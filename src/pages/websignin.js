@@ -154,7 +154,9 @@ const redirect = (location, extra = {}) => ({ status: 303, headers: HTML({ Locat
 // orange Caveat note with its squiggle arrow, dashed rules. The two display faces are Reason's own
 // copies cut down to Latin (assets/fonts/*-web.woff2, SIL OFL), served at /web/fonts/<name>.woff2 by
 // src/http.js — nothing is fetched from Google. The rules are the shell's --line (PAPER.line, the
-// site's --border, in light) so they follow the paper into dark.
+// site's --border, in light) so they follow the paper into dark. --above/--below are the room each side
+// of a rule, the site's own: its hero note's 2rem plus the hero's bottom padding over the rule, the
+// .day section's 5rem top padding under it.
 const fontFile = (f) => readFileSync(new URL(`../../assets/fonts/${f}`, import.meta.url));
 export const WEB_FONTS = { serif: fontFile("instrument-serif-italic-web.woff2"), hand: fontFile("caveat-web.woff2") };
 export function webFont(name) {
@@ -165,7 +167,7 @@ export function webFont(name) {
 const FONTS = `@font-face{font-family:"Reason Serif";font-style:italic;font-weight:400;font-display:swap;src:url(/web/fonts/serif.woff2) format("woff2")}`
   + `@font-face{font-family:"Reason Hand";font-weight:400 700;font-display:swap;src:url(/web/fonts/hand.woff2) format("woff2")}`;
 const CSS = `${FONTS}
-:root{--serif:"Reason Serif","Instrument Serif","Iowan Old Style",Georgia,serif;--sans:"Inter",system-ui,-apple-system,sans-serif;--hand:"Reason Hand","Caveat",cursive;--mono:"Courier New","Courier",monospace;--rule:var(--line)}
+:root{--serif:"Reason Serif","Instrument Serif","Iowan Old Style",Georgia,serif;--sans:"Inter",system-ui,-apple-system,sans-serif;--hand:"Reason Hand","Caveat",cursive;--mono:"Courier New","Courier",monospace;--rule:var(--line);--above:calc(2rem + clamp(3rem,8vh,6rem));--below:5rem}
 body{font-family:var(--sans);font-size:16px;line-height:1.6}
 .hero{margin:.6rem 0 2.2rem}
 .hero .kicker{font:400 .72rem/1.4 var(--mono);text-transform:uppercase;letter-spacing:.14em;color:var(--dim);margin:0 0 .75rem}
@@ -174,7 +176,7 @@ body{font-family:var(--sans);font-size:16px;line-height:1.6}
 h2{font:italic 400 clamp(1.9rem,6vw,2.4rem)/1.12 var(--serif);letter-spacing:-.015em;margin:0 0 .9rem}
 .w-note{font:400 1.5rem/1.2 var(--hand);color:var(--accent);margin:1.1rem 0 0;transform:rotate(-1.5deg);transform-origin:left}
 .w-note svg{width:24px;height:14px;vertical-align:middle;margin-right:.25em;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round}
-.w-rule{border:0;height:0;border-top:1px dashed var(--rule);margin:2.4rem 0}
+.w-rule{border:0;height:0;border-top:1px dashed var(--rule);margin:var(--above) 0 var(--below)}
 .w-form label{display:block;margin:.8rem 0 .45rem;font:400 .72rem/1.4 var(--mono);text-transform:uppercase;letter-spacing:.14em;color:var(--dim)}
 .w-form input[type=tel],.w-form input[type=text]{display:block;width:100%;box-sizing:border-box;min-height:3rem;padding:.8rem .95rem;border-radius:4px;border:1px solid var(--edge,#ccc);font:inherit;font-size:1.05rem;background:var(--card);color:var(--ink)}
 .w-form input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 35%,transparent)}
@@ -185,19 +187,20 @@ h2{font:italic 400 clamp(1.9rem,6vw,2.4rem)/1.12 var(--serif);letter-spacing:-.0
 .w-link{background:none;border:0;padding:0;color:inherit;text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:3px;cursor:pointer;font:inherit;opacity:.85}
 .w-link[data-busy]{min-width:6.5rem;text-align:left}
 .w-err{color:var(--warn);font-weight:600}
-.w-join{margin-top:2.6rem;padding-top:2.2rem;border-top:1px dashed var(--rule)}
+.w-join{margin-top:var(--above);padding-top:var(--below);border-top:1px dashed var(--rule)}
 .w-join .w-note{margin:-.2rem 0 1rem}
 .w-qr{margin:1.2rem 0 0;display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap}
 .w-qr svg{width:9rem;height:9rem;border-radius:4px;border:1px solid var(--rule);background:#fff;padding:.3rem;box-sizing:border-box}
 .w-qr figcaption{flex:1;min-width:12rem;color:var(--dim);font-size:.95rem;margin:0}
 .w-num{font-variant-numeric:tabular-nums;white-space:nowrap}
 .w-out{margin-top:2.4rem}
-.foot{border-top-style:dashed;border-top-color:var(--rule)}
+.foot{margin-top:var(--above);border-top-style:dashed;border-top-color:var(--rule)}
 `;
 const p = (s) => `<p>${esc(s)}</p>`;
-// The site's hero note: its squiggle arrow, then one line in Reason's own hand.
+// The site's hero note: its squiggle arrow, then one line in Reason's own hand. Under a section
+// heading (the join block's) the line stands alone, without the arrow.
 const ARROW = `<svg viewBox="0 0 28 14" aria-hidden="true"><path d="M2 7 Q8 2 14 7 Q20 12 26 7"/><path d="M22 3 L26 7 L22 11"/></svg>`;
-const note = (words) => `<p class="w-note">${ARROW}${esc(words)}</p>`;
+const note = (words, arrow = true) => `<p class="w-note">${arrow ? ARROW : ""}${esc(words)}</p>`;
 // One line per screen, in the site's voice ("no app. no dashboard. just a text."): lowercase, and
 // it says what is true, never words for anybody to type.
 export const NOTES = {
@@ -214,7 +217,7 @@ const hero = (h1, sub = "", aside = "") => `<div class="hero"><p class="kicker">
  * at a desktop screen; the number is written out for anybody who would rather type it.
  */
 export function joinBlock(joinNumber) {
-  const lead = `<h2>New to Reason?</h2>${note(NOTES.join)}<div class="t">${p("A text from your phone finishes joining. Reason answers there first, then you can sign in here.")}`;
+  const lead = `<h2>New to Reason?</h2>${note(NOTES.join, false)}<div class="t">${p("A text from your phone finishes joining. Reason answers there first, then you can sign in here.")}`;
   if (!joinNumber) {
     return `<section class="w-join">${lead}${p("Reason's texting line isn't connected right now, so joining can't finish at the moment. Nothing was used up — try again later.")}</div></section>`;
   }

@@ -484,10 +484,16 @@ test("the pages wear the site: serif italic headline, mono eyebrow, one handwrit
     assert.match(page, /border-top:1px dashed var\(--rule\)/);
     assert.doesNotMatch(page, /fonts\.googleapis|fonts\.gstatic/, "nothing from Google");
   }
-  const notes = (page) => [...page.matchAll(/<p class="w-note"><svg[^]*?<\/svg>([^<]*)<\/p>/g)].map(m => m[1]);
+  const notes = (page) => [...page.matchAll(/<p class="w-note">(?:<svg[^]*?<\/svg>)?([^<]*)<\/p>/g)].map(m => m[1]);
+  const arrowed = (page) => [...page.matchAll(/<p class="w-note"><svg[^]*?<\/svg>([^<]*)<\/p>/g)].map(m => m[1]);
   assert.deepEqual(notes(form), [ws.NOTES.signin, ws.NOTES.join].map(esc));
   assert.deepEqual(notes(code), [ws.NOTES.code, ws.NOTES.join].map(esc));
   assert.deepEqual(notes(landing), [ws.NOTES.landing].map(esc));
+  // The hero lines keep the site's squiggle arrow; the join line under "New to Reason?" has none.
+  assert.deepEqual(arrowed(form), [ws.NOTES.signin].map(esc));
+  assert.deepEqual(arrowed(code), [ws.NOTES.code].map(esc));
+  assert.deepEqual(arrowed(landing), [ws.NOTES.landing].map(esc));
+  assert.match(form, /--above:calc\(2rem \+ clamp\(3rem,8vh,6rem\)\);--below:5rem[^]*\.w-join\{margin-top:var\(--above\);padding-top:var\(--below\)/);
   for (const line of Object.values(ws.NOTES)) assert.doesNotMatch(line, /["“”]|\b(say|type|reply|text me|send)\b/i, `${line}: intent, never words to say`);
 
   // The fonts: served while on, cached, the right bytes; the CSP lets the page load them and nothing else.
