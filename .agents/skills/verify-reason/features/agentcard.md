@@ -11,7 +11,8 @@ Source: `src/agentcard.js` (the API client, the webhook signature, the decline m
 (`POST /agentcard/webhook` → `agentcardWebhookRequest`), `src/db.js` (`agentcard_users`,
 `agentcard_purchases`, `agentcard_events`), `src/trust.js` (the gate `purchase_confirm` sits behind).
 Tests: `test/agentcard.test.js` against `test/fixture-agentcard.js`, a fake AgentCard that answers
-every route the real one documents — no key, no network, 52 tests at `587f67a` (2026-10-24).
+every route the real one documents — no key, no network, 52 tests at `587f67a` (2026-10-24), 54 after
+the placement-failure pin (2026-10-26).
 The rest of the shopping loop (offers, handoff, price watches) is in [shopping.md](shopping.md).
 
 **Production credentials went live on the Hetzner instance on 2026-10-12 ~03:03 ET.** The org token
@@ -73,6 +74,29 @@ node --test test/agentcard.test.js        # 52/52 at 587f67a (35 at ef7040a)
 node --test test/purchasesnote.test.js test/agentcard-token-seal.test.js test/oauth-token-seal.test.js \
   test/shopping-sandbox-fixes.test.js     # 22 + 5 + 5 + 5 at 587f67a; agentcard + purchasesnote 82 at b04eb74; purchasesnote 30 at f3669e8 (#108)
 ```
+
+**Placement failure after approval (2026-10-26), pinned offline, then on the cage:**
+
+```bash
+cd ~/Desktop/pa
+node --test --test-name-pattern="2026-10-26" test/agentcard.test.js   # 2/2: the incident replayed against the fixture, and the late-event case
+# On the cage: the incident's own event shape, unsigned, must bounce (the cage blanks the secret), and
+# the four placement columns must exist on the caged database.
+P=8813   # any free port; REASON_VERIFY_PORT
+REASON_VERIFY_RUN=/tmp/reason-verify-place REASON_VERIFY_PORT=$P .agents/skills/verify-reason/bin/caged.sh start
+curl -s -w ' HTTP %{http_code}\n' -X POST "http://127.0.0.1:$P/agentcard/webhook" -H 'content-type: application/json' --data \
+  '{"id":"evt_c8b2aa7568ff17d35696038a","type":"order.failed","data":{"order_id":null,"conversation_id":"conv_571c1e34073228ee2696c96b","user_id":"usr_x","code":"place","message":null,"retryable":false,"charge_status":"none"}}'
+REASON_VERIFY_RUN=/tmp/reason-verify-place .agents/skills/verify-reason/bin/peek.sh schema agentcard_purchases | grep -o 'placement_[a-z_]*' | sort -u
+REASON_VERIFY_RUN=/tmp/reason-verify-place REASON_VERIFY_PORT=$P .agents/skills/verify-reason/bin/caged.sh stop
+```
+
+**End state (driven 2026-10-26 on the cage, port 8813):** `{"error":"rejected: no
+AGENTCARD_WEBHOOK_SECRET on this machine"} HTTP 401`, `serve.log` has one
+`agentcard_webhook_rejected`, and the schema lists `placement_fail_code`, `placement_fail_reason`,
+`placement_failed_at`, `placement_failures`. The signed path — match by conversation, the
+store-rejected re-ask with the ceiling, the stop on the second failure, the code and reason on
+`purchase_track` — is the pinned test above; it needs the fixture's signed deliveries and is never
+driven against the live webhook.
 
 **The cage cannot buy anything, by design.** `caged.sh start` blanks `AGENTCARD_CLIENT_ID`,
 `AGENTCARD_CLIENT_SECRET` and `AGENTCARD_WEBHOOK_SECRET` for the server, and `caged.sh env` prints
@@ -292,6 +316,37 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   exchange again (`src/http.js`). Declined rows in the purchases block carry why and whose fault
   (`refusalWhy`, `src/agentcard.js`) plus one closing line on whether the card was ever the problem
   (`cardVerdict`, `src/purchasesnote.js`) — a commerce-fee setup refusal is never blamed on the card.
+- **A store that refuses to place the order AFTER the approval is said as the store's doing, never
+  "the approval didn't count" (2026-10-26).** Live, 03:19 ET: Target, CeraVe PM, est. $16.78; Face ID
+  approved, 2 s later `order.failed code=place order_id=null`; the approval's timer re-confirmed with
+  the same confirmation_id, got `vault_approval_required` with a NEW authorization, and Reason told the
+  owner "it looks like the first approval didn't count". It did count — the store rejected the order,
+  which consumed the approval. Now: an `order.failed` with no order id is matched to the purchase by
+  `data.conversation_id` (the buy conversation), only for the person `data.user_id` names, only while
+  the row is `awaiting_approval`, and never for an approval pause (`order.failed` is also sent for
+  `vault_approval_required`; `agentcard.isApprovalPause`). It lands as `placement_failures` (count),
+  `placement_failed_at`, `placement_fail_code` (`place`/`prepare`, or a named code) and
+  `placement_fail_reason` (AgentCard's `message`, when any) on `agentcard_purchases`
+  (`db.noteAgentcardPlacementFailure`); the webhook says nothing itself — the re-confirm is the one
+  voice. That re-confirm (`purchase_confirm`, the pause branch) re-reads the row and, when it has a
+  placement failure OR the approval was consumed and a new authorization came back (the event can be
+  late), answers `store_rejected: true` with the code and reason, "nothing was charged", "that attempt
+  used up the approval, so AgentCard needs a fresh one", and the new link. The SECOND failure on one
+  cart is the end of it: `blocked: "store_rejected_twice"`, no third link, nothing sent to AgentCard,
+  the row `failed` with `decline_code` = the placement code, and the model is told to suggest checking
+  the address and the item and that trying later is a NEW purchase, only if they want it. `purchase_track`
+  (live and `local_record`) and `refusalWhy` carry the code and reason (`store`, never the card).
+  Event shape from docs.agentcard.com/webhooks/orders/order-failed (read 2026-10-26); the live
+  `agentcard_events` rows for the incident are `evt_c8b2aa7568ff17d35696038a` and
+  `evt_a1beb939a5892d7e45e91b64` (ids only; the table keeps no payload).
+- **Every approval text restates the hold ceiling (2026-10-26).** The approval texts said only the
+  estimated total ($16.78) while AgentCard's approval card showed the most the card may be held for
+  ($26.14); the cart line had said it once, the approval texts never, and the owner was surprised.
+  `holdLineFor(row, cents)` (`src/tools.js`) reads `ceiling_cents` off the row's `cart_json` and every
+  pause answer — first ask, re-ask, flight — carries `hold` ("total $X (an estimate…), and the card
+  may be held for up to $Y until the store settles — the same figure AgentCard's approval card shows")
+  and `hold_ceiling`, and the error text tells the model to put that line before the link. A cart with
+  no ceiling gets the total alone, nothing invented. Fixture: `fake.set({ ceilingCents })`.
 - **`purchase_track` answers from the local row when the connection is dead.** An expired or
   unreachable AgentCard connection no longer returns `blocked: connection_expired`: the row's status,
   reason and amount come back (`read_from: "local_record"`, `live_check: "needs_reconnect"`), and

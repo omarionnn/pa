@@ -374,7 +374,10 @@ export async function startAgentCard({
         if (cfg.ask === "bad_address") {
           return json(400, { error: "zip is required", code: "invalid_delivery_address", message: "zip is required" });
         }
-        const cart = cfg.ask === "dearer" ? COFFEE_DEARER : cfg.ask === "other" ? OTHER_COFFEE : COFFEE;
+        const base = cfg.ask === "dearer" ? COFFEE_DEARER : cfg.ask === "other" ? OTHER_COFFEE : COFFEE;
+        // `ceilingCents`: the most the card may be held for, as the real API's `approvedCeilingCents`
+        // (2026-10-26: $26.14 on a $16.78 Target cart). Same hash — the ceiling is not part of it.
+        const cart = cfg.ceilingCents == null ? base : { ...base, approvedCeilingCents: cfg.ceilingCents, totalIsEstimate: true };
         carts.set(conv, cart);
         return json(200, {
           conversation_id: conv,

@@ -6672,6 +6672,18 @@ addColumnIfMissing("agentcard_purchases", "quote_checked_at", "INTEGER");
 addColumnIfMissing("agentcard_purchases", "approval_expires_at", "INTEGER");
 addColumnIfMissing("agentcard_purchases", "ticketing_state", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("agentcard_purchases", "order_raw_json", "TEXT NOT NULL DEFAULT ''");
+// A placement that failed AFTER the person approved (2026-10-26: Target, `order.failed code=place`
+// with order_id null, 2 s after each Face ID approval). The approval is consumed by the attempt, so
+// the same confirm then needs a fresh one — which is the store's doing, not the person's. Kept so the
+// next confirm can say so, and so the second failure on one cart stops the loop.
+//   placement_failures    how many times the store refused to place this cart after an approval
+//   placement_failed_at   when the last one landed (ms)
+//   placement_fail_code   AgentCard's `code` on that order.failed (`place`, `prepare`, or a named one)
+//   placement_fail_reason AgentCard's `message` on it, when it gave one
+addColumnIfMissing("agentcard_purchases", "placement_failures", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("agentcard_purchases", "placement_failed_at", "INTEGER");
+addColumnIfMissing("agentcard_purchases", "placement_fail_code", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "placement_fail_reason", "TEXT NOT NULL DEFAULT ''");
 
 // ---------- flight travelers ----------
 //
@@ -7132,6 +7144,23 @@ export function noteAgentcardCancelReason(buyConversationId, { code = "", detail
   const d = String(detail ?? "").trim();
   if (c) db.prepare("UPDATE agentcard_purchases SET cancel_reason = ?, updated_at = ? WHERE buy_conversation_id = ? AND cancel_reason = ''").run(c.slice(0, 200), clock.now(), buyConversationId);
   if (d) db.prepare("UPDATE agentcard_purchases SET cancel_detail = ?, updated_at = ? WHERE buy_conversation_id = ? AND cancel_detail = ''").run(d.slice(0, 500), clock.now(), buyConversationId);
+  return getAgentcardPurchase(buyConversationId);
+}
+
+/**
+ * The store refused to place this cart after the person had approved the payment (an `order.failed`
+ * with no order_id, matched to the purchase by its buy conversation). Counted, and the latest code and
+ * reason kept — a later event with no reason never erases one already kept.
+ */
+export function noteAgentcardPlacementFailure(buyConversationId, { code = "", reason = "" } = {}) {
+  if (!buyConversationId) return null;
+  const c = String(code ?? "").trim().slice(0, 100);
+  const r = String(reason ?? "").trim().slice(0, 500);
+  db.prepare(`UPDATE agentcard_purchases SET placement_failures = placement_failures + 1, placement_failed_at = ?,
+      placement_fail_code = CASE WHEN ? != '' THEN ? ELSE placement_fail_code END,
+      placement_fail_reason = CASE WHEN ? != '' THEN ? ELSE placement_fail_reason END,
+      updated_at = ? WHERE buy_conversation_id = ?`)
+    .run(clock.now(), c, c, r, r, clock.now(), buyConversationId);
   return getAgentcardPurchase(buyConversationId);
 }
 
