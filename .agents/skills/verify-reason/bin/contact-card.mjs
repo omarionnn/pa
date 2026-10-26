@@ -8,7 +8,7 @@
 //
 // Checks: the sent URL's hash = sha8 of the served bytes; the hashed path and the alias serve the
 // same card; PHOTO is the orange photo (sha pinned in test/contact-card-orange.test.js); a REV:
-// line; no long cache. Sends nothing to anybody.
+// line; NOTE = "Your personal concierge" (10-25); no long cache. Sends nothing to anybody.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
@@ -21,6 +21,7 @@ const check = (ok, what) => { console.log(`${ok ? "ok  " : "FAIL"} ${what}`); if
 function checkCard(body, cache, label) {
   const photo = /\r\nPHOTO;ENCODING=b;TYPE=JPEG:([\s\S]*?)\r\n(?! )/.exec(body)?.[1]?.replace(/\r\n /g, "");
   check(!!photo && sha(Buffer.from(photo, "base64")) === ORANGE, `${label}: PHOTO is the orange photo`);
+  check(/\r\nNOTE:Your personal concierge\r\n/.test(body), `${label}: NOTE is "Your personal concierge"`);
   check(/\r\nREV:\d{4}-\d\d-\d\dT[\d:]+Z\r\n/.test(body), `${label}: has a REV: line`);
   check(!/max-age=[1-9]/.test(cache ?? ""), `${label}: no long cache (${cache})`);
 }

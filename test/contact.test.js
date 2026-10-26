@@ -87,6 +87,12 @@ test("the card is a vCard with the line's number, a photo, and the site on it", 
   assert.match(v, /\r\n [A-Za-z0-9+/=]/, "the photo continues on folded lines");
 });
 
+test("the card's note is the owner's tagline, \"Your personal concierge\" (10-25 copy change)", () => {
+  const v = vcard({ number: LINE });
+  assert.match(v, /\r?\nNOTE:Your personal concierge\r?\n/);
+  assert.doesNotMatch(v, /lives in your texts/i);
+});
+
 test("the card includes a second number labeled 'call me' when a call number is given", () => {
   const CALL = "+19145551234";
   const v = vcard({ number: LINE, callNumber: CALL });

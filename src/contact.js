@@ -40,7 +40,7 @@ export function isContactPath(pathname) {
 }
 
 /** The card's REV: line. Bump it whenever the photo or the card's fields change. */
-export const CARD_REVISED = "2026-10-25T22:15:00Z";
+export const CARD_REVISED = "2026-10-26T03:20:00Z";
 
 /** How long after a failed try before the card is tried again. */
 export const RETRY_AFTER_MS = 6 * 60 * 60 * 1000;
@@ -101,7 +101,7 @@ function vEsc(v) {
  * never from the model. A card with no number would be a contact nobody can save against the
  * thread, so it is refused rather than made.
  */
-export function vcard({ number, callNumber, name = "Reason", note = "An assistant that lives in your texts.", url = config.siteUrl || config.publicUrl || "" } = {}) {
+export function vcard({ number, callNumber, name = "Reason", note = "Your personal concierge", url = config.siteUrl || config.publicUrl || "" } = {}) {
   const tel = normalizeNumber(number);
   if (!tel) return null;
   const call = normalizeNumber(callNumber);
