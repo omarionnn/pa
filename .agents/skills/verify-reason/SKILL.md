@@ -372,6 +372,8 @@ ring-time cache warm-up — prove latency on Hetzner, not here. See
 
 ### Baseline — 3,665 pass, **0 failures** after busy form buttons (2026-10-25)
 
+Contact card photo brand orange + `scripts/card-to-owner.js` over `780e91a`: **3,791 tests, 3,669 passing, 0 failing, 122 skipped** (+4, `test/contact-card-orange.test.js` — pins the photo sha; the blue one must never return). Before that:
+
 Busy form buttons over `17e6843`: **3,787 tests, 3,665 passing, 0 failing, 122 skipped** (+4, `test/pages-busy-buttons.test.js`). Before that:
 
 Light pages on the site's paper over `7e81701`: **3,783 tests, 3,661 passing, 0 failing, 122 skipped** (+3, `test/pages-paper.test.js`; `test/pages-phone.test.js` table-fade "clean" now relative to the paper card). Before that:
