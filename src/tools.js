@@ -4087,14 +4087,16 @@ export const tools = [
     name: "invites_list",
     description: "Their invites: every invite link they have made and its state (unused, canceled or redeemed), how many invites they have left, and any request for more that is still pending."
       + " Use when they ask about their invites in any words — 'my invites', 'how many invites do I have', 'did anyone use my link'. Read this rather than remembering; links and counts change."
-      + " Who claimed a link is deliberately not in it.",
+      + " Who claimed a link is deliberately not in it."
+      + " Answer in a line or two, the way a friend would: how many they have left, any link that's out and not used yet and roughly when it went (a day, not a timestamp), and offer to make another if they have any left."
+      + " Never list links as numbered rows and never show a link's number; the number is only for invite_link_cancel.",
     input_schema: { type: "object", properties: {} },
   },
   {
     name: "invite_link_create",
     description: "Make one invite link for them to send a friend. Each link is single-use and gives whoever claims it their own Reason — not a waitlist spot. Links never expire; opening one does not use it up; it is spent only when someone joins with it."
       + " Use when they want to invite someone or ask for a link. If it says needs_name, ask them once what name their friend should see ('who should i say invited them?'), save it with my_name, then call this again."
-      + " Send the link exactly as returned, on its own line.",
+      + " Write one short line first saying it's an invite for a friend to pass on, in your own words (never quote a command), then the link exactly as returned, alone on its own line with nothing after it — it goes out as its own message, so forwarding it shows the card.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -10875,7 +10877,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return await runEventTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- invites (src/invites.js) ----------
-    case "invites_list": return invites.myInvites(c);
+    case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };
 
     case "invite_link_create": {
       const out = invites.makeLink(c);
@@ -10893,7 +10895,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             : "They have no invites left. They can ask for more — invite_request_more, once they have said how many and why.",
         };
       }
-      return { ...out, say: "Send the link exactly as it is, on its own line. It works once, never expires, and opening it does not use it up — only someone joining does." };
+      return { ...out, say: "One short line first, in your own words, saying it's an invite for a friend to pass on (never quote a command). Then the link exactly as it is, alone on its own line with nothing after it: it goes out as its own message, so forwarding it shows the card. It works once, never expires, and opening it does not use it up — only someone joining does." };
     }
 
     case "invite_link_cancel": {

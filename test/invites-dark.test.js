@@ -151,7 +151,7 @@ test("off: the master mints, the page opens, a friend texts the code in, they jo
   assert.equal(acct.invited_by, OWNER_C);
   assert.equal(db.getInvite(OWNER_C, inv.id).state, "redeemed");
   assert.equal(h.channel.sent.filter(m => m.to === NEW1)[0]?.text, "You're in, invited by Omari.");
-  assert.deepEqual(h.said.filter(e => e.conversationId === OWNER_C).map(e => e.text), ["Esi joined from your invite."]);
+  assert.deepEqual(h.said.filter(e => e.conversationId === OWNER_C).map(e => e.text), ["Esi just joined with your invite 🎉"]);
   assert.equal(db.inviteAllowance(OWNER_C), 1);
   // And the friend, a non-owner, is not then told about invites either.
   assert.deepEqual(names(toolsFor(`dm:fake:${NEW1}`)).filter(n => INVITE_TOOLS.has(n)), []);

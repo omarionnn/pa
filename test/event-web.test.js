@@ -94,7 +94,7 @@ test("before the password the page — and its link preview — shows the name a
   assert.match(out.body, /costumes mandatory/);
   assert.match(out.body, /og:title" content="Halloween Party"/);
   for (const leak of [/Elm St/, /Oct 31|9:00|21:00/, /Ama/, /\+1\d{10}/, /pumpkin|scrypt/]) assert.ok(!leak.test(out.body), `page leaks ${leak}`);
-  assert.match(out.body, /Joining gives you access to Reason, an assistant you text that can help you with everything about this event \(and more\)/, "access framing, said plainly");
+  assert.match(out.body, /Joining gives you access to Reason, your personal concierge, which can help you with everything about this event \(and more\)/, "access framing, said plainly");
   assert.match(out.body, /Joining starts a text conversation between you and Reason/, "that joining starts a Reason conversation is said plainly");
   assert.ok(!/signs you up/.test(out.body), "never framed as a signup");
   assert.equal((await eventRequestFor({ publicId: "AAAAAAAAAAAAAAAA", method: "GET", headers: {}, readBody: async () => null, router: h.router })).status, 404);

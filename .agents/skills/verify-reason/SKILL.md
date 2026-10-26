@@ -370,6 +370,10 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
+### Baseline — 3,687 pass, **0 failures** after the invite card (#159, 2026-10-26)
+
+Per-inviter card `GET /i/{token}/card.png` (also `/p/i/…`; src/invitecard.js, fonts inline from assets/fonts, cached `data/invite-cards/<sha16>.png` by name + INVITE_CARD_VERSION, `assets/og.png` if no browser). Invite og:title "Reason — your personal concierge", description "Free for you, for good.". Caged check: insert an `invites` row (node:sqlite), `curl -o x.png 127.0.0.1:8796/p/i/<token>/card.png` → 200 image/png 1200×630; POST → 405; unknown token → 404. **3,809 tests, 3,687 passing, 0 failing, 122 skipped.**
+
 ### Baseline — 3,682 pass, **0 failures** after the invite page v2 (#156, 2026-10-25)
 
 Invite page `/i/{token}`: heading in the homepage headline face (Instrument Serif italic, Google Fonts link in the head), calling leads the examples, cost line "Nothing. <Inviter> got you in early, and early people never pay for Reason…" over `3b96256`: **3,804 tests, 3,682 passing, 0 failing, 122 skipped**. Caged check: insert an `invites` row into the cage db with `node:sqlite` (external sqlite3 is refused under the OpenClaw state dir), then `curl 127.0.0.1:8796/i/<token>`. `flights.test.js` / `pages-busy-buttons.test.js` can fail under load while a cage or Playwright run shares the machine; rerun alone before calling it red.
