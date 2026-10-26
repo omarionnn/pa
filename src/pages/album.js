@@ -106,7 +106,8 @@ export function renderAlbum({ ev, conversationId }) {
   if (view.closed) return closedPage(ev, view.album, {});
   const all = view.all;
   const album = view.album;
-  let body = hero(ev, { photos: all ? photos.length : (album ? db.photoCount(album.id) : 0), people: album ? db.contributorCount(album.id) : 0 });
+  // Before they may see the album, the counts are their own: how many others added is theirs to learn on release.
+  let body = hero(ev, { photos: photos.length, people: all && album ? db.contributorCount(album.id) : (photos.length ? 1 : 0) });
   if (all) {
     body += `<div class="al-row"><a class="al-btn" href="${esc(`${base(ev)}/download`)}">Download album</a>${addButton()}</div>` + expiryBlock(album, ev);
     if (highlights.length) body += `<p class="al-h">Highlights</p>${grid(ev, highlights, "al-hi", { viewer: conversationId })}<p class="al-note">Picked by the organizer.</p>`;
@@ -248,7 +249,11 @@ export async function albumRequest({ ev, sub, method, query = {}, readBody, acco
   if (!owner) return page(404, renderNotFound());
   if (form?.get("step") === "send") {
     const asked = sendCode({ conversationId: owner.conversationId, what: owner.organizer ? "open the album page for" : "open the album for" });
-    if (!asked.ok) return page(200, renderGate({ ev, action, token, sent: true, error: `Reason has already texted this link's code. Use that one, or try again in about ${Math.max(1, Math.ceil((asked.retry_after_s ?? 900) / 60))} minutes.` }));
+    if (!asked.ok) {
+      const mins = Math.max(1, Math.ceil((asked.retry_after_s ?? 900) / 60));
+      const why = asked.reason === "rate_limited" && asked.retry_after_s >= 3600 ? `Too many code requests from this browser. Try again in about ${Math.round(mins / 60)} hour${mins >= 90 ? "s" : ""}.` : `Reason has already texted this link's code. Use that one, or try again in about ${mins} minutes.`;
+      return page(asked.retry_after_s >= 3600 ? 429 : 200, renderGate({ ev, action, token, sent: true, error: why }));
+    }
     return page(200, renderGate({ ev, action, token, sent: true }));
   }
   if (form?.get("step") === "code") {

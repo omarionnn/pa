@@ -255,6 +255,12 @@ test("attendees cannot see the album before release; release sends exactly one a
   assert.equal(r.told, "sent");
   assert.equal(rt.sent.length, 3);
   assert.equal(rt.sent[2].conversationId, ESI_C);
+  // Each announcement is its own message row carrying the real words, so the status page's retry
+  // (events.retryDelivery resends message.body) can only ever resend those words — never a placeholder.
+  const rows = db.eventMessages(ev.id).filter(m => m.kind === "album");
+  assert.equal(rows.length, 3);
+  for (const m of rows) { assert.match(m.body, /the Game Night album is ready/); assert.match(m.body, /\/album\?t=/); }
+  assert.equal(db.deliveriesFor(rows[0].id).length, 1, "one delivery per message row");
   // Checked in and released: the whole album, the exact expiry, highlights on top once pinned, the download.
   const org = await tool("album_manage", { event_id: ev.id, action: "pin", photo_ids: [db.photosOf(album.id)[2].id] }, KOFI_C, rt);
   assert.equal(org.pinned.length, 1);
@@ -296,6 +302,11 @@ test("a forwarded link does nothing for the wrong person: the gate texts the lin
   assert.equal(rt.sent.length, before + 1);
   assert.equal(rt.sent[before].conversationId, KOFI_C, "the code goes to the organizer, whose link it is");
   assert.match(rt.sent[before].text, /open the album page for "Game Night"/);
+  // The gate's button is under the same per-browser ceiling as the sign-in page: past it, no text goes.
+  for (let i = 0; i < 12; i++) await req(ev, { sub: "album/manage", method: "POST", body: form({ t: ev.organizer_token, step: "send" }), rt });
+  const capped = await req(ev, { sub: "album/manage", method: "POST", body: form({ t: ev.organizer_token, step: "send" }), rt });
+  assert.equal(capped.status, 429);
+  assert.ok(rt.sent.length <= before + events.SIGNIN_PER_BROWSER_HOUR, "a browser cannot keep the organizer's phone buzzing");
   // A made-up or dead link: not found, byte for byte.
   const ghost = await req(ev, { sub: "album/manage", query: { t: "nope" } });
   assert.equal(ghost.status, 404);
@@ -392,6 +403,14 @@ test("a never-released album runs no timer, deletes nothing, and is listed as wa
   assert.equal(rt.sent.length, 0, "a month past the event's start, nobody was texted an album");
   const page = await req(ev, { cookie: asBrowser(AMA_C, "tok-ama-4") });
   assert.match(page.text, /hasn't released the album yet/);
+  assert.ok(!/people/.test(page.text.split("Highlights")[0].split("al-sub")[1] ?? ""), "before release the counts are their own, not the album's");
+  // An event the operator paused sends nothing to guests, so its album cannot be released either.
+  db.updateEventRow(ev.id, { status: "paused" });
+  const held = await tool("album_manage", { event_id: ev.id, action: "release" }, KOFI_C, rt);
+  assert.equal(held.ok, false);
+  assert.match(held.error, /paused/);
+  assert.equal(db.albumOf(ev.id).released_at, null);
+  assert.equal(rt.sent.length, 0);
 });
 
 // ---------- the events feature, untouched ----------

@@ -273,18 +273,17 @@ export function checkinList(ev) {
   return db.attendeesOf(ev.id).map(a => ({ guest_id: a.id, display_name: a.display_name, checked_in: db.checkedIn(ev.id, a.conversation_id) }));
 }
 
-/** The release announcement, to one guest, once: the message row is the album's one (`album` kind). */
+/**
+ * The release announcement, to one guest, once. The words are per guest (their own link), so each
+ * guest gets a message row of their own carrying the REAL text: the events feature's retry from the
+ * status page resends `message.body`, and must resend these words, never a placeholder. The text is
+ * stable per guest (the deadline is fixed at release), so asking again finds the same row and
+ * `ensureDelivery` the same delivery — one message, however many times this runs.
+ */
 async function announceTo({ runtime, ev, album, att }) {
-  const message = db.recentEventMessage(ev.id, "album", `album:${album.id}`, 0) ?? db.insertEventMessage(ev.id, "album", `album:${album.id}`);
-  const d = db.ensureDelivery({ messageId: message.id, eventId: ev.id, conversationId: att.conversation_id });
-  if (d.state !== "pending") return { delivery: d.id, state: events.deliveryState(d) };
-  // The body is per guest (their own link), so it is built here rather than kept on the message row.
-  let r;
-  try { r = runtime?._tell ? await runtime._tell(att.conversation_id, releaseText(ev, album, att), { idempotencyKey: d.idem_key }) : { ok: false, error: "no way to send" }; }
-  catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
-  const handed = db.outboxRowsForKey(d.idem_key).length > 0 || !!r?.ok;
-  db.markDelivery(d.id, { state: handed ? "handed" : "error", error: r?.ok ? null : (r?.error ?? null) });
-  return { delivery: d.id, state: events.deliveryState(db.deliveryById(d.id)) };
+  const body = releaseText(ev, album, att);
+  const message = db.recentEventMessage(ev.id, "album", body, 0) ?? db.insertEventMessage(ev.id, "album", body);
+  return await events.deliver({ runtime, message, conversationId: att.conversation_id });
 }
 
 /**
@@ -296,6 +295,9 @@ export async function release({ runtime = null, ev, conversationId }) {
   if (!albumFor(ev)) return { ok: false, reason: "not_available" };
   if (!events.managed(conversationId, ev.id)) return { ok: false, reason: "not_organizer" };
   if (ev.status === "cancelled") return { ok: false, reason: "cancelled" };
+  // Paused from the status page: nothing goes out to guests (as blasts and releases are held), so
+  // the album is not released either — releasing is the one text it sends.
+  if (ev.status !== "active") return { ok: false, reason: ev.status };
   const album = db.ensureAlbum(ev.id, ev.organizer_conversation_id);
   if (album.closed_at) return { ok: false, reason: "closed" };
   const now = clock.now();

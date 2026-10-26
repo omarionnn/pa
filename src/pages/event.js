@@ -331,7 +331,14 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   if (sub && /^album(\/|$)/.test(sub)) {
     return await albumRequest({
       ev, sub, method, query, readBody, account, mine, runtime, log,
-      sendCode: ({ conversationId, what }) => sendSigninCode({ ev, conversationId, runtime, what, log }),
+      // Under the same per-browser ceiling as the sign-in page, so an unknown browser holding a
+      // link cannot keep the link's owner's phone buzzing; then the per-person limit inside.
+      sendCode: ({ conversationId, what }) => {
+        const actor = eventActor(headers, remoteAddress);
+        if (!events.signinGate(actor)) return { ok: false, reason: "rate_limited", retry_after_s: 3600 };
+        events.noteSigninRequest(actor);
+        return sendSigninCode({ ev, conversationId, runtime, what, log });
+      },
       tryCode: ({ conversationId, code }) => events.trySigninCode({ conversationId, code, actor: eventActor(headers, remoteAddress) }),
     });
   }
