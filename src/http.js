@@ -67,7 +67,7 @@ import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard } from "./pages/card.js";
 import { previewRequest } from "./pages/preview.js";
 import { mimeForKind } from "./documents/store.js";
-import { CONTACT_PATH, vcard, lineNumber } from "./contact.js";
+import { isContactPath, vcard, lineNumber } from "./contact.js";
 import { inviteRequest } from "./invites.js";
 import { eventPageRequest } from "./pages/event.js";
 import * as eventsmod from "./events.js";
@@ -600,7 +600,7 @@ export function assetRequest({ pathname, router = null }) {
     if (!bytes) return { status: 404, headers: HTML(), body: renderNotFound() };
     return { status: 200, headers: { "Content-Type": "image/svg+xml", "Content-Length": bytes.length, "Cache-Control": "public, max-age=86400" }, body: bytes };
   }
-  if (pathname === CONTACT_PATH) {
+  if (isContactPath(pathname)) {
     const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
     const card = live ? vcard({ number: lineNumber(router, live.name), callNumber: config.elevenPhoneNumber }) : null;
     if (!card) return { status: 404, headers: HTML(), body: renderNotFound() };
@@ -610,7 +610,8 @@ export function assetRequest({ pathname, router = null }) {
         "Content-Type": "text/vcard; charset=utf-8",
         "Content-Disposition": 'inline; filename="Reason.vcf"',
         "Content-Length": Buffer.byteLength(card),
-        "Cache-Control": "public, max-age=3600",
+        // No long cache: the address is what changes with the card, and an old hash still answers.
+        "Cache-Control": "no-cache",
       },
       body: card,
     };

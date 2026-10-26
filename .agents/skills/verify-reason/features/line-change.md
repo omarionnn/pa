@@ -12,7 +12,7 @@ Source: `src/linechange.js` (`isReturning`, `tellNewLine`, `LINE_CHANGE_LINE`),
 claimed, so a retried webhook never gets there), `src/db.js` (`line_change_cards`,
 `lineChangeDue`, `claimLineChangeCard`, `recordLineChangeCard`; the owner is seeded as done),
 `src/config.js` (`REASON_LINE_CHANGE_AT`, default `2026-10-23T15:50:00Z`), `src/contact.js`
-(the card is `GET /reason.vcf` by address). Tests: `test/linechange.test.js` (5/5 at `587f67a`).
+(the card is `GET /reason-<sha8>.vcf` by address — content-addressed since 10-25, `/reason.vcf` still an alias). Tests: `test/linechange.test.js` (5/5 at `587f67a`).
 
 ## Sub-features
 

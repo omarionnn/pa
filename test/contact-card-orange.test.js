@@ -63,7 +63,7 @@ test("the one-off send reaches only the owner's thread, once", async () => {
   assert.equal(r.outcome, "sent");
   assert.equal(r.conversationId, "dm:owner");
   assert.deepEqual(router.sent.map(m => m.to), ["+12025551234"]);
-  assert.equal(router.sent[0].mediaUrl, "https://reason.example.test/reason.vcf");
+  assert.match(router.sent[0].mediaUrl, /^https:\/\/reason\.example\.test\/reason-[0-9a-f]{8}\.vcf$/);
   assert.ok(existsSync(marker));
   assert.equal((await S.sendCardToOwner({ router, marker })).outcome, "already");
   assert.equal(router.sent.length, 1, "a rerun sends nothing");
