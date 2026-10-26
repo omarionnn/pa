@@ -1332,6 +1332,7 @@ test("pinned (2026-10-26): a new cart on the same conversation starts over; a fa
   assert.equal(fresh.placement_failed_at, null);
   assert.equal(fresh.authorization_state, "", "the approval spent on the old cart does not carry over");
   assert.equal(fresh.authorization_id, "");
+  assert.equal(fresh.decline_code, "", "the old cart's decline code is not the new cart's story");
   const yes3 = await yesFor(two.conversation_id, changed.cart_hash);
   fake.set({ confirms: ["approval_required"] });
   const pause = await call("purchase_confirm", { conversation_id: two.conversation_id, cart_hash: changed.cart_hash, confirmation_id: yes3 });

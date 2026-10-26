@@ -1367,8 +1367,10 @@ function placementGaveUp(buyConversationId, row, me) {
   const why = placementWhy(row);
   const flight = row.kind === "flight";
   const who = flight ? "the airline side" : (row.merchant || "the store");
-  // A row already ended for another reason (an expired approval, a decline) keeps that reason.
-  db.markAgentcardPurchase(buyConversationId, { status: "failed", declineCode: row.decline_code || why.code || "place" });
+  // A row already ended for another reason (an expired approval, a decline) keeps that reason; a
+  // waiting row's stale code, if any, is not this cart's story.
+  const ended = row.status === "failed" || row.status === "declined";
+  db.markAgentcardPurchase(buyConversationId, { status: "failed", declineCode: (ended && row.decline_code) || why.code || "place" });
   return {
     ok: false, blocked: "store_rejected_twice", store_rejected: true,
     placement_failures: why.times || 2, placement_fail_code: why.code || undefined, placement_fail_reason: why.reason || undefined,
