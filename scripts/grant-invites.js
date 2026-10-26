@@ -33,7 +33,9 @@ export function grant(argv) {
   if (!off && !(Number.isInteger(count) && count >= 0 && count <= 100)) return { ok: false, error: "count must be a whole number from 0 to 100" };
   const acct = findAccount(who);
   if (!acct) return { ok: false, error: "no account for that number or conversation" };
-  const before = { enabled: db.invitesEnabledFor(acct.conversation_id), remaining: db.inviteAllowance(acct.conversation_id) };
+  // Read without creating: db.inviteAllowance() inserts a first row, and a dry run writes nothing.
+  const row = db.db.prepare("SELECT remaining, enabled FROM invite_allowances WHERE conversation_id = ?").get(acct.conversation_id);
+  const before = { enabled: !!row?.enabled, remaining: row ? Number(row.remaining) : (acct.invited_by ? 0 : db.DEFAULT_INVITES) };
   const plan = off ? { enabled: false, remaining: before.remaining } : { enabled: true, remaining: count };
   const out = {
     ok: true, dryRun: !apply,

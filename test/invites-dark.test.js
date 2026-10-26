@@ -191,6 +191,9 @@ test("grant one person: dry run writes nothing; --apply turns invites on for the
   assert.equal(dry.dryRun, true);
   assert.deepEqual(dry.after, { enabled: true, remaining: 3 });
   assert.equal(db.invitesEnabledFor(KOFI_C), false, "dry run wrote nothing");
+  db.db.prepare("DELETE FROM invite_allowances WHERE conversation_id = ?").run(AMA_C);
+  grant([AMA, "2"]);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM invite_allowances WHERE conversation_id = ?").get(AMA_C).n, 0, "not even a first allowance row");
   assert.deepEqual(names(toolsFor(KOFI_C)).filter(n => INVITE_TOOLS.has(n)), []);
 
   const done = grant([KOFI, "3", "--apply"]);
