@@ -46,7 +46,7 @@ export function homePage() {
     title: "Reason",
     kicker: "Your personal concierge",
     lines: [
-      "Reason is an assistant you text like a friend. You ask it for things in plain words — look this up, remind me, sort this out, what's on Thursday — and it does them, keeps track of what is still open, and comes back when there is something real to say.",
+      "Reason is your personal concierge. You text it like a friend — to call a restaurant and book a table, find you a flight, or keep your week straight — and it does it, keeps track of what is still open, and comes back when there is something real to say.",
       "It is one person's assistant at a time. Everyone who texts it gets their own: their own memory, their own connected accounts, their own history. Nobody can see anybody else's.",
       "It only connects to something when you connect it yourself. If you want it to work with your email, your calendar or your Drive, you ask, it sends you a link, and you agree on Google's own page. Each of those is its own permission and its own tap — connecting your email does not give it your files. It never asks for a password, for anything.",
       "Anything that spends money or reaches another person stops and asks you first, and shows you exactly what it is about to do. A yes covers that one thing.",
@@ -84,7 +84,7 @@ export function privacyPage() {
     head: verificationTag(),
     links: [{ label: "Terms of service", href: "/terms" }, { label: "Home", href: "/" }],
     lines: [
-      "Reason is a personal assistant you text. This explains what it stores, what leaves the machine it runs on, and how to get rid of all of it. It is written against the code, which is public: github.com/omarionnn/pa",
+      "Reason is your personal concierge, over text. This explains what it stores, what leaves the machine it runs on, and how to get rid of all of it. It is written against the code, which is public: github.com/omarionnn/pa",
     ],
     sections: [
       {
@@ -172,7 +172,7 @@ export function termsPage() {
     head: verificationTag(),
     links: [{ label: "Privacy policy", href: "/privacy" }, { label: "Home", href: "/" }],
     lines: [
-      "Reason is a personal assistant you text. It is free software under the MIT licence, and this install of it is run by one person, who gave you the number. These terms are between you and that person.",
+      "Reason is your personal concierge, over text. It is free software under the MIT licence, and this install of it is run by one person, who gave you the number. These terms are between you and that person.",
     ],
     sections: [
       {

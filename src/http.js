@@ -68,7 +68,8 @@ import { pageCard } from "./pages/card.js";
 import { previewRequest } from "./pages/preview.js";
 import { mimeForKind } from "./documents/store.js";
 import { isContactPath, vcard, lineNumber } from "./contact.js";
-import { inviteRequest } from "./invites.js";
+import { inviteRequest, inviteCardName } from "./invites.js";
+import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
 import * as eventsmod from "./events.js";
 import { readFileSync } from "node:fs";
@@ -198,6 +199,19 @@ export function createServer({ router, runtime, log = () => {} }) {
         });
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);
+      }
+
+      // ---------- an invite link's card picture ----------
+      // The forwarded link's preview (src/invitecard.js): one picture per inviter name, drawn once.
+      // Public like the page itself, and a read: an unknown token is the same flat 404.
+      const inviteCardRoute = /^(?:\/p)?\/i\/([A-Za-z0-9_-]{32})\/card\.png$/.exec(url.pathname);
+      if (inviteCardRoute) {
+        const name = inviteCardName(inviteCardRoute[1]);
+        let png = null;
+        if (name) png = await inviteCard(name).catch((e) => { log?.(`invite card: ${e?.message ?? e}`); return null; });
+        if (!png) { res.writeHead(404, { "Content-Type": "text/plain" }); return res.end("not found"); }
+        res.writeHead(200, { "Content-Type": "image/png", "Content-Length": png.length, "Cache-Control": "public, max-age=86400" });
+        return res.end(req.method === "HEAD" ? "" : png);
       }
 
       // ---------- an invite link ----------

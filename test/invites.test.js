@@ -27,6 +27,7 @@ delete process.env.REASON_AUTO_ADMIT;
 process.env.REASON_INVITES_OPEN = "1";
 
 const invites = await import("../src/invites.js");
+const invitecard = await import("../src/invitecard.js");
 const { runTool } = await import("../src/tools.js");
 const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
@@ -149,14 +150,14 @@ test("a GET of the invite page renders who invited them and changes nothing — 
   assert.equal(out.status, 200);
   assert.equal(out.headers["Cache-Control"], "no-store");
   assert.match(out.body, /Kofi invited you to Reason/);
-  assert.match(out.body, /<meta property="og:title" content="Kofi invited you to Reason">/);
-  assert.match(out.body, /<meta property="og:image" content="https:\/\/reason\.example\.test\/og\.png">/);
+  assert.match(out.body, /<meta property="og:title" content="Kofi thinks you should join Reason">/, "the forwarded card names the inviter");
+  assert.match(out.body, new RegExp(`<meta property="og:image" content="[^"]*/i/${inv.token}/card\\.png\\?v=${invitecard.inviteCardKey("Kofi")}">`), "the inviter's own card, versioned by name");
   assert.match(out.body, /Nothing\. Kofi got you in early, and early people never pay for Reason\. No card, no subscription, ever\. It(?:'|&#39;)s our thanks for being here first\./, "what it costs: early means free for good, by the inviter's name");
   assert.match(out.body, /\(call this restaurant and book a table for 4,/, "calling leads the examples");
   assert.match(out.body, /family=Instrument\+Serif:ital@1/, "heading loads the homepage headline face");
   assert.match(out.body, /\.hero h1\{font-family:"Instrument Serif"[^}]*font-style:italic;font-weight:400/, "heading is the homepage's italic serif");
   assert.match(out.body, /Reason is your personal concierge/, "what Reason does");
-  assert.match(out.body, /og:description" content="Your personal concierge\. Free for early people, for good\.">/, "link preview line matches the cost: early people, free for good");
+  assert.match(out.body, /og:description" content="Reason — your personal concierge">/, "link preview line");
   assert.doesNotMatch(out.body, /lives in your texts/i);
   const code = invites.formatCode(inv.claim_code);
   const href = /href="(sms:[^"]*)"/.exec(out.body)?.[1]?.replaceAll("&amp;", "&").replaceAll("&#39;", "'");
@@ -180,6 +181,18 @@ test("over the wire: GET, HEAD and the files-domain path read the page; POST is 
     const viaFiles = await fetch(`${base}/p/i/${inv.token}`);
     assert.equal(viaFiles.status, 200, "the files domain rewrites /i/x to /p/i/x");
     await viaFiles.text();
+    // The forwarded card: the inviter's picture, drawn once per name (here pre-drawn by a fake
+    // renderer so no browser launches), served through both doors; a guessed token is a 404.
+    await invitecard.inviteCard("Kofi", { shoot: async () => Buffer.from("kofi-card") });
+    for (const path of [`/i/${inv.token}/card.png`, `/p/i/${inv.token}/card.png`]) {
+      const pic = await fetch(`${base}${path}`);
+      assert.equal(pic.status, 200, path);
+      assert.equal(pic.headers.get("content-type"), "image/png");
+      assert.equal(await pic.text(), "kofi-card");
+    }
+    const guessed = await fetch(`${base}/i/${"y".repeat(32)}/card.png`);
+    assert.equal(guessed.status, 404);
+    await guessed.text();
     const head = await fetch(`${base}/i/${inv.token}`, { method: "HEAD" });
     assert.equal(head.status, 200);
     const post = await fetch(`${base}/i/${inv.token}`, { method: "POST", body: "code=x" });
@@ -229,7 +242,7 @@ test("the inviter is told by name and nothing else; no word crosses in either di
   const h = harness();
   await h.router.deliver({ ...texts(NEW1, `${invites.joinText(inv.claim_code)} — also my bank pin is 4321`), displayName: "Esi" });
   const toKofi = h.said.filter(e => e.conversationId === KOFI_C).map(e => e.text);
-  assert.deepEqual(toKofi, ["Esi joined from your invite."]);
+  assert.deepEqual(toKofi, ["Esi just joined with your invite 🎉"]);
   assert.ok(!toKofi.join(" ").includes("4321"), "nothing of what the invitee said");
   const toEsi = sentTo(h.channel, NEW1).join(" ");
   assert.ok(!toEsi.includes("saturday"), "nothing of the inviter's conversation");
@@ -238,7 +251,7 @@ test("the inviter is told by name and nothing else; no word crosses in either di
   // Without a name for them, the end of their number — still nothing from either thread.
   const inv2 = mint(KOFI_C);
   await h.router.deliver(texts(NEW2, invites.joinText(inv2.claim_code)));
-  assert.equal(h.said.filter(e => e.conversationId === KOFI_C).at(-1).text, "someone with a number ending 0102 joined from your invite.");
+  assert.equal(h.said.filter(e => e.conversationId === KOFI_C).at(-1).text, "Someone with a number ending 0102 just joined with your invite 🎉");
 });
 
 test("two people claiming one link at once: exactly one wins, the other is told it has already been claimed", async () => {

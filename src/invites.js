@@ -25,6 +25,7 @@
 import * as db from "./db.js";
 import { config, normalizeNumber, stamp } from "./config.js";
 import { shell, esc, renderNotFound, foot } from "./pages/render.js";
+import { inviteCardKey } from "./invitecard.js";
 
 /** The path an invite link lives at. On the files domain Caddy rewrites `/i/x` to `/p/i/x`. */
 export const INVITE_PATH = "/i";
@@ -229,7 +230,7 @@ export function claimByText({ channel, address, text, name = "" }) {
   }
   const inviter = inv.conversation_id;
   const inviterShown = inviterName(inviter) || "a friend";
-  const joiner = out.account.name || `someone with a number ending ${addr.slice(-4)}`;
+  const joiner = out.account.name || `Someone with a number ending ${addr.slice(-4)}`;
   return {
     joined: true,
     conversationId: out.account.conversation_id,
@@ -238,7 +239,7 @@ export function claimByText({ channel, address, text, name = "" }) {
     welcome: `You're in, invited by ${inviterShown}.`,
     // Their name or the end of their number, and nothing else. No word of either conversation
     // crosses in either direction.
-    toInviter: `${joiner} joined from your invite.`,
+    toInviter: `${joiner} just joined with your invite 🎉`,
   };
 }
 
@@ -259,6 +260,12 @@ export function memberLine(inv, conversationId) {
  * forward or a hundred opens leave the invite exactly as it was. An unknown token is the same flat
  * not-found every other guessed link gets.
  */
+/** The inviter name a link's card shows, or null for a token that is not a link. A read. */
+export function inviteCardName(token) {
+  const inv = /^[A-Za-z0-9_-]{32}$/.test(String(token ?? "")) ? db.inviteByToken(token) : null;
+  return inv ? (inviterName(inv.conversation_id) || "A friend") : null;
+}
+
 export function inviteRequest({ token, lineNumber = null }) {
   const html = (status, body) => ({
     status,
@@ -284,15 +291,22 @@ const HEADING_CSS = `.hero h1{font-family:"Instrument Serif","Iowan Old Style",G
 
 export function renderInvite({ invite, name, lineNumber }) {
   const title = `${name} invited you to Reason`;
-  const image = config.publicUrl ? `${config.publicUrl}/og.png` : "";
+  // The forwarded link's card (owner, 2026-10-25): the inviter's own picture, a line naming them as
+  // the title, and what Reason is underneath. src/invitecard.js draws the picture once per name.
+  const cardTitle = `${name} thinks you should join Reason`;
+  const image = `${inviteUrl(invite.token)}/card.png?v=${inviteCardKey(name)}`;
   const head = [
     `<meta property="og:type" content="website">`,
     `<meta property="og:site_name" content="Reason">`,
-    `<meta property="og:title" content="${esc(title)}">`,
-    `<meta property="og:description" content="Your personal concierge. Free for early people, for good.">`,
-    image ? `<meta property="og:image" content="${esc(image)}">` : "",
+    `<meta property="og:title" content="${esc(cardTitle)}">`,
+    `<meta property="og:description" content="Reason — your personal concierge">`,
+    `<meta property="og:image" content="${esc(image)}">`,
+    `<meta property="og:image:type" content="image/png">`,
+    `<meta property="og:image:width" content="1200">`,
+    `<meta property="og:image:height" content="630">`,
+    `<meta property="og:image:alt" content="${esc(cardTitle)}. It's free right now.">`,
     `<meta name="twitter:card" content="summary_large_image">`,
-    `<meta name="twitter:title" content="${esc(title)}">`,
+    `<meta name="twitter:title" content="${esc(cardTitle)}">`,
   ].filter(Boolean).map(t => `\n${t}`).join("") + HEADING_FONT;
 
   const p = (s) => `<p>${esc(s)}</p>`;
