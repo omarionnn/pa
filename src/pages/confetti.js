@@ -34,7 +34,7 @@ vx:Math.cos(a)*v,vy:Math.sin(a)*v-(calm?0:3+Math.random()*2),w:calm?2.5:5+Math.r
 rot:Math.random()*6.283,spin:(Math.random()-.5)*.35,round:calm||Math.random()<.25,col:pal[i%pal.length]})}
 var t0=now,prev=now;
 function frame(t){
-var k=Math.min((t-prev)/16.7,3),e=(t-t0)/T;prev=t;
+var k=Math.max(0,Math.min((t-prev)/16.7,3)),e=Math.max(0,(t-t0)/T);prev=Math.max(prev,t);
 if(e>=1){c.remove();if(live===c)live=null;return}
 x.clearRect(0,0,W,H);x.globalAlpha=calm?Math.sin(Math.PI*e):e<.6?1:1-(e-.6)/.4;
 for(var j=0;j<ps.length;j++){var p=ps[j];
