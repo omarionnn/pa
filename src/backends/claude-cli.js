@@ -115,7 +115,9 @@ async function runTurnOnCli({
   // Whose Reason this is: the person in front of it, not whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
   const speaker = me.name === "the person I work for" ? "them" : me.name;
-  const prefix = kind === "event" ? `[event ${stamp()}]` : `[${stamp()}] ${speaker}:`;
+  // "(web)" after their name when the line came from Reason Web — the same label the API path writes
+  // (src/agent.js), so the thread reads the same whichever backend ran the turn.
+  const prefix = kind === "event" ? `[event ${stamp()}]` : `[${stamp()}] ${speaker}${toolCtx.channel === "web" ? " (web)" : ""}:`;
   // Anything they attached that is a picture: fetched, size- and type-checked, converted if it is
   // an iPhone's HEIC, and turned into the blocks the model is handed — the same call the API path
   // makes, so the limits, the refusal sentences and the record (src/reviewed.js) are the same code.

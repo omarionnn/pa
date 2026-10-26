@@ -430,6 +430,10 @@ export class Runtime extends EventEmitter {
       const turnArgs = (over = {}) => ({
         conversationId, text, kind, attachments, events: this, log: this.log,
         taskId: meta.fromTask ?? null,
+        // Where they are speaking from, for the one case the model has to know: a web message is
+        // labelled as such on its own line (src/agent.js, src/backends/claude-cli.js). A text is
+        // labelled nothing, exactly as before.
+        ...(meta.channel === "web" ? { channel: "web" } : {}),
         ...(answering ? { answering } : {}),
         ...(inboundRequests ? { requests: inboundRequests } : {}),
         ...(keep != null ? { keep } : {}), ...this.turnExtras, ...ctx,
@@ -490,6 +494,9 @@ export class Runtime extends EventEmitter {
           const ev = db.writeEvent({ conversationId, channel: meta.channel ?? a.row?.channel ?? "", messageId: a.handle, role: "user", content: a.text, attachments: [] });
           db.enqueueExtraction(conversationId, ev);
         } catch { /* best-effort */ }
+        // The folded text is theirs too, on the channel IT came on (a web line folded into a
+        // text's turn is still a web line in the history).
+        try { db.writeMessage({ conversationId, role: "user", channel: a.row?.channel ?? meta.channel ?? "", externalId: a.handle, text: a.text, at: a.row?.arrived_at ?? clock.now() }); } catch { /* best-effort */ }
       }
       if (fold?.answering) answering = fold.answering;
       // Event log: the assistant's reply, written whether or not it is sent. Extraction is NOT

@@ -38,6 +38,7 @@ import { readYesNo } from "../calls/verify.js";
 import { clock, config, normalizeNumber, stamp } from "../config.js";
 import { OutageError, downLine, leftWhileDownLine } from "../down.js";
 import * as onethought from "../onethought.js";
+import * as web from "../web.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 
 /** What somebody whose event code did not work is told, by why. */
@@ -115,16 +116,53 @@ export class Router {
   }
 
   /**
+   * A web message, resolved to the person it belongs to — or refused.
+   *
+   * Web is a route to a conversation that already exists, never a conversation of its own
+   * (docs/plans/reason-web-phase1.md §3): `conversationIdFor` would mint `dm:web:…`, a second Reason
+   * with no memory, so it is not asked. The conversation comes on the inbound as `conversationId`,
+   * put there by server code from the browser's session — never from anything the client sent; a
+   * `from` on a web inbound is ignored. From it the ACCOUNT gives the real channel and address, and
+   * admission runs against those, so a paused or removed person is as signed out on web as they are
+   * on their phone. Refused outright, before admission, when the switch is off or does not cover
+   * this person: with REASON_WEB off a web message is a thing that cannot happen, and this is the
+   * one place that makes it so.
+   *
+   * Returns `{ address, channel }` to admit with, or `{ refused }`.
+   */
+  #webSender(inbound) {
+    if (!web.webOn()) return { refused: "web_off" };
+    const conversationId = String(inbound.conversationId ?? "").trim();
+    if (!conversationId) return { refused: "no_session" };
+    const account = db.getAccount(conversationId);
+    if (!account) return { refused: "no_account" };
+    if (!web.webAllowedFor(conversationId)) return { refused: "web_not_for_them" };
+    return { address: account.address, channel: account.channel };
+  }
+
+  /**
    * One inbound message → at most one turn. Returns what happened, which is what the webhook
    * route answers the provider with.
    */
   async deliver(inbound) {
-    const address = normalizeNumber(inbound.from) || String(inbound.from ?? "").trim();
+    let address = normalizeNumber(inbound.from) || String(inbound.from ?? "").trim();
+    // Whose Reason admission is asked about. For a text that is the line it arrived on; for a web
+    // message it is the account's own channel and number, because web has neither.
+    let admitAs = inbound.channel;
+    if (inbound.channel === web.WEB) {
+      const sender = this.#webSender(inbound);
+      if (sender.refused) {
+        this.log({ inbound: inbound.externalId, web_refused: sender.refused });
+        return { ok: false, refused: sender.refused, conversationId: null };
+      }
+      address = sender.address;
+      admitAs = sender.channel;
+    }
 
     // Before anything else: is this somebody Reason works for? A number with no account never
     // reaches the queue and never reaches the model — its words are written down as a quote for
     // the master to read, and that is all.
-    const admitted = accounts.admit({ channel: inbound.channel, address });
+    const admitted = accounts.admit({ channel: admitAs, address });
     if (!admitted.allow) {
       if (admitted.reason === "blocked") {
         this.log({ inbound: inbound.externalId, blocked: address });
@@ -159,8 +197,16 @@ export class Router {
       }
     }
     // Re-read after a possible auto-admit created the account.
-    const readmitted = admitted.allow ? admitted : accounts.admit({ channel: inbound.channel, address });
+    const readmitted = admitted.allow ? admitted : accounts.admit({ channel: admitAs, address });
     const { conversationId, isOperator } = readmitted;
+    // A web message is answered to the conversation its session named and no other. `admit` built
+    // the id from the account's channel and number, so for the same account that is the same id —
+    // checked all the same, because the alternative is one person's words landing in another's
+    // Reason on a bookkeeping slip, and nothing below would notice.
+    if (inbound.channel === web.WEB && conversationId !== String(inbound.conversationId)) {
+      this.log({ inbound: inbound.externalId, web_refused: "conversation_mismatch" });
+      return { ok: false, refused: "conversation_mismatch", conversationId: null };
+    }
 
     // Somebody Reason works for who has never been sent its contact card: a pre-approved number's
     // first text, or an account from before the card existed whose startup send did not go. Once,
@@ -569,6 +615,16 @@ export class Router {
         });
         db.enqueueExtraction(conversationId, evId);
       } catch { /* best-effort */ }
+      // History, one row per message they sent — their own words as heard, with the channel each
+      // came on and when (src/web.js). Not the framing lines above, which are Reason's.
+      for (const [i, h] of held.entries()) {
+        try {
+          db.writeMessage({
+            conversationId, role: "user", channel: h.channel, externalId: h.external_id,
+            text: texts[i] || h.text || "", media: h.attachments ?? [], at: h.arrived_at ?? clock.now(),
+          });
+        } catch { /* best-effort */ }
+      }
 
       try {
         reply = await this.runtime.inbound(conversationId, userText, {
@@ -803,7 +859,9 @@ export class Router {
       said.push(EVENT_QUESTION);
     }
     // Their history starts with what actually happened, so the turn their answer starts knows the
-    // question it is answering.
+    // question it is answering. The code text they sent is theirs, on the channel it came on; what
+    // Reason sent back went through the outbox and is history from there.
+    try { db.writeMessage({ conversationId: conv, role: "user", channel: inbound.channel, externalId: inbound.externalId, text: inbound.text ?? "", at: inbound.at ?? clock.now() }); } catch { /* best-effort */ }
     db.saveConversation(conv, [...db.loadConversation(conv),
       { role: "user", content: String(inbound.text ?? "") },
       ...(said.length ? [{ role: "assistant", content: said.join("\n\n") }] : [])]);
