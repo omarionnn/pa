@@ -320,3 +320,32 @@ feature file: `.agents/skills/verify-reason/features/web-signin.md`.
   behind Caddy's `X-Files-Domain` marker; proxied through Netlify, every Web visitor would share one
   bucket and a stranger's wrong codes would lock everybody out. Route `/web` through Caddy or trust
   Netlify's client-address header there — before the rewrite.
+
+## 10. W2 as built (PR `wt/web-convo`, 2026-10-26)
+
+The conversation, dark behind `REASON_WEB` like W1. Verify-skill feature file:
+`.agents/skills/verify-reason/features/web-conversation.md`.
+
+- **Signed-in `/web` = the conversation** (`src/pages/webconvo.js`): newest 40 lines from `messages`,
+  labelled You/Reason · iMessage/SMS/Web · time, day separators, a "Continued on Web / in iMessage"
+  divider where the person's place changes, older pages on scroll (`/web/history?before=`), and at the
+  start "Your conversation before <day> stays in your texts." W1's landing is gone.
+- **Composer** → `POST /web/send` → `Router.deliver({ channel: "web", conversationId: <session> })`.
+  Same-origin + session csrf (header or field), browser-made id, 4000 chars, 20/min. Acknowledged
+  within 1.5 s; the turn never waits on the request, so a closed tab loses nothing. One id = one turn
+  (W0's claim): the script re-posts unsent lines after a reload under the same id; the no-script form
+  carries a server-minted id.
+- **Live**: SSE `/web/stream` (per session, own conversation only via `db.historyBus`, `typing` from
+  `WebChannel.typing` for this person's address, `signedout` on revocation, 20 s cycles with
+  Last-Event-ID resume) plus a 4 s `/web/history?after=` poll while a reply is awaited. **Differs from
+  §4.3** in one way: the stream is cycled every 20 s on purpose, because `/web/*` reaches the app
+  through Netlify's proxy; whether Netlify passes a streaming body through is unproven until deploy.
+- **Boundary note once**: `accounts.web_notice_seen_at`, set on the first signed-in render.
+- **Decision 9**: `threads.web_hint_due`, set by `upsertThread` when a text follows a Web message within
+  12 h, taken atomically by `deliver` on the next text to them (never a code key, never web/console):
+  "Our full conversation, the Web part included, is on Reason Web."
+- **CSP** gains `connect-src 'self'` (fetch + EventSource).
+- **Tests**: `test/web-convo.test.js` (14); W0's two text→web→text expectations now include the line.
+  Drive: `bin/web-convo-drive.mjs` (real HTTP). Previews: `bin/web-convo-preview.mjs`.
+- **Not in W2 (W3+)**: the Ongoing panel (the layout leaves a second grid column for it), notification
+  preferences, browsers list + revoke, token hashing/rotation, CSP nonce, attachments from Web.

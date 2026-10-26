@@ -19,7 +19,7 @@ export class WebChannel extends Channel {
 
   constructor() {
     super();
-    /** `message` events: `{ to, text, message_id, at }` for whatever just went out. No listener yet (W2). */
+    /** `message` events `{ to, text, message_id, at }` for whatever just went out; `typing` events `{ to, on, until }` (W2's live stream). */
     this.events = new EventEmitter();
     /** What this process has sent, newest last, so findSent can answer without the database when it can. */
     this.recent = [];
@@ -44,8 +44,16 @@ export class WebChannel extends Channel {
     return { ok: true, delivered };
   }
 
-  /** Never: a reply to a web message is shown in the browser, never texted. */
-  async typing() { return { ok: true, supported: false }; }
+  /**
+   * "Reason is working on it" in the open conversation tab (W2): an in-process `typing` event the
+   * live stream passes on to that person's tabs only. Nothing is sent anywhere; with no tab open it
+   * is heard by nobody, which is fine.
+   */
+  async typing({ to, on = true, maxDurationMs = 25_000 } = {}) {
+    if (!webOn()) return { ok: true, supported: false };
+    this.events.emit("typing", { to, on: !!on, until: on ? clock.now() + Math.max(5_000, Number(maxDurationMs) || 25_000) : 0 });
+    return { ok: true };
+  }
 
   /**
    * "Did this one go out?", for a row that was mid-flight when the process died. What makes a web

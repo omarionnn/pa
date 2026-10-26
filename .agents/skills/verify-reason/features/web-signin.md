@@ -7,8 +7,8 @@ Hetzner, **signed** (`signed = "REASON_SITE_PROXY_SECRET"`, HS256 JWS in `x-nf-s
 `heyreason.com/web` + same path and query (`webMovedTo`, only once `REASON_SITE_PROXY_SECRET` is set;
 the website's own signed request on that host is served). W1 is sign-in alone: a person
 types the number they text Reason from, Reason texts that number a six-digit code through the line it
-already uses, they type it, and that browser is theirs. The signed-in landing is a placeholder
-("You're in, <name>." + the approved boundary notice) until W2 brings the conversation.
+already uses, they type it, and that browser is theirs. Signed in, `/web` is now the conversation
+(W2, [web-conversation.md](web-conversation.md)); W1's "You're in, <name>." landing is gone.
 **Behind `REASON_WEB`** (`off` | `owner` | `on`, like `REASON_EVENTS`): off, `/web/*` is the same flat
 404 as a made-up path; `owner`, only the owner's number is ever texted a code (anybody else's gets the
 identical page and nothing); `on`, anybody with a Reason. **Live with `REASON_WEB=owner`** since

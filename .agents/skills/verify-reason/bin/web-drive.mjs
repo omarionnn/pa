@@ -106,13 +106,13 @@ step("the same code again: just wrong", reused.status === 200 && /isn(&#39;|')t 
 const session = `reason_page=${token}`;
 const landing = await req({ cookie: session });
 const csrf = /name="c" value="([^"]+)"/.exec(landing.body)?.[1];
-step("GET /web signed in: 'You're in, Kofi' + the boundary notice + a sign-out form with its secret", landing.status === 200 && /You(&#39;|')re in, Kofi\./.test(landing.body) && /One Reason\. Pick up anywhere\./.test(landing.body) && !!csrf);
+step("GET /web signed in: the conversation ('Hi, Kofi.', W2) + the first-visit boundary notice + a sign-out form with its secret", landing.status === 200 && /Hi, Kofi\./.test(landing.body) && /One Reason\. Pick up anywhere\./.test(landing.body) && !!csrf);
 step("the session row is Kofi's, under wsign:", db.db.prepare("SELECT conversation_id, page_id FROM page_sessions WHERE token = ?").get(token)?.conversation_id === KOFI_C);
 
 // 6. Sign out: refused without the secret or from elsewhere; done with both.
 const noSecret = await req({ sub: "signout", method: "POST", body: form({}), cookie: session });
 const elsewhere = await req({ sub: "signout", method: "POST", body: form({ c: csrf }), cookie: session, origin: "https://evil.example" });
-step("sign-out without the secret, or from another site: 403, still signed in", noSecret.status === 403 && elsewhere.status === 403 && /You(&#39;|')re in/.test((await req({ cookie: session })).body));
+step("sign-out without the secret, or from another site: 403, still signed in", noSecret.status === 403 && elsewhere.status === 403 && /Hi, Kofi/.test((await req({ cookie: session })).body));
 const out = await req({ sub: "signout", method: "POST", body: form({ c: csrf }), cookie: session });
 step("sign-out: 303, cookie cleared, row gone, cookie opens nothing", out.status === 303 && /^reason_page=; .*Max-Age=0/.test(cookies(out)[0] ?? "") && db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions").get().n === 0 && /Text me a code/.test((await req({ cookie: session })).body));
 

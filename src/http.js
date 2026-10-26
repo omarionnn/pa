@@ -25,8 +25,9 @@
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
 //   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
 //   POST /access/web                  a number left on the website's form, signed by the form's server
-//   GET  /web                         Reason Web (src/pages/websignin.js): sign in by number, or the signed-in landing
+//   GET  /web                         Reason Web (src/pages/websignin.js): sign in by number, or (signed in) the conversation
 //   POST /web/signin|code|signout     ask for the code, type it, sign this browser out — all 404 while REASON_WEB is off
+//   GET  /web/history|stream, POST /web/send   the conversation: older/newer lines, live events, a message (src/pages/webconvo.js)
 //   GET  /web/fonts/{serif|hand}.woff2  the site's two display faces for those pages (404 while off)
 //        /web…  on the pages host, not signed by the website: 301 to {REASON_SITE_URL}/web… (src/pages/siteproxy.js)
 //   POST /agentcard/webhook           a card landed in somebody's vault, or a payment was approved
@@ -227,12 +228,18 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(fontOut.status, fontOut.headers);
         return res.end(req.method === "HEAD" ? "" : fontOut.body);
       }
-      const webRoute = /^\/web(?:\/(signin|code|signout))?$/.exec(url.pathname);
+      const webRoute = /^\/web(?:\/(signin|code|signout|history|stream|send))?$/.exec(url.pathname);
       if (webRoute && webOn()) {
         const out = await webRequestFor({
           sub: webRoute[1] || null, method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers,
           remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, router, log,
         });
+        // The live stream (W2) stays open and writes as the conversation moves; everything else is one answer.
+        if (out.stream) {
+          res.writeHead(out.status, out.headers);
+          if (req.method === "HEAD") return res.end();
+          return out.stream(res, req);
+        }
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);
       }
@@ -687,7 +694,7 @@ export async function eventRequestFor({ router = null, ...rest }) {
  * through the one helper every join surface uses (src/web.js joinNumber), never a string here.
  */
 export async function webRequestFor({ router = null, ...rest }) {
-  return await webRequest({ ...rest, joinNumber: joinNumber(router) });
+  return await webRequest({ ...rest, router, joinNumber: joinNumber(router) });
 }
 
 /**

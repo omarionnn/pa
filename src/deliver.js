@@ -14,6 +14,7 @@
 import * as db from "./db.js";
 import { config } from "./config.js";
 import { outgoingParts } from "./plain.js";
+import { WEB, webAllowedFor } from "./web.js";
 
 // A page link goes out BARE, on purpose. On 2026-10-06 the link's own bubble briefly carried the
 // page's picture as an attachment, so the page would arrive looking like a page whether or not the
@@ -70,6 +71,9 @@ async function sendEach(target, { to, parts }) {
  * and reported if it never arrives), so that is `mediaOk: true, mediaQueued: true` and the runtime
  * marks it sent — otherwise it rode out again on the next message while the first copy retried.
  */
+/** The one line a text carries after a switch from Web (decision 9): intent, not instructions. */
+export const WEB_HINT = "Our full conversation, the Web part included, is on Reason Web.";
+
 export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (line) => console.error(line) }) {
   return async function deliver({ conversationId, text, media, channel, to: toIn, chatId: chatIn, fromOwner, isOperator, replyTo = null, sendStyle = null, idempotencyKey = null }) {
     const route = whereTo({ conversationId, channel, to: toIn, chatId: chatIn });
@@ -113,6 +117,16 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
       const t = target ? await target.send({ to, text: line }) : await router.send({ channel: name, to, text: line, chatId, ...durable, ...(idempotencyKey ? { idempotencyKey: `${idempotencyKey}:no-media` } : {}) });
       if (!t.ok && !t.queued) warn(`could not send over ${name}: ${t.error}`);
       return { ok: said.ok !== false, mediaOk: false, error: r.error };
+    }
+
+    // Decision 9 (docs/plans/reason-web-phase1.md §7): the first text to them after they moved from
+    // Web to texting mid-task says, once, that the whole conversation is on Web. Their own texts
+    // only (never a code, never a third party), and taken atomically so a second send cannot repeat it.
+    if (name !== WEB && name !== "console" && durable.toOwner && !media
+      && !db.HISTORY_EXCLUDED_KEYS.some(p => String(idempotencyKey ?? "").startsWith(p))
+      && webAllowedFor(conversationId) && db.takeWebHint(conversationId)) {
+      text = `${String(text ?? "").trimEnd()}\n\n${WEB_HINT}`;
+      log({ web_hint: conversationId });
     }
 
     // What this message actually becomes on a phone: markers a text thread cannot draw taken off,
