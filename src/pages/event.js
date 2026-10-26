@@ -28,7 +28,7 @@ import { siteClientIp } from "./siteproxy.js";
 import * as db from "../db.js";
 import * as events from "../events.js";
 import * as accounts from "../accounts.js";
-import { readCookie, cookieHeader, clearCookieHeader, requestCode, SESSION_TTL_MS } from "./access.js";
+import { readCookie, readCookies, cookieHeader, clearCookieHeader, requestCode, SESSION_TTL_MS } from "./access.js";
 import { shell, esc, renderNotFound, codeInputAttrs, foot, sentLine } from "./render.js";
 import { normalizeNumber, clock } from "../config.js";
 import { prettyNumber } from "../invites.js";
@@ -355,7 +355,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     // cookie (SameSite=Lax), and is answered without touching the one this browser holds.
     const presented = readCookie(headers?.cookie);
     if (!presented) return redirect(`/e/${ev.public_id}`);
-    db.endPageSession(presented);
+    for (const t of new Set([presented, ...readCookies(headers?.cookie)])) db.endPageSession(t);
     return redirect(`/e/${ev.public_id}`, { "Set-Cookie": clearCookieHeader({ path: "/", headers }) });
   }
 

@@ -92,7 +92,8 @@ test("the website's signature: only our secret, unexpired, from netlify, for our
   assert.equal(proxy.viaSite({}), false, "no signature");
   assert.equal(proxy.viaSite({ "x-nf-sign": "forged" }), false);
   assert.equal(proxy.viaSite({ "x-nf-sign": sign({ secret: "someone-elses" }) }), false, "another secret");
-  assert.equal(proxy.viaSite({ "x-nf-sign": sign({ exp: Math.floor(clock.now() / 1000) - 1 }) }), false, "expired");
+  assert.equal(proxy.viaSite({ "x-nf-sign": sign({ exp: Math.floor(clock.now() / 1000) - 120 }) }), false, "expired");
+  assert.equal(proxy.viaSite({ "x-nf-sign": sign({ exp: Math.floor(clock.now() / 1000) - 5 }) }), true, "a minute's grace for clock skew");
   assert.equal(proxy.viaSite({ "x-nf-sign": sign({ iss: "me" }) }), false, "not netlify");
   assert.equal(proxy.viaSite({ "x-nf-sign": sign({ id: "site-2" }) }), false, "another Netlify site");
   assert.equal(proxy.viaSite({ "x-nf-sign": sign({ alg: "none" }) }), false, "alg is pinned");
@@ -241,6 +242,7 @@ test("the cookie: shared under heyreason.com, host-only elsewhere; sign-out clea
   assert.match(cookieHeader("t", { path: "/", headers: { host: "reason.example.test", "x-nf-sign": sign() } }), /; Domain=heyreason\.test;/, "the website's proxied request");
   assert.doesNotMatch(cookieHeader("t", { path: "/", headers: { host: "reason.example.test" } }), /Domain=/, "the Funnel: host-only");
   assert.doesNotMatch(cookieHeader("t", { path: "/", headers: { host: "evilheyreason.test" } }), /Domain=/, "a lookalike is not under it");
+  assert.doesNotMatch(cookieHeader("t", { path: "/", headers: { host: "mail.heyreason.test" } }), /Domain=/, "only Reason's own three hosts set it");
   assert.doesNotMatch(cookieHeader("t"), /Domain=/, "no request: as before");
   const cleared = clearCookieHeader({ path: "/", headers: { host: "files.heyreason.test" } });
   assert.equal(cleared.length, 2);
@@ -250,6 +252,11 @@ test("the cookie: shared under heyreason.com, host-only elsewhere; sign-out clea
   assert.equal(readCookie("reason_page=stale-token; reason_page=live-token"), "live-token");
   assert.equal(readCookie("reason_page=live-token; reason_page=stale-token"), "live-token");
   assert.equal(readCookie("reason_page=only"), "only");
+  // A session planted from a sibling host (cookie tossing) beside the visitor's own: never swapped in.
+  db.startPageSession("web", "someone-else", { conversationId: "dm:fake:+14155559876" });
+  assert.equal(readCookie("reason_page=someone-else; reason_page=live-token"), null, "two people's sessions: neither");
+  db.startPageSession("web", "live-token-2", { conversationId: OWNER_C });
+  assert.equal(readCookie("reason_page=live-token-2; reason_page=live-token"), "live-token-2", "two of the same person's: the first");
   assert.equal(readCookie(""), null);
 });
 
@@ -271,4 +278,21 @@ test("every event address is built on REASON_EVENTS_URL; old files-domain links 
   // Unset: the pages domain, exactly as before the move.
   config.eventsUrl = "";
   assert.equal(events.eventUrl(ev), `https://files.heyreason.test/e/${ev.public_id}`);
+});
+
+test("Web sign-out with two copies of the cookie ends both sessions and clears both copies", async () => {
+  const h = harness();
+  db.startPageSession("wsign:dm:owner", "old-host-only", { conversationId: OWNER_C });
+  db.startPageSession("wsign:dm:owner", "shared-one", { conversationId: OWNER_C });
+  const jar = "reason_page=old-host-only; reason_page=shared-one";
+  const landing = await web(h, viaNetlify("198.51.100.1"), { cookie: jar });
+  assert.equal(landing.status, 200);
+  const c = /name="c" value="([^"]+)"/.exec(landing.body)?.[1];
+  assert.ok(c, "the signed-in landing carries the sign-out secret");
+  const out = await web(h, viaNetlify("198.51.100.1"), { sub: "signout", method: "POST", body: form({ c }), cookie: jar });
+  assert.equal(out.status, 303);
+  assert.equal(db.pageSessionExists("old-host-only"), false);
+  assert.equal(db.pageSessionExists("shared-one"), false);
+  const cleared = setCookies(out).filter(x => x.startsWith("reason_page=;"));
+  assert.equal(cleared.length, 2, "host-only and Domain=heyreason.test copies");
 });

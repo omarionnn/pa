@@ -5396,6 +5396,11 @@ export function pageSessionExists(token) {
   return !!token && !!db.prepare("SELECT 1 FROM page_sessions WHERE token = ?").get(String(token));
 }
 
+/** Whose session row this is (its conversation), or null. A read only. */
+export function pageSessionConversation(token) {
+  return token ? db.prepare("SELECT conversation_id FROM page_sessions WHERE token = ?").get(String(token))?.conversation_id ?? null : null;
+}
+
 /** Sign one browser out: its session row is gone, so its cookie opens nothing anywhere. */
 export function endPageSession(token) {
   if (!token) return false;

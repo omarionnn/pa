@@ -199,18 +199,30 @@ export function clearCookieHeader({ path = "/", headers = null } = {}) {
   return domain ? [plain, `${COOKIE}=; Path=${path}; Domain=${domain}; Max-Age=0; HttpOnly; SameSite=Lax${secure}`] : plain;
 }
 
-/**
- * The session token this browser sent. A browser can hold two (a host-only one from before the
- * cookie was shared, and the shared one); then the first that is still a session wins.
- */
-export function readCookie(header) {
+/** Every `reason_page` value this browser sent, in order (a browser can hold two; see readCookie). */
+export function readCookies(header) {
   const found = [];
   for (const part of String(header ?? "").split(";")) {
     const [k, ...v] = part.trim().split("=");
-    if (k === COOKIE) found.push(v.join("="));
+    if (k === COOKIE && v.join("=")) found.push(v.join("="));
   }
+  return found;
+}
+
+/**
+ * The session token this browser sent. A browser can hold two (a host-only one from before the
+ * cookie was shared, and the shared one); then the first that is still a session wins — unless the
+ * live ones belong to different people, which no sign-in of ours makes (a cookie planted from a
+ * sibling host would): then none, so a planted session can sign somebody out but never swap them
+ * into another account.
+ */
+export function readCookie(header) {
+  const found = readCookies(header);
   if (found.length < 2) return found[0] ?? null;
-  return found.find(t => t && db.pageSessionExists(t)) ?? found[0];
+  const live = found.filter(t => db.pageSessionExists(t));
+  if (!live.length) return found[0];
+  const owners = new Set(live.map(t => db.pageSessionConversation(t) ?? `page:${t}`));
+  return owners.size === 1 ? live[0] : null;
 }
 
 /** For tests and for /health: how close this page is to being locked out. */

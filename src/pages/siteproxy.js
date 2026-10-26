@@ -25,7 +25,8 @@ export function viaSite(headers = {}) {
   let head, claims;
   try { head = JSON.parse(b64(h).toString("utf8")); claims = JSON.parse(b64(p).toString("utf8")); } catch { return false; }
   if (head?.alg !== "HS256" || claims?.iss !== "netlify") return false;
-  if (!Number.isFinite(claims.exp) || claims.exp * 1000 <= clock.now()) return false;
+  // A minute's grace for the two clocks: an expiry missed by seconds would 301 the website's own request.
+  if (!Number.isFinite(claims.exp) || claims.exp * 1000 + 60_000 <= clock.now()) return false;
   if (config.siteProxyId && claims.netlify_id !== config.siteProxyId) return false;
   return true;
 }
@@ -54,14 +55,15 @@ export function webMovedTo(headers = {}, pathAndQuery = "/web") {
 
 /**
  * The domain the `reason_page` cookie is shared across, or "" for host-only. Owner decision 3: one
- * sign-in serves Web, pages, events and /ops, and those now sit on heyreason.com and its
- * subdomains, so the cookie names the website's domain whenever the request is under it (or came
- * through the website). Anywhere else (the Funnel, a dev machine) a Domain the browser would
- * refuse is left off.
+ * sign-in serves Web, pages, events and /ops, and those now sit on heyreason.com, files. and events.,
+ * so the cookie names the website's domain — set only when the request is to one of those three
+ * hosts (or came through the website, signed). A browser then sends it to every heyreason.com host,
+ * which is why nothing but Reason's own may ever be added under that domain. Anywhere else (the
+ * Funnel, a dev machine) a Domain the browser would refuse is left off.
  */
 export function cookieDomain(headers = {}) {
   const site = hostname(config.siteUrl);
   if (!site || !site.includes(".") || /^[0-9.]+$/.test(site)) return "";
-  const host = requestHost(headers);
-  return host === site || host.endsWith(`.${site}`) || viaSite(headers) ? site : "";
+  const ours = [site, hostname(config.pagesUrl), hostname(config.eventsUrl)].filter(h => h === site || h.endsWith(`.${site}`));
+  return ours.includes(requestHost(headers)) || viaSite(headers) ? site : "";
 }
