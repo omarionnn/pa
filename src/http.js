@@ -69,7 +69,7 @@ import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard } from "./pages/card.js";
 import { previewRequest } from "./pages/preview.js";
 import { mimeForKind } from "./documents/store.js";
-import { isContactPath, vcard, lineNumber } from "./contact.js";
+import { isContactPath, vcard, lineNumber, liveLineNumber } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
@@ -645,8 +645,7 @@ export function assetRequest({ pathname, router = null }) {
 
 /** An event page, with the texting line's number for its "Text Reason to finish" button. */
 export async function eventRequestFor({ router = null, ...rest }) {
-  const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
-  return await eventPageRequest({ ...rest, lineNumber: live ? lineNumber(router, live.name) : null });
+  return await eventPageRequest({ ...rest, lineNumber: liveLineNumber(router) });
 }
 
 /**
@@ -654,8 +653,7 @@ export async function eventRequestFor({ router = null, ...rest }) {
  * tests; the route above is the only caller.
  */
 export function inviteRequestFor({ token, router = null }) {
-  const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
-  return inviteRequest({ token, lineNumber: live ? lineNumber(router, live.name) : null });
+  return inviteRequest({ token, lineNumber: liveLineNumber(router) });
 }
 
 /**
@@ -1105,6 +1103,32 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
       // against 13:00:49 on 2026-10-24). Then the conversation finds the row, and the read below has
       // to list this order on it before anything is written.
       const row = byOrder ?? (orderId && data.conversation_id ? db.getAgentcardPurchase(data.conversation_id) : null);
+      // order.failed with NO order id, on a purchase waiting for its approval: the store refused to
+      // place the cart after the person approved (2026-10-26 03:20 ET: Target, `code: "place"`,
+      // 2 s after each Face ID approval, twice). That attempt consumed the approval, so the next
+      // confirm of the same cart comes back asking for a fresh one — and until this was matched,
+      // Reason read that as "the first approval didn't count", which was false. Matched by the buy
+      // conversation the event names, only for the person it names, and never for an approval pause
+      // (order.failed is also sent for `vault_approval_required`, which is not a failure). Nothing is
+      // said here: the confirm that is about to be repeated (the approval's own timer) is the one
+      // voice, and it reads this off the row. If that confirm has already gone out before this
+      // lands, it still knows — the row's approval was consumed and a new authorization came back.
+      // Only once the row's approval HAS gone through: before that, a confirm that ended without an
+      // order is Reason's own confirm, which gets its answer directly and marks the row itself, and
+      // "after your approval" would be a lie. (The two-second race the other way — the failure
+      // landing before its approval — is covered by the consumed-approval evidence, without a code.)
+      if (kind === "failed" && !orderId && data.conversation_id && !agentcard.isApprovalPause(data.code)) {
+        const waiting = db.getAgentcardPurchase(data.conversation_id);
+        if (waiting && user && waiting.conversation_id === user.conversation_id && waiting.status === "awaiting_approval" && waiting.authorization_state === "approved") {
+          const noted = db.noteAgentcardPlacementFailure(waiting.buy_conversation_id, { code: data.code ?? "", reason: data.message ?? "" });
+          log({
+            agentcard_webhook: event.type, purchase: waiting.buy_conversation_id, via: "conversation", placement_failed: true,
+            code: data.code ?? "none", reason: data.message || "none", failures: noted?.placement_failures ?? undefined,
+            charge_status: data.charge_status ?? undefined, retryable: data.retryable ?? undefined,
+          });
+          return { status: 200, body: { ok: true, matched: true, placement_failed: true, failures: noted?.placement_failures ?? 1 } };
+        }
+      }
       if (!row || (user && row.conversation_id !== user.conversation_id)) {
         log({ agentcard_webhook: event.type, unmatched_order: orderId || "none", code: data.code ?? undefined, billing_setup: agentcard.billingSetupRequired(data.code) || undefined });
         return { status: 200, body: { ok: true, matched: false } };
@@ -1275,7 +1299,13 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
           error: `Reason has already texted ${config.ownerName} a code. Use that one, or try again in about ${Math.ceil(asked.retry_after_s / 60)} minutes.`,
         });
       }
-      if (runtime?.say) {
+      // Keyed `pcode:` on the code's own row, as event sign-in keys `esign:`: the key is what keeps a
+      // code text out of the per-message history (db.js HISTORY_EXCLUDED_KEYS) — a code is a secret,
+      // never a line in the conversation — and it is what stops a retried send texting a code twice.
+      if (runtime?._tell) {
+        Promise.resolve(runtime._tell(page.conversation_id, asked.line, { idempotencyKey: `pcode:${page.id}:${asked.id}` }))
+          .catch(e => log({ page_code_text_failed: page.id, why: (e?.message ?? String(e)).split("\n")[0] }));
+      } else if (runtime?.say) {
         try { runtime.say(page.conversation_id, asked.line); } catch (e) { log({ page_code_text_failed: page.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
       }
       log({ page_code_sent: page.id });
@@ -1470,7 +1500,11 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
         log({ ops_code_refused: asked.reason });
         return gate({ sent: true, error: `Reason has already texted ${config.ownerName} a code. Use that one, or try again in about ${Math.ceil(asked.retry_after_s / 60)} minutes.` });
       }
-      if (runtime?.say) {
+      // `pcode:` key, as above: keeps the code out of the per-message history and out of a double send.
+      if (runtime?._tell) {
+        Promise.resolve(runtime._tell(page.conversation_id, asked.line, { idempotencyKey: `pcode:${page.id}:${asked.id}` }))
+          .catch(e => log({ ops_code_text_failed: (e?.message ?? String(e)).split("\n")[0] }));
+      } else if (runtime?.say) {
         try { runtime.say(page.conversation_id, asked.line); } catch (e) { log({ ops_code_text_failed: (e?.message ?? String(e)).split("\n")[0] }); }
       }
       log({ ops_code_sent: true });

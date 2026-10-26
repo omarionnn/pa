@@ -1071,9 +1071,12 @@ function localPurchaseAnswer(row, who, me) {
   const amount = row.amount_cents ? trust.money(row.amount_cents) : "";
   const reconnect = ["connection_expired", "no_card", "not_enrolled", "needs_verification", "connect_failed"].includes(who.blocked);
   const what = `${row.what || "the order"}${row.merchant ? ` from ${row.merchant}` : ""}${amount ? ` (${amount})` : ""}`;
+  const pw = placementHistory(row);
   const lead = cancelled
     ? `Reason's record: ${what} was CANCELLED — ${why.given ? `reason: ${why.words}` : "no reason given"}. Nothing is coming.` + cancelNote(why)
-    : `Reason's record: ${what} — status '${row.status}'${row.decline_code ? ` (${row.decline_code})` : ""}${row.order_id ? `, order ${row.order_id}` : ""}. Say that as what Reason last knew, not as a fresh read.`;
+    : `Reason's record: ${what} — status '${row.status}'${row.decline_code ? ` (${row.decline_code})` : ""}${row.order_id ? `, order ${row.order_id}` : ""}.`
+      + (pw ? ` ${row.merchant || "The store"} refused to place it after the approval${pw.times > 1 ? `, ${pw.times} times` : ""} — ${pw.words} (${pw.given}); nothing was charged, and the approval itself went through — the store is what refused.` : "")
+      + ` Say that as what Reason last knew, not as a fresh read.`;
   const footnote = reconnect
     ? ` Only as a side note, after the answer: a live re-check with AgentCard needs ${me.name}'s card reconnected (vault_enroll gives the link) — offer it, don't lead with it.`
     : who.blocked === "not_configured"
@@ -1085,6 +1088,7 @@ function localPurchaseAnswer(row, who, me) {
     amount: amount || undefined,
     ...(cancelled ? { cancelled: true, placed: false, reason: why.words, cancel_reason: why.code || undefined } : {}),
     ...(row.decline_code ? { decline_code: row.decline_code } : {}),
+    ...(pw ? { store_rejected: true, placement_failures: pw.times, placement_fail_code: pw.code || undefined, placement_fail_reason: pw.reason || undefined } : {}),
     note: lead + footnote,
   };
 }
@@ -1315,6 +1319,74 @@ function purchaseAskLine(c, row) {
     total, url,
     record: { merchant: row.merchant, items, total, total_label: "AgentCard's all-in total", address: where || null, delivery_estimate: offer?.shipping_time || null, source_url: url || null, fetched_at: new Date(Number(row.updated_at)).toISOString() },
   };
+}
+
+/**
+ * The numbers an approval text has to carry, in one line: AgentCard's estimated total AND the most
+ * the card may be held for, which is the figure AgentCard's own approval card shows. On 2026-10-26
+ * the owner saw $16.78 in Reason's approval texts and $26.14 on AgentCard's card, and was surprised;
+ * the cart line had said it once, the approval texts never. Read off the cart on the row, never
+ * retyped; with no ceiling on the cart, the total alone.
+ */
+function holdLineFor(row, cents) {
+  let cart = null;
+  try { cart = row?.cart_json ? JSON.parse(row.cart_json) : null; } catch { cart = null; }
+  const total = trust.money(cents);
+  const ceilingCents = Number(cart?.ceiling_cents) || 0;
+  const ceiling = ceilingCents > cents ? trust.money(ceilingCents) : "";
+  const est = cart?.total_is_estimate ? " (an estimate: the shop prices tax and delivery at checkout)" : "";
+  return {
+    total, ceiling: ceiling || undefined,
+    line: ceiling
+      ? `total ${total}${est}, and the card may be held for up to ${ceiling} until the store settles — the same figure AgentCard's approval card shows`
+      : `total ${total}${est}`,
+  };
+}
+
+/**
+ * Why the store refused to place this cart after the approval, in words, off the row (src/agentcard.js
+ * placementFailureWords) — plus the code and the store's line as given, for the final message.
+ */
+function placementWhy(row) {
+  const code = row?.placement_fail_code || "";
+  const reason = row?.placement_fail_reason || "";
+  return {
+    code, reason, times: Number(row?.placement_failures) || 0,
+    words: agentcard.placementFailureWords({ code, reason }),
+    given: `AgentCard's code: ${code || "none"}${reason ? `; its words: ${reason}` : "; no reason given"}`,
+  };
+}
+
+/**
+ * The store refused to place this cart twice, each time after the person approved the payment.
+ * The cart is done: a third approval would almost certainly end the same way, and asking for one
+ * is how somebody taps Face ID three times for nothing. Marks the row failed with the placement
+ * code, sends nothing, and tells the model what to say — and that trying later is a NEW purchase.
+ */
+function placementGaveUp(buyConversationId, row, me) {
+  const why = placementWhy(row);
+  const flight = row.kind === "flight";
+  const who = flight ? "the airline side" : (row.merchant || "the store");
+  // A row already ended for another reason (an expired approval, a decline) keeps that reason; a
+  // waiting row's stale code, if any, is not this cart's story.
+  const ended = row.status === "failed" || row.status === "declined";
+  db.markAgentcardPurchase(buyConversationId, { status: "failed", declineCode: (ended && row.decline_code) || why.code || "place" });
+  return {
+    ok: false, blocked: "store_rejected_twice", store_rejected: true,
+    placement_failures: why.times || 2, placement_fail_code: why.code || undefined, placement_fail_reason: why.reason || undefined,
+    cart_line: `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(Number(row.amount_cents) || 0)})`,
+    error: `Not ${flight ? "booked" : "bought"}, and not sent again — ${why.words}, twice: each time ${me.name} approved the payment, ${who} refused to place the order (${why.given}). Nothing was charged, and any hold on the card drops off on its own.`
+      + ` Tell them plainly: ${who} turned it down twice after their approval — never that an approval didn't count — nothing was charged, and it is worth checking ${flight ? "the travelers' details and the flight itself" : "the delivery address and the item, since an address the store can't use is the usual cause"}.`
+      + ` Do not offer a third try on this cart. If they would rather try again later, that is a NEW ${flight ? "booking (flight_book, a fresh quote, a new yes)" : "purchase (purchase, a fresh cart, a new yes)"}, and only if they want it.`,
+  };
+}
+
+/** Not placed, not cancelled: the states in which "the store refused to place it" is still the story. */
+const PLACEMENT_HISTORY_STATES = new Set(["awaiting_approval", "failed", "declined", "outcome_unknown"]);
+
+/** The row's placement refusals, when they are the story — never on an order that was then placed. */
+function placementHistory(row) {
+  return Number(row?.placement_failures) > 0 && PLACEMENT_HISTORY_STATES.has(String(row.status)) ? placementWhy(row) : null;
 }
 
 /** The closest standing permission and why it does not reach, for a refusal the model has to say. */
@@ -11988,6 +12060,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
+      // The store has already refused to place this cart twice, each time after an approval. It is
+      // not sent a third time (2026-10-26: Target, `order.failed code=place` after both Face IDs).
+      if ((row.status === "awaiting_approval" || row.status === "failed") && (Number(row.placement_failures) || 0) >= 2) {
+        return placementGaveUp(input.conversation_id, row, me);
+      }
+
       // A flight carries more than a cart: who flies, how fresh the price is, and whether the total is
       // final. Every one of those is checked here, before anything is sent (src/flightbook.js).
       const flightRefusal = flightConfirmRefusal(c, row);
@@ -12131,30 +12209,63 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // make a person who did exactly what they were asked be asked all over again.
       if (out.status === "needs_approval" || (out.status === "declined" && (out.decline_code === "vault_approval_required" || out.decline_code === "byoc_approval_required"))) {
         const expiresMs = Date.parse(out.approval_expires_at || "");
+        // The row as it stands NOW, not as it was read at the top: the order.failed that follows an
+        // approval lands on it between the two (2026-10-26, 2 s after each Face ID).
+        const fresh = db.getAgentcardPurchase(input.conversation_id) ?? row;
+        const newAuth = !!out.authorization_id && !!fresh.authorization_id && out.authorization_id !== fresh.authorization_id;
+        // A pause AFTER an approval, with a new authorization, means the approval was consumed and
+        // no order came of it: the store refused to place it. The webhook usually says so first
+        // (placement_failures); the consumed approval says so on its own if the event is late.
+        const consumed = fresh.authorization_state === "approved" && newAuth;
+        const failures = Number(fresh.placement_failures) || 0;
+        const rejected = failures > 0 || consumed;
+        if (rejected && failures >= 2) return placementGaveUp(input.conversation_id, fresh, me);
         db.markAgentcardPurchase(input.conversation_id, {
           status: "awaiting_approval", chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null, authorizationId: out.authorization_id || undefined,
+          // The old approval is spent; the new link is unapproved until its own event says otherwise.
+          ...(newAuth ? { authorizationState: "" } : {}),
           ...(Number.isFinite(expiresMs) ? { approvalExpiresAt: expiresMs } : {}),
           ...(row.kind === "flight" ? { ticketingState: "approval_pending" } : {}),
         });
+        // Every approval text — the first and every re-ask — carries the total AND the hold ceiling,
+        // the two numbers AgentCard's approval card shows (2026-10-26: $16.78 in the texts, $26.14 on
+        // the card, and the owner was surprised).
+        const hold = holdLineFor(row, cents);
+        const sameAgain = `call purchase_confirm again with the SAME confirmation_id (${ctx.confirmationId ?? "the one you have"}), the same conversation_id and the same cart_hash. Do not ask them for another yes, and do not say it is bought until that call comes back with an order.`;
         if (row.kind === "flight") {
           return {
             ok: false, blocked: "vault_approval_required",
-            approval_url: out.approval_url, cart_line: line, amount: trust.money(cents),
+            approval_url: out.approval_url, cart_line: line, amount: trust.money(cents), hold: hold.line, hold_ceiling: hold.ceiling,
             approval_expires_at: out.approval_expires_at || undefined,
-            error: `Nothing has been charged and nothing is booked — AgentCard wants ${me.name} to approve the payment on their own device.`
-              + ` Send the approval link as its OWN message — the link alone, nothing before it, nothing after it, no punctuation touching it — and say in a separate message that it opens AgentCard's page showing the merchant and the amount (${trust.money(cents)}), approved with their passkey: Face ID or Touch ID on iPhone, face or fingerprint unlock on Android, or their master password.`
+            ...(rejected ? { store_rejected: true, placement_failures: failures, placement_fail_code: fresh.placement_fail_code || undefined, placement_fail_reason: fresh.placement_fail_reason || undefined } : {}),
+            error: (rejected
+              ? `Not booked — ${placementWhy(fresh).words} after ${me.name} approved the payment (${placementWhy(fresh).given}). Nothing was charged. That attempt used up the approval, so AgentCard needs a fresh one to try again. Tell them exactly that — the airline side refused it, never that their approval didn't count — and that nothing was charged. Then the link below.`
+              : `Nothing has been charged and nothing is booked — AgentCard wants ${me.name} to approve the payment on their own device.`)
+              + ` Send the approval link as its OWN message — the link alone, nothing before it, nothing after it, no punctuation touching it — and say in a separate message that it opens AgentCard's page showing the merchant and the numbers (${hold.line}), approved with their passkey: Face ID or Touch ID on iPhone, face or fingerprint unlock on Android, or their master password.`
               + ` ${out.approval_expires_at ? `It stops working at ${stamp(Date.parse(out.approval_expires_at))}.` : "It stops working after about 15 minutes."} An expired approval means a fresh price and a new approval, never a retry.`
               + ` Link: ${out.approval_url}`
-              + ` Once they approve, call purchase_confirm again with the SAME confirmation_id (${ctx.confirmationId ?? "the one you have"}), conversation_id and cart_hash. An approval is not a booking, and a booking is not a ticket.`,
+              + ` Once they approve, ${sameAgain} An approval is not a booking, and a booking is not a ticket.`,
+          };
+        }
+        if (rejected) {
+          const why = placementWhy(fresh);
+          return {
+            ok: false, blocked: "vault_approval_required", store_rejected: true,
+            approval_url: out.approval_url, cart_line: line, amount: trust.money(cents), hold: hold.line, hold_ceiling: hold.ceiling,
+            placement_failures: failures, placement_fail_code: why.code || undefined, placement_fail_reason: why.reason || undefined,
+            error: `Not placed — ${why.words} after ${me.name} approved the payment (${failures ? why.given : "AgentCard gave no code for it yet"}). Nothing was charged, and if the card shows a hold for it, that drops off on its own.`
+              + ` That attempt used up the approval, so AgentCard needs a fresh one before it can try the store again.`
+              + ` Tell them exactly that, in plain words: ${row.merchant || "the store"} rejected the order${why.reason ? `, and why` : ""} — never that their approval didn't count, failed or was missed; it went through.`
+              + ` Then the numbers again in one short line (${hold.line}), then this link on its own line, as the last thing in the message, untouched: ${out.approval_url}`
+              + ` Once they approve, ${sameAgain} If the store refuses it again, that is the end of this cart — the next confirm stops and says so.`,
           };
         }
         return {
           ok: false, blocked: "vault_approval_required",
-          approval_url: out.approval_url, cart_line: line, amount: trust.money(cents),
+          approval_url: out.approval_url, cart_line: line, amount: trust.money(cents), hold: hold.line, hold_ceiling: hold.ceiling,
           error: `Nothing has been charged yet — AgentCard wants ${me.name} to approve the payment on their own phone.`
-            + ` Send them this link on its own line, as the last thing in the message, untouched: ${out.approval_url}`
-            + ` They tap it, approve with Face ID or Touch ID, and then you call purchase_confirm again with the SAME confirmation_id (${ctx.confirmationId ?? "the one you have"}),`
-            + ` the same conversation_id and the same cart_hash. Do not ask them for another yes, and do not say it is bought until that second call comes back with an order.`
+            + ` Put the numbers in one short line first, the same ones AgentCard's approval card shows (${hold.line}), then send them this link on its own line, as the last thing in the message, untouched: ${out.approval_url}`
+            + ` They tap it, approve with Face ID or Touch ID, and then you ${sameAgain}`
             + ` An approval is an authorization, not an order: even once they have approved, nothing is placed until the repeated confirm says so. When AgentCard reports the approval, you will be woken to send that same confirm yourself.`,
         };
       }
@@ -12505,12 +12616,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const known = await reconcilePurchase(c, buyConv, who.token, orderId, { read: t.read ?? t });
       const now = db.getAgentcardPurchase(buyConv);
       const shop = now.merchant || t.order?.merchant_name || "the shop";
+      // The store refused to place it after an approval (order.failed, no order id): the code and
+      // the reason as AgentCard gave them ride on every answer, so the final message can say them.
+      const pw = placementHistory(now);
+      const placementNote = pw
+        ? ` ${shop} refused to place it after ${me.name} approved the payment${pw.times > 1 ? `, ${pw.times} times` : ""} — ${pw.words} (${pw.given}). Nothing was charged for it; say the code and the reason as given, and never that an approval didn't count.`
+        : "";
       const base = {
         status: now.status, order_id: now.order_id || undefined, known: known.known, placed: known.placed,
         bought: now.what, merchant: now.merchant,
+        ...(pw ? { store_rejected: true, placement_failures: pw.times, placement_fail_code: pw.code || undefined, placement_fail_reason: pw.reason || undefined } : {}),
       };
       if (!t.ok) {
-        return { ok: false, ...base, error: `${known.line} Say that rather than guessing where it is or whether it went through.` };
+        return { ok: false, ...base, error: `${known.line}${placementNote} Say that rather than guessing where it is or whether it went through.` };
       }
       if (known.cancelled || now.status === "cancelled") {
         const why = cancelWhy(now, t.order);
@@ -12540,8 +12658,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!t.found) {
         return {
           ok: true, ...base,
-          note: `AgentCard's own record, read just now: ${known.line} Say what is known and what is not, in those terms.`
-            + (known.placed ? "" : ` Do not retry the purchase on this; only a new yes from them can, and only once they understand it may already have gone through.`),
+          note: `AgentCard's own record, read just now: ${known.line}${placementNote} Say what is known and what is not, in those terms.`
+            + (known.placed ? "" : pw
+              ? ` Do not retry this cart on your own; if they want it, that is a new purchase and a new yes.`
+              : ` Do not retry the purchase on this; only a new yes from them can, and only once they understand it may already have gone through.`),
         };
       }
       // An order AgentCard lists. Every field it leaves null is said to be missing, by name and by

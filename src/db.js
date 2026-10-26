@@ -1487,6 +1487,12 @@ addColumnIfMissing("connected_accounts", "conversation_id", "TEXT NOT NULL DEFAU
 // expressive effect need, and both arrived after threads did.
 addColumnIfMissing("threads", "service", "TEXT");
 addColumnIfMissing("threads", "last_inbound_id", "TEXT");
+// Where their most recent message came from, web included. `channel`/`address` above are the PHONE
+// route — the one everything Reason starts itself (a timer, a task's news, a sign-in code) goes to —
+// and a web message must never overwrite them (upsertThread). This column is the only trace a web
+// message leaves on the thread; a later phase reads it for the one-line "the rest is on Web" hint
+// after a switch (docs/plans/reason-web-phase1.md §7 decision 9).
+addColumnIfMissing("threads", "last_channel", "TEXT");
 addColumnIfMissing("outbox", "send_style", "TEXT");
 // Inline replies: what each inbound message said (so "the one about the table" can be found again
 // by its words), which message an outbound one is pinned under, and the message this turn's reply
@@ -3572,15 +3578,28 @@ export function scheduleTask(id, wakeAt) {
  */
 export function upsertThread({ conversationId, channel, address, chatId = null, isOwner, service = null, lastInboundId = null }) {
   const now = clock.now();
-  db.prepare(`INSERT INTO threads (conversation_id, channel, address, chat_id, is_owner, service, last_inbound_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  // A web message never becomes the thread's route. `channel`/`address` are where Reason's OWN
+  // messages go — a reminder, a task finishing, a sign-in code — and that has to stay the phone:
+  // with a shared conversation the first web message would otherwise point every one of those at a
+  // browser tab that may be closed. So a web inbound touches `last_channel`, the activity stamp and
+  // the handle, and leaves the route exactly as it was. A thread that does not exist yet is not
+  // created by a web message either: the phone route is proven by a text, never by a browser.
+  if (channel === "web") {
+    db.prepare(`UPDATE threads SET last_channel = 'web',
+        last_inbound_id = COALESCE(?, last_inbound_id), updated_at = ?
+      WHERE conversation_id = ?`).run(lastInboundId, now, conversationId);
+    return getThread(conversationId);
+  }
+  db.prepare(`INSERT INTO threads (conversation_id, channel, address, chat_id, is_owner, service, last_inbound_id, last_channel, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(conversation_id) DO UPDATE SET
       channel = excluded.channel, address = excluded.address,
       chat_id = COALESCE(excluded.chat_id, threads.chat_id),
       service = COALESCE(excluded.service, threads.service),
       last_inbound_id = COALESCE(excluded.last_inbound_id, threads.last_inbound_id),
+      last_channel = excluded.last_channel,
       is_owner = excluded.is_owner, updated_at = excluded.updated_at`)
-    .run(conversationId, channel, address, chatId, isOwner ? 1 : 0, service, lastInboundId, now, now);
+    .run(conversationId, channel, address, chatId, isOwner ? 1 : 0, service, lastInboundId, channel, now, now);
   return getThread(conversationId);
 }
 
@@ -4120,7 +4139,11 @@ export function markOutboundSent(id, { messageId = null } = {}) {
   const now = clock.now();
   db.prepare(`UPDATE outbox SET state = 'sent', message_id = ?, sent_at = ?, next_attempt_at = NULL,
     last_error = '', updated_at = ? WHERE id = ?`).run(messageId, now, now, id);
-  return getOutbound(id);
+  const row = getOutbound(id);
+  // The moment a message really went is the moment it is history (src/web.js). Not when it was
+  // drafted: a reply the outbox never managed to send is not something the person was told.
+  try { historyFromOutbound(row); } catch { /* history is never allowed to cost a send */ }
+  return row;
 }
 
 /** It did not go, and it might later. */
@@ -6702,6 +6725,18 @@ addColumnIfMissing("agentcard_purchases", "quote_checked_at", "INTEGER");
 addColumnIfMissing("agentcard_purchases", "approval_expires_at", "INTEGER");
 addColumnIfMissing("agentcard_purchases", "ticketing_state", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("agentcard_purchases", "order_raw_json", "TEXT NOT NULL DEFAULT ''");
+// A placement that failed AFTER the person approved (2026-10-26: Target, `order.failed code=place`
+// with order_id null, 2 s after each Face ID approval). The approval is consumed by the attempt, so
+// the same confirm then needs a fresh one — which is the store's doing, not the person's. Kept so the
+// next confirm can say so, and so the second failure on one cart stops the loop.
+//   placement_failures    how many times the store refused to place this cart after an approval
+//   placement_failed_at   when the last one landed (ms)
+//   placement_fail_code   AgentCard's `code` on that order.failed (`place`, `prepare`, or a named one)
+//   placement_fail_reason AgentCard's `message` on it, when it gave one
+addColumnIfMissing("agentcard_purchases", "placement_failures", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("agentcard_purchases", "placement_failed_at", "INTEGER");
+addColumnIfMissing("agentcard_purchases", "placement_fail_code", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "placement_fail_reason", "TEXT NOT NULL DEFAULT ''");
 
 // ---------- flight travelers ----------
 //
@@ -7106,7 +7141,20 @@ export function recordAgentcardPurchase({ conversationId, buyConversationId, sta
       amount_cents = excluded.amount_cents,
       merchant = excluded.merchant,
       what = excluded.what,
-      updated_at = excluded.updated_at`)
+      updated_at = excluded.updated_at,
+      -- A different cart on the same conversation (they changed the item, the address, the count; or
+      -- a 409 handed back a fresh one) is a fresh attempt: the store's refusals of the OLD cart and the
+      -- approval that was spent on it do not carry over, or a cart nobody has tried would be said to
+      -- have been rejected, and after two it would never be sent at all. The same hash keeps them, and
+      -- so does a clarifying turn with no cart yet (hash ''). The old cart's decline code goes too, or a
+      -- card decline on cart A would be the blame for cart B's refusals.
+      placement_failures = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN 0 ELSE agentcard_purchases.placement_failures END,
+      placement_failed_at = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN NULL ELSE agentcard_purchases.placement_failed_at END,
+      placement_fail_code = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.placement_fail_code END,
+      placement_fail_reason = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.placement_fail_reason END,
+      authorization_state = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.authorization_state END,
+      authorization_id = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.authorization_id END,
+      decline_code = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.decline_code END`)
     .run(conversationId, buyConversationId, status, cartHash, Math.round(amountCents), merchant, what, clock.now(), clock.now());
   return getAgentcardPurchase(buyConversationId);
 }
@@ -7162,6 +7210,23 @@ export function noteAgentcardCancelReason(buyConversationId, { code = "", detail
   const d = String(detail ?? "").trim();
   if (c) db.prepare("UPDATE agentcard_purchases SET cancel_reason = ?, updated_at = ? WHERE buy_conversation_id = ? AND cancel_reason = ''").run(c.slice(0, 200), clock.now(), buyConversationId);
   if (d) db.prepare("UPDATE agentcard_purchases SET cancel_detail = ?, updated_at = ? WHERE buy_conversation_id = ? AND cancel_detail = ''").run(d.slice(0, 500), clock.now(), buyConversationId);
+  return getAgentcardPurchase(buyConversationId);
+}
+
+/**
+ * The store refused to place this cart after the person had approved the payment (an `order.failed`
+ * with no order_id, matched to the purchase by its buy conversation). Counted, and the latest code and
+ * reason kept — a later event with no reason never erases one already kept.
+ */
+export function noteAgentcardPlacementFailure(buyConversationId, { code = "", reason = "" } = {}) {
+  if (!buyConversationId) return null;
+  const c = String(code ?? "").trim().slice(0, 100);
+  const r = String(reason ?? "").trim().slice(0, 500);
+  db.prepare(`UPDATE agentcard_purchases SET placement_failures = placement_failures + 1, placement_failed_at = ?,
+      placement_fail_code = CASE WHEN ? != '' THEN ? ELSE placement_fail_code END,
+      placement_fail_reason = CASE WHEN ? != '' THEN ? ELSE placement_fail_reason END,
+      updated_at = ? WHERE buy_conversation_id = ?`)
+    .run(clock.now(), c, c, r, r, clock.now(), buyConversationId);
   return getAgentcardPurchase(buyConversationId);
 }
 
@@ -9304,6 +9369,37 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS event_log_conv ON event_log (conversation_id, at);
 
+  -- One row per message a person sent or was sent, with where it happened (Reason Web, phase W0:
+  -- docs/plans/reason-web-phase1.md §4.3). The model's thread (conversations.messages) is one JSON
+  -- blob with no channel and no time on a line; event_log has both but is blanked after 30 days for
+  -- memory's sake. Web's "your full conversation, with where each message came from" needs a row that
+  -- is neither — so this is written alongside them, from the same moments, and nothing reads it yet.
+  --
+  --   role        user | assistant
+  --   channel     sendblue | linq | console | fake | web — where THIS message happened
+  --   external_id the provider's handle (inbound), or the sent message's id (outbound); the dedupe
+  --   outbox_id   the outbox row an assistant message went out as, one history row per send
+  --   media       JSON list of what was attached, as src/reviewed.js recorded it
+  --   deleted_at  reserved; nothing writes it in v1 (§7 decision 7: no history deletion)
+  --
+  -- Written only while REASON_WEB is not off, for every conversation (src/web.js historyOn). Never
+  -- backfilled: history starts the day the switch is turned, and Web says so.
+  CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    external_id TEXT,
+    outbox_id INTEGER,
+    text TEXT NOT NULL DEFAULT '',
+    media TEXT NOT NULL DEFAULT '[]',
+    at INTEGER NOT NULL,
+    deleted_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS messages_conv_at ON messages (conversation_id, at, id);
+  CREATE UNIQUE INDEX IF NOT EXISTS messages_inbound_once ON messages (conversation_id, channel, external_id) WHERE external_id IS NOT NULL AND role = 'user';
+  CREATE UNIQUE INDEX IF NOT EXISTS messages_outbox_once ON messages (outbox_id) WHERE outbox_id IS NOT NULL;
+
   CREATE TABLE IF NOT EXISTS fact_embeddings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id TEXT NOT NULL,
@@ -9432,6 +9528,72 @@ export function writeEvent({ conversationId, channel = "", messageId = "", threa
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(conversationId, channel, messageId, threadId, role, String(content ?? ""), JSON.stringify(attachments), JSON.stringify(toolCalls), at);
   return Number(r.lastInsertRowid);
+}
+
+// -- messages (per-message history with source channel; Reason Web W0) --
+
+/** Is the per-message history being written at all? Read from config here rather than src/web.js, which imports this file. */
+function historyOn() {
+  return config.web === "owner" || config.web === true;
+}
+
+/**
+ * Messages Reason wrote that are not part of anybody's conversation: a sign-in code is a secret,
+ * never shown in history (§4.3), and nothing else is excluded. Matched on the outbox key's prefix,
+ * which is the one thing a code-writing caller sets on purpose: `pcode:` is a page's or /ops's gate
+ * (src/http.js), `esign:` an event sign-in (src/pages/event.js), `wsign:` Web's own (W1).
+ */
+export const HISTORY_EXCLUDED_KEYS = ["pcode:", "esign:", "wsign:"];
+
+/**
+ * One history row. Idempotent on (conversation, channel, external_id) for a person's message and on
+ * outbox_id for Reason's, so a retried webhook or a second markOutboundSent writes nothing twice.
+ * Returns the row id, or null when nothing was written (switch off, duplicate, empty).
+ */
+export function writeMessage({ conversationId, role, channel, externalId = null, outboxId = null, text = "", media = [], at = clock.now() }) {
+  if (!historyOn()) return null;
+  if (!conversationId || !role || !channel) return null;
+  const body = String(text ?? "");
+  const atts = Array.isArray(media) ? media : [];
+  if (!body.trim() && !atts.length) return null;
+  const r = db.prepare(`INSERT OR IGNORE INTO messages (conversation_id, role, channel, external_id, outbox_id, text, media, at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, role, channel, externalId == null ? null : String(externalId), outboxId ?? null, body, JSON.stringify(atts), at);
+  return r.changes ? Number(r.lastInsertRowid) : null;
+}
+
+/**
+ * The history row for a message that just left through the outbox. To the person whose Reason it
+ * is only (`to_owner`): a text Reason sent somebody else on their behalf is that errand's business,
+ * recorded by the tool that sent it, not a line in this person's conversation.
+ */
+function historyFromOutbound(row) {
+  if (!row || !historyOn()) return null;
+  if (!row.to_owner) return null;
+  if (HISTORY_EXCLUDED_KEYS.some(p => String(row.idem_key ?? "").startsWith(p))) return null;
+  const media = row.media ? [{ kind: "file", mimeType: row.media.mimeType ?? null, filename: row.media.filename ?? null }] : [];
+  return writeMessage({
+    conversationId: row.conversation_id, role: "assistant", channel: row.channel,
+    externalId: row.message_id ?? null, outboxId: row.id, text: row.body ?? "", media, at: row.sent_at ?? clock.now(),
+  });
+}
+
+/** This conversation's history, oldest first, after a row id. Scoped by conversation: never anybody else's. */
+export function messagesFor(conversationId, { after = 0, limit = 200 } = {}) {
+  return db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND id > ? AND deleted_at IS NULL
+    ORDER BY at ASC, id ASC LIMIT ?`).all(conversationId, after, limit)
+    .map(r => ({ ...r, media: (() => { try { return JSON.parse(r.media || "[]"); } catch { return []; } })() }));
+}
+
+/**
+ * Did a web message with these words go to this address in the window? Asked by the web channel's
+ * findSent after a crash, through the outbox row the history row was written off, so the address is
+ * the outbox's and two people typing the same words never answer for each other.
+ */
+export function webMessageSent({ address, text, since, until }) {
+  return db.prepare(`SELECT m.external_id, m.at FROM messages m JOIN outbox o ON o.id = m.outbox_id
+    WHERE m.channel = 'web' AND o.address = ? AND o.body = ? AND m.at >= ? AND m.at <= ?
+    ORDER BY m.at DESC LIMIT 1`).get(address, text, since, until) ?? null;
 }
 
 export function eventsSince(conversationId, sinceAt, { limit = 100 } = {}) {

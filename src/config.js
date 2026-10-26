@@ -355,6 +355,12 @@ export const config = {
   // owner organizes have one; 1/true/on/yes: every event's; anything else: off, and no model is told
   // albums exist. Nothing stored under off is touched: the sweep still closes an album at its expiry.
   eventAlbums: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_EVENT_ALBUMS ?? "").trim().toLowerCase()),
+  // Reason Web (src/web.js, docs/plans/reason-web-phase1.md): the same Reason in a browser. `owner`:
+  // only the owner's conversation may be reached from the web channel; 1/true/on/yes: anybody with a
+  // Reason; anything else: OFF — the web channel is not registered, a web inbound is refused before
+  // admission, nothing is written to the per-message history, and no tool list changes. Off is the
+  // default and is what live runs until the owner says otherwise (§7 decision 10).
+  web: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_WEB ?? "").trim().toLowerCase()),
   // How long an album's photos are kept after the organizer releases it (spec: three days). The ONE
   // retention setting — every expiry, every line that names it, reads this (src/albums.js RETENTION).
   albumRetentionDays: Number(process.env.REASON_ALBUM_RETENTION_DAYS || 3),

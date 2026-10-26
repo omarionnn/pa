@@ -360,7 +360,9 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // here, before anything else is gathered, so its one small side call (only made when they have a
   // purchase on record) runs alongside the context below and is awaited only where the notes meet.
   const purchasesPending = startPurchasesNote(conversationId, { text, kind, messages, log });
-  const prefix = kind === "event" ? `[event ${stamp()}]` : `[${stamp()}] ${me.name === "the person I work for" ? "them" : me.name}:`;
+  // "(web)" after their name when the line came from Reason Web, so the model knows where it is being
+  // spoken to and answers there; a text carries no label, as it always has.
+  const prefix = kind === "event" ? `[event ${stamp()}]` : `[${stamp()}] ${me.name === "the person I work for" ? "them" : me.name}${toolCtx.channel === "web" ? " (web)" : ""}:`;
 
   // Did Reason's last reply in this thread actually arrive? Read here, before the model sees
   // anything, because the failure this prevents is Reason answering the next message as though the
