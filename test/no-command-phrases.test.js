@@ -7,7 +7,8 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const root = new URL("../src/", import.meta.url).pathname;
-const files = (d) => readdirSync(d).flatMap(f => { const p = join(d, f); return statSync(p).isDirectory() ? files(p) : p.endsWith(".js") ? [p] : []; });
+const scriptsDir = new URL("../scripts/", import.meta.url).pathname;
+const files = (d) => readdirSync(d).flatMap(f => { const p = join(d, f); return statSync(p).isDirectory() ? files(p) : /\.m?js$/.test(p) ? [p] : []; });
 /** say/text/reply/type followed by a quoted phrase or a capitalised keyword, outside comments. */
 const COACH = /\b(say|text|reply|type|send)\s+(back\s+)?(with\s+)?(just\s+)?(["“][a-z#][^"”]{0,40}["”]|\b(YES|NO|STOP|HELP|START|UNDO)\b)/;
 // Lines that are about what REASON says (never say "done") rather than what the person should send,
@@ -19,7 +20,7 @@ const ALLOWED = [...REVIEWED.map(t => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g
 
 test("no user-facing string or prompt coaches an exact phrase to send", () => {
   const hits = [];
-  for (const f of files(root)) {
+  for (const f of [...files(root), ...files(scriptsDir)]) {
     readFileSync(f, "utf8").split("\n").forEach((line, i) => {
       const code = line.replace(/^\s*(\/\/|\*|\/\*).*$/, "");
       if (!code.trim() || !COACH.test(code) || ALLOWED.some(r => r.test(code))) return;
@@ -47,4 +48,14 @@ test("the specific lines rewritten read as plain intent", async () => {
   assert.ok(!/\(yes or no;/.test(src("eventrides.js")));
   assert.ok(!/text "undo"/.test(src("activity.js")));
   assert.ok(!/"Forget #12"|"make leg day 8"|"stop texting me unless I ask"/.test(src("memory.js")));
+});
+
+test("rules the model must see: no promised page picture/title (page_create), owning a misread (prompt)", async () => {
+  process.env.REASON_DB_PATH ||= join((await import("node:os")).tmpdir(), `ncp2-${process.pid}.db`);
+  const { SYSTEM } = await import("../src/agent.js");
+  const { toolsFor } = await import("../src/tools.js");
+  const page = toolsFor(process.env.REASON_CONVERSATION || "dm:owner").find(t => t.name === "page_create");
+  assert.ok(page, "page_create is shown to the model");
+  assert.match(page.description, /never promise a preview card, a picture of the page or a title/);
+  assert.match(SYSTEM, /Misread something\? Own it out loud/);
 });
