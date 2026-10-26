@@ -370,7 +370,11 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,697 pass, **0 failures** after invites for one person (#162, 2026-10-26)
+### Baseline — 3,706 pass, **0 failures** after event albums (wt/event-album, 2026-10-26, NOT deployed)
+
+One private photo album per event behind `REASON_EVENT_ALBUMS` (unset on live = dark). Nine pinned tests in `test/event-album.test.js`; `bin/album-drive.mjs` under `caged.sh env` drives note → add → check-in → release (one text) → late upload (none) → expiry (files gone), all ok; the cage (`REASON_EVENTS=on REASON_EVENT_ALBUMS=on caged.sh start`) answered `/e/<id>/album/manage` with the gate bare, the organizer's page with the organizer's `reason_page` cookie, 404 for a stranger's cookie and a dead link, and the same under `/p/e/…`. See [features/event-albums.md](features/event-albums.md). **3,828 tests, 3,706 passing, 0 failing, 122 skipped.**
+
+### Earlier — 3,697 pass, **0 failures** after invites for one person (#162, 2026-10-26)
 
 Per-person switch `invite_allowances.enabled`; `scripts/grant-invites.js <number|conversation> <count> [--apply] | --off` (dry run by default, prints the owner's message, never sends). Caged check: with `caged.sh env` exported, insert an account (node:sqlite), run the script dry then `--apply` against the CAGE db, and `toolsFor(conv)` shows the four non-master invite tools while a stranger shows none. Never `--apply` on live without the owner's person + count. No-name invite flow + rename pinned in test/invites.test.js. **3,819 tests, 3,697 passing, 0 failing, 122 skipped.**
 
