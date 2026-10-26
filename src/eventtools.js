@@ -492,7 +492,7 @@ export async function runEventTool(name, input, ctx) {
     return {
       ok: true,
       event: events.organizerView(ev),
-      share: { name: ev.name, password: input.password, link: events.eventUrl(ev), share_text: events.shareText(ev, input.password) },
+      share: { name: ev.name, password: input.password, link: events.eventUrl(ev), share_text: events.shareText(ev, input.password) }, links: LINK_ALONE,
       say: "Send them the share_text as one message for them to forward, then the link as its OWN message with nothing else in it — never inside the share text or a block to copy — so Messages draws it as the event's card. The link opens a join page; guests still need the password. Guests who already use Reason can also just text Reason the name and password, or paste the link to their Reason. Mention once that they can text a photo or flyer to put on the link's card."
         + (ev.guest_list_visible ? " Don't bring up the who's-going list or Instagram: one follow-up about their own spot on it goes out on its own after your reply." : ""),
     };
@@ -743,7 +743,7 @@ export async function runEventTool(name, input, ctx) {
       if (problem) return { ok: false, error: problem === "too_short" ? "Too short; at least 4 characters." : "Too long." };
       db.updateEventRow(ev.id, { password_hash: events.hashPassword(input.new_password), password_version: ev.password_version + 1 });
       events.scrubSoon(c, input.new_password);
-      return { ok: true, share: { name: ev.name, password: input.new_password, share_text: events.shareText(ev, input.new_password), link: events.eventUrl(ev) }, note: "Everyone already joined stays joined; the old password no longer works for new joins (or for a join page someone had half-finished)." };
+      return { ok: true, share: { name: ev.name, password: input.new_password, share_text: events.shareText(ev, input.new_password), link: events.eventUrl(ev) }, links: LINK_ALONE, note: "Everyone already joined stays joined; the old password no longer works for new joins (or for a join page someone had half-finished)." };
     }
 
     case "event_guest_remove": {

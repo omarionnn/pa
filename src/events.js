@@ -557,7 +557,7 @@ export function ownerCreationLine(ev, { opsLink = null } = {}) {
  * a message of its own, so the phone draws it as the event's card (spec §14).
  */
 export function shareText(ev, password) {
-  return `You're invited to ${ev.name}. The password to join is: ${password}\nOpen the link below and enter it.`;
+  return `You're invited to ${ev.name}. The password to join is: ${password}\nOpen this link and enter it:`;
 }
 
 // ---------- joining ----------

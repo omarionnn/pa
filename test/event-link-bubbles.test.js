@@ -43,6 +43,10 @@ test("the welcome: details first, then the who's-going link alone and in full", 
   // The owner's creation text: each link after its words, each alone.
   const owner = outgoingTexts(events.ownerCreationLine(ev, { opsLink: "https://reason.omarinyarko.com/ops?k=x#events" }));
   assert.deepEqual(owner.map(b => URL_ONLY.test(b)), [false, true, false, true], JSON.stringify(owner));
+  // The invite an organizer forwards, with its link under it: the words, then the link alone.
+  const share = outgoingTexts(`${events.shareText(ev, "pumpkin")}\n${events.eventUrl(ev)}`);
+  assert.deepEqual(share.map(b => URL_ONLY.test(b)), [false, true], JSON.stringify(share));
+  assert.match(made.links, /full link on its own line/);
   // A result that hands the model a link tells it to send the link the same way.
   const dirOut = await runTool("event_directory", { event_id: ev.id, display_name: "Ama K" }, { conversationId: "dm:fake:+13475550000", messages: [] });
   assert.match(dirOut.links, /full link on its own line/);
