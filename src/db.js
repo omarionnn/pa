@@ -11150,3 +11150,165 @@ export function redeemEventClaim({ code, channel, address, existingConversationI
     throw e;
   }
 }
+
+// ---------- the event photo album (src/albums.js) ----------
+//
+// One private album per event, kept separate from the event's own rows so the events feature reads
+// exactly as it did. Every row carries a conversation_id, as every table does, and src/albums.js is
+// the only reader of these three:
+//
+//   event_albums     one per event, made the first time anybody touches it. `released_at` is the
+//                    moment the organizer ended the event and released the album — nothing else
+//                    releases it — and `expires_at` is the one shared deadline (config.albumRetentionDays
+//                    after release). `closed_at` is when the sweep deleted the files.
+//   event_photos     one per stored picture: whose it is (`conversation_id`), the file under
+//                    data/event-albums, its hash (a retry of the same picture from the same person is
+//                    not a second photo), and the organizer's pin. Removing one removes the file and the
+//                    row: there is no soft delete to keep bytes around.
+//   event_checkins   the organizer's check-in list: one row per guest actually there. The ONLY thing
+//                    that opens the album to a guest; nothing checks anybody in on its own.
+//   album_consents   the one note before a person's first contribution, and when they agreed to it.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS event_albums (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL UNIQUE,
+    conversation_id TEXT NOT NULL,
+    released_at INTEGER,
+    expires_at INTEGER,
+    closed_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS event_photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    album_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    media_id INTEGER,
+    file TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    pinned_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS event_photos_album ON event_photos (album_id, created_at, id);
+  CREATE INDEX IF NOT EXISTS event_photos_person ON event_photos (conversation_id, album_id);
+  CREATE TABLE IF NOT EXISTS event_checkins (
+    event_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    checked_in_by TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (event_id, conversation_id)
+  );
+  CREATE TABLE IF NOT EXISTS album_consents (
+    conversation_id TEXT PRIMARY KEY,
+    asked_at INTEGER,
+    agreed_at INTEGER
+  );
+`);
+// `nudged_at`: when the organizer was told, once, around the event's end, that nobody is checked in.
+addColumnIfMissing("event_albums", "nudged_at", "INTEGER");
+
+export function albumOf(eventId) {
+  return db.prepare("SELECT * FROM event_albums WHERE event_id = ?").get(Number(eventId)) ?? null;
+}
+export function albumById(id) {
+  return db.prepare("SELECT * FROM event_albums WHERE id = ?").get(Number(id)) ?? null;
+}
+/** The event's album, made now if it has none. `conversationId` is the organizer's: the album is theirs. */
+export function ensureAlbum(eventId, conversationId) {
+  const now = clock.now();
+  db.prepare("INSERT OR IGNORE INTO event_albums (event_id, conversation_id, created_at, updated_at) VALUES (?, ?, ?, ?)").run(Number(eventId), conversationId, now, now);
+  return albumOf(eventId);
+}
+const ALBUM_FIELDS = new Set(["released_at", "expires_at", "closed_at", "nudged_at"]);
+export function updateAlbum(id, fields) {
+  const keys = Object.keys(fields).filter(k => ALBUM_FIELDS.has(k));
+  if (keys.length) db.prepare(`UPDATE event_albums SET ${keys.map(k => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...keys.map(k => fields[k]), clock.now(), Number(id));
+  return albumById(id);
+}
+/** Release, compare-and-set on it not being released yet: the one caller that wins sends the announcement. */
+export function releaseAlbum(id, { releasedAt, expiresAt }) {
+  return db.prepare("UPDATE event_albums SET released_at = ?, expires_at = ?, updated_at = ? WHERE id = ? AND released_at IS NULL").run(releasedAt, expiresAt, clock.now(), Number(id)).changes === 1;
+}
+/** Albums past their deadline and not yet closed: the sweep's list. */
+export function albumsToClose(now = clock.now()) {
+  return db.prepare("SELECT * FROM event_albums WHERE expires_at IS NOT NULL AND expires_at <= ? AND closed_at IS NULL ORDER BY expires_at, id").all(now);
+}
+/** Albums with photos that were never released: waiting on the organizer (an open product decision). */
+export function albumsWaiting() {
+  return db.prepare(`SELECT a.*, (SELECT COUNT(*) FROM event_photos p WHERE p.album_id = a.id) AS photos FROM event_albums a
+    WHERE a.released_at IS NULL AND photos > 0 ORDER BY a.created_at`).all();
+}
+/** Never-released albums with photos whose organizer has not had the end-of-event nudge (src/albums.js sweep). */
+export function albumsToNudge() {
+  return db.prepare(`SELECT a.*, (SELECT COUNT(*) FROM event_photos p WHERE p.album_id = a.id) AS photos FROM event_albums a
+    WHERE a.released_at IS NULL AND a.closed_at IS NULL AND a.nudged_at IS NULL AND photos > 0 ORDER BY a.created_at`).all();
+}
+/** The end-of-event nudge, compare-and-set: the one caller that wins is the one that sends it. */
+export function markAlbumNudged(id, at) {
+  return db.prepare("UPDATE event_albums SET nudged_at = ?, updated_at = ? WHERE id = ? AND nudged_at IS NULL").run(at, clock.now(), Number(id)).changes === 1;
+}
+
+export function insertPhoto({ albumId, eventId, conversationId, mediaId = null, file, mediaType, bytes, sha256 }) {
+  const id = Number(db.prepare(`INSERT INTO event_photos (album_id, event_id, conversation_id, media_id, file, media_type, bytes, sha256, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(Number(albumId), Number(eventId), conversationId, mediaId == null ? null : Number(mediaId), file, mediaType, Number(bytes), sha256, clock.now()).lastInsertRowid);
+  return photoById(id);
+}
+export function photoById(id) {
+  return db.prepare("SELECT * FROM event_photos WHERE id = ?").get(Number(id)) ?? null;
+}
+/** The same bytes from the same person in the same album: a retry or a double-send, not a second photo. */
+export function photoByHash(albumId, conversationId, sha256) {
+  return db.prepare("SELECT * FROM event_photos WHERE album_id = ? AND conversation_id = ? AND sha256 = ?").get(Number(albumId), conversationId, sha256) ?? null;
+}
+/**
+ * Every photo in one album, in THE one order (src/albums.js PHOTO_ORDER, decided 2026-10-26: upload time). Pinned ones
+ * are not lifted here — the page puts highlights on top itself, in the order they were pinned.
+ */
+export function photosOf(albumId) {
+  return db.prepare("SELECT * FROM event_photos WHERE album_id = ? ORDER BY created_at, id").all(Number(albumId));
+}
+export function photosBy(albumId, conversationId) {
+  return db.prepare("SELECT * FROM event_photos WHERE album_id = ? AND conversation_id = ? ORDER BY created_at, id").all(Number(albumId), conversationId);
+}
+export function photoCount(albumId) {
+  return Number(db.prepare("SELECT COUNT(*) AS n FROM event_photos WHERE album_id = ?").get(Number(albumId)).n);
+}
+export function contributorCount(albumId) {
+  return Number(db.prepare("SELECT COUNT(DISTINCT conversation_id) AS n FROM event_photos WHERE album_id = ?").get(Number(albumId)).n);
+}
+export function pinPhoto(id, pinnedAt) {
+  db.prepare("UPDATE event_photos SET pinned_at = ? WHERE id = ?").run(pinnedAt, Number(id));
+  return photoById(id);
+}
+/** The row goes here; the file is the caller's to unlink first (src/albums.js removePhoto). */
+export function deletePhotoRow(id) {
+  return db.prepare("DELETE FROM event_photos WHERE id = ?").run(Number(id)).changes === 1;
+}
+
+export function checkIn(eventId, conversationId, by) {
+  return db.prepare("INSERT OR IGNORE INTO event_checkins (event_id, conversation_id, checked_in_by, at) VALUES (?, ?, ?, ?)").run(Number(eventId), conversationId, by, clock.now()).changes === 1;
+}
+export function undoCheckIn(eventId, conversationId) {
+  return db.prepare("DELETE FROM event_checkins WHERE event_id = ? AND conversation_id = ?").run(Number(eventId), conversationId).changes === 1;
+}
+export function checkedIn(eventId, conversationId) {
+  return !!db.prepare("SELECT 1 FROM event_checkins WHERE event_id = ? AND conversation_id = ?").get(Number(eventId), conversationId);
+}
+export function checkinsOf(eventId) {
+  return db.prepare("SELECT * FROM event_checkins WHERE event_id = ? ORDER BY at, rowid").all(Number(eventId));
+}
+
+export function albumConsent(conversationId) {
+  return db.prepare("SELECT * FROM album_consents WHERE conversation_id = ?").get(conversationId) ?? null;
+}
+export function askAlbumConsent(conversationId, at) {
+  db.prepare("INSERT INTO album_consents (conversation_id, asked_at) VALUES (?, ?) ON CONFLICT(conversation_id) DO UPDATE SET asked_at = excluded.asked_at").run(conversationId, at);
+  return albumConsent(conversationId);
+}
+export function agreeAlbumConsent(conversationId, at) {
+  db.prepare("INSERT INTO album_consents (conversation_id, asked_at, agreed_at) VALUES (?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET agreed_at = excluded.agreed_at").run(conversationId, at, at);
+  return albumConsent(conversationId);
+}

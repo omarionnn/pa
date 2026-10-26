@@ -1,0 +1,132 @@
+<!--
+  DRAFT — not published. The website's "What's new" entry for event albums.
+
+  Publish ONLY when the feature is live for users (REASON_EVENT_ALBUMS set on Hetzner), as part of
+  shipping it: copy this file to ~/Desktop/reason-site-new/public/updates/albums/index.html, add the
+  card below to public/updates/index.html at the top of the list (and move the "New" stamp to it),
+  then deploy the site from the local CLI as usual. It describes only shipped, agreed behaviour:
+  nothing about reminders, photo order, or albums the organizer never releases.
+
+  Card for public/updates/index.html (newest first):
+
+    <li>
+      <a class="up-card" href="/updates/albums/">
+        <div class="up-body">
+          <time datetime="2026-MM-DD">Mon D, 2026</time><span class="rubber-stamp up-new">New</span>
+          <h2>Event albums</h2>
+          <p>One private album per event.</p>
+        </div>
+        <span class="up-more">See how it works <span class="up-arrow" aria-hidden="true">→</span></span>
+      </a>
+    </li>
+
+  Fill in the date on the day it ships; the og image (public/updates/og-albums.png) is made with
+  tools/make-og-updates.mjs from a tools/og-albums.html like the events one.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Event albums · What's new · Reason</title>
+<meta name="robots" content="noindex">
+<meta name="description" content="One private album per event. Guests send Reason their photos, the host releases the album, and everyone who was there gets the night's photos in one place.">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Reason">
+<meta property="og:title" content="What's new: Event albums">
+<meta property="og:description" content="One private album per event. Send photos, the host releases, everyone there gets them.">
+<meta property="og:url" content="https://reason.omarinyarko.com/updates/albums/">
+<meta property="og:image" content="https://reason.omarinyarko.com/updates/og-albums.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="What's new in Reason: Event albums. One private album per event.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://reason.omarinyarko.com/updates/og-albums.png">
+<link rel="canonical" href="https://reason.omarinyarko.com/updates/albums/">
+<meta name="theme-color" content="#f2ebe0">
+<link rel="mask-icon" href="/favicon.svg?v=orange" color="#B8460B">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=orange">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=orange">
+<link rel="icon" type="image/png" href="/apple-touch-icon.png?v=orange">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/updates/updates.css">
+</head>
+<body>
+<header class="nav">
+  <a class="wordmark" href="/" aria-label="Reason home">reas<svg class="wm-bubble" viewBox="-4 0 70 66" aria-hidden="true"><g transform="translate(6 0) skewX(-10)"><path d="M31 6 A25 25 0 1 1 13 49 L4 60 L8 44 A25 25 0 0 1 31 6 Z"/></g></svg>n</a>
+  <nav><a class="nav-cta" href="sms:+16562167455">Text Reason</a></nav>
+</header>
+<main class="up-main">
+  <a class="up-back" href="/updates/">← What's new</a>
+  <p class="eyebrow"><time datetime="2026-MM-DD">Mon D, 2026</time> · New</p>
+  <h1>Event albums</h1>
+  <p class="lede">One private album per event. Guests send Reason their photos from the night, the host releases the album when it's over, and everyone who was there gets the photos in one place.</p>
+  <!-- The demo is real HTML, readable with no script. demo.js only paces it in, step by step. -->
+  <div class="up-demo" id="demo">
+    <figure>
+      <div class="phone" role="group" aria-label="A guest's texts with Reason">
+        <div class="phone-top">
+          <div class="avatar"><img src="/apple-touch-icon.png" alt="" width="38" height="38"></div>
+          <div><strong>Reason</strong><span>iMessage</span></div>
+        </div>
+        <div class="thread">
+          <div class="bub me no-anim" data-step="1">📷📷📷 these are from game night</div>
+          <div class="bub them no-anim" data-step="2">add these 3 to the Game Night album? photos you add will be shared with checked-in attendees after the organizer releases the album. they can save or screenshot them. the album stays up for three days after it's released, then the photos are deleted.</div>
+          <div class="bub me no-anim" data-step="3">yes</div>
+          <div class="bub them no-anim" data-step="4">done. they'll show as "Shared by Maya"</div>
+          <div class="bub them no-anim" data-step="7">the Game Night album is ready. it's up until Thu, Oct 29, 11:40 PM — save what you want before then:</div>
+          <div class="bub link-bub no-anim" data-step="8">files.reason.omarinyarko.com/e/k3x9/album</div>
+        </div>
+      </div>
+      <figcaption>a guest</figcaption>
+    </figure>
+    <figure>
+      <div class="phone" role="group" aria-label="The host's texts with Reason">
+        <div class="phone-top">
+          <div class="avatar"><img src="/apple-touch-icon.png" alt="" width="38" height="38"></div>
+          <div><strong>Reason</strong><span>iMessage</span></div>
+        </div>
+        <div class="thread">
+          <div class="bub me no-anim" data-step="5">let me manage the game night photos</div>
+          <div class="bub them no-anim" data-step="6">here's your album page — check people in, pin highlights, and end the event when you're ready:</div>
+          <div class="bub link-bub no-anim" data-step="6">files.reason.omarinyarko.com/e/k3x9/album/manage</div>
+        </div>
+      </div>
+      <figcaption>the host</figcaption>
+    </figure>
+  </div>
+  <button class="up-replay" id="replay" type="button" hidden>Play it again</button>
+  <section class="up-section" aria-labelledby="how">
+    <h2 id="how">How it works</h2>
+    <ul class="up-powers">
+      <li><strong>Send photos, name the event.</strong> Reason only collects photos you say are for an event. The first time, it tells you how they'll be shared and for how long, and waits for your yes.</li>
+      <li><strong>Shared by you.</strong> Every photo shows the name on the guest list, never a phone number. Take your own photos out any time.</li>
+      <li><strong>The host releases it.</strong> Only when the host ends the event. Everyone the host checked in gets one text with the link. Nothing else buzzes.</li>
+      <li><strong>Highlights on top.</strong> The host can pin a few photos above the rest. Optional.</li>
+      <li><strong>Save one, or the lot.</strong> Save any photo, or download the whole album.</li>
+      <li><strong>Three days, then gone.</strong> The album shows its exact expiry. After it, the photos are deleted from Reason. What you saved stays on your phone.</li>
+    </ul>
+  </section>
+  <section class="up-section" aria-labelledby="privacy">
+    <h2 id="privacy">Privacy, in plain words</h2>
+    <ul class="up-privacy">
+      <li><strong>Only people who were there.</strong> The host's check-in list is the only way in. Joining the event isn't the same as being there.</li>
+      <li><strong>A link alone opens nothing.</strong> Reason checks who you are on every open; a forwarded link shows the other person only what they're allowed, or nothing.</li>
+      <li><strong>Anyone can save a copy.</strong> Private access can't stop a saved photo being shared on, so Reason says so before you add anything.</li>
+    </ul>
+  </section>
+  <div class="up-cta">
+    <a class="btn" href="sms:+16562167455">Text Reason</a>
+    <span class="note">opens Messages. send your photos and name the event.</span>
+  </div>
+</main>
+<footer>
+  <span class="footer-mark" aria-label="Reason">reas<svg class="wm-bubble" viewBox="-4 0 70 66" aria-hidden="true"><g transform="translate(6 0) skewX(-10)"><path d="M31 6 A25 25 0 1 1 13 49 L4 60 L8 44 A25 25 0 0 1 31 6 Z"/></g></svg>n</span>
+  <nav class="legal"><a href="/updates/">What&rsquo;s new</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></nav>
+</footer>
+<script src="/updates/events/demo.js" defer></script>
+</body>
+</html>

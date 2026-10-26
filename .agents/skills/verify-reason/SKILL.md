@@ -370,7 +370,11 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,697 pass, **0 failures** after invites for one person (#162, 2026-10-26)
+### Baseline — 3,711 pass, **0 failures** after event albums (#163, 2026-10-26)
+
+One private photo album per event behind `REASON_EVENT_ALBUMS`. Fourteen pinned tests in `test/event-album.test.js` (nine for the album, five for the check-in nudges and check-in by name); `bin/album-drive.mjs` under `caged.sh env` drives note → add → check-in → release (one text) → late upload (none) → expiry (files gone) → the end-of-event nudge → "everyone except" → "everyone" again (nothing), all ok; the cage (`REASON_EVENTS=on REASON_EVENT_ALBUMS=on caged.sh start`) answered `/e/<id>/album/manage?t=<organizer_token>` with the gate ("Text me a code", no album content), the bare path with no cookie 404, the organizer's page with the organizer's `reason_page` cookie (check-in list, "Check everyone in", release button), 404 for a stranger's cookie byte-identical to a dead link, and 200 under `/p/e/…`; `toolsFor(<guest>)` lists the four album tools only with the flag on. Maintenance pass 2026-10-26 at `0b9d2c4`: every citation in the feature file re-grepped, clean. See [features/event-albums.md](features/event-albums.md). **3,833 tests, 3,711 passing, 0 failing, 122 skipped.**
+
+### Earlier — 3,697 pass, **0 failures** after invites for one person (#162, 2026-10-26)
 
 Per-person switch `invite_allowances.enabled`; `scripts/grant-invites.js <number|conversation> <count> [--apply] | --off` (dry run by default, prints the owner's message, never sends). Caged check: with `caged.sh env` exported, insert an account (node:sqlite), run the script dry then `--apply` against the CAGE db, and `toolsFor(conv)` shows the four non-master invite tools while a stranger shows none. Never `--apply` on live without the owner's person + count. No-name invite flow + rename pinned in test/invites.test.js. **3,819 tests, 3,697 passing, 0 failing, 122 skipped.**
 
