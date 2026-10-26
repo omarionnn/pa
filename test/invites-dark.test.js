@@ -224,3 +224,15 @@ test("grant: bad input is refused and changes nothing", async () => {
   assert.equal(grant(["+19999999999", "2", "--apply"]).ok, false);
   assert.equal(db.invitesEnabledFor(KOFI_C), false);
 });
+
+test("grant: the owner's message, count filled in, printed but never sent", async () => {
+  const { grant, grantMessage } = await import("../scripts/grant-invites.js");
+  assert.deepEqual(grantMessage(3), [
+    "something for you 🎁 you can bring 3 friends into Reason.",
+    "Reason's still early and you're part of that, so it's free for you, and for the friends you bring, for good. whenever you're ready, I'll make you a link to send them.",
+  ]);
+  assert.match(grantMessage(1)[0], /bring 1 friend into/);
+  const before = db.db.prepare("SELECT COUNT(*) AS n FROM outbox").get().n;
+  assert.deepEqual(grant([KOFI, "3"]).message_to_send_separately, grantMessage(3));
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM outbox").get().n, before, "nothing queued to send");
+});

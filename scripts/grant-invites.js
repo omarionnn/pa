@@ -14,6 +14,17 @@ import { pathToFileURL } from "node:url";
 import * as db from "../src/db.js";
 import { config, normalizeNumber } from "../src/config.js";
 
+/**
+ * What Reason texts them once invites are on (owner's pick, 2026-10-26). Printed with every run so
+ * the owner sees it; this script never sends it — that is its own owner-approved step.
+ */
+export function grantMessage(count) {
+  return [
+    `something for you 🎁 you can bring ${count} ${count === 1 ? "friend" : "friends"} into Reason.`,
+    "Reason's still early and you're part of that, so it's free for you, and for the friends you bring, for good. whenever you're ready, I'll make you a link to send them.",
+  ];
+}
+
 /** An account by conversation id, or by phone number on any texting channel. */
 export function findAccount(who) {
   const byId = db.getAccount(String(who ?? ""));
@@ -42,6 +53,7 @@ export function grant(argv) {
     account: { conversation: acct.conversation_id, name: acct.name || "(no name yet)", state: acct.state, operator: !!acct.is_operator },
     invitesOpenForAll: !!config.invitesOpen,
     before, after: plan,
+    ...(off ? {} : { message_to_send_separately: grantMessage(count) }),
     ...(acct.name ? {} : { note: "No name on the account: their first invite link will ask them what name friends should see." }),
   };
   if (apply) out.after = db.setInvitesEnabled(acct.conversation_id, off ? { enabled: false } : { enabled: true, count });
