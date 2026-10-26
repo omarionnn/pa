@@ -13,6 +13,7 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-invites-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+process.env.REASON_DATA_DIR = join(dir, "data");
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
