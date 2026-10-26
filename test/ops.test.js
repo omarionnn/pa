@@ -237,7 +237,7 @@ test("a change of state that lasts texts the owner once, with the link; the same
   r = ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
   assert.equal(sent.length, 1);
   assert.equal(sent[0].c, "dm:owner");
-  assert.match(sent[0].text, /^Reason check — 1 thing needs you:\n• Texts out: 1 text failed in the last day — opted out\nStatus page: https:\/\/reason\.omarinyarko\.com\/ops\?k=/);
+  assert.match(sent[0].text, /^Reason check — 1 thing needs you:\n• Texts out: 1 text failed in the last day — opted out\nStatus page: https:\/\/heyreason\.com\/ops\?k=/);
   assert.equal(r.changes.length, 1);
 
   r = ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
@@ -333,7 +333,7 @@ test("pressing send without the key texts nobody; with it, the owner is texted o
   assert.match(out.body, /texted Omari a six-digit code/);
   assert.equal(sent.length, 1);
   assert.equal(sent[0].c, "dm:owner");
-  assert.match(sent[0].text, /^Your Reason code is [0-9]{6}, to open "Reason status" on that browser.[^\n]*\n\n@reason\.omarinyarko\.com #[0-9]{6}$/);
+  assert.match(sent[0].text, /^Your Reason code is [0-9]{6}, to open "Reason status" on that browser.[^\n]*\n\n@heyreason\.com #[0-9]{6}$/);
 });
 
 test("the right code opens the page, sets a cookie for the whole site, and that cookie opens it again — and the JSON", async () => {

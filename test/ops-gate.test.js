@@ -171,7 +171,7 @@ test("the alert's link is heyreason.com/ops and names the check it is about; the
   const outbox = { id: "outbox", group: "alive", label: "Texts out", state: "bad", detail: "2 failed" };
   const card = { id: "provider:agentcard", group: "services", label: "AgentCard", state: "warn", detail: "HTTP 404" };
   const text = ops.alertText([{ kind: "wrong", check: card }, { kind: "wrong", check: outbox }], { verdict: "bad", checks: [outbox, card] });
-  assert.match(text, new RegExp(`Status page: https://reason\\.omarinyarko\\.com/ops\\?k=${ops.opsKey()}&focus=outbox$`), "the worst one, by id");
+  assert.match(text, new RegExp(`Status page: https://heyreason\\.com/ops\\?k=${ops.opsKey()}&focus=outbox$`), "the worst one, by id");
   assert.equal(ops.opsUrl("provider:agentcard"), `https://heyreason.com/ops?k=${ops.opsKey()}&focus=provider%3Aagentcard`);
 
   const now = clock.now();

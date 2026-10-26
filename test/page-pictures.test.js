@@ -315,7 +315,7 @@ test("copying a picture says who is asking and which page it was on, and a webp 
     { type: "image", url: webp },
   ] });
   assert.equal(out.ok, true, out.error);
-  assert.match(lastHeaders["user-agent"] ?? "", /Reason\/1\.0; \+https:\/\/reason\.omarinyarko\.com/, "it names itself, honestly");
+  assert.match(lastHeaders["user-agent"] ?? "", /Reason\/1\.0; \+https:\/\/heyreason\.com/, "it names itself, honestly");
   assert.equal(lastHeaders.referer, "https://listing.example.test/42", "and the page the picture was found on");
   assert.ok(!Object.keys(lastHeaders).some(h => /^(cookie|authorization)$/.test(h)), "no credential goes out");
 
