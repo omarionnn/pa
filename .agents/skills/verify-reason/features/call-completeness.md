@@ -32,8 +32,8 @@ files but not mapped here.
   fact; one user's call fact is invisible to another; facts under 0.5 confidence are skipped.
 - **Extraction guard.** `worthExtracting` is false for under 12 characters or filler. Those turns
   still reach `event_log` (the thread record) and are NOT enqueued.
-- **Detail-hiding texted-yes.** The text reads `On the phone with you now — just reply here to confirm
-  what was just asked. Unless you confirm, I won't do it.` It never carries "transfer $500" or any
+- **Detail-hiding texted-yes.** The text reads `On the phone with you now — reply "yes" to confirm
+  what was just asked. Anything else and I won't do it.` It never carries "transfer $500" or any
   action detail; the person on the call already knows. Only a yes arriving after the text counts.
 - **Latency logging.** `voice_turn` log lines carry `first_word_ms` (speech to first content) and
   `turn_ms` (total); `first_word_ms` is `null` when no content was streamed. `http.js` also logs

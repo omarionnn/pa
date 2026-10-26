@@ -10928,7 +10928,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       if (name === "invite_requests_pending") {
         const waiting = invites.pendingForMaster();
-        return { ok: true, requests: waiting, count: waiting.length, note: waiting.length ? "Name each by its request_number when you list more than one, so their answer can say which; read what they decide in their own words." : "No requests are waiting." };
+        return { ok: true, requests: waiting, count: waiting.length, note: waiting.length ? "Name each by its request_number when you list more than one, so their answer can say which; read what they decide in their own words, and if more than one is waiting and their answer doesn't make clear which, ask before deciding." : "No requests are waiting." };
       }
       const out = invites.decide(input.request_number, { approve: input.decision === "approve", count: input.count ?? null });
       if (!out.ok) {

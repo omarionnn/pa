@@ -179,7 +179,9 @@ export function verify({
   // that arrived after the text went.
   const ownerTexts = (messages ?? []).filter(m => m?.role === "user").length;
   if (!call.verify_sent_at) {
-    const sent = tell(`On the phone with you now — just reply here to confirm what was just asked. Unless you confirm, I won't do it.`);
+    // The one place a word is named on purpose (exception to the no-phrases copy rule, 2026-10-26):
+    // a security check read by exact match in code (readYesNo), so it must say what counts.
+    const sent = tell(`On the phone with you now — reply "yes" to confirm what was just asked. Anything else and I won't do it.`);
     if (!sent) {
       log({ call_verify_text_failed: call.id });
       return {
@@ -213,7 +215,7 @@ export function verify({
   return {
     ok: false, verified: false, waiting: true,
     say: since.length
-      ? `Their text did not clearly confirm or refuse, so it does not count. Ask them to answer that text plainly, either way, and check again.`
+      ? `Their text was not a plain yes or no, so it does not count. Ask them to reply with just "yes" or "no", and check again.`
       : `No answer by text yet. Tell them it is waiting on their phone, and call verify_caller again when they say they have answered.`,
   };
 }

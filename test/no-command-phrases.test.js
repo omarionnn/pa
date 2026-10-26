@@ -14,7 +14,7 @@ const COACH = /\b(say|text|reply|type|send)\s+(back\s+)?(with\s+)?(just\s+)?(["�
 // and the prompt rule itself, which quotes the forbidden shape to forbid it.
 // Reviewed 2026-10-26: each of these quotes words REASON says, a tool's own value, or what a person
 // might ask for — none tells the person what to type.
-const REVIEWED = ['say "nothing was done"', 'type "description"', 'they say "buy me X"', 'say "not quoted"'];
+const REVIEWED = ['reply "yes" to confirm', 'reply with just "yes" or "no"', 'say "nothing was done"', 'type "description"', 'they say "buy me X"', 'say "not quoted"'];
 const ALLOWED = [...REVIEWED.map(t => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))), /never (say|write)/i, /Never give them words to type/, /\bnot\s+say\b/i, /don't say/i, /do not say/i, /Never say/];
 
 test("no user-facing string or prompt coaches an exact phrase to send", () => {
@@ -42,7 +42,8 @@ test("the specific lines rewritten read as plain intent", async () => {
   assert.equal(undo.holdLine({ doing: "texting Marta", seconds: 30 }), "texting Marta in 30s — just tell me if you want to stop it");
   const src = (p) => readFileSync(join(root, p), "utf8");
   assert.ok(!/say "my invites"|say "approve/.test(src("invites.js")));
-  assert.ok(!/reply "yes"/.test(src("calls/verify.js")));
+  // Exception, kept on purpose: the call security check is matched by exact word in code.
+  assert.match(src("calls/verify.js"), /reply "yes" to confirm/);
   assert.ok(!/\(yes or no;/.test(src("eventrides.js")));
   assert.ok(!/text "undo"/.test(src("activity.js")));
   assert.ok(!/"Forget #12"|"make leg day 8"|"stop texting me unless I ask"/.test(src("memory.js")));
