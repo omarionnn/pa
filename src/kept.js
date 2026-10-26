@@ -28,7 +28,7 @@ export function keptNote(conversationId, { pages = 8, reminders = 6 } = {}) {
   const made = db.listPages(conversationId).slice(0, pages)
     .map(p => ({ page_id: p.id, title: p.title, made: stamp(p.created_at), link: ownerUrl(p) }));
   const set = db.listTimers(conversationId).slice(0, reminders)
-    .map(t => ({ timer_id: t.id, for: stamp(t.fire_at), note: t.note }));
+    .map(t => ({ timer_id: t.id, for: stamp(t.fire_at), note: t.note, ...(t.call_goal ? { by_phone: true } : {}) }));
   if (!made.length && !set.length) return "";
 
   const parts = [];

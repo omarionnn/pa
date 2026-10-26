@@ -42,7 +42,7 @@ import { startRun as researchStart, step as researchStep, view as researchView, 
 import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
 import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } from "./parallel.js";
 import { videoUnderstand, videoCapability } from "./video.js";
-import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "./calls/provider.js";
+import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
 import { recordingNoteFor } from "./calls/inbound.js";
 import { checkCallForPaymentDetails } from "./calls/payments.js";
 import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./calls/brief.js";
@@ -3033,12 +3033,15 @@ export const tools = [
   {
     name: "timer_set",
     description: "Schedule Reason to come back to this conversation at a real time with a note to itself (e.g. 'day-of reminder for plan 3', 'ask how dinner was'). When it fires you get an event message and decide what to say. Returns the timer id and the resolved time."
-      + " Pass `repeat` for anything STANDING — \"check in with me every monday about the job search\", \"remind me every day at 7 to work out\", \"every weekday morning ask what's on\", \"every two weeks ask if i've invoiced\". That makes one series that keeps coming back until they stop it, and `fire_at` is not needed: the rule decides when. One series, not a timer you re-set each time.",
+      + " Pass `repeat` for anything STANDING — \"check in with me every monday about the job search\", \"remind me every day at 7 to work out\", \"every weekday morning ask what's on\", \"every two weeks ask if i've invoiced\". That makes one series that keeps coming back until they stop it, and `fire_at` is not needed: the rule decides when. One series, not a timer you re-set each time."
+      + " Pass `then_call` when they asked to be CALLED, woken or rung at the time — \"call me at 7 tomorrow\", \"wake me up at 6:30 with a call\", \"ring me in 20 minutes so i actually leave\". Then the firing rings their own phone instead of texting, and opens with the words you give. A plain \"remind me\" is a text, never a call. Works with `repeat` too (\"call me every weekday at 7\").",
     input_schema: {
       type: "object",
       properties: {
         fire_at: { type: "string", description: "ISO 8601 datetime with offset, e.g. 2026-09-26T18:00:00-04:00. Required for a one-off; leave it out when you pass `repeat`." },
         note: { type: "string", description: "What future-Reason should do when this fires. With `repeat` this is what the check-ins are ABOUT, in your own words ('how the job search is going'), because it is what you will be shown every time it comes round." },
+        then_call: { type: "string", description: "Only when they asked for a CALL at this time. Why you are ringing, as the first words of the call, said to them: 'you asked me to call at 7 to get you up', 'you wanted a nudge to leave for the airport'. The call opens with exactly this after their name, and the rest of the call is you as usual. Nothing is texted first; if the call cannot be placed or they do not pick up, one text says so. Never a third party: this always rings the person you are talking to." },
+        their_time: { type: "boolean", description: "For a one-off `then_call`: false ONLY when you picked the time yourself. Then a time in their night (23:00-08:00) is moved to 8am. When they named it — a 6:30 wake-up — leave this out or pass true: it rings at 6:30." },
         plan_id: { type: "integer", description: "Plan this timer belongs to, if any" },
         task_id: { type: "integer", description: "The job this belongs to, if it belongs to one. Name it: it is how \"never mind, forget the trip\" finds this and stops it, instead of leaving it running after the job is called off." },
         repeat: {
@@ -6393,6 +6396,7 @@ const S = {
   timer_set: z.object({
     fire_at: z.string().optional(), note: z.string().min(1).max(500),
     plan_id: z.number().int().optional(), task_id: z.number().int().optional(),
+    then_call: z.string().max(300).optional(), their_time: z.boolean().optional(),
     repeat: z.object({
       kind: z.string().max(40),
       hour: z.number(),
@@ -7392,6 +7396,9 @@ function timerView(t) {
   return t && {
     id: t.id, fires_at: stamp(t.fire_at), fire_at_iso: new Date(t.fire_at).toISOString(),
     note: t.note, plan_id: t.plan_id,
+    // A timer that rings them rather than texting: what the call will open with. Said here so
+    // "never mind the call" finds the right timer, and so the list never shows a call as a text.
+    ...(t.call_goal ? { calls_them: t.call_goal } : {}),
     // Which standing check-in this firing is one of, when it is one. Said here so "cancel that
     // reminder" on a series timer can be answered as what it is: one occurrence, not the whole thing.
     ...(t.series_id ? { series_id: t.series_id, standing: true } : {}),
@@ -7745,7 +7752,40 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
   // Whether there is audio is now a settled fact. Save it once, here, and write down which it is —
   // a file, or a reason there is not one.
   if (r.recording_state === "pending") r = await fileRecording(conversationId, r, live, ctx);
+  // A scheduled call ("call me at 7") that reached nobody is owed one text saying it tried. Here,
+  // because this is the one place every settle path comes through; queued rather than sent,
+  // because none of those paths is guaranteed to hold a runtime (the lost-calls sweep does not).
+  if (r.timer_id && r.is_owner) queueMissedScheduledCall(conversationId, r, ctx.log ?? (() => {}));
   return r;
+}
+
+/**
+ * The one text a scheduled call that nobody answered is owed, queued once.
+ *
+ * Code's words, not the model's: the point of the call was to reach them at a time, so what they get
+ * is what the call would have said, as a text, and the fact that the phone was tried. A call that
+ * reached their voicemail counts as not reaching them — a wake-up call that woke the answering
+ * machine woke nobody. A call that was never placed never gets here: `call_place` reports that to
+ * the runtime, which texts the reason at once (src/runtime.js _placeTimerCall).
+ */
+export function queueMissedScheduledCall(conversationId, row, log = () => {}) {
+  if (LIVE_STATES.includes(row.state)) return { queued: false, why: "still going" };
+  const reached = SPOKE_TO_SOMETHING.includes(row.state) && row.state !== "voicemail";
+  if (reached) return { queued: false, why: "they picked up" };
+  const who = db.getAccount(conversationId);
+  const address = who?.address && who.address !== "console" ? who.address : "";
+  const channel = who?.channel && who.channel !== "console" ? who.channel : "";
+  if (!address || !channel) return { queued: false, why: "no texting channel on this conversation" };
+  if (!db.markMissedCallTold(row.id)) return { queued: false, why: "already told" };
+  const how = row.state === "voicemail" ? "it went to voicemail" : row.state === "busy" ? "the line was busy" : "you didn't pick up";
+  const { row: queued } = db.enqueueOutbound({
+    idemKey: `timer:${row.timer_id}:call_missed`,
+    conversationId, channel, address,
+    body: `tried calling u just now — ${String(row.goal ?? "").trim().replace(/[.!?]+$/, "")} — but ${how}. so this is the text instead.`,
+    toOwner: true, maxAttempts: config.outboxMaxAttempts,
+  });
+  log({ scheduled_call_missed: row.id, timer: row.timer_id, state: row.state, outbox: queued.id });
+  return { queued: true, outbox: queued.id };
 }
 
 /**
@@ -8876,27 +8916,63 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
     case "plan_done": return db.setPlanStatus(c, input.plan_id, "done");
     case "timer_set": {
+      // A timer that ends in a phone call rather than a text ("call me at 7"). Refused NOW when
+      // nothing on this install can ring a phone, or there is no number to ring, rather than at
+      // 7am: the person is told at the moment they ask, while they can still take a text instead.
+      // Who it rings is never a choice — the person in this conversation, through the same
+      // `call_place` path and the same caps a call asked for by text goes through (src/runtime.js).
+      const callGoal = String(input.then_call ?? "").trim() || null;
+      if (callGoal) {
+        const st = ctx.calls?.status?.();
+        if (!ctx.calls || st?.status !== "live") {
+          return {
+            ok: false, status: "not_connected",
+            error: `No phone provider is wired up${st?.missing?.length ? ` (no ${st.missing.join(", ")})` : ""}, so Reason cannot ring anyone at that time. Say that plainly and offer a text at that time instead — set that only if they want it.`,
+          };
+        }
+        if (!me.address || me.address === "console") {
+          return { ok: false, error: `There is no phone number on file for ${me.name}, so there is nobody to ring. Say so and offer a text instead.` };
+        }
+        const pay = checkCallForPaymentDetails({ goal: callGoal, facts: [] });
+        if (!pay.ok) return { ok: false, status: "payment_details_refused", found: pay.found, error: pay.error };
+      }
       // A standing check-in rather than a one-off. The rule decides when, so `fire_at` is neither
       // needed nor read, and the first firing is made in the same call. See src/series.js.
       if (input.repeat) {
-        const started = series.start({ conversationId: c, what: input.note, repeat: input.repeat });
+        const started = series.start({ conversationId: c, what: input.note, repeat: input.repeat, callGoal });
         trust.ledgerWrite({ conversationId: c, action: "series_set", input, out: started, target: String(input.note).slice(0, 120) });
         if (!started.ok) return started;
         return {
           ok: true, series: started.series, first: started.first, timer_id: started.timer_id,
-          say_back: `Say the schedule back to them ONCE, in their words, with what it is about: "${started.series.schedule}, i'll ask ${started.series.what}". Then leave it — no list, no explanation of how it works.`,
+          say_back: callGoal
+            ? `Say the schedule back to them ONCE, in their words, as a call: "${started.series.schedule}, i'll ring you". Then leave it — no list, no explanation of how it works.`
+            : `Say the schedule back to them ONCE, in their words, with what it is about: "${started.series.schedule}, i'll ask ${started.series.what}". Then leave it — no list, no explanation of how it works.`,
         };
       }
       if (!input.fire_at) return { ok: false, error: "A one-off timer needs fire_at (ISO 8601 with an offset). For something standing, pass `repeat` instead." };
-      const fireAt = Date.parse(input.fire_at);
+      let fireAt = Date.parse(input.fire_at);
       if (Number.isNaN(fireAt)) return { ok: false, error: `Could not parse fire_at '${input.fire_at}'. Use ISO 8601 with an offset.` };
       if (fireAt <= clock.now()) return { ok: false, error: `That time (${stamp(fireAt)}) is already in the past. Now is ${stamp()}.` };
       if (input.plan_id && !db.getPlan(c, input.plan_id)) return { ok: false, error: `No plan #${input.plan_id}` };
+      // Quiet hours apply to a call only when Reason picked the hour. A wake-up call THEY set for
+      // 6:30 rings at 6:30 — that is the whole point of it — so the move happens only on an
+      // explicit `their_time: false`, never by default: the failure the default guards against is
+      // a 6:30 wake-up quietly rung at 8 because a flag was forgotten.
+      let moved = null;
+      if (callGoal && input.their_time === false) {
+        const at = series.outOfQuiet(fireAt, { their_time: false }, series.tzFor(c));
+        if (at !== fireAt) { moved = { from: stamp(fireAt), to: stamp(at) }; fireAt = at; }
+      }
       // Which job this reminder belongs to, written down now so "forget the trip" can find it
       // later by looking rather than by remembering. See src/letgo.js.
       const onTask = taskFromInput(c, input, ctx);
       if (onTask.error) return onTask;
-      return { ok: true, timer: timerView(db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null, taskId: onTask.id })) };
+      const made = db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null, taskId: onTask.id, callGoal });
+      return {
+        ok: true, timer: timerView(made),
+        ...(callGoal ? { say_back: `Say back in ONE line that you'll ring them at ${stamp(fireAt)}. Nothing about how it works.` } : {}),
+        ...(moved ? { moved, note: `That hour was in their night and you picked it, so it was moved to ${moved.to}. Say the time you will actually ring.` } : {}),
+      };
     }
     case "timer_list": return { timers: db.listTimers(c).map(timerView) };
     case "timer_cancel": {
@@ -10399,7 +10475,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // the provider refuses a call that arrives without either. A call to the owner is the one
       // exception: it opens with a greeting, not a disclosure at the person who set this up — they
       // are told about the recording once, by text, below.
-      const announcement = announcementFor({ ownerName: me.name, toOwner });
+      // A scheduled call (the runtime placing a "call me at 7" timer, src/runtime.js) opens with
+      // why it is ringing, so the first words are not a bare "what's up" at 6:30 in the morning.
+      const scheduled = Number.isInteger(ctx.scheduledTimerId) ? ctx.scheduledTimerId : null;
+      let announcement = announcementFor({ ownerName: me.name, toOwner, because: toOwner && scheduled ? input.goal : "" });
+      // The goal is the model's words, and the provider refuses an owner greeting that reads like
+      // the stranger line ("...a call for the airport" trips "call for"). The plain greeting then,
+      // and the voice turn still knows why it rang (scheduledCallNote in src/calls/voice.js).
+      if (toOwner && scheduled && !requireAnnouncement({ announcement, ownerName: me.name, toOwner }).ok) {
+        announcement = announcementFor({ ownerName: me.name, toOwner });
+      }
       const rules = callRulesFor({ ownerName: me.name });
 
       // Not at half eleven at night, unless it is their own phone. Refused out loud rather than
@@ -10476,7 +10561,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const row = db.createCall(c, {
         provider: st.name, toNumber: to, isOwner: toOwner,
         goal: brief.goal, facts: input.facts ?? [], confirmationId: ctx.confirmationId ?? null,
-        announcement, taskId: onCallTask.id,
+        announcement, taskId: onCallTask.id, timerId: scheduled,
       });
       // The brief on the row, so the voice turn an hour from now is held to what was approved then
       // rather than to a default, and so a safe-recovery call can be built from the original.

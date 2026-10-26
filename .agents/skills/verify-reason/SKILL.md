@@ -370,6 +370,26 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
+**6 — A scheduled call, with the fake provider.** "Call me at 7": the real `timer_set`, the real
+Runtime sweep and `call_place`, the fake call provider and the fake channel, in process under the
+cage's env. No model, no phone, nothing leaves the machine.
+
+```bash
+eval "$(bin/caged.sh env | sed 's/^/export /')" \
+  && REASON_DB_PATH=$(mktemp -d)/timer-call.db node bin/timer-call-drive.mjs   # 20 steps, "all ok"
+```
+
+See [features/scheduled-calls.md](features/scheduled-calls.md).
+
+### Baseline — 3,727 pass, **0 failures** after scheduled calls (wt/timer-call, 2026-10-26)
+
+A timer can end in a phone call: `timer_set` with `then_call` ("call me at 7", a wake-up call) places
+`call_place` to the person's own number when it fires, opening with why; refusals, caps and an
+unanswered call become one text; "remind me" stays a text. Sixteen pinned tests in
+`test/timer-call.test.js`; `bin/timer-call-drive.mjs` under `caged.sh env`: 20 steps, all ok. See
+[features/scheduled-calls.md](features/scheduled-calls.md). `npm run test:offline` with no `.env`
+loaded: **3,849 tests, 3,727 passing, 0 failing, 122 skipped.**
+
 ### Baseline — 3,711 pass, **0 failures** after event albums (#163, 2026-10-26)
 
 One private photo album per event behind `REASON_EVENT_ALBUMS`. Fourteen pinned tests in `test/event-album.test.js` (nine for the album, five for the check-in nudges and check-in by name); `bin/album-drive.mjs` under `caged.sh env` drives note → add → check-in → release (one text) → late upload (none) → expiry (files gone) → the end-of-event nudge → "everyone except" → "everyone" again (nothing), all ok; the cage (`REASON_EVENTS=on REASON_EVENT_ALBUMS=on caged.sh start`) answered `/e/<id>/album/manage?t=<organizer_token>` with the gate ("Text me a code", no album content), the bare path with no cookie 404, the organizer's page with the organizer's `reason_page` cookie (check-in list, "Check everyone in", release button), 404 for a stranger's cookie byte-identical to a dead link, and 200 under `/p/e/…`; `toolsFor(<guest>)` lists the four album tools only with the flag on. Maintenance pass 2026-10-26 at `0b9d2c4`: every citation in the feature file re-grepped, clean. See [features/event-albums.md](features/event-albums.md). **3,833 tests, 3,711 passing, 0 failing, 122 skipped.**
