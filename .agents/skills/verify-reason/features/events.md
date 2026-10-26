@@ -17,7 +17,12 @@ tables, `accounts.joined_via_event`, `redeemEventClaim`), `src/privacy.js` (`SEC
 password is sealed out of the decision log and the action ledger), `src/config.js` (`events`).
 Pages: `src/pages/event.js` (`eventPageRequest`: the join page, the claim/finish step, the
 who's-going page), routed in `src/http.js` (`/e/<id>`, `/e/<id>/join`, `/e/<id>/who`, and the same
-under `/p/` for the files domain — Caddy rewrites everything there under `/p`). The text that
+under `/p/` for old files-domain requests). **Event links live on `https://events.heyreason.com`**
+(owner's domain rule, 2026-10-26): `REASON_EVENTS_URL` (unset → `REASON_PAGES_URL`) is the one base
+for every event address (`events.eventUrl` → directory, organizer page, album, manage, cover,
+cover preview, code `@host` binding). Caddy's `events.heyreason.com` block passes `/e/*` (and the
+icons) to the app unchanged; `files.heyreason.com/e/*` (and `files.reason.omarinyarko.com/e/*` via
+files.) answer 301 to events. + same path and query. `isOwnEventLink` still accepts old files. links. The text that
 finishes a web join: `src/channels/router.js` `#claimEvent`.
 Tools: `src/eventtools.js` (definitions, schemas, visibility, and one handler per tool, wired
 into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/events.test.js`,
@@ -140,10 +145,11 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
     (`EVENT_CARD_LINE`) → one question (`EVENT_QUESTION`), no model turn on the code; a number that
     already has an account is just joined (welcome only — the existing-user web route without a
     session). Claims live 24h, die on a password rotation, are single-use; a retried webhook is a no-op.
-  - Wrong passwords count per browser (`ip:<addr>`) and per event. The address is Caddy's
-    `X-Forwarded-For` only when the request is from loopback AND carries `X-Files-Domain: true` (Caddy
-    2.6 replaces a browser's own XFF); never `X-NF-Client-Connection-IP` (nothing strips it on that
-    path); otherwise the socket address. Form actions and links are absolute (`/e/<id>/join`,
+  - Wrong passwords count per browser (`ip:<addr>`) and per event. The address is Netlify's
+    `X-NF-Client-Connection-IP` ONLY alongside a valid website signature (`x-nf-sign`,
+    src/pages/siteproxy.js — event pages are not proxied by the website today, so in practice never);
+    else Caddy's `X-Forwarded-For` only when the request is from loopback AND carries `X-Files-Domain:
+    true` (Caddy 2.6 replaces a browser's own XFF); otherwise the socket address. Form actions and links are absolute (`/e/<id>/join`,
     `/e/<id>/who?t=`): the public link has no trailing slash, so a relative `join` would post to
     `/e/join` and 404 — pinned by a test that resolves them against the real link.
   - A page session only joins an account `accounts.admit` still allows (not paused/removed/blocked).

@@ -1,7 +1,11 @@
 # Reason Web — signing in (phase W1)
 
-The same Reason, reached from a browser at `/web` (the website will proxy `heyreason.com/web` to it
-in phase W5; until then the route exists only on Reason's own address). W1 is sign-in alone: a person
+The same Reason, reached from a browser at **`https://heyreason.com/web`** (owner's domain rule,
+2026-10-26): the website (Netlify) rewrites `/web` and `/web/*` to `files.heyreason.com/web…` on
+Hetzner, **signed** (`signed = "REASON_SITE_PROXY_SECRET"`, HS256 JWS in `x-nf-sign`;
+`src/pages/siteproxy.js`). Direct hits to `files.heyreason.com/web…` answer **301** to
+`heyreason.com/web` + same path and query (`webMovedTo`, only once `REASON_SITE_PROXY_SECRET` is set;
+the website's own signed request on that host is served). W1 is sign-in alone: a person
 types the number they text Reason from, Reason texts that number a six-digit code through the line it
 already uses, they type it, and that browser is theirs. The signed-in landing is a placeholder
 ("You're in, <name>." + the approved boundary notice) until W2 brings the conversation.
@@ -37,8 +41,10 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 - **Wrong tries** — `events.tryKeyedCode` under `wsign:<conv>` (person) and `wsignb:<actor>`
   (browser): 5 wrong per browser per 15 min — the only limit ever said ("Too many wrong codes from
   this browser") — plus the silent 20 per person per 15 min and 40 per person per day. The actor is
-  `eventActor` (Caddy's `X-Forwarded-For` only from loopback with `X-Files-Domain: true`; else the
-  socket). 10 code requests per browser per hour (`events.signinGate`, shared with event sign-in).
+  `eventActor`: with a valid website signature, Netlify's `x-nf-client-connection-ip` (Netlify
+  overwrites a browser's own; `siteClientIp`); else Caddy's `X-Forwarded-For` only from loopback with
+  `X-Files-Domain: true`; else the socket. A forged Netlify header without a valid signature counts
+  for nothing (pinned, `test/domains.test.js`). 10 code requests per browser per hour (`events.signinGate`, shared with event sign-in).
 - **Enumeration** — a known and an unknown number get byte-identical pages (only the echoed number
   differs); the join block is on every page; no account is ever created by typing a number.
 - **The join block** (owner decisions 1 + 2) — "New to Reason? A text from your phone finishes
@@ -47,7 +53,9 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   the first LIVE channel's — never a string, never the linq adapter (registered, `not_connected` on
   live). No live line → "Reason's texting line isn't connected right now…" and no number, no QR.
 - **The session** — on a right code: `startPageSession("wsign:<conv>", token, { conversationId })`,
-  cookie `reason_page` with `Path=/`, `HttpOnly; SameSite=Lax; Secure` (https), 90 days
+  cookie `reason_page` with `Path=/`, **`Domain=heyreason.com`** whenever the request is under the
+  website's domain or came through it signed (`cookieDomain`; decision 3 — one sign-in for Web, pages
+  on files., events on events., /ops; host-only on the Funnel), `HttpOnly; SameSite=Lax; Secure` (https), 90 days
   (`SESSION_TTL_MS`). The same cookie opens their pages, events and /ops (decision 3). Web reads it
   with a **30-day idle** limit (`WEB_IDLE_MS`, via `pageSessionOwner(…, { idleMs })`): idle or old,
   the row is deleted and the cookie opens nothing anywhere. `sessionAccount` also requires
@@ -115,21 +123,26 @@ connected); a stranger's number mints nothing and answers the same bytes.
   block's absence on `<figure class="w-qr"` / `sms:`, never on `w-qr` or `<svg`.
 - **The cookie is shared** (decision 3): signing out of Web signs that browser out of pages and events
   too, and an idle-expired Web session (30 days) deletes the row other pages were using. Intended.
-- **Live since 2026-10-26 17:30 UTC with `REASON_WEB=owner`.** `https://files.heyreason.com/web`
-  goes through Caddy's `@web` handle (→ 8788, `X-Files-Domain true`) and the funnel answers too;
-  `heyreason.com/web` (Netlify) is not proxied yet (W5). Drive it live only with a fictional 555
+- **Live since 2026-10-26 17:30 UTC with `REASON_WEB=owner`; at `https://heyreason.com/web` since
+  the domain move (10-26).** Path: Netlify rewrite (signed) → Caddy `files.heyreason.com` `@web` handle
+  (→ 8788, `X-Files-Domain true`) → the app. `files.heyreason.com/web` direct → 301. The Funnel still
+  answers /web (one `127.0.0.1` rate bucket; debugging only). Drive it live only with a fictional 555
   number (same page, no text, no `wsign:` outbox row); never request the owner's code.
+- **Two `reason_page` cookies.** A browser signed in before the move holds a host-only copy (files.
+  or heyreason.com from /ops) beside the shared one; `readCookie` takes the first that is still a
+  session, and sign-out clears both copies (`clearCookieHeader` returns two).
 - **Test with a real browser, not just curl.** curl lets you send any `Origin`; a browser sends what
   the page's referrer policy allows. Under `no-referrer` Safari and Chrome post `Origin: null`, and
   the owner's own sign-in was refused through Caddy (10-26). The pages now say `same-origin`
   (header and the shell's `<meta>`), and `Origin: null` passes only with `Sec-Fetch-Site:
   same-origin`. Probe: Playwright webkit + chromium, fill a 555 number, submit, expect no
   "didn't come from this page".
-- **Before W5 proxies `/web/*` through Netlify** (review finding, 2026-10-26): `eventActor` trusts
-  `X-Forwarded-For` only behind Caddy's `X-Files-Domain` marker, so through Netlify every visitor
-  would share one `ip:<netlify egress>` bucket and one stranger's 5 wrong codes would lock Web
-  sign-in for everybody. W5 must either route `/web` through Caddy on `files.heyreason.com` or add
-  a trusted Netlify client-address header to `eventActor` — decide before the rewrite, not after.
+- **Through Netlify every request reaches Caddy from Netlify's addresses.** Without the signature
+  every visitor would share one `ip:<netlify egress>` bucket (one stranger's 5 wrong codes would lock
+  Web sign-in for everybody). If the site's `REASON_SITE_PROXY_SECRET` env var and the server's ever
+  differ, nothing verifies and the server 301s the website's own request back to heyreason.com/web.
+  Symptom: a redirect loop on heyreason.com/web. Fix: the same value in both (Netlify env +
+  /opt/reason/.env), then redeploy the site and restart Reason.
 - A browser with a session row that Web no longer allows (paused account, switch back to `owner`)
   sees the sign-in form and has no sign-out; the row stays and reopens when allowed again. The
   browsers list in W2 is where it gets a revoke.

@@ -5391,6 +5391,11 @@ export function pageSessionValid(pageId_, token, maxAgeMs) {
   return true;
 }
 
+/** Is there a session row for this token at all? A read only: no ageing, no touch. */
+export function pageSessionExists(token) {
+  return !!token && !!db.prepare("SELECT 1 FROM page_sessions WHERE token = ?").get(String(token));
+}
+
 /** Sign one browser out: its session row is gone, so its cookie opens nothing anywhere. */
 export function endPageSession(token) {
   if (!token) return false;

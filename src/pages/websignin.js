@@ -316,7 +316,7 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
     }
     db.endPageSession(presented);
     log({ web_signout: true });
-    return redirect("/web", { "Set-Cookie": clearCookieHeader({ path: "/" }) });
+    return redirect("/web", { "Set-Cookie": clearCookieHeader({ path: "/", headers }) });
   }
 
   // A signed-in browser posting a sign-in form: it is already in.
@@ -348,7 +348,7 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
     log({ web_signin_ok: true });
     // The session cookie on every path, so the browser is theirs on their pages and events too;
     // the form cookie has done its job.
-    return { status: 303, headers: HTML({ Location: "/web", "Content-Length": 0, "Set-Cookie": [cookieHeader(tried.token, { path: "/" }), clearFormCookie()] }), body: "" };
+    return { status: 303, headers: HTML({ Location: "/web", "Content-Length": 0, "Set-Cookie": [cookieHeader(tried.token, { path: "/", headers }), clearFormCookie()] }), body: "" };
   }
 
   // sub === "signin": ask for a code.
