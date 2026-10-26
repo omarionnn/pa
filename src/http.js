@@ -69,7 +69,7 @@ import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard } from "./pages/card.js";
 import { previewRequest } from "./pages/preview.js";
 import { mimeForKind } from "./documents/store.js";
-import { isContactPath, vcard, lineNumber } from "./contact.js";
+import { isContactPath, vcard, lineNumber, liveLineNumber } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
@@ -645,8 +645,7 @@ export function assetRequest({ pathname, router = null }) {
 
 /** An event page, with the texting line's number for its "Text Reason to finish" button. */
 export async function eventRequestFor({ router = null, ...rest }) {
-  const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
-  return await eventPageRequest({ ...rest, lineNumber: live ? lineNumber(router, live.name) : null });
+  return await eventPageRequest({ ...rest, lineNumber: liveLineNumber(router) });
 }
 
 /**
@@ -654,8 +653,7 @@ export async function eventRequestFor({ router = null, ...rest }) {
  * tests; the route above is the only caller.
  */
 export function inviteRequestFor({ token, router = null }) {
-  const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
-  return inviteRequest({ token, lineNumber: live ? lineNumber(router, live.name) : null });
+  return inviteRequest({ token, lineNumber: liveLineNumber(router) });
 }
 
 /**

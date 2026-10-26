@@ -10,6 +10,7 @@
 // soak (§7 decision 10).
 import * as accounts from "./accounts.js";
 import { config } from "./config.js";
+import { liveLineNumber } from "./contact.js";
 
 /** The channel name a web message arrives on and leaves by. One spelling, everywhere. */
 export const WEB = "web";
@@ -39,4 +40,17 @@ export function webAllowedFor(conversationId) {
  */
 export function historyOn() {
   return webOn();
+}
+
+/**
+ * The number the Web join surface (W1: "New to Reason? A text from your phone finishes joining",
+ * the sms: link, the QR, the "not on your phone?" line) tells a person to text. Read off the LIVE
+ * channel at request time, exactly as pages/event.js and invites.js do: never hardcoded, never
+ * from the linq adapter, which on the live install is registered but not connected. Null means
+ * "no texting line is live", and the surface must say it cannot finish joining right now rather
+ * than show a number. Owner rule, 2026-10-26: Reason is Sendblue only; nobody is ever shown a
+ * Linq number.
+ */
+export function joinNumber(router) {
+  return liveLineNumber(router);
 }

@@ -129,6 +129,23 @@ export function lineNumber(router, channel) {
 }
 
 /**
+ * The first texting channel that is actually LIVE right now, or null. Never the console, never a
+ * channel that is merely registered: on the live install Linq is registered but `not_connected`
+ * (no LINQ_* keys), and Sendblue is the line people text. Every surface that tells a person a
+ * number to text (event join, invite, contact card, Reason Web join) must ask this, so a
+ * registered-but-dead adapter can never hand out its number.
+ */
+export function liveLine(router) {
+  return (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live") ?? null;
+}
+
+/** The live line's number, or null when no texting channel is live. Owner rule (2026-10-26): never a Linq number; this is how. */
+export function liveLineNumber(router) {
+  const live = liveLine(router);
+  return live ? lineNumber(router, live.name) : null;
+}
+
+/**
  * Send one person the card, if they have not had it. Never throws, never blocks a turn: this is a
  * nicety sent alongside the real work, and a failure here is a log line and a later retry.
  *
