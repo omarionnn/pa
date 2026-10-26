@@ -32,6 +32,7 @@ import { shell, esc, renderNotFound, codeInputAttrs, foot, sentLine } from "./re
 import { normalizeNumber, clock } from "../config.js";
 import { prettyNumber } from "../invites.js";
 import { coverUrl, coverFile, previewFile, INVITE_LINE, COVER_W, COVER_H } from "../eventcover.js";
+import { albumRequest } from "./album.js";
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-Length": Buffer.byteLength(body), ...extra }), body });
@@ -325,6 +326,15 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
 
   const account = sessionAccount(headers);
   const mine = account ? events.roleIn(account.conversation_id, ev.id) : null;
+
+  // ---- the photo album (src/pages/album.js): the same person and the same role, read the same way ----
+  if (sub && /^album(\/|$)/.test(sub)) {
+    return await albumRequest({
+      ev, sub, method, query, readBody, account, mine, runtime, log,
+      sendCode: ({ conversationId, what }) => sendSigninCode({ ev, conversationId, runtime, what, log }),
+      tryCode: ({ conversationId, code }) => events.trySigninCode({ conversationId, code, actor: eventActor(headers, remoteAddress) }),
+    });
+  }
 
   // ---- sign this browser out ----
   if (sub === "signout") {

@@ -19,6 +19,8 @@
 //   GET  /i/{token}                   an invite link (also /p/i/{token}); a read that never spends it
 //   GET  /e/{id}/cover.jpg            an event link's card picture (src/eventcover.js); public, versioned
 //   GET  /e/{id}/cover-preview.jpg?k= the organizer's look at a cover still waiting on them
+//   GET  /e/{id}/album[/manage]       the event's private photo album (src/pages/album.js); role read per request
+//   GET  /e/{id}/album/photo/{n}      one photo's bytes; /album/download the whole album as a ZIP
 //   GET  /s/{token}                   a sign-in link: Reason's own browser, shown to one person
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
 //   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
@@ -190,7 +192,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       // ---------- an event's pages ----------
       // The public join page and the who's-going page (src/pages/event.js). `/p/e/…` is the same
       // link arriving through the files domain, which Caddy rewrites under /p.
-      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|cover\.jpg|cover-preview\.jpg))?$/.exec(url.pathname);
+      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}))?$/.exec(url.pathname);
       if (eventRoute) {
         const out = await eventRequestFor({
           publicId: eventRoute[1], sub: eventRoute[2] || null, method: req.method,
