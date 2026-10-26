@@ -14,6 +14,8 @@ import { Router } from "./channels/router.js";
 import { ConsoleChannel } from "./channels/console.js";
 import { SendblueChannel } from "./channels/sendblue.js";
 import { LinqChannel } from "./channels/linq.js";
+import { WebChannel } from "./channels/web.js";
+import { webOn } from "./web.js";
 import { chooseCallProvider } from "./calls/choose.js";
 import { createServer } from "./http.js";
 import { makeDeliver } from "./deliver.js";
@@ -71,6 +73,9 @@ router.register(consoleChannel);
 // a Sendblue-only install behaves exactly as a Linq-only install did, and neither is special.
 router.register(new SendblueChannel());
 router.register(new LinqChannel());
+// Reason Web's channel, only while REASON_WEB is `owner` or `on`. Off, the name `web` is not a
+// channel at all, so nothing can be routed to it and the install runs exactly as it did (src/web.js).
+if (webOn()) router.register(new WebChannel());
 
 // `say()` still goes out as an event — those are code-written lines with nothing attached.
 runtime.on("outbound", async ({ conversationId, text, channel, to, chatId, fromOwner, replyTo, sendStyle }) => {

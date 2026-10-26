@@ -69,7 +69,7 @@ import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard } from "./pages/card.js";
 import { previewRequest } from "./pages/preview.js";
 import { mimeForKind } from "./documents/store.js";
-import { isContactPath, vcard, lineNumber } from "./contact.js";
+import { isContactPath, vcard, lineNumber, liveLineNumber } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
@@ -645,8 +645,7 @@ export function assetRequest({ pathname, router = null }) {
 
 /** An event page, with the texting line's number for its "Text Reason to finish" button. */
 export async function eventRequestFor({ router = null, ...rest }) {
-  const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
-  return await eventPageRequest({ ...rest, lineNumber: live ? lineNumber(router, live.name) : null });
+  return await eventPageRequest({ ...rest, lineNumber: liveLineNumber(router) });
 }
 
 /**
@@ -654,8 +653,7 @@ export async function eventRequestFor({ router = null, ...rest }) {
  * tests; the route above is the only caller.
  */
 export function inviteRequestFor({ token, router = null }) {
-  const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
-  return inviteRequest({ token, lineNumber: live ? lineNumber(router, live.name) : null });
+  return inviteRequest({ token, lineNumber: liveLineNumber(router) });
 }
 
 /**
@@ -1275,7 +1273,13 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
           error: `Reason has already texted ${config.ownerName} a code. Use that one, or try again in about ${Math.ceil(asked.retry_after_s / 60)} minutes.`,
         });
       }
-      if (runtime?.say) {
+      // Keyed `pcode:` on the code's own row, as event sign-in keys `esign:`: the key is what keeps a
+      // code text out of the per-message history (db.js HISTORY_EXCLUDED_KEYS) — a code is a secret,
+      // never a line in the conversation — and it is what stops a retried send texting a code twice.
+      if (runtime?._tell) {
+        Promise.resolve(runtime._tell(page.conversation_id, asked.line, { idempotencyKey: `pcode:${page.id}:${asked.id}` }))
+          .catch(e => log({ page_code_text_failed: page.id, why: (e?.message ?? String(e)).split("\n")[0] }));
+      } else if (runtime?.say) {
         try { runtime.say(page.conversation_id, asked.line); } catch (e) { log({ page_code_text_failed: page.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
       }
       log({ page_code_sent: page.id });
@@ -1470,7 +1474,11 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
         log({ ops_code_refused: asked.reason });
         return gate({ sent: true, error: `Reason has already texted ${config.ownerName} a code. Use that one, or try again in about ${Math.ceil(asked.retry_after_s / 60)} minutes.` });
       }
-      if (runtime?.say) {
+      // `pcode:` key, as above: keeps the code out of the per-message history and out of a double send.
+      if (runtime?._tell) {
+        Promise.resolve(runtime._tell(page.conversation_id, asked.line, { idempotencyKey: `pcode:${page.id}:${asked.id}` }))
+          .catch(e => log({ ops_code_text_failed: (e?.message ?? String(e)).split("\n")[0] }));
+      } else if (runtime?.say) {
         try { runtime.say(page.conversation_id, asked.line); } catch (e) { log({ ops_code_text_failed: (e?.message ?? String(e)).split("\n")[0] }); }
       }
       log({ ops_code_sent: true });
