@@ -1774,7 +1774,10 @@ export function createTimer(conversationId, { fireAt, note, planId = null, taskI
 }
 /** The call a timer's firing placed, if the phone has already rung for it. Unscoped: the fire path holds the timer row. */
 export function callByTimer(timerId) {
-  return db.prepare("SELECT * FROM calls WHERE timer_id = ? ORDER BY id DESC LIMIT 1").get(timerId) ?? null;
+  // A row the provider refused before anything was dialled (state failed, no external id) is not a
+  // phone that rang: a retry after that must still send the "couldn't be placed" text, so it is
+  // not what this returns.
+  return db.prepare("SELECT * FROM calls WHERE timer_id = ? AND NOT (state = 'failed' AND external_id IS NULL) ORDER BY id DESC LIMIT 1").get(timerId) ?? null;
 }
 /**
  * Claim the one "I tried to call you and couldn't reach you" text for a scheduled call. True once,
@@ -1907,9 +1910,10 @@ export function pendingSeriesTimers(seriesId) {
  * Called only once the message is in the outbox — a firing the model answered with NO_REPLY has
  * asked nothing, so it must not turn the next thing they say into a report about it.
  */
-export function noteSeriesFired(id, { at = clock.now() } = {}) {
+export function noteSeriesFired(id, { at = clock.now(), awaiting = true } = {}) {
+  // A standing CALL asks nothing by text, so the next thing they say is not a report on it.
   db.prepare("UPDATE series SET fired_count = fired_count + 1, last_fired_at = ?, awaiting_since = ? WHERE id = ?")
-    .run(at, at, id);
+    .run(at, awaiting ? at : null, id);
   return seriesById(id);
 }
 /** The one series waiting on an answer here, newest firing first. At most one is ever taken. */

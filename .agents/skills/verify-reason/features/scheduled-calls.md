@@ -24,7 +24,7 @@ ceiling and the never-twice check reads `db.callByTimer`; `_runTimer` → `_plac
 `src/calls/voice.js` (`scheduledCallNote` in `ownerContext`), `src/kept.js` (`by_phone`),
 `src/agent.js` (the timers line: asked to be called, woken or rung → `then_call`; "remind me" is a
 text).
-Tests: `test/timer-call.test.js` (16 pass at this PR).
+Tests: `test/timer-call.test.js` (20 pass at this PR).
 
 ## Sub-features
 
@@ -65,7 +65,7 @@ the call" → nothing rings. Set a wake-up for 6:30 → it rings at 6:30, not 8.
 
 ```bash
 cd ~/Desktop/pa
-node --test test/timer-call.test.js                       # 16 pass
+node --test test/timer-call.test.js                       # 20 pass
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" \
   && REASON_DB_PATH=$(mktemp -d)/timer-call.db node .agents/skills/verify-reason/bin/timer-call-drive.mjs
 ```

@@ -385,7 +385,7 @@ See [features/scheduled-calls.md](features/scheduled-calls.md).
 
 A timer can end in a phone call: `timer_set` with `then_call` ("call me at 7", a wake-up call) places
 `call_place` to the person's own number when it fires, opening with why; refusals, caps and an
-unanswered call become one text; "remind me" stays a text. Sixteen pinned tests in
+unanswered call become one text; "remind me" stays a text. Twenty pinned tests in
 `test/timer-call.test.js`; `bin/timer-call-drive.mjs` under `caged.sh env`: 20 steps, all ok. See
 [features/scheduled-calls.md](features/scheduled-calls.md). `npm run test:offline` with no `.env`
 loaded: **3,849 tests, 3,727 passing, 0 failing, 122 skipped.**

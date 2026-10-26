@@ -260,6 +260,31 @@ test("a retry after a crash finds the call row and does not ring twice", async (
   assert.ok(timer(set.timer.id).fired_at);
 });
 
+test("a scheduled call nobody ever heard from again is settled by the sweep with the one text, not silence", async () => {
+  const h = harness();
+  const set = await setCall(h);
+  clock.skip(10 * MIN + 1000);
+  // The process died between the dial and the mark: a row still `placing`, no provider id, timer due.
+  const row = db.createCall(CONV, { provider: "fake", toNumber: OWNER, isOwner: true, goal: GOAL, facts: [], announcement: "hey Omari", timerId: set.timer.id });
+  assert.equal(await h.runtime.tick(), 1);
+  assert.equal(h.calls.placed.length, 0, "the phone does not ring again");
+  assert.equal(h.fake.sent.length, 0, "nothing texted while nobody knows how it ended");
+  // Nothing ever reports how it ended; the lost-calls sweep writes it down as failed.
+  clock.skip(callLostAfterMs() + 1000);
+  const swept = await h.runtime.lostCalls();
+  assert.equal(swept.unknown, 1);
+  assert.equal(db.listCalls(CONV).find(r => r.id === row.id).state, "failed");
+  await h.runtime.outbox();
+  assert.equal(h.fake.sent.length, 1, "the one honest text");
+  assert.match(h.fake.sent[0].text, /the call didn't connect/);
+  assert.match(h.fake.sent[0].text, new RegExp(GOAL));
+  assert.equal(h.turns.length, 0, "never an event turn");
+  // Sweeping again says nothing more.
+  await h.runtime.lostCalls();
+  await h.runtime.outbox();
+  assert.equal(h.fake.sent.length, 1, "exactly once");
+});
+
 test("\"call me every weekday at 7\": a standing series of calls, each firing rings", async () => {
   const h = harness();
   const set = await runTool("timer_set", {
@@ -271,7 +296,7 @@ test("\"call me every weekday at 7\": a standing series of calls, each firing ri
   assert.equal(set.series.calls_them, "you asked me to call every weekday at 7 to get you up");
   const first = timer(set.timer_id);
   assert.equal(first.call_goal, "you asked me to call every weekday at 7 to get you up", "the firing carries the call");
-  assert.equal(first.note, "morning wake-up call" === first.note ? first.note : "standing call: morning wake-up call");
+  assert.equal(first.note, "standing call: morning wake-up call");
 
   clock.skip(first.fire_at - clock.now() + 1000);
   assert.equal(await h.runtime.tick(), 1);
@@ -279,14 +304,43 @@ test("\"call me every weekday at 7\": a standing series of calls, each firing ri
   assert.equal(h.turns.length, 0);
   assert.equal(h.fake.sent.length, 0);
   assert.equal(db.seriesById(set.series.series_id).fired_count, 1, "counted as a firing of the series");
+  assert.equal(db.seriesById(set.series.series_id).awaiting_since, null, "a call asked nothing by text: their next text is not a report on it");
 
   // The next occurrence is a call too.
-  h.runtime.series?.();
   const { schedule } = await import("../src/series.js");
   schedule();
   const next = db.pendingSeriesTimer(set.series.series_id);
   assert.ok(next, "the next one is armed");
   assert.equal(next.call_goal, first.call_goal);
+});
+
+test("\"call me every weekday at 6:30\" rings at 6:30: a standing call is never pulled to 8am unless the model says it picked the hour", async () => {
+  const h = harness();
+  const named = await runTool("timer_set", { note: "wake-up", then_call: "wake you", repeat: { kind: "daily", hour: 6, minute: 30 } }, { conversationId: CONV, calls: h.calls });
+  assert.equal(named.ok, true, JSON.stringify(named));
+  const hhmm = (ms) => new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false }).format(ms);
+  assert.equal(hhmm(timer(named.timer_id).fire_at), "06:30");
+  const mine = await runTool("timer_set", { note: "check-in call", then_call: "checking in", repeat: { kind: "daily", hour: 6, minute: 30, their_time: false } }, { conversationId: CONV, calls: h.calls });
+  assert.equal(hhmm(timer(mine.timer_id).fire_at), "08:00", "only an explicit their_time: false moves it");
+  // A text series keeps its old default: an unflagged night hour is moved.
+  const text = await runTool("timer_set", { note: "check in", repeat: { kind: "daily", hour: 6, minute: 30 } }, { conversationId: CONV, calls: h.calls });
+  assert.equal(hhmm(timer(text.timer_id).fire_at), "08:00");
+});
+
+test("the process dies after a refused dial and before the text: the retry still sends it, once", async () => {
+  const h = harness({ calls: new FakeCallProvider({ script: [{ placeFails: "the provider is out of credit" }] }) });
+  const set = await setCall(h);
+  clock.skip(10 * MIN + 1000);
+  // What a crash leaves: the refused row (failed, never dialled) with the timer on it, the timer still due.
+  const row = db.createCall(CONV, { provider: "fake", toNumber: OWNER, isOwner: true, goal: GOAL, facts: [], announcement: "hey Omari", timerId: set.timer.id });
+  db.updateCall(CONV, row.id, { state: "failed", outcome: "could not be placed: the provider is out of credit" });
+  assert.equal(db.callByTimer(set.timer.id), null, "a row that never dialled is not a phone that rang");
+  assert.equal(await h.runtime.tick(), 1);
+  assert.equal(h.fake.sent.length, 1, "the text still goes");
+  assert.match(h.fake.sent[0].text, /couldn't be placed/);
+  clock.skip(10 * MIN);
+  assert.equal(await h.runtime.tick(), 0);
+  assert.equal(h.fake.sent.length, 1, "once");
 });
 
 test("no phone line on this install: refused when they ask, with a text offered — not at 7am", async () => {
@@ -327,6 +381,19 @@ test("announcementFor opens an owner call with why, and the owner guard still ho
   assert.equal(requireAnnouncement({ announcement: announcementFor({ ownerName: "Omari", toOwner: true, because: "this call is recorded" }), ownerName: "Omari", toOwner: true }).ok, false);
   // A third-party call is untouched by `because`.
   assert.match(announcementFor({ ownerName: "Omari", toOwner: false, because: "x" }), /AI assistant calling for Omari/);
+});
+
+test("an unmapped refusal never repeats model-facing words at them; a provider's own error is quoted", async () => {
+  const h = harness();
+  const set = await setCall(h);
+  // The number vanished between set and fire: the refusal names REASON_OWNER_NUMBER and the person in the third person.
+  db.db.exec("UPDATE accounts SET address = ''");
+  clock.skip(10 * MIN + 1000);
+  assert.equal(await h.runtime.tick(), 1);
+  assert.equal(h.calls.placed.length, 0);
+  assert.equal(h.fake.sent.length, 1, "the thread still knows where to text");
+  assert.doesNotMatch(h.fake.sent[0].text, /REASON_OWNER_NUMBER|for Omari|Say so/);
+  assert.match(h.fake.sent[0].text, /no number on file for u/);
 });
 
 test("the voice turn is told why Reason rang, and only on a call Reason placed at a timer", () => {

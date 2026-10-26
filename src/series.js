@@ -368,7 +368,9 @@ export function start({ conversationId, what, repeat, now = clock.now(), tz = nu
   const said = String(what ?? "").trim();
   if (!said) return { ok: false, error: "A series needs `note` saying what it is about, in your own words." };
   const ringing = String(callGoal ?? "").trim() || null;
-  const parsed = normalizeRule(repeat);
+  // A standing call is never Reason's idea of a time: "call me every weekday at 6:30" rings at
+  // 6:30 unless the model says outright that it picked the hour. Same default as a one-off call.
+  const parsed = normalizeRule(ringing && repeat && repeat.their_time === undefined ? { ...repeat, their_time: true } : repeat);
   if (!parsed.ok) return parsed;
 
   const cap = Number(config.maxSeries);

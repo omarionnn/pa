@@ -176,8 +176,13 @@ function unplacedCallLine(t, { status = "", error = "" } = {}) {
     payment_details_refused: "i don't say payment details on a call",
     quiet_hours: "it's the middle of the night",
   }[String(status ?? "")];
-  const raw = String(error ?? "").split("\n")[0].replace(/^The call did not go through:\s*/i, "").replace(/\s*(Say exactly that|Say that plainly|IMPORTANT|Nobody's phone rang)\b.*$/s, "").trim().replace(/[.:]+$/, "");
-  const reason = plain ?? (raw ? raw : "");
+  const raw = String(error ?? "");
+  // Only a provider's own error is quoted ("The call did not go through: <provider>"); any other
+  // unmapped refusal is written for the model and is not repeated at them.
+  const provider = /^The call did not go through:\s*/i.test(raw)
+    ? raw.split("\n")[0].replace(/^The call did not go through:\s*/i, "").replace(/\s*(Say exactly that|Nobody's phone rang)\b.*$/s, "").trim().replace(/[.:]+$/, "")
+    : "";
+  const reason = plain ?? (/no number on file/i.test(raw) ? "there's no number on file for u" : provider);
   return `tried to call u just now — ${t.call_goal} — but the call couldn't be placed${reason ? ` (${reason})` : ""}. so this is the text instead.`;
 }
 
@@ -1080,7 +1085,7 @@ export class Runtime extends EventEmitter {
    */
   _noteSeriesFired(t) {
     if (!t?.series_id) return;
-    const s = db.noteSeriesFired(t.series_id);
+    const s = db.noteSeriesFired(t.series_id, { awaiting: !t.call_goal });
     this.log({ series: t.series_id, checked_in: s?.fired_count ?? null, timer: t.id });
   }
 
@@ -1190,6 +1195,8 @@ export class Runtime extends EventEmitter {
       // How `call_place` knows this is a scheduled call: it writes the timer onto the row (the
       // never-twice check above reads it back) and opens the call with the goal.
       scheduledTimerId: t.id, fromTimer: t.id,
+      // The timer's task is the call's task too, so letting the task go finds and cancels it.
+      taskId: t.task_id ?? null,
     };
     let out;
     try {

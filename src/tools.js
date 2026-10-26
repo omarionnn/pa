@@ -7777,7 +7777,10 @@ export function queueMissedScheduledCall(conversationId, row, log = () => {}) {
   const channel = who?.channel && who.channel !== "console" ? who.channel : "";
   if (!address || !channel) return { queued: false, why: "no texting channel on this conversation" };
   if (!db.markMissedCallTold(row.id)) return { queued: false, why: "already told" };
-  const how = row.state === "voicemail" ? "it went to voicemail" : row.state === "busy" ? "the line was busy" : "you didn't pick up";
+  const how = row.state === "voicemail" ? "it went to voicemail"
+    : row.state === "busy" ? "the line was busy"
+      : ["no_answer", "declined"].includes(row.state) ? "you didn't pick up"
+        : "the call didn't connect";
   const { row: queued } = db.enqueueOutbound({
     idemKey: `timer:${row.timer_id}:call_missed`,
     conversationId, channel, address,
@@ -7920,6 +7923,9 @@ export async function settleLostCalls({ now = clock.now(), calls = null, log = (
     });
     out.unknown++;
     log({ call_lost: row.id, since: row.created_at, why, ended_at: settled.ended_at });
+    // A scheduled call that was never heard from again is still a wake-up that did not reach them:
+    // the one "tried to call u" text goes out here too, never silence (claimed once, as in settleCall).
+    if (settled?.timer_id && settled.is_owner) queueMissedScheduledCall(row.conversation_id, settled, log);
   }
   return out;
 }
