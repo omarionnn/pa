@@ -254,8 +254,8 @@ function penalty(g, size) {
 }
 
 /**
- * The code as inline SVG: one path, a four-module quiet zone, `currentColor` on a white tile so it
- * reads on the dark theme too. `label` becomes the accessible name.
+ * The code as inline SVG: one path, a four-module quiet zone, black on a white tile so it reads on
+ * the dark theme too. `label` becomes the accessible name.
  */
 export function qrSvg(text, { label = "QR code", size = 180 } = {}) {
   const m = qrMatrix(text);

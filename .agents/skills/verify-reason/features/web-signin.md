@@ -109,6 +109,14 @@ connected); a stranger's number mints nothing and answers the same bytes.
   too, and an idle-expired Web session (30 days) deletes the row other pages were using. Intended.
 - `heyreason.com/web` is not proxied yet (W5): on live today the route answers only on the funnel
   address, and `REASON_WEB` is unset, so it is a 404 everywhere. Nothing to drive live.
+- **Before W5 proxies `/web/*` through Netlify** (review finding, 2026-10-26): `eventActor` trusts
+  `X-Forwarded-For` only behind Caddy's `X-Files-Domain` marker, so through Netlify every visitor
+  would share one `ip:<netlify egress>` bucket and one stranger's 5 wrong codes would lock Web
+  sign-in for everybody. W5 must either route `/web` through Caddy on `files.heyreason.com` or add
+  a trusted Netlify client-address header to `eventActor` — decide before the rewrite, not after.
+- A browser with a session row that Web no longer allows (paused account, switch back to `owner`)
+  sees the sign-in form and has no sign-out; the row stays and reopens when allowed again. The
+  browsers list in W2 is where it gets a revoke.
 - Deferred to W2+: token hashing and 24h rotation (§4.2), a browsers list with per-row revoke, the
   once-only boundary notice column (`web_notice_seen_at`; W1 shows the notice statically on the
   landing), the `(web)` hint after a Web→text switch (decision 9).

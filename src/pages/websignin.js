@@ -188,7 +188,7 @@ export function renderSignin({ number = "", sent = false, error = "", joinNumber
         + `<label for="code">The code from your texts</label><input id="code" ${codeInputAttrs({ autofocus: true })} required>`
         + `<button class="w-btn" type="submit" data-busy="Checking…">Sign in</button></form>`
         + `<form class="w-form" method="POST" action="/web/signin">${hidden}<input type="hidden" name="number" value="${esc(number)}"><button class="w-link" type="submit" data-busy="Sending…">Text it again</button></form>`
-        + `<div class="t">${p("The code works once, for 15 minutes. If none arrives, that number hasn't texted Reason yet — see below.")}</div>`
+        + `<div class="t">${p("The code works once, for 15 minutes. If none arrives, that number may not have texted Reason yet — see below.")}</div>`
       : `<form class="w-form" method="POST" action="/web/signin">${hidden}<label for="number">Your phone number</label><input id="number" name="number" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 123-4567" maxlength="24" required value="${esc(number)}">`
         + `<button class="w-btn" type="submit" data-busy="Sending code…">Text me a code</button></form>`
         + `<div class="t">${p("Reason texts the code to that number through the same line you already text it on. Nothing is shown until the code is in.")}</div>`)

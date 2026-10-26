@@ -314,5 +314,9 @@ feature file: `.agents/skills/verify-reason/features/web-signin.md`.
 - **Tests**: `test/web-signin.test.js` (18). Drive: `bin/web-drive.mjs` (cage env, FakeChannel).
   Previews: `bin/web-preview.mjs`.
 - **Deferred from §4.2 to W2+**: token hashing (`token_hash`) and 24h rotation, the browsers list
-  with per-row revoke, decision 9's `(web)` hint. CSP keeps `'unsafe-inline'` until the shell takes
-  a nonce.
+  with per-row revoke (also the only sign-out for a session row Web no longer allows), decision 9's
+  `(web)` hint. CSP keeps `'unsafe-inline'` until the shell takes a nonce.
+- **W5 must settle first**: the per-browser actor (`eventActor`) reads the client address only
+  behind Caddy's `X-Files-Domain` marker; proxied through Netlify, every Web visitor would share one
+  bucket and a stranger's wrong codes would lock everybody out. Route `/web` through Caddy or trust
+  Netlify's client-address header there — before the rewrite.
