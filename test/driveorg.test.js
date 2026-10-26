@@ -414,7 +414,7 @@ test("with a yes it waits out the undo window first, with the file's NAME in the
   assert.equal(held.undo_held, true, JSON.stringify(held));
   assert.match(held.say_exactly, /Scan 47/, "the line reads back an id instead of the name");
   assert.match(held.say_exactly, /drive bin/);
-  assert.match(held.say_exactly, /text "undo" to stop it/);
+  assert.match(held.say_exactly, /just tell me if you want to stop it/);
   assert.equal(fake.state.driveUpdates.length, 0, "NOTHING may have happened while it is held");
   assert.equal(ledger().filter(r => r.action === "drive_trash" && r.outcome === "ok").length, 0, "a receipt for something that has not happened");
 

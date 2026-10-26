@@ -244,7 +244,7 @@ config.events = "owner";
   const j = await tool("event_join", { name: "Note Test One", password: "noteone" }, C.kofi);
   await settle();
   const after = toNum(KOFI).slice(yBefore);
-  step("note: text join → welcome, then ONE note asking for Instagram once; listed by default", j.ok && after.filter(t => /who's-going list/.test(t)).length === 1 && /you're in for Note Test One/.test(after[0]) && /as Kofi .*send your handle, or skip\./.test(after.at(-1)) && events.directoryEntries(g1).some(e => e.name === "Kofi"), JSON.stringify(after));
+  step("note: text join → welcome, then ONE note asking for Instagram once; listed by default", j.ok && after.filter(t => /who's-going list/.test(t)).length === 1 && /you're in for Note Test One/.test(after[0]) && /as Kofi .*send your handle if so, no worries if not\./.test(after.at(-1)) && events.directoryEntries(g1).some(e => e.name === "Kofi"), JSON.stringify(after));
   step("links: the who's-going link left as its own bubble, in full, after the words", /:$/.test(after[0]) && !/https?:/.test(after[0]) && /^https?:\/\/\S+\/who\?t=\S+$/.test(after[1] ?? ""), JSON.stringify(after.slice(0, 2)).slice(0, 200));
   step("note: in his thread as the last thing Reason said", db.loadConversation(C.kofi).at(-1)?.content === after.at(-1), JSON.stringify(db.loadConversation(C.kofi).slice(-2)).slice(0, 300));
   const share = await tool("event_directory", { event_id: g1.id, event_named: "Note Test One", instagram: "@kofi.b" }, C.kofi);

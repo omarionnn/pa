@@ -138,7 +138,7 @@ export function requestLineForMaster(request, { updated = false } = {}) {
   return [
     `invite request #${request.id}${updated ? " (updated)" : ""}: ${who} is asking for ${n} more invite${n === 1 ? "" : "s"}.`,
     `why: "${request.explanation}"`,
-    `say "approve ${request.id}" or "decline ${request.id}".`,
+    `want to give them more? just let me know either way.`,
   ].join("\n");
 }
 
@@ -180,7 +180,7 @@ export function decide(requestId, { approve, count = null }) {
   if (!after) return { ok: false, reason: "changed" };
   const n = after.approved_count;
   const toRequester = approve
-    ? `good news — you've got ${n} more invite${n === 1 ? "" : "s"}. say "my invites" whenever you want a link.`
+    ? `good news — you've got ${n} more invite${n === 1 ? "" : "s"}. just ask whenever you want a link.`
     : `your request for more invites wasn't approved this time.`;
   return { ok: true, request: after, requester: after.conversation_id, invites_left: db.inviteAllowance(after.conversation_id), toRequester };
 }

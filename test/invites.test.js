@@ -333,7 +333,8 @@ test("a request needs a count and a reason; a second pending one updates the fir
   assert.equal(toMaster.length, 2);
   assert.match(toMaster[1], new RegExp(`invite request #${first.request_number} \\(updated\\): Kofi, \\${KOFI} is asking for 10 more invites`));
   assert.match(toMaster[1], /"my whole team at work"/);
-  assert.match(toMaster[1], new RegExp(`approve ${first.request_number}`));
+  assert.match(toMaster[1], new RegExp(`request #${first.request_number}`));
+  assert.ok(!/say "approve/.test(toMaster[1]), "no phrase to type");
   // The model can't file a request with no reason: the schema refuses it.
   const bare = await tool("invite_request_more", { count: 2 }, AMA_C, events);
   assert.notEqual(bare.ok, true);

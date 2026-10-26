@@ -223,7 +223,7 @@ export function askMaster({ request, masterConversationId, messages = [] }) {
   const toMaster = [
     ...how,
     ``,
-    `want me to set them up with their own Reason? it'd be completely separate from yours — i'd never show you their stuff, or them yours. just say yes or no.`,
+    `want me to set them up with their own Reason? it'd be completely separate from yours — i'd never show you their stuff, or them yours.`,
     ...(alsoWaiting ? [``, `(${alsoWaiting} other ${alsoWaiting === 1 ? "person is" : "people are"} waiting too — i'll ask about them after.)`] : []),
   ].join("\n");
 

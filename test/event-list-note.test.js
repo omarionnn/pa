@@ -86,7 +86,7 @@ test("text join, no Instagram yet: listed under the name Reason knows, then ONE 
   await rt.drain();
   assert.equal(rt.sent.length, 2);
   assert.match(rt.sent[0].text, /you're in for Halloween Party/, "the welcome first");
-  assert.equal(rt.sent[1].text, "you're on the who's-going list as Ama (tell me a different name anytime, or say hide me to come off it). want your instagram on the guest list too? send your handle, or skip.");
+  assert.equal(rt.sent[1].text, "you're on the who's-going list as Ama — if you'd like a different name, or would rather not be on it, just let me know. want your instagram on the guest list too? send your handle if so, no worries if not.");
   assert.deepEqual(events.directoryEntries(ev).map(e => [e.name, e.instagram]), [["Omari", null], ["Ama", null]], "listed by default");
   const thread = db.loadConversation(AMA_C);
   assert.equal(thread.at(-1).content, rt.sent[1].text, "in the thread as the last thing said, so the answer is read against it");
@@ -110,7 +110,7 @@ test("a handle shared in answer is kept on the profile and shown; the next event
   rt.sent.length = 0;
   await tool("event_join", { name: "Friendsgiving", password: "turkey" }, AMA_C, rt);
   await rt.drain();
-  assert.deepEqual(notesTo(rt, AMA_C), ["you're on the who's-going list as Ama (tell me a different name anytime, or say hide me to come off it). i'll show your instagram @ama.k on this guest list too — say hide my instagram anytime."]);
+  assert.deepEqual(notesTo(rt, AMA_C), ["you're on the who's-going list as Ama — if you'd like a different name, or would rather not be on it, just let me know. i'll show your instagram @ama.k on this guest list too; tell me anytime if you'd rather it not show."]);
   assert.equal(events.directoryEntries(ev2).find(e => e.name === "Ama").instagram, "ama.k");
 });
 
@@ -175,7 +175,7 @@ test("hide me, hide my instagram (this list), remove my instagram (everywhere); 
   rt.sent.length = 0;
   await tool("event_join", { name: "Game Night", password: "dice" }, AMA_C, rt);
   await rt.drain();
-  assert.match(notesTo(rt, AMA_C)[0], /want your instagram on the guest list too\? send your handle, or skip\./);
+  assert.match(notesTo(rt, AMA_C)[0], /want your instagram on the guest list too\? send your handle if so, no worries if not\./);
   assert.equal(events.directoryEntries(ev3).find(e => e.name === "Ama").instagram, null);
   assert.equal((await tool("event_instagram", { instagram: "javascript:x" }, AMA_C, rt)).ok, false, "handles are checked by shape (instagramHandle)");
 });
@@ -190,7 +190,7 @@ test("organizers follow the same rules on their own list: listed under their nam
   assert.match(out.say, /Don't bring up the who's-going list or Instagram/);
   const ev = db.getEventRow(out.event.event_id);
   await rt.drain();
-  assert.deepEqual(notesTo(rt, OWNER_C), ["you're on the who's-going list as Omari (tell me a different name anytime, or say hide me to come off it). i'll show your instagram @omari on this guest list too — say hide my instagram anytime."]);
+  assert.deepEqual(notesTo(rt, OWNER_C), ["you're on the who's-going list as Omari — if you'd like a different name, or would rather not be on it, just let me know. i'll show your instagram @omari on this guest list too; tell me anytime if you'd rather it not show."]);
   assert.deepEqual(events.directoryEntries(ev), [{ id: db.attendeeRow(ev.id, OWNER_C).id, name: "Omari", instagram: "omari", listed: true, organizer: true }]);
   assert.equal(events.organizerView(ev).going, 0, "never counted as a guest");
   const hid = await tool("event_directory", { event_id: ev.id, in_directory: false }, OWNER_C, rt);
@@ -210,7 +210,7 @@ test("page join by somebody already on Reason: the handle they typed is kept, an
   events.scheduleListNote({ runtime: rt, ev, att });
   await rt.drain();
   assert.equal(db.getAccount(AMA_C).instagram, "ama.k");
-  assert.deepEqual(notesTo(rt, AMA_C), ["you're on the who's-going list as Ama K, with your instagram @ama.k (tell me a different name anytime, or say hide me to come off it, or say hide my instagram)."]);
+  assert.deepEqual(notesTo(rt, AMA_C), ["you're on the who's-going list as Ama K, with your instagram @ama.k — if you'd like a different name, or would rather not be on it, just let me know, or if you'd rather your instagram not show."]);
   // Unticked "show me" on the page: their choice, so no note about a list they're not on.
   const yaw = events.admitExisting({ ev, conversationId: YAW_C, displayName: "Yaw", inDirectory: false, via: "web", actor: "test" });
   const yatt = events.afterJoin({ ev, att: yaw.attendee });
@@ -230,9 +230,9 @@ test("page join by somebody already on Reason: the handle they typed is kept, an
 test("the note is told not to come from a pattern: no code reads the reply, the tools say how the model maps it", async () => {
   const { EVENT_TOOL_DEFS } = await import("../src/eventtools.js");
   const dirTool = EVENT_TOOL_DEFS.find(t => t.name === "event_directory");
-  assert.match(dirTool.description, /hide me/);
-  assert.match(dirTool.description, /hide my Instagram/);
-  assert.match(dirTool.description, /decline or say skip, call nothing/);
+  assert.match(dirTool.description, /off the list/);
+  assert.match(dirTool.description, /Instagram off this one list/);
+  assert.match(dirTool.description, /decline or pass, call nothing/);
   assert.match(EVENT_TOOL_DEFS.find(t => t.name === "event_instagram").description, /remove their Instagram everywhere/);
 });
 
@@ -264,4 +264,18 @@ test("the page's show-me box starts ticked (listed by default, visible on the fo
   assert.equal(box(renderJoin({ ev, account: db.getAccount(AMA_C) })), true);
   assert.equal(box(renderJoin({ ev })), true, "a stranger may be somebody already on Reason on a new browser: the claim text then finds their account");
   assert.equal(box(renderJoin({ ev, account: db.getAccount(AMA_C), values: { in_directory: false } })), false, "their own untick survives a re-render");
+});
+
+test("the note never hands them a phrase to type: plain intent only, in every case (owner copy rule 2026-10-25)", () => {
+  const ev = { guest_list_visible: 1 };
+  const row = (over) => ({ state: "joined", in_directory: 1, display_name: "Ama", instagram: null, ...over });
+  const all = [events.listNoteText(ev, row(), "ask"), events.listNoteText(ev, row({ instagram: "ama.k" }), "carried"),
+    events.listNoteText(ev, row({ instagram: "ama.k" }), "shown"), events.listNoteText(ev, row({ display_name: "" }), "ask")];
+  for (const t of all) {
+    assert.ok(t);
+    assert.ok(!/\b(say|text|reply|type)\b\s+["“']?(hide|skip|stop|remove|yes|no)\b/i.test(t), t);
+    assert.ok(!/["“”]/.test(t), `no quoted phrase: ${t}`);
+    assert.ok(!/, or skip\b/.test(t), t);
+  }
+  assert.equal(events.listNoteText({ guest_list_visible: 0 }, row({ instagram: "ama.k" }), "carried"), null);
 });

@@ -701,12 +701,14 @@ export function listNoteQuiet(ev, now = clock.now()) {
 export function listNoteText(ev, att, kind) {
   if (!ev?.guest_list_visible || !att || att.state !== "joined" || !att.in_directory) return null;
   const name = cleanDisplayName(att.display_name);
-  const change = "tell me a different name anytime, or say hide me to come off it";
-  if (!name) return kind === "ask" ? "what name should show for you on the who's-going list? and want your instagram on it too? send your handle, or skip." : null;
-  if (kind === "ask") return att.instagram ? null : `you're on the who's-going list as ${name} (${change}). want your instagram on the guest list too? send your handle, or skip.`;
+  // Plain intent, never a phrase to type (owner copy rule 2026-10-25): they answer in their own
+  // words and the model reads what they meant.
+  const change = "if you'd like a different name, or would rather not be on it, just let me know";
+  if (!name) return kind === "ask" ? "what name should show for you on the who's-going list? and if you'd like your instagram on it too, send your handle — totally optional." : null;
+  if (kind === "ask") return att.instagram ? null : `you're on the who's-going list as ${name} — ${change}. want your instagram on the guest list too? send your handle if so, no worries if not.`;
   if (!att.instagram) return null;
-  if (kind === "carried") return `you're on the who's-going list as ${name} (${change}). i'll show your instagram @${att.instagram} on this guest list too — say hide my instagram anytime.`;
-  return `you're on the who's-going list as ${name}, with your instagram @${att.instagram} (${change}, or say hide my instagram).`;
+  if (kind === "carried") return `you're on the who's-going list as ${name} — ${change}. i'll show your instagram @${att.instagram} on this guest list too; tell me anytime if you'd rather it not show.`;
+  return `you're on the who's-going list as ${name}, with your instagram @${att.instagram} — ${change}, or if you'd rather your instagram not show.`;
 }
 
 /**

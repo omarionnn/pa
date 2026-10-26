@@ -79,7 +79,7 @@ export function jobBlocks(job, events = [], { options = [] } = {}) {
       });
       blocks.push({
         type: "text",
-        text: `Answer in your messages, not here. I'll have texted you the same words — reply yes or no to that text`
+        text: `Answer in your messages, not here. I'll have texted you the same words — just answer that text`
           + ` and nothing happens until you do. A button on a web page isn't your answer, so there isn't one.`,
       });
     } else {

@@ -150,7 +150,7 @@ export const EVENT_TOOL_DEFS = [
   },
   {
     name: "event_directory",
-    description: "Their own entry on ONE event's who's-going list (guests, and an organizer on their own event's list): whether they appear on it, the name shown, and their Instagram (shown as a tappable link). Use when they want to show up on or come off the list (\"hide me\" → in_directory false), share their Instagram (also when they answer Reason's question about it with a handle — a handle given here is kept for future events too), hide it from this one list (\"hide my Instagram\" → remove_instagram), or change the name guests see. If they decline or say skip, call nothing. Only set what they asked for. Phone numbers are never shown.",
+    description: "Their own entry on ONE event's who's-going list (guests, and an organizer on their own event's list): whether they appear on it, the name shown, and their Instagram (shown as a tappable link). Use when, in any words, they want on or off the list (off the list → in_directory false), share their Instagram (also when they answer Reason's question about it with a handle — a handle given here is kept for future events too), want their Instagram off this one list (remove_instagram), or want a different name shown. If they decline or pass, call nothing. When you tell them what they can change, describe it plainly; never give them words to type. Only set what they asked for. Phone numbers are never shown.",
     input_schema: {
       type: "object",
       properties: {

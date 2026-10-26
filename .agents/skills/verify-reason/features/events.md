@@ -272,7 +272,7 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   off it, the ask is moot, or 12h past the start. Guest list off → never owed, never mentioned. The
   organizer gets the same note on `event_create` and is listed first (`db.organizerListing`,
   "(organizing)" on the page) — never counted (`going` stays guest-only). The answer is the model's:
-  `event_directory` (handle → also saved to the profile; "hide me", "hide my instagram" for one
+  `event_directory` (handle → also saved to the profile; off the list or Instagram off one
   list; organizers allowed on their own row) and `event_instagram` (remove / change everywhere).
   Pinned: `test/event-list-note.test.js`; drive: the `note:` steps in `bin/events-drive.mjs`.
   New users from a claim get their typed handle kept but no note (their welcome flow is its own).

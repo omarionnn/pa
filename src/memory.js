@@ -375,8 +375,8 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
     blocks.push({
       type: "text",
       text: `These are the only numbers I have, and they are the only ones I will ever say back to you — I do not`
-        + ` estimate one and I do not work one out. If a time does not suit any more, just say the new one`
-        + ` ("make leg day 8") and I change it and keep everything above. "Drop leg day" and I stop, and I will not`
+        + ` estimate one and I do not work one out. If a time does not suit any more, just tell me the new one`
+        + ` and I change it and keep everything above. Tell me to drop one and I stop, and I will not`
         + ` bring it up again. If a number is wrong, tell me what it really was.`,
     });
   }
@@ -411,17 +411,17 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
   blocks.push({ type: "text", text: patternsLine(got.initiative) });
   blocks.push({
     type: "text",
-    text: `You can change that any time — "stop texting me unless I ask", "once in the evening", "back to normal", or`
-      + ` "not today" for a day off. None of it lets me spend anything or send anything on my own.`,
+    text: `You can change that any time — less often, only when you ask, once in the evening, back to normal, or a day`
+      + ` off — just tell me. None of it lets me spend anything or send anything on my own.`,
   });
 
   blocks.push({
     type: "callout",
     tone: "note",
     title: "All of it is yours",
-    text: `Every line above has a number on it, ${ownerName}. Text me "#12 is wrong, it's actually…" and I change that one`
+    text: `Every line above has a number on it, ${ownerName}. Tell me one is wrong and what it really is, and I change that one`
       + ` line and nothing else — and I stop saying the old version anywhere, including in anything I already said.`
-      + ` "Forget #12" deletes it. Taking back something I may do without asking needs nothing more than you saying so.`,
+      + ` Tell me to forget one and it's gone. Taking back something I may do without asking needs nothing more than you saying so.`,
   });
 
   return blocks;
@@ -464,8 +464,8 @@ export function answerNote(got, { hasPage = false } = {}) {
   if (got.counts.commitments) {
     bits.push(`What they do on a schedule goes in with the things they told you, and so do the numbers under it — those`
       + ` are off real logs and are the only ones you may say. Never add one up, average one or round one, and never`
-      + ` count their missed ones back at them. A schedule is changed by them just saying the new time and stopped by`
-      + ` them saying stop; say that once rather than naming a tool.`);
+      + ` count their missed ones back at them. A schedule is changed by them just saying the new time and stopped`
+      + ` whenever they ask; say that once, in plain words, rather than naming a tool.`);
   }
   bits.push(`Say each line in plain words — "your sister's name is Ama", not "i know about your sister" — and never type a`
     + ` row's number into the text: "#640" reads as a database id to them. The numbers are on the page, beside each line.`

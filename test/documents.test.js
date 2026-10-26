@@ -446,7 +446,7 @@ test("a document to somebody else waits out the undo window, like a text", async
   assert.equal(held.undo_held, true, JSON.stringify(held));
   assert.equal(fake.sent.length, 0, "nothing has gone yet");
   assert.match(held.say_exactly, /The deck/, "the line names the document that is about to leave");
-  assert.match(held.say_exactly, /undo/);
+  assert.match(held.say_exactly, /tell me if you want to stop it/);
 });
 
 test("a person Reason may write to but never send to gets a draft, not a file", async () => {

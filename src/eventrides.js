@@ -393,9 +393,9 @@ export async function suggest({ runtime, ev, actor = null, now = clock.now() }) 
     const ig = (x) => (x.instagram ? ` (@${x.instagram} on instagram)` : "");
     const trip = rider.round_trip ? "there and back" : "there";
     await tell({ runtime, ev, conversationId: driver.conversation_id, actor,
-      body: `${ev.name} — ride match: ${r.first}${ig(r)} needs a ride ${trip} from around ${r.area}, leaving about ${timeLine(ev, rider.leave_at)}. you're driving from ${d.area} — want me to pair you? (yes or no; nothing's set until you both say yes)` });
+      body: `${ev.name} — ride match: ${r.first}${ig(r)} needs a ride ${trip} from around ${r.area}, leaving about ${timeLine(ev, rider.leave_at)}. you're driving from ${d.area} — want me to pair you? nothing's set until you're both in.` });
     await tell({ runtime, ev, conversationId: rider.conversation_id, actor,
-      body: `${ev.name} — ride match: ${d.first}${ig(d)} is driving from around ${d.area}, leaving about ${timeLine(ev, driver.leave_at)}. want me to pair you? (yes or no; nothing's set until you both say yes)` });
+      body: `${ev.name} — ride match: ${d.first}${ig(d)} is driving from around ${d.area}, leaving about ${timeLine(ev, driver.leave_at)}. want me to pair you? nothing's set until you're both in.` });
   }
   return made;
 }
