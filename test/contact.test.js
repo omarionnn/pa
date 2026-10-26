@@ -9,6 +9,7 @@
 //   does "yes" send the welcome and then the card, once?                        (router + access)
 //   does the startup pass reach everybody who already had an account, once?    (backfill)
 //   can the picture be fetched by whoever may see the page, and nobody else?    (cardRequest)
+import { createHash } from "node:crypto";
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -107,9 +108,10 @@ test("no number, no card: a contact nobody can save against the thread is not ma
 
 test("the card is served at its hashed address (and the old /reason.vcf) from the live line, and not without one", () => {
   const { router } = harness();
-  const hashed = new URL(contactCardUrl()).pathname;
+  const hashed = new URL(contactCardUrl({ router, channel: "fake" })).pathname;
   assert.match(hashed, /^\/reason-[0-9a-f]{8}\.vcf$/);
   const res = assetRequest({ pathname: hashed, router });
+  assert.equal(hashed, `/reason-${createHash("sha256").update(res.body).digest("hex").slice(0, 8)}.vcf`, "the address is the served card's own hash");
   assert.equal(assetRequest({ pathname: CONTACT_PATH, router }).body, res.body, "the old address is an alias");
   assert.doesNotMatch(res.headers["Cache-Control"], /max-age=[1-9]/, "no long cache on the card");
   assert.match(res.body, /\r\nREV:\d{4}-\d\d-\d\dT[\d:]+Z\r\n/, "the card says when it was revised");

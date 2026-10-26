@@ -38,7 +38,7 @@
 // page answered 404 while a private one answered 401, and that sorted guessed links into real and
 // imaginary. Keep any new page route on the same footing.
 import { createServer as nodeCreateServer } from "node:http";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import * as accounts from "./accounts.js";
 import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderPasswordGate, renderNotFound } from "./pages/render.js";
@@ -601,8 +601,12 @@ export function assetRequest({ pathname, router = null }) {
     return { status: 200, headers: { "Content-Type": "image/svg+xml", "Content-Length": bytes.length, "Cache-Control": "public, max-age=86400" }, body: bytes };
   }
   if (isContactPath(pathname)) {
-    const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
-    const card = live ? vcard({ number: lineNumber(router, live.name), callNumber: config.elevenPhoneNumber }) : null;
+    // With two live lines, the card whose hash is in the address (a Linq person's card carries the
+    // Linq number); an old hash or /reason.vcf gets the first live line's.
+    const cards = (router?.list?.() ?? []).filter(ch => ch.name !== "console" && ch.status?.().status === "live")
+      .map(ch => vcard({ number: lineNumber(router, ch.name), callNumber: config.elevenPhoneNumber })).filter(Boolean);
+    const want = /^\/reason-([0-9a-f]{8})\.vcf$/.exec(pathname)?.[1];
+    const card = cards.find(c => createHash("sha256").update(c).digest("hex").slice(0, 8) === want) ?? cards[0] ?? null;
     if (!card) return { status: 404, headers: HTML(), body: renderNotFound() };
     return {
       status: 200,
