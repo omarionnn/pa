@@ -42,7 +42,7 @@ import { startRun as researchStart, step as researchStep, view as researchView, 
 import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
 import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } from "./parallel.js";
 import { videoUnderstand, videoCapability } from "./video.js";
-import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "./calls/provider.js";
+import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
 import { recordingNoteFor } from "./calls/inbound.js";
 import { checkCallForPaymentDetails } from "./calls/payments.js";
 import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./calls/brief.js";
@@ -1071,9 +1071,12 @@ function localPurchaseAnswer(row, who, me) {
   const amount = row.amount_cents ? trust.money(row.amount_cents) : "";
   const reconnect = ["connection_expired", "no_card", "not_enrolled", "needs_verification", "connect_failed"].includes(who.blocked);
   const what = `${row.what || "the order"}${row.merchant ? ` from ${row.merchant}` : ""}${amount ? ` (${amount})` : ""}`;
+  const pw = placementHistory(row);
   const lead = cancelled
     ? `Reason's record: ${what} was CANCELLED — ${why.given ? `reason: ${why.words}` : "no reason given"}. Nothing is coming.` + cancelNote(why)
-    : `Reason's record: ${what} — status '${row.status}'${row.decline_code ? ` (${row.decline_code})` : ""}${row.order_id ? `, order ${row.order_id}` : ""}. Say that as what Reason last knew, not as a fresh read.`;
+    : `Reason's record: ${what} — status '${row.status}'${row.decline_code ? ` (${row.decline_code})` : ""}${row.order_id ? `, order ${row.order_id}` : ""}.`
+      + (pw ? ` ${row.merchant || "The store"} refused to place it after the approval${pw.times > 1 ? `, ${pw.times} times` : ""} — ${pw.words} (${pw.given}); nothing was charged, and the approval itself went through — the store is what refused.` : "")
+      + ` Say that as what Reason last knew, not as a fresh read.`;
   const footnote = reconnect
     ? ` Only as a side note, after the answer: a live re-check with AgentCard needs ${me.name}'s card reconnected (vault_enroll gives the link) — offer it, don't lead with it.`
     : who.blocked === "not_configured"
@@ -1085,6 +1088,7 @@ function localPurchaseAnswer(row, who, me) {
     amount: amount || undefined,
     ...(cancelled ? { cancelled: true, placed: false, reason: why.words, cancel_reason: why.code || undefined } : {}),
     ...(row.decline_code ? { decline_code: row.decline_code } : {}),
+    ...(pw ? { store_rejected: true, placement_failures: pw.times, placement_fail_code: pw.code || undefined, placement_fail_reason: pw.reason || undefined } : {}),
     note: lead + footnote,
   };
 }
@@ -1315,6 +1319,74 @@ function purchaseAskLine(c, row) {
     total, url,
     record: { merchant: row.merchant, items, total, total_label: "AgentCard's all-in total", address: where || null, delivery_estimate: offer?.shipping_time || null, source_url: url || null, fetched_at: new Date(Number(row.updated_at)).toISOString() },
   };
+}
+
+/**
+ * The numbers an approval text has to carry, in one line: AgentCard's estimated total AND the most
+ * the card may be held for, which is the figure AgentCard's own approval card shows. On 2026-10-26
+ * the owner saw $16.78 in Reason's approval texts and $26.14 on AgentCard's card, and was surprised;
+ * the cart line had said it once, the approval texts never. Read off the cart on the row, never
+ * retyped; with no ceiling on the cart, the total alone.
+ */
+function holdLineFor(row, cents) {
+  let cart = null;
+  try { cart = row?.cart_json ? JSON.parse(row.cart_json) : null; } catch { cart = null; }
+  const total = trust.money(cents);
+  const ceilingCents = Number(cart?.ceiling_cents) || 0;
+  const ceiling = ceilingCents > cents ? trust.money(ceilingCents) : "";
+  const est = cart?.total_is_estimate ? " (an estimate: the shop prices tax and delivery at checkout)" : "";
+  return {
+    total, ceiling: ceiling || undefined,
+    line: ceiling
+      ? `total ${total}${est}, and the card may be held for up to ${ceiling} until the store settles — the same figure AgentCard's approval card shows`
+      : `total ${total}${est}`,
+  };
+}
+
+/**
+ * Why the store refused to place this cart after the approval, in words, off the row (src/agentcard.js
+ * placementFailureWords) — plus the code and the store's line as given, for the final message.
+ */
+function placementWhy(row) {
+  const code = row?.placement_fail_code || "";
+  const reason = row?.placement_fail_reason || "";
+  return {
+    code, reason, times: Number(row?.placement_failures) || 0,
+    words: agentcard.placementFailureWords({ code, reason }),
+    given: `AgentCard's code: ${code || "none"}${reason ? `; its words: ${reason}` : "; no reason given"}`,
+  };
+}
+
+/**
+ * The store refused to place this cart twice, each time after the person approved the payment.
+ * The cart is done: a third approval would almost certainly end the same way, and asking for one
+ * is how somebody taps Face ID three times for nothing. Marks the row failed with the placement
+ * code, sends nothing, and tells the model what to say — and that trying later is a NEW purchase.
+ */
+function placementGaveUp(buyConversationId, row, me) {
+  const why = placementWhy(row);
+  const flight = row.kind === "flight";
+  const who = flight ? "the airline side" : (row.merchant || "the store");
+  // A row already ended for another reason (an expired approval, a decline) keeps that reason; a
+  // waiting row's stale code, if any, is not this cart's story.
+  const ended = row.status === "failed" || row.status === "declined";
+  db.markAgentcardPurchase(buyConversationId, { status: "failed", declineCode: (ended && row.decline_code) || why.code || "place" });
+  return {
+    ok: false, blocked: "store_rejected_twice", store_rejected: true,
+    placement_failures: why.times || 2, placement_fail_code: why.code || undefined, placement_fail_reason: why.reason || undefined,
+    cart_line: `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(Number(row.amount_cents) || 0)})`,
+    error: `Not ${flight ? "booked" : "bought"}, and not sent again — ${why.words}, twice: each time ${me.name} approved the payment, ${who} refused to place the order (${why.given}). Nothing was charged, and any hold on the card drops off on its own.`
+      + ` Tell them plainly: ${who} turned it down twice after their approval — never that an approval didn't count — nothing was charged, and it is worth checking ${flight ? "the travelers' details and the flight itself" : "the delivery address and the item, since an address the store can't use is the usual cause"}.`
+      + ` Do not offer a third try on this cart. If they would rather try again later, that is a NEW ${flight ? "booking (flight_book, a fresh quote, a new yes)" : "purchase (purchase, a fresh cart, a new yes)"}, and only if they want it.`,
+  };
+}
+
+/** Not placed, not cancelled: the states in which "the store refused to place it" is still the story. */
+const PLACEMENT_HISTORY_STATES = new Set(["awaiting_approval", "failed", "declined", "outcome_unknown"]);
+
+/** The row's placement refusals, when they are the story — never on an order that was then placed. */
+function placementHistory(row) {
+  return Number(row?.placement_failures) > 0 && PLACEMENT_HISTORY_STATES.has(String(row.status)) ? placementWhy(row) : null;
 }
 
 /** The closest standing permission and why it does not reach, for a refusal the model has to say. */
@@ -3033,12 +3105,15 @@ export const tools = [
   {
     name: "timer_set",
     description: "Schedule Reason to come back to this conversation at a real time with a note to itself (e.g. 'day-of reminder for plan 3', 'ask how dinner was'). When it fires you get an event message and decide what to say. Returns the timer id and the resolved time."
-      + " Pass `repeat` for anything STANDING — \"check in with me every monday about the job search\", \"remind me every day at 7 to work out\", \"every weekday morning ask what's on\", \"every two weeks ask if i've invoiced\". That makes one series that keeps coming back until they stop it, and `fire_at` is not needed: the rule decides when. One series, not a timer you re-set each time.",
+      + " Pass `repeat` for anything STANDING — \"check in with me every monday about the job search\", \"remind me every day at 7 to work out\", \"every weekday morning ask what's on\", \"every two weeks ask if i've invoiced\". That makes one series that keeps coming back until they stop it, and `fire_at` is not needed: the rule decides when. One series, not a timer you re-set each time."
+      + " Pass `then_call` when they asked to be CALLED, woken or rung at the time — \"call me at 7 tomorrow\", \"wake me up at 6:30 with a call\", \"ring me in 20 minutes so i actually leave\". Then the firing rings their own phone instead of texting, and opens with the words you give. A plain \"remind me\" is a text, never a call. Works with `repeat` too (\"call me every weekday at 7\").",
     input_schema: {
       type: "object",
       properties: {
         fire_at: { type: "string", description: "ISO 8601 datetime with offset, e.g. 2026-09-26T18:00:00-04:00. Required for a one-off; leave it out when you pass `repeat`." },
         note: { type: "string", description: "What future-Reason should do when this fires. With `repeat` this is what the check-ins are ABOUT, in your own words ('how the job search is going'), because it is what you will be shown every time it comes round." },
+        then_call: { type: "string", description: "Only when they asked for a CALL at this time. Why you are ringing, as the first words of the call, said to them: 'you asked me to call at 7 to get you up', 'you wanted a nudge to leave for the airport'. The call opens with exactly this after their name, and the rest of the call is you as usual. Nothing is texted first; if the call cannot be placed or they do not pick up, one text says so. Never a third party: this always rings the person you are talking to." },
+        their_time: { type: "boolean", description: "For a one-off `then_call`: false ONLY when you picked the time yourself. Then a time in their night (23:00-08:00) is moved to 8am. When they named it — a 6:30 wake-up — leave this out or pass true: it rings at 6:30." },
         plan_id: { type: "integer", description: "Plan this timer belongs to, if any" },
         task_id: { type: "integer", description: "The job this belongs to, if it belongs to one. Name it: it is how \"never mind, forget the trip\" finds this and stops it, instead of leaving it running after the job is called off." },
         repeat: {
@@ -6393,6 +6468,7 @@ const S = {
   timer_set: z.object({
     fire_at: z.string().optional(), note: z.string().min(1).max(500),
     plan_id: z.number().int().optional(), task_id: z.number().int().optional(),
+    then_call: z.string().max(300).optional(), their_time: z.boolean().optional(),
     repeat: z.object({
       kind: z.string().max(40),
       hour: z.number(),
@@ -7392,6 +7468,9 @@ function timerView(t) {
   return t && {
     id: t.id, fires_at: stamp(t.fire_at), fire_at_iso: new Date(t.fire_at).toISOString(),
     note: t.note, plan_id: t.plan_id,
+    // A timer that rings them rather than texting: what the call will open with. Said here so
+    // "never mind the call" finds the right timer, and so the list never shows a call as a text.
+    ...(t.call_goal ? { calls_them: t.call_goal } : {}),
     // Which standing check-in this firing is one of, when it is one. Said here so "cancel that
     // reminder" on a series timer can be answered as what it is: one occurrence, not the whole thing.
     ...(t.series_id ? { series_id: t.series_id, standing: true } : {}),
@@ -7745,7 +7824,43 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
   // Whether there is audio is now a settled fact. Save it once, here, and write down which it is —
   // a file, or a reason there is not one.
   if (r.recording_state === "pending") r = await fileRecording(conversationId, r, live, ctx);
+  // A scheduled call ("call me at 7") that reached nobody is owed one text saying it tried. Here,
+  // because this is the one place every settle path comes through; queued rather than sent,
+  // because none of those paths is guaranteed to hold a runtime (the lost-calls sweep does not).
+  if (r.timer_id && r.is_owner) queueMissedScheduledCall(conversationId, r, ctx.log ?? (() => {}));
   return r;
+}
+
+/**
+ * The one text a scheduled call that nobody answered is owed, queued once.
+ *
+ * Code's words, not the model's: the point of the call was to reach them at a time, so what they get
+ * is what the call would have said, as a text, and the fact that the phone was tried. A call that
+ * reached their voicemail counts as not reaching them — a wake-up call that woke the answering
+ * machine woke nobody. A call that was never placed never gets here: `call_place` reports that to
+ * the runtime, which texts the reason at once (src/runtime.js _placeTimerCall).
+ */
+export function queueMissedScheduledCall(conversationId, row, log = () => {}) {
+  if (LIVE_STATES.includes(row.state)) return { queued: false, why: "still going" };
+  const reached = SPOKE_TO_SOMETHING.includes(row.state) && row.state !== "voicemail";
+  if (reached) return { queued: false, why: "they picked up" };
+  const who = db.getAccount(conversationId);
+  const address = who?.address && who.address !== "console" ? who.address : "";
+  const channel = who?.channel && who.channel !== "console" ? who.channel : "";
+  if (!address || !channel) return { queued: false, why: "no texting channel on this conversation" };
+  if (!db.markMissedCallTold(row.id)) return { queued: false, why: "already told" };
+  const how = row.state === "voicemail" ? "it went to voicemail"
+    : row.state === "busy" ? "the line was busy"
+      : ["no_answer", "declined"].includes(row.state) ? "you didn't pick up"
+        : "the call didn't connect";
+  const { row: queued } = db.enqueueOutbound({
+    idemKey: `timer:${row.timer_id}:call_missed`,
+    conversationId, channel, address,
+    body: `tried calling u just now — ${String(row.goal ?? "").trim().replace(/[.!?]+$/, "")} — but ${how}. so this is the text instead.`,
+    toOwner: true, maxAttempts: config.outboxMaxAttempts,
+  });
+  log({ scheduled_call_missed: row.id, timer: row.timer_id, state: row.state, outbox: queued.id });
+  return { queued: true, outbox: queued.id };
 }
 
 /**
@@ -7880,6 +7995,9 @@ export async function settleLostCalls({ now = clock.now(), calls = null, log = (
     });
     out.unknown++;
     log({ call_lost: row.id, since: row.created_at, why, ended_at: settled.ended_at });
+    // A scheduled call that was never heard from again is still a wake-up that did not reach them:
+    // the one "tried to call u" text goes out here too, never silence (claimed once, as in settleCall).
+    if (settled?.timer_id && settled.is_owner) queueMissedScheduledCall(row.conversation_id, settled, log);
   }
   return out;
 }
@@ -8876,27 +8994,63 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
     case "plan_done": return db.setPlanStatus(c, input.plan_id, "done");
     case "timer_set": {
+      // A timer that ends in a phone call rather than a text ("call me at 7"). Refused NOW when
+      // nothing on this install can ring a phone, or there is no number to ring, rather than at
+      // 7am: the person is told at the moment they ask, while they can still take a text instead.
+      // Who it rings is never a choice — the person in this conversation, through the same
+      // `call_place` path and the same caps a call asked for by text goes through (src/runtime.js).
+      const callGoal = String(input.then_call ?? "").trim() || null;
+      if (callGoal) {
+        const st = ctx.calls?.status?.();
+        if (!ctx.calls || st?.status !== "live") {
+          return {
+            ok: false, status: "not_connected",
+            error: `No phone provider is wired up${st?.missing?.length ? ` (no ${st.missing.join(", ")})` : ""}, so Reason cannot ring anyone at that time. Say that plainly and offer a text at that time instead — set that only if they want it.`,
+          };
+        }
+        if (!me.address || me.address === "console") {
+          return { ok: false, error: `There is no phone number on file for ${me.name}, so there is nobody to ring. Say so and offer a text instead.` };
+        }
+        const pay = checkCallForPaymentDetails({ goal: callGoal, facts: [] });
+        if (!pay.ok) return { ok: false, status: "payment_details_refused", found: pay.found, error: pay.error };
+      }
       // A standing check-in rather than a one-off. The rule decides when, so `fire_at` is neither
       // needed nor read, and the first firing is made in the same call. See src/series.js.
       if (input.repeat) {
-        const started = series.start({ conversationId: c, what: input.note, repeat: input.repeat });
+        const started = series.start({ conversationId: c, what: input.note, repeat: input.repeat, callGoal });
         trust.ledgerWrite({ conversationId: c, action: "series_set", input, out: started, target: String(input.note).slice(0, 120) });
         if (!started.ok) return started;
         return {
           ok: true, series: started.series, first: started.first, timer_id: started.timer_id,
-          say_back: `Say the schedule back to them ONCE, in their words, with what it is about: "${started.series.schedule}, i'll ask ${started.series.what}". Then leave it — no list, no explanation of how it works.`,
+          say_back: callGoal
+            ? `Say the schedule back to them ONCE, in their words, as a call: "${started.series.schedule}, i'll ring you". Then leave it — no list, no explanation of how it works.`
+            : `Say the schedule back to them ONCE, in their words, with what it is about: "${started.series.schedule}, i'll ask ${started.series.what}". Then leave it — no list, no explanation of how it works.`,
         };
       }
       if (!input.fire_at) return { ok: false, error: "A one-off timer needs fire_at (ISO 8601 with an offset). For something standing, pass `repeat` instead." };
-      const fireAt = Date.parse(input.fire_at);
+      let fireAt = Date.parse(input.fire_at);
       if (Number.isNaN(fireAt)) return { ok: false, error: `Could not parse fire_at '${input.fire_at}'. Use ISO 8601 with an offset.` };
       if (fireAt <= clock.now()) return { ok: false, error: `That time (${stamp(fireAt)}) is already in the past. Now is ${stamp()}.` };
       if (input.plan_id && !db.getPlan(c, input.plan_id)) return { ok: false, error: `No plan #${input.plan_id}` };
+      // Quiet hours apply to a call only when Reason picked the hour. A wake-up call THEY set for
+      // 6:30 rings at 6:30 — that is the whole point of it — so the move happens only on an
+      // explicit `their_time: false`, never by default: the failure the default guards against is
+      // a 6:30 wake-up quietly rung at 8 because a flag was forgotten.
+      let moved = null;
+      if (callGoal && input.their_time === false) {
+        const at = series.outOfQuiet(fireAt, { their_time: false }, series.tzFor(c));
+        if (at !== fireAt) { moved = { from: stamp(fireAt), to: stamp(at) }; fireAt = at; }
+      }
       // Which job this reminder belongs to, written down now so "forget the trip" can find it
       // later by looking rather than by remembering. See src/letgo.js.
       const onTask = taskFromInput(c, input, ctx);
       if (onTask.error) return onTask;
-      return { ok: true, timer: timerView(db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null, taskId: onTask.id })) };
+      const made = db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null, taskId: onTask.id, callGoal });
+      return {
+        ok: true, timer: timerView(made),
+        ...(callGoal ? { say_back: `Say back in ONE line that you'll ring them at ${stamp(fireAt)}. Nothing about how it works.` } : {}),
+        ...(moved ? { moved, note: `That hour was in their night and you picked it, so it was moved to ${moved.to}. Say the time you will actually ring.` } : {}),
+      };
     }
     case "timer_list": return { timers: db.listTimers(c).map(timerView) };
     case "timer_cancel": {
@@ -10399,7 +10553,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // the provider refuses a call that arrives without either. A call to the owner is the one
       // exception: it opens with a greeting, not a disclosure at the person who set this up — they
       // are told about the recording once, by text, below.
-      const announcement = announcementFor({ ownerName: me.name, toOwner });
+      // A scheduled call (the runtime placing a "call me at 7" timer, src/runtime.js) opens with
+      // why it is ringing, so the first words are not a bare "what's up" at 6:30 in the morning.
+      const scheduled = Number.isInteger(ctx.scheduledTimerId) ? ctx.scheduledTimerId : null;
+      let announcement = announcementFor({ ownerName: me.name, toOwner, because: toOwner && scheduled ? input.goal : "" });
+      // The goal is the model's words, and the provider refuses an owner greeting that reads like
+      // the stranger line ("...a call for the airport" trips "call for"). The plain greeting then,
+      // and the voice turn still knows why it rang (scheduledCallNote in src/calls/voice.js).
+      if (toOwner && scheduled && !requireAnnouncement({ announcement, ownerName: me.name, toOwner }).ok) {
+        announcement = announcementFor({ ownerName: me.name, toOwner });
+      }
       const rules = callRulesFor({ ownerName: me.name });
 
       // Not at half eleven at night, unless it is their own phone. Refused out loud rather than
@@ -10476,7 +10639,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const row = db.createCall(c, {
         provider: st.name, toNumber: to, isOwner: toOwner,
         goal: brief.goal, facts: input.facts ?? [], confirmationId: ctx.confirmationId ?? null,
-        announcement, taskId: onCallTask.id,
+        announcement, taskId: onCallTask.id, timerId: scheduled,
       });
       // The brief on the row, so the voice turn an hour from now is held to what was approved then
       // rather than to a default, and so a safe-recovery call can be built from the original.
@@ -11897,6 +12060,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
+      // The store has already refused to place this cart twice, each time after an approval. It is
+      // not sent a third time (2026-10-26: Target, `order.failed code=place` after both Face IDs).
+      if ((row.status === "awaiting_approval" || row.status === "failed") && (Number(row.placement_failures) || 0) >= 2) {
+        return placementGaveUp(input.conversation_id, row, me);
+      }
+
       // A flight carries more than a cart: who flies, how fresh the price is, and whether the total is
       // final. Every one of those is checked here, before anything is sent (src/flightbook.js).
       const flightRefusal = flightConfirmRefusal(c, row);
@@ -12040,30 +12209,63 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // make a person who did exactly what they were asked be asked all over again.
       if (out.status === "needs_approval" || (out.status === "declined" && (out.decline_code === "vault_approval_required" || out.decline_code === "byoc_approval_required"))) {
         const expiresMs = Date.parse(out.approval_expires_at || "");
+        // The row as it stands NOW, not as it was read at the top: the order.failed that follows an
+        // approval lands on it between the two (2026-10-26, 2 s after each Face ID).
+        const fresh = db.getAgentcardPurchase(input.conversation_id) ?? row;
+        const newAuth = !!out.authorization_id && !!fresh.authorization_id && out.authorization_id !== fresh.authorization_id;
+        // A pause AFTER an approval, with a new authorization, means the approval was consumed and
+        // no order came of it: the store refused to place it. The webhook usually says so first
+        // (placement_failures); the consumed approval says so on its own if the event is late.
+        const consumed = fresh.authorization_state === "approved" && newAuth;
+        const failures = Number(fresh.placement_failures) || 0;
+        const rejected = failures > 0 || consumed;
+        if (rejected && failures >= 2) return placementGaveUp(input.conversation_id, fresh, me);
         db.markAgentcardPurchase(input.conversation_id, {
           status: "awaiting_approval", chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null, authorizationId: out.authorization_id || undefined,
+          // The old approval is spent; the new link is unapproved until its own event says otherwise.
+          ...(newAuth ? { authorizationState: "" } : {}),
           ...(Number.isFinite(expiresMs) ? { approvalExpiresAt: expiresMs } : {}),
           ...(row.kind === "flight" ? { ticketingState: "approval_pending" } : {}),
         });
+        // Every approval text — the first and every re-ask — carries the total AND the hold ceiling,
+        // the two numbers AgentCard's approval card shows (2026-10-26: $16.78 in the texts, $26.14 on
+        // the card, and the owner was surprised).
+        const hold = holdLineFor(row, cents);
+        const sameAgain = `call purchase_confirm again with the SAME confirmation_id (${ctx.confirmationId ?? "the one you have"}), the same conversation_id and the same cart_hash. Do not ask them for another yes, and do not say it is bought until that call comes back with an order.`;
         if (row.kind === "flight") {
           return {
             ok: false, blocked: "vault_approval_required",
-            approval_url: out.approval_url, cart_line: line, amount: trust.money(cents),
+            approval_url: out.approval_url, cart_line: line, amount: trust.money(cents), hold: hold.line, hold_ceiling: hold.ceiling,
             approval_expires_at: out.approval_expires_at || undefined,
-            error: `Nothing has been charged and nothing is booked — AgentCard wants ${me.name} to approve the payment on their own device.`
-              + ` Send the approval link as its OWN message — the link alone, nothing before it, nothing after it, no punctuation touching it — and say in a separate message that it opens AgentCard's page showing the merchant and the amount (${trust.money(cents)}), approved with their passkey: Face ID or Touch ID on iPhone, face or fingerprint unlock on Android, or their master password.`
+            ...(rejected ? { store_rejected: true, placement_failures: failures, placement_fail_code: fresh.placement_fail_code || undefined, placement_fail_reason: fresh.placement_fail_reason || undefined } : {}),
+            error: (rejected
+              ? `Not booked — ${placementWhy(fresh).words} after ${me.name} approved the payment (${placementWhy(fresh).given}). Nothing was charged. That attempt used up the approval, so AgentCard needs a fresh one to try again. Tell them exactly that — the airline side refused it, never that their approval didn't count — and that nothing was charged. Then the link below.`
+              : `Nothing has been charged and nothing is booked — AgentCard wants ${me.name} to approve the payment on their own device.`)
+              + ` Send the approval link as its OWN message — the link alone, nothing before it, nothing after it, no punctuation touching it — and say in a separate message that it opens AgentCard's page showing the merchant and the numbers (${hold.line}), approved with their passkey: Face ID or Touch ID on iPhone, face or fingerprint unlock on Android, or their master password.`
               + ` ${out.approval_expires_at ? `It stops working at ${stamp(Date.parse(out.approval_expires_at))}.` : "It stops working after about 15 minutes."} An expired approval means a fresh price and a new approval, never a retry.`
               + ` Link: ${out.approval_url}`
-              + ` Once they approve, call purchase_confirm again with the SAME confirmation_id (${ctx.confirmationId ?? "the one you have"}), conversation_id and cart_hash. An approval is not a booking, and a booking is not a ticket.`,
+              + ` Once they approve, ${sameAgain} An approval is not a booking, and a booking is not a ticket.`,
+          };
+        }
+        if (rejected) {
+          const why = placementWhy(fresh);
+          return {
+            ok: false, blocked: "vault_approval_required", store_rejected: true,
+            approval_url: out.approval_url, cart_line: line, amount: trust.money(cents), hold: hold.line, hold_ceiling: hold.ceiling,
+            placement_failures: failures, placement_fail_code: why.code || undefined, placement_fail_reason: why.reason || undefined,
+            error: `Not placed — ${why.words} after ${me.name} approved the payment (${failures ? why.given : "AgentCard gave no code for it yet"}). Nothing was charged, and if the card shows a hold for it, that drops off on its own.`
+              + ` That attempt used up the approval, so AgentCard needs a fresh one before it can try the store again.`
+              + ` Tell them exactly that, in plain words: ${row.merchant || "the store"} rejected the order${why.reason ? `, and why` : ""} — never that their approval didn't count, failed or was missed; it went through.`
+              + ` Then the numbers again in one short line (${hold.line}), then this link on its own line, as the last thing in the message, untouched: ${out.approval_url}`
+              + ` Once they approve, ${sameAgain} If the store refuses it again, that is the end of this cart — the next confirm stops and says so.`,
           };
         }
         return {
           ok: false, blocked: "vault_approval_required",
-          approval_url: out.approval_url, cart_line: line, amount: trust.money(cents),
+          approval_url: out.approval_url, cart_line: line, amount: trust.money(cents), hold: hold.line, hold_ceiling: hold.ceiling,
           error: `Nothing has been charged yet — AgentCard wants ${me.name} to approve the payment on their own phone.`
-            + ` Send them this link on its own line, as the last thing in the message, untouched: ${out.approval_url}`
-            + ` They tap it, approve with Face ID or Touch ID, and then you call purchase_confirm again with the SAME confirmation_id (${ctx.confirmationId ?? "the one you have"}),`
-            + ` the same conversation_id and the same cart_hash. Do not ask them for another yes, and do not say it is bought until that second call comes back with an order.`
+            + ` Put the numbers in one short line first, the same ones AgentCard's approval card shows (${hold.line}), then send them this link on its own line, as the last thing in the message, untouched: ${out.approval_url}`
+            + ` They tap it, approve with Face ID or Touch ID, and then you ${sameAgain}`
             + ` An approval is an authorization, not an order: even once they have approved, nothing is placed until the repeated confirm says so. When AgentCard reports the approval, you will be woken to send that same confirm yourself.`,
         };
       }
@@ -12414,12 +12616,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const known = await reconcilePurchase(c, buyConv, who.token, orderId, { read: t.read ?? t });
       const now = db.getAgentcardPurchase(buyConv);
       const shop = now.merchant || t.order?.merchant_name || "the shop";
+      // The store refused to place it after an approval (order.failed, no order id): the code and
+      // the reason as AgentCard gave them ride on every answer, so the final message can say them.
+      const pw = placementHistory(now);
+      const placementNote = pw
+        ? ` ${shop} refused to place it after ${me.name} approved the payment${pw.times > 1 ? `, ${pw.times} times` : ""} — ${pw.words} (${pw.given}). Nothing was charged for it; say the code and the reason as given, and never that an approval didn't count.`
+        : "";
       const base = {
         status: now.status, order_id: now.order_id || undefined, known: known.known, placed: known.placed,
         bought: now.what, merchant: now.merchant,
+        ...(pw ? { store_rejected: true, placement_failures: pw.times, placement_fail_code: pw.code || undefined, placement_fail_reason: pw.reason || undefined } : {}),
       };
       if (!t.ok) {
-        return { ok: false, ...base, error: `${known.line} Say that rather than guessing where it is or whether it went through.` };
+        return { ok: false, ...base, error: `${known.line}${placementNote} Say that rather than guessing where it is or whether it went through.` };
       }
       if (known.cancelled || now.status === "cancelled") {
         const why = cancelWhy(now, t.order);
@@ -12449,8 +12658,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!t.found) {
         return {
           ok: true, ...base,
-          note: `AgentCard's own record, read just now: ${known.line} Say what is known and what is not, in those terms.`
-            + (known.placed ? "" : ` Do not retry the purchase on this; only a new yes from them can, and only once they understand it may already have gone through.`),
+          note: `AgentCard's own record, read just now: ${known.line}${placementNote} Say what is known and what is not, in those terms.`
+            + (known.placed ? "" : pw
+              ? ` Do not retry this cart on your own; if they want it, that is a new purchase and a new yes.`
+              : ` Do not retry the purchase on this; only a new yes from them can, and only once they understand it may already have gone through.`),
         };
       }
       // An order AgentCard lists. Every field it leaves null is said to be missing, by name and by

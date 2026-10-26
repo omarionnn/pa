@@ -370,9 +370,33 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,763 pass, **0 failures** after Reason Web sign-in (W1, `wt/web-w1`, 2026-10-26)
+**6 — A scheduled call, with the fake provider.** "Call me at 7": the real `timer_set`, the real
+Runtime sweep and `call_place`, the fake call provider and the fake channel, in process under the
+cage's env. No model, no phone, nothing leaves the machine.
 
-Sign in by number at `/web`, dark behind `REASON_WEB` (W0's foundations merged as #165 the same morning: 3,867 / 3,745 / 0 / 122). Eighteen pinned tests in `test/web-signin.test.js`; `bin/web-drive.mjs` under `caged.sh env` drives form → stranger (same bytes, no text) → Kofi (code through the outbox, keyed `wsign:`) → wrong → right (303 + cookie) → reused → landing → sign-out refused without the secret / cross-site → sign-out → owner-only mode, 14/14 ok; `bin/web-preview.mjs` draws the four PNGs. Run with `env -i` and no `.env`: **3,885 tests, 3,763 passing, 0 failing, 0 cancelled, 122 skipped.** See [features/web-signin.md](features/web-signin.md).
+```bash
+eval "$(bin/caged.sh env | sed 's/^/export /')" \
+  && REASON_DB_PATH=$(mktemp -d)/timer-call.db node bin/timer-call-drive.mjs   # 20 steps, "all ok"
+```
+
+See [features/scheduled-calls.md](features/scheduled-calls.md).
+
+### Baseline — 3,786 pass, **0 failures** on main after #167, #166 and Reason Web sign-in (W1, #168, 2026-10-26)
+
+Sign in by number at `/web`, dark behind `REASON_WEB` (W0's foundations merged as #165 the same morning: 3,867 / 3,745 / 0 / 122). Eighteen pinned tests in `test/web-signin.test.js`; `bin/web-drive.mjs` under `caged.sh env` drives form → stranger (same bytes, no text) → Kofi (code through the outbox, keyed `wsign:`) → wrong → right (303 + cookie) → reused → landing → sign-out refused without the secret / cross-site → sign-out → owner-only mode, 14/14 ok; `bin/web-preview.mjs` draws the four PNGs. Run with `env -i` and no `.env` on the W1 branch alone: 3,885 / 3,763 / 0 / 122; with #167 and #166 merged in: **3,908 tests, 3,786 passing, 0 failing, 0 cancelled, 122 skipped.** See [features/web-signin.md](features/web-signin.md).
+
+### Earlier — 3,727 pass, **0 failures** after scheduled calls (wt/timer-call, 2026-10-26)
+
+A timer can end in a phone call: `timer_set` with `then_call` ("call me at 7", a wake-up call) places
+`call_place` to the person's own number when it fires, opening with why; refusals, caps and an
+unanswered call become one text; "remind me" stays a text. Twenty pinned tests in
+`test/timer-call.test.js`; `bin/timer-call-drive.mjs` under `caged.sh env`: 20 steps, all ok. See
+[features/scheduled-calls.md](features/scheduled-calls.md). `npm run test:offline` with no `.env`
+loaded: **3,849 tests, 3,727 passing, 0 failing, 122 skipped.**
+
+### Earlier — 3,714 pass, **0 failures** after the store-rejected-after-approval fix (2026-10-26)
+
+A null-order_id `order.failed` after an approval is now matched to the waiting purchase by its buy conversation and recorded (`placement_*` columns); the re-confirm says the store rejected the order (code and reason), that the approval was used up so AgentCard needs a fresh one, nothing charged, and sends the new link — never "the approval didn't count"; a second failure on the same cart stops with no third link; every approval text carries the total and the hold ceiling AgentCard's card shows; `purchase_track` carries the failure code and reason; a changed cart on the same conversation starts the count over. Three pinned tests in `test/agentcard.test.js` (`--test-name-pattern="2026-10-26"`). Caged drive 2026-10-26 (port 8813): the incident's own unsigned event bounced 401 fail-closed and `peek.sh schema agentcard_purchases` lists the four placement columns. See [features/agentcard.md](features/agentcard.md). **3,836 tests, 3,714 passing, 0 failing, 122 skipped.**
 
 ### Earlier — 3,711 pass, **0 failures** after event albums (#163, 2026-10-26)
 

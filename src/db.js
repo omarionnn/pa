@@ -1668,6 +1668,18 @@ addColumnIfMissing("notice_seen", "offered_at", "INTEGER");
 // carries one is one occurrence of a `series` row, and the series schedules the next after it. See
 // src/series.js.
 addColumnIfMissing("timers", "series_id", "INTEGER");
+// A timer that ends in a PHONE CALL rather than a text (2026-10-26): "call me at 7", "wake me up at
+// 6:30 with a call". `call_goal` is why Reason is ringing, in words it can open the call with, and
+// NULL is every ordinary timer. When one of these fires the runtime places the call itself through
+// `call_place` (to the person's own number) instead of running a model turn, and the call row made
+// for it points back here through `calls.timer_id` — which is also how a retry knows the phone has
+// already rung. A series carries one too, copied onto every firing it schedules.
+addColumnIfMissing("timers", "call_goal", "TEXT");
+addColumnIfMissing("series", "call_goal", "TEXT");
+addColumnIfMissing("calls", "timer_id", "INTEGER");
+// The one text a scheduled call that reached nobody is owed, stamped so it goes exactly once
+// whichever settle path (webhook, call_status, the lost-calls sweep) found out how the call ended.
+addColumnIfMissing("calls", "missed_told_at", "INTEGER");
 
 // The model's own "this is enough", stamped. A cap ending a run is code saying stop; this is the
 // model saying it, and it has to survive a restart the same way, or every wake re-opens a question
@@ -1765,10 +1777,24 @@ export function setPlanStatus(conversationId, id, status) {
 }
 
 // ---------- timers ----------
-export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null }) {
-  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(conversationId, fireAt, note, planId, taskId, seriesId);
+export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null, callGoal = null }) {
+  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id, call_goal) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(conversationId, fireAt, note, planId, taskId, seriesId, callGoal ? String(callGoal) : null);
   return getTimer(conversationId, Number(r.lastInsertRowid));
+}
+/** The call a timer's firing placed, if the phone has already rung for it. Unscoped: the fire path holds the timer row. */
+export function callByTimer(timerId) {
+  // A row the provider refused before anything was dialled (state failed, no external id) is not a
+  // phone that rang: a retry after that must still send the "couldn't be placed" text, so it is
+  // not what this returns.
+  return db.prepare("SELECT * FROM calls WHERE timer_id = ? AND NOT (state = 'failed' AND external_id IS NULL) ORDER BY id DESC LIMIT 1").get(timerId) ?? null;
+}
+/**
+ * Claim the one "I tried to call you and couldn't reach you" text for a scheduled call. True once,
+ * for the first settle path that gets here; false for every later one.
+ */
+export function markMissedCallTold(callId) {
+  return db.prepare("UPDATE calls SET missed_told_at = ? WHERE id = ? AND missed_told_at IS NULL").run(clock.now(), callId).changes === 1;
 }
 export function getTimer(conversationId, id) {
   return db.prepare("SELECT * FROM timers WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
@@ -1827,10 +1853,10 @@ export function markTimerGaveUp(id, { error = null } = {}) {
 // ---------- series: a check-in that keeps coming back ----------
 // Rows only. Every decision about WHEN — the next occurrence, quiet hours, what a missed one means —
 // is in src/series.js, so the maths is testable without a database and this file stays what it is.
-export function createSeries(conversationId, { what, rule, tz, nextAt = null }) {
-  const r = db.prepare(`INSERT INTO series (conversation_id, what, rule, tz, next_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, what, JSON.stringify(rule ?? {}), tz, nextAt, clock.now());
+export function createSeries(conversationId, { what, rule, tz, nextAt = null, callGoal = null }) {
+  const r = db.prepare(`INSERT INTO series (conversation_id, what, rule, tz, next_at, created_at, call_goal)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, what, JSON.stringify(rule ?? {}), tz, nextAt, clock.now(), callGoal ? String(callGoal) : null);
   return getSeries(conversationId, Number(r.lastInsertRowid));
 }
 /** Scoped to the conversation, like every other get: a series in another thread is not found. */
@@ -1894,9 +1920,10 @@ export function pendingSeriesTimers(seriesId) {
  * Called only once the message is in the outbox — a firing the model answered with NO_REPLY has
  * asked nothing, so it must not turn the next thing they say into a report about it.
  */
-export function noteSeriesFired(id, { at = clock.now() } = {}) {
+export function noteSeriesFired(id, { at = clock.now(), awaiting = true } = {}) {
+  // A standing CALL asks nothing by text, so the next thing they say is not a report on it.
   db.prepare("UPDATE series SET fired_count = fired_count + 1, last_fired_at = ?, awaiting_since = ? WHERE id = ?")
-    .run(at, at, id);
+    .run(at, awaiting ? at : null, id);
   return seriesById(id);
 }
 /** The one series waiting on an answer here, newest firing first. At most one is ever taken. */
@@ -4416,15 +4443,18 @@ export function createCall(conversationId, {
   state = "placing",
   // The job this call is a step of, when it is one.
   taskId = null,
+  // The timer whose firing placed this call, when it was a scheduled one ("call me at 7"). Written
+  // with the row, not after it, because it is what stops a retry of that timer ringing twice.
+  timerId = null,
 } = {}) {
   const now = clock.now();
   const r = db.prepare(`INSERT INTO calls
     (conversation_id, provider, external_id, to_number, is_owner, goal, facts, state, direction,
-     confirmation_id, announcement, webhook_token, task_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     confirmation_id, announcement, webhook_token, task_id, timer_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(conversationId, provider, externalId, toNumber, isOwner ? 1 : 0, goal, JSON.stringify(facts ?? []),
          state, direction === "in" ? "in" : "out", confirmationId,
-         announcement, linkToken(CALL_WEBHOOK_TOKEN_LENGTH), taskId, now, now);
+         announcement, linkToken(CALL_WEBHOOK_TOKEN_LENGTH), taskId, timerId, now, now);
   return getCall(conversationId, Number(r.lastInsertRowid));
 }
 
@@ -6714,6 +6744,18 @@ addColumnIfMissing("agentcard_purchases", "quote_checked_at", "INTEGER");
 addColumnIfMissing("agentcard_purchases", "approval_expires_at", "INTEGER");
 addColumnIfMissing("agentcard_purchases", "ticketing_state", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("agentcard_purchases", "order_raw_json", "TEXT NOT NULL DEFAULT ''");
+// A placement that failed AFTER the person approved (2026-10-26: Target, `order.failed code=place`
+// with order_id null, 2 s after each Face ID approval). The approval is consumed by the attempt, so
+// the same confirm then needs a fresh one — which is the store's doing, not the person's. Kept so the
+// next confirm can say so, and so the second failure on one cart stops the loop.
+//   placement_failures    how many times the store refused to place this cart after an approval
+//   placement_failed_at   when the last one landed (ms)
+//   placement_fail_code   AgentCard's `code` on that order.failed (`place`, `prepare`, or a named one)
+//   placement_fail_reason AgentCard's `message` on it, when it gave one
+addColumnIfMissing("agentcard_purchases", "placement_failures", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("agentcard_purchases", "placement_failed_at", "INTEGER");
+addColumnIfMissing("agentcard_purchases", "placement_fail_code", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "placement_fail_reason", "TEXT NOT NULL DEFAULT ''");
 
 // ---------- flight travelers ----------
 //
@@ -7118,7 +7160,20 @@ export function recordAgentcardPurchase({ conversationId, buyConversationId, sta
       amount_cents = excluded.amount_cents,
       merchant = excluded.merchant,
       what = excluded.what,
-      updated_at = excluded.updated_at`)
+      updated_at = excluded.updated_at,
+      -- A different cart on the same conversation (they changed the item, the address, the count; or
+      -- a 409 handed back a fresh one) is a fresh attempt: the store's refusals of the OLD cart and the
+      -- approval that was spent on it do not carry over, or a cart nobody has tried would be said to
+      -- have been rejected, and after two it would never be sent at all. The same hash keeps them, and
+      -- so does a clarifying turn with no cart yet (hash ''). The old cart's decline code goes too, or a
+      -- card decline on cart A would be the blame for cart B's refusals.
+      placement_failures = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN 0 ELSE agentcard_purchases.placement_failures END,
+      placement_failed_at = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN NULL ELSE agentcard_purchases.placement_failed_at END,
+      placement_fail_code = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.placement_fail_code END,
+      placement_fail_reason = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.placement_fail_reason END,
+      authorization_state = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.authorization_state END,
+      authorization_id = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.authorization_id END,
+      decline_code = CASE WHEN (excluded.cart_hash != '' AND excluded.cart_hash != agentcard_purchases.cart_hash) THEN '' ELSE agentcard_purchases.decline_code END`)
     .run(conversationId, buyConversationId, status, cartHash, Math.round(amountCents), merchant, what, clock.now(), clock.now());
   return getAgentcardPurchase(buyConversationId);
 }
@@ -7174,6 +7229,23 @@ export function noteAgentcardCancelReason(buyConversationId, { code = "", detail
   const d = String(detail ?? "").trim();
   if (c) db.prepare("UPDATE agentcard_purchases SET cancel_reason = ?, updated_at = ? WHERE buy_conversation_id = ? AND cancel_reason = ''").run(c.slice(0, 200), clock.now(), buyConversationId);
   if (d) db.prepare("UPDATE agentcard_purchases SET cancel_detail = ?, updated_at = ? WHERE buy_conversation_id = ? AND cancel_detail = ''").run(d.slice(0, 500), clock.now(), buyConversationId);
+  return getAgentcardPurchase(buyConversationId);
+}
+
+/**
+ * The store refused to place this cart after the person had approved the payment (an `order.failed`
+ * with no order_id, matched to the purchase by its buy conversation). Counted, and the latest code and
+ * reason kept — a later event with no reason never erases one already kept.
+ */
+export function noteAgentcardPlacementFailure(buyConversationId, { code = "", reason = "" } = {}) {
+  if (!buyConversationId) return null;
+  const c = String(code ?? "").trim().slice(0, 100);
+  const r = String(reason ?? "").trim().slice(0, 500);
+  db.prepare(`UPDATE agentcard_purchases SET placement_failures = placement_failures + 1, placement_failed_at = ?,
+      placement_fail_code = CASE WHEN ? != '' THEN ? ELSE placement_fail_code END,
+      placement_fail_reason = CASE WHEN ? != '' THEN ? ELSE placement_fail_reason END,
+      updated_at = ? WHERE buy_conversation_id = ?`)
+    .run(clock.now(), c, c, r, r, clock.now(), buyConversationId);
   return getAgentcardPurchase(buyConversationId);
 }
 
