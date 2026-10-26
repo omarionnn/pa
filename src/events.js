@@ -94,7 +94,9 @@ export function nameKey(name) {
 
 export const EVENT_PATH = "/e";
 
+/** Where event links start: the events domain, else the pages domain, else this server. */
 function base() {
+  if (config.eventsUrl) return config.eventsUrl;
   if (config.pagesUrl) return config.pagesUrl;
   return (config.publicUrl || `http://${config.host}:${config.port}`).replace(/\/+$/, "");
 }

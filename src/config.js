@@ -215,6 +215,17 @@ export const config = {
   // will not open on a phone.
   publicUrl: (process.env.REASON_PUBLIC_URL || "").replace(/\/+$/, ""),
   pagesUrl: (process.env.REASON_PAGES_URL || "").replace(/\/+$/, ""),
+  // Where event links live (owner's domain rule, 2026-10-26: events.heyreason.com). Every event
+  // address Reason builds — the join page, who's going, the album, the cover — starts here. Unset:
+  // the pages domain, as before, so an install with one domain keeps working.
+  eventsUrl: (process.env.REASON_EVENTS_URL || "").trim().replace(/\/+$/, ""),
+  // The secret the website (Netlify) signs every request it proxies here with (`signed =` on the
+  // /web rewrites; HS256 `x-nf-sign`, src/pages/siteproxy.js). Only a request carrying a valid
+  // signature is believed about the visitor's address or that it came through the website. Unset:
+  // nothing is, and /web is served on whatever host asked.
+  siteProxySecret: (process.env.REASON_SITE_PROXY_SECRET || "").trim(),
+  // The website's Netlify site id; when set, a signature for any other site is not ours.
+  siteProxyId: (process.env.REASON_SITE_PROXY_ID || "").trim(),
   // Where the owner opens the status page (src/ops.js): every link Reason hands them for it — the
   // alert texts, "back to normal", the status_page tool — is this plus `?k=`. The website proxies
   // /ops to this server (2026-10-24), so it lives on the domain the owner already knows rather

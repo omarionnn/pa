@@ -24,10 +24,11 @@
 // If outbound texting ever becomes possible, `finishStep` is the one place to swap for a code sent
 // to them.
 import { readFileSync } from "node:fs";
+import { siteClientIp } from "./siteproxy.js";
 import * as db from "../db.js";
 import * as events from "../events.js";
 import * as accounts from "../accounts.js";
-import { readCookie, cookieHeader, clearCookieHeader, requestCode, SESSION_TTL_MS } from "./access.js";
+import { readCookie, readCookies, cookieHeader, clearCookieHeader, requestCode, SESSION_TTL_MS } from "./access.js";
 import { shell, esc, renderNotFound, codeInputAttrs, foot, sentLine } from "./render.js";
 import { normalizeNumber, clock } from "../config.js";
 import { prettyNumber } from "../invites.js";
@@ -74,6 +75,10 @@ export function sessionAccount(headers) {
  * sent); otherwise the socket's own, so nobody can pick a fresh address per guess by writing a header.
  */
 export function eventActor(headers = {}, remoteAddress = "") {
+  // Through the website's proxy (heyreason.com/web): the visitor's address Netlify signed for, and
+  // only with a valid signature (src/pages/siteproxy.js). A forged header without one counts for nothing.
+  const site = siteClientIp(headers);
+  if (site) return `ip:${site.slice(0, 64)}`;
   // Through Caddy on the files domain (it marks those requests, and replaces any X-Forwarded-For a
   // browser sent with the real address): the forwarded address, and only that header — never the
   // Netlify one, which nothing on that path strips. Anything else: the socket's own address.
@@ -330,7 +335,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   // ---- the photo album (src/pages/album.js): the same person and the same role, read the same way ----
   if (sub && /^album(\/|$)/.test(sub)) {
     return await albumRequest({
-      ev, sub, method, query, readBody, account, mine, runtime, log,
+      ev, sub, method, query, headers, readBody, account, mine, runtime, log,
       // Under the same per-browser ceiling as the sign-in page, so an unknown browser holding a
       // link cannot keep the link's owner's phone buzzing; then the per-person limit inside.
       sendCode: ({ conversationId, what }) => {
@@ -350,8 +355,8 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     // cookie (SameSite=Lax), and is answered without touching the one this browser holds.
     const presented = readCookie(headers?.cookie);
     if (!presented) return redirect(`/e/${ev.public_id}`);
-    db.endPageSession(presented);
-    return redirect(`/e/${ev.public_id}`, { "Set-Cookie": clearCookieHeader({ path: "/" }) });
+    for (const t of new Set([presented, ...readCookies(headers?.cookie)])) db.endPageSession(t);
+    return redirect(`/e/${ev.public_id}`, { "Set-Cookie": clearCookieHeader({ path: "/", headers }) });
   }
 
   // ---- sign in by phone number ----
@@ -378,7 +383,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
         return page(tried.reason === "rate_limited" ? 429 : 200, renderSignin({ ev, number, sent: true, error: tried.reason === "rate_limited" ? "Too many wrong codes from this browser. Try again in about 15 minutes." : "That code isn't right." }));
       }
       log({ event_signin_ok: ev.id });
-      return redirect(`/e/${ev.public_id}`, { "Set-Cookie": cookieHeader(tried.token, { path: "/" }) });
+      return redirect(`/e/${ev.public_id}`, { "Set-Cookie": cookieHeader(tried.token, { path: "/", headers }) });
     }
     if (!events.signinGate(actor)) return page(429, renderSignin({ ev, number, error: "Too many sign-in tries from this browser. Try again in an hour." }));
     events.noteSigninRequest(actor);
@@ -426,7 +431,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
         return page(tried.reason === "rate_limited" ? 429 : 200, renderGate({ ev, token, sent: true, error: tried.reason === "rate_limited" ? "Too many wrong codes from this browser. Try again in about 15 minutes." : "That code isn't right." }));
       }
       log({ event_signin_ok: ev.id });
-      return redirect(whoPath(ev, token), { "Set-Cookie": cookieHeader(tried.token, { path: "/" }) });
+      return redirect(whoPath(ev, token), { "Set-Cookie": cookieHeader(tried.token, { path: "/", headers }) });
     }
     return page(200, renderGate({ ev, token }));
   }

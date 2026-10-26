@@ -13,12 +13,12 @@ import { fromOutside } from "./outside.js";
 import * as rides from "./eventrides.js";
 import * as cover from "./eventcover.js";
 
-/** Is this one of Reason's own event links (on the pages domain or this server's address)? */
+/** Is this one of Reason's own event links (on the events domain, the pages domain where older links live, or this server's address)? */
 export function isOwnEventLink(url) {
   if (!events.eventsOn() || !events.publicIdFromLink(url)) return false;
   let host;
   try { host = new URL(String(url).trim()).host; } catch { return false; }
-  const ours = [config.pagesUrl, config.publicUrl].filter(Boolean).map(u => { try { return new URL(u).host; } catch { return null; } });
+  const ours = [config.eventsUrl, config.pagesUrl, config.publicUrl].filter(Boolean).map(u => { try { return new URL(u).host; } catch { return null; } });
   return ours.includes(host);
 }
 

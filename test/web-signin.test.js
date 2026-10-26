@@ -259,9 +259,10 @@ test("the happy path: the code text is keyed wsign:, bound to the Web host, and 
   const sess = db.db.prepare("SELECT * FROM page_sessions WHERE token = ?").get(s.token);
   assert.equal(sess.conversation_id, KOFI_C);
   assert.equal(sess.page_id, ws.signinKey(KOFI_C));
-  // The cookie: on every path, HttpOnly, Secure, SameSite=Lax; the form cookie is cleared with it.
+  // The cookie: on every path, shared across heyreason.com (decision 3; test/domains.test.js), HttpOnly,
+  // Secure, SameSite=Lax; the form cookie is cleared with it.
   const set = setCookies(s.out);
-  assert.match(set.find(c => c.startsWith("reason_page=")), /; Path=\/; Max-Age=7776000; HttpOnly; SameSite=Lax; Secure$/);
+  assert.match(set.find(c => c.startsWith("reason_page=")), /; Path=\/; Domain=heyreason\.test; Max-Age=7776000; HttpOnly; SameSite=Lax; Secure$/);
   assert.match(set.find(c => c.startsWith(`${ws.FORM_COOKIE}=`)), /Max-Age=0/);
   // Logged: that it went, never the number or the code.
   const mine = h.logs.filter(l => l && typeof l === "object" && Object.keys(l).some(k => k.startsWith("web_sign")));

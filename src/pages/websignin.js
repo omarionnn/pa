@@ -27,7 +27,7 @@ import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import * as events from "../events.js";
 import { webAllowedFor } from "../web.js";
-import { requestCode, readCookie, cookieHeader, clearCookieHeader, codeHost, boundTo, SESSION_TTL_MS, CODE_TTL_MS } from "./access.js";
+import { requestCode, readCookie, readCookies, cookieHeader, clearCookieHeader, codeHost, boundTo, SESSION_TTL_MS, CODE_TTL_MS } from "./access.js";
 import { shell, esc, renderNotFound, codeInputAttrs, foot, sentLine } from "./render.js";
 import { eventActor } from "./event.js";
 import { prettyNumber } from "../invites.js";
@@ -314,9 +314,10 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
       log({ web_signout_refused: "origin_or_token" });
       return page(403, renderNotFound());
     }
-    db.endPageSession(presented);
+    // Every copy this browser sent (an older host-only one beside the shared one), not just the one read.
+    for (const t of new Set([presented, ...readCookies(headers?.cookie)])) db.endPageSession(t);
     log({ web_signout: true });
-    return redirect("/web", { "Set-Cookie": clearCookieHeader({ path: "/" }) });
+    return redirect("/web", { "Set-Cookie": clearCookieHeader({ path: "/", headers }) });
   }
 
   // A signed-in browser posting a sign-in form: it is already in.
@@ -348,7 +349,7 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
     log({ web_signin_ok: true });
     // The session cookie on every path, so the browser is theirs on their pages and events too;
     // the form cookie has done its job.
-    return { status: 303, headers: HTML({ Location: "/web", "Content-Length": 0, "Set-Cookie": [cookieHeader(tried.token, { path: "/" }), clearFormCookie()] }), body: "" };
+    return { status: 303, headers: HTML({ Location: "/web", "Content-Length": 0, "Set-Cookie": [cookieHeader(tried.token, { path: "/", headers }), clearFormCookie()] }), body: "" };
   }
 
   // sub === "signin": ask for a code.

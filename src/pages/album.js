@@ -185,7 +185,7 @@ function tokenOwner(ev, token) {
  * browser's page session (whom this browser belongs to, and their role in this event); `sendCode`
  * texts that person a sign-in code the way the who's-going gate does; `tryCode` checks one.
  */
-export async function albumRequest({ ev, sub, method, query = {}, readBody, account = null, mine = null, runtime = null, sendCode, tryCode, log = () => {} }) {
+export async function albumRequest({ ev, sub, method, query = {}, headers = {}, readBody, account = null, mine = null, runtime = null, sendCode, tryCode, log = () => {} }) {
   if (!albums.albumFor(ev) || ev.status === "cancelled") return page(404, renderNotFound());
   const rest = String(sub).replace(/^album\/?/, "");
   const c = account?.conversation_id ?? null;
@@ -273,7 +273,7 @@ export async function albumRequest({ ev, sub, method, query = {}, readBody, acco
       return page(tried.reason === "rate_limited" ? 429 : 200, renderGate({ ev, action, token, sent: true, error: tried.reason === "rate_limited" ? "Too many wrong codes from this browser. Try again in about 15 minutes." : "That code isn't right." }));
     }
     log({ album_signin_ok: ev.id });
-    return redirect(action, { "Set-Cookie": cookieHeader(tried.token, { path: "/" }) });
+    return redirect(action, { "Set-Cookie": cookieHeader(tried.token, { path: "/", headers }) });
   }
   return page(200, renderGate({ ev, action, token }));
 }

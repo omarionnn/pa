@@ -7,6 +7,11 @@ top of `REASON_EVENTS`; `owner` = only the owner's events have albums). Read it 
 `ssh root@91.98.19.150 "grep -E '^REASON_EVENT_ALBUMS=' /opt/reason/.env"` — **`REASON_EVENT_ALBUMS=1` on live
 since 2026-10-26 08:08 UTC** (#163 merged as `5dabcf9`, deployed, flag appended as the last line of `.env`).
 
+Album links (`albumUrl`, `manageUrl`, photo and ZIP paths under `/e/<id>/album…`) are built on the
+event base, so they live on **`https://events.heyreason.com`** since the domain move (2026-10-26,
+`REASON_EVENTS_URL`); an old `files.heyreason.com/e/<id>/album?t=…` answers 301 to the same path and
+query there (Caddy). Pinned: `test/domains.test.js`.
+
 Source: `src/albums.js` (the only reader of the album tables: the switch, the ONE retention setting
 `RETENTION` ← `config.albumRetentionDays` ← `REASON_ALBUM_RETENTION_DAYS`, default 3; `viewFor`, the
 one place that decides what a person may see; contribute / remove / pin / check-in / release /

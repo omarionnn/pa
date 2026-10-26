@@ -28,6 +28,7 @@
 //   GET  /web                         Reason Web (src/pages/websignin.js): sign in by number, or the signed-in landing
 //   POST /web/signin|code|signout     ask for the code, type it, sign this browser out — all 404 while REASON_WEB is off
 //   GET  /web/fonts/{serif|hand}.woff2  the site's two display faces for those pages (404 while off)
+//        /web…  on the pages host, not signed by the website: 301 to {REASON_SITE_URL}/web… (src/pages/siteproxy.js)
 //   POST /agentcard/webhook           a card landed in somebody's vault, or a payment was approved
 //
 // The raw body is handed to a channel adapter as the exact bytes that arrived. Signature schemes
@@ -48,6 +49,7 @@ import * as accounts from "./accounts.js";
 import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderPasswordGate, renderNotFound } from "./pages/render.js";
 import * as opspw from "./opspassword.js";
+import { webMovedTo } from "./pages/siteproxy.js";
 import { checkAccess, trySubmittedCode, requestCode, codeHost, readCookie, cookieHeader, pageUrl, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
 import * as ops from "./ops.js";
@@ -212,6 +214,13 @@ export function createServer({ router, runtime, log = () => {} }) {
       // Sign in by number, the code, the signed-in landing, sign out (src/pages/websignin.js). While
       // REASON_WEB is off these paths fall through to the same flat 404 as any path nobody was issued.
       // The site's two display faces for these pages, cached a week; off, the same flat 404.
+      // Web's home is the website (heyreason.com/web, proxied here and signed). The same paths asked of
+      // the pages host directly answer 301 to it, same path and query (src/pages/siteproxy.js).
+      const webMoved = /^\/web(?:\/|$)/.test(url.pathname) && webOn() ? webMovedTo(req.headers, `${url.pathname}${url.search}`) : null;
+      if (webMoved) {
+        res.writeHead(301, { Location: webMoved, "Content-Length": 0, "Cache-Control": "no-store" });
+        return res.end();
+      }
       const webFontRoute = /^\/web\/fonts\/([a-z]+)\.woff2$/.exec(url.pathname);
       const fontOut = webFontRoute && webOn() && (req.method === "GET" || req.method === "HEAD") ? webFont(webFontRoute[1]) : null;
       if (fontOut) {
@@ -1350,7 +1359,7 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
       log({ page_opened: page.id });
       return {
         status: 200,
-        headers: HTML({ "Set-Cookie": cookieHeader(tried.token, { path: cookiePath }) }),
+        headers: HTML({ "Set-Cookie": cookieHeader(tried.token, { path: cookiePath, headers }) }),
         body: renderPage(page, {
           interactive: true, picked: db.pageChoicesFor(page.id),
           related: relatedFor(page, true), ...whoseLine(page),
@@ -1455,7 +1464,7 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
     // rather than the pages' "/p/": this cookie has to come back on /ops, and a session is valid
     // for every page of the owner's anyway.
     status: 303,
-    headers: { ...HTML(), Location: focusId ? `/ops?focus=${encodeURIComponent(focusId)}` : "/ops", "Set-Cookie": cookieHeader(token, { path: "/" }) },
+    headers: { ...HTML(), Location: focusId ? `/ops?focus=${encodeURIComponent(focusId)}` : "/ops", "Set-Cookie": cookieHeader(token, { path: "/", headers }) },
     body: "",
   });
 

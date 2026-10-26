@@ -15,6 +15,7 @@
 import { randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
 import { config, clock } from "../config.js";
+import { cookieDomain } from "./siteproxy.js";
 
 export const CODE_TTL_MS = 15 * 60 * 1000;
 export const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
@@ -177,26 +178,51 @@ export function linksAreReachable() {
   return !!config.publicUrl;
 }
 
-export function cookieHeader(token, { path = "/p/" } = {}) {
+export function cookieHeader(token, { path = "/p/", headers = null } = {}) {
   const maxAge = Math.floor(SESSION_TTL_MS / 1000);
   // Lax rather than Strict: the owner arrives by tapping a link in a text message, which is a
   // cross-site navigation, and Strict would drop the cookie on exactly that first hop back.
   const secure = (config.publicUrl || "").startsWith("https://") ? "; Secure" : "";
-  return `${COOKIE}=${token}; Path=${path}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure}`;
+  // Under heyreason.com the one cookie is shared by Web, pages, events and /ops (decision 3).
+  const domain = headers ? cookieDomain(headers) : "";
+  return `${COOKIE}=${token}; Path=${path}${domain ? `; Domain=${domain}` : ""}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure}`;
 }
 
-/** The same cookie, gone: what a "sign out of this browser" answers with. */
-export function clearCookieHeader({ path = "/" } = {}) {
+/**
+ * The same cookie, gone: what a "sign out of this browser" answers with. Under the shared domain
+ * both copies go — the shared one and a host-only one an older sign-in left on this host.
+ */
+export function clearCookieHeader({ path = "/", headers = null } = {}) {
   const secure = (config.publicUrl || "").startsWith("https://") ? "; Secure" : "";
-  return `${COOKIE}=; Path=${path}; Max-Age=0; HttpOnly; SameSite=Lax${secure}`;
+  const plain = `${COOKIE}=; Path=${path}; Max-Age=0; HttpOnly; SameSite=Lax${secure}`;
+  const domain = headers ? cookieDomain(headers) : "";
+  return domain ? [plain, `${COOKIE}=; Path=${path}; Domain=${domain}; Max-Age=0; HttpOnly; SameSite=Lax${secure}`] : plain;
 }
 
-export function readCookie(header) {
+/** Every `reason_page` value this browser sent, in order (a browser can hold two; see readCookie). */
+export function readCookies(header) {
+  const found = [];
   for (const part of String(header ?? "").split(";")) {
     const [k, ...v] = part.trim().split("=");
-    if (k === COOKIE) return v.join("=");
+    if (k === COOKIE && v.join("=")) found.push(v.join("="));
   }
-  return null;
+  return found;
+}
+
+/**
+ * The session token this browser sent. A browser can hold two (a host-only one from before the
+ * cookie was shared, and the shared one); then the first that is still a session wins — unless the
+ * live ones belong to different people, which no sign-in of ours makes (a cookie planted from a
+ * sibling host would): then none, so a planted session can sign somebody out but never swap them
+ * into another account.
+ */
+export function readCookie(header) {
+  const found = readCookies(header);
+  if (found.length < 2) return found[0] ?? null;
+  const live = found.filter(t => db.pageSessionExists(t));
+  if (!live.length) return found[0];
+  const owners = new Set(live.map(t => db.pageSessionConversation(t) ?? `page:${t}`));
+  return owners.size === 1 ? live[0] : null;
 }
 
 /** For tests and for /health: how close this page is to being locked out. */
