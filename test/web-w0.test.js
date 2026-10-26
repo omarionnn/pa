@@ -37,7 +37,7 @@ const { Runtime } = await import("../src/runtime.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const { ConsoleChannel } = await import("../src/channels/console.js");
 const { WebChannel } = await import("../src/channels/web.js");
-const { makeDeliver, whereTo } = await import("../src/deliver.js");
+const { makeDeliver, whereTo, WEB_HINT } = await import("../src/deliver.js");
 const web = await import("../src/web.js");
 const { toolsFor } = await import("../src/tools.js");
 const { runTurnViaCli } = await import("../src/backends/claude-cli.js");
@@ -249,7 +249,7 @@ test("a web inbound never changes threads.channel or address; it leaves only las
   // A text afterwards marks the thread as texted again.
   await text(router, { id: "t1", body: "back on my phone" });
   assert.equal(db.getThread(THEIRS).last_channel, "fake");
-  assert.equal(fake.sent.at(-1).text, "re: back on my phone", "and its reply came back by text");
+  assert.equal(fake.sent.at(-1).text, `re: back on my phone\n\n${WEB_HINT}`, "and its reply came back by text (carrying W2's once-per-switch line about Web, decision 9)");
 });
 
 test("a web message from somebody with no thread yet creates no route: the phone is proven by a text, never a browser", async () => {
@@ -270,7 +270,7 @@ test("text → web → text: each reply goes back the way its message came, once
   await fromWeb(router, { id: "w1", body: "two" });
   await text(router, { id: "t2", body: "three" });
 
-  assert.deepEqual(fake.sent.map(m => m.text), ["re: one", "re: three"]);
+  assert.deepEqual(fake.sent.map(m => m.text), ["re: one", `re: three\n\n${WEB_HINT}`], "the text after the Web line carries the decision-9 line, once (W2)");
   assert.deepEqual(webCh.recent.map(m => m.text), ["re: two"]);
 
   const rows = db.messagesFor(THEIRS).map(m => [m.role, m.channel, m.text, m.external_id ?? null]);
@@ -280,7 +280,7 @@ test("text → web → text: each reply goes back the way its message came, once
     ["user", "web", "two", `${THEIRS}:w1`],
     ["assistant", "web", "re: two", webCh.recent[0].message_id],
     ["user", "fake", "three", "t2"],
-    ["assistant", "fake", "re: three", "fake-2"],
+    ["assistant", "fake", `re: three\n\n${WEB_HINT}`, "fake-2"],
   ]);
   for (const m of db.messagesFor(THEIRS)) {
     assert.equal(typeof m.at, "number");

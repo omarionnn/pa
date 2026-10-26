@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import * as secretbox from "./secretbox.js";
 import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { mkdirSync } from "node:fs";
+import { EventEmitter } from "node:events";
 import { dirname } from "node:path";
 import { config, clock } from "./config.js";
 import { parseSheet, applyPatch, addSteer, emptySheet } from "./sheet.js";
@@ -1497,6 +1498,13 @@ addColumnIfMissing("threads", "last_inbound_id", "TEXT");
 // message leaves on the thread; a later phase reads it for the one-line "the rest is on Web" hint
 // after a switch (docs/plans/reason-web-phase1.md §7 decision 9).
 addColumnIfMissing("threads", "last_channel", "TEXT");
+// Decision 9 (W2): the time a TEXT arrived right after the person was on Web (0 = none owed), so
+// Reason's next text to them, within the switch window, carries one line saying the whole
+// conversation is on Web; taken (cleared) by that text.
+addColumnIfMissing("threads", "web_hint_due", "INTEGER NOT NULL DEFAULT 0");
+// The first time this person opened their conversation on Web: the history boundary is explained
+// once, then never again (spec §9: "not a recurring popup").
+addColumnIfMissing("accounts", "web_notice_seen_at", "INTEGER");
 addColumnIfMissing("outbox", "send_style", "TEXT");
 // Inline replies: what each inbound message said (so "the one about the table" can be found again
 // by its words), which message an outbound one is pinned under, and the message this turn's reply
@@ -3594,6 +3602,12 @@ export function upsertThread({ conversationId, channel, address, chatId = null, 
       WHERE conversation_id = ?`).run(lastInboundId, now, conversationId);
     return getThread(conversationId);
   }
+  // A text right after Web, within the same stretch of work, is a switch (decision 9): the next text
+  // Reason sends carries the one line about Web. Once per switch — takeWebHint clears it.
+  const before = getThread(conversationId);
+  if (before?.last_channel === "web" && now - (before.updated_at ?? 0) < WEB_SWITCH_WINDOW_MS) {
+    db.prepare("UPDATE threads SET web_hint_due = ? WHERE conversation_id = ?").run(now, conversationId);
+  }
   db.prepare(`INSERT INTO threads (conversation_id, channel, address, chat_id, is_owner, service, last_inbound_id, last_channel, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(conversation_id) DO UPDATE SET
@@ -3605,6 +3619,21 @@ export function upsertThread({ conversationId, channel, address, chatId = null, 
       is_owner = excluded.is_owner, updated_at = excluded.updated_at`)
     .run(conversationId, channel, address, chatId, isOwner ? 1 : 0, service, lastInboundId, channel, now, now);
   return getThread(conversationId);
+}
+
+/** How recent the last Web message must be for a text after it to count as switching mid-task (decision 9). */
+export const WEB_SWITCH_WINDOW_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Is the decision-9 line owed on this text? Yes exactly once per switch, and only within the same
+ * window the switch was judged by: a switch whose reply never went out does not ride on a reminder
+ * days later. Taking it clears it either way.
+ */
+export function takeWebHint(conversationId, now = clock.now()) {
+  const r = db.prepare("SELECT web_hint_due AS due FROM threads WHERE conversation_id = ?").get(conversationId);
+  if (!r?.due) return false;
+  const took = db.prepare("UPDATE threads SET web_hint_due = 0 WHERE conversation_id = ? AND web_hint_due = ?").run(conversationId, r.due).changes === 1;
+  return took && now - r.due < WEB_SWITCH_WINDOW_MS;
 }
 
 export function getThread(conversationId) {
@@ -9588,7 +9617,41 @@ export function writeMessage({ conversationId, role, channel, externalId = null,
   const r = db.prepare(`INSERT OR IGNORE INTO messages (conversation_id, role, channel, external_id, outbox_id, text, media, at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(conversationId, role, channel, externalId == null ? null : String(externalId), outboxId ?? null, body, JSON.stringify(atts), at);
-  return r.changes ? Number(r.lastInsertRowid) : null;
+  if (!r.changes) return null;
+  const id = Number(r.lastInsertRowid);
+  // Live Web (W2): an open conversation tab hears about its own conversation's new row, nothing else.
+  try { historyBus.emit("row", { conversationId, id }); } catch { /* a listener never costs a write */ }
+  return id;
+}
+
+/** New history rows, as `row` events `{ conversationId, id }`. In-process: the SSE route listens, per conversation. */
+export const historyBus = new EventEmitter();
+historyBus.setMaxListeners(0);
+
+/**
+ * One page of older history: the `limit` rows just before row `before` (by time, then id), oldest
+ * first. Scoped by conversation like every read here; a `before` from another conversation finds
+ * nothing to stand on and returns nothing.
+ */
+export function messagesBefore(conversationId, { before = null, limit = 40 } = {}) {
+  const parse = (r) => ({ ...r, media: (() => { try { return JSON.parse(r.media || "[]"); } catch { return []; } })() });
+  let rows;
+  if (before == null) {
+    rows = db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND deleted_at IS NULL
+      ORDER BY at DESC, id DESC LIMIT ?`).all(conversationId, limit);
+  } else {
+    const at = db.prepare("SELECT at FROM messages WHERE id = ? AND conversation_id = ?").get(before, conversationId)?.at;
+    if (at == null) return [];
+    rows = db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND deleted_at IS NULL
+      AND (at < ? OR (at = ? AND id < ?)) ORDER BY at DESC, id DESC LIMIT ?`).all(conversationId, at, at, before, limit);
+  }
+  return rows.reverse().map(parse);
+}
+
+/** Record the first Web visit; true only the first time (the boundary note shows that once). */
+export function markWebNoticeSeen(conversationId) {
+  return db.prepare("UPDATE accounts SET web_notice_seen_at = ? WHERE conversation_id = ? AND web_notice_seen_at IS NULL")
+    .run(clock.now(), conversationId).changes === 1;
 }
 
 /**

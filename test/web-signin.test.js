@@ -171,13 +171,13 @@ test("`owner`: the owner's number is texted a code; anybody else's gets the same
   const ok = await typeCode(h, b, MASTER, code);
   assert.equal(ok.status, 303);
   const landing = await req(h, { cookie: `reason_page=${cookieValue(ok, "reason_page")}` });
-  assert.match(landing.body, /You(&#39;|')re in, Omari\./);
+  assert.match(landing.body, /What(&#39;|')s good, Omari\?/);
 });
 
 test("a person signed in while `on` is signed out the moment the switch is back to `owner` — not told why, not 404", async () => {
   const h = harness();
   const s = await signedIn(h);
-  assert.match((await req(h, { cookie: s.jar })).body, /You(&#39;|')re in, Kofi/);
+  assert.match((await req(h, { cookie: s.jar })).body, /What(&#39;|')s good, Kofi\?/);
   config.web = "owner";
   const out = await req(h, { cookie: s.jar });
   assert.equal(out.status, 200);
@@ -343,14 +343,14 @@ test("two people never cross: a session is one person's, and one's code never op
   const ok = await typeCode(h, b, AMA, amaCode);
   assert.equal(ok.status, 303);
   const ama = `reason_page=${cookieValue(ok, "reason_page")}`;
-  assert.match((await req(h, { cookie: ama })).body, /You(&#39;|')re in, Ama\./);
-  assert.match((await req(h, { cookie: kofi.jar })).body, /You(&#39;|')re in, Kofi\./);
+  assert.match((await req(h, { cookie: ama })).body, /What(&#39;|')s good, Ama\?/);
+  assert.match((await req(h, { cookie: kofi.jar })).body, /What(&#39;|')s good, Kofi\?/);
   assert.doesNotMatch((await req(h, { cookie: ama })).body, /Kofi/);
   // Signing Ama out leaves Kofi in.
   const csrf = /name="c" value="([^"]+)"/.exec((await req(h, { cookie: ama })).body)[1];
   assert.equal((await req(h, { sub: "signout", method: "POST", body: form({ c: csrf }), cookie: ama })).status, 303);
   assert.match((await req(h, { cookie: ama })).body, /Sign in with the number/);
-  assert.match((await req(h, { cookie: kofi.jar })).body, /You(&#39;|')re in, Kofi\./);
+  assert.match((await req(h, { cookie: kofi.jar })).body, /What(&#39;|')s good, Kofi\?/);
 });
 
 test("one number, two accounts: the most recently used one gets the code, and the page never mentions either (decision 4)", async () => {
@@ -383,7 +383,7 @@ test("sign-out revokes the session: only with the session's own secret, only fro
   // The right secret from another site: refused, still signed in.
   assert.equal((await req(h, { sub: "signout", method: "POST", body: form({ c: csrf }), cookie: s.jar, origin: "https://evil.example" })).status, 403);
   assert.equal((await req(h, { sub: "signout", method: "POST", body: form({ c: csrf }), cookie: s.jar, sfs: "cross-site" })).status, 403);
-  assert.match((await req(h, { cookie: s.jar })).body, /You(&#39;|')re in, Kofi/);
+  assert.match((await req(h, { cookie: s.jar })).body, /What(&#39;|')s good, Kofi\?/);
   // No cookie at all: nothing to do, nothing touched.
   assert.equal((await req(h, { sub: "signout", method: "POST", body: form({ c: csrf }), cookie: "" })).status, 303);
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions").get().n, 1);
@@ -400,7 +400,7 @@ test("a session is over after 30 idle days or 90 days of age, whichever first", 
   const h = harness();
   const s = await signedIn(h);
   db.db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now() - 29 * DAY, s.token);
-  assert.match((await req(h, { cookie: s.jar })).body, /You(&#39;|')re in/, "29 idle days: still in, and touched");
+  assert.match((await req(h, { cookie: s.jar })).body, /What(&#39;|')s good, /, "29 idle days: still in, and touched");
   db.db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now() - 31 * DAY, s.token);
   assert.match((await req(h, { cookie: s.jar })).body, /Sign in with the number/, "31 idle days: out");
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions").get().n, 0);

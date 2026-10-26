@@ -21,7 +21,7 @@
 // `REASON_WEB` (src/web.js): `owner` lets only the owner's conversation sign in — anybody else's
 // number gets the same page and no code, exactly like a number with no account; `on` lets anybody
 // with a Reason in; off and these routes do not exist (src/http.js answers its flat 404).
-import { timingSafeEqual, randomBytes } from "node:crypto";
+import { timingSafeEqual, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
@@ -139,7 +139,7 @@ function readFormCookie(header) {
 // Reason's own host (`same-origin`): under `no-referrer` a browser posts `Origin: null` and its own
 // sign-in form was refused (10-26).
 export const SECURITY_HEADERS = {
-  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "same-origin",
   "X-Frame-Options": "DENY",
@@ -166,7 +166,7 @@ export function webFont(name) {
 }
 const FONTS = `@font-face{font-family:"Reason Serif";font-style:italic;font-weight:400;font-display:swap;src:url(/web/fonts/serif.woff2) format("woff2")}`
   + `@font-face{font-family:"Reason Hand";font-weight:400 700;font-display:swap;src:url(/web/fonts/hand.woff2) format("woff2")}`;
-const CSS = `${FONTS}
+export const WEB_CSS = `${FONTS}
 :root{--serif:"Reason Serif","Instrument Serif","Iowan Old Style",Georgia,serif;--sans:"Inter",system-ui,-apple-system,sans-serif;--hand:"Reason Hand","Caveat",cursive;--mono:"Courier New","Courier",monospace;--rule:var(--line);--above:calc(2rem + clamp(3rem,8vh,6rem));--below:5rem}
 body{font-family:var(--sans);font-size:16px;line-height:1.6}
 .hero{margin:.6rem 0 2.2rem}
@@ -200,7 +200,7 @@ const p = (s) => `<p>${esc(s)}</p>`;
 // The site's hero note: its squiggle arrow, then one line in Reason's own hand. Under a section
 // heading (the join block's) the line stands alone, without the arrow.
 const ARROW = `<svg viewBox="0 0 28 14" aria-hidden="true"><path d="M2 7 Q8 2 14 7 Q20 12 26 7"/><path d="M22 3 L26 7 L22 11"/></svg>`;
-const note = (words, arrow = true) => `<p class="w-note">${arrow ? ARROW : ""}${esc(words)}</p>`;
+export const note = (words, arrow = true) => `<p class="w-note">${arrow ? ARROW : ""}${esc(words)}</p>`;
 // One line per screen, in the site's voice ("no app. no dashboard. just a text."): lowercase, and
 // it says what is true, never words for anybody to type.
 export const NOTES = {
@@ -244,20 +244,29 @@ export function renderSignin({ number = "", sent = false, error = "", joinNumber
         + `<button class="w-btn" type="submit" data-busy="Sending code…">Text me a code</button></form>`
         + `<div class="t">${p("Reason texts the code to that number through the same line you already text it on. Nothing is shown until the code is in.")}</div>`)
     + joinBlock(joinNumber) + foot();
-  return shell({ title: "Reason — sign in", body, pill: "Web", css: CSS, referrer: "same-origin" });
+  return shell({ title: "Reason — sign in", body, pill: "Web", css: WEB_CSS, referrer: "same-origin" });
+}
+
+/**
+ * The signed-in greeting (owner copy, 2026-10-26): "What's good, <first name>?" — the first name
+ * only — or "What's good?" when no name is known. One place, used by the conversation page too.
+ */
+export function greeting(name) {
+  const first = String(name ?? "").trim().split(/\s+/)[0] ?? "";
+  return first ? `What's good, ${first}?` : "What's good?";
 }
 
 /** Signed in. The conversation itself arrives in the next phase; this says so plainly, and says the one thing about Web worth knowing. */
 export function renderLanding({ account, csrf }) {
   const name = String(account?.name ?? "").trim();
-  const body = hero(`You're in${name ? `, ${name}` : ""}.`, "This browser is yours now, on every page Reason makes for you.", NOTES.landing)
+  const body = hero(greeting(name), "This browser is yours now, on every page Reason makes for you.", NOTES.landing)
     + `<div class="t">${p("Your conversation with Reason will open here. Until then, Reason is the same one you text, and nothing you've told it is lost.")}</div>`
     + `<hr class="w-rule"><h2>One Reason. Pick up anywhere.</h2><div class="t">`
     + p("Start on Web, continue in iMessage, or switch back. Reason keeps the context, so you don't have to explain again. See your full conversation on Web. Messages from Web won't appear in your iMessage thread.")
     + `</div>`
     + `<form class="w-form w-out" method="POST" action="/web/signout"><input type="hidden" name="c" value="${esc(csrf)}"><button class="w-link" type="submit" data-busy="Signing out…">Sign out of this browser</button></form>`
     + foot();
-  return shell({ title: "Reason", body, pill: "Web", css: CSS, referrer: "same-origin" });
+  return shell({ title: "Reason", body, pill: "Web", css: WEB_CSS, referrer: "same-origin" });
 }
 
 /**
@@ -281,16 +290,35 @@ function sendCode({ conversationId, runtime, log }) {
  * block, or null when no line is live. Every private decision is made here on the server, per
  * request: who this browser is (`sessionAccount`), never what the client claims.
  */
-export async function webRequest({ sub = null, method, query = {}, headers = {}, remoteAddress = "", readBody, runtime = null, joinNumber = null, log = () => {} }) {
+export async function webRequest({ sub = null, method, query = {}, headers = {}, remoteAddress = "", readBody, runtime = null, router = null, joinNumber = null, log = () => {} }) {
   const account = sessionAccount(headers);
   const formToken = readFormCookie(headers?.cookie);
+
+  // ---- W2: the conversation's own routes (src/pages/webconvo.js). Signed in only. ----
+  if (sub === "history" || sub === "stream" || sub === "send") {
+    const convo = await import("./webconvo.js");
+    if (!account) {
+      // Nobody's conversation: the same short answer whatever was asked, and a form post goes back to sign in.
+      if (sub === "send" && !String(headers.accept ?? "").includes("application/json")) return redirect("/web");
+      const body = JSON.stringify({ ok: false, error: "signed_out" });
+      return { status: 401, headers: { "Content-Type": "application/json; charset=utf-8", ...SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) }, body };
+    }
+    if (sub === "send") {
+      if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
+      return await convo.sendRequest({ account, headers, readBody, router, log });
+    }
+    if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
+    if (sub === "history") return convo.historyRequest({ account, query });
+    return convo.streamRequest({ account, headers, query, router, log });
+  }
 
   // ---- the landing, or the sign-in form ----
   if (sub === null) {
     if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
     if (account) {
-      const csrf = db.pageSessionCsrf(readCookie(headers.cookie));
-      return page(200, renderLanding({ account, csrf }), formToken ? { "Set-Cookie": clearFormCookie() } : {});
+      // W2: signed in, /web IS the conversation (src/pages/webconvo.js).
+      const { conversationPage } = await import("./webconvo.js");
+      return page(200, conversationPage({ account, headers, sendId: randomUUID(), method }), formToken ? { "Set-Cookie": clearFormCookie() } : {});
     }
     // A fresh form token for a browser that has none; the one it has otherwise, so two tabs agree.
     const token = formToken || randomBytes(16).toString("base64url");
