@@ -58,7 +58,7 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
 
 ```bash
 cd ~/Desktop/pa
-node --test test/web-convo.test.js   # 14: isolation (page/history/stream), forged ids, Web-only reply, same id = one turn (2 tabs), tab close, boundary once, decision 9 (x2), refusals, rate limit, safe rendering, stream (resume/typing/sign-out), paging, the page's form
+node --test test/web-convo.test.js   # 18: isolation (page/history/stream), forged ids, Web-only reply, same id = one turn (2 tabs), tab close, boundary once, decision 9 (x2), refusals, rate limit, safe rendering, stream (resume/typing/sign-out), paging, the page's form
 node --test test/web-w0.test.js test/web-signin.test.js test/domains.test.js   # W0/W1 still hold (W0's two text→web→text expectations now carry WEB_HINT)
 # over REAL HTTP on loopback, cage env, throwaway DB, real Router/Runtime/outbox/WebChannel + FakeChannel, scripted model:
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/web.db node .agents/skills/verify-reason/bin/web-convo-drive.mjs   # 16 steps
