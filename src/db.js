@@ -1664,6 +1664,18 @@ addColumnIfMissing("notice_seen", "offered_at", "INTEGER");
 // carries one is one occurrence of a `series` row, and the series schedules the next after it. See
 // src/series.js.
 addColumnIfMissing("timers", "series_id", "INTEGER");
+// A timer that ends in a PHONE CALL rather than a text (2026-10-26): "call me at 7", "wake me up at
+// 6:30 with a call". `call_goal` is why Reason is ringing, in words it can open the call with, and
+// NULL is every ordinary timer. When one of these fires the runtime places the call itself through
+// `call_place` (to the person's own number) instead of running a model turn, and the call row made
+// for it points back here through `calls.timer_id` — which is also how a retry knows the phone has
+// already rung. A series carries one too, copied onto every firing it schedules.
+addColumnIfMissing("timers", "call_goal", "TEXT");
+addColumnIfMissing("series", "call_goal", "TEXT");
+addColumnIfMissing("calls", "timer_id", "INTEGER");
+// The one text a scheduled call that reached nobody is owed, stamped so it goes exactly once
+// whichever settle path (webhook, call_status, the lost-calls sweep) found out how the call ended.
+addColumnIfMissing("calls", "missed_told_at", "INTEGER");
 
 // The model's own "this is enough", stamped. A cap ending a run is code saying stop; this is the
 // model saying it, and it has to survive a restart the same way, or every wake re-opens a question
@@ -1761,10 +1773,24 @@ export function setPlanStatus(conversationId, id, status) {
 }
 
 // ---------- timers ----------
-export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null }) {
-  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(conversationId, fireAt, note, planId, taskId, seriesId);
+export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null, callGoal = null }) {
+  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id, call_goal) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(conversationId, fireAt, note, planId, taskId, seriesId, callGoal ? String(callGoal) : null);
   return getTimer(conversationId, Number(r.lastInsertRowid));
+}
+/** The call a timer's firing placed, if the phone has already rung for it. Unscoped: the fire path holds the timer row. */
+export function callByTimer(timerId) {
+  // A row the provider refused before anything was dialled (state failed, no external id) is not a
+  // phone that rang: a retry after that must still send the "couldn't be placed" text, so it is
+  // not what this returns.
+  return db.prepare("SELECT * FROM calls WHERE timer_id = ? AND NOT (state = 'failed' AND external_id IS NULL) ORDER BY id DESC LIMIT 1").get(timerId) ?? null;
+}
+/**
+ * Claim the one "I tried to call you and couldn't reach you" text for a scheduled call. True once,
+ * for the first settle path that gets here; false for every later one.
+ */
+export function markMissedCallTold(callId) {
+  return db.prepare("UPDATE calls SET missed_told_at = ? WHERE id = ? AND missed_told_at IS NULL").run(clock.now(), callId).changes === 1;
 }
 export function getTimer(conversationId, id) {
   return db.prepare("SELECT * FROM timers WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
@@ -1823,10 +1849,10 @@ export function markTimerGaveUp(id, { error = null } = {}) {
 // ---------- series: a check-in that keeps coming back ----------
 // Rows only. Every decision about WHEN — the next occurrence, quiet hours, what a missed one means —
 // is in src/series.js, so the maths is testable without a database and this file stays what it is.
-export function createSeries(conversationId, { what, rule, tz, nextAt = null }) {
-  const r = db.prepare(`INSERT INTO series (conversation_id, what, rule, tz, next_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, what, JSON.stringify(rule ?? {}), tz, nextAt, clock.now());
+export function createSeries(conversationId, { what, rule, tz, nextAt = null, callGoal = null }) {
+  const r = db.prepare(`INSERT INTO series (conversation_id, what, rule, tz, next_at, created_at, call_goal)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, what, JSON.stringify(rule ?? {}), tz, nextAt, clock.now(), callGoal ? String(callGoal) : null);
   return getSeries(conversationId, Number(r.lastInsertRowid));
 }
 /** Scoped to the conversation, like every other get: a series in another thread is not found. */
@@ -1890,9 +1916,10 @@ export function pendingSeriesTimers(seriesId) {
  * Called only once the message is in the outbox — a firing the model answered with NO_REPLY has
  * asked nothing, so it must not turn the next thing they say into a report about it.
  */
-export function noteSeriesFired(id, { at = clock.now() } = {}) {
+export function noteSeriesFired(id, { at = clock.now(), awaiting = true } = {}) {
+  // A standing CALL asks nothing by text, so the next thing they say is not a report on it.
   db.prepare("UPDATE series SET fired_count = fired_count + 1, last_fired_at = ?, awaiting_since = ? WHERE id = ?")
-    .run(at, at, id);
+    .run(at, awaiting ? at : null, id);
   return seriesById(id);
 }
 /** The one series waiting on an answer here, newest firing first. At most one is ever taken. */
@@ -4412,15 +4439,18 @@ export function createCall(conversationId, {
   state = "placing",
   // The job this call is a step of, when it is one.
   taskId = null,
+  // The timer whose firing placed this call, when it was a scheduled one ("call me at 7"). Written
+  // with the row, not after it, because it is what stops a retry of that timer ringing twice.
+  timerId = null,
 } = {}) {
   const now = clock.now();
   const r = db.prepare(`INSERT INTO calls
     (conversation_id, provider, external_id, to_number, is_owner, goal, facts, state, direction,
-     confirmation_id, announcement, webhook_token, task_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     confirmation_id, announcement, webhook_token, task_id, timer_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(conversationId, provider, externalId, toNumber, isOwner ? 1 : 0, goal, JSON.stringify(facts ?? []),
          state, direction === "in" ? "in" : "out", confirmationId,
-         announcement, linkToken(CALL_WEBHOOK_TOKEN_LENGTH), taskId, now, now);
+         announcement, linkToken(CALL_WEBHOOK_TOKEN_LENGTH), taskId, timerId, now, now);
   return getCall(conversationId, Number(r.lastInsertRowid));
 }
 

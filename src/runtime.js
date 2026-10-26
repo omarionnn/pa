@@ -19,7 +19,7 @@ import * as accounts from "./accounts.js";
 import * as outboxLib from "./outbox.js";
 import * as brief from "./brief.js";
 import * as undoLib from "./undo.js";
-import { runReleasedAction, settleLostCalls, settleAbandonedResearch, refreshAgentcardConnections, setAgentcardRefreshLog } from "./tools.js";
+import { runTool, runReleasedAction, settleLostCalls, settleAbandonedResearch, refreshAgentcardConnections, setAgentcardRefreshLog } from "./tools.js";
 import { checkTickets } from "./ticketcheck.js";
 import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
@@ -150,8 +150,40 @@ const timerRetryGap = (n) => Math.max(0, n - 1) * config.timerRetryBackoffMs;
  * what it is — a note Reason left itself — because that is why it does not read like a text.
  */
 function missedTimerLine(t) {
+  if (t.call_goal) {
+    return `heads up — i was meant to call u at ${stamp(t.fire_at)} (${t.call_goal}) and couldn't.`
+      + ` something on my end broke each of the ${t.attempts} times i tried to place the call, so i've stopped trying and i'm telling u instead of going quiet.`;
+  }
   return `heads up — i missed a reminder i owed u. it was set for ${stamp(t.fire_at)}, and the note i left myself for it was: "${t.note}".`
     + ` something on my end broke each of the ${t.attempts} times i tried to send it, so i've stopped trying and i'm telling u instead of going quiet.`;
+}
+
+/**
+ * The one text a scheduled call that could not be placed gets, in code's words. `why` is what
+ * `call_place` refused with, which already names the cap, the missing provider or the provider's
+ * error; what they read is that the phone was tried, why it did not ring, and the thing the call
+ * was for — so a wake-up that could not ring still wakes them, by text.
+ */
+function unplacedCallLine(t, { status = "", error = "" } = {}) {
+  // `call_place` refuses in words written for the MODEL ("say that plainly", the env var to raise,
+  // the person's name in the third person). None of that is for them; each refusal has one plain
+  // reason here, and only a provider's own error is quoted.
+  const plain = {
+    daily_call_cap: "today's call limit is used up",
+    daily_call_minutes_cap: "today's call minutes are used up",
+    not_connected: "no phone line is set up on my end",
+    cannot_record: "the phone line can't record, and every call has to be",
+    payment_details_refused: "i don't say payment details on a call",
+    quiet_hours: "it's the middle of the night",
+  }[String(status ?? "")];
+  const raw = String(error ?? "");
+  // Only a provider's own error is quoted ("The call did not go through: <provider>"); any other
+  // unmapped refusal is written for the model and is not repeated at them.
+  const provider = /^The call did not go through:\s*/i.test(raw)
+    ? raw.split("\n")[0].replace(/^The call did not go through:\s*/i, "").replace(/\s*(Say exactly that|Nobody's phone rang)\b.*$/s, "").trim().replace(/[.:]+$/, "")
+    : "";
+  const reason = plain ?? (/no number on file/i.test(raw) ? "there's no number on file for u" : provider);
+  return `tried to call u just now — ${t.call_goal} — but the call couldn't be placed${reason ? ` (${reason})` : ""}. so this is the text instead.`;
 }
 
 export class Runtime extends EventEmitter {
@@ -967,7 +999,10 @@ export class Runtime extends EventEmitter {
     const t = db.getTimer(due.conversation_id, due.id);
     if (!t || t.fired_at || t.cancelled_at) return false;
 
-    if (!this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); return true; }
+    // The proactive ceiling is for things Reason starts. A call they asked for at a time is not
+    // one of those, and a wake-up call quietly dropped because the day's proactive texts were
+    // used up is the worst version of a missed alarm — so a call timer goes past it.
+    if (!t.call_goal && !this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); return true; }
     // Nobody to say it to. A person who has opted out, or whose last few messages all failed for
     // good, cannot get this one either — so the turn is not run (it was real research, every few
     // hours, for Agu, who had opted out a week before), their standing check-ins are paused, and
@@ -986,6 +1021,11 @@ export class Runtime extends EventEmitter {
     // Its message is already in the outbox: an earlier try got that far and the process stopped
     // before the timer was marked. The outbox owns it from there, so this is only the bookkeeping.
     if (db.outboundUnder(timerKey(t.id)).length) { db.markTimerFired(t.id); this._noteSeriesFired(t); return true; }
+    // Same for a call timer whose phone has already rung: the call row is made with the timer's id
+    // before the dial, so a process that died between the dial and the mark finds it here and
+    // does not ring them twice. (A call that was refused before the row — no provider, a cap —
+    // left no row, so its text goes out below like any other try.)
+    if (t.call_goal && db.callByTimer(t.id)) { db.markTimerFired(t.id); this._noteSeriesFired(t); return true; }
     // Out of tries before this one starts, which is what a turn that killed the process leaves.
     if (t.attempts >= config.timerMaxAttempts) {
       return await this._giveUpOnTimer(t, t.last_error ?? "the process stopped in the middle of the turn");
@@ -1052,7 +1092,7 @@ export class Runtime extends EventEmitter {
    */
   _noteSeriesFired(t) {
     if (!t?.series_id) return;
-    const s = db.noteSeriesFired(t.series_id);
+    const s = db.noteSeriesFired(t.series_id, { awaiting: !t.call_goal });
     this.log({ series: t.series_id, checked_in: s?.fired_count ?? null, timer: t.id });
   }
 
@@ -1061,6 +1101,9 @@ export class Runtime extends EventEmitter {
    * and throws when the timer should be tried again.
    */
   async _runTimer(t) {
+    // "Call me at 7": the firing IS the call. No model turn, no text first — the phone rings and
+    // the call itself opens with why. Only if it cannot be placed is anything written.
+    if (t.call_goal) return await this._placeTimerCall(t);
     const key = timerKey(t.id);
     let sent = null;
     const turn = async (args) => {
@@ -1131,6 +1174,55 @@ export class Runtime extends EventEmitter {
       ...(forGoal ? { keep: goals.checkKept(forGoal) } : {}),
       meta: { fromTimer: t.id, ...(standing ? { fromSeries: standing.id } : {}), ...(forGoal ? { fromGoal: forGoal.id } : {}) },
     });
+    return sent;
+  }
+
+  /**
+   * A scheduled call, placed. Code's, not the model's, for the same reason the timer's three tries
+   * are: a wake-up call is the one reminder that has to happen at the minute it was set for, and
+   * a model turn in front of it is a model turn that can decide not to.
+   *
+   * It goes through `call_place` itself — to "owner", which is this conversation's own number and
+   * nobody else's, with the timer's goal — so every rule a call asked for by text obeys applies
+   * here unchanged: no provider, a provider that cannot record, the daily call and minutes caps,
+   * payment details in the goal. Each of those is a refusal in words, and a refusal becomes ONE
+   * text saying the phone was tried and why it did not ring (never silence: the thing the call
+   * was for still has to reach them). The API spend caps never stop a call (src/spend.js,
+   * owner's rule); their heads-up text is the ops row's.
+   *
+   * Returns what became of the fallback text when there was one, like `_runTimer`; a call that
+   * was placed returns `{ ok: true }` and the timer is finished with. A placed call that nobody
+   * answers is settled later by whichever path hears how it ended, and `settleCall` queues the
+   * one text for that (src/tools.js queueMissedScheduledCall).
+   */
+  async _placeTimerCall(t) {
+    const c = t.conversation_id;
+    const ctx = {
+      ...this.turnExtras, conversationId: c, log: this.log, events: this,
+      // How `call_place` knows this is a scheduled call: it writes the timer onto the row (the
+      // never-twice check above reads it back) and opens the call with the goal.
+      scheduledTimerId: t.id, fromTimer: t.id,
+      // The timer's task is the call's task too, so letting the task go finds and cancels it.
+      taskId: t.task_id ?? null,
+    };
+    let out;
+    try {
+      out = await runTool("call_place", { to: "owner", goal: t.call_goal }, ctx);
+    } catch (e) {
+      out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
+    }
+    if (out?.ok) {
+      this.log({ timer: t.id, scheduled_call: out.call_id, state: out.state });
+      return { ok: true, call_id: out.call_id };
+    }
+    // Not placed: nobody's phone rang. One text, under this timer's own key, so a retry of the
+    // text cannot send it twice. A text that cannot be handed over throws, which keeps the timer
+    // due for the next sweep — exactly as a reminder whose turn broke.
+    this.log({ timer: t.id, scheduled_call_refused: out?.status ?? "error", why: String(out?.error ?? "").slice(0, 200) });
+    const sent = await this._tell(c, unplacedCallLine(t, { status: out?.status, error: out?.error }), { fromTimer: t.id, idempotencyKey: timerKey(t.id) });
+    if (sent?.ok === false && !db.outboundUnder(timerKey(t.id)).length) {
+      throw new Error(`the call could not be placed (${out?.error ?? "no reason given"}) and the text saying so could not be handed over: ${sent.error ?? "no reason given"}`);
+    }
     return sent;
   }
 

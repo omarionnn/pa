@@ -237,7 +237,7 @@ function eligible(rule, day) {
  * wall-clock terms: on the night the clocks change, "08:00" and "eight hours later" are not the
  * same instant.
  */
-function outOfQuiet(ms, rule, timeZone) {
+export function outOfQuiet(ms, rule, timeZone) {
   if (rule.their_time) return ms;
   const p = partsIn(ms, timeZone);
   if (p.hour >= QUIET_START) return atLocal({ ...addDays(p, 1), hour: QUIET_END, minute: 0 }, timeZone);
@@ -330,6 +330,8 @@ export function view(s) {
     last_fired: s.last_fired_at ? stamp(s.last_fired_at) : null,
     last_report: s.last_report || null,
     last_report_at: s.last_report_at ? stamp(s.last_report_at) : null,
+    // A standing CALL rather than a check-in by text: every firing rings their phone with this.
+    ...(s.call_goal ? { calls_them: s.call_goal } : {}),
     ...(s.state === "ended" ? { ended: stamp(s.ended_at), ended_why: s.ended_why || null } : {}),
   };
 }
@@ -351,7 +353,7 @@ export function tzFor(conversationId) {
 
 /** The note the timer carries: the series' own words, in Reason's voice, like any other reminder. */
 function noteFor(s) {
-  return `standing check-in: ${s.what}`;
+  return s.call_goal ? `standing call: ${s.what}` : `standing check-in: ${s.what}`;
 }
 
 /**
@@ -362,10 +364,13 @@ function noteFor(s) {
  * somebody who has just been told "every monday 9am, i'll ask how the search is going" should see
  * that reminder exist from that moment, not fifteen seconds later.
  */
-export function start({ conversationId, what, repeat, now = clock.now(), tz = null }) {
+export function start({ conversationId, what, repeat, now = clock.now(), tz = null, callGoal = null }) {
   const said = String(what ?? "").trim();
   if (!said) return { ok: false, error: "A series needs `note` saying what it is about, in your own words." };
-  const parsed = normalizeRule(repeat);
+  const ringing = String(callGoal ?? "").trim() || null;
+  // A standing call is never Reason's idea of a time: "call me every weekday at 6:30" rings at
+  // 6:30 unless the model says outright that it picked the hour. Same default as a one-off call.
+  const parsed = normalizeRule(ringing && repeat && repeat.their_time === undefined ? { ...repeat, their_time: true } : repeat);
   if (!parsed.ok) return parsed;
 
   const cap = Number(config.maxSeries);
@@ -388,7 +393,7 @@ export function start({ conversationId, what, repeat, now = clock.now(), tz = nu
   // than today — which matters when today is not an eligible day at all.
   if (rule.kind === "every_n_days") rule.anchor = dateKey(dayOf(first, zone));
 
-  const s = db.createSeries(conversationId, { what: said, rule, tz: zone, nextAt: first });
+  const s = db.createSeries(conversationId, { what: said, rule, tz: zone, nextAt: first, callGoal: ringing });
   const made = scheduleOne(s, { now });
   return { ok: true, series: view(db.getSeries(conversationId, s.id)), first: stamp(first), timer_id: made?.timer?.id ?? null };
 }
@@ -429,7 +434,9 @@ export function scheduleOne(s, { now = clock.now() } = {}) {
     db.setSeriesRule(s.id, rule);
   }
   const next = nextOccurrence(rule, at, zone);
-  const timer = db.createTimer(s.conversation_id, { fireAt: at, note: noteFor(s), seriesId: s.id });
+  // A standing call carries its goal onto every firing, so the fire path reads one timer row and
+  // never has to know whether the ring was a one-off or the Tuesday of a series.
+  const timer = db.createTimer(s.conversation_id, { fireAt: at, note: noteFor(s), seriesId: s.id, callGoal: s.call_goal || null });
   // Moved BEFORE the firing rather than after it: a firing somebody cancels by hand is then skipped
   // instead of being made again on the next sweep, and nothing can schedule the same occasion twice.
   db.setSeriesNext(s.id, next);

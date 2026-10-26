@@ -392,6 +392,17 @@ export function ownerProfileNote(conversationId) {
   }
 }
 
+/** Why Reason rang them, for a call it placed. "" on a call they made, or one with no goal on the row. */
+export function scheduledCallNote(call) {
+  if (!call || call.direction === "in" || !call.timer_id) return "";
+  const why = String(call.goal ?? "").trim();
+  if (!why) return "";
+  return `YOU rang THEM, at a time they asked for, and the call opened by saying why: "${why}".`
+    + ` That is what this call is for — stay on it (a wake-up call checks they are actually up; a nudge to leave asks if they are leaving)`
+    + ` until they say they are good or move on to something else, and do not ask what they called about: they did not call.`
+    + ` Keep it short; they asked for a ring, not a conversation.`;
+}
+
 export function ownerContext({ call, callMessages = [], now = clock.now() }) {
   const conversationId = call.conversation_id;
   const me = accounts.ownerOf(conversationId);
@@ -404,6 +415,10 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     VOICE_RULES,
     ownerLanguageRule(lang.language || "en"),
     ownerCallFrame({ name: me.name }),
+    // A call REASON placed to them — scheduled ("call me at 7 to get me up") or asked for by text —
+    // has a reason, and the model answering the turns must know it: a wake-up call whose second
+    // line is "what's up?" is Reason forgetting why it rang. The opening line already said it.
+    scheduledCallNote(call),
     // The half of the turn profile the model is responsible for: telling a pause for thought from a
     // finished turn (2026-10-07 addendum, section 4). The numbers in that profile are agent-level
     // settings on the platform and nothing a prompt can act on; this sentence is the part that is.
