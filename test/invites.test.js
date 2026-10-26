@@ -328,10 +328,47 @@ test("a link needs a name to show: none on the account means ask once, then mint
   const out = await tool("invite_link_create", {}, AMA_C);
   assert.equal(out.needs_name, true);
   assert.equal(db.listInvites(AMA_C).length, 0);
-  await tool("my_name", { name: "Ama" }, AMA_C);
+  assert.match(out.error, /ask them once/i);
+  assert.match(out.error, /same reply/, "the link goes out on the answer, not a second ask");
+  assert.doesNotMatch(out.error, /['"‘“][^'"’”]{3,}\?['"’”]/, "no quoted question to parrot");
+  // Their answer: my_name saves it and points straight back at the link, in the same reply.
+  const named = await tool("my_name", { name: "Ama" }, AMA_C);
+  assert.equal(named.ok, true);
+  assert.match(named.invite_link, /invite_link_create now/);
+  assert.match(named.invite_link, /same reply/);
   const made = await tool("invite_link_create", {}, AMA_C);
   assert.equal(made.ok, true);
   assert.equal(made.shown_as, "Ama");
+  assert.match(made.say, /alone on its own line/);
+  assert.equal(db.listInvites(AMA_C).length, 1, "one ask, one link");
+});
+
+test("rename: the saved name is the one shown, and a new name means a new card", async () => {
+  await tool("my_name", { name: "Ama" }, AMA_C);
+  const made = await tool("invite_link_create", {}, AMA_C);
+  const token = made.link.split("/").pop();
+  const page = () => inviteRequestFor({ token }).body;
+  const v = () => /card\.png\?v=([0-9a-f]+)/.exec(page())[1];
+  assert.match(page(), /Ama invited you to Reason/);
+  const before = v();
+  assert.equal(before, invitecard.inviteCardKey("Ama"));
+  const drawn = [];
+  const shoot = async (html) => { drawn.push(/<h1>([^<]*) thinks/.exec(html)[1]); return Buffer.from("png"); };
+  await invitecard.inviteCard(invites.inviteCardName(token), { shoot });
+
+  await tool("my_name", { name: "Ama Owusu" }, AMA_C);
+  assert.match(page(), /Ama Owusu invited you to Reason/, "the same link now shows the new name");
+  assert.notEqual(v(), before, "and points at a new card, so no phone shows the old one");
+  await invitecard.inviteCard(invites.inviteCardName(token), { shoot });
+  assert.deepEqual(drawn, ["Ama", "Ama Owusu"], "the new name is drawn fresh");
+});
+
+test("a person with invites switched off is never pointed at an invite link when they give their name", async () => {
+  config.invitesOpen = false;
+  try {
+    const named = await tool("my_name", { name: "Ama" }, AMA_C);
+    assert.equal(named.invite_link, undefined);
+  } finally { config.invitesOpen = true; }
 });
 
 test("a request needs a count and a reason; a second pending one updates the first; the master gets it by number", async () => {

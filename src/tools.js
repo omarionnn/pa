@@ -4096,7 +4096,7 @@ export const tools = [
   {
     name: "invite_link_create",
     description: "Make one invite link for them to send a friend. Each link is single-use and gives whoever claims it their own Reason — not a waitlist spot. Links never expire; opening one does not use it up; it is spent only when someone joins with it."
-      + " Use when they want to invite someone or ask for a link. If it says needs_name, ask them once what name their friend should see ('who should i say invited them?'), save it with my_name, then call this again."
+      + " Use when they want to invite someone or ask for a link. If it says needs_name, ask them once, warmly and in your own words, what name their friends should see on it. When they answer — read what they meant, however they put it — save it with my_name and call this again in that same reply, so the link goes out right then: never a second ask, never a dead end. The name on the card is the saved one; if they say they want a different name, save it with my_name and new links and cards use it."
       + " Write one short line first saying it's an invite for a friend to pass on, in your own words (never quote a command), then the link exactly as returned, alone on its own line with nothing after it — it goes out as its own message, so forwarding it shows the card.",
     input_schema: { type: "object", properties: {} },
   },
@@ -9420,6 +9420,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         out.name = name;
         // A name is the moment the contact card should land — personal, not just a number.
         out.send_contact_card = true;
+        // The name was the one thing an invite link was waiting on (invite_link_create's
+        // needs_name): the link goes out in this same reply, never on a second ask.
+        if (invitesOpenFor(c)) out.invite_link = "If they were waiting on an invite link, call invite_link_create now and send it in this same reply: one short line, then the link alone. The card shows this name from now on.";
       }
       if (wantsLanguage) {
         // "english" (or nothing) is the way back. A language nobody has written the words for is
@@ -10885,7 +10888,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (out.needs_name) {
         return {
           ok: false, needs_name: true,
-          error: "Reason has no name for them to show on the invite page. Ask them once what name their friend should see, save it with my_name, then call invite_link_create again.",
+          error: "Reason has no name for them to show on the invite page. Ask them once, warmly and in your own words, what name their friends should see on it (never quote a command). When they answer, read what they meant, save it with my_name, then call invite_link_create again in that same reply and send the link: one short line, then the link alone. Do not ask twice.",
         };
       }
       if (out.none_left) {
