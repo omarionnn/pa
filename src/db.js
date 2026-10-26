@@ -1498,8 +1498,9 @@ addColumnIfMissing("threads", "last_inbound_id", "TEXT");
 // message leaves on the thread; a later phase reads it for the one-line "the rest is on Web" hint
 // after a switch (docs/plans/reason-web-phase1.md §7 decision 9).
 addColumnIfMissing("threads", "last_channel", "TEXT");
-// Decision 9 (W2): set when a TEXT arrives right after the person was on Web, so Reason's next text
-// to them carries one line saying the whole conversation is on Web; taken (cleared) by that text.
+// Decision 9 (W2): the time a TEXT arrived right after the person was on Web (0 = none owed), so
+// Reason's next text to them, within the switch window, carries one line saying the whole
+// conversation is on Web; taken (cleared) by that text.
 addColumnIfMissing("threads", "web_hint_due", "INTEGER NOT NULL DEFAULT 0");
 // The first time this person opened their conversation on Web: the history boundary is explained
 // once, then never again (spec §9: "not a recurring popup").
@@ -3605,7 +3606,7 @@ export function upsertThread({ conversationId, channel, address, chatId = null, 
   // Reason sends carries the one line about Web. Once per switch — takeWebHint clears it.
   const before = getThread(conversationId);
   if (before?.last_channel === "web" && now - (before.updated_at ?? 0) < WEB_SWITCH_WINDOW_MS) {
-    db.prepare("UPDATE threads SET web_hint_due = 1 WHERE conversation_id = ?").run(conversationId);
+    db.prepare("UPDATE threads SET web_hint_due = ? WHERE conversation_id = ?").run(now, conversationId);
   }
   db.prepare(`INSERT INTO threads (conversation_id, channel, address, chat_id, is_owner, service, last_inbound_id, last_channel, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3623,9 +3624,16 @@ export function upsertThread({ conversationId, channel, address, chatId = null, 
 /** How recent the last Web message must be for a text after it to count as switching mid-task (decision 9). */
 export const WEB_SWITCH_WINDOW_MS = 12 * 60 * 60 * 1000;
 
-/** Is the decision-9 line owed on this text? Yes exactly once per switch: taking it clears it. */
-export function takeWebHint(conversationId) {
-  return db.prepare("UPDATE threads SET web_hint_due = 0 WHERE conversation_id = ? AND web_hint_due = 1").run(conversationId).changes === 1;
+/**
+ * Is the decision-9 line owed on this text? Yes exactly once per switch, and only within the same
+ * window the switch was judged by: a switch whose reply never went out does not ride on a reminder
+ * days later. Taking it clears it either way.
+ */
+export function takeWebHint(conversationId, now = clock.now()) {
+  const r = db.prepare("SELECT web_hint_due AS due FROM threads WHERE conversation_id = ?").get(conversationId);
+  if (!r?.due) return false;
+  const took = db.prepare("UPDATE threads SET web_hint_due = 0 WHERE conversation_id = ? AND web_hint_due = ?").run(conversationId, r.due).changes === 1;
+  return took && now - r.due < WEB_SWITCH_WINDOW_MS;
 }
 
 export function getThread(conversationId) {

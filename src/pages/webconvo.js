@@ -265,7 +265,7 @@ else{meta.textContent="You \\u00b7 Web \\u00b7 Not sent yet";var b=document.crea
 function send(p,li,tries){tries=tries||0;state(li,"sending");
 fetch("/web/send",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json","X-Reason-Csrf":R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c})})
 .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(j){j.status=r.status;return j})})
-.then(function(j){if(j.status===401){location.reload();return}if(j.ok){if(li.dataset.state!=="done"){state(li,"sent");waiting++;setTyping(true);poll()}}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,"failed")})
+.then(function(j){if(j.status===401){location.reload();return}if(j.ok){if(li.isConnected&&!j.duplicate){state(li,"sent");waiting++;setTyping(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,"failed")})
 .catch(function(){if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,"failed")})}
 form.addEventListener("submit",function(e){e.preventDefault();var text=box.value.replace(/\\s+$/,"");if(!text.trim())return;var p={id:uid(),text:text};keep(pend().concat([p]));box.value="";grow();send(p,pendingLine(p))});
 box.addEventListener("keydown",function(e){if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing&&!matchMedia("(pointer:coarse)").matches){e.preventDefault();form.requestSubmit()}});
@@ -298,13 +298,14 @@ const json = (status, obj, extra = {}) => {
 };
 
 /** GET /web signed in: the latest page of the conversation, and the boundary if this is the first visit. */
-export function conversationPage({ account, headers, sendId }) {
+export function conversationPage({ account, headers, sendId, method = "GET" }) {
   const conv = account.conversation_id;
   const service = serviceOf(conv);
   const rows = db.messagesBefore(conv, { limit: PAGE + 1 });
   const more = rows.length > PAGE;
   const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service }));
-  const firstVisit = db.markWebNoticeSeen(conv);
+  // Spent only by a real view (GET); a HEAD carries no body to show it in.
+  const firstVisit = method === "GET" ? db.markWebNoticeSeen(conv) : false;
   const csrf = db.pageSessionCsrf(readCookie(headers.cookie));
   return renderConversation({ account, csrf, lines, more, firstVisit, sendId });
 }
@@ -414,21 +415,22 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
           write(`id: ${r.id}\nevent: message\ndata: ${JSON.stringify(rowOut(r, { conversationId: conv, service }))}\n\n`);
         }
       };
-      const onRow = (e) => { if (e?.conversationId === conv) flush(); };
+      const onRow = (e) => { if (e?.conversationId !== conv) return; try { flush(); } catch { end("failed"); } };
       const onTyping = (e) => {
         if (e?.to !== account.address || !stillHers()) return;
         write(`event: typing\ndata: ${JSON.stringify({ on: !!e.on, until: e.until || 0 })}\n\n`);
       };
-      write("retry: 1500\n\n");
-      db.historyBus.on("row", onRow);
-      webCh?.events?.on?.("typing", onTyping);
-      flush();
+      // Timers first: `end` clears them, and the first flush may already end the stream.
       const beat = setInterval(() => write(": ping\n\n"), 15_000);
       const check = setInterval(() => { if (!stillHers()) { write("event: signedout\ndata: {}\n\n"); end("signed_out"); } }, recheckMs);
       const stop = setTimeout(() => end("cycle"), streamMs);
       for (const t of [beat, check, stop]) t.unref?.();
       req?.on?.("close", () => end("closed"));
       res.on?.("close", () => end("closed"));
+      write("retry: 1500\n\n");
+      db.historyBus.on("row", onRow);
+      webCh?.events?.on?.("typing", onTyping);
+      try { flush(); } catch (e) { log({ web_stream_failed: (e?.message ?? String(e)).split("\n")[0] }); end("failed"); }
     },
   };
 }

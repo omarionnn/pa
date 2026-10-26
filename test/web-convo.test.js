@@ -420,3 +420,40 @@ test("the page itself: the composer posts to /web/send with the session's secret
   await new Promise(r => setTimeout(r, 20));
   assert.equal(h.turns.length, 1);
 });
+
+// ---------- review follow-ups (fresh-subagent review of #173) ----------
+
+test("decision 9: an owed line goes stale with the switch window — it never rides on a reminder days later", async () => {
+  const h = harness();
+  const kofi = { ...browser(KOFI_C), conv: KOFI_C };
+  await send(h, kofi, { id: "stale-0001", text: "on web" });
+  await until(() => h.web.recent.length === 1);
+  // A text arrives (the switch) but its reply never goes out through deliver.
+  db.upsertThread({ conversationId: KOFI_C, channel: "fake", address: KOFI, isOwner: true, service: "iMessage" });
+  clock.skip(13 * HOUR);
+  await h.runtime._tell(KOFI_C, "Reminder: stretch");
+  assert.ok(await until(() => h.fake.sent.length === 1));
+  assert.equal(h.fake.sent[0].text, "Reminder: stretch");
+  assert.equal(db.getThread(KOFI_C).web_hint_due, 0, "and it is cleared, not left waiting");
+});
+
+test("a HEAD of /web does not spend the once-only boundary note", async () => {
+  const h = harness();
+  const kofi = { ...browser(KOFI_C), conv: KOFI_C };
+  assert.equal((await call(h, { b: kofi, method: "HEAD" })).status, 200);
+  assert.match((await call(h, { b: kofi })).body, /One Reason\. Pick up anywhere\./, "the first real view still shows it");
+});
+
+test("a stream whose session is already gone at the first look ends quietly, without throwing", async () => {
+  const h = harness();
+  const kofi = { ...browser(KOFI_C), conv: KOFI_C };
+  const acct = db.getAccount(KOFI_C);
+  db.endPageSession(kofi.token);
+  const s = convo.streamRequest({ account: acct, headers: headersFor(kofi), router: h.router });
+  const chunks = [];
+  const res = Object.assign(new EventEmitter(), { write: (x) => chunks.push(x), end: () => { res.ended = true; }, ended: false });
+  assert.doesNotThrow(() => s.stream(res, new EventEmitter()));
+  assert.equal(res.ended, true);
+  assert.match(chunks.join(""), /event: signedout/);
+  assert.equal(db.historyBus.listenerCount("row"), 0, "nothing left listening");
+});

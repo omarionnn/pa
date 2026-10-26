@@ -238,7 +238,8 @@ export function createServer({ router, runtime, log = () => {} }) {
         if (out.stream) {
           res.writeHead(out.status, out.headers);
           if (req.method === "HEAD") return res.end();
-          return out.stream(res, req);
+          // Headers are gone by now: a failure here can only end the stream, never answer 500.
+          try { return out.stream(res, req); } catch (e) { log?.(`web stream: ${e?.message ?? e}`); return res.end(); }
         }
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);

@@ -309,7 +309,7 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
     if (account) {
       // W2: signed in, /web IS the conversation (src/pages/webconvo.js).
       const { conversationPage } = await import("./webconvo.js");
-      return page(200, conversationPage({ account, headers, sendId: randomUUID() }), formToken ? { "Set-Cookie": clearFormCookie() } : {});
+      return page(200, conversationPage({ account, headers, sendId: randomUUID(), method }), formToken ? { "Set-Cookie": clearFormCookie() } : {});
     }
     // A fresh form token for a browser that has none; the one it has otherwise, so two tabs agree.
     const token = formToken || randomBytes(16).toString("base64url");
