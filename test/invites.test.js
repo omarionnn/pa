@@ -156,7 +156,7 @@ test("a GET of the invite page renders who invited them and changes nothing — 
   assert.match(out.body, /family=Instrument\+Serif:ital@1/, "heading loads the homepage headline face");
   assert.match(out.body, /\.hero h1\{font-family:"Instrument Serif"[^}]*font-style:italic;font-weight:400/, "heading is the homepage's italic serif");
   assert.match(out.body, /Reason is your personal concierge/, "what Reason does");
-  assert.match(out.body, /og:description" content="Your personal concierge\./, "link preview line");
+  assert.match(out.body, /og:description" content="Your personal concierge\. Free for early people, for good\.">/, "link preview line matches the cost: early people, free for good");
   assert.doesNotMatch(out.body, /lives in your texts/i);
   const code = invites.formatCode(inv.claim_code);
   const href = /href="(sms:[^"]*)"/.exec(out.body)?.[1]?.replaceAll("&amp;", "&").replaceAll("&#39;", "'");

@@ -289,7 +289,7 @@ export function renderInvite({ invite, name, lineNumber }) {
     `<meta property="og:type" content="website">`,
     `<meta property="og:site_name" content="Reason">`,
     `<meta property="og:title" content="${esc(title)}">`,
-    `<meta property="og:description" content="Your personal concierge. Free right now.">`,
+    `<meta property="og:description" content="Your personal concierge. Free for early people, for good.">`,
     image ? `<meta property="og:image" content="${esc(image)}">` : "",
     `<meta name="twitter:card" content="summary_large_image">`,
     `<meta name="twitter:title" content="${esc(title)}">`,
