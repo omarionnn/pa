@@ -44,7 +44,7 @@ const policyLinks = () => [
 export function homePage() {
   return renderNotice({
     title: "Reason",
-    kicker: "A personal assistant that lives in your texts",
+    kicker: "Your personal concierge",
     lines: [
       "Reason is an assistant you text like a friend. You ask it for things in plain words — look this up, remind me, sort this out, what's on Thursday — and it does them, keeps track of what is still open, and comes back when there is something real to say.",
       "It is one person's assistant at a time. Everyone who texts it gets their own: their own memory, their own connected accounts, their own history. Nobody can see anybody else's.",

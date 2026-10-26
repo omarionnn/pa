@@ -152,7 +152,9 @@ test("a GET of the invite page renders who invited them and changes nothing — 
   assert.match(out.body, /<meta property="og:title" content="Kofi invited you to Reason">/);
   assert.match(out.body, /<meta property="og:image" content="https:\/\/reason\.example\.test\/og\.png">/);
   assert.match(out.body, /free right now/i, "what it costs, plainly");
-  assert.match(out.body, /personal assistant that lives in your texts/, "what Reason does");
+  assert.match(out.body, /Reason is your personal concierge/, "what Reason does");
+  assert.match(out.body, /og:description" content="Your personal concierge\./, "link preview line");
+  assert.doesNotMatch(out.body, /lives in your texts/i);
   const code = invites.formatCode(inv.claim_code);
   const href = /href="(sms:[^"]*)"/.exec(out.body)?.[1]?.replaceAll("&amp;", "&").replaceAll("&#39;", "'");
   assert.equal(href, `sms:${LINE}?&body=${encodeURIComponent(invites.joinText(inv.claim_code))}`, "the sms link to Reason with the code prefilled");

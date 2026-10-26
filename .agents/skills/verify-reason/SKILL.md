@@ -370,6 +370,10 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
+### Baseline — 3,672 pass, **0 failures** after the tagline "Your personal concierge" (2026-10-25)
+
+Tagline on the home page, invite page (+ og:description), README, package.json over `dd5412c`: **3,794 tests, 3,672 passing, 0 failing, 122 skipped** (assertions tightened in `test/site.test.js` + `test/invites.test.js`; `bin/tagline.mjs` checks both pages in-process and `--live`).
+
 ### Baseline — 3,672 pass, **0 failures** after the card note "Your personal concierge" (2026-10-25)
 
 Card NOTE "Your personal concierge" + REV bump over `0961f7a`: **3,794 tests, 3,672 passing, 0 failing, 122 skipped** (+1 in `test/contact.test.js`; `bin/contact-card.mjs` now checks the NOTE). One earlier full run had 2 `test/flights.test.js` failures under load that pass in isolation (3/3, also on untouched main) — re-run before calling it red. Before that:
@@ -542,6 +546,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 | `bin/peek.sh thread\|inbound\|outbox\|pages\|confirms\|ledger\|schema <t>\|sql "…"` | Read the caged database. `schema` first when a column name is in doubt. |
 | `bin/fake-sendblue.mjs <port> <capture.jsonl> [ok\|fail]` | A loopback stand-in for api.sendblue.com: logs every request, answers sends 200 or 400. For `REASON_VERIFY_FAKE_SENDBLUE` and `REASON_WATCHDOG_SEND_URL`. |
 | `bin/evidence.sh new <slug>` / `run <dir> <name> -- cmd…` | Make an evidence folder; run a command into it. |
+| `bin/tagline.mjs [--out <dir>] \| --live <url>` | Tagline "Your personal concierge" on the home page + an invite page (body and og:description), old "lives in your texts" gone. In-process uses its own temp DB and a fake channel; `--live` is one read-only GET /. |
 
 ## Feature map
 
