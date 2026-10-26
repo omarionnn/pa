@@ -446,6 +446,13 @@ function changeLine(ev, changes) {
   return `update for ${ev.name}:\n${changes.join("\n")}`;
 }
 
+/**
+ * Every event link goes out in a bubble of its own, after the words about it, so Messages can draw
+ * it as a card (owner, 2026-10-25). Delivery splits a URL off by itself (src/links.js); words ending
+ * on a colon go first. Said to the model wherever a result hands it a link to pass on.
+ */
+const LINK_ALONE = "If you send a link, write your words first ending with a colon, then the full link on its own line with nothing after it — it goes out as its own message so it shows as a card. Never shorten it or put it mid-sentence.";
+
 /** Messages to guests stop while an event is paused from the status page. */
 const PAUSED = "This event is paused by Reason's operator right now, so nothing goes out to guests. Say so plainly; it isn't something they can undo themselves.";
 
@@ -485,7 +492,7 @@ export async function runEventTool(name, input, ctx) {
     return {
       ok: true,
       event: events.organizerView(ev),
-      share: { name: ev.name, password: input.password, link: events.eventUrl(ev), share_text: events.shareText(ev, input.password) },
+      share: { name: ev.name, password: input.password, link: events.eventUrl(ev), share_text: events.shareText(ev, input.password) }, links: LINK_ALONE,
       say: "Send them the share_text as one message for them to forward, then the link as its OWN message with nothing else in it — never inside the share text or a block to copy — so Messages draws it as the event's card. The link opens a join page; guests still need the password. Guests who already use Reason can also just text Reason the name and password, or paste the link to their Reason. Mention once that they can text a photo or flyer to put on the link's card."
         + (ev.guest_list_visible ? " Don't bring up the who's-going list or Instagram: one follow-up about their own spot on it goes out on its own after your reply." : ""),
     };
@@ -608,7 +615,7 @@ export async function runEventTool(name, input, ctx) {
     const which = events.whichEvent(c, input.event_id, input.event_named, { forGuest: name === "event_leave" || name === "event_mute" });
     if (!which.ok) return askWhich(which);
     if (name === "event_info") {
-      const view = { ok: true, ...events.viewFor(c, input.event_id) };
+      const view = { ok: true, ...events.viewFor(c, input.event_id), links: LINK_ALONE };
       return v.role === "guest" ? organizerWords(view, v.ev) : view;
     }
     if (v.role === "organizer" && name !== "event_directory") return { ok: false, error: "They're the organizer of this one; that's for guests." };
@@ -643,7 +650,7 @@ export async function runEventTool(name, input, ctx) {
     return {
       ok: true, you: { display_name: att.display_name, in_directory: !!att.in_directory, instagram: att.instagram || null },
       // The organizer's row has no guest page of its own: theirs is the guest-list page.
-      ...(v.ev.guest_list_visible ? { directory_link: v.role === "organizer" ? events.organizerPageUrl(v.ev) : events.directoryUrl(v.ev, att) } : { note: "The organizer keeps this guest list private, so the page isn't shown to guests; their choice is saved in case that changes." }),
+      ...(v.ev.guest_list_visible ? { directory_link: v.role === "organizer" ? events.organizerPageUrl(v.ev) : events.directoryUrl(v.ev, att), links: LINK_ALONE } : { note: "The organizer keeps this guest list private, so the page isn't shown to guests; their choice is saved in case that changes." }),
     };
   }
 
@@ -736,7 +743,7 @@ export async function runEventTool(name, input, ctx) {
       if (problem) return { ok: false, error: problem === "too_short" ? "Too short; at least 4 characters." : "Too long." };
       db.updateEventRow(ev.id, { password_hash: events.hashPassword(input.new_password), password_version: ev.password_version + 1 });
       events.scrubSoon(c, input.new_password);
-      return { ok: true, share: { name: ev.name, password: input.new_password, share_text: events.shareText(ev, input.new_password), link: events.eventUrl(ev) }, note: "Everyone already joined stays joined; the old password no longer works for new joins (or for a join page someone had half-finished)." };
+      return { ok: true, share: { name: ev.name, password: input.new_password, share_text: events.shareText(ev, input.new_password), link: events.eventUrl(ev) }, links: LINK_ALONE, note: "Everyone already joined stays joined; the old password no longer works for new joins (or for a join page someone had half-finished)." };
     }
 
     case "event_guest_remove": {
