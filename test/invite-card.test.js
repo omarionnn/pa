@@ -1,5 +1,5 @@
 // The forwarded invite link's card (owner, 2026-10-25): "<Name> thinks you should join reason" in the
-// homepage's italic serif, "It's free right now." in the site's orange handwriting, on the site's
+// homepage's italic serif, "Free for you, for good." in the site's orange handwriting, on the site's
 // paper. One picture per inviter name, drawn once and kept; the fonts ride inline.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
@@ -18,7 +18,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 test("the card says who, in the headline face, with the handwritten line in brand orange on the site's paper", () => {
   const html = card.inviteCardHtml("Kofi");
   assert.match(html, /<h1>Kofi thinks you should join <span class="wordmark"/, "the inviter's name, then the wordmark");
-  assert.match(html, /<p class="hand">It's free right now\.<\/p>/);
+  assert.match(html, /<p class="hand">Free for you, for good\.<\/p>/);
   assert.match(html, /@font-face\{font-family:"Card Serif";font-style:italic;font-weight:400;src:url\(data:font\/woff2;base64,/, "Instrument Serif italic inline, no network");
   assert.match(html, /@font-face\{font-family:"Card Hand";font-weight:400;src:url\(data:font\/woff2;base64,/, "Caveat inline");
   assert.ok(html.includes(`color:${BRAND_ORANGE}`), "handwriting in brand orange");

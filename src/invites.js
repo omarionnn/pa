@@ -291,22 +291,22 @@ const HEADING_CSS = `.hero h1{font-family:"Instrument Serif","Iowan Old Style",G
 
 export function renderInvite({ invite, name, lineNumber }) {
   const title = `${name} invited you to Reason`;
-  // The forwarded link's card (owner, 2026-10-25): the inviter's own picture, a line naming them as
-  // the title, and what Reason is underneath. src/invitecard.js draws the picture once per name.
+  // The forwarded link's card (owner, 2026-10-26): the inviter's own picture carries their name;
+  // the title row says what Reason is, and the description what it costs them. src/invitecard.js draws the picture once per name.
   const cardTitle = `${name} thinks you should join Reason`;
   const image = `${inviteUrl(invite.token)}/card.png?v=${inviteCardKey(name)}`;
   const head = [
     `<meta property="og:type" content="website">`,
     `<meta property="og:site_name" content="Reason">`,
-    `<meta property="og:title" content="${esc(cardTitle)}">`,
-    `<meta property="og:description" content="Reason — your personal concierge">`,
+    `<meta property="og:title" content="Reason — your personal concierge">`,
+    `<meta property="og:description" content="Free for you, for good.">`,
     `<meta property="og:image" content="${esc(image)}">`,
     `<meta property="og:image:type" content="image/png">`,
     `<meta property="og:image:width" content="1200">`,
     `<meta property="og:image:height" content="630">`,
-    `<meta property="og:image:alt" content="${esc(cardTitle)}. It's free right now.">`,
+    `<meta property="og:image:alt" content="${esc(cardTitle)}. Free for you, for good.">`,
     `<meta name="twitter:card" content="summary_large_image">`,
-    `<meta name="twitter:title" content="${esc(cardTitle)}">`,
+    `<meta name="twitter:title" content="Reason — your personal concierge">`,
   ].filter(Boolean).map(t => `\n${t}`).join("") + HEADING_FONT;
 
   const p = (s) => `<p>${esc(s)}</p>`;

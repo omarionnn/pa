@@ -1,5 +1,5 @@
 // The picture an invite link turns into when it is forwarded: "<Name> thinks you should join reason"
-// in the homepage's headline face, with "It's free right now." under it in the site's orange
+// in the homepage's headline face, with "Free for you, for good." under it in the site's orange
 // handwriting, on the site's warm paper (owner, 2026-10-25).
 //
 // One picture per inviter NAME, not per link: every link Kofi sends shows the same card, so it is
@@ -21,7 +21,7 @@ const SERIF = font("instrument-serif-italic-latin.woff2");
 const HAND = font("caveat-latin.woff2");
 
 /** Bump when the drawing changes, so every cached card is drawn again. */
-export const INVITE_CARD_VERSION = 1;
+export const INVITE_CARD_VERSION = 2;
 
 export function inviteCardHtml(name) {
   const who = String(name || "A friend");
@@ -36,7 +36,7 @@ body{background:${PAPER_GRAIN} ${PAPER.bg};position:relative;overflow:hidden;-we
 h1{font:italic 400 ${size}px/1.02 "Card Serif","Instrument Serif",Georgia,serif;letter-spacing:-.02em;color:${PAPER.ink};text-wrap:balance}
 h1 .wordmark{font-size:1em;color:${PAPER.ink}}h1 .wm-bubble path{stroke:${BRAND_ORANGE}}
 .hand{margin-top:34px;font:400 76px/1.1 "Card Hand",Caveat,cursive;color:${BRAND_ORANGE};transform:rotate(-1.5deg);transform-origin:left}
-</style></head><body><div class="in"><h1>${esc(who)} thinks you should join ${wordmark()}</h1><p class="hand">It's free right now.</p></div></body></html>`;
+</style></head><body><div class="in"><h1>${esc(who)} thinks you should join ${wordmark()}</h1><p class="hand">Free for you, for good.</p></div></body></html>`;
 }
 
 /** The cache key, and the `?v=` a link carries so a phone never shows a stale card. */

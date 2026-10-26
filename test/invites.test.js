@@ -150,14 +150,14 @@ test("a GET of the invite page renders who invited them and changes nothing — 
   assert.equal(out.status, 200);
   assert.equal(out.headers["Cache-Control"], "no-store");
   assert.match(out.body, /Kofi invited you to Reason/);
-  assert.match(out.body, /<meta property="og:title" content="Kofi thinks you should join Reason">/, "the forwarded card names the inviter");
+  assert.match(out.body, /<meta property="og:title" content="Reason — your personal concierge">/, "title row says what Reason is; the name lives in the picture");
   assert.match(out.body, new RegExp(`<meta property="og:image" content="[^"]*/i/${inv.token}/card\\.png\\?v=${invitecard.inviteCardKey("Kofi")}">`), "the inviter's own card, versioned by name");
   assert.match(out.body, /Nothing\. Kofi got you in early, and early people never pay for Reason\. No card, no subscription, ever\. It(?:'|&#39;)s our thanks for being here first\./, "what it costs: early means free for good, by the inviter's name");
   assert.match(out.body, /\(call this restaurant and book a table for 4,/, "calling leads the examples");
   assert.match(out.body, /family=Instrument\+Serif:ital@1/, "heading loads the homepage headline face");
   assert.match(out.body, /\.hero h1\{font-family:"Instrument Serif"[^}]*font-style:italic;font-weight:400/, "heading is the homepage's italic serif");
   assert.match(out.body, /Reason is your personal concierge/, "what Reason does");
-  assert.match(out.body, /og:description" content="Reason — your personal concierge">/, "link preview line");
+  assert.match(out.body, /og:description" content="Free for you, for good\.">/, "link preview line matches the card");
   assert.doesNotMatch(out.body, /lives in your texts/i);
   const code = invites.formatCode(inv.claim_code);
   const href = /href="(sms:[^"]*)"/.exec(out.body)?.[1]?.replaceAll("&amp;", "&").replaceAll("&#39;", "'");
