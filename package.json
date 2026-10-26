@@ -4,7 +4,7 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Reason: a general-purpose agent that lives in your texts. The model is the controller.",
+  "description": "Reason: your personal concierge. A general-purpose agent; the model is the controller.",
   "scripts": {
     "chat": "node --env-file-if-exists=.env src/chat.js",
     "serve": "node --env-file-if-exists=.env src/serve.js",

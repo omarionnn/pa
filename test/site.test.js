@@ -57,7 +57,8 @@ test("a stranger with no link and no code gets the home page", async () => {
   assert.equal(out.status, 200);
   assert.match(out.type, /text\/html/);
   assert.match(out.body, /Reason/);
-  assert.match(out.body, /lives in your texts/i);
+  assert.match(out.body, /Your personal concierge/);
+  assert.doesNotMatch(out.body, /lives in your texts/i);
   // The two promises the home page is for: nobody hands over a password, and nothing reaches
   // somebody else without being asked.
   assert.match(out.body, /never asks for a password/i);

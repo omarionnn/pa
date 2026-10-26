@@ -1,6 +1,6 @@
 # Reason
 
-A personal assistant that lives in your texts. It handles what you hand it (looking things up, errands, calls, reminders, follow-ups, plans with your friends) and talks like a person.
+Your personal concierge. It handles what you hand it (looking things up, errands, calls, reminders, follow-ups, plans with your friends) and talks like a person.
 
 MIT licensed. Owned by omarionnn. Not affiliated with any other product or organization.
 

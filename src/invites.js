@@ -280,7 +280,7 @@ export function renderInvite({ invite, name, lineNumber }) {
     `<meta property="og:type" content="website">`,
     `<meta property="og:site_name" content="Reason">`,
     `<meta property="og:title" content="${esc(title)}">`,
-    `<meta property="og:description" content="Your own assistant that lives in your texts. Free right now.">`,
+    `<meta property="og:description" content="Your personal concierge. Free right now.">`,
     image ? `<meta property="og:image" content="${esc(image)}">` : "",
     `<meta name="twitter:card" content="summary_large_image">`,
     `<meta name="twitter:title" content="${esc(title)}">`,
@@ -309,7 +309,7 @@ export function renderInvite({ invite, name, lineNumber }) {
 
   const body = `<div class="hero"><p class="kicker">An invite</p><h1>${esc(title)}</h1></div>`
     + `<div class="t">`
-    + p("Reason is a personal assistant that lives in your texts. You text it like a friend (look this up, remind me, sort this out, what's on Thursday) and it does it, keeps track of what's still open, and comes back when there's something real to say.")
+    + p("Reason is your personal concierge. You text it like a friend (look this up, remind me, sort this out, what's on Thursday) and it does it, keeps track of what's still open, and comes back when there's something real to say.")
     + p(`It's your own. Your own memory and your own history, and nothing you say is shared with ${name} or anyone else.`)
     + `</div>`
     + `<h2>What it costs</h2><div class="t">${p(COST_LINE)}</div>`

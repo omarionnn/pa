@@ -108,7 +108,7 @@ Real features with no file here. Add one when you touch them.
   sets the hash).
 - **Invites, dark** (#104) — `src/invites.js`, `GET /i/{token}`, claim by text in
   `src/channels/router.js`, owner-only tools behind `REASON_INVITES_OPEN` (off on live);
-  `test/invites*.test.js`, `test/flow-invites.test.js`.
+  `test/invites*.test.js`, `test/flow-invites.test.js`; tagline "Your personal concierge" on page + og:description → `bin/tagline.mjs`.
 - **Proactive catches, and a declined one remembered** (#110, #112) — the prompt rule in
   `src/agent.js`, `declinedNote` in `src/said.js` (180 days); `test/declined.test.js`, real model
   `test/flow-proactive-rules.test.js` (`REASON_PROACTIVE_EVAL=1`). #112 adds money/risk/trading
