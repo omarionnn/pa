@@ -276,3 +276,43 @@ What shipped, all dark behind `REASON_WEB` (default off):
 - Tests: `test/web-w0.test.js` (24 cases incl. flag-off zero change, tool lists identical, owner-only, isolation, route never stolen, one reply on the triggering channel, retry dedupe, exclusions, findSent) and `test/web-w0-migration.test.js` (old-shaped DB, script on a copy).
 
 Not in W0 (W1+): routes, sessions/CSRF/CSP, the `(web)` hint text after a switch (decision 9 — `last_channel` is its input), notification columns, memory tombstones, site changes.
+
+## 9. W1 as built (PR `wt/web-w1`, 2026-10-26)
+
+Sign-in only, dark behind `REASON_WEB`; nothing on live changes while the flag is unset. Verify-skill
+feature file: `.agents/skills/verify-reason/features/web-signin.md`.
+
+- **Routes** (`src/http.js` `webRoute`, only while `webOn()`; otherwise the same flat 404 as a made-up
+  path): `GET /web` (sign-in form, or the signed-in landing), `POST /web/signin` (ask for the code),
+  `POST /web/code` (type it), `POST /web/signout`. All in `src/pages/websignin.js`.
+- **Who a number opens** (`accountForNumber`): `accountsByAddress`, newest `last_seen_at` first, the
+  first account `accounts.admit` allows and `webAllowedFor` permits (decision 4 as code; `owner` mode
+  = only the owner's). Null for everybody else, and the page cannot tell them apart.
+- **Codes**: `requestCode` under `wsign:<conv>` (3 per 15 min per person, 15-min TTL, hashed, once,
+  a new one kills the old); texted via `runtime._tell` keyed `wsign:<conv>:<codeId>` (W0 excluded
+  the prefix from history), not awaited; the text ends `@<REASON_SITE_URL host> #code`. Wrong tries
+  through `events.tryKeyedCode` (new, extracted from `trySigninCode`, same ceilings) under
+  `wsign:`/`wsignb:`; 10 requests per browser per hour via `events.signinGate`.
+- **Decision 1 + 2**: the join block on every sign-in page — `sms:<live line>?&body=Hi` button, an
+  inline-SVG QR of the same link (`src/pages/qr.js`, no dependency, byte mode, level M, versions
+  1–10, decoded end to end with macOS CoreImage during the build) and the number written out. The
+  number is `web.joinNumber(router)`; no live line → an honest "isn't connected right now" and no
+  number. Pinned with the real `LinqChannel` (not_connected) + `SendblueChannel` (live) in both orders.
+- **Decision 3**: the shared `reason_page` cookie, `Path=/`, HttpOnly, SameSite=Lax, Secure; 90 days
+  hard, and a **30-day idle** limit for Web (`db.pageSessionOwner(token, max, { idleMs })`, new
+  optional argument; pages/events unchanged). A paused/removed account, or a non-owner once the flag
+  is back to `owner`, is simply signed out (the sign-in page, not a 404).
+- **§8 security**: `Origin`/`Sec-Fetch-Site` check against our hosts on every POST; before sign-in
+  a double-submit form token (`reason_web_form` cookie, `Path=/web`, 24h) in hidden `f`; signed in,
+  `page_sessions.csrf` (new column, `addColumnIfMissing`, minted on first read) in hidden `c`;
+  `timingSafeEqual` throughout. CSP (`default-src 'none'`, inline style/script for the theme switch,
+  `img-src 'self' data:`, `form-action 'self'`, `frame-ancestors 'none'`), nosniff, no-referrer,
+  DENY, no-store on every answer. No og tags. Logs name an outcome, never a number, code or token.
+  Sign-out = `endPageSession` + cleared cookie; refused without the secret or from another site.
+- **Landing**: "You're in, <name>." + the approved §9 wording as a static section (the once-only
+  `web_notice_seen_at` tracking waits for W2's shell) + "Sign out of this browser".
+- **Tests**: `test/web-signin.test.js` (18). Drive: `bin/web-drive.mjs` (cage env, FakeChannel).
+  Previews: `bin/web-preview.mjs`.
+- **Deferred from §4.2 to W2+**: token hashing (`token_hash`) and 24h rotation, the browsers list
+  with per-row revoke, decision 9's `(web)` hint. CSP keeps `'unsafe-inline'` until the shell takes
+  a nonce.
