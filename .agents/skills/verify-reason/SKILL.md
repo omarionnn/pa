@@ -370,6 +370,10 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
+### Baseline — 3,697 pass, **0 failures** after invites for one person (#162, 2026-10-26)
+
+Per-person switch `invite_allowances.enabled`; `scripts/grant-invites.js <number|conversation> <count> [--apply] | --off` (dry run by default, prints the owner's message, never sends). Caged check: with `caged.sh env` exported, insert an account (node:sqlite), run the script dry then `--apply` against the CAGE db, and `toolsFor(conv)` shows the four non-master invite tools while a stranger shows none. Never `--apply` on live without the owner's person + count. No-name invite flow + rename pinned in test/invites.test.js. **3,819 tests, 3,697 passing, 0 failing, 122 skipped.**
+
 ### Baseline — 3,687 pass, **0 failures** after the invite card (#159, 2026-10-26)
 
 Per-inviter card `GET /i/{token}/card.png` (also `/p/i/…`; src/invitecard.js, fonts inline from assets/fonts, cached `data/invite-cards/<sha16>.png` by name + INVITE_CARD_VERSION, `assets/og.png` if no browser). Invite og:title "Reason — your personal concierge", description "Free for you, for good.". Caged check: insert an `invites` row (node:sqlite), `curl -o x.png 127.0.0.1:8796/p/i/<token>/card.png` → 200 image/png 1200×630; POST → 405; unknown token → 404. **3,809 tests, 3,687 passing, 0 failing, 122 skipped.**

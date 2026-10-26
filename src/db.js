@@ -10237,6 +10237,29 @@ export function backfillInviteAllowances() {
 }
 export const inviteAllowanceBackfill = backfillInviteAllowances();
 
+// Invites for ONE person while they are still dark for everybody else (owner, 2026-10-26). A row's
+// `enabled` is the per-person switch; REASON_INVITES_OPEN stays the switch for all. Set only by the
+// owner's scripts/grant-invites.js — no tool, page or text reaches it.
+addColumnIfMissing("invite_allowances", "enabled", "INTEGER NOT NULL DEFAULT 0");
+
+/** Has the owner turned invites on for this one person? */
+export function invitesEnabledFor(conversationId) {
+  const row = db.prepare("SELECT enabled FROM invite_allowances WHERE conversation_id = ?").get(conversationId);
+  return !!row?.enabled;
+}
+
+/**
+ * Turn invites on (with exactly `count` left) or off for one account. Off keeps the count and every
+ * link as they are: links already sent still work, and turning it back on picks up where it was.
+ */
+export function setInvitesEnabled(conversationId, { enabled, count = null }) {
+  inviteAllowance(conversationId);
+  const now = clock.now();
+  db.prepare("UPDATE invite_allowances SET enabled = ?, updated_at = ? WHERE conversation_id = ?").run(enabled ? 1 : 0, now, conversationId);
+  if (count != null) db.prepare("UPDATE invite_allowances SET remaining = ?, updated_at = ? WHERE conversation_id = ?").run(count, now, conversationId);
+  return { enabled: invitesEnabledFor(conversationId), remaining: inviteAllowance(conversationId) };
+}
+
 /** This person's remaining allowance, created on first read for an account that came later. */
 export function inviteAllowance(conversationId) {
   const row = db.prepare("SELECT remaining FROM invite_allowances WHERE conversation_id = ?").get(conversationId);
