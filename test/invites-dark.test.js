@@ -179,3 +179,45 @@ test("on: everybody gets the invite tools with no code change; deciding stays th
   const decided = await tool("invite_request_decide", { request_number: filed.request_number, decision: "approve" }, KOFI_C);
   assert.equal(decided.blocked, "master_only", "still the master's to decide");
 });
+
+// ---------- one person on, everybody else still off (scripts/grant-invites.js) ----------
+
+test("grant one person: dry run writes nothing; --apply turns invites on for them alone with the count given", async () => {
+  const { grant } = await import("../scripts/grant-invites.js");
+  const AMA = "+13475550000", AMA_C = `dm:fake:${AMA}`;
+  db.upsertAccount({ conversationId: AMA_C, channel: "fake", address: AMA, name: "Ama" });
+  const dry = grant([KOFI, "3"]);
+  assert.equal(dry.ok, true);
+  assert.equal(dry.dryRun, true);
+  assert.deepEqual(dry.after, { enabled: true, remaining: 3 });
+  assert.equal(db.invitesEnabledFor(KOFI_C), false, "dry run wrote nothing");
+  assert.deepEqual(names(toolsFor(KOFI_C)).filter(n => INVITE_TOOLS.has(n)), []);
+
+  const done = grant([KOFI, "3", "--apply"]);
+  assert.deepEqual(done.after, { enabled: true, remaining: 3 });
+  assert.equal(config.invitesOpen, false, "the switch for all is untouched");
+  for (const list of [names(toolsFor(KOFI_C)), names(mcpToolsFor(KOFI_C))]) {
+    assert.deepEqual(list.filter(n => INVITE_TOOLS.has(n)).sort(), ["invite_link_cancel", "invite_link_create", "invite_request_more", "invites_list"], "Kofi gets his four, never the master's two");
+  }
+  assert.deepEqual(names(toolsFor(AMA_C)).filter(n => INVITE_TOOLS.has(n)), [], "nobody else does");
+  const link = await tool("invite_link_create", {}, KOFI_C);
+  assert.equal(link.ok, true);
+  assert.equal((await tool("invites_list", {}, KOFI_C)).invites_left, 3);
+  assert.equal((await tool("invites_list", {}, AMA_C)).blocked, "not_available");
+
+  // Off again: hidden again, count and the sent link kept.
+  grant([KOFI, "--off", "--apply"]);
+  assert.deepEqual(names(toolsFor(KOFI_C)).filter(n => INVITE_TOOLS.has(n)), []);
+  assert.equal(db.inviteAllowance(KOFI_C), 3);
+  assert.equal(db.listInvites(KOFI_C).filter(i => i.state === "unused").length, 1, "a link already sent still works");
+});
+
+test("grant: bad input is refused and changes nothing", async () => {
+  const { grant } = await import("../scripts/grant-invites.js");
+  assert.equal(grant([]).ok, false);
+  assert.equal(grant([KOFI]).ok, false);
+  assert.equal(grant([KOFI, "-1", "--apply"]).ok, false);
+  assert.equal(grant([KOFI, "2.5", "--apply"]).ok, false);
+  assert.equal(grant(["+19999999999", "2", "--apply"]).ok, false);
+  assert.equal(db.invitesEnabledFor(KOFI_C), false);
+});

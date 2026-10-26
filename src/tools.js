@@ -355,10 +355,11 @@ export const INVITE_TOOLS = new Set(["invites_list", "invite_link_create", "invi
 
 /**
  * May this conversation see and use invites? Everybody once REASON_INVITES_OPEN is on; until then
- * the master alone — a dark launch, so nobody else's model is ever told invites exist.
+ * the master, and anyone the owner turned them on for one by one (scripts/grant-invites.js) — a
+ * dark launch, so nobody else's model is ever told invites exist.
  */
 export function invitesOpenFor(conversationId) {
-  return config.invitesOpen || accounts.ownerOf(conversationId).isOperator;
+  return config.invitesOpen || accounts.ownerOf(conversationId).isOperator || db.invitesEnabledFor(conversationId);
 }
 
 /**
