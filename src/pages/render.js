@@ -286,6 +286,8 @@ a{color:var(--mark)}
 .brand{display:flex;align-items:center;gap:.45rem;min-width:0;color:var(--ink);font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
 .who{color:var(--dim);font:400 .9rem/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pill{flex:none;font-size:.68rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:.2rem .55rem}
+.pill-btn{-webkit-appearance:none;appearance:none;margin:0;background:none;font-family:inherit;line-height:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:color .15s,border-color .15s,transform .1s}
+.pill-btn:hover{color:var(--accent);border-color:var(--accent)}.pill-btn:active{transform:scale(.95)}.pill-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .wrap{max-width:44rem;margin:0 auto;padding:1.6rem 1.15rem 3.5rem}
 .hero{margin:0 0 2.2rem}
 h1{font:400 1.75rem/1.12 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.025em;margin:0;text-wrap:balance}
@@ -784,7 +786,9 @@ export function iconLinks() {
 
 // `intro` is the opening moment (INTRO_CSS): only a page made for someone gets it. The gate, the
 // not-found page and a plain notice open flat, and the first two stay byte-identical to each other.
-export function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "", intro = false, theme = true, referrer = "no-referrer" }) {
+// `pillButton` makes the top-right pill a button with that accessible name (the invite page's
+// confetti, src/pages/confetti.js); the page's own script decides what a press does.
+export function shell({ title, body, script = "", css = "", pill = "", pillButton = "", indexable = false, head = "", top = "", intro = false, theme = true, referrer = "no-referrer" }) {
   // Every page carries the Light · Dark · Auto choice at its foot (owner, 2026-10-25: "every page
   // Reason serves"); only a printed one leaves it out (`theme: false`), because paper has no choice.
   const scripts = `${script}${intro ? INTRO_JS : ""}${theme ? THEME.js : ""}`;
@@ -802,7 +806,7 @@ ${iconLinks()}
 <title>${esc(title)}</title>${headJs ? `\n<script>${headJs}</script>` : ""}
 <style>${CSS}${WORDMARK_CSS}${THEME.css}${css}${intro ? INTRO_CSS : ""}</style>
 </head><body>${intro ? `\n<div class="intro" aria-hidden="true"><div class="ib">${wordmark({ ing: `<span class="ing">ing</span>` })}</div><div class="il"></div></div>` : ""}
-<header class="bar"><div class="brand">${wordmark()}${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
+<header class="bar"><div class="brand">${wordmark()}${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? (pillButton ? `<button type="button" class="pill pill-btn" data-pop aria-label="${esc(pillButton)}">${esc(pill)}</button>` : `<span class="pill">${esc(pill)}</span>`) : ""}</header>
 <main class="sheet"><div class="wrap">${body}${theme ? THEME_SWITCH : ""}</div></main>${scripts ? `<script>${scripts}</script>` : ""}</body></html>`;
 }
 

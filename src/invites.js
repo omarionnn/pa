@@ -26,6 +26,7 @@ import * as db from "./db.js";
 import { config, normalizeNumber, stamp } from "./config.js";
 import { shell, esc, renderNotFound, foot } from "./pages/render.js";
 import { inviteCardKey } from "./invitecard.js";
+import { CONFETTI_JS, CONFETTI_CSS } from "./pages/confetti.js";
 
 /** The path an invite link lives at. On the files domain Caddy rewrites `/i/x` to `/p/i/x`. */
 export const INVITE_PATH = "/i";
@@ -338,7 +339,8 @@ export function renderInvite({ invite, name, lineNumber }) {
     + `<h2>What it costs</h2><div class="t">${p(costLine(name))}</div>`
     + action
     + foot();
-  return shell({ title, body, pill: "Invite", head, css: HEADING_CSS });
+  // The pill is a button: a tap on it pops confetti (owner, 2026-10-26; src/pages/confetti.js).
+  return shell({ title, body, pill: "Invite", pillButton: "Celebrate your invite", head, css: HEADING_CSS + CONFETTI_CSS, script: CONFETTI_JS });
 }
 
 /** Startup: everybody with an account has an allowance row. Idempotent; see db.backfillInviteAllowances. */

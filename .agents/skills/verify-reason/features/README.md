@@ -113,6 +113,12 @@ Real features with no file here. Add one when you touch them.
 - **Invites, dark** (#104) — `src/invites.js`, `GET /i/{token}`, claim by text in
   `src/channels/router.js`, owner-only tools behind `REASON_INVITES_OPEN` (off on live);
   `test/invites*.test.js`, `test/flow-invites.test.js`; tagline "Your personal concierge" on page + og:description → `bin/tagline.mjs`.
+  Confetti (#174): the INVITE pill top-right is a `<button>` "Celebrate your invite"
+  (`header .pill[data-pop]`, `shell({ pillButton })`); a click appends `canvas.confetti`
+  (inline `src/pages/confetti.js`, no network) that removes itself in ~1.7 s; reduced motion =
+  12 still sparkles; no other page has the button. `test/invite-confetti.test.js`. Prove live:
+  fetch a real `/i/{token}` (read-only, never claim), grep `data-pop` + `canvas.confetti`, then a
+  headless WebKit click and a screenshot mid-burst.
 - **Proactive catches, and a declined one remembered** (#110, #112) — the prompt rule in
   `src/agent.js`, `declinedNote` in `src/said.js` (180 days); `test/declined.test.js`, real model
   `test/flow-proactive-rules.test.js` (`REASON_PROACTIVE_EVAL=1`). #112 adds money/risk/trading
