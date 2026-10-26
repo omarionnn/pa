@@ -7,7 +7,8 @@ already uses, they type it, and that browser is theirs. The signed-in landing is
 ("You're in, <name>." + the approved boundary notice) until W2 brings the conversation.
 **Behind `REASON_WEB`** (`off` | `owner` | `on`, like `REASON_EVENTS`): off, `/web/*` is the same flat
 404 as a made-up path; `owner`, only the owner's number is ever texted a code (anybody else's gets the
-identical page and nothing); `on`, anybody with a Reason. **Dark on live** as of 2026-10-26.
+identical page and nothing); `on`, anybody with a Reason. **Live with `REASON_WEB=owner`** since
+2026-10-26 17:30 UTC.
 
 Source: `src/pages/websignin.js` (every decision: who a browser is, which account a number opens, the
 codes, CSRF/origin, the join block, the pages), `src/pages/qr.js` (the QR encoder, no dependency),
@@ -62,13 +63,20 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   browser is out of every page too), cookie cleared, 303 `/web`. No cookie → 303 and nothing
   touched; wrong/missing `c` or another site → 403, still signed in. GET → 405.
 - **Headers** — `SECURITY_HEADERS` on every answer: CSP (`default-src 'none'`, inline style/script
-  for the shell's theme switch, `img-src 'self' data:`, `form-action 'self'`, `frame-ancestors
-  'none'`), `nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `no-store`. No
+  for the shell's theme switch, `img-src 'self' data:`, `font-src 'self' data:`, `form-action
+  'self'`, `frame-ancestors 'none'`), `nosniff`, `Referrer-Policy: same-origin` (header and the
+  shell's `<meta>`; see the browser gotcha), `X-Frame-Options: DENY`, `no-store`. No
   `og:`/`twitter:` tags on any Web page. Logs: `web_signin_code_sent`, `web_signin_failed`,
   `web_signin_ok`, `web_signout` — never a number, code or token.
 - **Copy** — intent only (no phrase to type; `test/no-command-phrases.test.js` scans `src/`): the
   sms: body "Hi" is prefilled, never dictated. Page kit: `shell` with pill "Web", wordmark, PAPER,
   brand orange, theme switch.
+- **The look** (PR #170, the marketing site's) — Instrument Serif italic headlines, the mono eyebrow
+  "Your personal concierge", an orange Caveat note + squiggle arrow per screen (`NOTES`), dashed
+  rules. The two faces are Latin subsets in `assets/fonts/*-web.woff2`, served by `webFont` at
+  `GET|HEAD /web/fonts/{serif,hand}.woff2` (`font/woff2`, a week's cache, nosniff, CORP
+  same-origin; any other name, method or `REASON_WEB` off → the flat 404). `font-src 'self' data:`
+  is also what lets the wordmark's embedded face render.
 
 ## How to get to it (user POV)
 
@@ -83,12 +91,12 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 
 ```bash
 cd ~/Desktop/pa
-node --test test/web-signin.test.js      # 18: off=404 identical, owner mode, enumeration, QR, no-live/linq, happy path, wrong/reused/expired/flood/4th request, two users, decision 4, sign-out, idle/old, paused, CSRF/origin, headers, copy
+node --test test/web-signin.test.js      # 20: off=404 identical, owner mode, enumeration, QR, no-live/linq, happy path, wrong/reused/expired/flood/4th request, two users, decision 4, sign-out, idle/old, paused, CSRF/origin, headers, copy, the look + /web/fonts
 node --test test/web-join-number.test.js # the live-line rule with the real Linq + Sendblue classes
 node --test test/no-command-phrases.test.js test/code-guards.test.js
 # in process, cage env, throwaway DB, real Runtime + Router + outbox + FakeChannel (no model):
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/web.db node .agents/skills/verify-reason/bin/web-drive.mjs
-node .agents/skills/verify-reason/bin/web-preview.mjs [outDir]   # four PNGs: phone form, code step, desktop join block (QR + number), landing
+node .agents/skills/verify-reason/bin/web-preview.mjs [outDir] [prefix] [siteIndexHtml]   # signin, code, join (desktop QR + number), landing; with the site index also <prefix>vs-site.png. Served with the real CSP + /web/fonts
 ```
 
 Over HTTP on the cage: `REASON_WEB=on bin/caged.sh start`, then `curl -si 127.0.0.1:<port>/web` → 200,

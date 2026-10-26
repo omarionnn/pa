@@ -22,6 +22,7 @@
 // number gets the same page and no code, exactly like a number with no account; `on` lets anybody
 // with a Reason in; off and these routes do not exist (src/http.js answers its flat 404).
 import { timingSafeEqual, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import * as events from "../events.js";
@@ -133,11 +134,12 @@ function readFormCookie(header) {
 
 // Every answer here carries these. The pages are built from inline style and script (the shell's
 // theme switch), so those stay 'unsafe-inline'; nothing else may load, nothing may frame it, no
-// form may post anywhere but here, and no address is kept in any cache. The referrer goes only to
+// form may post anywhere but here, and no address is kept in any cache. Fonts are the wordmark's
+// inline one and the site's two faces from /web/fonts (below), and come from nowhere else. The referrer goes only to
 // Reason's own host (`same-origin`): under `no-referrer` a browser posts `Origin: null` and its own
 // sign-in form was refused (10-26).
 export const SECURITY_HEADERS = {
-  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "same-origin",
   "X-Frame-Options": "DENY",
@@ -147,25 +149,67 @@ const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", ...S
 const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-Length": Buffer.byteLength(body), ...extra }), body });
 const redirect = (location, extra = {}) => ({ status: 303, headers: HTML({ Location: location, "Content-Length": 0, ...extra }), body: "" });
 
-const CSS = `
-.w-form label{display:block;margin:.8rem 0 .3rem;font-weight:600}
-.w-form input[type=tel],.w-form input[type=text]{display:block;width:100%;box-sizing:border-box;min-height:3rem;padding:.8rem .95rem;border-radius:.6rem;border:1px solid var(--edge,#ccc);font:inherit;background:var(--card);color:var(--ink)}
+// Web is the marketing site's (heyreason.com, ~/Desktop/reason-site-new/public/styles.css) on Reason's
+// warm paper: Instrument Serif italic headlines, the small spaced monospace eyebrow, sans body, the
+// orange Caveat note with its squiggle arrow, dashed rules. The two display faces are Reason's own
+// copies cut down to Latin (assets/fonts/*-web.woff2, SIL OFL), served at /web/fonts/<name>.woff2 by
+// src/http.js — nothing is fetched from Google. The rules are the shell's --line (PAPER.line, the
+// site's --border, in light) so they follow the paper into dark. --above/--below are the room each side
+// of a rule, the site's own: its hero note's 2rem plus the hero's bottom padding over the rule, the
+// .day section's 5rem top padding under it.
+const fontFile = (f) => readFileSync(new URL(`../../assets/fonts/${f}`, import.meta.url));
+export const WEB_FONTS = { serif: fontFile("instrument-serif-italic-web.woff2"), hand: fontFile("caveat-web.woff2") };
+export function webFont(name) {
+  const body = Object.hasOwn(WEB_FONTS, name) ? WEB_FONTS[name] : null;
+  if (!body) return null;
+  return { status: 200, headers: { "Content-Type": "font/woff2", "Content-Length": body.length, "Cache-Control": "public, max-age=604800", "X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "same-origin" }, body };
+}
+const FONTS = `@font-face{font-family:"Reason Serif";font-style:italic;font-weight:400;font-display:swap;src:url(/web/fonts/serif.woff2) format("woff2")}`
+  + `@font-face{font-family:"Reason Hand";font-weight:400 700;font-display:swap;src:url(/web/fonts/hand.woff2) format("woff2")}`;
+const CSS = `${FONTS}
+:root{--serif:"Reason Serif","Instrument Serif","Iowan Old Style",Georgia,serif;--sans:"Inter",system-ui,-apple-system,sans-serif;--hand:"Reason Hand","Caveat",cursive;--mono:"Courier New","Courier",monospace;--rule:var(--line);--above:calc(2rem + clamp(3rem,8vh,6rem));--below:5rem}
+body{font-family:var(--sans);font-size:16px;line-height:1.6}
+.hero{margin:.6rem 0 2.2rem}
+.hero .kicker{font:400 .72rem/1.4 var(--mono);text-transform:uppercase;letter-spacing:.14em;color:var(--dim);margin:0 0 .75rem}
+.hero h1{font:italic 400 clamp(2.6rem,10vw,3.6rem)/1.08 var(--serif);letter-spacing:-.02em}
+.hero .sub{font-size:1.15rem;line-height:1.55;color:var(--dim);max-width:30rem;margin:.9rem 0 0}
+h2{font:italic 400 clamp(1.9rem,6vw,2.4rem)/1.12 var(--serif);letter-spacing:-.015em;margin:0 0 .9rem}
+.w-note{font:400 1.5rem/1.2 var(--hand);color:var(--accent);margin:1.1rem 0 0;transform:rotate(-1.5deg);transform-origin:left}
+.w-note svg{width:24px;height:14px;vertical-align:middle;margin-right:.25em;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round}
+.w-rule{border:0;height:0;border-top:1px dashed var(--rule);margin:var(--above) 0 var(--below)}
+.w-form label{display:block;margin:.8rem 0 .45rem;font:400 .72rem/1.4 var(--mono);text-transform:uppercase;letter-spacing:.14em;color:var(--dim)}
+.w-form input[type=tel],.w-form input[type=text]{display:block;width:100%;box-sizing:border-box;min-height:3rem;padding:.8rem .95rem;border-radius:4px;border:1px solid var(--edge,#ccc);font:inherit;font-size:1.05rem;background:var(--card);color:var(--ink)}
 .w-form input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 35%,transparent)}
 .w-form input::placeholder{color:var(--dim);opacity:1}
 .w-form input[type=tel]{letter-spacing:normal;text-transform:none;text-align:left}
-.w-btn{display:block;width:100%;text-align:center;margin:1rem 0;padding:.95rem;font-weight:600;border-radius:.6rem;background:var(--ink);color:var(--bg);text-decoration:none;border:0;font-size:1rem;cursor:pointer}
-.w-link{background:none;border:0;padding:0;color:inherit;text-decoration:underline;cursor:pointer;font:inherit;opacity:.8}
+.w-btn{display:block;width:100%;box-sizing:border-box;text-align:center;margin:1rem 0;padding:.9rem 1.8rem;font:500 .95rem/1.4 var(--sans);border-radius:3px;background:var(--ink);color:var(--bg);text-decoration:none;border:1px solid var(--ink);cursor:pointer;transition:transform .15s ease,box-shadow .15s ease}
+.w-btn:hover{transform:translateY(-1px);box-shadow:3px 4px 0 rgba(0,0,0,.12)}
+.w-link{background:none;border:0;padding:0;color:inherit;text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:3px;cursor:pointer;font:inherit;opacity:.85}
 .w-link[data-busy]{min-width:6.5rem;text-align:left}
 .w-err{color:var(--warn);font-weight:600}
-.w-join{margin-top:3rem;padding-top:1.5rem;border-top:1px solid var(--line)}
+.w-join{margin-top:var(--above);padding-top:var(--below);border-top:1px dashed var(--rule)}
+.w-join .w-note{margin:-.2rem 0 1rem}
 .w-qr{margin:1.2rem 0 0;display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap}
-.w-qr svg{width:9rem;height:9rem;border-radius:.6rem;border:1px solid var(--line);background:#fff;padding:.3rem;box-sizing:border-box}
+.w-qr svg{width:9rem;height:9rem;border-radius:4px;border:1px solid var(--rule);background:#fff;padding:.3rem;box-sizing:border-box}
 .w-qr figcaption{flex:1;min-width:12rem;color:var(--dim);font-size:.95rem;margin:0}
 .w-num{font-variant-numeric:tabular-nums;white-space:nowrap}
-.w-out{margin-top:3rem}
+.w-out{margin-top:2.4rem}
+.foot{margin-top:var(--above);border-top-style:dashed;border-top-color:var(--rule)}
 `;
 const p = (s) => `<p>${esc(s)}</p>`;
-const hero = (h1, sub = "") => `<div class="hero"><p class="kicker">Reason Web</p><h1>${esc(h1)}</h1>${sub ? `<p class="sub">${esc(sub)}</p>` : ""}</div>`;
+// The site's hero note: its squiggle arrow, then one line in Reason's own hand. Under a section
+// heading (the join block's) the line stands alone, without the arrow.
+const ARROW = `<svg viewBox="0 0 28 14" aria-hidden="true"><path d="M2 7 Q8 2 14 7 Q20 12 26 7"/><path d="M22 3 L26 7 L22 11"/></svg>`;
+const note = (words, arrow = true) => `<p class="w-note">${arrow ? ARROW : ""}${esc(words)}</p>`;
+// One line per screen, in the site's voice ("no app. no dashboard. just a text."): lowercase, and
+// it says what is true, never words for anybody to type.
+export const NOTES = {
+  signin: "same Reason, just a bigger screen.",
+  code: "six digits, if that number uses Reason.",
+  join: "one text from your phone and you're in.",
+  landing: "same conversation, wherever you are.",
+};
+const hero = (h1, sub = "", aside = "") => `<div class="hero"><p class="kicker">Your personal concierge</p><h1>${esc(h1)}</h1>${sub ? `<p class="sub">${esc(sub)}</p>` : ""}${aside ? note(aside) : ""}</div>`;
 
 /**
  * The block for somebody new, shown to everybody so it says nothing about the number typed. The
@@ -173,7 +217,7 @@ const hero = (h1, sub = "") => `<div class="hero"><p class="kicker">Reason Web</
  * at a desktop screen; the number is written out for anybody who would rather type it.
  */
 export function joinBlock(joinNumber) {
-  const lead = `<h2>New to Reason?</h2><div class="t">${p("A text from your phone finishes joining. Reason answers there first, then you can sign in here.")}`;
+  const lead = `<h2>New to Reason?</h2>${note(NOTES.join, false)}<div class="t">${p("A text from your phone finishes joining. Reason answers there first, then you can sign in here.")}`;
   if (!joinNumber) {
     return `<section class="w-join">${lead}${p("Reason's texting line isn't connected right now, so joining can't finish at the moment. Nothing was used up — try again later.")}</div></section>`;
   }
@@ -187,7 +231,7 @@ export function joinBlock(joinNumber) {
 /** The sign-in page: the number form, or — once a number was typed — the code box over the same words for every number. */
 export function renderSignin({ number = "", sent = false, error = "", joinNumber = null, formToken = "" }) {
   const hidden = `<input type="hidden" name="f" value="${esc(formToken)}">`;
-  const body = hero("Pick up where you left off.", "Sign in with the number you text Reason from.")
+  const body = hero("Pick up where you left off.", "Sign in with the number you text Reason from.", sent ? NOTES.code : NOTES.signin)
     + (error ? `<p class="w-err">${esc(error)}</p>` : "")
     + (sent
       ? (error ? `<div class="t">${p("If that number uses Reason, a code is on its way to it now.")}</div>` : sentLine("Sent. If that number uses Reason, a code is on its way to it now."))
@@ -206,9 +250,9 @@ export function renderSignin({ number = "", sent = false, error = "", joinNumber
 /** Signed in. The conversation itself arrives in the next phase; this says so plainly, and says the one thing about Web worth knowing. */
 export function renderLanding({ account, csrf }) {
   const name = String(account?.name ?? "").trim();
-  const body = hero(`You're in${name ? `, ${name}` : ""}.`, "This browser is yours now, on every page Reason makes for you.")
+  const body = hero(`You're in${name ? `, ${name}` : ""}.`, "This browser is yours now, on every page Reason makes for you.", NOTES.landing)
     + `<div class="t">${p("Your conversation with Reason will open here. Until then, Reason is the same one you text, and nothing you've told it is lost.")}</div>`
-    + `<h2>One Reason. Pick up anywhere.</h2><div class="t">`
+    + `<hr class="w-rule"><h2>One Reason. Pick up anywhere.</h2><div class="t">`
     + p("Start on Web, continue in iMessage, or switch back. Reason keeps the context, so you don't have to explain again. See your full conversation on Web. Messages from Web won't appear in your iMessage thread.")
     + `</div>`
     + `<form class="w-form w-out" method="POST" action="/web/signout"><input type="hidden" name="c" value="${esc(csrf)}"><button class="w-link" type="submit" data-busy="Signing out…">Sign out of this browser</button></form>`
