@@ -10557,6 +10557,48 @@ export function backfillOrganizerMemberships() {
 }
 backfillOrganizerMemberships();
 
+// ---------- the guest-list note and the Instagram a person keeps (owner decision 2026-10-25) ----------
+//
+//   accounts.instagram           the handle they chose to share on guest lists, kept for every event
+//                                after: saved when they give one (text or page), cleared by "remove
+//                                my Instagram". Shown on a list only through their row on it.
+//   event_attendees.list_note    the one follow-up after joining (src/events.js listNoteText): which
+//                                note is owed (`ask` | `carried` | `shown`), then `sent` or `dropped`.
+//                                Owed at most once per membership, so leaving and coming back does
+//                                not ask again.
+//   event_attendees.list_note_at while owed, when it may go (the sweep's backstop); once settled, when.
+addColumnIfMissing("accounts", "instagram", "TEXT");
+addColumnIfMissing("event_attendees", "list_note", "TEXT");
+addColumnIfMissing("event_attendees", "list_note_at", "INTEGER");
+
+export function setAccountInstagram(conversationId, handle) {
+  db.prepare("UPDATE accounts SET instagram = ? WHERE conversation_id = ?").run(handle ?? null, conversationId);
+}
+/** Take their handle off every list they are on (their own rows only), for "remove my Instagram". */
+export function clearInstagramEverywhere(conversationId) {
+  return Number(db.prepare("UPDATE event_attendees SET instagram = NULL, updated_at = ? WHERE conversation_id = ? AND instagram IS NOT NULL").run(clock.now(), conversationId).changes);
+}
+/** A new handle on every list where they show one now. */
+export function replaceInstagramEverywhere(conversationId, handle) {
+  return Number(db.prepare("UPDATE event_attendees SET instagram = ?, updated_at = ? WHERE conversation_id = ? AND instagram IS NOT NULL").run(handle, clock.now(), conversationId).changes);
+}
+/** Owe the note, once per membership: a row that was ever owed one keeps its first answer. */
+export function oweListNote(attendeeId, kind, dueAt) {
+  return db.prepare("UPDATE event_attendees SET list_note = ?, list_note_at = ? WHERE id = ? AND list_note IS NULL").run(kind, dueAt, Number(attendeeId)).changes === 1;
+}
+/** Settle an owed note, compare-and-set on it still being owed: the one caller that wins sends it. */
+export function settleListNote(attendeeId, kind, outcome) {
+  return db.prepare("UPDATE event_attendees SET list_note = ?, list_note_at = ? WHERE id = ? AND list_note = ?").run(outcome, clock.now(), Number(attendeeId), kind).changes === 1;
+}
+export function owedListNotes(now = clock.now(), { limit = 50 } = {}) {
+  return db.prepare(`SELECT * FROM event_attendees WHERE list_note IN ('ask', 'carried', 'shown') AND list_note_at <= ? AND state = 'joined'
+    ORDER BY list_note_at, id LIMIT ?`).all(now, limit);
+}
+/** The organizer's own row when they are on their own list: listed, but never counted or texted as a guest. */
+export function organizerListing(eventId) {
+  return db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND role = 'organizer' AND state = 'joined' AND in_directory = 1 AND display_name != ''").get(Number(eventId)) ?? null;
+}
+
 // ---------- rides between an event's guests (src/rides.js, spec v3 §13) ----------
 //
 //   events.rides_enabled  the organizer's switch, per event; off unless they turn it on.

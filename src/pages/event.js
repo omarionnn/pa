@@ -146,7 +146,7 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
     + field("password", "Event password", "password", `autocomplete="off" required maxlength="200"`)
     + (signedIn ? "" : field("display_name", "Your name (what other guests see)", "text", `required maxlength="40" autocomplete="name"`))
     + field("instagram", "Instagram (optional)", "text", `maxlength="60" autocapitalize="off" placeholder="@yourhandle"`)
-    + `<label class="check"><input type="checkbox" name="in_directory" value="1"${values.in_directory ? " checked" : ""}> <span>Show me on the who's-going page (name and Instagram, never your number)</span></label>`
+    + `<label class="check"><input type="checkbox" name="in_directory" value="1"${(values.in_directory ?? true) ? " checked" : ""}> <span>Show me on the who's-going page (name and Instagram, never your number)</span></label>`
     + (signedIn
       ? `<div class="t">${p(`You're signed in to Reason${account.name ? ` as ${account.name}` : ""}, so this just adds you to the event — its updates come to your Reason conversation.`)}</div>`
       : `<div class="t">${p("Joining gives you access to Reason, an assistant you text that can help you with everything about this event (and more).") + p("Joining starts a text conversation between you and Reason — that's where you'll get the event's updates.")}`
@@ -193,7 +193,7 @@ export function renderOrganizerHome({ ev }) {
 export function renderWho({ ev, att = null, organizer = false, token, saved = false }) {
   const list = events.directoryEntries(ev, { organizer });
   const items = list.length
-    ? `<ul class="ev-list">${list.map(e => `<li><span>${esc(e.name)}${organizer && !e.listed ? ` <span class="ev-note">(not listed)</span>` : ""}</span>${e.instagram ? `<a href="${esc(events.instagramUrl(e.instagram))}" rel="noopener noreferrer" target="_blank">@${esc(e.instagram)}</a>` : ""}</li>`).join("")}</ul>`
+    ? `<ul class="ev-list">${list.map(e => `<li><span>${esc(e.name)}${e.organizer ? ` <span class="ev-note">(organizing)</span>` : ""}${organizer && !e.listed ? ` <span class="ev-note">(not listed)</span>` : ""}</span>${e.instagram ? `<a href="${esc(events.instagramUrl(e.instagram))}" rel="noopener noreferrer" target="_blank">@${esc(e.instagram)}</a>` : ""}</li>`).join("")}</ul>`
     : `<div class="t">${p(organizer ? "Nobody has joined yet." : "Nobody has put themselves on the list yet.")}</div>`;
   const listBlock = ev.guest_list_visible || organizer
     ? `<h2>Who's going</h2>${items}`
@@ -445,9 +445,13 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
       const why = { organizer: "You're organizing this one.", full: "This event is full.", removed: "The organizer took you off this event.", paused: "Joining is paused right now." }[out.reason] ?? "That didn't work.";
       return again(200, why);
     }
-    if (!out.already) await events.sendWelcome({ runtime, ev, att: out.attendee });
+    const att = out.already ? out.attendee : events.afterJoin({ ev, att: out.attendee, typedInstagram: instagram });
+    if (!out.already) {
+      await events.sendWelcome({ runtime, ev, att });
+      events.scheduleListNote({ runtime, ev, att });
+    }
     log({ event_web_joined: ev.id, existing: true });
-    return page(200, renderJoined({ ev, att: out.attendee }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
+    return page(200, renderJoined({ ev, att }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
   }
 
   // Anybody else: everything is on the page; the last step is one text.

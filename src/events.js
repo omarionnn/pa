@@ -27,7 +27,7 @@ import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { boundTo, codeHost, typedCode } from "./pages/access.js";
 import { atLocal, tzFor } from "./series.js";
-import { config, clock, normalizeNumber } from "./config.js";
+import { config, clock, normalizeNumber, stamp } from "./config.js";
 
 // ---------- the switch ----------
 
@@ -373,11 +373,18 @@ export function guestList(ev) {
   }));
 }
 
-/** The who's-going list as the page shows it: opted-in guests only, unless it is the organizer. */
+/**
+ * The who's-going list as the page shows it: opted-in guests only, unless it is the organizer. The
+ * organizer is on it too when they put themselves there (the same rules as a guest), first.
+ */
 export function directoryEntries(ev, { organizer = false } = {}) {
-  return db.attendeesOf(ev.id).filter(a => organizer || a.in_directory).map(a => ({
-    id: a.id, name: a.display_name, instagram: a.instagram || null, listed: !!a.in_directory,
-  }));
+  const host = db.organizerListing(ev.id);
+  return [
+    ...(host ? [{ id: host.id, name: host.display_name, instagram: host.instagram || null, listed: true, organizer: true }] : []),
+    ...db.attendeesOf(ev.id).filter(a => organizer || a.in_directory).map(a => ({
+      id: a.id, name: a.display_name, instagram: a.instagram || null, listed: !!a.in_directory,
+    })),
+  ];
 }
 
 // ---------- recognizing a browser (spec v3 §12) ----------
@@ -637,7 +644,7 @@ export function admitExisting({ ev, conversationId, displayName, instagram = nul
  * The text and pasted-link routes for somebody already on Reason: password checked, then admitted.
  * Their account is the one they are texting from, and nothing about onboarding runs.
  */
-export async function joinExisting({ conversationId, name = null, link = null, password, organizer = null, displayName = null, instagram = null, inDirectory = false }) {
+export async function joinExisting({ conversationId, name = null, link = null, password, organizer = null, displayName = null, instagram = null, inDirectory = true }) {
   if (!eventsOn()) return { ok: false, reason: "not_available" };
   const via = link ? "link" : "text";
   const actor = `conv:${conversationId}`;
@@ -666,7 +673,127 @@ export function joinVerified({ conversationId, eventIds, organizer = null, displ
   const ev = candidates[0];
   const shown = cleanDisplayName(displayName) || cleanDisplayName(db.getAccount(conversationId)?.name);
   if (!shown) return { ok: false, reason: "needs_display_name", event: publicView(ev), event_ids: [ev.id] };
-  return admitExisting({ ev, conversationId, displayName: shown, via: "text", actor: `conv:${conversationId}` });
+  return admitExisting({ ev, conversationId, displayName: shown, inDirectory: true, via: "text", actor: `conv:${conversationId}` });
+}
+
+// ---------- the guest-list note (owner decision 2026-10-25) ----------
+//
+// Somebody who already had Reason joins (by text, pasted link or the page): right after the welcome,
+// ONE follow-up says the name they show under on the who's-going list and that they can change it,
+// and either asks once whether they want their Instagram on it, or — when they shared one before —
+// says it will show here too. Nothing when the organizer keeps the list private, nothing at night in
+// the event's zone (it waits for the morning), never a second time for the same event, never chased.
+// Their answer is read by the model off the thread (the note is written into it), never by pattern.
+// The organizer, on their own event's list, gets the same note when they make it.
+
+/** Nothing unprompted between these hours in the event's zone (as for rides, src/eventrides.js). */
+export const LIST_NOTE = { quietFrom: 21, quietUntil: 9, backstopMs: 10 * 60_000, staleAfterStartMs: 12 * 60 * 60_000 };
+
+export function listNoteQuiet(ev, now = clock.now()) {
+  const h = Number(new Intl.DateTimeFormat("en-US", { timeZone: ev.tz, hour: "numeric", hourCycle: "h23" }).format(new Date(now)));
+  return h >= LIST_NOTE.quietFrom || h < LIST_NOTE.quietUntil;
+}
+
+/**
+ * The note's words, or null when nothing should be said: the list is private, they are not on it,
+ * they are off the event, or the ask is moot because they already gave a handle.
+ */
+export function listNoteText(ev, att, kind) {
+  if (!ev?.guest_list_visible || !att || att.state !== "joined" || !att.in_directory) return null;
+  const name = cleanDisplayName(att.display_name);
+  const change = "tell me a different name anytime, or say hide me to come off it";
+  if (!name) return kind === "ask" ? "what name should show for you on the who's-going list? and want your instagram on it too? send your handle, or skip." : null;
+  if (kind === "ask") return att.instagram ? null : `you're on the who's-going list as ${name} (${change}). want your instagram on the guest list too? send your handle, or skip.`;
+  if (!att.instagram) return null;
+  if (kind === "carried") return `you're on the who's-going list as ${name} (${change}). i'll show your instagram @${att.instagram} on this guest list too — say hide my instagram anytime.`;
+  return `you're on the who's-going list as ${name}, with your instagram @${att.instagram} (${change}, or say hide my instagram).`;
+}
+
+/**
+ * After a join or a creation: the handle they typed is kept on their profile; with none typed, the
+ * one they shared before is carried onto this list; and, for somebody who already had Reason, the
+ * note is owed. Returns the row as it now stands.
+ */
+export function afterJoin({ ev, att, typedInstagram = null, newAccount = false, now = clock.now() }) {
+  if (!att) return att;
+  const conv = att.conversation_id;
+  const typed = instagramHandle(typedInstagram);
+  let kind = "ask";
+  if (typed) { db.setAccountInstagram(conv, typed); kind = "shown"; }
+  else if (att.instagram) kind = "shown";
+  else {
+    const kept = instagramHandle(db.getAccount(conv)?.instagram);
+    if (kept) { att = db.updateAttendeeRow(att.id, { instagram: kept }); kind = "carried"; }
+  }
+  if (!newAccount && ev.guest_list_visible) db.oweListNote(att.id, kind, now + LIST_NOTE.backstopMs);
+  return db.attendeeRow(ev.id, conv) ?? att;
+}
+
+/** The organizer's own row on a new event: on their list under their name, same rules as a guest. */
+export function afterCreate(ev) {
+  const row = db.attendeeRow(ev.id, ev.organizer_conversation_id);
+  if (!row || row.role !== "organizer" || !ev.guest_list_visible) return row;
+  const name = cleanDisplayName(row.display_name) ?? cleanDisplayName(db.getAccount(ev.organizer_conversation_id)?.name);
+  const att = db.updateAttendeeRow(row.id, { in_directory: 1, ...(name ? { display_name: name } : {}) });
+  return afterJoin({ ev, att });
+}
+
+/**
+ * Send the owed note now if it may go. Compare-and-set on the row, so the turn's own send and the
+ * sweep can never both send it. `{ state }`: sent | dropped | later | none.
+ */
+export async function sendListNote({ runtime, eventId, conversationId, now = clock.now() }) {
+  const ev = db.getEventRow(eventId);
+  const att = ev ? db.attendeeRow(ev.id, conversationId) : null;
+  const kind = att?.list_note;
+  if (!["ask", "carried", "shown"].includes(kind)) return { state: "none" };
+  const text = ev.status === "cancelled" || (ev.starts_at != null && now > ev.starts_at + LIST_NOTE.staleAfterStartMs) ? null : listNoteText(ev, att, kind);
+  if (!text) { db.settleListNote(att.id, kind, "dropped"); return { state: "dropped" }; }
+  if (ev.status === "paused" || listNoteQuiet(ev, now)) return { state: "later" };
+  if (!db.settleListNote(att.id, kind, "sent")) return { state: "none" };
+  const message = db.insertEventMessage(ev.id, "list_note", text);
+  const r = await deliver({ runtime, message, conversationId });
+  if (r.state !== "failed") intoThread({ runtime, conversationId, about: `the who's-going list for ${String(ev.name).slice(0, 80)}`, body: text });
+  return { state: "sent", delivery: r.state };
+}
+
+/**
+ * The note, after whatever turn is running for them now (Runtime.enqueue): so it lands after
+ * Reason's "you're in", as the last thing said, and their next text reads as the answer to it.
+ */
+export function scheduleListNote({ runtime, ev, att }) {
+  if (!att?.list_note || !["ask", "carried", "shown"].includes(att.list_note)) return;
+  // With no queue to wait behind, the sweep's backstop sends it instead, minutes later, rather than
+  // landing ahead of the reply this note is meant to follow.
+  if (typeof runtime?.enqueue !== "function") return;
+  const go = () => sendListNote({ runtime, eventId: ev.id, conversationId: att.conversation_id }).catch(() => {});
+  Promise.resolve(runtime.enqueue(att.conversation_id, go)).catch(() => {});
+}
+
+/** The sweep's pass: notes held for the morning, or whose immediate send never happened. */
+export async function sweepListNotes({ runtime, now = clock.now() }) {
+  const out = { sent: 0, dropped: 0, later: 0 };
+  for (const row of db.owedListNotes(now)) {
+    const r = await sendListNote({ runtime, eventId: row.event_id, conversationId: row.conversation_id, now });
+    if (out[r.state] != null) out[r.state]++;
+  }
+  return out;
+}
+
+/**
+ * A text Reason sent on its own goes into their thread as the last thing it said, marked as
+ * Reason's own, queued behind any running turn and skipped when the thread already ends with it.
+ */
+export function intoThread({ runtime, conversationId, about, body }) {
+  const write = () => {
+    const msgs = db.loadConversation(conversationId);
+    if (msgs.slice(-6).some(m => m.role === "assistant" && m.content === body)) return;
+    db.saveConversation(conversationId, [...msgs,
+      { role: "user", content: `[${stamp()}] (nothing from them — Reason texted them on its own, about ${about})` },
+      { role: "assistant", content: body }]);
+  };
+  if (typeof runtime?.enqueue === "function") Promise.resolve(runtime.enqueue(conversationId, async () => write())).catch(() => {});
+  else write();
 }
 
 // ---------- the web join (src/pages/event.js) ----------

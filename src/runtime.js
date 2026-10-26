@@ -42,6 +42,7 @@ import * as onethought from "./onethought.js";
 import * as said from "./said.js";
 import { PROVIDER as GOOGLE } from "./google.js";
 import * as eventRides from "./eventrides.js";
+import { sweepListNotes } from "./events.js";
 
 const MIN = 60_000;
 // Sweep turns a held thing may be put to the model in before it is let go. See `notice` below.
@@ -2322,6 +2323,16 @@ export class Runtime extends EventEmitter {
     }
   }
 
+  /** Event guest-list notes held for the morning, or whose send after the join never happened (src/events.js). Logged, never thrown. */
+  async eventListNotes({ now = clock.now() } = {}) {
+    try {
+      return await sweepListNotes({ runtime: this, now });
+    } catch (e) {
+      this.log({ event_list_notes_failed: (e?.message ?? String(e)).split("\n")[0] });
+      return { failed: true };
+    }
+  }
+
   async ticketChecks({ now = clock.now() } = {}) {
     // One pass at a time. On the claude-cli backend its email reads wait in the background lane
     // (src/ticketcheck.js readEmail), so the pass runs off the sweep's path: a reminder never waits
@@ -2416,6 +2427,8 @@ export class Runtime extends EventEmitter {
     // Rides between an event's guests (src/eventrides.js): the day-before ask, matches, the day-of
     // reminder. Inert unless REASON_EVENT_RIDES is on and an organizer turned rides on.
     const event_rides = await this.eventRides();
+    // The one guest-list note after joining an event, when it had to wait for the morning.
+    const event_list_notes = await this.eventListNotes();
     // Before the idle-thread pass: a builder that just finished is real news, and raising a dropped
     // thread first would mean asking "still there?" in the same minute something he is waiting on
     // landed. Its own reading half runs whether or not anything earns a text.
@@ -2442,7 +2455,7 @@ export class Runtime extends EventEmitter {
     const shapes = await this.rhythms();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
   }
 
   start(everyMs = 15_000) {

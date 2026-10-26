@@ -233,7 +233,7 @@ test("a guest never sees an unreleased detail, in any view they can reach", asyn
 test("the organizer's guest list and the directory never carry a phone number; the directory shows only who opted in", async () => {
   const ev = make();
   await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin", inDirectory: true, instagram: "@ama.k" });
-  await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" });
+  await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin", inDirectory: false });
   const all = JSON.stringify([events.guestList(ev), events.directoryEntries(ev), events.directoryEntries(ev, { organizer: true })]);
   assert.ok(!/\+1|3475550000|6465550111|dm:fake/.test(all), all);
   assert.deepEqual(events.directoryEntries(ev).map(e => e.name), ["Ama"]);
