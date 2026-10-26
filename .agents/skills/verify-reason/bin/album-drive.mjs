@@ -101,7 +101,7 @@ step("a stranger's recognized browser on the organizer's link: not found, same b
 
 const ama = db.attendeeRow(ev.id, C.ama);
 const ci = await tool("album_manage", { event_id: ev.id, action: "check_in", guest_id: ama.id }, C.kofi);
-step("ama checked in; nothing sent before release", ci.checked_in === true && sent.length === 0);
+step("ama checked in; nothing sent before release", ci.guests?.[0]?.checked_in === true && sent.length === 0);
 const rel = await tool("album_manage", { event_id: ev.id, action: "release" }, C.kofi);
 step("release: one text to the one checked-in guest, link last", rel.released === true && sent.length === 1 && sent[0].conversationId === C.ama && /:\nhttps:\/\/.+\/album\?t=/.test(sent[0].text), rel.expires);
 const album = db.albumOf(ev.id);
@@ -115,16 +115,43 @@ const zip = await req(ev, "album/download", { cookie: "reason_page=tok-ama" });
 step("whole-album download is a zip", zip.status === 200 && zip.body.readUInt32LE(0) === 0x04034b50);
 const yawRow = db.attendeeRow(ev.id, C.yaw);
 step("yaw (not checked in) cannot open the album or the zip", (await req(ev, "album", { cookie: (db.startPageSession("p-yaw", "tok-yaw", { conversationId: C.yaw }), "reason_page=tok-yaw") })).body.includes("checked in") && (await req(ev, "album/download", { cookie: "reason_page=tok-yaw" })).status === 404);
-const late = await tool("album_manage", { event_id: ev.id, action: "check_in", guest_id: yawRow.id }, C.kofi);
-step("checked in late: the one announcement, once", late.told === "sent" && sent.length === 2 && sent[1].conversationId === C.yaw);
+step("release reports who is still out, in Reason's words", rel.counts?.joined === 2 && rel.counts?.checked_in === 1 && /1 other who joined isn't checked in/.test(rel.nudge) && /ask who should be let in/.test(rel.note));
+const late = await tool("album_manage", { event_id: ev.id, action: "check_in", guest_names: ["yaw"] }, C.kofi);
+step("'Yaw came' — checked in late by name: the one announcement, once", late.ok && late.guests?.[0]?.guest === "Yaw" && late.guests[0].told === "sent" && sent.length === 2 && sent[1].conversationId === C.yaw, JSON.stringify(late.note));
 
 clock.skip(albums.RETENTION.ms + 1000);
-const swept = albums.sweep();
+const swept = await albums.sweep({ runtime });
 step("past the deadline the sweep closes it and deletes the files", swept.closed === 1 && albums.filesLeft(ev) === 0 && db.albumOf(ev.id).closed_at != null, JSON.stringify(swept));
 page = await req(ev, "album", { cookie: "reason_page=tok-ama" });
 step("the page is closed", /This album closed on/.test(page.body) && !/al-tile/.test(page.body.split("<main").pop()));
 step("nothing more goes in", (await tool("album_add", { event_id: ev.id, photo_ids: [photo(C.ama)] }, C.ama)).closed === true);
 step("still only the two announcements ever", sent.length === 2);
+
+// ---- the nudges and check-in by name (owner, 2026-10-26): a second event, released to nobody ----
+const made2 = await tool("event_create", { name: "Brunch", description: "eggs", starts_at: "2026-11-01T11:00", location: "41 Grove St", password: "eggs", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }, C.kofi);
+step("second event made", made2.ok);
+const ev2 = db.getEventRow(made2.event.event_id);
+for (const k of ["ama", "yaw", "esi"]) await events.joinExisting({ conversationId: C[k], name: "Brunch", password: "eggs" });
+sent.length = 0;
+texted(C.ama);
+const b1 = await tool("album_add", { event_id: ev2.id, event_named: "brunch", photo_ids: [photo(C.ama)] }, C.ama);
+step("a photo for brunch goes straight in (the note was answered once, ever)", b1.ok && b1.added?.length === 1);
+const sw = await albums.sweep({ runtime, now: ev2.starts_at + albums.END_NUDGE.afterStartMs });
+step("around the end with nobody checked in: the organizer is nudged once, plain intent", sw.nudged === 1 && sent.length === 1 && sent[0].conversationId === C.kofi && /nobody's checked in yet/.test(sent[0].text) && /let me know who was actually there/.test(sent[0].text), sent[0]?.text);
+const sw2 = await albums.sweep({ runtime, now: ev2.starts_at + albums.END_NUDGE.afterStartMs + 60_000 });
+step("never twice", sw2.nudged === 0 && sent.length === 1);
+const postRelease = await eventRequestFor({ publicId: ev2.public_id, sub: "album/manage", method: "POST", query: {}, headers: { cookie: "reason_page=tok-kofi" }, remoteAddress: "127.0.0.1", readBody: async () => "action=release", runtime, router: null });
+step("released from the page with nobody in: it releases, the organizer is texted why nobody can see it, no guest is texted", postRelease.status === 303 && db.albumOf(ev2.id).released_at != null && sent.length === 2 && sent[1].conversationId === C.kofi && /nobody can see it yet/.test(sent[1].text), sent[1]?.text);
+page = await req(ev2, "album/manage", { cookie: "reason_page=tok-kofi" });
+step("the page says so and offers 'Check everyone in'", /Nobody can see the album yet/.test(page.body) && /Check everyone in/.test(page.body));
+const exc = await tool("album_manage", { event_id: ev2.id, event_named: "brunch", action: "check_in_all", except: ["Esi"] }, C.kofi);
+step("'everyone except Esi': Ama and Yaw in and texted the link once each, Esi nothing", exc.ok && exc.counts?.checked_in === 2 && exc.left_out?.[0] === "Esi" && sent.length === 4 && !sent.some(s => s.conversationId === C.esi), exc.note);
+const esiIn = await tool("album_manage", { event_id: ev2.id, event_named: "brunch", action: "check_in", guest_names: ["esi"] }, C.kofi);
+step("'Esi was there too': in, texted once", esiIn.ok && esiIn.guests?.[0]?.told === "sent" && sent.length === 5 && sent[4].conversationId === C.esi);
+const everyone = await tool("album_manage", { event_id: ev2.id, event_named: "brunch", action: "check_in_all" }, C.kofi);
+step("'everyone' again: nothing new, nobody texted twice", everyone.newly === 0 && everyone.texted === 0 && sent.length === 5);
+const nobody = await tool("album_manage", { event_id: ev2.id, event_named: "brunch", action: "check_in", guest_names: ["Zed"] }, C.kofi);
+step("a name not on the list: nothing done, the list offered", nobody.ok === false && nobody.reason === "unknown_guest" && Array.isArray(nobody.guests));
 
 console.log(failed ? `\n${failed} FAILED` : "\nall ok");
 process.exit(failed ? 1 : 0);

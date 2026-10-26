@@ -102,10 +102,11 @@ async function joinAs(c, name = "Game Night", password = "catan", displayName = 
 }
 /** First contribution: the note, their yes in a later text, then the add. Returns the add result. */
 async function addFirst(c, ev, ids, rt) {
-  const ask = await tool("album_add", { event_id: ev.id, photo_ids: ids }, c, rt);
+  const ask = await tool("album_add", { event_id: ev.id, event_named: ev.name, photo_ids: ids }, c, rt);
+  if (ask.ok && !ask.needs_answer) return ask; // the note was answered before (another event of theirs): straight in
   assert.equal(ask.needs_answer, true, JSON.stringify(ask));
   texted(c);
-  return await tool("album_add", { event_id: ev.id, photo_ids: ids, agreed: true }, c, rt);
+  return await tool("album_add", { event_id: ev.id, event_named: ev.name, photo_ids: ids, agreed: true }, c, rt);
 }
 const files = (ev) => albums.filesLeft(ev);
 
@@ -220,7 +221,7 @@ test("attendees cannot see the album before release; release sends exactly one a
   const guests = db.attendeesOf(ev.id);
   for (const g of guests.filter(a => a.conversation_id !== ESI_C)) {
     const r = await tool("album_manage", { event_id: ev.id, action: "check_in", guest_id: g.id }, KOFI_C, rt);
-    assert.equal(r.checked_in, true, JSON.stringify(r));
+    assert.equal(r.guests[0].checked_in, true, JSON.stringify(r));
   }
   assert.equal(rt.sent.length, 0);
   // A checked-in guest still sees nothing of others' until release.
@@ -252,7 +253,7 @@ test("attendees cannot see the album before release; release sends exactly one a
   assert.equal(db.albumOf(ev.id).expires_at, album.expires_at, "a late upload does not move the deadline");
   const esi = guests.find(a => a.conversation_id === ESI_C);
   const r = await tool("album_manage", { event_id: ev.id, action: "check_in", guest_id: esi.id }, KOFI_C, rt);
-  assert.equal(r.told, "sent");
+  assert.equal(r.guests[0].told, "sent");
   assert.equal(rt.sent.length, 3);
   assert.equal(rt.sent[2].conversationId, ESI_C);
   // Each announcement is its own message row carrying the real words, so the status page's retry
@@ -356,11 +357,11 @@ test("the album shows the exact expiry; past it the sweep closes the page and th
   const runtime = new Runtime({ runTurn: async () => "ok" });
   // Just before the deadline: nothing happens.
   clock.skip(3 * 24 * 60 * 60_000 - 60_000);
-  assert.deepEqual(await runtime.eventAlbums(), { closed: 0, deleted: 0 });
+  assert.deepEqual(await runtime.eventAlbums(), { closed: 0, deleted: 0, nudged: 0 });
   assert.equal(files(ev), 2);
   // Past it: closed, files deleted, the page says so, nothing more can be added, no second announcement.
   clock.skip(2 * 60_000);
-  assert.deepEqual(await runtime.eventAlbums(), { closed: 1, deleted: 2 });
+  assert.deepEqual(await runtime.eventAlbums(), { closed: 1, deleted: 2, nudged: 0 });
   assert.equal(files(ev), 0);
   assert.ok(!existsSync(join(dir, "data", "event-albums", ev.public_id)), "the event's directory is gone");
   assert.equal(db.photoCount(album.id), 0);
@@ -373,7 +374,7 @@ test("the album shows the exact expiry; past it the sweep closes the page and th
   const more = await tool("album_add", { event_id: ev.id, photo_ids: [photo(AMA_C)] }, AMA_C, rt);
   assert.equal(more.closed, true);
   assert.equal(rt.sent.length, 1, "only ever the one announcement");
-  assert.deepEqual(await runtime.eventAlbums(), { closed: 0, deleted: 0 }, "closed once");
+  assert.deepEqual(await runtime.eventAlbums(), { closed: 0, deleted: 0, nudged: 0 }, "closed once");
 });
 
 test("retention is one setting: the note, the deadline and the page all read it", async () => {
@@ -386,7 +387,7 @@ test("retention is one setting: the note, the deadline and the page all read it"
   await tool("album_manage", { event_id: ev.id, action: "release" }, KOFI_C, rt);
   const album = db.albumOf(ev.id);
   assert.equal(album.expires_at - album.released_at, 5 * 24 * 60 * 60_000);
-  assert.equal(albums.PHOTO_ORDER, "upload time", "the open photo-order decision is one flag");
+  assert.equal(albums.PHOTO_ORDER, "upload time", "photo order is upload time (decided), one setting");
 });
 
 test("a never-released album runs no timer, deletes nothing, and is listed as waiting; the scheduled end time releases nothing", async () => {
@@ -396,7 +397,8 @@ test("a never-released album runs no timer, deletes nothing, and is listed as wa
   await addFirst(AMA_C, ev, [photo(AMA_C)], rt);
   await tool("album_manage", { event_id: ev.id, action: "check_in", guest_id: db.attendeeRow(ev.id, AMA_C).id }, KOFI_C, rt);
   clock.skip(30 * 24 * 60 * 60_000);
-  assert.deepEqual(albums.sweep(), { closed: 0, deleted: 0 });
+  // Ama is checked in, so the end-of-event nudge has nothing to say; a month on, nothing is closed either.
+  assert.deepEqual(await albums.sweep({ runtime: rt }), { closed: 0, deleted: 0, nudged: 0 });
   assert.equal(files(ev), 1);
   assert.equal(db.albumOf(ev.id).expires_at, null);
   assert.deepEqual(albums.waiting().map(w => [w.name, w.photos]), [["Game Night", 1]]);
@@ -411,6 +413,212 @@ test("a never-released album runs no timer, deletes nothing, and is listed as wa
   assert.match(held.error, /paused/);
   assert.equal(db.albumOf(ev.id).released_at, null);
   assert.equal(rt.sent.length, 0);
+});
+
+// ---------- the organizer is nudged to check people in; checks them in by name (decided 2026-10-26) ----------
+
+const H = 60 * 60_000;
+const organizerTexts = (rt) => rt.sent.filter(s => s.conversationId === KOFI_C);
+/** No "say/text/reply X" coaching in anything the organizer is told: plain intent only. */
+const COACH = /\b(say|text|reply|type|send)\s+(back\s+)?(with\s+)?(just\s+)?(["“][a-z#][^"”]{0,40}["”]|\b(YES|NO|STOP|HELP|START|UNDO)\b)/;
+
+test("a release with nobody checked in is never silent: it releases, then the organizer is told nobody can see it and asked who to let in — by the tool's result, or by text from the page", async () => {
+  // Through Reason: the result carries the counts and the nudge for the model to put in its own words.
+  let rt = fakeRuntime();
+  let ev = await made();
+  await joinAs(AMA_C); await joinAs(YAW_C);
+  await addFirst(AMA_C, ev, [photo(AMA_C)], rt);
+  const rel = await tool("album_manage", { event_id: ev.id, action: "release" }, KOFI_C, rt);
+  assert.equal(rel.released, true, JSON.stringify(rel));
+  assert.ok(db.albumOf(ev.id).released_at, "it still releases — the organizer's tap is honoured");
+  assert.deepEqual([rel.counts.joined, rel.counts.checked_in, rel.sent.guests], [2, 0, 0]);
+  assert.match(rel.nudge, /none of the 2 guests who joined are checked in, so nobody can see it yet/);
+  assert.match(rel.nudge, /only checked-in guests get the album/);
+  assert.match(rel.nudge, /let me know who was actually there/);
+  assert.ok(!COACH.test(rel.nudge), "plain intent, never a phrase to type");
+  assert.match(rel.note, /ask who should be let in/);
+  assert.equal(rt.sent.length, 0, "nothing is texted to anybody: no guest is in, and the organizer is in this very turn");
+  // Partial: what went out, who is still out, and the offer to let them in.
+  rt = fakeRuntime();
+  ev = await made(KOFI_C, { name: "Brunch", password: "eggs" });
+  await joinAs(AMA_C, "Brunch", "eggs"); await joinAs(YAW_C, "Brunch", "eggs"); await joinAs(ESI_C, "Brunch", "eggs");
+  await tool("album_manage", { event_id: ev.id, event_named: "brunch", action: "check_in", guest_names: ["Ama"] }, KOFI_C, rt);
+  const part = await tool("album_manage", { event_id: ev.id, event_named: "brunch", action: "release" }, KOFI_C, rt);
+  assert.deepEqual([part.counts.joined, part.counts.checked_in, part.sent.guests], [3, 1, 1]);
+  assert.match(part.nudge, /went out to the 1 guest you checked in\. 2 others who joined aren't checked in, so they can't see it/);
+  assert.ok(!COACH.test(part.nudge));
+  // Everyone in: nothing to nudge about.
+  rt = fakeRuntime();
+  ev = await made(KOFI_C, { name: "Hike", password: "boots" });
+  await joinAs(AMA_C, "Hike", "boots");
+  await tool("album_manage", { event_id: ev.id, event_named: "hike", action: "check_in", guest_names: ["Ama"] }, KOFI_C, rt);
+  const full = await tool("album_manage", { event_id: ev.id, event_named: "hike", action: "release" }, KOFI_C, rt);
+  assert.equal(full.nudge, undefined);
+  assert.ok(!/let in/.test(full.note));
+  // From the page button, with nobody checked in: released, the page says nobody can see it, and the organizer is TEXTED the nudge, once.
+  rt = fakeRuntime();
+  ev = await made(KOFI_C, { name: "Movie Night", password: "popcorn" });
+  await joinAs(AMA_C, "Movie Night", "popcorn"); await joinAs(YAW_C, "Movie Night", "popcorn");
+  await addFirst(AMA_C, ev, [photo(AMA_C)], rt);
+  const cookie = asBrowser(KOFI_C, "tok-kofi-n1");
+  const post = await req(ev, { sub: "album/manage", method: "POST", body: form({ action: "release" }), cookie, rt });
+  assert.equal(post.status, 303);
+  assert.match(decodeURIComponent(post.headers.Location), /Nobody is checked in, so nobody can see it yet/);
+  assert.ok(db.albumOf(ev.id).released_at);
+  assert.equal(organizerTexts(rt).length, 1, "the organizer is told by text");
+  assert.match(organizerTexts(rt)[0].text, /Movie Night album is released, but none of the 2 guests who joined are checked in/);
+  assert.ok(!COACH.test(organizerTexts(rt)[0].text));
+  assert.equal(rt.sent.length, 1, "no guest was texted: nobody is in");
+  const page = await req(ev, { sub: "album/manage", cookie });
+  assert.match(page.text, /Nobody can see the album yet/);
+  assert.match(page.text, /Check everyone in/);
+  // A second tap: already released, no second text.
+  await req(ev, { sub: "album/manage", method: "POST", body: form({ action: "release" }), cookie, rt });
+  assert.equal(organizerTexts(rt).length, 1);
+  // And the words Reason sent are in its thread with the organizer, as its own.
+  const thread = db.loadConversation(KOFI_C);
+  assert.ok(thread.some(m => m.role === "assistant" && /Movie Night album is released/.test(m.content)), "the nudge is the last thing Reason said, so the next text reads as the answer");
+});
+
+test("\"everyone\" checks every joined guest in and texts each the announcement once; a second \"everyone\" and the page's button send nothing again", async () => {
+  const rt = fakeRuntime();
+  const ev = await made();
+  await joinAs(AMA_C); await joinAs(YAW_C); await joinAs(ESI_C);
+  await addFirst(AMA_C, ev, [photo(AMA_C)], rt);
+  await tool("album_manage", { event_id: ev.id, action: "release" }, KOFI_C, rt);
+  assert.equal(rt.sent.length, 0, "released to nobody");
+  const all = await tool("album_manage", { event_id: ev.id, action: "check_in_all" }, KOFI_C, rt);
+  assert.equal(all.ok, true, JSON.stringify(all));
+  assert.deepEqual([all.counts.checked_in, all.counts.joined, all.newly, all.texted], [3, 3, 3, 3]);
+  assert.deepEqual(rt.sent.map(s => s.conversationId).sort(), [AMA_C, ESI_C, YAW_C].sort(), "each newly checked-in guest, once");
+  for (const s of rt.sent) assert.match(s.text, /the Game Night album is ready[\s\S]*\/album\?t=/);
+  assert.ok(all.guests.every(g => g.checked_in), "the list in the result shows them all in");
+  const again = await tool("album_manage", { event_id: ev.id, action: "check_in_all" }, KOFI_C, rt);
+  assert.deepEqual([again.newly, again.texted, rt.sent.length], [0, 0, 3]);
+  // The page's button is the same thing: nothing goes twice.
+  const cookie = asBrowser(KOFI_C, "tok-kofi-e1");
+  const post = await req(ev, { sub: "album/manage", method: "POST", body: form({ action: "checkin_all" }), cookie, rt });
+  assert.equal(post.status, 303);
+  assert.equal(rt.sent.length, 3);
+  assert.ok(!/Check everyone in/.test((await req(ev, { sub: "album/manage", cookie })).text), "with everyone in, the button is gone");
+  assert.equal(db.eventMessages(ev.id).filter(m => m.kind === "album").length, 3, "one message row per guest, the one dedupe");
+  // Before release, "everyone" checks in and texts nobody; the release then texts them all.
+  const rt2 = fakeRuntime();
+  const ev2 = await made(KOFI_C, { name: "Brunch", password: "eggs" });
+  await joinAs(AMA_C, "Brunch", "eggs"); await joinAs(YAW_C, "Brunch", "eggs");
+  const early = await tool("album_manage", { event_id: ev2.id, event_named: "brunch", action: "check_in_all" }, KOFI_C, rt2);
+  assert.deepEqual([early.counts.checked_in, early.texted, rt2.sent.length], [2, 0, 0]);
+  const rel = await tool("album_manage", { event_id: ev2.id, event_named: "brunch", action: "release" }, KOFI_C, rt2);
+  assert.deepEqual([rel.sent.guests, rt2.sent.length, rel.nudge], [2, 2, undefined]);
+});
+
+test("\"all except Lina\" leaves her out; \"Maya and Daniel came\" checks in exactly those two by name; names come off the guest list, never a number", async () => {
+  const rt = fakeRuntime();
+  const ev = await made();
+  await joinAs(AMA_C, "Game Night", "catan", "Maya"); await joinAs(YAW_C, "Game Night", "catan", "Daniel"); await joinAs(ESI_C, "Game Night", "catan", "Lina");
+  await tool("album_manage", { event_id: ev.id, action: "release" }, KOFI_C, rt);
+  const exc = await tool("album_manage", { event_id: ev.id, action: "check_in_all", except: ["Lina"] }, KOFI_C, rt);
+  assert.equal(exc.ok, true, JSON.stringify(exc));
+  assert.deepEqual([exc.counts.checked_in, exc.counts.joined, exc.left_out], [2, 3, ["Lina"]]);
+  assert.deepEqual(rt.sent.map(s => s.conversationId).sort(), [AMA_C, YAW_C].sort(), "Lina is texted nothing");
+  assert.equal(db.checkedIn(ev.id, ESI_C), false);
+  // Take them back off, then by name: "Maya and Daniel came".
+  const off = await tool("album_manage", { event_id: ev.id, action: "undo_check_in", guest_names: ["Maya", "Daniel"] }, KOFI_C, rt);
+  assert.deepEqual([off.counts.checked_in, off.guests.map(g => g.guest).sort()], [0, ["Daniel", "Maya"]]);
+  const came = await tool("album_manage", { event_id: ev.id, action: "check_in", guest_names: ["maya", "Dan"] }, KOFI_C, rt);
+  assert.equal(came.ok, true, JSON.stringify(came));
+  assert.deepEqual(came.guests.map(g => g.guest).sort(), ["Daniel", "Maya"], "a name said whole, or the start of one, is enough when it fits one guest");
+  assert.deepEqual([came.counts.checked_in, came.counts.joined], [2, 3]);
+  assert.equal(rt.sent.length, 2, "they already had their announcement: the same message row, nothing twice");
+  assert.equal(db.checkedIn(ev.id, ESI_C), false, "Lina was never named in");
+  // A name nobody on the list has: nothing done, said so, with the list to pick from.
+  const nobody = await tool("album_manage", { event_id: ev.id, action: "check_in", guest_names: ["Zed"] }, KOFI_C, rt);
+  assert.equal(nobody.ok, false);
+  assert.equal(nobody.reason, "unknown_guest");
+  assert.deepEqual(nobody.unknown, ["Zed"]);
+  assert.ok(nobody.guests.every(g => !/\+1\d{10}|\d{10}/.test(JSON.stringify(g))), "never a phone number");
+  assert.equal(db.checkedIn(ev.id, ESI_C), false);
+});
+
+test("a name two guests answer to is asked about, never guessed: nothing is checked in until the organizer says which", async () => {
+  const rt = fakeRuntime();
+  const ev = await made();
+  await joinAs(AMA_C, "Game Night", "catan", "Ama B"); await joinAs(ESI_C, "Game Night", "catan", "Ama K"); await joinAs(YAW_C, "Game Night", "catan", "Yaw");
+  await tool("album_manage", { event_id: ev.id, action: "release" }, KOFI_C, rt);
+  const asked = await tool("album_manage", { event_id: ev.id, action: "check_in", guest_names: ["Ama"] }, KOFI_C, rt);
+  assert.equal(asked.ok, false, JSON.stringify(asked));
+  assert.equal(asked.reason, "which_guest");
+  assert.deepEqual(asked.ambiguous[0].choices.map(c => c.display_name).sort(), ["Ama B", "Ama K"]);
+  assert.equal(db.checkinsOf(ev.id).length, 0, "nobody checked in on a guess");
+  assert.equal(rt.sent.length, 0);
+  // "Everyone except Ama" with two Amas: nobody at all is checked in until it's clear.
+  const exc = await tool("album_manage", { event_id: ev.id, action: "check_in_all", except: ["Ama"] }, KOFI_C, rt);
+  assert.equal(exc.ok, false);
+  assert.equal(exc.reason, "which_guest");
+  assert.equal(db.checkinsOf(ev.id).length, 0);
+  assert.equal(rt.sent.length, 0);
+  // Said whole, it is one person; a clear name alongside an unclear one does the clear one and asks about the other.
+  const whole = await tool("album_manage", { event_id: ev.id, action: "check_in", guest_names: ["Ama K"] }, KOFI_C, rt);
+  assert.deepEqual(whole.guests.map(g => g.guest), ["Ama K"]);
+  assert.equal(rt.sent.length, 1);
+  assert.equal(rt.sent[0].conversationId, ESI_C);
+  const mixed = await tool("album_manage", { event_id: ev.id, action: "check_in", guest_names: ["Yaw", "Ama"] }, KOFI_C, rt);
+  assert.equal(mixed.ok, true);
+  assert.deepEqual(mixed.guests.map(g => g.guest), ["Yaw"]);
+  assert.equal(mixed.which_guest.reason, "which_guest");
+  assert.match(mixed.note, /ask which/);
+  // The answer, by number: in, and texted once.
+  const amaB = db.attendeeRow(ev.id, AMA_C);
+  const picked = await tool("album_manage", { event_id: ev.id, action: "check_in", guest_id: amaB.id }, KOFI_C, rt);
+  assert.deepEqual(picked.guests.map(g => g.guest), ["Ama B"]);
+  assert.equal(rt.sent.length, 3);
+});
+
+test("around the event's end, an unreleased album with nobody checked in earns the organizer one nudge from the sweep — once, never with somebody checked in, never a day late", async () => {
+  const rt = fakeRuntime();
+  const ev = await made();
+  await joinAs(AMA_C); await joinAs(YAW_C);
+  await addFirst(AMA_C, ev, [photo(AMA_C), photo(AMA_C)], rt);
+  // A second event the same night where one guest IS checked in: never nudged.
+  const ev2 = await made(YAW_C, { name: "Rooftop Party", password: "sunset" });
+  await joinAs(AMA_C, "Rooftop Party", "sunset");
+  await addFirst(AMA_C, ev2, [photo(AMA_C)], rt);
+  await tool("album_manage", { event_id: ev2.id, action: "check_in", guest_names: ["Ama"] }, YAW_C, rt);
+  rt.sent.length = 0;
+  const at = (ms) => albums.sweep({ runtime: rt, now: ms });
+  // Before the end: nothing. (Events carry a start and no end; "around the end" is END_NUDGE.afterStartMs past the start.)
+  assert.deepEqual(await at(ev.starts_at + albums.END_NUDGE.afterStartMs - 60_000), { closed: 0, deleted: 0, nudged: 0 });
+  assert.equal(rt.sent.length, 0);
+  // At it: the organizer of the one with nobody in gets the nudge, in Reason's words; the other organizer nothing.
+  assert.deepEqual(await at(ev.starts_at + albums.END_NUDGE.afterStartMs), { closed: 0, deleted: 0, nudged: 1 });
+  assert.equal(rt.sent.length, 1);
+  assert.equal(rt.sent[0].conversationId, KOFI_C);
+  assert.match(rt.sent[0].text, /Game Night album has 2 photos in it and nobody's checked in yet, so when you release it nobody will be able to see it/);
+  assert.match(rt.sent[0].text, /let me know who was actually there/);
+  assert.ok(!COACH.test(rt.sent[0].text), "plain intent, never a phrase to type");
+  assert.ok(!/Rooftop/.test(rt.sent[0].text));
+  assert.ok(db.albumOf(ev.id).nudged_at, "written on the album");
+  assert.ok(db.albumOf(ev2.id).nudged_at, "the one with somebody in is marked done too — never nudged later either");
+  // Again, and an hour on, and after the organizer answers: nothing more, ever.
+  assert.deepEqual(await at(ev.starts_at + albums.END_NUDGE.afterStartMs + 1), { closed: 0, deleted: 0, nudged: 0 });
+  assert.deepEqual(await at(ev.starts_at + albums.END_NUDGE.afterStartMs + H), { closed: 0, deleted: 0, nudged: 0 });
+  assert.equal(rt.sent.length, 1);
+  assert.equal(db.eventMessages(ev.id).filter(m => m.kind === "album_end_nudge").length, 1);
+  // The organizer answers "everyone who came": both in, nothing texted (not released yet); then the release texts them, and nudges nothing.
+  const all = await tool("album_manage", { event_id: ev.id, action: "check_in_all" }, KOFI_C, rt);
+  assert.deepEqual([all.counts.checked_in, rt.sent.length], [2, 1]);
+  const rel = await tool("album_manage", { event_id: ev.id, action: "release" }, KOFI_C, rt);
+  assert.deepEqual([rel.sent.guests, rel.nudge, rt.sent.length], [2, undefined, 3]);
+  assert.equal(db.albumOf(ev.id).released_at > 0, true);
+  // Released albums, albums with no photos, and a moment more than a day gone are never nudged.
+  const ev3 = await made(ESI_C, { name: "Late One", password: "late" });
+  await joinAs(AMA_C, "Late One", "late");
+  await addFirst(AMA_C, ev3, [photo(AMA_C)], rt);
+  const before = rt.sent.length;
+  // (By then Game Night's released album is past its own deadline and closes — the same pass, its own business.)
+  assert.equal((await at(ev3.starts_at + albums.END_NUDGE.staleAfterStartMs + 60_000)).nudged, 0);
+  assert.equal(rt.sent.length, before, "a day late is dropped unsent");
+  assert.ok(db.albumOf(ev3.id).nudged_at, "and marked, so it never comes later");
 });
 
 // ---------- the events feature, untouched ----------

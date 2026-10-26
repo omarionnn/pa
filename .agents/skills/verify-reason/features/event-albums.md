@@ -52,9 +52,9 @@ table gained a column, no event tool or prompt line mentions albums (pinned).
 
 ```bash
 cd ~/Desktop/pa
-node --test test/event-album.test.js                # 9 pinned tests, everything above
+node --test test/event-album.test.js                # 14 pinned tests, everything above (5 for the nudges + check-in by name)
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_EVENT_ALBUMS=on REASON_DB_PATH=$(mktemp -d)/albums.db node .agents/skills/verify-reason/bin/album-drive.mjs
-node .agents/skills/verify-reason/bin/album-preview.mjs ~/Desktop   # three PNGs: attendee page, organizer page, sample chat
+node .agents/skills/verify-reason/bin/album-preview.mjs ~/Desktop   # three PNGs: attendee page, organizer page, sample chat (note · release · the nudge + "let everyone in")
 ```
 
 Over HTTP on the cage: start it as `REASON_EVENTS=on REASON_EVENT_ALBUMS=on bin/caged.sh start`,
@@ -63,14 +63,43 @@ calls), then `curl -si http://127.0.0.1:8796/e/<id>/album/manage` → the gate (
 code"), with `-H 'Cookie: reason_page=<token>'` for the organizer → 200 with `Check-in list`, and a
 stranger's token → 404. Driven 2026-10-26 at the PR's head (see Baseline).
 
+- **The organizer is nudged to check people in, never bypassed** (owner, 2026-10-26). `albums.release`
+  returns `joined` / `checked_in` and, when not everyone who joined is in, `nudge` (`checkinNudge`):
+  how many of the guests who joined are checked in, that only checked-in guests can see the album,
+  and who should be let in — plain intent, no phrase to type. Through the tool the model relays it
+  (the result's `note` says so); from the page button the organizer is TEXTED it once
+  (`nudgeOrganizer` → `event_messages` kind `album_nudge`, one delivery, the words into their thread)
+  and the page says "Nobody can see the album yet". A release to zero still releases. The sweep
+  (`albums.sweep`, now also the nudge pass) texts the same nudge ONCE around the event's end —
+  `END_NUDGE.afterStartMs` (4 h) past `starts_at`, events having no end time — only for an unreleased
+  album with photos and nobody checked in; `event_albums.nudged_at` is set compare-and-set first, so
+  never twice; somebody checked in, event not active, or more than `staleAfterStartMs` (24 h) past
+  the start → marked and dropped unsent. Kind `album_end_nudge`.
+- **The organizer checks people in by name** (`album_manage`): `check_in` / `undo_check_in` with
+  `guest_names` (or `guest_id` / `guest_ids`), `check_in_all` with optional `except`. `albums.guestsNamed`
+  matches against THIS event's joined guests (membership display name, else account name): a name
+  said whole, or every word said beginning a word of theirs ("Dan" → Daniel). Two guests answering
+  to a name → `which_guest` with the choices, nothing checked in on a guess (and "everyone except
+  <ambiguous>" does nothing at all); a name nobody has → `unknown_guest` with the list. The page
+  keeps a **Check everyone in** button (`action=checkin_all`). Every bulk check-in after release
+  texts each NEWLY checked-in guest the announcement once — the same per-guest message row as a
+  single check-in, so repeating "everyone" sends nothing.
+
+## Decided (owner, 2026-10-26)
+
+- Photo order: upload time. `albums.PHOTO_ORDER = "upload time"`, read by `db.photosOf`; the one setting.
+- Confirmed as built: a guest checked in after release is sent the one announcement at check-in;
+  "End event" touches the album only (the event row stays `active`); no 24h reminder.
+- Organizer never uses the check-in list: no bypass, no auto check-in — the nudges above are all
+  that happens; only the organizer's words or taps check anybody in.
+
 ## Open decisions (owner's; built so the answer drops in)
 
-- Photo order: `albums.PHOTO_ORDER = "upload time"`, read by `db.photosOf`. One flag.
 - Never-released albums: kept, no timer, `albums.waiting()` lists them; nothing surfaces them to the
   owner yet (the ops page is a one-line add).
-- Organizer never uses the check-in list: no bypass, no auto check-in; guests get nothing.
-- Chosen, not in the spec: a guest checked in after release is sent the one announcement at
-  check-in; "End event" touches the album only (the event row stays `active`).
+- "Around the end" with no end time on events: 4 h after the start (`END_NUDGE`), sent at that moment
+  whatever the hour (the organizer is at their own event); change the constant if the owner wants
+  the morning after instead.
 
 ## Not reached
 

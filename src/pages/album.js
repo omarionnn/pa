@@ -142,10 +142,12 @@ export function renderManage({ ev, conversationId, done = "" }) {
   }
   body += `<div class="al-row" style="margin-top:1rem"><a class="al-btn al-alt" href="${esc(`${base(ev)}/download`)}">Download album</a></div>`;
   body += `<p class="al-h">Check-in list · ${inCount} of ${list.length} checked in</p>`;
+  if (album?.released_at && list.length && !inCount) body += `<p class="al-note"><b>Nobody can see the album yet.</b> Only checked-in guests get it — check in the people who were there.</p>`;
   body += list.length
     ? `<ul class="al-list">${list.map(g => `<li><span>${esc(g.display_name || "a guest")}</span><form method="POST" action="${esc(act)}"><input type="hidden" name="action" value="${g.checked_in ? "undo" : "checkin"}"><input type="hidden" name="guest" value="${g.guest_id}"><button class="al-pill${g.checked_in ? " al-on" : ""}" type="submit">${g.checked_in ? "Checked in" : "Check in"}</button></form></li>`).join("")}</ul>`
     : `<div class="t">${p("Nobody has joined yet.")}</div>`;
-  body += `<p class="al-note">Only checked-in guests can open the album. Nobody is checked in on their own.</p>`;
+  if (list.length > inCount) body += `<form method="POST" action="${esc(act)}" style="margin-top:.8rem"><input type="hidden" name="action" value="checkin_all"><button class="al-btn al-alt" type="submit" data-busy="Checking in…" style="width:100%">Check everyone in</button></form>`;
+  body += `<p class="al-note">Only checked-in guests can open the album. Nobody is checked in on their own.${album?.released_at ? " Anyone checked in now is texted the link, once." : ""}</p>`;
   body += `<p class="al-h">Highlights</p>`;
   body += highlights.length ? grid(ev, highlights, "al-hi", { organizer: true }) : `<div class="t">${p("None pinned. Pin any photo below to put it on top — optional, any time.")}</div>`;
   body += `<p class="al-h">Everyone's photos</p>`;
@@ -229,8 +231,16 @@ export async function albumRequest({ ev, sub, method, query = {}, readBody, acco
       const op = form.get("action");
       let done = "";
       if (view.role === "organizer") {
-        if (op === "release") { const r = await albums.release({ runtime, ev, conversationId: c }); done = r.ok ? (r.already ? "Already released." : "Released.") : "Couldn't release."; log({ album_release: ev.id, ok: r.ok, already: !!r.already }); }
+        if (op === "release") {
+          const r = await albums.release({ runtime, ev, conversationId: c });
+          done = r.ok ? (r.already ? "Already released." : r.nudge && !r.checked_in ? (r.joined ? "Released. Nobody is checked in, so nobody can see it yet." : "Released. Nobody joined through Reason, so there's no one to send it to.") : "Released.") : "Couldn't release.";
+          // Released from the page, to fewer than everyone who joined: the organizer is told by text,
+          // in Reason's words, so a release to nobody is never silent (the tool's turn says it itself).
+          if (r.ok && !r.already && r.nudge) await albums.nudgeOrganizer({ runtime, ev, text: r.nudge });
+          log({ album_release: ev.id, ok: r.ok, already: !!r.already, joined: r.joined, checked_in: r.checked_in });
+        }
         else if (op === "checkin" || op === "undo") { const r = await albums.checkIn({ runtime, ev, conversationId: c, guestId: Number(form.get("guest")), present: op === "checkin" }); done = r.ok ? "" : "No such guest."; }
+        else if (op === "checkin_all") { const r = await albums.checkInAll({ runtime, ev, conversationId: c }); done = r.changed ? `${r.checked_in} of ${r.joined} checked in${r.told ? `; ${r.told} texted the link` : ""}.` : ""; log({ album_checkin_all: ev.id, newly: r.changed, told: r.told }); }
         else if (op === "pin" || op === "unpin") albums.pin({ ev, conversationId: c, photoId: Number(form.get("photo")), pinned: op === "pin" });
         else if (op === "remove") albums.removePhoto({ ev, conversationId: c, photoId: Number(form.get("photo")) });
         return redirect(`${base(ev)}/manage${done ? `?done=${encodeURIComponent(done)}` : ""}`);

@@ -2334,10 +2334,10 @@ export class Runtime extends EventEmitter {
     }
   }
 
-  /** Event albums past their deadline: closed, files deleted (src/albums.js). Logged, never thrown. */
+  /** Event albums past their deadline: closed, files deleted; and the one end-of-event check-in nudge (src/albums.js). Logged, never thrown. */
   async eventAlbums({ now = clock.now() } = {}) {
     try {
-      return sweepAlbums({ now, log: this.log });
+      return await sweepAlbums({ runtime: this, now, log: this.log });
     } catch (e) {
       this.log({ event_albums_failed: (e?.message ?? String(e)).split("\n")[0] });
       return { failed: true };

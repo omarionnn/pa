@@ -6,7 +6,8 @@
 //
 //   node .agents/skills/verify-reason/bin/album-preview.mjs [outDir]     (default ~/Desktop)
 //
-// Writes reason-album-attendee.png, reason-album-organizer.png, reason-album-chat.png.
+// Writes reason-album-attendee.png, reason-album-organizer.png, reason-album-chat.png (three panels:
+// the note before a first contribution, the release text, the organizer's nudge + "let everyone in").
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
@@ -112,6 +113,24 @@ const maya = db.attendeeRow(ev.id, C(1));
 const note = albums.consentNote(ev, 12);
 const releaseText = albums.releaseText(ev, album, maya);
 const [words, link] = releaseText.split("\n");
+// ---- the organizer's side: a second event Nana releases with nobody checked in, then lets everyone in ----
+const made2 = events.create(C(0), { name: "Rooftop Party", description: "sunset", starts_at: "2026-10-25T18:00", location: "roof", password: "sunset", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true });
+const ev2 = made2.event;
+for (let i = 1; i <= 8; i++) await events.joinExisting({ conversationId: C(i), name: "Rooftop Party", password: "sunset" });
+{
+  const bytes = await swatch("#c0785f", "#3f5f80");
+  const url = `https://cdn.example.test/${++n}.jpg`;
+  photos.set(url, bytes);
+  const mid = db.recordMedia({ conversationId: C(2), channel: "fake", externalId: `x${n}`, ordinal: 0, kind: "image", filename: `IMG_${1000 + n}.jpg`, url }).id;
+  const r = await albums.contribute({ ev: ev2, conversationId: C(2), mediaIds: [mid], fetchImpl: async (u) => new Response(photos.get(u), { status: 200, headers: { "content-type": "image/jpeg", "content-length": String(photos.get(u).length) } }) });
+  if (!r.ok) throw new Error("rooftop photo not stored");
+}
+const quiet = { _tell: async () => ({ ok: true }) };
+const rel2 = await albums.release({ runtime: quiet, ev: ev2, conversationId: C(0) });
+if (!rel2.nudge) throw new Error("expected the zero-check-in nudge");
+const letIn = await albums.checkInAll({ runtime: quiet, ev: ev2, conversationId: C(0) });
+const letInReply = `done — all ${letIn.checked_in} of them are checked in, and each just got their own link to the album.`;
+
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
 const bub = (side, text, cls = "") => `<div class="bub ${side} ${cls}">${esc(text)}</div>`;
 const chat = `<!doctype html><html><head><meta charset="utf-8"><style>
@@ -134,6 +153,12 @@ ${bub("them", `done. all 12 are in — they'll show as "Shared by Maya". the org
 ${bub("them", words)}
 ${bub("them", link, "link")}
 </div><p class="cap">One message to each checked-in guest, with their own link. Nothing per new photo; late uploads stay open until the expiry.</p>
+<h2>3 · The organizer ends it with nobody checked in</h2><div class="phone">
+${bub("me", "end the rooftop party and release the album")}
+${bub("them", rel2.nudge)}
+${bub("me", "let everyone in")}
+${bub("them", letInReply)}
+</div><p class="cap">A release to nobody is never silent: Reason says how many of the guests who joined are checked in, that only checked-in guests get the album, and asks who was there. Plain intent, never a phrase to type. "Everyone", "everyone except Lina" or a few names check them in; each newly checked-in guest is texted the link once.</p>
 </body></html>`;
 const pg = await browser.newPage({ viewport: { width: W, height: 844 }, deviceScaleFactor: 2 });
 await pg.setContent(chat);

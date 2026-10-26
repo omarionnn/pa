@@ -29,6 +29,18 @@
 //     exact expiry is on the album; at expiry the sweep closes it and deletes the files (`sweep`).
 //   - **never-released albums** (open decision): kept, no timer, nothing deleted, visible only as
 //     above; `waiting()` lists them for the owner to decide.
+//   - **the organizer is nudged to check people in, never bypassed** (decided 2026-10-26). A release
+//     never goes silently to nobody: `release` reports how many of the guests who joined are checked
+//     in, and when that is not all of them the organizer is told, in Reason's words, that only
+//     checked-in guests can see the album and asked who was there (`checkinNudge`). Once, around the
+//     event's end (`END_NUDGE`), an unreleased album with photos and nobody checked in earns the same
+//     nudge from the sweep — one text, `nudged_at` on the album, never repeated. Nothing here checks
+//     anybody in: only the organizer's words (`album_manage`) or taps (the page) do.
+//   - **the organizer checks people in by name.** "everyone", "everyone except Lina", "Maya and
+//     Daniel came": `guestsNamed` reads names against THIS event's joined guests (the display name
+//     on their membership, else the name on their account); a name two guests answer to is asked
+//     about, never guessed; `checkInMany` / `checkInAll` do the marking, and after release each
+//     newly checked-in guest is sent the one announcement (the same message row, so never twice).
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync, rmSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
@@ -65,10 +77,16 @@ export const RETENTION = Object.freeze({
 });
 
 /**
- * OPEN DECISION — photo order. Capture time was suggested and never approved. Until the owner
- * decides, every list reads upload time (db.photosOf: created_at, id), and this is the one flag.
+ * Photo order, decided 2026-10-26: upload time. Every list reads it (db.photosOf: created_at, id),
+ * and this is the one setting that says so.
  */
 export const PHOTO_ORDER = "upload time";
+
+/**
+ * The end-of-event nudge: events carry a start and no end, so "around the end" is `afterStartMs`
+ * past the start; past `staleAfterStartMs` it is dropped unsent (a week-old nudge helps nobody).
+ */
+export const END_NUDGE = Object.freeze({ afterStartMs: 4 * 60 * 60_000, staleAfterStartMs: 24 * 60 * 60_000 });
 
 /** What the album takes: the image types the rest of Reason reads, up to the same size (a HEIC is converted first). */
 export const LIMITS = Object.freeze({
@@ -273,6 +291,101 @@ export function checkinList(ev) {
   return db.attendeesOf(ev.id).map(a => ({ guest_id: a.id, display_name: a.display_name, checked_in: db.checkedIn(ev.id, a.conversation_id) }));
 }
 
+/** A guest's name as the organizer would say it: the one on their membership, else their account's. */
+function guestName(att) {
+  return events.cleanDisplayName(att.display_name) ?? events.cleanDisplayName(db.getAccount(att.conversation_id)?.name) ?? null;
+}
+/** Letters and digits only, lowercased, accents gone: "Léa-Marie" and "lea marie" are the same words. */
+const nameWords = (s) => String(s ?? "").normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+
+/**
+ * Which joined guests the organizer's names point at, the way events are read from their words:
+ * a name said whole matches the guest whose name it is; otherwise every word said has to begin a
+ * word of the guest's name ("Dan" → Daniel; "Maya K" → Maya Kim). One guest → `found`; two who
+ * both answer to it → `ambiguous`, with the choices, so the organizer is asked, never guessed for;
+ * nobody → `unknown`. Names are the guests' own typing: data, never instructions.
+ */
+export function guestsNamed(ev, names) {
+  const guests = db.attendeesOf(ev.id).map(att => ({ att, words: nameWords(guestName(att)) }));
+  const out = { found: [], ambiguous: [], unknown: [] };
+  const seen = new Set();
+  for (const raw of names ?? []) {
+    const said = nameWords(raw);
+    if (!said.length) continue;
+    let hits = guests.filter(g => g.words.length && g.words.join(" ") === said.join(" "));
+    if (!hits.length) hits = guests.filter(g => said.every(w => g.words.some(gw => gw.startsWith(w))));
+    if (hits.length === 1) { if (!seen.has(hits[0].att.id)) { seen.add(hits[0].att.id); out.found.push(hits[0].att); } }
+    else if (hits.length > 1) out.ambiguous.push({ name: String(raw), choices: hits.map(h => ({ guest_id: h.att.id, display_name: guestName(h.att) ?? "a guest" })) });
+    else out.unknown.push(String(raw));
+  }
+  return out;
+}
+
+/**
+ * Check several guests in (or out) at once, each exactly as `checkIn` does one: after release every
+ * guest newly checked in is sent the one announcement, under the same message row as ever, so
+ * running this twice sends nothing twice. Returns one line per guest and the counts after.
+ */
+export async function checkInMany({ runtime = null, ev, conversationId, guestIds, present = true }) {
+  if (!events.managed(conversationId, ev.id)) return { ok: false, reason: "not_organizer" };
+  const guests = [];
+  for (const id of [...new Set((guestIds ?? []).map(Number))]) {
+    const r = await checkIn({ runtime, ev, conversationId, guestId: id, present });
+    if (r.ok) guests.push({ guest_id: id, guest: r.guest, checked_in: r.checked_in, changed: r.changed, ...(r.told ? { told: r.told } : {}) });
+  }
+  return { ok: true, guests, changed: guests.filter(g => g.changed).length, told: guests.filter(g => g.told).length, ...counts(ev) };
+}
+
+/** Every joined guest in, except the ones named out. The organizer's "everyone who came". */
+export async function checkInAll({ runtime = null, ev, conversationId, exceptIds = [] }) {
+  const skip = new Set((exceptIds ?? []).map(Number));
+  const ids = db.attendeesOf(ev.id).map(a => a.id).filter(id => !skip.has(id));
+  return await checkInMany({ runtime, ev, conversationId, guestIds: ids });
+}
+
+/** How many of the guests who joined are checked in. */
+export function counts(ev) {
+  const list = checkinList(ev);
+  return { joined: list.length, checked_in: list.filter(g => g.checked_in).length };
+}
+
+/**
+ * What the organizer is told when the album cannot reach everyone who joined: how many of them are
+ * checked in, that only checked-in guests can see it, and who should be let in — in Reason's own
+ * words, plain intent, never a phrase to type. Null when everyone who joined is in (nothing to say).
+ * `released`: said after the release (what went out) or before it (what would).
+ */
+export function checkinNudge(ev, { released = true } = {}) {
+  const { joined, checked_in: inCount } = counts(ev);
+  if (joined > 0 && inCount >= joined) return null;
+  const album = db.albumOf(ev.id);
+  const photos = album ? db.photoCount(album.id) : 0;
+  const ask = "let me know who was actually there — everyone who joined, just some names, or everyone but someone — and i'll check them in.";
+  if (!joined) return released
+    ? `the ${ev.name} album is released, but nobody joined the event through Reason, so there's no one to send it to.`
+    : null;
+  if (!inCount) return released
+    ? `the ${ev.name} album is released, but none of the ${joined} guest${joined === 1 ? "" : "s"} who joined are checked in, so nobody can see it yet. only checked-in guests get the album. ${ask}`
+    : `the ${ev.name} album has ${photos} photo${photos === 1 ? "" : "s"} in it and nobody's checked in yet, so when you release it nobody will be able to see it. only checked-in guests get the album. ${ask}`;
+  const out = joined - inCount;
+  return released
+    ? `the ${ev.name} album went out to the ${inCount} guest${inCount === 1 ? "" : "s"} you checked in. ${out} other${out === 1 ? "" : "s"} who joined ${out === 1 ? "isn't" : "aren't"} checked in, so they can't see it. if any of them were there, let me know and i'll let them in.`
+    : null;
+}
+
+/**
+ * Text the organizer the nudge, as its own tracked event message (the same path every event text
+ * takes: a message row, one delivery, the words into their thread as Reason's own). `kind` keeps
+ * the end-of-event one and the one after release apart; the same words under the same kind reuse
+ * the row, so a retried turn cannot send it twice.
+ */
+export async function nudgeOrganizer({ runtime, ev, text, kind = "album_nudge" }) {
+  const message = db.recentEventMessage(ev.id, kind, text, 0) ?? db.insertEventMessage(ev.id, kind, text);
+  const r = await events.deliver({ runtime, message, conversationId: ev.organizer_conversation_id });
+  if (r.state !== "failed") events.intoThread({ runtime, conversationId: ev.organizer_conversation_id, about: `who's checked in for the ${String(ev.name).slice(0, 80)} album`, body: text });
+  return r;
+}
+
 /**
  * The release announcement, to one guest, once. The words are per guest (their own link), so each
  * guest gets a message row of their own carrying the REAL text: the events feature's retry from the
@@ -290,6 +403,10 @@ async function announceTo({ runtime, ev, album, att }) {
  * "End event and release album": the organizer's tap, and nothing else. Sets the one deadline
  * (RETENTION from now) and sends every checked-in guest the album link, once. A second tap finds it
  * released and sends nothing. The event's own rows are not touched — the events feature stays as it is.
+ * The result carries `joined` / `checked_in` and, when not everyone who joined is in, `nudge`: the
+ * words for the organizer (the tool relays them; the page texts them), so a release to nobody is
+ * never silent. It still releases: the organizer's tap is honoured, and letting people in afterwards
+ * sends each their announcement.
  */
 export async function release({ runtime = null, ev, conversationId }) {
   if (!albumFor(ev)) return { ok: false, reason: "not_available" };
@@ -312,7 +429,7 @@ export async function release({ runtime = null, ev, conversationId }) {
     const r = await announceTo({ runtime, ev, album: after, att: a });
     out[r.state] = (out[r.state] ?? 0) + 1;
   }
-  return { ok: true, album: after, sent: out };
+  return { ok: true, album: after, sent: out, ...counts(ev), nudge: checkinNudge(ev, { released: true }) };
 }
 
 // ---------- status ----------
@@ -351,9 +468,13 @@ export function waiting() {
  * The sweep's pass: every album past its deadline is closed and its files deleted — the bytes, not
  * only the rows. A page opened after this says the album closed and when. Nothing here reads the
  * switch: an album released while albums were on still closes on time if they are turned off.
+ * Then the end-of-event nudge (`END_NUDGE`): an unreleased album with photos, its event's start
+ * `afterStartMs` behind us, nobody checked in → the organizer is texted `checkinNudge` once;
+ * `nudged_at` is set first (compare-and-set), so it can never go twice. Somebody checked in, the
+ * event paused or cancelled, or the moment more than a day gone: marked, never sent.
  */
-export function sweep({ now = clock.now(), log = () => {} } = {}) {
-  const out = { closed: 0, deleted: 0 };
+export async function sweep({ runtime = null, now = clock.now(), log = () => {} } = {}) {
+  const out = { closed: 0, deleted: 0, nudged: 0 };
   for (const album of db.albumsToClose(now)) {
     const ev = db.getEventRow(album.event_id);
     for (const p of db.photosOf(album.id)) {
@@ -365,6 +486,21 @@ export function sweep({ now = clock.now(), log = () => {} } = {}) {
     db.updateAlbum(album.id, { closed_at: now });
     out.closed++;
     log({ album_closed: album.event_id, photos_deleted: out.deleted });
+  }
+  for (const album of db.albumsToNudge()) {
+    const ev = db.getEventRow(album.event_id);
+    // No event, or no start to count from: there is no "end" to nudge at — marked, so it is not rescanned every pass.
+    if (!ev || ev.starts_at == null) { db.markAlbumNudged(album.id, now); continue; }
+    if (now < ev.starts_at + END_NUDGE.afterStartMs) continue;
+    const stale = now > ev.starts_at + END_NUDGE.staleAfterStartMs;
+    const quiet = ev.status !== "active" || !albumFor(ev) || counts(ev).checked_in > 0;
+    if (!db.markAlbumNudged(album.id, now)) continue;
+    if (stale || quiet) { log({ album_nudge_dropped: ev.id, why: stale ? "more than a day past the start" : "somebody is checked in, or the event is not active" }); continue; }
+    const text = checkinNudge(ev, { released: false });
+    if (!text) continue;
+    const r = await nudgeOrganizer({ runtime, ev, text, kind: "album_end_nudge" });
+    out.nudged++;
+    log({ album_nudged: ev.id, delivery: r.state });
   }
   return out;
 }

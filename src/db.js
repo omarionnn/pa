@@ -11207,6 +11207,8 @@ db.exec(`
     agreed_at INTEGER
   );
 `);
+// `nudged_at`: when the organizer was told, once, around the event's end, that nobody is checked in.
+addColumnIfMissing("event_albums", "nudged_at", "INTEGER");
 
 export function albumOf(eventId) {
   return db.prepare("SELECT * FROM event_albums WHERE event_id = ?").get(Number(eventId)) ?? null;
@@ -11220,7 +11222,7 @@ export function ensureAlbum(eventId, conversationId) {
   db.prepare("INSERT OR IGNORE INTO event_albums (event_id, conversation_id, created_at, updated_at) VALUES (?, ?, ?, ?)").run(Number(eventId), conversationId, now, now);
   return albumOf(eventId);
 }
-const ALBUM_FIELDS = new Set(["released_at", "expires_at", "closed_at"]);
+const ALBUM_FIELDS = new Set(["released_at", "expires_at", "closed_at", "nudged_at"]);
 export function updateAlbum(id, fields) {
   const keys = Object.keys(fields).filter(k => ALBUM_FIELDS.has(k));
   if (keys.length) db.prepare(`UPDATE event_albums SET ${keys.map(k => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...keys.map(k => fields[k]), clock.now(), Number(id));
@@ -11239,6 +11241,15 @@ export function albumsWaiting() {
   return db.prepare(`SELECT a.*, (SELECT COUNT(*) FROM event_photos p WHERE p.album_id = a.id) AS photos FROM event_albums a
     WHERE a.released_at IS NULL AND photos > 0 ORDER BY a.created_at`).all();
 }
+/** Never-released albums with photos whose organizer has not had the end-of-event nudge (src/albums.js sweep). */
+export function albumsToNudge() {
+  return db.prepare(`SELECT a.*, (SELECT COUNT(*) FROM event_photos p WHERE p.album_id = a.id) AS photos FROM event_albums a
+    WHERE a.released_at IS NULL AND a.closed_at IS NULL AND a.nudged_at IS NULL AND photos > 0 ORDER BY a.created_at`).all();
+}
+/** The end-of-event nudge, compare-and-set: the one caller that wins is the one that sends it. */
+export function markAlbumNudged(id, at) {
+  return db.prepare("UPDATE event_albums SET nudged_at = ?, updated_at = ? WHERE id = ? AND nudged_at IS NULL").run(at, clock.now(), Number(id)).changes === 1;
+}
 
 export function insertPhoto({ albumId, eventId, conversationId, mediaId = null, file, mediaType, bytes, sha256 }) {
   const id = Number(db.prepare(`INSERT INTO event_photos (album_id, event_id, conversation_id, media_id, file, media_type, bytes, sha256, created_at)
@@ -11253,7 +11264,7 @@ export function photoByHash(albumId, conversationId, sha256) {
   return db.prepare("SELECT * FROM event_photos WHERE album_id = ? AND conversation_id = ? AND sha256 = ?").get(Number(albumId), conversationId, sha256) ?? null;
 }
 /**
- * Every photo in one album, in THE one order (src/albums.js PHOTO_ORDER): upload time. Pinned ones
+ * Every photo in one album, in THE one order (src/albums.js PHOTO_ORDER, decided 2026-10-26: upload time). Pinned ones
  * are not lifted here — the page puts highlights on top itself, in the order they were pinned.
  */
 export function photosOf(albumId) {
