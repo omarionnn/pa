@@ -7,7 +7,7 @@
 // and their phone treats it as a stranger: the old thread and their saved "Reason" contact both
 // still point at the dead line. So, the first time and only the first time:
 //
-//   1. Reason's contact card (GET /reason.vcf, the live card — 656 for texts, 914 for calls), by
+//   1. Reason's contact card (GET /reason-<sha8>.vcf, the live card — 656 for texts, 914 for calls), by
 //      address, the same way src/contact.js sends it;
 //   2. one line saying this is the new number, and to choose Add to Existing Contact → Reason so
 //      the old contact is updated rather than a second one appearing;
@@ -52,7 +52,7 @@ export async function tellNewLine({ router, channel, to, chatId = null, conversa
     // here and goes straight to its turn.
     if (!db.claimLineChangeCard(conversationId)) return { outcome: "not_returning" };
 
-    const url = contactCardUrl();
+    const url = contactCardUrl({ router, channel });
     let card;
     if (!url) card = { ok: false, error: "REASON_PUBLIC_URL is not set, so there is no address to serve the card from" };
     else {

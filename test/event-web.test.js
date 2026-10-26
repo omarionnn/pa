@@ -163,7 +163,7 @@ test("a new guest: everything on the page, one text to finish; then welcome (rel
   const iCard = got.findIndex(m => m.text === EVENT_CARD_LINE);
   const iQuestion = got.findIndex(m => m.text === EVENT_QUESTION);
   assert.ok(iWelcome >= 0 && iCard > iWelcome && iQuestion > iCard, `order welcome → card → question: ${all}`);
-  assert.ok(got[iCard].media?.url?.endsWith("/reason.vcf"), "the card is the contact card");
+  assert.ok(/\/reason-[0-9a-f]{8}\.vcf$/.test(got[iCard].media?.url ?? ""), "the card is the contact card");
   assert.match(all, /when: Sat, Oct 31/);
   assert.ok(!/Elm/.test(all), "the hidden address is not sent");
   assert.match(all, new RegExp(`/e/${ev.public_id}/who\\?t=${att.token}`));

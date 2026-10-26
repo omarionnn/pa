@@ -6,7 +6,7 @@
 //
 //   sudo -u reason node --env-file=.env scripts/card-to-owner.js --confirm=card-orange-1025
 //
-// Same send as offerContactCard (router.sendMediaUrl with the live /reason.vcf address). The owner
+// Same send as offerContactCard (router.sendMediaUrl with the live content-addressed /reason-<sha8>.vcf). The owner
 // is announce.js's ownerRecipient(): exactly one owner number, dm:owner preferred, or it refuses.
 // A marker file in the data directory, claimed before the send, makes a second run send nothing.
 import { existsSync, rmSync, writeFileSync } from "node:fs";
@@ -23,9 +23,9 @@ export const markerFor = (id, dataDir = config.dataDir) => join(dataDir, `card-t
 
 export async function sendCardToOwner({ id = SEND_ID, router, marker = markerFor(id) }) {
   if (existsSync(marker)) return { outcome: "already" };
-  const url = contactCardUrl();
-  if (!url) return { outcome: "failed", why: "REASON_PUBLIC_URL is not set" };
   const r = ownerRecipient();
+  const url = contactCardUrl({ router, channel: r.channel });
+  if (!url) return { outcome: "failed", why: "REASON_PUBLIC_URL is not set" };
   if (!lineNumber(router, r.channel)) return { outcome: "failed", why: `${r.channel} reports no line number` };
   // Claimed before the send (exclusive create), so two runs at once, or a marker that cannot be
   // written after the send, never mean a second card. A failed send releases it.

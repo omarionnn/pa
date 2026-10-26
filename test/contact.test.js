@@ -9,6 +9,7 @@
 //   does "yes" send the welcome and then the card, once?                        (router + access)
 //   does the startup pass reach everybody who already had an account, once?    (backfill)
 //   can the picture be fetched by whoever may see the page, and nobody else?    (cardRequest)
+import { createHash } from "node:crypto";
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -105,14 +106,19 @@ test("no number, no card: a contact nobody can save against the thread is not ma
   assert.equal(vcard({ number: "the line" }), null);
 });
 
-test("the card is served at /reason.vcf from the live line, and not without one", () => {
+test("the card is served at its hashed address (and the old /reason.vcf) from the live line, and not without one", () => {
   const { router } = harness();
-  const res = assetRequest({ pathname: CONTACT_PATH, router });
+  const hashed = new URL(contactCardUrl({ router, channel: "fake" })).pathname;
+  assert.match(hashed, /^\/reason-[0-9a-f]{8}\.vcf$/);
+  const res = assetRequest({ pathname: hashed, router });
+  assert.equal(hashed, `/reason-${createHash("sha256").update(res.body).digest("hex").slice(0, 8)}.vcf`, "the address is the served card's own hash");
+  assert.equal(assetRequest({ pathname: CONTACT_PATH, router }).body, res.body, "the old address is an alias");
+  assert.doesNotMatch(res.headers["Cache-Control"], /max-age=[1-9]/, "no long cache on the card");
+  assert.match(res.body, /\r\nREV:\d{4}-\d\d-\d\dT[\d:]+Z\r\n/, "the card says when it was revised");
   assert.equal(res.status, 200);
   assert.match(res.headers["Content-Type"], /^text\/vcard/);
   assert.match(res.headers["Content-Disposition"], /Reason\.vcf/);
   assert.match(res.body, new RegExp(`TEL[^\\r]*:\\${LINE}`));
-  assert.equal(contactCardUrl(), `https://reason.example.test${CONTACT_PATH}`);
 
   const dead = harness({ live: false });
   assert.equal(assetRequest({ pathname: CONTACT_PATH, router: dead.router }).status, 404, "no live line means no card");
@@ -142,7 +148,7 @@ test("yes sends the welcome, then the card to save — once", async () => {
   const cardAt = toKofi.findIndex(m => m.media?.url);
   assert.ok(welcomeAt >= 0, "welcomed");
   assert.ok(cardAt > welcomeAt, "the card comes after the welcome, not before it");
-  assert.equal(toKofi[cardAt].media.url, contactCardUrl());
+  assert.equal(toKofi[cardAt].media.url, contactCardUrl({ router: h.router, channel: "fake" }));
   assert.equal(toKofi[cardAt].text, CARD_LINE);
   assert.ok(db.getAccount(`dm:fake:${KOFI}`).contact_card_sent_at, "remembered on the account");
 

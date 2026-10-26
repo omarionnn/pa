@@ -37,7 +37,7 @@ const KOFI = "+14155559876";   // texted the old line
 const AMA = "+14155550111";    // first texted after the switch
 const LINE = "+16562167455";
 const CUTOFF = Date.parse("2026-10-23T15:50:00Z");
-const CARD = "https://reason.example.test/reason.vcf";
+const CARD = /^https:\/\/reason\.example\.test\/reason-[0-9a-f]{8}\.vcf$/;
 const conv = (n) => `dm:sendblue:${n}`;
 
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -91,7 +91,7 @@ test("a returning person gets the card, then the line, then their answer — and
 
   const toKofi = h.channel.sent.filter(m => m.to === KOFI);
   assert.equal(toKofi.length, 3, JSON.stringify(toKofi));
-  assert.equal(toKofi[0].media?.url, CARD, "the card first, by address, the live /reason.vcf");
+  assert.match(toKofi[0].media?.url ?? "", CARD, "the card first, by its content-addressed /reason-<sha8>.vcf");
   assert.equal(toKofi[0].text, "", "the card carries no words of its own");
   assert.equal(toKofi[1].text, LINE_CHANGE_LINE, "then the one line");
   assert.equal(toKofi[2].text, "answer to: yo you still there?", "then what they said, answered as normal");

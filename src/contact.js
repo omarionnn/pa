@@ -7,7 +7,7 @@
 // users phone") — and their fix is the one here: send the person a contact card to save.
 // Omari, 2026-10-06: "let's do the contact card."
 //
-// The card is a vCard this process serves itself (GET /reason.vcf). Sendblue fetches `media_url`
+// The card is a vCard this process serves itself (GET /reason-<sha8>.vcf, see contactCardUrl). Sendblue fetches `media_url`
 // from its side, the file "must end with .vcf or .vcard", and the address has to be reachable from
 // the internet — so without REASON_PUBLIC_URL there is no card to send and nothing here pretends.
 //
@@ -22,10 +22,25 @@
 // A send that fails is tried again, but not more than once every few hours (`contact_card_tried_at`):
 // a line that is down for an evening should not mean a card a day for the rest of time.
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import * as db from "./db.js";
 import { config, clock, normalizeNumber } from "./config.js";
 
+/**
+ * The old fixed address. Still served (the same card), but nothing sends it any more: Sendblue and
+ * iMessage may keep a copy of a URL they have fetched, so a card whose photo changed at the same
+ * address could arrive with the old photo. Every send uses contactCardUrl(), whose name carries
+ * the first 8 hex of the card's own sha256 — a new photo is a new address.
+ */
 export const CONTACT_PATH = "/reason.vcf";
+
+/** /reason.vcf, or /reason-<8 hex>.vcf. Any hash serves the current card (Sendblue fetches at once). */
+export function isContactPath(pathname) {
+  return pathname === CONTACT_PATH || /^\/reason-[0-9a-f]{8}\.vcf$/.test(pathname ?? "");
+}
+
+/** The card's REV: line. Bump it whenever the photo or the card's fields change. */
+export const CARD_REVISED = "2026-10-25T22:15:00Z";
 
 /** How long after a failed try before the card is tried again. */
 export const RETRY_AFTER_MS = 6 * 60 * 60 * 1000;
@@ -42,9 +57,20 @@ function photo() {
   return photoB64;
 }
 
-/** Where the card lives, or null when this install has no public address. */
-export function contactCardUrl() {
-  return config.publicUrl ? `${config.publicUrl}${CONTACT_PATH}` : null;
+/**
+ * The first 8 hex of the sha256 of the card as it is served — photo, number, everything. With no
+ * router (or no line number) the card is hashed without its number, which still changes with the
+ * photo.
+ */
+export function cardHash({ router = null, channel = null } = {}) {
+  const number = (router && channel && lineNumber(router, channel)) || "+10000000000";
+  const card = vcard({ number, callNumber: config.elevenPhoneNumber }) ?? "";
+  return createHash("sha256").update(card).digest("hex").slice(0, 8);
+}
+
+/** Where the card lives, by content, or null when this install has no public address. */
+export function contactCardUrl({ router = null, channel = null } = {}) {
+  return config.publicUrl ? `${config.publicUrl}/reason-${cardHash({ router, channel })}.vcf` : null;
 }
 
 /**
@@ -89,6 +115,7 @@ export function vcard({ number, callNumber, name = "Reason", note = "An assistan
     ...(call ? [`item1.TEL:${call}`, `item1.X-ABLabel:call me`] : []),
     ...(url ? [`URL:${url}`] : []),
     `NOTE:${vEsc(note)}`,
+    `REV:${CARD_REVISED}`,
     ...(photo() ? [`PHOTO;ENCODING=b;TYPE=JPEG:${photo()}`] : []),
     "END:VCARD",
   ];
@@ -112,7 +139,7 @@ export async function offerContactCard({ router, account, log = () => {}, line =
   if (!account) return { outcome: "skipped", why: "no account" };
   if (account.contact_card_sent_at) return { outcome: "already" };
   if (!account.channel || account.channel === "console" || !account.address) return { outcome: "skipped", why: "no texting channel" };
-  const url = contactCardUrl();
+  const url = contactCardUrl({ router, channel: account.channel });
   if (!url) return { outcome: "skipped", why: "REASON_PUBLIC_URL is not set, so there is no address to serve the card from" };
   const now = clock.now();
   if (account.contact_card_tried_at && now - account.contact_card_tried_at < RETRY_AFTER_MS) {
