@@ -226,6 +226,56 @@ config.eventRides = false;
 rides._setGeocoder(null);
 clock.reset();
 config.events = "owner";
+
+// ---- the guest-list note for somebody already on Reason (owner decision 2026-10-25) ----
+// Driven at noon tomorrow, then at 11pm, whatever time the drive runs: the note never goes at night.
+{
+  const [ny, nm, nd] = new Date(Date.now() + 86_400_000).toLocaleDateString("en-CA", { timeZone: "America/New_York" }).split("-").map(Number);
+  const noon = atLocal({ year: ny, month: nm, day: nd, hour: 12, minute: 0 }, "America/New_York");
+  clock.skip(noon - clock.now());
+  const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(r => setTimeout(r, 5)); };
+  const notes = (n) => toNum(n).filter(t => /who's-going list/.test(t));
+  const mk = async (name, password, over = {}) => db.getEventRow((await tool("event_create", { name, description: "x", starts_at: `${rday}T21:00`, location: "x", password, show_time_on_join: true, show_location_on_join: true, guest_list_visible: true, ...over }, C.owner)).event.event_id);
+  const ownerBefore = notes(OWNER).length;
+  const g1 = await mk("Note Test One", "noteone");
+  await settle();
+  step("note: the organizer is on his own list, one note after creating", notes(OWNER).length === ownerBefore + 1 && events.directoryEntries(g1)[0]?.organizer === true);
+  const yBefore = toNum(KOFI).length;
+  const j = await tool("event_join", { name: "Note Test One", password: "noteone" }, C.kofi);
+  await settle();
+  const after = toNum(KOFI).slice(yBefore);
+  step("note: text join → welcome, then ONE note asking for Instagram once; listed by default", j.ok && after.filter(t => /who's-going list/.test(t)).length === 1 && /you're in for Note Test One/.test(after[0]) && /as Kofi .*send your handle, or skip\./.test(after.at(-1)) && events.directoryEntries(g1).some(e => e.name === "Kofi"), JSON.stringify(after));
+  step("note: in his thread as the last thing Reason said", db.loadConversation(C.kofi).at(-1)?.content === after.at(-1), JSON.stringify(db.loadConversation(C.kofi).slice(-2)).slice(0, 300));
+  const share = await tool("event_directory", { event_id: g1.id, event_named: "Note Test One", instagram: "@kofi.b" }, C.kofi);
+  step("note: a handle he sends is kept on his profile and shown", share.ok && db.getAccount(C.kofi).instagram === "kofi.b");
+  const g2 = await mk("Note Test Two", "notetwo");
+  await tool("event_join", { name: "Note Test Two", password: "notetwo" }, C.kofi);
+  await settle();
+  step("note: next event carries it over and says so instead of asking", /i'll show your instagram @kofi\.b on this guest list too/.test(notes(KOFI).at(-1) ?? "") && events.directoryEntries(g2).find(e => e.name === "Kofi")?.instagram === "kofi.b");
+  const g3 = await mk("Note Test Three", "notethree", { guest_list_visible: false });
+  const n3 = notes(KOFI).length, t3 = toNum(KOFI).length;
+  await tool("event_join", { name: "Note Test Three", password: "notethree" }, C.kofi);
+  await settle();
+  step("note: guest list off → welcome only, no list, no Instagram", notes(KOFI).length === n3 && toNum(KOFI).length === t3 + 1 && !/instagram/i.test(toNum(KOFI).at(-1)) && db.organizerListing(g3.id) === null);
+  const g4 = await mk("Note Test Four", "notefour");
+  clock.skip(11 * 3_600_000);
+  const n4 = notes(KOFI).length;
+  await tool("event_join", { name: "Note Test Four", password: "notefour" }, C.kofi);
+  await settle();
+  const night = await runtime.eventListNotes();
+  step("note: at 11pm nothing goes, the sweep holds it", notes(KOFI).length === n4 && night.later >= 1, JSON.stringify(night));
+  clock.skip(10 * 3_600_000 + 5 * 60_000);
+  const m1 = await runtime.eventListNotes();
+  const m2 = await runtime.eventListNotes();
+  await settle();
+  // n4 + 2: his Halloween join earlier in this drive was owed one too (the drive runs at any hour).
+  step("note: the morning sweep sends it once", notes(KOFI).length > n4 && db.db.prepare("SELECT COUNT(*) AS n FROM event_deliveries d JOIN event_messages m ON m.id = d.message_id WHERE m.event_id = ? AND m.kind = 'list_note' AND d.conversation_id = ?").get(g4.id, C.kofi).n === 1 && db.attendeeRow(g4.id, C.kofi).list_note === "sent" && m2.sent === 0, JSON.stringify({ m1, m2, row: db.attendeeRow(g4.id, C.kofi).list_note, at: new Date(clock.now()).toISOString() }));
+  const gone = await tool("event_instagram", { remove: true }, C.kofi);
+  step("note: remove my Instagram → off his profile and every list", gone.ok && db.getAccount(C.kofi).instagram === null && !events.directoryEntries(g2).some(e => e.instagram));
+  for (const g of [g1, g2, g3, g4]) await tool("event_cancel", { event_id: g.id, event_named: g.name }, C.owner);
+  clock.reset();
+}
+
 const cancel = await tool("event_cancel", { event_id: ev.id, event_named: "Halloween Party" }, C.owner);
 step("cancellation reaches every guest", cancel.ok && toNum(AMA).some(t => /is cancelled/.test(t)) && toNum(YAW).some(t => /is cancelled/.test(t)));
 
