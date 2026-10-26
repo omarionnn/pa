@@ -65,6 +65,11 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   (first 10 hex of a sha256 of both files, `src/pages/render.js`; `/favicon.svg?v=…` is served by
   `assetRequest`, which ignores the query), also on Spotify, remote sign-in and
   brandedPage. Pinned in `test/pages-no-blue.test.js` (source + rendered-page scan).
+  **Icon links are root-relative** (`/favicon.svg?v=…`, never `REASON_PUBLIC_URL`; 2026-10-26): every
+  host a page is served on answers them itself — the app (Funnel, events.heyreason.com via Caddy's
+  `@event` handle), files.heyreason.com via Caddy's `@icons` handle (not rewritten under /p), and
+  heyreason.com/web from the website's byte-identical copies. Absolute Tailscale icons were refused,
+  so tabs had no icon. Pinned: `test/contact.test.js` (no `http` in any icon href).
   Caged check (driven 2026-10-25 over `42df809`): `curl /favicon.svg?v=<ICON_VERSION>` → 200
   `image/svg+xml`, fill #B8460B; the gate, a code-opened page and /ops carry the three `?v=` icon
   links, `--accent`/`--mark` #B8460B / #F26F2B and no blue hex. With no `REASON_PUBLIC_URL` the

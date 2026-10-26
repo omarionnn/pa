@@ -770,15 +770,16 @@ export const ICON_VERSION = (() => {
 })();
 
 /**
- * The icon every page points at, served by this process (src/http.js assetRequest). Absolute when
- * there is a public address, because a phone building a card for a link resolves these itself and
- * a relative path is fine for a browser but not for every fetcher. The same on the gate and the
- * not-found page as on a real page, so those two stay identical to each other.
+ * The icon every page points at, on the page's own host: `/favicon.svg` and `/apple-touch-icon.png`
+ * from the root, which every host Reason's pages are served on answers with the same two files
+ * (this process via the Funnel and events.heyreason.com, Caddy's icon handle on files.heyreason.com,
+ * the website's identical copies on heyreason.com for /web). Never absolute: an absolute icon named
+ * the Tailscale address, which the pages' CSP (and Safari) refused, so the tab had no icon (10-26).
+ * The same on the gate and the not-found page as on a real page, so those two stay identical.
  */
 export function iconLinks() {
-  const base = config.publicUrl || "";
   const v = ICON_VERSION ? `?v=${ICON_VERSION}` : "";
-  return `<link rel="apple-touch-icon" href="${base}/apple-touch-icon.png${v}">\n<link rel="icon" type="image/svg+xml" href="${base}/favicon.svg${v}">\n<link rel="icon" type="image/png" href="${base}/apple-touch-icon.png${v}">`;
+  return `<link rel="apple-touch-icon" href="/apple-touch-icon.png${v}">\n<link rel="icon" type="image/svg+xml" href="/favicon.svg${v}">\n<link rel="icon" type="image/png" href="/apple-touch-icon.png${v}">`;
 }
 
 // `intro` is the opening moment (INTRO_CSS): only a page made for someone gets it. The gate, the
