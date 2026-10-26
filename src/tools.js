@@ -2325,7 +2325,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   const window = undo.windowSettings(conversationId);
   const perKind = Object.entries(window.by_kind).map(([k, s]) => `${k}: ${s}s`).join(", ");
   out.find(c => c.name === "undo_window").what = window.seconds === 0 && !perKind
-    ? `nothing is held: ${who} has the undo window switched off, so anything they say go to happens immediately. They can turn it back on in plain words ("give me 30 seconds").`
+    ? `nothing is held: ${who} has the undo window switched off, so anything they say go to happens immediately. They can turn it back on whenever they like, in their own words.`
     : `anything that reaches somebody else — a text to another person, an email, an invite other people see, a call — waits ${window.seconds}s before it really goes${perKind ? ` (${perKind})` : ""},`
       + ` and one word takes it back in that time. Replies to ${who} are never held. This is an out AFTER a yes, never instead of asking:`
       + ` what needs a yes is exactly the same either way. They can set it, 0 to 300 seconds, overall or per kind.`;
@@ -9080,7 +9080,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return {
         ok: true, watch: watchView(watch),
         ...(everyHours !== asked ? { note: `Asked for every ${asked}h; the floor is ${config.dealWatchMinEveryHours}h, so it checks every ${everyHours}h.` } : {}),
-        reminder: `Watching from the verified ${offers.offerView(offer).price} read at ${stamp(offer.fetched_at)}. Tell them you are watching it, roughly how often, and that they can say stop any time. Nothing is bought or approved by this.`,
+        reminder: `Watching from the verified ${offers.offerView(offer).price} read at ${stamp(offer.fetched_at)}. Tell them you are watching it, roughly how often, and that they can tell you to stop any time. Nothing is bought or approved by this.`,
       };
     }
     case "watch_list": {
@@ -10928,7 +10928,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       if (name === "invite_requests_pending") {
         const waiting = invites.pendingForMaster();
-        return { ok: true, requests: waiting, count: waiting.length, note: waiting.length ? "Name each by its request_number, so 'approve 3' means request #3." : "No requests are waiting." };
+        return { ok: true, requests: waiting, count: waiting.length, note: waiting.length ? "Name each by its request_number when you list more than one, so their answer can say which; read what they decide in their own words, and if more than one is waiting and their answer doesn't make clear which, ask before deciding." : "No requests are waiting." };
       }
       const out = invites.decide(input.request_number, { approve: input.decision === "approve", count: input.count ?? null });
       if (!out.ok) {

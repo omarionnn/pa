@@ -225,14 +225,14 @@ export function describe({ action, input, conversationId, to = null }) {
 /**
  * The line that starts the window. One sentence, their voice, the real recipient in it.
  *
- *   sending the lease email to Marta in 30s — text "undo" to stop it
+ *   sending the lease email to Marta in 30s — just tell me if you want to stop it
  *
  * Written here rather than left to the model for the same reason the delivery-failure line is: it
- * is a statement about Reason's own plumbing, it has to be identical every time so the word "undo"
- * is learnable, and a model improvising it is a model that will one day write "sending a message".
+ * is a statement about Reason's own plumbing, it has to be identical every time, and it says
+ * plainly that they can stop it — in their own words, never a word to type (owner, 2026-10-25) — and a model improvising it is a model that will one day write "sending a message".
  */
 export function holdLine({ doing, seconds }) {
-  return `${doing} in ${seconds}s — text "undo" to stop it`;
+  return `${doing} in ${seconds}s — just tell me if you want to stop it`;
 }
 
 /** The line back when they catch it in time. */

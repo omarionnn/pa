@@ -179,6 +179,8 @@ export function verify({
   // that arrived after the text went.
   const ownerTexts = (messages ?? []).filter(m => m?.role === "user").length;
   if (!call.verify_sent_at) {
+    // The one place a word is named on purpose (exception to the no-phrases copy rule, 2026-10-26):
+    // a security check read by exact match in code (readYesNo), so it must say what counts.
     const sent = tell(`On the phone with you now — reply "yes" to confirm what was just asked. Anything else and I won't do it.`);
     if (!sent) {
       log({ call_verify_text_failed: call.id });

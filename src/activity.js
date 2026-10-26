@@ -72,14 +72,14 @@ export function activityBlocks({ tasks, finished = [], holds = [], now = Date.no
   // Above everything, including what is waiting on them, because it is the only thing on this page
   // measured in seconds. By the time somebody has opened the page a thirty-second window is mostly
   // gone, so the seconds are a true reading of the moment it was built and the instruction next to
-  // them — text "undo" — is the part that still works.
+  // them — telling Reason to stop it — is the part that still works.
   if (going.length) {
     blocks.push({
       type: "rows",
       title: going.length === 1 ? "Going out in a moment" : `Going out in a moment (${going.length})`,
       items: going.map(h => ({
         name: h.doing || h.what,
-        detail: 'text "undo" to stop it',
+        detail: "tell me if you want to stop it",
         value: `going out in ${Math.max(0, Math.ceil((h.due_at - now) / 1000))}s`,
       })),
     });

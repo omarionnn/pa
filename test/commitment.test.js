@@ -768,7 +768,7 @@ test("what they do on a schedule is on the memory page, with the numbers under i
   assert.match(blocks, /you told me this on 2026-10-02/, "said as something they reported, never as a measurement");
 
   // The one-text correction, named on the page itself and in what the model is told.
-  assert.match(blocks, /just say the new one/i);
+  assert.match(blocks, /just tell me the new one/i);
   assert.match(out.how_to_correct, /commitment_set with the same thing and the new time/);
   assert.match(out.how_to_correct, /Never memory_fix for those/);
   assert.match(out.note, /only ones you may say/i);

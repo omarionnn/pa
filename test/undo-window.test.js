@@ -110,7 +110,7 @@ test("a text to somebody else is held, and nothing is on the wire until the wind
   assert.equal(out.to, MARTA);
   // The one line Reason says, word for word. It names the thing and the recipient and the word that
   // stops it — never "sending a message", which is the version nobody can check at a glance.
-  assert.equal(out.say_exactly, `sending "${PROPER}" to ${MARTA} in 30s — text "undo" to stop it`);
+  assert.equal(out.say_exactly, `sending "${PROPER}" to ${MARTA} in 30s — just tell me if you want to stop it`);
   assert.match(out.note, /NOTHING HAS GONE YET/);
   assert.equal(fake.sent.length, 0, "nothing reached the channel");
   // And no receipt, because a receipt for something that has not happened is the lie this feature
@@ -153,7 +153,7 @@ test("a call is held too, and the line calls them by the name they were given", 
   const out = await runTool("call_place", { to: MARTA, goal: "ask about the lease", confirmation_id: yes },
     { conversationId: C, calls });
   assert.equal(out.undo_held, true, out.error);
-  assert.equal(out.say_exactly, `calling Marta in 30s — text "undo" to stop it`);
+  assert.equal(out.say_exactly, `calling Marta in 30s — just tell me if you want to stop it`);
   assert.equal(calls.placed.length, 0, "nothing was dialled");
   assert.equal(db.listCalls(C).length, 0, "and no call row exists yet");
 });
@@ -388,7 +388,7 @@ test("a long message is quoted short in the line, so the line stays one sentence
   assert.match(out.say_exactly, /^sending "Hello, Omari says 8pm on Tuesday works for him and he/);
   assert.match(out.say_exactly, /…" to \+14155559876 in 30s/, "elided, not read back in full");
   assert.ok(out.say_exactly.length < 140, `still one short line, got ${out.say_exactly.length}`);
-  assert.match(out.say_exactly, /text "undo" to stop it$/);
+  assert.match(out.say_exactly, /just tell me if you want to stop it$/);
 });
 
 test("a kind can have its own window, and it does not touch the others", async () => {
@@ -428,7 +428,7 @@ test("the open page shows what is still going out, with the seconds and the way 
   const going = blocks.find(b => b.type === "rows" && b.title === "Going out in a moment");
   assert.ok(going, "the held thing is on the page");
   assert.equal(going.items[0].value, "going out in 12s");
-  assert.equal(going.items[0].detail, 'text "undo" to stop it');
+  assert.equal(going.items[0].detail, 'tell me if you want to stop it');
   assert.match(going.items[0].name, new RegExp(`to \\${MARTA}`), "named, so it can be identified");
 
   // Above everything else on the page, because it is the only thing on it with a stopwatch.

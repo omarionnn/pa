@@ -85,7 +85,7 @@ test("a number from the website asks the master once, and the person is sent not
   const asked = sentTo(h.channel, MASTER);
   assert.equal(asked.length, 1);
   assert.match(asked[0].text, /\+14155559876 asked for access on the website/);
-  assert.match(asked[0].text, /yes or no/);
+  assert.match(asked[0].text, /want me to set them up/);
   // Nothing is quoted, because they said nothing, and it does not claim they texted.
   assert.doesNotMatch(asked[0].text, /they said|texted me for the first time/);
 
