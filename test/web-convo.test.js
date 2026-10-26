@@ -457,3 +457,16 @@ test("a stream whose session is already gone at the first look ends quietly, wit
   assert.match(chunks.join(""), /event: signedout/);
   assert.equal(db.historyBus.listenerCount("row"), 0, "nothing left listening");
 });
+
+test("the signed-in greeting: \"What's good, <first name>?\", first name only, or \"What's good?\" with no name", async () => {
+  const ws = await import("../src/pages/websignin.js");
+  assert.equal(ws.greeting("Omari Nyarko"), "What's good, Omari?");
+  assert.equal(ws.greeting("  Ama "), "What's good, Ama?");
+  assert.equal(ws.greeting(""), "What's good?");
+  assert.equal(ws.greeting(null), "What's good?");
+  const h = harness();
+  const kofi = { ...browser(KOFI_C), conv: KOFI_C };
+  assert.match((await call(h, { b: kofi })).body, /<h1>What&#39;s good, Kofi\?<\/h1>/);
+  db.db.prepare("UPDATE accounts SET name = '' WHERE conversation_id = ?").run(KOFI_C);
+  assert.match((await call(h, { b: kofi })).body, /<h1>What&#39;s good\?<\/h1>/);
+});

@@ -18,6 +18,9 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
 
 ## Sub-features
 
+- **The greeting** (owner copy 2026-10-26): serif italic h1 "What's good, <first name>?" (first word
+  of `accounts.name`), "What's good?" with no name — `greeting()` in `websignin.js`, shared by the
+  W1 landing render.
 - **The page** (`conversationPage` → `renderConversation`): newest `PAGE` = 40 lines server-drawn
   (escaped, links only for http(s), `white-space: pre-wrap`), day separators (Today / Yesterday /
   Mon, Oct 24), a hand-lettered "Continued on Web" / "Continued in iMessage" divider where the

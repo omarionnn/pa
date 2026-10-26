@@ -33,7 +33,7 @@ import { WEB } from "../web.js";
 import { config, clock } from "../config.js";
 import { shell, esc, foot } from "./render.js";
 import { readCookie } from "./access.js";
-import { WEB_CSS, SECURITY_HEADERS, note, sameOrigin, sessionAccount } from "./websignin.js";
+import { WEB_CSS, SECURITY_HEADERS, note, sameOrigin, sessionAccount, greeting } from "./websignin.js";
 
 /** How many lines a page of history holds, first load and each scroll back. */
 export const PAGE = 40;
@@ -206,7 +206,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit, sen
     ? `<aside class="c-note" aria-labelledby="c-note-h"><h2 id="c-note-h">${esc(BOUNDARY.title)}</h2><p>${esc(BOUNDARY.body)}</p><p>${esc(BOUNDARY.support)}</p><button class="w-link" type="button" data-close>Got it</button></aside>`
     : "";
   const body = `<div class="c-app"><div class="c-main">`
-    + `<div class="c-head"><p class="kicker">Your personal concierge</p><h1>${name ? `Hi, ${esc(name)}.` : "Your Reason."}</h1>${note("same conversation, wherever you are.")}</div>`
+    + `<div class="c-head"><p class="kicker">Your personal concierge</p><h1>${esc(greeting(name))}</h1>${note("same conversation, wherever you are.")}</div>`
     + notice
     + `<section class="c-log" aria-label="Your conversation with Reason">`
     + `<div class="c-start">${startLine(lines, more)}</div>`

@@ -247,10 +247,19 @@ export function renderSignin({ number = "", sent = false, error = "", joinNumber
   return shell({ title: "Reason — sign in", body, pill: "Web", css: WEB_CSS, referrer: "same-origin" });
 }
 
+/**
+ * The signed-in greeting (owner copy, 2026-10-26): "What's good, <first name>?" — the first name
+ * only — or "What's good?" when no name is known. One place, used by the conversation page too.
+ */
+export function greeting(name) {
+  const first = String(name ?? "").trim().split(/\s+/)[0] ?? "";
+  return first ? `What's good, ${first}?` : "What's good?";
+}
+
 /** Signed in. The conversation itself arrives in the next phase; this says so plainly, and says the one thing about Web worth knowing. */
 export function renderLanding({ account, csrf }) {
   const name = String(account?.name ?? "").trim();
-  const body = hero(`You're in${name ? `, ${name}` : ""}.`, "This browser is yours now, on every page Reason makes for you.", NOTES.landing)
+  const body = hero(greeting(name), "This browser is yours now, on every page Reason makes for you.", NOTES.landing)
     + `<div class="t">${p("Your conversation with Reason will open here. Until then, Reason is the same one you text, and nothing you've told it is lost.")}</div>`
     + `<hr class="w-rule"><h2>One Reason. Pick up anywhere.</h2><div class="t">`
     + p("Start on Web, continue in iMessage, or switch back. Reason keeps the context, so you don't have to explain again. See your full conversation on Web. Messages from Web won't appear in your iMessage thread.")
