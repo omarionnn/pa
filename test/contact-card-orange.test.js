@@ -69,6 +69,18 @@ test("the one-off send reaches only the owner's thread, once", async () => {
   assert.equal(router.sent.length, 1, "a rerun sends nothing");
 });
 
+test("a failed send releases the claim, so a later run can try again", async () => {
+  db.upsertAccount({ conversationId: "dm:owner", channel: "sendblue", address: "+12025551234", name: "Owner" });
+  db.db.prepare("UPDATE accounts SET is_operator = 1 WHERE conversation_id = 'dm:owner'").run();
+  const marker = S.markerFor(S.SEND_ID, dir);
+  const down = { ...stubRouter(), sendMediaUrl: async () => ({ ok: false, error: "down" }) };
+  assert.equal((await S.sendCardToOwner({ router: down, marker })).outcome, "failed");
+  assert.ok(!existsSync(marker));
+  const router = stubRouter();
+  assert.equal((await S.sendCardToOwner({ router, marker })).outcome, "sent");
+  assert.equal(router.sent.length, 1);
+});
+
 test("no owner, or two owner numbers: it refuses and sends nothing", async () => {
   const router = stubRouter();
   await assert.rejects(S.sendCardToOwner({ router, marker: S.markerFor(S.SEND_ID, dir) }), /exactly one owner/);

@@ -372,7 +372,7 @@ ring-time cache warm-up — prove latency on Hetzner, not here. See
 
 ### Baseline — 3,665 pass, **0 failures** after busy form buttons (2026-10-25)
 
-Contact card photo brand orange + `scripts/card-to-owner.js` over `780e91a`: **3,791 tests, 3,669 passing, 0 failing, 122 skipped** (+4, `test/contact-card-orange.test.js` — pins the photo sha; the blue one must never return). Before that:
+Contact card photo brand orange + `scripts/card-to-owner.js` over `780e91a`: **3,792 tests, 3,670 passing, 0 failing, 122 skipped** (+5, `test/contact-card-orange.test.js` — pins the photo sha; the blue one must never return). Before that:
 
 Busy form buttons over `17e6843`: **3,787 tests, 3,665 passing, 0 failing, 122 skipped** (+4, `test/pages-busy-buttons.test.js`). Before that:
 

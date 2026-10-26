@@ -8,8 +8,8 @@
 //
 // Same send as offerContactCard (router.sendMediaUrl with the live /reason.vcf address). The owner
 // is announce.js's ownerRecipient(): exactly one owner number, dm:owner preferred, or it refuses.
-// A marker file in the data directory makes a second run send nothing.
-import { existsSync, writeFileSync } from "node:fs";
+// A marker file in the data directory, claimed before the send, makes a second run send nothing.
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { config } from "../src/config.js";
@@ -27,14 +27,19 @@ export async function sendCardToOwner({ id = SEND_ID, router, marker = markerFor
   if (!url) return { outcome: "failed", why: "REASON_PUBLIC_URL is not set" };
   const r = ownerRecipient();
   if (!lineNumber(router, r.channel)) return { outcome: "failed", why: `${r.channel} reports no line number` };
+  // Claimed before the send (exclusive create), so two runs at once, or a marker that cannot be
+  // written after the send, never mean a second card. A failed send releases it.
+  try { writeFileSync(marker, "pending\n", { flag: "wx" }); } catch (e) {
+    return e?.code === "EEXIST" ? { outcome: "already" } : { outcome: "failed", why: `cannot write ${marker}: ${e?.code ?? e}` };
+  }
   let res;
   try {
     res = await router.sendMediaUrl({ channel: r.channel, to: r.address, text: LINE, mediaUrl: url });
   } catch (e) {
     res = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
   }
-  if (!res?.ok) return { outcome: "failed", why: res?.error ?? "unknown" };
-  writeFileSync(marker, `${new Date().toISOString()} ${res.delivered?.message_id ?? ""}\n`);
+  if (!res?.ok) { rmSync(marker, { force: true }); return { outcome: "failed", why: res?.error ?? "unknown" }; }
+  try { writeFileSync(marker, `${new Date().toISOString()} ${res.delivered?.message_id ?? ""}\n`); } catch { /* the "pending" claim already holds */ }
   return { outcome: "sent", conversationId: r.conversationId, messageId: !!res.delivered?.message_id };
 }
 
