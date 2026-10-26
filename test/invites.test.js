@@ -151,7 +151,7 @@ test("a GET of the invite page renders who invited them and changes nothing — 
   assert.match(out.body, /Kofi invited you to Reason/);
   assert.match(out.body, /<meta property="og:title" content="Kofi invited you to Reason">/);
   assert.match(out.body, /<meta property="og:image" content="https:\/\/reason\.example\.test\/og\.png">/);
-  assert.match(out.body, /You(?:'|&#39;)re early because Kofi brought you in, so Reason is free for you for good: no card, no subscription, ever\./, "what it costs: early means free for good, by the inviter's name");
+  assert.match(out.body, /Nothing\. Kofi got you in early, and early people never pay for Reason\. No card, no subscription, ever\. It(?:'|&#39;)s our thanks for being here first\./, "what it costs: early means free for good, by the inviter's name");
   assert.match(out.body, /\(call this restaurant and book a table for 4,/, "calling leads the examples");
   assert.match(out.body, /family=Instrument\+Serif:ital@1/, "heading loads the homepage headline face");
   assert.match(out.body, /\.hero h1\{font-family:"Instrument Serif"[^}]*font-style:italic;font-weight:400/, "heading is the homepage's italic serif");
