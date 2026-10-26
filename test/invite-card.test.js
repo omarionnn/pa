@@ -42,3 +42,11 @@ test("drawn once per name and kept; a new name is a new card; the key moves with
   assert.notEqual(card.inviteCardKey("Kofi"), card.inviteCardKey("Ama"));
   assert.match(card.inviteCardKey("Kofi"), /^[0-9a-f]{16}$/);
 });
+
+test("preview bots asking at once for a new name share one drawing", async () => {
+  let shots = 0;
+  const shoot = async () => { shots++; await new Promise(r => setTimeout(r, 20)); return Buffer.from("png"); };
+  const all = await Promise.all([1, 2, 3, 4].map(() => card.inviteCard("Esi", { shoot })));
+  assert.equal(shots, 1);
+  assert.ok(all.every(b => String(b) === "png"));
+});

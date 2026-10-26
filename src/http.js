@@ -206,10 +206,14 @@ export function createServer({ router, runtime, log = () => {} }) {
       // Public like the page itself, and a read: an unknown token is the same flat 404.
       const inviteCardRoute = /^(?:\/p)?\/i\/([A-Za-z0-9_-]{32})\/card\.png$/.exec(url.pathname);
       if (inviteCardRoute) {
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          res.writeHead(405, { Allow: "GET, HEAD", "Content-Type": "text/plain" });
+          return res.end("method not allowed");
+        }
         const name = inviteCardName(inviteCardRoute[1]);
-        let png = null;
-        if (name) png = await inviteCard(name).catch((e) => { log?.(`invite card: ${e?.message ?? e}`); return null; });
-        if (!png) { res.writeHead(404, { "Content-Type": "text/plain" }); return res.end("not found"); }
+        if (!name) { res.writeHead(404, { "Content-Type": "text/plain" }); return res.end("not found"); }
+        // No browser to draw with: the site's own og picture rather than a preview with no image.
+        const png = await inviteCard(name).catch((e) => { log?.(`invite card: ${e?.message ?? e}`); return readFileSync(new URL("../assets/og.png", import.meta.url)); });
         res.writeHead(200, { "Content-Type": "image/png", "Content-Length": png.length, "Cache-Control": "public, max-age=86400" });
         return res.end(req.method === "HEAD" ? "" : png);
       }

@@ -253,6 +253,12 @@ export function memberLine(inv, conversationId) {
 
 // ---------- the page ----------
 
+/** The inviter name a link's card shows, or null for a token that is not a link. A read. */
+export function inviteCardName(token) {
+  const inv = /^[A-Za-z0-9_-]{32}$/.test(String(token ?? "")) ? db.inviteByToken(token) : null;
+  return inv ? (inviterName(inv.conversation_id) || "A friend") : null;
+}
+
 /**
  * GET /i/{token}: who invited them, what Reason is, what it costs, and the button that joins.
  *
@@ -260,12 +266,6 @@ export function memberLine(inv, conversationId) {
  * forward or a hundred opens leave the invite exactly as it was. An unknown token is the same flat
  * not-found every other guessed link gets.
  */
-/** The inviter name a link's card shows, or null for a token that is not a link. A read. */
-export function inviteCardName(token) {
-  const inv = /^[A-Za-z0-9_-]{32}$/.test(String(token ?? "")) ? db.inviteByToken(token) : null;
-  return inv ? (inviterName(inv.conversation_id) || "A friend") : null;
-}
-
 export function inviteRequest({ token, lineNumber = null }) {
   const html = (status, body) => ({
     status,

@@ -190,6 +190,9 @@ test("over the wire: GET, HEAD and the files-domain path read the page; POST is 
       assert.equal(pic.headers.get("content-type"), "image/png");
       assert.equal(await pic.text(), "kofi-card");
     }
+    const postCard = await fetch(`${base}/i/${inv.token}/card.png`, { method: "POST" });
+    assert.equal(postCard.status, 405);
+    await postCard.text();
     const guessed = await fetch(`${base}/i/${"y".repeat(32)}/card.png`);
     assert.equal(guessed.status, 404);
     await guessed.text();

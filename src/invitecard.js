@@ -54,8 +54,17 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, clock]).finally(() => clearTimeout(t));
 }
 
+// A forwarded link is often fetched by several preview bots at once; they share one drawing.
+const drawing = new Map();
+
 /** The card for one inviter name: read from disk when drawn before, drawn and kept when not. */
-export async function inviteCard(name, { shoot = shootWithChromium } = {}) {
+export function inviteCard(name, { shoot = shootWithChromium } = {}) {
+  const key = inviteCardKey(name);
+  if (!drawing.has(key)) drawing.set(key, draw(name, shoot).finally(() => drawing.delete(key)));
+  return drawing.get(key);
+}
+
+async function draw(name, shoot) {
   const file = cardFile(name);
   if (existsSync(file)) {
     const png = readFileSync(file);
