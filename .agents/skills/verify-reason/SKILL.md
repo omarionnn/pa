@@ -370,7 +370,11 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,711 pass, **0 failures** after event albums (#163, 2026-10-26)
+### Baseline — 3,763 pass, **0 failures** after Reason Web sign-in (W1, `wt/web-w1`, 2026-10-26)
+
+Sign in by number at `/web`, dark behind `REASON_WEB` (W0's foundations merged as #165 the same morning: 3,867 / 3,745 / 0 / 122). Eighteen pinned tests in `test/web-signin.test.js`; `bin/web-drive.mjs` under `caged.sh env` drives form → stranger (same bytes, no text) → Kofi (code through the outbox, keyed `wsign:`) → wrong → right (303 + cookie) → reused → landing → sign-out refused without the secret / cross-site → sign-out → owner-only mode, 14/14 ok; `bin/web-preview.mjs` draws the four PNGs. Run with `env -i` and no `.env`: **3,885 tests, 3,763 passing, 0 failing, 0 cancelled, 122 skipped.** See [features/web-signin.md](features/web-signin.md).
+
+### Earlier — 3,711 pass, **0 failures** after event albums (#163, 2026-10-26)
 
 One private photo album per event behind `REASON_EVENT_ALBUMS`. Fourteen pinned tests in `test/event-album.test.js` (nine for the album, five for the check-in nudges and check-in by name); `bin/album-drive.mjs` under `caged.sh env` drives note → add → check-in → release (one text) → late upload (none) → expiry (files gone) → the end-of-event nudge → "everyone except" → "everyone" again (nothing), all ok; the cage (`REASON_EVENTS=on REASON_EVENT_ALBUMS=on caged.sh start`) answered `/e/<id>/album/manage?t=<organizer_token>` with the gate ("Text me a code", no album content), the bare path with no cookie 404, the organizer's page with the organizer's `reason_page` cookie (check-in list, "Check everyone in", release button), 404 for a stranger's cookie byte-identical to a dead link, and 200 under `/p/e/…`; `toolsFor(<guest>)` lists the four album tools only with the flag on. Maintenance pass 2026-10-26 at `0b9d2c4`: every citation in the feature file re-grepped, clean. See [features/event-albums.md](features/event-albums.md). **3,833 tests, 3,711 passing, 0 failing, 122 skipped.**
 
