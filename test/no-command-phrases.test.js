@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 const root = new URL("../src/", import.meta.url).pathname;
 const scriptsDir = new URL("../scripts/", import.meta.url).pathname;
-const files = (d) => readdirSync(d).flatMap(f => { const p = join(d, f); return statSync(p).isDirectory() ? files(p) : p.endsWith(".js") ? [p] : []; });
+const files = (d) => readdirSync(d).flatMap(f => { const p = join(d, f); return statSync(p).isDirectory() ? files(p) : /\.m?js$/.test(p) ? [p] : []; });
 /** say/text/reply/type followed by a quoted phrase or a capitalised keyword, outside comments. */
 const COACH = /\b(say|text|reply|type|send)\s+(back\s+)?(with\s+)?(just\s+)?(["“][a-z#][^"”]{0,40}["”]|\b(YES|NO|STOP|HELP|START|UNDO)\b)/;
 // Lines that are about what REASON says (never say "done") rather than what the person should send,
@@ -20,7 +20,7 @@ const ALLOWED = [...REVIEWED.map(t => new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g
 
 test("no user-facing string or prompt coaches an exact phrase to send", () => {
   const hits = [];
-  for (const f of [...files(root), ...files(scriptsDir).concat(readdirSync(scriptsDir).filter(n => n.endsWith(".mjs")).map(n => join(scriptsDir, n)))]) {
+  for (const f of [...files(root), ...files(scriptsDir)]) {
     readFileSync(f, "utf8").split("\n").forEach((line, i) => {
       const code = line.replace(/^\s*(\/\/|\*|\/\*).*$/, "");
       if (!code.trim() || !COACH.test(code) || ALLOWED.some(r => r.test(code))) return;
