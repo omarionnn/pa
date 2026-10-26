@@ -672,7 +672,7 @@ behaviour, change its feature file in the same commit.
   `catch-up: recovered N message(s)`. Pinned in `test/sendblue.test.js` ("catch-up on restart").
 - **The page link and the image URL point at two different public hosts, and neither is the
   cage.** `REASON_PAGES_URL=https://files.heyreason.com` (both this Mac's `.env` and
-  Hetzner's, read 2026-10-24; it was `https://heyreason.com/p` before) builds the page link
+  Hetzner's, set 2026-10-26 when the domain moved; before that `https://files.reason.omarinyarko.com`, and `https://reason.omarinyarko.com/p` until 2026-10-24) builds the page link
   as `https://files.heyreason.com/<id>?k=…`, no `/p`; `REASON_PUBLIC_URL=https://reason.tail3753c7.ts.net` builds `/img/…`. Swap either
   host for `127.0.0.1:<caged port>` before curling.
 - Worktrees have no `.env`; `ln -s ~/Desktop/pa/.env <worktree>/.env` (gitignored) before

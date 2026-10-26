@@ -243,8 +243,8 @@ page's preview tags — and that is fine: only someone already holding the key c
   `export function pageUrl`). When
   `REASON_PAGES_URL` is set the link is `{REASON_PAGES_URL}/{id}?k=<owner_key>`, verbatim — the
   variable carries whatever prefix the host in front needs. On this Mac's `.env` **and** on Hetzner
-  it is `https://files.heyreason.com` (read 2026-10-24; it was
-  `https://heyreason.com/p` until then), so a link reads
+  it is `https://files.heyreason.com` (set 2026-10-26 when the domain moved; before that
+  `https://files.reason.omarinyarko.com`, and `https://reason.omarinyarko.com/p` until 2026-10-24), so a link reads
   `https://files.heyreason.com/<id>?k=…` — no `/p` in it; the host in front maps it to
   Hetzner's `/p/<id>`. When only
   `REASON_PUBLIC_URL` is set, the fallback is `{REASON_PUBLIC_URL}/p/{id}?k=<owner_key>`. The caged
