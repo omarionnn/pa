@@ -4,8 +4,8 @@ Guests text Reason photos naming the event ("for Game Night"); the organizer end
 releases the album; the guests the organizer checked in open it, save photos or the whole album, and
 it closes a fixed time after release. **Behind `REASON_EVENT_ALBUMS`** (`off` | `owner` | `on`, on
 top of `REASON_EVENTS`; `owner` = only the owner's events have albums). Read it read-only with
-`ssh root@91.98.19.150 "grep -E '^REASON_EVENT_ALBUMS=' /opt/reason/.env"` — **unset on live as of
-2026-10-26 (dark)**.
+`ssh root@91.98.19.150 "grep -E '^REASON_EVENT_ALBUMS=' /opt/reason/.env"` — **`REASON_EVENT_ALBUMS=1` on live
+since 2026-10-26 08:08 UTC** (#163 merged as `5dabcf9`, deployed, flag appended as the last line of `.env`).
 
 Source: `src/albums.js` (the only reader of the album tables: the switch, the ONE retention setting
 `RETENTION` ← `config.albumRetentionDays` ← `REASON_ALBUM_RETENTION_DAYS`, default 3; `viewFor`, the
