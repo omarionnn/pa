@@ -107,8 +107,16 @@ connected); a stranger's number mints nothing and answers the same bytes.
   block's absence on `<figure class="w-qr"` / `sms:`, never on `w-qr` or `<svg`.
 - **The cookie is shared** (decision 3): signing out of Web signs that browser out of pages and events
   too, and an idle-expired Web session (30 days) deletes the row other pages were using. Intended.
-- `heyreason.com/web` is not proxied yet (W5): on live today the route answers only on the funnel
-  address, and `REASON_WEB` is unset, so it is a 404 everywhere. Nothing to drive live.
+- **Live since 2026-10-26 17:30 UTC with `REASON_WEB=owner`.** `https://files.heyreason.com/web`
+  goes through Caddy's `@web` handle (→ 8788, `X-Files-Domain true`) and the funnel answers too;
+  `heyreason.com/web` (Netlify) is not proxied yet (W5). Drive it live only with a fictional 555
+  number (same page, no text, no `wsign:` outbox row); never request the owner's code.
+- **Test with a real browser, not just curl.** curl lets you send any `Origin`; a browser sends what
+  the page's referrer policy allows. Under `no-referrer` Safari and Chrome post `Origin: null`, and
+  the owner's own sign-in was refused through Caddy (10-26). The pages now say `same-origin`
+  (header and the shell's `<meta>`), and `Origin: null` passes only with `Sec-Fetch-Site:
+  same-origin`. Probe: Playwright webkit + chromium, fill a 555 number, submit, expect no
+  "didn't come from this page".
 - **Before W5 proxies `/web/*` through Netlify** (review finding, 2026-10-26): `eventActor` trusts
   `X-Forwarded-For` only behind Caddy's `X-Files-Domain` marker, so through Netlify every visitor
   would share one `ip:<netlify egress>` bucket and one stranger's 5 wrong codes would lock Web

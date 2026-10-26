@@ -97,12 +97,17 @@ export function sessionAccount(headers) {
  * from must name this host, the website, the pages host or Reason's own address; one that says it
  * was cross-site is refused. A request naming nothing (an old client, a same-origin form on some
  * browsers) is allowed through and is held by the form token instead.
+ * The pages say `Referrer-Policy: same-origin`, so a browser posting from them names this host.
  */
 export function sameOrigin(headers = {}) {
   const site = String(headers["sec-fetch-site"] ?? "").toLowerCase();
   if (site && !["same-origin", "same-site", "none"].includes(site)) return false;
   const origin = String(headers.origin ?? "").trim();
-  if (!origin || origin === "null") return !origin;
+  if (!origin) return true;
+  // `Origin: null` is what a browser sends when the page's referrer policy withholds it; it is ours
+  // only when the browser itself vouches the post was same-origin (Sec-Fetch-Site, which no page
+  // can set). Safari and Chrome both sent it from /web while it was `no-referrer` (10-26).
+  if (origin === "null") return site === "same-origin";
   let host;
   try { host = new URL(origin).host; } catch { return false; }
   const hostOf = (u) => { try { return new URL(u).host; } catch { return ""; } };
@@ -128,11 +133,13 @@ function readFormCookie(header) {
 
 // Every answer here carries these. The pages are built from inline style and script (the shell's
 // theme switch), so those stay 'unsafe-inline'; nothing else may load, nothing may frame it, no
-// form may post anywhere but here, and no address is kept in any cache.
+// form may post anywhere but here, and no address is kept in any cache. The referrer goes only to
+// Reason's own host (`same-origin`): under `no-referrer` a browser posts `Origin: null` and its own
+// sign-in form was refused (10-26).
 export const SECURITY_HEADERS = {
   "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   "X-Content-Type-Options": "nosniff",
-  "Referrer-Policy": "no-referrer",
+  "Referrer-Policy": "same-origin",
   "X-Frame-Options": "DENY",
   "Cache-Control": "no-store",
 };
@@ -193,7 +200,7 @@ export function renderSignin({ number = "", sent = false, error = "", joinNumber
         + `<button class="w-btn" type="submit" data-busy="Sending code…">Text me a code</button></form>`
         + `<div class="t">${p("Reason texts the code to that number through the same line you already text it on. Nothing is shown until the code is in.")}</div>`)
     + joinBlock(joinNumber) + foot();
-  return shell({ title: "Reason — sign in", body, pill: "Web", css: CSS });
+  return shell({ title: "Reason — sign in", body, pill: "Web", css: CSS, referrer: "same-origin" });
 }
 
 /** Signed in. The conversation itself arrives in the next phase; this says so plainly, and says the one thing about Web worth knowing. */
@@ -206,7 +213,7 @@ export function renderLanding({ account, csrf }) {
     + `</div>`
     + `<form class="w-form w-out" method="POST" action="/web/signout"><input type="hidden" name="c" value="${esc(csrf)}"><button class="w-link" type="submit" data-busy="Signing out…">Sign out of this browser</button></form>`
     + foot();
-  return shell({ title: "Reason", body, pill: "Web", css: CSS });
+  return shell({ title: "Reason", body, pill: "Web", css: CSS, referrer: "same-origin" });
 }
 
 /**

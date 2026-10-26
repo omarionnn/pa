@@ -783,7 +783,7 @@ export function iconLinks() {
 
 // `intro` is the opening moment (INTRO_CSS): only a page made for someone gets it. The gate, the
 // not-found page and a plain notice open flat, and the first two stay byte-identical to each other.
-export function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "", intro = false, theme = true }) {
+export function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "", intro = false, theme = true, referrer = "no-referrer" }) {
   // Every page carries the Light · Dark · Auto choice at its foot (owner, 2026-10-25: "every page
   // Reason serves"); only a printed one leaves it out (`theme: false`), because paper has no choice.
   const scripts = `${script}${intro ? INTRO_JS : ""}${theme ? THEME.js : ""}`;
@@ -793,7 +793,7 @@ export function shell({ title, body, script = "", css = "", pill = "", indexable
 <meta charset="utf-8">${head}
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="${indexable ? "index,follow" : "noindex,nofollow,noarchive"}">
-<meta name="referrer" content="no-referrer">
+<meta name="referrer" content="${referrer}">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="${GROUND.light}" data-auto="${GROUND.light}" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="${GROUND.dark}" data-auto="${GROUND.dark}" media="(prefers-color-scheme: dark)">
