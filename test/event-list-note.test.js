@@ -257,11 +257,11 @@ test("left and back before the note went: owed afresh as things now stand; a pau
   assert.match(notesTo(rt, AMA_C).at(-1), /i'll show your instagram @ama\.k on this guest list too/);
 });
 
-test("the page's show-me box starts ticked for somebody already on Reason, unticked for a stranger", async () => {
+test("the page's show-me box starts ticked (listed by default, visible on the form), and an untick survives a re-render", async () => {
   const { renderJoin } = await import("../src/pages/event.js");
   const ev = await makeEvent(fakeRuntime());
   const box = (html) => /name="in_directory" value="1" checked/.test(html);
   assert.equal(box(renderJoin({ ev, account: db.getAccount(AMA_C) })), true);
-  assert.equal(box(renderJoin({ ev })), false);
+  assert.equal(box(renderJoin({ ev })), true, "a stranger may be somebody already on Reason on a new browser: the claim text then finds their account");
   assert.equal(box(renderJoin({ ev, account: db.getAccount(AMA_C), values: { in_directory: false } })), false, "their own untick survives a re-render");
 });

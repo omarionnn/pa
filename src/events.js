@@ -784,7 +784,8 @@ export async function sweepListNotes({ runtime, now = clock.now() }) {
     if (queuedNotes.has(row.id)) { out.queued++; continue; }
     const ev = db.getEventRow(row.event_id);
     if (ev && ev.status === "active" && listNoteQuiet(ev, now)) { out.later++; continue; }
-    const go = () => sendListNote({ runtime, eventId: row.event_id, conversationId: row.conversation_id, now });
+    // Read the clock when it actually goes: a long turn ahead of it may have run past 21:00.
+    const go = () => sendListNote({ runtime, eventId: row.event_id, conversationId: row.conversation_id });
     if (typeof runtime?.enqueue !== "function") {
       const r = await go();
       if (out[r.state] != null) out[r.state]++;
