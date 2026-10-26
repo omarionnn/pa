@@ -7,7 +7,7 @@
 //     from one address in fifteen minutes and that address is locked out for the window.
 //   - **a browser already signed in is never asked.**
 //   - **no hash set, no password**: the page has the code gate alone, exactly as before.
-//   - **every link the owner is given is reason.omarinyarko.com/ops**, and an alert's link names
+//   - **every link the owner is given is heyreason.com/ops**, and an alert's link names
 //     the check it is about (?focus=), which the page pins at the top.
 //   - **/ops.json carries the pass in flight** so the page can fill rows in as they are decided.
 //   - **the trend lines are hourly counts of what really happened**, people's conversations only.
@@ -167,12 +167,12 @@ test("passwordMatches is exact", async () => {
 
 // ---------- the link ----------
 
-test("the alert's link is reason.omarinyarko.com/ops and names the check it is about; the page pins that check first", async () => {
+test("the alert's link is heyreason.com/ops and names the check it is about; the page pins that check first", async () => {
   const outbox = { id: "outbox", group: "alive", label: "Texts out", state: "bad", detail: "2 failed" };
   const card = { id: "provider:agentcard", group: "services", label: "AgentCard", state: "warn", detail: "HTTP 404" };
   const text = ops.alertText([{ kind: "wrong", check: card }, { kind: "wrong", check: outbox }], { verdict: "bad", checks: [outbox, card] });
   assert.match(text, new RegExp(`Status page: https://reason\\.omarinyarko\\.com/ops\\?k=${ops.opsKey()}&focus=outbox$`), "the worst one, by id");
-  assert.equal(ops.opsUrl("provider:agentcard"), `https://reason.omarinyarko.com/ops?k=${ops.opsKey()}&focus=provider%3Aagentcard`);
+  assert.equal(ops.opsUrl("provider:agentcard"), `https://heyreason.com/ops?k=${ops.opsKey()}&focus=provider%3Aagentcard`);
 
   const now = clock.now();
   const report = { at: now, verdict: "bad", checks: [outbox, card, { id: "process", group: "alive", label: "Process", state: "ok", detail: "up" }], people: [] };

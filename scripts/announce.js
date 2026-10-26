@@ -36,7 +36,7 @@ export const ANNOUNCEMENTS = {
   "events-1025": {
     bubbles: [
       "got a birthday, game night or kickback coming up? I can host it for you now: invites, updates, who's coming, and rides.\n\nread more here 👇",
-      "reason.omarinyarko.com/updates",
+      "heyreason.com/updates",
     ],
   },
 };

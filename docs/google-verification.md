@@ -68,6 +68,8 @@ verified by anyone outside Tailscale. Brand verification cannot pass on this add
 
 Two ways out, both needing a decision from the owner:
 
+**Decided 2026-10-26: Reason moved to its own domain, `heyreason.com` (Netlify DNS); verify that in Search Console. The options below are history.**
+
 1. **A subdomain of a domain already owned** — e.g. `reason.omarinyarko.com`. Free. Search Console
    verifies `omarinyarko.com` once (DNS record at the registrar), and the subdomain is covered.
 2. **A new domain for Reason** — e.g. `textreason.com` or similar. Costs money every year; cleanest

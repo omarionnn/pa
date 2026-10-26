@@ -44,7 +44,7 @@ const EXT = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", 
  */
 function copyHeaders(from) {
   return {
-    "user-agent": "Mozilla/5.0 (compatible; Reason/1.0; +https://reason.omarinyarko.com)",
+    "user-agent": "Mozilla/5.0 (compatible; Reason/1.0; +https://heyreason.com)",
     accept: "image/avif,image/webp,image/jpeg,image/png,image/gif;q=0.8,*/*;q=0.5",
     ...(from ? { referer: from } : {}),
   };

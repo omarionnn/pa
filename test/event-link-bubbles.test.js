@@ -13,7 +13,7 @@ process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
-process.env.REASON_PAGES_URL = "https://files.reason.omarinyarko.com";
+process.env.REASON_PAGES_URL = "https://files.heyreason.com";
 process.env.REASON_EVENTS = "owner";
 
 const events = await import("../src/events.js");
@@ -41,7 +41,7 @@ test("the welcome: details first, then the who's-going link alone and in full", 
   const att = events.afterJoin({ ev, att: j.attendee });
   assert.equal(outgoingTexts(events.listNoteText(ev, att, "ask")).length, 1);
   // The owner's creation text: each link after its words, each alone.
-  const owner = outgoingTexts(events.ownerCreationLine(ev, { opsLink: "https://reason.omarinyarko.com/ops?k=x#events" }));
+  const owner = outgoingTexts(events.ownerCreationLine(ev, { opsLink: "https://heyreason.com/ops?k=x#events" }));
   assert.deepEqual(owner.map(b => URL_ONLY.test(b)), [false, true, false, true], JSON.stringify(owner));
   // The invite an organizer forwards, with its link under it: the words, then the link alone.
   const share = outgoingTexts(`${events.shareText(ev, "pumpkin")}\n${events.eventUrl(ev)}`);

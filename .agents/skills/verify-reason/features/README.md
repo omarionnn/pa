@@ -105,7 +105,7 @@ Real features with no file here. Add one when you touch them.
 - **The /ops status page** (#106) — `src/pages/ops.js`, `src/opspassword.js`, `opsRequest` in
   `src/http.js`; `test/ops-gate.test.js`. Password gate (`REASON_OPS_PASSWORD_HASH`, sign-in 303),
   instant Check again / Clear (202 as JSON), `running` in `/ops.json`; public at
-  `reason.omarinyarko.com/ops` via Netlify. On the cage both routes answer 401 (this Mac's `.env`
+  `heyreason.com/ops` via Netlify. On the cage both routes answer 401 (this Mac's `.env`
   sets the hash).
 - **Invites, dark** (#104) — `src/invites.js`, `GET /i/{token}`, claim by text in
   `src/channels/router.js`, owner-only tools behind `REASON_INVITES_OPEN` (off on live);
