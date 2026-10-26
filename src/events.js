@@ -437,9 +437,16 @@ export function accountForNumber(number) {
  */
 export const SIGNIN_WRONG = { perBrowser: 5, perPerson: 20, windowMs: 15 * 60_000, perPersonDay: 40, dayMs: 24 * 60 * 60_000 };
 export function trySigninCode({ conversationId, code, actor }) {
-  const browserKey = `esignb:${actor}`;
+  return tryKeyedCode({ conversationId, code, personKey: conversationId ? signinKey(conversationId) : null, browserKey: `esignb:${actor}` });
+}
+
+/**
+ * The same check under other keys: Reason Web signs in with `wsign:<conversation>` codes and counts
+ * its browsers under `wsignb:<actor>` (src/pages/websignin.js), with exactly these ceilings. One
+ * function, so a limit tightened here is tightened everywhere a texted code opens something.
+ */
+export function tryKeyedCode({ conversationId, code, personKey, browserKey }) {
   if (db.failedPageAttempts(browserKey, SIGNIN_WRONG.windowMs) >= SIGNIN_WRONG.perBrowser) return { ok: false, reason: "rate_limited" };
-  const personKey = conversationId ? signinKey(conversationId) : null;
   const live = personKey
     && db.failedPageAttempts(personKey, SIGNIN_WRONG.windowMs) < SIGNIN_WRONG.perPerson
     && db.failedPageAttempts(personKey, SIGNIN_WRONG.dayMs) < SIGNIN_WRONG.perPersonDay

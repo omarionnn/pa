@@ -1344,6 +1344,10 @@ addColumnIfMissing("pages", "closing", "TEXT");
 addColumnIfMissing("page_sessions", "conversation_id", "TEXT");
 db.exec(`UPDATE page_sessions SET conversation_id = (SELECT conversation_id FROM pages WHERE pages.id = page_sessions.page_id)
   WHERE conversation_id IS NULL`);
+// Reason Web W1 (2026-10-26): a per-session secret the web forms carry back, so a page on another
+// site cannot post as this browser (the cookie alone would ride along). Minted on first read for a
+// session that predates the column.
+addColumnIfMissing("page_sessions", "csrf", "TEXT");
 // active | paused | removed (2026-10-25). The CREATE TABLE above has had it, but a database made
 // before it never got it, and live was one: every read fell back to "active", so nothing looked
 // wrong, while every write — the owner's pause/resume/remove and the harm pause — would have
@@ -5342,16 +5346,31 @@ export function startPageSession(pageId_, token, { conversationId = null } = {})
  * no row of its own (the status page), where the question is not "may this browser see page X" but
  * "is this browser the owner's at all". Ages out and touches last_seen the same way pageSessionValid does.
  */
-export function pageSessionOwner(token, maxAgeMs) {
+export function pageSessionOwner(token, maxAgeMs, { idleMs = Infinity } = {}) {
   if (!token) return null;
   const row = db.prepare("SELECT * FROM page_sessions WHERE token = ?").get(token);
   if (!row?.conversation_id) return null;
-  if (clock.now() - row.created_at > maxAgeMs) {
+  // Too old since it was made, or (Reason Web, owner decision 3) unused for too long: gone, and the
+  // row with it, so the same cookie opens nothing anywhere afterwards.
+  if (clock.now() - row.created_at > maxAgeMs || clock.now() - row.last_seen_at > idleMs) {
     db.prepare("DELETE FROM page_sessions WHERE token = ?").run(token);
     return null;
   }
   db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now(), token);
   return row.conversation_id;
+}
+
+/**
+ * The secret a signed-in browser's forms must carry back (Reason Web). One per session, minted the
+ * first time it is asked for, never in a URL or a log; null for a token that opens nothing.
+ */
+export function pageSessionCsrf(token) {
+  if (!token) return null;
+  const row = db.prepare("SELECT token, csrf FROM page_sessions WHERE token = ?").get(token);
+  if (!row) return null;
+  if (row.csrf) return row.csrf;
+  db.prepare("UPDATE page_sessions SET csrf = ? WHERE token = ? AND csrf IS NULL").run(randomBytes(16).toString("base64url"), token);
+  return db.prepare("SELECT csrf FROM page_sessions WHERE token = ?").get(token)?.csrf ?? null;
 }
 
 /**

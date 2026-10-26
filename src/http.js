@@ -25,6 +25,8 @@
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
 //   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
 //   POST /access/web                  a number left on the website's form, signed by the form's server
+//   GET  /web                         Reason Web (src/pages/websignin.js): sign in by number, or the signed-in landing
+//   POST /web/signin|code|signout     ask for the code, type it, sign this browser out — all 404 while REASON_WEB is off
 //   POST /agentcard/webhook           a card landed in somebody's vault, or a payment was approved
 //
 // The raw body is handed to a channel adapter as the exact bytes that arrived. Signature schemes
@@ -73,6 +75,8 @@ import { isContactPath, vcard, lineNumber, liveLineNumber } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
+import { webRequest } from "./pages/websignin.js";
+import { webOn, joinNumber } from "./web.js";
 import * as eventsmod from "./events.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -198,6 +202,19 @@ export function createServer({ router, runtime, log = () => {} }) {
           publicId: eventRoute[1], sub: eventRoute[2] || null, method: req.method,
           query: Object.fromEntries(url.searchParams), headers: req.headers, remoteAddress: req.socket?.remoteAddress ?? "",
           readBody: () => readBody(req), runtime, router, log,
+        });
+        res.writeHead(out.status, out.headers);
+        return res.end(req.method === "HEAD" ? "" : out.body);
+      }
+
+      // ---------- Reason Web ----------
+      // Sign in by number, the code, the signed-in landing, sign out (src/pages/websignin.js). While
+      // REASON_WEB is off these paths fall through to the same flat 404 as any path nobody was issued.
+      const webRoute = /^\/web(?:\/(signin|code|signout))?$/.exec(url.pathname);
+      if (webRoute && webOn()) {
+        const out = await webRequestFor({
+          sub: webRoute[1] || null, method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers,
+          remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, router, log,
         });
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);
@@ -646,6 +663,14 @@ export function assetRequest({ pathname, router = null }) {
 /** An event page, with the texting line's number for its "Text Reason to finish" button. */
 export async function eventRequestFor({ router = null, ...rest }) {
   return await eventPageRequest({ ...rest, lineNumber: liveLineNumber(router) });
+}
+
+/**
+ * A Reason Web request, with the number its join block tells a new person to text: the live line's,
+ * through the one helper every join surface uses (src/web.js joinNumber), never a string here.
+ */
+export async function webRequestFor({ router = null, ...rest }) {
+  return await webRequest({ ...rest, joinNumber: joinNumber(router) });
 }
 
 /**
