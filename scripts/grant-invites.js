@@ -1,8 +1,9 @@
 // Turn invites on for ONE person while they stay dark for everybody else (owner, 2026-10-26).
 //
 // Owner-only CLI, run on the server (`/opt/reason`). No tool, page or text reaches it. By default
-// it is a DRY RUN: it finds the account, prints what it has now and what would change, and writes
-// nothing. It never texts anybody — telling them is a separate, owner-approved step.
+// it is a DRY RUN: it finds the account, prints what it has now and what would change, and changes
+// nothing about that person (loading src/db.js still runs the same startup migrations the server
+// runs on boot). It never texts anybody — telling them is a separate, owner-approved step.
 //
 //   dry run:  sudo -u reason node --env-file=.env scripts/grant-invites.js <number|conversation> <count>
 //   apply:    sudo -u reason node --env-file=.env scripts/grant-invites.js <number|conversation> <count> --apply
@@ -63,6 +64,6 @@ export function grant(argv) {
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const out = grant(process.argv.slice(2));
   console.log(JSON.stringify(out, null, 2));
-  if (out.ok && out.dryRun) console.log("\nDRY RUN — nothing written. Add --apply to make this change.");
+  if (out.ok && out.dryRun) console.log("\nDRY RUN — nothing changed for them. Add --apply to make this change.");
   process.exit(out.ok ? 0 : 1);
 }
