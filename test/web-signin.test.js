@@ -43,6 +43,7 @@ delete process.env.LINQ_WEBHOOK_SECRET;
 
 const { webRequestFor, createServer } = await import("../src/http.js");
 const ws = await import("../src/pages/websignin.js");
+const { esc } = await import("../src/pages/render.js");
 const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
@@ -466,6 +467,57 @@ test("a real browser's post through the files-host proxy is ours: Origin null + 
   assert.equal(page.headers["Referrer-Policy"], "same-origin");
   assert.match(page.body, /<meta name="referrer" content="same-origin">/);
   assert.doesNotMatch(page.body, /content="no-referrer"/);
+});
+
+// 10-26 owner: Web is an extension of the marketing site — its serif italic headline, monospace
+// eyebrow, the orange handwriting note with the squiggle arrow, dashed rules, its fonts.
+test("the pages wear the site: serif italic headline, mono eyebrow, one handwritten note per screen, dashed rules, fonts from /web/fonts only", async () => {
+  const form = ws.renderSignin({ joinNumber: "+16562167455", formToken: "t" });
+  const code = ws.renderSignin({ joinNumber: "+16562167455", formToken: "t", sent: true, number: KOFI });
+  const landing = ws.renderLanding({ account: { name: "Kofi" }, csrf: "c" });
+  for (const page of [form, code, landing]) {
+    assert.match(page, /<p class="kicker">Your personal concierge<\/p>/);
+    assert.match(page, /font:italic 400 clamp\([^)]*\)\/1\.08 var\(--serif\)/);
+    assert.match(page, /--serif:"Reason Serif","Instrument Serif"/);
+    assert.match(page, /--hand:"Reason Hand","Caveat"/);
+    assert.match(page, /--mono:"Courier New","Courier",monospace/);
+    assert.match(page, /border-top:1px dashed var\(--rule\)/);
+    assert.doesNotMatch(page, /fonts\.googleapis|fonts\.gstatic/, "nothing from Google");
+  }
+  const notes = (page) => [...page.matchAll(/<p class="w-note"><svg[^]*?<\/svg>([^<]*)<\/p>/g)].map(m => m[1]);
+  assert.deepEqual(notes(form), [ws.NOTES.signin, ws.NOTES.join].map(esc));
+  assert.deepEqual(notes(code), [ws.NOTES.code, ws.NOTES.join].map(esc));
+  assert.deepEqual(notes(landing), [ws.NOTES.landing].map(esc));
+  for (const line of Object.values(ws.NOTES)) assert.doesNotMatch(line, /["“”]|\b(say|type|reply|text me|send)\b/i, `${line}: intent, never words to say`);
+
+  // The fonts: served while on, cached, the right bytes; the CSP lets the page load them and nothing else.
+  assert.match(ws.SECURITY_HEADERS["Content-Security-Policy"], /font-src 'self' data:;/);
+  config.web = true;
+  const h = harness();
+  const server = createServer({ router: h.router, runtime: h.runtime });
+  await new Promise(r => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    for (const name of ["serif", "hand"]) {
+      const r = await fetch(`${base}/web/fonts/${name}.woff2`);
+      assert.equal(r.status, 200, name);
+      assert.equal(r.headers.get("content-type"), "font/woff2");
+      assert.match(r.headers.get("cache-control"), /max-age=\d+/);
+      const bytes = Buffer.from(await r.arrayBuffer());
+      assert.equal(bytes.subarray(0, 4).toString(), "wOF2");
+      assert.ok(bytes.length < 40_000, `${name} is the Latin cut, not the whole face`);
+    }
+    const ghost = await fetch(`${base}/no-such-thing`);
+    const ghostBody = await ghost.text();
+    for (const path of ["/web/fonts/nope.woff2", "/web/fonts/constructor.woff2", "/web/fonts/../db.woff2"]) {
+      const r = await fetch(`${base}${path}`);
+      assert.equal(r.status, ghost.status, path);
+    }
+    config.web = false;
+    const off = await fetch(`${base}/web/fonts/serif.woff2`);
+    assert.equal(off.status, ghost.status);
+    assert.equal(await off.text(), ghostBody, "off, a font path is the same flat 404");
+  } finally { config.web = true; await new Promise(r => server.close(r)); }
 });
 
 test("every answer carries the security headers; the pages carry no preview tags and no number but the live line's", async () => {

@@ -27,6 +27,7 @@
 //   POST /access/web                  a number left on the website's form, signed by the form's server
 //   GET  /web                         Reason Web (src/pages/websignin.js): sign in by number, or the signed-in landing
 //   POST /web/signin|code|signout     ask for the code, type it, sign this browser out — all 404 while REASON_WEB is off
+//   GET  /web/fonts/{serif|hand}.woff2  the site's two display faces for those pages (404 while off)
 //   POST /agentcard/webhook           a card landed in somebody's vault, or a payment was approved
 //
 // The raw body is handed to a channel adapter as the exact bytes that arrived. Signature schemes
@@ -75,7 +76,7 @@ import { isContactPath, vcard, lineNumber, liveLineNumber } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
-import { webRequest } from "./pages/websignin.js";
+import { webRequest, webFont } from "./pages/websignin.js";
 import { webOn, joinNumber } from "./web.js";
 import * as eventsmod from "./events.js";
 import { readFileSync } from "node:fs";
@@ -210,6 +211,13 @@ export function createServer({ router, runtime, log = () => {} }) {
       // ---------- Reason Web ----------
       // Sign in by number, the code, the signed-in landing, sign out (src/pages/websignin.js). While
       // REASON_WEB is off these paths fall through to the same flat 404 as any path nobody was issued.
+      // The site's two display faces for these pages, cached a week; off, the same flat 404.
+      const webFontRoute = /^\/web\/fonts\/([a-z]+)\.woff2$/.exec(url.pathname);
+      const fontOut = webFontRoute && webOn() && (req.method === "GET" || req.method === "HEAD") ? webFont(webFontRoute[1]) : null;
+      if (fontOut) {
+        res.writeHead(fontOut.status, fontOut.headers);
+        return res.end(req.method === "HEAD" ? "" : fontOut.body);
+      }
       const webRoute = /^\/web(?:\/(signin|code|signout))?$/.exec(url.pathname);
       if (webRoute && webOn()) {
         const out = await webRequestFor({

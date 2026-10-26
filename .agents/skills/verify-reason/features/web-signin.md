@@ -88,7 +88,7 @@ node --test test/web-join-number.test.js # the live-line rule with the real Linq
 node --test test/no-command-phrases.test.js test/code-guards.test.js
 # in process, cage env, throwaway DB, real Runtime + Router + outbox + FakeChannel (no model):
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/web.db node .agents/skills/verify-reason/bin/web-drive.mjs
-node .agents/skills/verify-reason/bin/web-preview.mjs [outDir]   # four PNGs: phone form, code step, desktop join block (QR + number), landing
+node .agents/skills/verify-reason/bin/web-preview.mjs [outDir] [prefix] [siteIndexHtml]   # signin, code, join (desktop QR + number), landing; with the site index also <prefix>vs-site.png. Served with the real CSP + /web/fonts
 ```
 
 Over HTTP on the cage: `REASON_WEB=on bin/caged.sh start`, then `curl -si 127.0.0.1:<port>/web` → 200,
