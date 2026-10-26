@@ -787,7 +787,11 @@ export class Router {
     db.upsertThread({ conversationId: conv, channel: inbound.channel, address, chatId, isOwner: true, service: inbound.service ?? null, lastInboundId: inbound.baseHandle ?? inbound.externalId ?? null });
     const said = [];
     if (!out.already) {
-      await events.sendWelcome({ runtime: this.runtime, ev: out.event, att: out.attendee });
+      // A handle typed on the page is kept for their next events; somebody who already had Reason
+      // gets the one guest-list note after the welcome (src/events.js afterJoin).
+      const att = events.afterJoin({ ev: out.event, att: out.attendee, typedInstagram: out.claim?.instagram ?? null, newAccount: out.newAccount });
+      await events.sendWelcome({ runtime: this.runtime, ev: out.event, att });
+      if (!out.newAccount) events.scheduleListNote({ runtime: this.runtime, ev: out.event, att });
       // Not the welcome's own words: those are the organizer's, and a guest's history must not hold
       // somebody else's text as if Reason had written it. event_info has the details on demand.
       said.push(`[sent them the welcome for the event "${out.event.name.slice(0, 80)}" and the details its organizer has released]`);

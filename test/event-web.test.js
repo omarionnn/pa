@@ -251,7 +251,7 @@ test("who's going: only joined guests, opt-in, Instagram as a link, never a phon
   const ev = ownerEvent();
   const a = (await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin", inDirectory: true, instagram: "ama.k" })).attendee;
   db.upsertAccount({ conversationId: "dm:fake:+15550009999", channel: "fake", address: "+15550009999", name: "Hidden Hal" });
-  await events.joinExisting({ conversationId: "dm:fake:+15550009999", name: "Halloween Party", password: "pumpkin" });
+  await events.joinExisting({ conversationId: "dm:fake:+15550009999", name: "Halloween Party", password: "pumpkin", inDirectory: false });
   // Ama's own browser (spec v3 §12: private pages open only on a browser recognized as hers).
   db.startPageSession("p-ama", "tok-ama-who-0001", { conversationId: AMA_C });
   const amaCookie = "reason_page=tok-ama-who-0001";

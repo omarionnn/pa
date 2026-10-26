@@ -260,6 +260,23 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   returns `share.share_text` (name + password, never the link; sealed in logs) and says to send the
   link as its own message so Messages draws the card.
 
+- **Guest-list note + Instagram (owner decision 2026-10-25, `src/events.js` "the guest-list note")**
+  — somebody already on Reason who joins (text, link, page, or the page's claim text) is on the
+  who's-going list by default (`in_directory` 1; the page's "show me" box starts ticked) under the
+  name Reason knows. `afterJoin` keeps a handle they typed on `accounts.instagram`, else carries the
+  kept one onto the row, and owes ONE note (`event_attendees.list_note` ask|carried|shown →
+  sent|dropped, `list_note_at` = due then settled; compare-and-set, never twice per membership).
+  `scheduleListNote` sends it through `Runtime.enqueue`, so it lands AFTER Reason's reply; the
+  sweep (`runtime.eventListNotes`) is the backstop after 10 min and the morning send: nothing
+  21:00–09:00 in the event's zone, nothing while paused, dropped if the list is private, they are
+  off it, the ask is moot, or 12h past the start. Guest list off → never owed, never mentioned. The
+  organizer gets the same note on `event_create` and is listed first (`db.organizerListing`,
+  "(organizing)" on the page) — never counted (`going` stays guest-only). The answer is the model's:
+  `event_directory` (handle → also saved to the profile; "hide me", "hide my instagram" for one
+  list; organizers allowed on their own row) and `event_instagram` (remove / change everywhere).
+  Pinned: `test/event-list-note.test.js`; drive: the `note:` steps in `bin/events-drive.mjs`.
+  New users from a claim get their typed handle kept but no note (their welcome flow is its own).
+
 ## How to get to it (user POV)
 
 - Open the link the organizer shared → enter the password → (already on Reason, same phone's

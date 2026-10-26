@@ -154,11 +154,12 @@ test("directory entry: opt in, Instagram as a handle, opt out and remove it late
   const on = await tool("event_directory", { event_id: ev.id, in_directory: true, instagram: "https://instagram.com/ama.k" }, AMA_C);
   assert.deepEqual(on.you, { display_name: "Ama", in_directory: true, instagram: "ama.k" });
   assert.ok(on.directory_link);
-  assert.deepEqual(events.directoryEntries(ev).map(e => [e.name, e.instagram]), [["Ama", "ama.k"]]);
+  // The organizer is on their own list too (owner decision 2026-10-25), first.
+  assert.deepEqual(events.directoryEntries(ev).map(e => [e.name, e.instagram]), [["Omari", null], ["Ama", "ama.k"]]);
   assert.equal((await tool("event_directory", { event_id: ev.id, instagram: "javascript:x" }, AMA_C)).ok, false);
   const off = await tool("event_directory", { event_id: ev.id, in_directory: false, remove_instagram: true }, AMA_C);
   assert.deepEqual(off.you, { display_name: "Ama", in_directory: false, instagram: null });
-  assert.deepEqual(events.directoryEntries(ev), []);
+  assert.deepEqual(events.directoryEntries(ev).map(e => e.name), ["Omari"]);
   db.updateEventRow(ev.id, { guest_list_visible: 0 });
   const priv = await tool("event_directory", { event_id: ev.id, in_directory: true }, AMA_C);
   assert.ok(!priv.directory_link);
