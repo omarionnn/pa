@@ -271,9 +271,24 @@ export function inviteRequest({ token, lineNumber = null }) {
   return html(200, renderInvite({ invite: inv, name, lineNumber }));
 }
 
-const COST_LINE = "Nothing. Reason is free right now: no card, no subscription.";
+// What it costs (owner, 2026-10-25): people who come in now are early, and early people keep
+// Reason free for good. The inviter's name carries it, because they're the reason this person is early.
+// Three wordings for the owner to pick from; COST is the one the page shows.
+export const COST_COPY = {
+  A: (who) => `Nothing, for you. You're early because ${who} brought you in, so Reason is free for you for good: no card, no subscription, ever.`,
+  B: (who) => `Nothing, and it stays that way. Everyone who's early keeps Reason free for good, and you're early because ${who} brought you in. No subscription, ever.`,
+  C: (who) => `Nothing. ${who[0].toUpperCase() + who.slice(1)} got you in early, and early people never pay for Reason. No card, no subscription, ever. It's our thanks for being here first.`,
+};
+export const COST = "A";
 
-export function renderInvite({ invite, name, lineNumber }) {
+// The invite heading wears the marketing homepage's headline face ("You already know how to use it."):
+// Instrument Serif italic 400 from Google Fonts, loaded the way reason-site-new/public/index.html loads it.
+const HEADING_FONT = `\n<link rel="preconnect" href="https://fonts.googleapis.com">`
+  + `\n<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>`
+  + `\n<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@1&display=swap" rel="stylesheet">`;
+const HEADING_CSS = `.hero h1{font-family:"Instrument Serif","Iowan Old Style",Georgia,serif;font-style:italic;font-weight:400;font-size:clamp(2.4rem,9vw,3.2rem);line-height:1.08;letter-spacing:-.02em}`;
+
+export function renderInvite({ invite, name, lineNumber, cost = COST }) {
   const title = `${name} invited you to Reason`;
   const image = config.publicUrl ? `${config.publicUrl}/og.png` : "";
   const head = [
@@ -284,7 +299,7 @@ export function renderInvite({ invite, name, lineNumber }) {
     image ? `<meta property="og:image" content="${esc(image)}">` : "",
     `<meta name="twitter:card" content="summary_large_image">`,
     `<meta name="twitter:title" content="${esc(title)}">`,
-  ].filter(Boolean).map(t => `\n${t}`).join("");
+  ].filter(Boolean).map(t => `\n${t}`).join("") + HEADING_FONT;
 
   const p = (s) => `<p>${esc(s)}</p>`;
   let action;
@@ -309,13 +324,13 @@ export function renderInvite({ invite, name, lineNumber }) {
 
   const body = `<div class="hero"><p class="kicker">An invite</p><h1>${esc(title)}</h1></div>`
     + `<div class="t">`
-    + p("Reason is your personal concierge. You text it like a friend (look this up, remind me, sort this out, what's on Thursday) and it does it, keeps track of what's still open, and comes back when there's something real to say.")
+    + p("Reason is your personal concierge. You text it like a friend (call this restaurant and book a table for 4, find me a flight home Friday, what's on Thursday) and it does it, keeps track of what's still open, and comes back when there's something real to say.")
     + p(`It's your own. Your own memory and your own history, and nothing you say is shared with ${name} or anyone else.`)
     + `</div>`
-    + `<h2>What it costs</h2><div class="t">${p(COST_LINE)}</div>`
+    + `<h2>What it costs</h2><div class="t">${p((COST_COPY[cost] ?? COST_COPY[COST])(name === "A friend" ? "a friend" : name))}</div>`
     + action
     + foot();
-  return shell({ title, body, pill: "Invite", head });
+  return shell({ title, body, pill: "Invite", head, css: HEADING_CSS });
 }
 
 /** Startup: everybody with an account has an allowance row. Idempotent; see db.backfillInviteAllowances. */
