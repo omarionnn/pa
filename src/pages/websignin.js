@@ -202,7 +202,7 @@ const note = (words) => `<p class="w-note">${ARROW}${esc(words)}</p>`;
 // it says what is true, never words for anybody to type.
 export const NOTES = {
   signin: "same Reason, just a bigger screen.",
-  code: "six digits, already on the way.",
+  code: "six digits, if that number uses Reason.",
   join: "one text from your phone and you're in.",
   landing: "same conversation, wherever you are.",
 };

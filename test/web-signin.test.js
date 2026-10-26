@@ -509,10 +509,16 @@ test("the pages wear the site: serif italic headline, mono eyebrow, one handwrit
     }
     const ghost = await fetch(`${base}/no-such-thing`);
     const ghostBody = await ghost.text();
-    for (const path of ["/web/fonts/nope.woff2", "/web/fonts/constructor.woff2", "/web/fonts/../db.woff2"]) {
+    for (const path of ["/web/fonts/nope.woff2", "/web/fonts/constructor.woff2", "/web/fonts/__proto__.woff2", "/web/fonts/%2e%2e/db.woff2", "/web/fonts/%2e%2e%2fserif.woff2"]) {
       const r = await fetch(`${base}${path}`);
       assert.equal(r.status, ghost.status, path);
     }
+    const head = await fetch(`${base}/web/fonts/serif.woff2`, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get("content-type"), "font/woff2");
+    assert.equal((await head.arrayBuffer()).byteLength, 0);
+    const post = await fetch(`${base}/web/fonts/serif.woff2`, { method: "POST", body: "x" });
+    assert.equal(post.status, ghost.status, "a post to a font path is the flat 404");
     config.web = false;
     const off = await fetch(`${base}/web/fonts/serif.woff2`);
     assert.equal(off.status, ghost.status);
