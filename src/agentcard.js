@@ -725,6 +725,35 @@ export const DECLINED_CHECKOUT = new Set(["declined", "denied"]);
 /** Decline codes that are a pause for the person's passkey, not a refusal. */
 const APPROVAL_PAUSES = new Set(["vault_approval_required", "byoc_approval_required"]);
 
+/** True for a decline code that is a pause for the person's passkey, not a refusal (and so never a placement failure). */
+export function isApprovalPause(code) {
+  return APPROVAL_PAUSES.has(String(code ?? "").trim());
+}
+
+/**
+ * The codes an `order.failed` carries when AgentCard cannot name why the store refused the order: the
+ * step it stopped at (docs.agentcard.com/webhooks/orders/order-failed, read 2026-10-26). `message` is
+ * null on those. Seen live 2026-10-26: Target, `place`, twice, 2 s after each approval.
+ */
+export const PLACEMENT_STEP_CODES = new Set(["place", "prepare"]);
+
+/**
+ * What a placement failure means, in the words to say it in. The store's own line when AgentCard
+ * passed one on; otherwise the step, said plainly, and never a guess at why.
+ */
+export function placementFailureWords({ code = "", reason = "" } = {}) {
+  const c = String(code ?? "").trim();
+  const r = String(reason ?? "").trim();
+  const base = c === "prepare"
+    ? "the store couldn't get the order ready"
+    : c === "place" || !c
+      ? "the store turned the order down when AgentCard tried to place it"
+      : (DECLINE_REASONS[c] ? DECLINE_REASONS[c].replace(/\.?\s*Nothing was charged.*$/s, "").replace(/\.$/, "") : `the store refused the order (${c})`);
+  return r ? `${base} — ${lowerFirstWord(r).replace(/\.$/, "")}` : base;
+}
+
+const lowerFirstWord = (s) => (s && /^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
+
 /**
  * What a conversation read says about one order, in plain terms. Keyed on order_id when there is
  * one; with none, on the last checkout. Every field it cannot see is said to be unknown — this is
@@ -918,6 +947,10 @@ export const DECLINE_REASONS = {
   // theirs (#96 read it as "your one free order has been used"; that was wrong).
   commerce_billing_required: "this is a setup problem on Reason's side, not the card or the shop: Reason's AgentCard account isn't set up yet to pay AgentCard's commerce fee, so AgentCard won't place orders through it."
     + " Nothing was charged and nothing was ordered.",
+  // order.failed's nameless codes: the step AgentCard stopped at, after the approval. The store's
+  // doing, not the card's and not the person's (2026-10-26, Target, twice).
+  place: "the store turned the order down when AgentCard tried to place it, after the payment was approved. Nothing was charged.",
+  prepare: "the store couldn't get the order ready, so AgentCard never placed it. Nothing was charged.",
 };
 
 export function declineLine(code) {
@@ -966,6 +999,11 @@ export function refusalWhy(row) {
   if (billingSetupRequired(code)) return { code, words: "Reason's AgentCard fee setup wasn't finished", whose: "reason_setup", card: false };
   if (code === "sandbox_mode" || code === "sandbox_unavailable") return { code, words: "this install was on AgentCard's sandbox credentials", whose: "reason_setup", card: false };
   if (code === "items_unavailable") return { code, words: "the shop no longer had the item", whose: "store", card: false };
+  // The store refused to place it after the approval (order.failed, no order id): the store's, never the card's.
+  // (A named decline on a row the store had refused earlier is that decline, not the refusal.)
+  if (PLACEMENT_STEP_CODES.has(code) || (!code && Number(row.placement_failures) > 0)) {
+    return { code: code || row.placement_fail_code || "", words: placementFailureWords({ code: code || row.placement_fail_code, reason: row.placement_fail_reason }), whose: "store", card: false };
+  }
   return { code, words: code ? `AgentCard declined it (${code})` : "AgentCard declined it without a code", whose: "agentcard", card: false };
 }
 

@@ -1103,6 +1103,32 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
       // against 13:00:49 on 2026-10-24). Then the conversation finds the row, and the read below has
       // to list this order on it before anything is written.
       const row = byOrder ?? (orderId && data.conversation_id ? db.getAgentcardPurchase(data.conversation_id) : null);
+      // order.failed with NO order id, on a purchase waiting for its approval: the store refused to
+      // place the cart after the person approved (2026-10-26 03:20 ET: Target, `code: "place"`,
+      // 2 s after each Face ID approval, twice). That attempt consumed the approval, so the next
+      // confirm of the same cart comes back asking for a fresh one — and until this was matched,
+      // Reason read that as "the first approval didn't count", which was false. Matched by the buy
+      // conversation the event names, only for the person it names, and never for an approval pause
+      // (order.failed is also sent for `vault_approval_required`, which is not a failure). Nothing is
+      // said here: the confirm that is about to be repeated (the approval's own timer) is the one
+      // voice, and it reads this off the row. If that confirm has already gone out before this
+      // lands, it still knows — the row's approval was consumed and a new authorization came back.
+      // Only once the row's approval HAS gone through: before that, a confirm that ended without an
+      // order is Reason's own confirm, which gets its answer directly and marks the row itself, and
+      // "after your approval" would be a lie. (The two-second race the other way — the failure
+      // landing before its approval — is covered by the consumed-approval evidence, without a code.)
+      if (kind === "failed" && !orderId && data.conversation_id && !agentcard.isApprovalPause(data.code)) {
+        const waiting = db.getAgentcardPurchase(data.conversation_id);
+        if (waiting && user && waiting.conversation_id === user.conversation_id && waiting.status === "awaiting_approval" && waiting.authorization_state === "approved") {
+          const noted = db.noteAgentcardPlacementFailure(waiting.buy_conversation_id, { code: data.code ?? "", reason: data.message ?? "" });
+          log({
+            agentcard_webhook: event.type, purchase: waiting.buy_conversation_id, via: "conversation", placement_failed: true,
+            code: data.code ?? "none", reason: data.message || "none", failures: noted?.placement_failures ?? undefined,
+            charge_status: data.charge_status ?? undefined, retryable: data.retryable ?? undefined,
+          });
+          return { status: 200, body: { ok: true, matched: true, placement_failed: true, failures: noted?.placement_failures ?? 1 } };
+        }
+      }
       if (!row || (user && row.conversation_id !== user.conversation_id)) {
         log({ agentcard_webhook: event.type, unmatched_order: orderId || "none", code: data.code ?? undefined, billing_setup: agentcard.billingSetupRequired(data.code) || undefined });
         return { status: 200, body: { ok: true, matched: false } };

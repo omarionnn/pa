@@ -370,7 +370,11 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,711 pass, **0 failures** after event albums (#163, 2026-10-26)
+### Baseline — 3,714 pass, **0 failures** after the store-rejected-after-approval fix (2026-10-26)
+
+A null-order_id `order.failed` after an approval is now matched to the waiting purchase by its buy conversation and recorded (`placement_*` columns); the re-confirm says the store rejected the order (code and reason), that the approval was used up so AgentCard needs a fresh one, nothing charged, and sends the new link — never "the approval didn't count"; a second failure on the same cart stops with no third link; every approval text carries the total and the hold ceiling AgentCard's card shows; `purchase_track` carries the failure code and reason; a changed cart on the same conversation starts the count over. Three pinned tests in `test/agentcard.test.js` (`--test-name-pattern="2026-10-26"`). Caged drive 2026-10-26 (port 8813): the incident's own unsigned event bounced 401 fail-closed and `peek.sh schema agentcard_purchases` lists the four placement columns. See [features/agentcard.md](features/agentcard.md). **3,836 tests, 3,714 passing, 0 failing, 122 skipped.**
+
+### Earlier — 3,711 pass, **0 failures** after event albums (#163, 2026-10-26)
 
 One private photo album per event behind `REASON_EVENT_ALBUMS`. Fourteen pinned tests in `test/event-album.test.js` (nine for the album, five for the check-in nudges and check-in by name); `bin/album-drive.mjs` under `caged.sh env` drives note → add → check-in → release (one text) → late upload (none) → expiry (files gone) → the end-of-event nudge → "everyone except" → "everyone" again (nothing), all ok; the cage (`REASON_EVENTS=on REASON_EVENT_ALBUMS=on caged.sh start`) answered `/e/<id>/album/manage?t=<organizer_token>` with the gate ("Text me a code", no album content), the bare path with no cookie 404, the organizer's page with the organizer's `reason_page` cookie (check-in list, "Check everyone in", release button), 404 for a stranger's cookie byte-identical to a dead link, and 200 under `/p/e/…`; `toolsFor(<guest>)` lists the four album tools only with the flag on. Maintenance pass 2026-10-26 at `0b9d2c4`: every citation in the feature file re-grepped, clean. See [features/event-albums.md](features/event-albums.md). **3,833 tests, 3,711 passing, 0 failing, 122 skipped.**
 
