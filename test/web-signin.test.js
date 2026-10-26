@@ -439,8 +439,33 @@ test("a sign-in form without its browser's token, or from another site, starts o
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_codes").get().n, 0);
   // Our own hosts are fine: the website, the pages host, Reason's own address, and no Origin at all.
   for (const origin of ["https://heyreason.test", "https://files.heyreason.test", "https://reason.example.test", null]) {
-    assert.equal((await ask(h, b, NOBODY, { expectText: false })).status, 200, String(origin));
+    assert.equal((await req(h, { sub: "signin", method: "POST", body: form({ number: NOBODY, f: b.f }), cookie: b.jar, origin })).status, 200, String(origin));
   }
+});
+
+// 10-26: the owner's own Safari got "That didn't come from this page" through Caddy. The page said
+// `no-referrer`, so the browser posted `Origin: null` (WebKit and Chromium both). This is the request
+// exactly as Caddy hands it on for files.heyreason.com.
+test("a real browser's post through the files-host proxy is ours: Origin null + same-origin passes; cross-site and unvouched null still fail", async () => {
+  const h = harness();
+  const b = await fresh(h);
+  const proxied = (extra) => webRequestFor({ sub: "signin", method: "POST", query: {}, remoteAddress: "127.0.0.1", readBody: async () => form({ number: NOBODY, f: b.f }), runtime: h.runtime, router: h.router, log: (e) => h.logs.push(e),
+    headers: { host: "files.heyreason.test", "x-forwarded-for": "198.51.100.7", "x-forwarded-host": "files.heyreason.test", "x-forwarded-proto": "https", "x-files-domain": "true", "content-type": "application/x-www-form-urlencoded", cookie: b.jar, ...extra } });
+  const refused = (out) => out.status === 403 && h.logs.at(-1)?.web_signin_refused === "origin_or_token";
+  for (const ok of [{ origin: "null", "sec-fetch-site": "same-origin" }, { origin: "https://files.heyreason.test", "sec-fetch-site": "same-origin" }, {}]) {
+    const out = await proxied(ok);
+    assert.equal(out.status, 200, JSON.stringify(ok));
+    assert.ok(!refused(out), JSON.stringify(ok));
+  }
+  for (const bad of [{ origin: "null" }, { origin: "null", "sec-fetch-site": "cross-site" }, { origin: "null", "sec-fetch-site": "same-site" }, { origin: "https://evil.example", "sec-fetch-site": "cross-site" }, { origin: "https://evil.example" }]) {
+    assert.ok(refused(await proxied(bad)), JSON.stringify(bad));
+  }
+  // The page itself must let the browser name its origin on the post: the header and the shell's
+  // <meta> both say same-origin (a <meta> no-referrer would override the header).
+  const page = await req(h);
+  assert.equal(page.headers["Referrer-Policy"], "same-origin");
+  assert.match(page.body, /<meta name="referrer" content="same-origin">/);
+  assert.doesNotMatch(page.body, /content="no-referrer"/);
 });
 
 test("every answer carries the security headers; the pages carry no preview tags and no number but the live line's", async () => {
