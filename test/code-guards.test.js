@@ -15,7 +15,7 @@ process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_CONVERSATION = "dm:owner";
 // Live's addresses (/opt/reason/.env): pages and events on the files host; /ops on the website,
 // from opsUrl()'s default because live sets no REASON_OPS_URL.
-process.env.REASON_PAGES_URL = "https://files.reason.omarinyarko.com";
+process.env.REASON_PAGES_URL = "https://files.heyreason.com";
 process.env.REASON_PUBLIC_URL = "https://reason.tail3753c7.ts.net";
 delete process.env.REASON_OPS_URL;
 
@@ -31,16 +31,16 @@ const endsBound = (line, host, code) => {
   assert.equal(parts.at(-1), `@${host} #${code}`, "Apple's domain-bound last line");
 };
 
-test("a page's code text ends in @files.reason.omarinyarko.com #code", () => {
-  endsBound(access.codeLine({ id: "abc", title: "Gift ideas" }, "012345"), "files.reason.omarinyarko.com", "012345");
+test("a page's code text ends in @files.heyreason.com #code", () => {
+  endsBound(access.codeLine({ id: "abc", title: "Gift ideas" }, "012345"), "files.heyreason.com", "012345");
 });
 
-test("the status page's code text ends in @reason.omarinyarko.com #code", () => {
-  endsBound(access.codeLine({ id: "ops", title: "Reason status" }, "004213", { host: access.codeHost(ops.opsUrl()) }), "reason.omarinyarko.com", "004213");
+test("the status page's code text ends in @heyreason.com #code", () => {
+  endsBound(access.codeLine({ id: "ops", title: "Reason status" }, "004213", { host: access.codeHost(ops.opsUrl()) }), "heyreason.com", "004213");
 });
 
-test("an event's sign-in code text ends in @files.reason.omarinyarko.com #code", () => {
-  for (const what of ["sign in to", "open"]) endsBound(events.signinCodeLine({ name: "Rooftop" }, "903117", { what }), "files.reason.omarinyarko.com", "903117");
+test("an event's sign-in code text ends in @files.heyreason.com #code", () => {
+  for (const what of ["sign in to", "open"]) endsBound(events.signinCodeLine({ name: "Rooftop" }, "903117", { what }), "files.heyreason.com", "903117");
 });
 
 const srcFiles = (d) => readdirSync(d, { withFileTypes: true }).flatMap(e =>

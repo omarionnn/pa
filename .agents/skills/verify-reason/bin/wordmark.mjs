@@ -82,7 +82,7 @@ try {
   let ref = null;
   if (site) {
     const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
-    await p.goto("https://reason.omarinyarko.com/", { waitUntil: "networkidle" });
+    await p.goto("https://heyreason.com/", { waitUntil: "networkidle" });
     await p.evaluate(() => document.fonts.ready);
     ref = await p.evaluate(() => { const r = document.querySelector(".nav-mark").getBoundingClientRect(), o = document.querySelector(".nav-mark svg").getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(o.width * 10) / 10 + "×" + Math.round(o.height * 10) / 10, fs: getComputedStyle(document.querySelector(".nav-mark")).fontSize }; });
     console.log(`site .nav-mark at 1280: ${ref.w}px wide, bubble ${ref.h}px, ${ref.fs} type`);

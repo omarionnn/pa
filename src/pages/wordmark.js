@@ -1,5 +1,5 @@
 // The "reason" wordmark every page Reason serves puts top left: the same mark as the top left of the
-// marketing site (reason.omarinyarko.com, ~/Desktop/reason-site-new/public — index.html .nav-mark,
+// marketing site (heyreason.com, ~/Desktop/reason-site-new/public — index.html .nav-mark,
 // styles.css .wordmark/.wm-bubble), copied here rather than linked so a page needs nothing but this
 // server. "reas", the speech bubble as the o (brand orange here; the site's is blue), "n", in Instrument Serif italic.
 //

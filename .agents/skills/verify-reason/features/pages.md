@@ -106,7 +106,7 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   code/password gates, not-found, notices, event pages (join, sign-in, gate, joined, who's going,
   organizer), /ops, invites, Spotify join/callback, the remote sign-in page — opens with "reas" + the
   brand-orange bubble (#B8460B; #F26F2B on dark pages, cards and covers — the site's bubble is the same orange) + "n" in Instrument Serif italic 1.35rem, the same mark as the top left of
-  reason.omarinyarko.com. One copy: `src/pages/wordmark.js` (font inline as a 1.5 KB data URI — no
+  heyreason.com. One copy: `src/pages/wordmark.js` (font inline as a 1.5 KB data URI — no
   request, nothing from Google); the shell (`src/pages/render.js`) and the three own-template pages
   (`src/spotify.js`, `src/signin-remote.js`, `src/http.js` brandedPage) import it. The opening moment
   reads "reas⌾ning" with it, like the site's loader. Check: `node bin/wordmark.mjs [--site]
@@ -225,8 +225,8 @@ page's preview tags — and that is fine: only someone already holding the key c
   (`src/pages/access.js`) in-process, `POST` it as `code=…`, and carry the `reason_page` cookie.
   The code is six digits (since 2026-10-25) and the text ends in a blank line and Apple's
   domain-bound `@<host> #<code>`: the pages host (`REASON_PAGES_URL`, live
-  `files.reason.omarinyarko.com`) for a page, the `/ops` host (`opsUrl()`, live
-  `reason.omarinyarko.com`) for the status page. `code=` may be the six digits, `012 345`, or the
+  `files.heyreason.com`) for a page, the `/ops` host (`opsUrl()`, live
+  `heyreason.com`) for the status page. `code=` may be the six digits, `012 345`, or the
   whole pasted text (`typedCode`). In the cage the text prints on the console channel in
   `serve.log` as `reason> Your Reason code is …` — the decision-log lines never carry it.
   Pressing "Text me the code" for real (`POST` with `send`) is limited to 3 codes per 15 minutes
@@ -243,14 +243,14 @@ page's preview tags — and that is fine: only someone already holding the key c
   `export function pageUrl`). When
   `REASON_PAGES_URL` is set the link is `{REASON_PAGES_URL}/{id}?k=<owner_key>`, verbatim — the
   variable carries whatever prefix the host in front needs. On this Mac's `.env` **and** on Hetzner
-  it is `https://files.reason.omarinyarko.com` (read 2026-10-24; it was
-  `https://reason.omarinyarko.com/p` until then), so a link reads
-  `https://files.reason.omarinyarko.com/<id>?k=…` — no `/p` in it; the host in front maps it to
+  it is `https://files.heyreason.com` (set 2026-10-26 when the domain moved; before that
+  `https://files.reason.omarinyarko.com`, and `https://reason.omarinyarko.com/p` until 2026-10-24), so a link reads
+  `https://files.heyreason.com/<id>?k=…` — no `/p` in it; the host in front maps it to
   Hetzner's `/p/<id>`. When only
   `REASON_PUBLIC_URL` is set, the fallback is `{REASON_PUBLIC_URL}/p/{id}?k=<owner_key>`. The caged
   instance inherits both from `.env`, so the `link` it hands back points at the **public site**,
-  not at the caged port — driven 2026-10-24, `link: https://files.reason.omarinyarko.com/0yKSptX1JR?k=…`.
-  Replace `https://files.reason.omarinyarko.com/` with `http://127.0.0.1:<caged port>/p/` before
+  not at the caged port — driven 2026-10-24, `link: https://files.heyreason.com/0yKSptX1JR?k=…`.
+  Replace `https://files.heyreason.com/` with `http://127.0.0.1:<caged port>/p/` before
   curling it (on 2026-10-24 that answered 401 with the "Text me the code" gate, as the table says).
 - `page_update` wants the **full** blocks you want the page to have now, not a patch.
 - Reaching the page over HTTP needs the server; `runTool` alone proves the row, not the render.

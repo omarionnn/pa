@@ -3,7 +3,7 @@
 A CLI the owner runs on the Hetzner box to tell active people about something new. No tool, page or
 text reaches it. Dry run by default: it prints the recipient count, the counts left out by reason,
 and the bubbles, never a number or a name, and writes nothing. The one announcement shipped is
-`events-1025` (two bubbles: the Events pitch, then `reason.omarinyarko.com/updates`). It must
+`events-1025` (two bubbles: the Events pitch, then `heyreason.com/updates`). It must
 never be sent without the owner's explicit go.
 
 Source: `scripts/announce.js` (`ANNOUNCEMENTS`, `audience`, `sendAll`, `renderDryRun`,

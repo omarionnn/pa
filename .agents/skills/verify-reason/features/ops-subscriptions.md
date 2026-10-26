@@ -33,7 +33,7 @@ The owner opens `/ops` and sees how close each Claude subscription is to its lim
 
 ## How to get to it (user POV)
 
-Open `reason.omarinyarko.com/ops`, sign in, open "N checks fine ▸" → **Claude subscriptions**. When
+Open `heyreason.com/ops`, sign in, open "N checks fine ▸" → **Claude subscriptions**. When
 Reason's window passes 80% the row is pinned under "Needs you" and the owner got one text.
 
 ## Driving it with the harness
@@ -69,7 +69,7 @@ Mac: `launchctl list | grep com.reason.usage-reporter` and `tail ~/.config/reaso
   `5-hour 36% · week 45% · 7 requests today · pushed 20s ago`, `quiet`).
 - **The Mac pushes to the Hetzner address, not the website.** `REASON_USAGE_URL` is
   `https://reason.tail3753c7.ts.net/ops/usage`: the website's Netlify proxy forwards `/ops` and
-  `/ops.json` only, so `reason.omarinyarko.com/ops/usage` is a 404.
+  `/ops.json` only, so `heyreason.com/ops/usage` is a 404.
 - `caged.sh env` does not export `REASON_BACKEND`, so a `node --env-file=.env` script beside the cage
   reads `.env`'s `claude-cli` and the Reason row says "no reading yet" rather than "not on the CLI
   backend". Harmless — the backstop then finds no `~/.claude/.credentials.json` on this Mac (the

@@ -237,7 +237,7 @@ test("a change of state that lasts texts the owner once, with the link; the same
   r = ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
   assert.equal(sent.length, 1);
   assert.equal(sent[0].c, "dm:owner");
-  assert.match(sent[0].text, /^Reason check — 1 thing needs you:\n• Texts out: 1 text failed in the last day — opted out\nStatus page: https:\/\/reason\.omarinyarko\.com\/ops\?k=/);
+  assert.match(sent[0].text, /^Reason check — 1 thing needs you:\n• Texts out: 1 text failed in the last day — opted out\nStatus page: https:\/\/heyreason\.com\/ops\?k=/);
   assert.equal(r.changes.length, 1);
 
   r = ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
@@ -333,7 +333,7 @@ test("pressing send without the key texts nobody; with it, the owner is texted o
   assert.match(out.body, /texted Omari a six-digit code/);
   assert.equal(sent.length, 1);
   assert.equal(sent[0].c, "dm:owner");
-  assert.match(sent[0].text, /^Your Reason code is [0-9]{6}, to open "Reason status" on that browser.[^\n]*\n\n@reason\.omarinyarko\.com #[0-9]{6}$/);
+  assert.match(sent[0].text, /^Your Reason code is [0-9]{6}, to open "Reason status" on that browser.[^\n]*\n\n@heyreason\.com #[0-9]{6}$/);
 });
 
 test("the right code opens the page, sets a cookie for the whole site, and that cookie opens it again — and the JSON", async () => {
@@ -473,18 +473,18 @@ test("nothing the database says becomes markup", async () => {
 
 // ---------- the owner's link lives on the website (2026-10-24) ----------
 
-test("every link to the page is reason.omarinyarko.com/ops with the key: the alert, back to normal, and the status_page tool", async () => {
-  assert.equal(ops.opsUrl(), `https://reason.omarinyarko.com/ops?k=${ops.opsKey()}`);
+test("every link to the page is heyreason.com/ops with the key: the alert, back to normal, and the status_page tool", async () => {
+  assert.equal(ops.opsUrl(), `https://heyreason.com/ops?k=${ops.opsKey()}`);
   const outbox = { id: "outbox", group: "alive", label: "Texts out", state: "ok", detail: "fine" };
   const harm = { id: "harm", group: "quality", label: "Harm screen", state: "bad", detail: "down" };
   const text = ops.alertText([{ kind: "fixed", check: outbox }], { verdict: "bad", checks: [harm] });
-  assert.equal(text, `Reason check — back to normal: Texts out.\nStatus page: https://reason.omarinyarko.com/ops?k=${ops.opsKey()}`);
+  assert.equal(text, `Reason check — back to normal: Texts out.\nStatus page: https://heyreason.com/ops?k=${ops.opsKey()}`);
   assert.doesNotMatch(text, /reason\.example\.test|ts\.net/);
 
   const { runTool } = await import("../src/tools.js");
   const out = await runTool("status_page", {}, { conversationId: "dm:owner" });
   assert.equal(out.ok, true);
-  assert.equal(out.url, `https://reason.omarinyarko.com/ops?k=${ops.opsKey()}`);
+  assert.equal(out.url, `https://heyreason.com/ops?k=${ops.opsKey()}`);
 });
 
 test("REASON_OPS_URL moves the link; set empty, it falls back to the server's own /ops", () => {

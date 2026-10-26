@@ -116,7 +116,7 @@ test("dry run renders the two bubbles, sends nothing and writes nothing", () => 
   assert.match(out, /recipients: 1\n/);
   assert.match(out, /opted-out 0, already-sent 0, quiet-hours 0/);
   assert.ok(out.includes(A.ANNOUNCEMENTS["events-1025"].bubbles[0]));
-  assert.ok(out.includes("reason.omarinyarko.com/updates"));
+  assert.ok(out.includes("heyreason.com/updates"));
   assert.ok(!out.includes("415"), "never a phone number");
   assert.ok(!out.includes("Someone"), "never a name");
 });
