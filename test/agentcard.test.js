@@ -1212,7 +1212,8 @@ test("pinned (2026-10-26): a null-order_id order.failed after an approval is the
   assert.match(stop.error, /delivery address/);
   assert.match(stop.error, /NEW purchase/);
   assert.match(stop.error, /only if they want/);
-  assert.doesNotMatch(stop.error, /didn.t count(?! —)|did not count/i);
+  assert.match(stop.error, /never that an approval didn't count/);
+  assert.doesNotMatch(stop.error.replace(/never that an approval didn't count/, ""), /didn.t count|did not count/i);
   const r3 = db.getAgentcardPurchase(cart.conversation_id);
   assert.equal(r3.status, "failed");
   assert.equal(r3.decline_code, "place");
@@ -1265,7 +1266,8 @@ test("pinned (2026-10-26): a re-confirm that meets a new authorization after an 
   assert.equal(again.placement_failures, 0);
   assert.match(again.error, /turned the order down when AgentCard tried to place it after Omari approved the payment \(AgentCard gave no code for it yet\)/);
   assert.match(again.error, /needs a fresh one/);
-  assert.doesNotMatch(again.error, /didn.t count(?!, failed)/i);
+  assert.match(again.error, /never that their approval didn't count/);
+  assert.doesNotMatch(again.error.replace(/never that their approval didn't count, failed or was missed/, ""), /didn.t count|did not count/i);
   assert.equal(again.approval_url, "https://vault.agentcard.sh/authorize?id=cauth_late2");
 
   // The same authorization coming back (a plain retry of an unapproved link) is NOT a rejection.
@@ -1276,6 +1278,74 @@ test("pinned (2026-10-26): a re-confirm that meets a new authorization after an 
   const same = await call("purchase_confirm", { conversation_id: two.conversation_id, cart_hash: two.cart_hash, confirmation_id: yes2 });
   assert.equal(same.blocked, "vault_approval_required");
   assert.equal(same.store_rejected, undefined);
+});
+
+// Review of the fix (2026-10-26): the count and the spent approval must not outlive the cart they were
+// about. "Change the address" is a new cart on the SAME conversation; a failure before anybody approved
+// is not "after your approval"; and an order the store then placed carries no rejection story.
+test("pinned (2026-10-26): a new cart on the same conversation starts over; a failure before any approval is not counted; a placed order carries no rejection", async () => {
+  await enroll();
+  const cart = await shop();
+  const yes = await yesFor(cart.conversation_id, cart.cart_hash);
+  fake.set({ confirms: ["approval_required"] });
+  await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
+  const place = { order_id: null, conversation_id: cart.conversation_id, user_id: "usr_8f3k2m", code: "place", message: null, retryable: false, charge_status: "none" };
+
+  // Before any approval: not a placement failure (that confirm's own answer is what marks the row).
+  const early = await deliver({ id: "evt_rc_early", type: "order.failed", data: { ...place, code: "items_unavailable" } });
+  assert.equal(early.body.matched, false);
+  assert.equal(db.getAgentcardPurchase(cart.conversation_id).placement_failures, 0);
+
+  // Approved, then refused once.
+  const waiting = db.getAgentcardPurchase(cart.conversation_id);
+  await deliver({ id: "evt_rc_ok", type: "checkout_authorization.approved", data: { user_id: "usr_8f3k2m", amount: 2306, authorization_id: waiting.authorization_id } });
+  await deliver({ id: "evt_rc_1", type: "order.failed", data: place });
+  assert.equal(db.getAgentcardPurchase(cart.conversation_id).placement_failures, 1);
+
+  // Then placed on the next confirm: the record says placed, and nothing about a rejection.
+  fake.set({ confirms: ["placed"], conversation: "tracked" });
+  const done = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
+  assert.equal(done.ok, true, JSON.stringify(done));
+  const t = await call("purchase_track", { conversation_id: cart.conversation_id });
+  assert.equal(t.status, "placed");
+  assert.equal(t.store_rejected, undefined);
+  assert.doesNotMatch(JSON.stringify(t), /refused to place|rejected/);
+  assert.equal(agentcard.refusalWhy(db.getAgentcardPurchase(cart.conversation_id)), null);
+
+  // A second cart, refused once after approval, then CHANGED on the same conversation: the count and
+  // the spent approval go with the old cart, and the first pause on the new one is a plain ask.
+  const two = await shop();
+  const yes2 = await yesFor(two.conversation_id, two.cart_hash);
+  fake.set({ confirms: ["approval_required"], conversation: null });
+  await call("purchase_confirm", { conversation_id: two.conversation_id, cart_hash: two.cart_hash, confirmation_id: yes2 });
+  const w2 = db.getAgentcardPurchase(two.conversation_id);
+  await deliver({ id: "evt_rc_ok2", type: "checkout_authorization.approved", data: { user_id: "usr_8f3k2m", amount: 2306, authorization_id: w2.authorization_id } });
+  await deliver({ id: "evt_rc_2", type: "order.failed", data: { ...place, conversation_id: two.conversation_id } });
+  assert.equal(db.getAgentcardPurchase(two.conversation_id).placement_failures, 1);
+  fake.set({ ask: "dearer" });
+  const changed = await call("purchase", { ask: "actually the bigger bag", conversation_id: two.conversation_id, ...ADDRESS });
+  assert.equal(changed.ok, true, JSON.stringify(changed));
+  assert.notEqual(changed.cart_hash, two.cart_hash, "a changed cart is a new hash");
+  const fresh = db.getAgentcardPurchase(two.conversation_id);
+  assert.equal(fresh.placement_failures, 0);
+  assert.equal(fresh.placement_fail_code, "");
+  assert.equal(fresh.placement_failed_at, null);
+  assert.equal(fresh.authorization_state, "", "the approval spent on the old cart does not carry over");
+  assert.equal(fresh.authorization_id, "");
+  const yes3 = await yesFor(two.conversation_id, changed.cart_hash);
+  fake.set({ confirms: ["approval_required"] });
+  const pause = await call("purchase_confirm", { conversation_id: two.conversation_id, cart_hash: changed.cart_hash, confirmation_id: yes3 });
+  assert.equal(pause.blocked, "vault_approval_required", JSON.stringify(pause));
+  assert.equal(pause.store_rejected, undefined, "a cart nobody has tried was not rejected");
+  assert.doesNotMatch(pause.error, /rejected|turned the order down|used up/);
+  // The same cart asked for again (same hash) keeps what it had.
+  fake.set({ ask: "cart" });
+  const three = await shop();
+  await yesFor(three.conversation_id, three.cart_hash);
+  db.noteAgentcardPlacementFailure(three.conversation_id, { code: "place" });
+  const same = await call("purchase", { ask: "the colombian coffee", conversation_id: three.conversation_id, ...ADDRESS });
+  assert.equal(same.cart_hash, three.cart_hash);
+  assert.equal(db.getAgentcardPurchase(three.conversation_id).placement_failures, 1);
 });
 
 // 2026-10-24: Walmart order e66d7f2b… was cancelled by AgentCard. order.updated matched the row and

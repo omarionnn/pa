@@ -1071,7 +1071,7 @@ function localPurchaseAnswer(row, who, me) {
   const amount = row.amount_cents ? trust.money(row.amount_cents) : "";
   const reconnect = ["connection_expired", "no_card", "not_enrolled", "needs_verification", "connect_failed"].includes(who.blocked);
   const what = `${row.what || "the order"}${row.merchant ? ` from ${row.merchant}` : ""}${amount ? ` (${amount})` : ""}`;
-  const pw = Number(row.placement_failures) > 0 ? placementWhy(row) : null;
+  const pw = placementHistory(row);
   const lead = cancelled
     ? `Reason's record: ${what} was CANCELLED — ${why.given ? `reason: ${why.words}` : "no reason given"}. Nothing is coming.` + cancelNote(why)
     : `Reason's record: ${what} — status '${row.status}'${row.decline_code ? ` (${row.decline_code})` : ""}${row.order_id ? `, order ${row.order_id}` : ""}.`
@@ -1365,15 +1365,26 @@ function placementWhy(row) {
  */
 function placementGaveUp(buyConversationId, row, me) {
   const why = placementWhy(row);
-  db.markAgentcardPurchase(buyConversationId, { status: "failed", declineCode: why.code || "place" });
+  const flight = row.kind === "flight";
+  const who = flight ? "the airline side" : (row.merchant || "the store");
+  // A row already ended for another reason (an expired approval, a decline) keeps that reason.
+  db.markAgentcardPurchase(buyConversationId, { status: "failed", declineCode: row.decline_code || why.code || "place" });
   return {
     ok: false, blocked: "store_rejected_twice", store_rejected: true,
     placement_failures: why.times || 2, placement_fail_code: why.code || undefined, placement_fail_reason: why.reason || undefined,
     cart_line: `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(Number(row.amount_cents) || 0)})`,
-    error: `Not bought, and not sent again — ${why.words}, twice: each time ${me.name} approved the payment, ${row.merchant || "the store"} refused to place the order (${why.given}). Nothing was charged, and any hold on the card drops off on its own.`
-      + ` Tell them plainly: the store turned it down twice after their approval — never that an approval didn't count — nothing was charged, and it is worth checking the delivery address and the item, since an address the store can't use is the usual cause.`
-      + ` Do not offer a third try on this cart. If they would rather try again later, that is a NEW purchase (purchase, a fresh cart, a new yes), and only if they want it.`,
+    error: `Not ${flight ? "booked" : "bought"}, and not sent again — ${why.words}, twice: each time ${me.name} approved the payment, ${who} refused to place the order (${why.given}). Nothing was charged, and any hold on the card drops off on its own.`
+      + ` Tell them plainly: ${who} turned it down twice after their approval — never that an approval didn't count — nothing was charged, and it is worth checking ${flight ? "the travelers' details and the flight itself" : "the delivery address and the item, since an address the store can't use is the usual cause"}.`
+      + ` Do not offer a third try on this cart. If they would rather try again later, that is a NEW ${flight ? "booking (flight_book, a fresh quote, a new yes)" : "purchase (purchase, a fresh cart, a new yes)"}, and only if they want it.`,
   };
+}
+
+/** Not placed, not cancelled: the states in which "the store refused to place it" is still the story. */
+const PLACEMENT_HISTORY_STATES = new Set(["awaiting_approval", "failed", "declined", "outcome_unknown"]);
+
+/** The row's placement refusals, when they are the story — never on an order that was then placed. */
+function placementHistory(row) {
+  return Number(row?.placement_failures) > 0 && PLACEMENT_HISTORY_STATES.has(String(row.status)) ? placementWhy(row) : null;
 }
 
 /** The closest standing permission and why it does not reach, for a refusal the model has to say. */
@@ -12514,7 +12525,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const shop = now.merchant || t.order?.merchant_name || "the shop";
       // The store refused to place it after an approval (order.failed, no order id): the code and
       // the reason as AgentCard gave them ride on every answer, so the final message can say them.
-      const pw = Number(now.placement_failures) > 0 ? placementWhy(now) : null;
+      const pw = placementHistory(now);
       const placementNote = pw
         ? ` ${shop} refused to place it after ${me.name} approved the payment${pw.times > 1 ? `, ${pw.times} times` : ""} — ${pw.words} (${pw.given}). Nothing was charged for it; say the code and the reason as given, and never that an approval didn't count.`
         : "";

@@ -1115,9 +1115,13 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
       // said here: the confirm that is about to be repeated (the approval's own timer) is the one
       // voice, and it reads this off the row. If that confirm has already gone out before this
       // lands, it still knows — the row's approval was consumed and a new authorization came back.
+      // Only once the row's approval HAS gone through: before that, a confirm that ended without an
+      // order is Reason's own confirm, which gets its answer directly and marks the row itself, and
+      // "after your approval" would be a lie. (The two-second race the other way — the failure
+      // landing before its approval — is covered by the consumed-approval evidence, without a code.)
       if (kind === "failed" && !orderId && data.conversation_id && !agentcard.isApprovalPause(data.code)) {
         const waiting = db.getAgentcardPurchase(data.conversation_id);
-        if (waiting && user && waiting.conversation_id === user.conversation_id && waiting.status === "awaiting_approval") {
+        if (waiting && user && waiting.conversation_id === user.conversation_id && waiting.status === "awaiting_approval" && waiting.authorization_state === "approved") {
           const noted = db.noteAgentcardPlacementFailure(waiting.buy_conversation_id, { code: data.code ?? "", reason: data.message ?? "" });
           log({
             agentcard_webhook: event.type, purchase: waiting.buy_conversation_id, via: "conversation", placement_failed: true,

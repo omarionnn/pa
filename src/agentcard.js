@@ -1000,7 +1000,8 @@ export function refusalWhy(row) {
   if (code === "sandbox_mode" || code === "sandbox_unavailable") return { code, words: "this install was on AgentCard's sandbox credentials", whose: "reason_setup", card: false };
   if (code === "items_unavailable") return { code, words: "the shop no longer had the item", whose: "store", card: false };
   // The store refused to place it after the approval (order.failed, no order id): the store's, never the card's.
-  if (PLACEMENT_STEP_CODES.has(code) || Number(row.placement_failures) > 0) {
+  // (A named decline on a row the store had refused earlier is that decline, not the refusal.)
+  if (PLACEMENT_STEP_CODES.has(code) || (!code && Number(row.placement_failures) > 0)) {
     return { code: code || row.placement_fail_code || "", words: placementFailureWords({ code: code || row.placement_fail_code, reason: row.placement_fail_reason }), whose: "store", card: false };
   }
   return { code, words: code ? `AgentCard declined it (${code})` : "AgentCard declined it without a code", whose: "agentcard", card: false };

@@ -11,7 +11,7 @@ Source: `src/agentcard.js` (the API client, the webhook signature, the decline m
 (`POST /agentcard/webhook` → `agentcardWebhookRequest`), `src/db.js` (`agentcard_users`,
 `agentcard_purchases`, `agentcard_events`), `src/trust.js` (the gate `purchase_confirm` sits behind).
 Tests: `test/agentcard.test.js` against `test/fixture-agentcard.js`, a fake AgentCard that answers
-every route the real one documents — no key, no network, 52 tests at `587f67a` (2026-10-24), 54 after
+every route the real one documents — no key, no network, 52 tests at `587f67a` (2026-10-24), 55 after
 the placement-failure pin (2026-10-26).
 The rest of the shopping loop (offers, handoff, price watches) is in [shopping.md](shopping.md).
 
@@ -79,7 +79,7 @@ node --test test/purchasesnote.test.js test/agentcard-token-seal.test.js test/oa
 
 ```bash
 cd ~/Desktop/pa
-node --test --test-name-pattern="2026-10-26" test/agentcard.test.js   # 2/2: the incident replayed against the fixture, and the late-event case
+node --test --test-name-pattern="2026-10-26" test/agentcard.test.js   # 3/3: the incident replayed against the fixture; the late-event case; new cart / pre-approval / placed-after-one
 # On the cage: the incident's own event shape, unsigned, must bounce (the cage blanks the secret), and
 # the four placement columns must exist on the caged database.
 P=8813   # any free port; REASON_VERIFY_PORT
@@ -323,8 +323,10 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   owner "it looks like the first approval didn't count". It did count — the store rejected the order,
   which consumed the approval. Now: an `order.failed` with no order id is matched to the purchase by
   `data.conversation_id` (the buy conversation), only for the person `data.user_id` names, only while
-  the row is `awaiting_approval`, and never for an approval pause (`order.failed` is also sent for
-  `vault_approval_required`; `agentcard.isApprovalPause`). It lands as `placement_failures` (count),
+  the row is `awaiting_approval` with its approval gone through (`authorization_state = 'approved'`;
+  before that a confirm that ended without an order is Reason's own, answered directly), and never for
+  an approval pause (`order.failed` is also sent for `vault_approval_required`;
+  `agentcard.isApprovalPause`). It lands as `placement_failures` (count),
   `placement_failed_at`, `placement_fail_code` (`place`/`prepare`, or a named code) and
   `placement_fail_reason` (AgentCard's `message`, when any) on `agentcard_purchases`
   (`db.noteAgentcardPlacementFailure`); the webhook says nothing itself — the re-confirm is the one
@@ -335,7 +337,12 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   cart is the end of it: `blocked: "store_rejected_twice"`, no third link, nothing sent to AgentCard,
   the row `failed` with `decline_code` = the placement code, and the model is told to suggest checking
   the address and the item and that trying later is a NEW purchase, only if they want it. `purchase_track`
-  (live and `local_record`) and `refusalWhy` carry the code and reason (`store`, never the card).
+  (live and `local_record`) and `refusalWhy` carry the code and reason (`store`, never the card) — only
+  while the refusal is the story (`placementHistory`: waiting, failed, declined, unknown), never on an
+  order the store then placed. A DIFFERENT cart on the same conversation ("change the address", a 409's
+  fresh cart) is a fresh attempt: `recordAgentcardPurchase` zeroes the `placement_*` columns and clears
+  `authorization_state` / `authorization_id` when the hash changes, so a cart nobody has tried is never
+  said to have been rejected and never refused unsent; the same hash keeps them.
   Event shape from docs.agentcard.com/webhooks/orders/order-failed (read 2026-10-26); the live
   `agentcard_events` rows for the incident are `evt_c8b2aa7568ff17d35696038a` and
   `evt_a1beb939a5892d7e45e91b64` (ids only; the table keeps no payload).

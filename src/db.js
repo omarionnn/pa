@@ -7088,7 +7088,17 @@ export function recordAgentcardPurchase({ conversationId, buyConversationId, sta
       amount_cents = excluded.amount_cents,
       merchant = excluded.merchant,
       what = excluded.what,
-      updated_at = excluded.updated_at`)
+      updated_at = excluded.updated_at,
+      -- A different cart on the same conversation (they changed the item, the address, the count; or
+      -- a 409 handed back a fresh one) is a fresh attempt: the store's refusals of the OLD cart and the
+      -- approval that was spent on it do not carry over, or a cart nobody has tried would be said to
+      -- have been rejected, and after two it would never be sent at all. The same hash keeps them.
+      placement_failures = CASE WHEN excluded.cart_hash != agentcard_purchases.cart_hash THEN 0 ELSE agentcard_purchases.placement_failures END,
+      placement_failed_at = CASE WHEN excluded.cart_hash != agentcard_purchases.cart_hash THEN NULL ELSE agentcard_purchases.placement_failed_at END,
+      placement_fail_code = CASE WHEN excluded.cart_hash != agentcard_purchases.cart_hash THEN '' ELSE agentcard_purchases.placement_fail_code END,
+      placement_fail_reason = CASE WHEN excluded.cart_hash != agentcard_purchases.cart_hash THEN '' ELSE agentcard_purchases.placement_fail_reason END,
+      authorization_state = CASE WHEN excluded.cart_hash != agentcard_purchases.cart_hash THEN '' ELSE agentcard_purchases.authorization_state END,
+      authorization_id = CASE WHEN excluded.cart_hash != agentcard_purchases.cart_hash THEN '' ELSE agentcard_purchases.authorization_id END`)
     .run(conversationId, buyConversationId, status, cartHash, Math.round(amountCents), merchant, what, clock.now(), clock.now());
   return getAgentcardPurchase(buyConversationId);
 }
