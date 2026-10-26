@@ -118,6 +118,9 @@ test("with REASON_WEB off there is no web channel, a web message is refused befo
   await text(router, { id: "t1", body: "hi" });
   assert.equal(turns.length, 1);
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM messages").get().n, 0, "flag off: the history table is never written");
+  // `threads.last_channel` is the one column a text now fills whatever the flag says: nullable,
+  // read by nothing in W0, and the route columns beside it are untouched.
+  assert.equal(db.getThread(THEIRS).address, FRIEND);
   // db.writeMessage itself is a no-op while off, however it is reached.
   assert.equal(db.writeMessage({ conversationId: THEIRS, role: "user", channel: "fake", externalId: "x", text: "y" }), null);
 });
@@ -233,7 +236,7 @@ test("a web inbound never changes threads.channel or address; it leaves only las
   assert.equal(after.address, FRIEND);
   assert.equal(after.service, before.service);
   assert.equal(after.last_channel, "web");
-  assert.equal(after.last_inbound_id, "w1");
+  assert.equal(after.last_inbound_id, `${THEIRS}:w1`, "the handle, under their conversation");
 
   // Something Reason starts itself — a reminder — goes to the PHONE, not the tab.
   assert.deepEqual(whereTo({ conversationId: THEIRS }), { channel: "fake", to: FRIEND, chatId: null, started: true });
@@ -274,7 +277,7 @@ test("text → web → text: each reply goes back the way its message came, once
   assert.deepEqual(rows, [
     ["user", "fake", "one", "t1"],
     ["assistant", "fake", "re: one", "fake-1"],
-    ["user", "web", "two", "w1"],
+    ["user", "web", "two", `${THEIRS}:w1`],
     ["assistant", "web", "re: two", webCh.recent[0].message_id],
     ["user", "fake", "three", "t2"],
     ["assistant", "fake", "re: three", "fake-2"],
@@ -300,6 +303,56 @@ test("the same web message delivered twice is one turn and one history row", asy
   assert.equal(turns.length, 1);
   assert.equal(webCh.recent.length, 1, "one reply");
   assert.deepEqual(db.messagesFor(THEIRS).map(m => m.role), ["user", "assistant"]);
+});
+
+test("two people's browsers using the same message id never swallow each other's message", async () => {
+  const { router, turns } = harness();
+  texted();
+  texted(OTHERS, OTHER);
+  const a = await fromWeb(router, { conversationId: THEIRS, id: "same-uuid", body: "kofi" });
+  const b = await fromWeb(router, { conversationId: OTHERS, id: "same-uuid", body: "ama" });
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+  assert.equal(b.duplicate, undefined, "Ama's message is not Kofi's retry");
+  assert.deepEqual(turns.map(t => [t.conversationId, t.text]), [[THEIRS, "kofi"], [OTHERS, "ama"]]);
+  // And Kofi's own retry of that id is still one turn.
+  const again = await fromWeb(router, { conversationId: THEIRS, id: "same-uuid", body: "kofi" });
+  assert.equal(again.duplicate, true);
+  assert.equal(turns.length, 2);
+  // The handle kept is under their conversation, so the dedupe row cannot collide across people.
+  assert.equal(db.db.prepare("SELECT external_id FROM inbound_messages WHERE conversation_id = ?").get(THEIRS).external_id, `${THEIRS}:same-uuid`);
+});
+
+test("web messages held when the switch is turned off are kept, not answered into nothing", async () => {
+  const { router, turns, logs } = harness();
+  texted();
+  // A web message is on the pile (as after a restart), and the switch is now off.
+  db.holdInbound({ conversationId: THEIRS, channel: "web", address: FRIEND, externalId: `${THEIRS}:held`, text: "still here?", quietMs: 0, maxMs: 0 });
+  config.web = false;
+  const r = await router.drainDue(clock.now());
+  assert.equal(r.conversations, 1);
+  assert.equal(r.turns, 1, "counted as handled by the sweep");
+  assert.equal(turns.length, 0, "no model turn was spent on a message nothing could answer");
+  assert.ok(logs.some(l => l.web_held_back === THEIRS));
+  const row = db.lastPendingInbound(THEIRS);
+  assert.ok(row, "the message is back on the pile");
+  assert.ok(row.ready_at > clock.now() + 59 * 60_000, "for an hour");
+  assert.equal(row.held_times, 0, "not counted as an outage hold");
+  // The switch comes back and the sweep reaches it: answered on web.
+  config.web = true;
+  router.register(new WebChannel());
+  clock.skip(61 * 60_000);
+  await router.drainDue(clock.now());
+  assert.deepEqual(turns.map(t => t.text), ["still here?"]);
+});
+
+test("a page's or /ops's sign-in code is never history (pcode: key)", async () => {
+  const { runtime, fake } = harness();
+  texted(CONV, OWNER);
+  await runtime._tell(CONV, "Your Reason code is 123456, to open \"Trip\" on that browser.", { idempotencyKey: "pcode:pg1:7" });
+  assert.equal(fake.sent.length, 1, "the code went");
+  assert.deepEqual(db.messagesFor(CONV), []);
+  assert.deepEqual(db.HISTORY_EXCLUDED_KEYS, ["pcode:", "esign:", "wsign:"]);
 });
 
 test("the history dedupes on the handle even when written twice by hand", () => {

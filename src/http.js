@@ -1275,7 +1275,13 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
           error: `Reason has already texted ${config.ownerName} a code. Use that one, or try again in about ${Math.ceil(asked.retry_after_s / 60)} minutes.`,
         });
       }
-      if (runtime?.say) {
+      // Keyed `pcode:` on the code's own row, as event sign-in keys `esign:`: the key is what keeps a
+      // code text out of the per-message history (db.js HISTORY_EXCLUDED_KEYS) — a code is a secret,
+      // never a line in the conversation — and it is what stops a retried send texting a code twice.
+      if (runtime?._tell) {
+        Promise.resolve(runtime._tell(page.conversation_id, asked.line, { idempotencyKey: `pcode:${page.id}:${asked.id}` }))
+          .catch(e => log({ page_code_text_failed: page.id, why: (e?.message ?? String(e)).split("\n")[0] }));
+      } else if (runtime?.say) {
         try { runtime.say(page.conversation_id, asked.line); } catch (e) { log({ page_code_text_failed: page.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
       }
       log({ page_code_sent: page.id });
@@ -1470,7 +1476,11 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
         log({ ops_code_refused: asked.reason });
         return gate({ sent: true, error: `Reason has already texted ${config.ownerName} a code. Use that one, or try again in about ${Math.ceil(asked.retry_after_s / 60)} minutes.` });
       }
-      if (runtime?.say) {
+      // `pcode:` key, as above: keeps the code out of the per-message history and out of a double send.
+      if (runtime?._tell) {
+        Promise.resolve(runtime._tell(page.conversation_id, asked.line, { idempotencyKey: `pcode:${page.id}:${asked.id}` }))
+          .catch(e => log({ ops_code_text_failed: (e?.message ?? String(e)).split("\n")[0] }));
+      } else if (runtime?.say) {
         try { runtime.say(page.conversation_id, asked.line); } catch (e) { log({ ops_code_text_failed: (e?.message ?? String(e)).split("\n")[0] }); }
       }
       log({ ops_code_sent: true });

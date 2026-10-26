@@ -9468,9 +9468,10 @@ function historyOn() {
 /**
  * Messages Reason wrote that are not part of anybody's conversation: a sign-in code is a secret,
  * never shown in history (§4.3), and nothing else is excluded. Matched on the outbox key's prefix,
- * which is the one thing a code-writing caller sets on purpose.
+ * which is the one thing a code-writing caller sets on purpose: `pcode:` is a page's or /ops's gate
+ * (src/http.js), `esign:` an event sign-in (src/pages/event.js), `wsign:` Web's own (W1).
  */
-const HISTORY_EXCLUDED_KEYS = ["esign:", "wsign:"];
+export const HISTORY_EXCLUDED_KEYS = ["pcode:", "esign:", "wsign:"];
 
 /**
  * One history row. Idempotent on (conversation, channel, external_id) for a person's message and on

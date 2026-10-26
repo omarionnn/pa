@@ -137,7 +137,7 @@ export class Router {
     const account = db.getAccount(conversationId);
     if (!account) return { refused: "no_account" };
     if (!web.webAllowedFor(conversationId)) return { refused: "web_not_for_them" };
-    return { address: account.address, channel: account.channel };
+    return { conversationId, address: account.address, channel: account.channel };
   }
 
   /**
@@ -157,6 +157,11 @@ export class Router {
       }
       address = sender.address;
       admitAs = sender.channel;
+      // A web message's id is the browser's own (a UUID it made up), where a provider's handle is
+      // unique across everybody. The dedupe is UNIQUE(channel, external_id) over all conversations,
+      // so one person's id must never be able to swallow another's message as a "duplicate": it is
+      // put under their conversation here, once, before anything reads it.
+      inbound = { ...inbound, conversationId: sender.conversationId, externalId: `${sender.conversationId}:${String(inbound.externalId ?? "").trim()}` };
     }
 
     // Before anything else: is this somebody Reason works for? A number with no account never
@@ -203,7 +208,7 @@ export class Router {
     // the id from the account's channel and number, so for the same account that is the same id —
     // checked all the same, because the alternative is one person's words landing in another's
     // Reason on a bookkeeping slip, and nothing below would notice.
-    if (inbound.channel === web.WEB && conversationId !== String(inbound.conversationId)) {
+    if (inbound.channel === web.WEB && conversationId !== inbound.conversationId) {
       this.log({ inbound: inbound.externalId, web_refused: "conversation_mismatch" });
       return { ok: false, refused: "conversation_mismatch", conversationId: null };
     }
@@ -515,6 +520,17 @@ export class Router {
     const held = db.takePendingInbound(conversationId);
     if (!held.length) return null;
     const last = held[held.length - 1];
+    // Web messages held when the switch was turned off (a restart with REASON_WEB gone): there is
+    // no channel to answer them on, so a turn would be spent and its reply dropped. They go back
+    // for an hour at a time instead, and are answered if the switch comes back. Nothing is lost
+    // and nothing is said to a phone that did not ask.
+    if (last.channel === web.WEB && !web.webOn()) {
+      // Not counted as a hold against the model being down: `held_times` is that counter.
+      // (reholdInbound adds one on the way back in, so one is taken off here: the row returns as it was.)
+      const back = db.reholdInbound(held.map(r => ({ ...r, held_times: (r.held_times ?? 0) - 1 })), { readyAt: clock.now() + 60 * 60_000, downSince: null });
+      this.log({ web_held_back: conversationId, messages: held.length, until: back.readyAt });
+      return { ok: true, conversationId, messages: held.length, replied: false, webOff: true };
+    }
     // From the moment these texts are taken, a text that lands is read against them and can be
     // folded in (src/onethought.js) — while voice notes are heard and the screen runs, not only once
     // the model has started. The runtime adopts this for the turn; anything folded into a turn that
@@ -551,6 +567,19 @@ export class Router {
       const said = texts.filter(Boolean);
       const several = canPin ? replies.burstLine(said.length) : "";
       fold.text = said.join("\n");
+
+      // History, one row per message they sent — their own words as heard, with the channel each
+      // came on and when (src/web.js). Here, before any of the shortcuts below answer without a
+      // turn, so the history never shows Reason's answer with no question in front of it. Not the
+      // framing lines Reason adds for the model, which are its own.
+      for (const [i, h] of held.entries()) {
+        try {
+          db.writeMessage({
+            conversationId, role: "user", channel: h.channel, externalId: h.external_id,
+            text: texts[i] || h.text || "", media: h.attachments ?? [], at: h.arrived_at ?? clock.now(),
+          });
+        } catch { /* best-effort */ }
+      }
 
       // A text that arrives while a call is waiting for a verification answer. The call sent
       // "reply yes here and I'll [do the thing]" via the outbox, but the text handler has no call
@@ -615,16 +644,6 @@ export class Router {
         });
         db.enqueueExtraction(conversationId, evId);
       } catch { /* best-effort */ }
-      // History, one row per message they sent — their own words as heard, with the channel each
-      // came on and when (src/web.js). Not the framing lines above, which are Reason's.
-      for (const [i, h] of held.entries()) {
-        try {
-          db.writeMessage({
-            conversationId, role: "user", channel: h.channel, externalId: h.external_id,
-            text: texts[i] || h.text || "", media: h.attachments ?? [], at: h.arrived_at ?? clock.now(),
-          });
-        } catch { /* best-effort */ }
-      }
 
       try {
         reply = await this.runtime.inbound(conversationId, userText, {
