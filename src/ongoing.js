@@ -353,7 +353,8 @@ export function ongoing(conversationId, now = clock.now()) {
   const tasks = db.listTasks(conversationId).map(t => taskItem(conversationId, t, name, now));
   const timers = db.listTimers(conversationId).filter(t => !t.series_id).map(t => timerItem(conversationId, t, name));
   const standing = db.listSeries(conversationId).filter(s => s.state === "active").map(s => seriesItem(conversationId, s, name));
-  const rank = (x) => [x.needs ? 0 : 1, Number.isFinite(x.due) ? x.due : Infinity];
+  // A time already passed (a waiting check that came and went) isn't "soonest": it goes after what's upcoming.
+  const rank = (x) => [x.needs ? 0 : 1, Number.isFinite(x.due) && (x.needs || x.due > now) ? x.due : Infinity];
   const items = [...tasks, ...timers, ...standing].filter(x => x.title).sort((a, b) => {
     const [an, ad] = rank(a), [bn, bd] = rank(b);
     return an - bn || (ad === bd ? 0 : ad < bd ? -1 : 1);

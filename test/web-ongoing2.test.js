@@ -124,6 +124,16 @@ test("4b. a title is the model's: normTitle keeps it short and never lets the pe
   assert.match(it.TITLE_HINT, /Never their name/);
 });
 
+test("1b. a waiting task whose check time has passed sorts after upcoming rows, never ahead of them", () => {
+  const now = clock.now();
+  db.createTimer(C, { fireAt: now + 2 * H, note: "n", label: "Upcoming" });
+  const w = db.createTask(C, { title: "t", goal: "g", maxAttempts: 3, label: "Waiting overdue", wakeAt: now - 3 * H });
+  db.db.prepare("UPDATE tasks SET state = 'waiting' WHERE id = ?").run(w.id);
+  const n = db.createTask(C, { title: "t", goal: "g", maxAttempts: 3, label: "Needs you", wakeAt: now + 30 * H });
+  db.db.prepare("UPDATE tasks SET state = 'waiting_on_you' WHERE id = ?").run(n.id);
+  assert.deepEqual(wc.inHand(C).map(x => x.title), ["Needs you", "Upcoming", "Waiting overdue"]);
+});
+
 test("4c. timer_set and task_start take the model's title; series firings carry their series' title", async () => {
   const tools = await import("../src/tools.js");
   const find = (n) => tools.tools.find(d => d.name === n);
