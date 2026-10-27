@@ -127,7 +127,7 @@ const PAGE_JS = `(function(){var W=window,D=document;if(W.__reasonPage)return;va
   + `W.setInterval=function(){var i=si.apply(W,arguments);I.push(i);return i};W.setTimeout=function(){var t=st.apply(W,arguments);if(T.length>500)T=T.slice(-250);T.push(t);return t};`
   + `[W,D].forEach(function(o){o.addEventListener=function(t,f,c){L.push([o,t,f,c]);return ael.call(o,t,f,c)}});`
   + `if(W.EventSource){var ES=W.EventSource;W.EventSource=function(u,o){var e=new ES(u,o);E.push(e);return e};W.EventSource.prototype=ES.prototype}})();`;
-const HEAD_JS = `${PAGE_JS}(function(){try{${tint}var h=document.documentElement,a=h.getAttribute('data-account-theme');`
+const HEAD_JS = `(function(){try{${tint}var h=document.documentElement,a=h.getAttribute('data-account-theme');`
   + `if(a==='paper'||a==='night')localStorage.setItem('${THEME_KEY}',a==='paper'?'light':'dark');else if(a==='auto')localStorage.removeItem('${THEME_KEY}');`
   + `var t=localStorage.getItem('${THEME_KEY}');if(t==='light'||t==='dark'){h.dataset.theme=t;tint()}h.classList.add('js');if(localStorage.getItem('${OG_KEY}')==='off')h.classList.add('og-off');`
   + `if(h.dataset.loader&&!sessionStorage.getItem('reason-web-loaded')&&!matchMedia('(prefers-reduced-motion: reduce)').matches)h.classList.add('loading')}catch(e){}})();`;
@@ -260,6 +260,7 @@ export function webPage({ title = "Reason", header = "", body = "", css = "", sc
 <meta name="theme-color" content="${TOKENS.night.ground}" data-auto="${TOKENS.night.ground}" media="(prefers-color-scheme: dark)">
 ${webIconLinks()}
 <title>${esc(title)}</title>
+<script>${PAGE_JS}</script>
 <script>${HEAD_JS}</script>
 <style>${KIT_CSS}${NOTIFY_CSS}${css}</style>
 </head><body${bodyClass ? ` class="${esc(bodyClass)}"` : ""}>${skipped.link}${loader ? `<div class="loader" role="status" aria-label="Loading"><p>reas${bubble(4)}n<span class="ing">ing</span></p></div>` : ""}
@@ -272,8 +273,7 @@ const LOAD_JS = loadJs(wordmark({ href: "/web" }));
  * The skip link (§4g): the first Tab on every page. On a page with the thread it goes to the thread
  * (`SKIP TO THE THREAD ↓`): to its newest end, at the top of the composer, so the composer is one
  * Tab after it and the page does not jump to the oldest message. Anywhere else it goes to the page's
- * main content (`SKIP TO CONTENT ↓`): a main without an id gets a focusable mark just before it (tabindex=-1,
- * so it takes focus without a ring, and out of the layout).
+ * main content (`SKIP TO CONTENT ↓`).
  */
 export function skipTo(html) {
   let out = String(html);
@@ -286,10 +286,12 @@ export function skipTo(html) {
       : out.replace('<ol class="thread"', '<ol class="thread" id="thread" tabindex="-1"');
     return { html: out, link: `<a class="skip" href="#thread">SKIP TO THE THREAD ↓</a>` };
   }
-  const main = /<main\b([^>]*)>/.exec(out);
-  if (!main) return { html: out, link: "" };
-  const id = /\sid="([^"]+)"/.exec(main[1])?.[1];
-  if (!id) out = out.replace(main[0], `<span class="skip-to" id="content" tabindex="-1"></span>${main[0]}`);
-  return { html: out, link: `<a class="skip" href="#${esc(id || "content")}">SKIP TO CONTENT ↓</a>` };
+  // Anywhere else: the main's own id, else the first id inside it (the page's headline, as a rule), which
+  // a browser starts the next Tab from; with neither, #content, which the loader's script lands on main.
+  const at = out.search(/<main\b/);
+  if (at < 0) return { html: out, link: "" };
+  const inMain = out.slice(at, out.indexOf("</main>", at) >>> 0);
+  const id = /^<main\b[^>]*\sid="([^"]+)"/.exec(inMain)?.[1] ?? /\sid="([^"]+)"/.exec(inMain)?.[1] ?? "content";
+  return { html: out, link: `<a class="skip" href="#${esc(id)}">SKIP TO CONTENT ↓</a>` };
 }
 

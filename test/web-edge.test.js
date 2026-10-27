@@ -174,7 +174,7 @@ test("L3–L5: the loading kit is on every Web page; ruled lines in border colou
   assert.match(js, /P\.end\(\);code\.forEach/);
   assert.match(js, /P\.on\(document,'click'/);
   const page = ws.renderSignin({ joinNumber: LINE, formToken: "t" });
-  assert.ok(page.indexOf("W.__reasonPage={") < page.indexOf("<style>"), "noted from the first script in the head");
+  assert.ok(page.indexOf("<script>(function(){var W=window,D=document;if(W.__reasonPage)return;") < page.indexOf("<style>"), "noted from the first script in the head, its own script");
   assert.match(page, /W\.setInterval=function\(\)\{var i=si\.apply\(W,arguments\);I\.push\(i\)/);
   assert.match(page, /W\.EventSource=function\(u,o\)\{var e=new ES\(u,o\);E\.push\(e\)/);
   // Back to a kept sign-in page mid-send: the sign-in again by GET, never a re-POST.
@@ -215,9 +215,12 @@ test("F1: the skip link is the first thing in every page; the thread's lands at 
   const order = ["<header class=\"top\"", "<ol class=\"thread\"", "<div class=\"composer\"", "<aside class=\"og\"", "<nav class=\"tabs\""].map(t => thread.indexOf(t));
   assert.ok(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])), `reading order ${order}`);
   const signin = ws.renderSignin({ joinNumber: LINE, formToken: "t" });
-  assert.match(signin, /<body><a class="skip" href="#content">SKIP TO CONTENT ↓<\/a>/);
-  assert.match(signin, /<span class="skip-to" id="content" tabindex="-1"><\/span><main class="so">/);
-  assert.deepEqual(kit.skipTo('<main id="m">x</main>'), { html: '<main id="m">x</main>', link: '<a class="skip" href="#m">SKIP TO CONTENT ↓</a>' });
+  // Elsewhere: to the page's headline (the first id in main), which the next Tab starts from; the page is untouched.
+  assert.match(signin, /<body><a class="skip" href="#so-title">SKIP TO CONTENT ↓<\/a>/);
+  assert.doesNotMatch(signin, /class="skip-to"/);
+  assert.deepEqual(kit.skipTo('<main id="m"><h1 id="h">x</h1></main>'), { html: '<main id="m"><h1 id="h">x</h1></main>', link: '<a class="skip" href="#m">SKIP TO CONTENT ↓</a>' });
+  assert.equal(kit.skipTo("<main><p>no ids</p></main>").link, '<a class="skip" href="#content">SKIP TO CONTENT ↓</a>', "the loader's script lands that one on main");
+  assert.match(load.loadJs(""), /closest\('a\.skip\[href="#content"\]'\)/);
   assert.deepEqual(kit.skipTo("<div>no main</div>"), { html: "<div>no main</div>", link: "" });
   assert.match(kit.KIT_CSS, /\.skip-to\{position:absolute;width:1px;height:1px;overflow:hidden\}/);
 });

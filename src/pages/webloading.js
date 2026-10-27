@@ -77,7 +77,7 @@ function groups(){var og=document.getElementById('og'),out=[];
 if(og)og.querySelectorAll('.og-sec').forEach(function(s){var h=s.querySelector('h2,h3');if(!h)return;out.push({t:h.textContent,pen:h.classList.contains('pen'),cards:s.querySelectorAll('.appr,.og-vc').length,rows:s.querySelectorAll('.og-row,.ogv').length})});
 if(!og&&document.querySelector('.appr,.og-vc'))out.push({t:'NEEDS YOU',pen:true,cards:1,rows:0});
 if(!og)out.push({t:'IN HAND',pen:false,cards:0,rows:3});return out}
-var STATE={approval:'NEEDS YOUR APPROVAL',working:'WORKING ON IT',needs:'WAITING ON YOU',stuck:'STUCK',ready:'READY',failed:"DIDN'T WORK",scheduled:'SCHEDULED'};
+var STATE={approval:'NEEDS YOUR APPROVAL',working:'WORKING ON IT',stuck:'STUCK',ready:'READY',failed:"DIDN'T WORK",scheduled:'SCHEDULED'};
 // What a row link says about the page it opens: its status, and its title.
 function known(a){var card=a.closest('.appr,.og-vc'),row=a.closest('[data-state]')||a,t='',s='',pen=false;
 if(card){var at=card.querySelector('.appr-t,.ogv-t');t=at?at.textContent:'';s=STATE.approval;pen=true}
@@ -129,5 +129,7 @@ P.on(document,'click',function(e){if(e.defaultPrevented||e.button!==0||e.metaKey
 var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(!a||a.target||a.hasAttribute('download')||a.getAttribute('aria-current')==='page')return;
 var k=kindOf(a);if(!k)return;e.preventDefault();go(a,k)});
 // Back and forward: the page for that address, drawn by the server. A fragment (the skip link) is not a page.
+// The skip link to a page's content when the page gave its main nothing to land on: focus the main itself.
+P.on(document,'click',function(e){var a=e.target&&e.target.closest?e.target.closest('a.skip[href="#content"]'):null;if(!a||document.getElementById('content'))return;var m=document.querySelector('main');if(!m)return;e.preventDefault();if(!m.hasAttribute('tabindex'))m.setAttribute('tabindex','-1');m.focus()});
 P.on(window,'popstate',function(){if(location.pathname+location.search!==shown)location.replace(location.href)});
 window.reasonLoad={go:go,kindOf:kindOf}})();`;
