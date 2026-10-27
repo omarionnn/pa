@@ -315,3 +315,53 @@ test("10. 9D: the session runs out mid-task — the real card, faded, read off t
   // The chat's own approval card now has somewhere to review it.
   assert.match(s, new RegExp(`<a class="appr-go" href="/web/ongoing/approval/${ids.approval}">Review details`));
 });
+
+test("11. live (owner 10-26 D5): the margin, the rail's ONGOING · N and the tab count follow the list without a reload", () => {
+  seedOngoing(C);
+  const me = browser(C);
+  const state = (query) => JSON.parse(page.ongoingRequest({ kind: "state", method: "GET", headers: { host: "heyreason.test", cookie: me }, query }).body);
+  // The page carries the tag of the margin it drew; asking with it brings no html back.
+  const m = og.ongoing(C);
+  const s = wc.renderConversation({ account: { conversation_id: C, name: "Omari" }, csrf: "c", lines: [], more: false, sendId: "s", ...m });
+  const v = /ogv:"([^"]+)"/.exec(s)[1];
+  assert.deepEqual(state({ draw: "margin", v }), { ok: true, count: 7, needs: 1, v });
+  // Something new lands: a new tag, the margin's html, and the new count.
+  db.createTimer(C, { fireAt: clock.now() + 60 * 60_000, note: "n", label: "Call the dentist" });
+  const j = state({ draw: "margin", v });
+  assert.notEqual(j.v, v);
+  assert.equal(j.count, 8);
+  assert.match(j.html, /^<aside class="og og-vol" id="og" aria-label="Ongoing">/);
+  assert.match(j.html, /Call the dentist/);
+  assert.equal(j.html, page.ogMargin(og.ongoing(C)));
+  // Without draw the answer is the old small one (the detail pages' sign-out check).
+  assert.deepEqual(state({}), { ok: true, count: 8, needs: 1 });
+  // The client: asked for beside every poll and stream event (and every 15 s), swapped in place keeping
+  // never while focus is inside it; the rail and the tab's badge recounted; HIDE delegated (See all is a link since #191).
+  assert.match(s, /\(j\.messages\|\|\[\]\)\.forEach\(add\);settleIn\(j\.settled\);ogLook\(\)/);
+  assert.match(s, /es\.addEventListener\('message',function\(e\)\{[^}]*\}catch\(x\)\{\}ogLook\(\)\}\)/);
+  assert.match(s, /setInterval\(ogLook,15000\)/);
+  assert.match(s, /fetch\('\/web\/ongoing\/state\?draw=margin&v='\+encodeURIComponent\(R\.ogv\)/);
+  assert.match(s, /if\(o2&&o2\.contains\(document\.activeElement\)\)return/);
+  assert.match(s, /s\.textContent='ONGOING'\+\(n\?' \\u00b7 '\+n:''\)/);
+  assert.match(s, /document\.addEventListener\('click',function\(e\)\{var o=ogEl\(\)/);
+  // The page's script still parses.
+  for (const js of s.match(/<script[^>]*>([\s\S]*?)<\/script>/g).map(t => t.replace(/^<script[^>]*>|<\/script>$/g, ""))) assert.doesNotThrow(() => new Function(js));
+});
+
+test("12. live on the phone's Ongoing tab: the list and the tab's count follow without a reload", () => {
+  seedOngoing(C);
+  const me = browser(C);
+  const state = (query) => JSON.parse(page.ongoingRequest({ kind: "state", method: "GET", headers: { host: "heyreason.test", cookie: me }, query }).body);
+  const s = wc.renderOngoing({ csrf: "c", ...og.ongoing(C) });
+  const v = /REASON_OG=\{v:"([^"]+)"\}/.exec(s)[1];
+  assert.equal(v, page.ogVersion(page.ogTabMain(og.ongoing(C))));
+  assert.deepEqual(state({ draw: "tab", v }), { ok: true, count: 7, needs: 1, v });
+  db.createTimer(C, { fireAt: clock.now() + 60 * 60_000, note: "n", label: "Call the dentist" });
+  const j = state({ draw: "tab", v });
+  assert.notEqual(j.v, v);
+  assert.equal(j.count, 8);
+  assert.match(j.html, /^<main class="og-list"><h1 class="h1">Ongoing<\/h1>[^]*Call the dentist[^]*<\/main>$/);
+  assert.match(s, /fetch\('\/web\/ongoing\/state\?draw=tab&v='\+encodeURIComponent\(v\)/);
+  assert.match(s, /if\(!m\|\|m\.contains\(document\.activeElement\)\)return/);
+  for (const js of s.match(/<script[^>]*>([\s\S]*?)<\/script>/g).map(t => t.replace(/^<script[^>]*>|<\/script>$/g, ""))) assert.doesNotThrow(() => new Function(js));
+});

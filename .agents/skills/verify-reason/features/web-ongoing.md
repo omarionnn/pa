@@ -31,6 +31,21 @@ handoff 2026-10-26, "3 · Ongoing", sheets 2/3, 9D). Model: `src/ongoing.js` (`o
 - **Home (SR7).** The approval card stays on paper; ALREADY IN HAND = top 3 `vRow`s in
   `.home-l` (dashed rule above and below, dashed between), then "See all N →" to the tab.
 
+## Live, no reload (owner 10-26 D5) + overdue sort (D6)
+
+- **D6.** `src/ongoing.js` rank: needs-you first, then soonest *upcoming*; a waiting check whose time
+  already passed sorts after upcoming rows (pinned: web-ongoing2 1b).
+- **D5 desktop.** The thread boots with `REASON_WEB.ogv` (`ogVersion(ogMargin(model))`); `ogLook()` asks
+  `/web/ongoing/state?draw=margin&v=<tag>` beside every poll, stream message/typing/state event and every
+  15 s; html comes back only when the tag changed; swapped in place (never while focus is inside), the
+  rail `ONGOING · N` and the tab badge recounted. HIDE is delegated so a redrawn margin keeps working.
+- **D5 phone tab.** `renderOngoing` draws `ogTabMain(model)` + `REASON_OG.v`; `OG_TAB_LIVE_JS` asks
+  `?draw=tab&v=` every 15 s / on visibility, swaps `<main>` (never under focus), recounts the badge.
+- Without `draw`, `/web/ongoing/state` is the old `{ok,count,needs}` (9D's sign-out check).
+- Drive: `bin/web-ongoing-live-drive.mjs` (caged env, temp DB, headless Chromium): adds a timer while
+  the thread (1280) and the tab (390) are open; both follow within ~15 s, same URL, HIDE still works,
+  0 page errors. Tests: web-ongoing 11 (margin) and 12 (tab).
+
 ## Sub-features
 
 - **Groups.** NEEDS YOU = unanswered `confirmations` from the last 24 h (paper card, NOTHING

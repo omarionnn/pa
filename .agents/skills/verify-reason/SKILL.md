@@ -643,7 +643,7 @@ Reason Web thread scrolling (S2 note, S3 DONE lines, TODAY ↓, L1/L2/L10, SR4):
 
 Reason Web Saved (phone tab S-A/S-B, desktop list + opened page, pin/remove): [features/web-saved.md](features/web-saved.md).
 Reason Web Ongoing (tab, margin, at volume + See all 2A–2C, home rows, details 2A–2E + approval, 9D): [features/web-ongoing.md](features/web-ongoing.md);
-`bin/web-ongoing-preview.mjs` draws every state beside the handoff's reference pages.
+`bin/web-ongoing-preview.mjs` draws every state beside the handoff's reference pages. `bin/web-ongoing-live-drive.mjs` proves D5 (margin, rail, tab badge and the phone tab follow live).
 Reason Web v2 edge (body=hey + hint, code-error pen, loading L3–L7, E1 404, E5 maintenance switch, keyboard
 focus F1): [features/web-edge.md](features/web-edge.md); driven in Chromium by `test/web-edge-browser.test.js`.
 
