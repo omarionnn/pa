@@ -74,7 +74,7 @@ const endTurn = () => ev({ type: "message_delta", delta: { stop_reason: "end_tur
 const settle = () => new Promise(r => setTimeout(r, 15));
 
 /** A drafter whose shown pieces are collected; `check` decides the said check. */
-function drafter({ check = async () => ({ ok: true }), conversationId = KOFI_C } = {}) {
+function drafter({ check = async () => ({ ok: true }), conversationId = `dm:unit:${Math.random()}` } = {}) {
   const shown = [], checked = [];
   const d = wd.startDraft({ conversationId, check: async (a) => { checked.push(a.draft); return check(a); }, emit: (e) => shown.push(e.text) });
   return { d, shown, checked };
@@ -277,6 +277,7 @@ test("switch on for this person: the reply grows in their tab as a Reason line, 
   assert.ok(saved >= 0 && cleared > saved, "the saved reply lands before the draft is cleared");
   assert.equal(evs[saved].data.text, reply);
   assert.ok(!other.events().some(e => e.event === "draft"), "nobody else's tab hears it");
+  assert.equal(wd.draftNow(KOFI_C), null, "nothing left to replay once the turn is over");
   s.close(); other.close();
 });
 
@@ -315,4 +316,28 @@ test("iMessage is never streamed, even with the switch on for everyone", async (
   await h.router.deliver({ channel: "fake", externalId: "im-1", from: KOFI, text: "you there?", chatId: null, at: clock.now() });
   assert.ok(await until(() => h.turns.length === 1));
   assert.equal(h.turns[0].draft, undefined);
+});
+
+test("a tab whose stream reconnects mid-turn gets the draft as it stands, at once", async () => {
+  process.env.REASON_WEB_DRAFTS = "on";
+  let release;
+  const hold = new Promise(r => { release = r; });
+  const h = harness(async ({ draft }) => {
+    draft.feed(start()); draft.feed(words("you're all set for tomorrow. the table "));
+    await hold;
+    draft.feed(words("is under your name.")); draft.feed(endTurn());
+    await new Promise(r => setTimeout(r, 10));
+    return "you're all set for tomorrow. the table is under your name.";
+  });
+  const b = browser(KOFI_C);
+  const first = openStream(h, b);
+  await send(h, b, { id: "w-re-00001", text: "am i set?" });
+  assert.ok(await until(() => first.events().some(e => e.event === "draft" && e.data.html)));
+  first.close();
+  const again = openStream(h, b);
+  const d = again.events().find(e => e.event === "draft");
+  assert.ok(d && /all set for tomorrow\./.test(d.data.html), "the reconnected tab has the draft without waiting for the next piece");
+  release();
+  assert.ok(await until(() => again.events().some(e => e.event === "draft" && e.data.html === null)));
+  again.close();
 });

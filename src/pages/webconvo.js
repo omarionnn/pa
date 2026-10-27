@@ -47,7 +47,7 @@ import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot
 import { prepareSend } from "../webmedia.js";
 import * as settle from "../settle.js";
 import { doingFor, doingEvents } from "../doing.js";
-import { draftEvents } from "../webdraft.js";
+import { draftEvents, draftNow } from "../webdraft.js";
 import { dailyAllowedFor } from "../dailyflag.js";
 import * as daily from "../daily.js";
 import { renderDaily } from "./webdaily.js";
@@ -1315,6 +1315,8 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
       draftEvents.on("draft", onDraft);
       // A tab that opens (or comes back) mid-turn hears what Reason is doing now, not only at the next change.
       if (doingFor(conv)) onDoing(conv);
+      // Same for a reply being written: a stream that cycled mid-turn picks the draft up where it is.
+      if (draftNow(conv)) onDraft({ conversationId: conv, text: draftNow(conv) });
       try { flush(); pushState(); } catch (e) { log({ web_stream_failed: (e?.message ?? String(e)).split("\n")[0] }); end("failed"); }
     },
   };

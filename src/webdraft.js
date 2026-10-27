@@ -36,6 +36,11 @@ import { checkDraft } from "./said.js";
 export const draftEvents = new EventEmitter();
 draftEvents.setMaxListeners(0);
 
+/** What each conversation's tab is showing now, so a tab whose stream reconnects mid-turn gets it at once. */
+const showing = new Map();
+export const draftNow = (conversationId) => showing.get(conversationId) ?? null;
+
+
 /**
  * Is streaming on for this conversation? REASON_WEB_DRAFTS: unset/"0"/"off" → never (prod today);
  * "1"/"on"/"all" → every conversation; anything else → a comma-separated list of conversation ids.
@@ -109,7 +114,11 @@ export function startDraft({ conversationId, log = () => {}, check = checkDraft,
     if (!checks.has(text)) checks.set(text, Promise.resolve().then(() => check({ conversationId, draft: text, log })).catch(() => ({ ok: true })));
     return checks.get(text);
   };
-  const show = (text) => { shown = text ?? ""; emit({ conversationId, text }); };
+  const show = (text) => {
+    shown = text ?? "";
+    if (text) showing.set(conversationId, text); else showing.delete(conversationId);
+    emit({ conversationId, text });
+  };
   const takeBack = () => { if (shown) show(null); shownFrom = -1; };
   const stop = (why) => { if (stopped) return; stopped = true; takeBack(); log({ web_draft_stopped: why, conversation: conversationId }); };
 
