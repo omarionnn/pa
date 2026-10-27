@@ -279,7 +279,7 @@ f.addEventListener('load',function(){fit();setTimeout(fit,400);setTimeout(fit,15
 
 function topHtml() {
   const a = (href, t, cur) => `<a href="${href}"${cur ? ` aria-current="page"` : ""}>${t}</a>`;
-  return `<header class="sv-top">${wordmark({ href: "/web" })}<nav aria-label="Account">${a("/web?thread", "CHAT")}${a("/web/saved", "SAVED", true)}${a("/web/memory", "MEMORY")}${a("/web/settings", "SETTINGS")}</nav></header>`;
+  return `<header class="sv-top">${wordmark({ href: "/web?home" })}<nav aria-label="Account">${a("/web?thread", "CHAT")}${a("/web/saved", "SAVED", true)}${a("/web/memory", "MEMORY")}${a("/web/settings", "SETTINGS")}</nav></header>`;
 }
 
 /**

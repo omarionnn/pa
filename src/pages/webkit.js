@@ -279,7 +279,7 @@ ${webIconLinks()}
 ${skipped.html}${footer}<script>${script};${THEME_JS};${NOTIFY_JS};${LOAD_JS}</script></body></html>`;
 }
 
-const LOAD_JS = loadJs(wordmark({ href: "/web" }));
+const LOAD_JS = loadJs(wordmark({ href: "/web?home" }));
 
 /**
  * The skip link (§4g): the first Tab on every page. On a page with the thread it goes to the thread

@@ -563,7 +563,7 @@ const signOutForm = (csrf, cls = "act2") => `<form method="POST" action="/web/si
 
 /** The top of every signed-in screen: the wordmark home; MEMORY and SETTINGS on desktop; a menu on phones. */
 function topBar({ csrf, extra = "", where = "" }) {
-  return `<header class="top">${wordmark({ href: "/web" })}${where}`
+  return `<header class="top">${wordmark({ href: "/web?home" })}${where}`
     + `<nav aria-label="Account">${extra}${typed("SAVED", { href: "/web/saved" })}${typed("MEMORY", { href: "/web/memory" })}${typed("SETTINGS", { href: "/web/settings" })}</nav>`
     + `<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">${MENU_SVG}</button></header>`
     + `<div class="menu" id="menu" hidden role="dialog" aria-modal="true" aria-label="Menu"><div class="menu-h">${wordmark()}<button class="act2 menu-x" type="button">CLOSE</button></div>`
@@ -869,7 +869,7 @@ export function chatFrom(conv, raw) {
 
 /** 5C, shown once: the same Reason, and what stays where. */
 export function renderFirstVisit() {
-  const body = `<header class="top">${wordmark({ href: "/web" })}</header><main class="solo" aria-labelledby="fv-h">`
+  const body = `<header class="top">${wordmark({ href: "/web?home" })}</header><main class="solo" aria-labelledby="fv-h">`
     + `<h1 id="fv-h" class="h1">${esc(BOUNDARY.title)}<br><em>${esc(BOUNDARY.titleEm)}</em></h1>`
     + `<p class="body">${esc(BOUNDARY.body)}</p>${hand(BOUNDARY.note, { tilt: true })}${action("Got it", { href: "/web?home" })}</main>`;
   return webPage({ title: "Reason", body, css: CSS });
@@ -902,7 +902,7 @@ export function soonPage({ which, account, headers }) {
 
 /** 9B: something went wrong. Nothing was lost. Drawn by src/http.js when a Web request throws. */
 export function renderError() {
-  const body = `<header class="top">${wordmark({ href: "/web" })}</header><main class="solo" aria-labelledby="er-h">`
+  const body = `<header class="top">${wordmark({ href: "/web?home" })}</header><main class="solo" aria-labelledby="er-h">`
     + `<h1 id="er-h" class="h1">Something went wrong.<br><em>Nothing was lost.</em></h1>`
     + `<p class="quiet">Your messages and anything I'm working on are safe.</p>${action("Try again", { href: "/web" })}</main>`;
   return webPage({ title: "Reason", body, css: CSS });

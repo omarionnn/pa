@@ -215,6 +215,7 @@ a.iv-link{text-decoration:none}
 .st-nav a{min-height:44px;display:inline-flex;align-items:center;text-decoration:none;font:400 12px/1.3 var(--mono);letter-spacing:.14em;color:var(--muted)}
 .st-nav a[aria-current]{color:var(--ink)}
 .st-nav a[aria-current]::before{content:"\\2192\\00a0"}
+@media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
 .st-main{flex:999 1 520px;gap:56px;padding-top:8px}
 .st-sec{gap:16px;padding-bottom:48px}
 .st-sec h2{font-size:12px}
@@ -255,7 +256,10 @@ a.iv-link{text-decoration:none}
 `;
 
 // The theme switches in place (kit window.reasonTheme, which also saves it for every browser), the
-// radio group moves by arrow keys, and the index marks the section last jumped to. An action's words
+// radio group moves by arrow keys, and the index's → follows the section in view (it used to follow only
+// the hash, so a page reached at #invites kept → INVITES however far you scrolled), held on a jumped-to
+// section until the reader scrolls themselves. The line a section must cross sits 30% down and slides
+// to the bottom over the last stretch of the page, so short sections at the end each get their turn. An action's words
 // turn present tense, muted, and it can't be pressed twice (§4d L8). 5A's sentence follows the
 // choice; 5D copies and shares the link; 8C asks the browser before it saves anything. All of it over
 // forms that already work without script, and nothing drawn that can't work (no dead controls).
@@ -263,8 +267,16 @@ const JS = `(function(){var g=document.querySelector('.th-g'),H=document.documen
 function mark(){var t=H.dataset.theme,cur=t==='light'?'paper':t==='dark'?'night':'auto';g.querySelectorAll('button').forEach(function(b){b.setAttribute('aria-checked',String(b.value===cur));b.tabIndex=b.value===cur?0:-1})}
 if(g){mark();g.addEventListener('click',function(e){var b=e.target.closest('button');if(!b||!window.reasonTheme)return;e.preventDefault();window.reasonTheme(b.value);mark();b.focus()});
 g.addEventListener('keydown',function(e){var k=e.key,bs=[].slice.call(g.querySelectorAll('button')),i=bs.indexOf(document.activeElement);if(i<0)return;var n=k==='ArrowRight'||k==='ArrowDown'?(i+1)%bs.length:k==='ArrowLeft'||k==='ArrowUp'?(i+bs.length-1)%bs.length:-1;if(n<0)return;e.preventDefault();bs[n].click()})}
-var nav=document.querySelectorAll('.st-nav a');function cur(){var h=location.hash||'#reach';nav.forEach(function(a){if(a.getAttribute('href')===h)a.setAttribute('aria-current','true');else a.removeAttribute('aria-current')})}
-window.addEventListener('hashchange',cur);if(location.hash)cur();
+var nav=[].slice.call(document.querySelectorAll('.st-nav a')),secs=nav.map(function(a){return document.getElementById(a.getAttribute('href').slice(1))}).filter(Boolean),held=null;
+function cur(id){nav.forEach(function(a){if(a.getAttribute('href')==='#'+id)a.setAttribute('aria-current','true');else a.removeAttribute('aria-current')})}
+function left(){return document.documentElement.scrollHeight-innerHeight-scrollY}
+function spy(){if(held||!secs.length)return;var band=innerHeight*.7,line=innerHeight-band*Math.min(1,Math.max(0,left())/band),id=secs[0].id;secs.forEach(function(s){if(s.getBoundingClientRect().top<line+1)id=s.id});cur(id)}
+function hold(){var s=secs.filter(function(s){return '#'+s.id===location.hash})[0];if(s){held=s.id;cur(s.id)}}
+function free(){if(held){held=null;spy()}}
+if(secs.length){hold();window.addEventListener('hashchange',hold);nav.forEach(function(a){a.addEventListener('click',function(){held=a.getAttribute('href').slice(1);cur(held)})});
+['wheel','touchstart','keydown','mousedown'].forEach(function(t){window.addEventListener(t,free,{passive:true})});
+var io=window.IntersectionObserver&&new IntersectionObserver(spy,{rootMargin:'0px 0px -70% 0px'});if(io)secs.forEach(function(s){io.observe(s)});
+window.addEventListener('scroll',function(){if(!io||left()<innerHeight*.7)spy()},{passive:true})}
 function busy(b,on){if(!b)return;if(on){b.dataset.was=b.innerHTML;if(b.dataset.busy)b.textContent=b.dataset.busy;b.setAttribute('aria-disabled','true');b.classList.add('busy')}else if(b.dataset.was!=null){b.innerHTML=b.dataset.was;b.removeAttribute('aria-disabled');b.classList.remove('busy')}}
 document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(e){if(f.dataset.sent){e.preventDefault();return}f.dataset.sent='1';busy(e.submitter||f.querySelector('[type=submit]'),true)})});
 window.addEventListener('pageshow',function(e){if(!e.persisted)return;document.querySelectorAll('form[data-sent]').forEach(function(f){delete f.dataset.sent;f.querySelectorAll('.busy').forEach(function(b){busy(b,false)})})});
@@ -387,7 +399,7 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
     + `<form method="POST" action="/web/signout" class="out-f">${hidden("c", csrf)}<button class="act2 out" type="submit" data-busy="SIGNING OUT…">SIGN OUT OF THIS BROWSER</button></form></section>`;
 
   const shown = SECTIONS.filter(([id]) => id !== "invites" || invitesView);
-  const body = `<header class="st-head"><a class="act2" href="/web?thread">← BACK TO THE CHAT</a>${wordmark({ href: "/web" })}</header>`
+  const body = `<header class="st-head"><a class="act2" href="/web?thread">← BACK TO THE CHAT</a>${wordmark({ href: "/web?home" })}</header>`
     + `<main class="st"><div class="st-side"><h1 class="st-h1">Settings</h1><nav class="st-nav" aria-label="Settings sections">`
     + shown.map(([id, t], i) => `<a href="#${id}"${i === 0 ? ` aria-current="true"` : ""}>${t}</a>`).join("")
     + `</nav></div><div class="st-main">${reachSec}${browsersSec}${notifySec}${connectedSec}${invitesSec}${themeSec}</div></main>`;

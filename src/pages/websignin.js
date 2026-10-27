@@ -233,8 +233,8 @@ export const smsHref = (n) => `sms:${normalizeNumber(n)}&body=${encodeURICompone
 /** The QR for that tap, in the paper's own two inks. Dark on light in both themes, so a phone can read it. */
 const qr = (n, cls = "qr") => `<figure class="${cls}">${qrSvg(smsHref(n), { label: "QR code to text Reason", size: 150 }).replace('fill="#fff"', 'fill="#ede5d8"').replace('fill="#000"', 'fill="#2a2520"')}`
   + `<figcaption><span class="on-phone">On a laptop? Scan</span><span class="on-desk">Scan with your phone</span></figcaption></figure>`;
-const backHead = (text, href) => `<header class="so-head"><span class="so-wm">${wordmark({ href: "/web" })}</span>${typed(text, { href })}</header>`;
-const markHead = () => `<header class="so-head">${wordmark({ href: "/web" })}</header>`;
+const backHead = (text, href) => `<header class="so-head"><span class="so-wm">${wordmark({ href: "/web?home" })}</span>${typed(text, { href })}</header>`;
+const markHead = () => `<header class="so-head">${wordmark({ href: "/web?home" })}</header>`;
 /** Mm:ss, for TRY AGAIN IN. */
 export const clockLeft = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 const waitLine = (ms) => `<p class="so-wait" data-left="${Math.max(0, Math.round(ms))}">TRY AGAIN IN <span class="left">${clockLeft(ms)}</span></p>`;
