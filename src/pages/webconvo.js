@@ -39,7 +39,7 @@ import { WEB, webStreamOrigin, siteOrigin } from "../web.js";
 import { config, clock } from "../config.js";
 import { esc } from "./render.js";
 import { readCookie } from "./access.js";
-import { ongoing, findItem, draftFor, approvals as pendingApprovals } from "../ongoing.js";
+import { ongoing, findItem, itemRecord, speakFirstPrompt, approvals as pendingApprovals } from "../ongoing.js";
 import { ogMargin, ogVersion, ogTabMain, OG_TAB_LIVE_JS, homeRows, needsYes, countLine, OG_CSS, NINE_D_JS, NINE_D_CSS, OG_POLL_JS } from "./webongoing.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting } from "./websignin.js";
 import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch, bubble, OG_KEY } from "./webkit.js";
@@ -580,8 +580,8 @@ export function tabBar(current, count) {
 
 /** The one-line composer. `sendId` makes even a no-script post one turn however often it is resent. */
 // `+` and the mic (composer 01–04, Listening) are drawn and run by src/pages/webcompose.js.
-function composer({ csrf, sendId, slot = "", draft = "", chat = "" }) {
-  return composerHtml({ csrf, sendId, maxText: MAX_TEXT, slot, draft, chat });
+function composer({ csrf, sendId, slot = "", chat = "" }) {
+  return composerHtml({ csrf, sendId, maxText: MAX_TEXT, slot, chat });
 }
 
 /** How many Ongoing rows show before "See all N →" (owner, 10-26): needs-you first, then soonest due. */
@@ -681,6 +681,12 @@ fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Typ
 .catch(function(){if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
 function post(p,li){keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));send(p,li||pendingLine(p))}
 R.api={uid:uid,post:post,pendingLine:pendingLine,state:state};
+// Which Web chat this tab is in, for an Ongoing detail opened from it (src/pages/webongoing.js); the shared thread clears it.
+try{if(R.chat)sessionStorage.setItem('reason-web-chat',R.chat);else sessionStorage.removeItem('reason-web-chat')}catch(x){}
+// An Ongoing detail's "… in the chat →": Reason speaks first about that row. The click id rides with it, so a
+// refresh before this line ran or a second tap is the same message (the server's claim), never two.
+if(R.ab&&R.ak){try{history.replaceState(null,'',R.chat?'/web?chat='+encodeURIComponent(R.chat):'/web?thread')}catch(x){}
+fetch('/web/about',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({about:R.ab,k:R.ak,c:R.c,chat:R.chat||''})}).then(function(r){return r.json()}).then(function(j){if(j&&j.ok&&!j.duplicate){waiting++;working(true)}poll()}).catch(function(){})}
 // Whatever this tab had not yet seen sent when it was opened (a reload mid-send, or a message from the
 // arrival) is shown at once and sent again under the SAME id once the thread is here, which the
 // server's claim turns into nothing if it already arrived.
@@ -759,12 +765,12 @@ export function streamPath() {
   return origin ? `${origin}/web/live` : "/web/stream";
 }
 
-function boot({ csrf, lines = [], more = false, conversationId = "", deferred = false, og = "", chat = "" }) {
+function boot({ csrf, lines = [], more = false, conversationId = "", deferred = false, og = "", chat = "", about = null }) {
   // `k` keys this tab's unsent messages to ONE conversation (and one Web chat): a tab later signed in as somebody else never resends them.
   const k = createHash("sha256").update(`pending:${conversationId}${chat ? `#${chat}` : ""}`).digest("base64url").slice(0, 12);
   // A deferred page (L1) learns first/last from its first /web/history; until then it polls nothing.
   const first = deferred ? 0 : lines[0]?.id ?? 0, last = deferred ? 0 : lines.reduce((n, m) => Math.max(n, m.id), 0);
-  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},k:${JSON.stringify(k)},stream:${JSON.stringify(streamPath())},defer:${deferred ? "true" : "false"},ph:${JSON.stringify(PLACEHOLDER)},finding:${JSON.stringify(FINDING)},ogv:${JSON.stringify(String(og))},chat:${JSON.stringify(String(chat))}};`;
+  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},k:${JSON.stringify(k)},stream:${JSON.stringify(streamPath())},defer:${deferred ? "true" : "false"},ph:${JSON.stringify(PLACEHOLDER)},finding:${JSON.stringify(FINDING)},ogv:${JSON.stringify(String(og))},chat:${JSON.stringify(String(chat))},ab:${JSON.stringify(about?.key ?? "")},ak:${JSON.stringify(about?.k ?? "")}};`;
 }
 
 const NET = `<p class="netline" role="status" hidden></p>`;
@@ -772,7 +778,7 @@ const NET = `<p class="netline" role="status" hidden></p>`;
 /**
  * The thread. `firstVisit` draws 5C in its place (once); `approvals` the one loud thing at the foot.
  */
-export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), found = null, deferred = false, work = null, draft = "", chat = "" }) {
+export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), found = null, deferred = false, work = null, chat = "", about = null }) {
   if (firstVisit) return renderFirstVisit({ account });
   const conv = account?.conversation_id ?? "";
   const service = serviceOf(conv);
@@ -800,13 +806,13 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     + (lines.length || chat ? "" : `<div class="empty">${hand("nothing here yet. whatever you tell me here or by text shows up in this thread.", { tilt: true })}</div>`)
     + appr + onIt(true) + longWorkHtml(work)
     + (chat ? "" : needsYes(approvals))
-    + composer({ csrf, sendId, slot: TODAY_SLOT, draft, chat })
+    + composer({ csrf, sendId, slot: TODAY_SLOT, chat })
     + `</section>${ongoingMargin(items, approvals, { back })}</main>`
     + `<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing${count ? `, ${count} ${count === 1 ? "thing" : "things"}` : ""}"><span aria-hidden="true">ONGOING${count ? ` · ${count}` : ""}</span></button>`
     + tabBar("chat", count) + listeningHtml();
   // Saved's FIND IT IN THE CHAT → (src/pages/websaved.js): the thread opened at that message, scrolled to it.
   const toFound = found ? `(function(){var e=document.getElementById('m-${Number(found)}');if(e)e.scrollIntoView({block:'center'})})();` : "";
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred, og: ogVersion(ogMargin({ items, approvals, back })), chat }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred, og: ogVersion(ogMargin({ items, approvals, back })), chat, about }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
 }
 
 /** S2: the "where you are" note, two slots that crossfade. Filled and shown by the page's script. */
@@ -851,6 +857,11 @@ export function renderHome({ account, csrf, sendId, items = [], approvals = [], 
     + tabBar("chat", items.length + approvals.length + back.length) + listeningHtml();
   return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, conversationId: account?.conversation_id, chat }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
 }
+
+const ABOUT_RE = /^(task|timer|series|approval):(\d{1,15})$/;
+const CLICK_RE = /^[A-Za-z0-9_-]{16,40}$/;
+/** `?about=<kind>:<id>&k=<click id>` from a detail's chat link, or null. Only the shape is read here; the row is looked up on the POST. */
+const aboutOf = (query) => (ABOUT_RE.test(String(query.about ?? "")) && CLICK_RE.test(String(query.k ?? "")) ? { key: String(query.about), k: String(query.k) } : null);
 
 /** A new Web chat's id, minted by the page that may start it (claimed by its first send). */
 export const newWebChatId = () => randomBytes(16).toString("base64url");
@@ -926,9 +937,7 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   if (query.chat != null) {
     const chat = chatFrom(conv, query.chat);
     if (!chat) return { status: 404, body: renderWebNotFound({ signedIn: true }) };
-    const about = /^(task|timer|series|approval):(\d{1,15})$/.exec(String(query.about ?? ""));
-    const draft = about ? draftFor(findItem(conv, about[1], about[2], now)) : "";
-    return renderConversation({ account, csrf, lines: [], more: false, sendId, items, approvals, back, now, deferred: true, work: workOf(conv), chat, draft });
+    return renderConversation({ account, csrf, lines: [], more: false, sendId, items, approvals, back, now, deferred: true, work: workOf(conv), chat, about: aboutOf(query) });
   }
   // ?at=<id> (Saved's FIND IT IN THE CHAT →): the thread around one of this conversation's own messages, drawn at once (no L1).
   const at = /^\d{1,15}$/.test(String(query.at ?? "")) ? Number(query.at) : null;
@@ -939,12 +948,10 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service, now }));
   if (found) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, found, work: workOf(conv) });
   const recentWeb = query.home == null && lines.some(m => m.web && m.role === "user" && now - m.at < THREAD_RECENT_MS);
-  // ?about=<kind>:<id> (an Ongoing detail's "Talk about it in the chat →"): the thread, with a draft about
-  // that row of THEIRS ready in the composer — never sent for them. The row is looked up in this
-  // conversation only, so no link can put somebody else's words (or a stranger's) in the line.
-  const about = /^(task|timer|series|approval):(\d{1,15})$/.exec(String(query.about ?? ""));
-  const draft = about ? draftFor(findItem(conv, about[1], about[2], now)) : "";
-  if (query.thread != null || recentWeb || about) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, deferred: true, work: workOf(conv), draft });
+  // ?about=<kind>:<id>&k=<click> (an Ongoing detail's "… in the chat →"): the thread, whose script asks
+  // Reason to speak first about that row (POST /web/about, aboutRequest below).
+  const about = aboutOf(query);
+  if (query.thread != null || recentWeb || about) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, deferred: true, work: workOf(conv), about });
   return renderHome({ account, csrf, sendId, items, approvals, back, pick: pickUp(conv, service) });
 }
 
@@ -1003,6 +1010,44 @@ function underLimit(conv, now = clock.now()) {
 }
 /** For tests. */
 export function resetSendLimits() { sends.clear(); }
+
+/**
+ * POST /web/about (owner 10-27 01:20): they tapped an Ongoing detail's "… in the chat →", and Reason
+ * speaks first about that row — one turn on the claude-cli path, its record in the prompt, the answer
+ * on Web only (the shared thread, or the Web chat it was opened from). Same-origin + the session's
+ * secret; the row is looked up in the session's own conversation (anybody else's is a 404). The click
+ * id is claimed with the row (db.claimInbound), so a refresh or a double tap posts once.
+ */
+export async function aboutRequest({ account, headers = {}, readBody, runtime, log = () => {} }) {
+  const form = new URLSearchParams((await readBody()) ?? "");
+  if (!sameOrigin(headers) || !same(headers["x-reason-csrf"] || form.get("c"), db.pageSessionCsrf(readCookie(headers.cookie)))) {
+    log({ web_about_refused: "origin_or_token" });
+    return json(403, { ok: false, error: "not_from_this_page" });
+  }
+  const m = ABOUT_RE.exec(String(form.get("about") ?? ""));
+  const k = String(form.get("k") ?? "");
+  if (!m || !CLICK_RE.test(k)) return json(400, { ok: false, error: "bad_request" });
+  const conv = account.conversation_id;
+  const chat = chatFrom(conv, form.get("chat"));
+  // A chat it speaks in must already be theirs: this never starts one.
+  if (chat == null || (chat && db.webChatOwner(chat) !== conv)) return json(404, { ok: false, error: "not_found" });
+  const item = findItem(conv, m[1], m[2]);
+  if (!item) return json(404, { ok: false, error: "not_found" });
+  if (!runtime?.event) return json(503, { ok: false, error: "unavailable" });
+  // The limit first, so a slowed-down tap is not spent: the same click can still speak once.
+  if (!underLimit(conv)) return json(429, { ok: false, error: "slow_down" });
+  if (!db.claimInbound({ channel: WEB, externalId: `${conv}:about:${m[1]}:${m[2]}:${k}`, conversationId: conv })) {
+    log({ web_about: "duplicate" });
+    return json(200, { ok: true, duplicate: true });
+  }
+  const { talkWords } = await import("./webongoing.js");
+  const text = speakFirstPrompt(itemRecord(conv, item), { link: talkWords(item.state) });
+  // The turn runs on server-side whatever happens to the tab; its one message arrives over /web/live.
+  Promise.resolve().then(() => runtime.event(conv, text, { channel: WEB, to: account.address, ...(chat ? { chatId: db.webChatRoute(chat) } : {}) }))
+    .catch((e) => log({ web_about_failed: (e?.message ?? String(e)).split("\n")[0] }));
+  log({ web_about: `${m[1]}:${m[2]}` });
+  return json(200, { ok: true });
+}
 
 /** How long a send waits to hear "refused" or "already had it" before saying "got it" and letting the turn run on. */
 export const ACK_WAIT_MS = 1500;

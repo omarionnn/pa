@@ -17,6 +17,7 @@ import * as db from "./db.js";
 import { clock, config } from "./config.js";
 import { parseRule } from "./series.js";
 import { cleanTitle, queueTitle } from "./itemtitle.js";
+import { APPROVAL_NUDGE } from "./pages/webkit.js";
 
 /** How long a closed task stays under BACK TO YOU. */
 export const BACK_WINDOW_MS = 72 * 60 * 60_000;
@@ -107,9 +108,25 @@ export function plainNote(text, { name = config.ownerName } = {}) {
   const first = /^(.{12,220}?[.!?])(\s|$)/.exec(t);
   t = first ? first[1] : t.length > 220 ? `${t.slice(0, 219).trimEnd()}…` : t;
   if (n) t = t.replace(new RegExp(`\\b${who}'s\\b`, "gi"), "your").replace(new RegExp(`\\b${who}\\b`, "gi"), "you");
+  t = tidyLine(t);
   t = t.charAt(0).toUpperCase() + t.slice(1);
   return t && !/[.!?…]$/.test(t) ? `${t}.` : t;
 }
+// Letters that stay capitals when a note shouts ("WORKED ON" reads as "worked on"; "NYC" stays).
+const KEEP_CAPS = new Set(["AM", "PM", "NYC", "LA", "SF", "DC", "US", "UK", "EU", "ID", "OK", "TV", "AI", "API", "PDF", "GPS", "DM", "ETA", "FAQ", "CEO", "IRS", "DMV", "JFK", "LGA", "EWR", "LAX", "SFO", "ATL", "ORD"]);
+/**
+ * A note made fit to show as a description (owner 10-27): no bracketed asides (where Reason keeps
+ * handles and its own reminders), no @handles, no shouting. Formatting, not meaning.
+ */
+export function tidyLine(text) {
+  return String(text ?? "")
+    .replace(/\s*\([^)]*\)/g, "").replace(/\s*\[[^\]]*\]/g, "")
+    .replace(/\s*@[A-Za-z0-9_.-]+/g, "")
+    .replace(/\b[A-Z]{2,}\b/g, (w) => (KEEP_CAPS.has(w) ? w : w.toLowerCase()))
+    .replace(/\b(github|imessage|youtube|linkedin|whatsapp|iphone)\b/gi, (w) => BRANDS[w.toLowerCase()])
+    .replace(/\s+([.,!?;:])/g, "$1").replace(/\s+/g, " ").trim();
+}
+const BRANDS = { github: "GitHub", imessage: "iMessage", youtube: "YouTube", linkedin: "LinkedIn", whatsapp: "WhatsApp", iphone: "iPhone" };
 
 // ---------------------------------------------------------------- what task_finish hands back
 const line = (v, max) => {
@@ -180,7 +197,7 @@ function chargedDuring(conversationId, from, to) {
 
 function taskItem(conversationId, t, name, now) {
   const tz = config.tz;
-  const base = { kind: "task", id: t.id, href: `/web/ongoing/task/${t.id}`, title: titled("task", conversationId, t, t.title, name), drafts: parseJson(t.drafts), task: t };
+  const base = { kind: "task", id: t.id, href: `/web/ongoing/task/${t.id}`, title: titled("task", conversationId, t, t.title, name), task: t };
   const sheet = t.sheet ?? {};
   if (t.state === "waiting_on_you") {
     const asked = sheet.needs?.asked_at ?? null;
@@ -219,7 +236,7 @@ function taskItem(conversationId, t, name, now) {
 function backItem(conversationId, t, name, now = clock.now()) {
   const res = parseJson(t.result_json) ?? {};
   const at = t.finished_at ? whenWord(t.finished_at, now) : null;
-  const base = { kind: "task", id: t.id, href: `/web/ongoing/task/${t.id}`, title: titled("task", conversationId, t, t.title, name), drafts: parseJson(t.drafts), group: "back", needs: false, due: t.finished_at, started: t.finished_at, task: t };
+  const base = { kind: "task", id: t.id, href: `/web/ongoing/task/${t.id}`, title: titled("task", conversationId, t, t.title, name), group: "back", needs: false, due: t.finished_at, started: t.finished_at, task: t };
   if (t.state === "done") {
     return { ...base, state: "ready", status: "READY", words: "done", meta: at ? `DONE · ${at}` : null,
       result: { headline: res.headline ?? null, facts: res.facts ?? [], note: res.note ?? (res.headline || res.facts?.length ? null : t.outcome || null) } };
@@ -236,11 +253,10 @@ function timerItem(conversationId, t, name) {
   return { kind: "timer", id: t.id, href: `/web/ongoing/timer/${t.id}`, group: "hand", state: "scheduled", needs: false, due: t.fire_at,
     started: t.created_at ?? null, meta: "ONCE", next_: nextWords(t.fire_at, tz),
     title: titled("timer", conversationId, t, t.note, name) || (t.call_goal ? "A call" : "A reminder"),
-    drafts: parseJson(t.drafts),
     status: t.call_goal ? "CALL" : "REMINDER", call: !!t.call_goal,
     when: `${fmt(tz, { weekday: "short" }).format(t.fire_at)} ${clockOf(t.fire_at, tz)}`,
     time: clockOf(t.fire_at, tz), period: periodOf(t.fire_at, tz), date: dayShort(t.fire_at, tz), every: null, everyLong: null,
-    description: plainNote(t.call_goal || t.note, { name }), next: t.fire_at };
+    description: t.blurb || plainNote(t.call_goal || t.note, { name }), next: t.fire_at };
 }
 
 function seriesItem(conversationId, s, name) {
@@ -252,10 +268,9 @@ function seriesItem(conversationId, s, name) {
   return { kind: "series", id: s.id, href: `/web/ongoing/series/${s.id}`, group: "hand", state: "scheduled", needs: false, due: next,
     started: s.created_at ?? null, meta: every.long || null, next_: nextWords(next, tz),
     title: titled("series", conversationId, s, s.what, name), status: every.short, call: !!s.call_goal,
-    drafts: parseJson(s.drafts),
     when: next ? `${fmt(tz, { weekday: "short" }).format(next)} ${clockOf(next, tz)}` : every.short,
     time: next ? clockOf(next, tz) : null, period: next ? periodOf(next, tz) : "", date: next ? dayShort(next, tz) : null,
-    every: every.short, everyLong: every.long, description: plainNote(s.call_goal || s.what, { name }), next };
+    every: every.short, everyLong: every.long, description: s.blurb || plainNote(s.call_goal || s.what, { name }), next };
 }
 
 // ---------------------------------------------------------------- approvals
@@ -376,27 +391,57 @@ export function ongoing(conversationId, now = clock.now()) {
   return { approvals: approvals(conversationId, now), items, back };
 }
 
+// ---------------------------------------------------------------- "… in the chat →" (owner 10-27 01:20)
 /**
- * What "Talk about it in the chat →" puts in the composer for one row (owner 10-27): a short message in
- * the person's own voice that fits the row's state. The draft the title summarise wrote for that state
- * when there is one (src/itemtitle.js); otherwise a plain one built from the row's own title. Never
- * sent for them; empty for a row that only wants their answer (NEEDS YOU: the question is theirs to answer).
+ * Everything Reason's own record holds about one row, for the turn that speaks first about it: the
+ * row as drawn, plus its database record (a task's goal, sheet, result and recent log; a reminder's
+ * note; a series' rule; an approval's ask). This conversation's rows only — `x` came from findItem.
  */
-export function draftFor(x) {
-  if (!x || x.state === "needs") return "";
-  const own = x.drafts?.[x.state];
-  if (typeof own === "string" && own.trim()) return own.trim();
-  const t = String(x.title ?? "").trim();
-  switch (x.state) {
-    case "waiting": return x.waitingOn ? `Any word back from ${x.waitingOn} yet?` : t ? `Any news on ${t}?` : "Any news?";
-    case "working": return t ? `How's ${t} going?` : "How's it going?";
-    case "stuck": return t ? `What would get ${t} going again?` : "What would get it going again?";
-    case "scheduled": return t ? `Can we change ${t}?` : "Can we change it?";
-    case "ready": return t ? `Can I see ${t}?` : "Can I see it?";
-    case "failed": return t ? `What's next for ${t}?` : "What's next?";
-    case "approval": return x.about ? `Can I see the details of ${x.about}?` : "Can I see the details first?";
-    default: return "";
+export function itemRecord(conversationId, x) {
+  const { task: _t, html: _h, ...drawn } = x ?? {};
+  const rec = { kind: x.kind, id: x.id, state: x.state, drawn };
+  if (x.kind === "task") {
+    const t = db.getTask(conversationId, x.id);
+    if (t) rec.record = { title: t.title, label: t.label, goal: t.goal, state: t.state, sheet: t.sheet ?? null, result: parseJson(t.result_json), outcome: t.outcome ?? null,
+      next_wake_at: t.next_wake_at ? new Date(t.next_wake_at).toISOString() : null, created_at: new Date(t.created_at).toISOString(),
+      log: db.taskLog(t.id, 12).map(l => ({ kind: l.kind, note: l.note, at: new Date(l.at).toISOString() })) };
+  } else if (x.kind === "timer") {
+    const t = db.getTimer(conversationId, x.id);
+    if (t) rec.record = { note: t.note, label: t.label, fire_at: new Date(t.fire_at).toISOString(), call_goal: t.call_goal ?? null, task_id: t.task_id ?? null };
+  } else if (x.kind === "series") {
+    const r = db.getSeries(conversationId, x.id);
+    if (r) rec.record = { what: r.what, label: r.label, rule: parseJson(r.rule) ?? r.rule, tz: r.tz, call_goal: r.call_goal ?? null, state: r.state };
+  } else if (x.kind === "approval") {
+    const c = db.getConfirmation(conversationId, x.id);
+    if (c) rec.record = { action: c.action, summary: c.summary, stakes: c.stakes, target: c.target, amount_cents: c.amount_cents ?? null, asked_at: new Date(c.asked_at).toISOString() };
   }
+  return rec;
+}
+
+/** Which moves fit each state: things Reason can really do with its own tools. */
+const SPEAK_FIRST = {
+  scheduled: "Offer to change it: move the time, change which days or how often, pause it, or stop it. Name a concrete alternative time or schedule that fits what it is.",
+  waiting: "Say who or what you are still waiting on and when you check again (from the record). Offer to check now, or to nudge them.",
+  working: "Say how far it has got and what you are doing next (from the steps). Offer what could change it: a different approach, a limit, or stopping it.",
+  stuck: "Say plainly what is blocking it and the one thing that would get it moving, then ask for it.",
+  ready: "Give the result in a line, then offer the natural next step for it.",
+  failed: "Say what happened and the plan from here (from the record), then ask whether to go ahead or try something else.",
+  needs: "Put the question you are waiting on them for, plainly, with the trade-off if there is one.",
+  approval: `Give the key details (what, where, how much, when it was asked), then end with this line as it is: "${APPROVAL_NUDGE}"`,
+};
+
+/**
+ * The event text for that turn. One message, Reason's voice, short; options it can actually carry
+ * out; never words for them to type (owner rule 10-25).
+ */
+export function speakFirstPrompt(rec, { link = "Talk about it in the chat" } = {}) {
+  return [
+    `They just tapped "${link}" on one of their Ongoing items on Reason Web, and the chat opened. Speak first, about this item only.`,
+    "Write ONE short message in your own voice: where it stands, then two or three concrete next moves you can really do with your tools, then ask which they want.",
+    SPEAK_FIRST[rec.state] ?? "Say where it stands and what you could do next, then ask.",
+    "Never quote words for them to type and never tell them what to say; just ask. No tool names, ids, timestamps in ISO form or internal notes. Do nothing else yet: no tool calls that change anything until they answer.",
+    `The item, as your own record holds it:\n${JSON.stringify(rec).slice(0, 6000)}`,
+  ].join("\n\n");
 }
 
 /** One row for a detail page, by kind and id, in this conversation only. Null when it isn't theirs or isn't there. */

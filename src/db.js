@@ -1541,6 +1541,12 @@ addColumnIfMissing("series", "label", "TEXT");
 addColumnIfMissing("tasks", "drafts", "TEXT");
 addColumnIfMissing("timers", "drafts", "TEXT");
 addColumnIfMissing("series", "drafts", "TEXT");
+// The row's one-line description for its detail page, in plain sentence case (owner 10-27): written by the
+// same summarise as `label` (src/itemtitle.js), null on older rows (src/ongoing.js cleans the note then).
+// `drafts` above is no longer written (the composer draft was replaced by Reason speaking first).
+addColumnIfMissing("tasks", "blurb", "TEXT");
+addColumnIfMissing("timers", "blurb", "TEXT");
+addColumnIfMissing("series", "blurb", "TEXT");
 addColumnIfMissing("outbox", "send_style", "TEXT");
 // Inline replies: what each inbound message said (so "the one about the table" can be found again
 // by its words), which message an outbound one is pinned under, and the message this turn's reply
@@ -1852,15 +1858,14 @@ export function getTimer(conversationId, id) {
  */
 // A call's own short title for Saved on Web (src/saved.js), written once by the same summarise as an Ongoing row's.
 addColumnIfMissing("calls", "label", "TEXT");
-export function setItemLabel(kind, conversationId, id, label, drafts = null) {
+export function setItemLabel(kind, conversationId, id, label, { blurb = null } = {}) {
   const table = { task: "tasks", timer: "timers", series: "series", call: "calls" }[kind];
   if (!table || !label) return false;
   const done = db.prepare(`UPDATE ${table} SET label = ? WHERE id = ? AND conversation_id = ? AND (label IS NULL OR label = '')`).run(label, id, conversationId).changes === 1;
   if (kind === "series") db.prepare("UPDATE timers SET label = ? WHERE series_id = ? AND conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND (label IS NULL OR label = '')").run(label, id, conversationId);
-  if (drafts && kind !== "call") {
-    const j = JSON.stringify(drafts);
-    db.prepare(`UPDATE ${table} SET drafts = ? WHERE id = ? AND conversation_id = ? AND drafts IS NULL`).run(j, id, conversationId);
-    if (kind === "series") db.prepare("UPDATE timers SET drafts = ? WHERE series_id = ? AND conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND drafts IS NULL").run(j, id, conversationId);
+  if (blurb && kind !== "call") {
+    db.prepare(`UPDATE ${table} SET blurb = ? WHERE id = ? AND conversation_id = ? AND blurb IS NULL`).run(blurb, id, conversationId);
+    if (kind === "series") db.prepare("UPDATE timers SET blurb = ? WHERE series_id = ? AND conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND blurb IS NULL").run(blurb, id, conversationId);
   }
   return done;
 }

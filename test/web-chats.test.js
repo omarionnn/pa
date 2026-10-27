@@ -336,13 +336,13 @@ test("11. review: an approval asked in a Web chat is answered there; a chat's ye
   const asked = trust.requestConfirmation({ conversationId: OWNER_C, messages: [], historyId: key, action: "purchase_confirm", summary: "Buy the headphones", stakes: "money" });
   const x = og.findItem(OWNER_C, "approval", asked.confirmation_id);
   assert.equal(x.chat, CHAT);
-  assert.equal(page.talkHref(x), `/web?chat=${CHAT}&about=${encodeURIComponent(`approval:${asked.confirmation_id}`)}`);
+  assert.equal(page.talkHref(x), `/web?chat=${CHAT}&about=${encodeURIComponent(`approval:${asked.confirmation_id}`)}`, "no click id until a detail page draws it");
   // That link opens the chat with the draft in its composer.
   const h = harness();
   const omari = { ...browser(OWNER_C), conv: OWNER_C };
   await call(h, { b: omari });
-  const r = await call(h, { b: omari, query: { chat: CHAT, about: `approval:${asked.confirmation_id}` } });
-  assert.match(r.body, /data-draft>Can I see the details first\?<\/textarea>/);
+  const r = await call(h, { b: omari, query: { chat: CHAT, about: `approval:${asked.confirmation_id}`, k: "click-kkkkkkkkkkkk" } });
+  assert.match(r.body, new RegExp(`chat:"${CHAT}",ab:"approval:${asked.confirmation_id}",ak:"click-kkkkkkkkkkkk"`), "Reason speaks first there");
   // The model's own pending list in a Web chat is that chat's only.
   const { runTool } = await import("../src/tools.js");
   const sharedAsk = trust.requestConfirmation({ conversationId: OWNER_C, messages: [], action: "browser_submit", summary: "Book the table", stakes: "commitment" });
