@@ -14,7 +14,7 @@
 //   9. the overnight write: claude-cli greeting stub, idempotent, issue counts editions, fixed moments keep
 //      fixed words, a bad model line keeps the plain one, the real CLI is never called under test
 //  10. the sweep: nothing before the hour, then once per person per day, only for whom the flag allows
-//  11. a fresh Web chat stays reachable: NEW WEB CHAT → on the thread page; /web?newchat → /web?chat=<id>
+//  11. one thread only (owner 10-27 07:08): no new-chat entry on the thread page or Home; /web?newchat → /web?thread
 //  12. a decision tap is one message into the thread, as if typed (the router gets the reply)
 //  13. new in your book: hidden without a stamp; drawn from src/stamps.js when one is given
 import { test, beforeEach, after } from "node:test";
@@ -150,6 +150,7 @@ test("4. overnight: decision, update, done; answers are not news; newest first; 
   assert.match(form, /name="id" value="[0-9a-f-]{36}"/);
   assert.match(form, /class="dd-p" type="submit" name="text" value="Yes, go ahead\.">Yes, go ahead</);
   assert.match(form, /class="dd-s" type="submit" name="text" value="Not now\.">Not now</);
+  assert.doesNotMatch(form, /name="chat"/, "a decision answers in the one thread");
   // update: into the thread at that message
   const msg = db.db.prepare("SELECT id FROM messages WHERE text LIKE 'The farmhouse%'").get().id;
   assert.match(html, new RegExp(`<h2 class="dd-h">The farmhouse inn near Hudson wrote back\\.</h2><p class="dd-d">The room with the wood stove is open the 14th to the 16th\\.</p><a class="dd-l" href="/web\\?at=${msg}">Read it in the thread</a>`));
@@ -317,18 +318,22 @@ test("10. the sweep: nothing before the hour, then once per person per day, only
   assert.equal(daily.sweepDaily().queued, 0, "off: nothing");
 });
 
-test("11. a fresh Web chat stays reachable from the thread page", async () => {
+test("11. one thread only: the thread page and Home have no new-chat entry; /web?newchat is the thread", async () => {
   const b = browser(OWNER_C);
   const thread = (await get(b, { thread: "" })).body;
-  assert.match(thread, /href="\/web\?newchat"[^>]*>NEW WEB CHAT →</);
+  const home = (await get(b)).body;
+  for (const [name, html] of [["thread", thread], ["home", home]]) {
+    assert.doesNotMatch(html, /NEW WEB CHAT/, `${name}: no NEW WEB CHAT`);
+    assert.doesNotMatch(html, /newchat/, `${name}: no newchat link`);
+    assert.doesNotMatch(html, /New Web chat/, `${name}: the menu has no New Web chat`);
+    assert.doesNotMatch(html, /name="chat"/, `${name}: no form names a chat`);
+  }
+  assert.match(thread, /href="\/web\?thread"[^>]*>The thread/, "the menu still has The thread");
   const go = await get(b, { newchat: "" });
   assert.equal(go.status, 303);
-  assert.match(go.headers.Location, /^\/web\?chat=[A-Za-z0-9_-]{22}$/);
-  const chat = await get(b, { chat: go.headers.Location.split("=")[1] });
-  assert.equal(chat.status, 200);
-  assert.match(chat.body, /name="chat" value="[A-Za-z0-9_-]{22}"/, "its composer starts that chat");
+  assert.equal(go.headers.Location, "/web?thread");
   process.env.REASON_WEB_DAILY = "";
-  assert.doesNotMatch((await get(b, { thread: "" })).body, /NEW WEB CHAT/, "off: the thread page is unchanged");
+  assert.equal((await get(b, { newchat: "" })).headers.Location, "/web?thread", "off: the same");
 });
 
 test("12. a decision tap is one message into the thread, as if typed", async () => {

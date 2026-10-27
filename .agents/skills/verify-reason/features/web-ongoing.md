@@ -86,14 +86,12 @@ handoff 2026-10-26, "3 · Ongoing", sheets 2/3, 9D). Model: `src/ongoing.js` (`o
 
 - **"… in the chat →" makes Reason speak first (owner 10-27 01:20; replaced the composer draft).** Every
   detail's foot link is `/web?thread&about=<kind>:<id>&k=<click id>` (`talkHref`; a fresh k per detail
-  page; a Web-chat approval, or a detail opened from a Web chat via sessionStorage `reason-web-chat`,
-  goes to `/web?chat=<id>&…`). The thread's script POSTs `/web/about` once and drops the params;
+  page; always the shared thread, an approval asked in an earlier Web chat too, owner 10-27 07:08). The thread's script POSTs `/web/about` once and drops the params;
   `aboutRequest` (src/pages/webconvo.js) checks origin + CSRF, finds the row in the session's own
   conversation (else 404), claims `<conv>:about:<kind>:<id>:<k>` (db.claimInbound, so a refresh or a
   double tap is one message), then runs ONE `runtime.event` on channel web with
   `speakFirstPrompt(itemRecord(...))` (src/ongoing.js): the row's full record, per-state real moves,
-  approval ends on APPROVAL_NUDGE, never words to type. The reply lands in the shared thread or that
-  Web chat; never texted. The event runs `fromOwner: true` (#213), so the first line is written to
+  approval ends on APPROVAL_NUDGE, never words to type. The reply lands in the shared thread; never texted. The event runs `fromOwner: true` (#213), so the first line is written to
   `messages` for EVERY account, not only the operator's (before, a non-owner's never reached history).
 - **Scheduled description.** `blurb` (tasks/timers/series), written by the same summarise as `label`
   (src/itemtitle.js `line`); else `plainNote` → `tidyLine` (src/ongoing.js): no (asides), no @handles, no shouting caps,

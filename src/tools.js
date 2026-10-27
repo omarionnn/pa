@@ -11587,6 +11587,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "confirm_pending": {
       // This thread's asks only (a Web-only chat's, or the shared one's): one asked elsewhere can't be answered here.
       const here = ctx.historyId && ctx.historyId !== c ? ctx.historyId : null;
+      if (!here) trust.adoptWebChatAsks(c, ctx.messages ?? []);
       const open = db.pendingConfirmations(c)
         .filter(x => !x.granted_at && (x.thread_key ?? null) === here)
         .map(x => ({ confirmation_id: x.id, action: x.action, asked: stamp(x.asked_at), you_said_youd: x.summary, target: x.target || undefined }));

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Draw Web-only chats (owner 10-27): Home (its composer starts a new chat), a new chat, a chat with an
-// exchange, and Chat history listing it. Throwaway database; no server of Reason's, no text, no model.
+// Draw one shared thread (owner 10-27 07:08, Web-only chats retired): Home (its composer posts to the
+// thread), the thread (no new-chat entry), an earlier Web chat read-only, and Chat history listing it. Throwaway database; no server of Reason's, no text, no model.
 //
 //   node .agents/skills/verify-reason/bin/web-chats-preview.mjs [outDir]
 //
-// Writes chats-<home|newchat|chat|history>-<390|1280>-<paper|night>.png and compare-chats.png.
+// Writes chats-<home|thread|chat|history>-<390|1280>-<paper|night>.png and compare-chats.png.
 import { mkdtempSync, rmSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +32,7 @@ db.markWebNoticeSeen(C);
 seedOngoing(C);
 const hist = await imp("src/pages/webhistory.js");
 const now = Date.now();
-// The shared thread: a text and its answer. Then one Web chat Home's composer started.
+// The shared thread: a text and its answer. Then one earlier Web chat (made before they were retired).
 db.writeMessage({ conversationId: C, role: "user", channel: "fake", text: "running late, push dinner to 8?", at: now - 3 * 3600e3 });
 db.writeMessage({ conversationId: C, role: "assistant", channel: "fake", text: "done, Via Carota has you at 8.", at: now - 3 * 3600e3 + 60e3 });
 const CHAT = "PreviewChatAAAAAAAAAAA";
@@ -46,7 +46,7 @@ const rows = db.messagesFor(C, { chat: CHAT }).map(r => wc.rowOut(r, { conversat
 const pages = {
   home: wc.renderHome({ account: acct, csrf: "c", sendId: "s", ...model, pick: "" }),
   chat: wc.renderConversation({ account: acct, csrf: "c", lines: rows, more: false, sendId: "s", ...model, chat: CHAT }),
-  newchat: wc.renderConversation({ account: acct, csrf: "c", lines: [], more: false, sendId: "s", ...model, chat: "PreviewChatBBBBBBBBBBB" }),
+  thread: wc.renderConversation({ account: acct, csrf: "c", lines: db.messagesFor(C, {}).map(r => wc.rowOut(r, { conversationId: C, service: "iMessage" })), more: false, sendId: "s", ...model }),
   history: hist.renderHistory({ account: db.getAccount(C) }),
 };
 const srv = http.createServer((req, res) => {
@@ -74,7 +74,7 @@ for (const name of Object.keys(pages)) for (const w of [390, 1280]) for (const t
 const ctx = await b.newContext({ viewport: { width: 1660, height: 900 } });
 const pg = await ctx.newPage();
 const img = (p) => `data:image/png;base64,${readFileSync(p).toString("base64")}`;
-await pg.setContent(`<body style="margin:0;background:#888;font:14px monospace;padding:12px"><div>HOME → (type) → THE NEW WEB CHAT · ITS PAGE LATER · CHAT HISTORY (390 Paper)</div><div style="display:flex;gap:12px">${["home", "newchat", "chat", "history"].map(n => `<img src="${img(join(outDir, `chats-${n}-390-paper.png`))}" width="390">`).join("")}</div></body>`);
+await pg.setContent(`<body style="margin:0;background:#888;font:14px monospace;padding:12px"><div>HOME · THE THREAD · AN EARLIER WEB CHAT (READ-ONLY) · CHAT HISTORY (390 Paper)</div><div style="display:flex;gap:12px">${["home", "thread", "chat", "history"].map(n => `<img src="${img(join(outDir, `chats-${n}-390-paper.png`))}" width="390">`).join("")}</div></body>`);
 await pg.screenshot({ path: join(outDir, "compare-chats.png"), fullPage: true });
 await ctx.close();
 await b.close(); srv.close();

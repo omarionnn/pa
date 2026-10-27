@@ -1,11 +1,11 @@
 // Reason Web, an item's "… in the chat →" makes Reason speak first about it (owner 10-27 01:20, which
 // replaced the prefilled draft). One pinned test per rule:
 //
-//   1. every detail's link names its row and a fresh click id
+//   1. every detail's link names its row and a fresh click id, always the shared thread (never a chat)
 //   2. one message per click: a refresh or a double tap is the same claim, one turn
 //   3. the turn is an event on Web with the row's full record and the no-command-phrase rule in it
-//   4. it lands in the shared thread, or the Web chat the detail was opened from; never texted
-//   5. somebody else's row, a forged page, a chat that isn't theirs: refused, no turn
+//   4. it lands in the one shared thread (a chat field is ignored, owner 10-27 07:08); never texted
+//   5. somebody else's row or a forged page: refused, no turn
 //   6. the thread page posts it once and drops ?about from the URL; nothing is put in the composer
 //   7. a scheduled row's description is one clean line: the summarise's, else the note tidied
 import { test, beforeEach, after } from "node:test";
@@ -144,7 +144,8 @@ test("1. every detail's link names its own row and a fresh click id", () => {
   const a = hrefOf(page.renderDetail(og.findItem(OWNER_C, "task", ids.waiting)));
   const b = hrefOf(page.renderDetail(og.findItem(OWNER_C, "task", ids.waiting)));
   assert.notEqual(a, b, "each detail page is its own click");
-  assert.match(page.renderDetail(og.findItem(OWNER_C, "task", ids.waiting)), /sessionStorage\.getItem\('reason-web-chat'\)/, "opened from a Web chat, it talks there");
+  assert.doesNotMatch(page.renderDetail(og.findItem(OWNER_C, "task", ids.waiting)), /reason-web-chat|web\?chat=/, "a detail never points into a Web chat");
+  assert.equal(page.talkHref({ kind: "approval", id: 7, chat: CHAT }), "/web?thread&about=approval%3A7", "a stray chat on the row is ignored");
 });
 
 test("2-4. one message per click, on Web only, with the row's record and the rules in the turn", async () => {
@@ -190,18 +191,26 @@ test("3b. each state is told its real moves; an approval ends on the nudge line"
   for (const [kind, id] of [["task", ids.working], ["task", ids.ready], ["timer", ids.timer]]) assert.ok(!/reply "|say "|type "/i.test(p(kind, id)));
 });
 
-test("4b. opened from a Web chat, it lands in that chat", async () => {
+test("4b. a chat field on the post is ignored: Reason speaks in the shared thread, the chat gets nothing", async () => {
   const ids = seedOngoing(OWNER_C);
   const h = harness({ turn: async () => "Want to move it?" });
   const omari = { ...browser(OWNER_C), conv: OWNER_C };
   db.claimWebChat(OWNER_C, CHAT);
-  await about(h, omari, { about: `series:${ids.series}`, k: "click-cccccccccccc", chat: CHAT });
-  assert.ok(await until(() => db.messagesFor(OWNER_C, { chat: CHAT }).length === 1));
-  assert.equal(db.messagesFor(OWNER_C).length, 0, "not in the shared thread");
-  assert.equal(eventTurns(h)[0].historyId, `${OWNER_C}#web:${CHAT}`, "the chat's own model thread");
+  const r = await about(h, omari, { about: `series:${ids.series}`, k: "click-cccccccccccc", chat: CHAT });
+  assert.equal(r.status, 200);
+  assert.ok(await until(() => db.messagesFor(OWNER_C).length === 1));
+  assert.equal(db.messagesFor(OWNER_C, { chat: CHAT }).length, 0, "nothing in the old chat");
+  assert.ok([undefined, null, OWNER_C].includes(eventTurns(h)[0].historyId), "the shared model thread");
+  // A chat id that was never started, or somebody else's: still just the shared thread, and no chat is made.
+  db.claimWebChat(KOFI_C, "BBBBBBBBBBBBBBBBBBBBBB");
+  assert.equal((await about(h, omari, { about: `series:${ids.series}`, k: "click-dddddddddddd", chat: "BBBBBBBBBBBBBBBBBBBBBB" })).status, 200);
+  assert.equal((await about(h, omari, { about: `series:${ids.series}`, k: "click-eeeeeeeeeeee", chat: "CCCCCCCCCCCCCCCCCCCCCC" })).status, 200);
+  assert.ok(await until(() => db.messagesFor(OWNER_C).length === 3));
+  assert.equal(db.webChatOwner("BBBBBBBBBBBBBBBBBBBBBB"), KOFI_C);
+  assert.equal(db.webChatOwner("CCCCCCCCCCCCCCCCCCCCCC") ?? null, null, "never starts a chat");
 });
 
-test("5. somebody else's row, a forged page or a chat that isn't theirs: refused, no turn", async () => {
+test("5. somebody else's row or a forged page: refused, no turn", async () => {
   const ids = seedOngoing(OWNER_C);
   const h = harness();
   const kofi = { ...browser(KOFI_C), conv: KOFI_C };
@@ -211,9 +220,10 @@ test("5. somebody else's row, a forged page or a chat that isn't theirs: refused
   assert.equal((await about(h, omari, { about: "task:99999", k: "click-ffffffffffff" })).status, 404);
   assert.equal((await about(h, omari, { about: "note:1", k: "click-gggggggggggg" })).status, 400);
   assert.equal((await about(h, omari, { about: `task:${ids.waiting}`, k: "x" })).status, 400);
+  // Kofi's row named through Omari's own chat field is still Kofi's: refused.
+  const kofiTask = db.createTask(KOFI_C, { title: "kofi's", goal: "g", maxAttempts: 3, label: "Kofi's errand" });
   db.claimWebChat(KOFI_C, CHAT);
-  assert.equal((await about(h, omari, { about: `task:${ids.waiting}`, k: "click-hhhhhhhhhhhh", chat: CHAT })).status, 404, "Kofi's chat");
-  assert.equal((await about(h, omari, { about: `task:${ids.waiting}`, k: "click-iiiiiiiiiiii", chat: "BBBBBBBBBBBBBBBBBBBBBB" })).status, 404, "never starts a chat");
+  assert.equal((await about(h, omari, { about: `task:${kofiTask.id}`, k: "click-hhhhhhhhhhhh", chat: CHAT })).status, 404, "another account's row");
   await new Promise(r => setTimeout(r, 30));
   assert.equal(eventTurns(h).length, 0);
 });

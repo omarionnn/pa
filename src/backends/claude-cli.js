@@ -40,6 +40,7 @@ import { withoutSelfNote, readSilence } from "../plain.js";
 import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "../offers.js";
 import { saveThread } from "../thread.js";
 import { runClaudeCli } from "./cli.js";
+import { adoptWebChatAsks } from "../trust.js";
 import { whileTurn } from "../background.js";
 import { startMcpHttp } from "./mcp-http.js";
 
@@ -180,6 +181,8 @@ async function runTurnOnCli({
     // model could not have had.
     // Only the asks made in THIS thread (a Web-only chat's, or the shared one's): one asked elsewhere
     // can't be answered here (src/trust.js recordConfirmation).
+    // One thread only (owner 10-27 07:08): an ask left open in an earlier Web-only chat is answered here now.
+    if (historyId === conversationId) adoptWebChatAsks(conversationId, before);
     const pending = pendingConfirmations(conversationId)
       .filter(x => !x.granted_at && (x.thread_key ?? null) === (historyId !== conversationId ? historyId : null))
       .map(x => `  - confirmation #${x.id} (${x.action}), asked ${stamp(x.asked_at)}: ${x.summary}`);

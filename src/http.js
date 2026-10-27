@@ -35,7 +35,6 @@
 //   POST /web/upload, GET /web/media/…   a photo, PDF or voice note in; files back, signed in only (src/webmedia.js)
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
-//   GET  /web/chats/recent            the latest Web chats, for Home's composer (src/webchats.js; header x-reason-csrf)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
 //   GET  /web/stamps, POST /web/api/stamps/{id}/share[/revoke], GET …/{id}/image.png   Stamps (src/pages/webstamps.js; REASON_WEB_DAILY)
 //   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)

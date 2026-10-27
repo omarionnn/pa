@@ -353,8 +353,6 @@ export function approvalItem(conversationId, c, now = clock.now()) {
   const money_ = !!row || c.amount_cents != null || /money|both/i.test(String(c.stakes ?? "")) || /\$|charge|pay|buy|purchase|order/i.test(`${c.action} ${c.summary}`);
   return {
     kind: "approval", id: c.id, href: `/web/ongoing/approval/${c.id}`, group: "needs", state: "approval", status: "NEEDS YOU", needs: true, due: c.asked_at, at: c.asked_at,
-    // Asked in a Web-only chat (owner 10-27): it is answered there, so that is where "Reply in the chat" goes.
-    chat: /#web:([A-Za-z0-9_-]{22})$/.exec(String(c.thread_key ?? ""))?.[1] ?? null,
     started: c.asked_at, meta: `ASKED ${whenWord(c.asked_at, now, tz)}`,
     title: String(c.summary ?? "").trim(), detail, money: money_, rows, total, about,
     // No Face ID promise here (owner 10-26 D2: only when the card flow really will prompt). Reason

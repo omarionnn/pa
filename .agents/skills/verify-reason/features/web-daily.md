@@ -9,8 +9,8 @@ Off = today's Home exactly (composer and all).
 Source: `src/daily.js` (window, facts, question, greeting, `writeEdition`, `sweepDaily`, tables
 `daily_editions` / `daily_looks` / `daily_questions`), `src/pages/webdaily.js` (`renderDaily`, `dailyHead`),
 `src/pages/webdailyroutes.js` (POST `/web/daily/answer|later`), `src/pages/webconvo.js`
-(`conversationPage` → renderDaily; NEW WEB CHAT → on the thread's top bar + phone menu),
-`src/pages/websignin.js` (`/web?newchat` → 303 `/web?chat=<new id>`), `src/runtime.js` (`daily()` in the sweep),
+(`conversationPage` → renderDaily; no new-chat entry anywhere: one shared thread, owner 10-27 07:08),
+`src/pages/websignin.js` (`/web?newchat` → 303 `/web?thread`), `src/runtime.js` (`daily()` in the sweep),
 `src/http.js` (route), `scripts/web-daily-sample.mjs` (staging samples).
 
 ## Sub-features
@@ -25,8 +25,8 @@ Source: `src/daily.js` (window, facts, question, greeting, `writeEdition`, `swee
 - **Window.** since = later of their last thread message and their last look at this page on an earlier day
   (`daily_looks`), floored at 14 days; never looked → the day before.
 - **Overnight.** newest first, ≤5 then `N more in the thread`: approvals asked in the window (decision:
-  a `/web/send` form, csrf + a fresh id, buttons `Yes, go ahead` / `Not now` as `text`, `chat` when asked in
-  a Web chat), tasks done (DONE stamp + result headline) / failed (update), Reason's own shared-thread lines
+  a `/web/send` form, csrf + a fresh id, buttons `Yes, go ahead` / `Not now` as `text`, only when it is the one open
+  approval; always the shared thread), tasks done (DONE stamp + result headline) / failed (update), Reason's own shared-thread lines
   not within 15 min of one of theirs (update → `/web?at=<id>`). First day: `Nothing yet. Text me something to start.`
 - **Lines out.** open watches, armed timers, active series; status mono right, pen when due within a day;
   hidden when none.
