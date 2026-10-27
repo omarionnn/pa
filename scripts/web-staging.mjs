@@ -49,6 +49,7 @@ const og = await imp("src/pages/webongoing.js");
 const wm = await imp("src/pages/webmemory.js");
 const wh = await imp("src/pages/webhistory.js");
 const st = await imp("src/pages/websettings.js");
+const sv = await imp("src/pages/websaved.js");
 const ongoingRows = await imp("src/ongoing.js");
 const db = await imp("src/db.js");
 
@@ -117,6 +118,35 @@ const appr = db.askConfirmation({ conversationId: CONV, action: "purchase_confir
 }
 const { items, approvals, back } = ongoingRows.ongoing(CONV, now);
 const detail = (kind, id) => og.renderDetail(ongoingRows.findItem(CONV, kind, id, now), { now });
+
+// ---------------------------------------------------------------- the sample person's Saved
+// What Reason made for her, written into the throwaway store and read back through src/saved.js: two
+// pages, two calls it placed to others, a placed purchase, an event she organised and its album.
+const SV = {};
+{
+  const page = (title, blocks, when) => { const pg = db.createPage(CONV, { title, blocks }); db.db.prepare("UPDATE pages SET created_at = ?, updated_at = ? WHERE id = ?").run(when, when, pg.id); return pg.id; };
+  SV.dinner = page("Dinner for six, Friday", [{ type: "text", text: "Three places near Fort Greene that take a table of six on a Friday, quietest first." },
+    { type: "rows", numbered: true, items: [{ name: "Olea", detail: "the back room", value: "7:30 PM" }, { name: "Walter's", detail: "a long table", value: "8:00 PM" }, { name: "Lucia", detail: "no music", value: "7:00 PM" }] }], at(1, 16, 15));
+  SV.lisbon = page("Lisbon, four days", [{ type: "text", text: "Alfama first, Belém on the quiet morning, Sintra if the weather holds." }], at(9, 11, 40));
+  db.db.prepare("UPDATE pages SET created_at = ?, updated_at = ? WHERE id = 'lisbon4'").run(at(16, 10, 5), at(16, 10, 5));
+  const call = (goal, summary, outcome, dur, when, label) => {
+    const c = db.createCall(CONV, { provider: "fake", toNumber: "+12125550188", isOwner: false, goal, facts: [] });
+    db.db.prepare("UPDATE calls SET state = 'completed', outcome_kind = 'confirmed', outcome = ?, summary = ?, duration_s = ?, created_at = ?, ended_at = ?, label = ? WHERE id = ?").run(outcome, summary, dur, when, when + dur * 1000, label, c.id);
+    return c.id;
+  };
+  SV.call = call("Book a cleaning at Dr. Patel's office", "They had Tuesday at 10:00 AM open and booked it under your name. Bring the new insurance card.", "Booked for Tuesday at 10:00 AM.", 132, at(0, 11, 20), "A cleaning at Dr. Patel's");
+  call("Ask Kwame's Plumbing about Saturday", "They can come Saturday between 10 and 12. $95 call-out, parts extra.", "Saturday, 10–12.", 88, at(3, 15, 5), "Kwame's Plumbing, Saturday");
+  const r = db.db.prepare(`INSERT INTO agentcard_purchases (conversation_id, buy_conversation_id, status, amount_cents, merchant, what, created_at, updated_at) VALUES (?, 'staging-buy-2', 'placed', 4200, 'Hearth & Co', 'Beeswax candles, set of four', ?, ?)`).run(CONV, at(2, 13, 0), at(2, 13, 0));
+  SV.receipt = Number(r.lastInsertRowid);
+  const e = db.db.prepare(`INSERT INTO events (public_id, organizer_conversation_id, name, name_key, starts_at, tz, password_hash, organizer_token, status, location, created_at, updated_at)
+    VALUES ('stgevent01', ?, 'Esi turns 30', 'esi turns 30', ?, 'America/New_York', 'x', 'stg-org-token', 'active', 'Olea, Fort Greene', ?, ?)`).run(CONV, nextDay(6, 19, 30), at(4, 18, 0), at(4, 18, 0));
+  SV.event = Number(e.lastInsertRowid);
+  for (let i = 0; i < 5; i++) db.db.prepare("INSERT INTO event_attendees (event_id, conversation_id, via, token, joined_at, updated_at) VALUES (?, ?, 'text', ?, ?, ?)").run(SV.event, `dm:fake:+155501009${i}`, `stg-t${i}`, at(3, 12, i), at(3, 12, i));
+  db.db.prepare("INSERT INTO event_albums (event_id, conversation_id, created_at, updated_at) VALUES (?, ?, ?, ?)").run(SV.event, CONV, at(4, 18, 1), at(4, 18, 1));
+  db.db.prepare("INSERT INTO saved_marks (conversation_id, kind, item_id, pinned_at, removed_at, updated_at) VALUES (?, 'page', ?, ?, NULL, ?)").run(CONV, SV.dinner, now, now);
+}
+const savedCount = og.countOf({ items, approvals, back });
+const saved = (o = {}) => sv.renderSaved({ account: o.account ?? account, csrf: "staging", query: o.query ?? {}, openKey: o.open ?? null, now, count: savedCount });
 
 // ---------------------------------------------------------------- the sample person's memory
 const mem = (about, fact, group) => db.remember(CONV, about, fact, { group, category: "", source: "user_stated" }).factId;
@@ -278,6 +308,17 @@ const S = [
   ["history-day", "Memory", "7B · A day, read-only", "No composer, Go to chat →.", history({ day: DAYKEY }), {}],
   ["history-search", "Memory", "Chat history · search", "Matches underlined in pen.", history({ q: "dentist" }), {}],
 
+  ["saved", "Saved", "Saved · list (S-A / desk-saved)", "FIND SOMETHING, kinds with counts, PINNED, THIS WEEK / EARLIER; on a desktop the pinned item opens beside it.", saved(), {}],
+  ["saved-page", "Saved", "Saved · a page opened", "The real page on paper, PIN · OPEN THE PAGE ↗, REMOVE FROM SAVED.", saved({ open: `page-${SV.lisbon}` }), {}],
+  ["saved-call", "Saved", "Saved · a call opened", "What happened, how it ended, BOOKED.", saved({ open: `call-${SV.call}` }), {}],
+  ["saved-receipt", "Saved", "Saved · a receipt opened", "PAID.", saved({ open: `receipt-${SV.receipt}` }), {}],
+  ["saved-event", "Saved", "Saved · an event opened", "", saved({ open: `event-${SV.event}` }), {}],
+  ["saved-calls", "Saved", "Saved · only calls", "A kind picked.", saved({ query: { kind: "calls" } }), {}],
+  ["saved-search", "Saved", "Saved · searching", "", saved({ query: { q: "dinner" } }), {}],
+  ["saved-nomatch", "Saved", "Saved · no match", "", saved({ query: { q: "zebra" } }), {}],
+  ["saved-removed", "Saved", "Saved · taken out", "PUT IT BACK.", saved({ query: { removed: `receipt-${SV.receipt}` } }), {}],
+  ["saved-empty", "Saved", "Saved · empty (S-B)", "Nothing saved yet.", saved({ account: emptyAccount }), {}],
+
   ["settings", "Settings", "Settings", "Reach (text me for everything), browsers, connected, invites, theme.", settings(), {}],
   ["settings-reach-web", "Settings", "Settings · keep routine results here", "Reach at timely decisions.", settings({ reach: "web" }), {}],
   ["settings-reach-edit", "Settings", "Settings · 5A reach choices", "The radio list of four, Save → / CANCEL.", st.renderReachEdit({ csrf: "staging", reach: "web" }), {}],
@@ -330,6 +371,13 @@ function local(url, signedOut) {
     if (qs.get("forget") === AISLE) return "memory-forget.html";
     return "memory.html";
   }
+  const svf = /^\/web\/saved\/page\/([^/]+)\/frame$/.exec(p);
+  if (svf) return `saved-frame-${decodeURIComponent(svf[1])}.html`;
+  const svo = /^\/web\/saved\/([a-z]+)\/([^/]+)$/.exec(p);
+  if (svo) return { [`page/${SV.lisbon}`]: "saved-page.html", [`call/${SV.call}`]: "saved-call.html", [`receipt/${SV.receipt}`]: "saved-receipt.html", [`event/${SV.event}`]: "saved-event.html" }[`${svo[1]}/${decodeURIComponent(svo[2])}`] ?? "saved.html";
+  if (p === "/web/saved") return qs.get("q") ? (/dinner/i.test(qs.get("q")) ? "saved-search.html" : "saved-nomatch.html") : qs.get("kind") === "calls" ? "saved-calls.html" : "saved.html";
+  if (p === "/web/saved/remove") return "saved-removed.html";
+  if (p === "/web/saved/pin" || p === "/web/saved/restore") return "saved.html";
   if (mediaMap[p]) return mediaMap[p];
   return { "/web/memory/correct": "memory-got-it.html", "/web/memory/forget": "memory.html", "/web/memory/guess": "memory.html", "/web/settings": "settings.html",
     "/web/signin": "code.html", "/web/code": "home.html", "/web/signout": "signed-out.html", "/web/send": "conversation.html" }[p] ?? null;
@@ -355,7 +403,7 @@ const TAG = `<style>.stg-tag{position:fixed;right:10px;bottom:10px;z-index:9999;
 
 function stage(html, { signedOut = false, loader = false, state = "", head = "" } = {}) {
   let out = html
-    .replace(/(href|action|src|data-src)="(\/web(?:\/[a-z0-9_-]+)*(?:\?[^"#]*)?)(#[^"]*)?"/g, (m, attr, url, hash = "") => { const to = local(url, signedOut); return to ? `${attr}="${to}${hash}"` : m; })
+    .replace(/(href|action|src|data-src)="(\/web(?:\/[A-Za-z0-9_-]+)*(?:\?[^"#]*)?)(#[^"]*)?"/g, (m, attr, url, hash = "") => { const to = local(url, signedOut); return to ? `${attr}="${to}${hash}"` : m; })
     .replace(/location\.(href|replace)(=|\()'(\/web[^']*)'/g, (m, how, op, url) => { const to = local(url, signedOut); return to ? `location.${how}${op}'${to}'` : m; })
     .replace(/<form([^>]*?) method="POST"/g, `<form$1 method="GET"`);
   if (!/<meta name="robots" content="[^"]*noindex/.test(out)) out = out.replace("<head>", `<head>\n<meta name="robots" content="noindex">`);
@@ -384,6 +432,8 @@ try {
   writeFileSync(join(outDir, "media", "photo.svg"), PHOTO_SVG);
   writeFileSync(join(outDir, "media", "voice.wav"), silentWav());
   writeFileSync(join(outDir, "media", "lease-2026.pdf"), PDF);
+  // Saved's paper card frames the real page, as /web/saved/page/<id>/frame draws it.
+  for (const id of new Set([SV.dinner, SV.lisbon, "lisbon4"])) writeFileSync(join(outDir, `saved-frame-${id}.html`), sv.renderFrame(db.getPageIn(CONV, id)));
   for (const [file, , , , html, o] of S) writeFileSync(join(outDir, `${file}.html`), stage(html, { ...o, loader: file === "loader" }));
 
   const groups = [...new Set(S.map(s => s[1]))];
@@ -398,8 +448,10 @@ try {
 
   writeFileSync(join(outDir, "robots.txt"), "User-agent: *\nDisallow: /\n");
   // The real security headers, minus the framing ban (a design tool may embed a page) and no-store.
-  const csp = ws.SECURITY_HEADERS["Content-Security-Policy"].replace(/; frame-ancestors 'none'/, "");
-  writeFileSync(join(outDir, "_headers"), `/*\n  X-Robots-Tag: noindex, nofollow\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: same-origin\n  Cache-Control: no-cache\n`);
+  // Saved frames its pages from this origin (frame-src 'self', as /web/saved does live); a frame carries Saved's own frame policy too.
+  const csp = ws.SECURITY_HEADERS["Content-Security-Policy"].replace(/; frame-ancestors 'none'/, "; frame-src 'self'");
+  writeFileSync(join(outDir, "_headers"), `/*\n  X-Robots-Tag: noindex, nofollow\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n  Referrer-Policy: same-origin\n  Cache-Control: no-cache\n`
+    + `/saved-frame-*\n  Content-Security-Policy: ${sv.FRAME_CSP}\n`);
   console.log(`wrote ${S.length} screens + index.html to ${outDir}`);
 
   if (deploy) {
