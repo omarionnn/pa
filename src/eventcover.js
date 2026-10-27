@@ -115,9 +115,13 @@ function forget(file) {
 /** Does this event have an organizer's picture live? */
 export const hasUploaded = (ev) => !!ev?.cover_file && existsSync(join(DIR(), basename(ev.cover_file)));
 
+/** Bump when Reason's drawn cover changes, so every cached one is drawn again under a new address. */
+export const DRAWN_COVER_VERSION = 2; // 2: pen colour brick red (10-26)
+const drawnKey = (name) => sha(`${DRAWN_COVER_VERSION}\n${name}`);
+
 /** The address's version: a new picture is a new address, so no phone keeps showing an old one. */
 export function coverTag(ev) {
-  return hasUploaded(ev) ? `u${ev.cover_version}` : `g${sha(ev.name).slice(0, 10)}`;
+  return hasUploaded(ev) ? `u${ev.cover_version}` : `g${drawnKey(ev.name).slice(0, 10)}`;
 }
 
 /** Where the card's picture is fetched from. Public: it is only ever what a stranger may see. */
@@ -131,7 +135,7 @@ export function coverUrl(ev) {
  */
 export async function coverFile(ev) {
   if (hasUploaded(ev)) return join(DIR(), basename(ev.cover_file));
-  const file = join(DIR(), `g-${ev.public_id}-${sha(ev.name).slice(0, 16)}.jpg`);
+  const file = join(DIR(), `g-${ev.public_id}-${drawnKey(ev.name).slice(0, 16)}.jpg`);
   if (existsSync(file) && readFileSync(file).length) return file;
   return await draw(generatedHtml(ev.name), file);
 }
