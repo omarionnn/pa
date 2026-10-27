@@ -64,8 +64,14 @@ handoff 2026-10-26, "3 · Ongoing", sheets 2/3, 9D). Model: `src/ongoing.js` (`o
   purchase_confirm reads its AgentCard row (`confirmation_id`, else the `[hash] in buy` target pin):
   SHOP, ITEM(S), SHIPS TO (city/state/zip), DELIVERY (offer), HOLD UP TO (ceiling), TOTAL; a flight
   row FLIGHT/DATE/AIRLINE/TRAVELERS; anything else WHAT, TO (calls/texts/emails), TOTAL from
-  `confirmations.amount_cents` (new; written from confirm_request's `amount`). ASKED always. Face ID
-  line only for `purchase_confirm` (AgentCard's passkey). No approve button.
+  `confirmations.amount_cents` (new; written from confirm_request's `amount`). ASKED always. No approve button.
+- **D2 (owner 10-26): never a Face ID promise.** A money ask (detail `.after p.q` AND the chat's
+  `approvalCard` `.appr-q`, under the unchanged nudge) says "Nothing is charged until you say so in the
+  chat." (`NOTHING_CHARGED`, webkit.js); a no-money ask says neither. Why: AgentCard decides at the
+  confirm (after the yes) whether to pause for the passkey (`vault_approval_required` + `approval_url`;
+  docs: a confirm MAY pause, auto-approval exists) and the unlock may be Touch ID/fingerprint/password.
+  The real pause is kept on `agentcard_purchases` (awaiting_approval, authorization_id,
+  approval_expires_at) once it happens. Pinned: test/web-ongoing.test.js 7 + 13.
 - **Details** `/web/ongoing/{task|timer|series}/<id>`: 2A steps with done times + NOTHING BOOKED YET
   (only if no consumed confirmation on the task); 2B ASKED/FOR + "i'll check again <day>." from the
   next check; 2C huge time + AM/PM, EVERY MONDAY, description, NEXT · date (one-off: the date);

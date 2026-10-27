@@ -18,7 +18,7 @@
 // Approving stays in the chat (no approve button, per the handoff); every nudge says so as intent,
 // never as words to type (owner rule 10-25).
 import { esc, renderNotFound } from "./render.js";
-import { webPage, label, hand, action, typed, stamp, APPROVAL_NUDGE } from "./webkit.js";
+import { webPage, label, hand, action, typed, stamp, APPROVAL_NUDGE, NOTHING_CHARGED } from "./webkit.js";
 import { SECURITY_HEADERS, sessionAccount } from "./websignin.js";
 import { renderWebNotFound } from "./webedge.js";
 import { findItem, ongoing, clockOf, periodOf } from "../ongoing.js";
@@ -402,7 +402,7 @@ function detailBody(x, tz) {
       return {
         main: `<div class="ogd-top">${label("NEEDS YOUR APPROVAL", "pen")}<h1 class="h1">${esc(x.title)}</h1></div>`
           + `<div class="bigcard">${rcpt(rows, x.total)}${stamp(x.money ? "NOTHING CHARGED YET" : "NOTHING BOOKED YET").replace('class="stamp ', 'class="stamp below ')}</div>`
-          + `<div class="after">${hand(APPROVAL_NUDGE, { cls: "big" })}${x.faceId ? `<p class="q">You'll get a Face ID prompt before anything is charged.</p>` : ""}</div>`,
+          + `<div class="after">${hand(APPROVAL_NUDGE, { cls: "big" })}${x.money ? `<p class="q">${NOTHING_CHARGED}</p>` : ""}</div>`,
         foot: action("Reply in the chat", { href: "/web?thread", cls: "reply" }),
         gap: 36,
       };

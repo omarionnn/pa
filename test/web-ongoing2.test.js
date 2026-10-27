@@ -134,6 +134,21 @@ test("1b. a waiting task whose check time has passed sorts after upcoming rows, 
   assert.deepEqual(wc.inHand(C).map(x => x.title), ["Needs you", "Upcoming", "Waiting overdue"]);
 });
 
+test("1c. D6 holds in v2's lists: the margin at volume, the phone tab and the arrival's rows put an overdue check below upcoming ones", async () => {
+  const og = await import("../src/pages/webongoing.js");
+  const now = clock.now();
+  const w = db.createTask(C, { title: "t", goal: "g", maxAttempts: 3, label: "Waiting overdue", wakeAt: now - 3 * H });
+  db.db.prepare("UPDATE tasks SET state = 'waiting' WHERE id = ?").run(w.id);
+  for (const [i, l] of ["Up one", "Up two", "Up three", "Up four"].entries()) db.createTimer(C, { fireAt: now + (i + 1) * H, note: "n", label: l });
+  const items = wc.inHand(C);
+  const order = (html) => [...html.matchAll(/(Up one|Up two|Up three|Up four|Waiting overdue)/g)].map(m => m[1]);
+  // Five in hand = volume: the top 3 are the three soonest upcoming; the overdue check is past See all.
+  assert.deepEqual(order(og.ogMargin({ items, approvals: [], back: [] })), ["Up one", "Up two", "Up three"]);
+  assert.deepEqual(order(og.ogMargin({ items, approvals: [], back: [] }, { tab: true })), ["Up one", "Up two", "Up three"]);
+  assert.deepEqual(order(og.homeRows(items)), ["Up one", "Up two", "Up three"]);
+  assert.equal(items.at(-1).title, "Waiting overdue");
+});
+
 test("4c. timer_set and task_start take the model's title; series firings carry their series' title", async () => {
   const tools = await import("../src/tools.js");
   const find = (n) => tools.tools.find(d => d.name === n);

@@ -329,9 +329,13 @@ export function approvalItem(conversationId, c, now = clock.now()) {
     kind: "approval", id: c.id, href: `/web/ongoing/approval/${c.id}`, group: "needs", state: "approval", status: "NEEDS YOU", needs: true, due: c.asked_at, at: c.asked_at,
     started: c.asked_at, meta: `ASKED ${whenWord(c.asked_at, now, tz)}`,
     title: String(c.summary ?? "").trim(), detail, money: money_, rows, total,
-    // AgentCard asks the person's own phone for their passkey (Face ID / Touch ID) before it charges,
-    // on every purchase_confirm (src/agentcard.js, vault_approval_required). No other gated action does.
-    faceId: c.action === "purchase_confirm",
+    // No Face ID promise here (owner 10-26 D2: only when the card flow really will prompt). Reason
+    // can't know that while the yes is still open: AgentCard decides at the confirm, which runs only
+    // after the yes, whether to pause for the passkey ("a confirm MAY pause", vault_approval_required +
+    // approval_url, src/agentcard.js isApprovalPause; it also offers auto-approval), and the person
+    // may approve with Touch ID, a fingerprint or a master password. When it does pause, that real
+    // signal is recorded on the purchase row (status awaiting_approval, authorization_id,
+    // approval_expires_at; src/tools.js purchase_confirm), by which time this ask is answered and gone.
     nudge: nudge ?? "one thing needs a yes",
   };
 }
