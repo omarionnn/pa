@@ -273,7 +273,7 @@ const WATCH_SCHEMA = {
  */
 export const SIDE_OUT_MS = 30_000;
 const SIDE_OUT_RUN = 3;
-const DOWN = /not logged in|\/login|oauth|credential|authenticat|expired|usage limit|session limit|limit reached|hit your .*limit|rate.?limit/i;
+const DOWN = /not logged in|\/login|oauth|credential|authenticat|expired|usage limit|session limit|limit reached|hit your .*limit/i;
 let sideOut = { until: 0, why: "" };
 let failedInARow = 0;
 export function sideCallsOut(at = Date.now()) { return at < sideOut.until ? sideOut.why : null; }
