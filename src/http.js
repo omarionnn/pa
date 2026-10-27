@@ -29,6 +29,7 @@
 //   POST /web/signin|code|signout     ask for the code, type it, sign this browser out — all 404 while REASON_WEB is off
 //   GET  /web/history|stream, POST /web/send   the conversation: older/newer lines, live events, a message (src/pages/webconvo.js)
 //   GET  /web/live                    the same live events, asked for on the pages host by the website's page (CORS: that origin only)
+//   POST /web/upload, GET /web/media/…   a photo, PDF or voice note in; files back, signed in only (src/webmedia.js)
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
 //   GET  /web/ongoing/{approval|task|timer|series}/{id}   one Ongoing row's detail; /web/ongoing/state (src/pages/webongoing.js)
@@ -241,6 +242,20 @@ export function createServer({ router, runtime, log = () => {} }) {
         const ok = !!site && String(req.headers.origin ?? "") === site;
         res.writeHead(ok ? 204 : 403, ok ? { "Access-Control-Allow-Origin": site, "Access-Control-Allow-Credentials": "true", "Access-Control-Allow-Methods": "GET", "Access-Control-Allow-Headers": "last-event-id", "Access-Control-Max-Age": "600", Vary: "Origin", "Content-Length": 0 } : { "Content-Length": 0 });
         return res.end();
+      }
+      // Photos, PDFs and voice notes (src/webmedia.js): POST /web/upload, and GET /web/media/… behind
+      // sign-in only — the conversation's own files and what was texted in, never a public address.
+      if (webOn() && (url.pathname === "/web/upload" || url.pathname.startsWith("/web/media/"))) {
+        let out;
+        try {
+          const { webMediaRoute, readRaw } = await import("./webmedia.js");
+          out = await webMediaRoute({ path: url.pathname, method: req.method, headers: req.headers, readBody: (max) => readRaw(req, max), log });
+        } catch (e) {
+          log({ http: url.pathname, threw: (e?.message ?? String(e)).split("\n")[0] });
+          return send(500, { ok: false, error: "server error" });
+        }
+        res.writeHead(out.status, out.headers);
+        return res.end(req.method === "HEAD" ? "" : out.body);
       }
       // Ongoing's own pages (src/pages/webongoing.js): one row's detail, and the small state the Ongoing pages poll.
       const ongoingRoute = /^\/web\/ongoing(?:\/(state|approval|task|timer|series)(?:\/(\d{1,12}))?)?$/.exec(url.pathname);

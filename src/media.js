@@ -46,6 +46,7 @@ import { config } from "./config.js";
 import { CONVERTIBLE, READABLE, checkUrl, findConverter, sniff, toJpeg } from "./pictures.js";
 import { isPdfBytes, pdfText, pdfRefusal, pdfNextStep } from "./pdf.js";
 import { geminiStatus, videoModelFor, videoMimeFor } from "./gemini.js";
+import { localUpload } from "./webuploads.js";
 
 /** Extension → the media_type Claude takes. A hint only; the bytes have the last word. */
 const MODEL_TYPES = {
@@ -153,6 +154,9 @@ export async function fetchImage({
   converter = findConverter(),
   convert = toJpeg,
 } = {}) {
+  // A photo handed in on Reason Web is kept on this machine (src/webuploads.js): read from disk, every check below unchanged.
+  const local = localUpload(url);
+  if (local) fetchImpl = local.fetch;
   const name = filename || String(url ?? "").split("?")[0].split("/").pop() || "the picture";
   const hinted = modelTypeFor(name);
   const convertible = CONVERT_EXTS[extOf(name)] ?? null;
@@ -321,6 +325,9 @@ export async function fetchPdf({
 } = {}) {
   const name = filename || String(url ?? "").split("?")[0].split("/").pop() || "the document";
   if (!url) return { ok: false, why: `they sent a PDF (${name}) but it arrived with no link to it` };
+  // One handed in on Reason Web is read from disk (src/webuploads.js), with the same checks.
+  const local = localUpload(url);
+  if (local) fetchImpl = local.fetch;
 
   const first = checkUrl(url);
   if (!first.ok) return { ok: false, why: `they sent a PDF (${name}) and it could not be downloaded (${first.why})` };

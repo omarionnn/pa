@@ -27,6 +27,7 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node
 import { join, extname } from "node:path";
 import { config, clock } from "./config.js";
 import { checkUrl } from "./pictures.js";
+import { localUpload } from "./webuploads.js";
 import {
   findConverter, runConverter, VOICE_EXT,
   VOICE_AFCONVERT_ARGS, VOICE_FFMPEG_ARGS, WAV_AFCONVERT_ARGS, WAV_FFMPEG_ARGS,
@@ -196,6 +197,9 @@ export async function hear({
   // network. A media_url is a string from a provider, not from the person who sent the note.
   const where = checkUrl(url);
   if (!where.ok) return { ok: false, error: `it could not be downloaded: ${where.why}` };
+  // A voice note recorded on Reason Web is kept on this machine (src/webuploads.js): read from disk.
+  const local = localUpload(url);
+  if (local) fetchImpl = local.fetch;
   const name = filename || String(url).split("?")[0].split("/").pop() || "audio";
   const ext = extname(name).toLowerCase();
   if (!converter && !NATIVE_AUDIO[ext]) {
@@ -328,7 +332,12 @@ export function couldNotHearLine(a, why) {
  * swapped for what was said, or for exactly why it could not be heard.
  */
 export async function hearInto(text, attachments = [], { log = () => {}, listen = hear, status = hearingStatus, cover = () => {} } = {}) {
-  const notes = attachments.filter(isAudio);
+  // Already heard before it got here — a Web voice note, transcribed as it was said (the browser's
+  // own speech recognition) or when it was sent (src/webmedia.js): the words ARE the message.
+  for (const a of attachments.filter(x => isAudio(x) && x.transcribed && x.transcript)) {
+    cover(a.media_id, { coverage: "transcribed", seconds: a.seconds ?? null, transcript: a.transcript, detail: a.transcribed === "browser" ? "transcribed in the browser as it was said" : "" });
+  }
+  const notes = attachments.filter(x => isAudio(x) && !(x.transcribed && x.transcript));
   if (!notes.length) return text;
   if (!status().ok) {
     // Nothing here can listen at all. The adapter's line is already the truth, and the record says

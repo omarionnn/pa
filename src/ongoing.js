@@ -290,7 +290,7 @@ export function approvalItem(conversationId, c) {
   rows.push(["ASKED", dayTime(c.asked_at, tz)]);
   const money_ = !!row || c.amount_cents != null || /money|both/i.test(String(c.stakes ?? "")) || /\$|charge|pay|buy|purchase|order/i.test(`${c.action} ${c.summary}`);
   return {
-    kind: "approval", id: c.id, href: `/web/ongoing/approval/${c.id}`, group: "needs", state: "approval", status: "NEEDS YOU", needs: true, due: c.asked_at,
+    kind: "approval", id: c.id, href: `/web/ongoing/approval/${c.id}`, group: "needs", state: "approval", status: "NEEDS YOU", needs: true, due: c.asked_at, at: c.asked_at,
     title: String(c.summary ?? "").trim(), detail, money: money_, rows, total,
     // AgentCard asks the person's own phone for their passkey (Face ID / Touch ID) before it charges,
     // on every purchase_confirm (src/agentcard.js, vault_approval_required). No other gated action does.
