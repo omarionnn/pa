@@ -82,7 +82,7 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 - **The look** (design handoff 2026-10-26, `~/Desktop/reason-web-handoff-2026-10-26`, kit =
   `src/pages/webkit.js`): Paper / Night tokens hex for hex (`TOKENS`), the four voices (Instrument
   Serif italic = your words + primary actions, Inter = Reason, Courier caps = labels, Caveat in pen =
-  the margin voice), the wordmark bubble in pen (#9c3b2e / #d46a5c — Web only; brand.js unchanged),
+  the margin voice), the wordmark bubble in pen (#9c3b2e / #d46a5c, the same pen as brand.js),
   dashed rules, hard-offset shadows, text actions with →, focus = 2px ink outline offset 3px, reduced
   motion = none. Theme = Paper · Night · Auto radio group (`themeSwitch`), the same `reason-theme`
   localStorage word every page reads. Fonts self-hosted, Latin subsets in `assets/fonts/*-web.woff2`

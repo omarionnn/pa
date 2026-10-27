@@ -28,9 +28,9 @@ test("the pen is #9c3b2e on paper and #d46a5c at night", () => {
   assert.equal(TOKENS.night.pen, BRAND_PEN_DARK);
 });
 
-test("no source, script or asset still carries the old pen #b03030 / #e8765c", () => {
+test("no source, script, asset or verify check still carries the old pen #b03030 / #e8765c", () => {
   const hits = [];
-  for (const dir of ["src", "scripts", "assets"]) {
+  for (const dir of ["src", "scripts", "assets", ".agents/skills/verify-reason/bin"]) {
     for (const f of files(join(root, dir))) if (OLD.test(readFileSync(f, "utf8"))) hits.push(f.slice(root.length));
   }
   assert.deepEqual(hits, []);
