@@ -1427,6 +1427,8 @@ addColumnIfMissing("calls", "direction", "TEXT NOT NULL DEFAULT 'out'");
 // say "rang them, they said Thursday" is a job that has to be told again by somebody. Null is an
 // ordinary call that belongs to no job, and every row from before reads as exactly that.
 addColumnIfMissing("calls", "task_id", "INTEGER");
+// Ongoing asks, per working task, whether a call for it is on the line now (taskCallLive).
+db.exec("CREATE INDEX IF NOT EXISTS calls_task ON calls (conversation_id, task_id)");
 // What language the call is being held in, and which languages its recorded-call disclosure has
 // been spoken in (2026-10-06, with the language switch). On the call rather than in a key-value
 // table because it is per-call state that should be deleted with the call and read back on the row

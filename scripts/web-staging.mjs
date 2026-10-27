@@ -217,10 +217,9 @@ const S = [
   ["signed-out", "Signed out", "Signed out", "", ws.renderSignin({ joinNumber: LINE, formToken: "staging", out: true }), so],
 
   ["first-visit", "Home and thread", "First visit", "Shown once.", wc.renderFirstVisit({ account }), {}],
-  ["home", "Home and thread", "Home · in hand", "Greeting, composer, approval, slips, pick up from iMessage.", home(), {}],
+  ["home", "Home and thread", "Home · in hand", "Greeting, composer, approval on paper, in-hand rows between dashed rules, pick up from iMessage.", home(), {}],
   ["home-new", "Home and thread", "Home · new", "Nothing in hand yet: start-with examples.", wc.renderHome({ account: emptyAccount, csrf: "staging", sendId: "staging", items: [], pick: "" }), {}],
   ["conversation", "Home and thread", "Conversation", "Photo, voice note (▶ plays), PDF slip, list, page card, approval in chat, Ongoing margin. Sending works here.", convo(), {}],
-  ["conversation-all", "Home and thread", "Conversation · Ongoing open", "See all, drawn open.", convo({ all: true }), {}],
   ["conversation-empty", "Home and thread", "Conversation · empty", "No messages, nothing in hand.", wc.renderConversation({ account: emptyAccount, csrf: "staging", lines: [], more: false, sendId: "staging", items: [], approvals: [] }), {}],
 
   ["sending", "Sending", "Sending…", "A message on its way (5A).", convo(), { state: STATE.sending }],
@@ -236,7 +235,8 @@ const S = [
   ["home-slips", "Composer", "Home · slips on the line", "The same composer on the arrival.", home(), { state: STATE.slips }],
 
   ["ongoing", "Ongoing", "Ongoing · list", "Mobile tab: NEEDS YOU, IN HAND, BACK TO YOU.", wc.renderOngoing({ csrf: "staging", items, approvals, back }), {}],
-  ["ongoing-all", "Ongoing", "Ongoing · all", "", wc.renderOngoing({ csrf: "staging", items, approvals, back, all: true }), {}],
+  ...(og.groupRows({ items, back }, "hand").length ? [["ongoing-hand", "Ongoing", "See all · in hand", "2B: newest first, filter words with counts, a meta line on every row.", og.renderSeeAll({ items, approvals, back }, "hand", { tabBar: wc.tabBar("ongoing", og.countOf({ items, approvals, back })), css: wc.CONVO_CSS }), {}]] : []),
+  ...(back.length ? [["ongoing-back", "Ongoing", "See all · back to you", "", og.renderSeeAll({ items, approvals, back }, "back", { tabBar: wc.tabBar("ongoing", og.countOf({ items, approvals, back })), css: wc.CONVO_CSS }), {}]] : []),
   ["ongoing-empty", "Ongoing", "Ongoing · empty", "Nothing left to chase.", wc.renderOngoing({ csrf: "staging", items: [] }), {}],
   ["detail-approval", "Ongoing", "Approval", "Receipt, NOTHING CHARGED YET, reply in chat.", detail("approval", appr.id), {}],
   ["detail-working", "Ongoing", "2A · Working", "Steps with times, the live line.", detail("task", T.working), {}],
@@ -286,13 +286,15 @@ function local(url, signedOut) {
   if (p === "/web") {
     if (qs.has("out")) return "signed-out.html";
     if (qs.has("join")) return "join.html";
-    if (qs.get("tab") === "ongoing") return qs.has("all") ? "ongoing-all.html" : "ongoing.html";
-    if (qs.has("thread")) return qs.has("all") ? "conversation-all.html" : "conversation.html";
+    if (qs.get("tab") === "ongoing") return "ongoing.html";
+    if (qs.has("thread")) return "conversation.html";
     return signedOut ? "signin.html" : "home.html";
   }
   const d = /^\/web\/ongoing\/([a-z]+\/\d+)$/.exec(p);
   if (d) return DETAIL[d[1]] ? `${DETAIL[d[1]]}.html` : "ongoing.html";
   if (p === "/web/ongoing") return "ongoing.html";
+  if (p === "/web/ongoing/hand") return "ongoing-hand.html";
+  if (p === "/web/ongoing/back") return "ongoing-back.html";
   if (p === "/web/memory") {
     if (qs.get("correct") === AISLE) return "memory-correcting.html";
     if (qs.get("forget") === AISLE) return "memory-forget.html";

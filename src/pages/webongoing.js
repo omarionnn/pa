@@ -305,7 +305,7 @@ const SEE_ALL_CSS = `
 .oga .h1{font-size:40px;line-height:1.06;letter-spacing:-.02em}
 .oga-h .lbl{font-size:11px;letter-spacing:.14em}
 .ogf{display:flex;gap:16px;flex-wrap:wrap}
-.ogf a{min-height:36px;display:inline-flex;align-items:center;text-decoration:none;font:400 11px/1 var(--mono);letter-spacing:.12em;color:var(--muted);border-bottom:1.5px solid transparent}
+.ogf a{min-height:44px;display:inline-flex;align-items:center;text-decoration:none;font:400 11px/1 var(--mono);letter-spacing:.12em;color:var(--muted);border-bottom:1.5px solid transparent}
 .ogf a[aria-current=true]{color:var(--ink);border-bottom-color:var(--ink)}
 .ogf a:hover{color:var(--ink)}
 @media (min-width:900px){.oga .h1{font-size:56px}}
