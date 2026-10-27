@@ -40,9 +40,9 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
   Ongoing tab bar (hides while typing). A pending, unanswered confirmation (last 24 h) shows the
   approval card (no approve button; Caveat "just tell me in the chat when you want it.").
 - **Ongoing tidy** (owner 2026-10-26, `test/web-ongoing2.test.js`): the margin and the phone's Ongoing
-  tab show the top 3 rows (`OG_TOP`; needs-you first, then soonest `due`), the rest drawn but folded
-  (`.og-x`); "See all N →" (typed caps, no box) opens them in place, "Show fewer" folds them; no-script
-  = `?thread&all=1` / `?tab=ongoing&all=1`. Desktop margin heading has "HIDE →": the panel slides away,
+  tab show each group's top 3 (`OG_TOP`; IN HAND soonest `due` first; NEEDS YOU never cut) with a count
+  on every heading, then a serif "See all N →" (`.og-more`) to `/web/ongoing/hand|back` (handoff v2;
+  see features/web-ongoing.md "At volume"). The in-place fold (`.og-x`, `?all=1`) is gone. Desktop margin heading has "HIDE →": the panel slides away,
   the thread takes the width, and a thin vertical typed "ONGOING · N" at the right edge (`.og-back`, fixed, desktop only; handoff §3 sheet 3) brings it back; kept per device in
   localStorage `reason-web-og` (applied in HEAD_JS before paint). Phones keep the Chat/Ongoing tabs.
   The top bar (wordmark, MEMORY, SETTINGS) is `position:sticky`, dashed rule once scrolled
@@ -52,7 +52,7 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
   without `REASON_BACKEND=claude-cli` nothing is asked), never the person's name (`normTitle` drops
   it); a series' title goes onto each firing. Until a row has one: `cleanTitle` strips Reason's note
   prefixes. Old rows: `scripts/backfill-item-titles.js` (dry run by default, `--write`; copy first).
-  Drive: render with the preview script and click `.og-all`, `.og-hide`, `.og-back`; scroll → `.stuck`.
+  Drive: render with the preview script and follow `.og-more`, click `.og-hide`, `.og-back`; scroll → `.stuck`.
 - **States** (page script): SENDING… at 60%, SENT that fades, WAITING TO SEND offline + the Caveat
   line "you're offline. i'll send it when you're back.", "lost the line for a sec. nothing's lost."
   after two missed polls, "didn't go. tap to try again." (a button, same id), "on it." (role=status)

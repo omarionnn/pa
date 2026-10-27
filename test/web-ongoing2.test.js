@@ -1,6 +1,6 @@
 // Reason Web, Ongoing tidy (owner, 10-26). One pinned test per approved change:
 //
-//   1. top 3 rows only — needs-you first, then soonest due — and "See all N →" opens the rest in place
+//   1. top 3 rows per group — soonest due — NEEDS YOU all of it, and "See all N →" to the group's page (v2)
 //   2. "HIDE →" beside the Ongoing heading; a vertical "ONGOING · N" at the right edge brings it back; kept per device
 //   3. the top bar stays pinned while the thread scrolls; "Show earlier messages" stays in the thread
 //   4. each row shows a short plain title written once when it is made (the model's, or one
@@ -39,7 +39,7 @@ beforeEach(() => {
 const H = 60 * 60_000;
 const page = (opts = {}) => wc.renderConversation({ account: { conversation_id: C, name: "Omari" }, csrf: "c", lines: [], more: false, sendId: "s", items: wc.inHand(C), approvals: [], ...opts });
 
-test("1. three rows show: needs-you first, then soonest due; See all N → opens the rest, Show fewer folds them", () => {
+test("1. NEEDS YOU shows every one; IN HAND its three soonest due, then a serif See all N → to its own page (handoff v2, 2A/2C)", () => {
   const now = clock.now();
   db.createTimer(C, { fireAt: now + 9 * H, note: "n", label: "Late one" });
   db.createTimer(C, { fireAt: now + 1 * H, note: "n", label: "Soonest" });
@@ -50,24 +50,20 @@ test("1. three rows show: needs-you first, then soonest due; See all N → opens
   assert.deepEqual(wc.inHand(C).map(x => x.title), ["Speedrun reply", "Soonest", "Second", "Third", "Late one"]);
 
   const s = page();
-  const shown = [...s.matchAll(/<a class="og-row( og-x)?" href="[^"]*" data-state="[^"]*"[^>]*><span class="og-top"><b>([^<]+)<\/b>/g)].map(m => [m[2], !m[1]]);
-  assert.deepEqual(shown, [["Speedrun reply", true], ["Soonest", true], ["Second", true], ["Third", false], ["Late one", false]]);
-  assert.match(s, /<a class="og-all" href="\/web\?thread&amp;all=1" aria-controls="og" aria-expanded="false" data-n="5">See all 5 <span aria-hidden="true">→<\/span><\/a><\/aside>/);
-  assert.match(s, /\.og \.og-x\{display:none\}\n\.og\.all \.og-x\{display:flex\}/);
-  assert.ok(!/class="card[^"]*og-all|og-all[^{]*\{[^}]*border:1px/.test(s), "a quiet text action, no box");
-  // In place, by script; and the same list drawn open without it.
-  assert.match(s, /var open=og\.classList\.toggle\('all'\)/);
-  const open = page({ all: true });
-  assert.match(open, /<aside class="og all" id="og" aria-label="Ongoing">/);
-  assert.match(open, /aria-expanded="true" data-n="5">Show fewer<\/a>/);
-  // Three or fewer: no See all at all.
+  const shown = [...s.matchAll(/<a class="ogv" href="[^"]*" data-state="[^"]*"[^>]*><span class="ogv-t">([^<]+)<\/span>/g)].map(m => m[1]);
+  assert.deepEqual(shown, ["Speedrun reply", "Soonest", "Second", "Third"], "the fourth is on See all, not drawn folded");
+  assert.match(s, /<h3 class="pen">NEEDS YOU · 1<\/h3>/);
+  assert.match(s, /<h3>IN HAND · 4<\/h3>[^]*<a class="og-more" href="\/web\/ongoing\/hand">See all 4 <span aria-hidden="true">→<\/span><\/a><\/section><\/aside>/);
+  assert.match(s, /\.og-more\{[^}]*font:italic 400 20px\/1 var\(--serif\)\}/, "serif italic, not typed caps");
+  assert.ok(!/og-all|og-x|Show fewer/.test(s.replace(/<style>[^]*?<\/style>/, "")), "no in-place fold any more");
+  // Three or fewer in hand: no See all at all.
   db.db.exec("DELETE FROM timers");
-  assert.ok(!page().includes("og-all\""));
+  assert.ok(!page().includes("og-more\""));
   // The mobile tab: the same three and See all, under its own heading, Chat/Ongoing tabs kept.
   for (let i = 0; i < 4; i++) db.createTimer(C, { fireAt: now + (i + 1) * H, note: "n", label: `R${i}` });
   const tab = wc.renderOngoing({ csrf: "c", items: wc.inHand(C), approvals: [] });
-  assert.match(tab, /<aside class="og og-tab" id="og" aria-label="Ongoing"><section class="og-sec">/);
-  assert.match(tab, /href="\/web\?tab=ongoing&amp;all=1"[^>]*>See all 5 /);
+  assert.match(tab, /<aside class="og og-tab og-vol" id="og" aria-label="Ongoing"><section class="og-sec">/);
+  assert.match(tab, /href="\/web\/ongoing\/hand">See all 4 /);
   assert.match(tab, /<nav class="tabs" aria-label="Sections">/);
 });
 

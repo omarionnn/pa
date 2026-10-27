@@ -1427,6 +1427,8 @@ addColumnIfMissing("calls", "direction", "TEXT NOT NULL DEFAULT 'out'");
 // say "rang them, they said Thursday" is a job that has to be told again by somebody. Null is an
 // ordinary call that belongs to no job, and every row from before reads as exactly that.
 addColumnIfMissing("calls", "task_id", "INTEGER");
+// Ongoing asks, per working task, whether a call for it is on the line now (taskCallLive).
+db.exec("CREATE INDEX IF NOT EXISTS calls_task ON calls (conversation_id, task_id)");
 // What language the call is being held in, and which languages its recorded-call disclosure has
 // been spoken in (2026-10-06, with the language switch). On the call rather than in a key-value
 // table because it is per-call state that should be deleted with the call and read back on the row
@@ -1701,6 +1703,9 @@ addColumnIfMissing("timers", "series_id", "INTEGER");
 // for it points back here through `calls.timer_id` — which is also how a retry knows the phone has
 // already rung. A series carries one too, copied onto every firing it schedules.
 addColumnIfMissing("timers", "call_goal", "TEXT");
+// When a timer was set (Reason Web's Ongoing "See all", newest first: owner's handoff v2, sheet 2B).
+// Older rows have none and sort after every dated one; nothing is guessed for them.
+addColumnIfMissing("timers", "created_at", "INTEGER");
 addColumnIfMissing("series", "call_goal", "TEXT");
 addColumnIfMissing("calls", "timer_id", "INTEGER");
 // The one text a scheduled call that reached nobody is owed, stamped so it goes exactly once
@@ -1804,8 +1809,8 @@ export function setPlanStatus(conversationId, id, status) {
 
 // ---------- timers ----------
 export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null, callGoal = null, label = null }) {
-  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id, call_goal, label) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(conversationId, fireAt, note, planId, taskId, seriesId, callGoal ? String(callGoal) : null, label || null);
+  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id, call_goal, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(conversationId, fireAt, note, planId, taskId, seriesId, callGoal ? String(callGoal) : null, label || null, clock.now());
   return getTimer(conversationId, Number(r.lastInsertRowid));
 }
 /** The call a timer's firing placed, if the phone has already rung for it. Unscoped: the fire path holds the timer row. */
@@ -4656,6 +4661,16 @@ export function claimErrandBooking(conversationId, errandId, callId) {
 export function errandCalls(conversationId, errandId) {
   return db.prepare("SELECT * FROM calls WHERE conversation_id = ? AND errand_id = ? ORDER BY id ASC")
     .all(conversationId, errandId).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
+}
+
+/**
+ * Is a call for this task on the line right now (Reason Web's Ongoing: "WORKING · CALLING NOW")?
+ * Only one started in the last `withinMs`: a row whose end never arrived (see lostCalls) is not a
+ * call that is ringing now.
+ */
+export function taskCallLive(conversationId, taskId, { now = clock.now(), withinMs = 2 * 60 * 60_000 } = {}) {
+  return !!db.prepare("SELECT 1 FROM calls WHERE conversation_id = ? AND task_id = ? AND state IN ('placing','ringing','in_progress') AND created_at >= ? LIMIT 1")
+    .get(conversationId, taskId, now - withinMs);
 }
 
 /** Calls on this errand that are still going, for the parallel limit. */

@@ -35,6 +35,31 @@ export const dayShort = (ms, tz) => fmt(tz, { weekday: "short", month: "short", 
 export const dayTime = (ms, tz) => `${fmt(tz, { weekday: "short" }).format(ms).toUpperCase()} · ${fmt(tz, { hour: "numeric", minute: "2-digit" }).format(ms).toUpperCase()}`;
 /** "Tuesday, 2:40 PM" for a sentence. */
 const daySentence = (ms, tz) => `${fmt(tz, { weekday: "long" }).format(ms)}, ${fmt(tz, { hour: "numeric", minute: "2-digit" }).format(ms)}`;
+/**
+ * When something happened, as a row's typed meta line says it (handoff v2, sheet 2B): "2:55 PM" today,
+ * "YESTERDAY", the weekday within the week ("TUE"), else the date ("NOV 1").
+ */
+export function whenWord(ms, now = clock.now(), tz = config.tz) {
+  if (!Number.isFinite(ms)) return null;
+  const day = (x) => fmt(tz, { year: "numeric", month: "2-digit", day: "2-digit" }).format(x);
+  if (day(ms) === day(now)) return fmt(tz, { hour: "numeric", minute: "2-digit" }).format(ms).toUpperCase();
+  if (day(ms) === day(now - 24 * 60 * 60_000)) return "YESTERDAY";
+  if (ms < now && now - ms < 6 * 24 * 60 * 60_000) return fmt(tz, { weekday: "short" }).format(ms).toUpperCase();
+  return fmt(tz, { month: "short", day: "numeric" }).format(ms).toUpperCase();
+}
+/**
+ * When a scheduled row next goes off, for a row's right side (sheet 2A/2B/2C): within the week the
+ * weekday and time in serif ("Mon 9:00") or typed in the margin ("MON"); further out the date ("Nov 1" / "NOV 1").
+ */
+export function nextWords(ms, tz = config.tz, now = clock.now()) {
+  if (!Number.isFinite(ms)) return { serif: null, typed: null };
+  if (ms - now < 6 * 24 * 60 * 60_000) {
+    const wd = fmt(tz, { weekday: "short" }).format(ms);
+    return { serif: `${wd} ${clockOf(ms, tz)}`, typed: wd.toUpperCase() };
+  }
+  const d = fmt(tz, { month: "short", day: "numeric" }).format(ms);
+  return { serif: d, typed: d.toUpperCase() };
+}
 const money = (cents) => `$${(Math.round(cents) / 100).toFixed(2).replace(/\.00$/, "")}`;
 
 const DAYS = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"];
@@ -158,7 +183,9 @@ function taskItem(conversationId, t, name, now) {
   const base = { kind: "task", id: t.id, href: `/web/ongoing/task/${t.id}`, title: titled("task", conversationId, t, t.title, name), task: t };
   const sheet = t.sheet ?? {};
   if (t.state === "waiting_on_you") {
-    return { ...base, group: "needs", state: "needs", status: "NEEDS YOU", words: "waiting on you", needs: true, due: t.next_wake_at ?? null,
+    const asked = sheet.needs?.asked_at ?? null;
+    return { ...base, group: "needs", state: "needs", status: "NEEDS YOU", words: "waiting on you", needs: true, due: t.next_wake_at ?? null, started: t.created_at,
+      meta: asked ? `ASKED ${whenWord(asked, now, tz)}` : null,
       detail: sheet.needs?.question ?? null, question: sheet.needs?.question ?? null, tradeoff: sheet.needs?.tradeoff ?? null, asked: sheet.needs?.asked_at ?? null };
   }
   if (t.state === "waiting" || t.state === "waiting_on_other") {
@@ -166,11 +193,13 @@ function taskItem(conversationId, t, name, now) {
     const since = w?.since ?? null;
     const check = w?.next_check ?? t.wanted_wake_at ?? t.next_wake_at ?? null;
     const detail = w ? `On ${w.on}${w.for ? `: ${w.for.replace(/[.]$/, "")}` : ""}.${since ? ` Asked ${daySentence(since, tz)}.` : ""}` : null;
-    return { ...base, group: "hand", state: "waiting", status: "WAITING", words: "waiting to hear back", needs: false, due: check,
+    return { ...base, group: "hand", state: "waiting", status: "WAITING", words: "waiting to hear back", needs: false, due: check, started: t.created_at,
+      meta: w ? `ON ${w.on.toUpperCase()}${since ? ` · SINCE ${whenWord(since, now, tz)}` : ""}` : null,
       detail, waitingOn: w?.on ?? null, waitingFor: w?.for ?? null, since, check: check && check > now ? check : null };
   }
   if (t.state === "blocked") {
-    return { ...base, group: "hand", state: "stuck", status: "STUCK", words: "stuck. i'll say why in the chat", needs: false, due: t.next_wake_at ?? null,
+    return { ...base, group: "hand", state: "stuck", status: "STUCK", words: "stuck. i'll say why in the chat", needs: false, due: t.next_wake_at ?? null, started: t.created_at,
+      meta: sheet.blocked?.at ? `SINCE ${whenWord(sheet.blocked.at, now, tz)}` : null,
       detail: sheet.blocked?.what ?? null, blocked: sheet.blocked ?? null };
   }
   // running: a real checklist
@@ -178,20 +207,25 @@ function taskItem(conversationId, t, name, now) {
   const doing = steps.find(s => s.state === "doing") ?? null;
   const doneN = steps.filter(s => s.state === "done").length;
   const lastLog = db.taskLog(t.id, 1)[0] ?? null;
-  return { ...base, group: "hand", state: "working", status: "WORKING", words: "working on it", needs: false, due: t.next_wake_at ?? null,
-    steps, realSteps: real, of: real && steps.length > 1 ? `${Math.min(steps.length, doing ? doneN + 1 : doneN)} OF ${steps.length}` : null, live: doing?.live ?? null,
+  const of = real && steps.length > 1 ? `${Math.min(steps.length, doing ? doneN + 1 : doneN)} OF ${steps.length}` : null;
+  // "2 OF 3" at the right says how far; the meta line says it's working and since when, or that a call for it is on the line now.
+  const calling = db.taskCallLive(conversationId, t.id, { now });
+  const meta = `${of ? "WORKING · " : ""}${calling ? "CALLING NOW" : `STARTED ${whenWord(t.created_at, now, tz)}`}`;
+  return { ...base, group: "hand", state: "working", status: "WORKING", words: "working on it", needs: false, due: t.next_wake_at ?? null, started: t.created_at,
+    steps, realSteps: real, of, calling, meta, live: doing?.live ?? null,
     detail: steps.length ? null : (lastLog && lastLog.kind !== "state" ? lastLog.note : null), goal: t.goal, nothingBooked: !committedOn(conversationId, t) };
 }
 
-function backItem(conversationId, t, name) {
+function backItem(conversationId, t, name, now = clock.now()) {
   const res = parseJson(t.result_json) ?? {};
-  const base = { kind: "task", id: t.id, href: `/web/ongoing/task/${t.id}`, title: titled("task", conversationId, t, t.title, name), group: "back", needs: false, due: t.finished_at, task: t };
+  const at = t.finished_at ? whenWord(t.finished_at, now) : null;
+  const base = { kind: "task", id: t.id, href: `/web/ongoing/task/${t.id}`, title: titled("task", conversationId, t, t.title, name), group: "back", needs: false, due: t.finished_at, started: t.finished_at, task: t };
   if (t.state === "done") {
-    return { ...base, state: "ready", status: "READY", words: "done",
+    return { ...base, state: "ready", status: "READY", words: "done", meta: at ? `DONE · ${at}` : null,
       result: { headline: res.headline ?? null, facts: res.facts ?? [], note: res.note ?? (res.headline || res.facts?.length ? null : t.outcome || null) } };
   }
   const point = (t.sheet?.furthest ?? []).at(-1) ?? null;
-  return { ...base, state: "failed", status: "DIDN'T WORK", words: "didn't work",
+  return { ...base, state: "failed", status: "DIDN'T WORK", words: "didn't work", meta: at ? `STOPPED · ${at}` : null,
     why: res.why ?? point?.because ?? t.sheet?.blocked?.what ?? (t.outcome || null),
     next: res.next ?? point?.one_action ?? null,
     nothingCharged: !chargedDuring(conversationId, t.created_at, t.finished_at ?? clock.now()) };
@@ -200,6 +234,7 @@ function backItem(conversationId, t, name) {
 function timerItem(conversationId, t, name) {
   const tz = config.tz;
   return { kind: "timer", id: t.id, href: `/web/ongoing/timer/${t.id}`, group: "hand", state: "scheduled", needs: false, due: t.fire_at,
+    started: t.created_at ?? null, meta: "ONCE", next_: nextWords(t.fire_at, tz),
     title: titled("timer", conversationId, t, t.note, name) || (t.call_goal ? "A call" : "A reminder"),
     status: t.call_goal ? "CALL" : "REMINDER", call: !!t.call_goal,
     when: `${fmt(tz, { weekday: "short" }).format(t.fire_at)} ${clockOf(t.fire_at, tz)}`,
@@ -214,6 +249,7 @@ function seriesItem(conversationId, s, name) {
   const tz = s.tz || config.tz;
   const every = everyWords(rule);
   return { kind: "series", id: s.id, href: `/web/ongoing/series/${s.id}`, group: "hand", state: "scheduled", needs: false, due: next,
+    started: s.created_at ?? null, meta: every.long || null, next_: nextWords(next, tz),
     title: titled("series", conversationId, s, s.what, name), status: every.short, call: !!s.call_goal,
     when: next ? `${fmt(tz, { weekday: "short" }).format(next)} ${clockOf(next, tz)}` : every.short,
     time: next ? clockOf(next, tz) : null, period: next ? periodOf(next, tz) : "", date: next ? dayShort(next, tz) : null,
@@ -251,7 +287,7 @@ function flightFacts(conversationId, row) {
 }
 
 /** One approval Reason is waiting on, with only the fields its own record really has. */
-export function approvalItem(conversationId, c) {
+export function approvalItem(conversationId, c, now = clock.now()) {
   const tz = config.tz;
   const row = c.action === "purchase_confirm" ? purchaseFor(conversationId, c) : null;
   const rows = [];
@@ -291,6 +327,7 @@ export function approvalItem(conversationId, c) {
   const money_ = !!row || c.amount_cents != null || /money|both/i.test(String(c.stakes ?? "")) || /\$|charge|pay|buy|purchase|order/i.test(`${c.action} ${c.summary}`);
   return {
     kind: "approval", id: c.id, href: `/web/ongoing/approval/${c.id}`, group: "needs", state: "approval", status: "NEEDS YOU", needs: true, due: c.asked_at, at: c.asked_at,
+    started: c.asked_at, meta: `ASKED ${whenWord(c.asked_at, now, tz)}`,
     title: String(c.summary ?? "").trim(), detail, money: money_, rows, total,
     // AgentCard asks the person's own phone for their passkey (Face ID / Touch ID) before it charges,
     // on every purchase_confirm (src/agentcard.js, vault_approval_required). No other gated action does.
@@ -303,7 +340,7 @@ export function approvalItem(conversationId, c) {
 export function approvals(conversationId, now = clock.now()) {
   return db.pendingConfirmations(conversationId)
     .filter(c => c.granted_at == null && now - c.asked_at < APPROVAL_WINDOW_MS && String(c.summary ?? "").trim())
-    .map(c => approvalItem(conversationId, c));
+    .map(c => approvalItem(conversationId, c, now));
 }
 
 /**
@@ -324,7 +361,7 @@ export function ongoing(conversationId, now = clock.now()) {
   const back = db.listTasks(conversationId, { includeClosed: true })
     .filter(t => (t.state === "done" || t.state === "failed") && t.finished_at && now - t.finished_at < BACK_WINDOW_MS)
     .sort((a, b) => b.finished_at - a.finished_at || a.id - b.id)
-    .map(t => backItem(conversationId, t, name)).filter(x => x.title);
+    .map(t => backItem(conversationId, t, name, now)).filter(x => x.title);
   return { approvals: approvals(conversationId, now), items, back };
 }
 
@@ -335,13 +372,13 @@ export function findItem(conversationId, kind, id, now = clock.now()) {
   const name = nameOf(conversationId);
   if (kind === "approval") {
     const c = db.getConfirmation(conversationId, n);
-    return c && c.granted_at == null && c.refused_at == null && c.consumed_at == null && now - c.asked_at < APPROVAL_WINDOW_MS ? approvalItem(conversationId, c) : null;
+    return c && c.granted_at == null && c.refused_at == null && c.consumed_at == null && now - c.asked_at < APPROVAL_WINDOW_MS ? approvalItem(conversationId, c, now) : null;
   }
   if (kind === "task") {
     const t = db.getTask(conversationId, n);
     if (!t) return null;
     if (t.open) return taskItem(conversationId, t, name, now);
-    return t.state === "done" || t.state === "failed" ? backItem(conversationId, t, name) : null;
+    return t.state === "done" || t.state === "failed" ? backItem(conversationId, t, name, now) : null;
   }
   if (kind === "timer") {
     const t = db.getTimer(conversationId, n);

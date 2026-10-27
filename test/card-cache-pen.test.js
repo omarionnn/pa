@@ -7,11 +7,11 @@ import { INVITE_CARD_VERSION } from "../src/invitecard.js";
 import { DRAWN_COVER_VERSION } from "../src/eventcover.js";
 
 test("invite cards drawn in orange are drawn again in red", () => {
-  assert.ok(INVITE_CARD_VERSION >= 3);
+  assert.ok(INVITE_CARD_VERSION >= 5); // 5: pen #9c3b2e / #d46a5c
 });
 
 test("event covers drawn in orange are drawn again in red", () => {
-  assert.ok(DRAWN_COVER_VERSION >= 2);
+  assert.ok(DRAWN_COVER_VERSION >= 3); // 3: pen #9c3b2e / #d46a5c
 });
 
 // The picture an invite link shows when its own card cannot be drawn (src/http.js) stayed the old

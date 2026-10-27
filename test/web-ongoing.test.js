@@ -5,7 +5,8 @@
 //   2. working: a real checklist (✓ / ○ pen / ○ muted, text alternatives), never a percentage
 //   3. waiting (who, since), scheduled (time + EVERY MON), one-off (time + date)
 //   4. back to you: READY → View result; DIDN'T WORK in pen with the Caveat reason and the next plan
-//   5. the desktop margin: same groups, "2 OF 3" + the Caveat live line, PR #179's top 3 / See all kept
+//   5. the desktop margin: same groups, "2 OF 3" + the Caveat live line; at volume 2C's quiet rows (test/web-ongoing-volume.test.js)
+//   (1–4 draw three things in hand, ongoing-mobile's fuller rows; four or more is "at volume", sheet 2A)
 //   6. details 2A–2E and the approval detail, with only the fields each row really has
 //   7. the approval stays chat-driven: no approve button; the nudge is intent; Face ID only for AgentCard
 //   8. the plumbing the design needed: sheet.steps, task_finish's result, a confirmation's amount
@@ -52,18 +53,21 @@ beforeEach(() => {
 });
 /** Pages escape an apostrophe as &#39;; the tests read the words. */
 const words = (h) => h.replace(/&#39;/g, "'");
-const tab = () => words(wc.renderOngoing({ csrf: "c", ...og.ongoing(C), all: true }));
+const tab = () => words(wc.renderOngoing({ csrf: "c", ...og.ongoing(C) }));
+/** The fixture with three things in hand (its one-off reminder off): ongoing-mobile's fuller rows, not volume's. */
+const seedFew = (opts) => { const ids = seedOngoing(C, opts); db.cancelTimer(C, ids.timer); return ids; };
 const margin = () => words(wc.renderConversation({ account: { conversation_id: C, name: "Omari" }, csrf: "c", lines: [], more: false, sendId: "s", ...og.ongoing(C) }));
 
-test("1. the tab: Ongoing, N THINGS · N NEEDS YOU, the three groups in order, a typed status on every row", () => {
-  seedOngoing(C);
+test("1. the tab: Ongoing, N THINGS · N NEEDS YOU, the three groups in order with their counts, a typed status on every row", () => {
+  seedFew();
   const s = tab();
-  assert.match(s, /<h1 class="h1">Ongoing<\/h1><p class="lbl">7 THINGS · 1 NEEDS YOU<\/p>/);
-  const heads = [...s.matchAll(/<h2( class="pen")?>([A-Z ]+)<\/h2>/g)].map(m => [m[2], !!m[1]]);
-  assert.deepEqual(heads, [["NEEDS YOU", true], ["IN HAND", false], ["BACK TO YOU", false]]);
+  assert.match(s, /<h1 class="h1">Ongoing<\/h1><p class="lbl">6 THINGS · 1 NEEDS YOU<\/p>/);
+  const heads = [...s.matchAll(/<h2( class="pen")?>([A-Z ]+ · \d+)<\/h2>/g)].map(m => [m[2], !!m[1]]);
+  assert.deepEqual(heads, [["NEEDS YOU · 1", true], ["IN HAND · 3", false], ["BACK TO YOU · 2", false]]);
   for (const t of ["WORKING", "WAITING", "EVERY MON", "READY"]) assert.match(s, new RegExp(`<span class="lbl">${t}</span>`));
   assert.match(s, /<span class="lbl pen">DIDN'T WORK<\/span>/);
-  assert.match(s, /<nav class="tabs"[^]*Ongoing<span class="n" aria-label="7 things">7<\/span>/);
+  assert.match(s, /<nav class="tabs"[^]*Ongoing<span class="n" aria-label="6 things">6<\/span>/);
+  assert.ok(!s.includes("See all"), "nothing past the top three, so no See all");
   assert.ok(!/%|progress-bar|<progress/.test(s.replace(/<style>[^]*?<\/style>/, "")), "no percentages");
   // The approval on its paper card, with the reference's two lines under it.
   assert.match(s, /<div class="card appr og-appr"><p class="appr-t">Buy the CeraVe PM lotion from Target<\/p><p class="appr-d">\$16\.78 all-in from Target\.<\/p><p class="lbl">NOTHING CHARGED YET<\/p><div class="appr-f"><a class="appr-go" href="\/web\/ongoing\/approval\/\d+">Review details <span aria-hidden="true">→<\/span><\/a><span class="hand tilt15">or just reply in the chat<\/span>/);
@@ -73,7 +77,7 @@ test("1. the tab: Ongoing, N THINGS · N NEEDS YOU, the three groups in order, a
 });
 
 test("2. working: the real steps, ✓ done · ○ pen in hand with its live words · ○ muted not started, each with a text alternative", () => {
-  const ids = seedOngoing(C, { withApproval: false });
+  const ids = seedFew({ withApproval: false });
   const s = tab();
   const row = s.slice(s.indexOf(`href="/web/ongoing/task/${ids.working}"`), s.indexOf("</a>", s.indexOf(`href="/web/ongoing/task/${ids.working}"`)));
   assert.match(row, /data-state="working" data-flight="WORKING"/);
@@ -103,8 +107,6 @@ test("3. waiting says who and since; scheduled shows the time and EVERY MON; a o
   assert.equal(s.period, "AM");
   assert.match(s.date, /^MON [A-Z]{3} \d{1,2}$/);
   assert.equal(s.description, "Call the gym about the 6 PM class, then text you what they say.");
-  const html = tab();
-  assert.match(html, /<span class="og-time">9:00<span class="ampm">AM<\/span><\/span>/);
   const t = og.findItem(C, "timer", ids.timer);
   assert.equal(t.every, null);
   assert.match(t.date, /^[A-Z]{3} [A-Z]{3} \d{1,2}$/);
@@ -112,12 +114,14 @@ test("3. waiting says who and since; scheduled shows the time and EVERY MON; a o
   assert.equal(og.ongoing(C).items.filter(x => x.kind === "timer").length, 1);
   assert.deepEqual(og.everyWords({ kind: "weekly", weekdays: [1, 4] }), { short: "EVERY MON · THU", long: "EVERY MONDAY AND THURSDAY" });
   assert.equal(og.everyWords({ kind: "daily" }).short, "EVERY DAY");
+  db.cancelTimer(C, ids.timer);
+  assert.match(tab(), /<span class="og-time">9:00<span class="ampm">AM<\/span><\/span>/);
 });
 
 test("4. back to you: READY with View result →; DIDN'T WORK with the Caveat reason and the next plan; gone after three days", () => {
-  const ids = seedOngoing(C, { withApproval: false });
+  const ids = seedFew({ withApproval: false });
   const s = tab();
-  assert.match(s, new RegExp(`<div class="og-row(?: og-x)?" data-state="ready"><span class="og-top"><b>Table for four, Saturday</b><span class="lbl">READY</span></span><a class="og-go" href="/web/ongoing/task/${ids.ready}">View result `));
+  assert.match(s, new RegExp(`<div class="og-row" data-state="ready"><span class="og-top"><b>Table for four, Saturday</b><span class="lbl">READY</span></span><a class="og-go" href="/web/ongoing/task/${ids.ready}">View result `));
   assert.match(s, /<b>Two tickets for Friday<\/b><span class="lbl pen">DIDN'T WORK<\/span><\/span><span class="hand">sold out before i got in\. sorry\.<\/span><span class="og-d">I'm watching resale/);
   clock.skip(og.BACK_WINDOW_MS + 1);
   assert.equal(og.ongoing(C).back.length, 0);
@@ -128,19 +132,23 @@ test("4. back to you: READY with View result →; DIDN'T WORK with the Caveat re
   assert.ok(!og.ongoing(C).back.some(x => x.title === "Called off"));
 });
 
-test("5. the desktop margin: the same groups, 2 OF 3 with the live line, PR #179's top 3 and See all kept", () => {
-  seedOngoing(C);
+test("5. the desktop margin: the same groups with counts, 2 OF 3 with the live line; at volume, 2C's quiet rows", () => {
+  const ids = seedFew();
   const s = margin();
   assert.match(s, /<div class="og-h"><h2>Ongoing<\/h2><button class="act2 og-hide"/);
   assert.match(s, /<b>Nov 14–16 at all three<\/b><span class="lbl">2 OF 3<\/span><\/span><span class="hand">on the phone now<\/span>/);
   assert.match(s, /<b>Check in on the gym class<\/b><span class="when">Mon 9:00<\/span>/);
   assert.match(s, /<b>Table for four, Saturday<\/b><span class="og-v">View /);
-  assert.match(s, /<h3>BACK TO YOU<\/h3>/);
-  // Top three: the approval, then the two soonest; the rest folded; See all counts everything.
-  const shown = [...s.matchAll(/class="(?:og-row|card appr og-appr)( og-x)?"/g)].map(m => !m[1]);
-  assert.deepEqual(shown, [true, true, true, false, false, false, false]);
-  assert.match(s, /data-n="7">See all 7 /);
-  assert.match(s, /<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing, 7 things"><span aria-hidden="true">ONGOING · 7<\/span><\/button>/);
+  assert.match(s, /<h3>BACK TO YOU · 2<\/h3>/);
+  assert.match(s, /<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing, 6 things"><span aria-hidden="true">ONGOING · 6<\/span><\/button>/);
+  // A fourth thing in hand: volume. The top three, then a serif "See all 4 →" to IN HAND's own page.
+  db.createTimer(C, { fireAt: clock.now() + 50 * H, note: "n", label: "Call the landlord" });
+  const v = margin();
+  assert.match(v, /<aside class="og og-vol" id="og"/);
+  assert.match(v, /<h3>IN HAND · 4<\/h3><div class="ogv-l">(<a class="ogv" [^]*?<\/a>){3}<\/div><a class="og-more" href="\/web\/ongoing\/hand">See all 4 <span aria-hidden="true">→<\/span><\/a>/);
+  assert.match(v, new RegExp(`<a class="card og-vc m" href="/web/ongoing/approval/${ids.approval}"><span class="ogv-t">Buy the CeraVe PM lotion from Target</span><span class="lbl">NOTHING CHARGED YET</span></a>`));
+  assert.match(v, /<span class="ogv-t">Call the landlord<\/span><span class="ogv-r"><span class="lbl">[A-Z]{3}<\/span><\/span><\/a>/, "the margin types the day");
+  assert.ok(!v.includes("Check in on the gym class"), "the fourth soonest is on See all");
 });
 
 test("6. details 2A–2E and the approval: ← ONGOING, a typed status, a serif headline, the row's real fields", () => {
