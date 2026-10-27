@@ -216,7 +216,7 @@ test("pin: the PINNED card (date block, meta, serif title), out of the time grou
   assert.match(list.body, /<span class="sv-date" aria-hidden="true"><span>NOV<\/span><span>14<\/span><\/span><span class="sv-pt"><span class="sv-pm">EVENT · SHARED WITH 3<\/span><span class="sv-ptt">A weekend upstate<\/span>/);
   assert.doesNotMatch(list.body, /class="sv-t">A weekend upstate/, "a pinned item is not repeated in its time group");
   const opened = await call({ sub: `saved/event/${ev.id}`, b });
-  assert.match(opened.body, /aria-pressed="true">UNPIN<\/button>/);
+  assert.match(opened.body, /type="submit">UNPIN<\/button>/);
   await call({ sub: "saved/pin", method: "POST", b, body: form({ c: b.csrf, k: key, on: "0" }) });
   assert.doesNotMatch((await call({ b })).body, /PINNED/);
 });
@@ -282,7 +282,11 @@ test("the opened page: typed line, PIN · OPEN THE PAGE ↗ · FIND IT IN THE CH
 
   const frame = await call({ sub: `saved/page/${pid}/frame`, b });
   assert.equal(frame.status, 200);
-  assert.equal(frame.headers["Content-Security-Policy"], "frame-ancestors 'self'");
+  assert.match(frame.headers["Content-Security-Policy"], /script-src 'none'/);
+  assert.match(frame.headers["Content-Security-Policy"], /frame-ancestors 'self'$/);
+  assert.doesNotMatch(frame.body, /<script>/, "nothing runs inside the frame");
+  assert.match(out.body, /sandbox="allow-same-origin allow-popups[^"]*"/);
+  assert.doesNotMatch(out.body, /sandbox="[^"]*allow-scripts/);
   assert.equal(frame.headers["X-Frame-Options"], "SAMEORIGIN");
   assert.match(frame.body, /<base target="_top">/);
   assert.match(frame.body, /Peaches is closest to everyone\./);
@@ -345,6 +349,7 @@ test("Saved rows and actions meet the 44px floor and the kit's focus ring; reduc
   assert.match(css, /\.op-a\{min-height:44px/);
   assert.match(css, /\.op-rm\{align-self:flex-start;min-height:44px/);
   assert.match(css, /\.sv-find input\{height:44px/);
+  assert.match(css, /\.sv-kinds a\{min-height:44px/);
   assert.match(css, /\.tabs a\{min-width:96px;min-height:48px/);
   assert.match(css, /prefers-reduced-motion:reduce/);
 });

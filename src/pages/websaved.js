@@ -116,7 +116,7 @@ function paper(it) {
   const r = it.row ?? {};
   if (it.kind === "page") {
     const src = `/web/saved/page/${encodeURIComponent(it.id)}/frame`;
-    return `<div class="op-card framed"><iframe class="op-frame" src="${esc(src)}" title="${esc(it.title)}" loading="lazy"></iframe><div class="op-pad">${hand(AGAIN_NOTE, { cls: "op-note" })}</div></div>`;
+    return `<div class="op-card framed"><iframe class="op-frame" src="${esc(src)}" title="${esc(it.title)}" loading="lazy" sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation"></iframe><div class="op-pad">${hand(AGAIN_NOTE, { cls: "op-note" })}</div></div>`;
   }
   let inner = `<h2 class="op-h">${esc(it.title)}</h2>${it.stamp ? stamp(it.stamp.text, it.stamp.tone) : ""}`;
   if (it.kind === "call") {
@@ -153,7 +153,7 @@ function openedHtml(it, { csrf, conv, auto, back }) {
   const msg = messageFor(conv, it);
   const hidden = (k, v) => `<input type="hidden" name="${k}" value="${esc(v)}">`;
   const pinForm = `<form method="POST" action="/web/saved/pin">${hidden("c", csrf)}${hidden("k", it.key)}${hidden("on", it.pinnedAt ? "0" : "1")}${hidden("back", back)}`
-    + `<button class="op-a" type="submit" aria-pressed="${it.pinnedAt ? "true" : "false"}">${it.pinnedAt ? "UNPIN" : "PIN"}</button></form>`;
+    + `<button class="op-a" type="submit">${it.pinnedAt ? "UNPIN" : "PIN"}</button></form>`;
   return `<section class="sv-open${auto ? " auto" : ""}" aria-label="Opened">`
     + `<a class="act2 sv-back" href="/web/saved">← SAVED</a>`
     + `<div class="op-top"><span class="op-what">${esc(made)}</span><span class="op-acts">${pinForm}`
@@ -180,7 +180,7 @@ const CSS = `
 .sv-find input::placeholder{color:var(--muted)}
 .sv-find input:focus-visible{border-bottom-width:2px;caret-color:var(--pen)}
 .sv-kinds{display:flex;gap:18px;flex-wrap:wrap}
-.sv-kinds a{min-height:36px;display:inline-flex;align-items:center;text-decoration:none;font:400 11px/1.3 var(--mono);letter-spacing:.12em;color:var(--muted);border-bottom:1.5px solid transparent}
+.sv-kinds a{min-height:44px;display:inline-flex;align-items:center;text-decoration:none;font:400 11px/1.3 var(--mono);letter-spacing:.12em;color:var(--muted);border-bottom:1.5px solid transparent}
 .sv-kinds a[aria-current]{color:var(--ink);border-bottom-color:var(--ink)}
 .sv-h{margin:0 0 4px;font:400 11px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
 .sv-h.pen{color:var(--pen)}
@@ -314,13 +314,19 @@ export function renderSaved({ account, csrf, query = {}, openKey = null, now = c
   return webPage({ title, body: topHtml() + main + tabBar("saved", count), css: CSS, script: FRAME_JS, bodyClass: "has-tabs", foot: "" });
 }
 
-/** The page itself, as its own host draws it, for the paper card. Read-only: no choice buttons, no theme switch. */
-export function renderFrame(page) {
+/**
+ * The page itself, as its own host draws it, for the paper card. Read-only: no choice buttons, no
+ * theme switch, and no script at all — the frame is sandboxed without scripts and served under a CSP
+ * that forbids them, so nothing a page carries can reach the signed-in Web page around it. The theme
+ * is drawn server-side: the person's Web choice (paper | night), else the phone's.
+ */
+export function renderFrame(page, { theme = null } = {}) {
   const picked = db.pageChoicesFor(page.id);
   const html = renderPage(page, { interactive: false, picked, printing: true });
-  const theme = `<script>(function(){try{var t=localStorage.getItem('reason-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}})();</script>`;
-  return html.replace("<head>", `<head><base target="_top">${theme}`);
+  const t = theme === "paper" ? ` data-theme="light"` : theme === "night" ? ` data-theme="dark"` : "";
+  return html.replace(/<html lang="en">/, `<html lang="en"${t}>`).replace(/<head[^>]*>/, (m) => `${m}<base target="_top">`);
 }
+export const FRAME_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' https: data:; media-src 'self' https:; font-src 'self' data:; script-src 'none'; form-action 'none'; base-uri 'self'; frame-ancestors 'self'";
 
 // ---------------------------------------------------------------- routes
 
@@ -347,7 +353,7 @@ export async function savedRequest({ account, path = "", method, query = {}, hea
     if (frame) {
       const page = db.getPageIn(conv, frame[1]);
       if (!page) return html(404, renderNotFound(), SECURITY_HEADERS);
-      return html(200, renderFrame(page), { ...SECURITY_HEADERS, "Content-Security-Policy": "frame-ancestors 'self'", "X-Frame-Options": "SAMEORIGIN" });
+      return html(200, renderFrame(page, { theme: db.webTheme(conv) }), { ...SECURITY_HEADERS, "Content-Security-Policy": FRAME_CSP, "X-Frame-Options": "SAMEORIGIN" });
     }
     if (item) {
       const key = `${item[1]}-${item[2]}`;

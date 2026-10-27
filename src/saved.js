@@ -215,7 +215,7 @@ export function restoreSaved(conv, key) {
  */
 export function messageFor(conv, item) {
   const q = (sql, ...a) => ONE(`SELECT id FROM messages WHERE conversation_id = ? AND deleted_at IS NULL AND role = 'assistant' AND ${sql} ORDER BY at, id LIMIT 1`, conv, ...a)?.id ?? null;
-  if (item.kind === "page") return q("instr(text, ?) > 0", item.id);
+  if (item.kind === "page") return q("instr(text, ?) > 0", `/${item.id}`);
   if (item.kind === "event") return q("instr(text, ?) > 0", item.row.public_id);
   if (item.kind === "album") return q("instr(text, ?) > 0", `${item.row.public_id}/album`);
   const t = Number(item.endedAt ?? item.at);
