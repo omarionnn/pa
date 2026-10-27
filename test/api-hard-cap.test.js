@@ -53,7 +53,7 @@ test("defaults: $1 a day, $2 a day for calls, $10 a month", async () => {
   assert.match(src, /apiMonthlyCapUsd: Number\(process\.env\.REASON_API_MONTHLY_CAP_USD \|\| 10\)/);
 });
 
-test("cap: today's spend reaching the daily cap flips the pre-reply checks to the subscription — no paid call is made", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
+test("cap: the text screen never asks the API, and past the daily cap callApi refuses every non-call feature", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
   const now = ny("2026-10-25T12:00:00");
   let apiAsks = 0, cliAsks = 0;
   harm.setScreenClient({ messages: { create: async () => { apiAsks++; return OK; } } });
@@ -61,21 +61,23 @@ test("cap: today's spend reaching the daily cap flips the pre-reply checks to th
   const { clock } = await import("../src/config.js");
   const off = now - clock.now(); clock.skip(off);
   try {
+    // A text's screen is on the subscription whatever the cap says (2026-10-27): never the API.
     spent("harm", 0.99, now);
-    assert.equal(spend.apiOut("harm"), false, "under the cap: on the API");
-    assert.notEqual((await harm.screen({ text: "hey" })).via, "cli_fallback");
-    assert.equal(apiAsks, 1);
+    assert.equal(spend.apiOut("harm"), false, "under the cap");
+    assert.equal((await harm.screen({ text: "hey" })).verdict, "clear");
+    assert.equal(apiAsks, 0);
+    assert.equal(cliAsks, 1);
     spent("onethought", 0.02, now);
     assert.equal(spend.capReached()?.which, "day");
     assert.match(spend.apiSkipWhy("said_check"), /daily cap \(\$1\.00\) is reached — on the subscription until midnight/);
-    assert.equal((await harm.screen({ text: "and again" })).via, "cli_fallback");
-    assert.equal(apiAsks, 1, "past the cap the API is never asked");
-    assert.equal(cliAsks, 1);
+    assert.equal((await harm.screen({ text: "and again" })).verdict, "clear");
+    assert.equal(apiAsks, 0, "the API is never asked");
+    assert.equal(cliAsks, 2);
     // callApi itself refuses for every non-call feature, so no path can slip past.
     for (const feature of ["harm", "onethought", "said_check", "extraction", "judge", "watch"]) {
       await assert.rejects(spend.callApi({ feature, client: { messages: { create: async () => { apiAsks++; return OK; } } }, params: { model: "claude-haiku-5-5" } }), /daily cap/);
     }
-    assert.equal(apiAsks, 1);
+    assert.equal(apiAsks, 0);
   } finally { harm.setScreenClient(null); harm.setCliScreen(null); clock.skip(-off); }
 }));
 

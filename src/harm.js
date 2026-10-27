@@ -91,17 +91,18 @@ const anthropic = () => (client ??= new Anthropic());
 /** For tests: what answers the API screen. `null` puts the real client back. */
 export function setScreenClient(c) { client = c; resetApiOut(); }
 
-/** For tests: what answers when the API screen cannot. `null` puts the real CLI back. */
-let cliScreen = screenViaCli;
-export function setCliScreen(f) { cliScreen = f ?? screenViaCli; }
+/** For tests: what answers the screen. `null` puts the real CLI back. */
+let cliScreen = (args) => screenViaCli({ model: config.harmCliModel, timeoutMs: config.harmCliTimeoutMs, ...args });
+const realCliScreen = cliScreen;
+export function setCliScreen(f) { cliScreen = f ?? realCliScreen; }
 
 /**
- * The API screen, and when it cannot run on an install that has the CLI, the CLI screen instead.
- * 2026-10-22 05:35 to 2026-10-23 13:06 UTC the API account was out of credit and every message was
- * `unscreened` for 34 hours; the CLI was right there and was not asked. A verdict the API did give
- * (clear, harm, crisis) is never second-guessed — only `unscreened` falls through.
+ * A phone call's screen, on the API: the one place the paid API still screens anything. Calls run
+ * on the API by the owner's choice (2026-10-25, REASON_CALL_BACKEND=api), where a cold CLI start
+ * would be seconds of dead air before the first word. A verdict the API did give is never
+ * second-guessed; only `unscreened` falls through to the CLI.
  */
-async function askApiThenCli({ system, prompt, model, verdicts, categories, feature = "harm" }) {
+async function askApiThenCli({ system, prompt, model, verdicts, categories, feature = "call_harm" }) {
   const r = await askApi({ system, prompt, model, feature });
   if (r.verdict !== "unscreened" || process.env.REASON_BACKEND !== "claude-cli") return r;
   const c = await cliScreen({ prompt, instructions: system, verdicts, categories });
@@ -110,12 +111,10 @@ async function askApiThenCli({ system, prompt, model, verdicts, categories, feat
 }
 
 /**
- * Which path screens a text when the caller does not say. The API whenever there is a key, on
- * every backend — one small fast call, ~1 s — and the CLI only when there is no key at all. On the
- * claude-cli backend the CLI screen was a second cold `claude -p` start in front of every message,
- * ~3 s, against the same subscription limit the reply itself spends.
+ * Which path screens a text: the subscription, always (owner, 2026-10-27: never bill the API). Only
+ * a phone call on the API backend says "api" for itself (src/calls/voice.js).
  */
-export const screenBackend = () => (process.env.ANTHROPIC_API_KEY ? "api" : process.env.REASON_BACKEND === "claude-cli" ? "claude-cli" : "api");
+export const screenBackend = () => "claude-cli";
 
 /**
  * The most of one message the screen is shown. A message of any length used to go in whole, so a
@@ -139,11 +138,11 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms));
 const API_ATTEMPTS = 2;
 
 /**
- * One screen question over the API, asked at most twice. A second ask is cheap (~1 s on a small
+ * One screen question over the API (a phone call's only), asked at most twice. A second ask is cheap (~1 s on a small
  * model) and turns a blip — a timeout, a 529, an answer off the schema — into a real verdict
  * instead of a turn with its hands tied. A platform refusal is an answer and is never re-asked.
  */
-async function askApi({ system, prompt, model, feature = "harm" }) {
+async function askApi({ system, prompt, model, feature = "call_harm" }) {
   let last = { verdict: "unscreened", error: "the screen was never asked" };
   // Known out of credit, or past the hard cap (src/spend.js): straight to the fallback, no round trip.
   const skip = apiSkipWhy(feature);
@@ -309,9 +308,9 @@ export async function screen({ text, messages = [], who = "them", backend = null
   // Their words verbatim; only code's own notes about the message are put plainly (see ownWords).
   const said = `The new message, verbatim:\n${who}: ${capForScreen(ownWords(text))}`;
   const prompt = (context ? `The last few lines of the conversation:\n${context}\n\n` : "") + said;
-  // Which path screens this message: the caller's, when it says (a call pins its own backend),
-  // else the API whenever there is a key and the CLI only when there is not. See screenBackend.
-  const cli = (backend ?? screenBackend()) === "claude-cli";
+  // Which path screens this message: the subscription, unless a phone call on the API says so
+  // (src/calls/voice.js). See screenBackend.
+  const cli = (backend ?? screenBackend()) !== "api";
   const ask = async (p) => {
     if (!cli) return askApiThenCli({ system: INSTRUCTIONS, prompt: p, model, verdicts: VERDICTS, categories: CATEGORIES, feature });
     const r = await cliScreen({ prompt: p, instructions: INSTRUCTIONS, verdicts: VERDICTS, categories: CATEGORIES });
@@ -353,12 +352,9 @@ Say 'harm' if any of that is in the reply, even wrapped in warnings. Say 'clear'
 export async function screenReply({ text, asked = "" }) {
   if (!modelAvailable()) return { verdict: "clear", skipped: "no_model" };
   const prompt = `What they had asked:\n${String(asked).slice(0, 600)}\n\nThe reply the assistant wrote, verbatim:\n${capForScreen(text)}`;
-  if (screenBackend() === "claude-cli") {
-    const r = await cliScreen({ prompt, instructions: REPLY_INSTRUCTIONS, verdicts: ["clear", "harm"], categories: CATEGORIES });
-    if (r.platform_refusal) return PLATFORM_REFUSAL;
-    return r.error ? { verdict: "unscreened", error: r.error } : tidy(r);
-  }
-  return askApiThenCli({ system: REPLY_INSTRUCTIONS, prompt, verdicts: ["clear", "harm"], categories: CATEGORIES });
+  const r = await cliScreen({ prompt, instructions: REPLY_INSTRUCTIONS, verdicts: ["clear", "harm"], categories: CATEGORIES });
+  if (r.platform_refusal) return PLATFORM_REFUSAL;
+  return r.error ? { verdict: "unscreened", error: r.error } : tidy(r);
 }
 
 // ---------- the words, which are code's ----------

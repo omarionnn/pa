@@ -26,22 +26,23 @@ export const config = {
   // Defaults to the same model as the conversation, because misreading a yes is the costly mistake.
   judgeModel: process.env.REASON_JUDGE_MODEL || process.env.REASON_MODEL || "claude-opus-5",
   judgeTimeoutMs: Number(process.env.REASON_JUDGE_TIMEOUT_MS || 12_000),
-  // The harm screen (src/harm.js): one narrow call in front of every message anybody sends. Its
-  // own model because it is asked one short question on every text, and misreading it costs one
-  // wrongly refused text, not a booking. A small fast model over the API, on EVERY backend whenever
-  // ANTHROPIC_API_KEY is set: on claude-cli the screen used to be a second cold `claude -p` start
-  // (sonnet, ~3 s) in front of every text, on the owner's subscription. Only with no key does it
-  // fall back to the CLI, on REASON_HARM_CLI_MODEL (default sonnet, src/backends/cli.js). Not the
-  // conversation model: opus does not take the forced tool_choice the screen uses. There is no
-  // switch that turns the screen off.
+  // The harm screen (src/harm.js): one narrow call on every message anybody sends. On the
+  // subscription, never the paid API (owner, 2026-10-27): `claude -p` on haiku, the same model the
+  // API screen ran on. It runs alongside the turn rather than in front of it (Runtime._screen), so
+  // its cold start costs no wait: every tool and the reply wait for its verdict instead. There is no
+  // switch that turns the screen off. `harmModel` is the API model, kept for phone calls only.
   harmModel: process.env.REASON_HARM_MODEL || "claude-haiku-5-5",
   // The harm screen on a CALL runs in the hot path before the first spoken word, so it has to be
   // fast: a cold `claude` CLI start is ~4.5s of dead air on the line, and opus does not support the
   // forced tool_choice the screen uses. A small fast model on the API classifies the same thing in
   // ~1s, so a call screens on this rather than on the global (CLI) backend. Text is unaffected.
   callHarmModel: process.env.REASON_CALL_HARM_MODEL || process.env.REASON_HARM_MODEL || "claude-haiku-5-5",
-  // Per attempt, on the API. A text's screen makes two attempts before it says `unscreened`.
+  // Per attempt, on the API (a call's screen). Two attempts before it says `unscreened`.
   harmTimeoutMs: Number(process.env.REASON_HARM_TIMEOUT_MS || 8_000),
+  // A text's screen, on the subscription. Past the timeout it is `unscreened`: the turn's hands stay
+  // tied, and the reply never waits longer than this for a verdict.
+  harmCliModel: process.env.REASON_HARM_CLI_MODEL || "haiku",
+  harmCliTimeoutMs: Number(process.env.REASON_HARM_CLI_TIMEOUT_MS || 20_000),
   // Strikes: this many 'harm' refusals inside this many hours pauses that person's Reason and
   // tells the master (count and kind only). 0 strikes = count but never pause. The master's own
   // account is refused the same way and never paused.
@@ -376,7 +377,6 @@ export const config = {
   // retention setting — every expiry, every line that names it, reads this (src/albums.js RETENTION).
   albumRetentionDays: Number(process.env.REASON_ALBUM_RETENTION_DAYS || 3),
   // The small model that reads one e-ticket email for its ticket numbers (src/ticketcheck.js).
-  ticketReadModel: process.env.REASON_TICKET_READ_MODEL || "claude-haiku-5-5",
   // How old a flight's fresh quote (the Fli re-check plus AgentCard's cart) may be when the yes is
   // turned into a confirm. Past it the quote is taken again and shown again; fares move by the minute.
   flightQuoteMaxAgeMs: Number(process.env.REASON_FLIGHT_QUOTE_MAX_AGE_MS || 15 * 60_000),
@@ -434,19 +434,17 @@ export const config = {
   burstQuietMs: Number(process.env.REASON_BURST_QUIET_MS ?? 4_000),
   burstMaxMs: Number(process.env.REASON_BURST_MAX_MS ?? 10_000),
   // A text that lands while a request is being worked on is read — continuation, new request, or
-  // chat — by one small side call (src/onethought.js). Over the API when it answers; on the
-  // claude-cli backend, the CLI when it does not (an empty account must not mean every mid-turn
-  // text is guessed at). It runs alongside the turn, never in front of a reply.
-  midTurnModel: process.env.REASON_MIDTURN_MODEL || "claude-haiku-5-5",
-  midTurnTimeoutMs: Number(process.env.REASON_MIDTURN_TIMEOUT_MS || 2_500),
+  // chat — by one small side call (src/onethought.js), on the subscription through the CLI, never
+  // the paid API. It runs alongside the turn, never in front of a reply.
   midTurnCliModel: process.env.REASON_MIDTURN_CLI_MODEL || "haiku",
-  midTurnCliTimeoutMs: Number(process.env.REASON_MIDTURN_CLI_TIMEOUT_MS || 20_000),
+  midTurnCliTimeoutMs: Number(process.env.REASON_MIDTURN_CLI_TIMEOUT_MS || 12_000),
   // What a sent reply asserted and asked, written down after it goes (src/said.js). Off with 0.
   saidLedger: process.env.REASON_SAID_LEDGER !== "0",
-  // The send-time check of a draft against what was already said. API only: it sits in front of a
-  // reply, so it gets one fast call or none at all.
-  saidCheckTimeoutMs: Number(process.env.REASON_SAID_CHECK_TIMEOUT_MS || 2_500),
-  saidCheckCliTimeoutMs: Number(process.env.REASON_SAID_CHECK_CLI_TIMEOUT_MS || 15_000),
+  // The send-time check of a draft against what was already said, on the subscription. It sits in
+  // front of a reply, so its CLI is started when the turn starts (said.warmCheck) and a check that
+  // runs past this is skipped, never waited out.
+  saidCheckCliModel: process.env.REASON_SAID_CHECK_CLI_MODEL || "haiku",
+  saidCheckCliTimeoutMs: Number(process.env.REASON_SAID_CHECK_CLI_TIMEOUT_MS || 8_000),
   // A picture somebody sends is fetched and handed to the model as a picture (src/media.js).
   //
   // The ceiling is Anthropic's, converted: "the maximum size per image is 10 MB (base64-encoded)"

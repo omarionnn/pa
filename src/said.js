@@ -27,6 +27,7 @@
 // Every read and write is scoped by conversation_id. Nothing here ever throws into a turn.
 import * as db from "./db.js";
 import { askJson } from "./onethought.js";
+import { startWarm } from "./backends/cli.js";
 import * as background from "./background.js";
 import { config, clock } from "./config.js";
 
@@ -126,12 +127,12 @@ export async function record({ conversationId, requestId = null, userText = "", 
     const r = recorder
       ? { value: await recorder({ userText, reply, claims, open }), via: "stub" }
       // On the subscription only (2026-10-25): this runs after the reply has gone, so a cold CLI
-      // start costs nobody a wait, and it was a paid call on every reply. On the API backend, the API.
-      // And on the subscription it is background work like extraction: through the background lane
+      // start costs nobody a wait. Background work like extraction: through the background lane
       // (src/background.js), one at a time, never beside a reply in flight, parked while limited.
       : process.env.REASON_BACKEND === "claude-cli"
-        ? await background.enqueue(`said:${conversationId}:${requestId ?? started}`, () => askJson({ system: RECORD_INSTRUCTIONS, prompt: recordPrompt({ userText, reply, claims, open }), schema: RECORD_SCHEMA, name: "ledger", feature: "said_record", api: false, maxTokens: 700 }))
-        : await askJson({ system: RECORD_INSTRUCTIONS, prompt: recordPrompt({ userText, reply, claims, open }), schema: RECORD_SCHEMA, name: "ledger", feature: "said_record", maxTokens: 700 });
+        ? await background.enqueue(`said:${conversationId}:${requestId ?? started}`, () => askJson({ system: RECORD_INSTRUCTIONS, prompt: recordPrompt({ userText, reply, claims, open }), schema: RECORD_SCHEMA, feature: "said_record" }))
+        : null;
+    if (!r) return null;
     const v = r.value ?? {};
     const out = applyRecord(conversationId, { requestId, value: v, claims, open });
     log({ said_recorded: conversationId, ...out.counts, via: r.via, ms: Date.now() - started });
@@ -194,13 +195,32 @@ const CHECK_SCHEMA = {
 let checker = null;
 export function setChecker(f) { checker = f; }
 
+/** Is there anything for the check to hold a draft against right now? */
+const somethingStanding = (conversationId, since) =>
+  db.standingClaims(conversationId, { since, limit: 1 }).length > 0 || db.closedQuestions(conversationId, { since, limit: 1 }).length > 0;
+
+/**
+ * The check's CLI, started when the turn starts (2026-10-27): the check is on the subscription now,
+ * never the paid API, and a cold `claude -p` start is ~3 s. Started here it is ready by the time the
+ * draft is, so the check in front of the reply costs about what the API's ~1 s did. Null when there
+ * is nothing standing to check against (no check will run) or no CLI; `cancel()` it when the turn
+ * ends — unasked, it never reached the model.
+ */
+export function warmCheck(conversationId, { now = clock.now() } = {}) {
+  try {
+    if (checker || !config.saidLedger || process.env.REASON_BACKEND !== "claude-cli") return null;
+    if (!somethingStanding(conversationId, now - CHECK_WINDOW_MS)) return null;
+    return startWarm({ system: CHECK_INSTRUCTIONS, schema: CHECK_SCHEMA, model: config.saidCheckCliModel, timeoutMs: config.saidCheckCliTimeoutMs, feature: "said_check", effort: "low" });
+  } catch { return null; }
+}
+
 /**
  * Is this draft safe to send against what was already said? `{ ok: true }`, or `{ ok: false, note }`
  * with the instruction for one recompose. Only asked when something is standing or closed in the
- * last few hours: over the API, and through the CLI only when the API cannot answer (a cold CLI
- * start in front of a reply is not cheap, so it is the fallback, not the path). Any failure is ok — this is a backstop, the turn's own block is the main rule.
+ * last few hours, on the subscription (the turn's `warm` CLI when it has one). Any failure is ok —
+ * this is a backstop, the turn's own block is the main rule.
  */
-export async function checkDraft({ conversationId, draft, log = () => {}, now = clock.now() }) {
+export async function checkDraft({ conversationId, draft, log = () => {}, now = clock.now(), warm = null }) {
   try {
     if (!config.saidLedger || !String(draft ?? "").trim()) return { ok: true };
     const since = now - CHECK_WINDOW_MS;
@@ -209,16 +229,16 @@ export async function checkDraft({ conversationId, draft, log = () => {}, now = 
     const closed = db.closedQuestions(conversationId, { since, limit: 5 });
     if (!claims.length && !closed.length) return { ok: true };
     closed.push(...db.declinedQuestions(conversationId, { since: now - DECLINED_WINDOW_MS, limit: 5 }));
-    if (!checker && !process.env.ANTHROPIC_API_KEY && process.env.REASON_BACKEND !== "claude-cli") return { ok: true, skipped: "no_model" };
+    if (!checker && process.env.REASON_BACKEND !== "claude-cli") return { ok: true, skipped: "no_model" };
     const started = Date.now();
     const prompt = `Standing claims:\n${claims.length ? claims.map(claimLine).join("\n") : "  (none)"}\n\nClosed questions:\n${closed.length ? closed.map(questionLine).join("\n") : "  (none)"}\n\nThe draft:\n${String(draft).slice(0, 3_000)}`;
     let v;
     try {
       v = checker
         ? await checker({ draft, claims, closed })
-        // The API on Haiku first — it is in front of the reply — and the CLI when the API cannot
-        // answer (no credit, down): a few seconds late beats a draft nobody checked (2026-10-25).
-        : (await askJson({ system: CHECK_INSTRUCTIONS, prompt, schema: CHECK_SCHEMA, name: "check", feature: "said_check", timeoutMs: config.saidCheckTimeoutMs, cliTimeoutMs: config.saidCheckCliTimeoutMs, maxTokens: 100 })).value;
+        // The subscription, never the API (2026-10-27): the turn's warm CLI when it has one, so
+        // the cold start was paid while the turn ran.
+        : (await askJson({ system: CHECK_INSTRUCTIONS, prompt, schema: CHECK_SCHEMA, feature: "said_check", cliModel: config.saidCheckCliModel, cliTimeoutMs: config.saidCheckCliTimeoutMs, warm })).value;
     } catch (e) {
       log({ said_check_failed: (e?.message ?? String(e)).split("\n")[0].slice(0, 160), conversation: conversationId, ms: Date.now() - started });
       return { ok: true, skipped: "check_failed" };

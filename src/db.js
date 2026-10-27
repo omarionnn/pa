@@ -4378,6 +4378,12 @@ export function markUndeliveredTold(id) {
   return r.changes === 1;
 }
 
+/** Put back as untold: the turn that claimed them was thrown away unheard (the harm screen refused it). */
+export function unmarkUndeliveredTold(ids = []) {
+  const st = db.prepare("UPDATE outbox SET told_at = NULL, updated_at = ? WHERE id = ?");
+  for (const id of ids) st.run(clock.now(), id);
+}
+
 /**
  * Failures the account owner still has to hear about: a message to somebody who is NOT them.
  *

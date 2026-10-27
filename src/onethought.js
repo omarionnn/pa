@@ -29,8 +29,6 @@
 // The state is in memory and per conversation, because a turn is: turns for one conversation run
 // one at a time (Runtime.enqueue). A folded text's row is deleted when it is taken, the same bargain
 // takePendingInbound makes, and a turn that is interrupted hands it back with its own (Router).
-import Anthropic from "@anthropic-ai/sdk";
-import { callApi, cachedSystem, apiSkipWhy } from "./spend.js";
 import { askStructuredViaCli } from "./backends/cli.js";
 import { config, clock, stamp } from "./config.js";
 
@@ -160,10 +158,9 @@ export function track(turn, promise) {
 }
 
 /**
- * The most a mid-turn read may take, all in (Router.#readMidTurn): the API ask, the CLI ask after
- * it, and a little over. A read past it leaves the text held for a turn of its own.
+ * The most a mid-turn read may take, all in (Router.#readMidTurn): the CLI ask and a little over. A read past it leaves the text held for a turn of its own.
  */
-export const READ_BUDGET_MS = config.midTurnTimeoutMs + config.midTurnCliTimeoutMs + 1_000;
+export const READ_BUDGET_MS = config.midTurnCliTimeoutMs + 1_000;
 
 /**
  * Wait for every read still in flight for this turn. Longer than any read can take (above), so a
@@ -203,48 +200,17 @@ const SCHEMA = {
   additionalProperties: false,
 };
 
-let client = null;
-const anthropic = () => (client ??= new Anthropic());
-
 /**
- * One structured answer from the small model: over the API when there is a key, and on the
- * claude-cli backend through the CLI when the API ask fails or there is no key. Throws when neither
- * gave an answer. Shared with src/said.js. `cli: false` keeps a caller to the API only; `api: false`
- * keeps it to the CLI only (work that runs after the reply, where a cold start costs nobody a wait).
- * `feature` names the call in the usage count (src/spend.js).
+ * One structured answer from the small model, on the subscription through the CLI — never the paid
+ * API (owner, 2026-10-27). Throws when it gave no answer, at once while the CLI is known down
+ * (src/backends/cli.js sideCallsOut). Shared with src/said.js and src/ticketcheck.js. `warm` is a
+ * started CLI (startWarm) to ask instead of a cold one; `feature` names the call in the usage count.
  */
-export async function askJson({ system, prompt, schema, name = "answer", feature = "onethought", model = config.midTurnModel, timeoutMs = config.midTurnTimeoutMs, api = true, cli = true, cliModel = config.midTurnCliModel, cliTimeoutMs = config.midTurnCliTimeoutMs, maxTokens = 200, client: sdk = null }) {
-  let apiError = null;
-  if (!api) apiError = "kept to the subscription";
-  else if (!sdk && (apiError = apiSkipWhy(feature))) { /* skipped: straight to the CLI */ }
-  else if (process.env.ANTHROPIC_API_KEY) {
-    try {
-      const res = await callApi({
-        feature, client: sdk ?? anthropic(),
-        params: {
-          model, max_tokens: maxTokens,
-          // Cached: the same instructions and tool on every call (src/spend.js cachedSystem).
-          system: cachedSystem(system),
-          tools: [{ name, description: "Record the answer.", input_schema: schema }],
-          tool_choice: { type: "tool", name },
-          messages: [{ role: "user", content: prompt }],
-        },
-        options: { timeout: timeoutMs, maxRetries: 0 },
-      });
-      const use = (res.content ?? []).find(b => b.type === "tool_use");
-      // A forced tool call cut off by max_tokens hands back partial (often empty) input, which
-      // would read as a real answer of nothing: said so, rather than taken.
-      if (res.stop_reason === "max_tokens") apiError = `the answer was cut off at ${maxTokens} tokens`;
-      else if (use?.input && typeof use.input === "object") return { value: use.input, via: "api" };
-      else apiError = "the API gave no answer";
-    } catch (e) {
-      apiError = (e?.message ?? String(e)).split("\n")[0].slice(0, 160);
-    }
-  } else apiError = "no API key";
-  if (!cli || process.env.REASON_BACKEND !== "claude-cli") throw new Error(apiError);
-  const r = await askStructuredViaCli({ prompt, system, schema, model: cliModel, timeoutMs: cliTimeoutMs, feature });
-  if (r.error || !r.value) throw new Error(`${apiError}; cli: ${r.error ?? "no answer"}`);
-  return { value: r.value, via: "cli", apiError };
+export async function askJson({ system, prompt, schema, feature = "onethought", cliModel = config.midTurnCliModel, cliTimeoutMs = config.midTurnCliTimeoutMs, warm = null }) {
+  if (process.env.REASON_BACKEND !== "claude-cli") throw new Error("no subscription CLI on this backend");
+  const r = warm ? await warm.ask(prompt) : await askStructuredViaCli({ prompt, system, schema, model: cliModel, timeoutMs: cliTimeoutMs, feature });
+  if (r.error || !r.value) throw new Error(`cli: ${r.error ?? "no answer"}`);
+  return { value: r.value, via: "cli" };
 }
 
 /**
@@ -266,7 +232,7 @@ export async function classify({ request, text, previous = "" }) {
   try {
     const r = reader
       ? { value: await reader({ request, text, previous }), via: "stub" }
-      : await askJson({ system: MIDTURN_INSTRUCTIONS, prompt: midTurnPrompt({ request, text, previous }), schema: SCHEMA, name: "sort", maxTokens: MIDTURN_MAX_TOKENS });
+      : await askJson({ system: MIDTURN_INSTRUCTIONS, prompt: midTurnPrompt({ request, text, previous }), schema: SCHEMA });
     const kind = typeof r.value === "string" ? r.value : r.value?.kind;
     if (!KINDS.includes(kind)) throw new Error(`the reader answered ${JSON.stringify(kind ?? null)}`);
     return { kind, via: r.via, ms: Date.now() - started };

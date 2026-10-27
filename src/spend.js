@@ -6,9 +6,12 @@
 // nobody told. So every API call records its tokens here by feature and model, with an estimated $
 // off config.apiPrices; every subscription (CLI) run is counted too, without a $; and the status
 // page shows it (src/ops.js "API spend"), turning red when the key is out of credit or a day's spend
-// passes config.apiDailyCapUsd — which texts the owner through the sustained-alert path. When the
-// pre-reply checks fall back to the subscription because the key is dry or failing, their own row
-// (fallbackCheck) texts the owner once, and once more when they are back on the API.
+// passes config.apiDailyCapUsd — which texts the owner through the sustained-alert path.
+//
+// Since 2026-10-27 (owner: never bill the API) every text-side model call is on the subscription:
+// the harm screen, the said check and the mid-turn read included, with no API fallback. The only
+// paid calls left are phone calls (and their screen) on REASON_CALL_BACKEND=api, and the API
+// backend (REASON_BACKEND=api), which the live install does not run. The table below is history.
 //
 // Where each feature runs, and why (2026-10-25):
 //   subscription (CLI)  replies, extraction, the profile, the confirm gate's judge, the watcher,
@@ -236,53 +239,14 @@ export function callCapCheck({ now = clock.now() } = {}) {
 
 // ---------- the pre-reply checks on the subscription ----------
 
-/** The short reads in front of every reply that fall back to the CLI when the API cannot answer. */
-export const SIDE_CHECKS = ["harm", "onethought", "said_check"];
-/**
- * Failures in a row (not credit), over at least FAILING_SPAN_MS, before the key counts as failing
- * rather than blipping: the harm screen asks twice per message, so one slow minute is not it.
- */
-const FAILING_RUN = 4;
-const FAILING_SPAN_MS = 2 * 60_000;
-
-/**
- * Are the pre-reply checks on the subscription because the API cannot answer? Read off the latest
- * paid side-check calls, not a time window: while the key is known dry no call is made (apiOut), so
- * the last one on record stays the refusal until a call works again — a quiet night is not a
- * recovery. Dry: the latest was refused for credit. Failing: the last FAILING_RUN all failed.
- */
-export function sideChecksFallback() {
-  const last = db.lastApiCalls(SIDE_CHECKS, FAILING_RUN);
-  if (!last.length || last[0].ok) return { down: false };
-  if (last[0].low_credit) return { down: true, why: "dry", at: last[0].at };
-  if (last.length >= FAILING_RUN && last.every(r => !r.ok) && last[0].at - last.at(-1).at >= FAILING_SPAN_MS) return { down: true, why: "failing", at: last[0].at, error: last[0].error };
-  return { down: false };
-}
-
-/**
- * The "Pre-reply checks" row. Red while they are on the subscription for want of the API, which
- * texts the owner ONCE through ops' sustained-alert path (with the status page link) and once more,
- * "back on the API", when a paid check works again — never a text per message, never to anybody
- * else (src/ops.js settle texts only config.ownerConversation).
- */
+/** The "Pre-reply checks" row on the status page. */
 export function fallbackCheck() {
-  const f = sideChecksFallback();
-  if (!f.down) return {
-    state: "ok", detail: "on the API (Haiku), the subscription as the fallback",
-    recovered: "Back on the API: the pre-reply checks are using the API key again, so replies are back to full speed.",
-  };
-  const cause = f.why === "dry" ? "The API key ran dry" : "The API key is failing";
-  const fix = f.why === "dry" ? "top up" : "check the key";
-  // On the API backend there is no subscription to fall back to: the checks are simply not running.
-  if (process.env.REASON_BACKEND !== "claude-cli") return {
-    state: "bad",
-    detail: `${f.why === "dry" ? "the API key is out of credit" : `the API key is failing (${f.error || "no answer"})`} — no subscription to fall back to, so the pre-reply checks are not running`,
-    alert: `${cause}, and with no subscription to fall back to the pre-reply checks are not running until you ${fix}.`,
-  };
+  // Since 2026-10-27 the pre-reply checks (the harm screen, the said check, the mid-turn read) run
+  // on the subscription and never on the paid API (owner), so a dry or failing key cannot reach
+  // them: there is nothing here to fall back from, and nothing to text about.
   return {
-    state: "bad",
-    detail: `${f.why === "dry" ? "the API key is out of credit" : `the API key is failing (${f.error || "no answer"})`} — the pre-reply checks are on the subscription`,
-    alert: `${cause}, so the pre-reply checks switched to the subscription; replies may be a few seconds slower until you ${fix}.`,
+    state: "ok", detail: "on the subscription, never the paid API",
+    recovered: "The pre-reply checks are on the subscription now, never the paid API key.",
   };
 }
 

@@ -22,7 +22,7 @@
 import { config, stamp } from "../config.js";
 import { systemFor } from "../agent.js";
 import * as accounts from "../accounts.js";
-import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold, outboxMark, ownerTextsSince } from "../db.js";
+import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold, unmarkUndeliveredTold, outboxMark, ownerTextsSince } from "../db.js";
 import { undeliveredNotice } from "../outbox.js";
 import { imagesFor, pdfsFor } from "../media.js";
 import { docsFor } from "../docread.js";
@@ -196,6 +196,11 @@ async function runTurnOnCli({
     const lost = undeliveredFor(conversationId).filter(x => markUndeliveredTold(x.id));
     const notice = undeliveredNotice(lost, { ownerName: me.name });
     if (notice) log({ undelivered_told: lost.map(x => x.id), conversation: conversationId });
+    // A turn the harm screen refuses is thrown away unheard, so what it was to tell them is still
+    // untold: given back for the next turn.
+    if (lost.length && toolCtx.harm?.ready) {
+      toolCtx.harm.ready.then((v) => { if (v?.verdict === "harm") unmarkUndeliveredTold(lost.map(x => x.id)); }).catch(() => {});
+    }
 
     // One thing this person has not heard about yet, same read as the API path and for the same
     // reason: the live Reason runs on this backend, so a feature nobody ever hears about here is a
@@ -279,7 +284,10 @@ async function runTurnOnCli({
     // when it was slower than the reply, the reply sat waiting for it before it could be sent. It
     // finishes on its own; the next turn for this conversation waits for it at the top.
     if (viewedMediaIds.length) {
-      const writing = recordLooked({ viewedMediaIds, reply, captured })
+      // Not before the harm screen has answered (Runtime._screen runs it beside the turn): a turn it
+      // refuses is thrown away, and a note made from it would outlive it.
+      const writing = Promise.resolve(toolCtx.harm?.ready)
+        .then((v) => v?.verdict === "harm" ? null : recordLooked({ viewedMediaIds, reply, captured }))
         .catch(e => log({ photo_note_failed: viewedMediaIds, why: (e?.message ?? String(e)).split("\n")[0] }))
         .finally(() => { if (notesPending.get(conversationId) === writing) notesPending.delete(conversationId); });
       notesPending.set(conversationId, writing);

@@ -174,28 +174,29 @@ test("a bubble that lands after the last tool call: the stale draft is discarded
   assert.ok(h.logs.some(l => l.draft_superseded === C && l.had_draft));
 });
 
-test("a bubble that lands while the first text is still being screened — before the model has started — is folded in too", async () => {
+test("a bubble that lands while the first text is still being screened is folded in too", async () => {
   onethought.setMidTurnReader(() => "continuation");
   const g = gate();
-  const h = harness(async (args) => { const r = await lookUp(args); return r.NEW_FROM_THEM?.includes("Tuesday") ? "Tuesday: 11:00am" : "Monday: 11:15am"; });
+  const h = harness(async (args) => { const r = await lookUp(args); return r.NEW_FROM_THEM?.includes("Tuesday") || String(args.text).includes("Tuesday") ? "Tuesday: 11:00am" : "Monday: 11:15am"; });
   let screens = 0;
   h.runtime.screen = async () => { if (++screens === 1) await g.wait(); return { verdict: "clear" }; };
   const first = h.router.deliver(text(WORK));
   await until(() => screens === 1, "the first screen to start");
-  assert.equal(h.turns.length, 0, "the model has not started");
   await h.router.deliver(text(TUESDAY));
   await until(() => h.logs.some(l => l.folded), "the fold");
   g.open();
   await first;
   await until(() => !h.router.waiting.has(C), "done");
-  assert.equal(h.turns.length, 1);
-  assert.deepEqual(h.fake.sent.map(m => m.text), ["Tuesday: 11:00am"]);
+  // The turn ran beside the screen, so the bubble is taken in as a recompose before anything goes.
+  assert.ok(h.turns.length <= 2);
+  assert.deepEqual(h.fake.sent.map(m => m.text), ["Tuesday: 11:00am"], "one reply, with the bubble in it");
 });
 
-test("a text folded into a turn that never ran (refused by the screen) goes back for a turn of its own", async () => {
+test("a text folded into a turn refused by the screen goes back for a turn of its own", async () => {
   onethought.setMidTurnReader(() => "continuation");
   const g = gate();
-  const h = harness(async (args) => `answered: ${burstFree(args.text)}`);
+  // The turn runs beside the screen (Runtime._screen) and reaches for a tool, which waits for the verdict.
+  const h = harness(async (args) => { await lookUp(args); return `answered: ${burstFree(args.text)}`; });
   let screens = 0;
   h.runtime.screen = async () => { if (++screens === 1) { await g.wait(); return { verdict: "harm", category: "other" }; } return { verdict: "clear" }; };
   const first = h.router.deliver(text("something refused"));
@@ -204,8 +205,9 @@ test("a text folded into a turn that never ran (refused by the screen) goes back
   await until(() => h.logs.some(l => l.folded), "the fold");
   g.open();
   await first;
-  await until(() => !h.router.waiting.has(C) && h.turns.length === 1, "its own turn");
-  assert.equal(burstFree(h.turns[0].text), "and another thing", "the folded text was answered on its own, not lost");
+  await until(() => !h.router.waiting.has(C) && h.turns.length === 2, "its own turn");
+  assert.equal(burstFree(h.turns[1].text), "and another thing", "the folded text was answered on its own, not lost");
+  assert.ok(!h.fake.sent.some(m => /answered: something refused/.test(m.text)), "the refused turn's reply never went");
 });
 
 test("a photo sent mid-turn is never folded (the fold hands over words): it keeps its own turn", async () => {
@@ -520,19 +522,22 @@ test("the ledger only ever touches its own conversation's rows", () => {
   assert.equal(db.getClaim("dm:other", theirs).status, "standing", "another person's claim is untouched");
 });
 
-test("pinned: the mid-turn reader has room for its forced tool call, and a cut-off answer is never read as one", async () => {
-  const { askJson, MIDTURN_MAX_TOKENS } = await import("../src/onethought.js");
-  assert.ok(MIDTURN_MAX_TOKENS >= 100, `max_tokens ${MIDTURN_MAX_TOKENS} leaves no room for the tool call`);
-  const was = process.env.ANTHROPIC_API_KEY;
+test("pinned: the mid-turn reader is on the subscription only — a key in the environment is never used", async () => {
+  const { askJson } = await import("../src/onethought.js");
+  const { cliConfig, resetSideCalls } = await import("../src/backends/cli.js");
+  const was = { key: process.env.ANTHROPIC_API_KEY, backend: process.env.REASON_BACKEND, bin: cliConfig.bin };
   process.env.ANTHROPIC_API_KEY = "test-key";
+  cliConfig.bin = "/nonexistent/claude";
   try {
-    const client = (res) => ({ messages: { create: async () => res } });
-    const whole = await askJson({ system: "s", prompt: "p", schema: {}, name: "sort", cli: false, maxTokens: MIDTURN_MAX_TOKENS,
-      client: client({ stop_reason: "tool_use", content: [{ type: "tool_use", name: "sort", input: { kind: "continuation" } }] }) });
-    assert.deepEqual(whole.value, { kind: "continuation" });
-    await assert.rejects(askJson({ system: "s", prompt: "p", schema: {}, name: "sort", cli: false, maxTokens: 20,
-      client: client({ stop_reason: "max_tokens", content: [{ type: "tool_use", name: "sort", input: {} }] }) }), /cut off at 20 tokens/);
+    delete process.env.REASON_BACKEND;
+    await assert.rejects(askJson({ system: "s", prompt: "p", schema: {} }), /no subscription CLI/);
+    process.env.REASON_BACKEND = "claude-cli";
+    resetSideCalls();
+    await assert.rejects(askJson({ system: "s", prompt: "p", schema: {} }), /cli: could not run/);
   } finally {
-    if (was === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = was;
+    resetSideCalls();
+    cliConfig.bin = was.bin;
+    if (was.key === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = was.key;
+    if (was.backend === undefined) delete process.env.REASON_BACKEND; else process.env.REASON_BACKEND = was.backend;
   }
 });

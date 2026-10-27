@@ -337,6 +337,7 @@ test("live: the real reader on the fixtures agrees with what was recorded", { sk
 test("guardrail: on the subscription an e-ticket read is background work — the lane, never the paid key, never beside a reply", async () => {
   const background = await import("../src/background.js");
   const { cliConfig } = await import("../src/backends/cli.js");
+  await import("../src/spend.js"); // what counts every run (src/spend.js recordCli), as in the server
   const saved = { b: process.env.REASON_BACKEND, k: process.env.ANTHROPIC_API_KEY, bin: cliConfig.bin };
   process.env.REASON_BACKEND = "claude-cli"; process.env.ANTHROPIC_API_KEY = "sk-test";
   cliConfig.bin = join(dir, "no-claude-here"); // nothing here may start the real CLI

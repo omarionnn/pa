@@ -65,7 +65,15 @@ What the cage sets, beyond the blanks (all in `bin/caged.sh start`, and the same
 - **The API backend** (`REASON_BACKEND=api`, override with `REASON_VERIFY_BACKEND`). This Mac's
   `claude` is logged in to the same subscription live Reason uses; on 2026-10-20 verification turns
   through it spent the shared 5-hour limit and live Reason was down for four hours. Startup prints
-  `model: the Anthropic API (…)` — if it says "the claude CLI", stop.
+  `model: the Anthropic API (…)` — if it says "the claude CLI", stop, unless you chose the CLI below.
+  **The one deliberate exception: a text turn on the subscription** (since #227, 2026-10-27, every
+  text-side model call is CLI-only, so this is the only way to see the harm screen, said check,
+  mid-turn read or extraction run on the cage). `REASON_VERIFY_BACKEND=claude-cli
+  REASON_TEST_NUMBERS=+12025551234 bin/caged.sh start` (with no `.env` the cage's owner is that
+  number; without `REASON_TEST_NUMBERS` startup refuses: "claude-cli with sendblue set up and no
+  test numbers"). The key stays blank — never add `REASON_VERIFY_ALLOW_API`. Each turn spends the
+  live subscription's 5-hour limit: a handful of turns, never a suite. Recipe and evidence in
+  [features/inbound-message.md](features/inbound-message.md) ("The harm screen beside the turn").
 - **Its own data dir** (`REASON_DATA_DIR=$RUN/data`). Page cards, previews and illustrations are
   written under it; before 2026-10-23 a caged page landed in the checkout's real `data/cards`.
 - **Uber blanked** (`UBER_CLIENT_ID`, `UBER_CLIENT_SECRET`) alongside texting, calling and AgentCard.
@@ -699,7 +707,8 @@ Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start 
 - **No API credit means no model on the cage.** On 2026-10-25 both this Mac's and Hetzner's
   `ANTHROPIC_API_KEY` answered 400 "Your credit balance is too low". The cage runs turns on the API,
   so every `bin/inbound.sh` / `bin/call-turn.sh` drive is unreachable until it is topped up — drive
-  tools (Drive 2) and routes (Drive 3) instead, and do **not** switch the cage to the CLI. Do not
+  tools (Drive 2) and routes (Drive 3) instead, and do **not** switch the cage to the CLI except for
+  the few text turns Launch B's subscription exception allows. Do not
   spend Reason's key to find out either (no "one Haiku call" check since 2026-10-25): read the live
   /ops "API spend" row, or `model_usage.low_credit` on Hetzner. Model-turn proof comes from the
   real-model test lanes, which run on the subscription (see below) — prompt evals that only need the
@@ -736,13 +745,24 @@ Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start 
   lanes use is this Mac's `claude` login — the same one live Reason replies on (see Launch B) — so a
   full real-model run competes with live replies for the 5-hour limit: run the one lane the change
   touches, not all of them.
-- **Where each model call runs** (2026-10-25, `src/spend.js` header): replies, extraction, the
-  profile, the judge, the watcher, photo notes and the said-ledger's record on the **subscription**
-  (extraction, the profile and the said-ledger's record through the background lane, `src/background.js`: one job at a time,
-  ≥15 s apart, never while a reply turn is in flight, parked while the CLI reports a limit — never
-  an API fallback); the harm screen, the one-thought sorter and the pre-send check on
-  the **API, `claude-haiku-5-5`**, cached instructions, with the CLI as fallback when the API cannot
-  answer; **calls** on the API exactly as configured. Every call is counted in `model_usage` by
+- **Where each model call runs** (since #227, 2026-10-27, `src/spend.js` header: never bill the
+  API): **every text-side model call is on the subscription**, with no API path and no API
+  fallback — replies, extraction, the profile, the judge, the watcher, photo notes, the
+  said-ledger's record (extraction, the profile and the record through the background lane,
+  `src/background.js`: one job at a time, ≥15 s apart, never while a reply turn is in flight,
+  parked while the CLI reports a limit), and the three per-message side checks: the **harm screen**
+  (`claude -p` on `REASON_HARM_CLI_MODEL` haiku, `REASON_HARM_CLI_TIMEOUT_MS` 20 s, run *beside* the
+  turn, `Runtime._screen` → `{verdict:"pending", ready, refuse}`; every tool and the reply await
+  `ready`), the **one-thought sorter** (`src/onethought.js`, `REASON_MIDTURN_CLI_MODEL` haiku, 12 s)
+  and the **said pre-send check** (`REASON_SAID_CHECK_CLI_MODEL` haiku, 8 s, its process pre-started
+  with the turn by `said.warmCheck` → `startWarm` in `src/backends/cli.js`). A side call whose CLI
+  failed outright trips `sideCallsOut()` (`src/backends/cli.js`): every side call fails fast for
+  `SIDE_OUT_MS` (30 s). The only paid calls left are **phone calls** and their screen
+  (`call_harm`, `REASON_CALL_BACKEND=api`) and the API backend itself, which live does not run.
+  So a `model_usage` row with `via='api'` and a text feature (`harm`, `said_check`, `onethought`,
+  `extraction`) is a regression. The cap and fallback text below are from 2026-10-25 and now
+  only bite calls; the "Pre-reply checks" row always reads `ok`, "on the subscription, never the
+  paid API". Every call is counted in `model_usage` by
   feature (`$` estimated off `config.apiPrices`; CLI runs counted without `$`); the /ops row
   **"API spend today / 7d by feature"** reads `$X of $cap today · calls $Z of $cap · $Y of $cap this
   month` first. The caps are **hard stops** since 2026-10-25 — see
@@ -750,19 +770,11 @@ Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start 
   but calls skips the API (`apiOut(feature)` / `callApi` in `src/spend.js`) until local midnight;
   `REASON_API_MONTHLY_CAP_USD` ($10) does the same until the 1st. Calls are never stopped or moved
   by any cap: `REASON_API_CALL_DAILY_CAP_USD` ($2) only texts the owner. Each cap texts the owner once; the midnight lift is silent.
-  Refusals for credit are counted on that row, but the text is the **"Pre-reply checks"** row's
-  (`api_fallback`, `fallbackCheck` in `src/spend.js`): red while the latest paid side-check call was
-  refused for credit, or the last four all failed over two minutes or more — read off `model_usage`, not a time window, so a
-  quiet night is not a recovery. Once sustained it texts the owner ONE line in his words ("The API
-  key ran dry, so the pre-reply checks switched to the subscription; replies may be a few seconds
-  slower until you top up." + the /ops link, `alert` on the check), and ONE "Back on the API: …"
-  (`recovered`) when a paid check works again. Cage drive (2026-10-25, key blanked): seed two
-  `low_credit` rows and an `ops_checks` `api_fallback` row 10 min old with a node script (this
-  Mac's `sqlite3` is refused under `~/.openclaw`; set `REASON_VERIFY_RUN=/tmp/…`), insert a
-  `page_sessions` row for the owner conversation, `POST /ops.json action=check` with the
-  `reason_page` cookie → `serve.log` shows the one text, a second pass `texted:false`, and after one
-  recorded successful `harm` call the one "Back on the API". Pinned in `test/api-spend.test.js`
-  ("owner: …").
+  The **"Pre-reply checks"** row (`api_fallback`, `fallbackCheck` in `src/spend.js`) no longer reads
+  `model_usage` or texts anybody since #227: it is always `ok`, "on the subscription, never the paid
+  API" (the 2026-10-25 dry-key / "Back on the API" texts and their cage drive are gone with the API
+  side checks). Pinned in `test/api-spend.test.js` and `test/never-the-api.test.js` (a fake API
+  server sees zero requests from a text turn).
   Read it on live: `sqlite3 -readonly /opt/reason/data/reason.db "SELECT feature, via, COUNT(*),
   ROUND(SUM(cost_usd),4) FROM model_usage WHERE at > (strftime('%s','now')-86400)*1000 GROUP BY 1,2"`.
 - The live Sendblue line is **+1 (656) 216-7455** since 2026-10-23, a dedicated `inbound_only` line
