@@ -19,6 +19,8 @@ import { execFileSync } from "node:child_process";
 
 const root = new URL("../", import.meta.url);
 const outDir = process.argv.find(a => a.startsWith("--out="))?.slice(6) || new URL("dist/web-staging/", root).pathname;
+// The folder is wiped and rewritten each run: only ever one named web-staging.
+if (!/\/web-staging\/?$/.test(outDir)) { console.error(`--out must end in /web-staging (got ${outDir})`); process.exit(1); }
 const deploy = process.argv.includes("--deploy");
 // reason-web-staging.netlify.app: its own Netlify site, never the marketing site.
 const SITE = process.env.REASON_STAGING_SITE || "c749fa22-03a3-4a51-9b80-1081b789fede";
