@@ -12,3 +12,6 @@ data/
 rehearsal/
 # The flight search sidecar is Python (scripts/fli_sidecar.py).
 __pycache__
+
+# npm run web:staging writes the static staging site here
+dist
