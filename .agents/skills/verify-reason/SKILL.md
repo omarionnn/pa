@@ -392,6 +392,10 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
 
 See [features/web-memory.md](features/web-memory.md).
 
+### Baseline — 3,878 pass, **0 failures** after Reason Web Settings (wt/web-settings, 2026-10-26)
+
+`/web/settings` real end to end: reach preference honoured by `src/deliver.js` (`keptOnWeb`), browsers list + revoke, connected, invites, theme per account. 21 pinned tests (`test/web-settings.test.js`, `test/web-settings-migration.test.js`); `bin/web-settings-drive.mjs` under `caged.sh env`: 17 steps, all ok. `npm run test:offline` under `env -i`: **4,000 tests, 3,878 passing, 0 failing, 122 skipped.** See [features/web-settings.md](features/web-settings.md).
+
 ### Baseline — 3,786 pass, **0 failures** on main after #167, #166 and Reason Web sign-in (W1, #168, 2026-10-26)
 
 Sign in by number at `/web`, dark behind `REASON_WEB` (W0's foundations merged as #165 the same morning: 3,867 / 3,745 / 0 / 122). Eighteen pinned tests in `test/web-signin.test.js`; `bin/web-drive.mjs` under `caged.sh env` drives form → stranger (same bytes, no text) → Kofi (code through the outbox, keyed `wsign:`) → wrong → right (303 + cookie) → reused → landing → sign-out refused without the secret / cross-site → sign-out → owner-only mode, 14/14 ok; `bin/web-preview.mjs` draws the four PNGs. Run with `env -i` and no `.env` on the W1 branch alone: 3,885 / 3,763 / 0 / 122; with #167 and #166 merged in: **3,908 tests, 3,786 passing, 0 failing, 0 cancelled, 122 skipped.** Domain move (Web at heyreason.com/web, signed Netlify proxy; events on events.heyreason.com, `test/domains.test.js`), on top of #170 + review fixes: **3,918 / 3,796 / 0 / 0 cancelled / 122** (8 pinned). See [features/web-signin.md](features/web-signin.md).
