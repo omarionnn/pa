@@ -262,7 +262,7 @@ test("every status reads in plain words", () => {
 // ---------- no side call: the main model reads the meaning (2026-10-27, replacing #95's gate) ----------
 //
 // The "is this about buying?" side call held every turn with a purchase on record ~5.3s on the
-// claude-cli backend, failed 21 times a day, and went to the paid Anthropic API 39 times a day. Now
+// claude-cli backend, failed 11 times a day, and went to the paid Anthropic API 31 times a day. Now
 // the block rides on every message of theirs while there is a purchase in the window, under a line
 // that leaves relevance to the main model — a superset of the turns it rode on before.
 
@@ -281,7 +281,7 @@ async function apiTurn(text) {
   return { tools: params.tools.map(t => t.name), body };
 }
 
-/** Every Anthropic API ask and every CLI spawn made while `f` runs, counted at the SDK and spawn. */
+/** Every Anthropic API ask made while `f` runs, trapped at the SDK (the CLI is pinned by the source check). */
 async function counted(f) {
   const Anthropic = (await import("@anthropic-ai/sdk")).default;
   const proto = Anthropic.Messages?.prototype ?? Object.getPrototypeOf(new Anthropic({ apiKey: "x" }).messages);

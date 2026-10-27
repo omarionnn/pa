@@ -18,9 +18,9 @@
 // use it only when the message is about buying — so the main model, which is reading the message
 // anyway, is the one that judges what it means (the repo's rule: AI reads meaning, never regex).
 // There used to be a side call in front of that ("is this about buying?", yes/no on the small model):
-// on the live claude-cli backend it held every such turn ~5.3s, failed 21 times in a day ("the CLI
-// reported an error: no detail") after spending the same 5s, and 39 of them went to the paid
-// Anthropic API, which Reason must never bill. Showing the block on a superset of the turns it used
+// in the 24h to 2026-10-27 21:00Z it ran 48 times live: 31 over the paid Anthropic API (which Reason
+// must never bill), 6 over claude-cli at ~5s each, and 11 that failed after ~5s ("the CLI reported
+// an error: no detail") — all of it in front of the reply. Showing the block on a superset of the turns it used
 // to ride on keeps the incident case covered with no call at all: nothing waits, nothing can fail,
 // nothing is billed. Turns that are not a person's message (events, sweeps) still go by the
 // structural signals below, so a timer never raises a purchase of its own accord.
