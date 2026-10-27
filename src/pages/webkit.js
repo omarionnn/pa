@@ -117,7 +117,16 @@ const tint = `function tint(){var t=document.documentElement.dataset.theme,c=t==
 export const OG_KEY = "reason-web-og";
 // A signed-in page names the theme the person chose on Web (`data-account-theme`, accountThemed below);
 // this browser's own switch is brought in line with it first, so every browser opens in the same one.
-const HEAD_JS = `(function(){try{${tint}var h=document.documentElement,a=h.getAttribute('data-account-theme');`
+// A page's lifetime (for webloading.js, which swaps one Web page for the next in place): every interval,
+// timeout, live stream and window/document listener a page's own script makes is noted here, so the
+// page being left can be ended (PAGE.end()) before the next one's script runs. Nothing is left running.
+const PAGE_JS = `(function(){var W=window,D=document;if(W.__reasonPage)return;var L=[],I=[],T=[],E=[],ael=EventTarget.prototype.addEventListener,si=W.setInterval,st=W.setTimeout,ci=W.clearInterval,ct=W.clearTimeout;`
+  + `W.__reasonPage={on:function(o,t,f,c){return ael.call(o,t,f,c)},later:function(f,ms){return st.call(W,f,ms)},cancel:function(t){ct.call(W,t)},`
+  + `end:function(){L.forEach(function(x){x[0].removeEventListener(x[1],x[2],x[3])});I.forEach(function(i){ci.call(W,i)});T.forEach(function(t){ct.call(W,t)});E.forEach(function(e){try{e.close()}catch(x){}});L=[];I=[];T=[];E=[]}};`
+  + `W.setInterval=function(){var i=si.apply(W,arguments);I.push(i);return i};W.setTimeout=function(){var t=st.apply(W,arguments);if(T.length>500)T=T.slice(-250);T.push(t);return t};`
+  + `[W,D].forEach(function(o){o.addEventListener=function(t,f,c){L.push([o,t,f,c]);return ael.call(o,t,f,c)}});`
+  + `if(W.EventSource){var ES=W.EventSource;W.EventSource=function(u,o){var e=new ES(u,o);E.push(e);return e};W.EventSource.prototype=ES.prototype}})();`;
+const HEAD_JS = `${PAGE_JS}(function(){try{${tint}var h=document.documentElement,a=h.getAttribute('data-account-theme');`
   + `if(a==='paper'||a==='night')localStorage.setItem('${THEME_KEY}',a==='paper'?'light':'dark');else if(a==='auto')localStorage.removeItem('${THEME_KEY}');`
   + `var t=localStorage.getItem('${THEME_KEY}');if(t==='light'||t==='dark'){h.dataset.theme=t;tint()}h.classList.add('js');if(localStorage.getItem('${OG_KEY}')==='off')h.classList.add('og-off');`
   + `if(h.dataset.loader&&!sessionStorage.getItem('reason-web-loaded')&&!matchMedia('(prefers-reduced-motion: reduce)').matches)h.classList.add('loading')}catch(e){}})();`;
@@ -161,7 +170,7 @@ body{margin:0;background:var(--ground);color:var(--ink);font:400 16px/1.55 var(-
 a{color:var(--ink)}a:hover{color:var(--hov)}
 :focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 a:focus-visible,button:focus-visible,summary:focus-visible,[tabindex]:focus-visible{border-radius:3px}
-input:not([type=radio]):not([type=checkbox]):focus-visible,textarea:focus-visible,select:focus-visible{outline:none}
+input:not([type=radio]):not([type=checkbox]):focus-visible{outline:none}
 input,textarea{caret-color:var(--pen)}
 [tabindex="-1"]:focus{outline:none}
 .card:focus-visible,a.card:focus-visible,.card a.card-a:focus-visible{outline-offset:4px;border-radius:4px}
@@ -249,7 +258,7 @@ ${iconLinks()}
 <script>${HEAD_JS}</script>
 <style>${KIT_CSS}${css}</style>
 </head><body${bodyClass ? ` class="${esc(bodyClass)}"` : ""}>${skipped.link}${loader ? `<div class="loader" role="status" aria-label="Loading"><p>reas${bubble(4)}n<span class="ing">ing</span></p></div>` : ""}
-${skipped.html}${footer}<script>${script}${THEME_JS}${LOAD_JS}</script></body></html>`;
+${skipped.html}${footer}<script>${script};${THEME_JS};${LOAD_JS}</script></body></html>`;
 }
 
 const LOAD_JS = loadJs(wordmark({ href: "/web" }));

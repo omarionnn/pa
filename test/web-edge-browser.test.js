@@ -145,6 +145,8 @@ test("L6 + L7 + 6B: the code is on its way, then being checked; a wrong one stay
 test("L3: the Ongoing tab draws its headings at once, a ghost card and ghost rows, then the real page fetched in its place", async () => {
   const { ctx, page, errors } = await open("/web?thread");
   try {
+    // Something of the thread page's own running, as its script would: a timer and a live stream.
+    await page.evaluate(() => { window.__ticks = 0; setInterval(() => { window.__ticks++; }, 50); window.__es = new EventSource("/web/stream"); });
     const h = await hold(page, (u) => u.search === "?tab=ongoing");
     await page.click('.tabs a[href="/web?tab=ongoing"]');
     await h.asked;
@@ -166,6 +168,11 @@ test("L3: the Ongoing tab draws its headings at once, a ghost card and ghost row
     await page.locator("main.og-list").waitFor();
     assert.equal(await page.title(), "Reason — Ongoing");
     assert.equal(await page.locator("main.ld").count(), 0);
+    // Whatever the thread page left running (its timers, its live stream) stopped with it.
+    const t1 = await page.evaluate(() => window.__ticks);
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => window.__ticks), t1, "the old page's interval is stopped");
+    assert.equal(await page.evaluate(() => window.__es.readyState), 2, "its stream is closed");
     // The real page's own script ran: its menu opens.
     await page.click(".menu-b");
     assert.equal(await page.locator("#menu").isVisible(), true);

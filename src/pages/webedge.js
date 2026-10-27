@@ -46,7 +46,7 @@ export function endMaintenance() {
 
 /** "3:30 PM": the return time in Eastern time, as the label says it. */
 export function etTime(ms) {
-  return new Intl.DateTimeFormat("en-US", { timeZone: ET, hour: "numeric", minute: "2-digit" }).format(ms).toUpperCase();
+  return new Intl.DateTimeFormat("en-US", { timeZone: ET, hour: "numeric", minute: "2-digit" }).format(ms).replace(/[\u202f\u00a0]/g, " ").toUpperCase();
 }
 
 /**

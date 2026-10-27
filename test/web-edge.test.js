@@ -169,6 +169,16 @@ test("L3–L5: the loading kit is on every Web page; ruled lines in border colou
   assert.match(js, /fetch\(url,\{credentials:'same-origin',redirect:'manual'/);
   assert.match(js, /r\.type==='opaqueredirect'/);
   assert.doesNotMatch(js, /location\.reload\(\)/, "never re-POSTs");
+  // The page being left is ended before the next one's script runs: its timers, streams and listeners
+  // (webkit's PAGE_JS keeps the list); the loader's own click and popstate are kept apart from it.
+  assert.match(js, /P\.end\(\);code\.forEach/);
+  assert.match(js, /P\.on\(document,'click'/);
+  const page = ws.renderSignin({ joinNumber: LINE, formToken: "t" });
+  assert.ok(page.indexOf("W.__reasonPage={") < page.indexOf("<style>"), "noted from the first script in the head");
+  assert.match(page, /W\.setInterval=function\(\)\{var i=si\.apply\(W,arguments\);I\.push\(i\)/);
+  assert.match(page, /W\.EventSource=function\(u,o\)\{var e=new ES\(u,o\);E\.push\(e\)/);
+  // Back to a kept sign-in page mid-send: the sign-in again by GET, never a re-POST.
+  assert.match(page, /if\(e\.persisted\)location\.replace\(/);
   // The wordmark goes in as the server drew it, never as a closing script tag.
   assert.doesNotMatch(load.loadJs("</script><b>"), /<\/script>/);
 });
@@ -180,7 +190,10 @@ test("F1: one 2px ink ring 3px out on :focus-visible; destructive in pen; inputs
   assert.match(css, /:focus-visible\{outline:2px solid var\(--ink\);outline-offset:3px\}/);
   assert.doesNotMatch(css.replace(/:focus-visible/g, ""), /:focus\{outline:2px/, "never on mouse focus");
   assert.match(css, /a:focus-visible,button:focus-visible,summary:focus-visible,\[tabindex\]:focus-visible\{border-radius:3px\}/);
-  assert.match(css, /input:not\(\[type=radio\]\):not\(\[type=checkbox\]\):focus-visible,textarea:focus-visible,select:focus-visible\{outline:none\}/);
+  assert.match(css, /input:not\(\[type=radio\]\):not\(\[type=checkbox\]\):focus-visible\{outline:none\}/);
+  assert.doesNotMatch(css, /textarea:focus-visible[^{]*\{outline:none|select:focus-visible[^{]*\{outline:none/, "a textarea or select keeps the ring");
+  // The six code cells: no ring, so their rule thickens while the field has focus (even when full).
+  assert.match(ws.renderCode({ number: "1", formToken: "t" }), /html\.js \.digits:focus-within \.cell\{border-bottom-width:2px\}/);
   assert.match(css, /input,textarea\{caret-color:var\(--pen\)\}/);
   assert.match(css, /\.danger:focus-visible,\.fg-go:focus-visible,\.every:focus-visible,\.ff:focus-visible\{outline-color:var\(--pen\)\}/);
   assert.match(css, /\.ic:focus-visible,\.menu-b:focus-visible\{border-radius:50%\}/);

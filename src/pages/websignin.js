@@ -195,6 +195,7 @@ const SO_CSS = `
 .digits .cell.cur{border-bottom-color:var(--pen);color:var(--pen)}
 .digits.bad .cell,.digits.bad .cell.on{border-bottom-color:var(--pen)}
 .digits.bad input{border-bottom-color:var(--pen)}
+html.js .digits:focus-within .cell{border-bottom-width:2px}
 .digits input{grid-column:1/-1;grid-row:1;width:100%;height:56px;border:0;border-bottom:1.5px solid var(--ink);border-radius:0;background:transparent;font:400 28px/1 var(--mono);letter-spacing:.5em;color:var(--ink);padding:0}
 html.js .digits input{position:absolute;inset:0;height:100%;border:0;color:transparent;caret-color:transparent;letter-spacing:0;font-size:16px;-webkit-text-fill-color:transparent}
 html:not(.js) .digits .cell{display:none}
@@ -259,6 +260,8 @@ if(n&&b){n.readOnly=true;var s=document.createElement('span');s.className='act b
 else if(c){c.readOnly=true;var g=f.querySelector('.digits');g.classList.remove('bad');var p=document.createElement('p');p.className='lbl checking';p.setAttribute('role','status');p.textContent='CHECKING\u2026';
 f.querySelectorAll('.code-f>.hand,.code-f>form,.code-f>.so-wait,.code-f>.so-quiet').forEach(function(x){x.remove()});g.after(p)}
 else if(b)b.setAttribute('aria-busy','true')},0)})});
+// Back to a page the browser kept: its forms were mid-send. The sign-in again, fresh (a GET: nothing re-posts).
+window.addEventListener('pageshow',function(e){if(e.persisted)location.replace(/^\\/web\\/(signin|code)$/.test(location.pathname)?'/web':location.href)});
 })();`;
 
 const signedOutPage = (title, body) => webPage({ title, header: "", body, css: SO_CSS, script: SO_JS });

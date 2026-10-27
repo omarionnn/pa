@@ -63,8 +63,8 @@ ${[30, 40, 48, 50, 55, 62, 70, 80, 85, 90, 95, 100].map(w => `.ln.w${w}{width:${
 `;
 
 // The client half. Guarded so a page swapped in (its own copy of this script runs) never doubles up.
-export const loadJs = (wordmarkHtml) => `(function(){if(window.reasonLoad||!window.fetch||!window.DOMParser||!history.pushState)return;
-var C=${JSON.stringify(LOAD_COPY)},LIST={'/web/saved':'Saved','/web/ongoing/hand':'In hand','/web/ongoing/back':'Back to you'},WM=${JSON.stringify(String(wordmarkHtml)).replace(/</g, "\\u003c")},SLOW=${SLOW_MS},ctl=null,slowT=0,shown=location.pathname+location.search;
+export const loadJs = (wordmarkHtml) => `(function(){if(window.reasonLoad||!window.__reasonPage||!window.fetch||!window.DOMParser||!history.pushState)return;
+var P=window.__reasonPage,C=${JSON.stringify(LOAD_COPY)},LIST={'/web/saved':'Saved','/web/ongoing/hand':'In hand','/web/ongoing/back':'Back to you'},WM=${JSON.stringify(String(wordmarkHtml)).replace(/</g, "\\u003c")},SLOW=${SLOW_MS},ctl=null,slowT=0,shown=location.pathname+location.search;
 function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
 function ln(w,cls){return el('span','ln'+(w?' w'+w:'')+(cls?' '+cls:''))}
 function lines(ws,wide){var d=el('div','ld-lines'+(wide?' wide':''));d.setAttribute('aria-hidden','true');ws.forEach(function(w){d.appendChild(ln(w))});return d}
@@ -105,28 +105,29 @@ var again=el('button','act','Try again ');again.type='button';var ar=el('span','
 again.onclick=function(){w.remove();main.st.textContent=k==='detail'?C.detail:k==='ongoing'?C.ongoing:C.list;load(main,url,k,info)};
 var back=el('a','act2','BACK TO CHAT');back.href='/web?thread';back.onclick=function(){if(ctl)ctl.abort()};
 acts.appendChild(again);acts.appendChild(back);w.appendChild(acts);main.appendChild(w)}
-function failed(main,url){if(!main.isConnected)return;clearTimeout(slowT);var m=el('main','ld-err');
+function failed(main,url){if(!main.isConnected)return;P.cancel(slowT);var m=el('main','ld-err');
 var h=el('h1','h1','Something went wrong.');h.appendChild(document.createElement('br'));h.appendChild(el('em','','Nothing was lost.'));m.appendChild(h);
 var q=el('p','quiet',"Your messages and anything I'm working on are safe.");m.appendChild(q);var a=el('a','act','Try again ');a.href=url;var ar=el('span','','\\u2192');ar.setAttribute('aria-hidden','true');a.appendChild(ar);m.appendChild(a);
 var r=el('p','sr','Something went wrong.');r.setAttribute('role','alert');m.appendChild(r);main.replaceWith(m)}
-// The real page, in place of the drawn one: its title, its stylesheet, its body and its script.
+// The real page, in place of the drawn one: its title, its stylesheet, its body and its script. The page
+// being left is ended first (webkit PAGE_JS): its intervals, timeouts, streams and listeners stop.
 function swap(html){var d=new DOMParser().parseFromString(html,'text/html');document.title=d.title;
 var ns=d.head.querySelector('style'),os=document.head.querySelector('style');if(ns&&os)os.textContent=ns.textContent;
 document.body.className=d.body.className;var code=[];
 Array.prototype.slice.call(document.body.childNodes).forEach(function(n){n.remove()});
 Array.prototype.slice.call(d.body.childNodes).forEach(function(n){if(n.nodeName==='SCRIPT'){code.push(n.textContent);return}document.body.appendChild(document.adoptNode(n))});
-code.forEach(function(t){var s=document.createElement('script');s.textContent=t;document.body.appendChild(s)});
+P.end();code.forEach(function(t){var s=document.createElement('script');s.textContent=t;document.body.appendChild(s)});
 window.scrollTo(0,0);var f=document.querySelector('main h1')||document.querySelector('main');if(f){if(!f.hasAttribute('tabindex'))f.setAttribute('tabindex','-1');try{f.focus({preventScroll:true})}catch(e){}}}
-function load(main,url,k,info){if(ctl)ctl.abort();ctl=window.AbortController?new AbortController():null;var mine=ctl;clearTimeout(slowT);slowT=setTimeout(function(){slow(main,url,k,info)},SLOW);
+function load(main,url,k,info){if(ctl)ctl.abort();ctl=window.AbortController?new AbortController():null;var mine=ctl;P.cancel(slowT);slowT=P.later(function(){slow(main,url,k,info)},SLOW);
 fetch(url,{credentials:'same-origin',redirect:'manual',headers:{Accept:'text/html'},signal:mine?mine.signal:undefined}).then(function(r){
-if(r.type==='opaqueredirect'||r.status===0||(r.status>=300&&r.status<400)||r.status===401){clearTimeout(slowT);location.href=url;return}
-return r.text().then(function(t){if(mine!==ctl)return;clearTimeout(slowT);if(!/^<!doctype html>/i.test(t.trim()))return failed(main,url);swap(t)})})
+if(r.type==='opaqueredirect'||r.status===0||(r.status>=300&&r.status<400)||r.status===401){P.cancel(slowT);location.href=url;return}
+return r.text().then(function(t){if(mine!==ctl)return;P.cancel(slowT);if(!/^<!doctype html>/i.test(t.trim()))return failed(main,url);swap(t)})})
 .catch(function(e){if(e&&e.name==='AbortError')return;failed(main,url)})}
 function go(a,k){var info=k==='detail'?known(a):k==='ongoing'?groups():{title:a.getAttribute('data-title')||LIST[new URL(a.href,location.href).pathname]||''},url=new URL(a.href,location.href).href;
 var main=draw(k,info);history.pushState({reasonLoad:1},'',url);shown=location.pathname+location.search;load(main,url,k,info)}
-document.addEventListener('click',function(e){if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
+P.on(document,'click',function(e){if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
 var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(!a||a.target||a.hasAttribute('download')||a.getAttribute('aria-current')==='page')return;
 var k=kindOf(a);if(!k)return;e.preventDefault();go(a,k)});
 // Back and forward: the page for that address, drawn by the server. A fragment (the skip link) is not a page.
-window.addEventListener('popstate',function(){if(location.pathname+location.search!==shown)location.replace(location.href)});
+P.on(window,'popstate',function(){if(location.pathname+location.search!==shown)location.replace(location.href)});
 window.reasonLoad={go:go,kindOf:kindOf}})();`;
