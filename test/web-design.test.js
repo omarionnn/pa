@@ -400,7 +400,7 @@ test("'pick up from iMessage': the last two texts, quoted, one link into the thr
 
 test("5C first visit (once), the Ongoing tab's empty state, MEMORY/SETTINGS pages, and 9B — each in its own words", () => {
   const { first, ongoing, error, memory, settings } = allScreens();
-  assert.match(first, /<h1 id="fv-h" class="h1">One Reason\.<br><em>Pick up anywhere\.<\/em><\/h1><p class="body">This is the same Reason you text\. What you send here stays here; it won&#39;t show up in your iMessage thread\.<\/p><p class="hand tilt">either place works\. i&#39;ll keep up\.<\/p><a class="act" href="\/web">Got it <span aria-hidden="true">→<\/span><\/a>/);
+  assert.match(first, /<h1 id="fv-h" class="h1">One Reason\.<br><em>Pick up anywhere\.<\/em><\/h1><p class="body">This is the same Reason you text\. What you send here stays here; it won&#39;t show up in your iMessage thread\.<\/p><p class="hand tilt">either place works\. i&#39;ll keep up\.<\/p><a class="act" href="\/web\?home">Got it <span aria-hidden="true">→<\/span><\/a>/);
   assert.match(ongoing, /<h1 class="h1">Nothing left<br>to chase\.<\/h1><p class="hand tilt">whatever you hand me shows up here while i work\.<\/p>/);
   assert.match(ongoing, /<a href="\/web\?tab=ongoing" aria-current="page">Ongoing<\/a>/);
   assert.match(error, /Something went wrong\.<br><em>Nothing was lost\.<\/em><\/h1><p class="quiet">Your messages and anything I'm working on are safe\.<\/p><a class="act" href="\/web">Try again/);
