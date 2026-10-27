@@ -258,7 +258,7 @@ ${LOAD_CSS}
  * Every page carries Web's own icons and the notify script (src/pages/webnotify.js), which only wakes
  * on a signed-in page.
  */
-export function webPage({ title = "Reason", header = "", body = "", css = "", script = "", bodyClass = "", loader = false, foot = "", connect = "" }) {
+export function webPage({ title = "Reason", header = "", body = "", css = "", script = "", bodyClass = "", loader = false, foot = "", connect = "", head = "" }) {
   const footer = foot;
   const skipped = skipTo(`${header}${body}`);
   return `<!doctype html>
@@ -271,7 +271,7 @@ export function webPage({ title = "Reason", header = "", body = "", css = "", sc
 <meta name="theme-color" content="${TOKENS.paper.ground}" data-auto="${TOKENS.paper.ground}" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="${TOKENS.night.ground}" data-auto="${TOKENS.night.ground}" media="(prefers-color-scheme: dark)">
 ${webIconLinks()}
-<title>${esc(title)}</title>
+${head ? `${head}\n` : ""}<title>${esc(title)}</title>
 <script>${PAGE_JS}</script>
 <script>${HEAD_JS}</script>
 <style>${KIT_CSS}${NOTIFY_CSS}${css}</style>
