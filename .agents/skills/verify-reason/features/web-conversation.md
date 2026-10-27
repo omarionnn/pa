@@ -34,8 +34,8 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
   slips only from real open tasks + pending timers (`inHand`) else YOU COULD START WITH — three
   examples that fill the composer — then the unboxed "pick up from iMessage" block with the last
   two non-Web texts) unless they sent on Web in the last 30 min; `/web?thread` = the thread;
-  `/web?tab=ongoing` = the phone's Ongoing tab (rows or "Nothing left to chase."); `/web/memory`,
-  `/web/settings` = "coming soon" pages (Settings has the theme switch + sign-out). Desktop: MEMORY /
+  `/web?tab=ongoing` = the phone's Ongoing tab (rows or "Nothing left to chase.");
+  `/web/settings` = Settings ([web-settings.md](web-settings.md)); `/web/memory` "coming soon" until the Memory PR. Desktop: MEMORY /
   SETTINGS typed links, the Ongoing margin (empty state or IN HAND rows). Phone: ⋯ menu, Chat /
   Ongoing tab bar (hides while typing). A pending, unanswered confirmation (last 24 h) shows the
   approval card (no approve button; Caveat "just tell me in the chat when you want it.").
