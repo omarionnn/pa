@@ -270,13 +270,13 @@ g.addEventListener('keydown',function(e){var k=e.key,bs=[].slice.call(g.querySel
 var nav=[].slice.call(document.querySelectorAll('.st-nav a')),secs=nav.map(function(a){return document.getElementById(a.getAttribute('href').slice(1))}).filter(Boolean),held=null;
 function cur(id){nav.forEach(function(a){if(a.getAttribute('href')==='#'+id)a.setAttribute('aria-current','true');else a.removeAttribute('aria-current')})}
 function left(){return document.documentElement.scrollHeight-innerHeight-scrollY}
-function spy(){if(held||!secs.length)return;var band=innerHeight*.7,line=innerHeight-band*Math.min(1,Math.max(0,left())/band),id=secs[0].id;secs.forEach(function(s){if(s.getBoundingClientRect().top<=line-1)id=s.id});cur(id)}
+function spy(){if(held||!secs.length)return;var band=innerHeight*.7,line=innerHeight-band*Math.min(1,Math.max(0,left())/band),id=secs[0].id;secs.forEach(function(s){if(s.getBoundingClientRect().top<line+1)id=s.id});cur(id)}
 function hold(){var s=secs.filter(function(s){return '#'+s.id===location.hash})[0];if(s){held=s.id;cur(s.id)}}
 function free(){if(held){held=null;spy()}}
 if(secs.length){hold();window.addEventListener('hashchange',hold);nav.forEach(function(a){a.addEventListener('click',function(){held=a.getAttribute('href').slice(1);cur(held)})});
 ['wheel','touchstart','keydown','mousedown'].forEach(function(t){window.addEventListener(t,free,{passive:true})});
-if(window.IntersectionObserver){var io=new IntersectionObserver(spy,{rootMargin:'0px 0px -70% 0px'});secs.forEach(function(s){io.observe(s)});
-window.addEventListener('scroll',function(){if(left()<innerHeight*.7)spy()},{passive:true})}}
+var io=window.IntersectionObserver&&new IntersectionObserver(spy,{rootMargin:'0px 0px -70% 0px'});if(io)secs.forEach(function(s){io.observe(s)});
+window.addEventListener('scroll',function(){if(!io||left()<innerHeight*.7)spy()},{passive:true})}
 function busy(b,on){if(!b)return;if(on){b.dataset.was=b.innerHTML;if(b.dataset.busy)b.textContent=b.dataset.busy;b.setAttribute('aria-disabled','true');b.classList.add('busy')}else if(b.dataset.was!=null){b.innerHTML=b.dataset.was;b.removeAttribute('aria-disabled');b.classList.remove('busy')}}
 document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(e){if(f.dataset.sent){e.preventDefault();return}f.dataset.sent='1';busy(e.submitter||f.querySelector('[type=submit]'),true)})});
 window.addEventListener('pageshow',function(e){if(!e.persisted)return;document.querySelectorAll('form[data-sent]').forEach(function(f){delete f.dataset.sent;f.querySelectorAll('.busy').forEach(function(b){busy(b,false)})})});
