@@ -250,7 +250,7 @@ export function overnightFor(conversationId, since, now = clock.now()) {
   // share an outbox key up to `#n`. Its headline is the words; a link alone is never the headline.
   const groups = new Map();
   for (const m of rows) {
-    const k = m.idem_key && m.idem_key.includes("#") ? `k:${m.idem_key.slice(0, m.idem_key.indexOf("#"))}` : `m:${m.id}`;
+    const k = /#\d+$/.test(m.idem_key ?? "") ? `k:${m.idem_key.slice(0, m.idem_key.lastIndexOf("#"))}` : `m:${m.id}`;
     groups.set(k, [...(groups.get(k) ?? []), m]);
   }
   for (const parts of groups.values()) {

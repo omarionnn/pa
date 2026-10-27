@@ -10055,7 +10055,8 @@ export const opsSourceOf = (idemKey) => OPS_KEY_PREFIXES.some(p => String(idemKe
 // texts — sent under an automatic key until then — by what only that code wrote: the status page's
 // link, or the check's fixed opening line. Every part of a split message goes with its first.
 {
-  const base = (col) => `CASE WHEN instr(${col}, '#') > 0 THEN substr(${col}, 1, instr(${col}, '#') - 1) ELSE ${col} END`;
+  // The part number is the LAST `#n` (src/outbox.js sendSequence), so cut there: rtrim the digits, then the `#`.
+  const base = (col) => `CASE WHEN ${col} GLOB '*#[0-9]*' THEN rtrim(rtrim(${col}, '0123456789'), '#') ELSE ${col} END`;
   const keyed = OPS_KEY_PREFIXES.map(() => "substr(o.idem_key, 1, ?) = ?").join(" OR ");
   db.prepare(`UPDATE messages SET source = 'ops' WHERE source IS NULL AND role = 'assistant' AND (
       text LIKE '%/ops?k=%' OR text LIKE 'Reason check —%'

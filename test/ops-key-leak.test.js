@@ -148,11 +148,23 @@ test("4. nothing the server writes carries the key; the status page still opens"
 
 test("5. stripOpsKeys", () => {
   const key = ops.opsKey();
-  assert.equal(stripOpsKeys(`see https://heyreason.com/ops?k=${key}&focus=sweep.`), "see https://heyreason.com/ops?focus=sweep.");
+  assert.equal(stripOpsKeys(`see https://heyreason.test/ops?k=${key}&focus=sweep.`), "see https://heyreason.test/ops?focus=sweep.");
   assert.equal(stripOpsKeys(`<a href="/ops?k=abcDEF_-12&amp;focus=web">`), `<a href="/ops?focus=web">`);
-  assert.equal(stripOpsKeys(`"url":"https://x.test/ops?k=abc"`), `"url":"https://x.test/ops"`);
+  assert.equal(stripOpsKeys(`"url":"https://reason.example.test/ops?k=abc"`), `"url":"https://reason.example.test/ops"`);
   assert.equal(stripOpsKeys(`raw ${key} here`), "raw  here");
   assert.equal(stripOpsKeys("/ops/usage and /opsy?k=1 stay"), "/ops/usage and /opsy?k=1 stay");
+  assert.equal(stripOpsKeys("https://other.example/ops?k=abc"), "https://other.example/ops?k=abc", "somebody else's site is left alone");
+  assert.ok(!hasOpsKeyLink("https://other.example/ops?k=abc"));
   assert.ok(hasOpsKeyLink(`x /ops?focus=a&k=zz`));
   assert.ok(!hasOpsKeyLink("x /ops?focus=a"));
+});
+
+test("6. owner notices that are not questions go under an ops: key (harm pause, unreachable, first text)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
+  assert.match(src("runtime.js"), /tellMaster\(line, meta\?\.channel \?\? null, \{ idempotencyKey: `ops:harm-pause:/);
+  assert.match(src("runtime.js"), /tellMaster\(line, null, \{ idempotencyKey: `ops:unreachable:/);
+  assert.match(src("channels/router.js"), /idempotencyKey: `ops:new-contact:/);
+  for (const k of ["ops:harm-pause:x:1", "incident:calls:1", "event-created:e1", "ops:check:1:ab#2"]) assert.equal(db.opsSourceOf(k), "ops", k);
+  for (const k of ["auto:fake:x:1", "timer:3", null]) assert.equal(db.opsSourceOf(k), null, String(k));
 });
