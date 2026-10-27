@@ -161,7 +161,9 @@ const noAnswerYet = !db.messagesFor(KOFI_C).some(m => m.text === "re: slow: comp
 release();
 const landed = await until(() => db.messagesFor(KOFI_C).some(m => m.role === "assistant" && /compare three inns/.test(m.text)));
 step("a slow turn: acknowledged at once, tab closed, answer lands anyway", slow.status === 200 && noAnswerYet && landed);
-step("back on the page, the answer is there", /compare three inns/.test((await page(kofi, "?thread")).body.split(`<ol class="thread"`)[1] ?? ""));
+// The thread page opens with L1 (OPENING YOUR THREAD…) and fetches its newest page, as here.
+const back = await page(kofi, "?thread");
+step("back on the page, the answer is there", back.status === 200 && /OPENING YOUR THREAD/.test(back.body) && (await hist(kofi, "")).messages?.some(m => /compare three inns/.test(m.text)));
 
 // 7. Decision 9: back on the phone, the next text carries the Web line once.
 await router.deliver({ channel: "fake", externalId: "k-t2", from: KOFI, text: "on my phone now", chatId: null, at: Date.now() });
