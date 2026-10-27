@@ -51,7 +51,7 @@ function stubRouter() {
   };
 }
 
-test("the card's photo is the brand-red one, never the old blue or orange", () => {
+test("the card's photo is the handoff mark, never an older photo", () => {
   const bytes = readFileSync(PHOTO);
   const sha = createHash("sha256").update(bytes).digest("hex");
   assert.notEqual(sha, BLUE, "the blue-bubble photo is back");
