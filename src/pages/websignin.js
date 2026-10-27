@@ -22,18 +22,22 @@
 // number gets the same page and no code, exactly like a number with no account; `on` lets anybody
 // with a Reason in; off and these routes do not exist (src/http.js answers its flat 404).
 import { timingSafeEqual, randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import * as events from "../events.js";
-import { webAllowedFor } from "../web.js";
+import { webAllowedFor, webStreamOrigin } from "../web.js";
 import { requestCode, readCookie, readCookies, cookieHeader, clearCookieHeader, codeHost, boundTo, SESSION_TTL_MS, CODE_TTL_MS } from "./access.js";
-import { shell, esc, renderNotFound, codeInputAttrs, foot, sentLine } from "./render.js";
+import { esc, renderNotFound, codeInputAttrs } from "./render.js";
 import { eventActor } from "./event.js";
 import { prettyNumber } from "../invites.js";
 import { qrSvg } from "./qr.js";
-import { config, normalizeNumber } from "../config.js";
+import { config, clock, normalizeNumber } from "../config.js";
+import { webPage, wordmark, label, hand, action, typed, WEB_FONTS, webFont } from "./webkit.js";
 
+export { WEB_FONTS, webFont };
+
+/** "Send a new code" from one browser: this many in this window, like every person's own code limit. */
+export const RESEND = { limit: 3, windowMs: 15 * 60_000 };
 /** A Web session unused for this long is over (owner decision 3), whatever its age. */
 export const WEB_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 /** The cookie that ties a sign-in form to the browser that was shown it (the pre-sign-in CSRF token). */
@@ -132,14 +136,16 @@ function readFormCookie(header) {
   return null;
 }
 
-// Every answer here carries these. The pages are built from inline style and script (the shell's
-// theme switch), so those stay 'unsafe-inline'; nothing else may load, nothing may frame it, no
-// form may post anywhere but here, and no address is kept in any cache. Fonts are the wordmark's
-// inline one and the site's two faces from /web/fonts (below), and come from nowhere else. The referrer goes only to
+// Every answer here carries these. The pages are built from inline style and script (the theme
+// switch, the code cells), so those stay 'unsafe-inline'; nothing else may load, nothing may frame
+// it, no form may post anywhere but here, and no address is kept in any cache. Fonts come from
+// /web/fonts only. The page may also open its live stream on the pages host (src/web.js
+// webStreamOrigin) — that one origin, and only when it qualifies. The referrer goes only to
 // Reason's own host (`same-origin`): under `no-referrer` a browser posts `Origin: null` and its own
 // sign-in form was refused (10-26).
+const STREAM_ORIGIN = webStreamOrigin();
 export const SECURITY_HEADERS = {
-  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+  "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'${STREAM_ORIGIN ? ` ${STREAM_ORIGIN}` : ""}; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "same-origin",
   "X-Frame-Options": "DENY",
@@ -149,102 +155,190 @@ const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", ...S
 const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-Length": Buffer.byteLength(body), ...extra }), body });
 const redirect = (location, extra = {}) => ({ status: 303, headers: HTML({ Location: location, "Content-Length": 0, ...extra }), body: "" });
 
-// Web is the marketing site's (heyreason.com, ~/Desktop/reason-site-new/public/styles.css) on Reason's
-// warm paper: Instrument Serif italic headlines, the small spaced monospace eyebrow, sans body, the
-// orange Caveat note with its squiggle arrow, dashed rules. The two display faces are Reason's own
-// copies cut down to Latin (assets/fonts/*-web.woff2, SIL OFL), served at /web/fonts/<name>.woff2 by
-// src/http.js — nothing is fetched from Google. The rules are the shell's --line (PAPER.line, the
-// site's --border, in light) so they follow the paper into dark. --above/--below are the room each side
-// of a rule, the site's own: its hero note's 2rem plus the hero's bottom padding over the rule, the
-// .day section's 5rem top padding under it.
-const fontFile = (f) => readFileSync(new URL(`../../assets/fonts/${f}`, import.meta.url));
-export const WEB_FONTS = { serif: fontFile("instrument-serif-italic-web.woff2"), hand: fontFile("caveat-web.woff2") };
-export function webFont(name) {
-  const body = Object.hasOwn(WEB_FONTS, name) ? WEB_FONTS[name] : null;
-  if (!body) return null;
-  return { status: 200, headers: { "Content-Type": "font/woff2", "Content-Length": body.length, "Cache-Control": "public, max-age=604800", "X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "same-origin" }, body };
+// The signed-out screens, sheet 6 of the handoff and its desktop "sign in and join" / "code" boards.
+// Mobile is one column, vertically centred, with the way in for somebody new as a typed link at the
+// foot; from 900px the join block stands to the right, past a dashed vertical rule.
+const SO_CSS = `
+.so-head{padding:20px 28px 0;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.so{flex:1 0 auto;width:100%;max-width:1080px;margin:0 auto;padding:12px 28px 28px;display:flex;flex-direction:column}
+.so-cols{flex:1;display:flex;flex-wrap:wrap;align-items:center;gap:96px}
+.so-in{flex:1 1 400px;min-width:0;display:flex;flex-direction:column;justify-content:center;gap:28px}
+.so-in form{display:flex;flex-direction:column;gap:28px;margin:0}
+.so-field{display:flex;flex-direction:column;gap:8px;max-width:420px}
+.so-field label{font:400 11px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
+.ul-in{width:100%;height:52px;border:0;border-bottom:1px solid var(--ink);border-radius:0;background:transparent;font:400 22px/1 var(--mono);letter-spacing:.06em;color:var(--ink);padding:0;-webkit-appearance:none;appearance:none}
+.ul-in::placeholder{color:var(--muted);opacity:1}
+.ul-in:focus{box-shadow:0 1px 0 0 var(--ink)}
+.so-field .hand{margin-top:4px}
+.so-new{align-self:center;text-align:center}
+.so-wm{display:none}
+.so-join{display:none;flex:1 1 340px;max-width:400px;flex-direction:column;gap:24px;padding-left:48px;border-left:1px dashed var(--hair)}
+.so-join .lbl{font-size:12px}
+.so-h2{margin:0;font:italic 400 38px/1.1 var(--serif)}
+.so-num{margin:0;font:400 18px/1.4 var(--mono);letter-spacing:.08em;overflow-wrap:anywhere}
+.qr{align-self:flex-start;background:var(--lifted);border:1px solid var(--hair);box-shadow:var(--sh);padding:14px;transform:rotate(-1.5deg);display:flex;flex-direction:column;gap:8px;align-items:center;margin:0}
+.qr svg{display:block;width:120px;height:120px}
+.qr figcaption{font:400 10px/1.3 var(--mono);letter-spacing:.12em;color:var(--muted);text-transform:uppercase}
+.qr .on-desk{display:none}
+.so-sub{margin:0;font-size:16px;line-height:1.5;color:var(--muted)}
+.so-lead{display:flex;flex-direction:column;gap:10px}
+.digits{position:relative;display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;max-width:520px}
+.digits .cell{height:56px;border-bottom:1.5px solid var(--hair);display:grid;place-items:center;font:400 28px/1 var(--mono);color:var(--ink)}
+.digits .cell.on{border-bottom-color:var(--ink)}
+.digits .cell.cur{border-bottom-color:var(--pen);color:var(--pen)}
+.digits.bad .cell,.digits.bad .cell.on{border-bottom-color:var(--pen)}
+.digits input{grid-column:1/-1;grid-row:1;width:100%;height:56px;border:0;border-bottom:1.5px solid var(--ink);border-radius:0;background:transparent;font:400 28px/1 var(--mono);letter-spacing:.5em;color:var(--ink);padding:0}
+html.js .digits input{position:absolute;inset:0;height:100%;border:0;color:transparent;caret-color:transparent;letter-spacing:0;font-size:16px;-webkit-text-fill-color:transparent}
+html.js .digits input:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+html:not(.js) .digits .cell{display:none}
+.code-f{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:12px;min-width:0}
+.code-f .hand{font-size:23px}
+.so-acts{display:flex;gap:16px 40px;align-items:center;flex-wrap:wrap}
+.so-acts form{margin:0}
+.so-wait{margin:0;font:400 13px/1.4 var(--mono);letter-spacing:.08em}
+.so-quiet{margin:0;font-size:15px;line-height:1.5;color:var(--muted)}
+.so-center{justify-content:center}
+@media (max-width:359px){.so-head,.so{padding-left:20px;padding-right:20px}}
+@media (min-width:900px){
+.so-head{padding:22px clamp(20px,4vw,48px)}
+.so{padding:60px clamp(20px,4vw,48px) 80px}
+.so-in{gap:32px}
+.so-in form{gap:32px}
+.ul-in{height:56px;font-size:26px}
+.so-new{display:none}
+.so-wm{display:inline-flex}
+.so-join{display:flex}
+.qr{padding:16px}.qr svg{width:150px;height:150px}.qr .on-phone{display:none}.qr .on-desk{display:inline}.qr figcaption{font-size:10.5px}
+.so-sub{font-size:18px}
+.code-main{max-width:640px;margin:0 auto;width:100%;padding-top:40px;gap:40px}
+.digits{gap:18px}.digits .cell,.digits input{height:72px;font-size:40px}
+.so-solo{max-width:640px;margin:0 auto;width:100%}
 }
-const FONTS = `@font-face{font-family:"Reason Serif";font-style:italic;font-weight:400;font-display:swap;src:url(/web/fonts/serif.woff2) format("woff2")}`
-  + `@font-face{font-family:"Reason Hand";font-weight:400 700;font-display:swap;src:url(/web/fonts/hand.woff2) format("woff2")}`;
-export const WEB_CSS = `${FONTS}
-:root{--serif:"Reason Serif","Instrument Serif","Iowan Old Style",Georgia,serif;--sans:"Inter",system-ui,-apple-system,sans-serif;--hand:"Reason Hand","Caveat",cursive;--mono:"Courier New","Courier",monospace;--rule:var(--line);--above:calc(2rem + clamp(3rem,8vh,6rem));--below:5rem}
-body{font-family:var(--sans);font-size:16px;line-height:1.6}
-.hero{margin:.6rem 0 2.2rem}
-.hero .kicker{font:400 .72rem/1.4 var(--mono);text-transform:uppercase;letter-spacing:.14em;color:var(--dim);margin:0 0 .75rem}
-.hero h1{font:italic 400 clamp(2.6rem,10vw,3.6rem)/1.08 var(--serif);letter-spacing:-.02em}
-.hero .sub{font-size:1.15rem;line-height:1.55;color:var(--dim);max-width:30rem;margin:.9rem 0 0}
-h2{font:italic 400 clamp(1.9rem,6vw,2.4rem)/1.12 var(--serif);letter-spacing:-.015em;margin:0 0 .9rem}
-.w-note{font:400 1.5rem/1.2 var(--hand);color:var(--accent);margin:1.1rem 0 0;transform:rotate(-1.5deg);transform-origin:left}
-.w-note svg{width:24px;height:14px;vertical-align:middle;margin-right:.25em;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round}
-.w-rule{border:0;height:0;border-top:1px dashed var(--rule);margin:var(--above) 0 var(--below)}
-.w-form label{display:block;margin:.8rem 0 .45rem;font:400 .72rem/1.4 var(--mono);text-transform:uppercase;letter-spacing:.14em;color:var(--dim)}
-.w-form input[type=tel],.w-form input[type=text]{display:block;width:100%;box-sizing:border-box;min-height:3rem;padding:.8rem .95rem;border-radius:4px;border:1px solid var(--edge,#ccc);font:inherit;font-size:1.05rem;background:var(--card);color:var(--ink)}
-.w-form input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 35%,transparent)}
-.w-form input::placeholder{color:var(--dim);opacity:1}
-.w-form input[type=tel]{letter-spacing:normal;text-transform:none;text-align:left}
-.w-btn{display:block;width:100%;box-sizing:border-box;text-align:center;margin:1rem 0;padding:.9rem 1.8rem;font:500 .95rem/1.4 var(--sans);border-radius:3px;background:var(--ink);color:var(--bg);text-decoration:none;border:1px solid var(--ink);cursor:pointer;transition:transform .15s ease,box-shadow .15s ease}
-.w-btn:hover{transform:translateY(-1px);box-shadow:3px 4px 0 rgba(0,0,0,.12)}
-.w-link{background:none;border:0;padding:0;color:inherit;text-decoration:underline;text-decoration-color:var(--rule);text-underline-offset:3px;cursor:pointer;font:inherit;opacity:.85}
-.w-link[data-busy]{min-width:6.5rem;text-align:left}
-.w-err{color:var(--warn);font-weight:600}
-.w-join{margin-top:var(--above);padding-top:var(--below);border-top:1px dashed var(--rule)}
-.w-join .w-note{margin:-.2rem 0 1rem}
-.w-qr{margin:1.2rem 0 0;display:flex;gap:1.2rem;align-items:center;flex-wrap:wrap}
-.w-qr svg{width:9rem;height:9rem;border-radius:4px;border:1px solid var(--rule);background:#fff;padding:.3rem;box-sizing:border-box}
-.w-qr figcaption{flex:1;min-width:12rem;color:var(--dim);font-size:.95rem;margin:0}
-.w-num{font-variant-numeric:tabular-nums;white-space:nowrap}
-.w-out{margin-top:2.4rem}
-.foot{margin-top:var(--above);border-top-style:dashed;border-top-color:var(--rule)}
 `;
-const p = (s) => `<p>${esc(s)}</p>`;
-// The site's hero note: its squiggle arrow, then one line in Reason's own hand. Under a section
-// heading (the join block's) the line stands alone, without the arrow.
-const ARROW = `<svg viewBox="0 0 28 14" aria-hidden="true"><path d="M2 7 Q8 2 14 7 Q20 12 26 7"/><path d="M22 3 L26 7 L22 11"/></svg>`;
-export const note = (words, arrow = true) => `<p class="w-note">${arrow ? ARROW : ""}${esc(words)}</p>`;
-// One line per screen, in the site's voice ("no app. no dashboard. just a text."): lowercase, and
-// it says what is true, never words for anybody to type.
-export const NOTES = {
-  signin: "same Reason, just a bigger screen.",
-  code: "six digits, if that number uses Reason.",
-  join: "one text from your phone and you're in.",
-  landing: "same conversation, wherever you are.",
-};
-const hero = (h1, sub = "", aside = "") => `<div class="hero"><p class="kicker">Your personal concierge</p><h1>${esc(h1)}</h1>${sub ? `<p class="sub">${esc(sub)}</p>` : ""}${aside ? note(aside) : ""}</div>`;
+
+/** The texting line, as a person reads it. */
+const shown = (n) => prettyNumber(n);
+/** The tap that opens a text TO Reason with a hello in it — the sign-up. */
+const smsHref = (n) => `sms:${normalizeNumber(n)}?&body=${encodeURIComponent("Hi")}`;
+/** The QR for that tap, in the paper's own two inks. Dark on light in both themes, so a phone can read it. */
+const qr = (n, cls = "qr") => `<figure class="${cls}">${qrSvg(smsHref(n), { label: "QR code to text Reason", size: 150 }).replace('fill="#fff"', 'fill="#ede5d8"').replace('fill="#000"', 'fill="#2a2520"')}`
+  + `<figcaption><span class="on-phone">On a laptop? Scan</span><span class="on-desk">Scan with your phone</span></figcaption></figure>`;
+const backHead = (text, href) => `<header class="so-head"><span class="so-wm">${wordmark({ href: "/web" })}</span>${typed(text, { href })}</header>`;
+const markHead = () => `<header class="so-head">${wordmark({ href: "/web" })}</header>`;
+/** Mm:ss, for TRY AGAIN IN. */
+export const clockLeft = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+const waitLine = (ms) => `<p class="so-wait" data-left="${Math.max(0, Math.round(ms))}">TRY AGAIN IN <span class="left">${clockLeft(ms)}</span></p>`;
+
+// The countdown ticks down by itself, the code cells mirror the one real input, and a sixth digit
+// sends the code. All of it is decoration over plain forms that work without script.
+const SO_JS = `(function(){
+document.querySelectorAll('.so-wait[data-left]').forEach(function(w){var until=Date.now()+Number(w.dataset.left),l=w.querySelector('.left');
+function tick(){var s=Math.max(0,Math.ceil((until-Date.now())/1000));l.textContent=Math.floor(s/60)+':'+('0'+s%60).slice(-2);if(s>0)setTimeout(tick,500);else location.reload()}tick()});
+var d=document.querySelector('.digits'),i=d&&d.querySelector('input');if(!i)return;var cells=d.querySelectorAll('.cell');
+function draw(){var v=i.value,f=document.activeElement===i;cells.forEach(function(c,k){c.textContent=v[k]||(f&&k===v.length?'|':'');c.classList.toggle('on',k<v.length);c.classList.toggle('cur',f&&k===v.length)})}
+i.addEventListener('input',function(){d.classList.remove('bad');draw();if(i.value.length===6&&i.form&&!i.form.dataset.sent){i.form.dataset.sent='1';i.form.requestSubmit?i.form.requestSubmit():i.form.submit()}});
+i.addEventListener('focus',draw);i.addEventListener('blur',draw);draw();
+document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(){var b=f.querySelector('[type=submit]');if(b)b.setAttribute('aria-busy','true')})});
+})();`;
+
+const signedOutPage = (title, body) => webPage({ title, header: "", body, css: SO_CSS, script: SO_JS });
 
 /**
- * The block for somebody new, shown to everybody so it says nothing about the number typed. The
- * `sms:` link opens a text TO Reason with a hello in it; the QR is the same link for a phone pointed
- * at a desktop screen; the number is written out for anybody who would rather type it.
+ * The block for somebody new, shown to everybody so it says nothing about the number typed (desktop's
+ * right-hand column). With no live line it says joining can't finish right now — no number, no QR.
  */
 export function joinBlock(joinNumber) {
-  const lead = `<h2>New to Reason?</h2>${note(NOTES.join, false)}<div class="t">${p("A text from your phone finishes joining. Reason answers there first, then you can sign in here.")}`;
   if (!joinNumber) {
-    return `<section class="w-join">${lead}${p("Reason's texting line isn't connected right now, so joining can't finish at the moment. Nothing was used up — try again later.")}</div></section>`;
+    return `<section class="so-join" aria-labelledby="dj-title">${label("NEW TO REASON")}<h2 id="dj-title" class="so-h2">We can't finish joining right now.</h2>`
+      + `<p class="so-quiet">Reason's line isn't taking new people for the moment. Nothing on your side went wrong.</p>${hand("i'll be back soon.", { tilt: true })}</section>`;
   }
-  const href = `sms:${normalizeNumber(joinNumber)}?&body=${encodeURIComponent("Hi")}`;
-  return `<section class="w-join">${lead}</div>`
-    + `<a class="w-btn" href="${esc(href)}">Text Reason</a>`
-    + `<figure class="w-qr">${qrSvg(href, { label: `Text Reason at ${prettyNumber(joinNumber)}` })}`
-    + `<figcaption>Not on your phone? From your phone, text Reason at <b class="w-num">${esc(prettyNumber(joinNumber))}</b>, or point its camera at this code.</figcaption></figure></section>`;
+  return `<section class="so-join" aria-labelledby="dj-title">${label("NEW TO REASON")}<h2 id="dj-title" class="so-h2">Your first text<br><em>is the sign-up.</em></h2>`
+    + qr(joinNumber)
+    + `<p class="so-num">or text <a href="${esc(smsHref(joinNumber))}">${esc(shown(joinNumber))}</a></p>${hand("then come back here to sign in.")}</section>`;
 }
 
-/** The sign-in page: the number form, or — once a number was typed — the code box over the same words for every number. */
-export function renderSignin({ number = "", sent = false, error = "", joinNumber = null, formToken = "" }) {
-  const hidden = `<input type="hidden" name="f" value="${esc(formToken)}">`;
-  const body = hero("Pick up where you left off.", "Sign in with the number you text Reason from.", sent ? NOTES.code : NOTES.signin)
-    + (error ? `<p class="w-err">${esc(error)}</p>` : "")
-    + (sent
-      ? (error ? `<div class="t">${p("If that number uses Reason, a code is on its way to it now.")}</div>` : sentLine("Sent. If that number uses Reason, a code is on its way to it now."))
-        + `<form class="w-form" method="POST" action="/web/code">${hidden}<input type="hidden" name="number" value="${esc(number)}">`
-        + `<label for="code">The code from your texts</label><input id="code" ${codeInputAttrs({ autofocus: true })} required>`
-        + `<button class="w-btn" type="submit" data-busy="Checking…">Sign in</button></form>`
-        + `<form class="w-form" method="POST" action="/web/signin">${hidden}<input type="hidden" name="number" value="${esc(number)}"><button class="w-link" type="submit" data-busy="Sending…">Text it again</button></form>`
-        + `<div class="t">${p("The code works once, for 15 minutes. If none arrives, that number may not have texted Reason yet — see below.")}</div>`
-      : `<form class="w-form" method="POST" action="/web/signin">${hidden}<label for="number">Your phone number</label><input id="number" name="number" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 123-4567" maxlength="24" required value="${esc(number)}">`
-        + `<button class="w-btn" type="submit" data-busy="Sending code…">Text me a code</button></form>`
-        + `<div class="t">${p("Reason texts the code to that number through the same line you already text it on. Nothing is shown until the code is in.")}</div>`)
-    + joinBlock(joinNumber) + foot();
-  return shell({ title: "Reason — sign in", body, pill: "Web", css: WEB_CSS, referrer: "same-origin" });
+const hidden = (name, value) => `<input type="hidden" name="${name}" value="${esc(value)}">`;
+
+/**
+ * 6A, the sign-in (and 6F above it when this browser was just signed out or its session ran out).
+ * `error`: { kind: "origin" } or { kind: "pause", waitMs } for this browser's own hourly limit.
+ */
+export function renderSignin({ number = "", error = null, joinNumber = null, formToken = "", out = false }) {
+  const note = error?.kind === "pause"
+    ? `${hand("let's pause a minute.", { role: "alert" })}${waitLine(error.waitMs)}`
+    : error?.kind === "origin" ? hand("that didn't come from this page. here it is again.", { role: "alert" })
+      : hand("the same line you already text me on.");
+  const body = `${markHead()}<main class="so"><div class="so-cols">`
+    + `<section class="so-in" aria-labelledby="so-title">`
+    + (out ? hand("you've been signed out. everything's still here.", { role: "status", tilt: true }) : "")
+    + `<h1 id="so-title" class="h1">What's your number?</h1>`
+    + `<form method="POST" action="/web/signin">${hidden("f", formToken)}<div class="so-field"><label for="number">PHONE NUMBER</label>`
+    + `<input class="ul-in" id="number" name="number" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 000-0000" maxlength="24" required value="${esc(number)}"${error?.kind === "pause" ? " disabled" : ""}>${note}</div>`
+    + (error?.kind === "pause" ? "" : action("Text me a code"))
+    + `</form></section>${joinBlock(joinNumber)}</div>`
+    + typed("NEW TO REASON? START WITH A TEXT →", { href: "/web?join=1", cls: "so-new" })
+    + `</main>`;
+  return signedOutPage("Reason — sign in", body);
+}
+
+/** "••• ••• 0142": the number they typed, all but its last four hidden. Never anything the server knows. */
+export function maskedNumber(number) {
+  const d = String(number ?? "").replace(/\D/g, "");
+  return d.length >= 4 ? `••• ••• ${d.slice(-4)}` : "your number";
+}
+
+/**
+ * 6B, the code. `error` is one of the handoff's notes, each right under the six digits:
+ *   wrong · expired (this browser asked more than a code's life ago) · tries (this browser typed too
+ *   many wrong codes; `waitMs` left) · resend (this browser asked for three codes in a quarter hour;
+ *   `leftMs` = how long the last one still works).
+ * Every one is about this browser, never the number, so none of them says whether it uses Reason.
+ */
+export function renderCode({ number = "", joinNumber = null, formToken = "", error = null, askedAt = clock.now() }) {
+  const kind = error?.kind ?? "";
+  const ttlMin = Math.round(CODE_TTL_MS / 60000);
+  const again = (inner) => `<form method="POST" action="/web/signin">${hidden("f", formToken)}${hidden("number", number)}${hidden("again", "1")}${inner}</form>`;
+  let note = hand("it fills in by itself if your browser offers it.");
+  if (kind === "wrong") note = hand("that's not it. try again?", { role: "alert" });
+  if (kind === "expired") note = `${hand("that one expired.", { role: "alert" })}${again(action("Send a fresh one", { cls: "act-sm" }))}`;
+  if (kind === "tries") note = `${hand("let's pause a minute.", { role: "alert" })}${waitLine(error.waitMs)}`;
+  if (kind === "resend") {
+    const left = Math.ceil((error.leftMs ?? 0) / 60000);
+    note = `${hand("i've sent a few. give it a moment.", { role: "alert" })}${left > 0 ? `<p class="so-quiet">The last code still works for ${left} minute${left === 1 ? "" : "s"}.</p>` : ""}`;
+  }
+  const bad = kind === "wrong" || kind === "expired" || kind === "tries";
+  const body = backHead("← USE A DIFFERENT NUMBER", "/web")
+    + `<main class="so"><section class="so-in code-main" aria-labelledby="so-title">`
+    + `<div class="so-lead"><h1 id="so-title" class="h1">Check your texts.</h1><p class="so-sub">Six digits, sent to ${esc(maskedNumber(number))}.</p></div>`
+    + `<form method="POST" action="/web/code">${hidden("f", formToken)}${hidden("number", number)}${hidden("t", String(askedAt))}`
+    + `<fieldset class="code-f"><legend class="sr">Six-digit code</legend><label class="sr" for="code">The six-digit code from your texts</label>`
+    + `<div class="digits${bad ? " bad" : ""}"><input id="code" ${codeInputAttrs({ autofocus: kind !== "tries" })} required${kind === "tries" ? " disabled" : ""}${bad ? ` aria-invalid="true"` : ""}>`
+    + `${'<span class="cell" aria-hidden="true"></span>'.repeat(6)}</div>${note}</fieldset></form>`
+    + `<div class="so-acts">${kind === "resend" || kind === "tries" ? "" : again(typed("SEND A NEW CODE"))}<p class="lbl">CODE GOOD FOR ${ttlMin} MIN</p></div>`
+    + `</section>${typed("NEW TO REASON? START WITH A TEXT →", { href: "/web?join=1", cls: "so-new" })}</main>`;
+  return signedOutPage("Reason — your code", body);
+}
+
+/** 6D, new to Reason (or 6E when no line is live): the sign-up is a text from their phone. */
+export function renderJoin({ joinNumber = null }) {
+  if (!joinNumber) {
+    const body = `<main class="so so-center"><section class="so-in so-solo" aria-labelledby="so-title">`
+      + `<h1 id="so-title" class="h1">We can't finish joining right now.</h1>`
+      + `<p class="so-sub">Reason's line isn't taking new people for the moment. Nothing on your side went wrong.</p>`
+      + hand("i'll be back soon.", { tilt: true })
+      + typed("ALREADY A MEMBER? SIGN IN →", { href: "/web" })
+      + `</section></main>`;
+    return signedOutPage("Reason — joining", body);
+  }
+  const body = backHead("← SIGN IN", "/web")
+    + `<main class="so"><section class="so-in so-solo" aria-labelledby="so-title">`
+    + `<h1 id="so-title" class="h1">Your first text<br><em>is the sign-up.</em></h1>`
+    + action("Text Reason", { href: smsHref(joinNumber) })
+    + `<p class="so-num">${esc(shown(joinNumber))}</p>`
+    + qr(joinNumber)
+    + hand("then come back here to sign in.")
+    + `</section></main>`;
+  return signedOutPage("Reason — new to Reason", body);
 }
 
 /**
@@ -254,19 +348,6 @@ export function renderSignin({ number = "", sent = false, error = "", joinNumber
 export function greeting(name) {
   const first = String(name ?? "").trim().split(/\s+/)[0] ?? "";
   return first ? `What's good, ${first}?` : "What's good?";
-}
-
-/** Signed in. The conversation itself arrives in the next phase; this says so plainly, and says the one thing about Web worth knowing. */
-export function renderLanding({ account, csrf }) {
-  const name = String(account?.name ?? "").trim();
-  const body = hero(greeting(name), "This browser is yours now, on every page Reason makes for you.", NOTES.landing)
-    + `<div class="t">${p("Your conversation with Reason will open here. Until then, Reason is the same one you text, and nothing you've told it is lost.")}</div>`
-    + `<hr class="w-rule"><h2>One Reason. Pick up anywhere.</h2><div class="t">`
-    + p("Start on Web, continue in iMessage, or switch back. Reason keeps the context, so you don't have to explain again. See your full conversation on Web. Messages from Web won't appear in your iMessage thread.")
-    + `</div>`
-    + `<form class="w-form w-out" method="POST" action="/web/signout"><input type="hidden" name="c" value="${esc(csrf)}"><button class="w-link" type="submit" data-busy="Signing out…">Sign out of this browser</button></form>`
-    + foot();
-  return shell({ title: "Reason", body, pill: "Web", css: WEB_CSS, referrer: "same-origin" });
 }
 
 /**
@@ -295,7 +376,7 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
   const formToken = readFormCookie(headers?.cookie);
 
   // ---- W2: the conversation's own routes (src/pages/webconvo.js). Signed in only. ----
-  if (sub === "history" || sub === "stream" || sub === "send") {
+  if (sub === "history" || sub === "stream" || sub === "send" || sub === "live") {
     const convo = await import("./webconvo.js");
     if (!account) {
       // Nobody's conversation: the same short answer whatever was asked, and a form post goes back to sign in.
@@ -309,7 +390,16 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
     }
     if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
     if (sub === "history") return convo.historyRequest({ account, query });
+    if (sub === "live") return convo.liveStreamRequest({ account, headers, query, router, log });
     return convo.streamRequest({ account, headers, query, router, log });
+  }
+
+  // ---- the "coming soon" pages behind MEMORY and SETTINGS (phases 3 and 4) ----
+  if (sub === "memory" || sub === "settings") {
+    if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
+    if (!account) return redirect("/web");
+    const { soonPage } = await import("./webconvo.js");
+    return page(200, soonPage({ which: sub, account, headers }));
   }
 
   // ---- the landing, or the sign-in form ----
@@ -318,11 +408,17 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
     if (account) {
       // W2: signed in, /web IS the conversation (src/pages/webconvo.js).
       const { conversationPage } = await import("./webconvo.js");
-      return page(200, conversationPage({ account, headers, sendId: randomUUID(), method }), formToken ? { "Set-Cookie": clearFormCookie() } : {});
+      return page(200, conversationPage({ account, headers, sendId: randomUUID(), method, query }), formToken ? { "Set-Cookie": clearFormCookie() } : {});
     }
     // A fresh form token for a browser that has none; the one it has otherwise, so two tabs agree.
     const token = formToken || randomBytes(16).toString("base64url");
-    return page(200, renderSignin({ joinNumber, formToken: token }), formToken ? {} : { "Set-Cookie": formCookieHeader(token) });
+    const set = formToken ? {} : { "Set-Cookie": formCookieHeader(token) };
+    if (query.join != null) return page(200, renderJoin({ joinNumber }), set);
+    // 6F: just signed out here, or this browser's Web session ran out (a cookie Reason no longer
+    // knows). A live session that Web simply doesn't open (an event guest's) gets no such line.
+    const presented = readCookie(headers?.cookie);
+    const out = query.out != null || (!!presented && !db.pageSessionOwner(presented, SESSION_TTL_MS, { idleMs: WEB_IDLE_MS }));
+    return page(200, renderSignin({ joinNumber, formToken: token, out }), set);
   }
 
   if (method !== "POST") {
@@ -345,7 +441,7 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
     // Every copy this browser sent (an older host-only one beside the shared one), not just the one read.
     for (const t of new Set([presented, ...readCookies(headers?.cookie)])) db.endPageSession(t);
     log({ web_signout: true });
-    return redirect("/web", { "Set-Cookie": clearCookieHeader({ path: "/", headers }) });
+    return redirect("/web?out=1", { "Set-Cookie": clearCookieHeader({ path: "/", headers }) });
   }
 
   // A signed-in browser posting a sign-in form: it is already in.
@@ -357,7 +453,7 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
   if (!sameOrigin(headers) || !formToken || !same(form.get("f"), formToken)) {
     log({ web_signin_refused: "origin_or_token" });
     const token = randomBytes(16).toString("base64url");
-    return page(403, renderSignin({ joinNumber, formToken: token, error: "That didn't come from this page — here it is again." }), { "Set-Cookie": formCookieHeader(token) });
+    return page(403, renderSignin({ joinNumber, formToken: token, error: { kind: "origin" } }), { "Set-Cookie": formCookieHeader(token) });
   }
   const number = String(form.get("number") ?? "").slice(0, 24);
   const actor = eventActor(headers, remoteAddress);
@@ -372,7 +468,15 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
     const tried = events.tryKeyedCode({ conversationId: who?.conversation_id ?? null, code: form.get("code"), personKey: who ? signinKey(who.conversation_id) : null, browserKey: `wsignb:${actor}` });
     if (!tried.ok) {
       log({ web_signin_failed: tried.reason });
-      return page(tried.reason === "rate_limited" ? 429 : 200, renderSignin({ number, sent: true, joinNumber, formToken, error: tried.reason === "rate_limited" ? "Too many wrong codes from this browser. Try again in about 15 minutes." : "That code isn't right." }));
+      const askedAt = /^\d{10,15}$/.test(String(form.get("t") ?? "")) ? Number(form.get("t")) : clock.now();
+      if (tried.reason === "rate_limited") {
+        const clear = db.pageAttemptsClearAt(`wsignb:${actor}`, { limit: events.SIGNIN_WRONG.perBrowser, windowMs: events.SIGNIN_WRONG.windowMs });
+        return page(429, renderCode({ number, joinNumber, formToken, askedAt, error: { kind: "tries", waitMs: (clear ?? clock.now() + 60_000) - clock.now() } }));
+      }
+      // Expired is this browser's clock, not the code's: it asked longer ago than a code lives. The
+      // same words for every number, so they say nothing about whose it is.
+      const kind = clock.now() - askedAt > CODE_TTL_MS ? "expired" : "wrong";
+      return page(200, renderCode({ number, joinNumber, formToken, askedAt, error: { kind } }));
     }
     log({ web_signin_ok: true });
     // The session cookie on every path, so the browser is theirs on their pages and events too;
@@ -381,8 +485,18 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
   }
 
   // sub === "signin": ask for a code.
-  if (!events.signinGate(actor)) return page(429, renderSignin({ number, joinNumber, formToken, error: "Too many sign-in tries from this browser. Try again in an hour." }));
+  if (!events.signinGate(actor)) {
+    const clear = db.signinRequestsClearAt(actor, { limit: events.SIGNIN_PER_BROWSER_HOUR, windowMs: 60 * 60_000 });
+    return page(429, renderSignin({ number, joinNumber, formToken, error: { kind: "pause", waitMs: (clear ?? clock.now() + 60_000) - clock.now() } }));
+  }
+  // "Send a new code" from this browser, a fourth time in a quarter hour: the same ceiling every
+  // person's codes have (three per fifteen minutes), counted on the browser so it says nothing about
+  // the number. Nothing is sent; the last code (if there was one) still works.
+  if (form.get("again") && db.signinRequestsSince(actor, clock.now() - RESEND.windowMs) >= RESEND.limit) {
+    const last = db.lastSigninRequestAt(actor) ?? clock.now();
+    return page(200, renderCode({ number, joinNumber, formToken, askedAt: last, error: { kind: "resend", leftMs: last + CODE_TTL_MS - clock.now() } }));
+  }
   events.noteSigninRequest(actor);
   if (who) sendCode({ conversationId: who.conversation_id, runtime, log });
-  return page(200, renderSignin({ number, sent: true, joinNumber, formToken }));
+  return page(200, renderCode({ number, joinNumber, formToken, askedAt: clock.now() }));
 }

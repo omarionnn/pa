@@ -89,11 +89,11 @@ function harness() {
   return { runtime, router, channel, logs };
 }
 const form = (o) => new URLSearchParams(o).toString();
-async function req(h, { sub = null, method = "GET", body = null, cookie = "", origin = "https://heyreason.test", sfs = null, ip = "203.0.113.9", router = h.router } = {}) {
+async function req(h, { sub = null, method = "GET", query = {}, body = null, cookie = "", origin = "https://heyreason.test", sfs = null, ip = "203.0.113.9", router = h.router } = {}) {
   const headers = { host: "heyreason.test", cookie, "x-forwarded-for": ip, "x-files-domain": "true" };
   if (origin) headers.origin = origin;
   if (sfs) headers["sec-fetch-site"] = sfs;
-  return await webRequestFor({ sub, method, query: {}, headers, remoteAddress: "127.0.0.1", readBody: async () => body, runtime: h.runtime, router, log: (e) => h.logs.push(e) });
+  return await webRequestFor({ sub, method, query, headers, remoteAddress: "127.0.0.1", readBody: async () => body, runtime: h.runtime, router, log: (e) => h.logs.push(e) });
 }
 const setCookies = (out) => [].concat(out.headers["Set-Cookie"] ?? []);
 const cookieValue = (out, name) => setCookies(out).map(c => new RegExp(`^${name}=([^;]*)`).exec(c)?.[1]).find(Boolean) ?? null;
@@ -115,7 +115,9 @@ async function ask(h, b, number, { expectText = true, ip } = {}) {
   else { await new Promise(r => setTimeout(r, 30)); assert.equal(h.channel.sent.length, before, "no text went"); }
   return out;
 }
-const typeCode = (h, b, number, code, { ip } = {}) => req(h, { sub: "code", method: "POST", body: form({ number, code, f: b.f }), cookie: b.jar, ip });
+const typeCode = (h, b, number, code, { ip, t } = {}) => req(h, { sub: "code", method: "POST", body: form({ number, code, f: b.f, ...(t ? { t } : {}) }), cookie: b.jar, ip });
+/** The code page's own `t` (when this browser asked), as the page posts it back. */
+const askedAt = (body) => /name="t" value="(\d+)"/.exec(body)?.[1] ?? null;
 /** Sign Kofi in on a fresh browser and hand back its session cookie. */
 async function signedIn(h, number = KOFI, to = KOFI) {
   const b = await fresh(h);
@@ -127,7 +129,13 @@ async function signedIn(h, number = KOFI, to = KOFI) {
   assert.ok(token, "the session cookie is set");
   return { token, jar: `reason_page=${token}`, out };
 }
-const withoutNumber = (body, n) => body.replaceAll(n, "N");
+/** A page with the typed number's echo (written out and masked) taken out, and the moment it was drawn (`t`). */
+const withoutNumber = (body, n) => body.replaceAll(n, "N").replaceAll(ws.maskedNumber(n), "M").replace(/name="t" value="\d+"/g, 'name="t" value="T"');
+/** The sign-in form's heading, the page everybody signed out sees. */
+const SIGNIN = /<h1 id="so-title" class="h1">What(&#39;|')s your number\?<\/h1>/;
+const SIGNED_OUT = /<p class="hand tilt" role="status">you(&#39;|')ve been signed out\. everything(&#39;|')s still here\.<\/p>/;
+/** The first signed-in GET is the once-only 5C page; this spends it so later GETs show the arrival. */
+const firstVisit = async (h, jar) => assert.match((await req(h, { cookie: jar })).body, /One Reason\.<br><em>Pick up anywhere\.<\/em>/);
 
 // ---------- the switch ----------
 
@@ -149,7 +157,7 @@ test("REASON_WEB off: /web and its sub-paths are the same flat 404 as a path nob
     config.web = true;
     const on = await fetch(`${base}/web`);
     assert.equal(on.status, 200);
-    assert.match(await on.text(), /Sign in with the number you text Reason from/);
+    assert.match(await on.text(), SIGNIN);
   } finally { await new Promise(r => server.close(r)); }
 });
 
@@ -170,18 +178,20 @@ test("`owner`: the owner's number is texted a code; anybody else's gets the same
   // The owner's own code signs the owner in.
   const ok = await typeCode(h, b, MASTER, code);
   assert.equal(ok.status, 303);
-  const landing = await req(h, { cookie: `reason_page=${cookieValue(ok, "reason_page")}` });
-  assert.match(landing.body, /What(&#39;|')s good, Omari\?/);
+  const jar = `reason_page=${cookieValue(ok, "reason_page")}`;
+  await firstVisit(h, jar);
+  assert.match((await req(h, { cookie: jar })).body, /What(&#39;|')s good, Omari\?/);
 });
 
 test("a person signed in while `on` is signed out the moment the switch is back to `owner` — not told why, not 404", async () => {
   const h = harness();
   const s = await signedIn(h);
+  await firstVisit(h, s.jar);
   assert.match((await req(h, { cookie: s.jar })).body, /What(&#39;|')s good, Kofi\?/);
   config.web = "owner";
   const out = await req(h, { cookie: s.jar });
   assert.equal(out.status, 200);
-  assert.match(out.body, /Sign in with the number you text Reason from/);
+  assert.match(out.body, SIGNIN);
 });
 
 // ---------- enumeration, and the join block ----------
@@ -196,15 +206,30 @@ test("a number with no account gets byte-identical words to one with, no text, n
   assert.equal(withoutNumber(unknown.body, NOBODY), withoutNumber(known.body, KOFI));
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM accounts").get().n, accountsBefore, "typing a number never makes an account");
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM outbox").get().n, 1, "one text, to the one real number");
-  // The join block: the live line's number, as an sms: link, as a QR, and written out — on the page
-  // for a stranger and for Kofi alike, and on the first page before any number is typed.
-  for (const body of [known.body, unknown.body, (await req(h)).body]) {
-    assert.match(body, /New to Reason\?/);
-    assert.ok(body.includes(`href="sms:${LINE}?&amp;body=Hi"`), "the sms: link to the live line, with a hello prefilled");
-    assert.match(body, /<svg[^>]*aria-label="Text Reason at \+1 \(656\) 216-7455"/, "the QR of that link");
-    assert.match(body, /text Reason at <b class="w-num">\+1 \(656\) 216-7455<\/b>/, "the number written out");
+  // The code step (6B): "Check your texts.", the typed number masked to its last four, and the way
+  // in for somebody new — the same for a stranger and for Kofi alike.
+  for (const [body, n] of [[known.body, KOFI], [unknown.body, NOBODY]]) {
+    assert.match(body, /<h1 id="so-title" class="h1">Check your texts\.<\/h1>/);
+    assert.ok(body.includes(`Six digits, sent to ${ws.maskedNumber(n)}.`), "masked to the last four typed digits");
+    assert.ok(ws.maskedNumber(n).endsWith(n.slice(-4)));
+    assert.match(body, /<input type="hidden" name="number" value="[^"]*"><input type="hidden" name="t" value="\d+">/);
+    assert.match(body, /<input id="code" type="text" name="code" autocomplete="one-time-code"/);
+    assert.match(body, /href="\/web\?join=1"/, "the way in for somebody new");
     assert.doesNotMatch(body, /808/);
   }
+  // The join block: the live line's number, as an sms: link, as a QR, and written out — on the
+  // sign-in page everybody sees before any number is typed, and on the join page.
+  for (const body of [(await req(h)).body, (await req(h, { query: { join: "1" } })).body]) {
+    assert.ok(body.includes(`href="sms:${LINE}?&amp;body=Hi"`), "the sms: link to the live line, with a hello prefilled");
+    assert.match(body, /<figure class="qr"><svg[^>]*aria-label="QR code to text Reason"/, "the QR of that link");
+    assert.match(body, /\+1 \(656\) 216-7455/, "the number written out");
+    assert.match(body, /then come back here to sign in\./);
+    assert.doesNotMatch(body, /808/);
+  }
+  const signin = (await req(h)).body;
+  assert.match(signin, /<section class="so-join"[^>]*><p class="lbl">NEW TO REASON<\/p>/);
+  assert.match(signin, /Your first text<br><em>is the sign-up\.<\/em>/);
+  assert.ok(signin.includes(`<p class="so-num">or text <a href="sms:${LINE}?&amp;body=Hi">+1 (656) 216-7455</a></p>`), "the number written out, as the same link");
   // Only the person's own channel address was texted; the stranger's number appears nowhere but the echo.
   assert.deepEqual(h.channel.sent.map(m => m.to), [KOFI]);
 });
@@ -226,8 +251,13 @@ test("no live texting line: the join block says so and shows no number — never
   dead.register(new LinqChannel());
   assert.equal(dead.get("linq").status().status, "not_connected");
   const out = await req(h, { router: dead });
-  assert.match(out.body, /texting line isn(&#39;|')t connected right now/);
-  assert.doesNotMatch(out.body, /sms:|<figure class="w-qr"|<a class="w-btn"|8083199759|319-9759/);
+  assert.match(out.body, /We can(&#39;|')t finish joining right now\./);
+  assert.doesNotMatch(out.body, /sms:|<figure class="qr"|<svg[^>]*aria-label="QR|8083199759|319-9759/);
+  // The join page itself (6E): the same, and the way back to sign in.
+  const join = await req(h, { router: dead, query: { join: "1" } });
+  assert.match(join.body, /We can(&#39;|')t finish joining right now\./);
+  assert.match(join.body, /ALREADY A MEMBER\? SIGN IN →/);
+  assert.doesNotMatch(join.body, /sms:|<figure class="qr"|<svg[^>]*aria-label="QR|8083199759|319-9759/);
 });
 
 test("linq registered but not live, sendblue live: only the Sendblue number is on the page, in either order", async () => {
@@ -272,6 +302,8 @@ test("the happy path: the code text is keyed wsign:, bound to the Web host, and 
   assert.ok(!logged.includes(codesTo(h, KOFI)[0]), "the code is in no log line");
 });
 
+const WRONG = /that(&#39;|')s not it\. try again\?/;
+
 test("wrong, reused and expired codes are one answer; a new code kills the old; a fourth request in the window texts nothing", async () => {
   const h = harness();
   const b = await fresh(h);
@@ -280,31 +312,46 @@ test("wrong, reused and expired codes are one answer; a new code kills the old; 
   // Wrong.
   const wrong = await typeCode(h, b, KOFI, first === "000000" ? "000001" : "000000");
   assert.equal(wrong.status, 200);
-  assert.match(wrong.body, /That code isn(&#39;|')t right\./);
+  assert.match(wrong.body, WRONG);
   // A second request: the first code is dead.
   await ask(h, b, KOFI);
   const second = codesTo(h, KOFI)[1];
   assert.notEqual(first, second);
-  assert.match((await typeCode(h, b, KOFI, first)).body, /That code isn(&#39;|')t right\./);
+  assert.match((await typeCode(h, b, KOFI, first)).body, WRONG);
   // The third is the last in fifteen minutes; the fourth asks for nothing and says nothing different.
   await ask(h, b, KOFI);
   const fourth = await ask(h, b, KOFI, { expectText: false });
   assert.equal(fourth.status, 200);
   assert.equal(codesTo(h, KOFI).length, 3);
   assert.ok(h.logs.some(l => l.web_signin_code_refused === "too_many_sent"));
+  // "Send a new code" from this browser past three in the quarter hour: says so, texts nothing.
+  const sentBefore = h.channel.sent.length;
+  const resend = await req(h, { sub: "signin", method: "POST", body: form({ number: KOFI, f: b.f, again: "1" }), cookie: b.jar });
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(resend.status, 200);
+  assert.match(resend.body, /i(&#39;|')ve sent a few\. give it a moment\./);
+  assert.equal(h.channel.sent.length, sentBefore, "no text went");
+  // The same for a number nobody holds: the limit is the browser's, not the number's.
+  const resendNobody = await req(h, { sub: "signin", method: "POST", body: form({ number: NOBODY, f: b.f, again: "1" }), cookie: b.jar });
+  assert.equal(withoutNumber(resendNobody.body, NOBODY), withoutNumber(resend.body, KOFI));
   // The live one works once.
   const live = codesTo(h, KOFI)[2];
   const ok = await typeCode(h, b, KOFI, live);
   assert.equal(ok.status, 303);
   const again = await typeCode(h, b, KOFI, live);
   assert.equal(again.status, 200, "a used code is just wrong");
-  assert.match(again.body, /That code isn(&#39;|')t right\./);
-  // Expired: a fresh code, sixteen minutes later.
+  assert.match(again.body, WRONG);
+  // Expired: a fresh code, typed sixteen minutes later. The code is refused; the page says so by this
+  // browser's own clock (`t`), and offers a fresh one.
   clock.skip(16 * MIN);
-  await ask(h, b, KOFI);
+  const asked = await ask(h, b, KOFI);
   const late = codesTo(h, KOFI)[3];
   clock.skip(16 * MIN);
-  assert.match((await typeCode(h, b, KOFI, late)).body, /That code isn(&#39;|')t right\./);
+  const expired = await typeCode(h, b, KOFI, late, { t: askedAt(asked.body) });
+  assert.equal(expired.status, 200);
+  assert.match(expired.body, /that one expired\./);
+  assert.match(expired.body, /Send a fresh one/);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions").get().n, 1, "only the one live code ever opened anything");
 });
 
 test("a flood of wrong codes locks the browser out, says only that, and the person's real code still works elsewhere", async () => {
@@ -315,14 +362,16 @@ test("a flood of wrong codes locks the browser out, says only that, and the pers
   for (let i = 0; i < 5; i++) assert.equal((await typeCode(h, b, KOFI, "111111", { ip: "198.51.100.7" })).status, 200);
   const locked = await typeCode(h, b, KOFI, code, { ip: "198.51.100.7" });
   assert.equal(locked.status, 429, "the right code from a locked browser is refused too");
-  assert.match(locked.body, /Too many wrong codes from this browser/);
+  assert.match(locked.body, /let(&#39;|')s pause a minute\./);
+  assert.match(locked.body, /TRY AGAIN IN <span class="left">\d+:\d\d<\/span>/);
   // The same flood as a stranger's number costs the same and says the same.
   const other = await fresh(h);
   for (let i = 0; i < 5; i++) await typeCode(h, other, NOBODY, "222222", { ip: "198.51.100.8" });
   const lockedToo = await typeCode(h, other, NOBODY, "222222", { ip: "198.51.100.8" });
   assert.equal(lockedToo.status, 429);
-  // Two browsers, so two form tokens: the same page otherwise.
-  assert.equal(withoutNumber(lockedToo.body, NOBODY).replaceAll(other.f, "F"), withoutNumber(locked.body, KOFI).replaceAll(b.f, "F"));
+  // Two browsers, so two form tokens and two countdowns of their own: the same page otherwise.
+  const wait = (body) => body.replace(/data-left="\d+"/g, 'data-left="L"').replace(/<span class="left">\d+:\d\d<\/span>/g, "<span class=\"left\">L</span>");
+  assert.equal(wait(withoutNumber(lockedToo.body, NOBODY).replaceAll(other.f, "F")), wait(withoutNumber(locked.body, KOFI).replaceAll(b.f, "F")));
   // Kofi, on his own browser, is fine.
   const mine = await fresh(h);
   assert.equal((await typeCode(h, mine, KOFI, code, { ip: "203.0.113.50" })).status, 303);
@@ -343,13 +392,15 @@ test("two people never cross: a session is one person's, and one's code never op
   const ok = await typeCode(h, b, AMA, amaCode);
   assert.equal(ok.status, 303);
   const ama = `reason_page=${cookieValue(ok, "reason_page")}`;
+  await firstVisit(h, ama);
+  await firstVisit(h, kofi.jar);
   assert.match((await req(h, { cookie: ama })).body, /What(&#39;|')s good, Ama\?/);
   assert.match((await req(h, { cookie: kofi.jar })).body, /What(&#39;|')s good, Kofi\?/);
   assert.doesNotMatch((await req(h, { cookie: ama })).body, /Kofi/);
   // Signing Ama out leaves Kofi in.
   const csrf = /name="c" value="([^"]+)"/.exec((await req(h, { cookie: ama })).body)[1];
   assert.equal((await req(h, { sub: "signout", method: "POST", body: form({ c: csrf }), cookie: ama })).status, 303);
-  assert.match((await req(h, { cookie: ama })).body, /Sign in with the number/);
+  assert.match((await req(h, { cookie: ama })).body, SIGNIN);
   assert.match((await req(h, { cookie: kofi.jar })).body, /What(&#39;|')s good, Kofi\?/);
 });
 
@@ -377,6 +428,7 @@ test("one number, two accounts: the most recently used one gets the code, and th
 test("sign-out revokes the session: only with the session's own secret, only from Reason's own page", async () => {
   const h = harness();
   const s = await signedIn(h);
+  await firstVisit(h, s.jar);
   const csrf = /name="c" value="([^"]+)"/.exec((await req(h, { cookie: s.jar })).body)[1];
   // No secret: refused, still signed in.
   assert.equal((await req(h, { sub: "signout", method: "POST", body: form({}), cookie: s.jar })).status, 403);
@@ -390,30 +442,36 @@ test("sign-out revokes the session: only with the session's own secret, only fro
   // The real thing.
   const out = await req(h, { sub: "signout", method: "POST", body: form({ c: csrf }), cookie: s.jar });
   assert.equal(out.status, 303);
+  assert.equal(out.headers.Location, "/web?out=1");
   assert.match(setCookies(out)[0], /^reason_page=; Path=\/; Max-Age=0; HttpOnly; SameSite=Lax; Secure$/);
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions").get().n, 0, "the row is gone, so the cookie opens nothing anywhere");
-  assert.match((await req(h, { cookie: s.jar })).body, /Sign in with the number/);
+  const gone = (await req(h, { cookie: s.jar })).body;
+  assert.match(gone, SIGNIN);
+  assert.match(gone, SIGNED_OUT, "a cookie whose session is gone: told it was signed out");
+  assert.match((await req(h, { query: { out: "1" } })).body, SIGNED_OUT, "where sign-out lands");
+  assert.doesNotMatch((await req(h)).body, SIGNED_OUT, "a fresh browser is told nothing of the kind");
   assert.equal((await req(h, { sub: "signout", method: "GET" })).status, 405);
 });
 
 test("a session is over after 30 idle days or 90 days of age, whichever first", async () => {
   const h = harness();
   const s = await signedIn(h);
+  await firstVisit(h, s.jar);
   db.db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now() - 29 * DAY, s.token);
   assert.match((await req(h, { cookie: s.jar })).body, /What(&#39;|')s good, /, "29 idle days: still in, and touched");
   db.db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now() - 31 * DAY, s.token);
-  assert.match((await req(h, { cookie: s.jar })).body, /Sign in with the number/, "31 idle days: out");
+  assert.match((await req(h, { cookie: s.jar })).body, SIGNIN, "31 idle days: out");
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions").get().n, 0);
   const t = await signedIn(h);
   db.db.prepare("UPDATE page_sessions SET created_at = ?, last_seen_at = ? WHERE token = ?").run(clock.now() - 91 * DAY, clock.now(), t.token);
-  assert.match((await req(h, { cookie: t.jar })).body, /Sign in with the number/, "91 days old: out however recently used");
+  assert.match((await req(h, { cookie: t.jar })).body, SIGNIN, "91 days old: out however recently used");
 });
 
 test("a paused account's browser is signed out, like every private page", async () => {
   const h = harness();
   const s = await signedIn(h);
   db.db.prepare("UPDATE accounts SET state = 'paused' WHERE conversation_id = ?").run(KOFI_C);
-  assert.match((await req(h, { cookie: s.jar })).body, /Sign in with the number/);
+  assert.match((await req(h, { cookie: s.jar })).body, SIGNIN);
   // And a paused number asking for a code gets the same page as a stranger, with no text.
   const b = await fresh(h);
   await ask(h, b, KOFI, { expectText: false });
@@ -470,32 +528,28 @@ test("a real browser's post through the files-host proxy is ours: Origin null + 
   assert.doesNotMatch(page.body, /content="no-referrer"/);
 });
 
-// 10-26 owner: Web is an extension of the marketing site — its serif italic headline, monospace
-// eyebrow, the orange handwriting note with the squiggle arrow, dashed rules, its fonts.
-test("the pages wear the site: serif italic headline, mono eyebrow, one handwritten note per screen, dashed rules, fonts from /web/fonts only", async () => {
-  const form = ws.renderSignin({ joinNumber: "+16562167455", formToken: "t" });
-  const code = ws.renderSignin({ joinNumber: "+16562167455", formToken: "t", sent: true, number: KOFI });
-  const landing = ws.renderLanding({ account: { name: "Kofi" }, csrf: "c" });
-  for (const page of [form, code, landing]) {
-    assert.match(page, /<p class="kicker">Your personal concierge<\/p>/);
-    assert.match(page, /font:italic 400 clamp\([^)]*\)\/1\.08 var\(--serif\)/);
-    assert.match(page, /--serif:"Reason Serif","Instrument Serif"/);
-    assert.match(page, /--hand:"Reason Hand","Caveat"/);
-    assert.match(page, /--mono:"Courier New","Courier",monospace/);
-    assert.match(page, /border-top:1px dashed var\(--rule\)/);
-    assert.doesNotMatch(page, /fonts\.googleapis|fonts\.gstatic/, "nothing from Google");
+// 10-26 owner: Web wears the design handoff's kit (src/pages/webkit.js): Instrument Serif and Caveat
+// self-hosted at /web/fonts, typed Courier labels, dashed rules, the reas◯n wordmark.
+test("the pages wear the kit: serif and hand faces from /web/fonts only, mono labels, dashed rules, the wordmark", async () => {
+  const convo = await import("../src/pages/webconvo.js");
+  const pages = {
+    signin: ws.renderSignin({ joinNumber: LINE, formToken: "t" }),
+    code: ws.renderCode({ number: KOFI, joinNumber: LINE, formToken: "t" }),
+    join: ws.renderJoin({ joinNumber: LINE }),
+    first: convo.renderFirstVisit({ account: { name: "Kofi" } }),
+    home: convo.renderHome({ account: { name: "Kofi" }, csrf: "c", sendId: "s" }),
+  };
+  for (const [name, page] of Object.entries(pages)) {
+    assert.match(page, /@font-face\{font-family:"Reason Serif";font-style:italic;[^}]*src:url\(\/web\/fonts\/serif\.woff2\)/, name);
+    assert.match(page, /@font-face\{font-family:"Reason Hand";[^}]*src:url\(\/web\/fonts\/hand\.woff2\)/, name);
+    assert.match(page, /--serif:"Reason Serif","Instrument Serif"/, name);
+    assert.match(page, /--hand:"Reason Hand",Caveat/, name);
+    assert.match(page, /--mono:"Courier New",Courier,monospace/, name);
+    assert.match(page, /border-top:1px dashed var\(--hair\)/, `${name}: dashed rules`);
+    assert.match(page, /<a class="wm" href="\/web" aria-label="Reason, home">reas<svg class="bub" aria-hidden="true" viewBox="0 0 40 40">/, `${name}: the wordmark`);
+    assert.doesNotMatch(page, /fonts\.googleapis|fonts\.gstatic/, `${name}: nothing from Google`);
+    for (const url of page.matchAll(/url\(([^)]+)\)/g)) assert.match(url[1], /^\/web\/fonts\/[a-z]+\.woff2$/, `${name}: ${url[1]}`);
   }
-  const notes = (page) => [...page.matchAll(/<p class="w-note">(?:<svg[^]*?<\/svg>)?([^<]*)<\/p>/g)].map(m => m[1]);
-  const arrowed = (page) => [...page.matchAll(/<p class="w-note"><svg[^]*?<\/svg>([^<]*)<\/p>/g)].map(m => m[1]);
-  assert.deepEqual(notes(form), [ws.NOTES.signin, ws.NOTES.join].map(esc));
-  assert.deepEqual(notes(code), [ws.NOTES.code, ws.NOTES.join].map(esc));
-  assert.deepEqual(notes(landing), [ws.NOTES.landing].map(esc));
-  // The hero lines keep the site's squiggle arrow; the join line under "New to Reason?" has none.
-  assert.deepEqual(arrowed(form), [ws.NOTES.signin].map(esc));
-  assert.deepEqual(arrowed(code), [ws.NOTES.code].map(esc));
-  assert.deepEqual(arrowed(landing), [ws.NOTES.landing].map(esc));
-  assert.match(form, /--above:calc\(2rem \+ clamp\(3rem,8vh,6rem\)\);--below:5rem[^]*\.w-join\{margin-top:var\(--above\);padding-top:var\(--below\)/);
-  for (const line of Object.values(ws.NOTES)) assert.doesNotMatch(line, /["“”]|\b(say|type|reply|text me|send)\b/i, `${line}: intent, never words to say`);
 
   // The fonts: served while on, cached, the right bytes; the CSP lets the page load them and nothing else.
   assert.match(ws.SECURITY_HEADERS["Content-Security-Policy"], /font-src 'self' data:;/);
@@ -505,7 +559,7 @@ test("the pages wear the site: serif italic headline, mono eyebrow, one handwrit
   await new Promise(r => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    for (const name of ["serif", "hand"]) {
+    for (const name of ["serif", "roman", "hand", "handbold", "sans"]) {
       const r = await fetch(`${base}/web/fonts/${name}.woff2`);
       assert.equal(r.status, 200, name);
       assert.equal(r.headers.get("content-type"), "font/woff2");
@@ -548,9 +602,35 @@ test("every answer carries the security headers; the pages carry no preview tags
   assert.equal((await req(h, { sub: "signin", method: "POST", body: form({ number: AMA, f: b.f }), cookie: `${s.jar}; ${b.jar}` })).status, 303);
 });
 
-test("the copy coaches no phrase: intent words only, and the sms: body is the only prefilled text", () => {
-  const html = ws.renderSignin({ joinNumber: LINE, formToken: "t", sent: true, number: KOFI }) + ws.renderLanding({ account: { name: "Kofi" }, csrf: "c" });
-  const text = html.replace(/<[^>]+>/g, " ");
-  assert.doesNotMatch(text, /\b(say|text|reply|type|send)\s+["“]/i);
-  assert.match(text, /text Reason at\s+\+1 \(656\) 216-7455\s*, or point its camera at this code/);
+test("the copy coaches no phrase: intent words only; the sms: body and the three tap-to-fill examples are the only prefilled words", async () => {
+  const convo = await import("../src/pages/webconvo.js");
+  const html = [
+    ws.renderSignin({ joinNumber: LINE, formToken: "t" }),
+    ws.renderSignin({ joinNumber: LINE, formToken: "t", out: true }),
+    ws.renderSignin({ joinNumber: null, formToken: "t", error: { kind: "origin" } }),
+    ws.renderSignin({ joinNumber: LINE, formToken: "t", number: KOFI, error: { kind: "pause", waitMs: 90_000 } }),
+    ...[null, { kind: "wrong" }, { kind: "expired" }, { kind: "tries", waitMs: 60_000 }, { kind: "resend", leftMs: 5 * MIN }]
+      .map(error => ws.renderCode({ number: KOFI, joinNumber: LINE, formToken: "t", error })),
+    ws.renderJoin({ joinNumber: LINE }),
+    ws.renderJoin({ joinNumber: null }),
+    convo.renderFirstVisit({ account: { name: "Kofi" } }),
+    convo.renderHome({ account: { name: "Kofi" }, csrf: "c", sendId: "s" }),
+    convo.renderOngoing({ csrf: "c" }),
+    convo.renderError(),
+    convo.soonPage({ which: "memory", account: { name: "Kofi" }, headers: {} }),
+    convo.soonPage({ which: "settings", account: { name: "Kofi" }, headers: {} }),
+  ].join("\n");
+  // Words a person reads (not the scripts and styles), with the owner's three example requests — which
+  // a tap puts in the composer, and nothing sends until they do — taken out first.
+  let text = html.replace(/<(script|style)>[^]*?<\/\1>/g, " ").replace(/<[^>]+>/g, " ");
+  for (const ex of convo.EXAMPLES) {
+    const quoted = `"${esc(ex)}"`;
+    assert.ok(text.includes(quoted), `${ex}: on the arrival`);
+    text = text.replaceAll(quoted, " ");
+  }
+  assert.doesNotMatch(text, /["“”]|&quot;/, "no other quoted words anywhere");
+  assert.doesNotMatch(text, /\b(say|text|reply|type|send)\s+(&quot;|["“'‘])/i);
+  assert.doesNotMatch(text, /\b(reply|say|type)\s+[A-Z]{2,}\b/, "no 'reply YES'-style coaching");
+  assert.ok(html.includes(`href="sms:${LINE}?&amp;body=Hi"`), "the sms: body is the only prefilled text");
+  for (const m of html.matchAll(/href="(sms:[^"]*)"/g)) assert.equal(m[1], `sms:${LINE}?&amp;body=Hi`, "every sms: link prefills only the hello");
 });

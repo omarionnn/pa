@@ -11262,6 +11262,26 @@ export function joinAttemptCounts(eventId, since) {
 export function signinRequestsSince(actor, since) {
   return Number(db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE actor = ? AND route = 'signin' AND at >= ?").get(String(actor), since).n);
 }
+/**
+ * When one browser's code requests stop counting against `limit` in a window of `windowMs`: the
+ * moment its limit-th most recent request leaves the window, or null when it is under the limit.
+ * Reason Web's countdowns ("TRY AGAIN IN 4:59") read this; it is the browser's own, never a number's.
+ */
+export function signinRequestsClearAt(actor, { limit, windowMs, now = clock.now() }) {
+  const rows = db.prepare("SELECT at FROM event_join_attempts WHERE actor = ? AND route = 'signin' AND at >= ? ORDER BY at DESC LIMIT ?")
+    .all(String(actor), now - windowMs, limit);
+  return rows.length >= limit ? rows[rows.length - 1].at + windowMs : null;
+}
+/** The same for wrong codes typed from one browser key (src/events.js SIGNIN_WRONG.perBrowser). */
+export function pageAttemptsClearAt(key, { limit, windowMs, now = clock.now() }) {
+  const rows = db.prepare("SELECT at FROM page_attempts WHERE page_id = ? AND ok = 0 AND at >= ? ORDER BY at DESC LIMIT ?")
+    .all(String(key), now - windowMs, limit);
+  return rows.length >= limit ? rows[rows.length - 1].at + windowMs : null;
+}
+/** The last time this browser asked for a sign-in code, or null. */
+export function lastSigninRequestAt(actor) {
+  return db.prepare("SELECT MAX(at) AS at FROM event_join_attempts WHERE actor = ? AND route = 'signin'").get(String(actor))?.at ?? null;
+}
 /** Joins since `since` — every one, including people who later left or were taken off. */
 export function joinsSince(since) {
   return Number(db.prepare("SELECT COUNT(*) AS n FROM event_attendees WHERE joined_at >= ? AND role = 'guest'").get(since).n);

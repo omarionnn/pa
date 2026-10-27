@@ -285,6 +285,7 @@ test("Web sign-out with two copies of the cookie ends both sessions and clears b
   db.startPageSession("wsign:dm:owner", "old-host-only", { conversationId: OWNER_C });
   db.startPageSession("wsign:dm:owner", "shared-one", { conversationId: OWNER_C });
   const jar = "reason_page=old-host-only; reason_page=shared-one";
+  await web(h, viaNetlify("198.51.100.1"), { cookie: jar }); // the once-only 5C page
   const landing = await web(h, viaNetlify("198.51.100.1"), { cookie: jar });
   assert.equal(landing.status, 200);
   const c = /name="c" value="([^"]+)"/.exec(landing.body)?.[1];

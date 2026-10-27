@@ -54,3 +54,30 @@ export function historyOn() {
 export function joinNumber(router) {
   return liveLineNumber(router);
 }
+
+const originOf = (u) => { try { const x = new URL(u); return x.protocol === "https:" ? x.origin : null; } catch { return null; } };
+const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ""; } };
+
+/**
+ * The origin a Web page opens its live stream on, or null for its own (/web/stream, then the poll).
+ * The website's proxy (Netlify, heyreason.com/web) buffers a stream until it ends — proven live
+ * 10-26: first byte after ~16 s, all at once — so by default the page listens at the pages host
+ * (files.heyreason.com/web/live), which Caddy hands straight to Reason. Only an https origin under
+ * the website's own domain qualifies: the `reason_page` cookie is `Domain=<that domain>`, so it is
+ * sent there, and nothing outside it may ever receive it. REASON_WEB_STREAM=off turns this off.
+ */
+export function webStreamOrigin() {
+  const want = config.webStream;
+  if (/^(off|0|false|no)$/i.test(want)) return null;
+  const site = hostOf(config.siteUrl);
+  const cand = want ? originOf(want) : originOf(config.pagesUrl);
+  if (!site || !cand) return null;
+  const host = hostOf(cand);
+  if (host === site || !host.endsWith(`.${site}`)) return null;
+  return cand;
+}
+
+/** The website's own origin (https://heyreason.com): the only page that may read the stream across hosts. */
+export function siteOrigin() {
+  return originOf(config.siteUrl);
+}

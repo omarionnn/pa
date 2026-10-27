@@ -28,7 +28,9 @@
 //   GET  /web                         Reason Web (src/pages/websignin.js): sign in by number, or (signed in) the conversation
 //   POST /web/signin|code|signout     ask for the code, type it, sign this browser out — all 404 while REASON_WEB is off
 //   GET  /web/history|stream, POST /web/send   the conversation: older/newer lines, live events, a message (src/pages/webconvo.js)
-//   GET  /web/fonts/{serif|hand}.woff2  the site's two display faces for those pages (404 while off)
+//   GET  /web/live                    the same live events, asked for on the pages host by the website's page (CORS: that origin only)
+//   GET  /web/memory|settings         "coming soon" pages behind MEMORY and SETTINGS (phases 3, 4)
+//   GET  /web/fonts/{serif|roman|hand|handbold|sans}.woff2  Web's own faces (src/pages/webkit.js; 404 while off)
 //        /web…  on the pages host, not signed by the website: 301 to {REASON_SITE_URL}/web… (src/pages/siteproxy.js)
 //   POST /agentcard/webhook           a card landed in somebody's vault, or a payment was approved
 //
@@ -79,7 +81,7 @@ import { isContactPath, vcard, lineNumber, liveLineNumber } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
-import { webRequest, webFont } from "./pages/websignin.js";
+import { webRequest, webFont, SECURITY_HEADERS as WEB_SECURITY_HEADERS } from "./pages/websignin.js";
 import { webOn, joinNumber } from "./web.js";
 import * as eventsmod from "./events.js";
 import { readFileSync } from "node:fs";
@@ -217,7 +219,9 @@ export function createServer({ router, runtime, log = () => {} }) {
       // The site's two display faces for these pages, cached a week; off, the same flat 404.
       // Web's home is the website (heyreason.com/web, proxied here and signed). The same paths asked of
       // the pages host directly answer 301 to it, same path and query (src/pages/siteproxy.js).
-      const webMoved = /^\/web(?:\/|$)/.test(url.pathname) && webOn() ? webMovedTo(req.headers, `${url.pathname}${url.search}`) : null;
+      // One exception: /web/live, the conversation's live stream, which the website's page opens on this
+      // host on purpose — the website's proxy buffers a stream (src/web.js webStreamOrigin).
+      const webMoved = /^\/web(?:\/|$)/.test(url.pathname) && url.pathname !== "/web/live" && webOn() ? webMovedTo(req.headers, `${url.pathname}${url.search}`) : null;
       if (webMoved) {
         res.writeHead(301, { Location: webMoved, "Content-Length": 0, "Cache-Control": "no-store" });
         return res.end();
@@ -228,12 +232,23 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(fontOut.status, fontOut.headers);
         return res.end(req.method === "HEAD" ? "" : fontOut.body);
       }
-      const webRoute = /^\/web(?:\/(signin|code|signout|history|stream|send))?$/.exec(url.pathname);
+      const webRoute = /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings))?$/.exec(url.pathname);
       if (webRoute && webOn()) {
-        const out = await webRequestFor({
-          sub: webRoute[1] || null, method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers,
-          remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, router, log,
-        });
+        let out;
+        try {
+          out = await webRequestFor({
+            sub: webRoute[1] || null, method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers,
+            remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, router, log,
+          });
+        } catch (e) {
+          // A page asks for the calm one (9B: "Something went wrong. Nothing was lost."); the page's own
+          // script asking for JSON gets JSON, which it already knows how to treat as a missed beat.
+          log({ http: url.pathname, threw: (e?.message ?? String(e)).split("\n")[0] });
+          if (String(req.headers.accept ?? "").includes("application/json")) return send(500, { error: "server error" });
+          const body = (await import("./pages/webconvo.js")).renderError();
+          res.writeHead(500, { "Content-Type": "text/html; charset=utf-8", ...WEB_SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) });
+          return res.end(req.method === "HEAD" ? "" : body);
+        }
         // The live stream (W2) stays open and writes as the conversation moves; everything else is one answer.
         if (out.stream) {
           res.writeHead(out.status, out.headers);

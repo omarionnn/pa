@@ -106,6 +106,12 @@ const history = async (h, b, query) => JSON.parse((await call(h, { sub: "history
 const until = async (pred, ms = 3000) => { const end = Date.now() + ms; while (!pred() && Date.now() < end) await new Promise(r => setTimeout(r, 5)); return pred(); };
 const textIn = (h, { from = KOFI, id, body }) => h.router.deliver({ channel: "fake", externalId: id, from, text: body, chatId: null, at: clock.now() });
 const rowsOf = (c) => db.messagesFor(c).map(m => [m.role, m.channel, m.text]);
+const FIRST = /One Reason\.<br><em>Pick up anywhere\.<\/em>/;
+/** The thread itself (/web?thread). The person's first-ever GET is the once-only 5C page, so that is spent first. */
+async function thread(h, b) {
+  await call(h, { b });
+  return (await call(h, { b, query: { thread: "" } })).body;
+}
 
 /** Open the live stream into a fake response; returns what it wrote and a way to close it. */
 function openStream(h, b, query = {}, opts = {}) {
@@ -131,10 +137,10 @@ test("two people never see each other's history: the page, older pages, catch-up
   const kofi = { ...browser(KOFI_C), conv: KOFI_C };
   const ama = { ...browser(AMA_C), conv: AMA_C };
 
-  const kPage = (await call(h, { b: kofi })).body;
+  const kPage = await thread(h, kofi);
   assert.match(kPage, /kofi&#39;s secret plan/);
   assert.ok(!kPage.includes("ama"), "Kofi's page has nothing of Ama's");
-  const aPage = (await call(h, { b: ama })).body;
+  const aPage = await thread(h, ama);
   assert.match(aPage, /ama&#39;s private note/);
   assert.ok(!aPage.includes("kofi"));
 
@@ -232,7 +238,7 @@ test("closing the tab keeps the work: the send is acknowledged before the turn e
   release();
   assert.ok(await until(() => h.web.recent.length === 1));
   // They come back: a fresh page has the answer.
-  const page = (await call(h, { b: { ...browser(KOFI_C), conv: KOFI_C } })).body;
+  const page = await thread(h, { ...browser(KOFI_C), conv: KOFI_C });
   assert.match(page, /done: research flights to Accra/);
 });
 
@@ -242,13 +248,16 @@ test("the history boundary note shows on the first Web visit only, never as a re
   const h = harness();
   const kofi = { ...browser(KOFI_C), conv: KOFI_C };
   const first = (await call(h, { b: kofi })).body;
-  assert.match(first, /One Reason\. Pick up anywhere\./);
-  assert.match(first, /Messages from Web won&#39;t appear in your iMessage thread\./);
+  assert.match(first, FIRST);
+  assert.match(first, /This is the same Reason you text\. What you send here stays here; it won&#39;t show up in your iMessage thread\./);
+  assert.match(first, /<a class="act" href="\/web">Got it <span aria-hidden="true">→<\/span><\/a>/);
   const second = (await call(h, { b: kofi })).body;
-  assert.ok(!/One Reason\. Pick up anywhere\./.test(second), "not again");
+  assert.ok(!FIRST.test(second), "not again");
+  assert.match(second, /class="greet"/, "the arrival instead");
+  assert.ok(!FIRST.test((await call(h, { b: kofi, query: { thread: "" } })).body), "nor on the thread");
   const otherBrowser = (await call(h, { b: { ...browser(KOFI_C), conv: KOFI_C } })).body;
-  assert.ok(!/One Reason\. Pick up anywhere\./.test(otherBrowser), "once per person, not per browser");
-  assert.match((await call(h, { b: { ...browser(AMA_C), conv: AMA_C } })).body, /One Reason\. Pick up anywhere\./, "Ama's own first visit shows it to her");
+  assert.ok(!FIRST.test(otherBrowser), "once per person, not per browser");
+  assert.match((await call(h, { b: { ...browser(AMA_C), conv: AMA_C } })).body, FIRST, "Ama's own first visit shows it to her");
 });
 
 // ---------- decision 9 ----------
@@ -333,8 +342,9 @@ test("a message's words are never markup: escaped everywhere, and only http(s) a
   const h = harness({ turn: async () => `<img src=x onerror=alert(1)> see https://example.com/a?b=1&c=2. and javascript:alert(1)` });
   const kofi = { ...browser(KOFI_C), conv: KOFI_C };
   await send(h, kofi, { id: "xss-0001", text: `<script>alert("x")</script>` });
-  await until(() => h.web.recent.length === 1);
-  const page = (await call(h, { b: kofi })).body;
+  // deliver sends a lone link as its own line, so the reply is two: wait for the one with the markup in it.
+  assert.ok(await until(() => rowsOf(KOFI_C).some(r => r[0] === "assistant" && r[2].includes("<img"))));
+  const page = await thread(h, kofi);
   assert.ok(!page.includes(`<script>alert("x")</script>`));
   assert.match(page, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/);
   assert.ok(!page.includes("<img src=x"));
@@ -380,10 +390,10 @@ test("long history pages back: forty at a time, oldest first within a page, and 
   const h = harness();
   for (let i = 0; i < 95; i++) { clock.skip(1000); db.writeMessage({ conversationId: KOFI_C, role: i % 2 ? "assistant" : "user", channel: "fake", externalId: i % 2 ? null : `p${i}`, text: `line ${i}` }); }
   const kofi = { ...browser(KOFI_C), conv: KOFI_C };
-  const page = (await call(h, { b: kofi })).body;
+  const page = await thread(h, kofi);
   assert.match(page, /line 94/);
   assert.ok(!page.includes(">line 54<"), "only the newest forty on the page");
-  assert.match(page, /Show earlier messages/);
+  assert.match(page, /↑ SHOW EARLIER MESSAGES/);
   const firstOnPage = Number(/data-id="(\d+)"/.exec(page)[1]);
   const p2 = await history(h, kofi, { before: String(firstOnPage) });
   assert.equal(p2.messages.length, 40);
@@ -400,21 +410,24 @@ test("long history pages back: forty at a time, oldest first within a page, and 
 test("the page itself: the composer posts to /web/send with the session's secret and a fresh id, labelled for screen readers", async () => {
   const h = harness();
   const kofi = { ...browser(KOFI_C), conv: KOFI_C };
-  const out = await call(h, { b: kofi });
+  await call(h, { b: kofi });
+  const out = await call(h, { b: kofi, query: { thread: "" } });
   assert.equal(out.status, 200);
   assert.match(out.headers["Content-Security-Policy"], /default-src 'none'/);
   assert.equal(out.headers["Cache-Control"], "no-store");
   const body = out.body;
-  assert.match(body, /<form class="c-compose" method="POST" action="\/web\/send"><input type="hidden" name="c" value="[^"]+"><input type="hidden" name="id" value="[0-9a-f-]{36}">/);
-  assert.match(body, /<label class="c-sr" for="c-input">Message Reason<\/label>/);
+  assert.match(body, /<form class="cform" method="POST" action="\/web\/send"><input type="hidden" name="c" value="[^"]+"><input type="hidden" name="id" value="[0-9a-f-]{36}">/);
+  assert.match(body, /<label class="sr" for="c-input">Message Reason<\/label><input id="c-input" type="text" name="text"/);
   assert.match(body, /placeholder="Tell Reason what you need"/);
-  assert.match(body, /aria-label="Send"/);
-  assert.match(body, /role="log"/);
+  assert.match(body, /<button class="send" type="submit" aria-label="Send">/);
+  assert.match(body, /<ol class="thread" role="log" aria-live="polite"/);
   assert.ok(!/og:/.test(body), "no link-preview tags on a private page");
   // A plain form post (no script) is a 303 back to the conversation, and the same id twice is one turn.
   const id = /name="id" value="([^"]+)"/.exec(body)[1];
   const post = () => call(h, { sub: "send", method: "POST", b: kofi, body: new URLSearchParams({ id, text: "no script here", c: kofi.csrf }).toString() });
-  assert.equal((await post()).status, 303);
+  const first = await post();
+  assert.equal(first.status, 303);
+  assert.equal(first.headers.Location, "/web?thread");
   assert.equal((await post()).status, 303);
   await until(() => h.web.recent.length === 1);
   await new Promise(r => setTimeout(r, 20));
@@ -441,7 +454,7 @@ test("a HEAD of /web does not spend the once-only boundary note", async () => {
   const h = harness();
   const kofi = { ...browser(KOFI_C), conv: KOFI_C };
   assert.equal((await call(h, { b: kofi, method: "HEAD" })).status, 200);
-  assert.match((await call(h, { b: kofi })).body, /One Reason\. Pick up anywhere\./, "the first real view still shows it");
+  assert.match((await call(h, { b: kofi })).body, FIRST, "the first real view still shows it");
 });
 
 test("a stream whose session is already gone at the first look ends quietly, without throwing", async () => {
@@ -466,7 +479,8 @@ test("the signed-in greeting: \"What's good, <first name>?\", first name only, o
   assert.equal(ws.greeting(null), "What's good?");
   const h = harness();
   const kofi = { ...browser(KOFI_C), conv: KOFI_C };
-  assert.match((await call(h, { b: kofi })).body, /<h1>What&#39;s good, Kofi\?<\/h1>/);
+  assert.match((await call(h, { b: kofi })).body, FIRST, "the first visit is 5C");
+  assert.match((await call(h, { b: kofi })).body, /<h1 class="greet">What&#39;s good, Kofi\?<\/h1>/);
   db.db.prepare("UPDATE accounts SET name = '' WHERE conversation_id = ?").run(KOFI_C);
-  assert.match((await call(h, { b: kofi })).body, /<h1>What&#39;s good\?<\/h1>/);
+  assert.match((await call(h, { b: kofi })).body, /<h1 class="greet">What&#39;s good\?<\/h1>/);
 });
