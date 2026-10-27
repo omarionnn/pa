@@ -11,7 +11,7 @@
 // subscription path (never the billed API), or the first words of their first message when the CLI is
 // not the backend or the summarise fails. A later reply never retitles it.
 import * as db from "./db.js";
-import { config, clock } from "./config.js";
+import { clock } from "./config.js";
 import { askStructuredViaCli } from "./backends/cli.js";
 import { normTitle } from "./itemtitle.js";
 import * as onethought from "./onethought.js";
@@ -101,9 +101,13 @@ export function titleWebChat(conversationId, chat) {
       const line = (role) => db.db.prepare(`SELECT text FROM messages WHERE conversation_id = ? AND chat_id = ? AND role = ? AND deleted_at IS NULL
         ORDER BY at, id LIMIT 1`).get(conversationId, chat, role)?.text ?? "";
       const first = line("user");
+      const name = db.getAccount(conversationId)?.name ?? "";
       let title = null;
-      try { title = await modelTitle({ first, reply: line("assistant"), name: db.getAccount(conversationId)?.name ?? config.ownerName }); } catch { /* the fallback below */ }
-      db.db.prepare("UPDATE web_chats SET title = ? WHERE id = ? AND conversation_id = ? AND title IS NULL").run(title || fallbackTitle(first), chat, conversationId);
+      try { title = await modelTitle({ first, reply: line("assistant"), name }); } catch { /* the fallback below */ }
+      // The fallback keeps the same rule as the model's: never their own name.
+      const fallback = fallbackTitle(first);
+      title ||= fallback === UNTITLED ? UNTITLED : normTitle(fallback, { name }) ? fallback : UNTITLED;
+      db.db.prepare("UPDATE web_chats SET title = ? WHERE id = ? AND conversation_id = ? AND title IS NULL").run(title, chat, conversationId);
     } catch { /* a title is never worth an error */ } finally { titling.delete(chat); }
   });
   return chain;

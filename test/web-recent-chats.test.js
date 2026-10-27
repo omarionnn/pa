@@ -207,4 +207,12 @@ test("7. fallback title: the first words of their first message when there is no
   await settle();
   assert.equal(db.db.prepare("SELECT title FROM web_chats WHERE id = ?").get(id("C")).title, chats.UNTITLED);
   assert.equal(chats.fallbackTitle("x".repeat(60)), `${"x".repeat(47)}…`);
+  // A first message naming them: the fallback never carries their name either.
+  chats.setTitleAsk(async () => ({ value: { title: "" } }));
+  seed(OWNER_C, id("D"), [["user", "Omari here, plan my week"], ["assistant", "On it."]], 5_000);
+  await settle();
+  assert.equal(db.db.prepare("SELECT title FROM web_chats WHERE id = ?").get(id("D")).title, chats.UNTITLED);
+  // HEAD answers like GET.
+  seed(OWNER_C, id("E"), [["user", "hi"]], 6_000);
+  assert.equal((await recent(browser(OWNER_C), { method: "HEAD" })).status, 200);
 });
