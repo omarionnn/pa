@@ -238,7 +238,7 @@ export function rowOut(row, { conversationId, service = null }) {
 const serviceOf = (conversationId) => db.getThread(conversationId)?.service ?? null;
 
 function lineHtml(m) {
-  return `<li class="msg ${m.role === "user" ? "you" : "re"}" data-id="${m.id}" data-at="${m.at}" data-web="${m.web ? 1 : 0}"${m.cid ? ` data-cid="${esc(m.cid)}"` : ""}>${m.html}</li>`;
+  return `<li class="msg ${m.role === "user" ? "you" : "re"}" id="m-${m.id}" data-id="${m.id}" data-at="${m.at}" data-web="${m.web ? 1 : 0}"${m.cid ? ` data-cid="${esc(m.cid)}"` : ""}>${m.html}</li>`;
 }
 
 const dayName = (at, now) => {
@@ -365,10 +365,10 @@ html.og-off .wrapc>.og{display:none}
 .og-row .when{flex:none;font:italic 400 20px/1 var(--serif)}
 .empty{display:flex;flex-direction:column;gap:20px}
 .empty .h2{margin:0;font:italic 400 32px/1.1 var(--serif)}
-.tabs{position:fixed;left:0;right:0;bottom:0;z-index:6;background:var(--ground);border-top:1px solid var(--hair);padding:6px 24px calc(14px + env(safe-area-inset-bottom));display:flex;justify-content:space-around}
-.tabs a{min-width:120px;min-height:48px;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;font:italic 400 22px/1 var(--serif);color:var(--muted)}
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:6;background:var(--ground);border-top:1px solid var(--hair);padding:6px 16px calc(22px + env(safe-area-inset-bottom));display:flex;justify-content:space-around}
+.tabs a{min-width:96px;min-height:48px;display:inline-flex;align-items:center;justify-content:center;gap:6px;text-decoration:none;font:italic 400 21px/1 var(--serif);color:var(--muted)}
 .tabs a[aria-current=page]{color:var(--ink)}
-.tabs .n{font:700 12px/1 var(--mono);font-style:normal;color:var(--pen)}
+.tabs .n{font:700 11px/1 var(--mono);font-style:normal;color:var(--pen)}
 body.has-tabs{padding-bottom:84px}
 body.has-tabs .composer{bottom:76px}
 body.typing .tabs{display:none}
@@ -458,16 +458,18 @@ const signOutForm = (csrf, cls = "act2") => `<form method="POST" action="/web/si
 /** The top of every signed-in screen: the wordmark home; MEMORY and SETTINGS on desktop; a menu on phones. */
 function topBar({ csrf, extra = "" }) {
   return `<header class="top">${wordmark({ href: "/web" })}`
-    + `<nav aria-label="Account">${extra}${typed("MEMORY", { href: "/web/memory" })}${typed("SETTINGS", { href: "/web/settings" })}</nav>`
+    + `<nav aria-label="Account">${extra}${typed("SAVED", { href: "/web/saved" })}${typed("MEMORY", { href: "/web/memory" })}${typed("SETTINGS", { href: "/web/settings" })}</nav>`
     + `<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">${MENU_SVG}</button></header>`
     + `<div class="menu" id="menu" hidden role="dialog" aria-modal="true" aria-label="Menu"><div class="menu-h">${wordmark()}<button class="act2 menu-x" type="button">CLOSE</button></div>`
     + `<ul><li>${action("The thread", { href: "/web?thread" })}</li><li>${action("Memory", { href: "/web/memory" })}</li><li>${action("Settings", { href: "/web/settings" })}</li></ul>`
     + `${signOutForm(csrf)}</div>`;
 }
 
+/** The phone's three tabs (v2 handoff): Chat · Ongoing (its count in pen) · Saved, the current one in ink. */
 export function tabBar(current, count) {
   return `<nav class="tabs" aria-label="Sections"><a href="/web?thread"${current === "chat" ? ` aria-current="page"` : ""}>Chat</a>`
-    + `<a href="/web?tab=ongoing"${current === "ongoing" ? ` aria-current="page"` : ""}>Ongoing${count ? `<span class="n" aria-label="${count} ${count === 1 ? "thing" : "things"}">${count}</span>` : ""}</a></nav>`;
+    + `<a href="/web?tab=ongoing"${current === "ongoing" ? ` aria-current="page"` : ""}>Ongoing${count ? `<span class="n" aria-label="${count} ${count === 1 ? "thing" : "things"}">${count}</span>` : ""}</a>`
+    + `<a href="/web/saved"${current === "saved" ? ` aria-current="page"` : ""}>Saved</a></nav>`;
 }
 
 /** The one-line composer. `sendId` makes even a no-script post one turn however often it is resent. */
@@ -607,7 +609,7 @@ const NET = `<p class="netline" role="status" hidden></p>`;
 /**
  * The thread. `firstVisit` draws 5C in its place (once); `approvals` the one loud thing at the foot.
  */
-export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now() }) {
+export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), found = null }) {
   if (firstVisit) return renderFirstVisit({ account });
   const startLine = more
     ? `<button class="act2" type="button">↑ SHOW EARLIER MESSAGES</button>`
@@ -628,7 +630,9 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     + `</section>${ongoingMargin(items, approvals, { back })}</main>`
     + `<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing${count ? `, ${count} ${count === 1 ? "thing" : "things"}` : ""}"><span aria-hidden="true">ONGOING${count ? ` · ${count}` : ""}</span></button>`
     + tabBar("chat", count) + listeningHtml();
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: account?.conversation_id }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
+  // Saved's FIND IT IN THE CHAT → (src/pages/websaved.js): the thread opened at that message, scrolled to it.
+  const toFound = found ? `(function(){var e=document.getElementById('m-${Number(found)}');if(e)e.scrollIntoView({block:'center'})})();` : "";
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: account?.conversation_id }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
 }
 
 /** B / B2, the arrival: the greeting, the composer, then what's in hand or where to start, then iMessage. */
@@ -702,9 +706,14 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   if (method === "GET" && db.markWebNoticeSeen(conv)) return renderFirstVisit({ account });
   const { items, approvals, back } = ongoing(conv, now);
   if (query.tab === "ongoing") return renderOngoing({ csrf, items, approvals, back });
-  const rows = db.messagesBefore(conv, { limit: PAGE + 1 });
-  const more = rows.length > PAGE;
+  // ?at=<id> (Saved's FIND IT IN THE CHAT →): the thread around one of this conversation's own messages.
+  const at = /^\d{1,15}$/.test(String(query.at ?? "")) ? Number(query.at) : null;
+  const from = at ? db.messagesFor(conv, { after: at - 1, limit: PAGE }) : [];
+  const found = from[0]?.id === at ? at : null;
+  const rows = found ? [...db.messagesBefore(conv, { before: found, limit: 11 }), ...from] : db.messagesBefore(conv, { limit: PAGE + 1 });
+  const more = found ? rows.length - from.length > 10 : rows.length > PAGE;
   const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service }));
+  if (found) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, found });
   const recentWeb = lines.some(m => m.web && m.role === "user" && now - m.at < THREAD_RECENT_MS);
   if (query.thread != null || recentWeb) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now });
   return renderHome({ account, csrf, sendId, items, approvals, back, pick: pickUp(conv, service) });

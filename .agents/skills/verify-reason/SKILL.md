@@ -397,6 +397,15 @@ See [features/web-memory.md](features/web-memory.md) and [features/web-history.m
 ### Baseline — 3,952 pass, 0 failures after Reason Web v2 Settings + notifications (wt/v2-settings, 2026-10-27)
 
 v2 Settings edit states 5A–5D (four-value reach honoured by `keptOnWeb`, sign-out-everywhere confirm, invite just made + cancel from Web), L8 busy words, theme switch in Settings only, notifications 8A–8C (`/web/signal`, tab title + filled favicon, in-app line, per-browser notifications), Web icons I1. `test/web-settings-edit.test.js` (11), `test/web-notify.test.js` (13); `bin/web-settings-drive.mjs`: 29 steps, all ok. `npm run test:offline` under `env -i`: 4,075 tests, 3,952 passing; 1 load flake (`flight-search` sidecar) passes alone. See [features/web-settings.md](features/web-settings.md), [features/web-notify.md](features/web-notify.md).
+**8 — Reason Web Saved, over real HTTP.** The list (kinds, find, groups), an opened page framed from
+its own route, FIND IT IN THE CHAT into the thread, PIN / REMOVE / PUT IT BACK form posts, refusals.
+
+```bash
+eval "$(bin/caged.sh env | sed 's/^/export /')" \
+  && REASON_DB_PATH=$(mktemp -d)/saved.db node bin/web-saved-drive.mjs   # 21 steps, all ok
+```
+
+See [features/web-saved.md](features/web-saved.md).
 
 ### Baseline — 3,878 pass, **0 failures** after Reason Web Settings (wt/web-settings, 2026-10-26)
 
@@ -622,6 +631,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 to drive it here, and what end state proves it. That map is the maintained source — when you change
 behaviour, change its feature file in the same commit.
 
+Reason Web Saved (phone tab S-A/S-B, desktop list + opened page, pin/remove): [features/web-saved.md](features/web-saved.md).
 Reason Web Ongoing (tab, margin, at volume + See all 2A–2C, home rows, details 2A–2E + approval, 9D): [features/web-ongoing.md](features/web-ongoing.md);
 `bin/web-ongoing-preview.mjs` draws every state beside the handoff's reference pages.
 
