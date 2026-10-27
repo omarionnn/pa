@@ -127,7 +127,9 @@ test("whole sentences only, and each one only after the said check passed it", a
   d.feed(endTurn());
   await settle();
   assert.equal(shown.at(-1), "sure, you can pick it up at 5. it's on the second floor.");
-  assert.ok(d.passed("sure, you can pick it up at 5. it's on the second floor."), "the finished reply is not checked twice");
+  const n = checked.length;
+  assert.deepEqual(await d.check("sure, you can pick it up at 5. it's on the second floor."), { ok: true });
+  assert.equal(checked.length, n, "the finished reply's check is the piece's, not a second one");
   d.end();
   assert.equal(shown.at(-1), null, "the end takes it back");
 });

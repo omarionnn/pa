@@ -99,19 +99,23 @@ export function shapeDraft(conversationId, raw, { complete = false } = {}) {
 /**
  * One turn's drafter. `feed` takes each CLI event; `taken()` takes back anything shown (the said
  * check rejected the finished reply); `end()` takes back what is left once the reply has gone, and
- * stops. `passed(text)` says whether exactly this text already passed the said check this turn.
+ * stops. `check(text)` is the said check for the finished reply, shared with the piece that matches it.
  */
 export function startDraft({ conversationId, log = () => {}, check = checkDraft, emit = (e) => draftEvents.emit("draft", e) }) {
   let msg = null, seq = 0, shownFrom = -1, shown = "", busy = false, again = false, stopped = false;
-  const ok = new Set();
+  // One said check per exact text, shared: the finished reply's own check reuses a piece's, in flight or done.
+  const checks = new Map();
+  const checkOnce = (text) => {
+    if (!checks.has(text)) checks.set(text, Promise.resolve().then(() => check({ conversationId, draft: text, log })).catch(() => ({ ok: true })));
+    return checks.get(text);
+  };
   const show = (text) => { shown = text ?? ""; emit({ conversationId, text }); };
   const takeBack = () => { if (shown) show(null); shownFrom = -1; };
   const stop = (why) => { if (stopped) return; stopped = true; takeBack(); log({ web_draft_stopped: why, conversation: conversationId }); };
 
-  let running = Promise.resolve();
   function pump() {
-    if (busy) { again = true; return running; }
-    return (running = pumping());
+    if (busy) { again = true; return; }
+    return pumping();
   }
   async function pumping() {
     busy = true;
@@ -126,10 +130,9 @@ export function startDraft({ conversationId, log = () => {}, check = checkDraft,
         const shaped = shapeDraft(conversationId, m.text.slice(0, upto), { complete: m.done });
         if (shaped.stop) { stop("floor"); break; }
         if (shaped.hold || shaped.text === shown) continue;
-        const v = ok.has(shaped.text) ? { ok: true } : await check({ conversationId, draft: shaped.text, log });
+        const v = await checkOnce(shaped.text);
         if (stopped) break;
         if (!v.ok) { stop("said_check"); break; }
-        ok.add(shaped.text);
         // Still the same message, and still one that has called no tool: only then is it the reply.
         if (msg !== m || m.tool) continue;
         shownFrom = m.n;
@@ -159,9 +162,8 @@ export function startDraft({ conversationId, log = () => {}, check = checkDraft,
 
   return {
     feed,
-    /** Resolves once no piece is being checked, so the finished reply's own check can reuse it. */
-    idle: () => running,
-    passed: (text) => ok.has(String(text ?? "").trim()) || ok.has(String(text ?? "")),
+    /** The said check for `text` — the very same one a piece of it already started, when there was one. */
+    check: (text) => checkOnce(String(text ?? "")),
     taken: () => stop("rewritten"),
     end: () => { stopped = true; takeBack(); },
   };

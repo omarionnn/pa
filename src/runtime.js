@@ -509,9 +509,8 @@ export class Runtime extends EventEmitter {
         // so, or asks a question already settled, is rewritten once before it goes. API-only and
         // only when something is standing, so almost every reply pays nothing for it.
         if (kind === "user" && reply && reply.trim() !== "NO_REPLY") {
-          // A reply the tab already watched pass this same check, word for word, is not asked twice.
-          if (draft) await draft.idle();
-          const check = draft?.passed(reply) ? { ok: true } : await said.checkDraft({ conversationId, draft: reply, log: this.log });
+          // A reply the tab already watched pass this check, word for word, is not asked twice (src/webdraft.js).
+          const check = draft ? await draft.check(reply) : await said.checkDraft({ conversationId, draft: reply, log: this.log });
           if (!check.ok) {
             // What the tab was shown goes; the rewrite arrives whole.
             draft?.taken();
