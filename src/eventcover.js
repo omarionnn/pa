@@ -116,7 +116,7 @@ function forget(file) {
 export const hasUploaded = (ev) => !!ev?.cover_file && existsSync(join(DIR(), basename(ev.cover_file)));
 
 /** Bump when Reason's drawn cover changes, so every cached one is drawn again under a new address. */
-export const DRAWN_COVER_VERSION = 2; // 2: pen colour brick red (10-26)
+export const DRAWN_COVER_VERSION = 3; // 2: pen colour brick red (10-26); 3: pen #9c3b2e / #d46a5c (10-26)
 const drawnKey = (name) => sha(`${DRAWN_COVER_VERSION}\n${name}`);
 
 /** The address's version: a new picture is a new address, so no phone keeps showing an old one. */

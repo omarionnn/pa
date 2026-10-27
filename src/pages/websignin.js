@@ -425,8 +425,8 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     return convo.streamRequest({ account, headers, query, router, log });
   }
 
-  // ---- Memory (src/pages/webmemory.js): the list, and correct / forget / a guess answered. Signed in only. ----
-  if (sub === "memory" || /^memory\/(correct|forget|guess)$/.test(sub ?? "")) {
+  // ---- Memory (src/pages/webmemory.js): the list, correct / forget / a guess answered, and chat history (webhistory.js). Signed in only. ----
+  if (sub === "memory" || /^memory\/(correct|forget|guess|history)$/.test(sub ?? "")) {
     if (!account) {
       if (String(headers.accept ?? "").includes("application/json")) {
         const body = JSON.stringify({ ok: false, error: "signed_out" });

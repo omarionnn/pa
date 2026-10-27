@@ -27,8 +27,8 @@ answered before the session is touched; `webSignedIn` gives Ongoing detail pages
   (tag `reason-needs-you`, silent), once per approval (localStorage `reason-web-notified`). No
   "private by default" line (K2).
 - **I1 icons** — `/web/icons/{favicon,favicon-night,favicon-needs-you,favicon-night-needs-you}.svg`
-  and `apple-touch-icon.png` (180×180, exported from the handoff svg), drawn in the brand pen
-  (#b03030 / #e8765c), fingerprinted `?v=WEB_ICON_VERSION`. Reason pages (files.) keep `/favicon.svg`.
+  and `apple-touch-icon.png` (180×180, exported from the handoff svg), the handoff's files as given, in the brand pen
+  (#9c3b2e / #d46a5c, src/pages/brand.js since #190), fingerprinted `?v=WEB_ICON_VERSION`. Reason pages (files.) keep `/favicon.svg`.
 
 ## Drive
 

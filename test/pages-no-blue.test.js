@@ -118,6 +118,6 @@ test("the favicon is the brand-red bubble and every page links it fingerprinted"
     }
     assert.deepEqual(blues(html), [], `${name}: no blue in the served page`);
     // No browser-default (blue in Safari) focus ring: one brand-red :focus-visible every page loads.
-    assert.match(html, /:focus-visible\{outline:2px solid var\(--accent,var\(--mark,#b03030\)\)/, `${name}: brand-red focus ring`);
+    assert.match(html, /:focus-visible\{outline:2px solid var\(--accent,var\(--mark,#9c3b2e\)\)/, `${name}: brand-red focus ring`);
   }
 });

@@ -17,7 +17,7 @@ const { cardUrl } = await import("../src/pages/render.js");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 test("a page's card file and address name the pen, so the orange ones are never served again", () => {
-  assert.equal(BRAND_ART, "pen2");
+  assert.equal(BRAND_ART, "pen3");
   const page = { id: "abc123", revision: 4, owner_key: "k" };
   assert.ok(cardPath(page).endsWith(`abc123-r4-${BRAND_ART}.png`));
   assert.ok(!cardPath(page).endsWith("abc123-r4.png"), "not the orange card's file");

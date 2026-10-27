@@ -81,7 +81,7 @@ function allScreens() {
     notConnected: ws.renderJoin({ joinNumber: null }),
     first: wc.renderFirstVisit({ account }),
     home: wc.renderHome({ account, csrf: "c", sendId: "s" }),
-    homeInHand: wc.renderHome({ account, csrf: "c", sendId: "s", items: [{ kind: "task", title: "A cabin for Nov 14–16", status: "WORKING", words: "working on it" }] }),
+    homeInHand: wc.renderHome({ account, csrf: "c", sendId: "s", items: [{ kind: "task", state: "working", href: "/web/ongoing/task/1", title: "A cabin for Nov 14–16", status: "WORKING", words: "working on it" }] }),
     thread: wc.renderConversation({ account, csrf: "c", lines: [], more: false, sendId: "s" }),
     ongoing: wc.renderOngoing({ csrf: "c" }),
     error: wc.renderError(),
@@ -95,10 +95,10 @@ function allScreens() {
 test("tokens are the handoff's table, hex for hex, and Night/Auto switch the same names", () => {
   assert.deepEqual(
     Object.fromEntries(Object.entries(kit.TOKENS.paper).filter(([k]) => !/shadow|hover/.test(k))),
-    { ground: "#f2ebe0", deep: "#ede5d8", lifted: "#faf6ee", ink: "#2a2520", muted: "#78705f", hair: "#d4c9b5", pen: "#b03030", photo: "#e3d9c8" });
+    { ground: "#f2ebe0", deep: "#ede5d8", lifted: "#faf6ee", ink: "#2a2520", muted: "#78705f", hair: "#d4c9b5", pen: "#9c3b2e", photo: "#e3d9c8" });
   assert.deepEqual(
     Object.fromEntries(Object.entries(kit.TOKENS.night).filter(([k]) => !/shadow|hover/.test(k))),
-    { ground: "#1c1814", deep: "#151210", lifted: "#27211b", ink: "#efe6d6", muted: "#a89d88", hair: "#3e362c", pen: "#e8765c", photo: "#332b23" });
+    { ground: "#1c1814", deep: "#151210", lifted: "#27211b", ink: "#efe6d6", muted: "#a89d88", hair: "#3e362c", pen: "#d46a5c", photo: "#332b23" });
   const css = kit.KIT_CSS;
   assert.match(css, /:root\{--ground:#f2ebe0;/);
   assert.match(css, /:root\[data-theme=dark\]\{--ground:#1c1814;/, "Night when chosen");
@@ -365,14 +365,17 @@ test("approval card: NEEDS YOUR APPROVAL, NOTHING BOOKED/CHARGED YET, no approve
   assert.deepEqual(wc.waitingApprovals(AMA_C), []);
 });
 
-test("arrival: the greeting, then examples that fill the composer (B2) or real slips (B), then 'pick up from iMessage'", () => {
+test("arrival: the greeting, then examples that fill the composer (B2) or quiet in-hand rows (B), then 'pick up from iMessage'", () => {
   const { home, homeInHand } = allScreens();
   assert.match(home, /<h1 class="greet">What&#39;s good, Kofi\?<\/h1>/);
   assert.match(home, /\.greet\{[^}]*-webkit-line-clamp:2/, "greetings clamp to two lines");
   assert.match(home, /<section class="start-w" aria-label="You could start with" hidden><p class="lbl">YOU COULD START WITH<\/p>/);
   for (const t of wc.EXAMPLES) assert.ok(home.includes(`<button class="ex" type="button" data-text="${t}">"${t}"</button>`), t);
   assert.ok(!homeInHand.includes("YOU COULD START WITH"));
-  assert.match(homeInHand, /<section class="inhand" aria-label="Already in hand"><p class="lbl">ALREADY IN HAND<\/p><div class="slips"><a class="card slipc" href="\/web\?thread"><span class="lbl">WORKING<\/span><span class="t">A cabin for Nov 14–16<\/span><span class="hand">working on it<\/span>/);
+  // STAGING-REVIEW 7: quiet rows between dashed rules, as on Ongoing; no boxed slips.
+  assert.match(homeInHand, /<section class="inhand" aria-label="Already in hand"><p class="lbl">ALREADY IN HAND<\/p><div class="ogv-l home-l"><a class="ogv" href="\/web\/ongoing\/task\/1" data-state="working" data-flight="WORKING"><span class="ogv-t">A cabin for Nov 14–16<\/span><span class="ogv-r"><span class="lbl">WORKING<\/span><\/span><\/a><\/div><\/section>/);
+  assert.match(homeInHand, /\.home-l\{border-top:1px dashed var\(--hair\);border-bottom:1px dashed var\(--hair\)\}/);
+  assert.ok(!/slipc|class="slips"/.test(homeInHand));
   // ALREADY IN HAND is only ever real: open tasks and pending timers of this conversation.
   db.createTask(KOFI_C, { title: "Refund for the boots", goal: "g", maxAttempts: 3 });
   assert.deepEqual(wc.inHand(KOFI_C).map(x => [x.title, x.status]), [["Refund for the boots", "WORKING"]]);
@@ -543,6 +546,6 @@ test("review fixes: a guest who left never reads the event's name off a card", (
 
 test("Web's pen matches the brand pen on every other page", async () => {
   const brand = await import("../src/pages/brand.js");
-  assert.equal(brand.BRAND_PEN, "#b03030");
-  assert.equal(brand.BRAND_PEN_DARK, "#e8765c");
+  assert.equal(brand.BRAND_PEN, "#9c3b2e");
+  assert.equal(brand.BRAND_PEN_DARK, "#d46a5c");
 });

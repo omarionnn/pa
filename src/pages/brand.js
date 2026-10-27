@@ -1,5 +1,5 @@
-// Reason's brand pen colour, the one place it is written down: brick red (owner, 2026-10-26),
-// replacing the 10-25 orange (#B8460B light / #F26F2B dark). Every accent on every page Reason
+// Reason's brand pen colour, the one place it is written down: brick red (owner, 2026-10-26; deepened
+// 10-26 ~23:45 to the values below), replacing the 10-25 orange (#B8460B light / #F26F2B dark). Every accent on every page Reason
 // serves — the wordmark bubble, the "An event" kicker, the way back to Reason, a connector's error
 // line, the cover's kicker — reads one of these two, never its own hex. (Reason Web's own files,
 // src/pages/websignin.js and src/pages/webconvo.js, move on their own branch.)
@@ -8,21 +8,21 @@
 // white on it passes too. On a dark page it is too dim, so dark pages take BRAND_PEN_DARK, a warm,
 // lighter brick that is AA on the dark card (#1b1916), the dark ground and the dark soft fill.
 
-export const BRAND_PEN = "#b03030";
-export const BRAND_PEN_DARK = "#e8765c";
+export const BRAND_PEN = "#9c3b2e";
+export const BRAND_PEN_DARK = "#d46a5c";
 
 // A page's card is drawn once and kept on disk with the pen in its pixels, so its file name and `?v=`
 // include this. Bump it with the pen (and INVITE_CARD_VERSION, DRAWN_COVER_VERSION for the other kept
 // pictures) and every card is drawn again at a new address; #175 changed the pen without it.
-export const BRAND_ART = "pen2";
+export const BRAND_ART = "pen3";
 
 // The light page is the marketing site's paper (~/Desktop/reason-site-new/public/styles.css, owner
 // 2026-10-25): its ground, raised paper, warm fill, rule and ink, copied hex for hex, plus the same
 // faint fractal-noise grain the site lays over its body. Every page Reason serves reads its light
 // colours from here; dark pages keep their own. One change from the site: its secondary text
 // (#78705f) is 4.1:1 on its own ground, so `dim` is the same hue darkened to #6a6253 (5.1:1 on bg,
-// 4.8:1 on the warm fill, 5.6:1 on paper). Brand red is 5.4:1 on bg,
-// 5.9:1 on paper and 5.1:1 on the ground, so it passes everywhere (bin/theme-all.mjs checks).
+// 4.8:1 on the warm fill, 5.6:1 on paper). Brand red is 5.8:1 on bg,
+// 6.3:1 on paper and 5.5:1 on the ground, so it passes everywhere (bin/theme-all.mjs checks).
 export const PAPER = {
   ground: "#ede5d8", // site --bg-warm: the strip behind the top line, and the phone's chrome
   bg: "#f2ebe0",     // site --bg: the page itself
