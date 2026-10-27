@@ -387,7 +387,7 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
     + `<form method="POST" action="/web/signout" class="out-f">${hidden("c", csrf)}<button class="act2 out" type="submit" data-busy="SIGNING OUT…">SIGN OUT OF THIS BROWSER</button></form></section>`;
 
   const shown = SECTIONS.filter(([id]) => id !== "invites" || invitesView);
-  const body = `<header class="st-head"><a class="act2" href="/web?thread">← BACK TO THE CHAT</a>${wordmark({ href: "/web" })}</header>`
+  const body = `<header class="st-head"><a class="act2" href="/web?thread">← BACK TO THE CHAT</a>${wordmark({ href: "/web?home" })}</header>`
     + `<main class="st"><div class="st-side"><h1 class="st-h1">Settings</h1><nav class="st-nav" aria-label="Settings sections">`
     + shown.map(([id, t], i) => `<a href="#${id}"${i === 0 ? ` aria-current="true"` : ""}>${t}</a>`).join("")
     + `</nav></div><div class="st-main">${reachSec}${browsersSec}${notifySec}${connectedSec}${invitesSec}${themeSec}</div></main>`;
