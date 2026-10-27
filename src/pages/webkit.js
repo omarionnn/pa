@@ -155,7 +155,7 @@ html :is(${GROUND_SURFACES}){background-image:var(--grain);background-size:160px
  * the page's own script just drew after a send); nothing drawn at load or brought back from history.
  * The stamp's own tilt stays in `transform`; the press is `scale`, so the two never fight.
  */
-export const INK_JS = `window.reasonInk=function(el,c){if(!el||!el.classList)return;el.classList.remove(c);void el.offsetWidth;el.classList.add(c);el.addEventListener('animationend',function f(){el.classList.remove(c);el.removeEventListener('animationend',f)})};`;
+export const INK_JS = `window.reasonInk=function(el,c){if(!el||!el.classList)return;el.classList.remove(c);void el.offsetWidth;el.classList.add(c);function f(){el.classList.remove(c);el.removeEventListener('animationend',f);el.removeEventListener('animationcancel',f)}el.addEventListener('animationend',f);el.addEventListener('animationcancel',f)};`;
 
 // ---------------------------------------------------------------- theme
 const THEME_KEY = "reason-theme";
@@ -174,10 +174,10 @@ const PAGE_JS = `(function(){var W=window,D=document;if(W.__reasonPage)return;va
   + `W.setInterval=function(){var i=si.apply(W,arguments);I.push(i);return i};W.setTimeout=function(){var t=st.apply(W,arguments);if(T.length>500)T=T.slice(-250);T.push(t);return t};`
   + `[W,D].forEach(function(o){o.addEventListener=function(t,f,c){L.push([o,t,f,c]);return ael.call(o,t,f,c)}});`
   + `if(W.EventSource){var ES=W.EventSource;W.EventSource=function(u,o){var e=new ES(u,o);E.push(e);return e};W.EventSource.prototype=ES.prototype}})();`;
-const HEAD_JS = `(function(){try{${tint}var h=document.documentElement,a=h.getAttribute('data-account-theme');`
+const HEAD_JS = `(function(){try{${tint}var h=document.documentElement,a=h.getAttribute('data-account-theme');${LATE_HEAD}`
   + `if(a==='paper'||a==='night')localStorage.setItem('${THEME_KEY}',a==='paper'?'light':'dark');else if(a==='auto')localStorage.removeItem('${THEME_KEY}');`
   + `var t=localStorage.getItem('${THEME_KEY}');if(t==='light'||t==='dark'){h.dataset.theme=t;tint()}h.classList.add('js');if(localStorage.getItem('${OG_KEY}')==='off')h.classList.add('og-off');`
-  + `${LATE_HEAD}if(h.dataset.loader&&!sessionStorage.getItem('reason-web-loaded')&&!matchMedia('(prefers-reduced-motion: reduce)').matches)h.classList.add('loading')}catch(e){}})();`;
+  + `if(h.dataset.loader&&!sessionStorage.getItem('reason-web-loaded')&&!matchMedia('(prefers-reduced-motion: reduce)').matches)h.classList.add('loading')}catch(e){}})();`;
 // The Paper · Night · Auto radio group, wherever it is drawn; and the loader's exit.
 const THEME_JS = `(function(){${tint}var h=document.documentElement;
 function show(){var cur=h.dataset.theme==='light'?'paper':h.dataset.theme==='dark'?'night':'auto';document.querySelectorAll('.themes').forEach(function(f){f.hidden=false;f.querySelectorAll('input').forEach(function(i){i.checked=i.value===cur})})}
@@ -275,7 +275,7 @@ button{font:inherit;color:inherit}
 .th-dot{color:var(--muted)}
 .foot{padding:28px var(--gut) 32px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
 .loader{display:none}
-html.loading .loader{display:flex;position:fixed;inset:0;z-index:50;background:var(--ground);align-items:center;justify-content:center;transition:opacity .4s ease}
+html.loading .loader{display:flex;position:fixed;inset:0;z-index:50;background-color:var(--ground);align-items:center;justify-content:center;transition:opacity .4s ease}
 html.loading.loaded .loader{opacity:0}
 .loader p{margin:0;font:italic 400 64px/1 var(--serif);letter-spacing:-.01em;display:inline-flex;align-items:center}
 .loader .bub{width:34px;height:34px;color:var(--pen);transform:skewX(-10deg);margin:8px 2px 0}

@@ -202,7 +202,7 @@ test("8C: a notification says only \"Reason needs your approval.\" — never a d
 function pretend({ path = "/web/settings", signedIn = true, permission = "granted", theme = undefined, osDark = false } = {}) {
   const store = new Map(), shown = [], vis = [], themed = [];
   let answer = { ok: true, needs: [], done: [], notify: false }, timers = [];
-  const link = (calm, needs, media) => ({ href: calm, media, dataset: { calm, needs } });
+  const link = (calm, needs, media) => ({ href: calm, media, dataset: { calm, needs }, getAttribute(k) { return this[k]; }, setAttribute(k, v) { this[k] = v; } });
   const links = [link("/web/icons/favicon.svg?v=1", "/web/icons/favicon-needs-you.svg?v=1", "(prefers-color-scheme: light)"), link("/web/icons/favicon-night.svg?v=1", "/web/icons/favicon-night-needs-you.svg?v=1", "(prefers-color-scheme: dark)")];
   const kids = [];
   const main = { firstChild: null, insertBefore(el) { kids.unshift(el); el.parentMain = this; } };

@@ -98,7 +98,7 @@ var TITLE=${JSON.stringify(NEEDS_TITLE)},base=document.title,links=[].slice.call
 function get(k){try{return JSON.parse(localStorage.getItem(k)||'[]')}catch(e){return[]}}function put(k,v){try{localStorage.setItem(k,JSON.stringify(v.slice(-50)))}catch(e){}}
 function night(){var t=H.dataset.theme;return t==='dark'||(t!=='light'&&!!window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)}
 var P=links.filter(function(l){return!/dark/.test(l.media||'')})[0],N=links.filter(function(l){return/dark/.test(l.media||'')})[0],needy=false;
-function icon(n){needy=n;var s=night()?N:P;if(!s)return;var h=n?s.dataset.needs:s.dataset.calm;links.forEach(function(l){if(l.href!==h)l.href=h})}
+function icon(n){needy=n;var s=night()?N:P;if(!s)return;var h=n?s.dataset.needs:s.dataset.calm;links.forEach(function(l){if(l.getAttribute('href')!==h)l.setAttribute('href',h)})}
 function calm(){if(document.title!==base)document.title=base;icon(false)}
 icon(false);document.addEventListener('reason-theme',function(){icon(needy)});
 var chat=location.pathname==='/web'||location.pathname==='/web/';
