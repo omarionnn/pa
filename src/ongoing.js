@@ -16,7 +16,7 @@
 import * as db from "./db.js";
 import { clock, config } from "./config.js";
 import { parseRule } from "./series.js";
-import { cleanTitle, queueTitle } from "./itemtitle.js";
+import { cleanTitle, queueTitle, queueBlurb } from "./itemtitle.js";
 import { APPROVAL_NUDGE } from "./pages/webkit.js";
 
 /** How long a closed task stays under BACK TO YOU. */
@@ -127,6 +127,13 @@ export function tidyLine(text) {
     .replace(/\s+([.,!?;:])/g, "$1").replace(/\s+/g, " ").trim();
 }
 const BRANDS = { github: "GitHub", imessage: "iMessage", youtube: "YouTube", linkedin: "LinkedIn", whatsapp: "WhatsApp", iphone: "iPhone" };
+
+/** A scheduled row's description: its own `blurb`, else the note tidied while one is asked for (a titled row only; an untitled one gets it with its title). */
+function describe(kind, conversationId, row, text, name) {
+  if (String(row.blurb ?? "").trim()) return row.blurb;
+  if (String(row.label ?? "").trim()) queueBlurb(kind, conversationId, row.id, text, { name });
+  return plainNote(text, { name });
+}
 
 // ---------------------------------------------------------------- what task_finish hands back
 const line = (v, max) => {
@@ -256,7 +263,7 @@ function timerItem(conversationId, t, name) {
     status: t.call_goal ? "CALL" : "REMINDER", call: !!t.call_goal,
     when: `${fmt(tz, { weekday: "short" }).format(t.fire_at)} ${clockOf(t.fire_at, tz)}`,
     time: clockOf(t.fire_at, tz), period: periodOf(t.fire_at, tz), date: dayShort(t.fire_at, tz), every: null, everyLong: null,
-    description: t.blurb || plainNote(t.call_goal || t.note, { name }), next: t.fire_at };
+    description: describe("timer", conversationId, t, t.call_goal || t.note, name), next: t.fire_at };
 }
 
 function seriesItem(conversationId, s, name) {
@@ -270,7 +277,7 @@ function seriesItem(conversationId, s, name) {
     title: titled("series", conversationId, s, s.what, name), status: every.short, call: !!s.call_goal,
     when: next ? `${fmt(tz, { weekday: "short" }).format(next)} ${clockOf(next, tz)}` : every.short,
     time: next ? clockOf(next, tz) : null, period: next ? periodOf(next, tz) : "", date: next ? dayShort(next, tz) : null,
-    every: every.short, everyLong: every.long, description: s.blurb || plainNote(s.call_goal || s.what, { name }), next };
+    every: every.short, everyLong: every.long, description: describe("series", conversationId, s, s.call_goal || s.what, name), next };
 }
 
 // ---------------------------------------------------------------- approvals
