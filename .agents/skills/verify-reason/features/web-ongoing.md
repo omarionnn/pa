@@ -84,15 +84,19 @@ handoff 2026-10-26, "3 · Ongoing", sheets 2/3, 9D). Model: `src/ongoing.js` (`o
 - **Mobile nudge.** `needsYes`: Caveat "the <merchant> order needs a yes →" above the composer, to
   the approval detail; hidden ≥900px.
 
-- **"Talk about it in the chat →" carries the row (owner 10-27).** Every detail's foot link (2A–2E and
-  the approval; not NEEDS YOU, whose question is theirs to answer) is `/web?thread&about=<kind>:<id>`.
-  `conversationPage` looks the row up in the session's own conversation (`findItem`) and puts
-  `draftFor(item)` (src/ongoing.js) in the composer — never sent. The draft is the row's own
-  `drafts[state]` (tasks/timers/series `drafts` JSON column), written by the SAME claude-cli summarise
-  that writes `label` (src/itemtitle.js `summariseItem`, `DRAFT_STATES`), else a per-state fallback
-  from the label ("Any news on <label>?", "Any word back from <on> yet?", "Can I see the details of
-  the <merchant> order?"). Rows the main model titled through a tool get the fallback. The page's
-  script drops `about` from the URL once drawn.
+- **"… in the chat →" makes Reason speak first (owner 10-27 01:20; replaced the composer draft).** Every
+  detail's foot link is `/web?thread&about=<kind>:<id>&k=<click id>` (`talkHref`; a fresh k per detail
+  page; a Web-chat approval, or a detail opened from a Web chat via sessionStorage `reason-web-chat`,
+  goes to `/web?chat=<id>&…`). The thread's script POSTs `/web/about` once and drops the params;
+  `aboutRequest` (src/pages/webconvo.js) checks origin + CSRF, finds the row in the session's own
+  conversation (else 404), claims `<conv>:about:<kind>:<id>:<k>` (db.claimInbound, so a refresh or a
+  double tap is one message), then runs ONE `runtime.event` on channel web with
+  `speakFirstPrompt(itemRecord(...))` (src/ongoing.js): the row's full record, per-state real moves,
+  approval ends on APPROVAL_NUDGE, never words to type. The reply lands in the shared thread or that
+  Web chat; never texted.
+- **Scheduled description.** `blurb` (tasks/timers/series), written by the same summarise as `label`
+  (src/itemtitle.js `line`); else `plainNote` → `tidyLine`: no (asides), no @handles, no shouting caps,
+  brand casing (GitHub, iMessage…).
 
 ## How to get to it (user POV)
 
@@ -105,10 +109,10 @@ From the chat: the approval card's "Review details →", or the pen "needs a yes
   (through the real server), home rows, timers.created_at.
 - `node --test test/web-ongoing.test.js test/web-ongoing2.test.js` — every group/state/detail,
   plumbing, cross-account 404s, 9D markup (seed: `test/fixture-ongoing.js`).
-- `node --test test/web-talkdraft.test.js` — the talk-about-it draft: links, per-state drafts, one
-  summarise, name/tool-word guard, another account's row → empty line.
-- `node .agents/skills/verify-reason/bin/web-talkdraft-preview.mjs` — detail → thread-with-draft PNGs
-  (talkdraft-<state>-…, compare-talkdraft.png) into reason-web-design-previews/v2.
+- `node --test test/web-speakfirst.test.js` — speak-first: link + click id, one post per click, record
+  + rules in the turn, lands in thread/chat, cross-account/forged refused, clean description.
+- `node .agents/skills/verify-reason/bin/web-talkdraft-preview.mjs` — detail → thread with Reason's first
+  line (sample words; the live words are the model's) into reason-web-design-previews/v2.
 - `node .agents/skills/verify-reason/bin/web-ongoing-preview.mjs` — ongoing-<state>-<390|1280>-
   <paper|night>.png + compare-ongoing-<state>.png into ~/Desktop/reason-web-design-previews.
 - Live (Hetzner only, read-only): temporary owner `page_sessions` row (conversation `dm:owner`),

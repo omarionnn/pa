@@ -435,7 +435,7 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
   const formToken = readFormCookie(headers?.cookie);
 
   // ---- W2: the conversation's own routes (src/pages/webconvo.js). Signed in only. ----
-  if (sub === "history" || sub === "stream" || sub === "send" || sub === "live") {
+  if (sub === "history" || sub === "stream" || sub === "send" || sub === "live" || sub === "about") {
     const convo = await import("./webconvo.js");
     if (!account) {
       // Nobody's conversation: the same short answer whatever was asked, and a form post goes back to sign in.
@@ -446,6 +446,10 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     if (sub === "send") {
       if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
       return await convo.sendRequest({ account, headers, readBody, router, log });
+    }
+    if (sub === "about") {
+      if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
+      return await convo.aboutRequest({ account, headers, readBody, runtime, log });
     }
     if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
     if (sub === "history") return convo.historyRequest({ account, query });

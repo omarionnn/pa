@@ -23,7 +23,7 @@ import { SECURITY_HEADERS, sessionAccount } from "./websignin.js";
 import { renderWebNotFound } from "./webedge.js";
 import { findItem, ongoing, clockOf, periodOf } from "../ongoing.js";
 import { clock, config } from "../config.js";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 /** How many rows show before "See all N →" (PR #179, owner 10-26): needs-you first, then soonest due. */
 export const OG_TOP = 3;
@@ -394,14 +394,22 @@ const rcpt = (rows, total = null) => `<dl class="rcpt">${rows.map(([k, v]) => `<
 const headBlock = (status, title, { pen = false, sub = "" } = {}) => `<div class="ogd-top">${label(status, pen ? "pen" : "")}<h1 class="h1">${esc(title)}</h1>${sub ? `<p class="ogd-sub">${esc(sub)}</p>` : ""}</div>`;
 
 /**
- * Where a detail's "… in the chat →" goes: the thread, with a draft about THIS row ready in the composer
- * (src/ongoing.js draftFor, looked up again server-side from kind:id in the session's own rows).
- * A NEEDS YOU row only wants their answer, so it opens the plain thread.
+ * Where a detail's "… in the chat →" goes (owner 10-27 01:20): the chat, where Reason speaks first about
+ * THIS row. `k` is this page's click id: the thread posts it with kind:id to /web/about, and the claim
+ * on the pair makes a refresh or a double tap one message (src/pages/webconvo.js aboutRequest).
+ * An approval asked in a Web-only chat opens that chat (only an answer there counts, src/trust.js).
  */
-export const talkHref = (x) => (x?.kind && x.id && x.state !== "needs"
-  // An approval asked in a Web-only chat can only be answered in that chat (src/trust.js).
-  ? `/web?${x.chat ? `chat=${encodeURIComponent(x.chat)}&` : "thread&"}about=${encodeURIComponent(`${x.kind}:${x.id}`)}`
+export const talkHref = (x) => (x?.kind && x.id
+  ? `/web?${x.chat ? `chat=${encodeURIComponent(x.chat)}&` : "thread&"}about=${encodeURIComponent(`${x.kind}:${x.id}`)}${x.k ? `&k=${encodeURIComponent(x.k)}` : ""}`
   : "/web?thread");
+/** The words on each state's link, which the turn is told they tapped. */
+export const TALK_WORDS = { approval: "Reply in the chat", needs: "Reply in the chat", scheduled: "Change it in the chat", ready: "See it in the chat" };
+export const talkWords = (state) => TALK_WORDS[state] ?? "Talk about it in the chat";
+/**
+ * A detail opened from a Web-only chat (that tab's last chat, kept by the chat page) talks about it in
+ * that chat; from anywhere else, the shared thread. The server checks the chat is theirs.
+ */
+const DETAIL_CHAT_JS = `(function(){try{var c=sessionStorage.getItem('reason-web-chat');var a=document.querySelector('.ogd-foot a.act');if(!c||!a||!/^[A-Za-z0-9_-]{22}$/.test(c))return;var h=a.getAttribute('href');if(h.indexOf('/web?thread&')===0)a.setAttribute('href','/web?chat='+c+'&'+h.slice(12))}catch(e){}})();`;
 
 /** The detail page's body, by what the row is. Everything on it is a field the row really has. */
 function detailBody(x, tz) {
@@ -515,13 +523,13 @@ function plainGoal(goal) {
 
 /** One row's own page. */
 export function renderDetail(item, { now = clock.now() } = {}) {
-  const x = enrich(item, now);
+  const x = { ...enrich(item, now), k: randomBytes(12).toString("base64url") };
   const b = detailBody(x, config.tz);
   const inFlight = x.state === "working" || x.state === "waiting" || x.state === "stuck";
   const body = `<header class="ogd-h">${typed("← ONGOING", { href: "/web?tab=ongoing" })}</header>`
     + `<main class="ogd${b.cls ?? ""}"${b.gap ? ` style="gap:${b.gap}px"` : ""}${inFlight ? ` data-flight="${esc(x.status)}" data-title="${esc(x.title)}"` : ""}>${b.main}</main>`
     + `<div class="ogd-foot">${b.foot}</div>`;
-  return webPage({ title: `Reason — ${x.title}`, body, css: DETAIL_CSS + NINE_D_CSS, script: NINE_D_JS + OG_POLL_JS });
+  return webPage({ title: `Reason — ${x.title}`, body, css: DETAIL_CSS + NINE_D_CSS, script: NINE_D_JS + OG_POLL_JS + DETAIL_CHAT_JS });
 }
 
 // ---------------------------------------------------------------- the routes

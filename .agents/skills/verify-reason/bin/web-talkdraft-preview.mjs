@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Draw "Talk about it in the chat →" (owner 10-27): each Ongoing detail beside the thread it opens,
-// with that row's draft already in the composer. Throwaway database seeded by test/fixture-ongoing.js;
+// Draw an item's "… in the chat →" (owner 10-27 01:20): each Ongoing detail beside the thread it opens,
+// with Reason's first line about that row (sample words). Throwaway database seeded by test/fixture-ongoing.js;
 // no server of Reason's, no text sent, no model.
 //
 //   node .agents/skills/verify-reason/bin/web-talkdraft-preview.mjs [outDir]
@@ -31,14 +31,24 @@ const C = "dm:owner";
 db.upsertAccount({ conversationId: C, channel: "fake", address: "+12025551234", name: "Omari", isOperator: true });
 db.markWebNoticeSeen(C);
 const ids = seedOngoing(C);
-// The waiting row as the summarise would leave it: label + its drafts.
-db.db.prepare("UPDATE tasks SET label = 'Speedrun reply', drafts = ? WHERE id = ?").run(JSON.stringify({ waiting: "Any word back from Speedrun yet?" }), ids.waiting);
+db.db.prepare("UPDATE tasks SET label = 'Speedrun reply' WHERE id = ?").run(ids.waiting);
+// Sample first lines (the live words are the model's, from speakFirstPrompt).
+const SAY = {
+  waiting: "Still no word from Speedrun. I'm checking again Thursday. Want me to look now, or nudge them?",
+  working: "Hudson's open at $540, I'm on the phone with Waramaug now, Woodstock's next. Want me to cap the price or stop at the first yes?",
+  scheduled: "Want to change your Monday gym call? I could move it to 5, make it every other week, or stop it.",
+  ready: "You're booked at Via Carota, Sat 7:30 for 4. Want me to add it to your calendar or tell the others?",
+  failed: "Friday sold out before I got in. I'm watching resale until Thursday night. Keep watching, or try a different night?",
+  approval: "The CeraVe PM lotion from Target, $16.78 all-in, shipping to the Bronx. just tell me in the chat when you want it.",
+};
 const rows = { waiting: ["task", ids.waiting], working: ["task", ids.working], scheduled: ["series", ids.series], ready: ["task", ids.ready], failed: ["task", ids.failed], approval: ["approval", ids.approval] };
 const pages = {};
 for (const [st, [kind, id]] of Object.entries(rows)) {
   pages[`detail-${st}`] = og.renderDetail(m.findItem(C, kind, id));
-  const r = wc.conversationPage({ account: { conversation_id: C, name: "Omari" }, headers: {}, sendId: "s", query: { about: `${kind}:${id}` } });
-  pages[`thread-${st}`] = typeof r === "string" ? r : r.body;
+  db.db.exec("DELETE FROM messages");
+  db.writeMessage({ conversationId: C, role: "assistant", channel: "web", text: SAY[st] });
+  const lines = db.messagesFor(C).map(r => wc.rowOut(r, { conversationId: C, service: "iMessage" }));
+  pages[`thread-${st}`] = wc.renderConversation({ account: { conversation_id: C, name: "Omari" }, csrf: "c", lines, more: false, sendId: "s", items: [], approvals: [], back: [] });
 }
 const srv = http.createServer((req, res) => {
   const u = decodeURIComponent(req.url.split("?")[0]);

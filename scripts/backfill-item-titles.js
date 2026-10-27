@@ -34,11 +34,11 @@ for (const r of rows) {
     const now = db.db.prepare("SELECT label FROM timers WHERE id = ?").get(r.id);
     if (now?.label) { skipped++; continue; }
   }
-  // The same one summarise writes the row's chat drafts too (src/itemtitle.js DRAFT_STATES).
-  const got = await summariseItem(r.text, { kind: r.kind, name: nameOf(r.c) });
+  // The same one summarise writes the row's description line too (src/itemtitle.js).
+  const got = await summariseItem(r.text, { name: nameOf(r.c) });
   const title = got?.title ?? null;
-  console.log(`${r.kind} #${r.id} [${r.c}] → ${title ?? "(none)"}${got?.drafts ? ` + ${Object.keys(got.drafts).length} drafts` : ""}`);
+  console.log(`${r.kind} #${r.id} [${r.c}] → ${title ?? "(none)"}${got?.line ? ` · ${got.line}` : ""}`);
   if (!title) continue;
-  if (write && db.setItemLabel(r.kind, r.c, r.id, title, got.drafts)) wrote++;
+  if (write && db.setItemLabel(r.kind, r.c, r.id, title, { blurb: got.line })) wrote++;
 }
 console.log(`${rows.length} rows without a title; ${write ? `${wrote} written, ${skipped} already titled by their series` : "dry run, nothing written"}.`);
