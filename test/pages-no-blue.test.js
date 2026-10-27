@@ -56,6 +56,9 @@ function blues(text) {
 
 // The demo's iMessage bubble and its typing cursor: the only lines allowed a blue.
 const DEMO_BUBBLE = (file, line) => file === "src/pages/preview.js" && /^\.(msg|cursor)\{/.test(line.trim());
+// The navy wax seal (handoff 2026-10-27 "S3 · Old money, made real": the four wax palettes are the only new
+// colours; navy is the travel seal). One line, the palette itself.
+const NAVY_WAX = (file, line) => file === "src/seal.js" && /^\s*navy: \{ base: "#1f2f4a", rim: "#0c1424", recess: "#18263d"/.test(line);
 
 test("no blue colour anywhere in src/ or the served icons, except the demo's iMessage bubbles", () => {
   const files = execSync("git ls-files src assets", { cwd: root }).toString().trim().split("\n")
@@ -63,7 +66,7 @@ test("no blue colour anywhere in src/ or the served icons, except the demo's iMe
   const stray = [];
   for (const f of files) {
     readFileSync(new URL(f, root), "utf8").split("\n").forEach((line, i) => {
-      if (DEMO_BUBBLE(f, line)) return;
+      if (DEMO_BUBBLE(f, line) || NAVY_WAX(f, line)) return;
       for (const c of blues(line)) stray.push(`${f}:${i + 1} ${c}`);
     });
   }

@@ -257,6 +257,7 @@ function tellNew(conversationId, ids) {
   const rows = ids.map(id => ONE("SELECT id, type, told_at FROM stamps WHERE id = ?", id)).filter(r => r && !r.told_at);
   if (!rows.length) return;
   const line = tellLine(rows.map(r => r.type));
+  if (!line) return;
   const send = () => {
     try {
       for (const r of rows) db.db.prepare("UPDATE stamps SET told_at = ? WHERE id = ? AND told_at IS NULL").run(clock.now(), r.id);
@@ -294,7 +295,7 @@ const onPurchase = ({ buyConversationId }) => {
 /** After any finished errand (research included): the suite key and the anniversary, if this one completed them. */
 const onAny = (conversationId) => {
   try {
-    if (!conversationId || !dailyAllowedFor(conversationId) || !db.getAccount(conversationId)) return;
+    if (!waxLook() || !conversationId || !dailyAllowedFor(conversationId) || !db.getAccount(conversationId)) return;
     awardLive(conversationId, [...suiteCandidates(conversationId), ...anniversaryCandidates(conversationId)]);
   } catch (e) { logger({ stamp_award_failed: (e?.message ?? String(e)).split("\n")[0] }); }
 };
@@ -304,7 +305,16 @@ db.completionBus.on("purchase", onPurchase);
 db.completionBus.on("task", ({ conversationId }) => onAny(conversationId));
 db.completionBus.on("call", ({ conversationId }) => onAny(conversationId));
 db.completionBus.on("research", ({ conversationId }) => onAny(conversationId));
-db.completionBus.on("purchase", ({ buyConversationId }) => { try { onAny(db.getAgentcardPurchase(buyConversationId)?.conversation_id); } catch { /* never costs the write */ } });
+db.completionBus.on("purchase", ({ buyConversationId }) => {
+  try {
+    const p = db.getAgentcardPurchase(buyConversationId);
+    if (!p) return;
+    // When it was placed: updated_at moves on with every later write (a cancel reason, a told-at), so the
+    // moment is kept here, once.
+    if (waxLook()) db.db.prepare("INSERT OR IGNORE INTO stamp_step_times (conversation_id, kind, ref_id, finished_at) VALUES (?, 'purchase', ?, ?)").run(p.conversation_id, p.id, clock.now());
+    onAny(p.conversation_id);
+  } catch { /* never costs the write */ }
+});
 
 /**
  * The server's half: how a stamp is mentioned (runtime._tell) and where its log lines go. Without it
@@ -326,7 +336,7 @@ export function backfill(conversationId, { dryRun = false } = {}) {
   for (const t of ALL("SELECT * FROM tasks WHERE conversation_id = ? AND state = 'done' AND finished_at IS NOT NULL ORDER BY finished_at, id", conversationId)) found.push(...candidatesForTask(t));
   for (const c of ALL("SELECT * FROM calls WHERE conversation_id = ? AND outcome_kind <> '' ORDER BY id", conversationId)) found.push(...candidatesForCall(c));
   for (const p of purchasesDone(conversationId)) found.push(...candidatesForPurchase(p));
-  found.push(...suiteCandidates(conversationId, { all: true, dryRun }), ...anniversaryCandidates(conversationId));
+  if (waxLook()) found.push(...suiteCandidates(conversationId, { all: true, dryRun }), ...anniversaryCandidates(conversationId));
   const seen = new Set(), counts = {};
   for (const c of found.sort((a, b) => a.at - b.at)) {
     const key = `${c.type}\u0000${c.ref}`;
@@ -635,6 +645,13 @@ db.db.exec(`
     created_at INTEGER NOT NULL,
     UNIQUE(conversation_id, kind, started_at)
   );
+  CREATE TABLE IF NOT EXISTS stamp_step_times (
+    conversation_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    ref_id INTEGER NOT NULL,
+    finished_at INTEGER NOT NULL,
+    PRIMARY KEY (kind, ref_id)
+  );
 `);
 
 /** Every finished errand with when it started and when it finished: `{ kind, id, start, end }`. */
@@ -651,7 +668,8 @@ function steps(conversationId) {
       if (r.task_id != null) tied.add(r.task_id);
     }
   } catch { /* no research table on an old install */ }
-  for (const p of purchasesDone(conversationId)) out.push({ kind: "purchase", id: p.id, start: p.created_at, end: p.updated_at });
+  const placed = new Map(ALL("SELECT ref_id, finished_at FROM stamp_step_times WHERE conversation_id = ? AND kind = 'purchase'", conversationId).map(x => [x.ref_id, x.finished_at]));
+  for (const p of purchasesDone(conversationId)) out.push({ kind: "purchase", id: p.id, start: p.created_at, end: placed.get(p.id) ?? p.updated_at });
   for (const t of ALL("SELECT id, created_at, finished_at FROM tasks WHERE conversation_id = ? AND state = 'done' AND finished_at IS NOT NULL", conversationId)) {
     if (!tied.has(t.id)) out.push({ kind: "task", id: t.id, start: t.created_at, end: t.finished_at });
   }
@@ -675,10 +693,18 @@ function suiteFrom(all, first) {
  * is the candidate. `all`: look at every window (backfill), not only ones that end with the newest step.
  */
 export function suiteCandidates(conversationId, { all = false, dryRun = false } = {}) {
-  const list = steps(conversationId);
+  let list = steps(conversationId);
   if (list.length < 4) return [];
   const newestEnd = Math.max(...list.map(x => x.end));
-  const out = [], used = new Set();
+  // Live, only the steps that could share a window with the one that just finished.
+  if (!all) list = list.filter(x => x.end >= newestEnd - SUITE_WINDOW_MS);
+  // A step already in a logged job is never part of another.
+  const used = new Set();
+  for (const j of ALL("SELECT steps_json FROM stamp_jobs WHERE conversation_id = ? AND kind = 'suite'", conversationId)) {
+    for (const x of parse(j.steps_json, [])) used.add(`${x.kind}:${x.id}`);
+  }
+  list = list.filter(x => !used.has(`${x.kind}:${x.id}`));
+  const out = [];
   for (const first of list) {
     const job = suiteFrom(list, first);
     if (!job || job.steps.some(x => used.has(`${x.kind}:${x.id}`))) continue;
@@ -694,19 +720,21 @@ export function suiteCandidates(conversationId, { all = false, dryRun = false } 
   return out;
 }
 
-/** The anniversary ticket: a year after the account began. Its serial is the place among everyone who reached a year. */
+/** The anniversary ticket: a year after the account began. Its serial is the place among everyone who reached a year (the order accounts began). */
 export function anniversaryCandidates(conversationId, { now = clock.now() } = {}) {
   const acct = db.getAccount(conversationId);
   if (!acct?.created_at) return [];
   const at = acct.created_at + 365 * 86_400_000;
   if (at > now) return [];
   if (ONE("SELECT 1 AS x FROM stamps WHERE conversation_id = ? AND type = 'anniversary'", conversationId)) return [];
-  const before = ONE("SELECT COUNT(*) AS n FROM stamps WHERE type = 'anniversary' AND earned_at <= ?", at)?.n ?? 0;
+  // Everyone who began before them reached a year before them: their place is their place in line.
+  const before = ONE("SELECT COUNT(*) AS n FROM accounts WHERE created_at < ? OR (created_at = ? AND conversation_id < ?)", acct.created_at, acct.created_at, conversationId)?.n ?? 0;
   return [{ type: "anniversary", ref: "anniversary", at, detail: { serial: before + 1, from: acct.created_at } }];
 }
 
 /** Award the anniversary if a year has passed (the book and Home ask; nothing else marks a date). */
 export function checkAnniversary(conversationId) {
+  if (!waxLook()) return [];
   try { return awardLive(conversationId, anniversaryCandidates(conversationId)); } catch { return []; }
 }
 

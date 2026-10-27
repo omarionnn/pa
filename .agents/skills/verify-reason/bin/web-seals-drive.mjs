@@ -98,6 +98,7 @@ db.db.prepare("UPDATE research SET finished_at = ? WHERE id = ?").run(t0 + 30 * 
 db.db.prepare("INSERT INTO agentcard_purchases (conversation_id, buy_conversation_id, status, merchant, amount_cents, created_at, updated_at) VALUES (?, 'drive-buy', 'awaiting_approval', 'Sample Shop', 6000, ?, ?)").run(C, t0 + 60 * M, t0 + 60 * M);
 db.markAgentcardPurchase("drive-buy", { status: "placed" });
 db.db.prepare("UPDATE agentcard_purchases SET updated_at = ? WHERE buy_conversation_id = 'drive-buy'").run(t0 + 70 * M);
+db.db.prepare("UPDATE stamp_step_times SET finished_at = ? WHERE kind = 'purchase'").run(t0 + 70 * M);
 task(t0 + 75 * M, t0 + 100 * M);
 const types = db.db.prepare("SELECT type FROM stamps WHERE conversation_id = ? ORDER BY id").all(C).map(x => x.type);
 step(types.includes("first") && types.includes("long_hold"), `completions earned: ${types.join(", ")}`);

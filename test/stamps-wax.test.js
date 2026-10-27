@@ -413,3 +413,31 @@ test("Home: New in your book is the newest seal at 104px with no postmark, its n
   seed(OWNER_C, "first", { at: Date.now() - 86_400_000 });
   assert.equal(stamps.newestStamp(OWNER_C), null, "the patch is kept outside the book, not a seal");
 });
+
+test("flag off: no suite key, no job, no anniversary, nothing told — prod's book is untouched", () => {
+  process.env.REASON_STAMPS_WAX = "";
+  const s = T0 - 40 * 86_400_000;
+  finished("call", OWNER_C, { start: s, end: s + 20 * M });
+  finished("research", OWNER_C, { start: s + 5 * M, end: s + 40 * M });
+  finished("purchase", OWNER_C, { start: s + 45 * M, end: s + 60 * M });
+  finished("task", OWNER_C, { start: s + 61 * M, end: s + 110 * M });
+  db.db.prepare("UPDATE accounts SET created_at = ? WHERE conversation_id = ?").run(T0 - 400 * 86_400_000, OWNER_C);
+  stamps.checkAnniversary(OWNER_C);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM stamps WHERE type IN ('suite_key','anniversary')").get().n, 0);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM stamp_jobs").get().n, 0);
+  assert.equal(stamps.tellLine(["suite_key"]), "", "a wax-only kind has no typed line, so nothing is sent");
+});
+
+test("suite key: an errand already in one job never counts toward another; a purchase keeps the time it was placed", () => {
+  const s = T0 - 50 * 86_400_000;
+  finished("call", OWNER_C, { start: s, end: s + 10 * M });
+  finished("research", OWNER_C, { start: s + 1 * M, end: s + 20 * M });
+  const buy = finished("purchase", OWNER_C, { start: s + 2 * M, end: s + 30 * M });
+  finished("task", OWNER_C, { start: s + 3 * M, end: s + 40 * M });
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM stamps WHERE type = 'suite_key'").get().n, 1);
+  // A later write moves updated_at on; the purchase still finished when it was placed.
+  db.db.prepare("UPDATE agentcard_purchases SET updated_at = ? WHERE buy_conversation_id = ?").run(s + 10 * 60 * M, buy);
+  finished("call", OWNER_C, { start: s + 50 * M, end: s + 60 * M });
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM stamps WHERE type = 'suite_key'").get().n, 1, "the second call alone makes no second key");
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM stamp_jobs").get().n, 1);
+});
