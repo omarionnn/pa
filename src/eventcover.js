@@ -140,7 +140,8 @@ export function v2Card(ev) {
     to: "",
   } : null;
   const place = ev.location_public ? String(ev.location || "") : "";
-  const host = events.organizerName(ev) || "";
+  // Never the organizer's name: this card is what a forwarded link shows anybody.
+  const host = "";
   const hostName = (() => { try { return new URL(events.eventUrl(ev)).host.toUpperCase(); } catch { return "EVENTS.HEYREASON.COM"; } })();
   return {
     key: JSON.stringify(["v2-1", ev.name, host, place, date]),

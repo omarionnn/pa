@@ -141,7 +141,7 @@ function renderAlbumV2({ ev, conversationId, all = false }) {
   const shown = ordered.map(ph => {
     const caption = view.all && !named.has(ph.conversation_id) ? (named.add(ph.conversation_id), ph.mine ? "yours" : `from ${ph.shared_by}’s phone`) : "";
     const removeHtml = all && ph.mine
-      ? `<form method="POST" action="${esc(base(ev))}" style="margin:0"><input type="hidden" name="action" value="remove"><input type="hidden" name="photo" value="${ph.id}"><button class="typed rm" type="submit">REMOVE</button></form>`
+      ? `<form method="POST" action="${esc(base(ev))}" style="margin:0"><input type="hidden" name="action" value="remove"><input type="hidden" name="photo" value="${ph.id}"><input type="hidden" name="all" value="1"><button class="typed rm" type="submit">REMOVE</button></form>`
       : "";
     return { src: photoPath(ev, ph), href: photoPath(ev, ph), alt: `Photo from ${ph.shared_by}`, caption, removeHtml };
   });
@@ -299,7 +299,7 @@ export async function albumRequest({ ev, sub, method, query = {}, headers = {}, 
         return redirect(`${base(ev)}/manage${done ? `?done=${encodeURIComponent(done)}` : ""}`);
       }
       if (op === "remove") albums.removePhoto({ ev, conversationId: c, photoId: Number(form.get("photo")) });
-      return redirect(base(ev));
+      return redirect(config.pagesV2 && form.get("all") === "1" ? `${base(ev)}?all=1` : base(ev));
     }
     if (form) return redirect(action);
     if (view.role === "organizer") return page(200, renderManage({ ev, conversationId: c, done: String(query.done ?? "").slice(0, 80) }));

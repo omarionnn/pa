@@ -175,6 +175,9 @@ test("P3: a call page — only this conversation's calls, facts off the row, the
   const audio = await get(p.id, { cookie: t, sub: "audio" });
   assert.equal(audio.status, 200);
   assert.equal(audio.headers["Content-Type"], "audio/wav");
+  const part = await pageRequest({ id: p.id, sub: "audio", method: "GET", headers: { cookie: `reason_page=${t}`, range: "bytes=0-3" }, readBody: async () => "" });
+  assert.equal(part.status, 206);
+  assert.equal(String(part.body), "RIFF");
   assert.equal((await get(p.id, { sub: "audio" })).status, 404, "a stranger gets nothing");
   assert.equal((await get(p.id, { cookie: sessionFor(KOFI, "zzzzzzzz"), sub: "audio" })).status, 404);
 });
@@ -205,6 +208,8 @@ test("P6: a receipt only for a purchase that went through, with the card, the ye
   assert.match(html, /SAVE AS PDF/);
   assert.match(html, /href="https:\/\/heyreason\.test\/web">SEE IT IN THE CHAT →/, "the owner has Web");
   assert.doesNotMatch(html, /FACE ID/, "never claims how the yes was given");
+  db.markAgentcardPurchase("b1", { status: "cancelled" });
+  assert.doesNotMatch((await get(p.id, { cookie: sessionFor(OWNER, p.id) })).body, /class="paid"/, "a purchase undone since is no receipt");
 });
 
 test("E3: signed in as somebody else — only your own masked number, the same for a ghost id; sign out clears it", async () => {
@@ -225,7 +230,9 @@ test("E3: signed in as somebody else — only your own masked number, the same f
   assert.equal((await get(p.id, { cookie: kt, key: p.owner_key })).status, 401);
   const out = await pageRequest({ id: p.id, sub: "signout", method: "POST", headers: { cookie: `reason_page=${kt}` }, readBody: async () => "" });
   assert.equal(out.status, 303);
-  assert.match(out.headers["Set-Cookie"], /Max-Age=0|Expires=Thu, 01 Jan 1970/);
+  const cleared = [].concat(out.headers["Set-Cookie"]).join("\n");
+  assert.match(cleared, /Path=\/p\//);
+  assert.match(cleared, /Path=\/;|Path=\/$/m);
   assert.equal(db.pageSessionOwner(kt, 1e12), null);
 });
 
@@ -275,6 +282,7 @@ test("E2 + P4 + LP3: a cancelled event is turned off; the page and its card show
   assert.match(pub.body, /ARE YOU IN\?/);
   assert.match(pub.body, /I'm in →/);
   assert.doesNotMatch(pub.body, /Farmhouse|NOV|4:00/, "nothing the organizer kept back");
+  assert.doesNotMatch(pub.body, /Omari|Hosted by/, "never anybody's name before joining");
   assert.match(pub.body, /Anyone with this link can see it\. Made with Reason\./);
   const card = v2Card(ev);
   assert.doesNotMatch(card.key, /Farmhouse|"NOV"/);
@@ -293,6 +301,9 @@ test("E2 + P4 + LP3: a cancelled event is turned off; the page and its card show
   assert.equal(ics.status, 200);
   assert.match(ics.body, /BEGIN:VEVENT[\s\S]*SUMMARY:A weekend upstate/);
   assert.equal((await req("calendar.ics")).status, 404);
+  off();
+  assert.equal((await req("calendar.ics", kt)).status, 404, "flag off: no calendar route");
+  on();
   db.db.prepare("UPDATE events SET status = 'cancelled' WHERE id = ?").run(ev.id);
   const offPage = await req();
   assert.equal(offPage.status, 410);

@@ -140,7 +140,7 @@ export function checkContent(blocks, { seenUrl = () => false, ownsCall = () => f
     }
     const type = raw.type;
     if (!BLOCK_TYPES.includes(type)) {
-      return { ok: false, error: `${at} has type '${type}', which is not a block. Use one of: ${BLOCK_TYPES.join(", ")}.` };
+      return { ok: false, error: `${at} has type '${type}', which is not a block. Use one of: ${BLOCK_TYPES.filter(t => pagesV2 || !MADE_BLOCKS.includes(t)).join(", ")}.` };
     }
 
     if (MADE_BLOCKS.includes(type)) {

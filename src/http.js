@@ -60,7 +60,7 @@ import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderPasswordGate, renderNotFound } from "./pages/render.js";
 import * as opspw from "./opspassword.js";
 import { webMovedTo } from "./pages/siteproxy.js";
-import { checkAccess, trySubmittedCode, requestCode, codeHost, readCookie, cookieHeader, clearCookieHeader, pageUrl, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS } from "./pages/access.js";
+import { checkAccess, trySubmittedCode, requestCode, codeHost, readCookie, readCookies, cookieHeader, clearCookieHeader, pageUrl, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
 import * as ops from "./ops.js";
 import * as subusage from "./subusage.js";
@@ -1464,15 +1464,26 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
     const audio = callAudio(db.getCall(page.conversation_id, page.blocks[0].call_id));
     if (!audio) return { status: 404, headers: HTML(), body: renderNotFound() };
     const bytes = readFileSync(audio.file);
-    return { status: 200, headers: { "Content-Type": audio.mime, "Content-Length": bytes.length, "Cache-Control": "private, no-store" }, body: bytes };
+    // A byte range, because Safari will not play a recording served without one.
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(headers?.range ?? "").trim());
+    if (range && (range[1] || range[2])) {
+      let start = range[1] ? Number(range[1]) : Math.max(0, bytes.length - Number(range[2]));
+      let end = range[1] && range[2] ? Math.min(Number(range[2]), bytes.length - 1) : bytes.length - 1;
+      if (start > end || start >= bytes.length) return { status: 416, headers: { "Content-Range": `bytes */${bytes.length}`, "Cache-Control": "private, no-store" }, body: "" };
+      const part = bytes.subarray(start, end + 1);
+      return { status: 206, headers: { "Content-Type": audio.mime, "Content-Length": part.length, "Content-Range": `bytes ${start}-${end}/${bytes.length}`, "Accept-Ranges": "bytes", "Cache-Control": "private, no-store" }, body: part };
+    }
+    return { status: 200, headers: { "Content-Type": audio.mime, "Content-Length": bytes.length, "Accept-Ranges": "bytes", "Cache-Control": "private, no-store" }, body: bytes };
   }
 
   // ---- Pages v2, E3: "Sign in as someone else" — this browser forgets who it is, then the gate ----
   if (sub === "signout") {
     if (!config.pagesV2 || method !== "POST") return { status: 404, headers: HTML(), body: renderNotFound() };
-    if (cookie) db.endPageSession(cookie);
+    // Every session this browser presented, and the cookie at both paths it can live under (pages
+    // set it at /p/ or /, the event pages at /), so the gate is what comes next — not the same 403.
+    for (const t of new Set([cookie, ...readCookies(headers?.cookie)].filter(Boolean))) db.endPageSession(t);
     log({ page_browser_signed_out: true });
-    return { status: 303, headers: HTML({ Location: `../${id}`, "Set-Cookie": clearCookieHeader({ path: cookiePath, headers }) }), body: "" };
+    return { status: 303, headers: HTML({ Location: `../${id}`, "Set-Cookie": [clearCookieHeader({ path: "/p/", headers }), clearCookieHeader({ path: "/", headers })] }), body: "" };
   }
 
   // ---- the code for a private page ----

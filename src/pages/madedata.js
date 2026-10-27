@@ -145,7 +145,8 @@ function callVM(page) {
 function receiptVM(page) {
   const b = page.blocks[0];
   const row = db.agentcardPurchaseById(page.conversation_id, b.purchase_id);
-  if (!row) return null;
+  // Only ever a purchase that went through: one refunded or cancelled since draws as an ordinary page.
+  if (!row || row.status !== "placed") return null;
   const card = db.getAgentcardUser(page.conversation_id);
   const conf = row.confirmation_id ? db.getConfirmation(page.conversation_id, row.confirmation_id) : null;
   return {

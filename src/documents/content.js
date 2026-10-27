@@ -29,6 +29,9 @@ export const DOCUMENT_KINDS = ["docx", "pptx", "pdf"];
 const NOT_IN_A_DOCUMENT = {
   choice: "a question the owner taps an answer to only works on a page — in a file it is a list that does nothing."
     + " Put the question on a page (page_create), or write the options into a steps or rows block as information.",
+  day: "the day, wrapped up, is a whole page of its own (page_create), never part of a file.",
+  call: "a call summed up is a page of its own (page_create), drawn from the call's record, never part of a file.",
+  receipt: "a receipt is a page of its own (page_create), drawn from the purchase's record, never part of a file.",
 };
 
 /** The kinds that cannot carry a picture, because nothing in them downloads one. */

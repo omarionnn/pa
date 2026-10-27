@@ -177,8 +177,9 @@ function renderJoinV2({ ev, account = null, error = "", values = {} }) {
     ["When", ev.time_public && ev.starts_at != null ? timeOnly(ev) : ""],
     ["Where", ev.location_public ? ev.location : ""],
   ];
+  // No host name before joining: a forwarded link never shows anybody's name (publicView).
   return made.renderEvent({
-    title: ev.name, host: events.organizerName(ev) || "", description: ev.description,
+    title: ev.name, host: "", description: ev.description,
     date: ev.time_public ? dateCard(ev) : null,
     facts,
     rsvp: { joinHtml: joinFormV2(ev, { account, error, values }), open: !!error },
@@ -518,7 +519,8 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     return page(405, renderNotFound(), { Allow: "GET, HEAD" });
   }
   // ADD TO MY CALENDAR → (Pages v2): only for somebody on the event, only once its time is out.
-  if (sub === "calendar.ics" && config.pagesV2) {
+  if (sub === "calendar.ics" && !config.pagesV2) return page(404, renderNotFound());
+  if (sub === "calendar.ics") {
     if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
     const att = mine?.role === "guest" ? mine.att : null;
     const ics = ev.status !== "cancelled" && att ? calendarFile(ev, att) : null;
