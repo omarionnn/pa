@@ -269,3 +269,5 @@ page's preview tags — and that is fine: only someone already holding the key c
   `pictures: { search: null }` in `ctx` unless the illustration or the photos are what you are
   testing. The cage keeps cards, previews and illustrations under its own run dir
   (`REASON_DATA_DIR`), never in the checkout's `data/cards`.
+
+- **Wordmark text (10-27).** The bubble is drawn, so its o rides as a zero-size inline `.wm-o` (`WORDMARK_O`, src/pages/wordmark.js); the Web kit wraps the mark in one inline `.wm-w` so `innerText` (Reason's own page reader, src/browser.js) reads "reason", not "reas\nn". Pinned: test/wordmark-text.test.js (textContent, innerText, a copy, same pixels); `bin/wordmark.mjs` expects text "reason".

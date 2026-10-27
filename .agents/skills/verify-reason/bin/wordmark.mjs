@@ -8,7 +8,7 @@
 //   cd ~/Desktop/pa && node .agents/skills/verify-reason/bin/wordmark.mjs [--shot out.png] [--site]
 //
 // One line per page × width × scheme, `ok` or `FAIL`; exits non-zero on any FAIL. A page passes when
-// its first visible thing is the wordmark (reas + brand-red bubble + n), at the start of the top line, in the inline Instrument
+// its first visible thing is the wordmark (reas + brand-red bubble + n, text "reason": the o rides hidden), at the start of the top line, in the inline Instrument
 // Serif italic at 21.6px, the site's #2a2520 in light / the page's light ink in dark, bubble brand red #9c3b2e (dark: #d46a5c),
 // with no old dot-and-"Reason" left in the top line. `--site` also measures the live marketing
 // site's .nav-mark at 1280 and requires the same width, type size and bubble size (needs the network,
@@ -97,7 +97,7 @@ try {
     const m = await p.evaluate(measure);
     const ink = scheme === "light" ? "rgb(42, 37, 32)" : "rgb(243, 239, 232)";
     const why = m.missing ? ["no .wordmark"] : [
-      m.text !== "reasn" && `text "${m.text}"`, Math.abs(m.l - m.inL) > 1 && `left ${m.l}, line starts ${m.inL}`, m.t > 60 && `top ${m.t}`, m.fs !== "21.6px" && `size ${m.fs}`,
+      m.text !== "reason" && `text "${m.text}"`, Math.abs(m.l - m.inL) > 1 && `left ${m.l}, line starts ${m.inL}`, m.t > 60 && `top ${m.t}`, m.fs !== "21.6px" && `size ${m.fs}`,
       m.color !== ink && `colour ${m.color}`, m.stroke !== (scheme === "light" ? "rgb(156, 59, 46)" : "rgb(212, 106, 92)") && `bubble ${m.stroke}`, !m.font && "font not loaded",
       !m.firstIn && "not the first thing", m.oldDot && "old dot still there",
       ref && w === 1280 && (m.w !== ref.w || m.o !== ref.h || m.fs !== ref.fs) && `${m.w}px wide, bubble ${m.o} vs site ${ref.w}px, ${ref.h}`,
