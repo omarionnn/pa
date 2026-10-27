@@ -233,6 +233,7 @@ html.loading .loader{display:flex;position:fixed;inset:0;z-index:50;background:v
 html.loading.loaded .loader{opacity:0}
 .loader p{margin:0;font:italic 400 64px/1 var(--serif);letter-spacing:-.01em;display:inline-flex;align-items:center}
 .loader .bub{width:34px;height:34px;color:var(--pen);transform:skewX(-10deg);margin:8px 2px 0}
+.loader .wm-w .bub{vertical-align:top;margin-top:19px}.loader .wm-w .ing{vertical-align:top}
 .loader .ing{color:var(--muted);display:inline-block;overflow:hidden;white-space:nowrap;width:0;animation:ing .6s steps(3,end) .15s forwards}
 @keyframes ing{to{width:1.55ch}}
 @media (min-width:900px){.wm{font-size:26px}.wm .bub{width:.577em;height:.577em}.wm-w .bub{margin-top:calc(.2115em + 1.5px)}.lbl{font-size:11px}.hand{font-size:22px}.h1{font-size:64px}.act{font-size:32px}.act2{font-size:12px}}
@@ -266,7 +267,7 @@ ${webIconLinks()}
 <script>${PAGE_JS}</script>
 <script>${HEAD_JS}</script>
 <style>${KIT_CSS}${NOTIFY_CSS}${css}</style>
-</head><body${bodyClass ? ` class="${esc(bodyClass)}"` : ""}>${skipped.link}${loader ? `<div class="loader" role="status" aria-label="Loading"><p>reas${bubble(4)}${WORDMARK_O}n<span class="ing">ing</span></p></div>` : ""}
+</head><body${bodyClass ? ` class="${esc(bodyClass)}"` : ""}>${skipped.link}${loader ? `<div class="loader" role="status" aria-label="Loading"><p><span class="wm-w">reas${bubble(4)}${WORDMARK_O}n<span class="ing">ing</span></span></p></div>` : ""}
 ${skipped.html}${footer}<script>${script};${THEME_JS};${NOTIFY_JS};${LOAD_JS}</script></body></html>`;
 }
 

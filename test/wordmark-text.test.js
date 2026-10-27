@@ -30,8 +30,10 @@ before(async () => { browser = await chromium.launch(); });
 after(async () => { await browser?.close(); });
 
 test("in a browser: textContent and a copy read reason, and the mark looks exactly the same", async () => {
-  const pg = await browser.newPage({ viewport: { width: 600, height: 300 } });
-  for (const [name, html] of Object.entries(MARKS)) {
+  for (const width of [600, 1280]) {
+  const pg = await browser.newPage({ viewport: { width, height: 300 } });
+  for (const [n, html] of Object.entries(MARKS)) {
+    const name = `${n} @${width}`;
     const css = site.WORDMARK_CSS + kit.webPage({}).match(/<style>([^]*?)<\/style>/)[1];
     await pg.setContent(`<!doctype html><style>${css}body{margin:40px;font-size:40px}</style><div id="m">${html}</div>`);
     await pg.evaluate(() => document.fonts.ready);
@@ -45,6 +47,22 @@ test("in a browser: textContent and a copy read reason, and the mark looks exact
     await pg.evaluate(() => { getSelection().removeAllRanges(); document.querySelector("#m .wm-o").remove(); });
     assert.deepEqual(await box(), sizeWith, `${name}: same size`);
     assert.ok(withO.equals(await pg.locator("#m").screenshot()), `${name}: same pixels`);
+    // The Web kit's bubble sits where the old flex layout centred it: (44 - (size + 3px margin)) / 2 + 3.
+    if (/^Web kit/.test(n)) {
+      const [top, h, bubTop, bubH] = await pg.evaluate(() => { const w = document.querySelector("#m .wm").getBoundingClientRect(), b = document.querySelector("#m .bub").getBoundingClientRect(); return [w.top, w.height, b.top, b.height]; });
+      assert.ok(Math.abs((bubTop - top) - ((h - bubH - 3) / 2 + 3)) < 0.05, `${name}: bubble offset ${bubTop - top}`);
+    }
   }
+  await pg.close();
+  }
+});
+
+test("the loader, while it shows, reads reasoning as one word and its bubble sits where the flex put it", async () => {
+  const pg = await browser.newPage({ viewport: { width: 390, height: 600 } });
+  await pg.setContent(kit.webPage({ body: "<main></main>", loader: true }).replace("</head>", "<style>*{animation:none!important;transition:none!important}</style></head>"));
+  await pg.evaluate(() => { document.documentElement.classList.add("loading"); return document.fonts.ready; });
+  assert.equal(await pg.evaluate(() => document.querySelector(".loader p").innerText), "reasoning");
+  const [top, h, bubTop] = await pg.evaluate(() => { const p = document.querySelector(".loader p").getBoundingClientRect(), b = document.querySelector(".loader .bub").getBoundingClientRect(); return [p.top, p.height, b.top]; });
+  assert.ok(Math.abs((bubTop - top) - ((h - 34 - 8) / 2 + 8)) < 0.05, `bubble offset ${bubTop - top}`);
   await pg.close();
 });
