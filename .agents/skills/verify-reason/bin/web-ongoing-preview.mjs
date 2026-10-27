@@ -34,7 +34,7 @@ db.upsertAccount({ conversationId: C, channel: "fake", address: "+12025551234", 
 const ids = seedOngoing(C);
 const model = m.ongoing(C);
 const pages = {
-  tab: wc.renderOngoing({ csrf: "c", ...model, all: true }),
+  tab: wc.renderOngoing({ csrf: "c", ...model }),
   margin: wc.renderConversation({ account: { conversation_id: C, name: "Omari" }, csrf: "c", lines: [], more: false, sendId: "s", ...model }),
   empty: wc.renderOngoing({ csrf: "c", items: [], approvals: [], back: [] }),
   approval: og.renderDetail(m.findItem(C, "approval", ids.approval)),
