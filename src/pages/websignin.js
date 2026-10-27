@@ -483,7 +483,10 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     if (account) {
       // W2: signed in, /web IS the conversation (src/pages/webconvo.js).
       const { conversationPage } = await import("./webconvo.js");
-      return page(200, conversationPage({ account, headers, sendId: randomUUID(), method, query }), formToken ? { "Set-Cookie": clearFormCookie() } : {});
+      const drawn = conversationPage({ account, headers, sendId: randomUUID(), method, query });
+      // A Web chat that is not theirs (src/pages/webconvo.js chatFrom) comes back as { status, body }.
+      if (drawn && typeof drawn === "object") return page(drawn.status, drawn.body);
+      return page(200, drawn, formToken ? { "Set-Cookie": clearFormCookie() } : {});
     }
     // A fresh form token for a browser that has none; the one it has otherwise, so two tabs agree.
     const token = formToken || randomBytes(16).toString("base64url");

@@ -378,8 +378,9 @@ export class Router {
     // with it: one that adds to that request is folded into the turn working on it, instead of
     // getting a turn and a second answer of its own (src/onethought.js). Not awaited — the webhook
     // is answered now and the read runs alongside the turn, which waits for it before it sends.
+    // Never read into a turn for another chat (a Web-only chat and the shared thread are two talks).
     const working = onethought.activeFor(conversationId);
-    if (working) onethought.track(working, this.#readMidTurn(conversationId, working, { externalId: inbound.externalId, text: under ? `${under}\n${inbound.text}` : inbound.text }));
+    if (working && (working.webChat ?? null) === (inbound.channel === web.WEB ? db.webChatOf(inbound.chatId) : null)) onethought.track(working, this.#readMidTurn(conversationId, working, { externalId: inbound.externalId, text: under ? `${under}\n${inbound.text}` : inbound.text }));
 
     // Somebody is already waiting out this conversation's window; this message just joined their
     // turn. Answering the webhook now is the right thing anyway: the provider wants a 2xx, not a
@@ -536,6 +537,7 @@ export class Router {
     // the model has started. The runtime adopts this for the turn; anything folded into a turn that
     // never ran goes back on the pile in the `finally` below.
     const fold = onethought.begin(conversationId, { text: held.map(h => h.text).join("\n") });
+    fold.webChat = last.channel === web.WEB ? db.webChatOf(last.chat_id) : null;
     const bubble = this.#bubble(conversationId, {
       channel: last.channel, address: last.address, chatId: last.chat_id ?? null, service: last.service ?? null,
     });
@@ -577,6 +579,7 @@ export class Router {
           db.writeMessage({
             conversationId, role: "user", channel: h.channel, externalId: h.external_id,
             text: texts[i] || h.text || "", media: h.attachments ?? [], at: h.arrived_at ?? clock.now(),
+            chatId: h.chat_id ?? null,
           });
         } catch { /* best-effort */ }
       }

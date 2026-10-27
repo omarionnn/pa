@@ -123,14 +123,14 @@ function micOffHtml() {
  */
 // `slot` is the conversation's own control inside the line, before the mic (the thread's TODAY ↓,
 // src/pages/webconvo.js TODAY_SLOT): the one hook the thread has into this composer.
-export function composerHtml({ csrf, sendId, maxText, slot = "", draft = "" }) {
+export function composerHtml({ csrf, sendId, maxText, slot = "", draft = "", chat = "" }) {
   const picks = Object.entries(PICKS);
   return `<div class="composer">`
     + micOffHtml()
     + `<div class="cdrop" aria-hidden="true"><div>${DROP_SVG}<span class="hand">let go. i’ll read it.</span><span class="lbl">ON DESKTOP, DROP ANYWHERE</span></div></div>`
     + `<p class="lbl fromvoice" hidden>FROM YOUR VOICE · EDIT ANYTHING</p>`
     + `<div class="upl" hidden><ul class="on-line" aria-label="Attached"></ul><div class="upfail" role="status" hidden><div class="uf-list"></div><p class="lbl uf-lim">${esc(LIMITS_LINE)}</p></div></div>`
-    + `<form class="cform" method="POST" action="/web/send"><input type="hidden" name="c" value="${esc(csrf)}"><input type="hidden" name="id" value="${esc(sendId)}">`
+    + `<form class="cform" method="POST" action="/web/send"><input type="hidden" name="c" value="${esc(csrf)}"><input type="hidden" name="id" value="${esc(sendId)}">${chat ? `<input type="hidden" name="chat" value="${esc(chat)}">` : ""}`
     + `<button class="ic c-add" type="button" aria-label="Add a photo or file" aria-haspopup="dialog" aria-expanded="false" hidden>${PLUS_SVG}</button>`
     + picks.map(([k, p]) => `<input class="c-file" data-pick="${k}" type="file" accept="${esc(p.accept)}"${p.capture ? ` capture="${p.capture}"` : ""}${k === "camera" ? "" : " multiple"} hidden tabindex="-1" aria-hidden="true">`).join("")
     + `<label class="sr" for="c-input">Message Reason</label><textarea id="c-input" name="text" rows="1" maxlength="${Number(maxText)}" placeholder="Tell Reason what you need" autocomplete="off" enterkeyhint="send" required${draft ? " data-draft" : ""}>${esc(draft)}</textarea>`

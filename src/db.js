@@ -4125,9 +4125,16 @@ export function dueConversations(now = clock.now()) {
  * holds because this driver is synchronous — a comment rather than a mutex on purpose.
  */
 export function takePendingInbound(conversationId) {
-  const rows = db.prepare("SELECT * FROM pending_inbound WHERE conversation_id = ? ORDER BY arrived_at, id").all(conversationId);
-  if (!rows.length) return [];
-  db.prepare("DELETE FROM pending_inbound WHERE conversation_id = ?").run(conversationId);
+  const all = db.prepare("SELECT * FROM pending_inbound WHERE conversation_id = ? ORDER BY arrived_at, id").all(conversationId);
+  if (!all.length) return [];
+  // One turn is one chat (owner 10-27): a Web-only chat's messages are never answered in the same
+  // turn as the shared thread's, or another Web chat's. The oldest chat goes first; the rest stay
+  // held, and the same wait (or the sweep) drains them next.
+  const key = (r) => (r.channel === "web" ? webChatOf(r.chat_id) ?? "" : "");
+  const first = key(all[0]);
+  const rows = all.filter(r => key(r) === first);
+  const del = db.prepare("DELETE FROM pending_inbound WHERE id = ?");
+  for (const r of rows) del.run(r.id);
   return rows.map(r => ({ ...r, attachments: safeJson(r.attachments, []) }));
 }
 
@@ -9695,6 +9702,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS messages_conv_at ON messages (conversation_id, at, id);
   CREATE UNIQUE INDEX IF NOT EXISTS messages_inbound_once ON messages (conversation_id, channel, external_id) WHERE external_id IS NOT NULL AND role = 'user';
   CREATE UNIQUE INDEX IF NOT EXISTS messages_outbox_once ON messages (outbox_id) WHERE outbox_id IS NOT NULL;
+  -- Web-only chats (owner 10-27): one row per chat Home's composer started, owned by one conversation.
+  CREATE TABLE IF NOT EXISTS web_chats (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS web_chats_conv ON web_chats (conversation_id, last_at);
 
   -- Which messages belong to which task (Reason Web v2, "done things settle", src/settle.js). Written
   -- at the end of a turn that worked on a task — started it, updated it, finished it, or was its own
@@ -9820,6 +9835,10 @@ db.exec(`
   );
 `);
 
+// Web-only chats (owner 10-27): the chat a row belongs to; null = the shared thread (iMessage + Web).
+addColumnIfMissing("messages", "chat_id", "TEXT");
+db.exec("CREATE INDEX IF NOT EXISTS messages_chat_at ON messages (conversation_id, chat_id, at, id) WHERE chat_id IS NOT NULL");
+
 // Temporal columns on person_facts
 addColumnIfMissing("person_facts", "valid_from", "INTEGER");
 addColumnIfMissing("person_facts", "valid_to", "INTEGER");
@@ -9874,20 +9893,63 @@ export const HISTORY_EXCLUDED_KEYS = ["pcode:", "esign:", "wsign:"];
  * outbox_id for Reason's, so a retried webhook or a second markOutboundSent writes nothing twice.
  * Returns the row id, or null when nothing was written (switch off, duplicate, empty).
  */
-export function writeMessage({ conversationId, role, channel, externalId = null, outboxId = null, text = "", media = [], at = clock.now() }) {
+export function writeMessage({ conversationId, role, channel, externalId = null, outboxId = null, text = "", media = [], at = clock.now(), chatId = null }) {
   if (!historyOn()) return null;
   if (!conversationId || !role || !channel) return null;
   const body = String(text ?? "");
   const atts = Array.isArray(media) ? media : [];
   if (!body.trim() && !atts.length) return null;
-  const r = db.prepare(`INSERT OR IGNORE INTO messages (conversation_id, role, channel, external_id, outbox_id, text, media, at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, role, channel, externalId == null ? null : String(externalId), outboxId ?? null, body, JSON.stringify(atts), at);
+  // A Web-only chat's row (Home's composer, owner 10-27): only ever on the web channel, only ever a
+  // chat this conversation owns. Anything else is the shared thread's.
+  const chat = channel === "web" ? webChatOf(chatId) : null;
+  const ownChat = chat && webChatOwner(chat) === conversationId ? chat : null;
+  const r = db.prepare(`INSERT OR IGNORE INTO messages (conversation_id, role, channel, external_id, outbox_id, text, media, at, chat_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, role, channel, externalId == null ? null : String(externalId), outboxId ?? null, body, JSON.stringify(atts), at, ownChat);
   if (!r.changes) return null;
   const id = Number(r.lastInsertRowid);
+  if (ownChat) db.prepare("UPDATE web_chats SET last_at = ? WHERE id = ?").run(Math.max(at, clock.now()), ownChat);
   // Live Web (W2): an open conversation tab hears about its own conversation's new row, nothing else.
-  try { historyBus.emit("row", { conversationId, id }); } catch { /* a listener never costs a write */ }
+  try { historyBus.emit("row", { conversationId, id, chatId: ownChat }); } catch { /* a listener never costs a write */ }
   return id;
+}
+
+// ---------------------------------------------------------------- Web-only chats (owner 10-27)
+// Home's composer starts a chat of its own: a clean page with only that exchange, its own model
+// context (`historyKeyFor`), its replies only on Web. Everything else — memory, tasks, Ongoing, Saved,
+// approvals — stays the person's, under their conversation_id. The id is the browser's (minted by the
+// page, 128 bits); the first send claims it for that conversation and it is nobody else's after.
+export const WEB_CHAT_RE = /^[A-Za-z0-9_-]{22}$/;
+const WEB_CHAT_PREFIX = "web:";
+/** The chat id inside a web route's chatId ("web:<id>"), or null. */
+export function webChatOf(chatId) {
+  const s = String(chatId ?? "");
+  if (!s.startsWith(WEB_CHAT_PREFIX)) return null;
+  const id = s.slice(WEB_CHAT_PREFIX.length);
+  return WEB_CHAT_RE.test(id) ? id : null;
+}
+export const webChatRoute = (id) => `${WEB_CHAT_PREFIX}${id}`;
+/** The model's history key for a turn in this chat: its own, never the shared thread's. */
+export const historyKeyFor = (conversationId, chatId) => {
+  const chat = webChatOf(chatId);
+  return chat && webChatOwner(chat) === conversationId ? `${conversationId}#web:${chat}` : conversationId;
+};
+export function webChatOwner(id) {
+  return WEB_CHAT_RE.test(String(id ?? "")) ? db.prepare("SELECT conversation_id FROM web_chats WHERE id = ?").get(String(id))?.conversation_id ?? null : null;
+}
+/** Make (or find) this conversation's chat `id`. False when the id is somebody else's or malformed. */
+export function claimWebChat(conversationId, id) {
+  if (!conversationId || !WEB_CHAT_RE.test(String(id ?? ""))) return false;
+  const now = clock.now();
+  db.prepare("INSERT OR IGNORE INTO web_chats (id, conversation_id, created_at, last_at) VALUES (?, ?, ?, ?)").run(String(id), conversationId, now, now);
+  return webChatOwner(id) === conversationId;
+}
+/** This conversation's Web chats that have anything in them, newest first: `{ id, created_at, last_at, count, first }`. */
+export function listWebChats(conversationId) {
+  return db.prepare(`SELECT c.id, c.created_at, c.last_at, COUNT(m.id) AS count,
+      (SELECT text FROM messages f WHERE f.conversation_id = c.conversation_id AND f.chat_id = c.id AND f.deleted_at IS NULL AND f.role = 'user' ORDER BY f.at, f.id LIMIT 1) AS first
+    FROM web_chats c JOIN messages m ON m.conversation_id = c.conversation_id AND m.chat_id = c.id AND m.deleted_at IS NULL
+    WHERE c.conversation_id = ? GROUP BY c.id ORDER BY c.last_at DESC`).all(conversationId);
 }
 
 /** New history rows, as `row` events `{ conversationId, id }`. In-process: the SSE route listens, per conversation. */
@@ -9899,17 +9961,20 @@ historyBus.setMaxListeners(0);
  * first. Scoped by conversation like every read here; a `before` from another conversation finds
  * nothing to stand on and returns nothing.
  */
-export function messagesBefore(conversationId, { before = null, limit = 40 } = {}) {
+// The shared thread is every row with no chat; a Web chat is its own rows only.
+const chatWhere = (chat) => (chat ? { sql: "chat_id = ?", args: [String(chat)] } : { sql: "chat_id IS NULL", args: [] });
+export function messagesBefore(conversationId, { before = null, limit = 40, chat = null } = {}) {
   const parse = (r) => ({ ...r, media: (() => { try { return JSON.parse(r.media || "[]"); } catch { return []; } })() });
+  const c = chatWhere(chat);
   let rows;
   if (before == null) {
-    rows = db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND deleted_at IS NULL
-      ORDER BY at DESC, id DESC LIMIT ?`).all(conversationId, limit);
+    rows = db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND ${c.sql} AND deleted_at IS NULL
+      ORDER BY at DESC, id DESC LIMIT ?`).all(conversationId, ...c.args, limit);
   } else {
-    const at = db.prepare("SELECT at FROM messages WHERE id = ? AND conversation_id = ?").get(before, conversationId)?.at;
+    const at = db.prepare(`SELECT at FROM messages WHERE id = ? AND conversation_id = ? AND ${c.sql}`).get(before, conversationId, ...c.args)?.at;
     if (at == null) return [];
-    rows = db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND deleted_at IS NULL
-      AND (at < ? OR (at = ? AND id < ?)) ORDER BY at DESC, id DESC LIMIT ?`).all(conversationId, at, at, before, limit);
+    rows = db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND ${c.sql} AND deleted_at IS NULL
+      AND (at < ? OR (at = ? AND id < ?)) ORDER BY at DESC, id DESC LIMIT ?`).all(conversationId, ...c.args, at, at, before, limit);
   }
   return rows.reverse().map(parse);
 }
@@ -9933,13 +9998,15 @@ function historyFromOutbound(row) {
   return writeMessage({
     conversationId: row.conversation_id, role: "assistant", channel: row.channel,
     externalId: row.message_id ?? null, outboxId: row.id, text: row.body ?? "", media, at: row.sent_at ?? clock.now(),
+    chatId: row.chat_id ?? null,
   });
 }
 
 /** This conversation's history, oldest first, after a row id. Scoped by conversation: never anybody else's. */
-export function messagesFor(conversationId, { after = 0, limit = 200 } = {}) {
-  return db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND id > ? AND deleted_at IS NULL
-    ORDER BY at ASC, id ASC LIMIT ?`).all(conversationId, after, limit)
+export function messagesFor(conversationId, { after = 0, limit = 200, chat = null } = {}) {
+  const c = chatWhere(chat);
+  return db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND ${c.sql} AND id > ? AND deleted_at IS NULL
+    ORDER BY at ASC, id ASC LIMIT ?`).all(conversationId, ...c.args, after, limit)
     .map(r => ({ ...r, media: (() => { try { return JSON.parse(r.media || "[]"); } catch { return []; } })() }));
 }
 

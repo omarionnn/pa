@@ -524,9 +524,12 @@ test("/web/live on the pages host: not sent round to the website; CORS with cred
 test("review fixes: unsent messages are keyed to ONE conversation and cleared on sign-out; a countdown never re-POSTs; a pasted code draws and sends", () => {
   const k = (conv) => /k:"([^"]+)"/.exec(wc.renderConversation({ account: db.getAccount(conv), csrf: "c", lines: [], more: false, sendId: "s" }))?.[1];
   assert.ok(k(KOFI_C) && k(AMA_C) && k(KOFI_C) !== k(AMA_C), "two people, two keys");
-  assert.equal(/k:"([^"]+)"/.exec(wc.renderHome({ account: db.getAccount(KOFI_C), csrf: "c", sendId: "s" }))?.[1], k(KOFI_C), "home → thread hand-off uses the same key");
+  // Home's composer starts a Web-only chat (owner 10-27): its hand-off key is that chat's page's key, never the shared thread's.
+  const chatK = /k:"([^"]+)"/.exec(wc.renderConversation({ account: db.getAccount(KOFI_C), csrf: "c", lines: [], more: false, sendId: "s", chat: "KKKKKKKKKKKKKKKKKKKKKK" }))?.[1];
+  assert.equal(/k:"([^"]+)"/.exec(wc.renderHome({ account: db.getAccount(KOFI_C), csrf: "c", sendId: "s", chat: "KKKKKKKKKKKKKKKKKKKKKK" }))?.[1], chatK, "home → its chat hand-off uses the same key");
+  assert.notEqual(chatK, k(KOFI_C));
   const t = allScreens().thread;
-  assert.match(t, /var KEY='reason-web-pending:'\+R\.k/);
+  assert.match(t, /KEY='reason-web-pending:'\+R\.k/);
   assert.match(t, /form\[action="\/web\/signout"\][^]*?sessionStorage\.removeItem/);
   const code = allScreens().codeTries;
   assert.ok(!/location\.reload\(\)/.test(code), "a 429 answered a POST: reloading it would re-POST");

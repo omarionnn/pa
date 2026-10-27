@@ -472,6 +472,9 @@ export class Runtime extends EventEmitter {
         // labelled as such on its own line (src/agent.js, src/backends/claude-cli.js). A text is
         // labelled nothing, exactly as before.
         ...(meta.channel === "web" ? { channel: "web" } : {}),
+        // A Web-only chat (owner 10-27): the model reads and writes that chat's own thread; the
+        // tools still act for the person (their memory, tasks, Ongoing, approvals).
+        ...(meta.channel === "web" && db.historyKeyFor(conversationId, meta.chatId) !== conversationId ? { historyId: db.historyKeyFor(conversationId, meta.chatId) } : {}),
         ...(answering ? { answering } : {}),
         ...(inboundRequests ? { requests: inboundRequests } : {}),
         ...(keep != null ? { keep } : {}), ...this.turnExtras, ...ctx,
@@ -711,8 +714,10 @@ export class Runtime extends EventEmitter {
     if (kind !== "user" || !String(text ?? "").trim()) return { verdict: "clear" };
     const me = accounts.ownerOf(conversationId);
     const who = me.name === "the person I work for" ? "them" : me.name;
-    // The thread as it stood when the message came in, kept for a second look (below).
-    const messages = db.loadConversation(conversationId);
+    // The thread as it stood when the message came in, kept for a second look (below). A Web-only
+    // chat's own thread, never the shared one's (db.historyKeyFor).
+    const historyId = meta.channel === "web" ? db.historyKeyFor(conversationId, meta.chatId) : conversationId;
+    const messages = db.loadConversation(historyId);
     const ask = () => Promise.resolve()
       .then(() => this.screen({ text, messages, who }))
       .catch(e => ({ verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] }));
@@ -753,7 +758,7 @@ export class Runtime extends EventEmitter {
 
     // Their words and the answer go into the thread, so the next turn knows this happened and does
     // not pick up a conversation the model never had.
-    db.saveConversation(conversationId, [...db.loadConversation(conversationId), ...harm.historyLines({ who, text })]);
+    db.saveConversation(historyId, [...db.loadConversation(historyId), ...harm.historyLines({ who, text })]);
     const strike = this._countStrike(conversationId, out);
     await this._emit({ conversationId, text: harm.REFUSAL_LINE, meta });
     await this._pauseIfReached(conversationId, strike, meta);

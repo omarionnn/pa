@@ -102,6 +102,28 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
   `pcode:`/`esign:`/`wsign:` key, `webAllowedFor`) takes it atomically and ends with
   `\n\nOur full conversation, the Web part included, is on Reason Web.` Once per switch.
 
+### Web-only chats (owner 10-27)
+
+- **Home's composer starts a fresh chat.** `renderHome` mints a 22-char id (`newWebChatId`) into the
+  form (`chat` hidden field) and `R.chat`; the page goes to `/web?chat=<id>`. "Continue the thread →",
+  the Chat tab, "THE THREAD →" and the menu's "The thread" stay `/web?thread` (the one shared conversation).
+- **Storage.** `web_chats(id, conversation_id, created_at, last_at)`; `messages.chat_id` (null = the
+  shared thread). The first send claims the id for the session's conversation (`db.claimWebChat`);
+  another account's id or a malformed one → 404, no turn. `chatFrom` gates `?chat=` on the page,
+  `/web/history`, `/web/stream` and `/web/live`.
+- **Routing.** The send goes to `router.deliver` with `chatId: "web:<id>"` (the existing chatId plumbing):
+  held row `chat_id` → `writeMessage(chatId)` → runtime meta → reply on the web channel → outbox
+  `chat_id` → `historyFromOutbound` → the chat's row. Never texted. `takePendingInbound` takes one
+  chat's rows per turn; a mid-turn read only folds into the same chat's turn.
+- **Model context.** `db.historyKeyFor(conv, chatId)` = `<conv>#web:<id>`: the turn's `historyId`
+  (runtime turnArgs → claude-cli / agent / mcp-core `messages`, harm screen). Tools still get the
+  person's `conversationId`, so memory, tasks, Ongoing, Saved and approvals are shared.
+- **Proactive** (timers, wakes, approvals) has no channel → the thread route, unchanged.
+- **Chat history** (/web/memory/history) lists each chat as a day-style row (`WEB CHAT · <DAY> · N
+  MESSAGES`) → `/web?chat=<id>`; days, a day's lines and search are `chat_id IS NULL` only.
+  Provisional placement: SCOPE-v2 Q-v2-51.
+- Tests: `node --test test/web-chats.test.js`. Preview: `bin/web-chats-preview.mjs`.
+
 ## Proving it
 
 ```bash
