@@ -29,7 +29,7 @@ Code: `src/stamps.js` (catalog, tables `stamps` + `stamp_shares`, awarding, back
   `stamp_share_opened` (+ `opens`), `stamp_share_signup` (+ `signups`, from `/access/web` body `ref`;
   the website's form does not send `ref` yet — stub on the site side).
 - **Public** `/s/<shareId>` + `/og.png`: no sign-in, `X-Robots-Tag` + meta noindex, og + twitter
-  summary_large_image, CTA `heyreason.com/?ref=s_<id>`. Revoked → E2 turned off, 410; og → `assets/og.png`.
+  summary_large_image, CTA `heyreason.com/?ref=s_<id>`. Revoked = never existed = malformed `/s/…` → one E1-style 404 page (`webedge.js renderShareNotFound`, noindex, "Get your own Reason"), byte-identical; their og.png a plain JSON 404.
   Share ids are 12 chars; ride-along sign-in tokens are 32–64 (`signin-remote.js` TOKEN), and an id with
   no share falls through to that handler unchanged.
 - **Redaction**: public output carries only name, duration/count, optional first name
@@ -42,7 +42,7 @@ shared `heyreason.com/s/…` link from iMessage.
 ## Drive it here
 `REASON_DB_PATH=$(mktemp -d)/stamps.db node bin/web-stamps-drive.mjs [outDir]` under `caged.sh env`:
 empty → a real `finishTask` earns First errand → many pages → share via the endpoint (cross-site 403)
-→ public page + real Chromium og.png (1200×630) → Stop sharing → 410; PNGs at 390/1280 Paper/Night and
+→ public page + real Chromium og.png (1200×630) → Stop sharing → the 404 page; PNGs at 390/1280 Paper/Night and
 `compare-stamps.png`. Tests: `test/stamps.test.js`, `test/stamps-web.test.js`.
 
 ## Live proof
@@ -51,4 +51,4 @@ only on a throwaway account (created then deleted with its stamps, shares and se
 
 ## End state that proves it
 The book draws the owner's real stamps; a share URL opens without sign-in, noindex, with its card;
-revoked answers 410 turned off; no public output names a merchant, company, place, price or person.
+revoked answers the same 404 page as an unknown id; no public output names a merchant, company, place, price or person.

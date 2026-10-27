@@ -149,7 +149,7 @@ function sharePanel(s, { share, first, csrf }) {
 }
 
 /** KEPT OUTSIDE THE BOOK: the first-errand patch and, at a year, the ticket. Hidden when neither is earned. */
-function keptOutside(outside) {
+function keptOutside(outside, tz = config.tz) {
   const first = outside.find(s => s.type === "first");
   const year = outside.find(s => s.type === "anniversary");
   if (!first && !year) return "";
@@ -158,7 +158,7 @@ function keptOutside(outside) {
   if (year) {
     const serial = Number(year.values?.serial) || 1;
     const from = new Date(year.values?.from ?? year.earnedAt - 365 * 86_400_000), to = new Date(year.earnedAt);
-    const my = (d) => d.toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).toUpperCase();
+    const my = (d) => d.toLocaleString("en-US", { month: "short", year: "numeric", timeZone: tz }).toUpperCase();
     rows.push(`<div class="kp"><div>${ticket({ serial, span: `${my(from)} TO ${my(to)}`, width: 132, label: `A creased paper ticket: admit one, a year of things handled, with Reason, number ${String(serial).padStart(6, "0")}` })}</div><span><em>A year of things handled.</em><br>One year in.</span></div>`);
   }
   return `<div class="kept"><p class="lbl">KEPT OUTSIDE THE BOOK</p>${rows.join("")}</div>`;
@@ -175,9 +175,9 @@ export function renderSealBook({ all = [], page = null, selectedId = null, first
   const aside = sel
     ? `<aside class="side" aria-labelledby="sel-h">${label(sel.id === v.newestId ? "THE NEWEST" : sel.date)}<h2 id="sel-h">${esc(sel.name)}.</h2>`
       + `<p class="story">${esc(sel.story)}</p><a class="in-thread" href="${esc(sel.href)}">See it in the thread</a>`
-      + sharePanel(sel, { share, first, csrf }) + keptOutside(v.outside) + margin + `</aside>`
+      + sharePanel(sel, { share, first, csrf }) + keptOutside(v.outside, tz) + margin + `</aside>`
     : `<aside class="side" aria-labelledby="sel-h">${label("THE FIRST ONE")}<h2 id="sel-h">Nothing here yet.</h2>`
-      + `<p class="story">${esc(KEEP_LINE)}</p><a class="in-thread" href="/web?thread">Go to the thread</a>${keptOutside(v.outside)}</aside>`;
+      + `<p class="story">${esc(KEEP_LINE)}</p><a class="in-thread" href="/web?thread">Go to the thread</a>${keptOutside(v.outside, tz)}</aside>`;
   const body = GRAIN_DEF + dailyHeader("stamps")
     + `<main class="sb" id="content"><div class="sb-top"><div>${label(headLine(v))}<h1 class="sb-h1">Your book.</h1></div>${pager}</div>`
     + `<div class="sb-cols">${sheet}${aside}</div></main>`;

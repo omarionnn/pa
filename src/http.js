@@ -21,7 +21,7 @@
 //   GET  /e/{id}/cover-preview.jpg?k= the organizer's look at a cover still waiting on them
 //   GET  /e/{id}/album[/manage]       the event's private photo album (src/pages/album.js); role read per request
 //   GET  /e/{id}/album/photo/{n}      one photo's bytes; /album/download the whole album as a ZIP
-//   GET  /s/{shareId}[/og.png]        a shared stamp (12 base62, src/pages/webstamps.js); no such share → the sign-in link below
+//   GET  /s/{shareId}[/og.png]        a shared stamp (12 base62, src/pages/webstamps.js); no live share → the 404 page (picture: plain 404)
 //   GET  /s/{token}                   a sign-in link: Reason's own browser, shown to one person
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
 //   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
@@ -413,8 +413,8 @@ export function createServer({ router, runtime, log = () => {} }) {
       // themselves. Nothing about these requests is logged beyond the fact that one happened: the
       // body of /type is what somebody typed into a sign-in page.
       // A shared stamp first (src/pages/webstamps.js): 12 base62, never the 32–64 of a sign-in token. A
-      // path of that shape with no share behind it falls through to the sign-in link, unchanged. Signed
-      // by the website's proxy or not, it answers the same: nothing here depends on who is asking.
+      // page of that shape with no live share behind it is the stamps' 404 page (its picture, a plain
+      // 404). Signed by the website's proxy or not, it answers the same: nothing depends on who asks.
       const stampShare = /^\/s\/([0-9A-Za-z]{12})(?:\/(og\.png))?$/.exec(url.pathname);
       if (stampShare) {
         const { shareRequest } = await import("./pages/webstamps.js");
@@ -426,7 +426,16 @@ export function createServer({ router, runtime, log = () => {} }) {
       }
       if (url.pathname.startsWith(`${SIGNIN_PATH}/`)) {
         const m = /^\/s\/([A-Za-z0-9_-]{32,64})(?:\/([a-z]+))?$/.exec(url.pathname);
-        if (!m) return send(404, { error: "not found" });
+        if (!m) {
+          // Not a sign-in link nor a share id: a page asked for gets the same 404 page as a missing share.
+          if ((req.method === "GET" || req.method === "HEAD") && !/\.png$/i.test(url.pathname)) {
+            const { shareNotFound } = await import("./pages/webstamps.js");
+            const out = shareNotFound();
+            res.writeHead(out.status, out.headers);
+            return res.end(req.method === "HEAD" ? "" : out.body);
+          }
+          return send(404, { error: "not found" });
+        }
         const out = await remoteRequest({
           token: m[1], action: m[2] ?? "", method: req.method, headers: req.headers,
           // Only the hash of the picture the phone already has, so an unchanged one is not resent.

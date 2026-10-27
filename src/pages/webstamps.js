@@ -22,7 +22,8 @@ import { config } from "../config.js";
 import { webPage, wordmark, label, hand, action, TOKENS, BUBBLE_PATH } from "./webkit.js";
 import { WORDMARK_O } from "./wordmark.js";
 import { dailyHeader, DAILY_HEAD_CSS } from "./webdailyhead.js";
-import { ogFontCss, renderTurnedOff } from "./made.js";
+import { ogFontCss } from "./made.js";
+import { renderShareNotFound } from "./webedge.js";
 import { readCookie } from "./access.js";
 import { esc } from "./render.js";
 
@@ -385,23 +386,27 @@ export function renderSharePage({ face, line, shareId }) {
 }
 
 /**
- * GET /s/<shareId>[/og.png]. Null when no share by that id exists (or the flag no longer allows its
- * owner): the caller falls through to the ride-along sign-in link handler, unchanged.
+ * The one answer for a /s/ page with no live share behind it: never existed, turned off, its owner's
+ * flag no longer on, or not an id at all. A 404 page, the same bytes for each, so nobody learns which.
+ */
+export function shareNotFound() {
+  const body = renderShareNotFound({ thing: waxLook() ? "seal" : "stamp" });
+  return { status: 404, headers: { "Content-Type": "text/html; charset=utf-8", ...PUBLIC_HEADERS, "Content-Length": Buffer.byteLength(body) }, body };
+}
+
+/**
+ * GET /s/<shareId>[/og.png]. No live share by that id (none, turned off, or the flag no longer allows
+ * its owner): the 404 page, or for the picture null, so the caller answers it the plain not-found it
+ * gives any address. A 12-character id is never a sign-in token (32–64), so nothing is lost there.
  */
 export async function shareRequest({ shareId, sub = null, method = "GET", log = () => {} }) {
   const v = stamps.shareView(shareId);
-  if (!v || !dailyAllowedFor(v.share.conversation_id)) return null;
+  if (!v || v.revoked || !dailyAllowedFor(v.share.conversation_id)) return sub === "og.png" ? null : shareNotFound();
   if (method !== "GET" && method !== "HEAD") return { status: 405, headers: { ...PUBLIC_HEADERS, Allow: "GET, HEAD", "Content-Length": 0 }, body: "" };
   if (sub === "og.png") {
-    // Turned off: the generic card, so an old preview shows nothing of the stamp.
-    const png = v.revoked ? null : await (waxLook() ? sealPng(stamps.publicSeal(v.stamp), v.first) : stampCardPng(stamps.publicFace(v.stamp), stamps.publicLine(v.stamp, v.first))).catch(() => null);
+    const png = await (waxLook() ? sealPng(stamps.publicSeal(v.stamp), v.first) : stampCardPng(stamps.publicFace(v.stamp), stamps.publicLine(v.stamp, v.first))).catch(() => null);
     const bytes = png ?? genericOg();
     return { status: 200, headers: { "Content-Type": "image/png", "Content-Length": bytes.length, "Cache-Control": png ? "public, max-age=300" : "no-store", "X-Robots-Tag": "noindex", "X-Content-Type-Options": "nosniff" }, body: bytes };
-  }
-  if (v.revoked) {
-    // E2, the existing "turned off" screen, its faces from Web's own font path (served under /web on every host).
-    const body = renderTurnedOff({ host: "HEYREASON.COM", siteUrl: config.siteUrl || "https://heyreason.com" }).replaceAll("url(/fonts/", "url(/web/fonts/");
-    return { status: 410, headers: { "Content-Type": "text/html; charset=utf-8", ...PUBLIC_HEADERS, "Content-Length": Buffer.byteLength(body) }, body };
   }
   if (method === "GET") stamps.noteShareOpened(shareId, { log });
   const body = waxLook()

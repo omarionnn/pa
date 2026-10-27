@@ -212,10 +212,10 @@ test("the routes that existed before still answer exactly as they did", async ()
   assert.match(page.type, /text\/html/);
   assert.match(page.body, /Private page/);
 
-  // A sign-in link that is not real is still 404 JSON, not the home page.
+  // A /s/ address that is neither a sign-in link nor a share is the stamps' 404 page, not the home page.
   const signin = await get("/s/short");
   assert.equal(signin.status, 404);
-  assert.match(signin.type, /application\/json/);
+  assert.match(signin.body, /isn’t here/);
 
   // Webhooks are untouched: a GET on one is still not found rather than a page.
   const hook = await get("/channels/sendblue/webhook");

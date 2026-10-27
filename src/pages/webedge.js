@@ -114,6 +114,23 @@ export function renderWebNotFound({ signedIn = false } = {}) {
   return webPage({ title: "Reason — not here", body, css: EDGE_CSS, foot: "" });
 }
 
+/**
+ * E1 on a shared seal's public page (/s/<id>): the same slip and words, for an id that never existed,
+ * one that was turned off, and one that is not an id at all — drawn alike, so nobody learns which.
+ * No thread to go back to; the share page's own way out instead. `thing`: "seal", or "stamp" before the wax book.
+ */
+export function renderShareNotFound({ thing = "seal" } = {}) {
+  const site = String(config.siteUrl || "https://heyreason.com").replace(/\/+$/, "");
+  const body = `<header class="eg-head">${wordmark({ href: site })}</header><main class="eg" aria-labelledby="eg-h">`
+    + `<div class="torn" aria-hidden="true"><span style="width:80%"></span><span style="width:55%"></span></div>`
+    + label("404")
+    + `<h1 id="eg-h" class="h1">This ${thing} isn’t here.<br><em>Nothing’s lost.</em></h1>`
+    + `<p class="eg-q">The link may have a typo, or whoever shared it stopped sharing.</p>`
+    + action("Get your own Reason", { href: `${site}/` })
+    + `</main>`;
+  return webPage({ title: "Reason — not here", body, css: EDGE_CSS, foot: "" });
+}
+
 /** E5: Web is paused. `until` (ms) is when it should be back; `joinNumber` the live line, or null. */
 export function renderMaintenance({ until = null, joinNumber = null } = {}) {
   const sms = joinNumber ? smsHref(joinNumber) : null;
