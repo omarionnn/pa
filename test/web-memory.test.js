@@ -132,6 +132,13 @@ test("filing: a model reads one conversation's unfiled facts and files each unde
   groups.setFilingReader(async (rows) => rows.map(r => ({ id: r.id, group: "hobbies" })));
   await groups.fileFacts();
   assert.equal(db.getFact(KOFI_C, k).memory_group, "");
+  // A row passed over three times is left alone, and the next conversation is still filed.
+  groups.setFilingReader(async (rows) => rows.filter(r => r.id !== k).map(r => ({ id: r.id, group: "routines" })));
+  for (let i = 0; i < 3; i++) await groups.fileFacts();
+  const later = fact(OWNER_C, "Omari", "Walks to work");
+  assert.equal(groups.anyUnfiled(), true);
+  await groups.fileFacts();
+  assert.equal(db.getFact(OWNER_C, later).memory_group, "routines", "one stubborn row does not hold up the rest");
   // The extractor files as it writes.
   const { validateAndInsert } = await import("../src/extract.js");
   await validateAndInsert(OWNER_C, [{ about: "Omari", fact: "Takes the A train to work", category: "routine", group: "routines", confidence: 0.9 }], []);
@@ -228,7 +235,7 @@ test("REASON THINKS…: real guesses in the margin; yes saves a fact in their na
   assert.match(h, /<p class="gs-t">you like places with a fireplace\.<\/p>/);
   assert.match(h, /<p class="gs-t">often up past midnight\.<\/p>/, "patterns are guesses too");
   assert.match(h, /name="answer" value="yes">Yes, that's right<\/button>/);
-  assert.match(h, /name="answer" value="no">No<\/button>/);
+  assert.match(h, /name="answer" value="no">No<span class="sr">/);
   const yes = await call({ b, method: "POST", sub: "memory/guess", body: form({ c: b.csrf, id: String(g1.id), answer: "yes" }) });
   assert.equal(yes.status, 303);
   const saved = db.memoryFacts(OWNER_C).find(f => f.fact === "you like places with a fireplace");

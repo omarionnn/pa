@@ -122,7 +122,7 @@ function guessHtml(g, csrf) {
   return `<div class="gs" id="g-${g.id}"><p class="gs-t">${esc(withStop(g.text))}</p>`
     + `<form class="gs-a" method="POST" action="/web/memory/guess">${hidden("c", csrf)}${hidden("id", String(g.id))}`
     + `<button class="gs-y" type="submit" name="answer" value="yes">Yes, that's right</button>`
-    + `<button class="gs-n" type="submit" name="answer" value="no">No</button></form></div>`;
+    + `<button class="gs-n" type="submit" name="answer" value="no">No<span class="sr">, that's not it: ${esc(withStop(g.text))}</span></button></form></div>`;
 }
 
 const CSS = `
@@ -138,7 +138,6 @@ const CSS = `
 .gh{margin:0 0 2px;font:400 11px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
 .gh.pen{color:var(--pen)}
 .fr{padding:10px 0;border-bottom:1px dashed var(--hair);display:flex;flex-direction:column;gap:2px;outline-offset:2px}
-.fr:focus{outline:none}
 .ft{margin:0;font-size:15px;line-height:1.3;overflow-wrap:anywhere}
 .fa{display:flex;gap:20px;flex-shrink:0;position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .fr:hover .fa,.fr:focus .fa,.fr:focus-within .fa,.fr:target .fa{position:static;width:auto;height:auto;overflow:visible;clip:auto}
@@ -233,6 +232,7 @@ go.addEventListener('click',function(){if(go.getAttribute('aria-busy'))return;go
 document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a.fc,a.ff');if(!a)return;var row=a.closest('.fr');if(!row||!row.dataset.k)return;e.preventDefault();if(a.classList.contains('fc'))edit(row);else forget(row)});
 document.querySelectorAll('form.gs-a').forEach(function(f){f.addEventListener('submit',function(){f.querySelectorAll('button').forEach(function(b){b.setAttribute('aria-busy','true')})})});
 document.addEventListener('animationend',function(e){if(e.target.classList&&e.target.classList.contains('got'))e.target.remove()});
+var sc=document.querySelector('.fg-wrap .fg-go');if(sc){sc.focus();var kp=document.querySelector('.fg-wrap .fg-keep');document.addEventListener('keydown',function(e){if(e.key==='Escape'&&kp)location.href=kp.href})}
 var got=document.querySelector('.got');if(got){var r=got.closest('.fr');if(r)r.focus({preventScroll:true})}
 })();`;
 
@@ -279,7 +279,7 @@ export async function correctRow(conv, key, text, { log = () => {} } = {}) {
   let newKey;
   if (row.kind === "fact") {
     const out = db.correctFact(conv, row.id, { fact: clean });
-    if (!out.ok) return { ok: false, status: 409, error: "same_as_another", say: "that's already saved as its own line." };
+    if (!out.ok) return /already saved/.test(out.error ?? "") ? { ok: false, status: 409, error: "same_as_another", say: "that's already saved as its own line." } : { ok: false, status: 404, error: "not_found" };
     newKey = `fact-${out.newId}`;
     import("../embedding.js").then(m => { m.removeEmbedding(row.id); return m.embedAndStore(conv, out.newId, `${row.about}: ${clean}`); }).catch(() => {});
     import("../extract.js").then(m => m.scheduleProfile(conv, { log })).catch(() => {});

@@ -8836,13 +8836,16 @@ export function memoryFacts(conversationId) {
 }
 
 /** Active facts with no group yet, all from one conversation (the one with the oldest), oldest first. */
-export function unfiledFacts({ limit = 60 } = {}) {
+export function unfiledFacts({ limit = 60, skip = [] } = {}) {
+  // `skip`: ids the filer has given up on, so one stubborn row never holds up every other conversation.
+  const ids = [...skip].map(Number).filter(Number.isInteger);
+  const not = ids.length ? ` AND f.id NOT IN (${ids.map(() => "?").join(",")})` : "";
   const first = db.prepare(`SELECT p.conversation_id FROM person_facts f JOIN people p ON p.id = f.person_id
-    WHERE f.status = 'active' AND f.memory_group = '' ORDER BY f.id LIMIT 1`).get();
+    WHERE f.status = 'active' AND f.memory_group = ''${not} ORDER BY f.id LIMIT 1`).get(...ids);
   if (!first) return [];
   return db.prepare(`SELECT f.id, f.fact, f.category, p.name AS about, p.key AS about_key, p.conversation_id
     FROM person_facts f JOIN people p ON p.id = f.person_id
-    WHERE p.conversation_id = ? AND f.status = 'active' AND f.memory_group = '' ORDER BY f.id LIMIT ?`).all(first.conversation_id, limit);
+    WHERE p.conversation_id = ? AND f.status = 'active' AND f.memory_group = ''${not} ORDER BY f.id LIMIT ?`).all(first.conversation_id, ...ids, limit);
 }
 
 /** How many active facts still have no group, across every conversation. */

@@ -69,7 +69,7 @@ export function setFilingReader(f) { reader = f; }
 export async function fileFacts({ limit = BATCH, log = () => {} } = {}) {
   const read = reader ?? (onSubscription() ? readViaCli : null);
   if (!read) return 0;
-  const rows = db.unfiledFacts({ limit: limit * 2 }).filter(r => (tries.get(r.id) ?? 0) < MAX_TRIES).slice(0, limit);
+  const rows = db.unfiledFacts({ limit, skip: [...tries].filter(([, n]) => n >= MAX_TRIES).map(([id]) => id) });
   if (!rows.length) return 0;
   const ownKey = db.personKey(db.getAccount(rows[0].conversation_id)?.name ?? "");
   const picks = await read(rows, ownKey);
@@ -86,7 +86,7 @@ export async function fileFacts({ limit = BATCH, log = () => {} } = {}) {
 
 /** Is there anything for `fileFacts` to do? Cheap; the sweep asks every pass. */
 export function anyUnfiled() {
-  return db.unfiledCount() > 0;
+  return db.unfiledCount() > [...tries.values()].filter(n => n >= MAX_TRIES).length;
 }
 
 /** For tests. */
