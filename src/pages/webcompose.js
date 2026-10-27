@@ -103,7 +103,9 @@ export const serverHears = () => { try { return !!hearingStatus().ok; } catch { 
  * The one-line composer (§3; reference composer 01–04). `+` and the mic appear only once the page's
  * script is running and can make them work; without it the line is the plain form that posts.
  */
-export function composerHtml({ csrf, sendId, maxText }) {
+// `slot` is the conversation's own control inside the line, before the mic (the thread's TODAY ↓,
+// src/pages/webconvo.js TODAY_SLOT): the one hook the thread has into this composer.
+export function composerHtml({ csrf, sendId, maxText, slot = "" }) {
   return `<div class="composer">`
     + `<div class="cdrop" aria-hidden="true">${DROP_SVG}<span class="hand">let go. i'll read it.</span></div>`
     + `<ul class="on-line" aria-label="Attached" hidden></ul>`
@@ -111,6 +113,7 @@ export function composerHtml({ csrf, sendId, maxText }) {
     + `<button class="ic c-add" type="button" aria-label="Add a photo or file" hidden>${PLUS_SVG}</button>`
     + `<input class="c-file" type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/heic,image/heif,.heic,.heif,application/pdf,.pdf" multiple hidden tabindex="-1" aria-hidden="true">`
     + `<label class="sr" for="c-input">Message Reason</label><input id="c-input" type="text" name="text" maxlength="${Number(maxText)}" placeholder="Tell Reason what you need" autocomplete="off" enterkeyhint="send" required>`
+    + slot
     + `<button class="ic c-mic" type="button" aria-label="Speak instead" hidden>${MIC_SVG}</button>`
     + `<button class="send" type="submit" aria-label="Send">${SEND_SVG}</button></form>`
     + `<div class="dict" hidden><button class="ic d-stop" type="button" aria-label="Stop without sending"><span class="rec" aria-hidden="true"></span></button>`

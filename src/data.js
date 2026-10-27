@@ -153,6 +153,9 @@ const TABLES = [
   // Their invite links, how many invites they have left, and any request for more with the reason
   // they gave. Keyed by the inviter's conversation; a link a friend redeemed stays the inviter's row.
   "invites", "invite_allowances", "invite_requests",
+  // Reason Web's thread (src/settle.js): which of their messages belong to which task, and the kind
+  // of device each Web message was typed on. About them and their conversation, so exported and deleted.
+  "task_messages", "web_devices",
 ];
 
 /**

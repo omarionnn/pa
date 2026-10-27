@@ -41,9 +41,10 @@ import { readCookie } from "./access.js";
 import { ongoing, approvals as pendingApprovals } from "../ongoing.js";
 import { ogMargin, needsYes, countLine, OG_CSS, NINE_D_JS, NINE_D_CSS, OG_POLL_JS } from "./webongoing.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting } from "./websignin.js";
-import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch, OG_KEY } from "./webkit.js";
+import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch, bubble, OG_KEY } from "./webkit.js";
 import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot, COMPOSE_CSS, COMPOSE_JS } from "./webcompose.js";
 import { prepareSend } from "../webmedia.js";
+import * as settle from "../settle.js";
 
 /** How many lines a page of history holds, first load and each "show earlier". */
 export const PAGE = 40;
@@ -208,6 +209,7 @@ function lineInner(m, conversationId) {
     if (m.role === "user") words = voice ? `<p class="said hand">${esc(said)}</p>` : `<div class="said">${linkify(said)}</div>`;
     else words = `<div class="rsay">${reasonBody(said, conversationId)}</div>`;
   }
+  m.plain = said.trim() ? said : [...m.media.filter(x => x.kind === "file").map(x => x.name), ...m.media.filter(x => x.kind === "image").map(() => "a photo")].filter(Boolean).join(" · ");
   return `${lbl}${photos}${files}${words}${play}`;
 }
 
@@ -217,7 +219,7 @@ function lineInner(m, conversationId) {
  * "sending" line for the real one; `html` is the line drawn here; nothing else about the row's
  * bookkeeping leaves the server.
  */
-export function rowOut(row, { conversationId, service = null }) {
+export function rowOut(row, { conversationId, service = null, now = clock.now() }) {
   const prefix = `${conversationId}:`;
   const ext = String(row.external_id ?? "");
   const m = {
@@ -232,13 +234,18 @@ export function rowOut(row, { conversationId, service = null }) {
   };
   m.files = m.media.filter(x => x.kind === "file").map(x => x.name);
   m.html = lineInner(m, conversationId);
+  // S2: the day and the device, for the "where you are" note (src/settle.js); never guessed.
+  m.day = dayKey(m.at);
+  m.dayLabel = dayName(m.at, now);
+  m.where = settle.whereWords({ at: m.at, device: settle.deviceOf(row, conversationId), now });
   return m;
 }
 
 const serviceOf = (conversationId) => db.getThread(conversationId)?.service ?? null;
 
+const placeAttrs = (m) => ` data-day="${esc(m.day ?? dayKey(m.at))}"${m.where ? ` data-where="${esc(m.where)}"` : ""}`;
 function lineHtml(m) {
-  return `<li class="msg ${m.role === "user" ? "you" : "re"}" data-id="${m.id}" data-at="${m.at}" data-web="${m.web ? 1 : 0}"${m.cid ? ` data-cid="${esc(m.cid)}"` : ""}>${m.html}</li>`;
+  return `<li class="msg ${m.role === "user" ? "you" : "re"}" data-id="${m.id}" data-at="${m.at}" data-web="${m.web ? 1 : 0}"${m.cid ? ` data-cid="${esc(m.cid)}"` : ""}${placeAttrs(m)}>${m.html}</li>`;
 }
 
 const dayName = (at, now) => {
@@ -247,17 +254,60 @@ const dayName = (at, now) => {
 };
 const continued = (where) => `<li class="cont" role="separator" aria-label="Continued ${esc(where)}"><span aria-hidden="true"></span><span class="hand">Continued ${esc(where)}</span><span aria-hidden="true"></span></li>`;
 
-/** The lines with a day label where the day changes and a "Continued on Web" mark where the place does. */
-export function listHtml(lines, { now = clock.now() } = {}) {
+/**
+ * S3, a finished task settled into one line between dashed rules: a DONE stamp, the title, the typed
+ * meta and the count, a real button that unfolds the original messages (quoted, muted, a thin rule on
+ * the left). Just finished: JUST NOW and the Caveat line until it is opened. Without script the fold
+ * simply stays open. `data-ids` names every message folded into it, so a live copy is never added twice.
+ */
+export function doneHtml(fold, { conversationId, service = null, now = clock.now() }) {
+  const ms = fold.rows.map(r => rowOut(r, { conversationId, service, now }));
+  const last = ms.at(-1);
+  const d = settle.doneLine(fold, { now, sourceOf: (r) => sourceLabel(r.channel, service) });
+  const quotes = ms.filter(m => m.plain).map(m => `<p class="${m.role === "user" ? "q-you" : "q-re"}">${esc(m.plain)}</p>`).join("");
+  const tilt = d.taskId % 2 ? -3 : 2;
+  return `<li class="msg done" data-task="${d.taskId}" data-id="${last.id}" data-ids="${ms.map(m => m.id).join(" ")}" data-at="${last.at}" data-web="${last.web ? 1 : 0}" data-n="${d.count}"${d.fresh ? ` data-fresh="1"` : ""}${placeAttrs(last)}>`
+    + `<button class="dl" type="button" aria-expanded="false" aria-controls="fold-${d.taskId}"><span class="dl-st" style="transform:rotate(${tilt}deg)">DONE</span>`
+    + `<span class="dl-t"><span class="dl-title">${esc(d.title)}</span><span class="dl-meta">${esc(d.meta)}</span></span><span class="dl-n">${d.count} ↓</span></button>`
+    + `<div class="fold" id="fold-${d.taskId}">${quotes}</div>`
+    + (d.fresh ? `<p class="hand dl-fresh">just wrapped this one up. tap to see how.</p>` : "")
+    + `</li>`;
+}
+
+/**
+ * The lines with a day label where the day changes and a "Continued on Web" mark where the place does.
+ * `folds` (src/settle.js foldsFor) settles each finished task at its last message: the DONE line goes
+ * there and its other messages are not drawn on their own. A day label carries the day and the
+ * "where you are" words of the first thing under it.
+ */
+export function listHtml(lines, { now = clock.now(), folds = null, conversationId = "", service = null } = {}) {
   let out = "", day = null, web = null;
   for (const m of lines) {
+    const tid = folds?.owner.get(m.id);
+    const fold = tid != null ? folds.folds.get(tid) : null;
+    if (fold && fold.lastId !== m.id) continue;
     const d = dayKey(m.at);
-    if (d !== day) { out += `<li class="day" role="separator">${label(dayName(m.at, now))}</li>`; day = d; }
+    if (d !== day) { out += `<li class="day" role="separator" data-day="${esc(d)}"${m.where ? ` data-where="${esc(m.where)}"` : ""}>${label(dayName(m.at, now))}</li>`; day = d; }
+    if (fold) {
+      // Where the person was when this work began and ended counts for "Continued on Web" as if unfolded.
+      const theirs = fold.rows.filter(r => r.role === "user");
+      const firstWeb = theirs.length ? theirs[0].channel === WEB : null;
+      if (web !== null && firstWeb !== null && firstWeb !== web) out += continued(firstWeb ? "on Web" : `in ${sourceLabel(theirs[0].channel, service)}`);
+      if (theirs.length) web = theirs.at(-1).channel === WEB;
+      out += doneHtml(fold, { conversationId, service, now });
+      continue;
+    }
     if (web !== null && m.web !== web && m.role === "user") out += continued(m.web ? "on Web" : `in ${m.source}`);
     if (m.role === "user") web = m.web;
     out += lineHtml(m);
   }
   return out;
+}
+
+/** One page of history drawn: its lines with finished tasks settled (src/settle.js), as the thread shows it. */
+export function pageHtml(lines, { conversationId, service = null, now = clock.now() }) {
+  const folds = settle.foldsFor(conversationId, lines.map(m => m.id));
+  return listHtml(lines, { now, folds, conversationId, service });
 }
 
 // ---------------------------------------------------------------- what Reason holds
@@ -292,10 +342,53 @@ const CSS = `
 .menu form{margin:0}
 .wrapc{flex:1 0 auto;width:100%;max-width:1200px;margin:0 auto;padding:8px var(--gut) 0;display:flex;flex-wrap:wrap;gap:72px;align-items:flex-start}
 .convo{flex:999 1 540px;min-width:0;display:flex;flex-direction:column;gap:26px}
-.thread{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:26px}
+.thread{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:40px}
 .start{align-self:center;text-align:center}
 .start .lbl{white-space:normal}
-.day{text-align:center}
+.day{text-align:center;margin-top:12px}
+.thread>.day:first-child{margin-top:0}
+.where{position:relative;display:block;flex:0 1 230px;min-width:0;height:30px;margin-left:auto}
+.where[hidden]{display:none}
+.wn-s{position:absolute;right:0;top:0;white-space:nowrap;font:400 22px/30px var(--hand);color:var(--pen);opacity:0;transform:rotate(-2deg) translateY(-10px);transition:opacity .5s ease,transform .6s cubic-bezier(.2,.8,.2,1)}
+.wn-s.on{opacity:1;transform:rotate(-2deg) translateY(0)}
+.done{display:flex;flex-direction:column;gap:12px;align-self:stretch}
+.dl{min-height:52px;width:100%;border:0;background:transparent;padding:12px 0;border-top:1px dashed var(--hair);border-bottom:1px dashed var(--hair);display:flex;align-items:center;gap:12px;cursor:pointer;text-align:left;color:var(--ink);font:inherit}
+.dl-st{flex-shrink:0;font:700 10px/1.3 var(--mono);letter-spacing:.12em;color:var(--pen);border:1.5px solid var(--pen);border-radius:3px;padding:2px 7px}
+.dl-t{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.dl-title{font-size:15px;line-height:1.35;overflow-wrap:anywhere}
+.dl-meta{font:400 10px/1.4 var(--mono);letter-spacing:.12em;color:var(--muted)}
+.dl-n{font:400 10.5px/1.3 var(--mono);letter-spacing:.1em;color:var(--muted);white-space:nowrap}
+.fold{padding-left:16px;border-left:1px solid var(--hair);display:flex;flex-direction:column;gap:12px}
+html.js .done:not(.open) .fold{display:none}
+.fold p{margin:0;overflow-wrap:anywhere;white-space:pre-wrap}
+.q-you{align-self:flex-end;font:italic 400 18px/1.3 var(--serif);color:var(--muted);text-align:right}
+.q-re{font-size:14px;line-height:1.5;color:var(--muted)}
+.dl-fresh{font-size:20px;margin-top:-4px}
+.done.open .dl-fresh{display:none}
+.l1{display:flex;flex-direction:column;gap:30px;min-height:calc(100vh - 340px);min-height:calc(100dvh - 340px)}
+.l1~.longwork,.l1~.approval,.l1~.empty{display:none}
+.l1[hidden],.l1 [hidden]{display:none}
+.l1-sp{flex:1}
+html:not(.js) .l1,html:not(.js) .thread[aria-busy]{display:none}
+.gh{display:flex;flex-direction:column;gap:10px;width:100%}
+.gh-l{display:block;width:90px;height:1px;background:var(--hair);opacity:.7}
+.gh-w{display:flex;flex-direction:column;gap:12px;width:100%}
+.gh-w span{display:block;height:2px;background:var(--hair);animation:ghost 1.6s ease-in-out infinite}
+.gh-re .gh-l,.gh-re .gh-w{align-self:flex-start;align-items:flex-start}
+.gh-you .gh-l{align-self:flex-end}.gh-you .gh-w{align-items:flex-end}
+@keyframes ghost{50%{opacity:.5}}
+.start.finding{align-self:stretch;text-align:left}
+.start .gh{margin-top:26px}
+.l2-rule{border-top:1px dashed var(--hair);margin-top:26px}
+.longwork{display:flex;flex-direction:column;gap:26px}
+.longwork[hidden],.onit:not([hidden])~.longwork{display:none}
+.lw-on{display:flex;align-items:center;gap:12px}
+.lw-on .ring{width:36px;height:36px;border-radius:50%;border:1px solid var(--hair);display:grid;place-items:center;flex:none;animation:breathe 3.2s ease-in-out infinite}
+.lw-on .bub{width:15px;height:15px;color:var(--pen);transform:skewX(-10deg)}
+.lw-on .hand{font-size:23px}
+.lw-note{margin:0;font-size:15px;line-height:1.55;color:var(--muted)}
+.today{flex-shrink:0;min-height:44px;padding:0 4px;border:0;background:transparent;cursor:pointer;font:400 11px/1 var(--mono);letter-spacing:.14em;color:var(--ink);white-space:nowrap}
+.today[hidden]{display:none}
 .cont{display:flex;align-items:center;gap:14px;margin-top:-14px}
 .cont>span:not(.hand){flex:1;border-top:1px dashed var(--hair)}
 .cont .hand{font-size:23px}
@@ -416,11 +509,12 @@ body.has-tabs .foot{display:none}
 .soon form{margin:0}
 .soon .themes{margin-top:8px}
 @media (min-width:900px){
+.l1{min-height:calc(100vh - 290px);min-height:calc(100dvh - 290px)}
 .top{padding:22px clamp(20px,4vw,48px)}
 .top nav{display:flex}
 .menu-b{display:none}
 .wrapc{padding:16px clamp(20px,4vw,48px) 0}
-.convo,.thread{gap:36px}
+.convo{gap:36px}
 .lbl{font-size:11px}
 .said{font-size:26px;line-height:1.3}
 .said.hand{font-size:30px}
@@ -453,6 +547,7 @@ body.has-tabs .foot{display:flex}
 .solo .h1{font-size:64px}
 .og-m{display:none}
 }
+@media (max-width:420px){.wn-s{font-size:20px}}
 @media (max-width:359px){.greet{font-size:34px}.lbl{font-size:10px;letter-spacing:.12em}.rsay p{font-size:15px}}
 ${OG_CSS}${NINE_D_CSS}`;
 
@@ -462,8 +557,8 @@ const SEND_SVG = `<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 16V4M
 const signOutForm = (csrf, cls = "act2") => `<form method="POST" action="/web/signout"><input type="hidden" name="c" value="${esc(csrf)}"><button class="${cls}" type="submit">SIGN OUT OF THIS BROWSER</button></form>`;
 
 /** The top of every signed-in screen: the wordmark home; MEMORY and SETTINGS on desktop; a menu on phones. */
-function topBar({ csrf, extra = "" }) {
-  return `<header class="top">${wordmark({ href: "/web" })}`
+function topBar({ csrf, extra = "", where = "" }) {
+  return `<header class="top">${wordmark({ href: "/web" })}${where}`
     + `<nav aria-label="Account">${extra}${typed("MEMORY", { href: "/web/memory" })}${typed("SETTINGS", { href: "/web/settings" })}</nav>`
     + `<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">${MENU_SVG}</button></header>`
     + `<div class="menu" id="menu" hidden role="dialog" aria-modal="true" aria-label="Menu"><div class="menu-h">${wordmark()}<button class="act2 menu-x" type="button">CLOSE</button></div>`
@@ -478,8 +573,8 @@ function tabBar(current, count) {
 
 /** The one-line composer. `sendId` makes even a no-script post one turn however often it is resent. */
 // `+` and the mic (composer 01–04, Listening) are drawn and run by src/pages/webcompose.js.
-function composer({ csrf, sendId }) {
-  return composerHtml({ csrf, sendId, maxText: MAX_TEXT });
+function composer({ csrf, sendId, slot = "" }) {
+  return composerHtml({ csrf, sendId, maxText: MAX_TEXT, slot });
 }
 
 /** How many Ongoing rows show before "See all N →" (owner, 10-26): needs-you first, then soonest due. */
@@ -543,13 +638,17 @@ setInterval(function(){if(until&&Date.now()>until)working(false)},1000);
 // From the arrival, a message moves you into the thread once Reason has it.
 if(!list){R.api={uid:uid,post:function(p){keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));location.href='/web?thread'},pendingLine:function(){return document.createElement('li')},state:function(li,st){if(st==='failed'&&R.say)R.say("that didn't go. try it again?")}};
 form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.trim(),fs=R.takeFiles?R.takeFiles():[];if(!t&&!fs.length)return;var p={id:uid(),text:t};if(fs.length)p.files=fs;R.api.post(p)});return}
-function line(m){var li=document.createElement('li');li.className='msg arrive '+(m.role==='user'?'you':'re');li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;li.innerHTML=m.html;times(li);return li}
-function add(m){if(list.querySelector('.msg[data-id="'+m.id+'"]'))return;unempty();var stick=near(),li=line(m);
-if(m.cid){var p=list.querySelector('.msg[data-pending="'+m.cid+'"]');if(p){p.replaceWith(li);forget(m.cid);li.classList.add('just');var s=document.createElement('p');s.className='st';s.textContent='SENT \\u00b7 '+fmt(m.at);li.appendChild(s);setTimeout(function(){s.classList.add('fade');setTimeout(function(){s.remove();li.classList.remove('just')},1100)},1200);if(stick)bottom();return}}
+var loaded=!R.defer,lastPoll=0,calm2=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+function line(m){var li=document.createElement('li');li.className='msg arrive '+(m.role==='user'?'you':'re');li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;if(m.day)li.dataset.day=m.day;if(m.where)li.dataset.where=m.where;li.innerHTML=m.html;times(li);return li}
+function has(id){return list.querySelector('.msg[data-id="'+id+'"]')||list.querySelector('.done[data-ids~="'+id+'"]')}
+function dayCheck(li,m){if(!m.day)return;var p=li.previousElementSibling;while(p&&!p.dataset.day)p=p.previousElementSibling;if(p&&p.dataset.day===m.day)return;var d=document.createElement('li');d.className='day';d.setAttribute('role','separator');d.dataset.day=m.day;if(m.where)d.dataset.where=m.where;var l=document.createElement('p');l.className='lbl';l.textContent=m.dayLabel||'';d.appendChild(l);li.parentNode.insertBefore(d,li)}
+function add(m){if(has(m.id))return;unempty();var stick=near(),li=line(m);
+if(m.cid){var p=list.querySelector('.msg[data-pending="'+m.cid+'"]');if(p){p.replaceWith(li);dayCheck(li,m);forget(m.cid);li.classList.add('just');var s=document.createElement('p');s.className='st';s.textContent='SENT \\u00b7 '+fmt(m.at);li.appendChild(s);setTimeout(function(){s.classList.add('fade');setTimeout(function(){s.remove();li.classList.remove('just')},1100)},1200);if(stick)bottom();where();return}}
 var after=null;list.querySelectorAll('.msg[data-id]').forEach(function(o){var a=Number(o.dataset.at),i=Number(o.dataset.id);if(a<m.at||(a===m.at&&i<m.id))after=o});
 var fp=list.querySelector('.msg[data-pending]');
 if(after&&after.nextSibling&&!(fp&&after.nextSibling===fp))list.insertBefore(li,after.nextSibling);else if(fp&&(!after||after.nextSibling===fp))list.insertBefore(li,fp);else if(after)list.appendChild(li);else list.insertBefore(li,list.firstChild);
-if(m.id>R.last)R.last=m.id;if(m.role==='assistant'){waiting=Math.max(0,waiting-1);if(!waiting)working(false)}if(stick)bottom()}
+dayCheck(li,m);
+if(m.id>R.last)R.last=m.id;if(m.role==='assistant'){waiting=Math.max(0,waiting-1);if(!waiting)working(false)}if(stick)bottom();where()}
 function unempty(){var e=document.querySelector('.convo>.empty');if(e)e.remove()}
 function pendingLine(p){unempty();var li=document.createElement('li');li.className='msg you arrive';li.dataset.pending=p.id;if(p.files&&p.files.length&&R.drawFiles)R.drawFiles(li,p);else{var s=document.createElement('div');s.className='said';s.textContent=p.text;li.appendChild(s)}list.appendChild(li);bottom();return li}
 function stored(li){return pend().filter(function(x){return x.id===li.dataset.pending})[0]||{id:li.dataset.pending,text:(li.querySelector('.said')||{}).textContent||''}}
@@ -564,31 +663,68 @@ fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Typ
 .catch(function(){if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
 function post(p,li){keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));send(p,li||pendingLine(p))}
 R.api={uid:uid,post:post,pendingLine:pendingLine,state:state};
+// Whatever this tab had not yet seen sent when it was opened (a reload mid-send, or a message from the
+// arrival) is shown at once and sent again under the SAME id once the thread is here, which the
+// server's claim turns into nothing if it already arrived.
+var carried=pend().map(function(p){return{p:p,li:pendingLine(p)}});
 form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.replace(/\\s+$/,''),fs=R.takeFiles?R.takeFiles():[];if(!t.trim()&&!fs.length)return;var p={id:uid(),text:t.trim()?t:''};if(fs.length)p.files=fs;box.value='';box.dispatchEvent(new Event('input'));post(p)});
-// A tab reloaded mid-send (or arriving from the home screen): whatever it has not yet seen in history
-// is shown again and sent again under the SAME id, which the server's claim turns into nothing if it already arrived.
-pend().forEach(function(p){if(list.querySelector('.msg[data-cid="'+p.id+'"]')){forget(p.id);return}send(p,pendingLine(p))});
 window.addEventListener('offline',function(){noteLine("you're offline. i'll send it when you're back.")});
 window.addEventListener('online',function(){noteLine('');list.querySelectorAll('.msg[data-state=waiting]').forEach(function(li){if(li.retry)return li.retry();send(stored(li),li)});poll()});
 if(offline())noteLine("you're offline. i'll send it when you're back.");
-var polling=false;function poll(){if(polling)return;polling=true;fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
+// L10: what Reason is still working on at length, from the server's own record of the task.
+function workIs(w){var lw=document.querySelector('.longwork');if(!lw)return;if(!w){lw.hidden=true;return}lw.dataset.task=w.taskId;lw.querySelector('.lw-line').textContent=w.line;lw.querySelector('.lw-note').textContent=w.note;if(lw.hidden){lw.hidden=false;if(near())bottom()}}
+// S3: a task that finished while this page was open settles in place: its lines become one DONE line.
+function tidyDays(){list.querySelectorAll('li.day').forEach(function(d){var n=d.nextElementSibling;if(!n||n.classList.contains('day'))d.remove()})}
+function settleIn(a){(a||[]).forEach(function(s){if(list.querySelector('.done[data-task="'+s.task+'"]'))return;var at=list.querySelector('.msg:not(.done)[data-id="'+s.ids[s.ids.length-1]+'"]');if(!at)return;var t=document.createElement('ol');t.innerHTML=s.html;var li=t.firstElementChild;if(!li)return;times(li);at.replaceWith(li);s.ids.forEach(function(id){var o=list.querySelector('.msg:not(.done)[data-id="'+id+'"]');if(o)o.remove()});doneInit(li.parentNode)});tidyDays();where()}
+var polling=false;function poll(){if(polling||!loaded)return;polling=true;lastPoll=Date.now();fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);settleIn(j.settled);if('work' in j)workIs(j.work);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
 var beat=0;setInterval(function(){if(!live||Date.now()-beat>40000)poll()},4000);
 function stream(){if(!window.EventSource)return;try{es=R.stream.indexOf('http')===0?new EventSource(R.stream+'?after='+R.last,{withCredentials:true}):new EventSource(R.stream+'?after='+R.last)}catch(x){return}es.onopen=function(){live=true;beat=Date.now();if(lost){lost=0;noteLine('')}};
 es.addEventListener('ping',function(){beat=Date.now()});
 es.addEventListener('message',function(e){beat=Date.now();try{add(JSON.parse(e.data))}catch(x){}});
 es.addEventListener('typing',function(e){try{var t=JSON.parse(e.data);working(t.on,t.until)}catch(x){}});
+es.addEventListener('state',function(e){beat=Date.now();try{var j=JSON.parse(e.data);settleIn(j.settled);workIs(j.work)}catch(x){}});
 es.addEventListener('signedout',function(){es.close();expired()});
 es.onerror=function(){live=false}}
-stream();
 document.addEventListener('visibilitychange',function(){if(!document.hidden)poll()});
-var loading=false;function older(){if(loading||!R.more)return;loading=true;var h=document.body.scrollHeight;
-fetch('/web/history?before='+R.first,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){return r.json()}).then(function(j){var ms=j.messages||[];var anchor=list.firstChild;
-ms.forEach(function(m){if(!list.querySelector('.msg[data-id="'+m.id+'"]'))list.insertBefore(line(m),anchor)});
-if(ms.length)R.first=ms[0].id;R.more=!!j.more;start.textContent='';if(!R.more&&j.start){var s=document.createElement('p');s.className='lbl';s.textContent=j.start;start.appendChild(s)}
-window.scrollBy(0,document.body.scrollHeight-h)}).catch(function(){}).then(function(){loading=false;if(R.more)hook()})}
+// L2: ↑ FINDING EARLIER MESSAGES… where the button was, a ghost above the day it lands on; the page
+// stays where it is while the earlier day arrives above it.
+var loading=false;function older(){if(loading||!R.more)return;loading=true;start.innerHTML=R.finding;start.classList.add('finding');var a=list.querySelector('.msg'),top=a?a.getBoundingClientRect().top:0;
+fetch('/web/history?before='+R.first,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){var t=document.createElement('ol');t.innerHTML=j.html||'';
+var fd=list.firstElementChild;if(fd&&fd.classList.contains('day')&&t.querySelector('li.day[data-day="'+fd.dataset.day+'"]'))fd.remove();
+t.querySelectorAll('.msg[data-id]').forEach(function(li){if(has(li.dataset.id))li.remove()});
+var anchor=list.firstChild;times(t);while(t.firstChild)list.insertBefore(t.firstChild,anchor);doneInit();
+if(j.first)R.first=j.first;R.more=!!j.more;start.classList.remove('finding');start.textContent='';if(!R.more&&j.start){var s=document.createElement('p');s.className='lbl';s.textContent=j.start;start.appendChild(s)}
+if(a)window.scrollBy(0,a.getBoundingClientRect().top-top);where()}).catch(function(){}).then(function(){loading=false;start.classList.remove('finding');if(R.more)hook()})}
 function hook(){start.textContent='';var b=document.createElement('button');b.type='button';b.className='act2';b.textContent='\\u2191 SHOW EARLIER MESSAGES';b.onclick=older;start.appendChild(b)}
-if(R.more)hook();
-bottom();
+// S2: the "where you are" note names the day and device of what is at the top of the screen. A day
+// is current once it passes 90px under the top bar; at the very bottom it is the latest. Two slots
+// crossfade (none under reduced motion). Scrolled back into an earlier day, TODAY ↓ shows inside the
+// composer line and the placeholder says "Reply from here".
+var wn=document.querySelector('.where'),ws=wn?wn.querySelectorAll('.wn-s'):[],wnow=wn?wn.querySelector('.wn-now'):null,cur=null,tb=document.querySelector('.today');
+function note(t){if(t===cur)return;var on=wn.querySelector('.wn-s.on')||ws[0];if(cur===null){on.textContent=t;on.classList.add('on')}else{var off=on===ws[0]?ws[1]:ws[0];off.textContent=t;on.classList.remove('on');off.classList.add('on')}cur=t;wn.setAttribute('aria-label',t);if(wnow)wnow.textContent=t}
+function backTo(on){if(!tb)return;tb.hidden=!on;if(box&&R.ph)box.placeholder=on?R.ph.back:R.ph.rest}
+function where(){if(!wn||!loaded)return;var ms=list.querySelectorAll('li[data-where]');if(!ms.length){wn.hidden=true;backTo(false);return}wn.hidden=false;
+var line=(bar?bar.getBoundingClientRect().bottom:0)+90,end=window.innerHeight+window.scrollY>=document.documentElement.scrollHeight-40,pick=ms[0];
+if(end)pick=ms[ms.length-1];else for(var i=0;i<ms.length;i++){if(ms[i].getBoundingClientRect().top<=line)pick=ms[i];else break}
+note(pick.dataset.where);backTo(!end&&pick.dataset.day!==ms[ms.length-1].dataset.day)}
+var ticking=false;window.addEventListener('scroll',function(){if(ticking)return;ticking=true;requestAnimationFrame(function(){ticking=false;where()})},{passive:true});window.addEventListener('resize',where);
+if(tb)tb.onclick=function(){window.scrollTo({top:document.documentElement.scrollHeight,behavior:calm2?'auto':'smooth'})};
+// S3: a DONE line opens and folds its messages; the Caveat line under a just-finished one goes once it has been opened (remembered here).
+var OPK='reason-web-opened';function opened(){try{return JSON.parse(localStorage.getItem(OPK)||'[]')}catch(e){return[]}}
+function doneInit(root){var o=opened();(root||list).querySelectorAll('.done[data-fresh]').forEach(function(li){if(o.indexOf(li.dataset.task)>=0){var f=li.querySelector('.dl-fresh');if(f)f.remove()}})}
+list.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('.dl');if(!b||!list.contains(b))return;var li=b.parentNode,open=li.classList.toggle('open');b.setAttribute('aria-expanded',open?'true':'false');b.querySelector('.dl-n').textContent=open?'FOLD ↑':li.dataset.n+' ↓';
+if(open){var f=li.querySelector('.dl-fresh');if(f)f.remove();try{var o=opened();if(o.indexOf(li.dataset.task)<0){o.push(li.dataset.task);localStorage.setItem(OPK,JSON.stringify(o.slice(-50)))}}catch(x){}}where()});
+function ready(){loaded=true;times(list);doneInit();
+carried.forEach(function(c){if(list.querySelector('.msg[data-cid="'+c.p.id+'"]')){c.li.remove();forget(c.p.id);return}send(c.p,c.li)});
+stream();if(R.more)hook();bottom();where()}
+// L1: the thread opens with its composer and tabs already live; the newest page comes from the server.
+// Slow (over 8 s) or failed, it says so in the same place, with a way to try again.
+function opening(){var l1=document.querySelector('.l1');function slow(){if(!l1)return;var s=l1.querySelector('[role=status]');if(s)s.textContent='STILL LOOKING…';l1.querySelector('.l1-slow').hidden=false;l1.querySelector('.l1-again').hidden=false}var tm=setTimeout(slow,8000);
+fetch('/web/history',{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}if(!r.ok)throw 1;return r.json()}).then(function(j){clearTimeout(tm);var t=document.createElement('ol');t.innerHTML=j.html||'';var anchor=list.firstChild;while(t.firstChild)list.insertBefore(t.firstChild,anchor);
+R.first=j.first||0;R.last=Math.max(R.last,j.last||0);R.more=!!j.more;if(l1)l1.remove();list.removeAttribute('aria-busy');
+start.textContent='';if(!R.more&&j.start){var s=document.createElement('p');s.className='lbl';s.textContent=j.start;start.appendChild(s)}
+if('work' in j)workIs(j.work);ready()}).catch(function(e){if(e!==0){clearTimeout(tm);slow()}})}
+if(R.defer)opening();else ready();
 })();`;
 
 const json = (status, obj, extra = {}) => {
@@ -602,11 +738,12 @@ export function streamPath() {
   return origin ? `${origin}/web/live` : "/web/stream";
 }
 
-function boot({ csrf, lines = [], more = false, conversationId = "" }) {
+function boot({ csrf, lines = [], more = false, conversationId = "", deferred = false }) {
   // `k` keys this tab's unsent messages to ONE conversation: a tab later signed in as somebody else never resends them.
   const k = createHash("sha256").update(`pending:${conversationId}`).digest("base64url").slice(0, 12);
-  const first = lines[0]?.id ?? 0, last = lines.reduce((n, m) => Math.max(n, m.id), 0);
-  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},k:${JSON.stringify(k)},stream:${JSON.stringify(streamPath())}};`;
+  // A deferred page (L1) learns first/last from its first /web/history; until then it polls nothing.
+  const first = deferred ? 0 : lines[0]?.id ?? 0, last = deferred ? 0 : lines.reduce((n, m) => Math.max(n, m.id), 0);
+  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},k:${JSON.stringify(k)},stream:${JSON.stringify(streamPath())},defer:${deferred ? "true" : "false"},ph:${JSON.stringify(PLACEHOLDER)},finding:${JSON.stringify(FINDING)}};`;
 }
 
 const NET = `<p class="netline" role="status" hidden></p>`;
@@ -614,28 +751,62 @@ const NET = `<p class="netline" role="status" hidden></p>`;
 /**
  * The thread. `firstVisit` draws 5C in its place (once); `approvals` the one loud thing at the foot.
  */
-export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), all = false }) {
+export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), all = false, deferred = false, work = null }) {
   if (firstVisit) return renderFirstVisit({ account });
+  const conv = account?.conversation_id ?? "";
+  const service = serviceOf(conv);
   const startLine = more
     ? `<button class="act2" type="button">↑ SHOW EARLIER MESSAGES</button>`
     : lines.length ? label(`Your conversation before ${dayFmt().format(lines[0].at)} stays in your texts.`) : "";
-  const asked = approvals[0]?.at ?? null;
+  // SR4: a label is always who · where · when; what the card is waiting for is said inside the card.
+  const asked = approvals[0]?.at ?? approvals[0]?.asked_at ?? null;
   const askedIn = asked ? [...lines].reverse().find(m => m.role === "assistant" && m.at <= asked + 60_000) : null;
-  const apprLbl = asked ? `REASON · ${(askedIn?.source ?? sourceLabel(null, serviceOf(account?.conversation_id))).toUpperCase()} · ${timeFmt().format(asked)}` : "REASON · WAITING ON YOU";
+  const apprLbl = `REASON · ${(askedIn?.source ?? sourceLabel(null, service)).toUpperCase()} · ${timeFmt().format(asked ?? askedIn?.at ?? now)}`;
   const appr = approvals.length ? `<div class="msg re approval">${label(apprLbl)}${approvalCard({ title: approvals[0].title, money: approvals[0].money, href: approvals[0].href })}</div>` : "";
   const count = items.length + approvals.length + back.length;
-  const body = topBar({ csrf }) + NET
+  const drawn = pageHtml(lines, { conversationId: conv, service, now });
+  // L1: with script, the page opens with its composer and tabs live and the thread's place held by
+  // ruled lines; the newest page arrives from /web/history. Without script it is all here at once.
+  const thread = deferred
+    ? `${OPENING}<ol class="thread" role="log" aria-live="polite" aria-relevant="additions" aria-busy="true"></ol>`
+      + `<noscript><div class="start">${startLine}</div><ol class="thread" role="log">${drawn}</ol></noscript>`
+    : `<div class="start">${startLine}</div><ol class="thread" role="log" aria-live="polite" aria-relevant="additions">${drawn}</ol>`;
+  const body = topBar({ csrf, where: WHERE_NOTE }) + NET
     + `<main class="wrapc"><section class="convo" aria-labelledby="c-h"><h1 id="c-h" class="sr">Your conversation with Reason</h1>`
-    + `<div class="start">${startLine}</div>`
-    + `<ol class="thread" role="log" aria-live="polite" aria-relevant="additions">${listHtml(lines, { now })}</ol>`
+    + (deferred ? `<div class="start"></div>` : "") + thread
     + (lines.length ? "" : `<div class="empty">${hand("nothing here yet. whatever you tell me here or by text shows up in this thread.", { tilt: true })}</div>`)
-    + appr + onIt(true)
+    + appr + onIt(true) + longWorkHtml(work)
     + needsYes(approvals)
-    + composer({ csrf, sendId })
+    + composer({ csrf, sendId, slot: TODAY_SLOT })
     + `</section>${ongoingMargin(items, approvals, { all, back })}</main>`
     + `<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing${count ? `, ${count} ${count === 1 ? "thing" : "things"}` : ""}"><span aria-hidden="true">ONGOING${count ? ` · ${count}` : ""}</span></button>`
     + tabBar("chat", count) + listeningHtml();
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: account?.conversation_id }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
+}
+
+/** S2: the "where you are" note, two slots that crossfade. Filled and shown by the page's script. */
+export const WHERE_NOTE = `<span class="where" role="status" aria-live="polite" hidden><span class="wn-s on" aria-hidden="true"></span><span class="wn-s" aria-hidden="true"></span><span class="sr wn-now"></span></span>`;
+/** S2: back to today, inside the composer line (src/pages/webcompose.js `slot`), never over the thread. */
+export const TODAY_SLOT = `<button class="today" type="button" hidden>TODAY <span aria-hidden="true">↓</span></button>`;
+/** The composer's words at rest, and while scrolled back into an earlier day. */
+export const PLACEHOLDER = { rest: "Tell Reason what you need", back: "Reply from here" };
+
+const ghost = (side, widths) => `<div class="gh gh-${side}" aria-hidden="true"><span class="gh-l"></span><span class="gh-w">${widths.map(w => `<span style="width:${w}%"></span>`).join("")}</span></div>`;
+/** L1, sheet "Loading · app screens": OPENING YOUR THREAD… and ghost messages, yours right, Reason's left. */
+const OPENING = `<div class="l1"><p class="lbl" role="status">OPENING YOUR THREAD…</p><div class="l1-sp"></div>${ghost("re", [80, 55])}${ghost("you", [60])}${ghost("re", [75, 70, 30])}<p class="hand l1-slow" hidden>taking a little longer than usual. still here.</p><a class="act l1-again" href="/web?thread" hidden>Try again <span aria-hidden="true">→</span></a></div>`;
+/** L2: ↑ FINDING EARLIER MESSAGES… with a ghost above the day it will land on. Drawn by the page's script. */
+export const FINDING = `<p class="lbl" role="status">↑ FINDING EARLIER MESSAGES…</p>${ghost("re", [70, 40])}<div class="l2-rule" aria-hidden="true"></div>`;
+
+/** L10's state for this conversation, with the honest line it carries (src/settle.js longWork), or null. */
+export function workOf(conversationId) {
+  const w = settle.longWork(conversationId);
+  return w ? { ...w, note: w.texted ? settle.LONG_NOTE : settle.LONG_NOTE_WEB } : null;
+}
+
+/** L10, sheet "Loading · actions": "on it." with what it's doing, and the honest line. Null work draws a hidden block. */
+export function longWorkHtml(work) {
+  const note = work?.note ?? "";
+  return `<div class="longwork"${work ? ` data-task="${work.taskId}"` : " hidden"}><div class="lw-on" role="status"><span class="ring">${bubble(4)}</span><span class="hand lw-line">${esc(work?.line ?? "on it.")}</span></div><p class="lw-note">${esc(note)}</p></div>`;
 }
 
 /** B / B2, the arrival: the greeting, the composer, then what's in hand or where to start, then iMessage. */
@@ -712,9 +883,9 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   if (query.tab === "ongoing") return renderOngoing({ csrf, items, approvals, back, all });
   const rows = db.messagesBefore(conv, { limit: PAGE + 1 });
   const more = rows.length > PAGE;
-  const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service }));
+  const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service, now }));
   const recentWeb = lines.some(m => m.web && m.role === "user" && now - m.at < THREAD_RECENT_MS);
-  if (query.thread != null || recentWeb) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, all });
+  if (query.thread != null || recentWeb) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, all, deferred: true, work: workOf(conv) });
   return renderHome({ account, csrf, sendId, items, approvals, back, pick: pickUp(conv, service) });
 }
 
@@ -722,21 +893,41 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
  * GET /web/history?before=<id> (older page) or ?after=<id> (catch-up). Only the session's own
  * conversation is ever read; an id from somebody else's history simply finds nothing.
  */
-export function historyRequest({ account, query = {} }) {
+export function historyRequest({ account, query = {}, now = clock.now() }) {
   const conv = account.conversation_id;
   const service = serviceOf(conv);
   const num = (v) => (/^\d{1,15}$/.test(String(v ?? "")) ? Number(v) : null);
   if (query.after != null) {
     const after = num(query.after) ?? 0;
     const rows = db.messagesFor(conv, { after, limit: 200 });
-    return json(200, { messages: rows.map(r => rowOut(r, { conversationId: conv, service })) });
+    // What is still being worked at length (L10), and finished tasks to settle in place (S3).
+    return json(200, { messages: rows.map(r => rowOut(r, { conversationId: conv, service, now })), work: workOf(conv), settled: settledLately(conv, { service, now }) });
   }
+  // A page: the newest (the thread opening, L1) or the one before row `before` (L2). `html` is the
+  // page drawn as the thread draws it — day labels, "Continued on Web", finished tasks settled.
   const before = num(query.before);
   const rows = db.messagesBefore(conv, { before, limit: PAGE + 1 });
   const more = rows.length > PAGE;
-  const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service }));
+  const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service, now }));
   const start = !more && lines.length ? `Your conversation before ${dayFmt().format(lines[0].at)} stays in your texts.` : null;
-  return json(200, { messages: lines, more, start });
+  const html = pageHtml(lines, { conversationId: conv, service, now });
+  const first = lines[0]?.id ?? 0, last = lines.reduce((n, m) => Math.max(n, m.id), 0);
+  return json(200, { messages: lines, html, more, start, first, last, ...(before == null ? { work: workOf(conv) } : {}) });
+}
+
+/**
+ * Tasks that finished in the last few minutes, settled: what a page that showed their messages one by
+ * one swaps in (the DONE line, JUST NOW). `ids` are every message folded into it.
+ */
+export function settledLately(conversationId, { service = serviceOf(conversationId), now = clock.now() } = {}) {
+  const done = db.db.prepare("SELECT id FROM tasks WHERE conversation_id = ? AND state = 'done' AND finished_at >= ?").all(conversationId, now - settle.JUST_NOW_MS).map(r => r.id);
+  if (!done.length) return [];
+  const ids = db.db.prepare(`SELECT DISTINCT m.id FROM task_messages l JOIN messages m ON m.conversation_id = l.conversation_id
+      AND ((l.outbox_id IS NOT NULL AND m.outbox_id = l.outbox_id) OR (l.external_id IS NOT NULL AND m.role = 'user' AND m.external_id = l.external_id))
+    WHERE l.conversation_id = ? AND l.task_id IN (${done.map(() => "?").join(",")})`).all(conversationId, ...done).map(r => r.id);
+  const { folds } = settle.foldsFor(conversationId, ids);
+  return [...folds.values()].filter(f => done.includes(f.task.id))
+    .map(f => ({ task: f.task.id, ids: f.rows.map(r => r.id), html: doneHtml(f, { conversationId, service, now }) }));
 }
 
 const sends = new Map(); // conversation → recent send times, for SEND_LIMIT
@@ -781,6 +972,8 @@ export async function sendRequest({ account, headers = {}, readBody, router, log
   const conv = account.conversation_id;
   if (files.length && !(await import("../webuploads.js")).attachmentsFor(conv, files)) return fail(400, "bad_file");
   if (!underLimit(conv)) { log({ web_send_refused: "rate_limited" }); return fail(429, "slow_down"); }
+  // S2: what kind of device this was typed on, for "today, on your laptop". Kept by the message's own id.
+  try { settle.noteWebDevice(conv, id, settle.deviceClass(headers["user-agent"])); } catch { /* never costs a send */ }
 
   const delivering = Promise.resolve()
     .then(async () => {
@@ -820,6 +1013,7 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
         if (closed) return;
         closed = true;
         db.historyBus.off("row", onRow);
+        db.historyBus.off("state", onRow);
         webCh?.events?.off?.("typing", onTyping);
         clearInterval(beat); clearInterval(check); clearTimeout(stop);
         log({ web_stream_end: why });
@@ -832,14 +1026,23 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
           write(`id: ${r.id}\nevent: message\ndata: ${JSON.stringify(rowOut(r, { conversationId: conv, service }))}\n\n`);
         }
       };
-      const onRow = (e) => { if (e?.conversationId !== conv) return; try { flush(); } catch { end("failed"); } };
+      // L10 and S3 ride the stream too: what is being worked at length, and tasks that just settled.
+      // Sent when it changes — after a new row, when a turn writes down its task's messages
+      // (historyBus `state`, src/settle.js), and on the 15 s ping — never on a poll beside the stream.
+      let lastState = null;
+      const pushState = () => {
+        if (closed) return;
+        const s = JSON.stringify({ work: workOf(conv), settled: settledLately(conv, { service }) });
+        if (s !== lastState) { lastState = s; write(`event: state\ndata: ${s}\n\n`); }
+      };
+      const onRow = (e) => { if (e?.conversationId !== conv) return; try { flush(); pushState(); } catch { end("failed"); } };
       const onTyping = (e) => {
         if (e?.to !== account.address || !stillHers()) return;
         write(`event: typing\ndata: ${JSON.stringify({ on: !!e.on, until: e.until || 0 })}\n\n`);
       };
       // Timers first: `end` clears them, and the first flush may already end the stream.
       // A named event, not a comment, so the page can tell a live stream from a silently dead one.
-      const beat = setInterval(() => write("event: ping\ndata: {}\n\n"), 15_000);
+      const beat = setInterval(() => { write("event: ping\ndata: {}\n\n"); try { pushState(); } catch { /* the ping still goes */ } }, 15_000);
       const check = setInterval(() => { if (!stillHers()) { write("event: signedout\ndata: {}\n\n"); end("signed_out"); } }, recheckMs);
       const stop = setTimeout(() => end("cycle"), streamMs);
       for (const t of [beat, check, stop]) t.unref?.();
@@ -847,8 +1050,9 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
       res.on?.("close", () => end("closed"));
       write("retry: 1500\n\n");
       db.historyBus.on("row", onRow);
+      db.historyBus.on("state", onRow);
       webCh?.events?.on?.("typing", onTyping);
-      try { flush(); } catch (e) { log({ web_stream_failed: (e?.message ?? String(e)).split("\n")[0] }); end("failed"); }
+      try { flush(); pushState(); } catch (e) { log({ web_stream_failed: (e?.message ?? String(e)).split("\n")[0] }); end("failed"); }
     },
   };
 }

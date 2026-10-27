@@ -268,8 +268,8 @@ test("day labels, and Caveat 'Continued on Web' where the person moved to Web", 
     wc.rowOut(row({ id: 1, role: "user", channel: "fake", text: "a", at: now - day }), { conversationId: KOFI_C }),
     wc.rowOut(row({ id: 2, role: "user", channel: "web", text: "b", at: now }), { conversationId: KOFI_C }),
   ], { now });
-  assert.match(html, /<li class="day" role="separator"><p class="lbl">YESTERDAY<\/p><\/li>/);
-  assert.match(html, /<li class="day" role="separator"><p class="lbl">TODAY<\/p><\/li><li class="cont" role="separator" aria-label="Continued on Web"><span aria-hidden="true"><\/span><span class="hand">Continued on Web<\/span>/);
+  assert.match(html, /<li class="day" role="separator" data-day="[\d-]+" data-where="yesterday, on your phone"><p class="lbl">YESTERDAY<\/p><\/li>/);
+  assert.match(html, /<li class="day" role="separator" data-day="[\d-]+" data-where="today, on the web"><p class="lbl">TODAY<\/p><\/li><li class="cont" role="separator" aria-label="Continued on Web"><span aria-hidden="true"><\/span><span class="hand">Continued on Web<\/span>/);
 });
 
 test("Reason's lists become 01 02 03 in pen between dashed rules; a trailing price gets its own column", () => {
@@ -333,7 +333,7 @@ test("the thread page: a log, ↑ SHOW EARLIER, 'on it.' as a status, the one-li
   assert.match(s, /<p class="under">Replies come here, not to your phone as well\.<\/p>/);
   // Owner 10-26: + and the mic, built, shown once the script can run them (test/web-compose.test.js).
   assert.match(s, /aria-label="Add a photo or file" hidden>[^]*aria-label="Speak instead" hidden>/);
-  assert.match(s, /<form class="cform" method="POST" action="\/web\/send"><input type="hidden" name="c" value="[^"]*"><input type="hidden" name="id" value="[^"]*"><button class="ic c-add" type="button" aria-label="Add a photo or file" hidden>[^]*?<\/button><input class="c-file" type="file"[^>]*hidden[^>]*><label class="sr" for="c-input">Message Reason<\/label><input id="c-input"[^>]*><button class="ic c-mic" type="button" aria-label="Speak instead" hidden>[^]*?<\/button><button class="send" type="submit" aria-label="Send">[^]*?<\/button><\/form>/, "+ · the input · the mic · send (composer 01)");
+  assert.match(s, /<form class="cform" method="POST" action="\/web\/send"><input type="hidden" name="c" value="[^"]*"><input type="hidden" name="id" value="[^"]*"><button class="ic c-add" type="button" aria-label="Add a photo or file" hidden>[^]*?<\/button><input class="c-file" type="file"[^>]*hidden[^>]*><label class="sr" for="c-input">Message Reason<\/label><input id="c-input"[^>]*><button class="today" type="button" hidden>TODAY <span aria-hidden="true">↓<\/span><\/button><button class="ic c-mic" type="button" aria-label="Speak instead" hidden>[^]*?<\/button><button class="send" type="submit" aria-label="Send">[^]*?<\/button><\/form>/, "+ · the input · TODAY ↓ (hidden until scrolled back, v2 §4b) · the mic · send (composer 01)");
   assert.match(s, /<nav class="tabs" aria-label="Sections"><a href="\/web\?thread" aria-current="page">Chat<\/a><a href="\/web\?tab=ongoing">Ongoing<\/a><\/nav>/);
   assert.match(s, /<nav aria-label="Account"><a class="act2" href="\/web\/memory">MEMORY<\/a><a class="act2" href="\/web\/settings">SETTINGS<\/a><\/nav>/);
   assert.match(s, /<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">/);
