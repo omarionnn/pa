@@ -269,10 +269,10 @@ html.fg-open body{overflow:hidden}
 .mem-body:empty{display:none}
 .more{align-self:flex-start;min-height:44px;display:inline-flex;align-items:center;gap:.25em;text-decoration:none;font:italic 400 19px/1.15 var(--serif)}
 .gc{padding:16px 18px;display:flex;flex-direction:column;gap:6px}
-.gc-h{display:flex;justify-content:space-between;align-items:baseline;gap:12px}
+.gc-h{display:flex;justify-content:space-between;align-items:baseline;gap:0 12px;flex-wrap:wrap}
 .gc-l{margin:0;font-size:10.5px;color:var(--pen)}
 .gc-f{margin:0}
-.gc-t{margin:0;font-size:11.5px}
+.gc-t{margin:0;font-size:11.5px;white-space:nowrap}
 .gc .gs-list{gap:6px}
 .gc .gs+.gs{padding-top:10px;border-top:1px dashed var(--hair)}
 .gc .gs-t{font-size:22px}
@@ -301,7 +301,7 @@ mark{background:transparent;color:inherit;border-bottom:2px solid var(--pen)}
 .flt-a{font-size:12px}
 .mem-body{gap:56px}
 .mem-found{max-width:720px}
-.gs-aside{order:1}
+.gs-aside{order:1;max-width:360px!important;flex-basis:320px!important}
 .gs-aside .gc{margin:0}
 .more{font-size:20px}
 .sg{font-size:24px}
