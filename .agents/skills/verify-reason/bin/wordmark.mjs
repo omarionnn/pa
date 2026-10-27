@@ -9,7 +9,7 @@
 //
 // One line per page × width × scheme, `ok` or `FAIL`; exits non-zero on any FAIL. A page passes when
 // its first visible thing is the wordmark (reas + brand-red bubble + n), at the start of the top line, in the inline Instrument
-// Serif italic at 21.6px, the site's #2a2520 in light / the page's light ink in dark, bubble brand red #b03030 (dark: #e8765c),
+// Serif italic at 21.6px, the site's #2a2520 in light / the page's light ink in dark, bubble brand red #9c3b2e (dark: #d46a5c),
 // with no old dot-and-"Reason" left in the top line. `--site` also measures the live marketing
 // site's .nav-mark at 1280 and requires the same width, type size and bubble size (needs the network,
 // reads only). `--shot` saves the 390px light event join page.

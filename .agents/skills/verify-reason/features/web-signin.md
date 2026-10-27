@@ -78,11 +78,11 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   `web_signin_ok`, `web_signout` — never a number, code or token.
 - **Copy** — intent only (no phrase to type; `test/no-command-phrases.test.js` scans `src/`): the
   sms: body "Hi" is prefilled, never dictated. Page kit: `shell` with pill "Web", wordmark, PAPER,
-  brand pen red (#b03030), theme switch.
+  brand pen red (#9c3b2e), theme switch.
 - **The look** (design handoff 2026-10-26, `~/Desktop/reason-web-handoff-2026-10-26`, kit =
   `src/pages/webkit.js`): Paper / Night tokens hex for hex (`TOKENS`), the four voices (Instrument
   Serif italic = your words + primary actions, Inter = Reason, Courier caps = labels, Caveat in pen =
-  the margin voice), the wordmark bubble in pen (#b03030 / #e8765c — Web only; brand.js unchanged),
+  the margin voice), the wordmark bubble in pen (#9c3b2e / #d46a5c — Web only; brand.js unchanged),
   dashed rules, hard-offset shadows, text actions with →, focus = 2px ink outline offset 3px, reduced
   motion = none. Theme = Paper · Night · Auto radio group (`themeSwitch`), the same `reason-theme`
   localStorage word every page reads. Fonts self-hosted, Latin subsets in `assets/fonts/*-web.woff2`

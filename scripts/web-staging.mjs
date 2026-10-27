@@ -126,7 +126,7 @@ function local(url, signedOut) {
 }
 const SHIM = `<script>(function(){var f=window.fetch,sent=0,R=${JSON.stringify(reply)};window.fetch=function(u,o){u=String(u);if(u.indexOf('/web/')!==0)return f.apply(this,arguments);var b;if(u.indexOf('/web/send')===0){sent++;b={ok:true}}else{b={messages:[],more:false};if(sent){sent--;var m=Object.assign({},R,{id:R.id+Math.floor(Math.random()*1e6),at:Date.now()});b.messages=[m]}}return new Promise(function(r){setTimeout(function(){r(new Response(JSON.stringify(b),{status:200,headers:{'Content-Type':'application/json'}}))},700)})};try{window.EventSource=undefined}catch(e){}})();</script>`;
 const LOADER = `<script>try{sessionStorage.removeItem('reason-web-loaded')}catch(e){}</script>`;
-const TAG = `<style>.stg-tag{position:fixed;right:10px;bottom:10px;z-index:9999;font:11px/1 "Courier New",Courier,monospace;letter-spacing:.12em;text-transform:uppercase;background:#b03030;color:#fff;padding:7px 9px;text-decoration:none;opacity:.9}.stg-tag:hover{color:#fff;opacity:1}</style><a class="stg-tag" href="index.html">STAGING · sample data · all screens</a>`;
+const TAG = `<style>.stg-tag{position:fixed;right:10px;bottom:10px;z-index:9999;font:11px/1 "Courier New",Courier,monospace;letter-spacing:.12em;text-transform:uppercase;background:#9c3b2e;color:#fff;padding:7px 9px;text-decoration:none;opacity:.9}.stg-tag:hover{color:#fff;opacity:1}</style><a class="stg-tag" href="index.html">STAGING · sample data · all screens</a>`;
 
 function stage(html, { signedOut = false, loader = false } = {}) {
   let out = html
