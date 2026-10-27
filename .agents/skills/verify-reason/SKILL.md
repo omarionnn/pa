@@ -725,7 +725,7 @@ Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start 
   profile, the judge, the watcher, photo notes and the said-ledger's record on the **subscription**
   (extraction, the profile and the said-ledger's record through the background lane, `src/background.js`: one job at a time,
   ≥15 s apart, never while a reply turn is in flight, parked while the CLI reports a limit — never
-  an API fallback); the harm screen, purchase-topic, the one-thought sorter and the pre-send check on
+  an API fallback); the harm screen, the one-thought sorter and the pre-send check on
   the **API, `claude-haiku-5-5`**, cached instructions, with the CLI as fallback when the API cannot
   answer; **calls** on the API exactly as configured. Every call is counted in `model_usage` by
   feature (`$` estimated off `config.apiPrices`; CLI runs counted without `$`); the /ops row

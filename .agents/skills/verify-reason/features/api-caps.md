@@ -8,7 +8,7 @@ at New York midnight / on the 1st with nothing to reset.
 
 - **Daily cap** — `REASON_API_DAILY_CAP_USD` (default $1), every paid feature except calls. Reached:
   `apiOut(feature)` is true and `callApi` throws before any request, so the harm screen,
-  purchase-topic, the one-thought sorter and the said-ledger's pre-send check take the CLI fallback
+  the one-thought sorter and the said-ledger's pre-send check take the CLI fallback
   a dry key takes (claude-cli backend). Judge, watch, extraction and profile are already on the CLI.
 - **Call cap — a heads-up only** (owner, 2026-10-25) — `REASON_API_CALL_DAILY_CAP_USD` (default $2;
   live $6), features `call` and `call_harm` (`CALL_FEATURES`). Calls never count toward the daily cap

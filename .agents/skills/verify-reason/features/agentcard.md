@@ -259,25 +259,18 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   row's `status`, so a cancellation reaches the next turn whether or not `cancelledLine` was sent,
   and the row change itself switches the block on (`test/purchasesnote.test.js`, and the
   suppressed-text pin in `test/agentcard.test.js`).
-- **The block rides only on a message about buying, read from its meaning (2026-10-24, after #94).**
-  `startPurchasesNote` asks one yes/no of `claude-haiku-5-5` over the API, with the CLI behind it on
-  a `claude-cli` backend (`askTopicCli` in `src/purchasesnote.js`, its own
-  `REASON_PURCHASE_TOPIC_CLI_TIMEOUT_MS` 12s added to the budget — taken on an API error, a missing
-  key or an API skip) (`REASON_PURCHASE_TOPIC_MODEL`; deliberately not `REASON_HARM_MODEL`, which this Mac's `.env` sets
-  to opus): is the new message about buying, orders, shopping, deliveries, refunds, returns or a product
-  they might buy, shown with a 300-char snippet of Reason's last message so "any update?" after an order
-  thread counts. No regexes, no keyword lists. **Only when there is something to show**: no purchase row
-  in the 14-day window means no call at all. It starts as context building starts (both backends) and is
-  awaited where the notes meet, with a hard `REASON_PURCHASE_TOPIC_TIMEOUT_MS` (1.8s) that aborts the
-  request. On a timeout, an error, an answer that is not yes/no, neither an API key nor the CLI backend
-  (`structural("no_api_key")`), or an event turn, it falls
-  back to the structural signals above, so a failed check never hides the block in the incident case.
-  A phone call keeps the structural signals (its context is built once per call). `purchases_recent` is
-  sent on every turn either way. Decision log: `{"purchases_topic":"yes"|"no","via":"api"|"cli","ms":…}`,
-  `{"purchases_topic_failed":…}`, `{"purchases_topic":"structural","why":…}`. Offline wiring in
-  `test/purchasesnote.test.js`; the real model in `test/flow-purchases-topic.test.js` (needs a key:
-  `node --env-file=.env --test test/flow-purchases-topic.test.js`; 7/7, p50 563ms, max 890ms on
-  2026-10-24 from this Mac).
+- **No side call: the main model reads the meaning (#223, 2026-10-27; replaces #95's yes/no gate).**
+  On a message of theirs, `startPurchasesNote` returns the block whenever there is a purchase row in
+  the 14-day window, ending with `ONLY_IF_BUYING` ("Background only: use this when their message is
+  about buying … otherwise do not bring it up."). Its promise is already settled: no API, no CLI, no
+  timeout, nothing in front of the reply. The old gate ran 48 times in the 24h to 2026-10-27 21:00Z:
+  31 over the paid API, 6 over the CLI at ~5s, 11 CLI failures after ~5s, all of it awaited before the
+  prompt was built. Event turns, and a message with no text, still go by the structural signals above,
+  so a sweep never raises an old purchase. A phone call also keeps the structural signals.
+  `purchases_recent` is sent on every turn. Log: `{"purchases_note":N,"why":"their_message"}`, and
+  there must be **no** `purchases_topic` line after the deploy. Pinned in `test/purchasesnote.test.js`
+  ("never calls the Anthropic API" traps `Messages.prototype.create` with a key set; "settled at once";
+  the incident message and a 5-day-old "any updates on the order?" still get the block).
 - **Tracking reads the conversation; `/track` is gone.** `GET /buy/v1/merchants/retail/orders/:id/track`
   answers `410 {"error":"endpoint_retired"}` since 2026-10-24 and the docs name no replacement.
   `agentcard.trackOrder` reads the purchase conversation's `orders[]` (`retailer_order_id` = the
