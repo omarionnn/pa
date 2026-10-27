@@ -329,7 +329,7 @@ test("the thread page: a log, ↑ SHOW EARLIER, 'on it.' as a status, the one-li
   assert.ok(!/aria-label="Add a photo or file"|aria-label="Speak instead"|type="file"|class="slot|class="(?:attach|mic)/i.test(s), "no + or mic, no room held for them");
   assert.match(s, /<form class="cform" method="POST" action="\/web\/send"><input type="hidden" name="c" value="[^"]*"><input type="hidden" name="id" value="[^"]*"><label class="sr" for="c-input">Message Reason<\/label><input id="c-input"[^>]*><button class="send" type="submit" aria-label="Send">[^]*?<\/button><\/form>/, "the form is the input and send, nothing else");
   assert.match(s, /<nav class="tabs" aria-label="Sections"><a href="\/web\?thread" aria-current="page">Chat<\/a><a href="\/web\?tab=ongoing">Ongoing<\/a><\/nav>/);
-  assert.match(s, /<nav aria-label="Account"><a class="act2" href="\/web\/memory">MEMORY<\/a><a class="act2" href="\/web\/settings">SETTINGS<\/a><\/nav>/);
+  assert.match(s, /<nav aria-label="Account"><a class="act2 og-back" href="#og" aria-controls="og">ONGOING<\/a><a class="act2" href="\/web\/memory">MEMORY<\/a><a class="act2" href="\/web\/settings">SETTINGS<\/a><\/nav>/);
   assert.match(s, /<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">/);
   assert.match(s, /\.composer\{position:sticky;bottom:0/, "desktop: pinned to the bottom");
   assert.match(s, /body\.typing \.tabs\{display:none\}/, "the tab bar hides while typing");

@@ -98,6 +98,7 @@ import { contactCardUrl, offerContactCard } from "./contact.js";
 import { rmSync } from "node:fs";
 import * as purchasesNoteMod from "./purchasesnote.js";
 import * as incidents from "./incidents.js";
+import { TITLE_HINT, normTitle, queueTitle } from "./itemtitle.js";
 
 /**
  * What image_generate tells the model. Sending is the default because a person who asks for a
@@ -3112,6 +3113,7 @@ export const tools = [
       properties: {
         fire_at: { type: "string", description: "ISO 8601 datetime with offset, e.g. 2026-09-26T18:00:00-04:00. Required for a one-off; leave it out when you pass `repeat`." },
         note: { type: "string", description: "What future-Reason should do when this fires. With `repeat` this is what the check-ins are ABOUT, in your own words ('how the job search is going'), because it is what you will be shown every time it comes round." },
+        title: { type: "string", description: TITLE_HINT },
         then_call: { type: "string", description: "Only when they asked for a CALL at this time. Why you are ringing, as the first words of the call, said to them: 'you asked me to call at 7 to get you up', 'you wanted a nudge to leave for the airport'. The call opens with exactly this after their name, and the rest of the call is you as usual. Nothing is texted first; if the call cannot be placed or they do not pick up, one text says so. Never a third party: this always rings the person you are talking to." },
         their_time: { type: "boolean", description: "For a one-off `then_call`: false ONLY when you picked the time yourself. Then a time in their night (23:00-08:00) is moved to 8am. When they named it — a 6:30 wake-up — leave this out or pass true: it rings at 6:30." },
         plan_id: { type: "integer", description: "Plan this timer belongs to, if any" },
@@ -3401,6 +3403,7 @@ export const tools = [
       type: "object",
       properties: {
         title: { type: "string", description: "Short human name for it, how you would say it: 'get the handyman to call back', 'find a table for 4 saturday'" },
+        short_title: { type: "string", description: TITLE_HINT },
         goal: { type: "string", description: "What done looks like, specific enough that future-you can tell whether it happened." },
         wake_in_minutes: { type: "integer", description: "How long until you take the first step. Omit to start right away on the next pass." },
         wake_at: { type: "string", description: "ISO 8601 datetime with offset, if a specific time matters more than a delay." },
@@ -9017,7 +9020,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // A standing check-in rather than a one-off. The rule decides when, so `fire_at` is neither
       // needed nor read, and the first firing is made in the same call. See src/series.js.
       if (input.repeat) {
-        const started = series.start({ conversationId: c, what: input.note, repeat: input.repeat, callGoal });
+        const label = normTitle(input.title, { name: me.name });
+        const started = series.start({ conversationId: c, what: input.note, repeat: input.repeat, callGoal, label });
+        if (started.ok && !label) queueTitle("series", c, started.series?.series_id, input.note, { name: me.name });
         trust.ledgerWrite({ conversationId: c, action: "series_set", input, out: started, target: String(input.note).slice(0, 120) });
         if (!started.ok) return started;
         return {
@@ -9045,7 +9050,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // later by looking rather than by remembering. See src/letgo.js.
       const onTask = taskFromInput(c, input, ctx);
       if (onTask.error) return onTask;
-      const made = db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null, taskId: onTask.id, callGoal });
+      const label = normTitle(input.title, { name: me.name });
+      const made = db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null, taskId: onTask.id, callGoal, label });
+      if (!label) queueTitle("timer", c, made.id, input.note, { name: me.name });
       return {
         ok: true, timer: timerView(made),
         ...(callGoal ? { say_back: `Say back in ONE line that you'll ring them at ${stamp(fireAt)}. Nothing about how it works.` } : {}),
@@ -9262,8 +9269,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "task_start": {
       const wake = wakeFrom(input);
       if (wake.error) return { ok: false, error: wake.error };
+      const label = normTitle(input.short_title, { name: me.name });
       const task = db.createTask(c, {
-        title: input.title, goal: input.goal,
+        title: input.title, goal: input.goal, label,
         wakeAt: wake.at ?? clock.now(),
         maxAttempts: config.taskMaxAttempts,
         sheet: input.sheet ?? null,
@@ -9272,6 +9280,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         originHandle: ctx.answering?.handle ?? null,
       });
       if (task?.ok === false) return task;
+      if (!label) queueTitle("task", c, task.id, input.title, { name: me.name });
       return {
         ok: true, task: taskView(task),
         note: `This is real and it survives a restart. You will be woken at ${stamp(task.next_wake_at)} to take the next step. Nothing has been done on it yet — do not tell them it is underway as if something happened.`
