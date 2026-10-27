@@ -166,7 +166,8 @@ test("L3: the Ongoing tab draws its headings at once, a ghost card and ghost row
     assert.equal(await page.locator(".tabs a[aria-current=page]").textContent().then(t => t.replace(/\d+$/, "")), "Ongoing");
     h.release();
     await page.locator("main.og-list").waitFor();
-    assert.equal(await page.title(), "Reason — Ongoing");
+    // The page's own title comes with it; something needs them here, so the tab says so (§4h item 5).
+    await page.waitForFunction(() => document.title === "Reason · needs you");
     assert.equal(await page.locator("main.ld").count(), 0);
     // Whatever the thread page left running (its timers, its live stream) stopped with it.
     const t1 = await page.evaluate(() => window.__ticks);
