@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 process.env.REASON_DB_PATH = join(mkdtempSync(join(tmpdir(), "wordmark-test-")), "x.db");
 const { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE, WORDMARK_BUBBLE_DARK } = await import("../src/pages/wordmark.js");
-const { BRAND_ORANGE, BRAND_ORANGE_DARK } = await import("../src/pages/brand.js");
+const { BRAND_PEN, BRAND_PEN_DARK } = await import("../src/pages/brand.js");
 const card = await import("../src/pages/card.js");
 const cover = await import("../src/eventcover.js");
 const render = await import("../src/pages/render.js");
@@ -29,7 +29,7 @@ test("the wordmark is the site's: reas, the bubble, n — and its font is inline
   assert.match(WORDMARK_CSS, /src:url\(data:font\/woff2;base64,[A-Za-z0-9+/=]{1000,}\)/);
   assert.match(WORDMARK_CSS, /font:italic 400 1\.35rem\/1\.2 "Reason Wordmark"/);
   assert.match(WORDMARK_CSS, /letter-spacing:-\.01em/);
-  assert.match(WORDMARK_CSS, /stroke:#B8460B;stroke-width:6/);
+  assert.match(WORDMARK_CSS, /stroke:#b03030;stroke-width:6/);
   assert.doesNotMatch(WORDMARK_CSS, /https?:/, "nothing fetched from anywhere");
 });
 
@@ -62,32 +62,34 @@ test("the opening moment says reasoning with the same mark", () => {
 // 2026-10-25, owner: the brand orange is #B8460B, and the old dot-and-"Reason" mark goes from the
 // footers and the link-preview cards too.
 // 2026-10-25, owner: the bubble goes brand orange too — the lighter one on every dark ground.
-test("the bubble is the brand orange: light on light pages, the lighter one on dark pages, cards and covers", () => {
-  assert.equal(WORDMARK_BUBBLE, BRAND_ORANGE);
-  assert.equal(WORDMARK_BUBBLE_DARK, BRAND_ORANGE_DARK);
-  assert.ok(WORDMARK_CSS.includes(`.wm-bubble path{fill:none;stroke:${BRAND_ORANGE};`));
-  assert.ok(WORDMARK_CSS.includes(`:root[data-theme=dark] .wm-bubble path{stroke:${BRAND_ORANGE_DARK}}`));
-  assert.ok(WORDMARK_CSS.includes(`:root:not([data-theme=light]) .wm-bubble path{stroke:${BRAND_ORANGE_DARK}}`));
+// 2026-10-26, owner: the brand pen colour becomes brick red, #b03030 light / #e8765c dark.
+test("the bubble is the brand colour: light on light pages, the lighter one on dark pages, cards and covers", () => {
+  assert.equal(WORDMARK_BUBBLE, BRAND_PEN);
+  assert.equal(WORDMARK_BUBBLE_DARK, BRAND_PEN_DARK);
+  assert.ok(WORDMARK_CSS.includes(`.wm-bubble path{fill:none;stroke:${BRAND_PEN};`));
+  assert.ok(WORDMARK_CSS.includes(`:root[data-theme=dark] .wm-bubble path{stroke:${BRAND_PEN_DARK}}`));
+  assert.ok(WORDMARK_CSS.includes(`:root:not([data-theme=light]) .wm-bubble path{stroke:${BRAND_PEN_DARK}}`));
   assert.doesNotMatch(WORDMARK_CSS, /0A84FF/i);
-  assert.ok(card.cardHtml({ title: "x", forName: "Omari" }).includes(`.brand .wm-bubble path{stroke:${BRAND_ORANGE_DARK}}`));
-  assert.ok(cover.generatedHtml("x").includes(`.mark .wm-bubble path{stroke:${BRAND_ORANGE_DARK}}`));
+  assert.ok(card.cardHtml({ title: "x", forName: "Omari" }).includes(`.brand .wm-bubble path{stroke:${BRAND_PEN_DARK}}`));
+  assert.ok(cover.generatedHtml("x").includes(`.mark .wm-bubble path{stroke:${BRAND_PEN_DARK}}`));
 });
 
-test("one brand orange: #B8460B light, a lighter one of the same hue dark, both AA for small text", () => {
-  assert.equal(BRAND_ORANGE, "#B8460B");
+test("one brand red: #b03030 light, a lighter brick dark, both AA for small text", () => {
+  assert.equal(BRAND_PEN, "#b03030");
+  assert.equal(BRAND_PEN_DARK, "#e8765c");
   const lum = (h) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255)
     .map(c => c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4)
     .reduce((a, c, i) => a + c * [.2126, .7152, .0722][i], 0);
   const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + .05) / (y + .05); };
-  for (const bg of ["#ffffff", "#f2ebe0", "#faf6ee"]) assert.ok(ratio(BRAND_ORANGE, bg) >= 4.5, `light on ${bg}`);
-  for (const bg of ["#1b1916", "#12110f", "#211f1b"]) assert.ok(ratio(BRAND_ORANGE_DARK, bg) >= 4.5, `dark on ${bg}`);
+  for (const bg of ["#ffffff", "#f2ebe0", "#faf6ee"]) assert.ok(ratio(BRAND_PEN, bg) >= 4.5, `light on ${bg}`);
+  for (const bg of ["#1b1916", "#12110f", "#211f1b"]) assert.ok(ratio(BRAND_PEN_DARK, bg) >= 4.5, `dark on ${bg}`);
   const css = render.shell({ title: "x", body: "" });
-  assert.ok(css.includes(`--mark:${BRAND_ORANGE};`) && css.includes(`--mark:${BRAND_ORANGE_DARK};`));
+  assert.ok(css.includes(`--mark:${BRAND_PEN};`) && css.includes(`--mark:${BRAND_PEN_DARK};`));
   for (const page of [spotify.joinPage({ token: "t" }), remote.shell("Sign in", "")]) {
     const html = typeof page === "string" ? page : page.body;
-    assert.ok(html.includes(`--mark:${BRAND_ORANGE}`) && html.includes(`--mark:${BRAND_ORANGE_DARK}`));
+    assert.ok(html.includes(`--mark:${BRAND_PEN}`) && html.includes(`--mark:${BRAND_PEN_DARK}`));
   }
-  assert.ok(cover.generatedHtml("Game Night").includes(`color:${BRAND_ORANGE_DARK}`), "the cover's kicker");
+  assert.ok(cover.generatedHtml("Game Night").includes(`color:${BRAND_PEN_DARK}`), "the cover's kicker");
 });
 
 test("no page or card carries the old dot-and-Reason mark; footers and cards use the wordmark", () => {

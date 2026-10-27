@@ -29,7 +29,7 @@ import * as events from "./events.js";
 import { config, clock } from "./config.js";
 import { esc } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE_DARK } from "./pages/wordmark.js";
-import { BRAND_ORANGE_DARK } from "./pages/brand.js";
+import { BRAND_PEN_DARK } from "./pages/brand.js";
 import { shootWithChromium, NoCardRenderer } from "./pages/card.js";
 import { fetchImage } from "./media.js";
 import { runClaudeCli } from "./backends/cli.js";
@@ -62,7 +62,7 @@ export function generatedHtml(name) {
   const size = t.length > 60 ? 64 : t.length > 34 ? 80 : t.length > 18 ? 100 : 124;
   return `<!doctype html><html><head><meta charset="utf-8"><style>${BASE_CSS}
 body{background:radial-gradient(120% 140% at 0% 0%,#4a3b31 0%,#2c2520 55%,#1d1915 100%);color:#fff}
-.kicker{position:absolute;left:80px;top:72px;font:600 26px/1 ${FONT_SANS};letter-spacing:.14em;text-transform:uppercase;color:${BRAND_ORANGE_DARK}}
+.kicker{position:absolute;left:80px;top:72px;font:600 26px/1 ${FONT_SANS};letter-spacing:.14em;text-transform:uppercase;color:${BRAND_PEN_DARK}}
 h1{position:absolute;left:80px;right:80px;top:132px;bottom:96px;display:flex;align-items:center;font:500 ${size}px/1.06 ${FONT_SERIF};letter-spacing:-.025em;text-wrap:balance;overflow:hidden}
 h1 span{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 ${MARK_CSS}</style></head><body><p class="kicker">You're invited</p><h1><span>${esc(t)}</span></h1>${MARK}</body></html>`;
@@ -115,9 +115,13 @@ function forget(file) {
 /** Does this event have an organizer's picture live? */
 export const hasUploaded = (ev) => !!ev?.cover_file && existsSync(join(DIR(), basename(ev.cover_file)));
 
+/** Bump when Reason's drawn cover changes, so every cached one is drawn again under a new address. */
+export const DRAWN_COVER_VERSION = 2; // 2: pen colour brick red (10-26)
+const drawnKey = (name) => sha(`${DRAWN_COVER_VERSION}\n${name}`);
+
 /** The address's version: a new picture is a new address, so no phone keeps showing an old one. */
 export function coverTag(ev) {
-  return hasUploaded(ev) ? `u${ev.cover_version}` : `g${sha(ev.name).slice(0, 10)}`;
+  return hasUploaded(ev) ? `u${ev.cover_version}` : `g${drawnKey(ev.name).slice(0, 10)}`;
 }
 
 /** Where the card's picture is fetched from. Public: it is only ever what a stranger may see. */
@@ -131,7 +135,7 @@ export function coverUrl(ev) {
  */
 export async function coverFile(ev) {
   if (hasUploaded(ev)) return join(DIR(), basename(ev.cover_file));
-  const file = join(DIR(), `g-${ev.public_id}-${sha(ev.name).slice(0, 16)}.jpg`);
+  const file = join(DIR(), `g-${ev.public_id}-${drawnKey(ev.name).slice(0, 16)}.jpg`);
   if (existsSync(file) && readFileSync(file).length) return file;
   return await draw(generatedHtml(ev.name), file);
 }

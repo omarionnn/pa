@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.REASON_DB_PATH ??= join(mkdtempSync(join(tmpdir(), "paper-")), "x.db");
 
-const { PAPER, PAPER_GRAIN, BRAND_ORANGE } = await import("../src/pages/brand.js");
+const { PAPER, PAPER_GRAIN, BRAND_PEN } = await import("../src/pages/brand.js");
 const render = await import("../src/pages/render.js");
 const ev = await import("../src/pages/event.js");
 const { renderOps } = await import("../src/pages/ops.js");
@@ -25,13 +25,13 @@ test("the paper is the site's, hex for hex, with its grain", () => {
   assert.equal(render.GROUND.dark, "#0b0a09");
 });
 
-test("ink, the quieter text and the brand orange stay AA on the paper", () => {
+test("ink, the quieter text and the brand red stay AA on the paper", () => {
   for (const bg of [PAPER.bg, PAPER.card, PAPER.soft]) {
     assert.ok(ratio(PAPER.ink, bg) >= 4.5, `ink on ${bg}`);
     assert.ok(ratio(PAPER.dim, bg) >= 4.5, `dim on ${bg}`);
     assert.ok(ratio("#b4232a", bg) >= 4.5, `warn on ${bg}`);
   }
-  for (const bg of [PAPER.bg, PAPER.card]) assert.ok(ratio(BRAND_ORANGE, bg) >= 4.5, `orange on ${bg}`);
+  for (const bg of [PAPER.bg, PAPER.card]) assert.ok(ratio(BRAND_PEN, bg) >= 4.5, `brand red on ${bg}`);
 });
 
 test("every page template takes the paper and its grain in light, and none in dark", () => {

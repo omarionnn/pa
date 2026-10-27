@@ -14,7 +14,7 @@ import { stamp, config, normalizeNumber } from "../config.js";
 import { CALLOUT_TONES } from "./content.js";
 import { pageUrl, ownerUrl } from "./access.js";
 import { wordmark, WORDMARK_CSS } from "./wordmark.js";
-import { BRAND_ORANGE, BRAND_ORANGE_DARK, PAPER, PAPER_GRAIN } from "./brand.js";
+import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./brand.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 
@@ -270,8 +270,8 @@ export function dark(rules) {
 }
 
 const CSS = `
-:root{--ink:${PAPER.ink};--dim:${PAPER.dim};--line:${PAPER.line};--bg:${PAPER.bg};--ground:${GROUND.light};--card:${PAPER.card};--soft:${PAPER.soft};--grain:${PAPER_GRAIN};--accent:${BRAND_ORANGE};--accent-ink:#fff;--mark:${BRAND_ORANGE};--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
-${dark([["", `--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--ground:${GROUND.dark};--card:#1b1916;--soft:#211f1b;--accent:${BRAND_ORANGE_DARK};--accent-ink:#12110f;--mark:${BRAND_ORANGE_DARK};--warn:#ff7b72;--edge:rgba(255,255,255,.17);--grain:none`]])}
+:root{--ink:${PAPER.ink};--dim:${PAPER.dim};--line:${PAPER.line};--bg:${PAPER.bg};--ground:${GROUND.light};--card:${PAPER.card};--soft:${PAPER.soft};--grain:${PAPER_GRAIN};--accent:${BRAND_PEN};--accent-ink:#fff;--mark:${BRAND_PEN};--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
+${dark([["", `--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--ground:${GROUND.dark};--card:#1b1916;--soft:#211f1b;--accent:${BRAND_PEN_DARK};--accent-ink:#12110f;--mark:${BRAND_PEN_DARK};--warn:#ff7b72;--edge:rgba(255,255,255,.17);--grain:none`]])}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 /* Two tones: the top line sits on a slightly darker ground, and the page itself is a pale sheet with
@@ -512,7 +512,7 @@ const THEME_SWITCH = `<div class="theme" role="group" aria-label="Appearance" hi
   + `<button type="button" data-set="dark" aria-pressed="false">Dark</button>`
   + `<button type="button" data-set="auto" aria-pressed="true">Auto</button></div>`;
 /** Its look. The fallbacks are the names the pages with their own stylesheet use (src/spotify.js…). */
-const THEME_CSS = `:focus-visible{outline:2px solid var(--accent,var(--mark,${BRAND_ORANGE}));outline-offset:2px}:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}.theme{display:inline-flex;gap:.15rem;margin:1.1rem 0 0;padding:.15rem;border:1px solid var(--line);border-radius:99px}.theme[hidden]{display:none}.theme button{min-height:0;font:inherit;font-size:.78rem;line-height:1;color:var(--dim,var(--mute));background:none;border:0;border-radius:99px;padding:.45rem .8rem;cursor:pointer;-webkit-tap-highlight-color:transparent}.theme button[aria-pressed=true]{background:var(--line);color:var(--ink,var(--fg))}.theme button:focus-visible{outline:2px solid var(--accent,var(--mark,${BRAND_ORANGE}));outline-offset:2px}`;
+const THEME_CSS = `:focus-visible{outline:2px solid var(--accent,var(--mark,${BRAND_PEN}));outline-offset:2px}:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}.theme{display:inline-flex;gap:.15rem;margin:1.1rem 0 0;padding:.15rem;border:1px solid var(--line);border-radius:99px}.theme[hidden]{display:none}.theme button{min-height:0;font:inherit;font-size:.78rem;line-height:1;color:var(--dim,var(--mute));background:none;border:0;border-radius:99px;padding:.45rem .8rem;cursor:pointer;-webkit-tap-highlight-color:transparent}.theme button[aria-pressed=true]{background:var(--line);color:var(--ink,var(--fg))}.theme button:focus-visible{outline:2px solid var(--accent,var(--mark,${BRAND_PEN}));outline-offset:2px}`;
 // A form button that answers the tap (owner, 2026-10-25: "Text me a code" gave no sign it had
 // been pressed but the browser's own spinner, and a second tap sent a second request). On submit the
 // button says what is happening — a ring and its data-busy words ("Sending code…"), the same width —
@@ -537,13 +537,13 @@ f._busyT=setTimeout(function(){if(!f.dataset.busy)return;quiet(f);say(f,'No answ
 window.addEventListener('pageshow',function(e){if(e.persisted)document.querySelectorAll('form[data-busy]').forEach(function(f){quiet(f);var s=f.querySelector('.busy-say');if(s)s.textContent=''})});
 })();
 `;
-const BUSY_CSS = `.busy-ring{display:inline-block;width:.9em;height:.9em;margin-right:.5em;vertical-align:-.12em;border:2px solid currentColor;border-top-color:var(--mark,${BRAND_ORANGE});border-right-color:transparent;border-radius:50%;animation:busy-turn .7s linear infinite}`
+const BUSY_CSS = `.busy-ring{display:inline-block;width:.9em;height:.9em;margin-right:.5em;vertical-align:-.12em;border:2px solid currentColor;border-top-color:var(--mark,${BRAND_PEN});border-right-color:transparent;border-radius:50%;animation:busy-turn .7s linear infinite}`
   + `@keyframes busy-turn{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.busy-ring{animation:none}}`
   + `button[aria-disabled=true]{cursor:progress}`
   // The waiting words are already on the button: the status line says them to a screen reader only,
   // and shows itself when there is something new to say (no answer).
   + `.busy-say{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}.busy-say.busy-bad{position:static;width:auto;height:auto;overflow:visible;clip-path:none;white-space:normal;margin:.6rem 0 0;font-size:.9rem;color:var(--warn,var(--mark));font-weight:600}`
-  + `.sent-ok{margin:.8rem 0;font-weight:600}.sent-ok b{color:var(--mark,${BRAND_ORANGE})}`;
+  + `.sent-ok{margin:.8rem 0;font-weight:600}.sent-ok b{color:var(--mark,${BRAND_PEN})}`;
 /** The "Code sent ✓" line a page shows once a code is on its way. */
 export const sentLine = (words) => `<p class="sent-ok" role="status"><b aria-hidden="true">✓</b> ${esc(words)}</p>`;
 
@@ -1005,7 +1005,7 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
  *
  * Styles are inline rather than a class because this one component drops into three page chromes —
  * the page kit's stylesheet, the connector pages', and the live sign-in page's — which share no
- * variable names, and the brand orange under white reads the same on either ground.
+ * variable names, and the brand red under white reads the same on either ground.
  *
  * "" when there is no number to text, which is the honest answer: a button that opens Messages
  * with nobody in the To field is worse than the sentence it replaced.
@@ -1017,7 +1017,7 @@ export function backToReason({ text = "done, keep going", label = "Back to Reaso
   return `<p style="margin:1.5rem 0 .4rem"><a href="${esc(href)}" `
     + `style="display:block;box-sizing:border-box;width:100%;max-width:22rem;padding:.95rem 1.2rem;`
     + `font:inherit;font-weight:600;text-align:center;text-decoration:none;`
-    + `border-radius:.6rem;background:${BRAND_ORANGE};color:#fff">${esc(label)}</a></p>`
+    + `border-radius:.6rem;background:${BRAND_PEN};color:#fff">${esc(label)}</a></p>`
     + `<p style="margin:0;font-size:.85rem;opacity:.7">opens Messages with your reply typed — just hit send.</p>`;
 }
 

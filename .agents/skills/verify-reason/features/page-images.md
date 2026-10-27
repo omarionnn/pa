@@ -37,7 +37,7 @@ HEIC→JPEG and `checkUrl` — not this feature.)
 - **Generate.** `image_generate(prompt, aspect_ratio?, count?, send?)` — `1:1`, `3:4`, `4:3`, `16:9`,
   `9:16`; 1–4 (enforced in the provider); ~5–10s. Files land in `REASON_IMAGEN_OUTPUT`. The tool
   appends a fixed house-style suffix to every prompt (minimal editorial illustration, warm cream
-  and charcoal with one burnt-orange accent, the brand orange from `src/pages/brand.js`, no text, no people, not photorealistic), so the prompt
+  and charcoal with one brick-red accent, the brand red from `src/pages/brand.js`, no text, no people, not photorealistic), so the prompt
   the provider receives is never exactly what the model wrote.
 - **Serve.** `GET /img/<name>.(png|jpg|webp|gif)`. Two gates, and the first is the stricter one: the
   route regex in `createServer` (`src/http.js`, re-grep `imgRoute =`) only matches a basename of

@@ -12,7 +12,7 @@
 // choice sets the page to it and survives a reload; the ground matches the state; and every visible
 // text (wordmark letters, headings, body, switch, input text) is ≥4.5:1 against what it sits on, the
 // wordmark bubble and every input's edge ≥1.3:1 (≥3:1 for a focused input's ring is not checked).
-// The orange kicker is held to 4.5:1 like the rest (brand orange #B8460B, src/pages/brand.js), and
+// The kicker is held to 4.5:1 like the rest (brand red #b03030 / #e8765c, src/pages/brand.js), and
 // no visible element nor the switch's focus ring is blue (owner, 2026-10-25).
 // `--shots dir` saves each page at 390px in all four states.
 const { mkdtempSync, mkdirSync } = await import("node:fs");
@@ -94,7 +94,7 @@ const audit = () => {
     if (r < 1.3) bad.push(`bubble ${r.toFixed(2)}`);
   }
   // No blue (owner, 2026-10-25): every visible element's text, fill, edge and outline is off the
-  // blue hues — links, buttons, focus rings and highlights take the brand orange (src/pages/brand.js).
+  // blue hues — links, buttons, focus rings and highlights take the brand red (src/pages/brand.js).
   const blue = (c) => { const [r, g, b, a = 1] = c.map((v, i) => i < 3 ? v / 255 : v); if (a < .05) return false; const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; if (!d) return false; const l = (mx + mn) / 2, sat = d / (1 - Math.abs(2 * l - 1)); let h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; h = (h * 60 + 360) % 360; return h >= 190 && h <= 260 && sat > .35; };
   for (const el of document.querySelectorAll("body *")) {
     if (!visible(el)) continue;
