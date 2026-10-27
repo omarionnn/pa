@@ -2,6 +2,7 @@
 // without making it a nuisance — timers that fire, watches that re-check, and dropped threads
 // it raises again. Each pass is separately callable so its logic can be tested without a model.
 import { RECORDING_RIDES_MS } from "./config.js";
+import * as doing from "./doing.js";
 import { EventEmitter } from "node:events";
 import * as incidents from "./incidents.js";
 import { runTurn as realRunTurn } from "./agent.js";
@@ -479,6 +480,8 @@ export class Runtime extends EventEmitter {
       });
       let reply;
       let failed = false;
+      // What the open Web tab says under "on it." while this turn reads what it was handed (src/doing.js).
+      const doneDoing = doing.begin(conversationId, attachments);
       try {
         reply = await this._afterScreen(screened, await this.runTurn(turnArgs()), { conversationId, text, meta });
         reply = await this._takeInFolded({ fold, screened, conversationId, meta, reply, turnArgs });
@@ -507,6 +510,7 @@ export class Runtime extends EventEmitter {
         if (fold && e && typeof e === "object") e.foldedRows = onethought.foldedRows(fold);
         throw e;
       } finally {
+        doneDoing();
         onethought.end(fold);
         // A read that finished in the instant between the last check and here: never shown, so
         // back on the pile for a turn of its own rather than lost.
