@@ -345,3 +345,11 @@ test("P5 + E2: the album as the design for a checked-in guest; a closed album's 
   db.db.prepare("UPDATE event_albums SET closed_at = ? WHERE id = ?").run(Date.now(), album.id);
   assert.match((await req()).body, /This link’s been <em>turned off\.<\/em>/);
 });
+
+test("pages v2 wordmark: a hidden o where the bubble stands for it, so the text reads reason", async () => {
+  const { wordmark } = await import("../src/pages/made.js");
+  const html = wordmark();
+  const text = html.replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]+>/g, "");
+  assert.equal(text, "reason");
+  assert.match(html, /clip-path:inset\(50%\)[^>]*>o<\/span>n<\/span>$/);
+});

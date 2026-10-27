@@ -240,9 +240,11 @@ details.join>summary::-webkit-details-marker{display:none}
 `;
 
 // ---------------------------------------------------------------- small parts
+// The o the bubble stands for: in the text, never seen, so copy-paste and readers get "reason", not "reasn".
+const WM_O = `<span style="position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap">o</span>`;
 const BUBBLE = "M20 5C28.8 5 36 10.9 36 18.2S28.8 31.4 20 31.4c-1.9 0-3.7-.3-5.4-.8L7 35l2.3-6.6C6.3 26.1 4 22.4 4 18.2 4 10.9 11.2 5 20 5z";
 export const wordmark = () =>
-  `<span class="wm" role="img" aria-label="reason">reas<svg aria-hidden="true" viewBox="0 0 40 40"><path d="${BUBBLE}" fill="none" stroke="var(--pen)" stroke-width="5" stroke-linejoin="round"/></svg>n</span>`;
+  `<span class="wm" role="img" aria-label="reason">reas<svg aria-hidden="true" viewBox="0 0 40 40"><path d="${BUBBLE}" fill="none" stroke="var(--pen)" stroke-width="5" stroke-linejoin="round"/></svg>${WM_O}n</span>`;
 
 /** Typed facts with dotted leaders. `rows` is [[label, value], …]; empty values are left out. */
 export function leaders(rows, cls = "") {
@@ -537,7 +539,7 @@ body{margin:0;background:${P.ground}}
 .og .host{font-family:${MONO};font-size:16px;letter-spacing:.14em;color:${P.muted}}
 </style></head><body><div class="og">${inner}</div></body></html>`;
 const FONTS_INLINE_PLACEHOLDER = "/*fonts*/";
-const ogMark = `<span class="wm" role="img" aria-label="reason">reas<svg aria-hidden="true" viewBox="0 0 40 40"><path d="${BUBBLE}" fill="none" stroke="${P.pen}" stroke-width="5" stroke-linejoin="round"/></svg>n</span>`;
+const ogMark = `<span class="wm" role="img" aria-label="reason">reas<svg aria-hidden="true" viewBox="0 0 40 40"><path d="${BUBBLE}" fill="none" stroke="${P.pen}" stroke-width="5" stroke-linejoin="round"/></svg>${WM_O}n</span>`;
 
 /**
  * The one card every private page shows in a link preview (LP2). Nothing of the page is on it: not
