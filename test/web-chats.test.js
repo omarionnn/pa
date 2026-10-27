@@ -319,7 +319,7 @@ test("10. review: from a Web chat's turn, no tool reaches the person's own phone
   const h = harness();
   const ctx = { conversationId: OWNER_C, historyId: `${OWNER_C}#web:${CHAT}`, channels: h.router, messages: [] };
   assert.equal(key, ctx.historyId);
-  for (const [name, input] of [["message_send", { to: OWNER, text: "hi" }], ["send_picture", { url: "https://example.com/a.png" }], ["mark_moment", { effect: "confetti", moment: "x" }], ["reply_to", { quote: "x" }]]) {
+  for (const [name, input] of [["message_send", { to: OWNER, text: "hi" }], ["send_picture", { url: "https://example.com/a.png" }], ["mark_moment", { effect: "confetti", moment: "x" }], ["reply_to", { quote: "x" }], ["voice_note_say", { text: "hi" }], ["resend_contact_card", {}]]) {
     const out = await runTool(name, input, ctx);
     assert.equal(out.status, "web_chat", `${name}: ${JSON.stringify(out).slice(0, 200)}`);
   }

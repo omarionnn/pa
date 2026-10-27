@@ -8197,6 +8197,8 @@ async function handOverDocument({ doc, to, say = "", ctx, c, me, name = "documen
   const linkNote = () => (linksAreReachable()
     ? `Their own link to it: ${documentUrl(doc)} — nobody else can open it.`
     : `REASON_PUBLIC_URL is not set, so there is no link that works off this machine either. The file is at ${doc.path} on this machine; say plainly that it could not be sent.`);
+  // A Web-only chat's turn never sends to their phone (owner 10-27): the link goes in the reply instead.
+  if (toOwner && ctx.historyId && ctx.historyId !== c) return { ok: true, sent: false, status: "web_chat", note: `This is a Web-only chat, so nothing went to their phone. ${linkNote()}` };
 
   const onDisk = documentOnDisk(doc);
   if (!onDisk.there) {
@@ -9693,6 +9695,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return { ok: true, ...saved, resolved: geo.display_name, note: parts.join(" ") };
     }
     case "resend_contact_card": {
+      if (ctx.historyId && ctx.historyId !== c) return { ok: false, status: "web_chat", error: "This is a Web-only chat: the card is texted to their phone, so it can only be resent from their main thread. Say so." };
       const account = db.getAccount(c);
       if (!account) return { ok: false, error: "No account for this conversation." };
       if (!account.channel || account.channel === "console" || !account.address) {
