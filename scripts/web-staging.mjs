@@ -230,10 +230,9 @@ const S = [
   ["signed-out", "Signed out", "Signed out", "", ws.renderSignin({ joinNumber: LINE, formToken: "staging", out: true }), so],
 
   ["first-visit", "Home and thread", "First visit", "Shown once.", wc.renderFirstVisit({ account }), {}],
-  ["home", "Home and thread", "Home · in hand", "Greeting, composer, approval, slips, pick up from iMessage.", home(), {}],
+  ["home", "Home and thread", "Home · in hand", "Greeting, composer, approval on paper, in-hand rows between dashed rules, pick up from iMessage.", home(), {}],
   ["home-new", "Home and thread", "Home · new", "Nothing in hand yet: start-with examples.", wc.renderHome({ account: emptyAccount, csrf: "staging", sendId: "staging", items: [], pick: "" }), {}],
   ["conversation", "Home and thread", "Conversation", "Photo, voice note (▶ plays), PDF slip, list, page card, approval in chat, Ongoing margin. Sending works here.", convo(), {}],
-  ["conversation-all", "Home and thread", "Conversation · Ongoing open", "See all, drawn open.", convo({ all: true }), {}],
   ["conversation-empty", "Home and thread", "Conversation · empty", "No messages, nothing in hand.", wc.renderConversation({ account: emptyAccount, csrf: "staging", lines: [], more: false, sendId: "staging", items: [], approvals: [] }), {}],
 
   ["sending", "Sending", "Sending…", "A message on its way (5A).", convo(), { state: STATE.sending }],
@@ -249,7 +248,8 @@ const S = [
   ["home-slips", "Composer", "Home · slips on the line", "The same composer on the arrival.", home(), { state: STATE.slips }],
 
   ["ongoing", "Ongoing", "Ongoing · list", "Mobile tab: NEEDS YOU, IN HAND, BACK TO YOU.", wc.renderOngoing({ csrf: "staging", items, approvals, back }), {}],
-  ["ongoing-all", "Ongoing", "Ongoing · all", "", wc.renderOngoing({ csrf: "staging", items, approvals, back, all: true }), {}],
+  ...(og.groupRows({ items, back }, "hand").length ? [["ongoing-hand", "Ongoing", "See all · in hand", "2B: newest first, filter words with counts, a meta line on every row.", og.renderSeeAll({ items, approvals, back }, "hand", { tabBar: wc.tabBar("ongoing", og.countOf({ items, approvals, back })), css: wc.CONVO_CSS }), {}]] : []),
+  ...(back.length ? [["ongoing-back", "Ongoing", "See all · back to you", "", og.renderSeeAll({ items, approvals, back }, "back", { tabBar: wc.tabBar("ongoing", og.countOf({ items, approvals, back })), css: wc.CONVO_CSS }), {}]] : []),
   ["ongoing-empty", "Ongoing", "Ongoing · empty", "Nothing left to chase.", wc.renderOngoing({ csrf: "staging", items: [] }), {}],
   ["detail-approval", "Ongoing", "Approval", "Receipt, NOTHING CHARGED YET, reply in chat.", detail("approval", appr.id), {}],
   ["detail-working", "Ongoing", "2A · Working", "Steps with times, the live line.", detail("task", T.working), {}],
@@ -306,14 +306,16 @@ function local(url, signedOut) {
   if (p === "/web") {
     if (qs.has("out")) return "signed-out.html";
     if (qs.has("join")) return "join.html";
-    if (qs.get("tab") === "ongoing") return qs.has("all") ? "ongoing-all.html" : "ongoing.html";
-    if (qs.has("thread")) return qs.has("all") ? "conversation-all.html" : "conversation.html";
+    if (qs.get("tab") === "ongoing") return "ongoing.html";
+    if (qs.has("thread")) return "conversation.html";
     return signedOut ? "signin.html" : "home.html";
   }
   const d = /^\/web\/ongoing\/([a-z]+\/\d+)$/.exec(p);
   if (d) return DETAIL[d[1]] ? `${DETAIL[d[1]]}.html` : "ongoing.html";
   if (p === "/web/ongoing") return "ongoing.html";
   if (p === "/web/memory/history") return qs.get("day") ? "history-day.html" : qs.get("q") ? "history-search.html" : "history.html";
+  if (p === "/web/ongoing/hand") return "ongoing-hand.html";
+  if (p === "/web/ongoing/back") return "ongoing-back.html";
   if (p === "/web/memory") {
     if (qs.get("q")) return "memory-search.html";
     if (qs.get("g")) return "memory-filter.html";
@@ -343,7 +345,7 @@ if(u.indexOf('/web/memory/')===0||u.indexOf('/web/ongoing/state')===0)return ans
 var b={messages:[],more:false};if(sent){sent--;var m=Object.assign({},R,{id:R.id+Math.floor(Math.random()*1e6),at:Date.now()});b.messages=[m]}return ans(b)};
 try{window.EventSource=undefined}catch(e){}})();</script>`;
 const LOADER = `<script>try{sessionStorage.removeItem('reason-web-loaded')}catch(e){}</script>`;
-const TAG = `<style>.stg-tag{position:fixed;right:10px;bottom:10px;z-index:9999;font:11px/1 "Courier New",Courier,monospace;letter-spacing:.12em;text-transform:uppercase;background:#b03030;color:#fff;padding:7px 9px;text-decoration:none;opacity:.9}.stg-tag:hover{color:#fff;opacity:1}</style><a class="stg-tag" href="index.html">STAGING · sample data · all screens</a>`;
+const TAG = `<style>.stg-tag{position:fixed;right:10px;bottom:10px;z-index:9999;font:11px/1 "Courier New",Courier,monospace;letter-spacing:.12em;text-transform:uppercase;background:#9c3b2e;color:#fff;padding:7px 9px;text-decoration:none;opacity:.9}.stg-tag:hover{color:#fff;opacity:1}</style><a class="stg-tag" href="index.html">STAGING · sample data · all screens</a>`;
 
 function stage(html, { signedOut = false, loader = false, state = "", head = "" } = {}) {
   let out = html
@@ -356,7 +358,7 @@ function stage(html, { signedOut = false, loader = false, state = "", head = "" 
 }
 
 // ---------------------------------------------------------------- sample media
-const PHOTO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e7cfae"/><stop offset="1" stop-color="#9a6a46"/></linearGradient></defs><rect width="800" height="600" fill="url(#g)"/><rect x="250" y="170" width="300" height="300" rx="14" fill="#f4ece0" stroke="#7a4f33" stroke-width="6"/><path d="M250 260h300M400 170v300" stroke="#b03030" stroke-width="18"/><circle cx="400" cy="160" r="34" fill="none" stroke="#b03030" stroke-width="12"/></svg>`;
+const PHOTO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e7cfae"/><stop offset="1" stop-color="#9a6a46"/></linearGradient></defs><rect width="800" height="600" fill="url(#g)"/><rect x="250" y="170" width="300" height="300" rx="14" fill="#f4ece0" stroke="#7a4f33" stroke-width="6"/><path d="M250 260h300M400 170v300" stroke="#9c3b2e" stroke-width="18"/><circle cx="400" cy="160" r="34" fill="none" stroke="#9c3b2e" stroke-width="12"/></svg>`;
 /** One second of quiet, 8 kHz mono: enough for ▶ to play something. */
 function silentWav(seconds = 1, rate = 8000) {
   const n = seconds * rate, b = Buffer.alloc(44 + n);
