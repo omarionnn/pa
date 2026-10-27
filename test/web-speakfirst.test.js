@@ -249,3 +249,12 @@ test("7. a scheduled row's description: the summarise's clean line, else the not
   assert.equal(og.findItem(OWNER_C, "timer", t.id).description, "Call the dentist to book a cleaning.");
   assert.equal(it.normLine("Text @omari about it", { name: "Omari" }), null);
 });
+
+test("8. live fix: for any account (not only the operator's) the first line is written to their history", async () => {
+  const ids = seedOngoing(KOFI_C);
+  const h = harness({ turn: async () => "Want to change it?" });
+  const kofi = { ...browser(KOFI_C), conv: KOFI_C };
+  await about(h, kofi, { about: `series:${ids.series}`, k: "click-llllllllllll" });
+  assert.ok(await until(() => db.messagesFor(KOFI_C).some(m => m.role === "assistant" && m.channel === "web")), "on Kofi's page");
+  assert.equal(h.fake.sent.length, 0);
+});

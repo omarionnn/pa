@@ -1043,7 +1043,8 @@ export async function aboutRequest({ account, headers = {}, readBody, runtime, l
   const { talkWords } = await import("./webongoing.js");
   const text = speakFirstPrompt(itemRecord(conv, item), { link: talkWords(item.state) });
   // The turn runs on server-side whatever happens to the tab; its one message arrives over /web/live.
-  Promise.resolve().then(() => runtime.event(conv, text, { channel: WEB, to: account.address, ...(chat ? { chatId: db.webChatRoute(chat) } : {}) }))
+  // `fromOwner`: it is said to the person themselves, so it is their history (src/deliver.js toOwner) — for every account, not only the operator's.
+  Promise.resolve().then(() => runtime.event(conv, text, { channel: WEB, to: account.address, fromOwner: true, ...(chat ? { chatId: db.webChatRoute(chat) } : {}) }))
     .catch((e) => log({ web_about_failed: (e?.message ?? String(e)).split("\n")[0] }));
   log({ web_about: `${m[1]}:${m[2]}` });
   return json(200, { ok: true });
