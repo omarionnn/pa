@@ -299,7 +299,9 @@ export function linesOutFor(conversationId, now = clock.now(), tz = tzOf(convers
 
 /** The shared thread's last two lines, and where the last was said. Null before there is any. */
 export function pickupFor(conversationId) {
-  const rows = db.messagesBefore(conversationId, { limit: 12 }).filter(r => String(r.text ?? "").trim()).slice(-2);
+  // The conversation only: an operator notice (the status check, an alert) is not where they left off.
+  const rows = db.messagesBefore(conversationId, { limit: 24 })
+    .filter(r => String(r.text ?? "").trim() && r.source !== "ops" && !hasOpsKeyLink(r.text)).slice(-2);
   if (!rows.length) return null;
   const last = rows[rows.length - 1];
   const service = db.db.prepare("SELECT service FROM threads WHERE conversation_id = ?").get(conversationId)?.service ?? null;

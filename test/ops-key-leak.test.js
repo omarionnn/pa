@@ -168,3 +168,12 @@ test("6. owner notices that are not questions go under an ops: key (harm pause, 
   for (const k of ["ops:harm-pause:x:1", "incident:calls:1", "event-created:e1", "ops:check:1:ab#2"]) assert.equal(db.opsSourceOf(k), "ops", k);
   for (const k of ["auto:fake:x:1", "timer:3", null]) assert.equal(db.opsSourceOf(k), null, String(k));
 });
+
+test("7. pick up quotes the conversation, never an operator notice", async () => {
+  const h = harness();
+  db.writeMessage({ conversationId: OWNER_C, role: "assistant", channel: "fake", text: "Booked the 7:30 table at Lilia.", at: TUE_9AM - 2 * H });
+  await send(h, "Reason check — 1 thing needs you:\n- Sweep: not running", "ops:check:3:ef", TUE_9AM - H);
+  at(TUE_9AM);
+  const lines = daily.pickupFor(OWNER_C).lines.map(l => l.text);
+  assert.deepEqual(lines, ["night", "Booked the 7:30 table at Lilia."]);
+});
