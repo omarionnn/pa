@@ -416,7 +416,7 @@ export function renderMemory({ account, csrf, state = {} }) {
     + `<label class="lbl" for="mem-q">FIND A FACT</label><div class="find-l">`
     + `<input class="find-in" id="mem-q" name="q" type="search" value="${esc(q)}" placeholder="dentist, aisle seats, juno…" maxlength="${MAX_QUERY}" autocomplete="off" enterkeyhint="search">`
     + `<a class="fx clr" href="/web/memory"${q ? "" : " hidden"}>CLEAR</a><button class="sr" type="submit">Find</button></div></form>`;
-  const body = `<header class="mh">${typed("← BACK TO THE CHAT", { href: "/web?thread", cls: "back" })}${wordmark({ href: "/web" })}</header>`
+  const body = `<header class="mh">${typed("← BACK TO THE CHAT", { href: "/web?thread", cls: "back" })}${wordmark({ href: "/web?home" })}</header>`
     + `<main class="mem${q ? " searching" : ""}" aria-labelledby="mem-h"><div class="mem-lead"><h1 id="mem-h" class="h1" tabindex="-1">What Reason <em>remembers</em></h1>`
     + `<p class="mem-sub">See it, correct it, or ask Reason to forget it.</p></div>`
     + `<p class="sr" role="status" id="mem-live">${state.gone ? "Forgotten." : state.answered ? "Got it." : ""}</p>`
