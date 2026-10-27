@@ -119,6 +119,11 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
   (runtime turnArgs → claude-cli / agent / mcp-core `messages`, harm screen). Tools still get the
   person's `conversationId`, so memory, tasks, Ongoing, Saved and approvals are shared.
 - **Proactive** (timers, wakes, approvals) has no channel → the thread route, unchanged.
+- **Approvals per thread.** `confirmations.thread_key` = the asking thread's history key (null = shared);
+  only that thread's answer grants it (`asked_elsewhere` otherwise); Ongoing links a chat's approval to
+  `/web?chat=<id>&about=approval:<id>`. A chat's "yes" never answers an access request or a call check.
+- **No phone from a chat turn.** message_send to self, send_picture, voice notes to self, mark_moment,
+  reply_to → `status: web_chat`.
 - **Chat history** (/web/memory/history) lists each chat as a day-style row (`WEB CHAT · <DAY> · N
   MESSAGES`) → `/web?chat=<id>`; days, a day's lines and search are `chat_id IS NULL` only.
   Provisional placement: SCOPE-v2 Q-v2-51.
