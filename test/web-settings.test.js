@@ -273,6 +273,21 @@ test("browsers: this person's sessions only, device from the user agent, last ac
   assert.match(rows[2], new RegExp(`Firefox on Windows.*${day}.*>SIGN OUT</button>`));
   assert.doesNotMatch(body, new RegExp(phone.token), "a session token is never on the page");
   assert.match(body, /<button class="every" type="submit">Sign out everywhere<\/button>/);
+  assert.doesNotMatch(body, /older sign-in/);
+});
+
+test("browsers: sessions never used since browsers were noted are one quiet count, ended by Sign out everywhere", async () => {
+  const h = harness();
+  for (let i = 0; i < 3; i++) db.startPageSession("p123", `page-${i}-${Math.random()}`, { conversationId: OWNER_C });
+  const me = browser(OWNER_C);
+  const body = await page(h, me);
+  assert.equal((body.match(/class="br-row/g) ?? []).length, 1, "only this one is listed");
+  assert.match(body, /<p class="st-quiet">And 3 other sign-ins that haven't opened Reason Web, like Reason's pages\. Signing out everywhere ends them too\.<\/p>/);
+  assert.match(body, /class="br-row here"/, "this browser is listed");
+  db.db.prepare("DELETE FROM page_sessions WHERE token LIKE 'page-1-%' OR token LIKE 'page-2-%'").run();
+  assert.match(await page(h, me), /And 1 other sign-in that hasn't opened Reason Web, like Reason's pages\. Signing out everywhere ends it too\./);
+  await post(h, me, { do: "everywhere" });
+  assert.equal(db.pageSessionsFor(OWNER_C).length, 0);
 });
 
 test("SIGN OUT ends that browser's session for real; this one stays; a handle from another list ends nothing", async () => {

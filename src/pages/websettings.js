@@ -216,7 +216,11 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
     + `</section>`
     + (PRIVATE_BY_DEFAULT ? `<section class="st-sec m-only" aria-labelledby="priv-h"><h2 id="priv-h">PRIVATE BY DEFAULT</h2><p class="priv">Sensitive texts only say <span class="q">"Reason needs your approval."</span> The details wait here, behind sign-in.</p></section>` : "");
 
-  const rows = [...browsers].sort((a, b) => (b.token === current) - (a.token === current)).map(s => {
+  // A session never used since browsers were noted (a Reason page's code, the status page, before
+  // this list existed) has nothing to name it by: those are counted in one quiet line, not listed
+  // one "Unknown browser" at a time. Sign out everywhere ends them too.
+  const older = browsers.filter(s => !s.user_agent && s.token !== current).length;
+  const rows = [...browsers].filter(s => s.user_agent || s.token === current).sort((a, b) => (b.token === current) - (a.token === current)).map(s => {
     const here = s.token === current;
     const dev = deviceName(s.user_agent);
     const when = here ? "NOW" : lastActive(s.last_seen_at, now);
@@ -227,6 +231,7 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
       + `</div>`;
   }).join("");
   const browsersSec = `<section class="st-sec" id="browsers" aria-labelledby="br-h"><h2 id="br-h">SIGNED-IN BROWSERS</h2>${rows}`
+    + (older ? `<p class="st-quiet">And ${older} other sign-in${older === 1 ? "" : "s"} that ${older === 1 ? "hasn't" : "haven't"} opened Reason Web, like Reason's pages. Signing out everywhere ends ${older === 1 ? "it" : "them"} too.</p>` : "")
     + post(csrf, "everywhere", `<button class="every" type="submit">Sign out everywhere</button>`)
     + saved(done === "browsers") + `</section>`;
 
