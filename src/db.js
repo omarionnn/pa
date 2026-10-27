@@ -2943,7 +2943,7 @@ export function pendingConfirmations(conversationId) {
 export function adoptWebChatAsks(conversationId, ownerTexts) {
   return db.prepare(`UPDATE confirmations SET thread_key = NULL,
       asked_after_msgs = CASE WHEN granted_at IS NULL THEN ? ELSE asked_after_msgs END
-    WHERE conversation_id = ? AND thread_key IS NOT NULL AND refused_at IS NULL AND consumed_at IS NULL`)
+    WHERE conversation_id = ? AND thread_key LIKE '%#web:%' AND refused_at IS NULL AND consumed_at IS NULL`)
     .run(Math.max(0, Number(ownerTexts) || 0), conversationId).changes;
 }
 
