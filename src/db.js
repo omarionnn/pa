@@ -1834,8 +1834,10 @@ export function getTimer(conversationId, id) {
  * Write a row's Web title once (src/itemtitle.js): only where none is set yet, so a title the model
  * wrote is never replaced by a later summarise. A series' title also goes onto its pending firing.
  */
+// A call's own short title for Saved on Web (src/saved.js), written once by the same summarise as an Ongoing row's.
+addColumnIfMissing("calls", "label", "TEXT");
 export function setItemLabel(kind, conversationId, id, label) {
-  const table = { task: "tasks", timer: "timers", series: "series" }[kind];
+  const table = { task: "tasks", timer: "timers", series: "series", call: "calls" }[kind];
   if (!table || !label) return false;
   const done = db.prepare(`UPDATE ${table} SET label = ? WHERE id = ? AND conversation_id = ? AND (label IS NULL OR label = '')`).run(label, id, conversationId).changes === 1;
   if (kind === "series") db.prepare("UPDATE timers SET label = ? WHERE series_id = ? AND conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND (label IS NULL OR label = '')").run(label, id, conversationId);

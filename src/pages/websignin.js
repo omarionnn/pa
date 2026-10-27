@@ -427,6 +427,13 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     return await memoryRequest({ account, action: sub === "memory" ? null : sub.slice("memory/".length), method, query, headers, readBody, log });
   }
 
+  // ---- Saved (src/pages/websaved.js): the list, one item opened, the page itself framed, pin / remove / restore ----
+  if (sub === "saved" || String(sub ?? "").startsWith("saved/")) {
+    if (!account) return redirect("/web");
+    const { savedRequest } = await import("./websaved.js");
+    return await savedRequest({ account, path: sub === "saved" ? "" : sub.slice("saved/".length), method, query, headers, readBody, log });
+  }
+
   // ---- Settings (src/pages/websettings.js): the page, and its one POST for every control ----
   if (sub === "settings") {
     if (!account) return redirect("/web");
