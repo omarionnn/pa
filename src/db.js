@@ -1535,6 +1535,12 @@ addColumnIfMissing("tasks", "result_json", "TEXT");
 addColumnIfMissing("confirmations", "amount_cents", "INTEGER");
 addColumnIfMissing("timers", "label", "TEXT");
 addColumnIfMissing("series", "label", "TEXT");
+// The short drafts Web's "Talk about it in the chat →" puts in the composer (src/itemtitle.js), one per
+// state the row can be in, in the person's own voice: JSON {waiting, working, ...}. Written by the same
+// summarise that writes `label`, never by a call of its own; null on older rows (a plain fallback then).
+addColumnIfMissing("tasks", "drafts", "TEXT");
+addColumnIfMissing("timers", "drafts", "TEXT");
+addColumnIfMissing("series", "drafts", "TEXT");
 addColumnIfMissing("outbox", "send_style", "TEXT");
 // Inline replies: what each inbound message said (so "the one about the table" can be found again
 // by its words), which message an outbound one is pinned under, and the message this turn's reply
@@ -1846,11 +1852,16 @@ export function getTimer(conversationId, id) {
  */
 // A call's own short title for Saved on Web (src/saved.js), written once by the same summarise as an Ongoing row's.
 addColumnIfMissing("calls", "label", "TEXT");
-export function setItemLabel(kind, conversationId, id, label) {
+export function setItemLabel(kind, conversationId, id, label, drafts = null) {
   const table = { task: "tasks", timer: "timers", series: "series", call: "calls" }[kind];
   if (!table || !label) return false;
   const done = db.prepare(`UPDATE ${table} SET label = ? WHERE id = ? AND conversation_id = ? AND (label IS NULL OR label = '')`).run(label, id, conversationId).changes === 1;
   if (kind === "series") db.prepare("UPDATE timers SET label = ? WHERE series_id = ? AND conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND (label IS NULL OR label = '')").run(label, id, conversationId);
+  if (drafts && kind !== "call") {
+    const j = JSON.stringify(drafts);
+    db.prepare(`UPDATE ${table} SET drafts = ? WHERE id = ? AND conversation_id = ? AND drafts IS NULL`).run(j, id, conversationId);
+    if (kind === "series") db.prepare("UPDATE timers SET drafts = ? WHERE series_id = ? AND conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND drafts IS NULL").run(j, id, conversationId);
+  }
   return done;
 }
 export function listTimers(conversationId) {

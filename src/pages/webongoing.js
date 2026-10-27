@@ -393,6 +393,13 @@ const rcpt = (rows, total = null) => `<dl class="rcpt">${rows.map(([k, v]) => `<
   + (total ? `<div class="tot"><dt>TOTAL</dt><span class="dots" aria-hidden="true"></span><dd>${esc(total)}</dd></div>` : "") + `</dl>`;
 const headBlock = (status, title, { pen = false, sub = "" } = {}) => `<div class="ogd-top">${label(status, pen ? "pen" : "")}<h1 class="h1">${esc(title)}</h1>${sub ? `<p class="ogd-sub">${esc(sub)}</p>` : ""}</div>`;
 
+/**
+ * Where a detail's "… in the chat →" goes: the thread, with a draft about THIS row ready in the composer
+ * (src/ongoing.js draftFor, looked up again server-side from kind:id in the session's own rows).
+ * A NEEDS YOU row only wants their answer, so it opens the plain thread.
+ */
+export const talkHref = (x) => (x?.kind && x.id && x.state !== "needs" ? `/web?thread&about=${encodeURIComponent(`${x.kind}:${x.id}`)}` : "/web?thread");
+
 /** The detail page's body, by what the row is. Everything on it is a field the row really has. */
 function detailBody(x, tz) {
   switch (x.state) {
@@ -403,7 +410,7 @@ function detailBody(x, tz) {
         main: `<div class="ogd-top">${label("NEEDS YOUR APPROVAL", "pen")}<h1 class="h1">${esc(x.title)}</h1></div>`
           + `<div class="bigcard">${rcpt(rows, x.total)}${stamp(x.money ? "NOTHING CHARGED YET" : "NOTHING BOOKED YET").replace('class="stamp ', 'class="stamp below ')}</div>`
           + `<div class="after">${hand(APPROVAL_NUDGE, { cls: "big" })}${x.money ? `<p class="q">${NOTHING_CHARGED}</p>` : ""}</div>`,
-        foot: action("Reply in the chat", { href: "/web?thread", cls: "reply" }),
+        foot: action("Reply in the chat", { href: talkHref(x), cls: "reply" }),
         gap: 36,
       };
     }
@@ -414,7 +421,7 @@ function detailBody(x, tz) {
         main: headBlock("WORKING ON IT", x.title, { sub: x.goalLine })
           + (items ? `<ul class="steps" aria-label="Steps">${items}</ul>` : (x.detail ? `<p class="ask">${esc(x.detail)}</p>` : ""))
           + (x.nothingBooked ? `<p class="small">NOTHING BOOKED YET</p>` : ""),
-        foot: action("Talk about it in the chat", { href: "/web?thread" }),
+        foot: action("Talk about it in the chat", { href: talkHref(x) }),
       };
     }
     case "waiting": {
@@ -425,21 +432,21 @@ function detailBody(x, tz) {
         main: headBlock(x.waitingOn ? `WAITING ON ${x.waitingOn.toUpperCase()}` : "WAITING", x.title)
           + (rows.length ? rcpt(rows) : "")
           + (x.checkLine ? hand(x.checkLine, { cls: "big" }) : ""),
-        foot: action("Talk about it in the chat", { href: "/web?thread" }),
+        foot: action("Talk about it in the chat", { href: talkHref(x) }),
       };
     }
     case "needs":
       return {
         main: headBlock("WAITING ON YOU", x.title, { pen: true })
           + (x.question ? `<p class="ask">${esc(x.question)}</p>` : "") + (x.tradeoff ? `<p class="ogd-sub">${esc(x.tradeoff)}</p>` : ""),
-        foot: action("Reply in the chat", { href: "/web?thread", cls: "reply" }),
+        foot: action("Reply in the chat", { href: talkHref(x), cls: "reply" }),
       };
     case "stuck":
       return {
         main: headBlock("STUCK", x.title)
           + (x.blocked?.what ? `<p class="hand huge">${esc(x.blocked.what)}</p>` : "")
           + (x.blocked?.unblock ? `<div class="next">${label("WHAT WOULD GET IT GOING")}<p class="b">${esc(x.blocked.unblock)}</p></div>` : ""),
-        foot: action("Talk about it in the chat", { href: "/web?thread" }),
+        foot: action("Talk about it in the chat", { href: talkHref(x) }),
       };
     case "scheduled":
       return {
@@ -449,7 +456,7 @@ function detailBody(x, tz) {
           + `<p class="every">${esc(x.everyLong || x.dateLong || "")}</p>`
           + (x.description && !same(x.description, x.title) ? `<p class="desc">${esc(x.description)}</p>` : "")
           + (x.everyLong && x.date ? `<p class="small">NEXT · ${esc(x.date)}</p>` : ""),
-        foot: action("Change it in the chat", { href: "/web?thread" }),
+        foot: action("Change it in the chat", { href: talkHref(x) }),
       };
     case "ready": {
       const r = x.result ?? {};
@@ -459,7 +466,7 @@ function detailBody(x, tz) {
           + (r.facts?.length ? `<p class="res-f">${r.facts.map(esc).join("<br>")}</p>` : "")
           + (r.note ? `<p class="${r.headline || r.facts?.length ? "res-n" : "res-b"}">${esc(r.note)}</p>` : "")
           + stamp("DONE").replace('class="stamp ', 'class="stamp above ') + `</div>`,
-        foot: action("See it in the chat", { href: "/web?thread" }),
+        foot: action("See it in the chat", { href: talkHref(x) }),
       };
     }
     case "failed":
@@ -468,10 +475,10 @@ function detailBody(x, tz) {
           + (x.why ? `<p class="hand huge">${esc(x.why)}</p>` : "")
           + (x.next ? `<div class="next">${label("WHAT HAPPENS NEXT")}<p class="b">${esc(x.next)}</p></div>` : "")
           + (x.nothingCharged ? `<p class="small">NOTHING CHARGED</p>` : ""),
-        foot: action("Talk about it in the chat", { href: "/web?thread" }),
+        foot: action("Talk about it in the chat", { href: talkHref(x) }),
       };
     default:
-      return { main: headBlock(x.status ?? "", x.title), foot: action("Talk about it in the chat", { href: "/web?thread" }) };
+      return { main: headBlock(x.status ?? "", x.title), foot: action("Talk about it in the chat", { href: talkHref(x) }) };
   }
 }
 

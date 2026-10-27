@@ -4,7 +4,8 @@
 // be reminded to…", "standing check-in: daily gua sha…". They are right for the model and wrong
 // for the person's own list. So each row carries a `label`, written once when it is made: by the
 // model that makes it (timer_set / task_start take `title`), or, when nothing wrote one, by one
-// cheap summarise on the claude-cli subscription path — never the billed API. What the title SAYS
+// cheap summarise on the claude-cli subscription path — never the billed API. That same summarise
+// also writes the row's chat drafts (DRAFT_STATES below), so they cost no call of their own. What the title SAYS
 // is the model's call; the only code that reads the words is the last-resort cleanup below, which
 // strips Reason's own note prefixes so a row with no title yet is still readable.
 import { config } from "./config.js";
@@ -46,31 +47,66 @@ export function cleanTitle(text, { name } = {}) {
   return normTitle(t, { name: "" }) ?? "";
 }
 
-const SCHEMA = {
-  type: "object",
-  properties: { title: { type: "string" } },
-  required: ["title"],
-  additionalProperties: false,
+// The states a row of each kind can be in on Web's Ongoing, and what "Talk about it in the chat →"
+// drafts for each (owner 10-27): waiting asks for news, working how it's going, scheduled offers to
+// change it, ready asks to see it, didn't-work asks what's next, stuck what would get it going.
+export const DRAFT_STATES = { task: ["waiting", "working", "stuck", "ready", "failed"], timer: ["scheduled"], series: ["scheduled"] };
+const DRAFT_ASK = {
+  waiting: "asking whether there is any news (e.g. 'Any word back from Speedrun yet?')",
+  working: "asking how it is going (e.g. 'How's the table hunt going?')",
+  stuck: "asking what would get it moving again",
+  ready: "asking to see it (e.g. 'Can I see what you found?')",
+  failed: "asking what happens next now that it did not work",
+  scheduled: "offering to change it (e.g. 'Can we move my Twi check-in?')",
+};
+
+const schemaFor = (kind) => {
+  const states = DRAFT_STATES[kind] ?? [];
+  const props = { title: { type: "string" } };
+  if (states.length) props.drafts = { type: "object", properties: Object.fromEntries(states.map(k => [k, { type: "string" }])), required: states, additionalProperties: false };
+  return { type: "object", properties: props, required: Object.keys(props), additionalProperties: false };
 };
 
 const SYSTEM = `You name one item on a person's to-do list. You are given an assistant's private note about a reminder or a job it is holding for them.
 Reply with a title for the person to read on their own list: 2 to 5 words, plain, the thing itself, the way they would say it.
 Examples: "Speedrun reply", "Daily Twi check-in", "Prep for Wednesday", "Cancel Claude Pro", "Work commute check".
-Never use their name or talk about them in the third person. No times, dates, "remind", quotes or punctuation at the end.`;
+Never use their name or talk about them in the third person. No times, dates, "remind", quotes or punctuation at the end.
+When asked for drafts: for each state, one short message the PERSON could send their assistant about this item, in their own casual first-person voice, a natural question that moves it along. Under 12 words. Never their name, never the assistant's private notes, tool names or "they asked".`;
 
-/** One title from the claude-cli subscription. Null when the CLI is not the backend or anything goes wrong. */
-export async function summariseTitle(text, { name = config.ownerName, ask = askStructuredViaCli } = {}) {
+const MAX_DRAFT = 120;
+/** One draft as written, made safe to put in their composer: one line, short, first person, never their name or a tool-ish word. Null when unusable. */
+export function normDraft(raw, { name } = {}) {
+  let t = String(raw ?? "").replace(/\s+/g, " ").trim().replace(/^["'“‘]+|["'”’]+$/g, "").trim();
+  if (!t || t.length > MAX_DRAFT) return null;
+  if (firstName(name) && nameRe(name).test(t)) return null;
+  // Reason's own machinery never reaches their line: snake_case tool names, "the user", "<x> asked".
+  if (/\b[a-z]+_[a-z_]+\b|\bthe user\b|\b(he|she|they) asked\b|\breason asked\b/i.test(t)) return null;
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+/** The title and the per-state drafts from one claude-cli summarise. Null when the CLI is not the backend or anything goes wrong. */
+export async function summariseItem(text, { kind = "task", name = config.ownerName, ask = askStructuredViaCli } = {}) {
   if (ask === askStructuredViaCli && (process.env.REASON_BACKEND !== "claude-cli" || process.env.NODE_TEST_CONTEXT)) return null;
+  const states = DRAFT_STATES[kind] ?? [];
+  const wantDrafts = states.length ? `\n\nAlso write drafts, one per state: ${states.map(k => `${k}: ${DRAFT_ASK[k]}`).join("; ")}.` : "";
   const { value, error } = await ask({
-    prompt: `Their first name, which must NOT appear: ${firstName(name) || "(unknown)"}\n\nThe note:\n${String(text ?? "").slice(0, 600)}`,
+    prompt: `Their first name, which must NOT appear: ${firstName(name) || "(unknown)"}\n\nThe note:\n${String(text ?? "").slice(0, 600)}${wantDrafts}`,
     system: SYSTEM,
-    schema: SCHEMA,
+    schema: schemaFor(kind),
     model: process.env.REASON_TITLE_CLI_MODEL || "sonnet",
     timeoutMs: 45_000,
     feature: "title",
   });
   if (error) return null;
-  return normTitle(value?.title, { name });
+  const title = normTitle(value?.title, { name });
+  const drafts = {};
+  for (const k of states) { const d = normDraft(value?.drafts?.[k], { name }); if (d) drafts[k] = d; }
+  return { title, drafts: Object.keys(drafts).length ? drafts : null };
+}
+
+/** One title from the claude-cli subscription. Null when the CLI is not the backend or anything goes wrong. */
+export async function summariseTitle(text, opts = {}) {
+  return (await summariseItem(text, opts))?.title ?? null;
 }
 
 // One summarise at a time, each row asked for once per process: a page view never fans out.
@@ -91,8 +127,8 @@ export function queueTitle(kind, conversationId, id, text, { name, ask } = {}) {
   asked.add(key);
   chain = chain.then(async () => {
     try {
-      const title = await summariseTitle(text, { name: name ?? db.getAccount(conversationId)?.name ?? config.ownerName, ...(ask ? { ask } : {}) });
-      if (title) db.setItemLabel(kind, conversationId, id, title);
+      const got = await summariseItem(text, { kind, name: name ?? db.getAccount(conversationId)?.name ?? config.ownerName, ...(ask ? { ask } : {}) });
+      if (got?.title) db.setItemLabel(kind, conversationId, id, got.title, got.drafts);
     } catch { /* a title is never worth an error */ }
   });
   return chain;

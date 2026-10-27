@@ -13,7 +13,7 @@ if (dbArg) process.env.REASON_DB_PATH = dbArg.slice(5);
 
 const db = await import("../src/db.js");
 const { config } = await import("../src/config.js");
-const { summariseTitle } = await import("../src/itemtitle.js");
+const { summariseItem } = await import("../src/itemtitle.js");
 
 if (process.env.REASON_BACKEND !== "claude-cli") {
   console.error("REASON_BACKEND is not claude-cli: titles come only from the subscription CLI. Nothing done.");
@@ -34,9 +34,11 @@ for (const r of rows) {
     const now = db.db.prepare("SELECT label FROM timers WHERE id = ?").get(r.id);
     if (now?.label) { skipped++; continue; }
   }
-  const title = await summariseTitle(r.text, { name: nameOf(r.c) });
-  console.log(`${r.kind} #${r.id} [${r.c}] → ${title ?? "(none)"}`);
+  // The same one summarise writes the row's chat drafts too (src/itemtitle.js DRAFT_STATES).
+  const got = await summariseItem(r.text, { kind: r.kind, name: nameOf(r.c) });
+  const title = got?.title ?? null;
+  console.log(`${r.kind} #${r.id} [${r.c}] → ${title ?? "(none)"}${got?.drafts ? ` + ${Object.keys(got.drafts).length} drafts` : ""}`);
   if (!title) continue;
-  if (write && db.setItemLabel(r.kind, r.c, r.id, title)) wrote++;
+  if (write && db.setItemLabel(r.kind, r.c, r.id, title, got.drafts)) wrote++;
 }
 console.log(`${rows.length} rows without a title; ${write ? `${wrote} written, ${skipped} already titled by their series` : "dry run, nothing written"}.`);
