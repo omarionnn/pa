@@ -21,9 +21,16 @@ import { BRAND_PEN, BRAND_PEN_DARK } from "./brand.js";
 export const WORDMARK_BUBBLE = BRAND_PEN;
 export const WORDMARK_BUBBLE_DARK = BRAND_PEN_DARK;
 
+/**
+ * The o the bubble stands for, in the text but never seen: copy-paste, a page reader and search
+ * snippets read "reason", not "reasn". Zero size and still inline (an out-of-flow span would break
+ * the word in two for innerText), so the mark looks the same. Inline, so it holds on every page and card whatever else its <style> carries.
+ */
+export const WORDMARK_O = `<span class="wm-o" style="font-size:0;line-height:0;letter-spacing:0">o</span>`;
+
 /** The mark itself. `ing` is extra html after the n (the opening moment's "reasoning"). */
 export function wordmark({ ing = "" } = {}) {
-  return `<span class="wordmark" role="img" aria-label="Reason">reas<svg class="wm-bubble" viewBox="-4 0 70 66" aria-hidden="true"><g transform="translate(6 0) skewX(-10)"><path d="M31 6 A25 25 0 1 1 13 49 L4 60 L8 44 A25 25 0 0 1 31 6 Z"/></g></svg>n${ing}</span>`;
+  return `<span class="wordmark" role="img" aria-label="Reason">reas<svg class="wm-bubble" viewBox="-4 0 70 66" aria-hidden="true"><g transform="translate(6 0) skewX(-10)"><path d="M31 6 A25 25 0 1 1 13 49 L4 60 L8 44 A25 25 0 0 1 31 6 Z"/></g></svg>${WORDMARK_O}n${ing}</span>`;
 }
 
 /** Its styles, for any page's <style>: the site's .wordmark and .wm-bubble, sizes and all. */

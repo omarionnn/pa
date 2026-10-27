@@ -22,6 +22,7 @@
 // /web/fonts/<name>.woff2 by src/http.js, never fetched from Google; Courier New is the system's.
 import { readFileSync } from "node:fs";
 import { esc } from "./render.js";
+import { WORDMARK_O } from "./wordmark.js";
 import { LOAD_CSS, loadJs } from "./webloading.js";
 import { webIconLinks, NOTIFY_JS, NOTIFY_CSS } from "./webnotify.js";
 
@@ -59,7 +60,8 @@ export const bubble = (stroke = 5, cls = "bub") =>
   `<svg class="${cls}" aria-hidden="true" viewBox="0 0 40 40"><path d="${BUBBLE_PATH}" fill="none" stroke="currentColor" stroke-width="${stroke}" stroke-linejoin="round"/></svg>`;
 /** "reas◯n", top-left on every screen. A link home when `href` is given. */
 export function wordmark({ href = "", ing = "" } = {}) {
-  const inner = `reas${bubble(5)}n${ing}`;
+  // One inline run inside the flex (.wm-w), so innerText reads "reason" as one word, not "reas\no\nn".
+  const inner = `<span class="wm-w">reas${bubble(5)}${WORDMARK_O}n${ing}</span>`;
   return href
     ? `<a class="wm" href="${esc(href)}" aria-label="Reason, home">${inner}</a>`
     : `<span class="wm" role="img" aria-label="reason">${inner}</span>`;
@@ -192,6 +194,7 @@ button{font:inherit;color:inherit}
 .sr{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;margin:0;padding:0;border:0}
 .wm{font:italic 400 22px/1 var(--serif);letter-spacing:-.01em;display:inline-flex;align-items:center;text-decoration:none;color:var(--ink);min-height:44px}
 .wm .bub{width:.59em;height:.59em;color:var(--pen);transform:skewX(-10deg);margin:3px 1px 0}
+.wm-w .bub{vertical-align:top;margin-top:calc(.205em + 1.5px)}
 .lbl{margin:0;font:400 10.5px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lbl.pen{color:var(--pen)}
 .hand{margin:0;font:400 21px/1.2 var(--hand);color:var(--pen)}
@@ -237,9 +240,10 @@ html.loading .loader{display:flex;position:fixed;inset:0;z-index:50;background:v
 html.loading.loaded .loader{opacity:0}
 .loader p{margin:0;font:italic 400 64px/1 var(--serif);letter-spacing:-.01em;display:inline-flex;align-items:center}
 .loader .bub{width:34px;height:34px;color:var(--pen);transform:skewX(-10deg);margin:8px 2px 0}
+.loader .wm-w .bub{vertical-align:top;margin-top:19px}.loader .wm-w .ing{vertical-align:top}
 .loader .ing{color:var(--muted);display:inline-block;overflow:hidden;white-space:nowrap;width:0;animation:ing .6s steps(3,end) .15s forwards}
 @keyframes ing{to{width:1.55ch}}
-@media (min-width:900px){.wm{font-size:26px}.wm .bub{width:.577em;height:.577em}.lbl{font-size:11px}.hand{font-size:22px}.h1{font-size:64px}.act{font-size:32px}.act2{font-size:12px}}
+@media (min-width:900px){.wm{font-size:26px}.wm .bub{width:.577em;height:.577em}.wm-w .bub{margin-top:calc(.2115em + 1.5px)}.lbl{font-size:11px}.hand{font-size:22px}.h1{font-size:64px}.act{font-size:32px}.act2{font-size:12px}}
 @media (max-width:359px){:root{--gut:20px}.h1{font-size:38px}}
 ${LOAD_CSS}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}html.loading .loader{display:none}}
@@ -270,7 +274,7 @@ ${webIconLinks()}
 <script>${PAGE_JS}</script>
 <script>${HEAD_JS}</script>
 <style>${KIT_CSS}${NOTIFY_CSS}${css}</style>
-</head><body${bodyClass ? ` class="${esc(bodyClass)}"` : ""}>${skipped.link}${loader ? `<div class="loader" role="status" aria-label="Loading"><p>reas${bubble(4)}n<span class="ing">ing</span></p></div>` : ""}
+</head><body${bodyClass ? ` class="${esc(bodyClass)}"` : ""}>${skipped.link}${loader ? `<div class="loader" role="status" aria-label="Loading"><p><span class="wm-w">reas${bubble(4)}${WORDMARK_O}n<span class="ing">ing</span></span></p></div>` : ""}
 ${skipped.html}${footer}<script>${script};${THEME_JS};${NOTIFY_JS};${LOAD_JS}</script></body></html>`;
 }
 

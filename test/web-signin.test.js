@@ -546,7 +546,7 @@ test("the pages wear the kit: serif and hand faces from /web/fonts only, mono la
     assert.match(page, /--hand:"Reason Hand",Caveat/, name);
     assert.match(page, /--mono:"Courier New",Courier,monospace/, name);
     assert.match(page, /border-top:1px dashed var\(--hair\)/, `${name}: dashed rules`);
-    assert.match(page, /<a class="wm" href="\/web" aria-label="Reason, home">reas<svg class="bub" aria-hidden="true" viewBox="0 0 40 40">/, `${name}: the wordmark`);
+    assert.match(page, /<a class="wm" href="\/web" aria-label="Reason, home"><span class="wm-w">reas<svg class="bub" aria-hidden="true" viewBox="0 0 40 40">/, `${name}: the wordmark`);
     assert.doesNotMatch(page, /fonts\.googleapis|fonts\.gstatic/, `${name}: nothing from Google`);
     for (const url of page.matchAll(/url\(([^)]+)\)/g)) assert.match(url[1], /^\/web\/fonts\/[a-z]+\.woff2$/, `${name}: ${url[1]}`);
   }

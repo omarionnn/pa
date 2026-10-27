@@ -138,11 +138,11 @@ test("instant replies: the stream is the path, the 4 s poll only its fallback (o
 
 test("the wordmark: reas◯n with the bubble in pen, skewed −10°; the loader is reas◯n + ing and only where asked", () => {
   const wm = kit.wordmark();
-  assert.match(wm, /role="img" aria-label="reason">reas<svg class="bub" aria-hidden="true"/);
+  assert.match(wm, /role="img" aria-label="reason"><span class="wm-w">reas<svg class="bub" aria-hidden="true"/);
   assert.match(kit.KIT_CSS, /\.wm \.bub\{[^}]*color:var\(--pen\);transform:skewX\(-10deg\)/);
   const thread = allScreens().thread;
   assert.match(thread, /data-loader="1"/);
-  assert.match(thread, /<div class="loader" role="status" aria-label="Loading"><p>reas<svg[^]*?<\/svg>n<span class="ing">ing<\/span>/);
+  assert.match(thread, /<div class="loader" role="status" aria-label="Loading"><p><span class="wm-w">reas<svg[^]*?<\/svg><span class="wm-o"[^>]*>o<\/span>n<span class="ing">ing<\/span>/);
   assert.match(thread, /prefers-reduced-motion: reduce/, "the head script never starts it under reduced motion");
   assert.match(thread, /Math\.max\(0,1200-/, "held at least 1.2 s");
   assert.ok(!allScreens().signin.includes('class="loader"'));
