@@ -130,7 +130,10 @@ function titled(kind, conversationId, row, text, name) {
 export function stepsOf(task) {
   const sheet = task.sheet ?? {};
   if (sheet.steps?.length) return { real: true, steps: sheet.steps.map(s => ({ text: s.text, state: s.state, live: s.live ?? null, at: s.at ?? null })) };
-  const done = db.taskLog(task.id, 40).filter(l => l.kind === "progress").map(l => ({ text: l.note, state: "done", live: null, at: l.at }));
+  // Reason's own log lines: their name turned into "you", the words otherwise as written.
+  const n = String(nameOf(task.conversation_id) ?? "").trim().split(/\s+/)[0];
+  const you = (t) => (n ? String(t).replace(new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}'s\\b`, "gi"), "your").replace(new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "gi"), "you") : t);
+  const done = db.taskLog(task.id, 40).filter(l => l.kind === "progress").map(l => ({ text: you(l.note), state: "done", live: null, at: l.at }));
   const left = (sheet.left ?? []).map(t => ({ text: t, state: "todo", live: null, at: null }));
   return { real: false, steps: [...done.slice(-6), ...left] };
 }
@@ -139,10 +142,15 @@ export function stepsOf(task) {
 function committedOn(conversationId, task) {
   return !!db.db.prepare("SELECT 1 FROM confirmations WHERE conversation_id = ? AND task_id = ? AND consumed_at IS NOT NULL LIMIT 1").get(conversationId, task.id);
 }
-/** Was any card charge or hold made while this task was open? Only then may it NOT say "nothing charged". */
+/**
+ * A purchase row that certainly took no money: no order, no authorization or hold, nothing charged,
+ * and not one whose outcome nobody knows. Anything less certain counts as maybe charged.
+ */
+const surelyUncharged = (p) => !String(p.order_id ?? "") && !String(p.authorization_id ?? "") && !String(p.authorization_state ?? "")
+  && ["", "none"].includes(String(p.charge_status ?? "").trim().toLowerCase()) && p.status !== "outcome_unknown";
+/** Was any card purchase live while this task was open that might have charged? Then "nothing charged" is not said. */
 function chargedDuring(conversationId, from, to) {
-  return db.listAgentcardPurchases(conversationId, 50).some(p => p.created_at >= from && p.created_at <= to
-    && (String(p.order_id ?? "") !== "" || /captur|charg|settl|authori|hold/i.test(String(p.charge_status ?? ""))));
+  return db.listAgentcardPurchases(conversationId, 50).some(p => p.created_at <= to && Math.max(p.created_at, p.updated_at ?? 0) >= from && !surelyUncharged(p));
 }
 
 function taskItem(conversationId, t, name, now) {
@@ -327,7 +335,7 @@ export function findItem(conversationId, kind, id, now = clock.now()) {
   const name = nameOf(conversationId);
   if (kind === "approval") {
     const c = db.getConfirmation(conversationId, n);
-    return c && c.granted_at == null && c.refused_at == null && c.consumed_at == null ? approvalItem(conversationId, c) : null;
+    return c && c.granted_at == null && c.refused_at == null && c.consumed_at == null && now - c.asked_at < APPROVAL_WINDOW_MS ? approvalItem(conversationId, c) : null;
   }
   if (kind === "task") {
     const t = db.getTask(conversationId, n);

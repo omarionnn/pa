@@ -176,6 +176,11 @@ test("6. details 2A–2E and the approval: ← ONGOING, a typed status, a serif 
   // A charge made while it was open: "nothing charged" is no longer true, so it is not said.
   db.db.prepare("UPDATE agentcard_purchases SET order_id = 'o1', created_at = ? WHERE buy_conversation_id = 'buy-1'").run(db.getTask(C, ids.failed).created_at);
   assert.ok(!d("task", ids.failed).includes("NOTHING CHARGED"));
+  // A purchase whose outcome nobody knows, live while the task was open: not claimed either.
+  db.db.prepare("UPDATE agentcard_purchases SET order_id = '', status = 'outcome_unknown', charge_status = 'unknown' WHERE buy_conversation_id = 'buy-1'").run();
+  assert.ok(!d("task", ids.failed).includes("NOTHING CHARGED"));
+  db.db.prepare("UPDATE agentcard_purchases SET status = 'cancelled', charge_status = 'none' WHERE buy_conversation_id = 'buy-1'").run();
+  assert.ok(d("task", ids.failed).includes("NOTHING CHARGED"), "a cart that surely took nothing does not suppress it");
   // An older done task with no result card: its outcome, as Reason wrote it.
   const o = db.createTask(C, { title: "o", goal: "g", maxAttempts: 3, label: "Roundup" });
   db.finishTask(C, o.id, { state: "done", outcome: "Texted the three-story roundup" });
@@ -204,6 +209,10 @@ test("7. the approval detail: only the fields its record has, NOTHING CHARGED YE
   assert.match(call, /<dt>WHAT<\/dt>[^]*<dd>CALL<\/dd>[^]*<dt>TO<\/dt>[^]*<dd>\+12125550100<\/dd>/);
   assert.ok(!call.includes("Face ID") && !call.includes("TOTAL"));
   assert.match(call, /NOTHING BOOKED YET/);
+  // A day old: no longer drawn as one that needs them, even by its address.
+  clock.skip(og.APPROVAL_WINDOW_MS + 1);
+  assert.equal(og.findItem(C, "approval", c.id), null);
+  clock.reset();
   // Answered: no longer an approval.
   db.grantConfirmation(c.id, "yes");
   assert.equal(og.findItem(C, "approval", c.id), null);
@@ -225,6 +234,11 @@ test("8. the plumbing: steps on the sheet (one in hand, done times stamped), tas
   assert.deepEqual(og.resultFor("failed", { why: " sold out. ", next: "" }), { why: "sold out.", next: null });
   assert.equal(og.resultFor("cancelled", { why: "x" }), null);
   assert.equal(og.resultFor("done", {}), null);
+  // Through the real tool: task_finish's result reaches the row (the input schema keeps it).
+  const t = db.createTask(C, { title: "x", goal: "g", maxAttempts: 3, label: "Tickets" });
+  const out = JSON.parse(JSON.stringify(await tools.runTool("task_finish", { task_id: t.id, state: "failed", outcome: "sold out", result: { why: "sold out before i got in.", next: "Watching resale." } }, { conversationId: C })));
+  assert.notEqual(out.ok, false, JSON.stringify(out));
+  assert.deepEqual(JSON.parse(db.getTask(C, t.id).result_json), { why: "sold out before i got in.", next: "Watching resale." });
   // confirm_request's amount reaches the row.
   const c = db.askConfirmation({ conversationId: C, action: "browser_submit", summary: "Book it", stakes: "money", target: "x", askedAfterMsgs: 0, amount: 240 });
   assert.equal(db.getConfirmation(C, c.id).amount_cents, 24000);
