@@ -32,6 +32,7 @@
 //   POST /web/upload, GET /web/media/…   a photo, PDF or voice note in; files back, signed in only (src/webmedia.js)
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
+//   GET  /web/saved[/<kind>/<id>], POST /web/saved/pin|remove|restore   Saved (src/pages/websaved.js; index src/saved.js)
 //   GET  /web/ongoing/{approval|task|timer|series}/{id}   one Ongoing row's detail; /web/ongoing/state (src/pages/webongoing.js)
 //   GET  /web/fonts/{serif|roman|hand|handbold|sans}.woff2  Web's own faces (src/pages/webkit.js; 404 while off)
 //        /web…  on the pages host, not signed by the website: 301 to {REASON_SITE_URL}/web… (src/pages/siteproxy.js)
@@ -260,7 +261,8 @@ export function createServer({ router, runtime, log = () => {} }) {
       // Ongoing's own pages (src/pages/webongoing.js): one row's detail, and the small state the Ongoing pages poll.
       const ongoingRoute = /^\/web\/ongoing(?:\/(state|approval|task|timer|series)(?:\/(\d{1,12}))?)?$/.exec(url.pathname);
       const webRoute = ongoingRoute ?? /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings))?$/.exec(url.pathname)
-        ?? /^\/web\/(memory\/(?:correct|forget|guess))$/.exec(url.pathname);
+        ?? /^\/web\/(memory\/(?:correct|forget|guess))$/.exec(url.pathname)
+        ?? /^\/web\/(saved(?:\/(?:pin|remove|restore|(?:page|call|receipt|event|album)\/[A-Za-z0-9_-]{1,40}|page\/[A-Za-z0-9_-]{1,40}\/frame))?)$/.exec(url.pathname);
       if (webRoute && webOn()) {
         let out;
         try {

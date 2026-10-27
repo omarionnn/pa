@@ -78,7 +78,7 @@ const asked = new Set();
 let chain = Promise.resolve();
 
 /**
- * Title a row nothing titled yet, in the background. `kind` is task | timer | series. Never throws,
+ * Title a row nothing titled yet, in the background. `kind` is task | timer | series | call. Never throws,
  * never blocks the caller; a series' title also goes onto its pending firing.
  */
 export function queueTitle(kind, conversationId, id, text, { name, ask } = {}) {
