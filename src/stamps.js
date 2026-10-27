@@ -576,7 +576,7 @@ export function stampMarkup(summary, { size = "md", tilt = true, cls = "" } = {}
   const detail = summary.detail ?? "";
   // Tier sizes per shape, from the reference's own stamps.
   const t = k.shape === "rect" ? { e: 9, m: 15, d: 9, gap: 4, ml: ".08em" } : k.shape === "oval" ? { e: 9, m: 14, d: 10, gap: 2, ml: ".08em" } : k.shape === "ring" ? { e: 9, m: 16, d: 9, gap: 3, ml: ".1em" } : { e: 10, m: 15, d: 10, gap: 3, ml: ".04em" };
-  const mainSize = main.length > 12 ? t.m * 0.8 : t.m;
+  const mainSize = main.length > 10 ? t.m * 0.8 : t.m;
   const tier = (text, fs, ls) => (text ? `<span style="font-size:${px(fs * s)};letter-spacing:${ls};white-space:nowrap">${escHtml(text)}</span>` : "");
   const style = `width:${px(w * s)};height:${px(h * s)};margin:${px(m * s)} 0;${border(s, c)};color:${c};display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:${px(t.gap * s)};`
     + `transform:rotate(${tilt ? summary.rotation ?? 0 : 0}deg);font-family:var(--mono,'Courier New',Courier,monospace);font-weight:700;line-height:1.15;text-align:center;box-sizing:border-box;flex-shrink:0;padding:0`;
