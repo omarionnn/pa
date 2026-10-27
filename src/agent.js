@@ -9,6 +9,7 @@ import * as notice from "./notice.js";
 import { loadConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
 import { imagesFor, pdfsFor, videosFor } from "./media.js";
+import { docsFor } from "./docread.js";
 import { startCapture, recordLooked, captureViaApi } from "./looked.js";
 import { splitImage } from "./backends/mcp-core.js";
 import * as reviewed from "./reviewed.js";
@@ -386,6 +387,9 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   const pdfResult = await pdfsFor(attachments, { log, cover: reviewed.cover });
   notes.push(...pdfResult.notes);
   seen.push(...pdfResult.seen);
+  const docResult = await docsFor(attachments, { log, cover: reviewed.cover });
+  notes.push(...docResult.notes);
+  seen.push(...docResult.seen);
 
   // A video — a clip from their camera roll, a screen recording — uploaded to Gemini and watched.
   const videoResult = await videosFor(attachments, { log, cover: reviewed.cover });

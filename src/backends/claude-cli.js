@@ -25,6 +25,7 @@ import * as accounts from "../accounts.js";
 import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold, outboxMark, ownerTextsSince } from "../db.js";
 import { undeliveredNotice } from "../outbox.js";
 import { imagesFor, pdfsFor } from "../media.js";
+import { docsFor } from "../docread.js";
 import { startCapture, recordLooked, captureViaCli } from "../looked.js";
 import * as reviewed from "../reviewed.js";
 import { capabilitiesNow } from "../tools.js";
@@ -142,6 +143,10 @@ async function runTurnOnCli({
   const pdfResult = await pdfs(attachments, { log, cover: reviewed.cover });
   notes.push(...pdfResult.notes);
   seen.push(...pdfResult.seen);
+  // A Word file or plain text handed in on Web (src/docread.js), read here the same way.
+  const docResult = await docsFor(attachments, { log, cover: reviewed.cover });
+  notes.push(...docResult.notes);
+  seen.push(...docResult.seen);
   const said = [`${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
   // The history says the looking has already happened, so a later turn does not offer to go back
   // and check a picture that is out of reach by then. The model's own copy of this turn says where

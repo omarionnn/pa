@@ -44,6 +44,7 @@ import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting } from "./websig
 import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch, OG_KEY } from "./webkit.js";
 import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot, COMPOSE_CSS, COMPOSE_JS } from "./webcompose.js";
 import { prepareSend } from "../webmedia.js";
+import { doingFor, doingEvents } from "../doing.js";
 
 /** How many lines a page of history holds, first load and each "show earlier". */
 export const PAGE = 40;
@@ -566,12 +567,13 @@ pend().forEach(function(p){if(list.querySelector('.msg[data-cid="'+p.id+'"]')){f
 window.addEventListener('offline',function(){noteLine("you're offline. i'll send it when you're back.")});
 window.addEventListener('online',function(){noteLine('');list.querySelectorAll('.msg[data-state=waiting]').forEach(function(li){if(li.retry)return li.retry();send(stored(li),li)});poll()});
 if(offline())noteLine("you're offline. i'll send it when you're back.");
-var polling=false;function poll(){if(polling)return;polling=true;fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
+var polling=false;function poll(){if(polling)return;polling=true;fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);if(R.doing)R.doing(j.doing);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
 var beat=0;setInterval(function(){if(!live||Date.now()-beat>40000)poll()},4000);
 function stream(){if(!window.EventSource)return;try{es=R.stream.indexOf('http')===0?new EventSource(R.stream+'?after='+R.last,{withCredentials:true}):new EventSource(R.stream+'?after='+R.last)}catch(x){return}es.onopen=function(){live=true;beat=Date.now();if(lost){lost=0;noteLine('')}};
 es.addEventListener('ping',function(){beat=Date.now()});
 es.addEventListener('message',function(e){beat=Date.now();try{add(JSON.parse(e.data))}catch(x){}});
-es.addEventListener('typing',function(e){try{var t=JSON.parse(e.data);working(t.on,t.until)}catch(x){}});
+es.addEventListener('typing',function(e){try{var t=JSON.parse(e.data);working(t.on,t.until);if(R.doing)R.doing(t.on?t.doing:null)}catch(x){}});
+es.addEventListener('doing',function(e){try{if(R.doing)R.doing(JSON.parse(e.data).doing)}catch(x){}});
 es.addEventListener('signedout',function(){es.close();expired()});
 es.onerror=function(){live=false}}
 stream();
@@ -730,7 +732,8 @@ export function historyRequest({ account, query = {} }) {
   if (query.after != null) {
     const after = num(query.after) ?? 0;
     const rows = db.messagesFor(conv, { after, limit: 200 });
-    return json(200, { messages: rows.map(r => rowOut(r, { conversationId: conv, service })) });
+    // `doing`: what Reason is doing on this conversation's turn right now (src/doing.js), or null.
+    return json(200, { messages: rows.map(r => rowOut(r, { conversationId: conv, service })), doing: doingFor(conv) });
   }
   const before = num(query.before);
   const rows = db.messagesBefore(conv, { before, limit: PAGE + 1 });
@@ -822,6 +825,7 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
         closed = true;
         db.historyBus.off("row", onRow);
         webCh?.events?.off?.("typing", onTyping);
+        doingEvents.off("change", onDoing);
         clearInterval(beat); clearInterval(check); clearTimeout(stop);
         log({ web_stream_end: why });
         try { res.end(); } catch { /* already gone */ }
@@ -836,8 +840,9 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
       const onRow = (e) => { if (e?.conversationId !== conv) return; try { flush(); } catch { end("failed"); } };
       const onTyping = (e) => {
         if (e?.to !== account.address || !stillHers()) return;
-        write(`event: typing\ndata: ${JSON.stringify({ on: !!e.on, until: e.until || 0 })}\n\n`);
+        write(`event: typing\ndata: ${JSON.stringify({ on: !!e.on, until: e.until || 0, doing: e.on ? doingFor(conv) : null })}\n\n`);
       };
+      const onDoing = (c) => { if (c !== conv || !stillHers()) return; write(`event: doing\ndata: ${JSON.stringify({ doing: doingFor(conv) })}\n\n`); };
       // Timers first: `end` clears them, and the first flush may already end the stream.
       // A named event, not a comment, so the page can tell a live stream from a silently dead one.
       const beat = setInterval(() => write("event: ping\ndata: {}\n\n"), 15_000);
@@ -849,6 +854,9 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
       write("retry: 1500\n\n");
       db.historyBus.on("row", onRow);
       webCh?.events?.on?.("typing", onTyping);
+      doingEvents.on("change", onDoing);
+      // A tab that opens (or comes back) mid-turn hears what Reason is doing now, not only at the next change.
+      if (doingFor(conv)) onDoing(conv);
       try { flush(); } catch (e) { log({ web_stream_failed: (e?.message ?? String(e)).split("\n")[0] }); end("failed"); }
     },
   };
