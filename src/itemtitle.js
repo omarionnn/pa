@@ -116,4 +116,50 @@ export function queueTitle(kind, conversationId, id, text, { name, ask } = {}) {
   return chain;
 }
 
+/**
+ * A scheduled row the model already titled (timer_set / series with `title`) has no description, since
+ * only an untitled row is summarised. One summarise in the same queue writes its description alone:
+ * the title is never replaced. Never throws or blocks.
+ */
+export function queueBlurb(kind, conversationId, id, text, { name, ask } = {}) {
+  if (kind !== "timer" && kind !== "series") return null;
+  if (!ask && process.env.REASON_BACKEND !== "claude-cli") return null;
+  if (!ask && process.env.NODE_TEST_CONTEXT) return null;
+  if (process.env.REASON_ITEM_TITLES === "0") return null;
+  const key = `${kind}:${id}:blurb`;
+  if (asked.has(key) || asked.has(`${kind}:${id}`)) return null;
+  asked.add(key);
+  chain = chain.then(async () => {
+    try {
+      const got = await summariseItem(text, { name: name ?? db.getAccount(conversationId)?.name ?? config.ownerName, ...(ask ? { ask } : {}) });
+      if (got?.line) db.setItemBlurb(kind, conversationId, id, got.line);
+    } catch { /* a description is never worth an error */ }
+  });
+  return chain;
+}
+
+/** The scheduled rows still owed a description: pending one-off timers and active series with no `blurb`. */
+export function rowsWithoutBlurb() {
+  return [
+    ...db.db.prepare("SELECT id, conversation_id AS c, COALESCE(NULLIF(call_goal, ''), what) AS text FROM series WHERE state = 'active' AND (blurb IS NULL OR blurb = '')").all().map(r => ({ ...r, kind: "series" })),
+    ...db.db.prepare("SELECT id, conversation_id AS c, COALESCE(NULLIF(call_goal, ''), note) AS text FROM timers WHERE fired_at IS NULL AND cancelled_at IS NULL AND series_id IS NULL AND (blurb IS NULL OR blurb = '')").all().map(r => ({ ...r, kind: "timer" })),
+  ];
+}
+
+/**
+ * The one-time backfill of descriptions (scripts/backfill-blurbs.js): one summarise per row on the
+ * claude-cli subscription; only `blurb` is ever written, never a title, note or any other column.
+ * `write` false prints what it would write. `ask` is the CLI unless a test hands a stub.
+ */
+export async function backfillBlurbs({ write = false, ask, log = console.log } = {}) {
+  const rows = rowsWithoutBlurb();
+  let wrote = 0;
+  for (const r of rows) {
+    const got = await summariseItem(r.text, { name: db.getAccount(r.c)?.name || config.ownerName, ...(ask ? { ask } : {}) });
+    log(`${r.kind} #${r.id} → ${got?.line ?? "(none)"}`);
+    if (write && got?.line && db.setItemBlurb(r.kind, r.c, r.id, got.line)) wrote++;
+  }
+  return { rows: rows.length, wrote };
+}
+
 export function resetTitleQueue() { asked.clear(); chain = Promise.resolve(); }

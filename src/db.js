@@ -1869,6 +1869,17 @@ export function setItemLabel(kind, conversationId, id, label, { blurb = null } =
   }
   return done;
 }
+/**
+ * Write a row's one-line description alone (src/itemtitle.js queueBlurb, scripts/backfill-blurbs.js): only
+ * where none is set, never touching the title or anything else. A series' line also goes onto its pending firing.
+ */
+export function setItemBlurb(kind, conversationId, id, blurb) {
+  const table = { task: "tasks", timer: "timers", series: "series" }[kind];
+  if (!table || !blurb) return false;
+  const done = db.prepare(`UPDATE ${table} SET blurb = ? WHERE id = ? AND conversation_id = ? AND (blurb IS NULL OR blurb = '')`).run(blurb, id, conversationId).changes === 1;
+  if (kind === "series") db.prepare("UPDATE timers SET blurb = ? WHERE series_id = ? AND conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND (blurb IS NULL OR blurb = '')").run(blurb, id, conversationId);
+  return done;
+}
 export function listTimers(conversationId) {
   return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL ORDER BY fire_at").all(conversationId);
 }

@@ -96,7 +96,14 @@ handoff 2026-10-26, "3 · Ongoing", sheets 2/3, 9D). Model: `src/ongoing.js` (`o
   Web chat; never texted.
 - **Scheduled description.** `blurb` (tasks/timers/series), written by the same summarise as `label`
   (src/itemtitle.js `line`); else `plainNote` → `tidyLine`: no (asides), no @handles, no shouting caps,
-  brand casing (GitHub, iMessage…).
+  brand casing (GitHub, iMessage…). A row that already has a `label` but no `blurb` (the model titled it
+  through a tool, or it predates #211) asks for its description alone when the detail draws it:
+  `queueBlurb` (src/ongoing.js `describe`) → `db.setItemBlurb`, which writes only `blurb`.
+  Backfill: `scripts/backfill-blurbs.js [--write]` (claude-cli only, `blurb` only where empty). Prove it
+  on a copy first: on the box, `sqlite3 -readonly …/reason.db ".backup /tmp/blurbs-copy.db"`, then run with
+  `REASON_DB_PATH=/tmp/blurbs-copy.db REASON_DATA_DIR=/tmp/blurbs-data` from a scratch copy of the branch.
+  The Mac can't open a live copy, because the DB's token migration needs REASON_TOKEN_KEY. Then
+  ATTACH the live DB read-only and diff label/note/time: expect 0. Tests: `test/web-blurb-backfill.test.js`.
 
 ## How to get to it (user POV)
 
