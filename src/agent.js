@@ -10,6 +10,7 @@ import { loadConversation, undeliveredFor, markUndeliveredTold, heldNotices, ope
 import { undeliveredNotice } from "./outbox.js";
 import { imagesFor, pdfsFor, videosFor } from "./media.js";
 import { docsFor } from "./docread.js";
+import * as doing from "./doing.js";
 import { startCapture, recordLooked, captureViaApi } from "./looked.js";
 import { splitImage } from "./backends/mcp-core.js";
 import * as reviewed from "./reviewed.js";
@@ -386,10 +387,14 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   const captured = startCapture({ blocks, viewedMediaIds, attachments, capture, log });
 
   // A PDF — a receipt, a ticket, a lease — read on this machine and handed to the model as text.
-  const pdfResult = await pdfsFor(attachments, { log, cover: reviewed.cover });
+  const reading = doing.counter(conversationId, attachments);
+  let pdfResult, docResult;
+  try {
+    pdfResult = await pdfsFor(attachments, { log, cover: reviewed.cover, onRead: reading.next });
+    docResult = await docsFor(attachments, { log, cover: reviewed.cover, onRead: reading.next });
+  } finally { reading.done(); }
   notes.push(...pdfResult.notes);
   seen.push(...pdfResult.seen);
-  const docResult = await docsFor(attachments, { log, cover: reviewed.cover });
   notes.push(...docResult.notes);
   seen.push(...docResult.seen);
 

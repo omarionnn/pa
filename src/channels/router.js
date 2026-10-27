@@ -499,6 +499,25 @@ export class Router {
   }
 
   /**
+   * Reason Web §4h "take it back": the person takes one Web message back before its turn starts.
+   * `id` is the browser's own id for it, put under the conversation exactly as `deliver` puts it, so
+   * nobody can name another person's message. The send is never held for this: the message waits
+   * only the ordinary burst window, and whichever comes first — this, or the turn taking the held
+   * rows — wins outright (db.cancelHeldInbound). With nothing left held and no turn running, the
+   * "working on it" bubble the hold put up comes down.
+   */
+  takeBack({ conversationId, id, inFlight = false }) {
+    const externalId = `${conversationId}:${String(id ?? "").trim()}`;
+    const out = db.cancelHeldInbound({ conversationId, channel: web.WEB, externalId, inFlight });
+    this.log({ web_take_back: out.ok ? (out.already ? "already" : out.early ? "early" : "cancelled") : out.why, conversation: conversationId });
+    if (out.ok && !out.already && db.pendingReadyAt(conversationId) === null && !onethought.activeFor(conversationId)) {
+      const b = this.bubbles.get(conversationId);
+      if (b && !b.done) void Promise.resolve().then(() => b.stop()).catch(() => {});
+    }
+    return out;
+  }
+
+  /**
    * Run one turn on everything a conversation is holding, in the order it arrived.
    *
    * Called two ways and the same either way: by the request that waited out the window — again for

@@ -240,6 +240,11 @@ const STATE = {
   failed: after(`window.STG_SEND='hang';var A=REASON_WEB.api,li=A.pendingLine({id:A.uid(),text:'Can you also check trains from Lisbon to Porto?'});A.state(li,'failed')`),
   offline: after(`var A=REASON_WEB.api;A.post({id:A.uid(),text:'Can you also check trains from Lisbon to Porto?'})`),
   nineD: after(`window.reasonMidTask(true)`),
+  // §4h: "take it back" under a message just sent (the pen line draining), and tapped: "taken back. nothing sent."
+  takeBack: after(`window.STG_SEND='hang';var A=REASON_WEB.api;A.post({id:A.uid(),text:'Book the 7:30 at Peaches.'})`),
+  takenBack: after(`window.STG_SEND='hang';var A=REASON_WEB.api;A.post({id:A.uid(),text:'Book the 7:30 at Peaches.'});setTimeout(function(){var b=document.querySelector('.tb-b');if(b)b.click()},300)`),
+  // §4h: the working line counting real files as they are read (src/doing.js counter).
+  counts: after(`var o=document.querySelector('.onit');if(o)o.hidden=false;REASON_WEB.doing('reading the lease\u2026 2 of 3 files')`),
 };
 const OFFLINE_HEAD = `<script>try{Object.defineProperty(Navigator.prototype,'onLine',{get:function(){return false}})}catch(e){}</script>`;
 
@@ -266,6 +271,10 @@ const S = [
   ["conversation-empty", "Home and thread", "Conversation · empty", "No messages, nothing in hand.", wc.renderConversation({ account: emptyAccount, csrf: "staging", lines: [], more: false, sendId: "staging", items: [], approvals: [] }), {}],
 
   ["sending", "Sending", "Sending…", "A message on its way (5A).", convo(), { state: STATE.sending }],
+  ["take-it-back", "Sending", "Take it back", "§4h: for 5 s after a send, until Reason starts on it; the pen line drains right to left.", convo(), { state: STATE.takeBack }],
+  ["taken-back", "Sending", "Taken back", "§4h: tapped in time: \"taken back. nothing sent.\" for 2 s.", convo(), { state: STATE.takenBack }],
+  ["while-you-were-out", "Home and thread", "While you were out", "§4h: back after 3+ hours with something changed: one line under TODAY, once per return.", convo({ away: "while you were out: 2 done, 1 needs you." }), {}],
+  ["working-counts", "Sending", "Working line counts", "§4h: real counts only (several files read one by one); the status label follows at most every 3 s.", convo(), { state: STATE.counts }],
   ["didnt-go", "Sending", "Didn't go", "Tap to try again; it won't send twice (5A).", convo(), { state: STATE.failed }],
   ["offline", "Sending", "Offline · waiting to send", "You're offline; the message waits (9C).", convo(), { state: STATE.offline, head: OFFLINE_HEAD }],
 
@@ -388,6 +397,7 @@ const SHIM = `<script>(function(){var f=window.fetch,sent=0,n=0,R=${JSON.stringi
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function ans(b,st){return new Promise(function(r){setTimeout(function(){r(new Response(JSON.stringify(b),{status:st||200,headers:{'Content-Type':'application/json'}}))},700)})}
 window.fetch=function(u,o){u=String(u);o=o||{};if(u.indexOf('/web/')!==0)return f.apply(this,arguments);var h=o.headers||{};
+if(u.indexOf('/web/send/cancel')===0)return ans(window.STG_CANCEL==='late'?{ok:false,error:'too_late'}:{ok:true,cancelled:true},window.STG_CANCEL==='late'?409:200);
 if(u.indexOf('/web/send')===0){if(window.STG_SEND==='hang')return new Promise(function(){});sent++;return ans({ok:true})}
 if(u.indexOf('/web/upload')===0){var t=String(h['Content-Type']||''),nm=decodeURIComponent(h['X-Reason-Name']||'file');
 if(window.STG_UPLOAD)return ans({ok:false,error:window.STG_UPLOAD},413);

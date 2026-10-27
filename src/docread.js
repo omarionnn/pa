@@ -109,11 +109,12 @@ export function docText(buf) {
  * `notes` the model reads this turn, `seen` what the history keeps. Only a file handed in on Web is a
  * `doc` (src/webuploads.js); it is read from disk, never fetched.
  */
-export async function docsFor(attachments = [], { log = () => {}, cover = () => {} } = {}) {
+export async function docsFor(attachments = [], { log = () => {}, cover = () => {}, onRead = () => {} } = {}) {
   const notes = [];
   const seen = [];
   for (const a of attachments) {
     if (a?.kind !== "doc") continue;
+    try { onRead(a); } catch { /* never costs a read */ }
     const name = a.filename || "the document";
     const local = localUpload(a.url);
     const path = local ? filePath(local.meta) : null;

@@ -26,6 +26,7 @@ import { loadConversation, saveConversation, pendingConfirmations, undeliveredFo
 import { undeliveredNotice } from "../outbox.js";
 import { imagesFor, pdfsFor } from "../media.js";
 import { docsFor } from "../docread.js";
+import * as doing from "../doing.js";
 import { startCapture, recordLooked, captureViaCli } from "../looked.js";
 import * as reviewed from "../reviewed.js";
 import { capabilitiesNow } from "../tools.js";
@@ -142,11 +143,16 @@ async function runTurnOnCli({
   const captured = startCapture({ blocks, viewedMediaIds, attachments, capture, log });
   // A PDF — a receipt, a ticket, a lease — read on this machine and handed over as text, the same
   // call the API path makes (src/agent.js). Until 10-26 this backend, the live one, never read one.
-  const pdfResult = await pdfs(attachments, { log, cover: reviewed.cover });
+  // §4h: the open Web tab's working line counts the files as they are read ("… 2 of 3 files", src/doing.js).
+  const reading = doing.counter(conversationId, attachments);
+  let pdfResult, docResult;
+  try {
+    pdfResult = await pdfs(attachments, { log, cover: reviewed.cover, onRead: reading.next });
+    // A Word file or plain text handed in on Web (src/docread.js), read here the same way.
+    docResult = await docsFor(attachments, { log, cover: reviewed.cover, onRead: reading.next });
+  } finally { reading.done(); }
   notes.push(...pdfResult.notes);
   seen.push(...pdfResult.seen);
-  // A Word file or plain text handed in on Web (src/docread.js), read here the same way.
-  const docResult = await docsFor(attachments, { log, cover: reviewed.cover });
   notes.push(...docResult.notes);
   seen.push(...docResult.seen);
   const said = [`${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
