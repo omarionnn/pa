@@ -7,7 +7,7 @@
 //   - the four voices (§1.4): your words in Instrument Serif italic, Reason's in Inter, labels and
 //     facts in typed Courier capitals, and the margin voice in Caveat, always in pen colour
 //   - the wordmark: "reas◯n" with the o drawn as a speech bubble in pen colour, skewed −10°. Pen is
-//     #b03030 / #e8765c on Web only; the other pages keep their own orange (src/pages/brand.js).
+//     #b03030 / #e8765c, the same pen as every other page (src/pages/brand.js).
 //   - dashed hairline rules, hard-offset shadows with no blur, nearly square corners, stamps
 //   - text actions: never a box around a control (§1.2); a primary action is serif italic with →
 //   - motion: new lines rise 6px and fade in over 0.3s; reduced motion means none at all (§2 Motion)

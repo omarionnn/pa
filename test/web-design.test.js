@@ -505,8 +505,8 @@ test("review fixes: a guest who left never reads the event's name off a card", (
   assert.ok(wc.reasonBody("https://events.heyreason.test/e/evtpublicid00002", KOFI_C).includes("Secret dinner"));
 });
 
-test("Web's pen is Web's: brand orange on every other page is unchanged", async () => {
+test("Web's pen matches the brand pen on every other page", async () => {
   const brand = await import("../src/pages/brand.js");
-  assert.equal(brand.BRAND_ORANGE, "#B8460B");
-  assert.equal(brand.BRAND_ORANGE_DARK, "#F26F2B");
+  assert.equal(brand.BRAND_PEN, "#b03030");
+  assert.equal(brand.BRAND_PEN_DARK, "#e8765c");
 });
