@@ -331,7 +331,7 @@ function stage(html, { signedOut = false, loader = false, state = "", head = "" 
 }
 
 // ---------------------------------------------------------------- sample media
-const PHOTO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e7cfae"/><stop offset="1" stop-color="#9a6a46"/></linearGradient></defs><rect width="800" height="600" fill="url(#g)"/><rect x="250" y="170" width="300" height="300" rx="14" fill="#f4ece0" stroke="#7a4f33" stroke-width="6"/><path d="M250 260h300M400 170v300" stroke="#b03030" stroke-width="18"/><circle cx="400" cy="160" r="34" fill="none" stroke="#b03030" stroke-width="12"/></svg>`;
+const PHOTO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e7cfae"/><stop offset="1" stop-color="#9a6a46"/></linearGradient></defs><rect width="800" height="600" fill="url(#g)"/><rect x="250" y="170" width="300" height="300" rx="14" fill="#f4ece0" stroke="#7a4f33" stroke-width="6"/><path d="M250 260h300M400 170v300" stroke="#9c3b2e" stroke-width="18"/><circle cx="400" cy="160" r="34" fill="none" stroke="#9c3b2e" stroke-width="12"/></svg>`;
 /** One second of quiet, 8 kHz mono: enough for ▶ to play something. */
 function silentWav(seconds = 1, rate = 8000) {
   const n = seconds * rate, b = Buffer.alloc(44 + n);
