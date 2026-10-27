@@ -1086,7 +1086,7 @@ function localPurchaseAnswer(row, who, me) {
       ? ` Only as a side note, after the answer: AgentCard isn't set up on this install, so there is no live re-check.`
       : ` Only as a side note, after the answer: AgentCard couldn't be reached just now for a live re-check.`;
   return {
-    ok: true, status: row.status, read_from: "local_record", live_check: reconnect ? "needs_reconnect" : who.blocked === "not_configured" ? "not_configured" : "unavailable",
+    ok: true, status: row.status, ...(config.pagesV2 ? { purchase_id: row.id } : {}), read_from: "local_record", live_check: reconnect ? "needs_reconnect" : who.blocked === "not_configured" ? "not_configured" : "unavailable",
     order_id: row.order_id || undefined, bought: row.what || undefined, merchant: row.merchant || undefined,
     amount: amount || undefined,
     ...(cancelled ? { cancelled: true, placed: false, reason: why.words, cancel_reason: why.code || undefined } : {}),
@@ -3029,6 +3029,17 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
 
 // What a page may contain, in the words the model reads. The authoritative version is the
 // checker in src/pages/content.js — this is that list said once, where the model will see it.
+/**
+ * What a designed page (Pages v2) may point at: only this conversation's own calls, and only its own
+ * purchases that really went through. A page is never a window onto somebody else's rows.
+ */
+function madeOwners(c) {
+  return {
+    ownsCall: (id) => !!db.getCall(c, id),
+    ownsPurchase: (id) => db.agentcardPurchaseById(c, id)?.status === "placed",
+  };
+}
+
 const BLOCKS_DESC = [
   'An array of blocks, in order. Each is an object with a "type":',
   "{type:'section',title} a heading that starts a new part;",
@@ -3042,6 +3053,12 @@ const BLOCKS_DESC = [
   "{type:'steps',items:['..'],title?} a numbered list, one step per row — the short version at the top of a guide, how to progress, what to do first. Never write a numbered list inside a text block; this is the block for it;",
   "{type:'rows',items:[{name,detail?,value?,n?}],title?,numbered?} a plan, a menu, a schedule, a shopping list: a bold name, a grey line under it, a value on the right (a price, a time, '2 sets of 8'). On a phone this beats a table whenever each item has three facts or fewer; use a table only for a real side-by-side comparison with four or more facts per item;",
   "{type:'callout',text,title?,tone?} a safety note, a caveat, or a line that echoes what they told you ('You said your knee is fine'). tone is 'plain' (a thin rule), 'note' (a soft box) or 'warning' (the box with a red title);",
+  ...(config.pagesV2 ? [
+    "Cards items may also carry facts:[{label,value}] (up to 4 short typed facts: 'Open' '7:30 PM'), at (a short time for its line) and, on ONE item, pick:true with opinion (one short lowercase line of why: 'closest to everyone.'). A page of just a cards block of 2–3 options and the choice whose options are those cards' titles is drawn as a shortlist;",
+    "{type:'day',items:[{at,title,detail?,stamp?,link?:{label,url}}],note?,tomorrow?} the day, wrapped up: one line per thing that happened (at '7:00', stamp 'done', 'paid' or 'booked' only when it really is), note a few lowercase words, tomorrow one line. The page's only block;",
+    "{type:'call',call_id,points?,worth_knowing?} one call summed up from its own record (its length, recording, transcript, what it said it was): points are up to 3 plain lines of what happened, worth_knowing one lowercase line. The page's only block; the title is who was called;",
+    "{type:'receipt',purchase_id,note?} the receipt for one purchase of theirs that really went through, from its own record; note one lowercase line ('due friday, paid tuesday. you're good.'). The page's only block;",
+  ] : []),
   "No HTML, no markdown, no scripts: you give the data and Reason's own template draws the page.",
   "How a page reads, top to bottom, when it is a guide or a plan: the title; a one-line subtitle (the page's own field, not a block); a two-sentence text intro; 'The short version' as steps; why; how; the plan itself as rows; common mistakes; a callout for safety or caveats that quotes what they said; Sources as links, followed by one honest text line on what is research and what is your judgment; and the closing line (the page's own field) — one sentence, like 'Start easy for the first two weeks.' Leave out any part that has nothing in it.",
 ].join(" ");
@@ -10882,7 +10899,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     // ---------- pages ----------
     case "page_create": {
-      const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
+      const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u), ...madeOwners(c) });
       if (!checked.ok) return { ok: false, error: `That page was not made: ${checked.error}` };
       // The pictures, settled by code (src/pages/pictures.js): the ones this page should have are
       // found and put on, a generated one in a shortlist is refused, a generated one elsewhere is
@@ -10910,7 +10927,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       let blocks;
       let pictureNotes = [];
       if (input.blocks !== undefined) {
-        const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
+        const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u), ...madeOwners(c) });
         if (!checked.ok) return { ok: false, error: `That page was not changed: ${checked.error}` };
         const pictures = await preparePictures(c, checked.blocks, pictureOpts(ctx, {
           title: input.title ?? existing.title, subtitle: input.subtitle ?? existing.subtitle,

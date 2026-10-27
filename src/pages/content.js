@@ -12,7 +12,18 @@
 // Every image URL is checked against the URLs this conversation has actually seen in a tool result
 // (see `db.rememberSeenUrls`), so a picture on a page is a picture something really served.
 
-export const BLOCK_TYPES = ["section", "text", "image", "table", "links", "cards", "choice", "status", "timeline", "details", "copy", "steps", "rows", "callout"];
+import { config } from "../config.js";
+
+export const BLOCK_TYPES = ["section", "text", "image", "table", "links", "cards", "choice", "status", "timeline", "details", "copy", "steps", "rows", "callout", "day", "call", "receipt"];
+
+/**
+ * The blocks that make one of the designed pages (Pages Reason makes, v2: src/pages/made.js). Each is
+ * the whole page: "the day, wrapped up", one call summed up, one receipt. Held behind
+ * REASON_PAGES_V2 — with it off they are refused, because the pages before v2 cannot draw them.
+ */
+export const MADE_BLOCKS = ["day", "call", "receipt"];
+/** A stamp on a line of the day. A fixed list, as STATUS_STATES: nothing the model writes is a class. */
+export const DAY_STAMPS = ["done", "paid", "booked"];
 
 /**
  * How loud a `callout` is. `plain` is a thin rule down the left; `note` is a soft box for a
@@ -111,7 +122,7 @@ function sourceUrl(v) {
   return webUrl(v) || false;
 }
 
-export function checkContent(blocks, { seenUrl = () => false } = {}) {
+export function checkContent(blocks, { seenUrl = () => false, ownsCall = () => false, ownsPurchase = () => false, pagesV2 = config.pagesV2 } = {}) {
   if (!Array.isArray(blocks) || !blocks.length) {
     return { ok: false, error: "A page needs at least one block of content." };
   }
@@ -129,7 +140,12 @@ export function checkContent(blocks, { seenUrl = () => false } = {}) {
     }
     const type = raw.type;
     if (!BLOCK_TYPES.includes(type)) {
-      return { ok: false, error: `${at} has type '${type}', which is not a block. Use one of: ${BLOCK_TYPES.join(", ")}.` };
+      return { ok: false, error: `${at} has type '${type}', which is not a block. Use one of: ${BLOCK_TYPES.filter(t => pagesV2 || !MADE_BLOCKS.includes(t)).join(", ")}.` };
+    }
+
+    if (MADE_BLOCKS.includes(type)) {
+      if (!pagesV2) return { ok: false, error: `${at} has type '${type}', which is not a block. Use one of: ${BLOCK_TYPES.filter(t => !MADE_BLOCKS.includes(t)).join(", ")}.` };
+      if (blocks.length !== 1) return { ok: false, error: `${at} (${type}) is a whole page on its own: send it as the only block.` };
     }
 
     switch (type) {
@@ -224,9 +240,68 @@ export function checkContent(blocks, { seenUrl = () => false } = {}) {
           }
           const source = sourceUrl(it?.source);
           if (source === false) return { ok: false, error: `${at} (cards) item ${j + 1} has a source that is not an http(s) url.` };
-          items.push({ title, image, url, price: str(it?.price, LIMITS.label), note: str(it?.note, LIMITS.text), source });
+          // The shortlist's typed facts ("OPEN 7:30 PM"), the time on its line, and which one is Reason's
+          // pick with the one handwritten line of why (Pages v2, P1). All optional; the page before v2
+          // simply does not draw them.
+          const facts = [];
+          if (it?.facts !== undefined && it.facts !== null) {
+            if (!Array.isArray(it.facts) || it.facts.length > 4) return { ok: false, error: `${at} (cards) item ${j + 1} has "facts" that is not a list of at most 4 {label, value}.` };
+            for (const f of it.facts) {
+              const label = str(f?.label, 24); const value = str(f?.value, LIMITS.value);
+              if (!label || !value) return { ok: false, error: `${at} (cards) item ${j + 1} has a fact without a short label and value.` };
+              facts.push({ label, value });
+            }
+          }
+          const item = { title, image, url, price: str(it?.price, LIMITS.label), note: str(it?.note, LIMITS.text), source };
+          if (facts.length) item.facts = facts;
+          const when = str(it?.at, 20); if (when) item.at = when;
+          if (it?.pick === true) {
+            if (items.some(x => x.pick)) return { ok: false, error: `${at} (cards) marks more than one pick. Reason has one pick.` };
+            item.pick = true;
+            const opinion = str(it?.opinion, 80); if (opinion) item.opinion = opinion;
+          }
+          items.push(item);
         }
         out.push({ type, title: raw.title === undefined ? null : str(raw.title, LIMITS.title), items });
+        break;
+      }
+
+      // ---- the designed pages (v2) ----
+      case "day": {
+        if (!Array.isArray(raw.items) || !raw.items.length) return { ok: false, error: `${at} (day) needs at least one item.` };
+        if (raw.items.length > 12) return { ok: false, error: `${at} (day) has ${raw.items.length} items; the most is 12.` };
+        const items = [];
+        for (const [j, it] of raw.items.entries()) {
+          const title = str(it?.title, 80);
+          if (!title) return { ok: false, error: `${at} (day) item ${j + 1} needs a title under 80 characters.` };
+          const stamp = it?.stamp === undefined || it?.stamp === null || it?.stamp === "" ? null : it.stamp;
+          if (stamp !== null && !DAY_STAMPS.includes(stamp)) return { ok: false, error: `${at} (day) item ${j + 1} has stamp '${it.stamp}', which is not one of: ${DAY_STAMPS.join(", ")}.` };
+          let link = null;
+          if (it?.link !== undefined && it?.link !== null) {
+            const url = webUrl(it.link?.url); const label = str(it.link?.label, 40);
+            if (!url || !label) return { ok: false, error: `${at} (day) item ${j + 1} has a link without a short label and an http(s) url.` };
+            link = { label, url };
+          }
+          items.push({ at: str(it?.at, 8), title, detail: str(it?.detail, 120), stamp, link });
+        }
+        out.push({ type, items, note: str(raw.note, 60), tomorrow: str(raw.tomorrow, 200) });
+        break;
+      }
+      case "call": {
+        const id = Number(raw.call_id);
+        if (!Number.isInteger(id) || id < 1 || !ownsCall(id)) return { ok: false, error: `${at} (call) needs call_id: one of this conversation's own calls, from call_status.` };
+        const points = [];
+        if (raw.points !== undefined && raw.points !== null) {
+          if (!Array.isArray(raw.points) || raw.points.length > 4) return { ok: false, error: `${at} (call) has "points" that is not a list of at most 4 lines.` };
+          for (const pt of raw.points) { const t = str(pt, 200); if (!t) return { ok: false, error: `${at} (call) has an empty or long point.` }; points.push(t); }
+        }
+        out.push({ type, call_id: id, points, worth_knowing: str(raw.worth_knowing, 140) });
+        break;
+      }
+      case "receipt": {
+        const id = Number(raw.purchase_id);
+        if (!Number.isInteger(id) || id < 1 || !ownsPurchase(id)) return { ok: false, error: `${at} (receipt) needs purchase_id: one of this conversation's own purchases that really went through.` };
+        out.push({ type, purchase_id: id, note: str(raw.note, 80) });
         break;
       }
       // Where something has got to, as a badge and one line. At most one per page: two status

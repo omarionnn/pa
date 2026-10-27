@@ -15,6 +15,8 @@ import { cookieHeader } from "./access.js";
 import { shell, esc, renderNotFound, codeInputAttrs, sentLine } from "./render.js";
 import { coverUrl } from "../eventcover.js";
 import { normalizeNumber, config } from "../config.js";
+import * as made from "./made.js";
+import * as events from "../events.js";
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-Length": Buffer.byteLength(body), ...extra }), body });
@@ -101,7 +103,8 @@ function closedPage(ev, album, { organizer = false }) {
 }
 
 /** The attendee album, for one guest: everything once released and checked in; otherwise their own. */
-export function renderAlbum({ ev, conversationId }) {
+export function renderAlbum({ ev, conversationId, seeAll = false }) {
+  if (config.pagesV2) return renderAlbumV2({ ev, conversationId, all: seeAll });
   const { highlights, photos, view } = albums.photosFor(conversationId, ev);
   if (view.closed) return closedPage(ev, view.album, {});
   const all = view.all;
@@ -122,6 +125,56 @@ export function renderAlbum({ ev, conversationId }) {
     body += `<div class="al-row">${addButton()}</div>`;
   }
   return shell({ title: `${ev.name} — album`, body, pill: "Album", css: CSS });
+}
+
+/**
+ * The album as Pages v2 draws it (P5 / PD5): photos taped at angles, Caveat captions, "See all N →",
+ * DOWNLOAD ALL, and who it's shared with. Same view, same rules as renderAlbum: decided by albums.viewFor.
+ */
+function renderAlbumV2({ ev, conversationId, all = false }) {
+  const { highlights, photos, view } = albums.photosFor(conversationId, ev);
+  if (view.closed) return made.renderTurnedOff({ siteUrl: config.siteUrl });
+  const ordered = [...highlights, ...photos.filter(p => !highlights.some(h => h.id === p.id))];
+  const people = view.all && view.album ? db.contributorCount(view.album.id) : (photos.length ? 1 : 0);
+  // The handwritten line under a photo is who sent it in, once per person: a real fact, never a caption made up.
+  const named = new Set();
+  const shown = ordered.map(ph => {
+    const caption = view.all && !named.has(ph.conversation_id) ? (named.add(ph.conversation_id), ph.mine ? "yours" : `from ${ph.shared_by}’s phone`) : "";
+    const removeHtml = all && ph.mine
+      ? `<form method="POST" action="${esc(base(ev))}" style="margin:0"><input type="hidden" name="action" value="remove"><input type="hidden" name="photo" value="${ph.id}"><input type="hidden" name="all" value="1"><button class="typed rm" type="submit">REMOVE</button></form>`
+      : "";
+    return { src: photoPath(ev, ph), href: photoPath(ev, ph), alt: `Photo from ${ph.shared_by}`, caption, removeHtml };
+  });
+  const g = events.guestView(ev, view.att ?? null);
+  const dates = g.when && ev.starts_at != null
+    ? new Date(ev.starts_at).toLocaleString("en-US", { timeZone: ev.tz, month: "short", day: "numeric" }).toUpperCase()
+    : "";
+  const n = shown.length;
+  const counts = `${n} PHOTO${n === 1 ? "" : "S"}`;
+  const checked = albums.counts(ev).checked_in;
+  const why = view.all ? "" : !view.released
+    ? "The organizer hasn't released the album yet. Once they end the event and release it, checked-in guests get the link."
+    : "The album is shared with the guests the organizer checked in. Until then this page shows only the photos you added.";
+  return made.renderAlbum({
+    title: ev.name,
+    kicker: view.all ? `${counts} · ${people} OF YOU` : counts,
+    deskKicker: view.all ? `${counts} · FROM ${people} OF YOU` : counts,
+    meta: [dates, view.all && people ? `SENT IN BY ${people} ${people === 1 ? "PERSON" : "PEOPLE"}` : ""].filter(Boolean).join(" · "),
+    deskMeta: dates,
+    photos: shown, total: n, all,
+    seeAllHref: `${base(ev)}?all=1`,
+    downloadHref: view.all && n ? `${base(ev)}/download` : "",
+    addLine: "Text Reason a photo to add it.",
+    why,
+    // LP3: the album's link previews as its event's own card, under the album's name.
+    head: [
+      `<meta property="og:type" content="website">`, `<meta property="og:site_name" content="Reason">`,
+      `<meta property="og:title" content="${esc(`${ev.name} — album`)}">`,
+      `<meta property="og:image" content="${esc(coverUrl(ev))}">`, `<meta property="og:image:width" content="1200">`, `<meta property="og:image:height" content="630">`,
+      `<meta name="twitter:card" content="summary_large_image">`,
+    ].join(""),
+    foot: view.all && checked ? `Shared with the ${checked} ${checked === 1 ? "person" : "people"} at this event. Made with Reason.` : "Shared with the organizer. Made with Reason.",
+  });
 }
 
 /** The organizer's page: release, the check-in list, highlights, every photo with pin and remove. */
@@ -246,11 +299,11 @@ export async function albumRequest({ ev, sub, method, query = {}, headers = {}, 
         return redirect(`${base(ev)}/manage${done ? `?done=${encodeURIComponent(done)}` : ""}`);
       }
       if (op === "remove") albums.removePhoto({ ev, conversationId: c, photoId: Number(form.get("photo")) });
-      return redirect(base(ev));
+      return redirect(config.pagesV2 && form.get("all") === "1" ? `${base(ev)}?all=1` : base(ev));
     }
     if (form) return redirect(action);
     if (view.role === "organizer") return page(200, renderManage({ ev, conversationId: c, done: String(query.done ?? "").slice(0, 80) }));
-    return page(200, renderAlbum({ ev, conversationId: c }));
+    return page(200, renderAlbum({ ev, conversationId: c, seeAll: query.all === "1" }));
   }
 
   // ---- anybody else: the link says whose page it is, and that person — only — is texted a code ----

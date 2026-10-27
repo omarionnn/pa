@@ -60,7 +60,7 @@ import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderPasswordGate, renderNotFound } from "./pages/render.js";
 import * as opspw from "./opspassword.js";
 import { webMovedTo } from "./pages/siteproxy.js";
-import { checkAccess, trySubmittedCode, requestCode, codeHost, readCookie, cookieHeader, pageUrl, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS } from "./pages/access.js";
+import { checkAccess, trySubmittedCode, requestCode, codeHost, readCookie, readCookies, cookieHeader, clearCookieHeader, pageUrl, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
 import * as ops from "./ops.js";
 import * as subusage from "./subusage.js";
@@ -81,7 +81,8 @@ import { renderNotice, renderConnected, dark, THEME, iconLinks } from "./pages/r
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
-import { pageCard } from "./pages/card.js";
+import { pageCard, shootWithChromium } from "./pages/card.js";
+import { madeKind, renderMadePage, callAudio, notYoursFor, archivedFor, privateHead, privateOgPng, PRIVATE_OG_VERSION } from "./pages/madedata.js";
 import { previewRequest } from "./pages/preview.js";
 import { mimeForKind } from "./documents/store.js";
 import { isContactPath, vcard, lineNumber, liveLineNumber } from "./contact.js";
@@ -209,7 +210,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       // ---------- an event's pages ----------
       // The public join page and the who's-going page (src/pages/event.js). `/p/e/…` is the same
       // link arriving through the files domain, which Caddy rewrites under /p.
-      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}))?$/.exec(url.pathname);
+      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}|calendar\.ics))?$/.exec(url.pathname);
       if (eventRoute) {
         const out = await eventRequestFor({
           publicId: eventRoute[1], sub: eventRoute[2] || null, method: req.method,
@@ -358,8 +359,23 @@ export function createServer({ router, runtime, log = () => {} }) {
         return res.end(req.method === "HEAD" ? "" : out.body);
       }
 
+      // ---------- Pages v2: the faces and the one private card (held behind REASON_PAGES_V2) ----------
+      // The designed pages draw in Web's own faces, served here for the pages and events hosts (the
+      // files domain rewrites under /p, so both spellings answer). The private card is the one picture
+      // every private page's link preview shows (LP2): the same bytes for every page.
+      if (config.pagesV2 && (req.method === "GET" || req.method === "HEAD")) {
+        const madeFont = /^(?:\/p)?(?:\/e)?\/fonts\/([a-z]+)\.woff2$/.exec(url.pathname);
+        const fontBody = madeFont ? webFont(madeFont[1]) : null;
+        if (fontBody) { res.writeHead(fontBody.status, fontBody.headers); return res.end(req.method === "HEAD" ? "" : fontBody.body); }
+        if (/^(?:\/p)?\/og\/private\.png$/.test(url.pathname)) {
+          const out = await privateOgRequest({ log });
+          res.writeHead(out.status, out.headers);
+          return res.end(req.method === "HEAD" ? "" : out.body);
+        }
+      }
+
       // ---------- pages ----------
-      const pageRoute = /^\/p\/([A-Za-z0-9_-]{8,64})(?:\/(choice))?$/.exec(url.pathname);
+      const pageRoute = /^\/p\/([A-Za-z0-9_-]{8,64})(?:\/(choice|audio|signout))?$/.exec(url.pathname);
       if (pageRoute) {
         const out = await pageRequest({
           id: pageRoute[1],
@@ -870,6 +886,35 @@ export async function cardRequest({ id, key = null, headers = {}, draw = pageCar
   }
 }
 const JSONH = { "Content-Type": "application/json", "Cache-Control": "no-store" };
+
+/** The one private card (Pages v2, LP2). `shoot` is injectable so a test needs no browser. */
+export async function privateOgRequest({ shoot = (html) => shootWithChromium(html), log = () => {} } = {}) {
+  try {
+    const bytes = await privateOgPng({ shoot });
+    if (!bytes?.length) return { status: 404, headers: HTML(), body: renderNotFound() };
+    return { status: 200, headers: { "Content-Type": "image/png", "Content-Length": bytes.length, "Cache-Control": "public, max-age=86400" }, body: bytes };
+  } catch (e) {
+    log({ private_og_failed: (e?.message ?? String(e)).split("\n")[0] });
+    return { status: 404, headers: HTML(), body: renderNotFound() };
+  }
+}
+
+/** Where the private card is fetched from: absolute, as a link preview needs. */
+export const privateOgUrl = () => `${pageUrl("og/private.png")}?v=${PRIVATE_OG_VERSION}`;
+
+/**
+ * The owner's page, drawn. With REASON_PAGES_V2 a designed page (src/pages/madedata.js) draws in the
+ * v2 frame, and every page carries the one generic preview (LP2) instead of its own title and card.
+ */
+function ownerPageHtml(page, { interactive, picked }) {
+  if (config.pagesV2) {
+    const head = privateHead(privateOgUrl());
+    const designed = renderMadePage(page, { picked, interactive, head });
+    if (designed) return designed;
+    return renderPage(page, { interactive, picked, related: relatedFor(page, interactive), ...whoseLine(page), previewHead: head });
+  }
+  return renderPage(page, { interactive, picked, related: relatedFor(page, interactive), ...whoseLine(page) });
+}
 
 export const WEB_ACCESS_PATH = "/access/web";
 const WEB_ACCESS_MAX_BODY = 512;
@@ -1386,7 +1431,15 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
       return { status: 403, headers: JSONH, body: JSON.stringify({ ok: false, error: "answers can only be given on the owner's own page" }) };
     }
     let body;
-    try { body = JSON.parse((await readBody()) ?? "{}"); } catch { body = null; }
+    const rawChoice = (await readBody()) ?? "";
+    // Pages v2 posts the pick as a plain form when script is off; the answer is then the page again.
+    const asForm = config.pagesV2 && !String(headers?.["content-type"] ?? "").includes("application/json");
+    if (asForm) {
+      const f = new URLSearchParams(rawChoice);
+      body = { key: f.get("key"), label: f.get("label") };
+    } else {
+      try { body = JSON.parse(rawChoice || "{}"); } catch { body = null; }
+    }
     const block = choiceBlock(page.blocks, body?.key);
     if (!block) return { status: 400, headers: JSONH, body: JSON.stringify({ ok: false, error: "no such question on this page" }) };
     const picked = block.options.find(o => o.label === body?.label);
@@ -1399,7 +1452,38 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
     log({ page_choice: page.id, key: block.key, picked: picked.label });
     // The turn itself is fired by the sweep, not here: an HTTP handler should not wait on a model
     // call, and the sweep is what makes "exactly once" true across a restart.
+    if (asForm) return { status: 303, headers: HTML({ Location: `../${page.id}` }), body: "" };
     return { status: 200, headers: JSONH, body: JSON.stringify({ ok: true, picked: picked.label }) };
+  }
+
+  // ---- Pages v2: a call page's recording, for its owner only ----
+  if (sub === "audio") {
+    if (!config.pagesV2 || (method !== "GET" && method !== "HEAD") || !access.allow || !access.interactive || madeKind(real) !== "call") {
+      return { status: 404, headers: HTML(), body: renderNotFound() };
+    }
+    const audio = callAudio(db.getCall(page.conversation_id, page.blocks[0].call_id));
+    if (!audio) return { status: 404, headers: HTML(), body: renderNotFound() };
+    const bytes = readFileSync(audio.file);
+    // A byte range, because Safari will not play a recording served without one.
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(headers?.range ?? "").trim());
+    if (range && (range[1] || range[2])) {
+      let start = range[1] ? Number(range[1]) : Math.max(0, bytes.length - Number(range[2]));
+      let end = range[1] && range[2] ? Math.min(Number(range[2]), bytes.length - 1) : bytes.length - 1;
+      if (start > end || start >= bytes.length) return { status: 416, headers: { "Content-Range": `bytes */${bytes.length}`, "Cache-Control": "private, no-store" }, body: "" };
+      const part = bytes.subarray(start, end + 1);
+      return { status: 206, headers: { "Content-Type": audio.mime, "Content-Length": part.length, "Content-Range": `bytes ${start}-${end}/${bytes.length}`, "Accept-Ranges": "bytes", "Cache-Control": "private, no-store" }, body: part };
+    }
+    return { status: 200, headers: { "Content-Type": audio.mime, "Content-Length": bytes.length, "Accept-Ranges": "bytes", "Cache-Control": "private, no-store" }, body: bytes };
+  }
+
+  // ---- Pages v2, E3: "Sign in as someone else" — this browser forgets who it is, then the gate ----
+  if (sub === "signout") {
+    if (!config.pagesV2 || method !== "POST") return { status: 404, headers: HTML(), body: renderNotFound() };
+    // Every session this browser presented, and the cookie at both paths it can live under (pages
+    // set it at /p/ or /, the event pages at /), so the gate is what comes next — not the same 403.
+    for (const t of new Set([cookie, ...readCookies(headers?.cookie)].filter(Boolean))) db.endPageSession(t);
+    log({ page_browser_signed_out: true });
+    return { status: 303, headers: HTML({ Location: `../${id}`, "Set-Cookie": [clearCookieHeader({ path: "/p/", headers }), clearCookieHeader({ path: "/", headers })] }), body: "" };
   }
 
   // ---- the code for a private page ----
@@ -1450,10 +1534,7 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
       return {
         status: 200,
         headers: HTML({ "Set-Cookie": cookieHeader(tried.token, { path: cookiePath, headers }) }),
-        body: renderPage(page, {
-          interactive: true, picked: db.pageChoicesFor(page.id),
-          related: relatedFor(page, true), ...whoseLine(page),
-        }),
+        body: config.pagesV2 && page.state === "archived" ? archivedFor(page) : ownerPageHtml(page, { interactive: true, picked: db.pageChoicesFor(page.id) }),
       };
     }
     const why = tried.reason === "rate_limited"
@@ -1473,16 +1554,23 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
   // A GET never signs a browser in and never texts anything, however many times a link preview
   // fetches it: the only way in is the code, and the only thing that sends one is the button.
   if (access.allow) {
+    // E4: its owner opened a page that has been put away. Only ever its owner: anybody else is at the
+    // gate below and learns nothing about the page's state.
+    if (config.pagesV2 && page.state === "archived") return { status: 200, headers: HTML(), body: archivedFor(page) };
     return {
       status: 200,
       headers: HTML(),
-      body: renderPage(page, {
+      body: ownerPageHtml(page, {
         interactive: access.interactive,
         picked: access.interactive ? db.pageChoicesFor(page.id) : {},
-        related: relatedFor(page, access.interactive),
-        ...whoseLine(page),
       }),
     };
+  }
+  // E3: a browser already signed in as somebody else, without the page's own key. Decided from the
+  // browser's session alone, so a real page and an id that never existed draw the same screen.
+  if (config.pagesV2 && !access.via_key && access.reason !== "rate_limited") {
+    const viewer = db.pageSessionOwner(cookie, SESSION_TTL_MS);
+    if (viewer && viewer !== page.conversation_id) return { status: 403, headers: HTML(), body: notYoursFor(viewer, id) };
   }
   if (access.reason === "rate_limited") {
     return gateFor(access, page, {
@@ -1505,7 +1593,10 @@ function gateFor(access, page, { real, status = 401, sent = false, error = "" })
     headers: HTML(),
     body: renderCodeGate({
       title: "Private page", error, ownerName: config.ownerName,
-      canSend, sent: canSend && sent, preview: canSend ? page : null,
+      canSend, sent: canSend && sent,
+      // v2 (LP2): every private link previews the same — never the page's own title or card.
+      preview: canSend && !config.pagesV2 ? page : null,
+      head: canSend && config.pagesV2 ? privateHead(privateOgUrl()) : "",
     }),
   };
 }
