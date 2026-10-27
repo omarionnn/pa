@@ -479,6 +479,8 @@ body.has-tabs .foot{display:none}
 .composer{padding:12px 0 24px;margin-top:12px}
 .og{display:flex}
 html.og-off .og-back{display:flex;align-items:center;justify-content:center}
+html.og-off .wrapc{padding-right:max(64px,4vw)}
+.og-back:focus-visible{outline-offset:-4px}
 .tabs{display:none}
 body.has-tabs{padding-bottom:0}
 body.has-tabs .composer{bottom:0}
