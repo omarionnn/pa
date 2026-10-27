@@ -32,6 +32,8 @@
 //   POST /web/upload, GET /web/media/…   a photo, PDF or voice note in; files back, signed in only (src/webmedia.js)
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
+//   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)
+//   GET  /web/icons/{file}            Web's favicons and home-screen icon (src/pages/webnotify.js)
 //   GET  /web/ongoing/{approval|task|timer|series}/{id}   one Ongoing row's detail; /web/ongoing/state (src/pages/webongoing.js)
 //   GET  /web/fonts/{serif|roman|hand|handbold|sans}.woff2  Web's own faces (src/pages/webkit.js; 404 while off)
 //        /web…  on the pages host, not signed by the website: 301 to {REASON_SITE_URL}/web… (src/pages/siteproxy.js)
@@ -84,7 +86,7 @@ import { isContactPath, vcard, lineNumber, liveLineNumber } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
-import { webRequest, webFont, SECURITY_HEADERS as WEB_SECURITY_HEADERS } from "./pages/websignin.js";
+import { webRequest, webFont, webSignedIn, SECURITY_HEADERS as WEB_SECURITY_HEADERS } from "./pages/websignin.js";
 import { webOn, joinNumber, siteOrigin } from "./web.js";
 import * as eventsmod from "./events.js";
 import { readFileSync } from "node:fs";
@@ -229,6 +231,13 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(301, { Location: webMoved, "Content-Length": 0, "Cache-Control": "no-store" });
         return res.end();
       }
+      // Web's own icons (src/pages/webnotify.js): the favicons, their filled "needs you" twins, the home-screen icon.
+      const webIconRoute = /^\/web\/icons\/([a-z-]+\.(?:svg|png))$/.exec(url.pathname);
+      const iconOut = webIconRoute && webOn() && (req.method === "GET" || req.method === "HEAD") ? (await import("./pages/webnotify.js")).webIcon(webIconRoute[1]) : null;
+      if (iconOut) {
+        res.writeHead(iconOut.status, iconOut.headers);
+        return res.end(req.method === "HEAD" ? "" : iconOut.body);
+      }
       const webFontRoute = /^\/web\/fonts\/([a-z]+)\.woff2$/.exec(url.pathname);
       const fontOut = webFontRoute && webOn() && (req.method === "GET" || req.method === "HEAD") ? webFont(webFontRoute[1]) : null;
       if (fontOut) {
@@ -259,13 +268,13 @@ export function createServer({ router, runtime, log = () => {} }) {
       }
       // Ongoing's own pages (src/pages/webongoing.js): one row's detail, and the small state the Ongoing pages poll.
       const ongoingRoute = /^\/web\/ongoing(?:\/(state|approval|task|timer|series)(?:\/(\d{1,12}))?)?$/.exec(url.pathname);
-      const webRoute = ongoingRoute ?? /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings))?$/.exec(url.pathname)
+      const webRoute = ongoingRoute ?? /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings|signal))?$/.exec(url.pathname)
         ?? /^\/web\/(memory\/(?:correct|forget|guess))$/.exec(url.pathname);
       if (webRoute && webOn()) {
         let out;
         try {
           out = ongoingRoute
-            ? (await import("./pages/webongoing.js")).ongoingRequest({ kind: ongoingRoute[1] || null, id: ongoingRoute[2] || null, method: req.method, headers: req.headers })
+            ? webSignedIn((await import("./pages/webongoing.js")).ongoingRequest({ kind: ongoingRoute[1] || null, id: ongoingRoute[2] || null, method: req.method, headers: req.headers }), req.headers)
             : await webRequestFor({
               sub: webRoute[1] || null, method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers,
               remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, router, log,

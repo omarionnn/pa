@@ -157,7 +157,11 @@ test("the theme switch is Paper · Night · Auto as a real radio group, hidden u
   for (const [name, html] of Object.entries(allScreens())) assert.equal(names(html).size, (html.match(/class="themes"/g) || []).length, `${name}: one group per switch`);
   // The choice is the one every Reason page reads.
   assert.match(allScreens().signin, /localStorage\.getItem\('reason-theme'\)/);
-  for (const [name, html] of Object.entries(allScreens())) assert.match(html, /class="themes"/, `${name} carries the switch`);
+  // v2 (staging review 6): the switch lives in Settings only — no footer switch, none in the phone menu.
+  for (const [name, html] of Object.entries(allScreens())) {
+    if (name === "settings") continue; // the pre-Settings fallback page draws its own THEME row
+    assert.doesNotMatch(html, /class="themes"|<footer class="foot">/, `${name} carries no switch`);
+  }
 });
 
 test("fonts are self-hosted: five faces at /web/fonts, nothing from Google, CSP font-src self", () => {

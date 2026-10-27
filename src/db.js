@@ -1513,6 +1513,9 @@ addColumnIfMissing("accounts", "web_notice_seen_at", "INTEGER");
 addColumnIfMissing("accounts", "web_reach", "TEXT");
 addColumnIfMissing("accounts", "web_theme", "TEXT");
 addColumnIfMissing("page_sessions", "user_agent", "TEXT");
+// Reason Web v2 (Gap 8C): browser notifications, per browser. 1 = this browser asked for them (and its
+// own permission was granted when it did); 0, the default, = off. Only ever says "Reason needs your approval."
+addColumnIfMissing("page_sessions", "web_notify", "INTEGER NOT NULL DEFAULT 0");
 // The short plain title an Ongoing row shows on Web, written once when the row is made (src/itemtitle.js).
 addColumnIfMissing("tasks", "label", "TEXT");
 // What a closed task hands back on Web's Ongoing, BACK TO YOU (src/ongoing.js): for `done`, the
@@ -5501,13 +5504,46 @@ export function endPageSessionOf(conversationId, token) {
   return db.prepare("DELETE FROM page_sessions WHERE token = ? AND conversation_id = ?").run(String(token), conversationId).changes === 1;
 }
 
-/** Where a finished job's result goes for this person: 'web' (kept on Web) or 'text' (texted, the default). */
+/**
+ * How Reason reaches this person when it starts a message itself (Reason Web Settings, Gap 5):
+ *   'text' everything (NULL and anything unknown read as this: how Reason always worked)
+ *   'web'  timely decisions: a finished job's result stays on Web, everything timely is texted
+ *   'yes'  only what needs a yes: approvals are texted, everything else stays on Web
+ *   'none' nothing: everything Reason starts stays on Web
+ * The two values stored before v2 keep their meaning, so nobody's delivery changed with it.
+ */
+export const WEB_REACH_VALUES = ["web", "text", "yes", "none"];
 export function webReach(conversationId) {
-  return db.prepare("SELECT web_reach FROM accounts WHERE conversation_id = ?").get(conversationId)?.web_reach === "web" ? "web" : "text";
+  const v = db.prepare("SELECT web_reach FROM accounts WHERE conversation_id = ?").get(conversationId)?.web_reach;
+  return WEB_REACH_VALUES.includes(v) ? v : "text";
 }
 export function setWebReach(conversationId, value) {
-  if (value !== "web" && value !== "text") throw new Error(`web_reach must be web or text, not ${value}`);
+  if (!WEB_REACH_VALUES.includes(value)) throw new Error(`web_reach must be one of ${WEB_REACH_VALUES.join(", ")}, not ${value}`);
   return db.prepare("UPDATE accounts SET web_reach = ? WHERE conversation_id = ?").run(value, conversationId).changes === 1;
+}
+
+/**
+ * Whose live Web session this is, WITHOUT counting it as used: for the small background check an
+ * open tab makes every few seconds (src/pages/webnotify.js). Touching last_seen there would keep a
+ * forgotten background tab signed in forever, past the idle sign-out (owner decision 3).
+ */
+export function pageSessionPeek(token, maxAgeMs, { idleMs = Infinity } = {}) {
+  if (!token) return null;
+  const row = db.prepare("SELECT conversation_id, created_at, last_seen_at FROM page_sessions WHERE token = ?").get(String(token));
+  if (!row?.conversation_id) return null;
+  const now = clock.now();
+  if (now - row.created_at > maxAgeMs || now - row.last_seen_at > idleMs) return null;
+  return row.conversation_id;
+}
+
+/** Browser notifications on this one browser (Gap 8C): true only when it asked for them. */
+export function pageSessionNotify(token) {
+  return !!token && Number(db.prepare("SELECT web_notify FROM page_sessions WHERE token = ?").get(String(token))?.web_notify ?? 0) === 1;
+}
+/** Turn them on or off for one of THIS person's browsers. A token that is somebody else's is untouched. */
+export function setPageSessionNotify(conversationId, token, on) {
+  if (!conversationId || !token) return false;
+  return db.prepare("UPDATE page_sessions SET web_notify = ? WHERE token = ? AND conversation_id = ?").run(on ? 1 : 0, String(token), conversationId).changes === 1;
 }
 
 /** The theme this person chose on Web (paper | night | auto), or null when they never chose one. */

@@ -468,7 +468,7 @@ function topBar({ csrf, extra = "" }) {
     + `<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">${MENU_SVG}</button></header>`
     + `<div class="menu" id="menu" hidden role="dialog" aria-modal="true" aria-label="Menu"><div class="menu-h">${wordmark()}<button class="act2 menu-x" type="button">CLOSE</button></div>`
     + `<ul><li>${action("The thread", { href: "/web?thread" })}</li><li>${action("Memory", { href: "/web/memory" })}</li><li>${action("Settings", { href: "/web/settings" })}</li></ul>`
-    + `${themeSwitch("th-menu")}${signOutForm(csrf)}</div>`;
+    + `${signOutForm(csrf)}</div>`;
 }
 
 function tabBar(current, count) {

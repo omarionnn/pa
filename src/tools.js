@@ -11111,7 +11111,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "invite_request_more": {
       const out = invites.requestMore(c, { count: input.count, explanation: input.explanation });
       if (!out.ok) return { ok: false, error: out.missing === "count" ? "Ask how many invites they want first." : "Ask them why they want more before filing it." };
-      if (c !== config.ownerConversation) ctx.events?.say(config.ownerConversation, out.toMaster);
+      if (c !== config.ownerConversation) ctx.events?.say(config.ownerConversation, out.toMaster, { toMaster: true });
       return {
         ok: true, request_number: out.request.id, count: out.request.requested_count, updated: out.updated,
         note: out.updated

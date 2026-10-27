@@ -1,21 +1,27 @@
 // Reason Web Settings (design handoff 2026-10-26, HANDOFF.md "6 · Settings"; reference
-// desk-settings-{paper,night}.html and sheet-settings-{paper,night}.html 8A/8B).
+// desk-settings-{paper,night}.html and sheet-settings-{paper,night}.html 8A/8B), with the v2 edit
+// states (handoff v2 §4c items 5 and 8, sheet-settings-edit 5A–5D, sheet-notify 8C) and §4d L8.
 //
 // One calm page, every control real, every one a plain form that posts here and comes back (no
 // script needed); the theme also switches in place when script runs. Everything is the SESSION's
 // person's: nothing in a form can name another conversation, a browser or an invite that is not theirs.
 //
-//   How Reason reaches you   accounts.web_reach. 'web' = a finished job's result stays on Web (not
-//                            texted; src/deliver.js keptOnWeb); 'text' (the default, and how Reason
-//                            always worked) = it is texted too. Timely things — approvals, questions,
-//                            reminders, codes — are texted either way. Each dashed phrase is a button
-//                            that switches between the two (SCOPE.md Q1).
+//   How Reason reaches you   accounts.web_reach, one of four (db.WEB_REACH_VALUES), honoured by
+//                            src/deliver.js keptOnWeb: everything ('text', the default and how Reason
+//                            always worked) · timely decisions ('web': a finished job's result stays on
+//                            Web) · only what needs a yes ('yes') · nothing ('none'). Each dashed phrase
+//                            opens 5A, the radio list, at ?edit=reach; Save → shows 5B, the new sentence.
 //   Signed-in browsers       page_sessions for this person, with the browser each was last used from
 //                            (page_sessions.user_agent); SIGN OUT deletes that row, so its cookie
-//                            opens nothing anywhere; "Sign out everywhere" deletes every one, this too.
+//                            opens nothing anywhere; "Sign out everywhere" asks first (5C, ?confirm=
+//                            everywhere, with the real count), then deletes every one, this too.
+//   Browser notifications    page_sessions.web_notify, per browser, off by default (8C); turned on
+//                            only after the browser's own permission is granted.
 //   Connected                read only, from each integration's own store.
-//   Invites                  src/invites.js: what is left, every link with its state, make one.
+//   Invites                  src/invites.js: what is left, every link with its state, make one (5D,
+//                            ?invite=<id>: the link to copy or share), cancel an unused one.
 //   Theme                    accounts.web_theme, so every browser opens in it (webkit accountThemed).
+//                            The only theme switch on Web.
 import { createHash, timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
 import * as invites from "../invites.js";
@@ -34,11 +40,19 @@ import { sameOrigin, SECURITY_HEADERS, WEB_IDLE_MS } from "./websignin.js";
  */
 export const PRIVATE_BY_DEFAULT = false;
 
-/** The two ways a finished job's result can go, as the sentence says them. */
+/**
+ * The four ways Reason can reach you, in the order 5A lists them: the phrase the sentence says, the
+ * one plain line under it, what the sentence keeps here, and the Caveat line once it is saved.
+ */
 export const REACH = {
-  web: { first: "timely decisions", second: "routine results", sentence: (a, b) => `Text me for ${a}. Keep ${b} here.` },
-  text: { first: "everything", second: "a copy", sentence: (a, b) => `Text me for ${a}. Keep ${b} here.` },
+  web: { name: "timely decisions", line: "Approvals and anything with a deadline today.", keep: "routine results", saved: "got it. i'll text when something can't wait." },
+  text: { name: "everything", line: "Every update, as it happens.", keep: "a copy", saved: "got it. i'll text you everything, and keep a copy here." },
+  yes: { name: "only what needs a yes", line: "Approvals only. Everything else waits here.", keep: "everything else", saved: "got it. i'll only text when i need a yes." },
+  none: { name: "nothing", line: "Keep it all on the web.", keep: "it all", saved: "got it. i'll keep it all here." },
 };
+export const REACH_ORDER = ["web", "text", "yes", "none"];
+/** "Text me for timely decisions. Keep routine results here." with each part drawn by `part`. */
+const reachSentence = (reach, part = (t) => esc(t)) => `Text me for ${part(REACH[reach].name)}. Keep ${part(REACH[reach].keep)} here.`;
 
 /** "Chrome on Mac", from a browser's user agent. */
 export function deviceName(ua) {
@@ -80,7 +94,7 @@ export function connections(conversationId) {
 
 const STAMP = { redeemed: ["JOINED", "pen"], unused: ["UNUSED", "ink"], canceled: ["CANCELED", "muted"] };
 /** "files.heyreason.com/i/Ab3dE9…": a link as the list shows it. The whole link is the href, while it works. */
-const shortLink = (token) => invites.inviteUrl(String(token).slice(0, 6)).replace(/^https?:\/\//, "") + "…";
+const shortLink = (token, n = 6) => invites.inviteUrl(String(token).slice(0, n)).replace(/^https?:\/\//, "") + "…";
 
 // ---------------------------------------------------------------- the page
 const CSS = `
@@ -92,9 +106,9 @@ const CSS = `
 .st-main{display:flex;flex-direction:column;gap:40px;min-width:0}
 .st-sec{display:flex;flex-direction:column;gap:14px;padding-bottom:32px;border-bottom:1px dashed var(--hair);scroll-margin-top:24px}
 .st-sec h2{margin:0;font:400 11px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
-.st-sec form{margin:0}
+.st-sec form,.sub form{margin:0}
 .reach-p{margin:0;font:400 26px/1.35 var(--serif)}
-.ph{position:relative;border:0;border-bottom:1px dashed var(--ink);background:transparent;padding:0;font:inherit;font-style:italic;color:var(--ink);cursor:pointer}
+.ph{position:relative;border-bottom:1px dashed var(--ink);text-decoration:none;font-style:italic;color:var(--ink)}
 .ph::after{content:"";position:absolute;left:0;right:0;top:50%;min-height:44px;transform:translateY(-50%);height:100%}
 .ph:hover{color:var(--hov);border-bottom-color:var(--hov)}
 .st-sec .hand{font-size:21px}
@@ -109,8 +123,18 @@ const CSS = `
 .br-when{font:400 11px/1.4 var(--mono);letter-spacing:.08em;color:var(--muted)}
 .br-here{font:400 19px/1.2 var(--hand);color:var(--pen);white-space:nowrap}
 .br-out{font-size:11px;letter-spacing:.14em}
-.every{align-self:flex-start;margin-top:10px;min-height:44px;border:0;background:transparent;padding:0;cursor:pointer;font:italic 400 21px/1.2 var(--serif);color:var(--pen)}
+.every{align-self:flex-start;margin-top:10px;min-height:44px;display:inline-flex;align-items:center;text-decoration:none;font:italic 400 21px/1.2 var(--serif);color:var(--pen)}
 .every:hover{color:var(--hov)}
+.nt-p{margin:0;font:400 26px/1.35 var(--serif)}
+.nt-q{margin:0;font-size:15px;line-height:1.55;color:var(--muted)}
+.nt-on{align-self:flex-start;min-height:48px;border:0;background:transparent;padding:0;cursor:pointer;font:italic 400 22px/1.2 var(--serif);color:var(--ink)}
+.nt-on[hidden],.st [hidden],.sub [hidden]{display:none}
+.st-sec .nt-ask,.sub .nt-ask{font-size:20px}
+.nt-ex{padding-top:18px;border-top:1px dashed var(--hair);display:flex;flex-direction:column;gap:8px}
+.nt-ex .lbl{font-size:11px;white-space:normal}
+.nt-card{padding:14px 16px;display:flex;flex-direction:column;gap:4px}
+.nt-card b{font-size:14px;font-weight:600}
+.nt-card span{font-size:14px;line-height:1.45}
 #connected{gap:4px}
 #connected h2{margin-bottom:6px}
 .cn{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px 12px;align-items:baseline}
@@ -127,7 +151,9 @@ a.inv-l{min-height:44px;display:inline-flex;align-items:center}
 .inv-l.gone{color:var(--muted)}
 .inv .stamp{flex:none;align-self:center;font-size:10.5px;padding:3px 7px}
 a.inv-l{text-decoration-color:var(--hair);text-underline-offset:3px}
+a.iv-link{text-decoration:none}
 .inv .stamp-ink{transform:rotate(2deg)}.inv .stamp-muted{transform:rotate(-2deg)}
+.inv-x{font-size:11px;color:var(--muted)}
 .make{align-self:flex-start;margin-top:8px;min-height:44px;border:0;background:transparent;padding:0;cursor:pointer;font:italic 400 21px/1.2 var(--serif);color:var(--ink)}
 .make:hover{color:var(--hov)}
 #theme{border-bottom:0;padding-bottom:0;gap:40px}
@@ -138,7 +164,48 @@ a.inv-l{text-decoration-color:var(--hair);text-underline-offset:3px}
 .th-g .dot{color:var(--hair)}
 .out{font-size:12px;letter-spacing:.14em;align-self:flex-start}
 .d-only{display:none}
-@media (max-width:359px){.reach-p{font-size:23px}}
+.busy,.busy:hover{color:var(--muted);cursor:default;pointer-events:none}
+.sub-head{width:100%;max-width:640px;margin:0 auto;padding:16px var(--gut) 0}
+.sub-head .act2{font-size:12px}
+.sub{flex:1 0 auto;width:100%;max-width:640px;margin:0 auto;padding:28px var(--gut) 20px;display:flex;flex-direction:column;justify-content:flex-start;gap:22px}
+.sub.mid{justify-content:center;gap:24px}
+.sub.iv,.sub.nt{gap:20px}.sub.nt{gap:18px}
+.sub-l{margin:0;font:400 11px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
+.re-f{display:flex;flex-direction:column;gap:22px}
+.re-p{margin:0;font:400 26px/1.35 var(--serif)}
+.re-p em{border-bottom:1.5px solid var(--ink)}
+.ro-g{display:flex;flex-direction:column}
+.ro{position:relative;min-height:52px;border-bottom:1px dashed var(--hair);padding:10px 0;display:flex;align-items:baseline;gap:12px;cursor:pointer;color:var(--ink)}
+.ro input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.ro:focus-within{outline:2px solid var(--ink);outline-offset:3px}
+.ro:has(input:focus:not(:focus-visible)){outline:none}
+.ro-d{width:18px;flex:none;font:400 14px/1 var(--mono);color:var(--pen)}
+.ro-d::before{content:"\\25CB"}
+.ro input:checked~.ro-d::before{content:"\\25CF"}
+.ro-t{display:flex;flex-direction:column;gap:2px}
+.ro-n{font:italic 400 21px/1.2 var(--serif);color:var(--muted)}
+.ro input:checked~.ro-t .ro-n{color:var(--ink)}
+.ro-l{font-size:13px;line-height:1.4;color:var(--muted)}
+.sub-a{display:flex;gap:28px;align-items:center}
+.sub-go{align-self:flex-start;min-height:48px;border:0;background:transparent;padding:0;cursor:pointer;font:italic 400 24px/1.2 var(--serif);color:var(--ink);text-decoration:none;display:inline-flex;align-items:center}
+.sub-go:hover{color:var(--hov)}
+.sub-c{font-size:11.5px;color:var(--muted)}
+.sub .hand.tilt{font-size:22px}
+.so-card{padding:26px 22px;display:flex;flex-direction:column;gap:14px}
+.so-card .sub-l{color:var(--pen)}
+.so-n{margin:0;font:italic 400 28px/1.15 var(--serif)}
+.so-p{margin:0;font-size:15px;line-height:1.55}
+.so-card .sub-a{padding-top:4px}
+.so-card .sub-go{font-size:22px;color:var(--pen)}
+.so-card .sub-c{color:var(--ink)}
+.iv-n{margin:0;font:italic 400 38px/1 var(--serif)}
+.iv-card{padding:20px;display:flex;flex-direction:column;gap:12px}
+.iv-card .lbl{font-size:10px}
+.iv-link{font:400 18px/1.35 var(--mono);letter-spacing:.04em;overflow-wrap:anywhere;color:var(--ink)}
+.iv-card .sub-go{font-size:22px}
+.iv-card .sub-c{color:var(--ink)}
+.iv-note{margin:0;font-size:14px;line-height:1.5;color:var(--muted)}
+@media (max-width:359px){.reach-p,.re-p,.nt-p{font-size:23px}}
 @media (min-width:900px){
 .st-head{padding:22px clamp(20px,4vw,48px)}
 .st{flex-direction:row;flex-wrap:wrap;gap:80px;align-items:flex-start;padding:48px clamp(20px,4vw,48px) 64px}
@@ -164,6 +231,9 @@ a.inv-l{text-decoration-color:var(--hair);text-underline-offset:3px}
 .br-here{font-size:20px;text-align:right}
 .br-row form{justify-self:end}
 .every{margin-top:14px;font-size:22px}
+.nt-p{font-size:30px;max-width:20em}
+.nt-q{max-width:34em}
+.nt-ex{max-width:420px}
 #connected{gap:14px}
 #connected h2{margin-bottom:0}
 .cn{grid-template-columns:repeat(3,minmax(0,1fr));gap:18px 24px}
@@ -179,39 +249,81 @@ a.inv-l{text-decoration-color:var(--hair);text-underline-offset:3px}
 .th-box{padding-bottom:0;border-bottom:0}
 .th-g button{font-size:30px}
 .m-only{display:none}.d-only{display:inline}
+.sub-head{padding-top:28px}
+.sub{padding-top:40px}
 }
 `;
 
 // The theme switches in place (kit window.reasonTheme, which also saves it for every browser), the
-// radio group moves by arrow keys, and the index marks the section last jumped to. All of it over
-// forms that already work without script.
-const JS = `(function(){var g=document.querySelector('.th-g');
-function mark(){var t=document.documentElement.dataset.theme,cur=t==='light'?'paper':t==='dark'?'night':'auto';g.querySelectorAll('button').forEach(function(b){b.setAttribute('aria-checked',String(b.value===cur));b.tabIndex=b.value===cur?0:-1})}
+// radio group moves by arrow keys, and the index marks the section last jumped to. An action's words
+// turn present tense, muted, and it can't be pressed twice (§4d L8). 5A's sentence follows the
+// choice; 5D copies and shares the link; 8C asks the browser before it saves anything. All of it over
+// forms that already work without script, and nothing drawn that can't work (no dead controls).
+const JS = `(function(){var g=document.querySelector('.th-g'),H=document.documentElement;
+function mark(){var t=H.dataset.theme,cur=t==='light'?'paper':t==='dark'?'night':'auto';g.querySelectorAll('button').forEach(function(b){b.setAttribute('aria-checked',String(b.value===cur));b.tabIndex=b.value===cur?0:-1})}
 if(g){mark();g.addEventListener('click',function(e){var b=e.target.closest('button');if(!b||!window.reasonTheme)return;e.preventDefault();window.reasonTheme(b.value);mark();b.focus()});
 g.addEventListener('keydown',function(e){var k=e.key,bs=[].slice.call(g.querySelectorAll('button')),i=bs.indexOf(document.activeElement);if(i<0)return;var n=k==='ArrowRight'||k==='ArrowDown'?(i+1)%bs.length:k==='ArrowLeft'||k==='ArrowUp'?(i+bs.length-1)%bs.length:-1;if(n<0)return;e.preventDefault();bs[n].click()})}
 var nav=document.querySelectorAll('.st-nav a');function cur(){var h=location.hash||'#reach';nav.forEach(function(a){if(a.getAttribute('href')===h)a.setAttribute('aria-current','true');else a.removeAttribute('aria-current')})}
 window.addEventListener('hashchange',cur);if(location.hash)cur();
-document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(e){var b=e.submitter||f.querySelector('[type=submit]');if(b)b.setAttribute('aria-busy','true')})});
+function busy(b,on){if(!b)return;if(on){b.dataset.was=b.innerHTML;if(b.dataset.busy)b.textContent=b.dataset.busy;b.setAttribute('aria-disabled','true');b.classList.add('busy')}else if(b.dataset.was!=null){b.innerHTML=b.dataset.was;b.removeAttribute('aria-disabled');b.classList.remove('busy')}}
+document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(e){if(f.dataset.sent){e.preventDefault();return}f.dataset.sent='1';busy(e.submitter||f.querySelector('[type=submit]'),true)})});
+window.addEventListener('pageshow',function(e){if(!e.persisted)return;document.querySelectorAll('form[data-sent]').forEach(function(f){delete f.dataset.sent;f.querySelectorAll('.busy').forEach(function(b){busy(b,false)})})});
+var pick=document.querySelector('.re-pick');if(pick)document.querySelectorAll('.ro input').forEach(function(i){i.addEventListener('change',function(){pick.textContent=i.dataset.name})});
+var link=document.querySelector('.iv-link');if(link){var cp=document.querySelector('.iv-copy'),sh=document.querySelector('.iv-share'),said=document.querySelector('.iv-said'),url=link.getAttribute('href');
+if(cp&&navigator.clipboard&&window.isSecureContext){cp.hidden=false;cp.addEventListener('click',function(){navigator.clipboard.writeText(url).then(function(){said.textContent=said.dataset.ok;said.hidden=false},function(){said.textContent=said.dataset.no;said.hidden=false})})}
+if(sh&&navigator.share){sh.hidden=false;sh.addEventListener('click',function(){navigator.share({url:url}).catch(function(){})})}}
+var on=document.querySelector('.nt-on'),no=document.querySelector('.nt-no');
+function say(t){if(no){no.textContent=t;no.hidden=false}}
+if(on){if(!window.Notification)say(no.dataset.cant);else{on.hidden=false;var ask=document.querySelector('.nt-ask');if(ask)ask.hidden=false;
+on.addEventListener('click',function(){if(on.classList.contains('busy'))return;busy(on,true);
+Promise.resolve(Notification.requestPermission()).then(function(p){if(p!=='granted')throw 'no';return fetch('/web/settings',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded',Accept:'application/json'},body:'do=notify&on=1&c='+encodeURIComponent(H.getAttribute('data-c')||'')}).then(function(r){if(!r.ok)throw 'x';location.href=on.dataset.then})})
+.catch(function(e){busy(on,false);say(e==='no'?no.dataset.denied:no.dataset.failed)})})}}
+var blocked=document.querySelector('.nt-blocked');if(blocked&&(!window.Notification||Notification.permission!=='granted'))blocked.hidden=false;
 })();`;
 
-const SECTIONS = [["reach", "HOW I REACH YOU"], ["browsers", "BROWSERS"], ["connected", "CONNECTED"], ["invites", "INVITES"], ["theme", "THEME"]];
+const SECTIONS = [["reach", "HOW I REACH YOU"], ["browsers", "BROWSERS"], ["notify", "NOTIFICATIONS"], ["connected", "CONNECTED"], ["invites", "INVITES"], ["theme", "THEME"]];
 const hidden = (name, value) => `<input type="hidden" name="${name}" value="${esc(value)}">`;
 const post = (csrf, what, inner, cls = "") => `<form method="POST" action="/web/settings"${cls ? ` class="${cls}"` : ""}>${hidden("c", csrf)}${hidden("do", what)}${inner}</form>`;
-const saved = (on) => (on ? hand("got it.", { role: "status" }) : "");
+const saved = (on, words = "got it.") => (on ? hand(words, { role: "status" }) : "");
+const arrow = `<span aria-hidden="true">→</span>`;
+
+/** "3 browsers, including this one." — the count 5C confirms, every live sign-in of theirs. */
+export const browsersLine = (n) => (n <= 1 ? "1 browser: this one." : `${n} browsers, including this one.`);
+
+/**
+ * 8C: browser notifications for THIS browser. `on` is this browser's own setting. Off by default;
+ * "Turn on in this browser →" is drawn only where script can ask the browser (no dead control), and
+ * nothing is saved until the browser says yes. Their reach decides the sentence's "instead".
+ */
+export function notifyBody({ csrf, reach = "text", on = false, done = "", sub = false }) {
+  const instead = reach === "none" ? "Off. Everything waits here instead." : `Off. Reason texts you for <em>${esc(REACH[reach]?.name ?? REACH.text.name)}</em> instead.`;
+  const back = sub ? "/web/settings?edit=notify&done=notify" : "/web/settings?done=notify#notify";
+  const state = on
+    ? `<p class="nt-p">On in this browser.</p><p class="nt-q">While it's open, this browser tells you when something needs a yes. Nothing else, and no sound.</p>`
+      + `<p class="hand nt-blocked" role="status" hidden>this browser isn't allowing them right now. allow them in its settings.</p>`
+      + post(csrf, "notify", `${hidden("on", "0")}${hidden("back", sub ? "sub" : "")}<button class="act2" type="submit" data-busy="TURNING OFF…">TURN OFF IN THIS BROWSER</button>`)
+      + saved(done === "notify")
+    : `<p class="nt-p">${instead}</p><p class="nt-q">Turn these on if you'd rather hear from Reason in this browser than by text, while it's open.</p>`
+      + `<button class="nt-on" type="button" hidden data-busy="Turning on…" data-then="${esc(back)}">Turn on in this browser ${arrow}</button>`
+      + `<p class="hand tilt nt-ask" hidden>your browser will ask first.</p>`
+      + `<p class="hand nt-no" role="status" hidden data-cant="this browser can't show them. reason will keep texting you instead." data-denied="your browser said no. you can allow them in its settings, then try again." data-failed="that didn't save. try again in a moment."></p>`
+      + saved(done === "notify-off");
+  return state
+    + `<div class="nt-ex"><span class="lbl">WHEN THEY'RE ON, ONE SAYS ONLY</span><div class="card nt-card"><b>Reason</b><span>Reason needs your approval.</span></div></div>`;
+}
 
 /**
  * The whole page for one person. `browsers` are this person's sessions (`current` = this browser's
- * token); `invitesView` is invites.myInvites or null when invites are not open to them.
+ * token); `invitesView` is invites.myInvites or null when invites are not open to them; `notify` is
+ * this browser's own notifications setting.
  */
-export function renderSettings({ csrf, reach = "text", browsers = [], current = "", connected = [], invitesView = null, theme = null, done = "", now = clock.now() }) {
-  const r = REACH[reach] ?? REACH.text;
-  const other = reach === "web" ? "text" : "web";
-  const ph = (t) => `<button class="ph" type="submit" name="reach" value="${other}" aria-describedby="reach-how">${esc(t)}</button>`;
+export function renderSettings({ csrf, reach = "text", browsers = [], current = "", connected = [], invitesView = null, theme = null, notify = false, done = "", now = clock.now() }) {
+  if (!REACH[reach]) reach = "text";
+  const ph = (t) => `<a class="ph" href="/web/settings?edit=reach" aria-describedby="reach-how">${t}</a>`;
   const reachSec = `<section class="st-sec" id="reach" aria-labelledby="reach-h"><h2 id="reach-h">HOW REASON REACHES YOU</h2>`
-    + post(csrf, "reach", `<p class="reach-p">${r.sentence(ph(r.first), ph(r.second))}</p>`)
-    + `<p class="sr" id="reach-how">${reach === "web" ? "Now: routine results stay here. Choosing switches to texting you everything." : "Now: everything is texted to you. Choosing switches to keeping routine results here."}</p>`
+    + `<p class="reach-p">${reachSentence(reach, ph)}</p>`
+    + `<p class="sr" id="reach-how">Opens the four choices for what Reason texts you.</p>`
     + hand("or just ask me to text you for one thing.")
-    + saved(done === "reach")
     + (PRIVATE_BY_DEFAULT ? `<p class="priv d-only"><span class="lbl" style="display:inline">PRIVATE BY DEFAULT · </span>Sensitive texts only say "Reason needs your approval." The details wait here, behind sign-in.</p>` : "")
     + `</section>`
     + (PRIVATE_BY_DEFAULT ? `<section class="st-sec m-only" aria-labelledby="priv-h"><h2 id="priv-h">PRIVATE BY DEFAULT</h2><p class="priv">Sensitive texts only say <span class="q">"Reason needs your approval."</span> The details wait here, behind sign-in.</p></section>` : "");
@@ -227,13 +339,15 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
     return `<div class="br-row${here ? " here" : ""}"><span class="br-who"><span class="br-dev">${esc(dev)}</span>`
       + `<span class="br-when">${here ? `<span class="m-only">THIS ONE · </span>` : ""}${esc(when)}</span></span>`
       + (here ? `<span class="br-here">you're here</span>`
-        : post(csrf, "browser", `${hidden("b", sessionHandle(s.token))}<button class="act2 br-out" type="submit" aria-label="Sign out ${esc(dev)}, last active ${esc(when.toLowerCase())}">SIGN OUT</button>`))
+        : post(csrf, "browser", `${hidden("b", sessionHandle(s.token))}<button class="act2 br-out" type="submit" data-busy="SIGNING OUT…" aria-label="Sign out ${esc(dev)}, last active ${esc(when.toLowerCase())}">SIGN OUT</button>`))
       + `</div>`;
   }).join("");
   const browsersSec = `<section class="st-sec" id="browsers" aria-labelledby="br-h"><h2 id="br-h">SIGNED-IN BROWSERS</h2>${rows}`
     + (older ? `<p class="st-quiet">And ${older} other sign-in${older === 1 ? "" : "s"} that ${older === 1 ? "hasn't" : "haven't"} opened Reason Web, like Reason's pages. Signing out everywhere ends ${older === 1 ? "it" : "them"} too.</p>` : "")
-    + post(csrf, "everywhere", `<button class="every" type="submit">Sign out everywhere</button>`)
+    + `<a class="every" href="/web/settings?confirm=everywhere">Sign out everywhere</a>`
     + saved(done === "browsers") + `</section>`;
+
+  const notifySec = `<section class="st-sec" id="notify" aria-labelledby="nt-h"><h2 id="nt-h">BROWSER NOTIFICATIONS</h2>${notifyBody({ csrf, reach, on: notify, done })}</section>`;
 
   const connectedSec = `<section class="st-sec" id="connected" aria-labelledby="cn-h"><h2 id="cn-h">CONNECTED</h2>`
     + (connected.length
@@ -252,12 +366,15 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
       const link = inv.state === "unused"
         ? `<a class="inv-l" href="${esc(invites.inviteUrl(inv.token))}">${text}</a>`
         : `<span class="inv-l${inv.state === "canceled" ? " gone" : ""}">${text}</span>`;
-      return `<li>${link}${stamp(word, tone)}</li>`;
+      // An unused link can be canceled here, which gives the invite back (src/invites.js cancelLink).
+      const cancel = inv.state === "unused"
+        ? post(csrf, "cancel-invite", `${hidden("i", inv.id)}<button class="act2 inv-x" type="submit" data-busy="CANCELING…" aria-label="Cancel the invite link ${text}">CANCEL</button>`) : "";
+      return `<li>${link}${stamp(word, tone)}${cancel}</li>`;
     }).join("");
     invitesSec = `<section class="st-sec" id="invites" aria-labelledby="inv-h"><h2 id="inv-h">INVITES</h2><p class="inv-n">${left} left</p>`
       + (list ? `<ul class="inv">${list}</ul>` : "")
-      + (left > 0 ? post(csrf, "invite", `<button class="make" type="submit">Make an invite link <span aria-hidden="true">→</span></button>`) : "")
-      + saved(done === "invite")
+      + (left > 0 ? post(csrf, "invite", `<button class="make" type="submit" data-busy="Making a link…">Make an invite link ${arrow}</button>`) : "")
+      + saved(done === "invite-canceled", "canceled. that invite is yours again.")
       + (done === "invite-name" ? hand("i need your name for the invite card first. tell me in the chat.", { role: "status" }) : "")
       + `</section>`;
   }
@@ -267,14 +384,68 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
   const themeSec = `<section class="st-sec" id="theme" aria-labelledby="th-h"><div class="th-box"><h2 id="th-h">THEME</h2>`
     + post(csrf, "theme", `<div class="th-g" role="radiogroup" aria-labelledby="th-h">${opt("paper", "Paper")}<span class="dot" aria-hidden="true">·</span>${opt("night", "Night")}<span class="dot" aria-hidden="true">·</span>${opt("auto", "Auto")}</div>`)
     + saved(done === "theme") + `</div>`
-    + `<form method="POST" action="/web/signout" class="out-f">${hidden("c", csrf)}<button class="act2 out" type="submit">SIGN OUT OF THIS BROWSER</button></form></section>`;
+    + `<form method="POST" action="/web/signout" class="out-f">${hidden("c", csrf)}<button class="act2 out" type="submit" data-busy="SIGNING OUT…">SIGN OUT OF THIS BROWSER</button></form></section>`;
 
   const shown = SECTIONS.filter(([id]) => id !== "invites" || invitesView);
   const body = `<header class="st-head"><a class="act2" href="/web?thread">← BACK TO THE CHAT</a>${wordmark({ href: "/web" })}</header>`
     + `<main class="st"><div class="st-side"><h1 class="st-h1">Settings</h1><nav class="st-nav" aria-label="Settings sections">`
     + shown.map(([id, t], i) => `<a href="#${id}"${i === 0 ? ` aria-current="true"` : ""}>${t}</a>`).join("")
-    + `</nav></div><div class="st-main">${reachSec}${browsersSec}${connectedSec}${invitesSec}${themeSec}</div></main>`;
-  return webPage({ title: "Reason — Settings", body, css: CSS, script: JS, foot: "" });
+    + `</nav></div><div class="st-main">${reachSec}${browsersSec}${notifySec}${connectedSec}${invitesSec}${themeSec}</div></main>`;
+  return webPage({ title: "Reason — Settings", body, css: CSS, script: JS });
+}
+
+// ---------------------------------------------------------------- the edit states (one screen each)
+/** A Settings screen of its own, as 5A–5D and 8C draw them: ← SETTINGS, then one thing. */
+function subPage({ title, back, inner, cls = "" }) {
+  const body = `<header class="sub-head"><a class="act2" href="/web/settings#${back}">← SETTINGS</a></header><main class="sub${cls ? ` ${cls}` : ""}">${inner}</main>`;
+  return webPage({ title: `Reason — ${title}`, body, css: CSS, script: JS });
+}
+
+/** 5A: the radio list of four, under the sentence that follows the choice. Save → / CANCEL. */
+export function renderReachEdit({ csrf, reach = "text" }) {
+  if (!REACH[reach]) reach = "text";
+  const opts = REACH_ORDER.map(v => `<label class="ro"><input type="radio" name="reach" value="${v}" data-name="${esc(REACH[v].name)}"${v === reach ? " checked" : ""}>`
+    + `<span class="ro-d" aria-hidden="true"></span><span class="ro-t"><span class="ro-n">${esc(REACH[v].name)}</span><span class="ro-l">${esc(REACH[v].line)}</span></span></label>`).join("");
+  const inner = `<h1 class="sub-l" id="re-h">HOW REASON REACHES YOU</h1>`
+    + post(csrf, "reach", `<p class="re-p" aria-hidden="true">Text me for <em class="re-pick">${esc(REACH[reach].name)}</em>.</p>`
+      + `<div class="ro-g" role="radiogroup" aria-label="Text me for">${opts}</div>`
+      + `<div class="sub-a"><button class="sub-go" type="submit" data-busy="Saving…">Save ${arrow}</button><a class="act2 sub-c" href="/web/settings#reach">CANCEL</a></div>`, "re-f");
+  return subPage({ title: "How Reason reaches you", back: "reach", inner });
+}
+
+/** 5B: saved — the new sentence (each phrase opens 5A again) and the Caveat line that says what changed. */
+export function renderReachSaved({ reach = "text" }) {
+  if (!REACH[reach]) reach = "text";
+  const ph = (t) => `<a class="ph" href="/web/settings?edit=reach">${t}</a>`;
+  const inner = `<h1 class="sub-l">HOW REASON REACHES YOU</h1><p class="re-p">${reachSentence(reach, ph)}</p>`
+    + hand(REACH[reach].saved, { tilt: true, role: "status" });
+  return subPage({ title: "How Reason reaches you", back: "reach", inner });
+}
+
+/** 5C: sign out everywhere? The real count, what happens, Sign out everywhere (pen) / KEEP ME IN. */
+export function renderSignOutAll({ csrf, count = 1 }) {
+  const inner = `<div class="card so-card" role="group" aria-labelledby="so-h"><h1 class="sub-l" id="so-h">SIGN OUT EVERYWHERE?</h1>`
+    + `<p class="so-n">${esc(browsersLine(count))}</p>`
+    + `<p class="so-p">You'll need a new code to sign back in. Reason keeps working, and your texts aren't affected.</p>`
+    + `<div class="sub-a">${post(csrf, "everywhere", `<button class="sub-go" type="submit" data-busy="Signing out everywhere…">Sign out everywhere</button>`)}<a class="act2 sub-c" href="/web/settings#browsers">KEEP ME IN</a></div></div>`;
+  return subPage({ title: "Sign out everywhere?", back: "browsers", inner, cls: "mid" });
+}
+
+/** 5D: an invite link just made — the link, Copy it → / SHARE, "copied.", what's left now. */
+export function renderInviteMade({ invite, left }) {
+  const url = invites.inviteUrl(invite.token);
+  const inner = `<h1 class="sub-l">INVITES</h1><p class="iv-n">${left} left</p>`
+    + `<div class="card iv-card"><span class="lbl">NEW LINK · UNUSED</span><a class="iv-link" href="${esc(url)}">${esc(shortLink(invite.token, 4))}</a>`
+    + `<div class="sub-a"><button class="sub-go iv-copy" type="button" hidden>Copy it ${arrow}</button><button class="act2 sub-c iv-share" type="button" hidden>SHARE</button></div></div>`
+    + `<p class="hand tilt iv-said" role="status" hidden data-ok="copied. send it to someone you like." data-no="couldn't copy it. press and hold the link to copy it yourself."></p>`
+    + `<p class="iv-note">It works once. If they never use it, you can cancel it and get the invite back.</p>`;
+  return subPage({ title: "Invites", back: "invites", inner, cls: "iv" });
+}
+
+/** 8C as a screen of its own. */
+export function renderNotifySub({ csrf, reach = "text", on = false, done = "" }) {
+  const inner = `<h1 class="sub-l">BROWSER NOTIFICATIONS</h1>${notifyBody({ csrf, reach, on, done, sub: true })}`;
+  return subPage({ title: "Browser notifications", back: "notify", inner, cls: "nt" });
 }
 
 // ---------------------------------------------------------------- the requests
@@ -283,10 +454,12 @@ function same(a, b) {
   return x.length > 0 && x.length === y.length && timingSafeEqual(x, y);
 }
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", ...SECURITY_HEADERS, ...extra });
-const back = (done, anchor) => ({ status: 303, headers: HTML({ Location: `/web/settings${done ? `?done=${done}` : ""}#${anchor}`, "Content-Length": 0 }), body: "" });
+const to = (location) => ({ status: 303, headers: HTML({ Location: location, "Content-Length": 0 }), body: "" });
+const back = (done, anchor) => to(`/web/settings${done ? `?done=${done}` : ""}#${anchor}`);
 const json = (status, obj) => { const body = JSON.stringify(obj); return { status, headers: { "Content-Type": "application/json; charset=utf-8", ...SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) }, body }; };
 const NOT_HERE = "That didn't come from this page.";
 const sessionsOf = (conv) => db.pageSessionsFor(conv, { maxAgeMs: SESSION_TTL_MS, idleMs: WEB_IDLE_MS });
+const myInvitesView = (conv) => (invitesOpenFor(conv) ? { ...invites.myInvites(conv), links: db.listInvites(conv).map(invite => ({ invite })) } : null);
 
 /** What the page shows for one person, read fresh. */
 export function settingsView(account, token) {
@@ -296,21 +469,42 @@ export function settingsView(account, token) {
     browsers: sessionsOf(conv),
     current: token,
     connected: connections(conv),
-    invitesView: invitesOpenFor(conv) ? { ...invites.myInvites(conv), links: db.listInvites(conv).map(invite => ({ invite })) } : null,
+    invitesView: myInvitesView(conv),
     theme: db.webTheme(conv),
+    notify: db.pageSessionNotify(token),
   };
 }
 
+/** GET: the page, or one of its edit states (5A ?edit=reach, 5B ?saved=reach, 5C ?confirm=everywhere, 5D ?invite=<id>, 8C ?edit=notify). */
+function settingsPage({ account, token, query }) {
+  const conv = account.conversation_id;
+  const csrf = db.pageSessionCsrf(token);
+  const done = String(query.done ?? "");
+  if (query.edit === "reach") return renderReachEdit({ csrf, reach: db.webReach(conv) });
+  if (query.saved === "reach") return renderReachSaved({ reach: db.webReach(conv) });
+  if (query.edit === "notify") return renderNotifySub({ csrf, reach: db.webReach(conv), on: db.pageSessionNotify(token), done });
+  if (query.confirm === "everywhere") return renderSignOutAll({ csrf, count: sessionsOf(conv).length });
+  if (query.invite != null) {
+    // Only a link of theirs that still works; anything else is the list, where its state is shown.
+    const id = Number(query.invite);
+    const inv = Number.isInteger(id) && id > 0 && invitesOpenFor(conv) ? db.getInvite(conv, id) : null;
+    if (!inv || inv.state !== "unused") return null;
+    return renderInviteMade({ invite: inv, left: invites.myInvites(conv).links_you_can_still_make });
+  }
+  return renderSettings({ csrf, ...settingsView(account, token), done });
+}
+
 /**
- * GET /web/settings, and POST /web/settings with `do` = reach | theme | browser | everywhere | invite.
- * Signed in only (the router sends anybody else to sign in). Every POST carries the session's form
- * secret and comes from Reason's own page, like /web/send.
+ * GET /web/settings, and POST /web/settings with `do` = reach | theme | browser | everywhere | notify |
+ * invite | cancel-invite. Signed in only (the router sends anybody else to sign in). Every POST carries
+ * the session's form secret and comes from Reason's own page, like /web/send.
  */
 export async function settingsRequest({ account, method, query = {}, headers = {}, readBody, log = () => {} }) {
   const token = readCookie(headers?.cookie);
   const conv = account.conversation_id;
   if (method === "GET" || method === "HEAD") {
-    const body = renderSettings({ csrf: db.pageSessionCsrf(token), ...settingsView(account, token), done: String(query.done ?? "") });
+    const body = settingsPage({ account, token, query });
+    if (body == null) return back("", "invites");
     return { status: 200, headers: HTML({ "Content-Length": Buffer.byteLength(body) }), body };
   }
   if (method !== "POST") { const body = renderNotFound(); return { status: 405, headers: HTML({ Allow: "GET, HEAD, POST", "Content-Length": Buffer.byteLength(body) }), body }; }
@@ -324,10 +518,10 @@ export async function settingsRequest({ account, method, query = {}, headers = {
 
   if (what === "reach") {
     const v = form.get("reach");
-    if (v !== "web" && v !== "text") return back("", "reach");
+    if (!db.WEB_REACH_VALUES.includes(v)) return wantsJson ? json(400, { ok: false, error: "bad_reach" }) : to("/web/settings?edit=reach");
     db.setWebReach(conv, v);
     log({ web_settings: "reach", to: v });
-    return wantsJson ? json(200, { ok: true, reach: v }) : back("reach", "reach");
+    return wantsJson ? json(200, { ok: true, reach: v }) : to("/web/settings?saved=reach");
   }
 
   if (what === "theme") {
@@ -336,6 +530,15 @@ export async function settingsRequest({ account, method, query = {}, headers = {
     db.setWebTheme(conv, v);
     log({ web_settings: "theme", to: v });
     return wantsJson ? json(200, { ok: true, theme: v }) : back("theme", "theme");
+  }
+
+  if (what === "notify") {
+    // This browser only: the setting is on its own session row.
+    const on = form.get("on") === "1";
+    db.setPageSessionNotify(conv, token, on);
+    log({ web_settings: "notify", on });
+    if (wantsJson) return json(200, { ok: true, notify: on });
+    return form.get("back") === "sub" ? to(`/web/settings?edit=notify&done=${on ? "notify" : "notify-off"}`) : back(on ? "notify" : "notify-off", "notify");
   }
 
   if (what === "browser") {
@@ -360,7 +563,17 @@ export async function settingsRequest({ account, method, query = {}, headers = {
     if (!invitesOpenFor(conv)) return back("", "invites");
     const made = invites.makeLink(conv);
     log({ web_settings: "invite", ok: made.ok, ...(made.ok ? { number: made.number } : {}) });
-    return back(made.ok ? "invite" : made.needs_name ? "invite-name" : "", "invites");
+    if (made.ok) return to(`/web/settings?invite=${made.number}`);
+    return back(made.needs_name ? "invite-name" : "", "invites");
+  }
+
+  if (what === "cancel-invite") {
+    if (!invitesOpenFor(conv)) return back("", "invites");
+    // One of THIS person's own unused links, by its number in their list; anybody else's is not found.
+    const id = Number(form.get("i"));
+    const out = Number.isInteger(id) && id > 0 ? invites.cancelLink(conv, id, { replace: false }) : { ok: false };
+    log({ web_settings: "invite_canceled", ok: !!out.ok });
+    return back(out.ok ? "invite-canceled" : "", "invites");
   }
 
   return back("", "reach");

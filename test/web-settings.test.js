@@ -4,10 +4,10 @@
 //
 //   - signed out: the page and every POST send the browser to sign in; nothing changes
 //   - every POST needs the session's own secret and Reason's own origin (403, nothing changes)
-//   - How Reason reaches you: the dashed phrases are no-script submit buttons that flip
-//     accounts.web_reach; src/deliver.js honours it — a finished job's result is texted under 'text'
-//     (the default) and kept on Web (history row on web, nothing texted) under 'web'; a task waiting
-//     on them, a failed one, and a reminder are texted either way
+//   - How Reason reaches you: the dashed phrases open the edit state (test/web-settings-edit.test.js
+//     pins 5A–5D and the four values); src/deliver.js honours it — a finished job's result is texted
+//     under 'text' (the default) and kept on Web (history row on web, nothing texted) under 'web'; a
+//     task waiting on them, a failed one, and a reminder are texted either way
 //   - Private by default is not drawn while it is untrue (approvals are asked with their details)
 //   - Signed-in browsers: this person's sessions only, device from the user agent, last active, this
 //     one "you're here"; SIGN OUT really ends that session; a handle from somebody else's list ends
@@ -144,8 +144,8 @@ test("the page: Settings, the section index, every section in order, the referen
   const me = browser(OWNER_C);
   const body = await page(h, me);
   assert.match(body, /<h1 class="st-h1">Settings<\/h1>/);
-  assert.match(body, /<nav class="st-nav" aria-label="Settings sections"><a href="#reach" aria-current="true">HOW I REACH YOU<\/a><a href="#browsers">BROWSERS<\/a><a href="#connected">CONNECTED<\/a><a href="#invites">INVITES<\/a><a href="#theme">THEME<\/a><\/nav>/);
-  const order = ["HOW REASON REACHES YOU</h2>", "SIGNED-IN BROWSERS</h2>", "CONNECTED</h2>", "INVITES</h2>", "THEME</h2>", ">SIGN OUT OF THIS BROWSER<"].map(t => body.indexOf(t));
+  assert.match(body, /<nav class="st-nav" aria-label="Settings sections"><a href="#reach" aria-current="true">HOW I REACH YOU<\/a><a href="#browsers">BROWSERS<\/a><a href="#notify">NOTIFICATIONS<\/a><a href="#connected">CONNECTED<\/a><a href="#invites">INVITES<\/a><a href="#theme">THEME<\/a><\/nav>/);
+  const order = ["HOW REASON REACHES YOU</h2>", "SIGNED-IN BROWSERS</h2>", "BROWSER NOTIFICATIONS</h2>", "CONNECTED</h2>", "INVITES</h2>", "THEME</h2>", ">SIGN OUT OF THIS BROWSER<"].map(t => body.indexOf(t));
   assert.ok(order.every((i, k) => i > 0 && (k === 0 || i > order[k - 1])), `sections in order: ${order}`);
   assert.match(body, /← BACK TO THE CHAT/);
   assert.match(body, /<p class="hand">or just ask me to text you for one thing\.<\/p>/);
@@ -158,30 +158,33 @@ test("Private by default is not drawn while approvals are still asked with their
   const h = harness();
   const body = await page(h, browser(OWNER_C));
   assert.equal(st.PRIVATE_BY_DEFAULT, false);
-  assert.doesNotMatch(body, /PRIVATE BY DEFAULT/);
-  assert.doesNotMatch(body, /Reason needs your approval/);
+  assert.doesNotMatch(body, /PRIVATE BY DEFAULT/i);
+  assert.doesNotMatch(body, /behind sign-in|never the details/i);
+  // The one place the words appear is 8C's sample of what a browser notification says, which is true.
+  assert.equal((body.replace(/<script>[^]*?<\/script>/g, "").match(/Reason needs your approval/g) ?? []).length, 1);
+  assert.match(body, /<span class="lbl">WHEN THEY'RE ON, ONE SAYS ONLY<\/span><div class="card nt-card"><b>Reason<\/b><span>Reason needs your approval\.<\/span><\/div>/);
 });
 
 // ---------- How Reason reaches you ----------
 
-test("reach: the dashed phrases are no-script buttons that flip where a finished job's result goes", async () => {
+test("reach: the dashed phrases open the four choices; Save sets accounts.web_reach and shows the new sentence", async () => {
   const h = harness();
   const me = browser(OWNER_C);
   // The default is how Reason has always worked: everything texted.
   let body = await page(h, me);
-  assert.match(body, /Text me for <button class="ph" type="submit" name="reach" value="web" aria-describedby="reach-how">everything<\/button>\. Keep <button class="ph" type="submit" name="reach" value="web" aria-describedby="reach-how">a copy<\/button> here\./);
+  assert.match(body, /Text me for <a class="ph" href="\/web\/settings\?edit=reach" aria-describedby="reach-how">everything<\/a>\. Keep <a class="ph" href="\/web\/settings\?edit=reach" aria-describedby="reach-how">a copy<\/a> here\./);
   const out = await post(h, me, { do: "reach", reach: "web" });
   assert.equal(out.status, 303);
-  assert.equal(out.headers.Location, "/web/settings?done=reach#reach");
+  assert.equal(out.headers.Location, "/web/settings?saved=reach");
   assert.equal(db.webReach(OWNER_C), "web");
-  body = (await call(h, { b: me, query: { done: "reach" } })).body;
-  assert.match(body, /Text me for <button class="ph" type="submit" name="reach" value="text" aria-describedby="reach-how">timely decisions<\/button>\. Keep <button class="ph" type="submit" name="reach" value="text" aria-describedby="reach-how">routine results<\/button> here\./);
-  assert.match(body, /<p class="hand" role="status">got it\.<\/p>/);
+  body = await page(h, me);
+  assert.match(body, /Text me for <a class="ph" href="\/web\/settings\?edit=reach" aria-describedby="reach-how">timely decisions<\/a>\. Keep <a class="ph" href="\/web\/settings\?edit=reach" aria-describedby="reach-how">routine results<\/a> here\./);
   assert.equal(db.webReach(KOFI_C), "text", "only this person's");
   await post(h, me, { do: "reach", reach: "text" });
   assert.equal(db.webReach(OWNER_C), "text");
-  // Anything else is not a setting.
-  await post(h, me, { do: "reach", reach: "never" });
+  // Anything else is not a setting: back to the choices, nothing changed.
+  const bad = await post(h, me, { do: "reach", reach: "never" });
+  assert.equal(bad.headers.Location, "/web/settings?edit=reach");
   assert.equal(db.webReach(OWNER_C), "text");
 });
 
@@ -272,7 +275,7 @@ test("browsers: this person's sessions only, device from the user agent, last ac
   assert.match(rows[1], /Safari on iPhone.*2 HOURS AGO.*>SIGN OUT<\/button>/);
   assert.match(rows[2], new RegExp(`Firefox on Windows.*${day}.*>SIGN OUT</button>`));
   assert.doesNotMatch(body, new RegExp(phone.token), "a session token is never on the page");
-  assert.match(body, /<button class="every" type="submit">Sign out everywhere<\/button>/);
+  assert.match(body, /<a class="every" href="\/web\/settings\?confirm=everywhere">Sign out everywhere<\/a>/, "asks first (5C)");
   assert.doesNotMatch(body, /older sign-in/);
 });
 
@@ -325,7 +328,7 @@ test("SIGN OUT OF THIS BROWSER posts to the existing sign-out with this session'
   const h = harness();
   const me = browser(OWNER_C);
   const body = await page(h, me);
-  assert.match(body, new RegExp(`<form method="POST" action="/web/signout" class="out-f"><input type="hidden" name="c" value="${me.csrf}"><button class="act2 out" type="submit">SIGN OUT OF THIS BROWSER</button></form>`));
+  assert.match(body, new RegExp(`<form method="POST" action="/web/signout" class="out-f"><input type="hidden" name="c" value="${me.csrf}"><button class="act2 out" type="submit" data-busy="SIGNING OUT…">SIGN OUT OF THIS BROWSER</button></form>`));
   const out = await call(h, { sub: "signout", method: "POST", b: me, body: `c=${encodeURIComponent(me.csrf)}` });
   assert.equal(out.headers.Location, "/web?out=1");
   assert.equal((await call(h, { b: me })).status, 303);
@@ -381,13 +384,12 @@ test("invites: N left, every link stamped JOINED / UNUSED / CANCELED, and Make a
   let body = await page(h, me);
   assert.match(body, /<p class="inv-n">2 left<\/p>/);
   const out = await post(h, me, { do: "invite" });
-  assert.equal(out.headers.Location, "/web/settings?done=invite#invites");
   const [made] = db.listInvites(OWNER_C);
+  assert.equal(out.headers.Location, `/web/settings?invite=${made.id}`, "5D: the link just made");
   assert.equal(made.state, "unused");
-  body = (await call(h, { b: me, query: { done: "invite" } })).body;
+  body = await page(h, me);
   assert.match(body, /<p class="inv-n">1 left<\/p>/);
-  assert.match(body, new RegExp(`<li><a class="inv-l" href="${invites.inviteUrl(made.token)}">files\\.heyreason\\.test/i/${made.token.slice(0, 6).replace(/[-]/g, "\\-")}…</a><span class="stamp stamp-ink">UNUSED</span></li>`));
-  assert.match(body, /role="status">got it\./);
+  assert.match(body, new RegExp(`<li><a class="inv-l" href="${invites.inviteUrl(made.token)}">files\\.heyreason\\.test/i/${made.token.slice(0, 6).replace(/[-]/g, "\\-")}…</a><span class="stamp stamp-ink">UNUSED</span><form method="POST" action="/web/settings">`));
   // Canceling it (in the chat) frees the slot and stamps it.
   assert.equal(invites.cancelLink(OWNER_C, made.id, { replace: false }).ok, true);
   // One that somebody joined with.
