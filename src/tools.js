@@ -99,6 +99,7 @@ import { rmSync } from "node:fs";
 import * as purchasesNoteMod from "./purchasesnote.js";
 import * as incidents from "./incidents.js";
 import { TITLE_HINT, normTitle, queueTitle } from "./itemtitle.js";
+import { resultFor } from "./ongoing.js";
 
 /**
  * What image_generate tells the model. Sending is the default because a person who asks for a
@@ -3058,6 +3059,7 @@ const SHEET_DESC = [
   "decisions: [{what}] — what they chose, appended with the time.",
   "waiting: [{on, for, next_check?}] — who or what is owed and when you will check. Send the whole current list; it replaces the old one.",
   "left: ['..'] — what is still to do, shortest first. Replaces the old list.",
+  "steps: [{id?, text, state, live?}] — the job's real steps as they see them on their Ongoing list: text a few plain words ('Hudson inn', 'Call the cabin'), state 'done', 'doing' (the ONE in hand now) or 'todo'; live is an optional few lowercase words while it is 'doing' ('on the phone now'). Send the whole list each time; it replaces the old one and code stamps when each was done. Only steps you will really take, never a percentage.",
   "needs: {question, tradeoff} — the ONE thing you need from them, answerable in a word or two, with one line on what each answer costs. Required to set state waiting_on_you. null clears it.",
   "blocked: {what, unblock} — what stopped it and what would get it going. null clears it.",
   "furthest: {form, what, where?, filled?, one_action, stopped, because} — the furthest point you got to, for when it does not finish. form: 'filled_form' (a page or checkout filled in and waiting for one tap), 'draft' (words ready to send), 'partial' (what you gathered before it stopped), 'saved_state' (a browser sitting on the right page). where is a link they can open, and it is CHECKED before it is written — a link that does not open is refused. filled is [{field, value}] — what is already filled in. one_action is the ONE thing left for them to do, said as a thing they can do. stopped: site_refused|needed_a_yes|provider_down|cap_hit|outside_steer|other. Appended, never replaced; the newest is what gets handed back. A job that got somewhere cannot be closed 'failed' or set 'blocked' without one.",
@@ -3453,6 +3455,14 @@ export const tools = [
         task_id: { type: "integer" },
         state: { type: "string", description: "done | failed | cancelled" },
         outcome: { type: "string", description: "One line: what actually came of it." },
+        result: {
+          type: "object",
+          description: "What they see under BACK TO YOU on their Ongoing list on Reason Web. For 'done': the result itself — headline (the thing, e.g. the restaurant's name), facts (up to 4 short lines of the details that matter: 'SAT · 7:30 PM', '4 PEOPLE · UNDER OMARI'), note (one plain line, e.g. 'They'll hold the table 15 minutes.'). For 'failed': why (ONE short line in your own voice, lowercase, said to them: 'sold out before i got in. sorry.') and next (what happens next, plainly, or leave it out if nothing does). Only what is true; nothing for 'cancelled'.",
+          properties: {
+            headline: { type: "string" }, facts: { type: "array", items: { type: "string" } }, note: { type: "string" },
+            why: { type: "string" }, next: { type: "string" },
+          },
+        },
       },
       required: ["task_id", "state", "outcome"],
     },
@@ -9375,7 +9385,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const owed = furthestGate({ c, task: was, closing: "failed" });
         if (owed) return owed;
       }
-      const r = db.finishTask(c, input.task_id, { state: input.state, outcome: input.outcome });
+      const r = db.finishTask(c, input.task_id, { state: input.state, outcome: input.outcome, result: resultFor(input.state, input.result) });
       if (!r.ok) return r;
       // "Leave that alone" has to be answerable with what already went out. Read off the ledger
       // rather than from the model's memory of the job — and bounded to the window the task was
@@ -11472,7 +11482,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const put = trust.requestConfirmation({
         conversationId: c, messages: ctx.messages ?? [],
         action: input.action, summary: input.summary, stakes: input.stakes ?? "", target: input.target ?? "",
-        taskId: onTask ? onTask.id : null,
+        taskId: onTask ? onTask.id : null, amount: input.amount ?? null,
       });
       // An ask about a commit on a site is a walk that has stopped, waiting on one word. It is the
       // ordinary, correct way a booking gets this far — the model is told not to press the last

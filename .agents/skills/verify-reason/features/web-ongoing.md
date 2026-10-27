@@ -1,0 +1,65 @@
+# Reason Web — Ongoing (tab, margin, details, 9D)
+
+What Reason is holding for the signed-in person, drawn from the rows that ARE the work (design
+handoff 2026-10-26, "3 · Ongoing", sheets 2/3, 9D). Model: `src/ongoing.js` (`ongoing`, `findItem`,
+`approvals`, `stepsOf`, `resultFor`). Drawing + routes: `src/pages/webongoing.js` (`ogMargin`,
+`renderDetail`, `ongoingRequest`, `NINE_D_JS`, `OG_POLL_JS`). Wired into `src/pages/webconvo.js`
+(`inHand`/`waitingApprovals` delegate; `ongoingMargin` → `ogMargin`; PR #179's top-3 / See all /
+HIDE → / sticky bar kept) and `src/http.js` (`ongoingRoute`). Behind `REASON_WEB` like the rest.
+
+## Sub-features
+
+- **Groups.** NEEDS YOU = unanswered `confirmations` from the last 24 h (paper card, NOTHING
+  CHARGED/BOOKED YET, "Review details →", Caveat "or just reply in the chat" on the tab) +
+  `waiting_on_you` tasks. IN HAND = running (WORKING), waiting/waiting_on_other (WAITING, "On X: for.
+  Asked <day>, <time>."), blocked (STUCK), one-off timers (time + date), active series (time + EVERY
+  MON). BACK TO YOU = tasks `done` (READY) / `failed` (DIDN'T WORK in pen + Caveat why + next) whose
+  `finished_at` is within 72 h (`BACK_WINDOW_MS`). Heading line `N THINGS · N NEEDS YOU`.
+- **Steps.** `sheet.steps` (src/sheet.js; `task_update` sheet) `[{id,text,state todo|doing|done,live}]`,
+  one `doing` max, code stamps `at` when a step is first done. No steps on the sheet → the progress
+  log lines (done, with their times) + `sheet.left` (not started); no "N OF M" from that fallback.
+- **Results.** `task_finish.result` → `tasks.result_json` via `resultFor`: done `{headline, facts[],
+  note}`, failed `{why, next}`. Old rows: done shows `outcome`; failed falls back to
+  `furthest.because` / `blocked.what` / `outcome`, next to `furthest.one_action`.
+- **Approval detail** `/web/ongoing/approval/<id>`: receipt with ONLY the record's fields — a
+  purchase_confirm reads its AgentCard row (`confirmation_id`, else the `[hash] in buy` target pin):
+  SHOP, ITEM(S), SHIPS TO (city/state/zip), DELIVERY (offer), HOLD UP TO (ceiling), TOTAL; a flight
+  row FLIGHT/DATE/AIRLINE/TRAVELERS; anything else WHAT, TO (calls/texts/emails), TOTAL from
+  `confirmations.amount_cents` (new; written from confirm_request's `amount`). ASKED always. Face ID
+  line only for `purchase_confirm` (AgentCard's passkey). No approve button.
+- **Details** `/web/ongoing/{task|timer|series}/<id>`: 2A steps with done times + NOTHING BOOKED YET
+  (only if no consumed confirmation on the task); 2B ASKED/FOR + "i'll check again <day>." from the
+  next check; 2C huge time + AM/PM, EVERY MONDAY, description, NEXT · date (one-off: the date);
+  2D result card + DONE stamp; 2E why + WHAT HAPPENS NEXT + NOTHING CHARGED (only if no AgentCard
+  order/charge in the task's window).
+- **9D.** `window.reasonMidTask` redraws `main` as "Still working on it. Sign back in to see." with the
+  first `[data-flight]` row's status + title, faded — read off the page, never fetched. Called by the
+  thread's `expired()` (poll 401) and by `OG_POLL_JS` on the tab/detail pages (`/web/ongoing/state`
+  every 60 s → 401). Nothing in flight → `/web?out=1` (6F).
+- **Mobile nudge.** `needsYes`: Caveat "the <merchant> order needs a yes →" above the composer, to
+  the approval detail; hidden ≥900px.
+
+## How to get to it (user POV)
+
+Phone: the Ongoing tab (`/web?tab=ongoing`), tap a row. Desktop: the right margin; "See all N →".
+From the chat: the approval card's "Review details →", or the pen "needs a yes →" line.
+
+## Driving it with the harness
+
+- `node --test test/web-ongoing.test.js test/web-ongoing2.test.js` — every group/state/detail,
+  plumbing, cross-account 404s, 9D markup (seed: `test/fixture-ongoing.js`).
+- `node .agents/skills/verify-reason/bin/web-ongoing-preview.mjs` — ongoing-<state>-<390|1280>-
+  <paper|night>.png + compare-ongoing-<state>.png into ~/Desktop/reason-web-design-previews.
+- Live (Hetzner only, read-only): temporary owner `page_sessions` row (conversation `dm:owner`),
+  `curl -b reason_page=<tok> https://heyreason.com/web?tab=ongoing` and each
+  `/web/ongoing/<kind>/<id>` the owner really has; `/web/ongoing/state` → `{count, needs}`; another
+  id → 404. DELETE the session row after. A kind with no real row: make a far-future timer on
+  `dm:owner` (fire_at years out), fetch it, then `UPDATE timers SET cancelled_at=…` / delete it.
+
+## Gotchas
+
+- Apostrophes are escaped (`DIDN&#39;T WORK`) — grep for the entity.
+- `.st`, `.g`, `.t` are taken by the thread's CSS: Ongoing's own classes are `og-*`.
+- A series' pending firing is a timer row with `series_id`; it is drawn once, as the series.
+- Approvals older than 24 h drop off (same window as the chat's card) even if still open.
+- "2 OF 3" = the step in hand (done + 1 when one is `doing`), matching the reference.

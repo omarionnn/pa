@@ -68,17 +68,23 @@ export const WHY_STOPPED = ["site_refused", "needed_a_yes", "provider_down", "ca
 
 /** How the link in a hand-back is known to work. Code's word, never the model's — see src/tools.js. */
 export const LINK_KNOWN = ["checked", "browser_reached"];
+/**
+ * A task's steps, as the person sees them on Reason Web's Ongoing (owner's design handoff, 10-26):
+ * ✓ done, ○ in pen = the one in hand now, ○ muted = not started. Never a percentage. The model names
+ * the steps and moves them; code stamps when each one was done, so the times on the detail are real.
+ */
+export const STEP_STATES = ["todo", "doing", "done"];
 
 const LIMITS = {
   constraints: 24, options: 40, decisions: 40, steers: 40, routes: 40, waiting: 12, left: 20,
-  conflicts: 20, prices: 20, furthest: 8, filled: 12,
+  conflicts: 20, prices: 20, furthest: 8, filled: 12, steps: 12,
   key: 40, value: 300, label: 300, words: 400, text: 400, url: 2000,
 };
 
 export function emptySheet() {
   return {
     constraints: {}, options: [], decisions: [], waiting: [], steers: [], routes: [], left: [],
-    conflicts: [], prices: [], furthest: [],
+    conflicts: [], prices: [], furthest: [], steps: [],
     stakes: null, document: null,
     needs: null, blocked: null,
   };
@@ -136,6 +142,13 @@ export function parseSheet(raw) {
     tried: str(x.tried, LIMITS.text), failed_because: str(x.failed_because, LIMITS.text) ?? "", at: Number.isFinite(x.at) ? x.at : null,
   }));
   s.left = list(o.left).map(x => str(x, LIMITS.text)).filter(Boolean).slice(0, LIMITS.left);
+  s.steps = list(o.steps).filter(x => x && str(x.text, LIMITS.label)).map((x, i) => ({
+    id: str(x.id, LIMITS.key) ?? String(i + 1),
+    text: str(x.text, LIMITS.label),
+    state: STEP_STATES.includes(x.state) ? x.state : "todo",
+    live: str(x.live, 60),
+    at: Number.isFinite(x.at) ? x.at : null,
+  })).slice(0, LIMITS.steps);
   s.stakes = STAKES.includes(o.stakes) ? o.stakes : null;
   // Where a price was actually seen. Two of them, on two different sites, is what "a second source
   // for any price" means in practice — and it is checkable, because a host is a host.
@@ -334,6 +347,26 @@ export function applyPatch(sheet, patch, { now = Date.now() } = {}) {
     const out = patch.left.map(x => str(x, LIMITS.text)).filter(Boolean);
     if (out.length > LIMITS.left) return bad(`at most ${LIMITS.left} lines in what is left.`);
     s.left = out;
+    changed = true;
+  }
+
+  // The steps replace the old list, like `left`; a step keeps the time it was first marked done.
+  if (patch.steps !== undefined) {
+    if (!Array.isArray(patch.steps)) return bad("sheet.steps must be an array of {text, state}.");
+    if (patch.steps.length > LIMITS.steps) return bad(`at most ${LIMITS.steps} steps.`);
+    const out = [];
+    for (const [i, raw] of patch.steps.entries()) {
+      if (!raw || typeof raw !== "object") return bad("every step must be an object: {text, state}.");
+      const text = str(raw.text, LIMITS.label);
+      if (!text) return bad("every step needs text: the step in a few plain words.");
+      const state = raw.state === undefined ? "todo" : raw.state;
+      if (!STEP_STATES.includes(state)) return bad(`step '${text}' has state '${state}'; use one of ${STEP_STATES.join(", ")}.`);
+      const id = str(raw.id, LIMITS.key) ?? String(i + 1);
+      const was = s.steps.find(x => x.id === id) ?? s.steps.find(x => x.text === text);
+      out.push({ id, text, state, live: state === "doing" ? str(raw.live, 60) : null, at: state === "done" ? (was?.state === "done" && was.at ? was.at : now) : null });
+    }
+    if (out.filter(x => x.state === "doing").length > 1) return bad("only one step can be 'doing' at a time: the one in hand right now.");
+    s.steps = out;
     changed = true;
   }
 
@@ -637,6 +670,7 @@ export function sheetView(sheet, { progress = [], tastes = [], whys = [], stamp 
     steers: s.steers.map(x => ({ they_said: x.said, so_you_changed: x.changed, at: stamp(x.at) })),
     routes_that_failed: s.routes.map(r => ({ tried: r.tried, failed_because: r.failed_because, at: stamp(r.at) })),
     left: s.left,
+    ...(s.steps.length ? { steps: s.steps.map(x => ({ id: x.id, text: x.text, state: x.state, ...(x.live ? { live: x.live } : {}), ...(x.at ? { done_at: stamp(x.at) } : {}) })) } : {}),
     stakes: s.stakes ?? `${DEFAULT_STAKES} (you have not marked this job, so it is being treated as money — mark it)`,
     stakes_note: s.stakes === "low"
       ? "Low stakes: one research pass is enough, and closing it only needs the links to open. Do not interview them about a lunch spot,"

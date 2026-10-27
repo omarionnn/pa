@@ -30,6 +30,7 @@
 //   GET  /web/history|stream, POST /web/send   the conversation: older/newer lines, live events, a message (src/pages/webconvo.js)
 //   GET  /web/live                    the same live events, asked for on the pages host by the website's page (CORS: that origin only)
 //   GET  /web/memory|settings         "coming soon" pages behind MEMORY and SETTINGS (phases 3, 4)
+//   GET  /web/ongoing/{approval|task|timer|series}/{id}   one Ongoing row's detail; /web/ongoing/state (src/pages/webongoing.js)
 //   GET  /web/fonts/{serif|roman|hand|handbold|sans}.woff2  Web's own faces (src/pages/webkit.js; 404 while off)
 //        /web…  on the pages host, not signed by the website: 301 to {REASON_SITE_URL}/web… (src/pages/siteproxy.js)
 //   POST /agentcard/webhook           a card landed in somebody's vault, or a payment was approved
@@ -240,14 +241,18 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(ok ? 204 : 403, ok ? { "Access-Control-Allow-Origin": site, "Access-Control-Allow-Credentials": "true", "Access-Control-Allow-Methods": "GET", "Access-Control-Allow-Headers": "last-event-id", "Access-Control-Max-Age": "600", Vary: "Origin", "Content-Length": 0 } : { "Content-Length": 0 });
         return res.end();
       }
-      const webRoute = /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings))?$/.exec(url.pathname);
+      // Ongoing's own pages (src/pages/webongoing.js): one row's detail, and the small state the Ongoing pages poll.
+      const ongoingRoute = /^\/web\/ongoing(?:\/(state|approval|task|timer|series)(?:\/(\d{1,12}))?)?$/.exec(url.pathname);
+      const webRoute = ongoingRoute ?? /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings))?$/.exec(url.pathname);
       if (webRoute && webOn()) {
         let out;
         try {
-          out = await webRequestFor({
-            sub: webRoute[1] || null, method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers,
-            remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, router, log,
-          });
+          out = ongoingRoute
+            ? (await import("./pages/webongoing.js")).ongoingRequest({ kind: ongoingRoute[1] || null, id: ongoingRoute[2] || null, method: req.method, headers: req.headers })
+            : await webRequestFor({
+              sub: webRoute[1] || null, method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers,
+              remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, router, log,
+            });
         } catch (e) {
           // A page asks for the calm one (9B: "Something went wrong. Nothing was lost."); the page's own
           // script asking for JSON gets JSON, which it already knows how to treat as a missed beat.

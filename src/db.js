@@ -1507,6 +1507,12 @@ addColumnIfMissing("threads", "web_hint_due", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("accounts", "web_notice_seen_at", "INTEGER");
 // The short plain title an Ongoing row shows on Web, written once when the row is made (src/itemtitle.js).
 addColumnIfMissing("tasks", "label", "TEXT");
+// What a closed task hands back on Web's Ongoing, BACK TO YOU (src/ongoing.js): for `done`, the
+// result card (a headline, a few typed facts, one note); for `failed`, why in Reason's own words and
+// what happens next. Written by task_finish; JSON, null on rows closed before 10-26.
+addColumnIfMissing("tasks", "result_json", "TEXT");
+// The dollar figure a confirmation asked about (confirm_request's `amount`), so a receipt can show it.
+addColumnIfMissing("confirmations", "amount_cents", "INTEGER");
 addColumnIfMissing("timers", "label", "TEXT");
 addColumnIfMissing("series", "label", "TEXT");
 addColumnIfMissing("outbox", "send_style", "TEXT");
@@ -2777,10 +2783,11 @@ export function listActions(conversationId, { since = null, limit = 50 } = {}) {
 }
 
 // ---------- confirmations ----------
-export function askConfirmation({ conversationId, action, summary, stakes, target = "", askedAfterMsgs, taskId = null }) {
+export function askConfirmation({ conversationId, action, summary, stakes, target = "", askedAfterMsgs, taskId = null, amount = null }) {
+  const cents = Number.isFinite(Number(amount)) && amount !== null && amount !== "" ? Math.round(Number(amount) * 100) : null;
   const r = db.prepare(`INSERT INTO confirmations
-    (conversation_id, action, summary, stakes, target, asked_at, asked_after_msgs, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, action, summary, stakes, target, clock.now(), askedAfterMsgs, taskId);
+    (conversation_id, action, summary, stakes, target, asked_at, asked_after_msgs, task_id, amount_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, action, summary, stakes, target, clock.now(), askedAfterMsgs, taskId, cents);
   return getConfirmation(conversationId, Number(r.lastInsertRowid));
 }
 
@@ -3505,13 +3512,13 @@ export function updateTask(conversationId, id, { progress = null, wakeAt, state,
   return { ok: true, task: getTask(conversationId, id), ...(pulledIn ? { pulled_in: pulledIn } : {}) };
 }
 
-export function finishTask(conversationId, id, { state, outcome }) {
+export function finishTask(conversationId, id, { state, outcome, result = null }) {
   const t = getTask(conversationId, id);
   if (!t) return { ok: false, error: `No task #${id}` };
   if (!t.open) return { ok: false, error: `Task #${id} was already ${t.state}.` };
   logTask(id, "state", `${state}: ${outcome}`);
-  db.prepare("UPDATE tasks SET state = ?, outcome = ?, next_wake_at = NULL, finished_at = ?, updated_at = ? WHERE id = ?")
-    .run(state, String(outcome).slice(0, 600), clock.now(), clock.now(), id);
+  db.prepare("UPDATE tasks SET state = ?, outcome = ?, next_wake_at = NULL, finished_at = ?, updated_at = ?, result_json = ? WHERE id = ?")
+    .run(state, String(outcome).slice(0, 600), clock.now(), clock.now(), result ? JSON.stringify(result) : null, id);
   return { ok: true, task: getTask(conversationId, id) };
 }
 

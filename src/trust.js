@@ -55,8 +55,9 @@ export function ownerTexts(messages = []) {
  * Step 1 of the gate. Records what Reason is about to do, in words, before asking.
  * Returns the confirmation id the model must carry into the committing tool.
  */
-export function requestConfirmation({ conversationId, messages, action, summary, stakes, target = "", taskId = null }) {
+export function requestConfirmation({ conversationId, messages, action, summary, stakes, target = "", taskId = null, amount = null }) {
   const c = db.askConfirmation({
+    amount,
     conversationId, action: toolName(action), summary, stakes, target: normalizeTarget(target),
     askedAfterMsgs: ownerTexts(messages).length,
     // Which job this ask belongs to, when there is one. It is what lets a task refuse to close as
