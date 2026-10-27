@@ -817,7 +817,7 @@ export class Runtime extends EventEmitter {
       const line = harm.pausedLine({ address: me.address, strikes });
       const router = this.turnExtras?.channels;
       if (router?.tellMaster) {
-        const r = await router.tellMaster(line, meta?.channel ?? null).catch(e => ({ ok: false, error: e?.message }));
+        const r = await router.tellMaster(line, meta?.channel ?? null, { idempotencyKey: `ops:harm-pause:${conversationId}:${clock.now()}` }).catch(e => ({ ok: false, error: e?.message }));
         if (!r?.ok) this.log({ could_not_tell_master: r?.error ?? "no route", about: "harm_pause" });
       } else {
         this.emit("outbound", { conversationId: config.ownerConversation, text: line, toMaster: true });
@@ -1118,7 +1118,7 @@ export class Runtime extends EventEmitter {
       + (paused.length ? ` (${paused.length} paused)` : "") + ` so i'm not doing that work for nobody. if they come back, they can text me and i'll pick it up.`;
     const router = this.turnExtras?.channels;
     if (router?.tellMaster) {
-      const r = await router.tellMaster(line, null).catch(e => ({ ok: false, error: e?.message }));
+      const r = await router.tellMaster(line, null, { idempotencyKey: `ops:unreachable:${conversationId}:${clock.now()}` }).catch(e => ({ ok: false, error: e?.message }));
       if (!r?.ok) this.log({ could_not_tell_master: r?.error ?? "no route", about: "unreachable" });
     } else {
       this.emit("outbound", { conversationId: config.ownerConversation, text: line, toMaster: true });

@@ -28,6 +28,10 @@ Source: `src/daily.js` (window, facts, question, greeting, `writeEdition`, `swee
   a `/web/send` form, csrf + a fresh id, buttons `Yes, go ahead` / `Not now` as `text`, only when it is the one open
   approval; always the shared thread), tasks done (DONE stamp + result headline) / failed (update), Reason's own shared-thread lines
   not within 15 min of one of theirs (update → `/web?at=<id>`). First day: `Nothing yet. Text me something to start.`
+  Never an operator notice (`messages.source = 'ops'`, set from the sender's outbox key `ops:`/`incident:`/`event-created:`)
+  nor a row carrying a keyed `/ops` link; a message split round a link is one item headlined by its words, a link
+  alone is named by its page/document/task or not listed (#225, `test/ops-key-leak.test.js`). No Web response but `/ops`
+  itself ever carries the status page's key (`src/opsredact.js`) — on live, `curl` any /web page and grep for `ops?k=`.
 - **Lines out.** open watches, armed timers, active series; status mono right, pen when due within a day;
   hidden when none.
 - **One question today.** newest open guess not put off in 7 days; ≤1/day (`daily_questions`). Answer →

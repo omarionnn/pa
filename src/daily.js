@@ -35,6 +35,7 @@ import { askStructuredViaCli } from "./backends/cli.js";
 import * as background from "./background.js";
 import { dailyAllowedFor } from "./dailyflag.js";
 import { WEB, webAllowedFor } from "./web.js";
+import { hasOpsKeyLink } from "./opsredact.js";
 
 /** The local hour an edition is written from (overnight, before anyone's morning). */
 export const EDITION_HOUR = 4;
@@ -167,6 +168,31 @@ export function headlineOf(text) {
 }
 const parseJson = (s) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
 
+const LINK = /https?:\/\/[^\s<>"')]+/gi;
+/** The words of a message with its links taken out; "" when it was only a link. */
+const withoutLinks = (text) => oneLine(String(text ?? "").replace(LINK, " ")).replace(/^[\s:,.-]+$/, "");
+/**
+ * A message that was only a link: named by what it links to — a page or document Reason made (its
+ * title), or the task it was sent for (its label). Null when nothing names it: no item, never a bare URL.
+ */
+function linkTitle(conversationId, parts) {
+  for (const m of parts) {
+    for (const url of String(m.text ?? "").match(LINK) ?? []) {
+      let id = "";
+      try { id = new URL(url).pathname.split("/").filter(Boolean).pop() ?? ""; } catch { continue; }
+      if (!/^[A-Za-z0-9_-]{6,64}$/.test(id)) continue;
+      const t = db.db.prepare("SELECT title FROM pages WHERE id = ? AND conversation_id = ?").get(id, conversationId)?.title
+        ?? db.db.prepare("SELECT title FROM documents WHERE id = ? AND conversation_id = ?").get(id, conversationId)?.title;
+      if (oneLine(t)) return cut(oneLine(t), 120);
+    }
+    const task = db.db.prepare(`SELECT t.label, t.title FROM task_messages l JOIN tasks t ON t.id = l.task_id AND t.conversation_id = l.conversation_id
+        JOIN messages mm ON mm.outbox_id = l.outbox_id WHERE l.conversation_id = ? AND mm.id = ? LIMIT 1`).get(conversationId, m.id);
+    const name = oneLine(task?.label || task?.title || "");
+    if (name) return cut(name, 120);
+  }
+  return null;
+}
+
 /** The messages each of these tasks said, by id (task_messages), so a finished task is told once, as itself. */
 function taskMessageIds(conversationId, taskIds) {
   if (!taskIds.length) return new Map();
@@ -214,14 +240,28 @@ export function overnightFor(conversationId, since, now = clock.now()) {
   // What Reason said on its own in the shared thread: news, unless it was answering them.
   const theirs = db.db.prepare("SELECT at FROM messages WHERE conversation_id = ? AND role = 'user' AND chat_id IS NULL AND deleted_at IS NULL AND at >= ? AND at <= ? ORDER BY at")
     .all(conversationId, since - REPLY_MS, now).map(r => r.at);
-  const rows = db.db.prepare(`SELECT id, text, at FROM messages WHERE conversation_id = ? AND role = 'assistant' AND chat_id IS NULL AND deleted_at IS NULL
-      AND at >= ? AND at <= ? AND TRIM(COALESCE(text, '')) <> '' ORDER BY at DESC, id DESC LIMIT 60`).all(conversationId, since, now);
+  // Only what Reason did for them: an operator notice (the status check, an alert — tagged by its
+  // sender, db.OPS_KEY_PREFIXES) is never news here, and nor is anything carrying the status page's link.
+  const rows = db.db.prepare(`SELECT m.id, m.text, m.at, o.idem_key FROM messages m LEFT JOIN outbox o ON o.id = m.outbox_id
+      WHERE m.conversation_id = ? AND m.role = 'assistant' AND m.chat_id IS NULL AND m.deleted_at IS NULL AND m.source IS NULL
+      AND m.at >= ? AND m.at <= ? AND TRIM(COALESCE(m.text, '')) <> '' ORDER BY m.at DESC, m.id DESC LIMIT 60`).all(conversationId, since, now)
+    .filter(m => !hasOpsKeyLink(m.text));
+  // A message that left as several bubbles (a link on its own, src/links.js) is one item: its parts
+  // share an outbox key up to `#n`. Its headline is the words; a link alone is never the headline.
+  const groups = new Map();
   for (const m of rows) {
-    if (told.has(m.id)) continue;
-    if (theirs.some(at => at <= m.at && m.at - at < REPLY_MS)) continue;
-    if (asks.some(a => Math.abs(a.at - m.at) < 2 * 60_000)) continue;
-    const { headline, detail } = headlineOf(m.text);
-    if (headline) out.push({ id: `message:${m.id}`, at: m.at, kind: "update", headline, detail, threadMessageId: m.id });
+    const k = /#\d+$/.test(m.idem_key ?? "") ? `k:${m.idem_key.slice(0, m.idem_key.lastIndexOf("#"))}` : `m:${m.id}`;
+    groups.set(k, [...(groups.get(k) ?? []), m]);
+  }
+  for (const parts of groups.values()) {
+    parts.sort((a, b) => a.at - b.at || a.id - b.id);
+    const first = parts[0];
+    if (parts.some(m => told.has(m.id))) continue;
+    if (theirs.some(at => at <= first.at && first.at - at < REPLY_MS)) continue;
+    if (asks.some(a => Math.abs(a.at - first.at) < 2 * 60_000)) continue;
+    const words = parts.map(m => withoutLinks(m.text)).filter(Boolean).join(" ");
+    const { headline, detail } = words ? headlineOf(words) : { headline: linkTitle(conversationId, parts), detail: null };
+    if (headline) out.push({ id: `message:${first.id}`, at: first.at, kind: "update", headline, detail, threadMessageId: first.id });
   }
   return out.sort((a, b) => b.at - a.at || String(b.id).localeCompare(String(a.id)));
 }

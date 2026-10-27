@@ -955,7 +955,8 @@ export class Router {
     if (seen.action === "auto_admitted") {
       this.log({ inbound: inbound.externalId, auto_admitted: address, conversationId: seen.conversationId });
       const who = inbound.displayName ? `${inbound.displayName} (${address})` : address;
-      await this.tellMaster(`heads up — ${who} just texted me for the first time. i don't have them on your list yet.`, inbound.channel).catch(() => {});
+      await this.tellMaster(`heads up — ${who} just texted me for the first time. i don't have them on your list yet.`, inbound.channel,
+        { idempotencyKey: `ops:new-contact:${seen.conversationId}:${Date.now()}` }).catch(() => {});
       return { ok: true, autoAdmitted: true, conversationId: seen.conversationId };
     }
 
@@ -1047,7 +1048,7 @@ export class Router {
    * channel the request arrived on is the fallback. Returns the result rather than throwing,
    * because "the master could not be reached" is something to log, not something to crash on.
    */
-  async tellMaster(text, viaChannel = null) {
+  async tellMaster(text, viaChannel = null, { idempotencyKey = null } = {}) {
     const master = db.getAccount(config.ownerConversation);
     const to = master?.address && master.address !== "console" ? master.address : config.masterNumbers[0];
     // Their recorded channel, but only if it is actually running here. A row that still says
@@ -1058,7 +1059,9 @@ export class Router {
     if (!to || !channel) return { ok: false, error: `nowhere to reach ${config.ownerName}: no master number or live channel` };
     // Durable. Somebody is waiting on the master's answer, so an access question that fails to send
     // and is dropped leaves that person waiting on a question nobody was ever asked.
-    return await this.send({ channel, to, text, conversationId: config.ownerConversation, toOwner: true });
+    // A notice (not a question) comes with an `ops:` key, so its history row is tagged and Web's
+    // Home never lists it as news (db.OPS_KEY_PREFIXES).
+    return await this.send({ channel, to, text, conversationId: config.ownerConversation, toOwner: true, ...(idempotencyKey ? { idempotencyKey } : {}) });
   }
 
   /** Was the master's message an answer to the request in front of them? */
