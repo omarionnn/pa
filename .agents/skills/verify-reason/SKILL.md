@@ -394,6 +394,16 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
 
 See [features/web-memory.md](features/web-memory.md) and [features/web-history.md](features/web-history.md).
 
+**8 — Reason Web Saved, over real HTTP.** The list (kinds, find, groups), an opened page framed from
+its own route, FIND IT IN THE CHAT into the thread, PIN / REMOVE / PUT IT BACK form posts, refusals.
+
+```bash
+eval "$(bin/caged.sh env | sed 's/^/export /')" \
+  && REASON_DB_PATH=$(mktemp -d)/saved.db node bin/web-saved-drive.mjs   # 21 steps, all ok
+```
+
+See [features/web-saved.md](features/web-saved.md).
+
 ### Baseline — 3,878 pass, **0 failures** after Reason Web Settings (wt/web-settings, 2026-10-26)
 
 `/web/settings` real end to end: reach preference honoured by `src/deliver.js` (`keptOnWeb`), browsers list + revoke, connected, invites, theme per account. 21 pinned tests (`test/web-settings.test.js`, `test/web-settings-migration.test.js`); `bin/web-settings-drive.mjs` under `caged.sh env`: 17 steps, all ok. `npm run test:offline` under `env -i`: **4,000 tests, 3,878 passing, 0 failing, 122 skipped.** See [features/web-settings.md](features/web-settings.md).
@@ -618,6 +628,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 to drive it here, and what end state proves it. That map is the maintained source — when you change
 behaviour, change its feature file in the same commit.
 
+Reason Web Saved (phone tab S-A/S-B, desktop list + opened page, pin/remove): [features/web-saved.md](features/web-saved.md).
 Reason Web Ongoing (tab, margin, at volume + See all 2A–2C, home rows, details 2A–2E + approval, 9D): [features/web-ongoing.md](features/web-ongoing.md);
 `bin/web-ongoing-preview.mjs` draws every state beside the handoff's reference pages.
 
