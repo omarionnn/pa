@@ -29,7 +29,9 @@
 // Live updates are Server-Sent Events. The website's proxy (heyreason.com/web, Netlify) buffers a
 // stream until it ends, so when src/web.js webStreamOrigin names the pages host the page listens there
 // (/web/live, CORS for the website's origin only, the shared cookie); otherwise at /web/stream. Either
-// way a 4 s poll of /web/history runs whenever the stream isn't live, so nothing waits on it.
+// way the stream is the path a reply takes (owner 10-26: replies must feel instant). The 4 s poll of
+// /web/history is only the fallback: it runs while the stream is not open, or once it has been silent
+// past two of its 15 s `ping` events (a stream dead without an error), never alongside a live one.
 import { timingSafeEqual, createHash } from "node:crypto";
 import * as db from "../db.js";
 import { WEB, webStreamOrigin, siteOrigin } from "../web.js";
@@ -359,8 +361,7 @@ const CSS = `
 .netline{position:sticky;top:0;z-index:7;background:var(--ground);margin:0;padding:18px var(--gut);text-align:center;font:400 22px/1.2 var(--hand);color:var(--pen);border-bottom:1px dashed var(--hair)}
 .netline[hidden]{display:none}
 .composer{position:sticky;bottom:0;z-index:5;background:var(--ground);padding:8px 0 calc(16px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:6px}
-.cform{display:flex;align-items:center;gap:4px;border-top:1px solid var(--ink);padding:6px 0 0;margin:0}
-.slot{width:34px;height:44px;flex:none}
+.cform{display:flex;align-items:center;gap:10px;border-top:1px solid var(--ink);padding:6px 0 0;margin:0}
 .cform input[type=text]{flex:1;min-width:0;height:44px;border:0;border-radius:0;background:transparent;font:italic 400 21px/1 var(--serif);color:var(--ink);padding:0;-webkit-appearance:none;appearance:none}
 .cform input[type=text]::placeholder{color:var(--muted);opacity:1}
 .cform input[type=text]:focus-visible{outline:none}
@@ -368,8 +369,6 @@ const CSS = `
 .send{width:44px;height:44px;flex:none;border:0;border-radius:2px;background:var(--ink);color:var(--ground);display:grid;place-items:center;cursor:pointer}
 .send svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .cform input:placeholder-shown~.send{display:none}
-.cform input:placeholder-shown~.slot-r{display:block}
-.slot-r{display:none}
 .under{margin:0;font-size:13px;color:var(--muted)}
 .og{display:none;flex:1 1 300px;max-width:340px;flex-direction:column;gap:28px;padding-top:8px;position:sticky;top:24px}
 .og h2{margin:0;font:italic 400 32px/1.1 var(--serif)}
@@ -491,10 +490,9 @@ function tabBar(current, count) {
 /** The one-line composer. `sendId` makes even a no-script post one turn however often it is resent. */
 function composer({ csrf, sendId }) {
   return `<div class="composer"><form class="cform" method="POST" action="/web/send"><input type="hidden" name="c" value="${esc(csrf)}"><input type="hidden" name="id" value="${esc(sendId)}">`
-    // Room for attaching and speaking (phases to come): held, not drawn — no dead buttons.
-    + `<span class="slot" aria-hidden="true"></span>`
+    // No "+" (attach) and no mic (speak) until they work (owner, 10-26): the input runs edge to edge.
     + `<label class="sr" for="c-input">Message Reason</label><input id="c-input" type="text" name="text" maxlength="${MAX_TEXT}" placeholder="Tell Reason what you need" autocomplete="off" enterkeyhint="send" required>`
-    + `<button class="send" type="submit" aria-label="Send">${SEND_SVG}</button><span class="slot slot-r" aria-hidden="true"></span></form>`
+    + `<button class="send" type="submit" aria-label="Send">${SEND_SVG}</button></form>`
     + `<p class="under">Replies come here, not to your phone as well.</p></div>`;
 }
 
@@ -577,9 +575,10 @@ window.addEventListener('offline',function(){noteLine("you're offline. i'll send
 window.addEventListener('online',function(){noteLine('');list.querySelectorAll('.msg[data-state=waiting]').forEach(function(li){send({id:li.dataset.pending,text:li.querySelector('.said').textContent},li)});poll()});
 if(offline())noteLine("you're offline. i'll send it when you're back.");
 var polling=false;function poll(){if(polling)return;polling=true;fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
-setInterval(function(){if(waiting>0||until||!live)poll()},4000);
-function stream(){if(!window.EventSource)return;try{es=R.stream.indexOf('http')===0?new EventSource(R.stream+'?after='+R.last,{withCredentials:true}):new EventSource(R.stream+'?after='+R.last)}catch(x){return}es.onopen=function(){live=true;if(lost){lost=0;noteLine('')}};
-es.addEventListener('message',function(e){try{add(JSON.parse(e.data))}catch(x){}});
+var beat=0;setInterval(function(){if(!live||Date.now()-beat>40000)poll()},4000);
+function stream(){if(!window.EventSource)return;try{es=R.stream.indexOf('http')===0?new EventSource(R.stream+'?after='+R.last,{withCredentials:true}):new EventSource(R.stream+'?after='+R.last)}catch(x){return}es.onopen=function(){live=true;beat=Date.now();if(lost){lost=0;noteLine('')}};
+es.addEventListener('ping',function(){beat=Date.now()});
+es.addEventListener('message',function(e){beat=Date.now();try{add(JSON.parse(e.data))}catch(x){}});
 es.addEventListener('typing',function(e){try{var t=JSON.parse(e.data);working(t.on,t.until)}catch(x){}});
 es.addEventListener('signedout',function(){es.close();expired()});
 es.onerror=function(){live=false}}
@@ -827,7 +826,8 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
         write(`event: typing\ndata: ${JSON.stringify({ on: !!e.on, until: e.until || 0 })}\n\n`);
       };
       // Timers first: `end` clears them, and the first flush may already end the stream.
-      const beat = setInterval(() => write(": ping\n\n"), 15_000);
+      // A named event, not a comment, so the page can tell a live stream from a silently dead one.
+      const beat = setInterval(() => write("event: ping\ndata: {}\n\n"), 15_000);
       const check = setInterval(() => { if (!stillHers()) { write("event: signedout\ndata: {}\n\n"); end("signed_out"); } }, recheckMs);
       const stop = setTimeout(() => end("cycle"), streamMs);
       for (const t of [beat, check, stop]) t.unref?.();
