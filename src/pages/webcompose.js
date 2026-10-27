@@ -127,7 +127,7 @@ export function composerHtml({ csrf, sendId, maxText }) {
     + micOffHtml()
     + `<div class="cdrop" aria-hidden="true"><div>${DROP_SVG}<span class="hand">let go. i’ll read it.</span><span class="lbl">ON DESKTOP, DROP ANYWHERE</span></div></div>`
     + `<p class="lbl fromvoice" hidden>FROM YOUR VOICE · EDIT ANYTHING</p>`
-    + `<div class="upl" hidden><ul class="on-line" aria-label="Attached"></ul><div class="upfail" hidden><div class="uf-list"></div><p class="lbl uf-lim">${esc(LIMITS_LINE)}</p></div></div>`
+    + `<div class="upl" hidden><ul class="on-line" aria-label="Attached"></ul><div class="upfail" role="status" hidden><div class="uf-list"></div><p class="lbl uf-lim">${esc(LIMITS_LINE)}</p></div></div>`
     + `<form class="cform" method="POST" action="/web/send"><input type="hidden" name="c" value="${esc(csrf)}"><input type="hidden" name="id" value="${esc(sendId)}">`
     + `<button class="ic c-add" type="button" aria-label="Add a photo or file" aria-haspopup="dialog" aria-expanded="false" hidden>${PLUS_SVG}</button>`
     + picks.map(([k, p]) => `<input class="c-file" data-pick="${k}" type="file" accept="${esc(p.accept)}"${p.capture ? ` capture="${p.capture}"` : ""}${k === "camera" ? "" : " multiple"} hidden tabindex="-1" aria-hidden="true">`).join("")
@@ -150,7 +150,7 @@ export function composerHtml({ csrf, sendId, maxText }) {
  * keep talking, edit or send now (4B).
  */
 export function listeningHtml() {
-  return `<div class="listen" role="dialog" aria-modal="true" aria-label="Listening" data-mode="listening" hidden>`
+  return `<div class="listen" role="dialog" aria-modal="true" aria-label="Listening" data-mode="listening" tabindex="-1" hidden>`
     + `<div class="ls-top">${wordmark()}<span class="ls-on"><span class="ls-dot" aria-hidden="true"></span>LISTENING · <span class="ls-t" role="timer">0:00</span></span><span class="ls-paused">PAUSED</span></div>`
     + `<div class="ls-main"><div class="ls-ring" aria-hidden="true"><div>${bubble(2.6)}</div></div>`
     + `<div class="ls-wring" aria-hidden="true">${bubble(2.6)}</div>`
@@ -328,7 +328,8 @@ function live(f){return f.state!=='failed'&&!f.hidden}
 function sync(){var shown=files.filter(function(f){return !f.hidden}),ok=files.some(function(f){return f.state!=='failed'});
 form.classList.toggle('has-files',ok);comp.classList.toggle('has-files',shown.length>0);box.required=!ok;upl.hidden=!shown.length;
 var bad=files.filter(function(f){return f.state==='failed'});fail.hidden=!bad.length;failList.textContent='';
-bad.forEach(function(f){var b=document.createElement('button');b.type='button';b.className='uf-retry';b.textContent=nameOf(f)+' didn’t upload. tap to try again.';b.onclick=function(){send1(f)};failList.appendChild(b)})}
+bad.forEach(function(f){var again=!f.final,b=document.createElement(again?'button':'p');if(again)b.type='button';b.className='uf-retry';b.textContent=nameOf(f)+' didn’t upload.'+(again?' tap to try again.':'');
+if(again)b.onclick=function(){send1(f);var n=failList.querySelector('button');(n||box).focus()};failList.appendChild(b)})}
 function slip(f){var li=document.createElement('li');li.dataset.state=f.state;
 if(f.kind==='image'){var th=document.createElement(f.preview?'img':'span');th.className='th';if(f.preview){th.src=f.preview;th.alt=''}li.appendChild(th)}
 var tx=document.createElement('span');tx.className='tx';var n=document.createElement('span');n.className='nm';n.textContent=f.label;tx.appendChild(n);
@@ -341,9 +342,9 @@ function shrink(file){// A camera photo bigger than the model looks at, made sma
 return new Promise(function(res){if(file.size<=LIM.fit||!/^image\/(jpeg|png|webp)$/.test(file.type))return res(file);var u=URL.createObjectURL(file),im=new Image();im.onload=function(){var s=Math.min(1,2560/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=Math.round(im.width*s);c.height=Math.round(im.height*s);c.getContext('2d').drawImage(im,0,0,c.width,c.height);URL.revokeObjectURL(u);c.toBlob(function(b){res(b&&b.size<file.size?b:file)},'image/jpeg',.86)};im.onerror=function(){URL.revokeObjectURL(u);res(file)};im.src=u})}
 // One file up. A failure keeps the slip with "didn't upload. tap to try again." and the limits (3C); send leaves it out.
 function send1(f){var v=f.kind==='voice';f.state='up';if(v)f.hidden=true;draw();
-if(f.file.size>LIM.each){f.wait=Promise.resolve();f.state='failed';f.hidden=false;draw();return}
+if(f.file.size>LIM.each){f.wait=Promise.resolve();f.state='failed';f.final=true;f.hidden=false;draw();return}
 f.wait=(v?Promise.resolve(f.file):shrink(f.file)).then(function(b){return upload(b,v?'voice-note':f.file.name,v?{'X-Reason-Voice':'1','X-Reason-Seconds':String(f.seconds||1)}:null)}).then(function(j){if(j.status===401){location.href='/web?out=1';return}
-if(!j.ok){f.state='failed';f.hidden=false;draw();return}f.id=j.id;f.src=j.src;f.name=j.name;if(!v){f.kind=j.kind;f.label=j.label}f.state='ready';if(f.preview)blobs[j.id]=f.preview;draw()}).catch(function(){f.state='failed';f.hidden=false;draw()})}
+if(!j.ok){f.state='failed';f.final=j.status===413||j.status===415;f.hidden=false;draw();return}f.id=j.id;f.src=j.src;f.name=j.name;if(!v){f.kind=j.kind;f.label=j.label}f.state='ready';if(f.preview)blobs[j.id]=f.preview;draw()}).catch(function(){f.state='failed';f.hidden=false;draw()})}
 function take(list){say('');Array.prototype.slice.call(list||[]).slice(0,Math.max(0,LIM.files-files.length)).forEach(function(file){
 var img=/^image\//.test(file.type)||/\.(heic|heif)$/i.test(file.name),vid=/^video\//.test(file.type),f={file:file,name:file.name||'file',label:String(file.name||'file').toUpperCase(),kind:img?'image':vid?'video':'file',state:'up',preview:img&&/^image\/(jpeg|png|gif|webp)$/.test(file.type)?URL.createObjectURL(file):''};
 files.push(f);send1(f)});if(files.length&&!matchMedia('(pointer:coarse)').matches)box.focus()}
@@ -386,7 +387,7 @@ mic.hidden=false;
 var dict=comp.querySelector('.dict'),dclock=dict.querySelector('.d-clock'),bars=dict.querySelector('.d-bars'),ls=document.querySelector('.listen'),lsT=ls&&ls.querySelector('.ls-t'),lsF=ls&&ls.querySelector('.ls-fin'),lsI=ls&&ls.querySelector('.ls-int'),lsN=ls&&ls.querySelector('.ls-cn'),lsD=ls?ls.querySelectorAll('.ls-dots i'):[];
 var rec=null;
 function pickType(){var t=['audio/webm;codecs=opus','audio/mp4','audio/ogg;codecs=opus','audio/webm'];for(var i=0;i<t.length;i++)if(MR.isTypeSupported&&MR.isTypeSupported(t[i]))return t[i];return''}
-function mode(m){if(ls)ls.dataset.mode=m;var f=m==='paused'?ls.querySelector('.ls-now'):m==='listening'?ls.querySelector('.ls-send'):null;if(f)f.focus()}
+function mode(m){if(ls)ls.dataset.mode=m;var f=m==='paused'?ls.querySelector('.ls-now'):m==='listening'?ls.querySelector('.ls-send'):ls;if(f)f.focus()}
 function blocked(r){r.done=true;if(rec===r)rec=null;clearInterval(r.tick);clearInterval(r.cd);if(r.stream)r.stream.getTracks().forEach(function(t){t.stop()});close();lastFull=r.full;micOff(true)}
 function start(full){if(rec)return;say('');lastFull=full;var r=rec={full:full,t0:Date.now(),held:0,chunks:[],fin:'',int:'',keep:'',levels:[],spoke:false,last:Date.now(),done:false};
 GUM.call(navigator.mediaDevices,{audio:true}).then(function(stream){if(r.done){stream.getTracks().forEach(function(t){t.stop()});return}r.stream=stream;var type=pickType();try{r.mr=type?new MR(stream,{mimeType:type}):new MR(stream)}catch(x){r.mr=new MR(stream)}
@@ -416,8 +417,8 @@ function blobOf(r){return r.chunks.length?new Blob(r.chunks,{type:(r.mr&&r.mr.mi
 function pause(){var r=rec;if(!r||r.paused||r.done)return;r.paused=true;r.pauseAt=Date.now();r.early=null;try{r.mr&&r.mr.state==='recording'&&r.mr.pause()}catch(x){}
 if(r.sr){srDone(r).then(function(){if(rec!==r||!r.paused)return;r.fin=(r.fin+' '+r.int).replace(/\s+/g,' ').trim();r.int='';words();countdown(r)})}
 else{// No words from the browser (Firefox): written down on the server first (L9), then shown (4B).
-mode('writing');soFar(r).then(function(){var b=blobOf(r);if(!b||!b.size)return null;return upload(b,'voice-note',{'X-Reason-Voice':'1','X-Reason-Hear':'1','X-Reason-Seconds':String(Math.max(1,Math.round(secs(r))))})}).then(function(j){if(rec!==r||!r.paused)return;if(j&&j.status===401){location.href='/web?out=1';return}
-if(j&&j.ok){r.early={id:j.id,src:j.src,name:j.name,chunks:r.chunks.length};r.fin=j.words||''}words();countdown(r)}).catch(function(){if(rec===r&&r.paused)countdown(r)})}}
+mode('writing');soFar(r).then(function(){var b=blobOf(r);if(!b||!b.size)return null;r.earlyBlob=b;return upload(b,'voice-note',{'X-Reason-Voice':'1','X-Reason-Hear':'1','X-Reason-Seconds':String(Math.max(1,Math.round(secs(r))))})}).then(function(j){if(rec!==r||!r.paused)return;if(j&&j.status===401){location.href='/web?out=1';return}
+r.fin='';if(j&&j.ok){r.early={id:j.id,src:j.src,name:j.name,blob:r.earlyBlob,seconds:Math.max(1,Math.round(secs(r)))};r.fin=j.words||''}words();countdown(r)}).catch(function(){if(rec===r&&r.paused){r.fin='';words();countdown(r)}})}}
 function countdown(r){mode('paused');var n=3;function show(){lsN.textContent='SENDING IN '+n+'…';for(var i=0;i<lsD.length;i++)lsD[i].className=i<n?'':'off'}show();clearInterval(r.cd);r.cd=setInterval(function(){if(rec!==r||!r.paused){clearInterval(r.cd);return}n--;if(n<=0){clearInterval(r.cd);finish('send')}else show()},1000)}
 function keepTalking(){var r=rec;if(!r||!r.paused)return;clearInterval(r.cd);r.held+=Date.now()-r.pauseAt;r.paused=false;r.spoke=false;r.last=Date.now();r.early=null;try{r.mr&&r.mr.state==='paused'&&r.mr.resume()}catch(x){}
 if(r.sr){r.keep=r.fin?r.fin+' ':'';try{r.sr.start()}catch(x){}}mode('listening')}
@@ -430,8 +431,9 @@ var blob=blobOf(r);
 if(how==='edit'){if(!blob||!blob.size){box.value=said;fit();box.focus();return}voiced(said,blob,seconds);return}
 if(!blob||!blob.size){if(said){A.post({id:A.uid(),text:said});return}say("i didn't catch that.");return}
 if(!said&&!R.hear){say("i didn't catch that.");return}
+// Heard already at the pause (no browser words) and not resumed since: that very upload and its words go.
+var e=r.early||null;if(e){blob=e.blob||blob;seconds=e.seconds||seconds}
 var url=URL.createObjectURL(blob),p={id:A.uid(),text:said,voice:seconds,files:[{kind:'voice',name:'voice-note',label:'VOICE NOTE',seconds:seconds,preview:url}]},li=A.pendingLine(p);
-var e=r.early&&r.early.chunks===r.chunks.length?r.early:null;
 var go=function(){A.state(li,'sending');(e?Promise.resolve({ok:true,id:e.id,src:e.src,name:e.name}):upload(blob,'voice-note',{'X-Reason-Voice':'1','X-Reason-Seconds':String(seconds)})).then(function(j){if(j.status===401){location.href='/web?out=1';return}if(!j.ok){A.state(li,'failed');return}
 p.files=[{id:j.id,kind:'voice',name:j.name,label:'VOICE NOTE',seconds:seconds,src:j.src}];blobs[j.id]=url;A.post(p,li)}).catch(function(){A.state(li,'failed')})};li.retry=go;go()};
 if(r.mr&&r.mr.state!=='inactive'){r.mr.onstop=done;try{r.mr.stop()}catch(x){done()}}else done()})}
@@ -445,7 +447,7 @@ if(ls){ls.querySelector('.ls-send').onclick=function(){finish('send')};ls.queryS
 ls.querySelector('.ls-keep').onclick=keepTalking;ls.querySelector('.ls-edit').onclick=function(){finish('edit')};ls.querySelector('.ls-now').onclick=function(){finish('send')}}
 document.addEventListener('keyup',function(e){if(rec&&rec.full&&(e.key===' '||e.code==='Space'))e.preventDefault()},true);
 document.addEventListener('keydown',function(e){if(!rec)return;if(e.key==='Escape'){e.preventDefault();finish(false)}else if(rec.full&&(e.key===' '||e.code==='Space')){e.preventDefault();if(rec.paused)keepTalking();else rec.last=Date.now()}
-else if(rec.full&&e.key==='Tab'){var f=Array.prototype.filter.call(ls.querySelectorAll('button'),function(b){return b.offsetParent!==null}),a=f[0],z=f[f.length-1];if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}}});
+else if(rec.full&&e.key==='Tab'){var f=Array.prototype.filter.call(ls.querySelectorAll('button'),function(b){return b.offsetParent!==null}),a=f[0],z=f[f.length-1];if(!f.length){e.preventDefault();ls.focus();return}if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}}});
 })();
 // Playing a voice note in the thread: one at a time.
 (function(){var cur=null;document.addEventListener('click',function(e){var b=e.target&&e.target.closest&&e.target.closest('.vplay');if(!b)return;

@@ -846,6 +846,8 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
       db.historyBus.on("row", onRow);
       webCh?.events?.on?.("typing", onTyping);
       doingEvents.on("change", onDoing);
+      // A tab that opens (or comes back) mid-turn hears what Reason is doing now, not only at the next change.
+      if (doingFor(conv)) onDoing(conv);
       try { flush(); } catch (e) { log({ web_stream_failed: (e?.message ?? String(e)).split("\n")[0] }); end("failed"); }
     },
   };

@@ -98,7 +98,7 @@ export async function uploadRequest({ account, headers = {}, readBody, log = () 
     const f = await fit(bytes);
     if (!f.ok) { log({ web_upload_refused: "could_not_fit", bytes: bytes.length }); return json(413, { ok: false, error: "too_big", kind: "image" }); }
     body = f.bytes;
-    if (f.changed) name = name.replace(/\.[A-Za-z0-9]{2,5}$/, "") + ".jpg";
+    if (f.changed) name = (name.replace(/\.[A-Za-z0-9]{2,5}$/, "") || "photo") + ".jpg";
   }
   const m = uploads.store({ conversationId: conv, bytes: body, name: voice ? `voice-note` : name, voice, extra: voice && seconds ? { seconds } : {} });
   if (m.error) {
@@ -118,7 +118,11 @@ export async function uploadRequest({ account, headers = {}, readBody, log = () 
       words = String(r.text).trim();
       rec = uploads.update(rec.id, { transcript: words }) ?? rec;
       log({ web_voice_heard_early: rec.name, chars: words.length });
-    } else log({ web_voice_unheard_early: rec.name, why: r?.error ?? (r?.silent ? "silent" : "no words") });
+    } else {
+      // Tried once and nothing came of it: marked, so the send that follows doesn't listen again.
+      rec = uploads.update(rec.id, { unheard: true }) ?? rec;
+      log({ web_voice_unheard_early: rec.name, why: r?.error ?? (r?.silent ? "silent" : "no words") });
+    }
   }
   log({ web_upload: rec.kind, bytes: rec.bytes });
   return json(200, { ok: true, id: rec.id, kind: rec.kind, name: rec.name, label: uploads.slipLabel(rec), pages: rec.pages ?? null, seconds: rec.seconds ?? null, src: uploads.uploadPath(rec.id, rec.name), ...(words ? { words } : {}) });
@@ -146,7 +150,7 @@ export async function prepareSend({ conversationId, text = "", files = [], liste
     const kept = uploads.meta(a.web_upload)?.transcript;
     if (kept) { words = kept; Object.assign(a, { transcribed: "server", transcript: kept }); continue; }
     let r = null;
-    if (canHear().ok) {
+    if (canHear().ok && !uploads.meta(a.web_upload)?.unheard) {
       try { r = await listen({ url: a.url, filename: a.filename }); } catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
     }
     if (r?.ok && !r.silent && String(r.text ?? "").trim()) {

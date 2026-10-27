@@ -36,14 +36,17 @@ export function zipEntries(buf) {
   return out;
 }
 
-/** One entry's bytes (stored or deflated), or null. Capped so a zip bomb is refused, not inflated. */
-export function zipRead(buf, entry, { max = 64 * 1024 * 1024 } = {}) {
+/** The most a document's words may inflate to. A real 300-page lease is a few MB of XML. */
+export const MAX_XML_BYTES = 8 * 1024 * 1024;
+
+/** One entry's bytes (stored or deflated), or null. Capped as it inflates, so a zip bomb is refused, not inflated. */
+export function zipRead(buf, entry, { max = MAX_XML_BYTES } = {}) {
   const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf ?? []);
   const p = entry.offset;
   if (p + 30 > b.length || b.readUInt32LE(p) !== 0x04034b50) return null;
   const start = p + 30 + b.readUInt16LE(p + 26) + b.readUInt16LE(p + 28);
   const data = b.subarray(start, start + entry.csize);
-  if (entry.size > max) return null;
+  if (entry.size > max || entry.csize > b.length) return null;
   try {
     if (entry.method === 0) return Buffer.from(data);
     if (entry.method === 8) return inflateRawSync(data, { maxOutputLength: max });
@@ -73,7 +76,12 @@ export function isPlainText(buf) {
 }
 
 const ENT = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
-const unxml = (s) => s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => e[0] === "#" ? String.fromCodePoint(parseInt(e[1] === "x" || e[1] === "X" ? e.slice(2) : e.slice(1), e[1] === "x" || e[1] === "X" ? 16 : 10)) : ENT[e] ?? m);
+const unxml = (s) => s.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z]+);/gi, (m, e) => {
+  if (e[0] !== "#") return ENT[e] ?? m;
+  const hex = e[1] === "x" || e[1] === "X";
+  const cp = parseInt(hex ? e.slice(2) : e.slice(1), hex ? 16 : 10);
+  return Number.isInteger(cp) && cp >= 0 && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff) ? String.fromCodePoint(cp) : m;
+});
 
 /** The words of a .docx, a paragraph a line. `{ ok, text, chars }` or `{ ok: false, why }`. */
 export function docxText(buf) {
@@ -114,7 +122,8 @@ export async function docsFor(attachments = [], { log = () => {}, cover = () => 
       cover(a.media_id, { coverage: "failed", detail: "gone" });
       continue;
     }
-    const got = docText(readFileSync(path));
+    let got;
+    try { got = docText(readFileSync(path)); } catch (e) { got = { ok: false, why: "the file is damaged" }; }
     if (!got.ok || !got.text) {
       const why = got.ok ? "there are no words in it" : got.why;
       notes.push(`they sent a document (${name}) and it could not be read: ${why}`);

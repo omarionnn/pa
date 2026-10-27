@@ -341,7 +341,7 @@ test("composer 01–04 and Listening (D): the reference's copy, real buttons wit
   assert.match(html, /<button class="ic d-stop" type="button" aria-label="Stop without sending">[^]*<span class="d-clock" role="timer"[^>]*>0:00<\/span><button class="send d-send" type="button" aria-label="Stop and send">/, "03: dictating on the line");
   assert.match(html, /<p class="hand c-note" role="alert" hidden><\/p>/, "an upload error is one Caveat line");
   const ls = compose.listeningHtml();
-  assert.match(ls, /<div class="listen" role="dialog" aria-modal="true" aria-label="Listening" data-mode="listening" hidden>/);
+  assert.match(ls, /<div class="listen" role="dialog" aria-modal="true" aria-label="Listening" data-mode="listening" tabindex="-1" hidden>/);
   assert.match(ls, /LISTENING · <span class="ls-t" role="timer">0:00<\/span>/);
   assert.match(ls, /<button class="ls-never" type="button"><span aria-hidden="true">←<\/span><span class="u">NEVER MIND<\/span><\/button>/);
   assert.match(ls, /<button class="ls-send" type="button">Send it <span aria-hidden="true">→<\/span><\/button>/);
@@ -416,7 +416,7 @@ test("3C limits: the typed line is the server's own numbers — PHOTOS, PDFS, DO
   assert.equal(uploads.LIMITS_LINE, "PHOTOS, PDFS, DOCS · UP TO 20 MB EACH");
   for (const k of ["image", "pdf", "doc"]) assert.equal(uploads.LIMITS[k], 20 * 1024 * 1024, k);
   const html = compose.composerHtml({ csrf: "c", sendId: "s", maxText: 4000 });
-  assert.match(html, /<div class="upfail" hidden><div class="uf-list"><\/div><p class="lbl uf-lim">PHOTOS, PDFS, DOCS · UP TO 20 MB EACH<\/p><\/div>/);
+  assert.match(html, /<div class="upfail" role="status" hidden><div class="uf-list"><\/div><p class="lbl uf-lim">PHOTOS, PDFS, DOCS · UP TO 20 MB EACH<\/p><\/div>/);
 });
 
 test("docs: a Word file and plain text are taken and read; a video or a program is refused at the door", async () => {
@@ -438,6 +438,10 @@ test("docs: a Word file and plain text are taken and read; a video or a program 
   assert.match(read.notes[0], /^they sent a document \(lease\.docx\) — here is the text from it:\nRent is \$2,400 a month\./);
   assert.match(read.notes[1], /passport/);
   assert.match(read.seen[0], /you read it when it arrived/);
+  // A crafted entity can't take the turn down with it.
+  const { docxText } = await import("../src/docread.js");
+  assert.doesNotThrow(() => docxText(DOCX));
+  assert.equal((await import("../src/docread.js")).docText(Buffer.from("&#99999999; &#xFFFFFFF; fine")).ok, true);
 });
 
 test("a photo past what the model looks at (7 MB) is made to fit on the way in, not refused; one that can't be is 413", async () => {
@@ -455,6 +459,9 @@ test("a photo past what the model looks at (7 MB) is made to fit on the way in, 
   // Already small enough: as it was, never touched.
   assert.deepEqual(await fitPhoto(PNG, { resizer: null }), { ok: true, bytes: PNG, changed: false });
   assert.deepEqual(await fitPhoto(big, { resizer: null }), { ok: false });
+  // A pixel bomb is refused before anything decodes it.
+  const bomb = Buffer.from(PNG); bomb.writeUInt32BE(60000, 16); bomb.writeUInt32BE(60000, 20);
+  assert.deepEqual(await fitPhoto(Buffer.concat([bomb, Buffer.alloc(FIT_BYTES)]), { resizer: { bin: "/bin/false", args: () => [] } }), { ok: false });
 });
 
 test("4B / L9, no speech recognition in the browser: the words are written down at upload, and the send never listens twice", async () => {
@@ -474,6 +481,12 @@ test("4B / L9, no speech recognition in the browser: the words are written down 
   assert.ok(await until(() => h.turns.length === 1));
   assert.equal(h.turns[0].text, "hold the hudson one for me");
   assert.equal(heard, 1, "heard once, at upload");
+  // Heard and nothing came of it: marked, and the send doesn't listen again either.
+  const deaf = J(await media.uploadRequest({ account: db.getAccount(KOFI_C), headers: H(kofi, { "x-reason-csrf": kofi.csrf, "x-reason-voice": "1", "x-reason-hear": "1" }), readBody: async () => WEBM, listen: async () => { heard++; return { ok: false, error: "x" }; }, canHear: () => ({ ok: true }) }));
+  assert.equal(heard, 2);
+  const prep = await media.prepareSend({ conversationId: KOFI_C, text: "", files: [deaf.id], listen: async () => { heard++; return { ok: true, text: "no" }; }, canHear: () => ({ ok: true }) });
+  assert.equal(heard, 2, "never a second listen");
+  assert.match(prep.text, /voice/i);
 });
 
 test("3D: 'on it.' says what Reason is doing from the turn's own record — reading the lease… — and nothing it isn't", async () => {
@@ -507,6 +520,12 @@ test("3D: 'on it.' says what Reason is doing from the turn's own record — read
   release();
   assert.ok(await until(() => hist().doing === null));
   assert.equal(doing.doingFor(KOFI_C, { at: Date.now() + doing.STALE_MS + 1 }), null);
+  // Two turns at once: the newer one's line shows; when it ends first, the older one's is back.
+  const endA = doing.begin(KOFI_C, [{ kind: "pdf", filename: "lease.pdf" }]);
+  const endB = doing.begin(KOFI_C, [{ kind: "image" }]);
+  assert.equal(doing.doingFor(KOFI_C), "looking at the photo…");
+  endB(); assert.equal(doing.doingFor(KOFI_C), "reading the lease…");
+  endA(); endA(); assert.equal(doing.doingFor(KOFI_C), null);
   clearInterval(awake);
 });
 

@@ -12,7 +12,7 @@ import { EventEmitter } from "node:events";
 /** A turn that has run this long without ending is not "reading the lease" any more. */
 export const STALE_MS = 10 * 60_000;
 
-const now = new Map(); // conversationId → { line, at, token }
+const now = new Map(); // conversationId → [{ line, at, token }], oldest first
 /** `change` with the conversation id, whenever its line starts or ends (the Web stream listens). */
 export const doingEvents = new EventEmitter();
 doingEvents.setMaxListeners(0);
@@ -47,17 +47,22 @@ export function begin(conversationId, attachments = [], { at = Date.now() } = {}
   const line = conversationId ? lineFor(attachments) : null;
   if (!line) return () => {};
   const token = ++seq;
-  now.set(conversationId, { line, at, token });
+  now.set(conversationId, [...(now.get(conversationId) ?? []), { line, at, token }]);
   doingEvents.emit("change", conversationId);
-  return () => { if (now.get(conversationId)?.token === token) { now.delete(conversationId); doingEvents.emit("change", conversationId); } };
+  return () => {
+    const list = now.get(conversationId) ?? [];
+    const left = list.filter(d => d.token !== token);
+    if (left.length === list.length) return;
+    if (left.length) now.set(conversationId, left); else now.delete(conversationId);
+    doingEvents.emit("change", conversationId);
+  };
 }
 
 /** What the open tab says under "on it.", or null. */
 export function doingFor(conversationId, { at = Date.now() } = {}) {
-  const d = now.get(conversationId);
-  if (!d) return null;
-  if (at - d.at > STALE_MS) { now.delete(conversationId); return null; }
-  return d.line;
+  const list = (now.get(conversationId) ?? []).filter(d => at - d.at <= STALE_MS);
+  if (list.length) now.set(conversationId, list); else now.delete(conversationId);
+  return list.at(-1)?.line ?? null;
 }
 
 /** For tests. */

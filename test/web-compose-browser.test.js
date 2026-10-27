@@ -137,7 +137,8 @@ test("composer 02 + 04: + puts a slip on the line, a drop anywhere does too, and
     // A file Reason can't read: the slip stays, failed, with the Caveat line and the limits (3C); nothing sent.
     const before = userRows().length;
     await page.setInputFiles('.c-file[data-pick="file"]', { name: "setup.exe", mimeType: "application/octet-stream", buffer: Buffer.from([0x4d, 0x5a, 0x90, 0, 3, 0, 0, 0, 4, 0, 0, 0, 0xff, 0xff, 0, 0]) });
-    await page.locator(".uf-retry", { hasText: "the setup didn’t upload. tap to try again." }).waitFor();
+    // Refused for what it is (415): no "tap to try again", since trying again can't help.
+    await page.locator("p.uf-retry", { hasText: /^the setup didn’t upload\.$/ }).waitFor();
     assert.equal(await page.locator(".uf-lim").textContent(), "PHOTOS, PDFS, DOCS · UP TO 20 MB EACH");
     assert.equal(userRows().length, before);
     assert.deepEqual(errors, []);
