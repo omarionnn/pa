@@ -39,6 +39,20 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
   SETTINGS typed links, the Ongoing margin (empty state or IN HAND rows). Phone: ⋯ menu, Chat /
   Ongoing tab bar (hides while typing). A pending, unanswered confirmation (last 24 h) shows the
   approval card (no approve button; Caveat "just tell me in the chat when you want it.").
+- **Ongoing tidy** (owner 2026-10-26, `test/web-ongoing2.test.js`): the margin and the phone's Ongoing
+  tab show the top 3 rows (`OG_TOP`; needs-you first, then soonest `due`), the rest drawn but folded
+  (`.og-x`); "See all N →" (typed caps, no box) opens them in place, "Show fewer" folds them; no-script
+  = `?thread&all=1` / `?tab=ongoing&all=1`. Desktop margin heading has "HIDE →": the panel slides away,
+  the thread takes the width, and a thin vertical typed "ONGOING · N" at the right edge (`.og-back`, fixed, desktop only; handoff §3 sheet 3) brings it back; kept per device in
+  localStorage `reason-web-og` (applied in HEAD_JS before paint). Phones keep the Chat/Ongoing tabs.
+  The top bar (wordmark, MEMORY, SETTINGS) is `position:sticky`, dashed rule once scrolled
+  (`.top.stuck`); "↑ SHOW EARLIER MESSAGES" stays at the top of the thread. Row titles = `label` on
+  tasks/timers/series (src/itemtitle.js): the model's `title` (timer_set) / `short_title` (task_start),
+  else ONE background summarise on the claude-cli subscription (`feature: "title"`; no API path —
+  without `REASON_BACKEND=claude-cli` nothing is asked), never the person's name (`normTitle` drops
+  it); a series' title goes onto each firing. Until a row has one: `cleanTitle` strips Reason's note
+  prefixes. Old rows: `scripts/backfill-item-titles.js` (dry run by default, `--write`; copy first).
+  Drive: render with the preview script and click `.og-all`, `.og-hide`, `.og-back`; scroll → `.stuck`.
 - **States** (page script): SENDING… at 60%, SENT that fades, WAITING TO SEND offline + the Caveat
   line "you're offline. i'll send it when you're back.", "lost the line for a sec. nothing's lost."
   after two missed polls, "didn't go. tap to try again." (a button, same id), "on it." (role=status)
@@ -118,7 +132,7 @@ node .agents/skills/verify-reason/bin/web-preview.mjs   # every screen, 390/1280
   `contact_card_sent_at` sends anything, Web included (W0 behaviour; every live account has the card).
   Tests set it so the phone stays quiet.
 - **Typing is per address**, not per conversation: twin accounts on one number (decision 4) share it.
-- Deferred to W3+: the full Ongoing (groups, details, HIDE →), attachments + dictation (owner 10-26: no
+- Deferred to W3+: Ongoing detail views (2A–2E), attachments + dictation (owner 10-26: no
   + and no mic until they work; the input runs edge to edge), the "needs a yes →" nudge, notification
   preferences, browsers list + per-row revoke, token hashing/rotation, a CSP nonce instead of
   `'unsafe-inline'`, attachments from Web (the composer is text only).

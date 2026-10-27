@@ -99,11 +99,13 @@ export const onIt = (hidden = false) =>
 const THEME_KEY = "reason-theme";
 const tint = `function tint(){var t=document.documentElement.dataset.theme,c=t==='dark'?'${TOKENS.night.ground}':t==='light'?'${TOKENS.paper.ground}':null;document.querySelectorAll('meta[name=theme-color]').forEach(function(m){m.setAttribute('content',c||m.getAttribute('data-auto'))})}`;
 // In the head, before anything is painted: the chosen paper, and whether this tab sees the loader.
+// The Ongoing margin's HIDE → (src/pages/webconvo.js), remembered per device and applied before first paint.
+export const OG_KEY = "reason-web-og";
 // A signed-in page names the theme the person chose on Web (`data-account-theme`, accountThemed below);
 // this browser's own switch is brought in line with it first, so every browser opens in the same one.
 const HEAD_JS = `(function(){try{${tint}var h=document.documentElement,a=h.getAttribute('data-account-theme');`
   + `if(a==='paper'||a==='night')localStorage.setItem('${THEME_KEY}',a==='paper'?'light':'dark');else if(a==='auto')localStorage.removeItem('${THEME_KEY}');`
-  + `var t=localStorage.getItem('${THEME_KEY}');if(t==='light'||t==='dark'){h.dataset.theme=t;tint()}h.classList.add('js');`
+  + `var t=localStorage.getItem('${THEME_KEY}');if(t==='light'||t==='dark'){h.dataset.theme=t;tint()}h.classList.add('js');if(localStorage.getItem('${OG_KEY}')==='off')h.classList.add('og-off');`
   + `if(h.dataset.loader&&!sessionStorage.getItem('reason-web-loaded')&&!matchMedia('(prefers-reduced-motion: reduce)').matches)h.classList.add('loading')}catch(e){}})();`;
 // The Paper · Night · Auto radio group, wherever it is drawn; and the loader's exit.
 const THEME_JS = `(function(){${tint}var h=document.documentElement;

@@ -14,7 +14,8 @@
     "probe:sites": "node --env-file-if-exists=.env scripts/probe-sites.js",
     "rehearse:calls": "node --env-file-if-exists=.env scripts/call-rehearsal.mjs",
     "data:export": "node --env-file-if-exists=.env src/data.js export",
-    "data:delete": "node --env-file-if-exists=.env src/data.js delete"
+    "data:delete": "node --env-file-if-exists=.env src/data.js delete",
+    "web:staging": "node scripts/web-staging.mjs"
   },
   "engines": {
     "node": ">=22.9"

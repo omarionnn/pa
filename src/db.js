@@ -1513,6 +1513,10 @@ addColumnIfMissing("accounts", "web_notice_seen_at", "INTEGER");
 addColumnIfMissing("accounts", "web_reach", "TEXT");
 addColumnIfMissing("accounts", "web_theme", "TEXT");
 addColumnIfMissing("page_sessions", "user_agent", "TEXT");
+// The short plain title an Ongoing row shows on Web, written once when the row is made (src/itemtitle.js).
+addColumnIfMissing("tasks", "label", "TEXT");
+addColumnIfMissing("timers", "label", "TEXT");
+addColumnIfMissing("series", "label", "TEXT");
 addColumnIfMissing("outbox", "send_style", "TEXT");
 // Inline replies: what each inbound message said (so "the one about the table" can be found again
 // by its words), which message an outbound one is pinned under, and the message this turn's reply
@@ -1793,9 +1797,9 @@ export function setPlanStatus(conversationId, id, status) {
 }
 
 // ---------- timers ----------
-export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null, callGoal = null }) {
-  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id, call_goal) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(conversationId, fireAt, note, planId, taskId, seriesId, callGoal ? String(callGoal) : null);
+export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null, callGoal = null, label = null }) {
+  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id, call_goal, label) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(conversationId, fireAt, note, planId, taskId, seriesId, callGoal ? String(callGoal) : null, label || null);
   return getTimer(conversationId, Number(r.lastInsertRowid));
 }
 /** The call a timer's firing placed, if the phone has already rung for it. Unscoped: the fire path holds the timer row. */
@@ -1814,6 +1818,17 @@ export function markMissedCallTold(callId) {
 }
 export function getTimer(conversationId, id) {
   return db.prepare("SELECT * FROM timers WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
+}
+/**
+ * Write a row's Web title once (src/itemtitle.js): only where none is set yet, so a title the model
+ * wrote is never replaced by a later summarise. A series' title also goes onto its pending firing.
+ */
+export function setItemLabel(kind, conversationId, id, label) {
+  const table = { task: "tasks", timer: "timers", series: "series" }[kind];
+  if (!table || !label) return false;
+  const done = db.prepare(`UPDATE ${table} SET label = ? WHERE id = ? AND conversation_id = ? AND (label IS NULL OR label = '')`).run(label, id, conversationId).changes === 1;
+  if (kind === "series") db.prepare("UPDATE timers SET label = ? WHERE series_id = ? AND conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND (label IS NULL OR label = '')").run(label, id, conversationId);
+  return done;
 }
 export function listTimers(conversationId) {
   return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL ORDER BY fire_at").all(conversationId);
@@ -1869,10 +1884,10 @@ export function markTimerGaveUp(id, { error = null } = {}) {
 // ---------- series: a check-in that keeps coming back ----------
 // Rows only. Every decision about WHEN — the next occurrence, quiet hours, what a missed one means —
 // is in src/series.js, so the maths is testable without a database and this file stays what it is.
-export function createSeries(conversationId, { what, rule, tz, nextAt = null, callGoal = null }) {
-  const r = db.prepare(`INSERT INTO series (conversation_id, what, rule, tz, next_at, created_at, call_goal)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, what, JSON.stringify(rule ?? {}), tz, nextAt, clock.now(), callGoal ? String(callGoal) : null);
+export function createSeries(conversationId, { what, rule, tz, nextAt = null, callGoal = null, label = null }) {
+  const r = db.prepare(`INSERT INTO series (conversation_id, what, rule, tz, next_at, created_at, call_goal, label)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, what, JSON.stringify(rule ?? {}), tz, nextAt, clock.now(), callGoal ? String(callGoal) : null, label || null);
   return getSeries(conversationId, Number(r.lastInsertRowid));
 }
 /** Scoped to the conversation, like every other get: a series in another thread is not found. */
@@ -3308,15 +3323,15 @@ function rowToTask(r) {
   };
 }
 
-export function createTask(conversationId, { title, goal, wakeAt = null, maxAttempts, sheet = null, originHandle = null }) {
+export function createTask(conversationId, { title, goal, wakeAt = null, maxAttempts, sheet = null, originHandle = null, label = null }) {
   const now = clock.now();
   // The sheet is validated before the row exists, so a task never starts with a half-written one.
   const merged = applyPatch(emptySheet(), sheet, { now });
   if (!merged.ok) return merged;
   const r = db.prepare(`INSERT INTO tasks
-    (conversation_id, title, goal, state, next_wake_at, max_attempts, sheet, origin_handle, created_at, updated_at)
-    VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, title, goal, wakeAt, maxAttempts, JSON.stringify(merged.sheet), originHandle ?? null, now, now);
+    (conversation_id, title, goal, state, next_wake_at, max_attempts, sheet, origin_handle, created_at, updated_at, label)
+    VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, title, goal, wakeAt, maxAttempts, JSON.stringify(merged.sheet), originHandle ?? null, now, now, label || null);
   const id = Number(r.lastInsertRowid);
   logTask(id, "state", `started: ${goal}`);
   return getTask(conversationId, id);
