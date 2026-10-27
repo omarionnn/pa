@@ -407,9 +407,10 @@ export const TALK_WORDS = { approval: "Reply in the chat", needs: "Reply in the 
 export const talkWords = (state) => TALK_WORDS[state] ?? "Talk about it in the chat";
 /**
  * A detail opened from a Web-only chat (that tab's last chat, kept by the chat page) talks about it in
- * that chat; from anywhere else, the shared thread. The server checks the chat is theirs.
+ * that chat; from anywhere else, the shared thread. The server checks the chat is theirs. An approval keeps
+ * the chat it was asked in (only an answer there counts, src/trust.js).
  */
-const DETAIL_CHAT_JS = `(function(){try{var c=sessionStorage.getItem('reason-web-chat');var a=document.querySelector('.ogd-foot a.act');if(!c||!a||!/^[A-Za-z0-9_-]{22}$/.test(c))return;var h=a.getAttribute('href');if(h.indexOf('/web?thread&')===0)a.setAttribute('href','/web?chat='+c+'&'+h.slice(12))}catch(e){}})();`;
+const DETAIL_CHAT_JS = `(function(){try{var c=sessionStorage.getItem('reason-web-chat');var a=document.querySelector('.ogd-foot a.act');if(!c||!a||!/^[A-Za-z0-9_-]{22}$/.test(c))return;var h=a.getAttribute('href');if(h.indexOf('about=approval')>=0)return;if(h.indexOf('/web?thread&')===0)a.setAttribute('href','/web?chat='+c+'&'+h.slice(12))}catch(e){}})();`;
 
 /** The detail page's body, by what the row is. Everything on it is a field the row really has. */
 function detailBody(x, tz) {

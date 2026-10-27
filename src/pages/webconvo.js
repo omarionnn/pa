@@ -1034,11 +1034,12 @@ export async function aboutRequest({ account, headers = {}, readBody, runtime, l
   const item = findItem(conv, m[1], m[2]);
   if (!item) return json(404, { ok: false, error: "not_found" });
   if (!runtime?.event) return json(503, { ok: false, error: "unavailable" });
+  // The limit first, so a slowed-down tap is not spent: the same click can still speak once.
+  if (!underLimit(conv)) return json(429, { ok: false, error: "slow_down" });
   if (!db.claimInbound({ channel: WEB, externalId: `${conv}:about:${m[1]}:${m[2]}:${k}`, conversationId: conv })) {
     log({ web_about: "duplicate" });
     return json(200, { ok: true, duplicate: true });
   }
-  if (!underLimit(conv)) return json(429, { ok: false, error: "slow_down" });
   const { talkWords } = await import("./webongoing.js");
   const text = speakFirstPrompt(itemRecord(conv, item), { link: talkWords(item.state) });
   // The turn runs on server-side whatever happens to the tab; its one message arrives over /web/live.
