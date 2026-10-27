@@ -44,6 +44,7 @@ delete process.env.LINQ_WEBHOOK_SECRET;
 const { webRequestFor, createServer } = await import("../src/http.js");
 const ws = await import("../src/pages/websignin.js");
 const { esc } = await import("../src/pages/render.js");
+const { GRAIN } = await import("../src/pages/webkit.js");
 const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
@@ -548,7 +549,8 @@ test("the pages wear the kit: serif and hand faces from /web/fonts only, mono la
     assert.match(page, /border-top:1px dashed var\(--hair\)/, `${name}: dashed rules`);
     assert.match(page, /<a class="wm" href="\/web\?home" aria-label="Reason, home"><span class="wm-w">reas<svg class="bub" aria-hidden="true" viewBox="0 0 40 40">/, `${name}: the wordmark`);
     assert.doesNotMatch(page, /fonts\.googleapis|fonts\.gstatic/, `${name}: nothing from Google`);
-    for (const url of page.matchAll(/url\(([^)]+)\)/g)) assert.match(url[1], /^\/web\/fonts\/[a-z]+\.woff2$/, `${name}: ${url[1]}`);
+    // The one other url() is §4h's paper grain, an inline SVG (webkit.js GRAIN): nothing fetched.
+    for (const url of page.split(GRAIN).join("").matchAll(/url\(([^)]+)\)/g)) assert.match(url[1], /^\/web\/fonts\/[a-z]+\.woff2$/, `${name}: ${url[1]}`);
   }
 
   // The fonts: served while on, cached, the right bytes; the CSP lets the page load them and nothing else.

@@ -199,26 +199,26 @@ test("8C: a notification says only \"Reason needs your approval.\" — never a d
 // ---------- 8A / 8B: the tab and the line, run in a pretend browser ----------
 
 /** The notify script in a small pretend browser: a page at `path`, a tab that can be hidden, answers from `next()`. */
-function pretend({ path = "/web/settings", signedIn = true, permission = "granted" } = {}) {
-  const store = new Map(), shown = [], vis = [];
+function pretend({ path = "/web/settings", signedIn = true, permission = "granted", theme = undefined, osDark = false } = {}) {
+  const store = new Map(), shown = [], vis = [], themed = [];
   let answer = { ok: true, needs: [], done: [], notify: false }, timers = [];
-  const link = (calm, needs) => ({ href: calm, dataset: { calm, needs } });
-  const links = [link("/web/icons/favicon.svg?v=1", "/web/icons/favicon-needs-you.svg?v=1"), link("/web/icons/favicon-night.svg?v=1", "/web/icons/favicon-night-needs-you.svg?v=1")];
+  const link = (calm, needs, media) => ({ href: calm, media, dataset: { calm, needs }, getAttribute(k) { return this[k]; }, setAttribute(k, v) { this[k] = v; } });
+  const links = [link("/web/icons/favicon.svg?v=1", "/web/icons/favicon-needs-you.svg?v=1", "(prefers-color-scheme: light)"), link("/web/icons/favicon-night.svg?v=1", "/web/icons/favicon-night-needs-you.svg?v=1", "(prefers-color-scheme: dark)")];
   const kids = [];
   const main = { firstChild: null, insertBefore(el) { kids.unshift(el); el.parentMain = this; } };
   const make = () => { const hand = { textContent: "" }, a = { href: "", onclick: null }; return { className: "", attrs: {}, set innerHTML(v) { this.html = v; }, setAttribute(k, v) { this.attrs[k] = v; }, querySelector: (s) => (s === ".hand" ? hand : a), remove() { kids.splice(kids.indexOf(this), 1); }, hand, a }; };
   const document = {
     hidden: false, title: "Reason — Settings",
-    documentElement: { hasAttribute: (k) => k === "data-c" && signedIn },
+    documentElement: { hasAttribute: (k) => k === "data-c" && signedIn, dataset: theme ? { theme } : {} },
     querySelectorAll: (s) => (s.startsWith("link") ? links : []),
     querySelector: (s) => (s === ".nt-line" ? kids.find(k => k.className === "nt-line") ?? null : s === "main" ? main : null),
     createElement: () => make(),
-    addEventListener: (ev, fn) => vis.push(fn),
+    addEventListener: (ev, fn) => (ev === "visibilitychange" ? vis : themed).push(fn),
   };
   class Notification { constructor(title, opts) { shown.push({ title, ...opts }); } }
   Notification.permission = permission;
   const ctx = {
-    document, location: { pathname: path }, Notification,
+    document, location: { pathname: path }, Notification, matchMedia: (q) => ({ matches: /dark/.test(q) && osDark }),
     localStorage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)) },
     fetch: async () => ({ status: 200, json: async () => answer }),
     setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearTimeout: () => {},
@@ -232,36 +232,55 @@ function pretend({ path = "/web/settings", signedIn = true, permission = "grante
     async poll(a) { if (a) answer = a; timers = []; vis.forEach(f => f()); await tick(); },
     async hide(a) { document.hidden = true; await this.poll(a); },
     async show(a) { document.hidden = false; await this.poll(a); },
+    retheme(t) { if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; themed.forEach(f => f()); },
   };
 }
 const need = (id, approval = true, line = "the hudson inn needs a yes") => ({ id, approval, line, href: `/web/ongoing/approval/${id.split("-")[1]}` });
 
-test("8A: \"(1) Reason needs you\" and the filled mark, only while hidden and only for what's new; reset when they look", async () => {
+const PAPER = ["/web/icons/favicon.svg?v=1", "/web/icons/favicon.svg?v=1"], PAPER_NEEDS = ["/web/icons/favicon-needs-you.svg?v=1", "/web/icons/favicon-needs-you.svg?v=1"];
+const NIGHT = ["/web/icons/favicon-night.svg?v=1", "/web/icons/favicon-night.svg?v=1"], NIGHT_NEEDS = ["/web/icons/favicon-night-needs-you.svg?v=1", "/web/icons/favicon-night-needs-you.svg?v=1"];
+
+test("§4h 5: the title is exactly \"Reason · needs you\" while something needs them, the needs-you mark; back to the page's title when nothing does", async () => {
+  assert.equal(nt.NEEDS_TITLE, "Reason \u00b7 needs you");
   const p = pretend();
-  await p.start({ ok: true, needs: [need("approval-1")], done: [], notify: false });
-  assert.equal(p.document.title, "Reason — Settings", "what was already there when they were looking: no change");
-  await p.hide({ ok: true, needs: [need("approval-1")], done: [], notify: false });
+  await p.start({ ok: true, needs: [], done: [], notify: false });
   assert.equal(p.document.title, "Reason — Settings");
-  await p.poll({ ok: true, needs: [need("approval-1"), need("approval-2")], done: [], notify: false });
-  assert.equal(p.document.title, "(1) Reason needs you");
-  assert.deepEqual(p.links.map(l => l.href), ["/web/icons/favicon-needs-you.svg?v=1", "/web/icons/favicon-night-needs-you.svg?v=1"], "the mark fills in, night too");
+  assert.deepEqual(p.links.map(l => l.href), PAPER);
+  await p.poll({ ok: true, needs: [need("approval-1")], done: [], notify: false });
+  assert.equal(p.document.title, "Reason · needs you", "while they are looking too");
+  assert.deepEqual(p.links.map(l => l.href), PAPER_NEEDS);
+  await p.hide();
+  assert.equal(p.document.title, "Reason · needs you", "and in the background");
   await p.show();
-  assert.equal(p.document.title, "Reason — Settings", "they looked");
-  assert.deepEqual(p.links.map(l => l.href), ["/web/icons/favicon.svg?v=1", "/web/icons/favicon-night.svg?v=1"]);
+  assert.equal(p.document.title, "Reason · needs you", "looking does not clear it: answering does");
+  await p.poll({ ok: true, needs: [], done: [], notify: false });
+  assert.equal(p.document.title, "Reason — Settings");
+  assert.deepEqual(p.links.map(l => l.href), PAPER);
   assert.equal(p.shown.length, 0, "no browser notification unless this browser turned them on");
 });
 
-test("8A: \"Done · <short title> · Reason\" when something finishes while hidden; never while they're looking", async () => {
+test("§4h 5: no count, no \"Done ·\" title; a finished job leaves the tab alone", async () => {
   const p = pretend();
-  const old = { id: "task-1", title: "find a dentist", at: 1000 };
-  await p.start({ ok: true, needs: [], done: [old], notify: false });
-  await p.poll({ ok: true, needs: [], done: [{ id: "task-2", title: "table for four", at: 2000 }, old], notify: false });
-  assert.equal(p.document.title, "Reason — Settings", "visible: nothing");
-  await p.hide({ ok: true, needs: [], done: [{ id: "task-3", title: "pickup at 6:30", at: 3000 }, { id: "task-2", title: "table for four", at: 2000 }], notify: false });
-  assert.equal(p.document.title, "Done · pickup at 6:30 · Reason");
-  assert.equal(p.links[0].href, "/web/icons/favicon.svg?v=1", "the mark stays outlined");
-  await p.show();
+  await p.start({ ok: true, needs: [], done: [], notify: false });
+  await p.hide({ ok: true, needs: [need("approval-1"), need("approval-2")], done: [{ id: "task-3", title: "pickup at 6:30", at: 3000 }], notify: false });
+  assert.equal(p.document.title, "Reason · needs you");
+  await p.poll({ ok: true, needs: [], done: [{ id: "task-3", title: "pickup at 6:30", at: 3000 }], notify: false });
   assert.equal(p.document.title, "Reason — Settings");
+  assert.doesNotMatch(nt.NOTIFY_JS, /Done \\u00b7|'\('\+/);
+});
+
+test("§4h 5: the night marks on Night: the theme chosen on Web first, else the phone's", async () => {
+  const chosen = pretend({ theme: "dark" });
+  await chosen.start({ ok: true, needs: [need("approval-1")], done: [], notify: false });
+  assert.deepEqual(chosen.links.map(l => l.href), NIGHT_NEEDS, "Night chosen on Web, phone in light");
+  chosen.retheme("light");
+  assert.deepEqual(chosen.links.map(l => l.href), PAPER_NEEDS, "switched to Paper: follows at once");
+  const auto = pretend({ osDark: true });
+  await auto.start({ ok: true, needs: [], done: [], notify: false });
+  assert.deepEqual(auto.links.map(l => l.href), NIGHT, "Auto follows the phone");
+  const paper = pretend({ theme: "light", osDark: true });
+  await paper.start({ ok: true, needs: [], done: [], notify: false });
+  assert.deepEqual(paper.links.map(l => l.href), PAPER, "Paper chosen wins over a dark phone");
 });
 
 test("8C: a browser notification only when it's on here, permission granted, the tab hidden, and only once per approval", async () => {

@@ -316,7 +316,7 @@ export const COMPOSE_JS = String.raw`(function(){
 var R=window.REASON_WEB||{},A=R.api,form=document.querySelector('.cform');if(!form||!A)return;
 var comp=form.closest('.composer'),box=document.getElementById('c-input'),add=form.querySelector('.c-add'),mic=form.querySelector('.c-mic'),upl=comp.querySelector('.upl'),shelf=comp.querySelector('.on-line'),fail=comp.querySelector('.upfail'),failList=comp.querySelector('.uf-list'),note=comp.querySelector('.c-note'),sheet=comp.querySelector('.addsheet'),fromVoice=comp.querySelector('.fromvoice'),moff=comp.querySelector('.micoff'),body=document.body,onit=document.querySelector('.onit');
 var files=[],blobs={},noteT=0,LIM=R.lim||{each:20971520,fit:7340032,files:6};
-function say(t){if(!note)return;note.textContent=t;note.hidden=!t;clearTimeout(noteT);if(t)noteT=setTimeout(function(){note.hidden=true},9000)}
+function say(t){if(!note)return;note.textContent=t;note.hidden=!t;if(t&&window.reasonInk)reasonInk(note,'pen-in');clearTimeout(noteT);if(t)noteT=setTimeout(function(){note.hidden=true},9000)}
 R.say=say;
 // 3D: what Reason is doing, from the server's own record of the turn (src/doing.js); plain "on it." otherwise.
 // §4h: how far along it is ("reading the lease… 2 of 3 files") shows at once; the role="status" label
