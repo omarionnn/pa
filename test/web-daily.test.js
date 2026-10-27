@@ -257,7 +257,7 @@ test("9. the overnight write: the claude-cli greeting, once; issue counts editio
   say(OWNER_C, "user", "watch it", TUE_9AM - 15 * H);
   say(OWNER_C, "assistant", "The hotel dropped its price overnight. It's $40 under yesterday.", TUE_9AM - 4 * H);
   const asked = [];
-  daily.setGreetingAsk(async (args) => { asked.push(args); return { value: { greeting: "Morning, Omari. One thing moved while you slept.", question: "" } }; });
+  daily.setGreetingAsk(async (args) => { asked.push(args); return { value: { greeting: "Morning, Omari. One thing moved while you slept." } }; });
   at(TUE_9AM - 4 * H + 60_000);
   const w = await daily.writeEdition(OWNER_C);
   assert.equal(w.greeting_by, "claude-cli");
@@ -280,7 +280,7 @@ test("9. the overnight write: the claude-cli greeting, once; issue counts editio
   at(TUE_9AM + 2 * D - 3 * H); await daily.writeEdition(OWNER_C);
   at(TUE_9AM + 2 * D + H); daily.noteLook(OWNER_C);
   say(OWNER_C, "assistant", "The package arrived at your door this morning.", TUE_9AM + 3 * D - 5 * H);
-  daily.setGreetingAsk(async () => ({ value: { greeting: "Morning!!! 🔥 you're on a 3 day streak", question: "" } }));
+  daily.setGreetingAsk(async () => ({ value: { greeting: "Morning!!! 🔥 you're on a 3 day streak", } }));
   at(TUE_9AM + 3 * D - 3 * H);
   const bad = await daily.writeEdition(OWNER_C);
   assert.equal(bad.issue, 4);
@@ -296,7 +296,9 @@ test("10. the sweep: nothing before the hour, then once per person per day, only
   process.env.REASON_WEB_DAILY = "on";
   background.resetLane({ gapMs: 0 });
   const asked = [];
-  daily.setGreetingAsk(async (a) => { asked.push(a); return { value: { greeting: "morning.", question: "" } }; });
+  daily.setGreetingAsk(async (a) => { asked.push(a); return { value: { greeting: "morning.", } }; });
+  browser(OWNER_C); browser(KOFI_C); // both have signed in to Web; nobody else is written for
+  db.upsertAccount({ conversationId: "dm:fake:+14155550000", channel: "fake", address: "+14155550000", name: "Esi", isOperator: false });
   at(Date.UTC(2026, 9, 27, 7, 30)); // 3:30 AM New York
   assert.equal(daily.sweepDaily().queued, 0);
   at(Date.UTC(2026, 9, 27, 8, 5)); // 4:05 AM
@@ -338,6 +340,28 @@ test("12. a decision tap is one message into the thread, as if typed", async () 
   assert.equal(sent[0].text, "Yes, go ahead.");
   assert.equal(sent[0].channel, "web");
   assert.equal(sent[0].conversationId, OWNER_C);
+});
+
+test("14. two approvals waiting in one thread: no buttons (a plain yes could answer the other), a link instead", async () => {
+  say(OWNER_C, "user", "ok", TUE_9AM - 12 * H);
+  at(TUE_9AM - 3 * H);
+  db.askConfirmation({ conversationId: OWNER_C, action: "purchase_confirm", summary: "Order the lamp from Target", stakes: "money", askedAfterMsgs: 1, amount: 40 });
+  db.askConfirmation({ conversationId: OWNER_C, action: "browser_submit", summary: "Book the 7:40 to Accra", stakes: "money", askedAfterMsgs: 1, amount: 612 });
+  at(TUE_9AM);
+  const html = (await get(browser(OWNER_C))).body;
+  assert.doesNotMatch(html, /class="dd-acts"/);
+  assert.equal((html.match(/<a class="dd-l" href="\/web\?thread">Answer it in the thread<\/a>/g) ?? []).length, 2);
+});
+
+test("15. the day starts at their real midnight, clocks changing or not", () => {
+  const tz = "America/New_York";
+  for (const [y, m, d] of [[2026, 10, 1], [2026, 10, 2], [2026, 2, 8], [2026, 9, 27]]) {
+    const noon = Date.UTC(y, m, d, 17, 0);
+    const start = daily.dayStart(noon, tz);
+    assert.equal(daily.localDay(start, tz), daily.localDay(noon, tz));
+    assert.equal(daily.localHour(start, tz), 0);
+    assert.notEqual(daily.localDay(start - 1, tz), daily.localDay(noon, tz), `${y}-${m + 1}-${d}`);
+  }
 });
 
 test("13. new in your book: hidden without a stamp; drawn by src/stamps.js when there is one", () => {

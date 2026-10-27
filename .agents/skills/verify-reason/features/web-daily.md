@@ -41,7 +41,7 @@ Source: `src/daily.js` (window, facts, question, greeting, `writeEdition`, `swee
 ## Drive
 
 ```bash
-node --test test/web-daily.test.js     # 13 pinned (flag, states, overnight kinds, question, sweep, new chat)
+node --test test/web-daily.test.js     # 15 pinned (flag, states, overnight kinds, two approvals, question, sweep, DST, new chat)
 node scripts/web-staging.mjs --out=/tmp/x/web-staging   # daily-full, -first, -quiet, -missed
 ```
 

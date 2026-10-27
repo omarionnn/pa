@@ -34,7 +34,7 @@ import { ongoing, approvals as pendingApprovals } from "./ongoing.js";
 import { askStructuredViaCli } from "./backends/cli.js";
 import * as background from "./background.js";
 import { dailyAllowedFor } from "./dailyflag.js";
-import { WEB } from "./web.js";
+import { WEB, webAllowedFor } from "./web.js";
 
 /** The local hour an edition is written from (overnight, before anyone's morning). */
 export const EDITION_HOUR = 4;
@@ -100,7 +100,15 @@ export const localHour = (at, tz) => parts(at, tz).hour % 24;
 /** The instant their local day began. */
 export function dayStart(at, tz) {
   const p = parts(at, tz);
-  return at - (((p.hour % 24) * 60 + p.minute) * 60 + p.second) * 1000 - (at % 1000);
+  let t = at - (((p.hour % 24) * 60 + p.minute) * 60 + p.second) * 1000 - (at % 1000);
+  // A day the clocks change is 23 or 25 hours long: step to the real local midnight.
+  for (let i = 0; i < 3; i++) {
+    const q = parts(t, tz);
+    const off = ((q.hour % 24) * 60 + q.minute) * 60_000;
+    if (!off) break;
+    t += localDay(t, tz) === localDay(at, tz) ? -off : 24 * 60 * 60_000 - off;
+  }
+  return t;
 }
 const fmt = (tz, o) => new Intl.DateTimeFormat("en-US", { timeZone: tz, ...o });
 export const timeLabel = (at, now, tz) => {
@@ -174,10 +182,18 @@ function taskMessageIds(conversationId, taskIds) {
 export function overnightFor(conversationId, since, now = clock.now()) {
   const out = [];
   // Approvals asked in the window: the decision, answered by a reply in the thread it was asked in.
-  const asks = pendingApprovals(conversationId, now).filter(a => a.at >= since && a.at <= now);
+  const open = pendingApprovals(conversationId, now);
+  const asks = open.filter(a => a.at >= since && a.at <= now);
   for (const a of asks) {
-    out.push({ id: `approval:${a.id}`, at: a.at, kind: "decision", headline: cut(oneLine(a.title), 140), detail: a.detail ?? null,
-      threadMessageId: null, chat: a.chat ?? null, href: a.href, actions: DECISION.map(x => ({ ...x })) });
+    // A tap sends plain words ("Yes, go ahead."), which answer whatever is waiting in that thread. So the
+    // buttons show only when this is the one approval waiting there; otherwise it links to where it's answered.
+    const alone = open.filter(o => (o.chat ?? null) === (a.chat ?? null)).length === 1;
+    const href = a.chat ? `/web?chat=${a.chat}` : "/web?thread";
+    out.push(alone
+      ? { id: `approval:${a.id}`, at: a.at, kind: "decision", headline: cut(oneLine(a.title), 140), detail: a.detail ?? null,
+        threadMessageId: null, chat: a.chat ?? null, href: a.href, actions: DECISION.map(x => ({ ...x })) }
+      : { id: `approval:${a.id}`, at: a.at, kind: "update", headline: cut(oneLine(a.title), 140), detail: a.detail ?? null,
+        threadMessageId: null, chat: a.chat ?? null, href, linkText: "Answer it in the thread" });
   }
   // Tasks that finished: done (the DONE stamp and its one line) or stopped (an update into the thread).
   const finished = db.tasksFinishedSince(conversationId, since).filter(t => t.finished_at <= now && (t.state === "done" || t.state === "failed"));
@@ -329,8 +345,8 @@ You are given their first name and what happened overnight. Write a greeting in 
 all lowercase except their name, warm, plain, at most 12 words, one line, no emoji, no exclamation marks.
 It names how much happened, never details (no prices, places, people or companies).
 Shape: "morning, Ama. two things moved while you slept." Never mention streaks, days in a row, or missing anything.
-If a guess is given, also put it as one short, plain yes/no question to them (at most 10 words, ending in "?"), in the second person; otherwise return an empty question.`;
-const SCHEMA = { type: "object", properties: { greeting: { type: "string" }, question: { type: "string" } }, required: ["greeting", "question"], additionalProperties: false };
+Reply with the greeting only.`;
+const SCHEMA = { type: "object", properties: { greeting: { type: "string" } }, required: ["greeting"], additionalProperties: false };
 
 let testAsk = null;
 /** For tests: the stand-in for the claude-cli call (null puts the real path back). */
@@ -344,25 +360,21 @@ export function cleanGreeting(text, name = "") {
   if (name) t = t.replace(new RegExp(`\\b${name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g"), name);
   return t;
 }
-const cleanQuestion = (text) => {
-  const t = oneLine(text).replace(/^["'“”]+|["'“”]+$/g, "");
-  return t && t.length <= 90 && t.endsWith("?") && !/[\n#*_`]/.test(t) ? t : null;
-};
 
-/** The greeting (and the guess as a question) from the claude-cli subscription, or null. Never the billed API. */
-async function written({ name, overnight, question }) {
+/** The greeting from the claude-cli subscription, or null. Never the billed API. */
+async function written({ name, overnight }) {
   const ask = testAsk ?? askStructuredViaCli;
   if (ask === askStructuredViaCli && (process.env.REASON_BACKEND !== "claude-cli" || process.env.NODE_TEST_CONTEXT || process.env.REASON_DAILY_WRITE === "0")) return null;
   const kinds = { decision: "needs their yes or no", update: "news", done: "finished" };
   const { value, error } = await ask({
-    prompt: `First name: ${name || "(unknown)"}\nOvernight (${overnight.length}):\n${overnight.slice(0, 8).map(x => `- ${kinds[x.kind]}`).join("\n")}\n\nGuess to ask about: ${question ? question.text : "(none)"}`,
+    prompt: `First name: ${name || "(unknown)"}\nOvernight (${overnight.length}):\n${overnight.slice(0, 8).map(x => `- ${kinds[x.kind]}`).join("\n")}`,
     system: SYSTEM, schema: SCHEMA,
     model: process.env.REASON_DAILY_CLI_MODEL || "sonnet",
     timeoutMs: 45_000,
     feature: "daily_edition",
   });
   if (error || !value) return null;
-  return { greeting: cleanGreeting(value.greeting, name), question: question ? cleanQuestion(value.question) : null };
+  return { greeting: cleanGreeting(value.greeting, name) };
 }
 
 // ---------------------------------------------------------------- the edition
@@ -415,11 +427,12 @@ export function editionFor(conversationId, { now = clock.now() } = {}) {
   const name = firstName(conversationId);
   let greeting, question;
   if (stored) {
-    // The written greeting holds the day, unless it was written for a quiet night and something has
-    // happened since (it would be untrue), or vice versa.
+    // The written greeting holds the day while it is still true: the same kind of morning, the same
+    // count. Anything new since it was written and the plain greeting says it instead.
     const moment = momentOf({ issue, overnight: f.overnight, away: win.away, hadAnything: hadAnythingEver(conversationId) });
     const wasMoment = stored.edition.moment ?? null;
-    greeting = moment === wasMoment ? stored.edition.greeting : plainGreeting({ moment, name, overnight: f.overnight, since: win.since, tz, now });
+    const same = moment === wasMoment && (stored.edition.counted == null || stored.edition.counted === f.overnight.length);
+    greeting = same ? stored.edition.greeting : plainGreeting({ moment, name, overnight: f.overnight, since: win.since, tz, now });
     const q = stored.edition.question ?? null;
     question = q && stillAsking(conversationId, q, day, now) ? q : null;
   } else {
@@ -449,21 +462,23 @@ export async function writeEdition(conversationId, { now = clock.now(), log = ()
   const issue = editionCount(conversationId) + 1;
   const name = firstName(conversationId);
   const moment = momentOf({ issue, overnight: f.overnight, away: win.away, hadAnything: hadAnythingEver(conversationId) });
-  let question = questionFor(conversationId, day, now);
+  const question = questionFor(conversationId, day, now);
   let greeting = plainGreeting({ moment, name, overnight: f.overnight, since: win.since, tz, now });
   let by = moment ? "fixed" : "plain";
-  if (!moment || question) {
+  if (!moment) {
     let w = null;
-    try { w = await written({ name, overnight: f.overnight, question }); } catch { w = null; }
-    if (w?.greeting && !moment) { greeting = w.greeting; by = "claude-cli"; }
-    if (w?.question && question) question = { ...question, text: w.question, asked: "claude-cli" };
+    try { w = await written({ name, overnight: f.overnight }); } catch { w = null; }
+    if (w?.greeting) { greeting = w.greeting; by = "claude-cli"; }
   }
-  const edition = { issueNumber: issue, date: day, greeting, moment, away: win.away, ...f, question: question ?? null, newestStamp: newestStamp(conversationId) };
+  const edition = { issueNumber: issue, date: day, greeting, moment, away: win.away, counted: f.overnight.length, ...f, question: question ?? null, newestStamp: newestStamp(conversationId) };
   const r = db.db.prepare(`INSERT OR IGNORE INTO daily_editions (conversation_id, day, issue, since, edition, greeting_by, generated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`).run(conversationId, day, issue, win.since, JSON.stringify(edition), by, now);
   log({ daily_edition: day, conversation: conversationId, issue, greeting_by: by, overnight: f.overnight.length, lines_out: f.linesOut.length, question: !!question });
   return { ok: true, written: r.changes > 0, issue, greeting_by: by };
 }
+
+/** Someone who has signed in to Web at least once: nobody else is ever shown an edition, so none is written. */
+const usesWeb = (conversationId) => !!db.db.prepare("SELECT 1 FROM page_sessions WHERE conversation_id = ? AND page_id LIKE 'wsign:%' LIMIT 1").get(conversationId);
 
 const writing = new Set();
 /**
@@ -476,7 +491,7 @@ export function sweepDaily({ now = clock.now(), log = () => {} } = {}) {
   for (const acct of db.listAccountsOfPeople()) {
     if ((acct.state ?? "active") !== "active") continue;
     const c = acct.conversation_id;
-    if (!dailyAllowedFor(c)) continue;
+    if (!dailyAllowedFor(c) || !webAllowedFor(c) || !usesWeb(c)) continue;
     const tz = tzOf(c, now);
     const day = localDay(now, tz);
     const key = `daily:${c}:${day}`;

@@ -2094,6 +2094,11 @@ export class Runtime extends EventEmitter {
     return out;
   }
 
+  /** The daily edition's overnight write (src/daily.js sweepDaily). Never throws into the sweep. */
+  daily({ now = clock.now() } = {}) {
+    try { return dailyEdition.sweepDaily({ now, log: this.log }); } catch (e) { this.log({ daily_edition_failed: (e?.message ?? String(e)).split("\n")[0] }); return { queued: 0 }; }
+  }
+
   /**
    * The digest: one batched line, for somebody who asked for that instead.
    *
@@ -2104,11 +2109,6 @@ export class Runtime extends EventEmitter {
    *
    * The budget still applies. One text, which is what makes it a digest and not a report.
    */
-  /** The daily edition's overnight write (src/daily.js sweepDaily). Never throws into the sweep. */
-  daily({ now = clock.now() } = {}) {
-    try { return dailyEdition.sweepDaily({ now, log: this.log }); } catch (e) { this.log({ daily_edition_failed: (e?.message ?? String(e)).split("\n")[0] }); return { queued: 0 }; }
-  }
-
   async digest({ now = clock.now(), readWith = null } = {}) {
     const out = { people: 0, due: 0, turns: 0, sent: 0, handled: 0, skipped: [] };
     for (const acct of db.listAccountsOfPeople()) {

@@ -47,7 +47,7 @@ function overnightItem(x, { csrf, now, tz, last }) {
       + `</form>`;
   } else {
     const href = x.threadMessageId ? `/web?at=${Number(x.threadMessageId)}` : (x.href || "/web?thread");
-    foot = `<a class="dd-l" href="${esc(href)}">Read it in the thread</a>`;
+    foot = `<a class="dd-l" href="${esc(href)}">${esc(x.linkText || "Read it in the thread")}</a>`;
   }
   return `<article class="${cls}">${time}<div class="dd-b"><h2 class="dd-h">${esc(x.headline)}</h2>`
     + (x.detail ? `<p class="dd-d">${esc(x.detail)}</p>` : "") + foot + `</div></article>`;
