@@ -1,6 +1,6 @@
-// The contact card's photo wears the brand pen colour — orange on 10-25, brick red since 10-26 — and
-// on 10-25 the owner, only the owner, got the new card once (scripts/card-to-owner.js; not re-sent
-// for the red). Temp database, stubbed sender, no network, no model:
+// The contact card's photo wears the brand pen colour — orange on 10-25, brick red since 10-26, the
+// Web handoff's italic "r" + outlined bubble since 10-27 — and the owner, only the owner, gets a new
+// card once per change he asks for (scripts/card-to-owner.js: 10-25 orange, 10-27 the new mark). Temp database, stubbed sender, no network, no model:
 //
 //   is the card's photo the brand-red one, never the old blue or orange one?
 //   does the vCard carry that photo?
@@ -25,10 +25,13 @@ const { vcard } = await import("../src/contact.js");
 const S = await import("../scripts/card-to-owner.js");
 
 const PHOTO = new URL("../assets/reason-contact.jpg", import.meta.url);
-// sha256 of assets/reason-contact.jpg. BRAND = the bubble in the pen #9c3b2e (owner, 2026-10-26 ~23:45)
-// on the same paper and "r". If the photo is redrawn on purpose, update BRAND; BLUE, RED1 (the first
-// brick red) and ORANGE (the 10-25 #B8460B bubble) must never come back.
-const BRAND = "bbee1c8d4362a008e75834c6911dc38f83c2a5843b64b8de15c9d71c2b49151d";
+// sha256 of assets/reason-contact.jpg. BRAND = the Web handoff's contact mark (owner, 2026-10-27):
+// Instrument Serif italic "r" + the pen #9c3b2e speech-bubble outline on paper #f2ebe0, rendered
+// from the handoff's reason-contact.svg in headless Chromium with assets/fonts. If the photo is
+// redrawn on purpose, update BRAND; BLUE, ORANGE (10-25), RED1 (first brick red) and RED2 (the
+// filled-ring #9c3b2e photo of 10-26 ~23:45) must never come back.
+const BRAND = "dbefb618a1bc62752c1a1ac2da9a56d217e3cadf5f727765f473778a4ddbaf20";
+const RED2 = "bbee1c8d4362a008e75834c6911dc38f83c2a5843b64b8de15c9d71c2b49151d";
 const RED1 = "5b965ff3b76f9b228f37727f6c2a9dcc605af2373a1deb751d4153e81fcc3ca5";
 const ORANGE = "5213b3e9877e863725dc9ac7c84074d1f283f4964bb42974351ff307fad30bc9";
 const BLUE = "f29eadd2272eb5148002306adbbdccbf1fdf06518b655d965108aca961809d23";
@@ -54,6 +57,7 @@ test("the card's photo is the brand-red one, never the old blue or orange", () =
   assert.notEqual(sha, BLUE, "the blue-bubble photo is back");
   assert.notEqual(sha, ORANGE, "the orange-bubble photo is back");
   assert.notEqual(sha, RED1, "the first brick-red photo is back");
+  assert.notEqual(sha, RED2, "the filled-ring photo is back");
   assert.equal(sha, BRAND);
   assert.equal(bytes[0], 0xff); assert.equal(bytes[1], 0xd8, "still a JPEG (iOS saves JPEG card photos reliably)");
   assert.ok(vcard({ number: "+16562167455" }).replace(/\r\n /g, "").includes(bytes.toString("base64")), "the vCard carries this photo");
@@ -104,5 +108,5 @@ test("the CLI refuses without --confirm", () => {
     execFileSync(process.execPath, [new URL("../scripts/card-to-owner.js", import.meta.url).pathname], { env: { ...process.env }, stdio: "pipe" });
   } catch (e) { code = e.status; err = String(e.stderr); }
   assert.equal(code, 2);
-  assert.match(err, /--confirm=card-orange-1025/);
+  assert.match(err, /--confirm=card-mark-1027/);
 });
