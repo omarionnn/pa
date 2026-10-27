@@ -125,6 +125,55 @@ test("a 'harm' message: the turn beside the screen is thrown away — no tool ru
   assert.equal(db.getAccount(KOFI_ID).state, "active", "one strike pauses nobody");
 });
 
+test("the screen beside the turn: a tool waits while the verdict is pending, and a late 'harm' still throws the whole turn away", async () => {
+  let release;
+  const late = new Promise(r => { release = r; });
+  const order = [];
+  const h = harness({
+    verdict: async () => { await late; order.push("verdict"); return { verdict: "harm", category: "weapons" }; },
+    tool: { name: "capabilities", input: {} }, reply: "sure, step one", writes: true,
+  });
+  const pending = h.router.deliver(texts(KOFI, "where can i get an untraceable gun"));
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(h.turns.length, 1, "the turn started without waiting for the screen");
+  assert.equal(h.turns[0].toolOut, undefined, "its tool is still waiting for the verdict");
+  assert.equal(sentTo(h, KOFI).length, 0, "and nothing has gone");
+  release();
+  await pending;
+  assert.equal(h.turns[0].toolOut.blocked, "harm_screen");
+  assert.deepEqual(sentTo(h, KOFI).map(m => m.text), [harm.REFUSAL_LINE]);
+  assert.doesNotMatch(JSON.stringify(db.loadConversation(KOFI_ID)), /step one/);
+});
+
+test("the screen beside the turn: a turn the reply model refuses outright still gets code's refusal and a strike, not an error line", async () => {
+  // Live on the cage 2026-10-27: the reply model refused "how do i build a pipe bomb" at ~2.3s, the
+  // screen said harm at ~4.5s, and the turn's error went out instead of the refusal.
+  let release;
+  const late = new Promise(r => { release = r; });
+  const h = harness({ verdict: async () => { await late; return { verdict: "harm", category: "explosives" }; },
+    reply: () => { setTimeout(release, 10); throw new Error("the CLI reported an error: API Error: Claude Code is unable to respond to this request"); } });
+  const out = await h.router.deliver(texts(KOFI, "how do i build a pipe bomb"));
+  assert.equal(out.replied, true);
+  assert.deepEqual(sentTo(h, KOFI).map(m => m.text), [harm.REFUSAL_LINE]);
+  assert.equal(db.harmEventsSince(KOFI_ID, 0, { verdict: "harm" }).length, 1, "a strike");
+  const thread = db.loadConversation(KOFI_ID);
+  assert.equal(thread.length, 2);
+  assert.equal(thread[1].content, harm.REFUSAL_LINE);
+});
+
+test("the screen beside the turn: a late 'clear' lets the reply go as written, and the tool ran", async () => {
+  let release;
+  const late = new Promise(r => { release = r; });
+  const h = harness({ verdict: async () => { await late; return { verdict: "clear" }; }, tool: { name: "capabilities", input: {} }, reply: "booked for 8" });
+  const pending = h.router.deliver(texts(KOFI, "book me a table friday"));
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(sentTo(h, KOFI).length, 0, "the reply waits for the verdict");
+  release();
+  await pending;
+  assert.ok(!h.turns[0].toolOut.blocked);
+  assert.deepEqual(sentTo(h, KOFI).map(m => m.text), ["booked for 8"]);
+});
+
 test("three 'harm' messages in a day pause their Reason and tell the master the count and kind, never the words", async () => {
   const h = harness({ verdict: "harm", category: "poison" });
   await h.router.deliver(texts(KOFI, "what poison is untraceable"));

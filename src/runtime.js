@@ -445,8 +445,6 @@ export class Runtime extends EventEmitter {
       // every tool waits for it (runTool) and so does the reply (below). On 'harm' the turn's
       // reply is thrown away unsent, the thread is put back as it was, and the line back is code's.
       const screened = this._screen({ conversationId, text, kind, meta });
-      // The said check's CLI, started now so its cold start is paid while the turn runs (src/said.js).
-      const warmCheck = kind === "user" ? said.warmCheck(conversationId) : null;
       let refusedHarm = false;
       // One thought, one answer (src/onethought.js). A text of theirs that lands while this turn is
       // working, and is read as adding to what it is working on, is handed to this turn — on its
@@ -496,6 +494,9 @@ export class Runtime extends EventEmitter {
       const draft = kind === "user" && meta.channel === "web" && !shouldSend && (screened.verdict === "clear" || screened.verdict === "pending")
         && this.runTurn !== realRunTurn && webdraft.streamOn(conversationId)
         ? webdraft.startDraft({ conversationId, log: this.log, screen: screened.ready ?? null }) : null;
+      // The said check's CLI, started now so its cold start is paid while the turn runs (src/said.js).
+      // Not for a Web draft, which checks its pieces as they are written (src/webdraft.js).
+      const warmCheck = kind === "user" && !draft ? said.warmCheck(conversationId) : null;
       try {
         const first = await this.runTurn(turnArgs(draft ? { draft } : {}));
         // The reply waits for the verdict. Almost always it is in long before the turn is done.
@@ -538,6 +539,20 @@ export class Runtime extends EventEmitter {
           }
         }
       } catch (e) {
+        // A turn that broke before the screen had answered is decided by the screen, not the error.
+        // The usual way is the reply model's own safeguards refusing the message outright, which
+        // the screen beside it now sees second (2026-10-27): on 'harm' code's refusal goes, with
+        // its strike, exactly as if the turn had never run. A restart's interruption is left alone,
+        // so the drain still puts the message back.
+        if (screened.ready && !refusedHarm && !e?.interrupted) {
+          await screened.ready;
+          if (screened.verdict === "harm") {
+            this.log({ harm_refused_after_failed_turn: conversationId, why: (e?.message ?? String(e)).split("\n")[0].slice(0, 160) });
+            refusedHarm = true;
+            draft?.end();
+            return await screened.refuse();
+          }
+        }
         failed = true;
         draft?.end();
         // An interrupted turn hands back what it took in, with its own texts (Router.#handBack).
@@ -802,6 +817,10 @@ export class Runtime extends EventEmitter {
       // Written down so "has this come up before" is answerable, but never a strike: this person
       // is the one at risk, and pausing them would be the one wrong thing to do.
       if (verdict === "crisis") db.recordHarmEvent({ conversationId, verdict, category: out.category || "self_harm", note: out.note });
+      return out;
+    }).catch((e) => {
+      // Never a rejection nobody waits on, and never 'clear': whatever broke, nobody has read it.
+      if (out.verdict === "pending" || out.verdict === "clear") Object.assign(out, { verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] });
       return out;
     });
     return out;

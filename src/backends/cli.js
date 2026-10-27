@@ -169,7 +169,8 @@ function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = []
     // to stop waiting on it and let whoever owns the turn start a clean one — which for a timer is
     // the next sweep (Runtime.tick). It is why a timeout here must never be the end of anything.
     let timer = null;
-    const arm = (ms) => { clearTimeout(timer); timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, ms); };
+    let limit = timeoutMs;
+    const arm = (ms) => { clearTimeout(timer); limit = ms; timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, ms); };
     // A warm start (startWarm): started now, asked later. It waits at most WARM_IDLE_MS for its
     // question, and the run's own timeout counts from the question, not from the start.
     if (input) {
@@ -203,7 +204,7 @@ function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = []
     child.on("close", (code, signal) => {
       clearTimeout(timer);
       if (cancelled) return resolve({ ok: false, cancelled: true, error: "the warm start was never asked anything" });
-      if (killed) return resolve({ ok: false, error: `the CLI did not finish inside ${timeoutMs}ms`, stderr });
+      if (killed) return resolve({ ok: false, error: `the CLI did not finish inside ${limit}ms`, stderr });
       // Stopped from outside rather than finished. `systemctl restart` signals every process in the
       // unit's cgroup (KillMode=control-group is the default), so the CLI gets the same SIGTERM the
       // server does and dies in the middle of the turn. That is an UNFINISHED turn, not a broken
@@ -262,20 +263,29 @@ const WATCH_SCHEMA = {
 };
 
 /**
- * Fail fast (owner, 2026-10-27). A side call (the harm screen, the said check, the mid-turn read, the
- * judge) whose CLI run failed outright — signed out, out of its limit, could not start — says so,
- * and for SIDE_OUT_MS after it every side call answers with that error at once instead of burning
- * another ~5 s cold start on the same wall. Each caller already treats an error as its safe answer
- * (the screen as `unscreened`, the check as ok, the judge as `unclear`). A timeout or an answer off
- * the schema is about that one question and trips nothing.
+ * Fail fast (owner, 2026-10-27). When the CLI behind the side calls (the harm screen, the said
+ * check, the mid-turn read, the judge) is plainly down — signed out, out of its limit — or has
+ * failed SIDE_OUT_RUN times in a row, every side call answers with that error at once for
+ * SIDE_OUT_MS instead of burning another ~5 s cold start on the same wall. Each caller already
+ * treats an error as its safe answer (the screen as `unscreened`, the check as ok, the judge as
+ * `unclear`). One blip (a 529, an answer off the schema) trips nothing; neither does a timeout,
+ * which is about that one question, or a missing binary, which fails in a millisecond anyway.
  */
 export const SIDE_OUT_MS = 30_000;
+const SIDE_OUT_RUN = 3;
+const DOWN = /not logged in|\/login|oauth|credential|authenticat|expired|usage limit|session limit|limit reached|hit your .*limit|rate.?limit/i;
 let sideOut = { until: 0, why: "" };
+let failedInARow = 0;
 export function sideCallsOut(at = Date.now()) { return at < sideOut.until ? sideOut.why : null; }
-export function resetSideCalls() { sideOut = { until: 0, why: "" }; }
-// No binary at all (`could not run`) fails in a millisecond on its own, so there is nothing to save.
-const trips = (r) => !r.ok && !r.interrupted && !r.cancelled && !/did not finish inside|could not run/.test(r.error ?? "")
-  && !(r.envelope && !r.envelope.is_error);
+export function resetSideCalls() { sideOut = { until: 0, why: "" }; failedInARow = 0; }
+const counts = (r) => !r.ok && !r.interrupted && !r.cancelled && !/did not finish inside|could not run/.test(r.error ?? "");
+function noteSideRun(r, error) {
+  if (!counts(r)) { if (r.ok) failedInARow = 0; return; }
+  failedInARow++;
+  if (DOWN.test(error) || failedInARow >= SIDE_OUT_RUN) {
+    sideOut = { until: Date.now() + SIDE_OUT_MS, why: `the CLI is failing (${error.slice(0, 120)}), so side calls skip it for a moment` };
+  }
+}
 
 /** How long a warm start waits for its question before it is put down. */
 const WARM_IDLE_MS = Number(process.env.REASON_CLI_WARM_IDLE_MS || 10 * 60_000);
@@ -288,9 +298,10 @@ function readStructured(r) {
   if (r.envelope?.stop_reason === "refusal") return { refusal: true, error: String(r.envelope.result ?? "").split("\n")[0] };
   if (!r.ok) {
     const error = r.error ?? `the CLI reported an error: ${String(r.envelope?.result ?? "").split("\n")[0] || "no detail"}`;
-    if (trips(r)) sideOut = { until: Date.now() + SIDE_OUT_MS, why: `the CLI failed just now (${error.slice(0, 120)}), so side calls skip it for a moment` };
+    noteSideRun(r, error);
     return { error };
   }
+  noteSideRun(r, "");
   // Newer CLI builds put a schema'd answer under `structured_output`; older ones in `result`.
   if (r.envelope?.structured_output && typeof r.envelope.structured_output === "object") return { value: r.envelope.structured_output, usage: r.envelope.usage ?? null };
   try { return { value: JSON.parse(String(r.envelope.result ?? "")), usage: r.envelope.usage ?? null }; }

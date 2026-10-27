@@ -31,6 +31,7 @@ process.env.REASON_BACKEND = "claude-cli";
 // The CLI, as a fake: reads the system prompt to know which question it is, answers with the
 // envelope the real one prints (one JSON document, or stream-json lines for a warm start).
 const runs = join(dir, "runs.log");
+const down = join(dir, "down"); // while this file exists the fake CLI is signed out
 const bin = join(dir, "claude");
 writeFileSync(bin, `#!${process.execPath}
 const fs = require("fs");
@@ -39,6 +40,11 @@ const at = (f) => { const i = a.indexOf(f); return i >= 0 ? a[i + 1] : ""; };
 const system = at("--system-prompt");
 const streamed = a.includes("--input-format");
 const answer = (prompt) => {
+  if (fs.existsSync(${JSON.stringify(down)})) {
+    fs.appendFileSync(${JSON.stringify(runs)}, JSON.stringify({ system: system.slice(0, 40), streamed, down: true }) + "\\n");
+    process.stdout.write(JSON.stringify({ type: "result", is_error: true, result: "Not logged in · Please run /login" }));
+    return;
+  }
   let value;
   if (/safety screen/.test(system)) value = /pipe bomb/i.test(prompt.split("verbatim:").pop()) ? { verdict: "harm", category: "explosives", note: "weapon" } : { verdict: "clear" };
   else if (/You check a draft text/.test(system)) value = { changed_silently: [], asks_closed: [] };
@@ -146,6 +152,26 @@ test("extraction still saves memories — on the subscription, with no API call"
   const facts = db.listFacts(config.ownerConversation);
   assert.ok(facts.some(f => /Ama is a nurse in Accra/.test(f.fact)), JSON.stringify(facts));
   assert.deepEqual(hits, [], "NO API CALL");
+});
+
+test("fail fast: a signed-out CLI is asked once, then side calls answer at once for a while (no 5 s burns) — still never the API", async () => {
+  writeFileSync(down, "");
+  try {
+    const screens = () => cliRuns().filter(r => /safety screen/.test(r.system)).length;
+    const before = screens();
+    const first = await harm.screen({ text: "hi", messages: [] });
+    assert.equal(first.verdict, "unscreened");
+    assert.match(first.error, /Not logged in/);
+    assert.equal(screens(), before + 1);
+    const t0 = Date.now();
+    const second = await harm.screen({ text: "hi again", messages: [] });
+    assert.equal(second.verdict, "unscreened", "never 'clear'");
+    assert.match(second.error, /side calls skip it/);
+    assert.ok(Date.now() - t0 < 100, "answered at once");
+    assert.equal(screens(), before + 1, "no second CLI start");
+    await assert.rejects(onethought.askJson({ system: "s", prompt: "p", schema: {} }), /side calls skip it/);
+    assert.deepEqual(hits, [], "NO API CALL");
+  } finally { rmSync(down, { force: true }); resetSideCalls(); }
 });
 
 test("nothing in this file billed the API, and the usage ledger agrees", () => {
