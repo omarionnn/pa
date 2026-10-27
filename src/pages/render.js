@@ -14,7 +14,7 @@ import { stamp, config, normalizeNumber } from "../config.js";
 import { CALLOUT_TONES } from "./content.js";
 import { pageUrl, ownerUrl } from "./access.js";
 import { wordmark, WORDMARK_CSS } from "./wordmark.js";
-import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./brand.js";
+import { BRAND_PEN, BRAND_PEN_DARK, BRAND_ART, PAPER, PAPER_GRAIN } from "./brand.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 
@@ -876,7 +876,7 @@ function previewTags(page) {
 
 /** Where this page's picture is fetched from: keyed, because a page is only ever its owner's. */
 export function cardUrl(page) {
-  const q = new URLSearchParams({ v: String(page.revision ?? 1) });
+  const q = new URLSearchParams({ v: `${page.revision ?? 1}-${BRAND_ART}` });
   if (page.owner_key) q.set("k", page.owner_key);
   return `${pageUrl(page.id)}/card.png?${q}`;
 }
