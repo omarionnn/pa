@@ -9855,6 +9855,8 @@ addColumnIfMissing("messages", "chat_id", "TEXT");
 // …and the thread an approval was asked in (its history key; null = the shared thread), so only an
 // answer in that same thread can grant it (src/trust.js recordConfirmation).
 addColumnIfMissing("confirmations", "thread_key", "TEXT");
+// …and each Web chat's short title (src/webchats.js), written once when its first reply lands.
+addColumnIfMissing("web_chats", "title", "TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS messages_chat_at ON messages (conversation_id, chat_id, at, id) WHERE chat_id IS NOT NULL");
 
 // Temporal columns on person_facts
@@ -9906,6 +9908,10 @@ function historyOn() {
  */
 export const HISTORY_EXCLUDED_KEYS = ["pcode:", "esign:", "wsign:"];
 
+let webChatReplyHook = null;
+/** src/webchats.js's titler: called with (conversationId, chatId) for each reply row written into a Web chat. */
+export function setWebChatReplyHook(f) { webChatReplyHook = typeof f === "function" ? f : null; }
+
 /**
  * One history row. Idempotent on (conversation, channel, external_id) for a person's message and on
  * outbox_id for Reason's, so a retried webhook or a second markOutboundSent writes nothing twice.
@@ -9929,6 +9935,8 @@ export function writeMessage({ conversationId, role, channel, externalId = null,
   if (ownChat) db.prepare("UPDATE web_chats SET last_at = ? WHERE id = ?").run(Math.max(at, clock.now()), ownChat);
   // Live Web (W2): an open conversation tab hears about its own conversation's new row, nothing else.
   try { historyBus.emit("row", { conversationId, id, chatId: ownChat }); } catch { /* a listener never costs a write */ }
+  // A reply landing in a Web chat: what titles it, once (src/webchats.js).
+  if (ownChat && role === "assistant" && webChatReplyHook) { try { webChatReplyHook(conversationId, ownChat); } catch { /* never costs a write */ } }
   return id;
 }
 
@@ -9962,9 +9970,9 @@ export function claimWebChat(conversationId, id) {
   db.prepare("INSERT OR IGNORE INTO web_chats (id, conversation_id, created_at, last_at) VALUES (?, ?, ?, ?)").run(String(id), conversationId, now, now);
   return webChatOwner(id) === conversationId;
 }
-/** This conversation's Web chats that have anything in them, newest first: `{ id, created_at, last_at, count, first }`. */
+/** This conversation's Web chats that have anything in them, newest first: `{ id, created_at, last_at, title, count, first }`. */
 export function listWebChats(conversationId) {
-  return db.prepare(`SELECT c.id, c.created_at, c.last_at, COUNT(m.id) AS count,
+  return db.prepare(`SELECT c.id, c.created_at, c.last_at, c.title, COUNT(m.id) AS count,
       (SELECT text FROM messages f WHERE f.conversation_id = c.conversation_id AND f.chat_id = c.id AND f.deleted_at IS NULL AND f.role = 'user' ORDER BY f.at, f.id LIMIT 1) AS first
     FROM web_chats c JOIN messages m ON m.conversation_id = c.conversation_id AND m.chat_id = c.id AND m.deleted_at IS NULL
     WHERE c.conversation_id = ? GROUP BY c.id ORDER BY c.last_at DESC`).all(conversationId);

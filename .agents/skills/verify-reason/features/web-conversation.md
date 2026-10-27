@@ -127,7 +127,20 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
 - **Chat history** (/web/memory/history) lists each chat as a day-style row (`WEB CHAT · <DAY> · N
   MESSAGES`) → `/web?chat=<id>`; days, a day's lines and search are `chat_id IS NULL` only.
   Provisional placement: SCOPE-v2 Q-v2-51.
-- Tests: `node --test test/web-chats.test.js`. Preview: `bin/web-chats-preview.mjs`.
+- **Titles.** `web_chats.title`, written ONCE when the chat's first reply row lands (`db.setWebChatReplyHook`
+  → `src/webchats.js titleWebChat`): one claude-cli summarise (`feature: "chat_title"`, only when
+  `REASON_BACKEND=claude-cli`, never under the test runner; `REASON_WEB_CHAT_TITLES=0` turns it off), else
+  the first 6 words / 48 chars of the first message (`"A Web chat"` when it had none). `UPDATE … WHERE
+  title IS NULL`, so a later reply never retitles. Chat history's row shows it.
+- **Recent chats** (owner 10-27 01:58, for Home's composer hover; the panel is the UI agent's, Q-v2-51):
+  `GET /web/chats/recent` → `{ chats: [{ id, title, preview, updatedAt, needsYou, working }] }`, the
+  session's own chats with messages, latest 5 by `last_at`. Signed out 401; another origin or a
+  missing/wrong `x-reason-csrf` header (`REASON_WEB.c`) 403; non-GET 405. `preview` = last non-empty
+  message, one line, ≤80 chars. `needsYou` = an open confirmation (24 h) whose `thread_key` is the chat's
+  history key; `working` = `onethought.activeFor(conv).webChat` is this chat, or a `pending_inbound` row
+  for `web:<id>`.
+- Tests: `node --test test/web-chats.test.js test/web-recent-chats.test.js`. Preview: `bin/web-chats-preview.mjs`.
+  Drive: `bin/web-recent-chats-drive.mjs` under `caged.sh env` (real HTTP, no model; fallback titles).
 
 ## Proving it
 
