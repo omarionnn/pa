@@ -218,10 +218,11 @@ test("a number with no account gets byte-identical words to one with, no text, n
     assert.doesNotMatch(body, /808/);
   }
   // The join block: the live line's number as an sms: link ("Text Reason →", Messages opens with
-  // "Hey" typed) and as a QR of that link — on the sign-in page everybody sees before any number is
+  // "hey" typed, v2) and as a QR of that link — on the sign-in page everybody sees before any number is
   // typed, and on the join page. The number itself is never written on the page (owner 10-26).
   for (const body of [(await req(h)).body, (await req(h, { query: { join: "1" } })).body]) {
-    assert.ok(body.includes(`<a class="act" href="sms:${LINE}&amp;body=Hey">Text Reason <span aria-hidden="true">→</span></a>`), "Text Reason → opens Messages to the live line with Hey prefilled");
+    assert.ok(body.includes(`href="sms:${LINE}&amp;body=hey">`), "Text Reason → opens Messages to the live line with hey prefilled");
+    assert.match(body, /<a class="act" href="sms:[^"]+">(or )?Text Reason <span aria-hidden="true">→<\/span><\/a><span class="tr-h">OPENS MESSAGES WITH “HEY” READY TO SEND<\/span>/, "with the typed hint under it");
     assert.match(body, /<figure class="qr"><svg[^>]*aria-label="QR code to text Reason"/, "the QR of that link");
     assert.doesNotMatch(body.replace(/href="sms:[^"]*"/g, ""), /656|216-?7455|so-num/, "no visible number");
     assert.match(body, /then come back here to sign in\./);
@@ -236,7 +237,7 @@ test("a number with no account gets byte-identical words to one with, no text, n
 
 test("the QR is a real QR of the sms: link", async () => {
   const { qrMatrix, qrSvg } = await import("../src/pages/qr.js");
-  const m = qrMatrix(`sms:${LINE}&body=Hey`);
+  const m = qrMatrix(`sms:${LINE}&body=hey`);
   assert.equal(m.length, 25, "version 2 for a 25-byte link");
   // The three finders, as the camera finds them: dark corner, dark centre, light ring between.
   for (const [r, c] of [[0, 0], [0, 18], [18, 0]]) { assert.equal(m[r][c], true); assert.equal(m[r + 3][c + 3], true); assert.equal(m[r + 1][c + 1], false); }
@@ -627,9 +628,12 @@ test("the copy coaches no phrase: intent words only; the sms: body and the three
     assert.ok(text.includes(quoted), `${ex}: on the arrival`);
     text = text.replaceAll(quoted, " ");
   }
+  // The one sanctioned quote: the typed hint under every "Text Reason →" says what the tap does (v2 §7).
+  assert.ok(text.includes("OPENS MESSAGES WITH “HEY” READY TO SEND"), "the hint under Text Reason →");
+  text = text.replaceAll("OPENS MESSAGES WITH “HEY” READY TO SEND", " ");
   assert.doesNotMatch(text, /["“”]|&quot;/, "no other quoted words anywhere");
   assert.doesNotMatch(text, /\b(say|text|reply|type|send)\s+(&quot;|["“'‘])/i);
   assert.doesNotMatch(text, /\b(reply|say|type)\s+[A-Z]{2,}\b/, "no 'reply YES'-style coaching");
-  assert.ok(html.includes(`href="sms:${LINE}&amp;body=Hey"`), "the sms: body is the only prefilled text");
-  for (const m of html.matchAll(/href="(sms:[^"]*)"/g)) assert.equal(m[1], `sms:${LINE}&amp;body=Hey`, "every sms: link prefills only the hello");
+  assert.ok(html.includes(`href="sms:${LINE}&amp;body=hey"`), "the sms: body is the only prefilled text");
+  for (const m of html.matchAll(/href="(sms:[^"]*)"/g)) assert.equal(m[1], `sms:${LINE}&amp;body=hey`, "every sms: link prefills only the hello");
 });

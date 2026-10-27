@@ -187,7 +187,8 @@ test("6A sign-in: the number on an underline, the Caveat note, a text action, an
   // Desktop: the join block to the right, with the real live number and a real QR.
   assert.match(s, /<section class="so-join" aria-labelledby="dj-title"><p class="lbl">NEW TO REASON<\/p><h2 id="dj-title" class="so-h2">Your first text<br><em>is the sign-up\.<\/em><\/h2>/);
   assert.match(s, /<figure class="qr"><svg[^>]*role="img" aria-label="QR code to text Reason"/);
-  assert.match(s, /<\/h2><a class="act" href="sms:\+16562167455&amp;body=Hey">Text Reason <span aria-hidden="true">→<\/span><\/a><figure class="qr">/);
+  // v2: the QR card first, then "or Text Reason →" with its typed hint (reference desk-sign-in).
+  assert.match(s, /<\/h2><figure class="qr">[^]*?<\/figure><div class="tr tr-or"><a class="act" href="sms:\+16562167455&amp;body=hey">or Text Reason <span aria-hidden="true">→<\/span><\/a><span class="tr-h">OPENS MESSAGES WITH “HEY” READY TO SEND<\/span><\/div><p class="hand">then come back here to sign in\.<\/p>/);
   assert.doesNotMatch(s.replace(/href="sms:[^"]*"/g, ""), /656|216-?7455|so-num/, "the number is never written on the page");
   assert.match(s, /then come back here to sign in\./);
   assert.ok(!s.includes("you&#39;ve been signed out"));
@@ -224,8 +225,8 @@ test("6B code: six cells over one real one-time-code input, the current digit in
 
 test("code errors: wrong, expired, too many tries with a countdown, resend limit — each an alert under the digits", () => {
   const { codeWrong, codeExpired, codeTries, codeResend } = allScreens();
-  assert.match(codeWrong, /<div class="digits bad"><input id="code"[^>]*aria-invalid="true">/);
-  assert.match(codeWrong, /<p class="hand" role="alert">that&#39;s not it\. try again\?<\/p>/);
+  assert.match(codeWrong, /<div class="digits bad"><input id="code"[^>]*aria-invalid="true" aria-describedby="code-note">/);
+  assert.match(codeWrong, /<p class="hand" id="code-note" role="alert">that&#39;s not it\. try again\?<\/p>/);
   assert.match(codeExpired, /role="alert">that one expired\.<\/p><form method="POST" action="\/web\/signin">[^]*?<input type="hidden" name="again" value="1"><button class="act act-sm" type="submit">Send a fresh one <span aria-hidden="true">→<\/span>/);
   assert.match(codeTries, /role="alert">let&#39;s pause a minute\.<\/p><p class="so-wait" data-left="299000">TRY AGAIN IN <span class="left">4:59/);
   assert.match(codeTries, /<input id="code"[^>]* disabled/);
@@ -237,7 +238,7 @@ test("code errors: wrong, expired, too many tries with a countdown, resend limit
 test("6D new to Reason: the live number, a real QR, Text Reason →; 6E with no live line: no number, no QR", () => {
   const { join: j, notConnected } = allScreens();
   assert.match(j, /<a class="act2" href="\/web">← SIGN IN<\/a>/);
-  assert.match(j, /<h1 id="so-title" class="h1">Your first text<br><em>is the sign-up\.<\/em><\/h1><a class="act" href="sms:\+16562167455&amp;body=Hey">Text Reason <span aria-hidden="true">→<\/span><\/a><figure class="qr">/);
+  assert.match(j, /<h1 id="so-title" class="h1">Your first text<br><em>is the sign-up\.<\/em><\/h1><div class="tr"><a class="act" href="sms:\+16562167455&amp;body=hey">Text Reason <span aria-hidden="true">→<\/span><\/a><span class="tr-h">OPENS MESSAGES WITH “HEY” READY TO SEND<\/span><\/div><figure class="qr">/);
   assert.doesNotMatch(j.replace(/href="sms:[^"]*"/g, ""), /656|216-?7455|so-num/, "the number is never written on the page");
   assert.match(j, /On a laptop\? Scan/);
   assert.match(notConnected, /We can't finish joining right now\.<\/h1><p class="so-sub">Reason's line isn't taking new people for the moment\. Nothing on your side went wrong\.<\/p><p class="hand tilt">i&#39;ll be back soon\.<\/p><a class="act2" href="\/web">ALREADY A MEMBER\? SIGN IN →<\/a>/);

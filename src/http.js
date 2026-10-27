@@ -235,6 +235,22 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(fontOut.status, fontOut.headers);
         return res.end(req.method === "HEAD" ? "" : fontOut.body);
       }
+      // E5 (src/pages/webedge.js): the owner's maintenance switch is on, so every /web address answers
+      // "Tidying up for a few minutes" (503) until the time it names. The faces above still load; a
+      // page's own script asking for JSON is told the same in JSON. Texting Reason is untouched.
+      if (webOn() && /^\/web(?:\/|$)/.test(url.pathname)) {
+        const edge = await import("./pages/webedge.js");
+        const m = edge.maintenance(clock.now());
+        if (m.on) {
+          const retry = String(Math.max(60, Math.ceil((m.until - clock.now()) / 1000)));
+          if (String(req.headers.accept ?? "").includes("application/json") || req.method === "OPTIONS") {
+            return send(503, { ok: false, error: "maintenance", until: m.until });
+          }
+          const body = edge.renderMaintenance({ until: m.until, joinNumber: joinNumber(router) });
+          res.writeHead(503, { "Content-Type": "text/html; charset=utf-8", ...WEB_SECURITY_HEADERS, "Retry-After": retry, "Content-Length": Buffer.byteLength(body) });
+          return res.end(req.method === "HEAD" ? "" : body);
+        }
+      }
       // A browser reconnecting the live stream across hosts sends Last-Event-ID, which needs a preflight:
       // answered for the website's own origin only, carrying nothing (src/pages/webconvo.js liveStreamRequest).
       if (url.pathname === "/web/live" && req.method === "OPTIONS" && webOn()) {
@@ -288,6 +304,15 @@ export function createServer({ router, runtime, log = () => {} }) {
         }
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);
+      }
+      // E1 (src/pages/webedge.js): any other /web address is "This page isn't here. Nothing's lost.",
+      // with the way back to the thread only for a browser that is signed in.
+      if (webOn() && /^\/web\//.test(url.pathname) && (req.method === "GET" || req.method === "HEAD")) {
+        const { renderWebNotFound } = await import("./pages/webedge.js");
+        const { sessionAccount } = await import("./pages/websignin.js");
+        const body = renderWebNotFound({ signedIn: !!sessionAccount(req.headers) });
+        res.writeHead(404, { "Content-Type": "text/html; charset=utf-8", ...WEB_SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) });
+        return res.end(req.method === "HEAD" ? "" : body);
       }
 
       // ---------- an invite link's card picture ----------
@@ -1551,6 +1576,16 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
       if (wantsJson) return { status: 200, headers: JSONH, body: JSON.stringify({ ok: out.ok, action, result: out }) };
       return { status: 303, headers: { ...HTML(), Location: "/ops?focus=events#events" }, body: "" };
     }
+    // ---- Reason Web's maintenance switch (E5): on until a time, or off ----
+    if (action === "web_maint_on" || action === "web_maint_off") {
+      const edge = await import("./pages/webedge.js");
+      const out = action === "web_maint_off" ? edge.endMaintenance()
+        : (() => { const until = edge.parseUntil(form.get("until"), clock.now()); return until ? edge.startMaintenance({ until, by: "ops", now: clock.now() }) : { ok: false, reason: "time" }; })();
+      log({ ops_web_maintenance: action === "web_maint_on" ? "on" : "off", ok: out.ok, ...(out.until ? { until: out.until } : {}), ...(out.reason ? { why: out.reason } : {}) });
+      if (wantsJson) return { status: out.ok ? 200 : 400, headers: JSONH, body: JSON.stringify({ ok: out.ok, action, result: out }) };
+      if (!out.ok) return { status: 400, headers: HTML(), body: renderOps({ report: ops.snapshot(), now: clock.now(), focus: focusId, events: eventsOps(), web: await webOps(out.reason === "too_far" ? "That's more than a day away. Pick a time within the next day." : "That time didn't read. Use HH:MM in Eastern time, or a number of minutes.") }) };
+      return { status: 303, headers: { ...HTML(), Location: "/ops?focus=web#web" }, body: "" };
+    }
     if (action === "check") {
       await run({});
       log({ ops_checked_by_owner: true });
@@ -1565,7 +1600,7 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
       const running = ops.progress();
       return { status: running ? 202 : 200, headers: JSONH, body: JSON.stringify({ ok: true, action, cleared, running }) };
     }
-    return { status: 200, headers: HTML(), body: renderOps({ report: ops.snapshot(), now: clock.now(), focus: focusId, events: eventsOps() }) };
+    return { status: 200, headers: HTML(), body: renderOps({ report: ops.snapshot(), now: clock.now(), focus: focusId, events: eventsOps(), web: await webOps() }) };
   }
 
   if (method === "POST" && !signedIn) {
@@ -1645,10 +1680,18 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
       }),
     };
   }
-  return { status: 200, headers: HTML(), body: renderOps({ report, now: clock.now(), focus: focusId, events: eventsOps() }) };
+  return { status: 200, headers: HTML(), body: renderOps({ report, now: clock.now(), focus: focusId, events: eventsOps(), web: await webOps() }) };
 }
 
 /** The status page's events section, or null while events are off and none exist. */
+/** Reason Web's maintenance switch, for the status page (null while Web is off altogether). */
+async function webOps(error = "") {
+  if (!webOn()) return null;
+  const edge = await import("./pages/webedge.js");
+  const m = edge.maintenance(clock.now());
+  return { on: m.on, label: m.on ? edge.etTime(m.until) : "", error };
+}
+
 function eventsOps() {
   if (!eventsmod.eventsOn() && !db.allEvents({ limit: 1 }).length) return null;
   try { return eventsmod.opsSummary(); } catch { return null; }

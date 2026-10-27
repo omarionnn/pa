@@ -392,6 +392,13 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
 
 See [features/web-memory.md](features/web-memory.md).
 
+### Baseline — 3,949 pass after Reason Web v2 edge (wt/v2-edge, 2026-10-27)
+
+`npm run test:offline` under `env -i`: **4,072 tests, 3,949 passing**, 1 failing = the known flaky
+`test/flights.test.js` sidecar (56/56 alone). New: `test/web-edge.test.js` (12) and
+`test/web-edge-browser.test.js` (9 Chromium drives: L6/L7/6B, L3, L3 motion, L4, L5, 9B, E1, E5, F1).
+See [features/web-edge.md](features/web-edge.md).
+
 ### Baseline — 3,878 pass, **0 failures** after Reason Web Settings (wt/web-settings, 2026-10-26)
 
 `/web/settings` real end to end: reach preference honoured by `src/deliver.js` (`keptOnWeb`), browsers list + revoke, connected, invites, theme per account. 21 pinned tests (`test/web-settings.test.js`, `test/web-settings-migration.test.js`); `bin/web-settings-drive.mjs` under `caged.sh env`: 17 steps, all ok. `npm run test:offline` under `env -i`: **4,000 tests, 3,878 passing, 0 failing, 122 skipped.** See [features/web-settings.md](features/web-settings.md).
@@ -618,6 +625,8 @@ behaviour, change its feature file in the same commit.
 
 Reason Web Ongoing (tab, margin, details 2A–2E + approval, 9D): [features/web-ongoing.md](features/web-ongoing.md);
 `bin/web-ongoing-preview.mjs` draws every state beside the handoff's reference pages.
+Reason Web v2 edge (body=hey + hint, code-error pen, loading L3–L7, E1 404, E5 maintenance switch, keyboard
+focus F1): [features/web-edge.md](features/web-edge.md); driven in Chromium by `test/web-edge-browser.test.js`.
 
 ## Facts worth not rediscovering
 
