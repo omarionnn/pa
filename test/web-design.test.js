@@ -113,6 +113,26 @@ test("reduced motion is no motion at all, and focus is a 2px ink outline offset 
   assert.match(kit.KIT_CSS, /translateY\(6px\)/, "new lines rise 6px");
 });
 
+test("no + (attach) and no mic (voice) on any screen until they work — owner decision 10-26", () => {
+  let composers = 0;
+  for (const [name, html] of Object.entries(allScreens())) {
+    if (html.includes('class="cform"')) composers++;
+    assert.ok(!/aria-label="(?:Add a photo or file|Attach[^"]*|Speak[^"]*|Voice[^"]*|Record[^"]*)"|type="file"|class="slot|class="(?:attach|mic)\b/i.test(html), `${name}: no + or mic drawn`);
+  }
+  assert.ok(composers >= 3, "home, home in hand and the thread all carry the composer");
+});
+
+test("instant replies: the stream is the path, the 4 s poll only its fallback (owner 10-26)", () => {
+  const s = allScreens().thread;
+  assert.match(s, /setInterval\(function\(\)\{if\(!live\|\|Date\.now\(\)-beat>40000\)poll\(\)\},4000\)/, "no poll beside a live stream, even while a reply is awaited");
+  assert.match(s, /es\.addEventListener\('ping',function\(\)\{beat=Date\.now\(\)\}\)/);
+  config.webStream = "";
+  const was = [config.siteUrl, config.pagesUrl];
+  config.siteUrl = "https://heyreason.com"; config.pagesUrl = "https://files.heyreason.com";
+  try { assert.equal(wc.streamPath(), "https://files.heyreason.com/web/live", "on by default in production's shape, no env needed"); }
+  finally { [config.siteUrl, config.pagesUrl] = was; }
+});
+
 test("the wordmark: reas◯n with the bubble in pen, skewed −10°; the loader is reas◯n + ing and only where asked", () => {
   const wm = kit.wordmark();
   assert.match(wm, /role="img" aria-label="reason">reas<svg class="bub" aria-hidden="true"/);
@@ -300,8 +320,9 @@ test("the thread page: a log, ↑ SHOW EARLIER, 'on it.' as a status, the one-li
   assert.match(s, /<button class="send" type="submit" aria-label="Send">/);
   assert.match(s, /\.cform input:placeholder-shown~\.send\{display:none\}/, "send appears only with text");
   assert.match(s, /<p class="under">Replies come here, not to your phone as well\.<\/p>/);
-  assert.ok(!/aria-label="Add a photo or file"|aria-label="Speak instead"/.test(s), "no dead + or mic");
-  assert.equal((s.match(/<span class="slot[^"]*" aria-hidden="true"><\/span>/g) ?? []).length, 2, "room held for them");
+  // Owner 10-26: no "+" (attach) and no mic (voice) until they work — not drawn at all, not disabled, no held gap.
+  assert.ok(!/aria-label="Add a photo or file"|aria-label="Speak instead"|type="file"|class="slot|class="(?:attach|mic)/i.test(s), "no + or mic, no room held for them");
+  assert.match(s, /<form class="cform" method="POST" action="\/web\/send"><input type="hidden" name="c" value="[^"]*"><input type="hidden" name="id" value="[^"]*"><label class="sr" for="c-input">Message Reason<\/label><input id="c-input"[^>]*><button class="send" type="submit" aria-label="Send">[^]*?<\/button><\/form>/, "the form is the input and send, nothing else");
   assert.match(s, /<nav class="tabs" aria-label="Sections"><a href="\/web\?thread" aria-current="page">Chat<\/a><a href="\/web\?tab=ongoing">Ongoing<\/a><\/nav>/);
   assert.match(s, /<nav aria-label="Account"><a class="act2" href="\/web\/memory">MEMORY<\/a><a class="act2" href="\/web\/settings">SETTINGS<\/a><\/nav>/);
   assert.match(s, /<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">/);
