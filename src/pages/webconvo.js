@@ -38,8 +38,9 @@ import { WEB, webStreamOrigin, siteOrigin } from "../web.js";
 import { config, clock } from "../config.js";
 import { esc } from "./render.js";
 import { readCookie } from "./access.js";
+import { cleanTitle, queueTitle } from "../itemtitle.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting } from "./websignin.js";
-import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch } from "./webkit.js";
+import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch, OG_KEY } from "./webkit.js";
 import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot, COMPOSE_CSS, COMPOSE_JS } from "./webcompose.js";
 import { prepareSend } from "../webmedia.js";
 
@@ -275,15 +276,34 @@ const whenFmt = () => new Intl.DateTimeFormat("en-US", { timeZone: config.tz, we
  * Ongoing tab and the desktop margin show until then.
  */
 export function inHand(conversationId) {
+  const name = db.getAccount(conversationId)?.name || config.ownerName;
+  // The row's own short title (src/itemtitle.js); until it has one, Reason's note cleaned up, and a
+  // one-time title asked for in the background so the next view reads like the person would say it.
+  const titled = (kind, row, text) => {
+    const label = String(row.label ?? "").trim();
+    if (label) return label;
+    // A series' firing is titled through its series (the title then reaches every firing).
+    if (kind === "timer" && row.series_id) {
+      const s = db.getSeries(conversationId, row.series_id);
+      if (s?.label) return s.label;
+      if (s) queueTitle("series", conversationId, s.id, s.what, { name });
+    } else queueTitle(kind, conversationId, row.id, text, { name });
+    return cleanTitle(text, { name }) || String(text ?? "").trim().slice(0, 48);
+  };
   const tasks = db.listTasks(conversationId).map(t => {
     const [status, words] = STATE_WORDS[t.state] ?? ["IN HAND", "in hand"];
-    return { kind: "task", title: String(t.title ?? "").trim(), status, words, needs: t.state === "waiting_on_you" };
+    return { kind: "task", title: titled("task", t, t.title), status, words, needs: t.state === "waiting_on_you", due: t.next_wake_at ?? null };
   });
   const timers = db.listTimers(conversationId).map(t => ({
-    kind: "timer", title: String(t.note ?? "").trim() || (t.call_goal ? "A call" : "A reminder"),
-    status: t.call_goal ? "CALL" : "REMINDER", when: whenFmt().format(t.fire_at), needs: false,
+    kind: "timer", title: titled("timer", t, t.note) || (t.call_goal ? "A call" : "A reminder"),
+    status: t.call_goal ? "CALL" : "REMINDER", when: whenFmt().format(t.fire_at), needs: false, due: t.fire_at,
   }));
-  return [...tasks, ...timers].filter(x => x.title);
+  // Needs-you first, then whatever is due soonest; nothing due last.
+  const rank = (x) => [x.needs ? 0 : 1, Number.isFinite(x.due) ? x.due : Infinity];
+  return [...tasks, ...timers].filter(x => x.title).sort((a, b) => {
+    const [an, ad] = rank(a), [bn, bd] = rank(b);
+    return an - bn || (ad === bd ? 0 : ad < bd ? -1 : 1);
+  });
 }
 
 /** Approvals Reason is waiting on (asked, not answered) in the last day: the one loud thing. */
@@ -297,7 +317,8 @@ export function waitingApprovals(conversationId, now = clock.now()) {
 
 // ---------------------------------------------------------------- the look
 const CSS = `
-.top{padding:20px var(--gut) 0;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.top{position:sticky;top:0;z-index:20;background:var(--ground);padding:20px var(--gut) 12px;display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px dashed transparent;transition:border-color .2s}
+.top.stuck{border-bottom-color:var(--hair)}
 .top nav{display:none;align-items:center;gap:28px}
 .menu-b{width:44px;height:44px;margin-right:-10px;border:0;background:transparent;display:grid;place-items:center;cursor:pointer;color:var(--ink)}
 .menu-b svg{width:20px;height:20px;fill:currentColor}
@@ -366,8 +387,16 @@ const CSS = `
 .send svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .cform input:placeholder-shown~.send{display:none}
 .under{margin:0;font-size:13px;color:var(--muted)}
-.og{display:none;flex:1 1 300px;max-width:340px;flex-direction:column;gap:28px;padding-top:8px;position:sticky;top:24px}
+.og{display:none;flex:1 1 300px;max-width:340px;flex-direction:column;gap:28px;padding-top:8px;position:sticky;top:104px;transition:transform .32s ease,opacity .32s ease}
+.og.going{transform:translateX(48px);opacity:0}
 .og h2{margin:0;font:italic 400 32px/1.1 var(--serif)}
+.og-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.og .og-x{display:none}
+.og.all .og-x{display:flex}
+.og-all{align-self:flex-start;min-height:44px;display:inline-flex;align-items:center;margin-top:-12px;font:400 12px/1.3 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink);text-decoration:none}
+.og-all:hover,.og-hide:hover,.og-back:hover{color:var(--pen)}
+.og-back{display:none;position:fixed;right:0;top:50%;transform:translateY(-50%);z-index:15;min-width:44px;min-height:44px;padding:20px 12px;border:0;border-left:1px dashed var(--hair);background:var(--ground);cursor:pointer;color:var(--ink);font:400 12px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;writing-mode:vertical-rl}
+html.og-off .wrapc>.og{display:none}
 .og-sec{display:flex;flex-direction:column}
 .og-sec h3{margin:0 0 4px;font:400 12px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
 .og-sec h3.pen{color:var(--pen)}
@@ -445,6 +474,9 @@ body.has-tabs .foot{display:none}
 .cform{padding-top:10px}
 .composer{padding:12px 0 24px;margin-top:12px}
 .og{display:flex}
+html.og-off .og-back{display:flex;align-items:center;justify-content:center}
+html.og-off .wrapc{padding-right:max(64px,4vw)}
+.og-back:focus-visible{outline-offset:-4px}
 .tabs{display:none}
 body.has-tabs{padding-bottom:0}
 body.has-tabs .composer{bottom:0}
@@ -489,17 +521,43 @@ function composer({ csrf, sendId }) {
   return composerHtml({ csrf, sendId, maxText: MAX_TEXT });
 }
 
-function ongoingMargin(items, approvals) {
+/** How many Ongoing rows show before "See all N →" (owner, 10-26): needs-you first, then soonest due. */
+export const OG_TOP = 3;
+
+/**
+ * The Ongoing list: the desktop margin, or (`tab`) the mobile Ongoing tab's body. The top OG_TOP rows
+ * show; the rest are drawn but folded, and "See all N →" opens them in place ("Show fewer" folds them
+ * back). Without script it is a link to the same list drawn open (`all`). The margin also carries
+ * "HIDE →": the page slides it away and the thread takes the width; a thin vertical typed "ONGOING · N" at the right edge brings it back (handoff §3, sheet 3).
+ */
+function ongoingMargin(items, approvals, { all = false, tab = false } = {}) {
+  const head = tab ? "" : `<div class="og-h"><h2>Ongoing</h2><button class="act2 og-hide" type="button" aria-controls="og" aria-expanded="true">HIDE <span aria-hidden="true">→</span></button></div>`;
+  const aside = (inner, cls = "") => `<aside class="og${tab ? " og-tab" : ""}${cls}" id="og" aria-label="Ongoing">${head}${inner}</aside>`;
+  if (!items.length && !approvals.length) {
+    return aside(`<div class="empty"><p class="h2">Nothing left<br>to chase.</p>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</div>`);
+  }
   const needs = items.filter(x => x.needs);
   const rest = items.filter(x => !x.needs);
-  if (!items.length && !approvals.length) {
-    return `<aside class="og" aria-label="Ongoing"><h2>Ongoing</h2><div class="empty"><p class="h2">Nothing left<br>to chase.</p>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</div></aside>`;
-  }
-  const row = (x) => `<div class="og-row"><b>${esc(x.title)}</b>${x.when ? `<span class="when">${esc(x.when)}</span>` : `<span class="lbl">${esc(x.status)}</span>`}</div>`;
-  return `<aside class="og" aria-label="Ongoing"><h2>Ongoing</h2>`
-    + (approvals.length || needs.length ? `<section class="og-sec"><h3 class="pen">NEEDS YOU</h3>${approvals.map(a => `<div class="card appr"><p class="appr-t">${esc(a.title)}</p><p class="lbl">${a.money ? "NOTHING CHARGED YET" : "NOTHING BOOKED YET"}</p></div>`).join("")}${needs.map(row).join("")}</section>` : "")
-    + (rest.length ? `<section class="og-sec"><h3>IN HAND</h3>${rest.map(row).join("")}</section>` : "")
-    + `</aside>`;
+  const total = approvals.length + items.length;
+  let i = 0;
+  const fold = () => (i++ >= OG_TOP ? " og-x" : "");
+  const row = (x) => `<div class="og-row${fold()}"><b>${esc(x.title)}</b>${x.when ? `<span class="when">${esc(x.when)}</span>` : `<span class="lbl">${esc(x.status)}</span>`}</div>`;
+  const appr = (a) => `<div class="card appr${fold()}"><p class="appr-t">${esc(a.title)}</p><p class="lbl">${a.money ? "NOTHING CHARGED YET" : "NOTHING BOOKED YET"}</p></div>`;
+  const section = (h, cls, rows) => {
+    const from = i;
+    const inner = rows();
+    return `<section class="og-sec${from >= OG_TOP ? " og-x" : ""}"><h3${cls}>${h}</h3>${inner}</section>`;
+  };
+  const back = tab ? "/web?tab=ongoing" : "/web?thread";
+  const more = total > OG_TOP
+    ? `<a class="og-all" href="${back}${all ? "" : "&amp;all=1"}" aria-controls="og" aria-expanded="${all}" data-n="${total}">${all ? "Show fewer" : `See all ${total} <span aria-hidden="true">→</span>`}</a>`
+    : "";
+  return aside(
+    (approvals.length || needs.length ? section("NEEDS YOU", ` class="pen"`, () => approvals.map(appr).join("") + needs.map(row).join("")) : "")
+    + (rest.length ? section("IN HAND", "", () => rest.map(row).join("")) : "")
+    + more,
+    all ? " all" : "",
+  );
 }
 
 /** "pick up from iMessage": the last two texts, quoted, the whole block one link into the thread. */
@@ -521,6 +579,13 @@ function pickUp(conversationId, service) {
 const CLIENT_JS = `(function(){
 var R=window.REASON_WEB,list=document.querySelector('.thread'),onit=document.querySelector('.onit'),form=document.querySelector('.cform'),box=document.getElementById('c-input'),start=document.querySelector('.start'),net=document.querySelector('.netline'),body=document.body;
 var mb=document.querySelector('.menu-b'),menu=document.getElementById('menu');
+var bar=document.querySelector('.top'),og=document.getElementById('og'),H=document.documentElement;
+function stuck(){if(bar)bar.classList.toggle('stuck',window.scrollY>4)}window.addEventListener('scroll',stuck,{passive:true});stuck();
+if(og){var hb=og.querySelector('.og-hide'),back=document.querySelector('.og-back'),all=og.querySelector('.og-all'),calm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+function keepOff(off){try{if(off)localStorage.setItem('${OG_KEY}','off');else localStorage.removeItem('${OG_KEY}')}catch(e){}}
+if(hb)hb.onclick=function(){keepOff(true);if(calm){H.classList.add('og-off');if(back)back.focus();return}og.classList.add('going');setTimeout(function(){H.classList.add('og-off');og.classList.remove('going');if(back)back.focus()},320)};
+if(back)back.onclick=function(e){e.preventDefault();keepOff(false);if(!calm)og.classList.add('going');H.classList.remove('og-off');requestAnimationFrame(function(){requestAnimationFrame(function(){og.classList.remove('going')})});if(hb)hb.focus()};
+if(all)all.onclick=function(e){e.preventDefault();var open=og.classList.toggle('all');all.setAttribute('aria-expanded',open?'true':'false');all.innerHTML=open?'Show fewer':'See all '+all.dataset.n+' <span aria-hidden="true">\\u2192</span>'}}
 document.querySelectorAll('form[action="/web/signout"]').forEach(function(f){f.addEventListener('submit',function(){try{Object.keys(sessionStorage).forEach(function(k){if(k.indexOf('reason-web-pending')===0)sessionStorage.removeItem(k)})}catch(x){}})});
 if(mb&&menu){var mx=menu.querySelector('.menu-x');function shut(){menu.hidden=true;mb.setAttribute('aria-expanded','false');mb.focus()}mb.onclick=function(){menu.hidden=false;mb.setAttribute('aria-expanded','true');mx.focus()};mx.onclick=shut;document.addEventListener('keydown',function(e){if(menu.hidden)return;if(e.key==='Escape')shut();else if(e.key==='Tab'){var f=menu.querySelectorAll('a,button,input:not([type=hidden])'),a=f[0],z=f[f.length-1];if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}}})}
 document.querySelectorAll('.start-w[hidden]').forEach(function(s){s.hidden=false});
@@ -615,7 +680,7 @@ const NET = `<p class="netline" role="status" hidden></p>`;
 /**
  * The thread. `firstVisit` draws 5C in its place (once); `approvals` the one loud thing at the foot.
  */
-export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], now = clock.now() }) {
+export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], now = clock.now(), all = false }) {
   if (firstVisit) return renderFirstVisit({ account });
   const startLine = more
     ? `<button class="act2" type="button">↑ SHOW EARLIER MESSAGES</button>`
@@ -624,6 +689,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
   const askedIn = asked ? [...lines].reverse().find(m => m.role === "assistant" && m.at <= asked + 60_000) : null;
   const apprLbl = asked ? `REASON · ${(askedIn?.source ?? sourceLabel(null, serviceOf(account?.conversation_id))).toUpperCase()} · ${timeFmt().format(asked)}` : "REASON · WAITING ON YOU";
   const appr = approvals.length ? `<div class="msg re approval">${label(apprLbl)}${approvalCard({ title: approvals[0].title, money: approvals[0].money })}</div>` : "";
+  const count = items.length + approvals.length;
   const body = topBar({ csrf }) + NET
     + `<main class="wrapc"><section class="convo" aria-labelledby="c-h"><h1 id="c-h" class="sr">Your conversation with Reason</h1>`
     + `<div class="start">${startLine}</div>`
@@ -631,8 +697,9 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     + (lines.length ? "" : `<div class="empty">${hand("nothing here yet. whatever you tell me here or by text shows up in this thread.", { tilt: true })}</div>`)
     + appr + onIt(true)
     + composer({ csrf, sendId })
-    + `</section>${ongoingMargin(items, approvals)}</main>`
-    + tabBar("chat", items.length + approvals.length) + listeningHtml();
+    + `</section>${ongoingMargin(items, approvals, { all })}</main>`
+    + `<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing${count ? `, ${count} ${count === 1 ? "thing" : "things"}` : ""}"><span aria-hidden="true">ONGOING${count ? ` · ${count}` : ""}</span></button>`
+    + tabBar("chat", count) + listeningHtml();
   return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: account?.conversation_id }) + composeBoot() + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
 }
 
@@ -661,10 +728,10 @@ export function renderFirstVisit() {
 }
 
 /** The mobile Ongoing tab. Real rows when Reason holds anything; otherwise "Nothing left to chase." */
-export function renderOngoing({ csrf, items = [], approvals = [] }) {
+export function renderOngoing({ csrf, items = [], approvals = [], all = false }) {
   const count = items.length + approvals.length;
   const inner = count
-    ? `<main class="og-list"><h1 class="h1">Ongoing</h1>${label(`${count} ${count === 1 ? "THING" : "THINGS"}`)}${ongoingMargin(items, approvals).replace('class="og"', 'class="og og-tab"').replace("<h2>Ongoing</h2>", "")}</main>`
+    ? `<main class="og-list"><h1 class="h1">Ongoing</h1>${label(`${count} ${count === 1 ? "THING" : "THINGS"}`)}${ongoingMargin(items, approvals, { all, tab: true })}</main>`
     : `<main class="og-m"><h1 class="h1">Nothing left<br>to chase.</h1>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</main>`;
   const css = `${CSS}.og-tab{display:flex;position:static;max-width:none;padding:0}`;
   return webPage({ title: "Reason — Ongoing", body: topBar({ csrf }) + inner + tabBar("ongoing", count), css, script: CLIENT_JS, bodyClass: "has-tabs" });
@@ -707,12 +774,13 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   if (method === "GET" && db.markWebNoticeSeen(conv)) return renderFirstVisit({ account });
   const items = inHand(conv);
   const approvals = waitingApprovals(conv, now);
-  if (query.tab === "ongoing") return renderOngoing({ csrf, items, approvals });
+  const all = query.all != null;
+  if (query.tab === "ongoing") return renderOngoing({ csrf, items, approvals, all });
   const rows = db.messagesBefore(conv, { limit: PAGE + 1 });
   const more = rows.length > PAGE;
   const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service }));
   const recentWeb = lines.some(m => m.web && m.role === "user" && now - m.at < THREAD_RECENT_MS);
-  if (query.thread != null || recentWeb) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, now });
+  if (query.thread != null || recentWeb) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, now, all });
   return renderHome({ account, csrf, sendId, items, approvals, pick: pickUp(conv, service) });
 }
 

@@ -99,13 +99,21 @@ export const onIt = (hidden = false) =>
 const THEME_KEY = "reason-theme";
 const tint = `function tint(){var t=document.documentElement.dataset.theme,c=t==='dark'?'${TOKENS.night.ground}':t==='light'?'${TOKENS.paper.ground}':null;document.querySelectorAll('meta[name=theme-color]').forEach(function(m){m.setAttribute('content',c||m.getAttribute('data-auto'))})}`;
 // In the head, before anything is painted: the chosen paper, and whether this tab sees the loader.
-const HEAD_JS = `(function(){try{${tint}var h=document.documentElement,t=localStorage.getItem('${THEME_KEY}');if(t==='light'||t==='dark'){h.dataset.theme=t;tint()}h.classList.add('js');`
+// The Ongoing margin's HIDE → (src/pages/webconvo.js), remembered per device and applied before first paint.
+export const OG_KEY = "reason-web-og";
+// A signed-in page names the theme the person chose on Web (`data-account-theme`, accountThemed below);
+// this browser's own switch is brought in line with it first, so every browser opens in the same one.
+const HEAD_JS = `(function(){try{${tint}var h=document.documentElement,a=h.getAttribute('data-account-theme');`
+  + `if(a==='paper'||a==='night')localStorage.setItem('${THEME_KEY}',a==='paper'?'light':'dark');else if(a==='auto')localStorage.removeItem('${THEME_KEY}');`
+  + `var t=localStorage.getItem('${THEME_KEY}');if(t==='light'||t==='dark'){h.dataset.theme=t;tint()}h.classList.add('js');if(localStorage.getItem('${OG_KEY}')==='off')h.classList.add('og-off');`
   + `if(h.dataset.loader&&!sessionStorage.getItem('reason-web-loaded')&&!matchMedia('(prefers-reduced-motion: reduce)').matches)h.classList.add('loading')}catch(e){}})();`;
 // The Paper · Night · Auto radio group, wherever it is drawn; and the loader's exit.
 const THEME_JS = `(function(){${tint}var h=document.documentElement;
 function show(){var cur=h.dataset.theme==='light'?'paper':h.dataset.theme==='dark'?'night':'auto';document.querySelectorAll('.themes').forEach(function(f){f.hidden=false;f.querySelectorAll('input').forEach(function(i){i.checked=i.value===cur})})}
-document.addEventListener('change',function(e){var i=e.target;if(!i||!i.closest||!i.closest('.themes'))return;var v=i.value==='paper'?'light':i.value==='night'?'dark':'';
-try{if(v)localStorage.setItem('${THEME_KEY}',v);else localStorage.removeItem('${THEME_KEY}')}catch(x){}if(v)h.dataset.theme=v;else delete h.dataset.theme;tint();show()});show();
+function apply(n){var v=n==='paper'?'light':n==='night'?'dark':'';
+try{if(v)localStorage.setItem('${THEME_KEY}',v);else localStorage.removeItem('${THEME_KEY}')}catch(x){}if(v)h.dataset.theme=v;else delete h.dataset.theme;tint();show();keep(n)}window.reasonTheme=apply;
+document.addEventListener('change',function(e){var i=e.target;if(!i||!i.closest||!i.closest('.themes'))return;apply(i.value)});show();
+function keep(n){var c=h.getAttribute('data-c');if(!c||!h.hasAttribute('data-account-theme'))return;h.setAttribute('data-account-theme',n);try{fetch('/web/settings',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded',Accept:'application/json'},body:'do=theme&theme='+encodeURIComponent(n)+'&c='+encodeURIComponent(c)})}catch(x){}}
 if(h.classList.contains('loading')){var t0=Date.now();try{sessionStorage.setItem('reason-web-loaded','1')}catch(x){}window.addEventListener('load',function(){setTimeout(function(){h.classList.add('loaded');setTimeout(function(){h.classList.remove('loading','loaded')},420)},Math.max(0,1200-(Date.now()-t0)))})}})();`;
 /**
  * Paper · Night · Auto, a real radio group. Hidden until the script can make it work (no dead controls).
@@ -114,6 +122,17 @@ if(h.classList.contains('loading')){var t0=Date.now();try{sessionStorage.setItem
 export function themeSwitch(id = "th") {
   const opt = (v, t) => `<label class="th-o"><input type="radio" name="theme-${id}" value="${v}"${v === "auto" ? " checked" : ""}><span>${t}</span></label>`;
   return `<fieldset class="themes" hidden><legend class="sr">Theme</legend><div class="th-row" id="${id}">${opt("paper", "Paper")}<span class="th-dot" aria-hidden="true">·</span>${opt("night", "Night")}<span class="th-dot" aria-hidden="true">·</span>${opt("auto", "Auto")}</div></fieldset>`;
+}
+
+/**
+ * A signed-in Web page, told the theme its person chose (paper | night | auto, or null for never) and
+ * the session's form secret, so any copy of the switch on it saves the choice for every browser.
+ * Paper and Night are drawn server-side too (`data-theme`), so even a page without script opens in it.
+ */
+export function accountThemed(html, { theme = null, csrf = "" } = {}) {
+  const t = ["paper", "night", "auto"].includes(theme) ? theme : "";
+  const drawn = t === "paper" ? ` data-theme="light"` : t === "night" ? ` data-theme="dark"` : "";
+  return String(html).replace(/^<!doctype html>\n<html lang="en"/, (m) => `${m} data-account-theme="${t}" data-c="${esc(csrf)}"${drawn}`);
 }
 
 // ---------------------------------------------------------------- the stylesheet

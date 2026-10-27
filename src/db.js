@@ -1505,6 +1505,18 @@ addColumnIfMissing("threads", "web_hint_due", "INTEGER NOT NULL DEFAULT 0");
 // The first time this person opened their conversation on Web: the history boundary is explained
 // once, then never again (spec §9: "not a recurring popup").
 addColumnIfMissing("accounts", "web_notice_seen_at", "INTEGER");
+// Reason Web Settings (2026-10-26). `web_reach`: where a finished job's result goes — 'web' keeps
+// it on Web (Reason Web Settings, "Keep routine results here"), anything else (NULL, 'text') texts it
+// as it always has. `web_theme`: paper | night | auto, chosen on Web, so every browser opens in it;
+// NULL = never chosen, and the browser's own switch decides. `page_sessions.user_agent`: the browser
+// a session was last used from, for the signed-in browsers list.
+addColumnIfMissing("accounts", "web_reach", "TEXT");
+addColumnIfMissing("accounts", "web_theme", "TEXT");
+addColumnIfMissing("page_sessions", "user_agent", "TEXT");
+// The short plain title an Ongoing row shows on Web, written once when the row is made (src/itemtitle.js).
+addColumnIfMissing("tasks", "label", "TEXT");
+addColumnIfMissing("timers", "label", "TEXT");
+addColumnIfMissing("series", "label", "TEXT");
 addColumnIfMissing("outbox", "send_style", "TEXT");
 // Inline replies: what each inbound message said (so "the one about the table" can be found again
 // by its words), which message an outbound one is pinned under, and the message this turn's reply
@@ -1785,9 +1797,9 @@ export function setPlanStatus(conversationId, id, status) {
 }
 
 // ---------- timers ----------
-export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null, callGoal = null }) {
-  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id, call_goal) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(conversationId, fireAt, note, planId, taskId, seriesId, callGoal ? String(callGoal) : null);
+export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null, callGoal = null, label = null }) {
+  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id, call_goal, label) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(conversationId, fireAt, note, planId, taskId, seriesId, callGoal ? String(callGoal) : null, label || null);
   return getTimer(conversationId, Number(r.lastInsertRowid));
 }
 /** The call a timer's firing placed, if the phone has already rung for it. Unscoped: the fire path holds the timer row. */
@@ -1806,6 +1818,17 @@ export function markMissedCallTold(callId) {
 }
 export function getTimer(conversationId, id) {
   return db.prepare("SELECT * FROM timers WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
+}
+/**
+ * Write a row's Web title once (src/itemtitle.js): only where none is set yet, so a title the model
+ * wrote is never replaced by a later summarise. A series' title also goes onto its pending firing.
+ */
+export function setItemLabel(kind, conversationId, id, label) {
+  const table = { task: "tasks", timer: "timers", series: "series" }[kind];
+  if (!table || !label) return false;
+  const done = db.prepare(`UPDATE ${table} SET label = ? WHERE id = ? AND conversation_id = ? AND (label IS NULL OR label = '')`).run(label, id, conversationId).changes === 1;
+  if (kind === "series") db.prepare("UPDATE timers SET label = ? WHERE series_id = ? AND conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND (label IS NULL OR label = '')").run(label, id, conversationId);
+  return done;
 }
 export function listTimers(conversationId) {
   return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL ORDER BY fire_at").all(conversationId);
@@ -1861,10 +1884,10 @@ export function markTimerGaveUp(id, { error = null } = {}) {
 // ---------- series: a check-in that keeps coming back ----------
 // Rows only. Every decision about WHEN — the next occurrence, quiet hours, what a missed one means —
 // is in src/series.js, so the maths is testable without a database and this file stays what it is.
-export function createSeries(conversationId, { what, rule, tz, nextAt = null, callGoal = null }) {
-  const r = db.prepare(`INSERT INTO series (conversation_id, what, rule, tz, next_at, created_at, call_goal)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, what, JSON.stringify(rule ?? {}), tz, nextAt, clock.now(), callGoal ? String(callGoal) : null);
+export function createSeries(conversationId, { what, rule, tz, nextAt = null, callGoal = null, label = null }) {
+  const r = db.prepare(`INSERT INTO series (conversation_id, what, rule, tz, next_at, created_at, call_goal, label)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, what, JSON.stringify(rule ?? {}), tz, nextAt, clock.now(), callGoal ? String(callGoal) : null, label || null);
   return getSeries(conversationId, Number(r.lastInsertRowid));
 }
 /** Scoped to the conversation, like every other get: a series in another thread is not found. */
@@ -3300,15 +3323,15 @@ function rowToTask(r) {
   };
 }
 
-export function createTask(conversationId, { title, goal, wakeAt = null, maxAttempts, sheet = null, originHandle = null }) {
+export function createTask(conversationId, { title, goal, wakeAt = null, maxAttempts, sheet = null, originHandle = null, label = null }) {
   const now = clock.now();
   // The sheet is validated before the row exists, so a task never starts with a half-written one.
   const merged = applyPatch(emptySheet(), sheet, { now });
   if (!merged.ok) return merged;
   const r = db.prepare(`INSERT INTO tasks
-    (conversation_id, title, goal, state, next_wake_at, max_attempts, sheet, origin_handle, created_at, updated_at)
-    VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, title, goal, wakeAt, maxAttempts, JSON.stringify(merged.sheet), originHandle ?? null, now, now);
+    (conversation_id, title, goal, state, next_wake_at, max_attempts, sheet, origin_handle, created_at, updated_at, label)
+    VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, title, goal, wakeAt, maxAttempts, JSON.stringify(merged.sheet), originHandle ?? null, now, now, label || null);
   const id = Number(r.lastInsertRowid);
   logTask(id, "state", `started: ${goal}`);
   return getTask(conversationId, id);
@@ -5440,6 +5463,50 @@ export function endPageSession(token) {
 export function endPageSessionsFor(conversationId) {
   if (!conversationId) return 0;
   return Number(db.prepare("DELETE FROM page_sessions WHERE conversation_id = ?").run(conversationId).changes);
+}
+
+/**
+ * Every browser one person is signed in on (Reason Web Settings): token, when it was made, when it
+ * was last used and the browser it was last used from. Newest use first. Rows past `maxAgeMs` since
+ * made, or `idleMs` unused, are not listed: they open nothing.
+ */
+export function pageSessionsFor(conversationId, { maxAgeMs = Infinity, idleMs = Infinity } = {}) {
+  if (!conversationId) return [];
+  const now = clock.now();
+  return db.prepare("SELECT token, created_at, last_seen_at, user_agent FROM page_sessions WHERE conversation_id = ? ORDER BY last_seen_at DESC, created_at DESC")
+    .all(conversationId).filter(r => now - r.created_at <= maxAgeMs && now - r.last_seen_at <= idleMs);
+}
+
+/** The browser a session was just used from. Written only when it changed, capped at 300 characters. */
+export function notePageSessionAgent(token, userAgent) {
+  const ua = String(userAgent ?? "").slice(0, 300);
+  if (!token || !ua) return false;
+  return db.prepare("UPDATE page_sessions SET user_agent = ? WHERE token = ? AND (user_agent IS NULL OR user_agent != ?)").run(ua, String(token), ua).changes === 1;
+}
+
+/** Sign one of THIS person's browsers out. A token that is somebody else's is untouched. */
+export function endPageSessionOf(conversationId, token) {
+  if (!conversationId || !token) return false;
+  return db.prepare("DELETE FROM page_sessions WHERE token = ? AND conversation_id = ?").run(String(token), conversationId).changes === 1;
+}
+
+/** Where a finished job's result goes for this person: 'web' (kept on Web) or 'text' (texted, the default). */
+export function webReach(conversationId) {
+  return db.prepare("SELECT web_reach FROM accounts WHERE conversation_id = ?").get(conversationId)?.web_reach === "web" ? "web" : "text";
+}
+export function setWebReach(conversationId, value) {
+  if (value !== "web" && value !== "text") throw new Error(`web_reach must be web or text, not ${value}`);
+  return db.prepare("UPDATE accounts SET web_reach = ? WHERE conversation_id = ?").run(value, conversationId).changes === 1;
+}
+
+/** The theme this person chose on Web (paper | night | auto), or null when they never chose one. */
+export function webTheme(conversationId) {
+  const t = db.prepare("SELECT web_theme FROM accounts WHERE conversation_id = ?").get(conversationId)?.web_theme;
+  return ["paper", "night", "auto"].includes(t) ? t : null;
+}
+export function setWebTheme(conversationId, value) {
+  if (!["paper", "night", "auto"].includes(value)) throw new Error(`web_theme must be paper, night or auto, not ${value}`);
+  return db.prepare("UPDATE accounts SET web_theme = ? WHERE conversation_id = ?").run(value, conversationId).changes === 1;
 }
 
 /** How many browsers one person is signed in on. */

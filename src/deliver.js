@@ -71,13 +71,37 @@ async function sendEach(target, { to, parts }) {
  * and reported if it never arrives), so that is `mediaOk: true, mediaQueued: true` and the runtime
  * marks it sent — otherwise it rode out again on the next message while the first copy retried.
  */
+/**
+ * "Keep routine results here" (Reason Web Settings, 2026-10-26): should this message stay on Web
+ * instead of being texted? Only when ALL of these hold, so anything else goes exactly as before:
+ *   - Reason started it (a reply always goes back the way it came) and it is words, not a recording
+ *   - it is a job's result: the turn ran for a task (`fromTask`) and that task is now `done`. A task
+ *     waiting on them, one that failed, a reminder, an approval, a code, a notice: all still texted
+ *     ("Text me for timely decisions")
+ *   - the person chose it (accounts.web_reach = 'web'), Web may reach them, and the web channel is
+ *     registered to take it
+ */
+export function keptOnWeb({ router, conversationId, route, fromTask = null, media = null }) {
+  if (!route?.started || media || fromTask == null) return false;
+  if (route.channel === WEB || route.channel === "console") return false;
+  if (!webAllowedFor(conversationId) || !router?.get?.(WEB)) return false;
+  if (db.webReach(conversationId) !== "web") return false;
+  return db.getTask(conversationId, fromTask)?.state === "done";
+}
+
 /** The one line a text carries after a switch from Web (decision 9): intent, not instructions. */
 export const WEB_HINT = "Our full conversation, the Web part included, is on Reason Web.";
 
 export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (line) => console.error(line) }) {
-  return async function deliver({ conversationId, text, media, channel, to: toIn, chatId: chatIn, fromOwner, isOperator, replyTo = null, sendStyle = null, idempotencyKey = null }) {
+  return async function deliver({ conversationId, text, media, channel, to: toIn, chatId: chatIn, fromOwner, isOperator, replyTo = null, sendStyle = null, idempotencyKey = null, fromTask = null }) {
     const route = whereTo({ conversationId, channel, to: toIn, chatId: chatIn });
-    const { channel: name, to, chatId } = route;
+    let { channel: name, to, chatId } = route;
+    // A finished job's result for somebody who keeps those on Web: written to Web (their history,
+    // their open tabs) and not texted. Same address, so it is the same person's history row.
+    if (keptOnWeb({ router, conversationId, route, fromTask, media })) {
+      name = WEB; chatId = null; replyTo = null; sendStyle = null;
+      log({ kept_on_web: conversationId, task: fromTask });
+    }
     const target = name === "console" ? consoleChannel : null;
     // Does the thing this is going to draw markdown? Asked of the adapter rather than assumed, and
     // every adapter says no (src/channels/channel.js). A channel that is not registered at all is

@@ -364,7 +364,7 @@ function noteFor(s) {
  * somebody who has just been told "every monday 9am, i'll ask how the search is going" should see
  * that reminder exist from that moment, not fifteen seconds later.
  */
-export function start({ conversationId, what, repeat, now = clock.now(), tz = null, callGoal = null }) {
+export function start({ conversationId, what, repeat, now = clock.now(), tz = null, callGoal = null, label = null }) {
   const said = String(what ?? "").trim();
   if (!said) return { ok: false, error: "A series needs `note` saying what it is about, in your own words." };
   const ringing = String(callGoal ?? "").trim() || null;
@@ -393,7 +393,7 @@ export function start({ conversationId, what, repeat, now = clock.now(), tz = nu
   // than today — which matters when today is not an eligible day at all.
   if (rule.kind === "every_n_days") rule.anchor = dateKey(dayOf(first, zone));
 
-  const s = db.createSeries(conversationId, { what: said, rule, tz: zone, nextAt: first, callGoal: ringing });
+  const s = db.createSeries(conversationId, { what: said, rule, tz: zone, nextAt: first, callGoal: ringing, label });
   const made = scheduleOne(s, { now });
   return { ok: true, series: view(db.getSeries(conversationId, s.id)), first: stamp(first), timer_id: made?.timer?.id ?? null };
 }
@@ -436,7 +436,7 @@ export function scheduleOne(s, { now = clock.now() } = {}) {
   const next = nextOccurrence(rule, at, zone);
   // A standing call carries its goal onto every firing, so the fire path reads one timer row and
   // never has to know whether the ring was a one-off or the Tuesday of a series.
-  const timer = db.createTimer(s.conversation_id, { fireAt: at, note: noteFor(s), seriesId: s.id, callGoal: s.call_goal || null });
+  const timer = db.createTimer(s.conversation_id, { fireAt: at, note: noteFor(s), seriesId: s.id, callGoal: s.call_goal || null, label: s.label || null });
   // Moved BEFORE the firing rather than after it: a firing somebody cancels by hand is then skipped
   // instead of being made again on the next sweep, and nothing can schedule the same occasion twice.
   db.setSeriesNext(s.id, next);
