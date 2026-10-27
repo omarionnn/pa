@@ -45,6 +45,7 @@ import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCar
 import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot, COMPOSE_CSS, COMPOSE_JS } from "./webcompose.js";
 import { prepareSend } from "../webmedia.js";
 import * as settle from "../settle.js";
+import { doingFor, doingEvents } from "../doing.js";
 
 /** How many lines a page of history holds, first load and each "show earlier". */
 export const PAGE = 40;
@@ -679,12 +680,13 @@ function workIs(w){var lw=document.querySelector('.longwork');if(!lw)return;if(!
 // S3: a task that finished while this page was open settles in place: its lines become one DONE line.
 function tidyDays(){list.querySelectorAll('li.day').forEach(function(d){var n=d.nextElementSibling;if(!n||n.classList.contains('day'))d.remove()})}
 function settleIn(a){(a||[]).forEach(function(s){var was=list.querySelector('.done[data-task="'+s.task+'"]');if(was&&was.dataset.ids===s.ids.join(' '))return;var at=list.querySelector('.msg:not(.done)[data-id="'+s.ids[s.ids.length-1]+'"]')||was;if(!at)return;if(was&&at!==was)was.remove();var t=document.createElement('ol');t.innerHTML=s.html;var li=t.firstElementChild;if(!li)return;times(li);at.replaceWith(li);s.ids.forEach(function(id){var o=list.querySelector('.msg:not(.done)[data-id="'+id+'"]');if(o)o.remove()});doneInit(li.parentNode)});tidyDays();where()}
-var polling=false;function poll(){if(polling||!loaded)return;polling=true;lastPoll=Date.now();fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);settleIn(j.settled);if('work' in j)workIs(j.work);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
+var polling=false;function poll(){if(polling||!loaded)return;polling=true;lastPoll=Date.now();fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);settleIn(j.settled);if('work' in j)workIs(j.work);if(R.doing)R.doing(j.doing);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
 var beat=0;setInterval(function(){if(!live||Date.now()-beat>40000)poll()},4000);
 function stream(){if(!window.EventSource)return;try{es=R.stream.indexOf('http')===0?new EventSource(R.stream+'?after='+R.last,{withCredentials:true}):new EventSource(R.stream+'?after='+R.last)}catch(x){return}es.onopen=function(){live=true;beat=Date.now();if(lost){lost=0;noteLine('')}};
 es.addEventListener('ping',function(){beat=Date.now()});
 es.addEventListener('message',function(e){beat=Date.now();try{add(JSON.parse(e.data))}catch(x){}});
-es.addEventListener('typing',function(e){try{var t=JSON.parse(e.data);working(t.on,t.until)}catch(x){}});
+es.addEventListener('typing',function(e){try{var t=JSON.parse(e.data);working(t.on,t.until);if(R.doing)R.doing(t.on?t.doing:null)}catch(x){}});
+es.addEventListener('doing',function(e){try{if(R.doing)R.doing(JSON.parse(e.data).doing)}catch(x){}});
 es.addEventListener('state',function(e){beat=Date.now();try{var j=JSON.parse(e.data);settleIn(j.settled);workIs(j.work)}catch(x){}});
 es.addEventListener('signedout',function(){es.close();expired()});
 es.onerror=function(){live=false}}
@@ -911,8 +913,9 @@ export function historyRequest({ account, query = {}, now = clock.now() }) {
   if (query.after != null) {
     const after = num(query.after) ?? 0;
     const rows = db.messagesFor(conv, { after, limit: 200 });
-    // What is still being worked at length (L10), and finished tasks to settle in place (S3).
-    return json(200, { messages: rows.map(r => rowOut(r, { conversationId: conv, service, now })), work: workOf(conv), settled: settledLately(conv, { service, now }) });
+    // What is still being worked at length (L10), finished tasks to settle in place (S3), and `doing`:
+    // what Reason is doing on this conversation's turn right now (src/doing.js), or null.
+    return json(200, { messages: rows.map(r => rowOut(r, { conversationId: conv, service, now })), work: workOf(conv), settled: settledLately(conv, { service, now }), doing: doingFor(conv) });
   }
   // A page: the newest (the thread opening, L1) or the one before row `before` (L2). `html` is the
   // page drawn as the thread draws it — day labels, "Continued on Web", finished tasks settled.
@@ -1026,6 +1029,7 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
         db.historyBus.off("row", onRow);
         db.historyBus.off("state", onRow);
         webCh?.events?.off?.("typing", onTyping);
+        doingEvents.off("change", onDoing);
         clearInterval(beat); clearInterval(check); clearTimeout(stop);
         log({ web_stream_end: why });
         try { res.end(); } catch { /* already gone */ }
@@ -1049,8 +1053,9 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
       const onRow = (e) => { if (e?.conversationId !== conv) return; try { flush(); pushState(); } catch { end("failed"); } };
       const onTyping = (e) => {
         if (e?.to !== account.address || !stillHers()) return;
-        write(`event: typing\ndata: ${JSON.stringify({ on: !!e.on, until: e.until || 0 })}\n\n`);
+        write(`event: typing\ndata: ${JSON.stringify({ on: !!e.on, until: e.until || 0, doing: e.on ? doingFor(conv) : null })}\n\n`);
       };
+      const onDoing = (c) => { if (c !== conv || !stillHers()) return; write(`event: doing\ndata: ${JSON.stringify({ doing: doingFor(conv) })}\n\n`); };
       // Timers first: `end` clears them, and the first flush may already end the stream.
       // A named event, not a comment, so the page can tell a live stream from a silently dead one.
       const beat = setInterval(() => { write("event: ping\ndata: {}\n\n"); try { pushState(); } catch { /* the ping still goes */ } }, 15_000);
@@ -1063,6 +1068,9 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
       db.historyBus.on("row", onRow);
       db.historyBus.on("state", onRow);
       webCh?.events?.on?.("typing", onTyping);
+      doingEvents.on("change", onDoing);
+      // A tab that opens (or comes back) mid-turn hears what Reason is doing now, not only at the next change.
+      if (doingFor(conv)) onDoing(conv);
       try { flush(); pushState(); } catch (e) { log({ web_stream_failed: (e?.message ?? String(e)).split("\n")[0] }); end("failed"); }
     },
   };

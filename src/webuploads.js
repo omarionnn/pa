@@ -19,9 +19,16 @@ import { randomBytes } from "node:crypto";
 import { config, clock } from "./config.js";
 import { sniff, READABLE } from "./pictures.js";
 import { isPdfBytes } from "./pdf.js";
+import { isDocx, isPlainText } from "./docread.js";
 
-/** The ceilings, by kind. A photo past the model's own limit would only ever be refused later. */
-export const LIMITS = { image: 7 * 1024 * 1024, pdf: 20 * 1024 * 1024, voice: 20 * 1024 * 1024 };
+/**
+ * The ceilings, by kind: exactly what the failed slip types under it, "PHOTOS, PDFS, DOCS · UP TO
+ * 20 MB EACH" (sheet-uploads 3C). A photo past what the model looks at (7 MB) is made smaller on the
+ * way in (src/webshrink.js) rather than refused.
+ */
+export const LIMITS = { image: 20 * 1024 * 1024, pdf: 20 * 1024 * 1024, doc: 20 * 1024 * 1024, voice: 20 * 1024 * 1024 };
+/** The line a failed slip types, from the same numbers the server holds. */
+export const LIMITS_LINE = `PHOTOS, PDFS, DOCS · UP TO ${Math.round(LIMITS.image / 1048576)} MB EACH`;
 export const MAX_UPLOAD_BYTES = Math.max(...Object.values(LIMITS));
 /** As long as an inbound media_url lives ("expires after 30 days for inbound", Sendblue). */
 export const KEEP_MS = 30 * 24 * 60 * 60_000;
@@ -56,13 +63,15 @@ export function classify(bytes, { voice = false } = {}) {
   const img = sniff(bytes);
   if (img && (READABLE.has(img) || img === "heic")) return { kind: "image", mime: IMAGE_MIME[img], ext: IMAGE_EXT[img] };
   if (isPdfBytes(bytes)) return { kind: "pdf", mime: "application/pdf", ext: ".pdf" };
+  if (isDocx(bytes)) return { kind: "doc", mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ext: ".docx" };
+  if (isPlainText(bytes)) return { kind: "doc", mime: "text/plain; charset=utf-8", ext: ".txt" };
   return null;
 }
 
 /** A name fit to show and to read in a sentence: no path, no control characters, the right extension. */
 export function cleanName(raw, ext) {
   let n = String(raw ?? "").split(/[\\/]/).pop().replace(/[\u0000-\u001f\u007f<>"`]/g, "").replace(/\s+/g, " ").trim();
-  if (!n || n === "." || n === "..") n = ext === ".pdf" ? "document" : ext && /webm|ogg|wav|m4a|mp3/.test(ext) ? "voice-note" : "photo";
+  if (!n || n === "." || n === "..") n = ext === ".pdf" || ext === ".docx" || ext === ".txt" ? "document" : ext && /webm|ogg|wav|m4a|mp3/.test(ext) ? "voice-note" : "photo";
   const has = /\.[A-Za-z0-9]{2,5}$/.exec(n)?.[0]?.toLowerCase();
   const same = has && (has === ext || (ext === ".jpg" && has === ".jpeg") || (ext === ".heic" && has === ".heif"));
   if (!same) n = `${n.replace(/\.[A-Za-z0-9]{2,5}$/, "")}${ext}`;
@@ -99,8 +108,11 @@ export function store({ conversationId, bytes, name = "", voice = false, extra =
   const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes ?? []);
   if (!conversationId) return { error: "no_conversation" };
   if (!buf.length) return { error: "empty" };
-  const what = classify(buf, { voice });
+  let what = classify(buf, { voice });
   if (!what) return { error: "unsupported" };
+  // Plain text keeps the name it came with when that name says text (notes.md stays notes.md).
+  const textExt = /\.(md|markdown|csv|txt)$/i.exec(String(name ?? ""))?.[0]?.toLowerCase();
+  if (what.ext === ".txt" && textExt) what = { ...what, ext: textExt };
   if (buf.length > LIMITS[what.kind]) return { error: "too_big", kind: what.kind, limit: LIMITS[what.kind] };
   mkdirSync(dir(), { recursive: true, mode: 0o700 });
   prune();

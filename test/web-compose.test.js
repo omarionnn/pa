@@ -129,11 +129,11 @@ test("upload: the bytes decide what it is — a photo, a PDF; anything else is r
   assert.match(ok.src, /^\/web\/media\/u\/[A-Za-z0-9_-]{22}\/listing\.png$/);
   // A PNG named .pdf is a PNG; the name follows the bytes.
   assert.equal(J(await up(kofi, PNG, { name: "lease.pdf" })).name, "lease.png");
-  const notOne = await up(kofi, Buffer.from("MZ this is an executable pretending"), { name: "photo.jpg" });
+  const notOne = await up(kofi, Buffer.from([0x4d, 0x5a, 0x90, 0, 3, 0, 0, 0, 4, 0, 0, 0, 0xff, 0xff, 0, 0]), { name: "photo.jpg" });
   assert.equal(notOne.status, 415);
   assert.equal(J(notOne).error, "unsupported");
   const big = Buffer.concat([PNG, Buffer.alloc(uploads.LIMITS.image)]);
-  assert.equal((await up(kofi, big, { name: "huge.png" })).status, 413, "a photo past the model's own limit");
+  assert.equal((await up(kofi, big, { name: "huge.png" })).status, 413, "a photo past 20 MB (PHOTOS, PDFS, DOCS · UP TO 20 MB EACH)");
   assert.equal((await up(kofi, Buffer.alloc(uploads.MAX_UPLOAD_BYTES + 1))).status, 413, "past every cap, refused on the length");
   // A recording is only ever taken as a voice note, from the mic.
   assert.equal((await up(kofi, WEBM)).status, 415);
@@ -214,7 +214,7 @@ test("a PDF sent on Web is read by the PDF reader from disk; the thread shows it
   assert.equal(read.ok, true);
   assert.ok(Buffer.compare(got, PDF) === 0, "the reader got the very bytes uploaded");
   const line = convo.rowOut(db.messagesFor(KOFI_C)[0], { conversationId: KOFI_C });
-  assert.match(line.html, /<a class="slip" href="\/web\/media\/u\/[^"]+\/lease\.pdf" target="_blank" rel="noopener">LEASE\.PDF · 4 PP<\/a>/);
+  assert.match(line.html, /<a class="slip fslip" href="\/web\/media\/u\/[^"]+\/lease\.pdf" target="_blank" rel="noopener"><span class="fn">LEASE\.PDF · 4 PP<\/span><span class="fs">TAP TO OPEN<\/span><\/a>/, "3D: the file slip, TAP TO OPEN");
 });
 
 test("somebody else's file never rides on a send; nor a made-up id; and an empty send with no files is refused", async () => {
@@ -336,16 +336,16 @@ test("4C: a numbered reply is 01 02 03 in pen between dashed rules", () => {
 
 test("composer 01–04 and Listening (D): the reference's copy, real buttons with names, roles", () => {
   const html = compose.composerHtml({ csrf: "c", sendId: "s", maxText: 4000 });
-  assert.match(html, /<div class="cdrop" aria-hidden="true"><svg[^]*?<\/svg><span class="hand">let go\. i'll read it\.<\/span><\/div>/, "04: drop anywhere");
-  assert.match(html, /<ul class="on-line" aria-label="Attached" hidden><\/ul>/, "02: the slips' shelf");
+  assert.match(html, /<div class="cdrop" aria-hidden="true"><div><svg[^]*?<\/svg><span class="hand">let go\. i’ll read it\.<\/span><span class="lbl">ON DESKTOP, DROP ANYWHERE<\/span><\/div><\/div>/, "3E: drop anywhere");
+  assert.match(html, /<div class="upl" hidden><ul class="on-line" aria-label="Attached"><\/ul>/, "3B: the slips' shelf");
   assert.match(html, /<button class="ic d-stop" type="button" aria-label="Stop without sending">[^]*<span class="d-clock" role="timer"[^>]*>0:00<\/span><button class="send d-send" type="button" aria-label="Stop and send">/, "03: dictating on the line");
   assert.match(html, /<p class="hand c-note" role="alert" hidden><\/p>/, "an upload error is one Caveat line");
   const ls = compose.listeningHtml();
-  assert.match(ls, /<div class="listen" role="dialog" aria-modal="true" aria-label="Listening" hidden>/);
+  assert.match(ls, /<div class="listen" role="dialog" aria-modal="true" aria-label="Listening" data-mode="listening" tabindex="-1" hidden>/);
   assert.match(ls, /LISTENING · <span class="ls-t" role="timer">0:00<\/span>/);
   assert.match(ls, /<button class="ls-never" type="button"><span aria-hidden="true">←<\/span><span class="u">NEVER MIND<\/span><\/button>/);
   assert.match(ls, /<button class="ls-send" type="button">Send it <span aria-hidden="true">→<\/span><\/button>/);
-  assert.match(ls, /PAUSE AND IT SENDS · SPACE TO KEEP TALKING/);
+  assert.match(ls, /<span>PAUSE AND IT SENDS<\/span><span class="ls-sp"> · SPACE TO KEEP TALKING<\/span>/, "4A: the phone says PAUSE AND IT SENDS; a desk adds Space");
   assert.match(ls, /<span class="ls-fin"><\/span> <span class="ls-int"><\/span>/, "final words and not-yet-final ones");
   assert.match(compose.COMPOSE_CSS, /\.ls-words\{[^}]*var\(--hand\);color:var\(--pen\)/, "the transcript in Caveat, pen");
   assert.match(compose.COMPOSE_CSS, /\.ls-int\{color:var\(--muted\)\}/, "not-yet-final words muted");
@@ -402,4 +402,144 @@ test("real HTTP: POST /web/upload through src/http.js, a send naming it, the his
   } finally {
     await new Promise(r => server.close(r));
   }
+});
+
+// ---------- v2: uploads (sheet-uploads 3A–3E), voice (sheet-voice 4A–4E), L9 ----------
+
+const { docsFor, docText, isDocx } = await import("../src/docread.js");
+const doing = await import("../src/doing.js");
+const { fitPhoto, FIT_BYTES } = await import("../src/webshrink.js");
+const { Document, Packer, Paragraph } = await import("docx");
+const DOCX = await Packer.toBuffer(new Document({ sections: [{ children: [new Paragraph("Rent is $2,400 a month."), new Paragraph("No dogs over 40 lb.")] }] }));
+
+test("3C limits: the typed line is the server's own numbers — PHOTOS, PDFS, DOCS · UP TO 20 MB EACH", () => {
+  assert.equal(uploads.LIMITS_LINE, "PHOTOS, PDFS, DOCS · UP TO 20 MB EACH");
+  for (const k of ["image", "pdf", "doc"]) assert.equal(uploads.LIMITS[k], 20 * 1024 * 1024, k);
+  const html = compose.composerHtml({ csrf: "c", sendId: "s", maxText: 4000 });
+  assert.match(html, /<div class="upfail" role="status" hidden><div class="uf-list"><\/div><p class="lbl uf-lim">PHOTOS, PDFS, DOCS · UP TO 20 MB EACH<\/p><\/div>/);
+});
+
+test("docs: a Word file and plain text are taken and read; a video or a program is refused at the door", async () => {
+  const kofi = browser(KOFI_C);
+  assert.ok(isDocx(DOCX));
+  const d = J(await up(kofi, DOCX, { name: "lease.docx" }));
+  assert.equal(d.kind, "doc");
+  assert.equal(d.label, "LEASE.DOCX");
+  const t = J(await up(kofi, Buffer.from("# Packing\n- passport\n"), { name: "notes.md" }));
+  assert.equal(t.kind, "doc");
+  assert.equal(t.name, "notes.md", "plain text keeps a name that says text");
+  assert.equal((await up(kofi, Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypisom"), Buffer.alloc(64)]), { name: "clip.mp4" })).status, 415, "a video is not a photo, a PDF or a doc");
+  assert.equal((await up(kofi, Buffer.from([0x4d, 0x5a, 0x90, 0, 3, 0, 0, 0, 4, 0, 0, 0xff, 0xff]), { name: "setup.exe" })).status, 415);
+  // The text the model is handed.
+  assert.match(docText(DOCX).text, /^Rent is \$2,400 a month\.\nNo dogs over 40 lb\.$/);
+  const atts = uploads.attachmentsFor(KOFI_C, [d.id, t.id]);
+  const read = await docsFor(atts);
+  assert.equal(read.notes.length, 2);
+  assert.match(read.notes[0], /^they sent a document \(lease\.docx\) — here is the text from it:\nRent is \$2,400 a month\./);
+  assert.match(read.notes[1], /passport/);
+  assert.match(read.seen[0], /you read it when it arrived/);
+  // A crafted entity can't take the turn down with it.
+  const { docxText } = await import("../src/docread.js");
+  assert.doesNotThrow(() => docxText(DOCX));
+  assert.equal((await import("../src/docread.js")).docText(Buffer.from("&#99999999; &#xFFFFFFF; fine")).ok, true);
+});
+
+test("a photo past what the model looks at (7 MB) is made to fit on the way in, not refused; one that can't be is 413", async () => {
+  const kofi = browser(KOFI_C);
+  const big = Buffer.concat([PNG, Buffer.alloc(FIT_BYTES + 10)]);
+  const small = Buffer.from("/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACv/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AN//Z", "base64");
+  let fitted = 0;
+  const call = (fit) => media.uploadRequest({ account: db.getAccount(KOFI_C), headers: H(kofi, { "x-reason-csrf": kofi.csrf, "x-reason-name": "camera.png" }), readBody: async () => big, fit });
+  const ok = J(await call(async (b) => { fitted++; assert.equal(b.length, big.length); return { ok: true, bytes: small, changed: true }; }));
+  assert.equal(fitted, 1);
+  assert.equal(ok.kind, "image");
+  assert.equal(ok.name, "camera.jpg");
+  assert.equal(uploads.meta(ok.id).bytes, small.length);
+  assert.equal((await call(async () => ({ ok: false }))).status, 413);
+  // Already small enough: as it was, never touched.
+  assert.deepEqual(await fitPhoto(PNG, { resizer: null }), { ok: true, bytes: PNG, changed: false });
+  assert.deepEqual(await fitPhoto(big, { resizer: null }), { ok: false });
+  // A pixel bomb is refused before anything decodes it.
+  const bomb = Buffer.from(PNG); bomb.writeUInt32BE(60000, 16); bomb.writeUInt32BE(60000, 20);
+  assert.deepEqual(await fitPhoto(Buffer.concat([bomb, Buffer.alloc(FIT_BYTES)]), { resizer: { bin: "/bin/false", args: () => [] } }), { ok: false });
+});
+
+test("4B / L9, no speech recognition in the browser: the words are written down at upload, and the send never listens twice", async () => {
+  const h = harness();
+  const kofi = browser(KOFI_C);
+  let heard = 0;
+  const listen = async ({ url }) => { heard++; assert.match(url, /^https:\/\/files\.heyreason\.test\/web\/media\/u\//); return { ok: true, text: "hold the hudson one for me" }; };
+  const r = J(await media.uploadRequest({ account: db.getAccount(KOFI_C), headers: H(kofi, { "x-reason-csrf": kofi.csrf, "x-reason-voice": "1", "x-reason-hear": "1", "x-reason-seconds": "4" }), readBody: async () => WEBM, listen, canHear: () => ({ ok: true }) }));
+  assert.equal(r.kind, "voice");
+  assert.equal(r.words, "hold the hudson one for me");
+  assert.equal(heard, 1);
+  // Without the ask, nothing is heard at upload.
+  const quiet = J(await media.uploadRequest({ account: db.getAccount(KOFI_C), headers: H(kofi, { "x-reason-csrf": kofi.csrf, "x-reason-voice": "1" }), readBody: async () => WEBM, listen, canHear: () => ({ ok: true }) }));
+  assert.equal(quiet.words, undefined);
+  assert.equal(heard, 1);
+  assert.equal((await send(h, kofi, { id: "w-voice-early1", text: "", files: r.id })).status, 200);
+  assert.ok(await until(() => h.turns.length === 1));
+  assert.equal(h.turns[0].text, "hold the hudson one for me");
+  assert.equal(heard, 1, "heard once, at upload");
+  // Heard and nothing came of it: marked, and the send doesn't listen again either.
+  const deaf = J(await media.uploadRequest({ account: db.getAccount(KOFI_C), headers: H(kofi, { "x-reason-csrf": kofi.csrf, "x-reason-voice": "1", "x-reason-hear": "1" }), readBody: async () => WEBM, listen: async () => { heard++; return { ok: false, error: "x" }; }, canHear: () => ({ ok: true }) }));
+  assert.equal(heard, 2);
+  const prep = await media.prepareSend({ conversationId: KOFI_C, text: "", files: [deaf.id], listen: async () => { heard++; return { ok: true, text: "no" }; }, canHear: () => ({ ok: true }) });
+  assert.equal(heard, 2, "never a second listen");
+  assert.match(prep.text, /voice/i);
+});
+
+test("3D: 'on it.' says what Reason is doing from the turn's own record — reading the lease… — and nothing it isn't", async () => {
+  assert.equal(doing.nameOf("lease.pdf"), "the lease");
+  assert.equal(doing.nameOf("Lease_Agreement-2026.pdf"), "the lease agreement 2026");
+  assert.equal(doing.nameOf("IMG_2041.pdf"), null);
+  assert.equal(doing.nameOf("document.pdf"), null);
+  assert.equal(doing.lineFor([{ kind: "pdf", filename: "lease.pdf" }]), "reading the lease…");
+  assert.equal(doing.lineFor([{ kind: "pdf", filename: "scan0001.pdf" }]), "reading the PDF…");
+  assert.equal(doing.lineFor([{ kind: "doc", filename: "notes.md" }]), "reading the notes…");
+  assert.equal(doing.lineFor([{ kind: "pdf", filename: "a.pdf" }, { kind: "doc", filename: "b.docx" }]), "reading the 2 files…");
+  assert.equal(doing.lineFor([{ kind: "image", filename: "x.png" }]), "looking at the photo…");
+  assert.equal(doing.lineFor([{ kind: "image" }, { kind: "image" }]), "looking at the 2 photos…");
+  assert.equal(doing.lineFor([{ kind: "voice" }]), null, "a voice note's words are the message; nothing to say");
+  assert.equal(doing.lineFor([]), null);
+  // While a turn with the lease runs, the open tab's history says so; when it ends, it doesn't.
+  doing.resetDoing();
+  // The turn below waits on a promise with no timer behind it, and the send's own wait is unref'd:
+  // something has to keep the loop awake while it's held.
+  const awake = setInterval(() => {}, 50);
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const h = harness({ turn: async ({ text }) => { await gate; return `re: ${text}`; } });
+  const kofi = browser(KOFI_C);
+  const { id } = J(await media.uploadRequest({ account: db.getAccount(KOFI_C), headers: H(kofi, { "x-reason-csrf": kofi.csrf, "x-reason-name": "lease.pdf" }), readBody: async () => PDF, readPdf: async () => ({ ok: true, pages: 4 }) }));
+  assert.equal((await send(h, kofi, { id: "w-doing-00001", text: "Is this the same place?", files: id })).status, 200);
+  assert.ok(await until(() => h.turns.length === 1));
+  const hist = () => J(convo.historyRequest({ account: db.getAccount(KOFI_C), query: { after: "0" } }));
+  assert.equal(hist().doing, "reading the lease…");
+  assert.equal(J(convo.historyRequest({ account: db.getAccount(AMA_C), query: { after: "0" } })).doing, null, "nobody else's tab hears it");
+  release();
+  assert.ok(await until(() => hist().doing === null));
+  assert.equal(doing.doingFor(KOFI_C, { at: Date.now() + doing.STALE_MS + 1 }), null);
+  // Two turns at once: the newer one's line shows; when it ends first, the older one's is back.
+  const endA = doing.begin(KOFI_C, [{ kind: "pdf", filename: "lease.pdf" }]);
+  const endB = doing.begin(KOFI_C, [{ kind: "image" }]);
+  assert.equal(doing.doingFor(KOFI_C), "looking at the photo…");
+  endB(); assert.equal(doing.doingFor(KOFI_C), "reading the lease…");
+  endA(); endA(); assert.equal(doing.doingFor(KOFI_C), null);
+  clearInterval(awake);
+});
+
+test("3A + 4A–4E as drawn: the + sheet, the slips' states, FROM YOUR VOICE, PAUSED + SENDING IN, writing it down…, I can't hear you yet.", () => {
+  const html = compose.composerHtml({ csrf: "c", sendId: "s", maxText: 4000 });
+  assert.match(html, /<div class="addsheet" role="dialog" aria-label="Add to your message" hidden><span class="lbl as-h">ADD TO YOUR MESSAGE<\/span><button class="as-pick" type="button" data-pick="media">Photo or video<\/button><button class="as-pick" type="button" data-pick="camera">Take a photo<\/button><button class="as-pick" type="button" data-pick="file">A file or PDF<\/button><button class="as-never" type="button">NEVER MIND<\/button><\/div>/, "3A");
+  assert.match(html, /<input class="c-file" data-pick="camera" type="file" accept="image\/\*" capture="environment" hidden/, "Take a photo opens the camera");
+  assert.match(html, /<p class="lbl fromvoice" hidden>FROM YOUR VOICE · EDIT ANYTHING<\/p>/, "4C");
+  assert.match(html, /<h2 id="mo-h" class="mo-h" tabindex="-1">I can’t hear you yet\.<\/h2><p class="mo-p">Your browser hasn’t allowed the microphone\. Allow it next to the address bar, then try again\.<\/p><button class="mo-try" type="button">Try again <span aria-hidden="true">→<\/span><\/button><p class="hand mo-or">or just type it\. that works too\.<\/p>/, "4E");
+  const ls = compose.listeningHtml();
+  assert.match(ls, /<span class="ls-paused">PAUSED<\/span>/, "4B header");
+  assert.match(ls, /<div class="ls-count" role="status"><span class="ls-cn">SENDING IN 3…<\/span><span class="ls-dots" aria-hidden="true"><i><\/i><i><\/i><i><\/i><\/span><\/div>/, "4B countdown");
+  assert.match(ls, /<button class="ls-keep" type="button">KEEP TALKING<\/button><button class="ls-edit" type="button">Edit it first<\/button><button class="ls-now" type="button">Send now <span aria-hidden="true">→<\/span><\/button>/, "4B actions");
+  assert.match(ls, /<p class="hand ls-writing" role="status">writing it down…<\/p><div class="ls-ruled" aria-hidden="true">/, "L9");
+  assert.match(compose.COMPOSE_CSS, /\.on-line li\[data-state=up\]\{opacity:\.55\}/, "3B: uploading is faded, no bars");
+  assert.ok(!/progress/i.test(compose.COMPOSE_JS + compose.COMPOSE_CSS), "no progress bars");
 });

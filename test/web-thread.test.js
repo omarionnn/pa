@@ -186,7 +186,7 @@ test("S2: the note's markup — a status, two slots that crossfade exactly as th
 
 test("SC3: TODAY ↓ sits inside the composer line (hidden until scrolled back), never floating; 40px between messages, 52px above a day", () => {
   const html = convo.renderConversation({ account: db.getAccount(KOFI_C), csrf: "c", lines: [], more: false, sendId: "s" });
-  assert.match(html, /<input id="c-input"[^>]*><button class="today" type="button" hidden>TODAY <span aria-hidden="true">↓<\/span><\/button><button class="ic c-mic"/);
+  assert.match(html, /<textarea id="c-input"[^>]*><\/textarea><button class="today" type="button" hidden>TODAY <span aria-hidden="true">↓<\/span><\/button><button class="ic c-mic"/);
   assert.match(html, /\.today\{flex-shrink:0;min-height:44px;padding:0 4px;border:0;background:transparent;cursor:pointer;font:400 11px\/1 var\(--mono\);letter-spacing:\.14em;color:var\(--ink\);white-space:nowrap\}/);
   assert.ok(!/\.today\{[^}]*position:(fixed|absolute)/.test(html), "never floats over the thread");
   assert.match(html, /\.thread\{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:40px\}/);
@@ -347,7 +347,7 @@ test("L1: the thread opens with the composer live and ruled lines in its place; 
   assert.match(page, /<ol class="thread" role="log" aria-live="polite" aria-relevant="additions" aria-busy="true"><\/ol>/, "the live log starts empty and busy, so the history isn't read out as it lands");
   assert.match(page, /<noscript><div class="start">[^]*?<\/div><ol class="thread" role="log">[^]*first words[^]*<\/ol><\/noscript>/);
   assert.match(page, /defer:true/);
-  assert.match(page, /<input id="c-input"/, "the composer is there from the first paint");
+  assert.match(page, /<textarea id="c-input"/, "the composer is there from the first paint");
   assert.match(page, /<nav class="tabs"/);
   assert.match(page, /html:not\(\.js\) \.l1,html:not\(\.js\) \.thread\[aria-busy\]\{display:none\}/);
   assert.match(page, /\.gh-w span\{display:block;height:2px;background:var\(--hair\);animation:ghost 1\.6s ease-in-out infinite\}/, "ruled lines, 2px, hairline; fade 0.5↔1 over 1.6s (none under reduced motion)");
