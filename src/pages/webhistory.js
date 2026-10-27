@@ -35,11 +35,13 @@ const noonOf = (key) => { const [y, m, d] = key.split("-").map(Number); return D
 
 /** Today · Yesterday · Tuesday, Oct 20 (this week) · Oct 12 · Oct 12, 2025 (another year). */
 export function dayName(key, now = clock.now()) {
-  if (key === dayKey(now)) return "Today";
-  if (key === dayKey(now - 864e5)) return "Yesterday";
+  // Whole calendar days between the two dates (noon UTC of each), so a clock change never shifts a name.
+  const ago = Math.round((noonOf(dayKey(now)) - noonOf(key)) / 864e5);
+  if (ago === 0) return "Today";
+  if (ago === 1) return "Yesterday";
   const at = noonOf(key);
   const opts = { timeZone: "UTC" };
-  for (let i = 2; i < 7; i++) if (key === dayKey(now - i * 864e5)) return new Intl.DateTimeFormat("en-US", { ...opts, weekday: "long", month: "short", day: "numeric" }).format(at);
+  if (ago > 1 && ago < 7) return new Intl.DateTimeFormat("en-US", { ...opts, weekday: "long", month: "short", day: "numeric" }).format(at);
   const sameYear = key.slice(0, 4) === dayKey(now).slice(0, 4);
   return new Intl.DateTimeFormat("en-US", { ...opts, month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) }).format(at);
 }
@@ -102,13 +104,11 @@ const wordsOf = (q) => cleanQuery(q).toLowerCase().split(" ").filter(Boolean);
 export function searchMessages(conv, q, { limit = MAX_HITS } = {}) {
   const words = wordsOf(q);
   if (!words.length) return { total: 0, hits: [] };
-  const where_ = words.map(() => "instr(lower(text), ?) > 0").join(" AND ");
-  const args = [conv, ...words];
-  const total = db.db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND deleted_at IS NULL AND ${where_}`).get(...args).n;
-  // SQLite's lower() folds ASCII only; the check below folds the rest the way the page marks them.
-  const hits = db.db.prepare(`SELECT id, role, channel, text, at FROM messages WHERE conversation_id = ? AND deleted_at IS NULL AND ${where_}
-    ORDER BY at DESC, id DESC LIMIT ?`).all(...args, limit).filter(r => words.every(w => String(r.text).toLowerCase().includes(w)));
-  return { total, hits };
+  // SQLite's lower() folds A–Z only, so the words are matched here, the way the page marks them
+  // ("café" finds "CAFÉ"); one person's history is small enough to read through.
+  const all = db.db.prepare(`SELECT id, role, channel, text, at FROM messages WHERE conversation_id = ? AND deleted_at IS NULL
+    ORDER BY at DESC, id DESC`).all(conv).filter(r => { const t = String(r.text ?? "").toLowerCase(); return words.every(w => t.includes(w)); });
+  return { total: all.length, hits: all.slice(0, limit) };
 }
 
 /** `text` escaped, every searched word underlined in pen. */

@@ -171,6 +171,8 @@ test("search: every word, both channels, underlined in pen, each hit opening its
   assert.match(none, /<p class="nomore">Nothing matches\.<\/p>/);
   assert.doesNotMatch(none, /kofi/i, "another account's words are never found");
   assert.match((await historyCall(b, { q: "%" })).body, /0 MESSAGES/, "a wildcard is just a character");
+  say(OWNER_C, "user", "fake", "CAFÉ AU LAIT", NY(10, 26, 16));
+  assert.match((await historyCall(b, { q: "café" })).body, /1 MESSAGE<\/p>.*<mark>CAFÉ<\/mark>/s, "any case beyond A–Z");
 });
 
 test("search: newest first, at most 50 shown with the total; a long message is cut around its match", async () => {
@@ -201,5 +203,8 @@ test("names of days: Today, Yesterday, this week by weekday, then the date; anot
   assert.equal(hist.dayName("2025-12-31", NOW), "Dec 31, 2025");
   assert.equal(hist.monthName("2026-09", NOW), "September");
   assert.equal(hist.monthName("2025-09", NOW), "September 2025");
+  // The night clocks spring forward (Mar 8 2026, New York): 00:30 on the 9th is still a day after the 8th.
+  assert.equal(hist.dayName("2026-03-08", Date.UTC(2026, 2, 9, 4, 30)), "Yesterday");
+  assert.equal(hist.dayName("2026-03-07", Date.UTC(2026, 2, 9, 4, 30)), "Saturday, Mar 7");
   void NYS;
 });
