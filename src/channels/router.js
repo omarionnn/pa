@@ -223,7 +223,9 @@ export class Router {
     // The master's reply might be the answer to somebody's access request. Read before their turn,
     // by the same judge the confirm gate uses, with every fact around it owned by code: a real new
     // message from the master's own number, tied to one request, single use, with an expiry.
-    if (isOperator) {
+    // Never from a Web-only chat (owner 10-27): those asks were put in the shared thread, and a "yes"
+    // typed in a chat about something else is not an answer to them.
+    if (isOperator && !(inbound.channel === web.WEB && db.webChatOf(inbound.chatId))) {
       const answered = await this.#readAccessAnswer({ conversationId, inbound, address });
       // If that message WAS the answer, code has already replied to both of them. Running a model
       // turn on top would mean the master gets told twice, in two voices, about one decision.
@@ -590,7 +592,8 @@ export class Router {
       // context — it would treat "Yes" as a reply to the last text. When there IS a pending
       // verification and the single text IS a clear yes or no, handle it here instead of running a
       // model turn that has no idea about the call.
-      const pendingCall = db.pendingCallVerification(conversationId);
+      // A call's check is texted to their phone and answered in the shared thread only, never from a Web-only chat.
+      const pendingCall = fold.webChat ? null : db.pendingCallVerification(conversationId);
       if (pendingCall && said.length === 1) {
         const answer = readYesNo(said[0]);
         if (answer === "yes" || answer === "no") {

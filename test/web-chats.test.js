@@ -311,3 +311,55 @@ test("9. review: a task's DONE line only gathers its own thread's messages; neit
   const chat = settle.foldsFor(OWNER_C, [inChat], { chat: CHAT });
   assert.deepEqual([...chat.folds.values()].map(f => f.lastId), [inChat], "the chat settles at its own last line, so it is drawn");
 });
+
+test("10. review: from a Web chat's turn, no tool reaches the person's own phone", async () => {
+  const { runTool } = await import("../src/tools.js");
+  db.claimWebChat(OWNER_C, CHAT);
+  const key = db.historyKeyFor(OWNER_C, db.webChatRoute(CHAT));
+  const h = harness();
+  const ctx = { conversationId: OWNER_C, historyId: `${OWNER_C}#web:${CHAT}`, channels: h.router, messages: [] };
+  assert.equal(key, ctx.historyId);
+  for (const [name, input] of [["message_send", { to: OWNER, text: "hi" }], ["send_picture", { url: "https://example.com/a.png" }], ["mark_moment", { effect: "confetti", moment: "x" }], ["reply_to", { quote: "x" }]]) {
+    const out = await runTool(name, input, ctx);
+    assert.equal(out.status, "web_chat", `${name}: ${JSON.stringify(out).slice(0, 200)}`);
+  }
+  assert.equal(h.fake.sent.length, 0);
+});
+
+test("11. review: an approval asked in a Web chat is answered there; a chat's yes never answers an access or call check", async () => {
+  const trust = await import("../src/trust.js");
+  const og = await import("../src/ongoing.js");
+  const page = await import("../src/pages/webongoing.js");
+  db.db.exec("DELETE FROM confirmations");
+  db.claimWebChat(OWNER_C, CHAT);
+  const key = db.historyKeyFor(OWNER_C, db.webChatRoute(CHAT));
+  const asked = trust.requestConfirmation({ conversationId: OWNER_C, messages: [], historyId: key, action: "purchase_confirm", summary: "Buy the headphones", stakes: "money" });
+  const x = og.findItem(OWNER_C, "approval", asked.confirmation_id);
+  assert.equal(x.chat, CHAT);
+  assert.equal(page.talkHref(x), `/web?chat=${CHAT}&about=${encodeURIComponent(`approval:${asked.confirmation_id}`)}`);
+  // That link opens the chat with the draft in its composer.
+  const h = harness();
+  const omari = { ...browser(OWNER_C), conv: OWNER_C };
+  await call(h, { b: omari });
+  const r = await call(h, { b: omari, query: { chat: CHAT, about: `approval:${asked.confirmation_id}` } });
+  assert.match(r.body, /data-draft>Can I see the details first\?<\/textarea>/);
+  // The model's own pending list in a Web chat is that chat's only.
+  const { runTool } = await import("../src/tools.js");
+  const sharedAsk = trust.requestConfirmation({ conversationId: OWNER_C, messages: [], action: "browser_submit", summary: "Book the table", stakes: "commitment" });
+  const inChat = await runTool("confirm_pending", {}, { conversationId: OWNER_C, historyId: key, messages: [] });
+  assert.deepEqual(inChat.waiting_on_an_answer.map(w => w.confirmation_id), [asked.confirmation_id]);
+  const inShared = await runTool("confirm_pending", {}, { conversationId: OWNER_C, messages: [] });
+  assert.deepEqual(inShared.waiting_on_an_answer.map(w => w.confirmation_id), [sharedAsk.confirmation_id]);
+});
+
+test("12. review: a yes typed in a Web chat never verifies a call whose check went to their phone", async () => {
+  db.db.exec("DELETE FROM calls");
+  const call_ = db.createCall(OWNER_C, { provider: "fake", toNumber: OWNER, isOwner: true, goal: "check in", facts: [] });
+  db.updateCall(OWNER_C, call_.id, { verify_sent_at: clock.now(), verify_sent_after_msgs: 0 });
+  const h = harness();
+  const omari = { ...browser(OWNER_C), conv: OWNER_C };
+  await sendIn(h, omari, CHAT, "wc-0501-aaaa", "yes");
+  assert.ok(await until(() => db.messagesFor(OWNER_C, { chat: CHAT }).length === 2));
+  assert.equal(h.turns.length, 1, "the chat's own turn ran");
+  assert.equal(db.pendingCallVerification(OWNER_C)?.id, call_.id, "still waiting on the phone's answer");
+});

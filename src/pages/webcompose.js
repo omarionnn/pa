@@ -315,7 +315,7 @@ body.listening{overflow:hidden}
 export const COMPOSE_JS = String.raw`(function(){
 var R=window.REASON_WEB||{},A=R.api,form=document.querySelector('.cform');if(!form||!A)return;
 var comp=form.closest('.composer'),box=document.getElementById('c-input'),add=form.querySelector('.c-add'),mic=form.querySelector('.c-mic'),upl=comp.querySelector('.upl'),shelf=comp.querySelector('.on-line'),fail=comp.querySelector('.upfail'),failList=comp.querySelector('.uf-list'),note=comp.querySelector('.c-note'),sheet=comp.querySelector('.addsheet'),fromVoice=comp.querySelector('.fromvoice'),moff=comp.querySelector('.micoff'),body=document.body,onit=document.querySelector('.onit');
-if(box.hasAttribute('data-draft')){try{history.replaceState(null,'','/web?thread')}catch(e){}setTimeout(function(){fit();if(matchMedia('(hover:hover)').matches){box.focus({preventScroll:true});box.setSelectionRange(box.value.length,box.value.length)}},0)}
+if(box.hasAttribute('data-draft')){try{var cq=new URLSearchParams(location.search).get('chat');history.replaceState(null,'',cq?'/web?chat='+encodeURIComponent(cq):'/web?thread')}catch(e){}setTimeout(function(){fit();if(matchMedia('(hover:hover)').matches){box.focus({preventScroll:true});box.setSelectionRange(box.value.length,box.value.length)}},0)}
 var files=[],blobs={},noteT=0,LIM=R.lim||{each:20971520,fit:7340032,files:6};
 function say(t){if(!note)return;note.textContent=t;note.hidden=!t;clearTimeout(noteT);if(t)noteT=setTimeout(function(){note.hidden=true},9000)}
 R.say=say;

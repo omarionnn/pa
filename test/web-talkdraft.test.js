@@ -84,7 +84,7 @@ test("2. the thread opens with a draft about that row, fitting its state; never 
   assert.match(html, /<textarea id="c-input"[^>]*required data-draft>/);
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM outbox").get().n, 0);
   // The link drops ?about once drawn, so a refresh is the plain thread.
-  assert.match(html, /history\.replaceState\(null,'','\/web\?thread'\)/);
+  assert.match(html, /history\.replaceState\(null,'',cq\?'\/web\?chat='\+encodeURIComponent\(cq\):'\/web\?thread'\)/);
   // The plain thread has an empty composer.
   assert.equal(composerText(pageOf(wc.conversationPage({ account: { conversation_id: C }, headers: {}, sendId: "s", query: { thread: "" } }))), "");
 });

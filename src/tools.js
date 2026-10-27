@@ -8339,6 +8339,8 @@ async function sendGeneratedImages({ images, say = "", model = null, ctx, c }) {
     note: `${them} could not be sent into this thread (${why}). Tell them plainly, in one line, that the image couldn't be sent. Do not say you sent it, and do not give them a link to it instead.`,
   });
 
+  // A Web-only chat's turn never texts the phone (owner 10-27): the picture would leave the chat.
+  if (ctx.historyId && ctx.historyId !== c) return notSent("this is a Web-only chat, and a picture can't be sent into it yet", { status: "web_chat" });
   const router = ctx.channels;
   const thread = db.getThread(c);
   const channel = thread ? router?.get?.(thread.channel) : null;
@@ -10059,6 +10061,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return { ok: false, status: "not_connected", error: `There is no texting channel running, so nothing can be sent anywhere. Say that plainly; do not say you sent it.` };
       }
       const toOwner = addressedToOwner(c, input.to);
+      // A Web-only chat's turn never texts their own phone (owner 10-27): the reply is the message.
+      if (toOwner && ctx.historyId && ctx.historyId !== c) return { ok: false, status: "web_chat", error: "This is a Web-only chat: nothing is texted to their phone from here. Say it in your reply instead." };
       // A task wake must not side-channel the owner through message_send — the turn's own reply
       // is gated by shouldSend and pinned under the originating text, so it lands right. A
       // message_send bypasses both, producing a loose non-sequitur in the thread.
@@ -10276,6 +10280,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
      * around an animation that was never going to play.
      */
     case "mark_moment": {
+      // A Web-only chat's turn never reaches their phone.
+      if (ctx.historyId && ctx.historyId !== c) return { ok: false, status: "web_chat", error: "This is a Web-only chat: nothing goes to their phone from here (owner 10-27). Say it in your reply instead." };
       const router = ctx.channels;
       const thread = db.getThread(c);
       const ch = router?.get?.(thread?.channel ?? "");
@@ -10311,6 +10317,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
      * never passes through the model, so it cannot be pointed at somebody else's thread.
      */
     case "reply_to": {
+      // A Web-only chat's turn never reaches their phone.
+      if (ctx.historyId && ctx.historyId !== c) return { ok: false, status: "web_chat", error: "This is a Web-only chat: nothing goes to their phone from here (owner 10-27). Say it in your reply instead." };
       const router = ctx.channels;
       const thread = db.getThread(c);
       const ch = router?.get?.(thread?.channel ?? "");
@@ -10419,6 +10427,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const router = ctx.channels;
       const thread = db.getThread(c);
       const asText = "Send it as a text instead, and do not say you sent a voice note.";
+      // A Web-only chat's turn never texts the phone (owner 10-27).
+      if (ctx.historyId && ctx.historyId !== c) return { ok: false, status: "web_chat", error: `This is a Web-only chat; a voice note would go to their phone, so none was sent. ${asText}` };
       if (!router || !thread || !router.get?.(thread.channel)) {
         return { ok: false, status: "not_connected", error: `There is no texting thread here to send a voice note into. ${asText}` };
       }
@@ -10462,6 +10472,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return { ok: false, status: "not_connected", error: "There is no texting channel running, so nothing can be sent anywhere. Say that plainly." };
       }
       const toOwner = addressedToOwner(c, input.to);
+      // A Web-only chat's turn never reaches their own phone.
+      if (toOwner && ctx.historyId && ctx.historyId !== c) return { ok: false, status: "web_chat", error: "This is a Web-only chat: a voice note would go to their phone, so none was sent. Say it in your reply instead." };
       const thread = db.getThread(c);
       const channelName = thread?.channel ?? router.list()[0]?.name;
       const to = toOwner ? (config.ownerNumbers[0] ?? thread?.address ?? "owner") : normalizeNumber(input.to);
@@ -10502,6 +10514,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "send_picture": {
+      // A Web-only chat's turn never reaches their phone.
+      if (ctx.historyId && ctx.historyId !== c) return { ok: false, status: "web_chat", error: "This is a Web-only chat: nothing goes to their phone from here (owner 10-27). Say it in your reply instead." };
       const router = ctx.channels;
       if (!router) {
         return { ok: false, status: "not_connected", error: "There is no texting channel running, so the picture cannot be sent. Say that plainly." };
@@ -11568,8 +11582,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       });
 
     case "confirm_pending": {
+      // This thread's asks only (a Web-only chat's, or the shared one's): one asked elsewhere can't be answered here.
+      const here = ctx.historyId && ctx.historyId !== c ? ctx.historyId : null;
       const open = db.pendingConfirmations(c)
-        .filter(x => !x.granted_at)
+        .filter(x => !x.granted_at && (x.thread_key ?? null) === here)
         .map(x => ({ confirmation_id: x.id, action: x.action, asked: stamp(x.asked_at), you_said_youd: x.summary, target: x.target || undefined }));
       return {
         waiting_on_an_answer: open, count: open.length,

@@ -172,8 +172,10 @@ async function runTurnOnCli({
     // "yeah that's it" lands on a question that was never put to them. Spelling the open
     // confirmations out restores what the API path gets for free; it does not add anything the
     // model could not have had.
+    // Only the asks made in THIS thread (a Web-only chat's, or the shared one's): one asked elsewhere
+    // can't be answered here (src/trust.js recordConfirmation).
     const pending = pendingConfirmations(conversationId)
-      .filter(x => !x.granted_at)
+      .filter(x => !x.granted_at && (x.thread_key ?? null) === (historyId !== conversationId ? historyId : null))
       .map(x => `  - confirmation #${x.id} (${x.action}), asked ${stamp(x.asked_at)}: ${x.summary}`);
 
     // Replies in this thread that never arrived, told about exactly once. Same read as the API path

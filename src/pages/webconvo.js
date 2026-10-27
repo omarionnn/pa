@@ -926,7 +926,9 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   if (query.chat != null) {
     const chat = chatFrom(conv, query.chat);
     if (!chat) return { status: 404, body: renderWebNotFound({ signedIn: true }) };
-    return renderConversation({ account, csrf, lines: [], more: false, sendId, items, approvals, back, now, deferred: true, work: workOf(conv), chat });
+    const about = /^(task|timer|series|approval):(\d{1,15})$/.exec(String(query.about ?? ""));
+    const draft = about ? draftFor(findItem(conv, about[1], about[2], now)) : "";
+    return renderConversation({ account, csrf, lines: [], more: false, sendId, items, approvals, back, now, deferred: true, work: workOf(conv), chat, draft });
   }
   // ?at=<id> (Saved's FIND IT IN THE CHAT →): the thread around one of this conversation's own messages, drawn at once (no L1).
   const at = /^\d{1,15}$/.test(String(query.at ?? "")) ? Number(query.at) : null;
