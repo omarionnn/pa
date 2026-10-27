@@ -11,9 +11,9 @@
 //     url is heyreason.com/s/<12 base62>, never the stamp id; the same link again; somebody else's stamp
 //     is refused; Stop sharing turns it off; no-script form posts come back to the page
 //   - /s/<shareId>: no sign-in, noindex (meta + X-Robots-Tag), the large stamp, its line, the CTA with
-//     ?ref=s_<id>, og:image + summary_large_image; revoked: E2 "turned off", 410, og → the generic card
+//     ?ref=s_<id>, og:image + summary_large_image; revoked = never existed = malformed: one 404 page, og a plain 404
 //   - /s/ collision: a sign-in link token (32+ base64url) still reaches the ride-along handler; a
-//     12-character path with no share falls through to it unchanged
+//     12-character path with no share is the stamps’ 404 page
 //   - REDACTION: merchant, company, city, price and person never appear in any public output
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
@@ -250,26 +250,40 @@ test("/s/<shareId>: public, noindex, the large stamp and its line, CTA with ref,
   assert.equal(db.db.prepare("SELECT opens FROM stamp_shares WHERE share_id = ?").get(sid).opens, 1);
 });
 
-test("revoked: the existing turned-off screen at 410, and the og falls back to the generic card", async () => {
+test("revoked and never-existed: the same 404 page (noindex, wordmark, the share page's CTA); their pictures a plain 404", async () => {
   const id = seed(OWNER_C, "first");
   const b = browser(OWNER_C);
   const sid = (await share(b, id)).json.url.split("/").pop();
   stamps.revokeShares(OWNER_C, id);
   await server(async (base) => {
-    const r = await fetch(`${base}/s/${sid}`);
-    assert.equal(r.status, 410);
-    assert.equal(r.headers.get("x-robots-tag"), "noindex, nofollow, noarchive");
-    const h = await r.text();
-    assert.match(h, /This link’s been <em>turned off\.<\/em>/);
-    assert.match(h, /HEYREASON\.COM/);
-    assert.doesNotMatch(h, /First errand|first errand/i);
-    assert.doesNotMatch(h, /url\(\/fonts\//, "faces from Web's own path, which every host serves");
-    const og = Buffer.from(await (await fetch(`${base}/s/${sid}/og.png`)).arrayBuffer());
-    assert.ok(og.equals(readFileSync(new URL("../assets/og.png", import.meta.url))), "the generic card");
+    const pages = [];
+    for (const path of [`/s/${sid}`, "/s/doesnotexist", "/s/AAAAAAAAAAAA", "/s/abc", "/s/not-a-share!", "/s/abc/def"]) {
+      const r = await fetch(`${base}${path}`);
+      assert.equal(r.status, 404, path);
+      assert.match(r.headers.get("content-type"), /^text\/html/, path);
+      assert.equal(r.headers.get("x-robots-tag"), "noindex, nofollow, noarchive", path);
+      const h = await r.text();
+      assert.match(h, /<meta name="robots" content="noindex/);
+      const main = /<main[\s\S]*<\/main>/.exec(h)[0];
+      assert.match(main, /This stamp isn’t here\.<br><em>Nothing’s lost\.<\/em>/);
+      assert.match(main, /Get your own Reason/);
+      assert.doesNotMatch(main, /!/, "no exclamation marks");
+      assert.match(h, /<header class="eg-head"><a[^>]*class="wm/, "the wordmark");
+      assert.doesNotMatch(h, /First errand|first errand|turned off/i);
+      pages.push(h);
+    }
+    assert.ok(pages.every(h => h === pages[0]), "revoked, never-existed and malformed are byte-for-byte the same");
+    assert.equal((await fetch(`${base}/s/${sid}`, { method: "HEAD" })).status, 404);
+    for (const path of [`/s/${sid}/og.png`, "/s/doesnotexist/og.png", "/s/abc/og.png"]) {
+      const og = await fetch(`${base}${path}`);
+      assert.equal(og.status, 404, path);
+      assert.doesNotMatch(og.headers.get("content-type"), /html|image/, path);
+      assert.deepEqual(await og.json(), { error: "not found" }, path);
+    }
   });
 });
 
-test("collision: a ride-along sign-in token under /s/ still reaches its own handler; a 12-character id with no share falls through", async () => {
+test("collision: a ride-along sign-in token under /s/ still reaches its own handler; a 12-character id with no share is the 404 page", async () => {
   process.env.REASON_WEB_DAILY = "on";
   config.publicUrl = "https://reason.example";
   const frame = { url: "https://www.amazon.com/ap/signin", text: "Sign in or create account", fields: [] };
@@ -289,7 +303,7 @@ test("collision: a ride-along sign-in token under /s/ still reaches its own hand
       assert.match(await mine.text(), /A STAMP FROM REASON/);
       const none = await fetch(`${base}/s/AAAAAAAAAAAA`);
       assert.equal(none.status, 404);
-      assert.deepEqual(await none.json(), { error: "not found" }, "the sign-in route's own 404, as before");
+      assert.match(await none.text(), /This stamp isn’t here/, "the stamps' 404 page, not a sign-in link");
     });
   } finally { remote.forgetAllRemoteSignins(); }
 });

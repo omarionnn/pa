@@ -4,7 +4,7 @@
 // (db.finishTask, db.updateCall, db.finishResearch, db.markAgentcardPurchase) earn the first-errand patch,
 // Held on your behalf and the suite key (logged as one job); the book in its states, Paper + Night at 390
 // and 1280; a share link (POST with the session secret), the public /s/<id> page, its og.png and the story
-// drawn by the real headless Chromium; Stop sharing → 410.
+// drawn by the real headless Chromium; Stop sharing → the 404 page (same as never existed).
 //
 //   cd <worktree> && REASON_DB_PATH=$(mktemp -d)/seals.db node .agents/skills/verify-reason/bin/web-seals-drive.mjs [outDir]
 process.env.REASON_WEB = "on";
@@ -141,7 +141,11 @@ step(story.readUInt32BE(16) === 1080 && story.readUInt32BE(20) === 1920, "story.
 writeFileSync(join(OUT, "seal-story-1080x1920.png"), story);
 await all4("seals-shared", `/web/stamps?stamp=${held}`);
 r = await fetch(`${base}/web/api/stamps/${held}/share/revoke`, { method: "POST", headers: { cookie: `reason_page=${token}`, "content-type": "application/x-www-form-urlencoded", origin: base, "sec-fetch-site": "same-origin" }, body: `c=${encodeURIComponent(csrf)}`, redirect: "manual" });
-step(r.status === 303 && (await fetch(`${base}/s/${sid}`)).status === 410, "Stop sharing → the link answers 410");
+r = await fetch(`${base}/s/${sid}`).then(async x => ({ status: x.status, h: await x.text() }));
+const never = await fetch(`${base}/s/doesnotexist`).then(async x => ({ status: x.status, h: await x.text() }));
+step(r.status === 404 && never.status === 404 && r.h === never.h && /This seal isn’t here/.test(r.h) && /Get your own Reason/.test(r.h), "Stop sharing → the same 404 page as an id that never existed");
+step((await fetch(`${base}/s/${sid}/og.png`)).status === 404 && (await fetch(`${base}/s/doesnotexist/og.png`)).status === 404, "their og.png: a plain 404");
+for (const width of [390, 1280]) for (const scheme of ["light", "dark"]) await shot("seal-404", "/s/doesnotexist", { width, scheme, cookie: false });
 
 await browser.close();
 await new Promise(r => server.close(r));

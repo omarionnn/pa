@@ -3,7 +3,7 @@
 // src/http.js createServer on a loopback port, a throwaway database, SAMPLE stamps only. A real errand
 // completion (db.finishTask) earns the first stamp; the book in its three states (empty, first stamp,
 // many pages) at 390 and 1280 in Paper and Night; the share made through the real endpoint with the
-// session's secret, the public page and its og.png drawn by real Chromium, then Stop sharing → 410 and
+// session's secret, the public page and its og.png drawn by real Chromium, then Stop sharing → the 404 page and
 // the generic card. Nothing is sent anywhere (no teller is installed). Run under the cage:
 //
 //   cd <worktree> && eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" \
@@ -129,12 +129,12 @@ const og = Buffer.from(await r.arrayBuffer());
 writeFileSync(join(OUT, "share-og-1200.png"), og);
 step(r.status === 200 && og.subarray(1, 4).toString() === "PNG" && og.readUInt32BE(16) === 1200 && og.readUInt32BE(20) === 630, "og.png: a real 1200×630 PNG drawn by Chromium");
 
-// 5. Stop sharing → 410, turned off; og → the generic card.
+// 5. Stop sharing → the 404 page, the same as an id that never existed; og → a plain 404.
 r = await fetch(`${base}/web/api/stamps/${newest}/share/revoke`, { method: "POST", headers: { cookie: `reason_page=${token}`, "content-type": "application/x-www-form-urlencoded", origin: base, "sec-fetch-site": "same-origin" }, body: `c=${encodeURIComponent(csrf)}`, redirect: "manual" });
 step(r.status === 303, "Stop sharing (no-script form) → 303 back to the book");
 r = await fetch(`${base}/s/${sid}`);
 h = await r.text();
-step(r.status === 410 && /turned off/.test(h), "revoked: 410, the turned-off screen");
+step(r.status === 404 && /This stamp isn’t here/.test(h) && h === await (await fetch(`${base}/s/doesnotexist`)).text(), "revoked: the 404 page, same as never existed");
 for (const width of [390, 1280]) await shot("share-revoked", `/s/${sid}`, { width, scheme: "light", cookie: false });
 
 // 6. Beside the reference.

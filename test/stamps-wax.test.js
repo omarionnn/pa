@@ -11,7 +11,7 @@
 //   - awarding: the suite key (call + research + purchase + one more inside 2h of the first step's
 //     start, logged as one job with its start); the anniversary at a year, serial = place
 //   - routes at REASON_STAMPS_WAX=on: the book, Save image (1200×630) and the story (1080×1920), the
-//     public page (noindex, og card, CTA), Stop sharing → 410; off → the typed book exactly as before
+//     public page (noindex, og card, CTA), Stop sharing → the 404 page; off → the typed book exactly as before
 //   - REDACTION: nothing but name, duration/count, date and the optional first name leaves the book
 //   - Home: New in your book is the newest seal, 104px, no postmark, its name and one line
 //   - nothing about streaks, points, levels or loss
@@ -342,7 +342,7 @@ test("pictures: Save image is the 1200×630 card, the story is 1080×1920, both 
   for (const d of drawn) assert.ok(!d.html.includes("Delta"));
 });
 
-test("public page: no sign-in, noindex, the large seal, its line, the date, og card, CTA with ref; Stop sharing → 410", async () => {
+test("public page: no sign-in, noindex, the large seal, its line, the date, og card, CTA with ref; Stop sharing → the 404 page", async () => {
   const id = seed(OWNER_C, "long_hold", { detail: { minutes: 52 } });
   const b = browser(OWNER_C);
   const { url } = await share(b, id);
@@ -367,7 +367,54 @@ test("public page: no sign-in, noindex, the large seal, its line, the date, og c
     assert.deepEqual(drawn.at(-1).size, { width: 1200, height: 630 });
   });
   await call({ sub: `api/stamps/${id}/share/revoke`, method: "POST", b, body: JSON.stringify({}), headers: { "content-type": "application/json", accept: "application/json", "x-reason-csrf": b.csrf } });
-  await server(async (base) => { assert.equal((await fetch(`${base}/s/${sid}`)).status, 410); });
+  await server(async (base) => {
+    const r = await fetch(`${base}/s/${sid}`);
+    assert.equal(r.status, 404);
+    const h = await r.text();
+    assert.match(h, /This seal isn’t here\.<br><em>Nothing’s lost\.<\/em>/);
+    assert.equal(h, await (await fetch(`${base}/s/doesnotexist`)).text(), "turned off looks exactly like never existed");
+  });
+});
+
+test("dates on their own clock: a first errand done 11:06 PM in New York (03:06 UTC next day) reads OCT 5 on the patch, card, story and share page; London reads OCT 6", async () => {
+  const done = Date.parse("2026-10-06T03:06:21Z");
+  db.db.prepare("UPDATE accounts SET notice_tz = ? WHERE conversation_id = ?").run("America/New_York", OWNER_C);
+  db.db.prepare("UPDATE accounts SET notice_tz = ? WHERE conversation_id = ?").run("Europe/London", KOFI_C);
+  // The stored moment is the errand's own finished_at, never a day boundary.
+  db.db.prepare("INSERT INTO tasks (conversation_id, title, goal, state, max_attempts, created_at, updated_at, finished_at) VALUES (?, 'x', 'x', 'done', 3, ?, ?, ?)").run(OWNER_C, done - 5_000_000, done, done);
+  stamps.backfill(OWNER_C);
+  const row = db.db.prepare("SELECT * FROM stamps WHERE conversation_id = ? AND type = 'first'").get(OWNER_C);
+  assert.equal(row.earned_at, done);
+  const pub = stamps.publicSeal(row);
+  assert.equal(pub.postmarkDate, "OCT 5 2026");
+  assert.equal(pub.when, "MONDAY, THE FIFTH OF OCTOBER");
+  const b = browser(OWNER_C);
+  const book = (await call({ b })).body;
+  assert.match(book, /first errand, with Reason&#39;s r, dated OCT 5 2026|first errand, with Reason's r, dated OCT 5 2026/);
+  assert.doesNotMatch(book, /OCT 6/);
+  for (const kind of ["image.png", "story.png"]) {
+    await call({ sub: `api/stamps/${row.id}/${kind}`, b });
+    assert.match(drawn.at(-1).html, /FIFTH OF OCTOBER|OCT 5 2026/i, kind);
+    assert.doesNotMatch(drawn.at(-1).html, /SIXTH OF OCTOBER|OCT 6/i, kind);
+  }
+  const sid = (await share(b, row.id)).url.split("/").pop();
+  await server(async (base) => {
+    const h = await (await fetch(`${base}/s/${sid}`)).text();
+    assert.match(h, /MONDAY, THE FIFTH OF OCTOBER/);
+    assert.match(h, /OCT 5 2026/);
+    assert.doesNotMatch(h, /OCT 6|SIXTH OF OCTOBER/);
+  });
+  const k = db.db.prepare("SELECT * FROM stamps WHERE id = ?").get(seed(KOFI_C, "first", { at: done }));
+  assert.equal(stamps.publicSeal(k).postmarkDate, "OCT 6 2026");
+  assert.equal(stamps.publicSeal(k).when, "TUESDAY, THE SIXTH OF OCTOBER");
+});
+
+test("the anniversary ticket's months are on their clock too, not UTC", () => {
+  const html = wx.renderSealBook({ tz: "America/New_York", now: Date.parse("2026-11-02T12:00:00Z"), all: [{
+    id: 9, type: "anniversary", outside: true, earnedAt: Date.parse("2026-11-01T02:00:00Z"), values: { serial: 1, from: Date.parse("2025-11-01T02:00:00Z") },
+    name: "A year of things handled", postmarkDate: "OCT 31 2026", date: "OCT 31", rotation: 0,
+  }] });
+  assert.match(html, /OCT 2025 TO OCT 2026/);
 });
 
 test("REDACTION: name, duration or count, date and the optional first name only — never a place, price, merchant or person", async () => {
