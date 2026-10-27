@@ -30,7 +30,7 @@
 //   GET  /web/history|stream, POST /web/send   the conversation: older/newer lines, live events, a message (src/pages/webconvo.js)
 //   GET  /web/live                    the same live events, asked for on the pages host by the website's page (CORS: that origin only)
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
-//   GET  /web/settings                "coming soon" page behind SETTINGS (phase 4)
+//   GET/POST /web/settings            Settings (src/pages/websettings.js)
 //   GET  /web/fonts/{serif|roman|hand|handbold|sans}.woff2  Web's own faces (src/pages/webkit.js; 404 while off)
 //        /web…  on the pages host, not signed by the website: 301 to {REASON_SITE_URL}/web… (src/pages/siteproxy.js)
 //   POST /agentcard/webhook           a card landed in somebody's vault, or a payment was approved
