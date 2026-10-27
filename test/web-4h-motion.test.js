@@ -19,7 +19,7 @@ test("late night: 23:00 up to 05:00 on the browser's clock, edges exact", () => 
 
 test("the page runs the same hour test in its head (before paint) and re-checks each minute", () => {
   const page = kit.webPage({ body: "<main></main>" });
-  const src = "function(d){var h=d.getHours();return h>=23||h<5}";
+  const src = "function(d){var h=d.getHours();return h>=23||5>h}";
   assert.ok(page.split(src).length - 1 >= 2, "head + minute tick");
   assert.match(page, /if\(late\(new Date\(\)\)\)h\.classList\.add\('late'\)/);
   assert.match(page, /setInterval\(function\(\)\{var on=late\(new Date\(\)\)[^]*?\},60000\)/);

@@ -126,7 +126,7 @@ export const GRAIN = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/20
 /** Night's ground between 11 PM and 5 AM on the person's own clock. Nothing else changes. */
 export const LATE_GROUND = "#221a13";
 // One source for the hour test, run in the browser (its own clock) and here in the tests.
-const LATE_SRC = "function(d){var h=d.getHours();return h>=23||h<5}";
+const LATE_SRC = "function(d){var h=d.getHours();return h>=23||5>h}"; // no "<": the head script stays free of markup characters
 /** Late night: 23:00 up to (not including) 05:00, in the clock of the Date given (the browser's local time). */
 export const isLateNight = new Function(`return ${LATE_SRC}`)();
 // Set before first paint; re-checked every minute. `late-go` lets the ground fade over 2s only when it
@@ -174,7 +174,7 @@ const PAGE_JS = `(function(){var W=window,D=document;if(W.__reasonPage)return;va
   + `W.setInterval=function(){var i=si.apply(W,arguments);I.push(i);return i};W.setTimeout=function(){var t=st.apply(W,arguments);if(T.length>500)T=T.slice(-250);T.push(t);return t};`
   + `[W,D].forEach(function(o){o.addEventListener=function(t,f,c){L.push([o,t,f,c]);return ael.call(o,t,f,c)}});`
   + `if(W.EventSource){var ES=W.EventSource;W.EventSource=function(u,o){var e=new ES(u,o);E.push(e);return e};W.EventSource.prototype=ES.prototype}})();`;
-const HEAD_JS = `(function(){try{${tint}var h=document.documentElement,a=h.getAttribute('data-account-theme');${LATE_HEAD}`
+const HEAD_JS = `(function(){try{${tint}var h=document.documentElement;${LATE_HEAD}var a=h.getAttribute('data-account-theme');`
   + `if(a==='paper'||a==='night')localStorage.setItem('${THEME_KEY}',a==='paper'?'light':'dark');else if(a==='auto')localStorage.removeItem('${THEME_KEY}');`
   + `var t=localStorage.getItem('${THEME_KEY}');if(t==='light'||t==='dark'){h.dataset.theme=t;tint()}h.classList.add('js');if(localStorage.getItem('${OG_KEY}')==='off')h.classList.add('og-off');`
   + `if(h.dataset.loader&&!sessionStorage.getItem('reason-web-loaded')&&!matchMedia('(prefers-reduced-motion: reduce)').matches)h.classList.add('loading')}catch(e){}})();`;
