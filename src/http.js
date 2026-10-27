@@ -32,7 +32,7 @@
 //   POST /web/upload, GET /web/media/…   a photo, PDF or voice note in; files back, signed in only (src/webmedia.js)
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
-//   GET  /web/ongoing/{approval|task|timer|series}/{id}   one Ongoing row's detail; /web/ongoing/state (src/pages/webongoing.js)
+//   GET  /web/ongoing/{approval|task|timer|series}/{id}   one Ongoing row's detail; /web/ongoing/{hand|back} a group's See all; /web/ongoing/state (src/pages/webongoing.js)
 //   GET  /web/fonts/{serif|roman|hand|handbold|sans}.woff2  Web's own faces (src/pages/webkit.js; 404 while off)
 //        /web…  on the pages host, not signed by the website: 301 to {REASON_SITE_URL}/web… (src/pages/siteproxy.js)
 //   POST /agentcard/webhook           a card landed in somebody's vault, or a payment was approved
@@ -258,14 +258,14 @@ export function createServer({ router, runtime, log = () => {} }) {
         return res.end(req.method === "HEAD" ? "" : out.body);
       }
       // Ongoing's own pages (src/pages/webongoing.js): one row's detail, and the small state the Ongoing pages poll.
-      const ongoingRoute = /^\/web\/ongoing(?:\/(state|approval|task|timer|series)(?:\/(\d{1,12}))?)?$/.exec(url.pathname);
+      const ongoingRoute = /^\/web\/ongoing(?:\/(state|hand|back)|\/(approval|task|timer|series)(?:\/(\d{1,12}))?)?$/.exec(url.pathname);
       const webRoute = ongoingRoute ?? /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings))?$/.exec(url.pathname)
         ?? /^\/web\/(memory\/(?:correct|forget|guess))$/.exec(url.pathname);
       if (webRoute && webOn()) {
         let out;
         try {
           out = ongoingRoute
-            ? (await import("./pages/webongoing.js")).ongoingRequest({ kind: ongoingRoute[1] || null, id: ongoingRoute[2] || null, method: req.method, headers: req.headers })
+            ? await (await import("./pages/webongoing.js")).ongoingRequest({ kind: ongoingRoute[1] || ongoingRoute[2] || null, id: ongoingRoute[3] || null, method: req.method, headers: req.headers, query: Object.fromEntries(url.searchParams) })
             : await webRequestFor({
               sub: webRoute[1] || null, method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers,
               remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, router, log,

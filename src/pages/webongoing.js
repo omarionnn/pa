@@ -2,9 +2,13 @@
 // ongoing-mobile, sheet-desktop-panel, sheet-details 2A–2E, ongoing-detail, sheet-global 9D). The rows
 // are src/ongoing.js's; this file only draws them.
 //
-//   ogMargin        the list: the desktop margin, or the mobile Ongoing tab's body. NEEDS YOU (the
-//                   approval on a paper card), IN HAND, BACK TO YOU; a typed status at the right of
-//                   every row; the top three shown and "See all N →" for the rest (PR #179's tidy)
+//   ogMargin        the list: the desktop margin, or the mobile Ongoing tab's body. NEEDS YOU (every
+//                   approval: the first on a paper card), IN HAND, BACK TO YOU, each heading with its
+//                   count; a typed status at the right of every row; each group's top three, then a
+//                   serif "See all N →" (handoff v2, sheet 2A/2C, §4c item 2)
+//   renderSeeAll    2B: one group's full list at /web/ongoing/{hand|back}, newest first, filter words
+//                   with counts, a typed meta line on every row
+//   homeRows        the arrival's "already in hand" as quiet rows between dashed rules (STAGING-REVIEW 7)
 //   renderDetail    one row's own page at /web/ongoing/<kind>/<id>: ← ONGOING, a typed status, a serif
 //                   headline, then what that kind of row really carries
 //   ongoingRequest  GET /web/ongoing/… (src/http.js), signed in, the session's own rows only
@@ -86,39 +90,111 @@ export function countLine(model) {
   return `${n} ${n === 1 ? "THING" : "THINGS"}${k ? ` · ${k} ${k === 1 ? "NEEDS" : "NEED"} YOU` : ""}`;
 }
 
+// ---------------------------------------------------------------- Ongoing at volume (handoff v2, sheet 2A/2B/2C, §4c item 2)
 /**
- * The Ongoing list: the desktop margin, or (`tab`) the mobile Ongoing tab's body. PR #179's tidy is
- * kept whole: the top OG_TOP rows show, the rest are drawn but folded, "See all N →" opens them in
- * place (no script: a link to the list drawn open, `all`), and the margin carries "HIDE →".
+ * One quiet row at volume: the title (two lines, then …), its status at the right (never wraps), and,
+ * where the sheet draws one, its typed meta line under the title ("WORKING · STARTED 2:55 PM").
+ * `typedWhen`: the margin types a scheduled row's day ("MON"); the phone sets it in serif ("Mon 9:00").
  */
-export function ogMargin({ approvals = [], items = [], back = [] }, { all = false, tab = false } = {}) {
+export function vRow(x, { meta = false, typedWhen = false } = {}) {
+  let right;
+  switch (x.state) {
+    case "approval": right = st("APPROVE", true); break;
+    case "working": right = st(x.of ?? "WORKING"); break;
+    case "needs": right = st("NEEDS YOU", true); break;
+    case "failed": right = st("DIDN'T WORK", true); break;
+    case "scheduled": {
+      const w = x.next_ ?? {};
+      right = typedWhen ? st(w.typed ?? x.every ?? "") : w.serif ? `<span class="ogv-w">${esc(w.serif)}</span>` : st(x.every ?? "");
+      break;
+    }
+    default: right = st(x.status ?? "");
+  }
+  return `<a class="ogv" href="${esc(x.href)}" data-state="${x.state}"${flight(x)}><span class="ogv-t">${esc(x.title)}</span><span class="ogv-r">${right}</span>`
+    + `${meta && x.meta ? `<span class="ogv-m">${esc(x.meta)}</span>` : ""}</a>`;
+}
+
+/** The approval at volume: 2A's card on the phone (Review details →), 2C's smaller card in the margin (the card is the link). */
+function vCard(x, { tab }) {
+  const nothing = `<span class="lbl">${x.money ? "NOTHING CHARGED YET" : "NOTHING BOOKED YET"}</span>`;
+  return tab
+    ? `<div class="card og-vc"><span class="lbl pen">NEEDS YOUR APPROVAL</span><span class="ogv-t">${esc(x.title)}</span>${nothing}<a class="appr-go" href="${esc(x.href)}">Review details <span aria-hidden="true">→</span></a></div>`
+    : `<a class="card og-vc m" href="${esc(x.href)}"><span class="ogv-t">${esc(x.title)}</span>${nothing}</a>`;
+}
+
+/** Where a group's "See all N →" goes: its own page, newest first, with filter words (2B). */
+export const SEE_ALL = { hand: "/web/ongoing/hand", back: "/web/ongoing/back" };
+const seeAllLink = (n, which) => `<a class="og-more" href="${SEE_ALL[which]}">See all ${n} <span aria-hidden="true">→</span></a>`;
+
+/**
+ * The Ongoing list: the desktop margin, or (`tab`) the mobile Ongoing tab's body. Each group's heading
+ * carries its count (`IN HAND · 9`). NEEDS YOU shows every approval (they are the point): the first on
+ * its paper card, the rest as rows. IN HAND and BACK TO YOU show their top OG_TOP and "See all N →"
+ * (serif) to their own page. At volume (a group runs past OG_TOP) every row is 2A/2C's quiet row; with
+ * fewer, the tab keeps ongoing-mobile's fuller rows. The margin also carries "HIDE →".
+ */
+export function ogMargin({ approvals = [], items = [], back = [] }, { tab = false } = {}) {
   const head = tab ? "" : `<div class="og-h"><h2>Ongoing</h2><button class="act2 og-hide" type="button" aria-controls="og" aria-expanded="true">HIDE <span aria-hidden="true">→</span></button></div>`;
-  const aside = (inner, cls = "") => `<aside class="og${tab ? " og-tab" : ""}${cls}" id="og" aria-label="Ongoing">${head}${inner}</aside>`;
+  const needs = items.filter(x => x.needs);
+  const rest = items.filter(x => !x.needs);
+  const volume = rest.length > OG_TOP || back.length > OG_TOP;
+  const aside = (inner) => `<aside class="og${tab ? " og-tab" : ""}${volume ? " og-vol" : ""}" id="og" aria-label="Ongoing">${head}${inner}</aside>`;
   if (!items.length && !approvals.length && !back.length) {
     return aside(`<div class="empty"><p class="h2">Nothing left<br>to chase.</p>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</div>`);
   }
-  const needs = items.filter(x => x.needs);
-  const rest = items.filter(x => !x.needs);
-  const total = approvals.length + items.length + back.length;
   const H = tab ? "h2" : "h3";
-  let i = 0;
-  const fold = () => (i++ >= OG_TOP ? " og-x" : "");
-  const section = (h, cls, rows) => {
-    const from = i;
-    const inner = rows();
-    return `<section class="og-sec${from >= OG_TOP ? " og-x" : ""}"><${H}${cls}>${h}</${H}>${inner}</section>`;
-  };
-  const back_ = tab ? "/web?tab=ongoing" : "/web?thread";
-  const more = total > OG_TOP
-    ? `<a class="og-all" href="${back_}${all ? "" : "&amp;all=1"}" aria-controls="og" aria-expanded="${all}" data-n="${total}">${all ? "Show fewer" : `See all ${total} <span aria-hidden="true">→</span>`}</a>`
-    : "";
+  const one = (x) => (volume ? vRow(x, { typedWhen: !tab }) : row(x, { tab, fold: "" }));
+  const section = (h, n, cls, inner, more = "") => `<section class="og-sec"><${H}${cls}>${h} · ${n}</${H}>${inner}${more}</section>`;
+  const needsN = approvals.length + needs.length;
+  const [first, ...others] = approvals;
+  const needsInner = (first ? (volume ? vCard(first, { tab }) : apprCard(first, { tab, fold: "" })) : "")
+    + (first && (others.length || needs.length) ? `<div class="og-sp" aria-hidden="true"></div>` : "")
+    + (others.length || needs.length ? `<div class="ogv-l">${others.map(x => vRow(x, { meta: tab })).join("")}${needs.map(one).join("")}</div>` : "");
   return aside(
-    (approvals.length || needs.length ? section("NEEDS YOU", ` class="pen"`, () => approvals.map(x => apprCard(x, { tab, fold: fold() })).join("") + needs.map(x => row(x, { tab, fold: fold() })).join("")) : "")
-    + (rest.length ? section("IN HAND", "", () => rest.map(x => row(x, { tab, fold: fold() })).join("")) : "")
-    + (back.length ? section("BACK TO YOU", "", () => back.map(x => row(x, { tab, fold: fold() })).join("")) : "")
-    + more,
-    all ? " all" : "",
+    (needsN ? section("NEEDS YOU", needsN, ` class="pen"`, needsInner) : "")
+    + (rest.length ? section("IN HAND", rest.length, "", `<div class="ogv-l">${rest.slice(0, OG_TOP).map(one).join("")}</div>`, rest.length > OG_TOP ? seeAllLink(rest.length, "hand") : "") : "")
+    + (back.length ? section("BACK TO YOU", back.length, "", `<div class="ogv-l">${back.slice(0, OG_TOP).map(one).join("")}</div>`, back.length > OG_TOP ? seeAllLink(back.length, "back") : "") : ""),
   );
+}
+
+/**
+ * The arrival's "already in hand" (STAGING-REVIEW item 7): quiet rows between dashed rules, as on
+ * Ongoing, under the approval that stays on paper. The top OG_TOP, then "See all N →" to Ongoing.
+ */
+export function homeRows(items = []) {
+  if (!items.length) return "";
+  return `<div class="ogv-l home-l">${items.slice(0, OG_TOP).map(x => vRow(x)).join("")}</div>`
+    + (items.length > OG_TOP ? `<a class="og-more" href="/web?tab=ongoing">See all ${items.length} <span aria-hidden="true">→</span></a>` : "");
+}
+
+// ---------------------------------------------------------------- 2B, See all
+/** The filter words for a group's See all, in the sheet's order. Only kinds it really has are drawn. */
+const FILTERS = {
+  hand: [["working", "WORKING", (x) => x.state === "working"], ["waiting", "WAITING", (x) => x.state === "waiting"], ["stuck", "STUCK", (x) => x.state === "stuck"], ["scheduled", "SCHEDULED", (x) => x.state === "scheduled"]],
+  back: [["ready", "READY", (x) => x.state === "ready"], ["failed", "DIDN'T WORK", (x) => x.state === "failed"]],
+};
+const TITLES = { hand: "In hand", back: "Back to you" };
+/** A group's rows, newest first: what was started or set most recently on top; undated ones last. */
+export function groupRows({ items = [], back = [] }, which) {
+  if (which === "back") return back.slice();
+  return items.filter(x => !x.needs).map((x, i) => [x, i])
+    .sort(([a, ai], [b, bi]) => (Number.isFinite(b.started) ? b.started : -Infinity) - (Number.isFinite(a.started) ? a.started : -Infinity) || ai - bi)
+    .map(([x]) => x);
+}
+
+/** 2B: ← ONGOING, the group's name, `9 THINGS · NEWEST FIRST`, the filter words with counts, every row with its meta line. */
+export function renderSeeAll(model, which, { filter = "", tabBar = "", css = "" } = {}) {
+  const rows = groupRows(model, which);
+  const kinds = FILTERS[which].map(([key, word, test]) => [key, word, rows.filter(test)]).filter(([, , r]) => r.length);
+  const on = kinds.find(([key]) => key === filter) ?? null;
+  const shown = on ? on[2] : rows;
+  const link = (key, text, current) => `<a href="${SEE_ALL[which]}${key ? `?f=${key}` : ""}"${current ? ` aria-current="true"` : ""}>${esc(text)}</a>`;
+  const nav = kinds.length > 1
+    ? `<nav class="ogf" aria-label="Filter">${link("", `ALL ${rows.length}`, !on)}${kinds.map(([key, word, r]) => link(key, `${word} ${r.length}`, on?.[0] === key)).join("")}</nav>` : "";
+  const body = `<header class="ogd-h">${typed("← ONGOING", { href: "/web?tab=ongoing" })}</header>`
+    + `<main class="oga"><div class="oga-h"><h1 class="h1">${TITLES[which]}</h1><span class="lbl">${shown.length} ${shown.length === 1 ? "THING" : "THINGS"} · NEWEST FIRST</span></div>`
+    + nav + `<div class="ogv-l">${shown.map(x => vRow(x, { meta: true })).join("")}</div></main>` + tabBar;
+  return webPage({ title: `Reason — ${TITLES[which]}`, body, css: css + DETAIL_CSS + SEE_ALL_CSS + NINE_D_CSS, script: NINE_D_JS + OG_POLL_JS, bodyClass: tabBar ? "has-tabs" : "" });
 }
 
 /** Mobile, above the composer: "the Target order needs a yes →", straight to the approval's detail. */
@@ -127,6 +203,32 @@ export const needsYes = (approvals = []) => (approvals.length
 
 // ---------------------------------------------------------------- the look (on top of webconvo's)
 export const OG_CSS = `
+.og-h h2{font-size:30px}
+.og-list .h1{font-size:40px;line-height:1.06;letter-spacing:-.02em}
+.og-vol{gap:26px}
+.og-tab.og-vol{gap:30px}
+.og-sec>h2,.og-sec>h3{margin:0 0 4px;font:400 11px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
+.og-sec>h2.pen,.og-sec>h3.pen{color:var(--pen)}
+.ogv-l{display:flex;flex-direction:column}
+.ogv{text-decoration:none;color:var(--ink);padding:14px 0;border-bottom:1px dashed var(--hair);display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;align-items:center}
+.ogv:last-child{border-bottom:0}
+.ogv-t{font-size:16px;font-weight:600;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.ogv-r{white-space:nowrap}
+.ogv-r .lbl,.og-vc .lbl{font-size:10px;letter-spacing:.14em;white-space:nowrap}
+.ogv-w{font:italic 400 18px/1 var(--serif);white-space:nowrap}
+.ogv-m{font:400 10px/1.4 var(--mono);letter-spacing:.12em;color:var(--muted);text-transform:uppercase;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ogv:hover .ogv-t{color:var(--hov)}
+.og-vc{padding:18px 20px;display:flex;flex-direction:column;gap:8px;max-width:none}
+.og-vc .appr-go{font-size:15px;font-weight:500;min-height:44px;display:inline-flex;align-items:center;align-self:flex-start;margin:-10px 0 -12px}
+.og-vc.m{padding:14px 16px;gap:6px;text-decoration:none;color:var(--ink)}
+.og-vc.m .ogv-t{font-size:15px}
+.og-sp{height:10px}
+.og .og-sp{height:8px}
+.og-tab .og-sp{height:10px}
+.og-more{align-self:flex-start;min-height:44px;display:inline-flex;align-items:center;gap:.3em;padding-top:6px;text-decoration:none;color:var(--ink);font:italic 400 20px/1 var(--serif)}
+.og-more:hover{color:var(--hov)}
+.home-l{border-top:1px dashed var(--hair);border-bottom:1px dashed var(--hair)}
+.inhand .og-more{margin-top:4px}
 .og-row{flex-direction:column;justify-content:flex-start;align-items:stretch;gap:6px;text-decoration:none;color:var(--ink)}
 .og-top{display:flex;justify-content:space-between;gap:10px;align-items:baseline;min-width:0}
 .og-top b{font-size:15px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -145,8 +247,6 @@ export const OG_CSS = `
 .og-sec .og-d{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .og-tab .og-sec .og-d{white-space:normal}
 .hand.tilt15{display:inline-block;font-size:20px;transform:rotate(-1.5deg)}
-.og-sec>h2{margin:0 0 6px;font:400 12px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
-.og-sec>h2.pen{color:var(--pen)}
 .og-tab{gap:48px}
 .og-tab .og-sec:first-child>h2.pen{margin-bottom:14px}
 .og-tab .og-row{padding:18px 0;gap:6px}
@@ -168,7 +268,7 @@ export const OG_CSS = `
 .og-time{flex:none;font:italic 400 24px/1 var(--serif)}
 .ampm{font:400 10px/1 var(--mono);font-style:normal;letter-spacing:.1em;margin-left:3px;color:var(--muted)}
 .og-go{font-size:15px;font-weight:500;text-decoration:none;min-height:44px;display:inline-flex;align-items:center;align-self:flex-start}
-.og-list>.lbl{margin-top:-20px;font-size:12px}
+.og-list>.lbl{margin-top:-20px;font-size:11px;letter-spacing:.14em}
 .needs-yes{min-height:44px;display:flex;align-items:center;justify-content:flex-end;gap:6px;text-decoration:none;font:400 22px/1.1 var(--hand);color:var(--pen)}
 .needs-yes span{font:400 16px/1 var(--sans)}
 @media (min-width:900px){.needs-yes{display:none}}
@@ -199,6 +299,17 @@ export const NINE_D_CSS = `
 `;
 
 // ---------------------------------------------------------------- the detail pages
+const SEE_ALL_CSS = `
+.oga{flex:1 0 auto;width:100%;max-width:720px;margin:0 auto;padding:28px var(--gut) 20px;display:flex;flex-direction:column;gap:26px}
+.oga-h{display:flex;flex-direction:column;gap:6px}
+.oga .h1{font-size:40px;line-height:1.06;letter-spacing:-.02em}
+.oga-h .lbl{font-size:11px;letter-spacing:.14em}
+.ogf{display:flex;gap:16px;flex-wrap:wrap}
+.ogf a{min-height:36px;display:inline-flex;align-items:center;text-decoration:none;font:400 11px/1 var(--mono);letter-spacing:.12em;color:var(--muted);border-bottom:1.5px solid transparent}
+.ogf a[aria-current=true]{color:var(--ink);border-bottom-color:var(--ink)}
+.ogf a:hover{color:var(--ink)}
+@media (min-width:900px){.oga .h1{font-size:56px}}
+`;
 const DETAIL_CSS = `
 .ogd-h{padding:16px var(--gut) 0;max-width:720px;width:100%;margin:0 auto}
 .ogd-h .act2{font-size:12px}
@@ -389,11 +500,23 @@ const json = (status, obj) => {
 };
 
 /**
+ * GET /web/ongoing/hand and /web/ongoing/back (?f=<filter>): a group's See all (2B). A promise: the
+ * phone's tab bar and the page's look are the conversation's (src/pages/webconvo.js), which imports
+ * this file, so it is loaded here when asked for rather than at the top.
+ */
+async function seeAllPage(account, which, query, now) {
+  const m = ongoing(account.conversation_id, now);
+  if (!groupRows(m, which).length) return redirect("/web?tab=ongoing");
+  const wc = await import("./webconvo.js");
+  return page(200, renderSeeAll(m, which, { filter: String(query.f ?? ""), tabBar: wc.tabBar("ongoing", countOf(m)), css: wc.CONVO_CSS }));
+}
+
+/**
  * GET /web/ongoing/<kind>/<id> — one row's page — and GET /web/ongoing/state, the small answer the
  * Ongoing pages use to notice a session that ran out. Signed in only; a row is looked up in the
  * session's own conversation, so somebody else's id is the same flat 404 as one that never existed.
  */
-export function ongoingRequest({ kind = null, id = null, method = "GET", headers = {}, now = clock.now() }) {
+export function ongoingRequest({ kind = null, id = null, method = "GET", headers = {}, query = {}, now = clock.now() }) {
   if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
   const account = sessionAccount(headers);
   if (kind === "state") {
@@ -403,6 +526,7 @@ export function ongoingRequest({ kind = null, id = null, method = "GET", headers
   }
   if (!account) return redirect("/web");
   if (!kind) return redirect("/web?tab=ongoing");
+  if (kind === "hand" || kind === "back") return seeAllPage(account, kind, query, now);
   const item = id ? findItem(account.conversation_id, kind, id, now) : null;
   if (!item) return page(404, renderNotFound());
   return page(200, renderDetail(item, { now }));
