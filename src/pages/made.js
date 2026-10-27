@@ -56,7 +56,7 @@ a{color:var(--ink)}
 :focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 .mp{min-height:100dvh;padding:24px;display:flex;flex-direction:column;gap:28px}
 .top{display:flex;justify-content:space-between;align-items:center;gap:12px}
-.wm{font-family:${SERIF};font-style:italic;font-size:20px;display:inline-flex;align-items:center;text-decoration:none;color:var(--ink)}
+.wm{font-family:${SERIF};font-style:italic;font-size:20px;display:inline-flex;white-space:nowrap;flex:none;align-items:center;text-decoration:none;color:var(--ink)}
 .wm svg{width:12px;height:12px;transform:skewX(-10deg);margin:3px 1px 0}
 .kick{font-family:${MONO};font-size:10px;letter-spacing:.14em;color:var(--mut);text-align:right}
 .cols{display:flex;flex-direction:column;gap:28px;flex:1}
@@ -533,7 +533,7 @@ const OG_SHELL = (inner) => `<!doctype html><html><head><meta charset="utf-8"><s
 body{margin:0;background:${P.ground}}
 .og{width:1200px;height:630px;box-sizing:border-box;background:${P.ground};color:${P.ink};font-family:${SANS};padding:64px 80px;display:flex;flex-direction:column;position:relative;overflow:hidden}
 .og .top{display:flex;justify-content:space-between;align-items:center}
-.og .wm{font-family:${SERIF};font-style:italic;font-size:40px;display:inline-flex;align-items:center;line-height:1}
+.og .wm{font-family:${SERIF};font-style:italic;font-size:40px;display:inline-flex;white-space:nowrap;flex:none;align-items:center;line-height:1}
 .og .wm svg{width:22px;height:22px;transform:skewX(-10deg);margin:5px 2px 0}
 .og .host{font-family:${MONO};font-size:16px;letter-spacing:.14em;color:${P.muted}}
 </style></head><body><div class="og">${inner}</div></body></html>`;

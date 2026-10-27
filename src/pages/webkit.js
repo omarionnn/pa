@@ -61,6 +61,7 @@ export const bubble = (stroke = 5, cls = "bub") =>
 /** "reas◯n", top-left on every screen. A link home when `href` is given. */
 export function wordmark({ href = "", ing = "" } = {}) {
   // One inline run inside the flex (.wm-w), so innerText reads "reason" as one word, not "reas\no\nn".
+  // The run never wraps (.wm-w nowrap): the bubble is an atomic inline, a break point, and a squeezed top bar split it "reas◯ / n" on phones (10-27).
   const inner = `<span class="wm-w">reas${bubble(5)}${WORDMARK_O}n${ing}</span>`;
   return href
     ? `<a class="wm" href="${esc(href)}" aria-label="Reason, home">${inner}</a>`
@@ -194,7 +195,7 @@ button{font:inherit;color:inherit}
 .sr{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;margin:0;padding:0;border:0}
 .wm{font:italic 400 22px/1 var(--serif);letter-spacing:-.01em;display:inline-flex;align-items:center;text-decoration:none;color:var(--ink);min-height:44px}
 .wm .bub{width:.59em;height:.59em;color:var(--pen);transform:skewX(-10deg);margin:3px 1px 0}
-.wm-w .bub{vertical-align:top;margin-top:calc(.205em + 1.5px)}
+.wm-w{white-space:nowrap}.wm-w .bub{vertical-align:top;margin-top:calc(.205em + 1.5px)}
 .lbl{margin:0;font:400 10.5px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lbl.pen{color:var(--pen)}
 .hand{margin:0;font:400 21px/1.2 var(--hand);color:var(--pen)}
