@@ -170,3 +170,5 @@ connected); a stranger's number mints nothing and answers the same bytes.
 - Deferred to W2+: token hashing and 24h rotation (§4.2), a browsers list with per-row revoke, the
   once-only boundary notice column (`web_notice_seen_at`; W1 shows the notice statically on the
   landing), the `(web)` hint after a Web→text switch (decision 9).
+
+- **Wordmark text (10-27).** The bubble is drawn, so its o rides as a zero-size inline `.wm-o` (`WORDMARK_O`, src/pages/wordmark.js); the Web kit wraps the mark in one inline `.wm-w` so `innerText` (Reason's own page reader, src/browser.js) reads "reason", not "reas\nn". Pinned: test/wordmark-text.test.js (textContent, innerText, a copy, same pixels); `bin/wordmark.mjs` expects text "reason".

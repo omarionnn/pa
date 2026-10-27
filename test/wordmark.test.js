@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.REASON_DB_PATH = join(mkdtempSync(join(tmpdir(), "wordmark-test-")), "x.db");
-const { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE, WORDMARK_BUBBLE_DARK } = await import("../src/pages/wordmark.js");
+const { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE, WORDMARK_BUBBLE_DARK, WORDMARK_O } = await import("../src/pages/wordmark.js");
 const { BRAND_PEN, BRAND_PEN_DARK } = await import("../src/pages/brand.js");
 const card = await import("../src/pages/card.js");
 const cover = await import("../src/eventcover.js");
@@ -25,7 +25,7 @@ const SITE_PATH = `<g transform="translate(6 0) skewX(-10)"><path d="M31 6 A25 2
 test("the wordmark is the site's: reas, the bubble, n — and its font is inline", () => {
   const m = wordmark();
   assert.ok(m.startsWith(`<span class="wordmark" role="img" aria-label="Reason">reas${SITE_BUBBLE}`));
-  assert.ok(m.includes(SITE_PATH) && m.endsWith("</svg>n</span>"));
+  assert.ok(m.includes(SITE_PATH) && m.endsWith("</svg>" + WORDMARK_O + "n</span>"));
   assert.match(WORDMARK_CSS, /src:url\(data:font\/woff2;base64,[A-Za-z0-9+/=]{1000,}\)/);
   assert.match(WORDMARK_CSS, /font:italic 400 1\.35rem\/1\.2 "Reason Wordmark"/);
   assert.match(WORDMARK_CSS, /letter-spacing:-\.01em/);
