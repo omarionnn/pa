@@ -1,22 +1,23 @@
-// Reason's trademark orange (owner, 2026-10-25), the one place it is written down. Every orange on
-// every page Reason serves — the "An event" kicker, the way back to Reason, a connector's error line,
-// the cover's kicker — reads one of these two, never its own hex.
+// Reason's brand pen colour, the one place it is written down: brick red (owner, 2026-10-26),
+// replacing the 10-25 orange (#B8460B light / #F26F2B dark). Every accent on every page Reason
+// serves — the wordmark bubble, the "An event" kicker, the way back to Reason, a connector's error
+// line, the cover's kicker — reads one of these two, never its own hex. (Reason Web's own files,
+// src/pages/websignin.js and src/pages/webconvo.js, move on their own branch.)
 //
-// BRAND_ORANGE is the light-page orange: 5.4:1 on white, 4.5:1 on the paper page (#f2ebe0), so small
-// uppercase text passes AA and white on it does too. On a dark page that same orange is too dim
-// (≈2.8:1), so dark pages take BRAND_ORANGE_DARK: the same hue and saturation, lightness 38% → 56%,
-// 5.9:1 on the dark card (#1b1916), 6.4:1 on the dark ground, 5.6:1 on the dark soft fill.
+// BRAND_PEN is the light-page red: AA for small text on white and on the paper page (#f2ebe0), and
+// white on it passes too. On a dark page it is too dim, so dark pages take BRAND_PEN_DARK, a warm,
+// lighter brick that is AA on the dark card (#1b1916), the dark ground and the dark soft fill.
 
-export const BRAND_ORANGE = "#B8460B";
-export const BRAND_ORANGE_DARK = "#F26F2B";
+export const BRAND_PEN = "#b03030";
+export const BRAND_PEN_DARK = "#e8765c";
 
 // The light page is the marketing site's paper (~/Desktop/reason-site-new/public/styles.css, owner
 // 2026-10-25): its ground, raised paper, warm fill, rule and ink, copied hex for hex, plus the same
 // faint fractal-noise grain the site lays over its body. Every page Reason serves reads its light
 // colours from here; dark pages keep their own. One change from the site: its secondary text
 // (#78705f) is 4.1:1 on its own ground, so `dim` is the same hue darkened to #6a6253 (5.1:1 on bg,
-// 4.8:1 on the warm fill, 5.6:1 on paper). Brand orange is 4.5:1 on bg, 5.0:1 on paper; on the ground
-// (4.3:1) it is only ever the wordmark bubble, a graphic, never text (bin/theme-all.mjs checks).
+// 4.8:1 on the warm fill, 5.6:1 on paper). Brand red is 5.4:1 on bg,
+// 5.9:1 on paper and 5.1:1 on the ground, so it passes everywhere (bin/theme-all.mjs checks).
 export const PAPER = {
   ground: "#ede5d8", // site --bg-warm: the strip behind the top line, and the phone's chrome
   bg: "#f2ebe0",     // site --bg: the page itself

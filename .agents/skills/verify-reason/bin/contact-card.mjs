@@ -7,20 +7,20 @@
 //   node bin/contact-card.mjs --live <base-url>   # read-only GETs against a running install
 //
 // Checks: the sent URL's hash = sha8 of the served bytes; the hashed path and the alias serve the
-// same card; PHOTO is the orange photo (sha pinned in test/contact-card-orange.test.js); a REV:
+// same card; PHOTO is the brand-red photo (sha pinned in test/contact-card-brand.test.js); a REV:
 // line; NOTE = "Your personal concierge" (10-25); no long cache. Sends nothing to anybody.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const root = new URL("../../../../", import.meta.url);
 const sha = (b) => createHash("sha256").update(b).digest("hex");
-const ORANGE = /const ORANGE = "([0-9a-f]{64})"/.exec(readFileSync(new URL("test/contact-card-orange.test.js", root), "utf8"))[1];
+const BRAND = /const BRAND = "([0-9a-f]{64})"/.exec(readFileSync(new URL("test/contact-card-brand.test.js", root), "utf8"))[1];
 let fails = 0;
 const check = (ok, what) => { console.log(`${ok ? "ok  " : "FAIL"} ${what}`); if (!ok) fails++; };
 
 function checkCard(body, cache, label) {
   const photo = /\r\nPHOTO;ENCODING=b;TYPE=JPEG:([\s\S]*?)\r\n(?! )/.exec(body)?.[1]?.replace(/\r\n /g, "");
-  check(!!photo && sha(Buffer.from(photo, "base64")) === ORANGE, `${label}: PHOTO is the orange photo`);
+  check(!!photo && sha(Buffer.from(photo, "base64")) === BRAND, `${label}: PHOTO is the brand-red photo`);
   check(/\r\nNOTE:Your personal concierge\r\n/.test(body), `${label}: NOTE is "Your personal concierge"`);
   check(/\r\nREV:\d{4}-\d\d-\d\dT[\d:]+Z\r\n/.test(body), `${label}: has a REV: line`);
   check(!/max-age=[1-9]/.test(cache ?? ""), `${label}: no long cache (${cache})`);

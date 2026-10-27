@@ -49,7 +49,7 @@ import { profileDirFor } from "./browser.js";
 import { config, clock } from "./config.js";
 import { backToReason, dark, THEME, iconLinks } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
-import { BRAND_ORANGE, BRAND_ORANGE_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
+import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
 
 /** The picture the person sees. A phone held upright, at a size a desktop sign-in form fits in. */
 export const VIEW = { width: 430, height: 700 };
@@ -551,8 +551,8 @@ ${iconLinks()}
 <meta name="robots" content="noindex"><title>${esc(title)}</title>
 <script>${THEME.head}</script>
 <style>
-:root{color-scheme:light dark;--ground:${PAPER.ground};--bg:${PAPER.bg};--fg:${PAPER.ink};--mute:${PAPER.dim};--grain:${PAPER_GRAIN};--card:${PAPER.card};--line:${PAPER.line};--soft:${PAPER.soft};--go:${PAPER.ink};--gofg:${PAPER.bg};--mark:${BRAND_ORANGE}}
-${dark([["", `--grain:none;--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--card:#1b1916;--line:#2c2924;--soft:#211f1b;--go:#f3efe8;--gofg:#12110f;--mark:${BRAND_ORANGE_DARK}`]])}
+:root{color-scheme:light dark;--ground:${PAPER.ground};--bg:${PAPER.bg};--fg:${PAPER.ink};--mute:${PAPER.dim};--grain:${PAPER_GRAIN};--card:${PAPER.card};--line:${PAPER.line};--soft:${PAPER.soft};--go:${PAPER.ink};--gofg:${PAPER.bg};--mark:${BRAND_PEN}}
+${dark([["", `--grain:none;--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--card:#1b1916;--line:#2c2924;--soft:#211f1b;--go:#f3efe8;--gofg:#12110f;--mark:${BRAND_PEN_DARK}`]])}
 *{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--grain) var(--ground);color:var(--fg)}
 .bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;color:var(--fg);font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
 ${WORDMARK_CSS}
@@ -576,7 +576,7 @@ input[type=text],input[type=password]{font:inherit;width:100%;padding:11px 12px;
 /* The real native boxes that sit on top of the site's own. Made to look like the box underneath. */
 #f{position:absolute;inset:0;pointer-events:none;margin:0}
 #f input{position:absolute;left:-9999px;top:0;width:10px;height:10px;min-height:0;padding:0 6px;margin:0;border:0;border-radius:3px;font:inherit;background:#fff;color:#000;pointer-events:auto;opacity:0;-webkit-appearance:none;appearance:none}
-#f input.at{opacity:1;outline:2px solid ${BRAND_ORANGE};outline-offset:-2px}
+#f input.at{opacity:1;outline:2px solid ${BRAND_PEN};outline-offset:-2px}
 header{display:flex;align-items:center;gap:10px;margin:2px 0 8px}
 header h1{flex:1;margin:0;font-size:18px}
 header button{min-height:38px;padding:7px 12px;font-size:14px;flex:none}

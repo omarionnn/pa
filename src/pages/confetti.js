@@ -2,21 +2,23 @@
 // invite page and confetti bursts). No library and no network: the script rides inline in the page
 // like every other script Reason's pages carry, and it touches nothing but the pill it is bound to.
 //
-// The colours are the site's own: brand orange, the stamp red, a warm sand, ink and the paper rule
-// on a light page; the brighter dark-page orange and the paper tones on a dark one, so every piece
+// The colours are the site's own: the brand red (src/pages/brand.js), a warm sand, ink and the paper
+// rule on a light page; the brighter dark-page red and the paper tones on a dark one, so every piece
 // shows against its ground. It bursts from the pill, falls and fades inside ~1.7 s, then the canvas
 // removes itself. A second tap within 400 ms is ignored; after that a tap starts a fresh burst.
 // Someone who asked their phone for less motion gets a dozen still sparkles that fade where they are.
 //
 // Wire it with shell({ pillButton: "…", script: CONFETTI_JS, css: CONFETTI_CSS }).
 
+import { BRAND_PEN, BRAND_PEN_DARK } from "./brand.js";
+
 export const CONFETTI_CSS = `canvas.confetti{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:50}`;
 
 export const CONFETTI_JS = `
 (function(){
 var b=document.querySelector('header .pill[data-pop]');if(!b)return;
-var LIGHT=['#B8460B','#B8460B','#b03030','#c9a46a','#2a2520','#d4c9b5'],
-DARK=['#F26F2B','#B8460B','#e0b779','#faf6ee','#ede5d8','#d4c9b5'],
+var LIGHT=['${BRAND_PEN}','${BRAND_PEN}','${BRAND_PEN}','#c9a46a','#2a2520','#d4c9b5'],
+DARK=['${BRAND_PEN_DARK}','${BRAND_PEN_DARK}','#e0b779','#faf6ee','#ede5d8','#d4c9b5'],
 last=0,live=null,raf=0;
 function dark(){var t=document.documentElement.getAttribute('data-theme');return t?t==='dark':matchMedia('(prefers-color-scheme:dark)').matches}
 b.addEventListener('click',function(){

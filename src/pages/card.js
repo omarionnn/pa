@@ -19,7 +19,7 @@ import { config } from "../config.js";
 import { esc, madeFor, topLine } from "./render.js";
 import { imageModelFor } from "../imagen.js";
 import { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE_DARK } from "./wordmark.js";
-import { BRAND_ORANGE } from "./brand.js";
+import { BRAND_PEN } from "./brand.js";
 
 export const CARD_W = 1200;
 export const CARD_H = 630;
@@ -32,7 +32,7 @@ function shortDate(ms) {
 
 // ---- illustration: a picture that matches the page's content ----
 
-const ILLUSTRATION_STYLE = `Style: minimal editorial illustration, warm cream and soft charcoal palette with a single burnt-orange accent (${BRAND_ORANGE}). Clean, modern, slightly stylized — not photorealistic. Soft ambient lighting, no text, no logos, no words, no lettering, no people's faces. Muted, sophisticated colour palette leaning warm beige and stone grey. Wide composition with breathing room, suitable as a background behind overlaid text.`;
+const ILLUSTRATION_STYLE = `Style: minimal editorial illustration, warm cream and soft charcoal palette with a single brick-red accent (${BRAND_PEN}). Clean, modern, slightly stylized — not photorealistic. Soft ambient lighting, no text, no logos, no words, no lettering, no people's faces. Muted, sophisticated colour palette leaning warm beige and stone grey. Wide composition with breathing room, suitable as a background behind overlaid text.`;
 
 const SENSITIVE_PATTERNS = [
   /\$\s*[\d,.]+/g,                    // dollar amounts

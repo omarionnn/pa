@@ -1,7 +1,8 @@
-// The contact card's photo went brand orange (10-25), and the owner — only the owner — got the new
-// card once (scripts/card-to-owner.js). Temp database, stubbed sender, no network, no model:
+// The contact card's photo wears the brand pen colour — orange on 10-25, brick red since 10-26 — and
+// on 10-25 the owner, only the owner, got the new card once (scripts/card-to-owner.js; not re-sent
+// for the red). Temp database, stubbed sender, no network, no model:
 //
-//   is the card's photo the orange one, never the old blue one?
+//   is the card's photo the brand-red one, never the old blue or orange one?
 //   does the vCard carry that photo?
 //   does the one-off send reach only the owner's dm:owner thread, once, and refuse without --confirm?
 import { test, beforeEach, after } from "node:test";
@@ -12,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
-const dir = mkdtempSync(join(tmpdir(), "reason-card-orange-"));
+const dir = mkdtempSync(join(tmpdir(), "reason-card-brand-"));
 process.env.REASON_DATA_DIR = dir;
 process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
@@ -24,8 +25,10 @@ const { vcard } = await import("../src/contact.js");
 const S = await import("../scripts/card-to-owner.js");
 
 const PHOTO = new URL("../assets/reason-contact.jpg", import.meta.url);
-// sha256 of assets/reason-contact.jpg. Orange = the bubble at #B8460B on the same paper and "r".
-// If the photo is redrawn on purpose, update ORANGE; BLUE must never come back.
+// sha256 of assets/reason-contact.jpg. BRAND = the bubble in brand red #b03030 (owner, 2026-10-26)
+// on the same paper and "r". If the photo is redrawn on purpose, update BRAND; BLUE and ORANGE (the
+// 10-25 #B8460B bubble) must never come back.
+const BRAND = "5b965ff3b76f9b228f37727f6c2a9dcc605af2373a1deb751d4153e81fcc3ca5";
 const ORANGE = "5213b3e9877e863725dc9ac7c84074d1f283f4964bb42974351ff307fad30bc9";
 const BLUE = "f29eadd2272eb5148002306adbbdccbf1fdf06518b655d965108aca961809d23";
 
@@ -44,11 +47,12 @@ function stubRouter() {
   };
 }
 
-test("the card's photo is the brand-orange one, never the old blue", () => {
+test("the card's photo is the brand-red one, never the old blue or orange", () => {
   const bytes = readFileSync(PHOTO);
   const sha = createHash("sha256").update(bytes).digest("hex");
   assert.notEqual(sha, BLUE, "the blue-bubble photo is back");
-  assert.equal(sha, ORANGE);
+  assert.notEqual(sha, ORANGE, "the orange-bubble photo is back");
+  assert.equal(sha, BRAND);
   assert.equal(bytes[0], 0xff); assert.equal(bytes[1], 0xd8, "still a JPEG (iOS saves JPEG card photos reliably)");
   assert.ok(vcard({ number: "+16562167455" }).replace(/\r\n /g, "").includes(bytes.toString("base64")), "the vCard carries this photo");
 });

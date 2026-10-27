@@ -67,7 +67,7 @@ import { sourceName } from "./outside.js";
 import { checkContent, LINE_LIMIT } from "./pages/content.js";
 import { generateIllustration } from "./pages/card.js";
 import { preparePictures } from "./pages/pictures.js";
-import { BRAND_ORANGE } from "./pages/brand.js";
+import { BRAND_PEN } from "./pages/brand.js";
 import { checkDocument, DOCUMENT_KINDS } from "./documents/content.js";
 import { KINDS as DOCUMENT_FORMATS, documentFilename, renderDocument, writeDocument, deleteDocumentFile, documentUrl, documentOnDisk, mimeForKind } from "./documents/store.js";
 import { LANGUAGES, topLine, madeFor } from "./pages/render.js";
@@ -10941,7 +10941,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     case "image_generate": {
       const send = input.send !== false;
-      const styledPrompt = `${input.prompt}. Style: minimal editorial illustration, warm cream and soft charcoal palette with a single burnt-orange accent (${BRAND_ORANGE}). Clean, modern, slightly stylized — not photorealistic. Soft ambient lighting, no text, no logos, no people. Muted, sophisticated color palette leaning warm beige and stone grey.`;
+      const styledPrompt = `${input.prompt}. Style: minimal editorial illustration, warm cream and soft charcoal palette with a single brick-red accent (${BRAND_PEN}). Clean, modern, slightly stylized — not photorealistic. Soft ambient lighting, no text, no logos, no people. Muted, sophisticated color palette leaning warm beige and stone grey.`;
       const opts = { aspectRatio: input.aspect_ratio ?? "1:1", count: input.count ?? 1 };
       const provider = ctx.imagenProvider ?? imagenProvider();
       let out = await provider.generate(styledPrompt, opts);

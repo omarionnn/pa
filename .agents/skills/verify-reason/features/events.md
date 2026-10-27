@@ -252,7 +252,7 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   og:title = the event name, og:description = `INVITE_LINE` ("You're invited. Join with the event
   password."), og:image = `/e/<id>/cover.jpg?v=<u{version}|g{name hash}>` (absolute, 1200×630 JPEG,
   public) — never the description, time, place, a guest's name or the password. No uploaded cover →
-  Reason draws one (`generatedHtml`: the name large, the small wordmark, `src/pages/wordmark.js`; the kicker in the dark brand orange). An uploaded one goes
+  Reason draws one (`generatedHtml`: the name large, the small wordmark, `src/pages/wordmark.js`; the kicker in the dark brand red). An uploaded one goes
   through `event_cover` (organizer only): `use_photo {photo_id}` draws the exact card into
   `cover_pending` (file `p-…` under `data/event-covers`), reads the picture with the model on the
   subscription (`readFlyerViaCli`, CLI `--json-schema`), checks the password against the hash, and
