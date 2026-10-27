@@ -15,6 +15,7 @@ import { CALLOUT_TONES } from "./content.js";
 import { pageUrl, ownerUrl } from "./access.js";
 import { wordmark, WORDMARK_CSS } from "./wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, BRAND_ART, PAPER, PAPER_GRAIN } from "./brand.js";
+import { PRINT_CSS, printUrl } from "./print.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 
@@ -435,10 +436,7 @@ button.go+input[type=text]{margin-top:1.2rem}
 .closing{margin:3rem 0 0;color:var(--dim);text-wrap:pretty}
 .foot{margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--dim);font-size:.8rem;display:flex;gap:.5rem;align-items:baseline}
 .foot .wordmark{font-size:1.05rem}
-/* Printed — a PDF Reason wrote, or somebody printing the page from their browser. The theme switch
-   goes because paper has no choice to offer. min-height is 100dvh on screen so the sheet always
-   fills the phone; on paper that is a mostly-blank second sheet for any short document, so it goes. */
-@media print{:root{--grain:none}.theme{display:none}body,.sheet{background:#fff}.sheet{border-radius:0;min-height:0}.wrap{padding-bottom:1rem}.card,.scroll,.choice,.co{break-inside:avoid}h2,h3{break-after:avoid}}
+/* Printed: see src/pages/print.js (PRINT_CSS), appended last in shell(). */
 `;
 
 // The opening moment of a page made for someone, borrowed from how Instinct's Files pages arrive:
@@ -474,6 +472,7 @@ html[data-intro=entering] .ib .ing{opacity:0;transition:opacity .3s cubic-bezier
 html[data-intro=entering] .il{opacity:0;transition:opacity .2s cubic-bezier(.32,.72,0,1)}
 html[data-intro=entering] .bar{opacity:1;transition:opacity .25s .6s}
 html[data-intro=entering] .sheet{transform:none;transition:transform .8s cubic-bezier(.25,.46,.45,.94) 60ms}
+@media print{.intro{display:none!important}}
 `;
 
 // Set before the first paint, in the head, so the page never flashes open and then covers itself.
@@ -788,7 +787,7 @@ export function iconLinks() {
 // not-found page and a plain notice open flat, and the first two stay byte-identical to each other.
 // `pillButton` makes the top-right pill a button with that accessible name (the invite page's
 // confetti, src/pages/confetti.js); the page's own script decides what a press does.
-export function shell({ title, body, script = "", css = "", pill = "", pillButton = "", indexable = false, head = "", top = "", intro = false, theme = true, referrer = "no-referrer" }) {
+export function shell({ title, body, script = "", css = "", pill = "", pillButton = "", indexable = false, head = "", top = "", intro = false, theme = true, referrer = "no-referrer", url = "" }) {
   // Every page carries the Light · Dark · Auto choice at its foot (owner, 2026-10-25: "every page
   // Reason serves"); only a printed one leaves it out (`theme: false`), because paper has no choice.
   const scripts = `${script}${intro ? INTRO_JS : ""}${theme ? THEME.js : ""}`;
@@ -804,10 +803,10 @@ export function shell({ title, body, script = "", css = "", pill = "", pillButto
 <meta name="theme-color" content="${GROUND.dark}" data-auto="${GROUND.dark}" media="(prefers-color-scheme: dark)">
 ${iconLinks()}
 <title>${esc(title)}</title>${headJs ? `\n<script>${headJs}</script>` : ""}
-<style>${CSS}${WORDMARK_CSS}${THEME.css}${css}${intro ? INTRO_CSS : ""}</style>
+<style>${CSS}${WORDMARK_CSS}${THEME.css}${css}${intro ? INTRO_CSS : ""}${PRINT_CSS}</style>
 </head><body>${intro ? `\n<div class="intro" aria-hidden="true"><div class="ib">${wordmark({ ing: `<span class="ing">ing</span>` })}</div><div class="il"></div></div>` : ""}
 <header class="bar"><div class="brand">${wordmark()}${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? (pillButton ? `<button type="button" class="pill pill-btn" data-pop aria-label="${esc(pillButton)}">${esc(pill)}</button>` : `<span class="pill">${esc(pill)}</span>`) : ""}</header>
-<main class="sheet"><div class="wrap">${body}${theme ? THEME_SWITCH : ""}</div></main>${scripts ? `<script>${scripts}</script>` : ""}</body></html>`;
+<main class="sheet"><div class="wrap">${body}${theme ? THEME_SWITCH : ""}${printUrl(url, esc)}</div></main>${scripts ? `<script>${scripts}</script>` : ""}</body></html>`;
 }
 
 /**
@@ -976,6 +975,7 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
     css: `${hasCopy ? COPY_CSS : ""}${said ? SAY_CSS : ""}${rel ? REL_CSS : ""}`,
     head: printing ? "" : `\n${previewHead ?? previewTags(page)}`,
     top,
+    url: page.id ? pageUrl(page.id) : "",
     intro: !printing,
     // Light · Dark · Auto is a choice a reader makes in a browser. A printed document is already
     // whichever one it was printed as, so the switch is left out rather than drawn and hidden.
@@ -1014,11 +1014,11 @@ export function backToReason({ text = "done, keep going", label = "Back to Reaso
   const number = normalizeNumber(config.sendblueFrom || config.linqFrom);
   if (!number) return "";
   const href = `sms:${number}&body=${encodeURIComponent(text)}`;
-  return `<p style="margin:1.5rem 0 .4rem"><a href="${esc(href)}" `
+  return `<p class="b2r" style="margin:1.5rem 0 .4rem"><a href="${esc(href)}" `
     + `style="display:block;box-sizing:border-box;width:100%;max-width:22rem;padding:.95rem 1.2rem;`
     + `font:inherit;font-weight:600;text-align:center;text-decoration:none;`
     + `border-radius:.6rem;background:${BRAND_PEN};color:#fff">${esc(label)}</a></p>`
-    + `<p style="margin:0;font-size:.85rem;opacity:.7">opens Messages with your reply typed — just hit send.</p>`;
+    + `<p class="b2r" style="margin:0;font-size:.85rem;opacity:.7">opens Messages with your reply typed — just hit send.</p>`;
 }
 
 /**

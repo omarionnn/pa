@@ -185,6 +185,7 @@ function renderJoinV2({ ev, account = null, error = "", values = {} }) {
     rsvp: { joinHtml: joinFormV2(ev, { account, error, values }), open: !!error },
     coming: null, calendarHref: "",
     head: headFor(ev),
+    url: events.eventUrl(ev),
   });
 }
 
@@ -201,6 +202,7 @@ function renderJoinedV2({ ev, att }) {
     coming: list,
     calendarHref: v.when ? `/e/${ev.public_id}/calendar.ics` : "",
     head: headFor(ev),
+    url: events.eventUrl(ev),
     foot: `Shared with the ${going} ${going === 1 ? "person" : "people"} on this event. Made with Reason.`,
   }).replace(`</aside>`, `<form method="POST" action="${esc(`/e/${ev.public_id}/signout`)}" style="margin:0"><button class="typed mut" type="submit">SIGN OUT OF THIS BROWSER</button></form></aside>`);
 }
@@ -237,7 +239,7 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
         + `<p><a href="${esc(signinPath(ev))}">Already use Reason? Sign in with your number</a></p></div>`)
     + `<button class="ev-btn" type="submit" data-busy="Joining…">Join</button></form>`;
   const body = intro(ev) + publicDetails(ev) + `<h2>Join</h2>` + form + foot();
-  return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
+  return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
 
 /** The last step for anybody without a page session: one text that proves the phone and joins. */
@@ -260,7 +262,7 @@ export function renderJoined({ ev, att }) {
   if (config.pagesV2) return renderJoinedV2({ ev, att });
   const dir = ev.guest_list_visible ? `<a class="ev-btn" href="${esc(whoPath(ev, att.token))}">See who's going</a>` : "";
   const body = `${intro(ev)}<h2>You're in</h2>${detailsBlock(ev, att)}<div class="t">${p("Your welcome is in your texts with Reason, and event updates will come there too.")}</div>${dir}`;
-  return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
+  return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
 
 /** The organizer's own event link, opened on their own browser: what guests see, and their guest list. */
@@ -270,7 +272,7 @@ export function renderOrganizerHome({ ev }) {
     + `<div class="t">${p(`When: ${v.when ?? "not set"}${v.time_shown_to_guests ? "" : " (not shared with guests yet)"}`)}${p(`Where: ${v.where ?? "not set"}${v.location_shown_to_guests ? "" : " (not shared with guests yet)"}`)}${p(`Going: ${v.going}${v.capacity ? ` of ${v.capacity}` : ""}`)}</div>`
     + `<a class="ev-btn" href="${esc(whoPath(ev, ev.organizer_token))}">Your guest list</a>`
     + `<div class="t">${p("To change anything or message your guests, text Reason.")}</div>`;
-  return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
+  return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
 
 /** The who's-going page for one viewer: a joined guest (their own token) or the organizer. */
@@ -293,7 +295,7 @@ export function renderWho({ ev, att = null, organizer = false, token, saved = fa
   const details = att ? detailsBlock(ev, att) : `<div class="t">${p(`When: ${events.whenLine(ev) ?? "not set"}`)}${p(`Where: ${ev.location || "not set"}`)}</div>`;
   const paused = ev.status === "paused" ? `<div class="t">${p("This event is paused right now.")}</div>` : "";
   const body = `<div class="hero"><p class="kicker">${organizer ? "Your event" : "An event"}</p><h1>${esc(ev.name)}</h1></div>${paused}${details}${head}${listBlock}${mine}`;
-  return shell({ title: `${ev.name} — who's going`, body, pill: "Event", css: CSS });
+  return shell({ title: `${ev.name} — who's going`, body, pill: "Event", url: events.eventUrl(ev), css: CSS });
 }
 
 /** Whose page this token opens, if anybody's: an attendee still on the event, or the organizer. */
@@ -334,7 +336,7 @@ export function renderGate({ ev, token, sent = false, error = "" }) {
         + `<button class="ev-link" type="submit" data-busy="Sending…">Text it again</button></form>`
       : `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="step" value="send">`
         + `<button class="ev-btn" type="submit" data-busy="Sending code…">Text me a code</button></form>`);
-  return shell({ title: ev.name, body, pill: "Event", css: CSS });
+  return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), css: CSS });
 }
 
 /**
@@ -357,7 +359,7 @@ export function renderSignin({ ev, number = "", sent = false, error = "" }) {
       : `<div class="t">${p("Already use Reason? Put in your number and Reason will text you a code.")}</div>`
         + `<form class="ev-form" method="POST" action="${esc(action)}"><label for="number">Your phone number</label><input id="number" name="number" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 123-4567" maxlength="24" required value="${esc(number)}">`
         + `<button class="ev-btn" type="submit" data-busy="Sending code…">Text me a code</button></form>`);
-  return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
+  return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
 
 /**
@@ -530,7 +532,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   // E2 (Pages v2): a cancelled event's link is turned off, and says only that.
   if (config.pagesV2 && ev.status === "cancelled") return page(410, made.renderTurnedOff({ siteUrl: config.siteUrl }));
   // Cancelled: nothing but the name and that it is off, in the page and in its preview alike.
-  if (ev.status !== "active") return page(200, shell({ title: ev.name, body: closedBody(ev), pill: "Event", head: ev.status === "cancelled" ? "" : headFor(ev), css: CSS }));
+  if (ev.status !== "active") return page(200, shell({ title: ev.name, body: closedBody(ev), pill: "Event", url: events.eventUrl(ev), head: ev.status === "cancelled" ? "" : headFor(ev), css: CSS }));
   // The organizer opening their own event's link gets their own page, never a guest's.
   if (mine?.role === "organizer") return page(200, renderOrganizerHome({ ev }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
   if (mine?.role === "guest") return page(200, renderJoined({ ev, att: mine.att }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
@@ -572,5 +574,5 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   if (!name) return again(200, "Add the name other guests should see.");
   const claim = events.makeClaim({ ev, displayName: name, instagram, inDirectory: values.in_directory });
   log({ event_web_claim: ev.id });
-  return page(200, shell({ title: ev.name, body: finishStep({ ev, claim, lineNumber }), pill: "Event", head: headFor(ev), css: CSS }));
+  return page(200, shell({ title: ev.name, body: finishStep({ ev, claim, lineNumber }), pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS }));
 }
