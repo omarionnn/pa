@@ -47,6 +47,7 @@ const wc = await imp("src/pages/webconvo.js");
 const kit = await imp("src/pages/webkit.js");
 const og = await imp("src/pages/webongoing.js");
 const wm = await imp("src/pages/webmemory.js");
+const wh = await imp("src/pages/webhistory.js");
 const st = await imp("src/pages/websettings.js");
 const ongoingRows = await imp("src/ongoing.js");
 const db = await imp("src/db.js");
@@ -133,6 +134,18 @@ db.stateWhy(CONV, { about: "Ama Owusu", why: "Saving for a trip home to Accra in
 db.noteGuess(CONV, { about: "Ama Owusu", guess: "You'd rather a hotel be quiet than central" });
 db.noteGuess(CONV, { about: "Ama Owusu", guess: "You plan trips about six weeks ahead", how: "i_noticed_a_pattern" });
 const memory = (state = {}, a = account) => wm.renderMemory({ account: a, csrf: "staging", state });
+// Chat history (Gap 7): the sample person's messages across both channels, written straight into the
+// throwaway store (the history switch is off here), read back through webhistory.js.
+{
+  const put = db.db.prepare("INSERT INTO messages (conversation_id, role, channel, external_id, outbox_id, text, media, at) VALUES (?, ?, ?, ?, ?, ?, '[]', ?)");
+  let k = 0;
+  const say = (role, channel, text, when) => put.run(CONV, role, channel, role === "user" ? `stg-${++k}` : null, role === "user" ? null : 50_000 + ++k, text, when);
+  const talk = [["user", "Can you find a quiet hotel in Lisbon for March?"], ["assistant", "On it. I'll look near Príncipe Real and keep it under $220 a night."], ["user", "And the dentist, can you get me in this week?"], ["assistant", "Calling now. I'll tell them it's recorded."], ["assistant", "Thursday 3pm with Dr. Patel. Here's the call."], ["user", "perfect"]];
+  for (let d = 0; d < 9; d++) talk.forEach(([r, x], i) => { if (d === 3 && i > 3) return; say(r, d === 0 && i < 3 ? "web" : "fake", x, at(d, 9 + i, 5 * i)); });
+  for (let d = 35; d < 60; d += 2) talk.slice(0, 3).forEach(([r, x], i) => say(r, "fake", x, at(d, 12, i)));
+}
+const DAYKEY = wh.dayKey(at(2, 12, 0));
+const history = (query = {}) => wh.renderHistory({ account, query, now });
 
 // ---------------------------------------------------------------- the thread
 let id = 0;
@@ -257,6 +270,13 @@ const S = [
   ["memory-got-it", "Memory", "Memory · got it", "\"got it.\" beside the corrected line.", memory({ fixed: AISLE }), {}],
   ["memory-forget", "Memory", "Memory · forget card", "7C.", memory({ forget: AISLE }), {}],
   ["memory-empty", "Memory", "Memory · empty", "Nothing saved yet.", memory({}, emptyAccount), {}],
+  ["memory-guesses", "Memory", "6A · Guesses, see all", "SEE ALL ↓ opened.", memory({ guesses: "all" }), {}],
+  ["memory-filter", "Memory", "6A · Filtered to People", "A filter shows its whole group.", memory({ g: "people" }), {}],
+  ["memory-search", "Memory", "6B · Searching", "Matches underlined in pen, the same person's lines after, the count.", memory({ q: "esi" }), {}],
+  ["memory-nomatch", "Memory", "6B · No match", "", memory({ q: "zebra" }), {}],
+  ["history", "Memory", "7A · Chat history", "Days of this month, earlier months grouped, FIND A MESSAGE.", history(), {}],
+  ["history-day", "Memory", "7B · A day, read-only", "No composer, Go to chat →.", history({ day: DAYKEY }), {}],
+  ["history-search", "Memory", "Chat history · search", "Matches underlined in pen.", history({ q: "dentist" }), {}],
 
   ["settings", "Settings", "Settings", "Reach (text me for everything), browsers, connected, invites, theme.", settings(), {}],
   ["settings-reach-web", "Settings", "Settings · keep routine results here", "The other reach choice, just saved.", settings({ reach: "web", done: "reach" }), {}],
@@ -293,7 +313,11 @@ function local(url, signedOut) {
   const d = /^\/web\/ongoing\/([a-z]+\/\d+)$/.exec(p);
   if (d) return DETAIL[d[1]] ? `${DETAIL[d[1]]}.html` : "ongoing.html";
   if (p === "/web/ongoing") return "ongoing.html";
+  if (p === "/web/memory/history") return qs.get("day") ? "history-day.html" : qs.get("q") ? "history-search.html" : "history.html";
   if (p === "/web/memory") {
+    if (qs.get("q")) return "memory-search.html";
+    if (qs.get("g")) return "memory-filter.html";
+    if (qs.get("guesses")) return "memory-guesses.html";
     if (qs.get("correct") === AISLE) return "memory-correcting.html";
     if (qs.get("forget") === AISLE) return "memory-forget.html";
     return "memory.html";
@@ -313,6 +337,7 @@ if(u.indexOf('/web/upload')===0){var t=String(h['Content-Type']||''),nm=decodeUR
 if(window.STG_UPLOAD)return ans({ok:false,error:window.STG_UPLOAD},413);
 if(!/^image\\/|^application\\/pdf|^audio\\//.test(t))return ans({ok:false,error:'unsupported'},415);
 var k=/^image\\//.test(t)?'image':/^audio\\//.test(t)?'voice':'pdf';return ans({ok:true,id:'stg'+(++n),kind:k,name:nm,label:k==='voice'?'VOICE NOTE':nm.toUpperCase()+(k==='pdf'?' · 1 PAGE':''),src:k==='image'?'media/photo.svg':k==='voice'?'media/voice.wav':'media/lease-2026.pdf'})}
+if(!o.method||o.method==='GET'){if(u.indexOf('/web/memory/history')===0)return f(/[?&]q=./.test(u)?'history-search.html':'history.html');if(u.indexOf('/web/memory')===0)return f(/[?&]q=./.test(u)?'memory-search.html':'memory.html')}
 if(u.indexOf('/web/memory/correct')===0){var q=new URLSearchParams(String(o.body||''));return ans({ok:true,html:GOT.split('__K__').join(esc(q.get('k'))).split('__T__').join(esc(q.get('text')))})}
 if(u.indexOf('/web/memory/')===0||u.indexOf('/web/ongoing/state')===0)return ans({ok:true});
 var b={messages:[],more:false};if(sent){sent--;var m=Object.assign({},R,{id:R.id+Math.floor(Math.random()*1e6),at:Date.now()});b.messages=[m]}return ans(b)};
