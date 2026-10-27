@@ -33,6 +33,7 @@ const EXTRACT_TOOL = {
             about: { type: "string", description: "The subject (person name or topic)" },
             fact: { type: "string", description: "One atomic fact, preference, or belief" },
             category: { type: "string", enum: ["identity", "relationship", "preference", "work", "health", "location", "routine", "goal", "belief", "other"] },
+            group: { type: "string", enum: ["preferences", "people", "places", "routines", "why"], description: "Where this goes on their memory page. people: about another person or a pet, or who someone is to them. places: where they live, work, go or want to go. routines: what they do regularly, schedules, habits, things they pay for on repeat. why: their goals, plans, reasons and beliefs. preferences: what they like, want and how they like things done, and anything else about them." },
             confidence: { type: "number", description: "0.5 to 1.0 — how certain this fact is" },
             replaces: { type: "integer", description: "Only when the new message says an Already-known line is no longer true: that line's # (the number after '#'). This fact is its new state. Leave out otherwise." },
             message: { type: "integer", description: "The [n] of the new message this fact came from." },
@@ -381,6 +382,7 @@ export async function validateAndInsert(conversationId, facts, episodes, entitie
       source: "inferred",
       confidence: f.confidence,
       category: f.category || "",
+      group: f.group || "",
       // The one message it came from when the reader said which, else every message in the batch.
       sourceMessageIds: Number.isInteger(f.message) && eventLogIds[f.message - 1] ? [eventLogIds[f.message - 1]] : eventLogIds,
       log,

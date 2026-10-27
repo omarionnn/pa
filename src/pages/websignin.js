@@ -31,7 +31,7 @@ import { esc, renderNotFound, codeInputAttrs } from "./render.js";
 import { eventActor } from "./event.js";
 import { qrSvg } from "./qr.js";
 import { config, clock, normalizeNumber } from "../config.js";
-import { webPage, wordmark, label, hand, action, typed, WEB_FONTS, webFont } from "./webkit.js";
+import { webPage, wordmark, label, hand, action, typed, WEB_FONTS, webFont, accountThemed } from "./webkit.js";
 
 export { WEB_FONTS, webFont };
 
@@ -93,7 +93,10 @@ export function sessionAccount(headers) {
   const owner = token ? db.pageSessionOwner(token, SESSION_TTL_MS, { idleMs: WEB_IDLE_MS }) : null;
   const acct = owner ? db.getAccount(owner) : null;
   if (!acct || !webAllowedFor(acct.conversation_id)) return null;
-  return accounts.admit({ channel: acct.channel, address: acct.address }).allow ? acct : null;
+  if (!accounts.admit({ channel: acct.channel, address: acct.address }).allow) return null;
+  // The browser it was used from, for Settings' signed-in browsers list.
+  db.notePageSessionAgent(token, headers?.["user-agent"]);
+  return acct;
 }
 
 /**
@@ -370,7 +373,25 @@ function sendCode({ conversationId, runtime, log }) {
  * block, or null when no line is live. Every private decision is made here on the server, per
  * request: who this browser is (`sessionAccount`), never what the client claims.
  */
-export async function webRequest({ sub = null, method, query = {}, headers = {}, remoteAddress = "", readBody, runtime = null, router = null, joinNumber = null, log = () => {} }) {
+export async function webRequest(args) {
+  return themedForAccount(await routeWeb(args), args?.headers);
+}
+
+/**
+ * Every signed-in page opens in the theme its person chose on Web (Settings), on any browser: the
+ * page is told the choice and the session's form secret (webkit accountThemed). Only for a session
+ * that is still good; a page for nobody's session (or a lapsed one) is untouched.
+ */
+function themedForAccount(out, headers) {
+  if (out?.status !== 200 || typeof out.body !== "string" || !out.body.startsWith("<!doctype html>")) return out;
+  const token = readCookie(headers?.cookie);
+  const conv = token ? db.pageSessionOwner(token, SESSION_TTL_MS, { idleMs: WEB_IDLE_MS }) : null;
+  if (!conv || !webAllowedFor(conv)) return out;
+  const body = accountThemed(out.body, { theme: db.webTheme(conv), csrf: db.pageSessionCsrf(token) });
+  return { ...out, body, headers: { ...out.headers, "Content-Length": Buffer.byteLength(body) } };
+}
+
+async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAddress = "", readBody, runtime = null, router = null, joinNumber = null, log = () => {} }) {
   const account = sessionAccount(headers);
   const formToken = readFormCookie(headers?.cookie);
 
@@ -393,12 +414,24 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
     return convo.streamRequest({ account, headers, query, router, log });
   }
 
-  // ---- the "coming soon" pages behind MEMORY and SETTINGS (phases 3 and 4) ----
-  if (sub === "memory" || sub === "settings") {
-    if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
+  // ---- Memory (src/pages/webmemory.js): the list, and correct / forget / a guess answered. Signed in only. ----
+  if (sub === "memory" || /^memory\/(correct|forget|guess)$/.test(sub ?? "")) {
+    if (!account) {
+      if (String(headers.accept ?? "").includes("application/json")) {
+        const body = JSON.stringify({ ok: false, error: "signed_out" });
+        return { status: 401, headers: { "Content-Type": "application/json; charset=utf-8", ...SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) }, body };
+      }
+      return redirect("/web");
+    }
+    const { memoryRequest } = await import("./webmemory.js");
+    return await memoryRequest({ account, action: sub === "memory" ? null : sub.slice("memory/".length), method, query, headers, readBody, log });
+  }
+
+  // ---- Settings (src/pages/websettings.js): the page, and its one POST for every control ----
+  if (sub === "settings") {
     if (!account) return redirect("/web");
-    const { soonPage } = await import("./webconvo.js");
-    return page(200, soonPage({ which: sub, account, headers }));
+    const { settingsRequest } = await import("./websettings.js");
+    return await settingsRequest({ account, method, query, headers, readBody, log });
   }
 
   // ---- the landing, or the sign-in form ----
