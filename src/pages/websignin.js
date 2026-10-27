@@ -40,6 +40,11 @@ export { WEB_FONTS, webFont };
 export const RESEND = { limit: 3, windowMs: 15 * 60_000 };
 /** A Web session unused for this long is over (owner decision 3), whatever its age. */
 export const WEB_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
+/** §4h "while you were out": a visit this long after the last one is a return (HANDOFF: "after 3+ hours away"). */
+export const WEB_AWAY_MS = 3 * 60 * 60 * 1000;
+/** Which signed-in GETs are a visit: the pages a person opens, never the stream, polls or JSON reads. */
+const isVisit = (sub) => sub === null || sub === "memory" || sub === "memory/history" || sub === "settings" || sub === "saved"
+  || /^saved\/(?:page|call|receipt|event|album)\/[A-Za-z0-9_-]{1,40}$/.test(String(sub ?? ""));
 /** The cookie that ties a sign-in form to the browser that was shown it (the pre-sign-in CSRF token). */
 export const FORM_COOKIE = "reason_web_form";
 const FORM_TTL_S = 24 * 60 * 60;
@@ -413,6 +418,10 @@ export async function webRequest(args) {
 
 /** A signed-in Web page drawn somewhere else (an Ongoing detail): told its person's theme and form secret, like every other. */
 export function webSignedIn(out, headers) {
+  // §4h: an Ongoing page drawn is a visit too (it shows the very rows "while you were out" counts).
+  if (out?.status === 200 && typeof out.body === "string" && out.body.startsWith("<!doctype html>") && sessionAccount(headers)) {
+    try { db.webVisit(readCookie(headers?.cookie), { awayMs: WEB_AWAY_MS }); } catch { /* never costs a page */ }
+  }
   return themedForAccount(out, headers);
 }
 
@@ -433,9 +442,14 @@ function themedForAccount(out, headers) {
 async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAddress = "", readBody, runtime = null, router = null, joinNumber = null, log = () => {} }) {
   const account = sessionAccount(headers);
   const formToken = readFormCookie(headers?.cookie);
+  // §4h "while you were out": a signed-in page drawn is a visit by this browser (the stream, polls
+  // and posts are not). A visit 3+ hours after the last starts a return the thread shows once.
+  if (account && method === "GET" && isVisit(sub)) {
+    try { db.webVisit(readCookie(headers?.cookie), { awayMs: WEB_AWAY_MS }); } catch { /* never costs a page */ }
+  }
 
   // ---- W2: the conversation's own routes (src/pages/webconvo.js). Signed in only. ----
-  if (sub === "history" || sub === "stream" || sub === "send" || sub === "live" || sub === "about") {
+  if (sub === "history" || sub === "stream" || sub === "send" || sub === "live" || sub === "about" || sub === "send/cancel") {
     const convo = await import("./webconvo.js");
     if (!account) {
       // Nobody's conversation: the same short answer whatever was asked, and a form post goes back to sign in.
@@ -446,6 +460,10 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     if (sub === "send") {
       if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
       return await convo.sendRequest({ account, headers, readBody, router, log });
+    }
+    if (sub === "send/cancel") {
+      if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
+      return await convo.cancelRequest({ account, headers, readBody, router, log });
     }
     if (sub === "about") {
       if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });

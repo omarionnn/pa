@@ -1525,6 +1525,17 @@ addColumnIfMissing("page_sessions", "user_agent", "TEXT");
 // Reason Web v2 (Gap 8C): browser notifications, per browser. 1 = this browser asked for them (and its
 // own permission was granted when it did); 0, the default, = off. Only ever says "Reason needs your approval."
 addColumnIfMissing("page_sessions", "web_notify", "INTEGER NOT NULL DEFAULT 0");
+// Reason Web §4h "while you were out", per browser. `web_seen_at`: this browser's last page visit
+// (a signed-in page drawn — not the stream or a poll, which `last_seen_at` already counts).
+// `web_away_from` / `web_away_to`: a return after 3+ hours away, from the visit before it to the
+// visit that came back; set by webVisit, spent (back to NULL) by the thread that shows the line.
+addColumnIfMissing("page_sessions", "web_seen_at", "INTEGER");
+addColumnIfMissing("page_sessions", "web_away_from", "INTEGER");
+addColumnIfMissing("page_sessions", "web_away_to", "INTEGER");
+// Reason Web §4h "take it back": when the person took a Web message back before its turn started.
+// Set only together with the held row's removal (cancelHeldInbound), so cancelled and started can
+// never both be true of one message.
+addColumnIfMissing("inbound_messages", "cancelled_at", "INTEGER");
 // The short plain title an Ongoing row shows on Web, written once when the row is made (src/itemtitle.js).
 addColumnIfMissing("tasks", "label", "TEXT");
 // What a closed task hands back on Web's Ongoing, BACK TO YOU (src/ongoing.js): for `done`, the
@@ -9501,6 +9512,98 @@ export function takePendingByHandle(conversationId, externalId) {
   if (!row) return null;
   db.prepare("DELETE FROM pending_inbound WHERE id = ?").run(row.id);
   return { ...row, attachments: safeJson(row.attachments, []) };
+}
+
+/**
+ * Reason Web §4h "take it back": the person takes one of their messages back before Reason starts on
+ * it. The one transition that decides it is the held row's DELETE: a turn starts by taking the held
+ * rows (takePendingInbound / takePendingByHandle, which delete them), so exactly one of the two finds
+ * the row and the other finds nothing — never both. Same bargain as every take here: synchronous,
+ * no await between read and delete, inside one IMMEDIATE transaction for good measure.
+ *
+ *   { ok: true, cancelled: true }                  taken back now; no turn will ever see it
+ *   { ok: true, cancelled: true, already: true }   taken back before (a second tap, a retry)
+ *   { ok: true, cancelled: true, early: true }     `inFlight` and not claimed yet: written down as
+ *                                                  claimed-and-cancelled, so the send's own claim
+ *                                                  (claimInbound) finds a duplicate and runs nothing
+ *   { ok: false, why: "started" }                  the turn already took it: too late
+ *   { ok: false, why: "not_found" | "not_yours" }  nothing of this conversation's by that id
+ */
+export function cancelHeldInbound({ conversationId, channel = "web", externalId, inFlight = false, now = clock.now() }) {
+  if (!conversationId || !externalId) return { ok: false, why: "not_found" };
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    let out;
+    const row = db.prepare("SELECT conversation_id, cancelled_at FROM inbound_messages WHERE channel = ? AND external_id = ?").get(channel, externalId);
+    if (row && row.conversation_id !== conversationId) out = { ok: false, why: "not_yours" };
+    else if (row && row.cancelled_at != null) out = { ok: true, cancelled: true, already: true };
+    else if (!row) {
+      if (!inFlight) out = { ok: false, why: "not_found" };
+      else {
+        db.prepare("INSERT INTO inbound_messages (channel, external_id, conversation_id, received_at, cancelled_at) VALUES (?, ?, ?, ?, ?)")
+          .run(channel, externalId, conversationId, now, now);
+        out = { ok: true, cancelled: true, early: true };
+      }
+    } else {
+      const gone = db.prepare("DELETE FROM pending_inbound WHERE conversation_id = ? AND channel = ? AND external_id = ?").run(conversationId, channel, externalId).changes;
+      if (gone) {
+        db.prepare("UPDATE inbound_messages SET cancelled_at = ? WHERE channel = ? AND external_id = ?").run(now, channel, externalId);
+        out = { ok: true, cancelled: true };
+      } else out = { ok: false, why: "started" };
+    }
+    db.exec("COMMIT");
+    return out;
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already gone */ }
+    throw e;
+  }
+}
+
+/** Was this message taken back (§4h)? A read only. */
+export function inboundCancelled(channel, externalId) {
+  return db.prepare("SELECT cancelled_at FROM inbound_messages WHERE channel = ? AND external_id = ?").get(channel, externalId)?.cancelled_at != null;
+}
+
+/**
+ * Reason Web §4h "while you were out": one page visit by this browser. A visit `awayMs` or more after
+ * the last one starts a return (from the last visit to this one), kept on the session until the
+ * thread shows it (takeWebAway). The first visit a browser ever makes has nothing to compare with.
+ */
+export function webVisit(token, { awayMs, now = clock.now() } = {}) {
+  if (!token) return null;
+  const row = db.prepare("SELECT web_seen_at FROM page_sessions WHERE token = ? AND conversation_id IS NOT NULL").get(String(token));
+  if (!row) return null;
+  const prev = row.web_seen_at;
+  if (prev != null && now - prev >= awayMs) {
+    db.prepare("UPDATE page_sessions SET web_seen_at = ?, web_away_from = ?, web_away_to = ? WHERE token = ?").run(now, prev, now, String(token));
+    return { returned: true, from: prev, to: now };
+  }
+  db.prepare("UPDATE page_sessions SET web_seen_at = ? WHERE token = ?").run(now, String(token));
+  return { returned: false };
+}
+
+/** This browser is here (it sent something): its last-seen moves on, without starting a return. */
+export function webPresent(token, now = clock.now()) {
+  if (!token) return false;
+  return db.prepare("UPDATE page_sessions SET web_seen_at = ? WHERE token = ? AND conversation_id IS NOT NULL").run(now, String(token)).changes === 1;
+}
+
+/** Taken back after its claim but before it was held (src/channels/router.js takeBack): the hold then never happens. */
+export function markInboundCancelled(channel, externalId, now = clock.now()) {
+  return db.prepare("UPDATE inbound_messages SET cancelled_at = ? WHERE channel = ? AND external_id = ? AND cancelled_at IS NULL").run(now, channel, externalId).changes === 1;
+}
+
+/**
+ * The return this browser has not been shown yet, spent as it is read (once per return): `{ from, to }`
+ * or null. One older than `within` is spent and dropped: it belongs to a return that is over.
+ */
+export function takeWebAway(token, conversationId, { within = Infinity, now = clock.now() } = {}) {
+  if (!token || !conversationId) return null;
+  const row = db.prepare("SELECT web_away_from, web_away_to FROM page_sessions WHERE token = ? AND conversation_id = ?").get(String(token), conversationId);
+  if (row?.web_away_from == null) return null;
+  const spent = db.prepare("UPDATE page_sessions SET web_away_from = NULL, web_away_to = NULL WHERE token = ? AND web_away_from IS NOT NULL").run(String(token)).changes;
+  if (!spent || now - row.web_away_to > within) return null;
+  return { from: row.web_away_from, to: row.web_away_to };
 }
 
 export function addOpenQuestion(conversationId, { requestId = null, question }) {

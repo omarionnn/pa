@@ -126,7 +126,8 @@ test("§4h 2: \"on it.\" writes itself in after a send, left to right over 0.5s"
   await page.fill("#c-input", "find me a plumber for saturday");
   await page.press("#c-input", "Enter");
   await page.locator(".onit:not([hidden])").waitFor();
-  const got = (await ink(page)).filter(x => x.c === "pen-in");
+  // §4h 4's "take it back" under the message writes itself in too; this is about "on it.".
+  const got = (await ink(page)).filter(x => x.c === "pen-in" && x.text === "on it.");
   assert.equal(got.length, 1);
   assert.match(got[0].cls, /\bhand\b/);
   assert.equal(got[0].text, "on it.");

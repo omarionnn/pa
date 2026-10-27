@@ -319,7 +319,12 @@ var files=[],blobs={},noteT=0,LIM=R.lim||{each:20971520,fit:7340032,files:6};
 function say(t){if(!note)return;note.textContent=t;note.hidden=!t;if(t&&window.reasonInk)reasonInk(note,'pen-in');clearTimeout(noteT);if(t)noteT=setTimeout(function(){note.hidden=true},9000)}
 R.say=say;
 // 3D: what Reason is doing, from the server's own record of the turn (src/doing.js); plain "on it." otherwise.
-R.doing=function(t){var h=onit&&onit.querySelector('.hand');if(h)h.textContent=t?String(t):'on it.'};
+// §4h: how far along it is ("reading the lease… 2 of 3 files") shows at once; the role="status" label
+// carries the same words, changed at most every 3 s so a screen reader is not read every step.
+// The visible line is hidden from screen readers once it counts; a quiet copy carries the throttled words.
+var dLast=0,dNext=null,dT=0,dSr=null;function dLabel(t){if(!onit)return;if(!dSr){dSr=document.createElement('span');dSr.className='sr';onit.appendChild(dSr);var hh=onit.querySelector('.hand');if(hh)hh.setAttribute('aria-hidden','true')}dNext='Reason is '+(t?String(t).replace(/…\s*/,', ').replace(/[,.…\s]+$/,''):'working on it');if(dT)return;
+var go=function(){dT=0;dLast=Date.now();onit.setAttribute('aria-label',dNext);dSr.textContent=dNext},wait=3000-(Date.now()-dLast);if(wait<=0)go();else dT=setTimeout(go,wait)}
+R.doing=function(t){var h=onit&&onit.querySelector('.hand');if(h)h.textContent=t?String(t):'on it.';dLabel(t)};
 // The box grows with what's in it (4C), wherever the browser can't size it by itself.
 function fit(){if(!box||(window.CSS&&CSS.supports&&CSS.supports('field-sizing','content')))return;box.style.height='auto';box.style.height=Math.min(box.scrollHeight,240)+'px'}
 if(box){box.addEventListener('input',function(){fit();if(!box.value.trim())unvoice()});

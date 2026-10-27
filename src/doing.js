@@ -58,11 +58,42 @@ export function begin(conversationId, attachments = [], { at = Date.now() } = {}
   };
 }
 
-/** What the open tab says under "on it.", or null. */
+/** What the open tab says under "on it.", or null: how far along it is while a count is known, else the line. */
 export function doingFor(conversationId, { at = Date.now() } = {}) {
   const list = (now.get(conversationId) ?? []).filter(d => at - d.at <= STALE_MS);
   if (list.length) now.set(conversationId, list); else now.delete(conversationId);
-  return list.at(-1)?.line ?? null;
+  const d = list.at(-1);
+  return d ? d.count ?? d.line : null;
+}
+
+/** What one turn reads one by one on this machine: its PDFs and documents (src/media.js pdfsFor, src/docread.js docsFor). */
+const readable = (a) => a?.kind === "pdf" || a?.kind === "doc";
+
+/**
+ * §4h "the working line counts": how far along a turn's reading is, from the real loop that reads its
+ * files one at a time. `next(a)` as each file is started ("reading the lease… 2 of 3 files"),
+ * `done()` once the loop is over (back to the turn's own line while the model reads). Counted only
+ * where there is a real loop over more than one file; a single PDF is read in one go (pdftotext /
+ * PDFKit hand back every page at once, src/pdf.js), so it says no page count it never had.
+ */
+export function counter(conversationId, attachments = []) {
+  const total = (Array.isArray(attachments) ? attachments : []).filter(readable).length;
+  let n = 0;
+  const set = (words) => {
+    const d = (now.get(conversationId) ?? []).at(-1);
+    if (!d || d.count === words) return;
+    d.count = words;
+    doingEvents.emit("change", conversationId);
+  };
+  return {
+    total,
+    next(a) {
+      if (total < 2 || !readable(a) || n >= total) return;
+      n += 1;
+      set(`reading ${nameOf(a.filename) ?? (a.kind === "pdf" ? "the PDF" : "the document")}… ${n} of ${total} files`);
+    },
+    done() { if (n) set(null); },
+  };
 }
 
 /** For tests. */

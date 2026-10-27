@@ -388,11 +388,13 @@ export async function fetchPdf({
  *
  * Returns `notes` (lines the model reads this turn) and `seen` (what the history keeps).
  */
-export async function pdfsFor(attachments = [], { fetchImpl, log = () => {}, cover = () => {} } = {}) {
+export async function pdfsFor(attachments = [], { fetchImpl, log = () => {}, cover = () => {}, onRead = () => {} } = {}) {
   const notes = [];
   const seen = [];
   for (const a of attachments) {
     if (a?.kind !== "pdf") continue;
+    // How far along the reading is, for the open Web tab's working line (src/doing.js counter).
+    try { onRead(a); } catch { /* never costs a read */ }
     const got = await fetchPdf({ url: a.url, filename: a.filename, ...(fetchImpl ? { fetchImpl } : {}) });
     if (got.ok) {
       const pageInfo = got.pages_read < got.pages

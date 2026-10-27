@@ -41,7 +41,7 @@ import { esc } from "./render.js";
 import { readCookie } from "./access.js";
 import { ongoing, findItem, itemRecord, speakFirstPrompt, approvals as pendingApprovals } from "../ongoing.js";
 import { ogMargin, ogVersion, ogTabMain, OG_TAB_LIVE_JS, homeRows, needsYes, countLine, OG_CSS, NINE_D_JS, NINE_D_CSS, OG_POLL_JS } from "./webongoing.js";
-import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting } from "./websignin.js";
+import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting, WEB_AWAY_MS } from "./websignin.js";
 import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch, bubble, OG_KEY } from "./webkit.js";
 import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot, COMPOSE_CSS, COMPOSE_JS } from "./webcompose.js";
 import { prepareSend } from "../webmedia.js";
@@ -63,6 +63,8 @@ export const STREAM_RECHECK_MS = 10_000;
 /** A Web message this recent means they are mid-conversation: /web opens on the thread, not the arrival.
  * Never right after signing in: sign-in lands on /web?home, which is always the arrival (owner, 10-27). */
 export const THREAD_RECENT_MS = 30 * 60_000;
+/** §4h "take it back": how long the page offers it after a send (and only until Reason starts on it). */
+export const TAKE_BACK_MS = 5000;
 
 // The first-visit note, 5C (owner copy in the handoff).
 export const BOUNDARY = {
@@ -438,6 +440,16 @@ html:not(.js) .l1,html:not(.js) .thread[aria-busy]{display:none}
 .st.fade{transition:opacity .6s ease .4s;opacity:0}
 .retry{min-height:44px;border:0;background:transparent;padding:0;cursor:pointer;font:400 22px/1.1 var(--hand);color:var(--pen)}
 .retry+.st{font-size:10px;letter-spacing:.12em}
+.away{margin:-32px 0 -14px}
+.away .hand{font-size:25px;line-height:1.2;transform:rotate(-1deg)}
+.tb{display:flex;flex-direction:column;align-items:flex-end}
+.tb-b{min-height:44px;min-width:44px;border:0;background:transparent;padding:0;cursor:pointer;font:400 23px/1 var(--hand);color:var(--pen)}
+.tb-l{display:block;width:100px;height:1px;margin-top:-9px;background:var(--pen);transform-origin:left;animation:tb-drain 5s linear forwards}
+@keyframes tb-drain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+.tb-gone{font-size:23px}
+.msg[data-state=sending]:has(.tb){opacity:1}
+.msg[data-state=sending]:has(.tb)>:not(.tb){opacity:.6}
+@media (prefers-reduced-motion:reduce){.tb-l{display:none}}
 .approval{display:flex;flex-direction:column;gap:10px}
 .onit .hand{font-size:23px}
 .netline{position:sticky;top:0;z-index:7;background:var(--ground);margin:0;padding:18px var(--gut);text-align:center;font:400 22px/1.2 var(--hand);color:var(--pen);border-bottom:1px dashed var(--hair)}
@@ -654,7 +666,7 @@ function uid(){if(window.crypto&&crypto.randomUUID)return crypto.randomUUID();va
 function working(on,u){until=on?(u||Date.now()+120000):0;if(onit){if(on&&onit.hidden&&window.reasonInk)reasonInk(onit.querySelector('.hand'),'pen-in');onit.hidden=!on}if(on&&near())bottom()}
 setInterval(function(){if(until&&Date.now()>until)working(false)},1000);
 // From the arrival, a message moves you into the thread once Reason has it.
-if(!list){R.api={uid:uid,post:function(p){keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));location.href=R.chat?'/web?chat='+R.chat:'/web?thread'},pendingLine:function(){return document.createElement('li')},state:function(li,st){if(st==='failed'&&R.say)R.say("that didn't go. try it again?")}};
+if(!list){R.api={uid:uid,post:function(p){p.at=p.at||Date.now();keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));location.href=R.chat?'/web?chat='+R.chat:'/web?thread'},pendingLine:function(){return document.createElement('li')},state:function(li,st){if(st==='failed'&&R.say)R.say("that didn't go. try it again?")}};
 form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.trim(),fs=R.takeFiles?R.takeFiles():[];if(!t&&!fs.length)return;var p={id:uid(),text:t};if(fs.length)p.files=fs;R.api.post(p)});return}
 var loaded=!R.defer,lastPoll=0,calm2=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
 function line(m){var li=document.createElement('li');li.className='msg arrive '+(m.role==='user'?'you':'re');li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;if(m.day)li.dataset.day=m.day;if(m.where)li.dataset.where=m.where;li.innerHTML=m.html;times(li);return li}
@@ -671,15 +683,31 @@ function unempty(){var e=document.querySelector('.convo>.empty');if(e)e.remove()
 function pendingLine(p){unempty();var li=document.createElement('li');li.className='msg you arrive';li.dataset.pending=p.id;if(p.files&&p.files.length&&R.drawFiles)R.drawFiles(li,p);else{var s=document.createElement('div');s.className='said';s.textContent=p.text;li.appendChild(s)}list.appendChild(li);bottom();return li}
 function stored(li){return pend().filter(function(x){return x.id===li.dataset.pending})[0]||{id:li.dataset.pending,text:(li.querySelector('.said')||{}).textContent||''}}
 function state(li,st){if(!li)return;li.dataset.state=st;li.querySelectorAll('.st,.retry').forEach(function(x){x.remove()});
-if(st==='sending'||st==='waiting'){var s=document.createElement('p');s.className='st';s.textContent=st==='sending'?'SENDING\\u2026':'WAITING TO SEND';li.appendChild(s)}
+if(st==='failed'||st==='waiting')li.querySelectorAll('.tb').forEach(function(x){x.remove()});
+if((st==='sending'&&!li.querySelector('.tb'))||st==='waiting'){var s=document.createElement('p');s.className='st';s.textContent=st==='sending'?'SENDING\\u2026':'WAITING TO SEND';li.appendChild(s)}
 else if(st==='failed'){var b=document.createElement('button');b.type='button';b.className='retry';b.textContent="didn't go. tap to try again.";b.onclick=function(){if(li.retry)return li.retry();send(stored(li),li)};var n=document.createElement('p');n.className='st';n.textContent="IT WON'T SEND TWICE";li.appendChild(b);li.appendChild(n)}}
 function expired(){if(!window.reasonMidTask||!window.reasonMidTask(waiting>0||!!until))location.href='/web?out=1'}
 function send(p,li,tries){tries=tries||0;if(offline()){state(li,'waiting');return}state(li,'sending');
 fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c,chat:R.chat||'',files:(p.files||[]).map(function(f){return f.id}).filter(Boolean).join(','),voice:p.voice?String(p.voice):''})})
 .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(j){j.status=r.status;return j})})
-.then(function(j){if(j.status===401){expired();return}if(j.ok){if(j.duplicate&&li.isConnected&&li.dataset.pending){li.remove();forget(p.id)}if(li.isConnected&&!j.duplicate){state(li,'sent');li.querySelectorAll('.st').forEach(function(x){x.remove()});waiting++;working(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,'failed')})
-.catch(function(){if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
-function post(p,li){keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));send(p,li||pendingLine(p))}
+.then(function(j){if(li.taken)return;if(j.status===401){expired();return}if(j.ok){if(j.duplicate&&li.isConnected&&li.dataset.pending){li.remove();forget(p.id)}if(li.isConnected&&!j.duplicate){state(li,'sent');li.querySelectorAll('.st').forEach(function(x){x.remove()});waiting++;li.counted=1;working(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,'failed')})
+.catch(function(){if(li.taken)return;if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
+function post(p,li){p.at=p.at||Date.now();keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));var l=li||pendingLine(p);takeBack(l,p);send(p,l)}
+// §4h "take it back": for 5 s after a send, and only until Reason starts on it (its own line arrives
+// in place of this one), a real button under the message, a pen line draining under it. Tapped, the
+// server takes it back if the turn has not taken it (POST /web/send/cancel); too late, it is SENT.
+// The send is never held for it: it went at once, and this only races the turn's own start.
+var TB=${TAKE_BACK_MS};
+function sentAt(li,at){li.querySelectorAll('.tb').forEach(function(x){x.remove()});if(li.dataset.state==='sending'){state(li,'sending');return}if(!li.isConnected||!li.dataset.pending||li.querySelector('.st,.retry'))return;var s=document.createElement('p');s.className='st';s.textContent='SENT \\u00b7 '+fmt(at||Date.now());li.appendChild(s)}
+function takeBack(li,p){if(!li||!p.at||offline())return;var left=TB-(Date.now()-p.at);if(left<300)return;
+var w=document.createElement('span');w.className='tb';var b=document.createElement('button');b.type='button';b.className='tb-b';b.textContent='take it back';w.appendChild(b);
+var l=document.createElement('span');l.className='tb-l';l.setAttribute('aria-hidden','true');l.style.animationDelay=(left-TB)+'ms';w.appendChild(l);li.appendChild(w);if(window.reasonInk)reasonInk(b,'pen-in');
+var t=setTimeout(function(){if(li.querySelector('.tb'))sentAt(li,p.at)},left);
+b.onclick=function(){if(b.disabled)return;b.disabled=true;clearTimeout(t);
+fetch('/web/send/cancel',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,c:R.c})})
+.then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){if(!j||!j.ok){sentAt(li,p.at);return}
+li.taken=true;forget(p.id);delete li.dataset.pending;li.removeAttribute('data-state');li.textContent='';var g=document.createElement('p');g.className='hand tb-gone';g.setAttribute('role','status');g.textContent='taken back. nothing sent.';li.appendChild(g);if(window.reasonInk)reasonInk(g,'pen-in');
+if(li.counted&&waiting){waiting--;if(!waiting)working(false)}setTimeout(function(){li.remove()},2000)}).catch(function(){sentAt(li,p.at)})}}
 R.api={uid:uid,post:post,pendingLine:pendingLine,state:state};
 // Which Web chat this tab is in, for an Ongoing detail opened from it (src/pages/webongoing.js); the shared thread clears it.
 try{if(R.chat)sessionStorage.setItem('reason-web-chat',R.chat);else sessionStorage.removeItem('reason-web-chat')}catch(x){}
@@ -739,8 +767,12 @@ var OPK='reason-web-opened';function opened(){try{return JSON.parse(localStorage
 function doneInit(root){var o=opened();(root||list).querySelectorAll('.done[data-fresh]').forEach(function(li){if(o.indexOf(li.dataset.task)>=0){var f=li.querySelector('.dl-fresh');if(f)f.remove()}})}
 list.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('.dl');if(!b||!list.contains(b))return;var li=b.parentNode,open=li.classList.toggle('open');b.setAttribute('aria-expanded',open?'true':'false');b.querySelector('.dl-n').textContent=open?'FOLD ↑':li.dataset.n+' ↓';
 if(open){var f=li.querySelector('.dl-fresh');if(f)f.remove();try{var o=opened();if(o.indexOf(li.dataset.task)<0){o.push(li.dataset.task);localStorage.setItem(OPK,JSON.stringify(o.slice(-50)))}}catch(x){}}where()});
-function ready(){loaded=true;times(list);doneInit();
-carried.forEach(function(c){if(list.querySelector('.msg[data-cid="'+c.p.id+'"]')){c.li.remove();forget(c.p.id);return}send(c.p,c.li)});
+// §4h "while you were out": the server's one line for this return, put under TODAY (or a TODAY of its own at the end).
+function awayIn(){var a=R.away;R.away=null;if(!a||list.querySelector('li.away'))return;var li=document.createElement('li');li.className='away';var p=document.createElement('p');p.className='hand';p.textContent=a.text;li.appendChild(p);
+var d=list.querySelector('li.day[data-day="'+a.day+'"]');if(d){d.parentNode.insertBefore(li,d.nextSibling);return}
+d=document.createElement('li');d.className='day';d.setAttribute('role','separator');d.dataset.day=a.day;var l=document.createElement('p');l.className='lbl';l.textContent='TODAY';d.appendChild(l);list.appendChild(d);list.appendChild(li)}
+function ready(){loaded=true;times(list);doneInit();awayIn();
+carried.forEach(function(c){if(list.querySelector('.msg[data-cid="'+c.p.id+'"]')){c.li.remove();forget(c.p.id);return}takeBack(c.li,c.p);send(c.p,c.li)});
 stream();if(R.more)hook();bottom();where()}
 // L1: the thread opens with its composer and tabs already live; the newest page comes from the server.
 // Slow (over 8 s) or failed, it says so in the same place, with a way to try again.
@@ -765,20 +797,58 @@ export function streamPath() {
   return origin ? `${origin}/web/live` : "/web/stream";
 }
 
-function boot({ csrf, lines = [], more = false, conversationId = "", deferred = false, og = "", chat = "", about = null }) {
+function boot({ csrf, lines = [], more = false, conversationId = "", deferred = false, og = "", chat = "", about = null, away = null }) {
   // `k` keys this tab's unsent messages to ONE conversation (and one Web chat): a tab later signed in as somebody else never resends them.
   const k = createHash("sha256").update(`pending:${conversationId}${chat ? `#${chat}` : ""}`).digest("base64url").slice(0, 12);
   // A deferred page (L1) learns first/last from its first /web/history; until then it polls nothing.
   const first = deferred ? 0 : lines[0]?.id ?? 0, last = deferred ? 0 : lines.reduce((n, m) => Math.max(n, m.id), 0);
-  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},k:${JSON.stringify(k)},stream:${JSON.stringify(streamPath())},defer:${deferred ? "true" : "false"},ph:${JSON.stringify(PLACEHOLDER)},finding:${JSON.stringify(FINDING)},ogv:${JSON.stringify(String(og))},chat:${JSON.stringify(String(chat))},ab:${JSON.stringify(about?.key ?? "")},ak:${JSON.stringify(about?.k ?? "")}};`;
+  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},k:${JSON.stringify(k)},stream:${JSON.stringify(streamPath())},defer:${deferred ? "true" : "false"},ph:${JSON.stringify(PLACEHOLDER)},finding:${JSON.stringify(FINDING)},ogv:${JSON.stringify(String(og))},chat:${JSON.stringify(String(chat))},ab:${JSON.stringify(about?.key ?? "")},ak:${JSON.stringify(about?.k ?? "")},away:${away ? JSON.stringify(away).replace(/</g, "\\u003c") : "null"}};`;
 }
 
 const NET = `<p class="netline" role="status" hidden></p>`;
 
 /**
+ * §4h "while you were out": "while you were out: 2 done, 1 needs you." Parts that are zero are left
+ * out; nothing at all is no line (null).
+ */
+export function awayWords({ done = 0, needs = 0 } = {}) {
+  const parts = [];
+  if (done > 0) parts.push(`${done} done`);
+  if (needs > 0) parts.push(`${needs} ${needs === 1 ? "needs" : "need"} you`);
+  return parts.length ? `while you were out: ${parts.join(", ")}.` : null;
+}
+
+/**
+ * The line for one return (`{ from, to }`, db.takeWebAway), counted from the same rows Ongoing and
+ * the DONE lines are drawn from (src/ongoing.js): tasks that finished done in that time, and what
+ * started needing them in it and still does (a task's question, an approval). Null for no return
+ * or nothing changed.
+ */
+export function awayFor(conversationId, ret, held = null) {
+  if (!ret) return null;
+  const { items, approvals, back } = held ?? ongoing(conversationId);
+  const within = (t) => Number.isFinite(t) && t > ret.from && t <= ret.to;
+  const done = back.filter(x => x.state === "ready" && within(x.task?.finished_at)).length;
+  const needs = items.filter(x => x.needs && within(x.asked)).length + approvals.filter(a => within(a.at)).length;
+  return awayWords({ done, needs });
+}
+
+/** The line as the thread draws it: one Caveat line in pen, under TODAY. */
+export const awayHtml = (text) => `<li class="away"><p class="hand">${esc(text)}</p></li>`;
+
+/** A drawn page with the line put under its TODAY label, or a TODAY label of its own at the end when today has no lines yet. */
+export function withAway(html, away, now = clock.now()) {
+  if (!away) return html;
+  const day = dayKey(now);
+  const at = new RegExp(`<li class="day" role="separator" data-day="${day}"[^>]*>.*?</li>`).exec(html);
+  if (at) return html.slice(0, at.index + at[0].length) + awayHtml(away) + html.slice(at.index + at[0].length);
+  return `${html}<li class="day" role="separator" data-day="${day}">${label("TODAY")}</li>${awayHtml(away)}`;
+}
+
+/**
  * The thread. `firstVisit` draws 5C in its place (once); `approvals` the one loud thing at the foot.
  */
-export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), found = null, deferred = false, work = null, chat = "", about = null }) {
+export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), found = null, deferred = false, work = null, chat = "", about = null, away = null }) {
   if (firstVisit) return renderFirstVisit({ account });
   const conv = account?.conversation_id ?? "";
   const service = serviceOf(conv);
@@ -793,7 +863,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
   // A Web-only chat is only that exchange: a pending approval stays in Ongoing (the margin, the tab's count), not in its lines.
   const appr = approvals.length && !chat ? `<div class="msg re approval">${label(apprLbl)}${approvalCard({ title: approvals[0].title, money: approvals[0].money, href: approvals[0].href })}</div>` : "";
   const count = items.length + approvals.length + back.length;
-  const drawn = pageHtml(lines, { conversationId: conv, service, now, keep: found, chat });
+  const drawn = withAway(pageHtml(lines, { conversationId: conv, service, now, keep: found, chat }), away, now);
   // L1: with script, the page opens with its composer and tabs live and the thread's place held by
   // ruled lines; the newest page arrives from /web/history. Without script it is all here at once.
   const thread = deferred
@@ -812,7 +882,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     + tabBar("chat", count) + listeningHtml();
   // Saved's FIND IT IN THE CHAT → (src/pages/websaved.js): the thread opened at that message, scrolled to it.
   const toFound = found ? `(function(){var e=document.getElementById('m-${Number(found)}');if(e)e.scrollIntoView({block:'center'})})();` : "";
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred, og: ogVersion(ogMargin({ items, approvals, back })), chat, about }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred, og: ogVersion(ogMargin({ items, approvals, back })), chat, about, away: away ? { text: away, day: dayKey(now) } : null }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
 }
 
 /** S2: the "where you are" note, two slots that crossfade. Filled and shown by the page's script. */
@@ -951,7 +1021,11 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   // ?about=<kind>:<id>&k=<click> (an Ongoing detail's "… in the chat →"): the thread, whose script asks
   // Reason to speak first about that row (POST /web/about, aboutRequest below).
   const about = aboutOf(query);
-  if (query.thread != null || recentWeb || about) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, deferred: true, work: workOf(conv), about });
+  if (query.thread != null || recentWeb || about) {
+    // §4h: the return this browser has not been shown, spent now (a GET only): once per return.
+    const away = method === "GET" ? awayFor(conv, db.takeWebAway(readCookie(headers.cookie), conv, { within: WEB_AWAY_MS, now }), { items, approvals, back }) : null;
+    return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, deferred: true, work: workOf(conv), about, away });
+  }
   return renderHome({ account, csrf, sendId, items, approvals, back, pick: pickUp(conv, service) });
 }
 
@@ -1052,6 +1126,10 @@ export async function aboutRequest({ account, headers = {}, readBody, runtime, l
 
 /** How long a send waits to hear "refused" or "already had it" before saying "got it" and letting the turn run on. */
 export const ACK_WAIT_MS = 1500;
+/** Sends still on their way to Router.deliver's claim, `<conversation>:<browser id>`: a take-back that lands first is written down so the claim finds it. */
+const inFlight = new Set();
+/** How long a take-back for an id not seen yet waits for its send to arrive before it is "not found". */
+export const CANCEL_WAIT_MS = 1500;
 
 /**
  * POST /web/send: one message into the person's conversation. Same-origin and the session's own
@@ -1086,23 +1164,61 @@ export async function sendRequest({ account, headers = {}, readBody, router, log
   if (chatRaw && !db.claimWebChat(conv, chatRaw)) { log({ web_send_refused: "chat" }); return fail(404, "not_found"); }
   if (files.length && !(await import("../webuploads.js")).attachmentsFor(conv, files)) return fail(400, "bad_file");
   if (!underLimit(conv)) { log({ web_send_refused: "rate_limited" }); return fail(429, "slow_down"); }
+  // §4h: sending is being here — this browser's last-seen moves on (never starts a return).
+  try { db.webPresent(token); } catch { /* never costs a send */ }
   // S2: what kind of device this was typed on, for "today, on your laptop". Kept by the message's own id.
   try { settle.noteWebDevice(conv, id, settle.deviceClass(headers["user-agent"])); } catch { /* never costs a send */ }
 
+  const key = `${conv}:${id}`;
+  inFlight.add(key);
   const delivering = Promise.resolve()
     .then(async () => {
       // A voice note with no words yet is heard first (src/webmedia.js prepareSend), so the words are the message.
       const prep = files.length ? await prepareSend({ conversationId: conv, text, files, log }) : { text, attachments: [] };
       if (!prep) return { ok: false, error: "failed" };
+      // §4h: taken back while it was still on its way here. Nothing is delivered (the claim would refuse it anyway).
+      if (db.inboundCancelled(WEB, key)) return { ok: true, duplicate: true, cancelled: true };
       return router.deliver({ channel: WEB, externalId: id, conversationId: conv, text: prep.text, ...(prep.attachments.length ? { attachments: prep.attachments } : {}), ...(chatRaw ? { chatId: db.webChatRoute(chatRaw) } : {}), at: clock.now() });
     })
     .catch((e) => { log({ web_send_failed: (e?.message ?? String(e)).split("\n")[0] }); return { ok: false, error: "failed" }; });
+  // Kept until the delivery settles; once Router.deliver has claimed the id, the claim's own row decides a take-back instead.
+  void delivering.finally(() => inFlight.delete(key));
   const quick = await Promise.race([delivering, new Promise(r => setTimeout(() => r(null), ackWaitMs).unref?.())]);
   log({ web_send: quick ? (quick.duplicate ? "duplicate" : quick.refused ?? (quick.ok === false ? "failed" : "done")) : "accepted" });
   if (quick && quick.refused) return fail(403, quick.refused);
   if (quick && quick.ok === false && quick.error === "failed") return fail(500, "failed");
   if (!wantsJson) return { status: 303, headers: { ...SECURITY_HEADERS, Location: back, "Content-Length": 0 }, body: "" };
   return json(200, { ok: true, id, duplicate: !!quick?.duplicate, ...(chatRaw ? { chat: chatRaw } : {}) });
+}
+
+/**
+ * POST /web/send/cancel (§4h "take it back"): the person takes back a message they just sent, before
+ * Reason starts on it. Same-origin and the session's own secret, like /web/send; the browser's id
+ * is put under the SESSION's conversation (Router.takeBack), so nobody can take back anyone else's.
+ * Never delays a send: it races the turn's own start, and exactly one of the two wins
+ * (db.cancelHeldInbound). Idempotent: a second tap says taken back again. Too late: 409 `too_late`.
+ */
+export async function cancelRequest({ account, headers = {}, readBody, router, log = () => {} }) {
+  const form = new URLSearchParams((await readBody()) ?? "");
+  if (!sameOrigin(headers) || !same(headers["x-reason-csrf"] || form.get("c"), db.pageSessionCsrf(readCookie(headers.cookie)))) {
+    log({ web_cancel_refused: "origin_or_token" });
+    return json(403, { ok: false, error: "not_from_this_page" });
+  }
+  const id = String(form.get("id") ?? "");
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) return json(400, { ok: false, error: "bad_id" });
+  if (!router?.takeBack) return json(503, { ok: false, error: "unavailable" });
+  const conv = account.conversation_id;
+  const key = `${conv}:${id}`;
+  let out = router.takeBack({ conversationId: conv, id, inFlight: inFlight.has(key) });
+  // Tapped before this browser's /web/send has even been read (two connections race): give that send
+  // a moment to arrive, so a tap in time is never answered "not found" while the message goes out.
+  for (let waited = 0; !out.ok && out.why === "not_found" && waited < CANCEL_WAIT_MS; waited += 50) {
+    await new Promise(r => setTimeout(r, 50));
+    out = router.takeBack({ conversationId: conv, id, inFlight: inFlight.has(key) });
+  }
+  if (out.ok) return json(200, { ok: true, cancelled: true, ...(out.already ? { already: true } : {}) });
+  if (out.why === "started") return json(409, { ok: false, error: "too_late" });
+  return json(404, { ok: false, error: "not_found" });
 }
 
 /**

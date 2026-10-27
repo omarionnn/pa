@@ -86,6 +86,8 @@ export class Router {
     this.waiting = new Set();
     /** The "…" bubble for each conversation, which has to outlive the wait AND the turn. */
     this.bubbles = new Map();
+    // §4h take it back: Web messages claimed and not yet held, `<external id>` → when claimed.
+    this.preHold = new Map();
     /** One promise per drain in flight, so shutdown can wait for them. See `idle`. */
     this.draining = new Set();
     /** The new-number card on its way to somebody, so a second text of theirs waits for it. */
@@ -259,6 +261,13 @@ export class Router {
       this.log({ inbound: inbound.externalId, duplicate: true });
       return { ok: true, duplicate: true, conversationId };
     }
+    // §4h: a Web message between its claim and its hold can still be taken back (takeBack). Pruned by
+    // age, so one that returned early (capped, a dropped part) does not linger.
+    if (inbound.channel === web.WEB) {
+      const t = clock.now();
+      for (const [k, at] of this.preHold) if (t - at > 120_000) this.preHold.delete(k);
+      this.preHold.set(inbound.externalId, t);
+    }
 
     // Somebody who already has a Reason sending the code an event page gave them: the page could not
     // tell it was them (no page session on that browser), and this text is how it finds out. They
@@ -352,6 +361,14 @@ export class Router {
     const under = (inbound.replyTo || inbound.threadRoot)
       ? replies.inboundReplyLine(conversationId, inbound.replyTo, inbound.threadRoot, { except: inbound.externalId })
       : "";
+    // §4h: taken back between the claim and here (takeBack). Checked with no await before the hold.
+    if (inbound.channel === web.WEB) {
+      this.preHold.delete(inbound.externalId);
+      if (db.inboundCancelled(web.WEB, inbound.externalId)) {
+        this.log({ inbound: inbound.externalId, taken_back: true });
+        return { ok: true, conversationId, cancelled: true, replied: false };
+      }
+    }
     const window = db.holdInbound({
       conversationId, channel: inbound.channel, address, chatId: inbound.chatId ?? null,
       externalId: inbound.externalId, text: under ? `${under}\n${inbound.text}` : inbound.text,
@@ -496,6 +513,32 @@ export class Router {
       this.log({ midturn_failed: (e?.message ?? String(e)).split("\n")[0], conversation: conversationId });
       return { left: "error" };
     }
+  }
+
+  /**
+   * Reason Web §4h "take it back": the person takes one Web message back before its turn starts.
+   * `id` is the browser's own id for it, put under the conversation exactly as `deliver` puts it, so
+   * nobody can name another person's message. The send is never held for this: the message waits
+   * only the ordinary burst window, and whichever comes first — this, or the turn taking the held
+   * rows — wins outright (db.cancelHeldInbound). With nothing left held and no turn running, the
+   * "working on it" bubble the hold put up comes down.
+   */
+  takeBack({ conversationId, id, inFlight = false }) {
+    const externalId = `${conversationId}:${String(id ?? "").trim()}`;
+    let out = db.cancelHeldInbound({ conversationId, channel: web.WEB, externalId, inFlight });
+    // Claimed but not held yet (deliver is between its claim and holdInbound, awaiting a read receipt,
+    // say): no turn can have it, so it is taken back here and deliver drops it before the hold. Both
+    // sides are synchronous at that point, so this and the hold cannot both happen.
+    if (!out.ok && out.why === "started" && this.preHold.has(externalId)) {
+      db.markInboundCancelled(web.WEB, externalId);
+      out = { ok: true, cancelled: true };
+    }
+    this.log({ web_take_back: out.ok ? (out.already ? "already" : out.early ? "early" : "cancelled") : out.why, conversation: conversationId });
+    if (out.ok && !out.already && db.pendingReadyAt(conversationId) === null && !onethought.activeFor(conversationId)) {
+      const b = this.bubbles.get(conversationId);
+      if (b && !b.done) void Promise.resolve().then(() => b.stop()).catch(() => {});
+    }
+    return out;
   }
 
   /**
