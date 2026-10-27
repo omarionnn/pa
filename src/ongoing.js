@@ -119,7 +119,7 @@ function titled(kind, conversationId, row, text, name) {
   const label = String(row.label ?? "").trim();
   if (label) return label;
   queueTitle(kind, conversationId, row.id, text, { name });
-  return cleanTitle(text, { name });
+  return cleanTitle(text, { name }) || String(text ?? "").trim().slice(0, 48);
 }
 
 /**

@@ -140,7 +140,7 @@ test("5. the desktop margin: the same groups, 2 OF 3 with the live line, PR #179
   const shown = [...s.matchAll(/class="(?:og-row|card appr og-appr)( og-x)?"/g)].map(m => !m[1]);
   assert.deepEqual(shown, [true, true, true, false, false, false, false]);
   assert.match(s, /data-n="7">See all 7 /);
-  assert.match(s, /<a class="act2 og-back" href="#og" aria-controls="og">ONGOING 7<\/a>/);
+  assert.match(s, /<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing, 7 things"><span aria-hidden="true">ONGOING · 7<\/span><\/button>/);
 });
 
 test("6. details 2A–2E and the approval: ← ONGOING, a typed status, a serif headline, the row's real fields", () => {

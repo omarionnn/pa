@@ -92,7 +92,7 @@ export function countLine(model) {
  * place (no script: a link to the list drawn open, `all`), and the margin carries "HIDE →".
  */
 export function ogMargin({ approvals = [], items = [], back = [] }, { all = false, tab = false } = {}) {
-  const head = tab ? "" : `<div class="og-h"><h2>Ongoing</h2><button class="act2 og-hide" type="button" aria-controls="og">HIDE <span aria-hidden="true">→</span></button></div>`;
+  const head = tab ? "" : `<div class="og-h"><h2>Ongoing</h2><button class="act2 og-hide" type="button" aria-controls="og" aria-expanded="true">HIDE <span aria-hidden="true">→</span></button></div>`;
   const aside = (inner, cls = "") => `<aside class="og${tab ? " og-tab" : ""}${cls}" id="og" aria-label="Ongoing">${head}${inner}</aside>`;
   if (!items.length && !approvals.length && !back.length) {
     return aside(`<div class="empty"><p class="h2">Nothing left<br>to chase.</p>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</div>`);

@@ -60,7 +60,7 @@ Never use their name or talk about them in the third person. No times, dates, "r
 
 /** One title from the claude-cli subscription. Null when the CLI is not the backend or anything goes wrong. */
 export async function summariseTitle(text, { name = config.ownerName, ask = askStructuredViaCli } = {}) {
-  if (process.env.REASON_BACKEND !== "claude-cli" && ask === askStructuredViaCli) return null;
+  if (ask === askStructuredViaCli && (process.env.REASON_BACKEND !== "claude-cli" || process.env.NODE_TEST_CONTEXT)) return null;
   const { value, error } = await ask({
     prompt: `Their first name, which must NOT appear: ${firstName(name) || "(unknown)"}\n\nThe note:\n${String(text ?? "").slice(0, 600)}`,
     system: SYSTEM,
@@ -83,6 +83,8 @@ let chain = Promise.resolve();
  */
 export function queueTitle(kind, conversationId, id, text, { name, ask } = {}) {
   if (!ask && process.env.REASON_BACKEND !== "claude-cli") return null;
+  // Under the test runner nothing reaches the real CLI: only a test's own `ask` is ever called.
+  if (!ask && process.env.NODE_TEST_CONTEXT) return null;
   if (process.env.REASON_ITEM_TITLES === "0") return null;
   const key = `${kind}:${id}`;
   if (asked.has(key)) return null;

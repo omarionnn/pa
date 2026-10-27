@@ -360,7 +360,7 @@ const CSS = `
 .og.all .og-x{display:flex}
 .og-all{align-self:flex-start;min-height:44px;display:inline-flex;align-items:center;margin-top:-12px;font:400 12px/1.3 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink);text-decoration:none}
 .og-all:hover,.og-hide:hover,.og-back:hover{color:var(--pen)}
-.og-back{display:none}
+.og-back{display:none;position:fixed;right:0;top:50%;transform:translateY(-50%);z-index:15;min-width:44px;min-height:44px;padding:20px 12px;border:0;border-left:1px dashed var(--hair);background:var(--ground);cursor:pointer;color:var(--ink);font:400 12px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;writing-mode:vertical-rl}
 html.og-off .wrapc>.og{display:none}
 .og-sec{display:flex;flex-direction:column}
 .og-sec h3{margin:0 0 4px;font:400 12px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
@@ -439,7 +439,9 @@ body.has-tabs .foot{display:none}
 .cform{padding-top:10px}
 .composer{padding:12px 0 24px;margin-top:12px}
 .og{display:flex}
-html.og-off .og-back{display:inline-flex}
+html.og-off .og-back{display:flex;align-items:center;justify-content:center}
+html.og-off .wrapc{padding-right:max(64px,4vw)}
+.og-back:focus-visible{outline-offset:-4px}
 .tabs{display:none}
 body.has-tabs{padding-bottom:0}
 body.has-tabs .composer{bottom:0}
@@ -494,7 +496,7 @@ export { OG_TOP } from "./webongoing.js";
  * The Ongoing list: the desktop margin, or (`tab`) the mobile Ongoing tab's body. The top OG_TOP rows
  * show; the rest are drawn but folded, and "See all N →" opens them in place ("Show fewer" folds them
  * back). Without script it is a link to the same list drawn open (`all`). The margin also carries
- * "HIDE →": the page slides it away and the thread takes the width; "ONGOING N" in the top bar brings it back.
+ * "HIDE →": the page slides it away and the thread takes the width; a thin vertical typed "ONGOING · N" at the right edge brings it back (handoff §3, sheet 3).
  */
 function ongoingMargin(items, approvals, { all = false, tab = false, back = [] } = {}) {
   return ogMargin({ items, approvals, back }, { all, tab });
@@ -621,7 +623,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     : lines.length ? label(`Your conversation before ${dayFmt().format(lines[0].at)} stays in your texts.`) : "";
   const appr = approvals.length ? `<div class="msg re approval">${label("REASON · WAITING ON YOU")}${approvalCard({ title: approvals[0].title, money: approvals[0].money, href: approvals[0].href })}</div>` : "";
   const count = items.length + approvals.length + back.length;
-  const body = topBar({ csrf, extra: `<a class="act2 og-back" href="#og" aria-controls="og">ONGOING${count ? ` ${count}` : ""}</a>` }) + NET
+  const body = topBar({ csrf }) + NET
     + `<main class="wrapc"><section class="convo" aria-labelledby="c-h"><h1 id="c-h" class="sr">Your conversation with Reason</h1>`
     + `<div class="start">${startLine}</div>`
     + `<ol class="thread" role="log" aria-live="polite" aria-relevant="additions">${listHtml(lines, { now })}</ol>`
@@ -630,6 +632,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     + needsYes(approvals)
     + composer({ csrf, sendId })
     + `</section>${ongoingMargin(items, approvals, { all, back })}</main>`
+    + `<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing${count ? `, ${count} ${count === 1 ? "thing" : "things"}` : ""}"><span aria-hidden="true">ONGOING${count ? ` · ${count}` : ""}</span></button>`
     + tabBar("chat", count);
   return webPage({ title: "Reason", body, css: CSS, script: boot({ csrf, lines, more, conversationId: account?.conversation_id }) + NINE_D_JS + CLIENT_JS, bodyClass: "has-tabs", loader: true });
 }

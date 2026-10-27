@@ -43,9 +43,9 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
   tab show the top 3 rows (`OG_TOP`; needs-you first, then soonest `due`), the rest drawn but folded
   (`.og-x`); "See all N →" (typed caps, no box) opens them in place, "Show fewer" folds them; no-script
   = `?thread&all=1` / `?tab=ongoing&all=1`. Desktop margin heading has "HIDE →": the panel slides away,
-  the thread takes the width, "ONGOING N" appears in the top bar to bring it back; kept per device in
+  the thread takes the width, and a thin vertical typed "ONGOING · N" at the right edge (`.og-back`, fixed, desktop only; handoff §3 sheet 3) brings it back; kept per device in
   localStorage `reason-web-og` (applied in HEAD_JS before paint). Phones keep the Chat/Ongoing tabs.
-  The top bar (wordmark, ONGOING N, MEMORY, SETTINGS) is `position:sticky`, dashed rule once scrolled
+  The top bar (wordmark, MEMORY, SETTINGS) is `position:sticky`, dashed rule once scrolled
   (`.top.stuck`); "↑ SHOW EARLIER MESSAGES" stays at the top of the thread. Row titles = `label` on
   tasks/timers/series (src/itemtitle.js): the model's `title` (timer_set) / `short_title` (task_start),
   else ONE background summarise on the claude-cli subscription (`feature: "title"`; no API path —
