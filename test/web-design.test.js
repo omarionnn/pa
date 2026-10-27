@@ -6,7 +6,8 @@
 //   - every screen state carries its copy, its roles (status / alert / log) and real controls with names
 //   - no screen coaches a phrase to type (owner rule 10-25), the approval nudge included
 //   - Reason's words: lists become 01 02 03, Reason's own links become cards, titles only from rows
-//     this conversation owns; photos, voice notes and files already in history are drawn, never fetched
+//     this conversation owns; photos, voice notes and files in history are drawn from /web/media/…,
+//     never from the address they came from (test/web-compose.test.js pins the inputs)
 //   - instant replies: the live stream may be heard on the pages host, with CORS for the website's
 //     origin only, and /web/live is not sent round to the website like the rest of /web
 //   - fonts are self-hosted; nothing comes from Google
@@ -113,11 +114,13 @@ test("reduced motion is no motion at all, and focus is a 2px ink outline offset 
   assert.match(kit.KIT_CSS, /translateY\(6px\)/, "new lines rise 6px");
 });
 
-test("no + (attach) and no mic (voice) on any screen until they work — owner decision 10-26", () => {
+test("+ and the mic are on every composer, hidden until the page's script can make them work (owner 10-26: build them, then show +)", () => {
   let composers = 0;
   for (const [name, html] of Object.entries(allScreens())) {
-    if (html.includes('class="cform"')) composers++;
-    assert.ok(!/aria-label="(?:Add a photo or file|Attach[^"]*|Speak[^"]*|Voice[^"]*|Record[^"]*)"|type="file"|class="slot|class="(?:attach|mic)\b/i.test(html), `${name}: no + or mic drawn`);
+    if (!html.includes('class="cform"')) continue;
+    composers++;
+    assert.match(html, /<button class="ic c-add" type="button" aria-label="Add a photo or file" hidden>/, `${name}: + is drawn hidden`);
+    assert.match(html, /<button class="ic c-mic" type="button" aria-label="Speak instead" hidden>/, `${name}: the mic is drawn hidden`);
   }
   assert.ok(composers >= 3, "home, home in hand and the thread all carry the composer");
 });
@@ -305,9 +308,12 @@ test("an event link with a known date is the date-block card (organiser's own); 
 test("photos, voice notes and files already in history: a tilted frame, a Caveat transcript, a typed slip — never a fetched address", () => {
   const m = wc.rowOut(row({ role: "user", channel: "fake", text: "also see if they take dogs", media: [{ mimeType: "audio/x-caf", filename: "Audio.caf", url: "https://secret.example/a" }] }), { conversationId: KOFI_C });
   assert.match(m.html, /YOU · VOICE · IMESSAGE · /);
-  assert.match(m.html, /<p class="said hand">also see if they take dogs<\/p>/);
-  const p = wc.rowOut(row({ role: "user", channel: "fake", text: "", media: [{ mimeType: "image/jpeg", filename: "IMG.JPG", url: "https://secret.example/p" }, { mimeType: "application/pdf", filename: "lease.pdf" }] }), { conversationId: KOFI_C });
-  assert.match(p.html, /<div class="photo" role="img" aria-label="Photo you sent"><span class="lbl">PHOTO<\/span><\/div><span class="slip">LEASE\.PDF<\/span>/);
+  assert.match(m.html, /<p class="said hand">also see if they take dogs<\/p><button type="button" class="vplay" data-src="\/web\/media\/m\/\d+\/0" aria-label="Play voice note">/);
+  const p = wc.rowOut(row({ role: "user", channel: "fake", text: "", media: [{ mimeType: "image/jpeg", filename: "IMG.JPG" }, { mimeType: "application/pdf", filename: "lease.pdf" }] }), { conversationId: KOFI_C });
+  assert.match(p.html, /<div class="photo" role="img" aria-label="Photo you sent"><span class="lbl">PHOTO<\/span><\/div><span class="slip">LEASE\.PDF<\/span>/, "an item with no address to serve is still drawn");
+  const q = wc.rowOut(row({ role: "user", channel: "fake", text: "", media: [{ kind: "image", filename: "IMG.HEIC", url: "https://secret.example/p" }] }), { conversationId: KOFI_C });
+  assert.match(q.html, /<a class="photo" href="\/web\/media\/m\/\d+\/0" target="_blank" rel="noopener"><img src="\/web\/media\/m\/\d+\/0" alt="Photo you sent"/, "a texted photo is served from Web's own address");
+  assert.ok(!JSON.stringify(q).includes("secret.example"), "a media address never leaves the server");
   assert.ok(!JSON.stringify(p).includes("secret.example"), "a media address never leaves the server");
   assert.match(allScreens().thread, /\.photo\{[^}]*transform:rotate\(2deg\)/);
 });
@@ -325,9 +331,9 @@ test("the thread page: a log, ↑ SHOW EARLIER, 'on it.' as a status, the one-li
   assert.match(s, /<button class="send" type="submit" aria-label="Send">/);
   assert.match(s, /\.cform input:placeholder-shown~\.send\{display:none\}/, "send appears only with text");
   assert.match(s, /<p class="under">Replies come here, not to your phone as well\.<\/p>/);
-  // Owner 10-26: no "+" (attach) and no mic (voice) until they work — not drawn at all, not disabled, no held gap.
-  assert.ok(!/aria-label="Add a photo or file"|aria-label="Speak instead"|type="file"|class="slot|class="(?:attach|mic)/i.test(s), "no + or mic, no room held for them");
-  assert.match(s, /<form class="cform" method="POST" action="\/web\/send"><input type="hidden" name="c" value="[^"]*"><input type="hidden" name="id" value="[^"]*"><label class="sr" for="c-input">Message Reason<\/label><input id="c-input"[^>]*><button class="send" type="submit" aria-label="Send">[^]*?<\/button><\/form>/, "the form is the input and send, nothing else");
+  // Owner 10-26: + and the mic, built, shown once the script can run them (test/web-compose.test.js).
+  assert.match(s, /aria-label="Add a photo or file" hidden>[^]*aria-label="Speak instead" hidden>/);
+  assert.match(s, /<form class="cform" method="POST" action="\/web\/send"><input type="hidden" name="c" value="[^"]*"><input type="hidden" name="id" value="[^"]*"><button class="ic c-add" type="button" aria-label="Add a photo or file" hidden>[^]*?<\/button><input class="c-file" type="file"[^>]*hidden[^>]*><label class="sr" for="c-input">Message Reason<\/label><input id="c-input"[^>]*><button class="ic c-mic" type="button" aria-label="Speak instead" hidden>[^]*?<\/button><button class="send" type="submit" aria-label="Send">[^]*?<\/button><\/form>/, "+ · the input · the mic · send (composer 01)");
   assert.match(s, /<nav class="tabs" aria-label="Sections"><a href="\/web\?thread" aria-current="page">Chat<\/a><a href="\/web\?tab=ongoing">Ongoing<\/a><\/nav>/);
   assert.match(s, /<nav aria-label="Account"><a class="act2" href="\/web\/memory">MEMORY<\/a><a class="act2" href="\/web\/settings">SETTINGS<\/a><\/nav>/);
   assert.match(s, /<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">/);
@@ -337,8 +343,8 @@ test("the thread page: a log, ↑ SHOW EARLIER, 'on it.' as a status, the one-li
 
 test("delivery states in the page's script: SENDING…, SENT that fades, WAITING TO SEND offline, a retry button that reuses the id", () => {
   const s = allScreens().thread;
-  for (const t of ["SENDING\\u2026", "'SENT'", "WAITING TO SEND", "didn't go. tap to try again.", "IT WON'T SEND TWICE", "you're offline. i'll send it when you're back.", "lost the line for a sec. nothing's lost."]) assert.ok(s.includes(t), t);
-  assert.match(s, /b\.className='retry';[^]*?b\.onclick=function\(\)\{send\(\{id:li\.dataset\.pending,/, "a retry is the same id: the server's claim makes it one turn");
+  for (const t of ["SENDING\\u2026", "'SENT \\u00b7 '+fmt(m.at)", "WAITING TO SEND", "didn't go. tap to try again.", "IT WON'T SEND TWICE", "you're offline. i'll send it when you're back.", "lost the line for a sec. nothing's lost."]) assert.ok(s.includes(t), t);
+  assert.match(s, /b\.className='retry';[^]*?b\.onclick=function\(\)\{if\(li\.retry\)return li\.retry\(\);send\(stored\(li\),li\)\}/, "a retry is the same id: the server's claim makes it one turn");
   assert.match(s, /<p class="netline" role="status" hidden><\/p>/);
   assert.match(s, /Still working on it\.<br><em>Sign back in to see\.<\/em>/, "9D when the session ends mid-task");
 });

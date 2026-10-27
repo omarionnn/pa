@@ -24,7 +24,7 @@ import { systemFor } from "../agent.js";
 import * as accounts from "../accounts.js";
 import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold, outboxMark, ownerTextsSince } from "../db.js";
 import { undeliveredNotice } from "../outbox.js";
-import { imagesFor } from "../media.js";
+import { imagesFor, pdfsFor } from "../media.js";
 import { startCapture, recordLooked, captureViaCli } from "../looked.js";
 import * as reviewed from "../reviewed.js";
 import { capabilitiesNow } from "../tools.js";
@@ -99,7 +99,7 @@ async function runTurnOnCli({
   keep = null,
   // Injectable so the whole turn is testable with no CLI, no network and no port: what the model
   // is handed, what the history keeps and what the record says are all decided in this function.
-  run = runClaudeCli, images = imagesFor, startMcp = startMcpHttp,
+  run = runClaudeCli, images = imagesFor, pdfs = pdfsFor, startMcp = startMcpHttp,
   // The quiet pass that writes each photo down (src/looked.js). Injectable so a test can state
   // what it noted, or that it failed, without a second CLI.
   capture = captureViaCli,
@@ -137,6 +137,11 @@ async function runTurnOnCli({
   // Started now, alongside the turn, and awaited only once the reply is in hand — what each photo
   // shows and every word in it, so the next turn can answer a form it can no longer see.
   const captured = startCapture({ blocks, viewedMediaIds, attachments, capture, log });
+  // A PDF — a receipt, a ticket, a lease — read on this machine and handed over as text, the same
+  // call the API path makes (src/agent.js). Until 10-26 this backend, the live one, never read one.
+  const pdfResult = await pdfs(attachments, { log, cover: reviewed.cover });
+  notes.push(...pdfResult.notes);
+  seen.push(...pdfResult.seen);
   const said = [`${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
   // The history says the looking has already happened, so a later turn does not offer to go back
   // and check a picture that is out of reach by then. The model's own copy of this turn says where
