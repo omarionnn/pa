@@ -399,7 +399,18 @@ function sendCode({ conversationId, runtime, log }) {
  * request: who this browser is (`sessionAccount`), never what the client claims.
  */
 export async function webRequest(args) {
+  // The open tab's small background check (src/pages/webnotify.js): answered before anything that
+  // would count it as using the session.
+  if (args?.sub === "signal") {
+    const { signalRequest } = await import("./webnotify.js");
+    return await signalRequest({ method: args.method, headers: args.headers, idleMs: WEB_IDLE_MS, securityHeaders: SECURITY_HEADERS });
+  }
   return themedForAccount(await routeWeb(args), args?.headers);
+}
+
+/** A signed-in Web page drawn somewhere else (an Ongoing detail): told its person's theme and form secret, like every other. */
+export function webSignedIn(out, headers) {
+  return themedForAccount(out, headers);
 }
 
 /**

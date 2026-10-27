@@ -119,7 +119,7 @@ test("+ and the mic are on every composer, hidden until the page's script can ma
   for (const [name, html] of Object.entries(allScreens())) {
     if (!html.includes('class="cform"')) continue;
     composers++;
-    assert.match(html, /<button class="ic c-add" type="button" aria-label="Add a photo or file" hidden>/, `${name}: + is drawn hidden`);
+    assert.match(html, /<button class="ic c-add" type="button" aria-label="Add a photo or file" aria-haspopup="dialog" aria-expanded="false" hidden>/, `${name}: + is drawn hidden`);
     assert.match(html, /<button class="ic c-mic" type="button" aria-label="Speak instead" hidden>/, `${name}: the mic is drawn hidden`);
   }
   assert.ok(composers >= 3, "home, home in hand and the thread all carry the composer");
@@ -157,7 +157,11 @@ test("the theme switch is Paper · Night · Auto as a real radio group, hidden u
   for (const [name, html] of Object.entries(allScreens())) assert.equal(names(html).size, (html.match(/class="themes"/g) || []).length, `${name}: one group per switch`);
   // The choice is the one every Reason page reads.
   assert.match(allScreens().signin, /localStorage\.getItem\('reason-theme'\)/);
-  for (const [name, html] of Object.entries(allScreens())) assert.match(html, /class="themes"/, `${name} carries the switch`);
+  // v2 (staging review 6): the switch lives in Settings only — no footer switch, none in the phone menu.
+  for (const [name, html] of Object.entries(allScreens())) {
+    if (name === "settings") continue; // the pre-Settings fallback page draws its own THEME row
+    assert.doesNotMatch(html, /class="themes"|<footer class="foot">/, `${name} carries no switch`);
+  }
 });
 
 test("fonts are self-hosted: five faces at /web/fonts, nothing from Google, CSP font-src self", () => {
@@ -269,8 +273,8 @@ test("day labels, and Caveat 'Continued on Web' where the person moved to Web", 
     wc.rowOut(row({ id: 1, role: "user", channel: "fake", text: "a", at: now - day }), { conversationId: KOFI_C }),
     wc.rowOut(row({ id: 2, role: "user", channel: "web", text: "b", at: now }), { conversationId: KOFI_C }),
   ], { now });
-  assert.match(html, /<li class="day" role="separator"><p class="lbl">YESTERDAY<\/p><\/li>/);
-  assert.match(html, /<li class="day" role="separator"><p class="lbl">TODAY<\/p><\/li><li class="cont" role="separator" aria-label="Continued on Web"><span aria-hidden="true"><\/span><span class="hand">Continued on Web<\/span>/);
+  assert.match(html, /<li class="day" role="separator" data-day="[\d-]+" data-where="yesterday, on your phone"><p class="lbl">YESTERDAY<\/p><\/li>/);
+  assert.match(html, /<li class="day" role="separator" data-day="[\d-]+" data-where="today, on the web"><p class="lbl">TODAY<\/p><\/li><li class="cont" role="separator" aria-label="Continued on Web"><span aria-hidden="true"><\/span><span class="hand">Continued on Web<\/span>/);
 });
 
 test("Reason's lists become 01 02 03 in pen between dashed rules; a trailing price gets its own column", () => {
@@ -311,7 +315,7 @@ test("photos, voice notes and files already in history: a tilted frame, a Caveat
   assert.match(m.html, /YOU · VOICE · IMESSAGE · /);
   assert.match(m.html, /<p class="said hand">also see if they take dogs<\/p><button type="button" class="vplay" data-src="\/web\/media\/m\/\d+\/0" aria-label="Play voice note">/);
   const p = wc.rowOut(row({ role: "user", channel: "fake", text: "", media: [{ mimeType: "image/jpeg", filename: "IMG.JPG" }, { mimeType: "application/pdf", filename: "lease.pdf" }] }), { conversationId: KOFI_C });
-  assert.match(p.html, /<div class="photo" role="img" aria-label="Photo you sent"><span class="lbl">PHOTO<\/span><\/div><span class="slip">LEASE\.PDF<\/span>/, "an item with no address to serve is still drawn");
+  assert.match(p.html, /<div class="photo" role="img" aria-label="Photo you sent"><span class="lbl">PHOTO<\/span><\/div><span class="slip fslip"><span class="fn">LEASE\.PDF<\/span><\/span>/, "an item with no address to serve is still drawn");
   const q = wc.rowOut(row({ role: "user", channel: "fake", text: "", media: [{ kind: "image", filename: "IMG.HEIC", url: "https://secret.example/p" }] }), { conversationId: KOFI_C });
   assert.match(q.html, /<a class="photo" href="\/web\/media\/m\/\d+\/0" target="_blank" rel="noopener"><img src="\/web\/media\/m\/\d+\/0" alt="Photo you sent"/, "a texted photo is served from Web's own address");
   assert.ok(!JSON.stringify(q).includes("secret.example"), "a media address never leaves the server");
@@ -328,13 +332,13 @@ test("the thread page: a log, ↑ SHOW EARLIER, 'on it.' as a status, the one-li
   assert.match(s, /<div class="onit" role="status" aria-label="Reason is working on it" hidden><span class="ring"><svg class="bub"/);
   assert.match(s, /<span class="hand">on it\.<\/span>/);
   assert.ok(!/c-dots|Reason is working on it<\/span>/.test(s), "no three dots");
-  assert.match(s, /<label class="sr" for="c-input">Message Reason<\/label><input id="c-input" type="text" name="text" maxlength="4000" placeholder="Tell Reason what you need"/);
+  assert.match(s, /<label class="sr" for="c-input">Message Reason<\/label><textarea id="c-input" name="text" rows="1" maxlength="4000" placeholder="Tell Reason what you need"/);
   assert.match(s, /<button class="send" type="submit" aria-label="Send">/);
-  assert.match(s, /\.cform input:placeholder-shown~\.send\{display:none\}/, "send appears only with text");
+  assert.match(s, /\.cform textarea:placeholder-shown~\.send\{display:none\}/, "send appears only with text");
   assert.match(s, /<p class="under">Replies come here, not to your phone as well\.<\/p>/);
   // Owner 10-26: + and the mic, built, shown once the script can run them (test/web-compose.test.js).
-  assert.match(s, /aria-label="Add a photo or file" hidden>[^]*aria-label="Speak instead" hidden>/);
-  assert.match(s, /<form class="cform" method="POST" action="\/web\/send"><input type="hidden" name="c" value="[^"]*"><input type="hidden" name="id" value="[^"]*"><button class="ic c-add" type="button" aria-label="Add a photo or file" hidden>[^]*?<\/button><input class="c-file" type="file"[^>]*hidden[^>]*><label class="sr" for="c-input">Message Reason<\/label><input id="c-input"[^>]*><button class="ic c-mic" type="button" aria-label="Speak instead" hidden>[^]*?<\/button><button class="send" type="submit" aria-label="Send">[^]*?<\/button><\/form>/, "+ · the input · the mic · send (composer 01)");
+  assert.match(s, /aria-label="Add a photo or file" aria-haspopup="dialog" aria-expanded="false" hidden>[^]*aria-label="Speak instead" hidden>/);
+  assert.match(s, /<form class="cform" method="POST" action="\/web\/send"><input type="hidden" name="c" value="[^"]*"><input type="hidden" name="id" value="[^"]*"><button class="ic c-add" type="button" aria-label="Add a photo or file" aria-haspopup="dialog" aria-expanded="false" hidden>[^]*?<\/button>(?:<input class="c-file" data-pick="(?:media|camera|file)" type="file"[^>]*hidden[^>]*>){3}<label class="sr" for="c-input">Message Reason<\/label><textarea id="c-input"[^>]*><\/textarea><button class="today" type="button" hidden>TODAY <span aria-hidden="true">↓<\/span><\/button><button class="ic c-mic" type="button" aria-label="Speak instead" hidden>[^]*?<\/button><button class="send" type="submit" aria-label="Send">[^]*?<\/button><\/form>/, "+ · the input · the mic · send (composer 01)");
   assert.match(s, /<nav class="tabs" aria-label="Sections"><a href="\/web\?thread" aria-current="page">Chat<\/a><a href="\/web\?tab=ongoing">Ongoing<\/a><a href="\/web\/saved">Saved<\/a><\/nav>/, "v2: Chat · Ongoing · Saved");
   assert.match(s, /<nav aria-label="Account"><a class="act2" href="\/web\/saved">SAVED<\/a><a class="act2" href="\/web\/memory">MEMORY<\/a><a class="act2" href="\/web\/settings">SETTINGS<\/a><\/nav>/);
   assert.match(s, /<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">/);

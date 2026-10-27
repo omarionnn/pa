@@ -33,6 +33,8 @@
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
+//   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)
+//   GET  /web/icons/{file}            Web's favicons and home-screen icon (src/pages/webnotify.js)
 //   GET  /web/saved[/<kind>/<id>], POST /web/saved/pin|remove|restore   Saved (src/pages/websaved.js; index src/saved.js)
 //   GET  /web/ongoing/{approval|task|timer|series}/{id}   one Ongoing row's detail; /web/ongoing/{hand|back} a group's See all; /web/ongoing/state (src/pages/webongoing.js)
 //   GET  /web/fonts/{serif|roman|hand|handbold|sans}.woff2  Web's own faces (src/pages/webkit.js; 404 while off)
@@ -86,7 +88,7 @@ import { isContactPath, vcard, lineNumber, liveLineNumber } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
-import { webRequest, webFont, SECURITY_HEADERS as WEB_SECURITY_HEADERS } from "./pages/websignin.js";
+import { webRequest, webFont, webSignedIn, SECURITY_HEADERS as WEB_SECURITY_HEADERS } from "./pages/websignin.js";
 import { webOn, joinNumber, siteOrigin } from "./web.js";
 import * as eventsmod from "./events.js";
 import { readFileSync } from "node:fs";
@@ -231,6 +233,13 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(301, { Location: webMoved, "Content-Length": 0, "Cache-Control": "no-store" });
         return res.end();
       }
+      // Web's own icons (src/pages/webnotify.js): the favicons, their filled "needs you" twins, the home-screen icon.
+      const webIconRoute = /^\/web\/icons\/([a-z-]+\.(?:svg|png))$/.exec(url.pathname);
+      const iconOut = webIconRoute && webOn() && (req.method === "GET" || req.method === "HEAD") ? (await import("./pages/webnotify.js")).webIcon(webIconRoute[1]) : null;
+      if (iconOut) {
+        res.writeHead(iconOut.status, iconOut.headers);
+        return res.end(req.method === "HEAD" ? "" : iconOut.body);
+      }
       const webFontRoute = /^\/web\/fonts\/([a-z]+)\.woff2$/.exec(url.pathname);
       const fontOut = webFontRoute && webOn() && (req.method === "GET" || req.method === "HEAD") ? webFont(webFontRoute[1]) : null;
       if (fontOut) {
@@ -277,14 +286,14 @@ export function createServer({ router, runtime, log = () => {} }) {
       }
       // Ongoing's own pages (src/pages/webongoing.js): one row's detail, and the small state the Ongoing pages poll.
       const ongoingRoute = /^\/web\/ongoing(?:\/(state|hand|back)|\/(approval|task|timer|series)(?:\/(\d{1,12}))?)?$/.exec(url.pathname);
-      const webRoute = ongoingRoute ?? /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings))?$/.exec(url.pathname)
+      const webRoute = ongoingRoute ?? /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings|signal))?$/.exec(url.pathname)
         ?? /^\/web\/(memory\/(?:correct|forget|guess|history))$/.exec(url.pathname)
         ?? /^\/web\/(saved(?:\/(?:pin|remove|restore|(?:page|call|receipt|event|album)\/[A-Za-z0-9_-]{1,40}|page\/[A-Za-z0-9_-]{1,40}\/frame))?)$/.exec(url.pathname);
       if (webRoute && webOn()) {
         let out;
         try {
           out = ongoingRoute
-            ? await (await import("./pages/webongoing.js")).ongoingRequest({ kind: ongoingRoute[1] || ongoingRoute[2] || null, id: ongoingRoute[3] || null, method: req.method, headers: req.headers, query: Object.fromEntries(url.searchParams) })
+            ? webSignedIn(await (await import("./pages/webongoing.js")).ongoingRequest({ kind: ongoingRoute[1] || ongoingRoute[2] || null, id: ongoingRoute[3] || null, method: req.method, headers: req.headers, query: Object.fromEntries(url.searchParams) }), req.headers)
             : await webRequestFor({
               sub: webRoute[1] || null, method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers,
               remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, router, log,
@@ -520,7 +529,7 @@ export function createServer({ router, runtime, log = () => {} }) {
           log({ spotify_join: email, conversation: row.conversation_id });
           runtime.say(config.ownerConversation,
             `${who.name || "Someone"} wants to connect their Spotify. Their email is ${email}.`
-            + ` Add it in the Spotify developer dashboard under User Management, then tell me and I will send them the link.`);
+            + ` Add it in the Spotify developer dashboard under User Management, then tell me and I will send them the link.`, { toMaster: true });
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
           return res.end(spotify.joinPage({ done: true }));
         }

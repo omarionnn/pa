@@ -394,6 +394,9 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
 
 See [features/web-memory.md](features/web-memory.md) and [features/web-history.md](features/web-history.md).
 
+### Baseline — 3,952 pass, 0 failures after Reason Web v2 Settings + notifications (wt/v2-settings, 2026-10-27)
+
+v2 Settings edit states 5A–5D (four-value reach honoured by `keptOnWeb`, sign-out-everywhere confirm, invite just made + cancel from Web), L8 busy words, theme switch in Settings only, notifications 8A–8C (`/web/signal`, tab title + filled favicon, in-app line, per-browser notifications), Web icons I1. `test/web-settings-edit.test.js` (11), `test/web-notify.test.js` (13); `bin/web-settings-drive.mjs`: 29 steps, all ok. `npm run test:offline` under `env -i`: 4,075 tests, 3,952 passing; 1 load flake (`flight-search` sidecar) passes alone. See [features/web-settings.md](features/web-settings.md), [features/web-notify.md](features/web-notify.md).
 **8 — Reason Web Saved, over real HTTP.** The list (kinds, find, groups), an opened page framed from
 its own route, FIND IT IN THE CHAT into the thread, PIN / REMOVE / PUT IT BACK form posts, refusals.
 
@@ -419,7 +422,7 @@ See [features/web-edge.md](features/web-edge.md).
 
 Sign in by number at `/web`, dark behind `REASON_WEB` (W0's foundations merged as #165 the same morning: 3,867 / 3,745 / 0 / 122). Eighteen pinned tests in `test/web-signin.test.js`; `bin/web-drive.mjs` under `caged.sh env` drives form → stranger (same bytes, no text) → Kofi (code through the outbox, keyed `wsign:`) → wrong → right (303 + cookie) → reused → landing → sign-out refused without the secret / cross-site → sign-out → owner-only mode, 14/14 ok; `bin/web-preview.mjs` draws the four PNGs. Run with `env -i` and no `.env` on the W1 branch alone: 3,885 / 3,763 / 0 / 122; with #167 and #166 merged in: **3,908 tests, 3,786 passing, 0 failing, 0 cancelled, 122 skipped.** Domain move (Web at heyreason.com/web, signed Netlify proxy; events on events.heyreason.com, `test/domains.test.js`), on top of #170 + review fixes: **3,918 / 3,796 / 0 / 0 cancelled / 122** (8 pinned). See [features/web-signin.md](features/web-signin.md).
 
-Web composer (2026-10-26): `+` uploads (POST /web/upload, bytes-typed, capped, kept under data/web-uploads), drop anywhere, slips on the line, voice (tap = dictate on the line, hold = Listening; browser speech where it exists, else heard on the server by src/voice.js), and photos / voice notes / file slips in the thread from `/web/media/…` behind sign-in only. Web files go through the same router attachments as a texted photo/PDF and are read from disk by src/media.js. 15 unit + real-HTTP tests (`test/web-compose.test.js`) and 5 Chromium drives (`test/web-compose-browser.test.js`). See [features/web-compose.md](features/web-compose.md).
+Web composer (2026-10-26): `+` uploads (POST /web/upload, bytes-typed, capped, kept under data/web-uploads), drop anywhere, slips on the line, voice (tap = dictate on the line, hold = Listening; browser speech where it exists, else heard on the server by src/voice.js), and photos / voice notes / file slips in the thread from `/web/media/…` behind sign-in only. Web files go through the same router attachments as a texted photo/PDF and are read from disk by src/media.js. 15 unit + real-HTTP tests (`test/web-compose.test.js`) and 5 Chromium drives (`test/web-compose-browser.test.js`). See [features/web-compose.md](features/web-compose.md). v2 (wt/v2-compose, 10-27): + sheet, slip states + typed limits enforced by the server (photos fitted, .docx/text read), "on it." from `src/doing.js`, voice 4B/4C/4E + L9; 6 more Chromium drives in `test/web-uploads-voice.test.js`; `npm run test:offline` under `env -i`: 3,941 pass, 0 fail.
 
 ### Earlier — 3,727 pass, **0 failures** after scheduled calls (wt/timer-call, 2026-10-26)
 
@@ -634,6 +637,9 @@ All executable, all run from `.agents/skills/verify-reason/`.
 `features/README.md` and one file per user-facing feature: what it is, how a person reaches it, how
 to drive it here, and what end state proves it. That map is the maintained source — when you change
 behaviour, change its feature file in the same commit.
+
+Reason Web thread scrolling (S2 note, S3 DONE lines, TODAY ↓, L1/L2/L10, SR4): [features/web-thread.md](features/web-thread.md);
+`bin/web-thread-preview.mjs` drives and draws it beside the reference boards.
 
 Reason Web Saved (phone tab S-A/S-B, desktop list + opened page, pin/remove): [features/web-saved.md](features/web-saved.md).
 Reason Web Ongoing (tab, margin, at volume + See all 2A–2C, home rows, details 2A–2E + approval, 9D): [features/web-ongoing.md](features/web-ongoing.md);

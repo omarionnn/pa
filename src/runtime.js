@@ -2,8 +2,10 @@
 // without making it a nuisance — timers that fire, watches that re-check, and dropped threads
 // it raises again. Each pass is separately callable so its logic can be tested without a model.
 import { RECORDING_RIDES_MS } from "./config.js";
+import * as doing from "./doing.js";
 import { EventEmitter } from "node:events";
 import * as incidents from "./incidents.js";
+import * as settle from "./settle.js";
 import { runTurn as realRunTurn } from "./agent.js";
 import * as db from "./db.js";
 import { clock, config, stamp } from "./config.js";
@@ -423,6 +425,7 @@ export class Runtime extends EventEmitter {
       let { answering = null, requests: inboundRequests = null, pinTo = null, fold: drained = null, ...rest } = meta;
       meta = rest;
       const mark = db.outboxMark();
+      const turnTasks = new Set();
       // `ctx` is extra context for the TOOLS of this turn, not for the model: runTurn spreads its
       // leftovers into every tool call's ctx. One caller uses it — the digest pass, which has to
       // tell `notice_send` that this turn IS the batched line rather than an interruption.
@@ -462,6 +465,9 @@ export class Runtime extends EventEmitter {
       const turnArgs = (over = {}) => ({
         conversationId, text, kind, attachments, events: this, log: this.log,
         taskId: meta.fromTask ?? null,
+        // The tasks this turn works on (task_start / task_update / task_finish, src/tools.js runTool),
+        // so its messages can be written down as theirs once it ends (src/settle.js).
+        turnTasks,
         // Where they are speaking from, for the one case the model has to know: a web message is
         // labelled as such on its own line (src/agent.js, src/backends/claude-cli.js). A text is
         // labelled nothing, exactly as before.
@@ -479,6 +485,8 @@ export class Runtime extends EventEmitter {
       });
       let reply;
       let failed = false;
+      // What the open Web tab says under "on it." while this turn reads what it was handed (src/doing.js).
+      const doneDoing = doing.begin(conversationId, attachments);
       try {
         reply = await this._afterScreen(screened, await this.runTurn(turnArgs()), { conversationId, text, meta });
         reply = await this._takeInFolded({ fold, screened, conversationId, meta, reply, turnArgs });
@@ -507,6 +515,7 @@ export class Runtime extends EventEmitter {
         if (fold && e && typeof e === "object") e.foldedRows = onethought.foldedRows(fold);
         throw e;
       } finally {
+        doneDoing();
         onethought.end(fold);
         // A read that finished in the instant between the last check and here: never shown, so
         // back on the pile for a turn of its own rather than lost.
@@ -629,6 +638,17 @@ export class Runtime extends EventEmitter {
         // question is worse. Taken rather than left, so it cannot fire on a later turn.
         await this._fireHeldReaction(conversationId, false);
       }
+      // Which task these messages belong to (Reason Web's DONE line, src/settle.js): this turn's texts
+      // and what it sent, for every task it worked on or woke for. Written down, never guessed later.
+      try {
+        if (meta.fromTask != null) turnTasks.add(Number(meta.fromTask));
+        if (turnTasks.size) {
+          settle.linkTurn({
+            conversationId, taskIds: [...turnTasks], outboxAfter: mark,
+            handles: [...(inboundRequests ?? []).map(r => r.handle), ...(fold?.added ?? []).map(a => a.handle)],
+          });
+        }
+      } catch (e) { this.log({ settle_link_failed: (e?.message ?? String(e)).split("\n")[0] }); }
       db.dropStaleRequests(conversationId);
       return reply;
     });

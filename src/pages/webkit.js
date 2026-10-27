@@ -21,8 +21,9 @@
 // Fonts are self-hosted (assets/fonts/*-web.woff2, SIL OFL, cut to Latin) and served at
 // /web/fonts/<name>.woff2 by src/http.js, never fetched from Google; Courier New is the system's.
 import { readFileSync } from "node:fs";
-import { esc, iconLinks } from "./render.js";
+import { esc } from "./render.js";
 import { LOAD_CSS, loadJs } from "./webloading.js";
+import { webIconLinks, NOTIFY_JS, NOTIFY_CSS } from "./webnotify.js";
 
 /** The handoff's colour table (§2), exactly. `deep` = deeper ground, `lifted` = lifted paper, `hair` = hairline. */
 export const TOKENS = {
@@ -140,7 +141,8 @@ function keep(n){var c=h.getAttribute('data-c');if(!c||!h.hasAttribute('data-acc
 if(h.classList.contains('loading')){var t0=Date.now();try{sessionStorage.setItem('reason-web-loaded','1')}catch(x){}window.addEventListener('load',function(){setTimeout(function(){h.classList.add('loaded');setTimeout(function(){h.classList.remove('loading','loaded')},420)},Math.max(0,1200-(Date.now()-t0)))})}})();`;
 /**
  * Paper · Night · Auto, a real radio group. Hidden until the script can make it work (no dead controls).
- * Each copy on a page (menu, footer, Settings) is its own group, named by its id, so every copy shows its tick.
+ * Each copy on a page is its own group, named by its id, so every copy shows its tick. Settings draws
+ * its own (src/pages/websettings.js); this one is left for the pre-Settings fallback page only.
  */
 export function themeSwitch(id = "th") {
   const opt = (v, t) => `<label class="th-o"><input type="radio" name="theme-${id}" value="${v}"${v === "auto" ? " checked" : ""}><span>${t}</span></label>`;
@@ -239,10 +241,13 @@ ${LOAD_CSS}
 /**
  * A whole Web page. `head` extras (the conversation's boot data) go in the script; `css` is the
  * screen's own. `loader` marks a page that may open with the reas◯n + ing loader (once per tab, never
- * under reduced motion). `foot` is drawn under the page (the theme switch, by default).
+ * under reduced motion). `foot` is drawn under the page; nothing by default. The theme switch lives in
+ * Settings only (v2 staging review item 6), never at the foot of every page.
+ * Every page carries Web's own icons and the notify script (src/pages/webnotify.js), which only wakes
+ * on a signed-in page.
  */
-export function webPage({ title = "Reason", header = "", body = "", css = "", script = "", bodyClass = "", loader = false, foot = undefined, connect = "" }) {
-  const footer = foot === undefined ? `<footer class="foot">${themeSwitch()}</footer>` : foot;
+export function webPage({ title = "Reason", header = "", body = "", css = "", script = "", bodyClass = "", loader = false, foot = "", connect = "" }) {
+  const footer = foot;
   const skipped = skipTo(`${header}${body}`);
   return `<!doctype html>
 <html lang="en"${loader ? ` data-loader="1"` : ""}><head>
@@ -253,12 +258,12 @@ export function webPage({ title = "Reason", header = "", body = "", css = "", sc
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="${TOKENS.paper.ground}" data-auto="${TOKENS.paper.ground}" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="${TOKENS.night.ground}" data-auto="${TOKENS.night.ground}" media="(prefers-color-scheme: dark)">
-${iconLinks()}
+${webIconLinks()}
 <title>${esc(title)}</title>
 <script>${HEAD_JS}</script>
-<style>${KIT_CSS}${css}</style>
+<style>${KIT_CSS}${NOTIFY_CSS}${css}</style>
 </head><body${bodyClass ? ` class="${esc(bodyClass)}"` : ""}>${skipped.link}${loader ? `<div class="loader" role="status" aria-label="Loading"><p>reas${bubble(4)}n<span class="ing">ing</span></p></div>` : ""}
-${skipped.html}${footer}<script>${script};${THEME_JS};${LOAD_JS}</script></body></html>`;
+${skipped.html}${footer}<script>${script};${THEME_JS};${NOTIFY_JS};${LOAD_JS}</script></body></html>`;
 }
 
 const LOAD_JS = loadJs(wordmark({ href: "/web" }));

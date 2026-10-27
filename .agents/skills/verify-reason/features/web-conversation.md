@@ -61,10 +61,10 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
   motion).
 - **The greeting** (owner copy 2026-10-26): serif italic h1 "What's good, <first name>?" (first word
   of `accounts.name`), "What's good?" with no name — `greeting()` in `websignin.js`.
-- **The page** (`conversationPage` → `renderConversation`): newest `PAGE` = 40 lines server-drawn
+- **The page** (`conversationPage` → `renderConversation({ deferred: true })`; since v2 the page opens with L1 and the script fetches the newest page from `/web/history` as drawn HTML — see [web-thread.md](web-thread.md); no-script gets it in `<noscript>`): newest `PAGE` = 40 lines server-drawn
   (escaped, links only for http(s), `white-space: pre-wrap`), day separators (Today / Yesterday /
   Mon, Oct 24), a hand-lettered "Continued on Web" / "Continued in iMessage" divider where the
-  person's place changes, "Show earlier messages" (button + IntersectionObserver) or, at the very
+  person's place changes, "Show earlier messages" (a button; L2 while it loads) or, at the very
   start, "Your conversation before <day> stays in your texts." (no backfill). Source label:
   `web` → Web, `console` → Console, else SMS when the thread's `service` is SMS, otherwise iMessage.
 - **The first-visit note, once (5C)** — on the first signed-in GET `markWebNoticeSeen` flips
