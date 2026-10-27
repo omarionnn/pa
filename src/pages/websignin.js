@@ -29,7 +29,6 @@ import { webAllowedFor, webStreamOrigin } from "../web.js";
 import { requestCode, readCookie, readCookies, cookieHeader, clearCookieHeader, codeHost, boundTo, SESSION_TTL_MS, CODE_TTL_MS } from "./access.js";
 import { esc, renderNotFound, codeInputAttrs } from "./render.js";
 import { eventActor } from "./event.js";
-import { prettyNumber } from "../invites.js";
 import { qrSvg } from "./qr.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import { webPage, wordmark, label, hand, action, typed, WEB_FONTS, webFont } from "./webkit.js";
@@ -175,7 +174,6 @@ const SO_CSS = `
 .so-join{display:none;flex:1 1 340px;max-width:400px;flex-direction:column;gap:24px;padding-left:48px;border-left:1px dashed var(--hair)}
 .so-join .lbl{font-size:12px}
 .so-h2{margin:0;font:italic 400 38px/1.1 var(--serif)}
-.so-num{margin:0;font:400 18px/1.4 var(--mono);letter-spacing:.08em;overflow-wrap:anywhere}
 .qr{align-self:flex-start;background:var(--lifted);border:1px solid var(--hair);box-shadow:var(--sh);padding:14px;transform:rotate(-1.5deg);display:flex;flex-direction:column;gap:8px;align-items:center;margin:0}
 .qr svg{display:block;width:120px;height:120px}
 .qr figcaption{font:400 10px/1.3 var(--mono);letter-spacing:.12em;color:var(--muted);text-transform:uppercase}
@@ -216,10 +214,11 @@ html:not(.js) .digits .cell{display:none}
 }
 `;
 
-/** The texting line, as a person reads it. */
-const shown = (n) => prettyNumber(n);
-/** The tap that opens a text TO Reason with a hello in it — the sign-up. */
-const smsHref = (n) => `sms:${normalizeNumber(n)}?&body=${encodeURIComponent("Hi")}`;
+/**
+ * The tap that opens Messages with a text TO Reason, "Hey" already typed — the sign-up. The number
+ * itself is never written on the page (owner 10-26): the link and the QR carry it.
+ */
+export const smsHref = (n) => `sms:${normalizeNumber(n)}&body=${encodeURIComponent("Hey")}`;
 /** The QR for that tap, in the paper's own two inks. Dark on light in both themes, so a phone can read it. */
 const qr = (n, cls = "qr") => `<figure class="${cls}">${qrSvg(smsHref(n), { label: "QR code to text Reason", size: 150 }).replace('fill="#fff"', 'fill="#ede5d8"').replace('fill="#000"', 'fill="#2a2520"')}`
   + `<figcaption><span class="on-phone">On a laptop? Scan</span><span class="on-desk">Scan with your phone</span></figcaption></figure>`;
@@ -253,8 +252,9 @@ export function joinBlock(joinNumber) {
       + `<p class="so-quiet">Reason's line isn't taking new people for the moment. Nothing on your side went wrong.</p>${hand("i'll be back soon.", { tilt: true })}</section>`;
   }
   return `<section class="so-join" aria-labelledby="dj-title">${label("NEW TO REASON")}<h2 id="dj-title" class="so-h2">Your first text<br><em>is the sign-up.</em></h2>`
+    + action("Text Reason", { href: smsHref(joinNumber) })
     + qr(joinNumber)
-    + `<p class="so-num">or text <a href="${esc(smsHref(joinNumber))}">${esc(shown(joinNumber))}</a></p>${hand("then come back here to sign in.")}</section>`;
+    + `${hand("then come back here to sign in.")}</section>`;
 }
 
 const hidden = (name, value) => `<input type="hidden" name="${name}" value="${esc(value)}">`;
@@ -334,7 +334,6 @@ export function renderJoin({ joinNumber = null }) {
     + `<main class="so"><section class="so-in so-solo" aria-labelledby="so-title">`
     + `<h1 id="so-title" class="h1">Your first text<br><em>is the sign-up.</em></h1>`
     + action("Text Reason", { href: smsHref(joinNumber) })
-    + `<p class="so-num">${esc(shown(joinNumber))}</p>`
     + qr(joinNumber)
     + hand("then come back here to sign in.")
     + `</section></main>`;

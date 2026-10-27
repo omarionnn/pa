@@ -72,8 +72,9 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
   person's address only (`WebChannel.typing`, called by the router's "…" bubble for a Web turn),
   `event: signedout` when the session ends (checked every 10 s and before every push). Resumes after
   `Last-Event-ID` / `?after=`. Each response ends after `STREAM_MS` = 20 s (browser reconnects).
-  Fallback: the script polls `/web/history?after=<last>` every 4 s while a reply is awaited or the
-  stream is down, and on tab focus.
+  Stream-first (owner 10-26: replies feel instant): the server sends a named `event: ping` every
+  15 s; the script polls `/web/history?after=<last>` every 4 s only while the stream is not open or
+  has been silent > 40 s (a dead stream with no error), never alongside a live one, and on tab focus.
 - **Instant replies** (`GET /web/live`): the same stream, opened by the page on the PAGES host
   (`webStreamOrigin()`: the pages origin when it is https and under the website's domain; config
   `REASON_WEB_STREAM` = off | an https origin; default on). `/web/live` is the one /web path the pages
@@ -117,7 +118,7 @@ node .agents/skills/verify-reason/bin/web-preview.mjs   # every screen, 390/1280
   `contact_card_sent_at` sends anything, Web included (W0 behaviour; every live account has the card).
   Tests set it so the phone stays quiet.
 - **Typing is per address**, not per conversation: twin accounts on one number (decision 4) share it.
-- Deferred to W3+: the full Ongoing (groups, details, HIDE →), attachments + dictation (the composer
-  holds room for + and mic, drawn nothing), the "needs a yes →" nudge, notification
+- Deferred to W3+: the full Ongoing (groups, details, HIDE →), attachments + dictation (owner 10-26: no
+  + and no mic until they work; the input runs edge to edge), the "needs a yes →" nudge, notification
   preferences, browsers list + per-row revoke, token hashing/rotation, a CSP nonce instead of
   `'unsafe-inline'`, attachments from Web (the composer is text only).

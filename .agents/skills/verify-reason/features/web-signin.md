@@ -48,8 +48,8 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 - **Enumeration** — a known and an unknown number get byte-identical pages (only the echoed number
   differs); the join block is on every page; no account is ever created by typing a number.
 - **The join block** (owner decisions 1 + 2) — "New to Reason? A text from your phone finishes
-  joining…", an `sms:<live line>?&body=Hi` button, a QR of that same link (`qrSvg`, inline SVG,
-  level M) and the number written out via `prettyNumber`. The number is `web.joinNumber(router)` →
+  joining…", a "Text Reason →" link `sms:<live line>&body=Hey` (Messages opens with Hey typed) and a QR
+  of that same link (`qrSvg`, inline SVG, level M). The number is never written on the page (owner 10-26). The number is `web.joinNumber(router)` →
   the first LIVE channel's — never a string, never the linq adapter (registered, `not_connected` on
   live). No live line → "Reason's texting line isn't connected right now…" and no number, no QR.
 - **The session** — on a right code: `startPageSession("wsign:<conv>", token, { conversationId })`,

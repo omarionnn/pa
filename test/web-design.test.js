@@ -181,7 +181,8 @@ test("6A sign-in: the number on an underline, the Caveat note, a text action, an
   // Desktop: the join block to the right, with the real live number and a real QR.
   assert.match(s, /<section class="so-join" aria-labelledby="dj-title"><p class="lbl">NEW TO REASON<\/p><h2 id="dj-title" class="so-h2">Your first text<br><em>is the sign-up\.<\/em><\/h2>/);
   assert.match(s, /<figure class="qr"><svg[^>]*role="img" aria-label="QR code to text Reason"/);
-  assert.match(s, /or text <a href="sms:\+16562167455\?&amp;body=Hi">\+1 \(656\) 216-7455<\/a>/);
+  assert.match(s, /<\/h2><a class="act" href="sms:\+16562167455&amp;body=Hey">Text Reason <span aria-hidden="true">→<\/span><\/a><figure class="qr">/);
+  assert.doesNotMatch(s.replace(/href="sms:[^"]*"/g, ""), /656|216-?7455|so-num/, "the number is never written on the page");
   assert.match(s, /then come back here to sign in\./);
   assert.ok(!s.includes("you&#39;ve been signed out"));
 });
@@ -230,7 +231,8 @@ test("code errors: wrong, expired, too many tries with a countdown, resend limit
 test("6D new to Reason: the live number, a real QR, Text Reason →; 6E with no live line: no number, no QR", () => {
   const { join: j, notConnected } = allScreens();
   assert.match(j, /<a class="act2" href="\/web">← SIGN IN<\/a>/);
-  assert.match(j, /<h1 id="so-title" class="h1">Your first text<br><em>is the sign-up\.<\/em><\/h1><a class="act" href="sms:\+16562167455\?&amp;body=Hi">Text Reason <span aria-hidden="true">→<\/span><\/a><p class="so-num">\+1 \(656\) 216-7455<\/p><figure class="qr">/);
+  assert.match(j, /<h1 id="so-title" class="h1">Your first text<br><em>is the sign-up\.<\/em><\/h1><a class="act" href="sms:\+16562167455&amp;body=Hey">Text Reason <span aria-hidden="true">→<\/span><\/a><figure class="qr">/);
+  assert.doesNotMatch(j.replace(/href="sms:[^"]*"/g, ""), /656|216-?7455|so-num/, "the number is never written on the page");
   assert.match(j, /On a laptop\? Scan/);
   assert.match(notConnected, /We can't finish joining right now\.<\/h1><p class="so-sub">Reason's line isn't taking new people for the moment\. Nothing on your side went wrong\.<\/p><p class="hand tilt">i&#39;ll be back soon\.<\/p><a class="act2" href="\/web">ALREADY A MEMBER\? SIGN IN →<\/a>/);
   assert.ok(!/sms:|<figure class="qr"|\d{3}\) \d{3}-\d{4}/.test(notConnected));
