@@ -256,7 +256,8 @@ function dayRow(d, now, first) {
  * pending design (SCOPE-v2 Q-v2-51).
  */
 function chatRow(c, now) {
-  const first = String(c.first ?? "").replace(/\s+/g, " ").trim();
+  // Its own short title once it has one (src/webchats.js), else what they opened it with.
+  const first = String(c.title || c.first || "").replace(/\s+/g, " ").trim();
   const title = first ? (first.length > 48 ? `${first.slice(0, 47).trimEnd()}…` : first) : "A Web chat";
   return `<li><a class="dy" href="/web?chat=${esc(c.id)}"><span class="dy-d">${esc(title)}</span>`
     + `<span class="dy-go" aria-hidden="true">→</span><span class="dy-m">WEB CHAT · ${esc(dayName(dayKey(c.last_at), now).toUpperCase())} · ${plural(c.count, "MESSAGE", "MESSAGES")}</span></a></li>`;

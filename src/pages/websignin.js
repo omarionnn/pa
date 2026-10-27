@@ -453,6 +453,22 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     return convo.streamRequest({ account, headers, query, router, log });
   }
 
+  // ---- Recent Web chats (src/webchats.js), for Home's composer. Signed in, same origin, and the session's own secret in x-reason-csrf. ----
+  if (sub === "chats/recent") {
+    const out = (status, obj) => {
+      const body = JSON.stringify(obj);
+      return { status, headers: { "Content-Type": "application/json; charset=utf-8", ...SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) }, body };
+    };
+    if (!account) return out(401, { ok: false, error: "signed_out" });
+    if (method !== "GET" && method !== "HEAD") { const r = out(405, { ok: false, error: "method" }); r.headers.Allow = "GET, HEAD"; return r; }
+    if (!sameOrigin(headers) || !same(headers["x-reason-csrf"], db.pageSessionCsrf(readCookie(headers.cookie)))) {
+      log({ web_chats_refused: "origin_or_token" });
+      return out(403, { ok: false, error: "not_from_this_page" });
+    }
+    const { recentChats } = await import("../webchats.js");
+    return out(200, { chats: recentChats(account.conversation_id) });
+  }
+
   // ---- Memory (src/pages/webmemory.js): the list, correct / forget / a guess answered, and chat history (webhistory.js). Signed in only. ----
   if (sub === "memory" || /^memory\/(correct|forget|guess|history)$/.test(sub ?? "")) {
     if (!account) {

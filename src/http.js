@@ -32,6 +32,7 @@
 //   POST /web/upload, GET /web/media/…   a photo, PDF or voice note in; files back, signed in only (src/webmedia.js)
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
+//   GET  /web/chats/recent            the latest Web chats, for Home's composer (src/webchats.js; header x-reason-csrf)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
 //   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)
 //   GET  /web/icons/{file}            Web's favicons and home-screen icon (src/pages/webnotify.js)
@@ -90,6 +91,8 @@ import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
 import { webRequest, webFont, webSignedIn, SECURITY_HEADERS as WEB_SECURITY_HEADERS } from "./pages/websignin.js";
+// Web chats' titles are written as their first reply lands (src/webchats.js installs that listener on import).
+import "./webchats.js";
 import { webOn, joinNumber, siteOrigin } from "./web.js";
 import * as eventsmod from "./events.js";
 import { readFileSync } from "node:fs";
@@ -289,6 +292,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       const ongoingRoute = /^\/web\/ongoing(?:\/(state|hand|back)|\/(approval|task|timer|series)(?:\/(\d{1,12}))?)?$/.exec(url.pathname);
       const webRoute = ongoingRoute ?? /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings|signal))?$/.exec(url.pathname)
         ?? /^\/web\/(memory\/(?:correct|forget|guess|history))$/.exec(url.pathname)
+        ?? /^\/web\/(chats\/recent)$/.exec(url.pathname)
         ?? /^\/web\/(saved(?:\/(?:pin|remove|restore|(?:page|call|receipt|event|album)\/[A-Za-z0-9_-]{1,40}|page\/[A-Za-z0-9_-]{1,40}\/frame))?)$/.exec(url.pathname);
       if (webRoute && webOn()) {
         let out;
