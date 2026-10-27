@@ -21,6 +21,7 @@
 //   GET  /e/{id}/cover-preview.jpg?k= the organizer's look at a cover still waiting on them
 //   GET  /e/{id}/album[/manage]       the event's private photo album (src/pages/album.js); role read per request
 //   GET  /e/{id}/album/photo/{n}      one photo's bytes; /album/download the whole album as a ZIP
+//   GET  /s/{shareId}[/og.png]        a shared stamp (12 base62, src/pages/webstamps.js); no such share → the sign-in link below
 //   GET  /s/{token}                   a sign-in link: Reason's own browser, shown to one person
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
 //   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
@@ -36,6 +37,7 @@
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET  /web/chats/recent            the latest Web chats, for Home's composer (src/webchats.js; header x-reason-csrf)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
+//   GET  /web/stamps, POST /web/api/stamps/{id}/share[/revoke], GET …/{id}/image.png   Stamps (src/pages/webstamps.js; REASON_WEB_DAILY)
 //   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)
 //   GET  /web/icons/{file}            Web's favicons and home-screen icon (src/pages/webnotify.js)
 //   GET  /web/saved[/<kind>/<id>], POST /web/saved/pin|remove|restore   Saved (src/pages/websaved.js; index src/saved.js)
@@ -100,11 +102,15 @@ import * as eventsmod from "./events.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
+// Stamps (REASON_WEB_DAILY): awarded as errands finish (src/stamps.js listens on db.completionBus once loaded).
+import * as stamps from "./stamps.js";
 import { config, stamp, clock } from "./config.js";
 
 const MAX_BODY = 1_000_000;
 
 export function createServer({ router, runtime, log = () => {} }) {
+  // A new stamp is mentioned in the thread through the runtime's own send, and only while REASON_WEB_DAILY is on.
+  stamps.installStamps({ tell: typeof runtime?._tell === "function" ? (c, text, meta) => runtime._tell(c, text, meta) : null, log });
   return nodeCreateServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
     const send = (status, body) => {
@@ -296,6 +302,7 @@ export function createServer({ router, runtime, log = () => {} }) {
         ?? /^\/web\/(memory\/(?:correct|forget|guess|history))$/.exec(url.pathname)
         ?? /^\/web\/(chats\/recent)$/.exec(url.pathname)
         ?? /^\/web\/(send\/cancel)$/.exec(url.pathname)
+        ?? /^\/web\/(stamps|api\/stamps\/\d{1,12}\/(?:share(?:\/revoke)?|image\.png))$/.exec(url.pathname)
         ?? /^\/web\/(saved(?:\/(?:pin|remove|restore|(?:page|call|receipt|event|album)\/[A-Za-z0-9_-]{1,40}|page\/[A-Za-z0-9_-]{1,40}\/frame))?)$/.exec(url.pathname);
       if (webRoute && webOn()) {
         let out;
@@ -402,6 +409,18 @@ export function createServer({ router, runtime, log = () => {} }) {
       // A private link showing the person Reason's own browser, so they sign in to a site
       // themselves. Nothing about these requests is logged beyond the fact that one happened: the
       // body of /type is what somebody typed into a sign-in page.
+      // A shared stamp first (src/pages/webstamps.js): 12 base62, never the 32–64 of a sign-in token. A
+      // path of that shape with no share behind it falls through to the sign-in link, unchanged. Signed
+      // by the website's proxy or not, it answers the same: nothing here depends on who is asking.
+      const stampShare = /^\/s\/([0-9A-Za-z]{12})(?:\/(og\.png))?$/.exec(url.pathname);
+      if (stampShare) {
+        const { shareRequest } = await import("./pages/webstamps.js");
+        const out = await shareRequest({ shareId: stampShare[1], sub: stampShare[2] ?? null, method: req.method, log });
+        if (out) {
+          res.writeHead(out.status, out.headers);
+          return res.end(req.method === "HEAD" ? "" : out.body);
+        }
+      }
       if (url.pathname.startsWith(`${SIGNIN_PATH}/`)) {
         const m = /^\/s\/([A-Za-z0-9_-]{32,64})(?:\/([a-z]+))?$/.exec(url.pathname);
         if (!m) return send(404, { error: "not found" });
@@ -968,10 +987,12 @@ export async function webAccessRequest({ rawBody, headers, router, log = () => {
   }
 
   if (Buffer.byteLength(rawBody) > WEB_ACCESS_MAX_BODY) return { status: 413, body: { error: "body too large" } };
-  let phone;
-  try { phone = JSON.parse(rawBody)?.phone; } catch { phone = undefined; }
+  let phone, ref;
+  try { ({ phone, ref } = JSON.parse(rawBody) ?? {}); } catch { phone = undefined; }
 
   const out = await router.webAccess({ address: phone });
+  // A join that came from a shared stamp's "Get your own Reason" (`ref=s_<shareId>`), when the form passes it on.
+  if (out.ok && ref) { try { stamps.noteShareSignup(ref, { log }); } catch { /* never costs a join */ } }
   if (out.ok) return { status: 200, body: { ok: true } };
   if (out.reason === "bad_number") return { status: 400, body: { ok: false, error: "bad_number" } };
   if (out.reason === "full_today") return { status: 429, body: { ok: false, error: "full_today" } };

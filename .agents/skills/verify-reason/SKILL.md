@@ -396,6 +396,10 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
 
 See [features/web-memory.md](features/web-memory.md) and [features/web-history.md](features/web-history.md).
 
+### Baseline — 4,175 pass, 0 failures after Stamps (wt/stamps, 2026-10-27)
+
+`npm run test:offline` under `env -i`: 4,297 tests, 4,175 passing, 0 failing, 122 skipped. New: `test/stamps.test.js` (12), `test/stamps-web.test.js` (12); `bin/web-stamps-drive.mjs`: 11 steps, all ok. See [features/web-stamps.md](features/web-stamps.md).
+
 ### Baseline — 4,151 pass, 0 failures on main after #217 (00f3300, 2026-10-27)
 
 `npm run test:offline` under `env -i`: 4,273 tests, 4,151 passing, 122 skipped, 0 failing, ~65s.
@@ -658,6 +662,7 @@ focus F1): [features/web-edge.md](features/web-edge.md); driven in Chromium by `
 Reason Web §4h plumbing (while you were out, take it back, working line counts): [features/web-small-details-plumbing.md](features/web-small-details-plumbing.md); `test/web-4h-plumbing.test.js`.
 Reason Web §4h small details (pen writes in, stamp lands, paper grain, late night): [features/web-motion.md](features/web-motion.md);
 driven in Chromium by `test/web-4h-motion-browser.test.js`.
+Reason Web Stamps + shared stamps (`REASON_WEB_DAILY`; awarding at real completions, the book, share/revoke, `/s/<id>` + og card, redaction): [features/web-stamps.md](features/web-stamps.md); `bin/web-stamps-drive.mjs` drives and draws it beside `reference/stamps.html`.
 Reason Web shell (wordmark text + nowrap, logo → `/web?home`, link cards for `/web`, `/privacy`, `/terms`): [features/web-shell.md](features/web-shell.md).
 Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start the cage with `REASON_PAGES_V2=1`): [features/pages-v2.md](features/pages-v2.md); `scripts/pages-v2-preview.mjs` + `scripts/pages-v2-compare.mjs`. Print (§4h-8, `src/pages/print.js`): same file, "Print"; `pages-v2-preview.mjs <dir> --print`.
 

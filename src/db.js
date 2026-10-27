@@ -3596,6 +3596,7 @@ export function finishTask(conversationId, id, { state, outcome, result = null }
   logTask(id, "state", `${state}: ${outcome}`);
   db.prepare("UPDATE tasks SET state = ?, outcome = ?, next_wake_at = NULL, finished_at = ?, updated_at = ?, result_json = ? WHERE id = ?")
     .run(state, String(outcome).slice(0, 600), clock.now(), clock.now(), result ? JSON.stringify(result) : null, id);
+  if (state === "done") emitCompletion("task", { conversationId, id });
   return { ok: true, task: getTask(conversationId, id) };
 }
 
@@ -4923,6 +4924,7 @@ export function updateCall(conversationId, id, fields) {
     sets.push("ended_at = ?"); args.push(clock.now());
   }
   db.prepare(`UPDATE calls SET ${sets.join(", ")} WHERE id = ? AND conversation_id = ?`).run(...args, id, conversationId);
+  if (fields.outcome_kind) emitCompletion("call", { conversationId, id });
   return getCall(conversationId, id);
 }
 
@@ -7466,6 +7468,7 @@ export function markAgentcardPurchase(buyConversationId, patch = {}) {
   sets.push("updated_at = ?");
   vals.push(clock.now(), buyConversationId);
   db.prepare(`UPDATE agentcard_purchases SET ${sets.join(", ")} WHERE buy_conversation_id = ?`).run(...vals);
+  if (patch.status === "placed" || patch.ticketingState === "issued") emitCompletion("purchase", { buyConversationId });
   return getAgentcardPurchase(buyConversationId);
 }
 
@@ -10095,6 +10098,18 @@ export function listWebChats(conversationId) {
 /** New history rows, as `row` events `{ conversationId, id }`. In-process: the SSE route listens, per conversation. */
 export const historyBus = new EventEmitter();
 historyBus.setMaxListeners(0);
+
+/**
+ * Errands finishing, as events (2026-10-27, src/stamps.js): `task` { conversationId, id } when a task
+ * is closed done, `call` { conversationId, id } when a call's outcome is written, `purchase`
+ * { buyConversationId } when an order is placed or a ticket issued. Told after the write, and a
+ * listener's failure never costs the write. Nobody listens unless src/stamps.js is loaded.
+ */
+export const completionBus = new EventEmitter();
+completionBus.setMaxListeners(0);
+function emitCompletion(kind, info) {
+  try { completionBus.emit(kind, info); } catch { /* a listener never costs a write */ }
+}
 
 /**
  * One page of older history: the `limit` rows just before row `before` (by time, then id), oldest
