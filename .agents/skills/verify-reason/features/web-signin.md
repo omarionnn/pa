@@ -61,6 +61,10 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   the row is deleted and the cookie opens nothing anywhere. `sessionAccount` also requires
   `accounts.admit` (paused/removed → signed out) and `webAllowedFor` (back to `owner` → everybody
   else signed out, shown the sign-in page, not a 404).
+- **Where sign-in lands** (owner, 10-27) — the right code redirects to **`/web?home`**, and `?home` is
+  always the arrival: it skips the 30-minute rule (`THREAD_RECENT_MS`) that makes plain `/web` open the
+  thread for someone mid-conversation. 5C still comes first, once; its "Got it" goes to `/web?home`
+  too. `web-drive.mjs` checks the Location and a Web message 5 minutes old.
 - **CSRF + origin** — every `/web/*` POST must come from one of Reason's hosts (`Origin` must be the
   request host, `REASON_SITE_URL`, `REASON_PAGES_URL` or `REASON_PUBLIC_URL`; `Sec-Fetch-Site`
   `cross-site` refused; no `Origin` allowed through). Before sign-in: a form token in cookie

@@ -637,3 +637,33 @@ test("the copy coaches no phrase: intent words only; the sms: body and the three
   assert.ok(html.includes(`href="sms:${LINE}&amp;body=hey"`), "the sms: body is the only prefilled text");
   for (const m of html.matchAll(/href="(sms:[^"]*)"/g)) assert.equal(m[1], `sms:${LINE}&amp;body=hey`, "every sms: link prefills only the hello");
 });
+
+// ---------- where sign-in lands (owner, 10-27) ----------
+
+test("signing in always lands on Home — even with a Web message sent 5 minutes ago — and plain /web mid-conversation still opens the thread", async () => {
+  const h = harness();
+  // Kofi was signed in on another browser and sent something on Web 5 minutes ago.
+  const first = await signedIn(h);
+  await firstVisit(h, first.jar);
+  db.writeMessage({ conversationId: KOFI_C, role: "user", channel: "web", externalId: `${KOFI_C}:cid-recent-abcdefgh`, text: "find me a quiet dinner spot", at: clock.now() - 5 * 60_000 });
+  const HOME = /What(&#39;|')s good, Kofi\?/;
+  assert.doesNotMatch((await req(h, { cookie: first.jar })).body, HOME, "re-opening /web mid-conversation is the thread");
+  // A fresh sign-in: the redirect is Home, and Home is what it draws.
+  const again = await signedIn(h);
+  assert.equal(again.out.headers.Location, "/web?home");
+  const landed = await req(h, { query: { home: "" }, cookie: again.jar });
+  assert.equal(landed.status, 200);
+  assert.match(landed.body, HOME, "the arrival, not the thread");
+  assert.ok(!landed.body.includes("find me a quiet dinner spot"), "no thread on the arrival");
+});
+
+test("5C still comes first, once, after the first sign-in — and its Got it goes to Home", async () => {
+  const h = harness();
+  const s = await signedIn(h);
+  assert.equal(s.out.headers.Location, "/web?home");
+  db.writeMessage({ conversationId: KOFI_C, role: "user", channel: "web", externalId: `${KOFI_C}:cid-recent-ijklmnop`, text: "hi", at: clock.now() - 60_000 });
+  const note = await req(h, { query: { home: "" }, cookie: s.jar });
+  assert.match(note.body, /One Reason\.<br><em>Pick up anywhere\.<\/em>/);
+  assert.match(note.body, /href="\/web\?home"/);
+  assert.match((await req(h, { query: { home: "" }, cookie: s.jar })).body, /What(&#39;|')s good, Kofi\?/);
+});

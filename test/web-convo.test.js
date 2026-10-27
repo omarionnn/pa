@@ -250,7 +250,7 @@ test("the history boundary note shows on the first Web visit only, never as a re
   const first = (await call(h, { b: kofi })).body;
   assert.match(first, FIRST);
   assert.match(first, /This is the same Reason you text\. What you send here stays here; it won&#39;t show up in your iMessage thread\./);
-  assert.match(first, /<a class="act" href="\/web">Got it <span aria-hidden="true">→<\/span><\/a>/);
+  assert.match(first, /<a class="act" href="\/web\?home">Got it <span aria-hidden="true">→<\/span><\/a>/);
   const second = (await call(h, { b: kofi })).body;
   assert.ok(!FIRST.test(second), "not again");
   assert.match(second, /class="greet"/, "the arrival instead");
