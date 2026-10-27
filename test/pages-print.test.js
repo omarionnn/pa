@@ -130,6 +130,7 @@ test("Reason Web pages print Paper on white with no grain", () => {
 });
 
 test("live routes: the owner's designed page and the event page print their canonical, keyless address", async () => {
+  const was = { pagesV2: config.pagesV2, events: config.events };
   config.pagesV2 = true;
   config.events = true;
   try {
@@ -146,6 +147,6 @@ test("live routes: the owner's designed page and the event page print their cano
     assert.equal(r.status, 200);
     printsWell(r.body, printableUrl(events.eventUrl(ev)), "event page");
   } finally {
-    config.pagesV2 = false;
+    Object.assign(config, was);
   }
 });
