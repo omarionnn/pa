@@ -7,7 +7,7 @@
 //   - the four voices (§1.4): your words in Instrument Serif italic, Reason's in Inter, labels and
 //     facts in typed Courier capitals, and the margin voice in Caveat, always in pen colour
 //   - the wordmark: "reas◯n" with the o drawn as a speech bubble in pen colour, skewed −10°. Pen is
-//     #b03030 / #e8765c, the same pen as every other page (src/pages/brand.js).
+//     #9c3b2e / #d46a5c, the same pen as every other page (src/pages/brand.js).
 //   - dashed hairline rules, hard-offset shadows with no blur, nearly square corners, stamps
 //   - text actions: never a box around a control (§1.2); a primary action is serif italic with →
 //   - motion: new lines rise 6px and fade in over 0.3s; reduced motion means none at all (§2 Motion)
@@ -26,8 +26,8 @@ import { LOAD_CSS, loadJs } from "./webloading.js";
 
 /** The handoff's colour table (§2), exactly. `deep` = deeper ground, `lifted` = lifted paper, `hair` = hairline. */
 export const TOKENS = {
-  paper: { ground: "#f2ebe0", deep: "#ede5d8", lifted: "#faf6ee", ink: "#2a2520", muted: "#78705f", hair: "#d4c9b5", pen: "#b03030", photo: "#e3d9c8", hover: "#000", shadow: "rgba(0,0,0,0.05)", shadowBig: "rgba(0,0,0,0.06)", shadowPhoto: "rgba(0,0,0,0.08)" },
-  night: { ground: "#1c1814", deep: "#151210", lifted: "#27211b", ink: "#efe6d6", muted: "#a89d88", hair: "#3e362c", pen: "#e8765c", photo: "#332b23", hover: "#fff", shadow: "rgba(0,0,0,0.35)", shadowBig: "rgba(0,0,0,0.35)", shadowPhoto: "rgba(0,0,0,0.35)" },
+  paper: { ground: "#f2ebe0", deep: "#ede5d8", lifted: "#faf6ee", ink: "#2a2520", muted: "#78705f", hair: "#d4c9b5", pen: "#9c3b2e", photo: "#e3d9c8", hover: "#000", shadow: "rgba(0,0,0,0.05)", shadowBig: "rgba(0,0,0,0.06)", shadowPhoto: "rgba(0,0,0,0.08)" },
+  night: { ground: "#1c1814", deep: "#151210", lifted: "#27211b", ink: "#efe6d6", muted: "#a89d88", hair: "#3e362c", pen: "#d46a5c", photo: "#332b23", hover: "#fff", shadow: "rgba(0,0,0,0.35)", shadowBig: "rgba(0,0,0,0.35)", shadowPhoto: "rgba(0,0,0,0.35)" },
 };
 
 // ---------------------------------------------------------------- fonts
