@@ -21,7 +21,7 @@ const SERIF = font("instrument-serif-italic-latin.woff2");
 const HAND = font("caveat-latin.woff2");
 
 /** Bump when the drawing changes, so every cached card is drawn again. */
-export const INVITE_CARD_VERSION = 4; // 3: pen colour brick red (10-26); 4: assets/og.png fallback redrawn red, so a phone that kept the blue one under a v3 address fetches again
+export const INVITE_CARD_VERSION = 5; // 3: pen colour brick red (10-26); 4: assets/og.png fallback redrawn red, so a phone that kept the blue one under a v3 address fetches again; 5: pen #9c3b2e / #d46a5c (10-26)
 
 export function inviteCardHtml(name) {
   const who = String(name || "A friend");

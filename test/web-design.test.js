@@ -95,10 +95,10 @@ function allScreens() {
 test("tokens are the handoff's table, hex for hex, and Night/Auto switch the same names", () => {
   assert.deepEqual(
     Object.fromEntries(Object.entries(kit.TOKENS.paper).filter(([k]) => !/shadow|hover/.test(k))),
-    { ground: "#f2ebe0", deep: "#ede5d8", lifted: "#faf6ee", ink: "#2a2520", muted: "#78705f", hair: "#d4c9b5", pen: "#b03030", photo: "#e3d9c8" });
+    { ground: "#f2ebe0", deep: "#ede5d8", lifted: "#faf6ee", ink: "#2a2520", muted: "#78705f", hair: "#d4c9b5", pen: "#9c3b2e", photo: "#e3d9c8" });
   assert.deepEqual(
     Object.fromEntries(Object.entries(kit.TOKENS.night).filter(([k]) => !/shadow|hover/.test(k))),
-    { ground: "#1c1814", deep: "#151210", lifted: "#27211b", ink: "#efe6d6", muted: "#a89d88", hair: "#3e362c", pen: "#e8765c", photo: "#332b23" });
+    { ground: "#1c1814", deep: "#151210", lifted: "#27211b", ink: "#efe6d6", muted: "#a89d88", hair: "#3e362c", pen: "#d46a5c", photo: "#332b23" });
   const css = kit.KIT_CSS;
   assert.match(css, /:root\{--ground:#f2ebe0;/);
   assert.match(css, /:root\[data-theme=dark\]\{--ground:#1c1814;/, "Night when chosen");
@@ -542,6 +542,6 @@ test("review fixes: a guest who left never reads the event's name off a card", (
 
 test("Web's pen matches the brand pen on every other page", async () => {
   const brand = await import("../src/pages/brand.js");
-  assert.equal(brand.BRAND_PEN, "#b03030");
-  assert.equal(brand.BRAND_PEN_DARK, "#e8765c");
+  assert.equal(brand.BRAND_PEN, "#9c3b2e");
+  assert.equal(brand.BRAND_PEN_DARK, "#d46a5c");
 });

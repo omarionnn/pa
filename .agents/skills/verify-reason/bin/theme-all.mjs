@@ -12,7 +12,7 @@
 // choice sets the page to it and survives a reload; the ground matches the state; and every visible
 // text (wordmark letters, headings, body, switch, input text) is ≥4.5:1 against what it sits on, the
 // wordmark bubble and every input's edge ≥1.3:1 (≥3:1 for a focused input's ring is not checked).
-// The kicker is held to 4.5:1 like the rest (brand red #b03030 / #e8765c, src/pages/brand.js), and
+// The kicker is held to 4.5:1 like the rest (brand red #9c3b2e / #d46a5c, src/pages/brand.js), and
 // no visible element nor the switch's focus ring is blue (owner, 2026-10-25).
 // `--shots dir` saves each page at 390px in all four states.
 const { mkdtempSync, mkdirSync } = await import("node:fs");

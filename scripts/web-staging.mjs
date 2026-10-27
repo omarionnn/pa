@@ -320,7 +320,7 @@ if(u.indexOf('/web/memory/')===0||u.indexOf('/web/ongoing/state')===0)return ans
 var b={messages:[],more:false};if(sent){sent--;var m=Object.assign({},R,{id:R.id+Math.floor(Math.random()*1e6),at:Date.now()});b.messages=[m]}return ans(b)};
 try{window.EventSource=undefined}catch(e){}})();</script>`;
 const LOADER = `<script>try{sessionStorage.removeItem('reason-web-loaded')}catch(e){}</script>`;
-const TAG = `<style>.stg-tag{position:fixed;right:10px;bottom:10px;z-index:9999;font:11px/1 "Courier New",Courier,monospace;letter-spacing:.12em;text-transform:uppercase;background:#b03030;color:#fff;padding:7px 9px;text-decoration:none;opacity:.9}.stg-tag:hover{color:#fff;opacity:1}</style><a class="stg-tag" href="index.html">STAGING · sample data · all screens</a>`;
+const TAG = `<style>.stg-tag{position:fixed;right:10px;bottom:10px;z-index:9999;font:11px/1 "Courier New",Courier,monospace;letter-spacing:.12em;text-transform:uppercase;background:#9c3b2e;color:#fff;padding:7px 9px;text-decoration:none;opacity:.9}.stg-tag:hover{color:#fff;opacity:1}</style><a class="stg-tag" href="index.html">STAGING · sample data · all screens</a>`;
 
 function stage(html, { signedOut = false, loader = false, state = "", head = "" } = {}) {
   let out = html
@@ -333,7 +333,7 @@ function stage(html, { signedOut = false, loader = false, state = "", head = "" 
 }
 
 // ---------------------------------------------------------------- sample media
-const PHOTO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e7cfae"/><stop offset="1" stop-color="#9a6a46"/></linearGradient></defs><rect width="800" height="600" fill="url(#g)"/><rect x="250" y="170" width="300" height="300" rx="14" fill="#f4ece0" stroke="#7a4f33" stroke-width="6"/><path d="M250 260h300M400 170v300" stroke="#b03030" stroke-width="18"/><circle cx="400" cy="160" r="34" fill="none" stroke="#b03030" stroke-width="12"/></svg>`;
+const PHOTO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e7cfae"/><stop offset="1" stop-color="#9a6a46"/></linearGradient></defs><rect width="800" height="600" fill="url(#g)"/><rect x="250" y="170" width="300" height="300" rx="14" fill="#f4ece0" stroke="#7a4f33" stroke-width="6"/><path d="M250 260h300M400 170v300" stroke="#9c3b2e" stroke-width="18"/><circle cx="400" cy="160" r="34" fill="none" stroke="#9c3b2e" stroke-width="12"/></svg>`;
 /** One second of quiet, 8 kHz mono: enough for ▶ to play something. */
 function silentWav(seconds = 1, rate = 8000) {
   const n = seconds * rate, b = Buffer.alloc(44 + n);

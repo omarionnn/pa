@@ -60,7 +60,7 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
 - **No blue on pages; brand-red favicon.** (owner, 2026-10-25; red since 2026-10-26) `--accent` (links, buttons, chosen
   option, focus rings, /ops highlight) = the brand red; unstyled links take `--mark`; the
   remote sign-in field outline too. Only blue kept: the iMessage demo bubbles in
-  `src/pages/preview.js`. Favicon = the site's bubble in brand red (`assets/favicon.svg`, fill #b03030), apple-touch icon =
+  `src/pages/preview.js`. Favicon = the site's bubble in brand red (`assets/favicon.svg`, fill #9c3b2e), apple-touch icon =
   "r" + the red bubble (`assets/apple-touch-icon.png`); every icon link carries `?v=ICON_VERSION`
   (first 10 hex of a sha256 of both files, `src/pages/render.js`; `/favicon.svg?v=…` is served by
   `assetRequest`, which ignores the query), also on Spotify, remote sign-in and
@@ -71,8 +71,8 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   heyreason.com/web from the website's byte-identical copies. Absolute Tailscale icons were refused,
   so tabs had no icon. Pinned: `test/contact.test.js` (no `http` in any icon href).
   Caged check (driven 2026-10-25 over `42df809`): `curl /favicon.svg?v=<ICON_VERSION>` → 200
-  `image/svg+xml`, fill #b03030 (was #B8460B before 2026-10-26); the gate, a code-opened page and /ops carry the three `?v=` icon
-  links, `--accent`/`--mark` #b03030 / #e8765c and no blue hex. With no `REASON_PUBLIC_URL` the
+  `image/svg+xml`, fill #9c3b2e (was #B8460B before 2026-10-26); the gate, a code-opened page and /ops carry the three `?v=` icon
+  links, `--accent`/`--mark` #9c3b2e / #d46a5c and no blue hex. With no `REASON_PUBLIC_URL` the
   links are relative.
 - **Form buttons answer the tap.** (owner, 2026-10-25) Every submit button on a Reason page (event
   join / sign-in / gate / resend / save / sign out, the page code gate and its resend, the /ops
@@ -102,7 +102,7 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   copies. Pinned in `test/pages-paper.test.js`; the table-fade pixel tests in
   `test/pages-phone.test.js` measure "clean" against the paper card, not white. Visual check:
   `node bin/theme-all.mjs --shots dir` (`*-auto-light.png`) next to the site at 390.
-- **One brand pen colour: brick red.** #b03030 on light pages, #e8765c (lighter brick) on dark
+- **One brand pen colour: brick red.** #9c3b2e on light pages, #d46a5c (lighter brick) on dark
   (owner, 2026-10-26; it was the 10-25 "trademark orange" #B8460B / #F26F2B, which is now pinned
   absent from src/ and assets/ in `test/pages-no-blue.test.js`) — both in `src/pages/brand.js` and nowhere else: `--mark` in
   the shell and the three own-template pages, the "An event" / "Your event" / "An invite" kicker,
@@ -112,7 +112,7 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
 - **The wordmark top left is the marketing site's.** Every page Reason serves — files pages, the
   code/password gates, not-found, notices, event pages (join, sign-in, gate, joined, who's going,
   organizer), /ops, invites, Spotify join/callback, the remote sign-in page — opens with "reas" + the
-  brand-red bubble (#b03030; #e8765c on dark pages, cards and covers) + "n" in Instrument Serif italic 1.35rem, the same mark as the top left of
+  brand-red bubble (#9c3b2e; #d46a5c on dark pages, cards and covers) + "n" in Instrument Serif italic 1.35rem, the same mark as the top left of
   heyreason.com. One copy: `src/pages/wordmark.js` (font inline as a 1.5 KB data URI — no
   request, nothing from Google); the shell (`src/pages/render.js`) and the three own-template pages
   (`src/spotify.js`, `src/signin-remote.js`, `src/http.js` brandedPage) import it. The opening moment
