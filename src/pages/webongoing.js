@@ -23,6 +23,7 @@ import { SECURITY_HEADERS, sessionAccount } from "./websignin.js";
 import { renderWebNotFound } from "./webedge.js";
 import { findItem, ongoing, clockOf, periodOf } from "../ongoing.js";
 import { clock, config } from "../config.js";
+import { createHash } from "node:crypto";
 
 /** How many rows show before "See all N →" (PR #179, owner 10-26): needs-you first, then soonest due. */
 export const OG_TOP = 3;
@@ -90,6 +91,28 @@ export function countLine(model) {
   const n = countOf(model), k = needsOf(model);
   return `${n} ${n === 1 ? "THING" : "THINGS"}${k ? ` · ${k} ${k === 1 ? "NEEDS" : "NEED"} YOU` : ""}`;
 }
+
+/**
+ * The mobile Ongoing tab's <main>: the count line and the list, or "Nothing left to chase." The tab page
+ * and /web/ongoing/state?draw=tab both draw it here, so the page can swap it in when it changes.
+ */
+export function ogTabMain(m) {
+  const { items = [], approvals = [], back = [] } = m;
+  return items.length + approvals.length + back.length
+    ? `<main class="og-list"><h1 class="h1">Ongoing</h1>${label(countLine(m))}${ogMargin(m, { tab: true })}</main>`
+    : `<main class="og-m"><h1 class="h1">Nothing left<br>to chase.</h1>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</main>`;
+}
+
+/** The tab page's live list (D5 on phones): every 15 s and on coming back to the tab, swapped only when it changed, never under focus. */
+export const OG_TAB_LIVE_JS = `(function(){var v=window.REASON_OG&&window.REASON_OG.v,busy=false,tabN=document.querySelector('.tabs a[href="/web?tab=ongoing"]');
+function count(n){if(!tabN)return;var b=tabN.querySelector('.n');if(!n){if(b)b.remove();return}if(!b){b=document.createElement('span');b.className='n';tabN.appendChild(b)}b.textContent=n;b.setAttribute('aria-label',n+(n===1?' thing':' things'))}
+function look(){if(busy||v==null||document.hidden)return;busy=true;fetch('/web/ongoing/state?draw=tab&v='+encodeURIComponent(v),{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401)throw 0;return r.json()}).then(function(j){if(!j||!j.ok)return;
+if(j.html!=null){var m=document.querySelector('main');if(!m||m.contains(document.activeElement))return;var t=document.createElement('div');t.innerHTML=j.html;var n=t.firstElementChild;if(!n)return;m.replaceWith(n)}
+v=j.v;count(j.count)}).catch(function(){}).then(function(){busy=false})}
+setInterval(look,15000);document.addEventListener('visibilitychange',look)})();`;
+
+/** A short tag for one drawing of the margin: the page and /web/ongoing/state compare it, so an unchanged list is never redrawn. */
+export const ogVersion = (html) => createHash("sha256").update(String(html)).digest("base64url").slice(0, 12);
 
 // ---------------------------------------------------------------- Ongoing at volume (handoff v2, sheet 2A/2B/2C, §4c item 2)
 /**
@@ -516,6 +539,8 @@ async function seeAllPage(account, which, query, now) {
  * GET /web/ongoing/<kind>/<id> — one row's page — and GET /web/ongoing/state, the small answer the
  * Ongoing pages use to notice a session that ran out. Signed in only; a row is looked up in the
  * session's own conversation, so somebody else's id is the same flat 404 as one that never existed.
+ * `?draw=margin&v=<tag>` (the thread's live margin, owner 10-26 D5) adds the margin's tag, and its
+ * html only when the tag differs from the one the page already has.
  */
 export function ongoingRequest({ kind = null, id = null, method = "GET", headers = {}, query = {}, now = clock.now() }) {
   if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
@@ -523,7 +548,13 @@ export function ongoingRequest({ kind = null, id = null, method = "GET", headers
   if (kind === "state") {
     if (!account) return json(401, { ok: false, error: "signed_out" });
     const m = ongoing(account.conversation_id, now);
-    return json(200, { ok: true, count: countOf(m), needs: needsOf(m) });
+    const out = { ok: true, count: countOf(m), needs: needsOf(m) };
+    if (query.draw === "margin" || query.draw === "tab") {
+      const html = query.draw === "tab" ? ogTabMain(m) : ogMargin(m);
+      out.v = ogVersion(html);
+      if (query.v !== out.v) out.html = html;
+    }
+    return json(200, out);
   }
   if (!account) return redirect("/web");
   if (!kind) return redirect("/web?tab=ongoing");

@@ -39,7 +39,7 @@ import { config, clock } from "../config.js";
 import { esc } from "./render.js";
 import { readCookie } from "./access.js";
 import { ongoing, approvals as pendingApprovals } from "../ongoing.js";
-import { ogMargin, homeRows, needsYes, countLine, OG_CSS, NINE_D_JS, NINE_D_CSS, OG_POLL_JS } from "./webongoing.js";
+import { ogMargin, ogVersion, ogTabMain, OG_TAB_LIVE_JS, homeRows, needsYes, countLine, OG_CSS, NINE_D_JS, NINE_D_CSS, OG_POLL_JS } from "./webongoing.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting } from "./websignin.js";
 import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch, bubble, OG_KEY } from "./webkit.js";
 import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot, COMPOSE_CSS, COMPOSE_JS } from "./webcompose.js";
@@ -616,10 +616,22 @@ var R=window.REASON_WEB,list=document.querySelector('.thread'),onit=document.que
 var mb=document.querySelector('.menu-b'),menu=document.getElementById('menu');
 var bar=document.querySelector('.top'),og=document.getElementById('og'),H=document.documentElement;
 function stuck(){if(bar)bar.classList.toggle('stuck',window.scrollY>4)}window.addEventListener('scroll',stuck,{passive:true});stuck();
-if(og){var hb=og.querySelector('.og-hide'),back=document.querySelector('.og-back'),calm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+var calm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches,back=document.querySelector('.og-back'),tabN=document.querySelector('.tabs a[href="/web?tab=ongoing"]');
+function ogEl(){return document.getElementById('og')}
 function keepOff(off){try{if(off)localStorage.setItem('${OG_KEY}','off');else localStorage.removeItem('${OG_KEY}')}catch(e){}}
-if(hb)hb.onclick=function(){keepOff(true);if(calm){H.classList.add('og-off');if(back)back.focus();return}og.classList.add('going');setTimeout(function(){H.classList.add('og-off');og.classList.remove('going');if(back)back.focus()},320)};
-if(back)back.onclick=function(e){e.preventDefault();keepOff(false);if(!calm)og.classList.add('going');H.classList.remove('og-off');requestAnimationFrame(function(){requestAnimationFrame(function(){og.classList.remove('going')})});if(hb)hb.focus()}}
+// Delegated, so a margin redrawn live (below) keeps HIDE working.
+document.addEventListener('click',function(e){var o=ogEl(),t=o&&e.target&&e.target.closest?e.target.closest('.og-hide'):null;if(!t||!o.contains(t))return;
+keepOff(true);if(calm){H.classList.add('og-off');if(back)back.focus();return}o.classList.add('going');setTimeout(function(){H.classList.add('og-off');o.classList.remove('going');if(back)back.focus()},320)});
+if(back)back.onclick=function(e){var o=ogEl();e.preventDefault();keepOff(false);if(o&&!calm)o.classList.add('going');H.classList.remove('og-off');requestAnimationFrame(function(){requestAnimationFrame(function(){if(o)o.classList.remove('going')})});var hb=o&&o.querySelector('.og-hide');if(hb)hb.focus()};
+// The margin, the rail's ONGOING · N and the tab's count follow the list live (owner 10-26 D5): asked
+// for beside every poll and stream event; the html comes back only when the list really changed.
+function ogCount(n){var w=n===1?' thing':' things';if(back){back.setAttribute('aria-label','Show Ongoing'+(n?', '+n+w:''));var s=back.querySelector('span');if(s)s.textContent='ONGOING'+(n?' \\u00b7 '+n:'')}
+if(tabN){var b=tabN.querySelector('.n');if(!n){if(b)b.remove()}else{if(!b){b=document.createElement('span');b.className='n';tabN.appendChild(b)}b.textContent=n;b.setAttribute('aria-label',n+w)}}}
+var ogBusy=false;function ogLook(){var o=ogEl();if(ogBusy||!o||!R||R.ogv==null||document.hidden)return;ogBusy=true;
+fetch('/web/ongoing/state?draw=margin&v='+encodeURIComponent(R.ogv),{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401)throw 0;return r.json()}).then(function(j){if(!j||!j.ok)return;
+if(j.html!=null){var o2=ogEl();if(o2&&o2.contains(document.activeElement))return;var t=document.createElement('div');t.innerHTML=j.html;var n=t.firstElementChild;if(!n||!o2)return;o2.replaceWith(n);times(n)}
+R.ogv=j.v;ogCount(j.count)}).catch(function(){}).then(function(){ogBusy=false})}
+setInterval(ogLook,15000);document.addEventListener('visibilitychange',ogLook);
 document.querySelectorAll('form[action="/web/signout"]').forEach(function(f){f.addEventListener('submit',function(){try{Object.keys(sessionStorage).forEach(function(k){if(k.indexOf('reason-web-pending')===0)sessionStorage.removeItem(k)})}catch(x){}})});
 if(mb&&menu){var mx=menu.querySelector('.menu-x');function shut(){menu.hidden=true;mb.setAttribute('aria-expanded','false');mb.focus()}mb.onclick=function(){menu.hidden=false;mb.setAttribute('aria-expanded','true');mx.focus()};mx.onclick=shut;document.addEventListener('keydown',function(e){if(menu.hidden)return;if(e.key==='Escape')shut();else if(e.key==='Tab'){var f=menu.querySelectorAll('a,button,input:not([type=hidden])'),a=f[0],z=f[f.length-1];if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}}})}
 document.querySelectorAll('.start-w[hidden]').forEach(function(s){s.hidden=false});
@@ -680,14 +692,14 @@ function workIs(w){var lw=document.querySelector('.longwork');if(!lw)return;if(!
 // S3: a task that finished while this page was open settles in place: its lines become one DONE line.
 function tidyDays(){list.querySelectorAll('li.day').forEach(function(d){var n=d.nextElementSibling;if(!n||n.classList.contains('day'))d.remove()})}
 function settleIn(a){(a||[]).forEach(function(s){var was=list.querySelector('.done[data-task="'+s.task+'"]');if(was&&was.dataset.ids===s.ids.join(' '))return;var at=list.querySelector('.msg:not(.done)[data-id="'+s.ids[s.ids.length-1]+'"]')||was;if(!at)return;if(was&&at!==was)was.remove();var t=document.createElement('ol');t.innerHTML=s.html;var li=t.firstElementChild;if(!li)return;times(li);at.replaceWith(li);s.ids.forEach(function(id){var o=list.querySelector('.msg:not(.done)[data-id="'+id+'"]');if(o)o.remove()});doneInit(li.parentNode)});tidyDays();where()}
-var polling=false;function poll(){if(polling||!loaded)return;polling=true;lastPoll=Date.now();fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);settleIn(j.settled);if('work' in j)workIs(j.work);if(R.doing)R.doing(j.doing);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
+var polling=false;function poll(){if(polling||!loaded)return;polling=true;lastPoll=Date.now();fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);settleIn(j.settled);ogLook();if('work' in j)workIs(j.work);if(R.doing)R.doing(j.doing);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
 var beat=0;setInterval(function(){if(!live||Date.now()-beat>40000)poll()},4000);
 function stream(){if(!window.EventSource)return;try{es=R.stream.indexOf('http')===0?new EventSource(R.stream+'?after='+R.last,{withCredentials:true}):new EventSource(R.stream+'?after='+R.last)}catch(x){return}es.onopen=function(){live=true;beat=Date.now();if(lost){lost=0;noteLine('')}};
 es.addEventListener('ping',function(){beat=Date.now()});
-es.addEventListener('message',function(e){beat=Date.now();try{add(JSON.parse(e.data))}catch(x){}});
-es.addEventListener('typing',function(e){try{var t=JSON.parse(e.data);working(t.on,t.until);if(R.doing)R.doing(t.on?t.doing:null)}catch(x){}});
+es.addEventListener('message',function(e){beat=Date.now();try{add(JSON.parse(e.data))}catch(x){}ogLook()});
+es.addEventListener('typing',function(e){try{var t=JSON.parse(e.data);working(t.on,t.until);if(R.doing)R.doing(t.on?t.doing:null)}catch(x){}ogLook()});
 es.addEventListener('doing',function(e){try{if(R.doing)R.doing(JSON.parse(e.data).doing)}catch(x){}});
-es.addEventListener('state',function(e){beat=Date.now();try{var j=JSON.parse(e.data);settleIn(j.settled);workIs(j.work)}catch(x){}});
+es.addEventListener('state',function(e){beat=Date.now();try{var j=JSON.parse(e.data);settleIn(j.settled);workIs(j.work)}catch(x){}ogLook()});
 es.addEventListener('signedout',function(){es.close();expired()});
 es.onerror=function(){live=false}}
 document.addEventListener('visibilitychange',function(){if(!document.hidden)poll()});
@@ -745,12 +757,12 @@ export function streamPath() {
   return origin ? `${origin}/web/live` : "/web/stream";
 }
 
-function boot({ csrf, lines = [], more = false, conversationId = "", deferred = false }) {
+function boot({ csrf, lines = [], more = false, conversationId = "", deferred = false, og = "" }) {
   // `k` keys this tab's unsent messages to ONE conversation: a tab later signed in as somebody else never resends them.
   const k = createHash("sha256").update(`pending:${conversationId}`).digest("base64url").slice(0, 12);
   // A deferred page (L1) learns first/last from its first /web/history; until then it polls nothing.
   const first = deferred ? 0 : lines[0]?.id ?? 0, last = deferred ? 0 : lines.reduce((n, m) => Math.max(n, m.id), 0);
-  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},k:${JSON.stringify(k)},stream:${JSON.stringify(streamPath())},defer:${deferred ? "true" : "false"},ph:${JSON.stringify(PLACEHOLDER)},finding:${JSON.stringify(FINDING)}};`;
+  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},k:${JSON.stringify(k)},stream:${JSON.stringify(streamPath())},defer:${deferred ? "true" : "false"},ph:${JSON.stringify(PLACEHOLDER)},finding:${JSON.stringify(FINDING)},ogv:${JSON.stringify(String(og))}};`;
 }
 
 const NET = `<p class="netline" role="status" hidden></p>`;
@@ -790,7 +802,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     + tabBar("chat", count) + listeningHtml();
   // Saved's FIND IT IN THE CHAT → (src/pages/websaved.js): the thread opened at that message, scrolled to it.
   const toFound = found ? `(function(){var e=document.getElementById('m-${Number(found)}');if(e)e.scrollIntoView({block:'center'})})();` : "";
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred, og: ogVersion(ogMargin({ items, approvals, back })) }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
 }
 
 /** S2: the "where you are" note, two slots that crossfade. Filled and shown by the page's script. */
@@ -842,14 +854,13 @@ export function renderFirstVisit() {
   return webPage({ title: "Reason", body, css: CSS });
 }
 
-/** The mobile Ongoing tab. Real rows when Reason holds anything; otherwise "Nothing left to chase." */
+/** The mobile Ongoing tab. Real rows when Reason holds anything; otherwise "Nothing left to chase." Kept current live (OG_TAB_LIVE_JS). */
 export function renderOngoing({ csrf, items = [], approvals = [], back = [] }) {
   const count = items.length + approvals.length + back.length;
-  const inner = count
-    ? `<main class="og-list"><h1 class="h1">Ongoing</h1>${label(countLine({ items, approvals, back }))}${ongoingMargin(items, approvals, { tab: true, back })}</main>`
-    : `<main class="og-m"><h1 class="h1">Nothing left<br>to chase.</h1>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</main>`;
+  const inner = ogTabMain({ items, approvals, back });
   const css = `${CSS}.og-tab{display:flex;position:static;max-width:none;padding:0}`;
-  return webPage({ title: "Reason — Ongoing", body: topBar({ csrf }) + inner + tabBar("ongoing", count), css, script: NINE_D_JS + OG_POLL_JS + CLIENT_JS, bodyClass: "has-tabs" });
+  const live = `window.REASON_OG={v:${JSON.stringify(ogVersion(inner))}};`;
+  return webPage({ title: "Reason — Ongoing", body: topBar({ csrf }) + inner + tabBar("ongoing", count), css, script: live + NINE_D_JS + OG_POLL_JS + CLIENT_JS + OG_TAB_LIVE_JS, bodyClass: "has-tabs" });
 }
 
 /** MEMORY and SETTINGS before their phases: a calm page in the same voice, with the two settings that already work. */
