@@ -1,7 +1,7 @@
 // Reason Web, Ongoing tidy (owner, 10-26). One pinned test per approved change:
 //
 //   1. top 3 rows only — needs-you first, then soonest due — and "See all N →" opens the rest in place
-//   2. "HIDE →" beside the Ongoing heading; "ONGOING N" in the top bar brings it back; kept per device
+//   2. "HIDE →" beside the Ongoing heading; a vertical "ONGOING · N" at the right edge brings it back; kept per device
 //   3. the top bar stays pinned while the thread scrolls; "Show earlier messages" stays in the thread
 //   4. each row shows a short plain title written once when it is made (the model's, or one
 //      claude-cli summarise), never the person's name; the cleaned note only until it has one
@@ -71,14 +71,16 @@ test("1. three rows show: needs-you first, then soonest due; See all N → opens
   assert.match(tab, /<nav class="tabs" aria-label="Sections">/);
 });
 
-test("2. HIDE → beside the heading; the thread takes the width; ONGOING N in the top bar; remembered per device", () => {
+test("2. HIDE → beside the heading; the thread takes the width; a vertical ONGOING · N at the right edge; remembered per device", () => {
   db.createTimer(C, { fireAt: clock.now() + H, note: "n", label: "One" });
   const s = page();
   assert.match(s, /<div class="og-h"><h2>Ongoing<\/h2><button class="act2 og-hide" type="button" aria-controls="og" aria-expanded="true">HIDE <span aria-hidden="true">→<\/span><\/button><\/div>/);
-  assert.match(s, /<nav aria-label="Account"><a class="act2 og-back" href="#og" aria-controls="og">ONGOING 1<\/a>/);
-  assert.match(s, /\.og-back\{display:none\}/);
+  // Hidden (handoff §3, desktop sheet 3): a thin vertical typed ONGOING · N at the right edge, not in the top bar.
+  assert.match(s, /<\/main><button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing, 1 thing"><span aria-hidden="true">ONGOING · 1<\/span><\/button>/);
+  assert.ok(!s.slice(s.indexOf('<header class="top">'), s.indexOf("</header>")).includes("og-back"), "not in the top bar");
+  assert.match(s, /\.og-back\{display:none;position:fixed;right:0;top:50%;[^}]*writing-mode:vertical-rl\}/);
   assert.match(s, /html\.og-off \.wrapc>\.og\{display:none\}/);
-  assert.match(s, /html\.og-off \.og-back\{display:inline-flex\}/);
+  assert.match(s, /html\.og-off \.og-back\{display:flex/);
   assert.match(s, /\.og\.going\{transform:translateX\(48px\);opacity:0\}/, "slides away");
   assert.match(s, /\.convo\{flex:999 1 540px/, "the thread grows into the room");
   // Applied before first paint, so a hidden panel never flashes in.
