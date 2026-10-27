@@ -43,7 +43,7 @@ public page), `src/pages/webstamps.js` (routes switch on `waxLook()`), `src/page
 `REASON_DB_PATH=$(mktemp -d)/seals.db node .agents/skills/verify-reason/bin/web-seals-drive.mjs [outDir]` —
 real HTTP, real completions (task/call/research/purchase) → patch, Held, suite key job; book states Paper +
 Night at 390/1280; share → public page, real og.png 1200×630, story.png 1080×1920; revoke → 410. 12 steps.
-Tests: `test/stamps-wax.test.js` (16). Staging: `npm run web:staging` sets `REASON_STAMPS_WAX=on`
+Tests: `test/stamps-wax.test.js` (18). Staging: `npm run web:staging` sets `REASON_STAMPS_WAX=on`
 (rows stamps*, stamp-card*, stamp-story, stamp-share-public).
 
 ## Live check (read-only)

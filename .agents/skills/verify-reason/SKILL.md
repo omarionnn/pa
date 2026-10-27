@@ -406,9 +406,9 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
-### Baseline — 4,218 pass, 0 failures after the wax-seal book (wt/stamps-wax, 2026-10-27)
+### Baseline — 4,220 pass, 0 failures after the wax-seal book (wt/stamps-wax, 2026-10-27)
 
-`npm run test:offline` under `env -i`: 4,332 tests, 4,218 passing, 0 failing. New: `test/stamps-wax.test.js` (16); `bin/web-seals-drive.mjs`: 12 steps, all ok. See [features/web-stamps-wax.md](features/web-stamps-wax.md).
+`npm run test:offline` under `env -i`: 4,334 tests, 4,220 passing, 0 failing. New: `test/stamps-wax.test.js` (18); `bin/web-seals-drive.mjs`: 12 steps, all ok. See [features/web-stamps-wax.md](features/web-stamps-wax.md).
 
 ### Baseline — 4,175 pass, 0 failures after Stamps (wt/stamps, 2026-10-27)
 
