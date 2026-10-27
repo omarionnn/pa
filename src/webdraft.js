@@ -37,8 +37,11 @@ export const draftEvents = new EventEmitter();
 draftEvents.setMaxListeners(0);
 
 /** What each conversation's tab is showing now, so a tab whose stream reconnects mid-turn gets it at once. */
-const showing = new Map();
-export const draftNow = (conversationId) => showing.get(conversationId) ?? null;
+const showing = new Map(); // conversationId → { text, owner }
+export const draftNow = (conversationId) => showing.get(conversationId)?.text ?? null;
+
+/** A drafter nobody ended (a turn that threw past its own cleanup) ends itself after this long. */
+export const DRAFT_MAX_MS = 5 * 60_000;
 
 
 /**
@@ -114,14 +117,26 @@ export function startDraft({ conversationId, log = () => {}, check = checkDraft,
     if (!checks.has(text)) checks.set(text, Promise.resolve().then(() => check({ conversationId, draft: text, log })).catch(() => ({ ok: true })));
     return checks.get(text);
   };
+  const me = {};
   const show = (text) => {
     shown = text ?? "";
-    if (text) showing.set(conversationId, text); else showing.delete(conversationId);
+    if (text) showing.set(conversationId, { text, owner: me });
+    else if (showing.get(conversationId)?.owner === me) showing.delete(conversationId);
     emit({ conversationId, text });
   };
+  // Turns for one conversation run one at a time, so anything still held for it is a turn's that never
+  // cleaned up: it goes from the tab now, rather than be replayed on every reconnect.
+  if (showing.has(conversationId)) { showing.delete(conversationId); emit({ conversationId, text: null }); }
+  const expire = setTimeout(() => end(), DRAFT_MAX_MS);
+  expire.unref?.();
   const takeBack = () => { if (shown) show(null); shownFrom = -1; };
+  const end = () => { clearTimeout(expire); stopped = true; takeBack(); };
   const stop = (why) => { if (stopped) return; stopped = true; takeBack(); log({ web_draft_stopped: why, conversation: conversationId }); };
 
+  // How far into a message may be shown: all of it once it has ended; before that, whole sentences
+  // that more words have already followed. The last sentence waits, because a message that is about
+  // to call a tool ends on its "let me check." — which must never show.
+  const cutOf = (m) => m.done ? m.text.length : sentenceEnd(m.text.trimEnd());
   function pump() {
     if (busy) { again = true; return; }
     return pumping();
@@ -133,7 +148,7 @@ export function startDraft({ conversationId, log = () => {}, check = checkDraft,
         again = false;
         if (stopped || !msg || msg.tool) break;
         const m = msg;
-        const upto = m.done ? m.text.length : sentenceEnd(m.text);
+        const upto = cutOf(m);
         if (upto <= m.tried) break;
         m.tried = upto;
         const shaped = shapeDraft(conversationId, m.text.slice(0, upto), { complete: m.done });
@@ -146,7 +161,7 @@ export function startDraft({ conversationId, log = () => {}, check = checkDraft,
         if (msg !== m || m.tool) continue;
         shownFrom = m.n;
         show(shaped.text);
-      } while (again || (msg && !msg.tool && (msg.done ? msg.text.length : sentenceEnd(msg.text)) > msg.tried));
+      } while (again || (msg && !msg.tool && cutOf(msg) > msg.tried));
     } catch (e) {
       stop(`failed: ${(e?.message ?? String(e)).split("\n")[0].slice(0, 120)}`);
     } finally { busy = false; }
@@ -174,6 +189,6 @@ export function startDraft({ conversationId, log = () => {}, check = checkDraft,
     /** The said check for `text` — the very same one a piece of it already started, when there was one. */
     check: (text) => checkOnce(String(text ?? "")),
     taken: () => stop("rewritten"),
-    end: () => { stopped = true; takeBack(); },
+    end,
   };
 }

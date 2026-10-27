@@ -501,7 +501,7 @@ export class Runtime extends EventEmitter {
         ? webdraft.startDraft({ conversationId, log: this.log }) : null;
       try {
         reply = await this._afterScreen(screened, await this.runTurn(turnArgs(draft ? { draft } : {})), { conversationId, text, meta });
-        reply = await this._takeInFolded({ fold, screened, conversationId, meta, reply, turnArgs });
+        reply = await this._takeInFolded({ fold, screened, conversationId, meta, reply, turnArgs, onSuperseded: draft ? () => draft.taken() : null });
         // No text is folded in from here: the reply is settled, and one that lands now gets a turn
         // of its own after it (Router.deliver's loop).
         if (fold) fold.closing = true;
@@ -681,7 +681,7 @@ export class Runtime extends EventEmitter {
    * it is NOT sent. It comes off the thread and the turn runs again with their new words and the
    * unsent draft, to write the one answer. Twice at most; a third addition is answered on its own.
    */
-  async _takeInFolded({ fold, screened, conversationId, meta, reply, turnArgs }) {
+  async _takeInFolded({ fold, screened, conversationId, meta, reply, turnArgs, onSuperseded = null }) {
     if (!fold) return reply;
     const me = accounts.ownerOf(conversationId);
     const who = me.name === "the person I work for" ? "them" : me.name;
@@ -709,6 +709,8 @@ export class Runtime extends EventEmitter {
       const draft = reply && reply.trim() !== "NO_REPLY" ? reply : null;
       if (draft && !db.retractDraft(conversationId, draft)) this.log({ draft_not_retracted: conversationId });
       this.log({ draft_superseded: conversationId, by: late.map(a => a.handle), round, had_draft: !!draft });
+      // A Web tab watching that reply grow (src/webdraft.js) loses it now; the recomposed one arrives whole.
+      onSuperseded?.();
       const again = onethought.recomposeText(late, draft);
       // The pictures of the first text were already looked at; the recompose is about the words.
       reply = await this._afterScreen(screened, await this.runTurn(turnArgs({ ...again, attachments: [] })), { conversationId, text: again.keep, meta });

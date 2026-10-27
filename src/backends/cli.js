@@ -10,6 +10,7 @@
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
+import { StringDecoder } from "node:string_decoder";
 
 /**
  * Every finished run, told as `run` with { ok, stdout } — stdout only for a streamed run, which is
@@ -166,10 +167,11 @@ function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = []
 
     // `onEvent` hears each event line as it is printed (src/webdraft.js). It never changes the run.
     let pending = "";
+    const utf8 = onEvent ? new StringDecoder("utf8") : null; // a character split across two chunks stays whole
     child.stdout.on("data", (d) => {
       stdout += d;
       if (!onEvent) return;
-      pending += d;
+      pending += utf8.write(d);
       let k;
       while ((k = pending.indexOf("\n")) >= 0) {
         const line = pending.slice(0, k);

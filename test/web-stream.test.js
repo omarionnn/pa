@@ -341,3 +341,27 @@ test("a tab whose stream reconnects mid-turn gets the draft as it stands, at onc
   assert.ok(await until(() => again.events().some(e => e.event === "draft" && e.data.html === null)));
   again.close();
 });
+
+test("a one-line 'let me check' right before a tool never shows, even when the check is instant", async () => {
+  const { d, shown } = drafter();
+  d.feed(start());
+  d.feed(words("let me check your calendar. "));
+  await settle();
+  d.feed(toolStart());
+  await settle();
+  assert.deepEqual(shown, [], "the last sentence of a message waits for more words or the message's end");
+});
+
+test("a draft a turn never cleaned up is cleared when the next turn starts, and never replayed", async () => {
+  const conv = `dm:unit:left-${Math.random()}`;
+  const shownA = [], shownB = [];
+  const a = wd.startDraft({ conversationId: conv, check: async () => ({ ok: true }), emit: (e) => shownA.push(e.text) });
+  a.feed(start()); a.feed(words("you're set. more ")); await settle();
+  assert.equal(wd.draftNow(conv), "you're set.");
+  // a is never ended (its turn threw past cleanup); the next turn's drafter clears it at once
+  const b = wd.startDraft({ conversationId: conv, check: async () => ({ ok: true }), emit: (e) => shownB.push(e.text) });
+  assert.deepEqual(shownB, [null]);
+  assert.equal(wd.draftNow(conv), null);
+  b.end(); a.end();
+  assert.equal(wd.draftNow(conv), null);
+});
