@@ -50,6 +50,8 @@ const wm = await imp("src/pages/webmemory.js");
 const wh = await imp("src/pages/webhistory.js");
 const st = await imp("src/pages/websettings.js");
 const sv = await imp("src/pages/websaved.js");
+const wd = await imp("src/pages/webdaily.js");
+const { dailySamples, sampleStampMarkup } = await imp("scripts/web-daily-sample.mjs");
 const ongoingRows = await imp("src/ongoing.js");
 const db = await imp("src/db.js");
 
@@ -269,6 +271,10 @@ const S = [
   ["home-new", "Home and thread", "Home · new", "Nothing in hand yet: start-with examples.", wc.renderHome({ account: emptyAccount, csrf: "staging", sendId: "staging", items: [], pick: "" }), {}],
   ["conversation", "Home and thread", "Conversation", "Photo, voice note (▶ plays), PDF slip, list, page card, approval in chat, Ongoing margin. Sending works here.", convo(), {}],
   ["conversation-empty", "Home and thread", "Conversation · empty", "No messages, nothing in hand.", wc.renderConversation({ account: emptyAccount, csrf: "staging", lines: [], more: false, sendId: "staging", items: [], approvals: [] }), {}],
+
+  // The daily edition (REASON_WEB_DAILY): Home as a morning paper. Sample editions (scripts/web-daily-sample.mjs).
+  ...Object.entries({ full: ["Daily edition", "Overnight (decision / update / done), Lines out, One question, New in your book, pick up."], first: ["Daily edition · first day", "NO. 1, \"Nothing yet.\""], quiet: ["Daily edition · quiet night", "Nothing happened overnight."], missed: ["Daily edition · missed days", "\"welcome back. here's what happened since Friday.\""] })
+    .map(([k, [title, note]]) => [`daily-${k}`, "Home and thread", title, note, wd.renderDaily({ edition: dailySamples()[k], csrf: "staging", now: Date.UTC(2026, 9, 27, 13, 0), stampMarkup: sampleStampMarkup, stamps: true }), {}]),
 
   ["sending", "Sending", "Sending…", "A message on its way (5A).", convo(), { state: STATE.sending }],
   ["take-it-back", "Sending", "Take it back", "§4h: for 5 s after a send, until Reason starts on it; the pen line drains right to left.", convo(), { state: STATE.takeBack }],

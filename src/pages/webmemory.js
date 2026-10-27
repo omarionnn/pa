@@ -473,12 +473,12 @@ export async function forgetRow(conv, key, { log = () => {} } = {}) {
 }
 
 /** "Yes, that's right": the guess becomes a fact in their name. "No": it is dismissed and never suggested again. */
-export async function answerGuess(conv, id, answer, { log = () => {} } = {}) {
+export async function answerGuess(conv, id, answer, { log = () => {}, said = "Yes, that's right (Reason Web)" } = {}) {
   const g = /^\d{1,12}$/.test(String(id ?? "")) ? db.getGuess(conv, Number(id)) : null;
   if (!g || g.confirmed_at || g.dismissed_at) return { ok: false, status: 404, error: "not_found" };
   if (answer === "yes") {
     const saved = db.remember(conv, g.about, g.guess, { source: "user_stated" });
-    db.confirmGuess(conv, { about: g.about, guess: g.guess, said: "Yes, that's right (Reason Web)" });
+    db.confirmGuess(conv, { about: g.about, guess: g.guess, said });
     if (saved?.factId) import("../extract.js").then(m => m.scheduleProfile(conv, { log })).catch(() => {});
     log({ web_memory: "guess_confirmed" });
     return { ok: true, factKey: saved?.factId ? `fact-${saved.factId}` : null };

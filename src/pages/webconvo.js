@@ -47,6 +47,9 @@ import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot
 import { prepareSend } from "../webmedia.js";
 import * as settle from "../settle.js";
 import { doingFor, doingEvents } from "../doing.js";
+import { dailyAllowedFor } from "../dailyflag.js";
+import * as daily from "../daily.js";
+import { renderDaily } from "./webdaily.js";
 
 /** How many lines a page of history holds, first load and each "show earlier". */
 export const PAGE = 40;
@@ -574,12 +577,14 @@ const SEND_SVG = `<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 16V4M
 const signOutForm = (csrf, cls = "act2") => `<form method="POST" action="/web/signout"><input type="hidden" name="c" value="${esc(csrf)}"><button class="${cls}" type="submit">SIGN OUT OF THIS BROWSER</button></form>`;
 
 /** The top of every signed-in screen: the wordmark home; MEMORY and SETTINGS on desktop; a menu on phones. */
-function topBar({ csrf, extra = "", where = "" }) {
+function topBar({ csrf, extra = "", where = "", newChat = false }) {
+  // REASON_WEB_DAILY: Home is the daily edition (no composer), so a fresh Web chat starts from here (SCOPE-v2 Q-v2-54).
+  if (newChat) extra = `${typed(NEW_CHAT, { href: "/web?newchat" })}${extra}`;
   return `<header class="top">${wordmark({ href: "/web?home" })}${where}`
     + `<nav aria-label="Account">${extra}${typed("SAVED", { href: "/web/saved" })}${typed("MEMORY", { href: "/web/memory" })}${typed("SETTINGS", { href: "/web/settings" })}</nav>`
     + `<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">${MENU_SVG}</button></header>`
     + `<div class="menu" id="menu" hidden role="dialog" aria-modal="true" aria-label="Menu"><div class="menu-h">${wordmark()}<button class="act2 menu-x" type="button">CLOSE</button></div>`
-    + `<ul><li>${action("The thread", { href: "/web?thread" })}</li><li>${action("Memory", { href: "/web/memory" })}</li><li>${action("Settings", { href: "/web/settings" })}</li></ul>`
+    + `<ul>${newChat ? `<li>${action("New Web chat", { href: "/web?newchat" })}</li>` : ""}<li>${action("The thread", { href: "/web?thread" })}</li><li>${action("Memory", { href: "/web/memory" })}</li><li>${action("Settings", { href: "/web/settings" })}</li></ul>`
     + `${signOutForm(csrf)}</div>`;
 }
 
@@ -870,7 +875,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     ? `${OPENING}<ol class="thread" role="log" aria-live="polite" aria-relevant="additions" aria-busy="true"></ol>`
       + `<noscript><div class="start">${startLine}</div><ol class="thread" role="log">${drawn}</ol></noscript>`
     : `<div class="start">${startLine}</div><ol class="thread" role="log" aria-live="polite" aria-relevant="additions">${drawn}</ol>`;
-  const body = topBar({ csrf, where: WHERE_NOTE }) + NET
+  const body = topBar({ csrf, where: WHERE_NOTE, newChat: dailyAllowedFor(conv) }) + NET
     + `<main class="wrapc"><section class="convo" aria-labelledby="c-h"><h1 id="c-h" class="sr">Your conversation with Reason</h1>`
     + (deferred ? `<div class="start"></div>` : "") + thread
     + (lines.length || chat ? "" : `<div class="empty">${hand("nothing here yet. whatever you tell me here or by text shows up in this thread.", { tilt: true })}</div>`)
@@ -884,6 +889,9 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
   const toFound = found ? `(function(){var e=document.getElementById('m-${Number(found)}');if(e)e.scrollIntoView({block:'center'})})();` : "";
   return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred, og: ogVersion(ogMargin({ items, approvals, back })), chat, about, away: away ? { text: away, day: dayKey(now) } : null }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
 }
+
+/** The thread page's way into a fresh Web-only chat while the daily edition is Home (it has no composer). */
+export const NEW_CHAT = "NEW WEB CHAT →";
 
 /** S2: the "where you are" note, two slots that crossfade. Filled and shown by the page's script. */
 export const WHERE_NOTE = `<span class="where" role="status" aria-live="polite" hidden><span class="wn-s on" aria-hidden="true"></span><span class="wn-s" aria-hidden="true"></span><span class="sr wn-now"></span></span>`;
@@ -1025,6 +1033,11 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
     // §4h: the return this browser has not been shown, spent now (a GET only): once per return.
     const away = method === "GET" ? awayFor(conv, db.takeWebAway(readCookie(headers.cookie), conv, { within: WEB_AWAY_MS, now }), { items, approvals, back }) : null;
     return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, deferred: true, work: workOf(conv), about, away });
+  }
+  // REASON_WEB_DAILY (src/dailyflag.js): the daily edition is Home (src/pages/webdaily.js). Opening it is looking.
+  if (dailyAllowedFor(conv)) {
+    if (method === "GET") { try { daily.noteLook(conv, now); } catch { /* never costs a page */ } }
+    return renderDaily({ edition: daily.editionFor(conv, { now }), csrf, now, stampMarkup: daily.stampMarkupFn(), stamps: daily.stampsReady() });
   }
   return renderHome({ account, csrf, sendId, items, approvals, back, pick: pickUp(conv, service) });
 }

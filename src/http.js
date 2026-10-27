@@ -295,6 +295,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       const webRoute = ongoingRoute ?? /^\/web(?:\/(signin|code|signout|history|stream|live|send|about|memory|settings|signal))?$/.exec(url.pathname)
         ?? /^\/web\/(memory\/(?:correct|forget|guess|history))$/.exec(url.pathname)
         ?? /^\/web\/(chats\/recent)$/.exec(url.pathname)
+        ?? /^\/web\/(daily\/(?:answer|later))$/.exec(url.pathname)
         ?? /^\/web\/(send\/cancel)$/.exec(url.pathname)
         ?? /^\/web\/(saved(?:\/(?:pin|remove|restore|(?:page|call|receipt|event|album)\/[A-Za-z0-9_-]{1,40}|page\/[A-Za-z0-9_-]{1,40}\/frame))?)$/.exec(url.pathname);
       if (webRoute && webOn()) {
