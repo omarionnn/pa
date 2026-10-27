@@ -232,13 +232,26 @@ export function privateHead(imageUrl) {
 export const PRIVATE_OG_VERSION = 1;
 
 /** The private card's PNG, drawn once and kept. `shoot(html)` is card.js's headless browser. */
+// One drawing at a time, and after a failed one a minute's rest: the card is fetched without
+// sign-in, so a burst of previews (or a broken Chromium) must never launch a browser per request.
+let ogDrawing = null;
+let ogFailedAt = 0;
+const OG_RETRY_MS = 60_000;
 export async function privateOgPng({ shoot }) {
   const dir = join(config.dataDir, "cards");
   const file = join(dir, `private-og-v${PRIVATE_OG_VERSION}.png`);
   if (existsSync(file)) return readFileSync(file);
-  const png = await shoot(made.privateOgHtml({ fontCss: made.ogFontCss() }));
-  if (!png?.length) return null;
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(file, png);
-  return png;
+  if (ogDrawing) return ogDrawing;
+  if (Date.now() - ogFailedAt < OG_RETRY_MS) return null;
+  ogDrawing = (async () => {
+    try {
+      const png = await shoot(made.privateOgHtml({ fontCss: made.ogFontCss() }));
+      if (!png?.length) { ogFailedAt = Date.now(); return null; }
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, png);
+      return png;
+    } catch (e) { ogFailedAt = Date.now(); throw e; }
+    finally { ogDrawing = null; }
+  })();
+  return ogDrawing;
 }

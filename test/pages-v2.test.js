@@ -353,3 +353,17 @@ test("pages v2 wordmark: a hidden o where the bubble stands for it, so the text 
   assert.equal(text, "reason");
   assert.match(html, /clip-path:inset\(50%\)[^>]*>o<\/span>n<\/span>$/);
 });
+
+test("LP2 private card: a burst of previews draws it once, and a failed draw rests before trying again", async () => {
+  const { privateOgPng } = await import("../src/pages/madedata.js");
+  const { readdirSync, rmSync, existsSync } = await import("node:fs");
+  const cards = join(process.env.REASON_DATA_DIR, "cards");
+  if (existsSync(cards)) for (const f of readdirSync(cards)) if (f.startsWith("private-og-")) rmSync(join(cards, f));
+  let shots = 0;
+  const slowFail = () => new Promise(r => setTimeout(() => { shots++; r(null); }, 20));
+  const out = await Promise.all([1, 2, 3, 4, 5].map(() => privateOgPng({ shoot: slowFail })));
+  assert.deepEqual(out, [null, null, null, null, null]);
+  assert.equal(shots, 1);
+  assert.equal(await privateOgPng({ shoot: () => { shots++; return Buffer.from("x"); } }), null);
+  assert.equal(shots, 1);
+});
