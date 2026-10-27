@@ -274,6 +274,7 @@ const wx = await imp("src/pages/webseals.js");
 const stampsPage = (all, o = {}) => wx.renderSealBook({ all, first: "Ama", csrf: "staging", now, ...o });
 const SEAL_PUB = stampsMod.publicSeal(STAMPS_MANY.at(-1).row, "Ama");
 const sharePublic = wx.renderSealSharePage({ pub: SEAL_PUB, shareId: "Sample12abcd" });
+const shareMissing = (await imp("src/pages/webedge.js")).renderShareNotFound({ thing: "seal" });
 // Home's "New in your book", in wax: the newest seal (a held call, yesterday).
 const WAX_NEWEST = stampSample([["long_hold", { minutes: 52, place: "the airline" }]]).map(s => ({ ...s, earnedAt: now - STAMP_DAY }))[0];
 const picture = (src, alt, w) => kit.webPage({ title: alt, body: `<main style="padding:32px;display:flex;flex-direction:column;gap:16px;align-items:flex-start">${kit.label(alt.toUpperCase())}<img src="${src}" alt="${alt}" style="max-width:100%;width:${w}px;height:auto;border-radius:3px"></main>` });
@@ -386,6 +387,7 @@ const S = [
   ["stamp-card-noname", "Stamps", "Share card · first name off", "“…on my behalf.”", picture("media/stamp-card-noname.png", "Share card, no name", 1200), {}],
   ["stamp-story", "Stamps", "Story image · 9:16", "1080×1920: the sealed card, the line, HEYREASON.COM.", picture("media/stamp-story.png", "Story image", 405), {}],
   ["stamp-share-public", "Stamps", "Shared seal · public page", "heyreason.com/s/<id>: no sign-in, noindex.", sharePublic, so],
+  ["stamp-share-missing", "Stamps", "Shared seal · not here (404)", "heyreason.com/s/<id> never existed, turned off, or malformed: one page, 404, noindex.", shareMissing, so],
   ["stamp-share-off", "Stamps", "Shared seal · turned off", "Stop sharing → 410.", madeMod.renderTurnedOff({ host: "HEYREASON.COM", siteUrl: "https://heyreason.com" }), so],
 
   ["loader", "Global", "Loader", "The reas◯n·ing loader (plays on every load here).", home(), {}],
