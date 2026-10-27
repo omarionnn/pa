@@ -662,6 +662,7 @@ focus F1): [features/web-edge.md](features/web-edge.md); driven in Chromium by `
 Reason Web §4h plumbing (while you were out, take it back, working line counts): [features/web-small-details-plumbing.md](features/web-small-details-plumbing.md); `test/web-4h-plumbing.test.js`.
 Reason Web §4h small details (pen writes in, stamp lands, paper grain, late night): [features/web-motion.md](features/web-motion.md);
 driven in Chromium by `test/web-4h-motion-browser.test.js`.
+Reason Web daily edition Home (REASON_WEB_DAILY; edition table, overnight claude-cli greeting, one question → Memory): [features/web-daily.md](features/web-daily.md); `test/web-daily.test.js`.
 Reason Web Stamps + shared stamps (`REASON_WEB_DAILY`; awarding at real completions, the book, share/revoke, `/s/<id>` + og card, redaction): [features/web-stamps.md](features/web-stamps.md); `bin/web-stamps-drive.mjs` drives and draws it beside `reference/stamps.html`.
 Reason Web shell (wordmark text + nowrap, logo → `/web?home`, link cards for `/web`, `/privacy`, `/terms`): [features/web-shell.md](features/web-shell.md).
 Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start the cage with `REASON_PAGES_V2=1`): [features/pages-v2.md](features/pages-v2.md); `scripts/pages-v2-preview.mjs` + `scripts/pages-v2-compare.mjs`. Print (§4h-8, `src/pages/print.js`): same file, "Print"; `pages-v2-preview.mjs <dir> --print`.

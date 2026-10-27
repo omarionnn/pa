@@ -511,6 +511,13 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     return await savedRequest({ account, path: sub === "saved" ? "" : sub.slice("saved/".length), method, query, headers, readBody, log });
   }
 
+  // ---- The daily edition's question (src/pages/webdaily.js): answered → Memory, or put off. REASON_WEB_DAILY only. ----
+  if (sub === "daily/answer" || sub === "daily/later") {
+    if (!account) return redirect("/web");
+    const { dailyRequest } = await import("./webdailyroutes.js");
+    return await dailyRequest({ account, action: sub.slice("daily/".length), method, headers, readBody, log });
+  }
+
   // ---- Stamps (src/pages/webstamps.js), behind REASON_WEB_DAILY: the book, a share made / stopped, the card saved ----
   if (sub === "stamps" || String(sub ?? "").startsWith("api/stamps/")) {
     if (account) {
@@ -539,6 +546,13 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
   if (sub === null) {
     if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
     if (account) {
+      // REASON_WEB_DAILY: Home is the daily edition, so a fresh Web chat is started here (the thread's NEW WEB CHAT →).
+      const { dailyAllowedFor } = await import("../dailyflag.js");
+      if (dailyAllowedFor(account.conversation_id)) {
+        const { newWebChatId } = await import("./webconvo.js");
+        if (query.newchat != null) return redirect(`/web?chat=${newWebChatId()}`);
+        await (await import("../daily.js")).loadStamps();
+      }
       // W2: signed in, /web IS the conversation (src/pages/webconvo.js).
       const { conversationPage } = await import("./webconvo.js");
       const drawn = conversationPage({ account, headers, sendId: randomUUID(), method, query });

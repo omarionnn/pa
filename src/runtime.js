@@ -46,6 +46,7 @@ import { PROVIDER as GOOGLE } from "./google.js";
 import * as eventRides from "./eventrides.js";
 import { sweepListNotes } from "./events.js";
 import { sweep as sweepAlbums } from "./albums.js";
+import * as dailyEdition from "./daily.js";
 
 const MIN = 60_000;
 // Sweep turns a held thing may be put to the model in before it is let go. See `notice` below.
@@ -2093,6 +2094,11 @@ export class Runtime extends EventEmitter {
     return out;
   }
 
+  /** The daily edition's overnight write (src/daily.js sweepDaily). Never throws into the sweep. */
+  daily({ now = clock.now() } = {}) {
+    try { return dailyEdition.sweepDaily({ now, log: this.log }); } catch (e) { this.log({ daily_edition_failed: (e?.message ?? String(e)).split("\n")[0] }); return { queued: 0 }; }
+  }
+
   /**
    * The digest: one batched line, for somebody who asked for that instead.
    *
@@ -2585,6 +2591,9 @@ export class Runtime extends EventEmitter {
     // And the batched line, for anybody who asked for one of those instead. After the sweep, so the
     // things this evening's digest mentions include the ones found a minute ago.
     const digested = await this.digest();
+    // The daily edition (REASON_WEB_DAILY): queues tomorrow-morning's page on the background lane once
+    // each person's clock passes the hour. Says nothing to anybody and never waits here.
+    const daily = this.daily();
     const follow = await this.followUp();
     const access = await this.accessQueue();
     // Async extraction: pull queued event_log rows, extract facts, embed, rebuild profiles.
@@ -2595,7 +2604,7 @@ export class Runtime extends EventEmitter {
     const shapes = await this.rhythms();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, retention };
   }
 
   start(everyMs = 15_000) {
