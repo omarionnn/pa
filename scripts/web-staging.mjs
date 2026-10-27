@@ -248,6 +248,20 @@ const STATE = {
 };
 const OFFLINE_HEAD = `<script>try{Object.defineProperty(Navigator.prototype,'onLine',{get:function(){return false}})}catch(e){}</script>`;
 
+// ---------------------------------------------------------------- Stamps (REASON_WEB_DAILY), sample stamps only
+const wst = await imp("src/pages/webstamps.js");
+const stampsMod = await imp("src/stamps.js");
+const madeMod = await imp("src/pages/made.js");
+const STAMP_DAY = 86_400_000;
+const stampSample = (list) => list.map(([type, detail], i) => {
+  const row = { id: 9000 + i, conversation_id: CONV, type, ref: `sample:${i}`, earned_at: now - (list.length - i) * 4 * STAMP_DAY, detail_json: JSON.stringify(detail), rotation: stampsMod.rotationFor(CONV, type, `sample:${i}`), message_id: 0 };
+  return { ...stampsMod.summarize(row), href: "/web?thread", row };
+});
+const STAMPS_MANY = stampSample([["first", {}], ["night_shift", { time: now }], ["three_in_one", { count: 3 }], ["early", { days: 9 }], ["human", { place: "a cable company" }], ["price_drop", { savedCents: 4000 }],
+  ["night_shift", { time: now }], ["long_hold", { minutes: 41 }], ["early", { days: 12 }], ["human", { place: "the airline" }], ["price_drop", { savedCents: 1800 }], ["long_hold", { minutes: 52 }]]);
+const stampsPage = (all, o = {}) => wst.renderStamps({ all, first: "Ama", csrf: "staging", now, ...o });
+const sharePublic = wst.renderSharePage({ face: stampsMod.publicFace(STAMPS_MANY.at(-1).row), line: stampsMod.publicLine(STAMPS_MANY.at(-1).row, "Ama"), shareId: "Sample12abcd" });
+
 // ---------------------------------------------------------------- every screen
 // [file, group, title, note, html, { signedOut, state, head }]
 const so = { signedOut: true };
@@ -341,6 +355,14 @@ const S = [
   ["settings-invite-name", "Settings", "Settings · invite needs a name", "", settings({ done: "invite-name" }), {}],
   ["settings-theme-night", "Settings", "Settings · theme Night", "", settings({ theme: "night", done: "theme" }), {}],
   ["settings-nothing-connected", "Settings", "Settings · nothing connected, no invites", "", settings({ connected: [], invitesView: null, browsers: browsers.slice(0, 1) }), {}],
+
+  ["stamps", "Stamps", "Stamps · many pages", "Page 2 of 2, NEW on the newest, share panel for The long hold, two hints on the blank spots.", stampsPage(STAMPS_MANY), {}],
+  ["stamps-page1", "Stamps", "Stamps · an earlier page", "A full page: no blank spots.", stampsPage(STAMPS_MANY, { page: 1 }), {}],
+  ["stamps-first", "Stamps", "Stamps · first stamp", "One stamp, seven blank spots.", stampsPage(STAMPS_MANY.slice(0, 1)), {}],
+  ["stamps-empty", "Stamps", "Stamps · empty", "Hints only; nothing to share yet.", stampsPage([]), {}],
+  ["stamps-shared", "Stamps", "Stamps · a link exists", "The link written out, STOP SHARING.", stampsPage(STAMPS_MANY, { share: { share_id: "Sample12abcd", show_name: 1 } }), {}],
+  ["stamp-share-public", "Stamps", "Shared stamp · public page", "heyreason.com/s/<id>: no sign-in, noindex.", sharePublic, so],
+  ["stamp-share-off", "Stamps", "Shared stamp · turned off", "Stop sharing → 410.", madeMod.renderTurnedOff({ host: "HEYREASON.COM", siteUrl: "https://heyreason.com" }), so],
 
   ["loader", "Global", "Loader", "The reas◯n·ing loader (plays on every load here).", home(), {}],
   ["error", "Global", "Something went wrong", "", wc.renderError(), {}],

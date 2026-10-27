@@ -511,6 +511,23 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     return await savedRequest({ account, path: sub === "saved" ? "" : sub.slice("saved/".length), method, query, headers, readBody, log });
   }
 
+  // ---- Stamps (src/pages/webstamps.js), behind REASON_WEB_DAILY: the book, a share made / stopped, the card saved ----
+  if (sub === "stamps" || String(sub ?? "").startsWith("api/stamps/")) {
+    if (account) {
+      const { stampsRequest } = await import("./webstamps.js");
+      const out = await stampsRequest({ account, path: sub === "stamps" ? "" : sub.slice("api/stamps/".length), method, query, headers, readBody, sec: SECURITY_HEADERS, log });
+      if (out) return out;
+    }
+    // Not for this browser: exactly what these addresses answered before they existed — E1 for a GET,
+    // the server's flat JSON 404 for anything else — so with the flag off nothing changed.
+    if (method !== "GET" && method !== "HEAD") {
+      const body = JSON.stringify({ error: "not found" });
+      return { status: 404, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) }, body };
+    }
+    const { renderWebNotFound } = await import("./webedge.js");
+    return page(404, renderWebNotFound({ signedIn: !!account }));
+  }
+
   // ---- Settings (src/pages/websettings.js): the page, and its one POST for every control ----
   if (sub === "settings") {
     if (!account) return redirect("/web");
