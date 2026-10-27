@@ -393,6 +393,19 @@ export async function webRequest({ sub = null, method, query = {}, headers = {},
     return convo.streamRequest({ account, headers, query, router, log });
   }
 
+  // ---- Memory (src/pages/webmemory.js): the list, and correct / forget / a guess answered. Signed in only. ----
+  if (sub === "memory" || /^memory\/(correct|forget|guess)$/.test(sub ?? "")) {
+    if (!account) {
+      if (String(headers.accept ?? "").includes("application/json")) {
+        const body = JSON.stringify({ ok: false, error: "signed_out" });
+        return { status: 401, headers: { "Content-Type": "application/json; charset=utf-8", ...SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) }, body };
+      }
+      return redirect("/web");
+    }
+    const { memoryRequest } = await import("./webmemory.js");
+    return await memoryRequest({ account, action: sub === "memory" ? null : sub.slice("memory/".length), method, query, headers, readBody, log });
+  }
+
   // ---- the "coming soon" pages behind MEMORY and SETTINGS (phases 3 and 4) ----
   if (sub === "memory" || sub === "settings") {
     if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });

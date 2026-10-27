@@ -29,7 +29,8 @@
 //   POST /web/signin|code|signout     ask for the code, type it, sign this browser out — all 404 while REASON_WEB is off
 //   GET  /web/history|stream, POST /web/send   the conversation: older/newer lines, live events, a message (src/pages/webconvo.js)
 //   GET  /web/live                    the same live events, asked for on the pages host by the website's page (CORS: that origin only)
-//   GET  /web/memory|settings         "coming soon" pages behind MEMORY and SETTINGS (phases 3, 4)
+//   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
+//   GET  /web/settings                "coming soon" page behind SETTINGS (phase 4)
 //   GET  /web/fonts/{serif|roman|hand|handbold|sans}.woff2  Web's own faces (src/pages/webkit.js; 404 while off)
 //        /web…  on the pages host, not signed by the website: 301 to {REASON_SITE_URL}/web… (src/pages/siteproxy.js)
 //   POST /agentcard/webhook           a card landed in somebody's vault, or a payment was approved
@@ -240,7 +241,8 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(ok ? 204 : 403, ok ? { "Access-Control-Allow-Origin": site, "Access-Control-Allow-Credentials": "true", "Access-Control-Allow-Methods": "GET", "Access-Control-Allow-Headers": "last-event-id", "Access-Control-Max-Age": "600", Vary: "Origin", "Content-Length": 0 } : { "Content-Length": 0 });
         return res.end();
       }
-      const webRoute = /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings))?$/.exec(url.pathname);
+      const webRoute = /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings))?$/.exec(url.pathname)
+        ?? /^\/web\/(memory\/(?:correct|forget|guess))$/.exec(url.pathname);
       if (webRoute && webOn()) {
         let out;
         try {
