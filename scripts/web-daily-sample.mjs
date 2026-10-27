@@ -41,7 +41,8 @@ export function dailySamples(now = Date.UTC(2026, 9, 27, 13, 0)) {
 }
 
 /** A stand-in for src/stamps.js stampMarkup in staging: the reference's round stamp, drawn the same way. */
-export function sampleStampMarkup(s, { size = 96 } = {}) {
+export function sampleStampMarkup(s, { size: scale = 0.8 } = {}) {
+  const size = Math.round(120 * scale);
   const [eyebrow, ...rest] = s.name.toUpperCase().split(" ");
   return `<span role="img" aria-label="${s.ariaLabel}" style="width:${size}px;height:${size}px;flex-shrink:0;border-radius:50%;border:3px double var(--pen);color:var(--pen);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;transform:rotate(${s.rotation}deg);font-family:var(--mono);font-weight:700;text-align:center">`
     + `<span style="font-size:10px;letter-spacing:.12em">${eyebrow}</span><span style="font-size:13px;letter-spacing:.06em">${rest.join(" ")}</span><span style="font-size:9px;letter-spacing:.12em">${s.detail}</span></span>`;

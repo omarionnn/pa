@@ -369,6 +369,6 @@ test("13. new in your book: hidden without a stamp; drawn by src/stamps.js when 
   assert.doesNotMatch(renderDaily({ edition: base, csrf: "x" }), /NEW IN YOUR BOOK/);
   const stamp = { id: "s1", type: "long_hold", name: "The long hold", detail: "52 MIN", story: "I sat on hold for 52 minutes so you didn't have to.", earnedAt: TUE_9AM - D, shape: "round", ink: "pen", rotation: -8, ariaLabel: "Stamp: The long hold, 52 minutes" };
   const html = renderDaily({ edition: { ...base, newestStamp: stamp }, csrf: "x", stamps: true, stampMarkup: (s, { size }) => `<span role="img" aria-label="${s.ariaLabel}" data-size="${size}"></span>` });
-  assert.match(html, /<a class="dd-nb" href="\/web\/stamps"><span class="dd-nbs"><span role="img" aria-label="Stamp: The long hold, 52 minutes" data-size="96"><\/span><\/span><span class="dd-nbt"><span class="dd-lbl sm">NEW IN YOUR BOOK<\/span><span class="dd-nbl">I sat on hold for 52 minutes so you didn&#39;t have to\.<\/span>/);
+  assert.match(html, /<a class="dd-nb" href="\/web\/stamps"><span class="dd-nbs"><span role="img" aria-label="Stamp: The long hold, 52 minutes" data-size="0.8"><\/span><\/span><span class="dd-nbt"><span class="dd-lbl sm">NEW IN YOUR BOOK<\/span><span class="dd-nbl">I sat on hold for 52 minutes so you didn&#39;t have to\.<\/span>/);
   assert.match(html, /href="\/web\/stamps">STAMPS</);
 });

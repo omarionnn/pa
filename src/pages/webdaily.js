@@ -102,7 +102,7 @@ function pickupHtml(p, { now, tz }) {
  * (src/stamps.js) when that build is in; `stamps` says whether /web/stamps exists for the header.
  */
 export function renderDaily({ edition: ed, csrf, now = clock.now(), stampMarkup = null, stamps = false }) {
-  const aside = questionHtml(ed.question, csrf) + stampHtml(ed.newestStamp, ed.newestStamp && stampMarkup ? stampMarkup(ed.newestStamp, { size: 96 }) : "");
+  const aside = questionHtml(ed.question, csrf) + stampHtml(ed.newestStamp, ed.newestStamp && stampMarkup ? stampMarkup(ed.newestStamp, { size: 0.8 }) : "");
   const body = dailyHead("home", { stamps })
     + `<main class="dd" id="edition"><div class="dd-mast"><p class="dd-lbl">NO. ${Number(ed.issueNumber)} · THE ${esc(weekday(ed.date).toUpperCase())} EDITION</p>`
     + `<h1 class="dd-date">${esc(fullDate(ed.date))}</h1><p class="dd-greet">${esc(ed.greeting)}</p>`
