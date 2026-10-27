@@ -360,10 +360,9 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // Whose Reason this is. Their name is in the prompt and on their own messages, so the model is
   // talking to the person in front of it rather than to whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
-  // What they have really bought (src/purchasesnote.js), on a message that is about buying. Started
-  // here, before anything else is gathered, so its one small side call (only made when they have a
-  // purchase on record) runs alongside the context below and is awaited only where the notes meet.
-  const purchasesPending = startPurchasesNote(conversationId, { text, kind, messages, log });
+  // What they have really bought (src/purchasesnote.js): on their message whenever they have a
+  // purchase on record, with no side call — the model judges whether it is about buying.
+  const purchasesPending = startPurchasesNote(conversationId, { text, kind, log });
   // "(web)" after their name when the line came from Reason Web, so the model knows where it is being
   // spoken to and answers there; a text carries no label, as it always has.
   const prefix = kind === "event" ? `[event ${stamp()}]` : `[${stamp()}] ${me.name === "the person I work for" ? "them" : me.name}${toolCtx.channel === "web" ? " (web)" : ""}:`;
@@ -470,8 +469,7 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
       graphContext = buildGraphContext(conversationId, text);
     } catch {}
   }
-  // What they have really bought, from the database (src/purchasesnote.js), when the message is about
-  // buying — read from its meaning, with #94's structural signals as the fallback. A cancelled order
+  // What they have really bought, from the database (src/purchasesnote.js). A cancelled order
   // that is only "placed" in the thread is a lie waiting to be told: 2026-10-24, "the Walmart order
   // already went through" about an order AgentCard had cancelled.
   const purchases = await purchasesPending;

@@ -40,15 +40,6 @@ export const config = {
   // forced tool_choice the screen uses. A small fast model on the API classifies the same thing in
   // ~1s, so a call screens on this rather than on the global (CLI) backend. Text is unaffected.
   callHarmModel: process.env.REASON_CALL_HARM_MODEL || process.env.REASON_HARM_MODEL || "claude-haiku-5-5",
-  // The meaning gate on the purchase block (src/purchasesnote.js startPurchasesNote): is this message
-  // about buying? One yes/no on the small side-call model, over the API, only when they have a purchase
-  // on record. Its own setting, not REASON_HARM_MODEL: an install that put the screen on opus must
-  // not put this on it too. Past the timeout the block falls back to #94's structural signals.
-  purchaseTopicModel: process.env.REASON_PURCHASE_TOPIC_MODEL || "claude-haiku-5-5",
-  purchaseTopicTimeoutMs: Number(process.env.REASON_PURCHASE_TOPIC_TIMEOUT_MS || 1_800),
-  // When the API ask cannot answer at all (no credit, down), the CLI is asked instead, on its own
-  // longer budget: a cold `claude -p` start is ~3s and never fits inside the API one.
-  purchaseTopicCliTimeoutMs: Number(process.env.REASON_PURCHASE_TOPIC_CLI_TIMEOUT_MS || 12_000),
   // Per attempt, on the API. A text's screen makes two attempts before it says `unscreened`.
   harmTimeoutMs: Number(process.env.REASON_HARM_TIMEOUT_MS || 8_000),
   // Strikes: this many 'harm' refusals inside this many hours pauses that person's Reason and
