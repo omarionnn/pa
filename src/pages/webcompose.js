@@ -144,6 +144,8 @@ export const COMPOSE_CSS = `
 .cform input[type=text]:not(:placeholder-shown)~.c-mic{display:none}
 .on-line{list-style:none;margin:0;padding:8px 0 4px;display:flex;flex-wrap:wrap;gap:10px}
 .on-line[hidden]{display:none}
+.composer.has-files .on-line{border-top:1px solid var(--ink);padding-top:14px}
+.composer.has-files .cform{border-top:0;padding-top:4px}
 .on-line li{display:inline-flex;align-items:center;gap:10px;background:var(--lifted);border:1px solid var(--hair);border-radius:2px;box-shadow:var(--sh);padding:6px 4px 6px 10px;transform:rotate(.5deg);max-width:100%;min-width:0}
 .on-line li:nth-child(odd){transform:rotate(-.6deg)}
 .on-line li.ph{padding-left:6px}
@@ -207,7 +209,7 @@ var R=window.REASON_WEB||{},A=R.api,form=document.querySelector('.cform');if(!fo
 var comp=form.closest('.composer'),box=document.getElementById('c-input'),add=form.querySelector('.c-add'),pick=form.querySelector('.c-file'),mic=form.querySelector('.c-mic'),shelf=comp.querySelector('.on-line'),note=comp.querySelector('.c-note'),body=document.body;
 var files=[],blobs={},noteT=0;
 function say(t){if(!note)return;note.textContent=t;note.hidden=!t;clearTimeout(noteT);if(t)noteT=setTimeout(function(){note.hidden=true},9000)}
-function sync(){var any=files.length>0;form.classList.toggle('has-files',any);box.required=!any;shelf.hidden=!any}
+function sync(){var any=files.length>0;form.classList.toggle('has-files',any);comp.classList.toggle('has-files',any);box.required=!any;shelf.hidden=!any}
 function slip(f){var li=document.createElement('li');if(f.kind==='image')li.className='ph';if(f.busy)li.dataset.busy='1';
 if(f.kind==='image'){var th=document.createElement(f.preview?'img':'span');th.className='th';if(f.preview){th.src=f.preview;th.alt=''}li.appendChild(th)}
 var n=document.createElement('span');n.className='nm';n.textContent=f.label;li.appendChild(n);
