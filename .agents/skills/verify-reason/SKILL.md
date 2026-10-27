@@ -381,16 +381,18 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
 
 See [features/scheduled-calls.md](features/scheduled-calls.md).
 
-**7 — Reason Web memory, over real HTTP.** The page, CORRECT/FORGET as links, the form posts and the
-script's JSON posts, guesses yes/no, cross-account and cross-site refusals, checked against the store,
-`recall` and the profile note. The filer gets a scripted reader; no model is called.
+**7 — Reason Web memory + chat history, over real HTTP.** The page, CORRECT/FORGET as links, the form
+posts and the script's JSON posts, guesses yes/no, at volume (counts, Show N more, a filter, the guess
+card, search with pen underlines), chat history (days, a day read-only, search, 404, signed out),
+cross-account and cross-site refusals, checked against the store, `recall` and the profile note. The
+filer gets a scripted reader; no model is called.
 
 ```bash
 eval "$(bin/caged.sh env | sed 's/^/export /')" \
-  && REASON_DB_PATH=$(mktemp -d)/mem.db node bin/web-memory-drive.mjs   # 17 steps, all ok
+  && REASON_DB_PATH=$(mktemp -d)/mem.db node bin/web-memory-drive.mjs   # 27 steps, all ok
 ```
 
-See [features/web-memory.md](features/web-memory.md).
+See [features/web-memory.md](features/web-memory.md) and [features/web-history.md](features/web-history.md).
 
 ### Baseline — 3,878 pass, **0 failures** after Reason Web Settings (wt/web-settings, 2026-10-26)
 
@@ -616,7 +618,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 to drive it here, and what end state proves it. That map is the maintained source — when you change
 behaviour, change its feature file in the same commit.
 
-Reason Web Ongoing (tab, margin, details 2A–2E + approval, 9D): [features/web-ongoing.md](features/web-ongoing.md);
+Reason Web Ongoing (tab, margin, at volume + See all 2A–2C, home rows, details 2A–2E + approval, 9D): [features/web-ongoing.md](features/web-ongoing.md);
 `bin/web-ongoing-preview.mjs` draws every state beside the handoff's reference pages.
 
 ## Facts worth not rediscovering

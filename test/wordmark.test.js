@@ -29,7 +29,7 @@ test("the wordmark is the site's: reas, the bubble, n — and its font is inline
   assert.match(WORDMARK_CSS, /src:url\(data:font\/woff2;base64,[A-Za-z0-9+/=]{1000,}\)/);
   assert.match(WORDMARK_CSS, /font:italic 400 1\.35rem\/1\.2 "Reason Wordmark"/);
   assert.match(WORDMARK_CSS, /letter-spacing:-\.01em/);
-  assert.match(WORDMARK_CSS, /stroke:#b03030;stroke-width:6/);
+  assert.match(WORDMARK_CSS, /stroke:#9c3b2e;stroke-width:6/);
   assert.doesNotMatch(WORDMARK_CSS, /https?:/, "nothing fetched from anywhere");
 });
 
@@ -63,6 +63,7 @@ test("the opening moment says reasoning with the same mark", () => {
 // footers and the link-preview cards too.
 // 2026-10-25, owner: the bubble goes brand orange too — the lighter one on every dark ground.
 // 2026-10-26, owner: the brand pen colour becomes brick red, #b03030 light / #e8765c dark.
+// 2026-10-26 ~23:45, owner: the pen moves to #9c3b2e light / #d46a5c dark.
 test("the bubble is the brand colour: light on light pages, the lighter one on dark pages, cards and covers", () => {
   assert.equal(WORDMARK_BUBBLE, BRAND_PEN);
   assert.equal(WORDMARK_BUBBLE_DARK, BRAND_PEN_DARK);
@@ -74,9 +75,9 @@ test("the bubble is the brand colour: light on light pages, the lighter one on d
   assert.ok(cover.generatedHtml("x").includes(`.mark .wm-bubble path{stroke:${BRAND_PEN_DARK}}`));
 });
 
-test("one brand red: #b03030 light, a lighter brick dark, both AA for small text", () => {
-  assert.equal(BRAND_PEN, "#b03030");
-  assert.equal(BRAND_PEN_DARK, "#e8765c");
+test("one brand red: #9c3b2e light, a lighter brick dark, both AA for small text", () => {
+  assert.equal(BRAND_PEN, "#9c3b2e");
+  assert.equal(BRAND_PEN_DARK, "#d46a5c");
   const lum = (h) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255)
     .map(c => c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4)
     .reduce((a, c, i) => a + c * [.2126, .7152, .0722][i], 0);

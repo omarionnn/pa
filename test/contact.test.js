@@ -270,7 +270,7 @@ test("a page names its picture, always keyed — a page is only ever its owner's
   const u = new URL(img.replace(/&amp;/g, "&"));
   assert.equal(u.pathname, `/p/${page.id}/card.png`);
   assert.equal(u.searchParams.get("k"), key, "the fetcher already holds this key");
-  assert.equal(u.searchParams.get("v"), "1-pen2", "revision and the pen it is drawn in");
+  assert.equal(u.searchParams.get("v"), "1-pen3", "revision and the pen it is drawn in");
   // The icon is on the page's own host (root-relative), never the Tailscale address (10-26).
   assert.match(res.body, /<link rel="apple-touch-icon" href="\/apple-touch-icon\.png\?v=[0-9a-f]{10}">/);
   assert.doesNotMatch(res.body, /rel="(?:apple-touch-)?icon"[^>]*href="https?:/);
