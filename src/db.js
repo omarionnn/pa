@@ -1505,6 +1505,14 @@ addColumnIfMissing("threads", "web_hint_due", "INTEGER NOT NULL DEFAULT 0");
 // The first time this person opened their conversation on Web: the history boundary is explained
 // once, then never again (spec §9: "not a recurring popup").
 addColumnIfMissing("accounts", "web_notice_seen_at", "INTEGER");
+// Reason Web Settings (2026-10-26). `web_reach`: where a finished job's result goes — 'web' keeps
+// it on Web (Reason Web Settings, "Keep routine results here"), anything else (NULL, 'text') texts it
+// as it always has. `web_theme`: paper | night | auto, chosen on Web, so every browser opens in it;
+// NULL = never chosen, and the browser's own switch decides. `page_sessions.user_agent`: the browser
+// a session was last used from, for the signed-in browsers list.
+addColumnIfMissing("accounts", "web_reach", "TEXT");
+addColumnIfMissing("accounts", "web_theme", "TEXT");
+addColumnIfMissing("page_sessions", "user_agent", "TEXT");
 // The short plain title an Ongoing row shows on Web, written once when the row is made (src/itemtitle.js).
 addColumnIfMissing("tasks", "label", "TEXT");
 addColumnIfMissing("timers", "label", "TEXT");
@@ -5455,6 +5463,50 @@ export function endPageSession(token) {
 export function endPageSessionsFor(conversationId) {
   if (!conversationId) return 0;
   return Number(db.prepare("DELETE FROM page_sessions WHERE conversation_id = ?").run(conversationId).changes);
+}
+
+/**
+ * Every browser one person is signed in on (Reason Web Settings): token, when it was made, when it
+ * was last used and the browser it was last used from. Newest use first. Rows past `maxAgeMs` since
+ * made, or `idleMs` unused, are not listed: they open nothing.
+ */
+export function pageSessionsFor(conversationId, { maxAgeMs = Infinity, idleMs = Infinity } = {}) {
+  if (!conversationId) return [];
+  const now = clock.now();
+  return db.prepare("SELECT token, created_at, last_seen_at, user_agent FROM page_sessions WHERE conversation_id = ? ORDER BY last_seen_at DESC, created_at DESC")
+    .all(conversationId).filter(r => now - r.created_at <= maxAgeMs && now - r.last_seen_at <= idleMs);
+}
+
+/** The browser a session was just used from. Written only when it changed, capped at 300 characters. */
+export function notePageSessionAgent(token, userAgent) {
+  const ua = String(userAgent ?? "").slice(0, 300);
+  if (!token || !ua) return false;
+  return db.prepare("UPDATE page_sessions SET user_agent = ? WHERE token = ? AND (user_agent IS NULL OR user_agent != ?)").run(ua, String(token), ua).changes === 1;
+}
+
+/** Sign one of THIS person's browsers out. A token that is somebody else's is untouched. */
+export function endPageSessionOf(conversationId, token) {
+  if (!conversationId || !token) return false;
+  return db.prepare("DELETE FROM page_sessions WHERE token = ? AND conversation_id = ?").run(String(token), conversationId).changes === 1;
+}
+
+/** Where a finished job's result goes for this person: 'web' (kept on Web) or 'text' (texted, the default). */
+export function webReach(conversationId) {
+  return db.prepare("SELECT web_reach FROM accounts WHERE conversation_id = ?").get(conversationId)?.web_reach === "web" ? "web" : "text";
+}
+export function setWebReach(conversationId, value) {
+  if (value !== "web" && value !== "text") throw new Error(`web_reach must be web or text, not ${value}`);
+  return db.prepare("UPDATE accounts SET web_reach = ? WHERE conversation_id = ?").run(value, conversationId).changes === 1;
+}
+
+/** The theme this person chose on Web (paper | night | auto), or null when they never chose one. */
+export function webTheme(conversationId) {
+  const t = db.prepare("SELECT web_theme FROM accounts WHERE conversation_id = ?").get(conversationId)?.web_theme;
+  return ["paper", "night", "auto"].includes(t) ? t : null;
+}
+export function setWebTheme(conversationId, value) {
+  if (!["paper", "night", "auto"].includes(value)) throw new Error(`web_theme must be paper, night or auto, not ${value}`);
+  return db.prepare("UPDATE accounts SET web_theme = ? WHERE conversation_id = ?").run(value, conversationId).changes === 1;
 }
 
 /** How many browsers one person is signed in on. */
