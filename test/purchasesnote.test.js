@@ -25,7 +25,7 @@ process.env.REASON_CONVERSATION = "dm:owner";
 
 const db = await import("../src/db.js");
 const { clock } = await import("../src/config.js");
-const { purchasesNote, shoppingMoment, statusWords, startPurchasesNote, setTopicReader, previousAssistant, topicPrompt } = await import("../src/purchasesnote.js");
+const { purchasesNote, shoppingMoment, statusWords, startPurchasesNote, previousAssistant, ONLY_IF_BUYING } = await import("../src/purchasesnote.js");
 const agent = await import("../src/agent.js");
 const { userMessageFor } = agent;
 const { config } = await import("../src/config.js");
@@ -43,9 +43,8 @@ const CERAVE = "Cerave PM Niacinamide & Hyaluronic Acid Facial Moisturizer For A
 const setClock = (ms) => { clock.reset(); clock.skip(ms - clock.now()); };
 
 const realCreate = agent.model.create;
-after(() => { setTopicReader(null); agent.model.create = realCreate; rmSync(dir, { recursive: true, force: true }); });
+after(() => { agent.model.create = realCreate; rmSync(dir, { recursive: true, force: true }); });
 beforeEach(() => {
-  setTopicReader(null);
   setClock(INCIDENT);
   db.db.exec("DELETE FROM agentcard_purchases; DELETE FROM conversations; DELETE FROM action_ledger; DELETE FROM offers;");
   db.upsertAccount({ conversationId: C, channel: "test", address: "+12025551234", name: "Omari", isOperator: true });
@@ -164,14 +163,15 @@ test("purchases_recent answers on a turn with no block, and reaches further back
 
 // ---------- when it rides ----------
 
-test("pinned: a turn with nothing to do with buying gets no block, though purchases are on record", async () => {
+test("pinned: with no shopping going on the structural signals are off — and their message still carries the block as background (2026-10-27)", async () => {
   // Bought five days ago, nothing since: no row moved in 48h, no buying tool, no offer read.
   purchase({ buy: "conv_old", status: "placed", merchant: "Amazon", what: "phone charger", at: clock.now() - 5 * DAY });
   ledger("web_search", HOUR); // something else ran recently; it is not a shopping flow
   assert.equal(shoppingMoment(C), "");
   assert.equal(purchasesNote(C), "");
+  // The main model is the one that judges an off-topic message; it is told to leave the block be.
   const prompt = await cliTurn("what's the weather tomorrow");
-  assert.doesNotMatch(prompt, /PURCHASES/);
+  assert.match(prompt, /PURCHASES ON RECORD[^]*Background only: use this when their message is about buying/);
 });
 
 test("a shopping flow going on switches it on: a buying tool or an offer read in the last 6 hours", () => {
@@ -259,19 +259,12 @@ test("every status reads in plain words", () => {
   assert.match(statusWords("partially_placed"), /partly/);
 });
 
-// ---------- the meaning gate (2026-10-24, after #94) ----------
+// ---------- no side call: the main model reads the meaning (2026-10-27, replacing #95's gate) ----------
 //
-// The block rides only on a message that is ABOUT buying, read by one small side call — stubbed here,
-// the live lane in test/flow-purchases-topic.test.js asks the real model. What is tested is the
-// wiring: the call is made only when there is something to show, the answer switches the block,
-// and a check that fails falls back to #94's structural signals.
-
-/** A stub for the side call that answers `about` and remembers what it was asked. */
-function reader(about) {
-  const asked = [];
-  setTopicReader(async (q) => { asked.push(q); return typeof about === "function" ? about(q) : { about }; });
-  return asked;
-}
+// The "is this about buying?" side call held every turn with a purchase on record ~5.3s on the
+// claude-cli backend, failed 11 times a day, and went to the paid Anthropic API 31 times a day. Now
+// the block rides on every message of theirs while there is a purchase in the window, under a line
+// that leaves relevance to the main model — a superset of the turns it rode on before.
 
 /** An API-path turn with the model stubbed: what it was handed (tools and the turn's message). */
 async function apiTurn(text) {
@@ -288,124 +281,97 @@ async function apiTurn(text) {
   return { tools: params.tools.map(t => t.name), body };
 }
 
-test("pinned: off-topic ('what's the weather') with purchases on record and the check saying no — no block, on both backends", async () => {
+/** Every Anthropic API ask made while `f` runs, trapped at the SDK (the CLI is pinned by the source check). */
+async function counted(f) {
+  const Anthropic = (await import("@anthropic-ai/sdk")).default;
+  const proto = Anthropic.Messages?.prototype ?? Object.getPrototypeOf(new Anthropic({ apiKey: "x" }).messages);
+  const realApi = proto.create;
+  let api = 0;
+  proto.create = function () { api++; throw new Error("no API call may be made"); };
+  const savedKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = "sk-test-must-not-be-used";
+  try { return { out: await f(), api }; } finally {
+    proto.create = realApi;
+    if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = savedKey;
+  }
+}
+
+test("pinned 2026-10-27: the purchases note never calls the Anthropic API, even with a key set", async () => {
   theMorning();
-  assert.equal(shoppingMoment(C), "purchase_row_changed", "the structural signal alone would have shown it");
-  const asked = reader(false);
-  assert.doesNotMatch(await cliTurn("what's the weather"), /PURCHASES/);
-  assert.equal(asked.length, 1);
-  assert.equal(asked[0].text, "what's the weather");
-  theMorning();
-  const api = await apiTurn("what's the weather");
-  assert.doesNotMatch(api.body, /PURCHASES/);
-  assert.equal(asked.length, 2);
+  const { out, api } = await counted(async () => [await startPurchasesNote(C, { text: ASK }), await startPurchasesNote(C, { text: "what's the weather" }), await cliTurn("any update on the order?")]);
+  assert.equal(api, 0);
+  assert.match(out[0], /CANCELLED by the shop/);
+  assert.match(out[2], /PURCHASES ON RECORD/);
+  const src = readFileSync(new URL("../src/purchasesnote.js", import.meta.url), "utf8");
+  assert.doesNotMatch(src, /@anthropic-ai\/sdk|callApi|askStructuredViaCli|messages\.create/, "no model call of any kind lives in purchasesnote.js");
 });
 
-test("pinned 2026-10-24: the incident message, check says yes — the block shows the cancelled order", async () => {
+test("pinned 2026-10-27: the note is settled at once — nothing in the turn waits on it", async () => {
   theMorning();
-  const asked = reader(true);
+  const t0 = Date.now();
+  const p = startPurchasesNote(C, { text: ASK });
+  let settled = false;
+  p.then(() => { settled = true; });
+  await Promise.resolve(); await Promise.resolve();
+  assert.ok(settled, "resolved on the next microtask, no network or child process behind it");
+  assert.ok(Date.now() - t0 < 200);
+  const t1 = Date.now();
+  assert.match(await cliTurn(ASK), /CANCELLED by the shop/);
+  assert.ok(Date.now() - t1 < 2_000, "the turn is not held by a purchase check");
+});
+
+test("pinned 2026-10-24: the incident message — the block shows the cancelled order, on both backends", async () => {
+  theMorning();
   const prompt = await cliTurn(ASK);
   assert.match(prompt, /PURCHASES ON RECORD/);
   assert.match(prompt, /Walmart · Cerave PM .* · \$16\.76 · CANCELLED by the shop, not coming/);
-  assert.equal(asked[0].text, ASK);
-  assert.equal(asked[0].previous, "done, the cerave's ordered from walmart. $16.76", "shown Reason's last message");
   theMorning();
   assert.match((await apiTurn(ASK)).body, /CANCELLED by the shop, not coming/);
 });
 
-test("pinned: 'any updates on the order?' — yes, and the block rides", async () => {
-  // Five days old and nothing moved since: no structural signal, so only the meaning switches it on.
+test("pinned: 'any updates on the order?' five days after, nothing moved since — the block still rides", async () => {
   purchase({ buy: "conv_old", status: "placed", merchant: "Amazon", what: "phone charger", at: clock.now() - 5 * DAY });
-  assert.equal(shoppingMoment(C), "");
-  const asked = reader(true);
-  const prompt = await cliTurn("any updates on the order?");
-  assert.match(prompt, /PURCHASES ON RECORD[^]*Amazon · phone charger · \$16\.76 · placed/);
-  assert.equal(asked.length, 1);
+  assert.equal(shoppingMoment(C), "", "no structural signal");
+  assert.match(await cliTurn("any updates on the order?"), /PURCHASES ON RECORD[^]*Amazon · phone charger · \$16\.76 · placed/);
+  assert.match((await apiTurn("any updates on the order?")).body, /Amazon · phone charger/);
 });
 
-test("pinned: the check timing out or failing falls back to the structural signals", async () => {
-  const saved = config.purchaseTopicTimeoutMs;
-  config.purchaseTopicTimeoutMs = 40;
-  try {
-    // Timeout, incident state (a row changed 9 minutes ago): the block still shows.
-    theMorning();
-    let aborted = false;
-    setTopicReader(({ signal }) => new Promise(() => { signal.addEventListener("abort", () => { aborted = true; }); }));
-    const logs = [];
-    const note = await startPurchasesNote(C, { text: ASK, log: (x) => logs.push(x) });
-    assert.match(note, /CANCELLED by the shop/);
-    assert.ok(aborted, "the hung request is aborted, not left running");
-    assert.match(logs.find(x => x.purchases_topic_failed).purchases_topic_failed, /timeout after 40ms/);
-    assert.equal(logs.find(x => x.purchases_topic === "structural").why, "check_failed");
-    const t0 = Date.now();
-    assert.match(await cliTurn(ASK), /CANCELLED by the shop/);
-    assert.ok(Date.now() - t0 < 2_000, "the timeout is hard");
-
-    // An error, incident state: the block still shows.
-    setTopicReader(async () => { throw new Error("529 overloaded"); });
-    assert.match(await cliTurn(ASK), /CANCELLED by the shop/);
-    // An answer that is neither: the same.
-    setTopicReader(async () => ({ about: "maybe" }));
-    assert.match(await startPurchasesNote(C, { text: ASK }), /CANCELLED/);
-
-    // An error with no structural signal (bought 5 days ago, nothing since): no block, as in #94.
-    db.db.exec("DELETE FROM agentcard_purchases");
-    purchase({ buy: "conv_old", status: "placed", merchant: "Amazon", what: "phone charger", at: clock.now() - 5 * DAY });
-    setTopicReader(async () => { throw new Error("boom"); });
-    assert.equal(await startPurchasesNote(C, { text: "what's the weather" }), "");
-  } finally { config.purchaseTopicTimeoutMs = saved; }
+test("pinned: an off-topic message with purchases on record carries the block, marked background for the model to judge", async () => {
+  theMorning();
+  const logs = [];
+  const note = await startPurchasesNote(C, { text: "what's the weather", log: (x) => logs.push(x) });
+  assert.match(note, /CANCELLED/);
+  assert.ok(note.endsWith(ONLY_IF_BUYING), "the main model decides relevance from what the message means");
+  assert.equal(logs.find(x => x.purchases_note).why, "their_message");
+  assert.ok(!logs.some(x => "purchases_topic" in x || "purchases_topic_failed" in x), "no check is run or logged");
 });
 
-test("pinned: no purchase rows — the check is never called", async () => {
-  const asked = reader(true);
+test("pinned: no purchase rows — no block", async () => {
   ledger("offer_check", HOUR); // a shopping flow, but nothing on record
   db.recordAgentcardPurchase({ conversationId: C, buyConversationId: "conv_browse", status: "shopping" }); // cartless: not shown
   purchase({ buy: "conv_lamp", status: "placed", what: "desk lamp", at: clock.now() - 20 * DAY }); // outside the window
   assert.doesNotMatch(await cliTurn("any updates on the order?"), /PURCHASES/);
   assert.doesNotMatch((await apiTurn("any updates on the order?")).body, /PURCHASES/);
   assert.equal(await startPurchasesNote(C, { text: ASK }), "");
-  assert.equal(asked.length, 0);
 });
 
-test("pinned: purchases_recent is in the tool list on a turn whose block is off", async () => {
-  theMorning();
-  reader(false);
+test("pinned: purchases_recent is in the tool list on every turn", async () => {
   const api = await apiTurn("what's the weather");
-  assert.doesNotMatch(api.body, /PURCHASES/);
   assert.ok(api.tools.includes("purchases_recent"), "the model can still look it up itself");
-  assert.ok(toolsFor(C).some(t => t.name === "purchases_recent"));
   assert.match(toolsFor(C).find(t => t.name === "purchases_recent").description, /Check this before you say whether anything was ordered/);
 });
 
-test("the check runs alongside context building, not in front of it", async () => {
+test("an event turn is not a message: the structural signals decide, without the background line", async () => {
   theMorning();
-  const order = [];
-  setTopicReader(async () => { order.push("check started"); await new Promise(r => setTimeout(r, 30)); order.push("check done"); return { about: true }; });
-  const images = async () => { order.push("images started"); await new Promise(r => setTimeout(r, 30)); order.push("images done"); return { blocks: [], notes: [], seen: [], viewedMediaIds: [] }; };
-  assert.match(await cliTurn(ASK, { images }), /CANCELLED/);
-  assert.ok(order.indexOf("check started") < order.indexOf("images done"), order.join(" > "));
+  const note = await startPurchasesNote(C, { text: "timer fired", kind: "event" });
+  assert.match(note, /CANCELLED/);
+  assert.ok(!note.includes(ONLY_IF_BUYING));
+  db.db.exec("DELETE FROM agentcard_purchases");
+  purchase({ buy: "conv_old", status: "placed", merchant: "Amazon", what: "phone charger", at: clock.now() - 5 * DAY });
+  assert.equal(await startPurchasesNote(C, { text: "timer fired", kind: "event" }), "", "a sweep never raises an old purchase on its own");
 });
 
-test("an event turn is not a message: no side call, the structural signals decide", async () => {
-  theMorning();
-  const asked = reader(false);
-  assert.match(await startPurchasesNote(C, { text: "timer fired", kind: "event" }), /CANCELLED/);
-  assert.equal(asked.length, 0);
-});
-
-test("with no API key and no stub there is no side call: the structural signals decide", async () => {
-  theMorning();
-  setTopicReader(null);
-  const saved = process.env.ANTHROPIC_API_KEY;
-  delete process.env.ANTHROPIC_API_KEY;
-  try {
-    const logs = [];
-    assert.match(await startPurchasesNote(C, { text: "what's the weather", log: (x) => logs.push(x) }), /CANCELLED/);
-    assert.equal(logs.find(x => x.purchases_topic).why, "no_api_key");
-  } finally { if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved; }
-});
-
-test("what the check is shown: Reason's last message (a snippet) and the new message", () => {
+test("Reason's last message, as a snippet (the router uses it)", () => {
   const msgs = [
     { role: "user", content: "[x] Omari: get the cerave" },
     { role: "assistant", content: [{ type: "tool_use", id: "t", name: "purchase", input: {} }, { type: "text", text: "done, it's   ordered." }] },
@@ -415,9 +381,6 @@ test("what the check is shown: Reason's last message (a snippet) and the new mes
   assert.equal(previousAssistant(msgs), "done, it's ordered.");
   assert.equal(previousAssistant([{ role: "assistant", content: "x".repeat(500) }]).length, 300);
   assert.equal(previousAssistant([]), "");
-  const prompt = topicPrompt({ text: "any update?", previous: "done, it's ordered." });
-  assert.match(prompt, /last message, for context:\ndone, it's ordered\.[^]*The new message, verbatim:\nany update\?$/);
-  assert.equal(topicPrompt({ text: "hi" }), "The new message, verbatim:\nhi");
 });
 
 
@@ -455,8 +418,7 @@ const nested = (s) => { let d = 0; for (const ch of s) { if (ch === "(") { if (d
 
 test("pinned 2026-10-24: an order reply quoting the purchase-row amount is not flagged, on both backends", async () => {
   theMorning();
-  // The block is OFF (the check says no): the row alone has to vouch for the figure.
-  reader(false);
+  // The row itself vouches for the figure (purchaseRecordSource), block or no block.
   const said = "your walmart order for the cerave ($16.76) was cancelled — the store couldn't use the address. want me to try again?";
   assert.equal(await apiReply("what happened with my order", said), said);
   theMorning();
@@ -479,7 +441,6 @@ test("pinned 2026-10-24: an order reply quoting the purchase-row amount is not f
 
 test("pinned 2026-10-24: the purchases block, when it rides, is a source for the reply", async () => {
   theMorning();
-  reader(true);
   db.db.exec("UPDATE agentcard_purchases SET amount_cents = 1676"); // as on live
   const said = "the walmart one ($16.76) got cancelled, so nothing's coming";
   assert.equal(await cliReply("did my cerave ship", said), said);
@@ -497,7 +458,6 @@ test("pinned 2026-10-24: an amount from purchases_recent this turn is not flagge
 
 test("pinned 2026-10-24: an invented price is still flagged, with the record in play", async () => {
   theMorning();
-  reader(true);
   const sent = await apiReply("is target cheaper", "target has it for $12.49, cheaper than the walmart one at $16.76");
   assert.equal(sent, "target has it for $12.49 (unverified), cheaper than the walmart one at $16.76");
   theMorning();
@@ -571,25 +531,4 @@ test("pinned 2026-10-24: purchase_track answers from the local row when AgentCar
     const theirs = await runTool("purchase_track", { order_id: "e66d7f2b" }, { conversationId: OTHER, messages: [] });
     assert.equal(theirs.blocked, "not_theirs");
   } finally { config.agentcardClientId = saved; }
-});
-
-
-// ---------- the meaning gate's own reply (2026-10-24) ----------
-//
-// "the check answered \"\"" 13 times out of 16 live answers: max_tokens was 3, and a reply that
-// opened with a newline or markdown spent all three before the word. Room for the word, and the
-// word read out of whatever it is wrapped in.
-
-test("pinned: the purchase-topic ask has room for its answer and reads yes/no out of any wrapping", async () => {
-  const { askTopicApi, readYesNo, TOPIC_MAX_TOKENS } = await import("../src/purchasesnote.js");
-  assert.ok(TOPIC_MAX_TOKENS >= 16, `max_tokens ${TOPIC_MAX_TOKENS} leaves no room`);
-  for (const [said, want] of [["yes", true], ["Yes.", true], ["\n\nyes", true], ["**No**", false], ["Answer: no", false], ["no\n\n", false], ["", null], ["\n\n", null], ["maybe", null], ["nothing", null], ["yesterday", null]]) {
-    assert.equal(readYesNo(said), want, JSON.stringify(said));
-  }
-  const asked = [];
-  const client = (text, stop = "end_turn") => ({ messages: { create: async (body) => { asked.push(body); return { content: [{ type: "text", text }], stop_reason: stop, usage: {} }; } } });
-  assert.equal((await askTopicApi({ text: "did it ship?", client: client("\n\nYes") })).about, true);
-  assert.equal(asked[0].max_tokens, TOPIC_MAX_TOKENS);
-  assert.equal((await askTopicApi({ text: "weather?", client: client("**no**") })).about, false);
-  await assert.rejects(askTopicApi({ text: "hm", client: client("\n\n", "max_tokens") }), /answered "" \(stop: max_tokens\)/);
 });

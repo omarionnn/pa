@@ -131,10 +131,9 @@ async function runTurnOnCli({
   // What it already knows about them (src/memorynote.js), started now so its one network call
   // runs while the pictures are fetched rather than after. Prompt only, never the saved thread.
   const remembering = kind === "event" ? Promise.resolve([]) : recall(conversationId, text, { log });
-  // What they have really bought (src/purchasesnote.js), on a message that is about buying — the same
-  // read as the API path, started now for the same reason: its side call runs while the rest is
-  // gathered, never in front of the reply. Shown Reason's last message, from the thread as it stands.
-  const purchasesPending = startPurchasesNote(conversationId, { text, kind, messages: loadConversation(historyId), log });
+  // What they have really bought (src/purchasesnote.js) — the same block as the API path. No side
+  // call: it rides whenever they have a purchase on record, and the model judges if it is relevant.
+  const purchasesPending = startPurchasesNote(conversationId, { text, kind, log });
   // A fresh source ledger for the reply check (src/offers.js), same as the API path.
   beginOfferTurn(conversationId, text, kind);
   const { blocks, notes, seen, viewedMediaIds } = await images(attachments, { log, cover: reviewed.cover });
@@ -210,8 +209,8 @@ async function runTurnOnCli({
     // API path carried would be a note nobody ever got: that is exactly how the back guide went
     // unoffered on 2026-10-06. Prompt only, never the saved conversation.
     const recentPhotos = kind === "event" ? "" : reviewed.recentPhotosNote(conversationId);
-    // What they have really bought (src/purchasesnote.js), when the message is about buying — the
-    // same read as the API path. The thread can still say "ordered" about an order since cancelled.
+    // What they have really bought (src/purchasesnote.js) — the same block as the API path. The
+    // thread can still say "ordered" about an order since cancelled.
     const purchases = await purchasesPending;
     // The block is Reason's own record, written by code: a figure in it is sourced for the reply check.
     if (purchases) noteOfferSource(conversationId, purchases);

@@ -13,18 +13,17 @@
 // now in plain words, under a line saying it overrides the chat. Tiny on purpose: at most a handful of
 // lines, no ids, and a `shopping` row that never got a cart is somebody browsing, not a purchase.
 //
-// WHEN the block rides (startPurchasesNote, 2026-10-24 follow-up to #94). Only on a message that is
-// about buying — orders, purchases, shopping, deliveries, refunds, returns, a product they might buy —
-// and that is read from what the message MEANS, by one tiny side call to the small model
-// (claude-haiku-5-5, the harm screen's and memory extractor's default, over the API; its own
-// REASON_PURCHASE_TOPIC_MODEL), never by regexes or keyword lists on their words (the repo's rule).
-// The side call is shown the new message and a snippet of Reason's last message, so "any update?"
-// right after an order thread counts. It is only made when there is something to show — at least one
-// purchase row in the 14-day window — so almost every turn costs nothing. It starts as context
-// building starts and runs alongside it, never in front of the reply, with a hard timeout
-// (REASON_PURCHASE_TOPIC_TIMEOUT_MS, 1.8s). On a timeout, an error, an install with no API key, or a
-// turn that is not a person's message (an event), it falls back to the structural signals of #94
-// below (shoppingMoment), so a failed check can never hide the block in the incident case.
+// WHEN the block rides (startPurchasesNote, 2026-10-27, replacing the meaning gate of #95). On every
+// message of theirs while they have a purchase in the 14-day window, under a line telling the model to
+// use it only when the message is about buying — so the main model, which is reading the message
+// anyway, is the one that judges what it means (the repo's rule: AI reads meaning, never regex).
+// There used to be a side call in front of that ("is this about buying?", yes/no on the small model):
+// in the 24h to 2026-10-27 21:00Z it ran 48 times live: 31 over the paid Anthropic API (which Reason
+// must never bill), 6 over claude-cli at ~5s each, and 11 that failed after ~5s ("the CLI reported
+// an error: no detail") — all of it in front of the reply. Showing the block on a superset of the turns it used
+// to ride on keeps the incident case covered with no call at all: nothing waits, nothing can fail,
+// nothing is billed. Turns that are not a person's message (events, sweeps) still go by the
+// structural signals below, so a timer never raises a purchase of its own accord.
 //
 // The structural signals (purchasesNote, and the fallback), which need no reading of the message:
 //   - a purchase row of theirs was created or changed in the last 48 hours (an order placed,
@@ -33,9 +32,6 @@
 //     them in that time (the offers table) — i.e. a shopping flow is going on right now.
 // The model can always read the same list itself with purchases_recent, whose description tells it to
 // check before saying whether anything was ordered.
-import Anthropic from "@anthropic-ai/sdk";
-import { callApi, cachedSystem, apiSkipWhy } from "./spend.js";
-import { askStructuredViaCli } from "./backends/cli.js";
 import * as db from "./db.js";
 import { refusalWhy, REFUSAL_WHOSE } from "./agentcard.js";
 import { config, clock } from "./config.js";
@@ -204,25 +200,18 @@ export function purchasesNote(conversationId, { now = clock.now(), days = PURCHA
   }
 }
 
-/** The block itself, from rows recentPurchases gave. */
-export function blockFor(rows, days = PURCHASE_DAYS) {
+/** Under the block on a person's message: the main model judges whether it is about buying. */
+export const ONLY_IF_BUYING = "Background only: use this when their message is about buying, an order, a purchase, shopping, a delivery, a refund, a return or a product they might buy (a follow-up like \"any update?\" after an order counts); otherwise do not bring it up.";
+
+/** The block itself, from rows recentPurchases gave. `background` adds the line above. */
+export function blockFor(rows, days = PURCHASE_DAYS, { background = false } = {}) {
   // A refused row says why and whose it was, from its own codes.
   // A cancelled one already says "by the shop", so whose it was rides only on a decline, where it
   // was missing; "no reason given" is left off to keep it tiny.
   const lines = rows.map(r => "- " + [r.date, r.merchant, r.item, r.amount, r.status,
     r.reason && r.reason !== "no reason given" ? `why: ${r.reason}${r.status.startsWith("CANCELLED") ? "" : ` (${r.whose})`}` : ""].filter(Boolean).join(" · "));
   const verdict = cardVerdict(rows);
-  return `PURCHASES ON RECORD (AgentCard, last ${days} days, newest first). ${OVERRIDES}\n${lines.join("\n")}${verdict ? `\n${verdict}` : ""}`;
-}
-
-// ---------- is this message about buying? (the meaning gate) ----------
-
-export const TOPIC_INSTRUCTIONS = `You sort ONE text that somebody sent to their personal assistant. The assistant can shop and buy things for them, and they have bought or tried to buy something through it in the last two weeks. Decide one thing: is the new message about buying, an order, a purchase, shopping, a delivery or shipping, a refund, a return, or a product they might buy? A follow-up that only makes sense as part of a conversation about one of those (for example "any update?" or "did it go through?" right after the assistant talked about an order) counts. Judge what the message means, not which words it uses. Anything else — weather, plans, people, questions about other things — is not. Answer with exactly one word: yes or no.`;
-
-/** What the side call is shown: Reason's last words (a snippet) and the new message. */
-export function topicPrompt({ text, previous = "" }) {
-  return (previous ? `The assistant's last message, for context:\n${previous}\n\n` : "")
-    + `The new message, verbatim:\n${String(text ?? "").slice(0, 1_000)}`;
+  return `PURCHASES ON RECORD (AgentCard, last ${days} days, newest first). ${OVERRIDES}\n${lines.join("\n")}${verdict ? `\n${verdict}` : ""}${background ? `\n${ONLY_IF_BUYING}` : ""}`;
 }
 
 /** A snippet of Reason's last message in the thread, newest last. "" when there is none. */
@@ -240,119 +229,18 @@ export function previousAssistant(messages = [], width = 300) {
   return "";
 }
 
-let client = null;
-const anthropic = () => (client ??= new Anthropic());
-
-/** One yes/no over the API on the small model. Throws on anything that is not a clean yes or no. */
-export async function askTopicApi({ text, previous = "", signal, timeoutMs = config.purchaseTopicTimeoutMs, client: sdk = null }) {
-  const res = await callApi({
-    feature: "purchase_topic", client: sdk ?? anthropic(),
-    params: {
-      model: config.purchaseTopicModel,
-      // Not 3 (#95, 2026-10-24): the answer is one word, but a reply that opens with a newline or
-      // markdown spends its few tokens on those and comes back "" — 13 of 16 live answers did.
-      max_tokens: TOPIC_MAX_TOKENS,
-      system: cachedSystem(TOPIC_INSTRUCTIONS),
-      messages: [{ role: "user", content: topicPrompt({ text, previous }) }],
-    },
-    // One ask, no SDK retry: a retry cannot land inside the budget, and the fallback is right there.
-    options: { timeout: timeoutMs, maxRetries: 0, signal },
-  });
-  // The model's own one-word answer, not the person's words: there is nothing to match in theirs.
-  const said = (res.content ?? []).filter(b => b.type === "text").map(b => b.text).join("");
-  const about = readYesNo(said);
-  if (about === null) throw new Error(`the check answered ${JSON.stringify(said.trim().slice(0, 20))} (stop: ${res.stop_reason ?? "?"})`);
-  return { about, usage: res.usage };
-}
-
-/** Room for "yes"/"no" plus whatever the model wraps it in. Still a few tokens; the cost is the input. */
-export const TOPIC_MAX_TOKENS = 16;
-
 /**
- * The model's yes or no out of whatever it wrapped it in — "yes", "Yes.", "\n\n**No**", "Answer: no".
- * The first yes/no word wins; anything with neither is null. Reads the model's reply only.
+ * The block for this turn, as a promise (the turn awaits it where the notes are put together; it is
+ * already settled, so nothing waits). No model is asked: on their message it rides whenever there is
+ * a purchase in the window, and on any other turn by the structural signals. Never rejects.
  */
-export function readYesNo(said) {
-  const m = String(said ?? "").toLowerCase().match(/\b(yes|no)\b/);
-  return m ? m[1] === "yes" : null;
-}
-
-/** For tests: what answers the meaning gate. `null` puts the real one back. */
-let topicReader = null;
-export function setTopicReader(f) { topicReader = f; }
-const TOPIC_SCHEMA = { type: "object", properties: { answer: { type: "string", enum: ["yes", "no"] } }, required: ["answer"], additionalProperties: false };
-
-/** The same yes/no on the subscription, for when the API cannot answer. Throws on anything else. */
-export async function askTopicCli({ text, previous = "", ask = askStructuredViaCli }) {
-  const r = await ask({ prompt: topicPrompt({ text, previous }), system: TOPIC_INSTRUCTIONS, schema: TOPIC_SCHEMA, model: config.midTurnCliModel, timeoutMs: config.purchaseTopicCliTimeoutMs, feature: "purchase_topic" });
-  const about = r?.value?.answer === "yes" ? true : r?.value?.answer === "no" ? false : null;
-  if (about === null) throw new Error(`cli: ${r?.error ?? "no yes or no"}`);
-  return { about, via: "cli" };
-}
-
-/**
- * The API on the small model first, and on the claude-cli backend the CLI when the API cannot
- * answer — no credit, down, refused (2026-10-25: with the key empty every check fell to the
- * structural signals). The CLI has its own longer budget; a cold start never fits the API's.
- */
-async function askTopic(args) {
-  let apiError = "no API key";
-  const skip = apiSkipWhy("purchase_topic");
-  if (process.env.ANTHROPIC_API_KEY && !skip) {
-    try { return await askTopicApi(args); } catch (e) { apiError = (e?.message ?? String(e)).split("\n")[0]; }
-  } else if (skip) apiError = skip;
-  if (process.env.REASON_BACKEND !== "claude-cli") throw new Error(apiError);
-  return await askTopicCli(args);
-}
-
-/**
- * Who reads the message: a test's stub, else the API (with the CLI behind it on the claude-cli
- * backend) — on every backend, like the harm screen. With neither there is none, and the structural
- * signals decide.
- */
-const reader = () => topicReader ?? (process.env.ANTHROPIC_API_KEY || process.env.REASON_BACKEND === "claude-cli" ? askTopic : null);
-/** The whole budget for a read: the API's, plus the CLI's when the CLI may be asked. */
-const budgetFor = (timeoutMs) => timeoutMs + (!topicReader && process.env.REASON_BACKEND === "claude-cli" ? config.purchaseTopicCliTimeoutMs : 0);
-
-/**
- * The block for this turn, as a promise — started as context building starts, awaited where the notes
- * are put together, so the side call runs alongside the rest and never in front of the reply. Never
- * rejects. See the header for when it rides and what it falls back to.
- */
-export function startPurchasesNote(conversationId, { text = "", kind = "user", messages = [], now = clock.now(), log = () => {}, timeoutMs = config.purchaseTopicTimeoutMs } = {}) {
+export function startPurchasesNote(conversationId, { text = "", kind = "user", now = clock.now(), log = () => {} } = {}) {
   try {
     const rows = recentPurchases(conversationId, { now });
-    // Nothing that would show: nothing to decide, and no call made.
     if (!rows.length) return Promise.resolve("");
-    const structural = (why) => {
-      log({ purchases_topic: "structural", why, conversation: conversationId });
-      return purchasesNote(conversationId, { now, log });
-    };
-    const read = reader();
-    if (kind !== "user" || !String(text ?? "").trim()) return Promise.resolve(structural("not_a_message"));
-    if (!read) return Promise.resolve(structural("no_api_key"));
-
-    const started = Date.now();
-    const ctl = new AbortController();
-    let timer;
-    const timedOut = new Promise((_, reject) => {
-      const budget = budgetFor(timeoutMs);
-      timer = setTimeout(() => { ctl.abort(); reject(new Error(`timeout after ${budget}ms`)); }, budget);
-    });
-    const asked = Promise.resolve().then(() => read({ text, previous: previousAssistant(messages), signal: ctl.signal, timeoutMs }));
-    return Promise.race([asked, timedOut])
-      .then(r => {
-        if (typeof r?.about !== "boolean") throw new Error("the check gave no yes or no");
-        log({ purchases_topic: r.about ? "yes" : "no", via: r.via ?? "api", ms: Date.now() - started, conversation: conversationId });
-        if (!r.about) return "";
-        log({ purchases_note: rows.length, why: "about_buying", conversation: conversationId });
-        return blockFor(rows);
-      })
-      .catch(e => {
-        log({ purchases_topic_failed: (e?.message ?? String(e)).split("\n")[0], ms: Date.now() - started, conversation: conversationId });
-        return structural("check_failed");
-      })
-      .finally(() => clearTimeout(timer));
+    if (kind !== "user" || !String(text ?? "").trim()) return Promise.resolve(purchasesNote(conversationId, { now, log }));
+    log({ purchases_note: rows.length, why: "their_message", conversation: conversationId });
+    return Promise.resolve(blockFor(rows, PURCHASE_DAYS, { background: true }));
   } catch {
     return Promise.resolve("");
   }

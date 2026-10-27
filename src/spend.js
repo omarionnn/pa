@@ -237,7 +237,7 @@ export function callCapCheck({ now = clock.now() } = {}) {
 // ---------- the pre-reply checks on the subscription ----------
 
 /** The short reads in front of every reply that fall back to the CLI when the API cannot answer. */
-export const SIDE_CHECKS = ["harm", "purchase_topic", "onethought", "said_check"];
+export const SIDE_CHECKS = ["harm", "onethought", "said_check"];
 /**
  * Failures in a row (not credit), over at least FAILING_SPAN_MS, before the key counts as failing
  * rather than blipping: the harm screen asks twice per message, so one slow minute is not it.

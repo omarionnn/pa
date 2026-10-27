@@ -72,7 +72,7 @@ test("cap: today's spend reaching the daily cap flips the pre-reply checks to th
     assert.equal(apiAsks, 1, "past the cap the API is never asked");
     assert.equal(cliAsks, 1);
     // callApi itself refuses for every non-call feature, so no path can slip past.
-    for (const feature of ["harm", "purchase_topic", "onethought", "said_check", "extraction", "judge", "watch"]) {
+    for (const feature of ["harm", "onethought", "said_check", "extraction", "judge", "watch"]) {
       await assert.rejects(spend.callApi({ feature, client: { messages: { create: async () => { apiAsks++; return OK; } } }, params: { model: "claude-haiku-5-5" } }), /daily cap/);
     }
     assert.equal(apiAsks, 1);

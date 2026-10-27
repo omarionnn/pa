@@ -218,9 +218,7 @@ test("guardrail: background CLI work has no API fallback anywhere — extraction
 
 test("4: the per-message checks are on claude-haiku-5-5 with small max_tokens", () => {
   assert.equal(config.harmModel, "claude-haiku-5-5");
-  assert.equal(config.purchaseTopicModel, "claude-haiku-5-5");
   assert.equal(config.midTurnModel, "claude-haiku-5-5");
-  assert.ok(purchases.TOPIC_MAX_TOKENS <= 32);
 });
 
 test("4: the harm screen sends its instructions cached, and counts the call", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: null }, async () => {
@@ -275,11 +273,12 @@ test("4: the said-ledger's record (after the reply) is kept to the subscription 
   assert.match(src, /REASON_BACKEND === "claude-cli"\s*\? await background\.enqueue\(`said:[^\n]*feature: "said_record", api: false/);
 });
 
-test("4: purchase-topic falls back to the CLI on its own budget", env({ ANTHROPIC_API_KEY: "", REASON_BACKEND: "claude-cli" }, async () => {
-  const r = await purchases.askTopicCli({ text: "any update on the order?", ask: async (a) => { assert.equal(a.feature, "purchase_topic"); assert.equal(a.timeoutMs, config.purchaseTopicCliTimeoutMs); return { value: { answer: "yes" } }; } });
-  assert.deepEqual(r, { about: true, via: "cli" });
-  await assert.rejects(purchases.askTopicCli({ text: "x", ask: async () => ({ error: "boom" }) }), /cli: boom/);
-}));
+test("4: the purchases note makes no side call at all — no API, no CLI (2026-10-27)", () => {
+  const src = readFileSync("src/purchasesnote.js", "utf8");
+  assert.doesNotMatch(src, /@anthropic-ai\/sdk|callApi|askStructuredViaCli|ANTHROPIC_API_KEY/);
+  assert.equal(typeof purchases.askTopicApi, "undefined");
+  assert.equal(typeof purchases.askTopicCli, "undefined");
+});
 
 // ---------- 5. cost per feature ----------
 
