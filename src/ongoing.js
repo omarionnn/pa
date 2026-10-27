@@ -393,7 +393,7 @@ export function draftFor(x) {
     case "ready": return t ? `Can I see ${t}?` : "Can I see it?";
     case "failed": return t ? `What's next for ${t}?` : "What's next?";
     case "approval": return x.about ? `Can I see the details of ${x.about}?` : "Can I see the details first?";
-    default: return t ? `About ${t}:` : "";
+    default: return "";
   }
 }
 
