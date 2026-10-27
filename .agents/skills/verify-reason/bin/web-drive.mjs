@@ -65,8 +65,8 @@ runtime.on("outbound", async ({ conversationId, text, channel: name, to, chatId,
 let fails = 0;
 const step = (name, ok, detail = "") => { if (!ok) fails++; console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`); };
 const form = (o) => new URLSearchParams(o).toString();
-const req = ({ sub = null, method = "GET", body = null, cookie = "", origin = "https://heyreason.example.test" } = {}) =>
-  webRequestFor({ sub, method, query: {}, headers: { host: "heyreason.example.test", cookie, origin, "x-forwarded-for": "203.0.113.9", "x-files-domain": "true" }, remoteAddress: "127.0.0.1", readBody: async () => body, runtime, router });
+const req = ({ sub = null, method = "GET", query = {}, body = null, cookie = "", origin = "https://heyreason.example.test" } = {}) =>
+  webRequestFor({ sub, method, query, headers: { host: "heyreason.example.test", cookie, origin, "x-forwarded-for": "203.0.113.9", "x-files-domain": "true" }, remoteAddress: "127.0.0.1", readBody: async () => body, runtime, router });
 const cookies = (out) => [].concat(out.headers["Set-Cookie"] ?? []);
 const cookieValue = (out, name) => cookies(out).map(c => new RegExp(`^${name}=([^;]*)`).exec(c)?.[1]).find(Boolean) ?? null;
 const until = async (pred, ms = 2000) => { const end = Date.now() + ms; while (!pred() && Date.now() < end) await new Promise(r => setTimeout(r, 10)); return pred(); };
@@ -100,7 +100,7 @@ const wrong = await req({ sub: "code", method: "POST", body: form({ number: KOFI
 step("a wrong code: 200, 'that's not it', no session", wrong.status === 200 && /that(&#39;|')s not it/.test(wrong.body) && db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions").get().n === 0);
 const right = await req({ sub: "code", method: "POST", body: form({ number: KOFI, code, f }), cookie: jar });
 const token = cookieValue(right, "reason_page");
-step("the right code: 303 to /web with an HttpOnly, Secure, SameSite=Lax cookie on /", right.status === 303 && !!token && /Path=\/; .*HttpOnly; SameSite=Lax; Secure/.test(cookies(right).find(c => c.startsWith("reason_page="))));
+step("the right code: 303 to /web?home (always the arrival) with an HttpOnly, Secure, SameSite=Lax cookie on /", right.status === 303 && right.headers.Location === "/web?home" && !!token && /Path=\/; .*HttpOnly; SameSite=Lax; Secure/.test(cookies(right).find(c => c.startsWith("reason_page="))));
 const reused = await req({ sub: "code", method: "POST", body: form({ number: KOFI, code, f }), cookie: jar });
 step("the same code again: just wrong", reused.status === 200 && /that(&#39;|')s not it/.test(reused.body));
 
@@ -110,6 +110,13 @@ const firstVisit = await req({ cookie: session });
 const landing = await req({ cookie: session });
 const csrf = /name="c" value="([^"]+)"/.exec(landing.body)?.[1];
 step("GET /web signed in: 5C once, then the arrival (What's good, Kofi?) with the session's secret", firstVisit.status === 200 && /One Reason\.<br><em>Pick up anywhere\.<\/em>/.test(firstVisit.body) && landing.status === 200 && /What(&#39;|')s good, Kofi\?/.test(landing.body) && !/Pick up anywhere/.test(landing.body) && !!csrf);
+// Sign-in lands on Home even mid-conversation (owner, 10-27): a Web message 5 minutes ago makes plain
+// /web the thread, but /web?home — where the code redirects — stays the arrival.
+const recentId = db.writeMessage({ conversationId: KOFI_C, role: "user", channel: "web", externalId: `${KOFI_C}:cid-drive-abcdefgh`, text: "find me a quiet dinner spot", at: Date.now() - 5 * 60_000 });
+const midThread = await req({ cookie: session });
+const home = await req({ query: { home: "" }, cookie: session });
+step("a Web message 5 min ago: /web is the thread, /web?home (the sign-in landing) is still the arrival", !/What(&#39;|')s good, Kofi\?/.test(midThread.body) && /What(&#39;|')s good, Kofi\?/.test(home.body));
+db.db.prepare("DELETE FROM messages WHERE id = ?").run(recentId);
 step("the session row is Kofi's, under wsign:", db.db.prepare("SELECT conversation_id, page_id FROM page_sessions WHERE token = ?").get(token)?.conversation_id === KOFI_C);
 
 // 6. Sign out: refused without the secret or from elsewhere; done with both.

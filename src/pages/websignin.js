@@ -555,8 +555,8 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     }
     log({ web_signin_ok: true });
     // The session cookie on every path, so the browser is theirs on their pages and events too;
-    // the form cookie has done its job.
-    return { status: 303, headers: HTML({ Location: "/web", "Content-Length": 0, "Set-Cookie": [cookieHeader(tried.token, { path: "/", headers }), clearFormCookie()] }), body: "" };
+    // the form cookie has done its job. Signing in always lands on the arrival, never the thread (?home).
+    return { status: 303, headers: HTML({ Location: "/web?home", "Content-Length": 0, "Set-Cookie": [cookieHeader(tried.token, { path: "/", headers }), clearFormCookie()] }), body: "" };
   }
 
   // sub === "signin": ask for a code.

@@ -59,7 +59,8 @@ export const STREAM_MS = 20_000;
 export const LIVE_STREAM_MS = 5 * 60_000;
 /** How often an open stream re-checks that the browser is still signed in. */
 export const STREAM_RECHECK_MS = 10_000;
-/** A Web message this recent means they are mid-conversation: /web opens on the thread, not the arrival. */
+/** A Web message this recent means they are mid-conversation: /web opens on the thread, not the arrival.
+ * Never right after signing in: sign-in lands on /web?home, which is always the arrival (owner, 10-27). */
 export const THREAD_RECENT_MS = 30 * 60_000;
 
 // The first-visit note, 5C (owner copy in the handoff).
@@ -850,7 +851,7 @@ export function renderHome({ account, csrf, sendId, items = [], approvals = [], 
 export function renderFirstVisit() {
   const body = `<header class="top">${wordmark({ href: "/web" })}</header><main class="solo" aria-labelledby="fv-h">`
     + `<h1 id="fv-h" class="h1">${esc(BOUNDARY.title)}<br><em>${esc(BOUNDARY.titleEm)}</em></h1>`
-    + `<p class="body">${esc(BOUNDARY.body)}</p>${hand(BOUNDARY.note, { tilt: true })}${action("Got it", { href: "/web" })}</main>`;
+    + `<p class="body">${esc(BOUNDARY.body)}</p>${hand(BOUNDARY.note, { tilt: true })}${action("Got it", { href: "/web?home" })}</main>`;
   return webPage({ title: "Reason", body, css: CSS });
 }
 
@@ -890,6 +891,7 @@ export function renderError() {
 /**
  * GET /web signed in. `view`: the thread (?thread), the Ongoing tab (?tab=ongoing), or — by default —
  * the arrival, unless they sent something on Web in the last half hour (then the thread they're in).
+ * ?home is always the arrival: where sign-in (and 5C's "Got it") lands, whatever was sent lately.
  * The first real view ever is 5C instead, once.
  */
 export function conversationPage({ account, headers, sendId, method = "GET", query = {}, now = clock.now() }) {
@@ -908,7 +910,7 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   const more = found ? rows.length - from.length > 10 : rows.length > PAGE;
   const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service, now }));
   if (found) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, found, work: workOf(conv) });
-  const recentWeb = lines.some(m => m.web && m.role === "user" && now - m.at < THREAD_RECENT_MS);
+  const recentWeb = query.home == null && lines.some(m => m.web && m.role === "user" && now - m.at < THREAD_RECENT_MS);
   // ?about=<kind>:<id> (an Ongoing detail's "Talk about it in the chat →"): the thread, with a draft about
   // that row of THEIRS ready in the composer — never sent for them. The row is looked up in this
   // conversation only, so no link can put somebody else's words (or a stranger's) in the line.
