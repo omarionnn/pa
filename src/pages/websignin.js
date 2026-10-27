@@ -31,7 +31,7 @@ import { esc, renderNotFound, codeInputAttrs } from "./render.js";
 import { eventActor } from "./event.js";
 import { qrSvg } from "./qr.js";
 import { config, clock, normalizeNumber } from "../config.js";
-import { webPage, wordmark, label, hand, action, typed, WEB_FONTS, webFont, accountThemed } from "./webkit.js";
+import { webPage, wordmark, label, hand, action, typed, textReason, WEB_FONTS, webFont, accountThemed } from "./webkit.js";
 
 export { WEB_FONTS, webFont };
 
@@ -176,6 +176,12 @@ const SO_CSS = `
 .so-wm{display:none}
 .so-join{display:none;flex:1 1 340px;max-width:400px;flex-direction:column;gap:24px;padding-left:48px;border-left:1px dashed var(--hair)}
 .so-join .lbl{font-size:12px}
+.so-join .qr{gap:10px}
+.tr-or .act{font-size:28px}
+.so-6d{gap:30px}
+.ul-in[readonly]{color:var(--muted)}
+.act.busy{color:var(--muted);cursor:default;pointer-events:none}
+.code-f .checking{font-size:11px}
 .so-h2{margin:0;font:italic 400 38px/1.1 var(--serif)}
 .qr{align-self:flex-start;background:var(--lifted);border:1px solid var(--hair);box-shadow:var(--sh);padding:14px;transform:rotate(-1.5deg);display:flex;flex-direction:column;gap:8px;align-items:center;margin:0}
 .qr svg{display:block;width:120px;height:120px}
@@ -188,9 +194,10 @@ const SO_CSS = `
 .digits .cell.on{border-bottom-color:var(--ink)}
 .digits .cell.cur{border-bottom-color:var(--pen);color:var(--pen)}
 .digits.bad .cell,.digits.bad .cell.on{border-bottom-color:var(--pen)}
+.digits.bad input{border-bottom-color:var(--pen)}
+html.js .digits:focus-within .cell{border-bottom-width:2px}
 .digits input{grid-column:1/-1;grid-row:1;width:100%;height:56px;border:0;border-bottom:1.5px solid var(--ink);border-radius:0;background:transparent;font:400 28px/1 var(--mono);letter-spacing:.5em;color:var(--ink);padding:0}
 html.js .digits input{position:absolute;inset:0;height:100%;border:0;color:transparent;caret-color:transparent;letter-spacing:0;font-size:16px;-webkit-text-fill-color:transparent}
-html.js .digits input:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
 html:not(.js) .digits .cell{display:none}
 .code-f{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:12px;min-width:0}
 .code-f .hand{font-size:23px}
@@ -218,10 +225,11 @@ html:not(.js) .digits .cell{display:none}
 `;
 
 /**
- * The tap that opens Messages with a text TO Reason, "Hey" already typed — the sign-up. The number
- * itself is never written on the page (owner 10-26): the link and the QR carry it.
+ * The tap that opens Messages with a text TO Reason, "hey" already typed (lowercase, Reason's own
+ * voice: v2 handoff §7) — the sign-up. The number itself is never written on the page (owner 10-26):
+ * the link and the QR carry it, and the typed hint under the link says what it does.
  */
-export const smsHref = (n) => `sms:${normalizeNumber(n)}&body=${encodeURIComponent("Hey")}`;
+export const smsHref = (n) => `sms:${normalizeNumber(n)}&body=${encodeURIComponent("hey")}`;
 /** The QR for that tap, in the paper's own two inks. Dark on light in both themes, so a phone can read it. */
 const qr = (n, cls = "qr") => `<figure class="${cls}">${qrSvg(smsHref(n), { label: "QR code to text Reason", size: 150 }).replace('fill="#fff"', 'fill="#ede5d8"').replace('fill="#000"', 'fill="#2a2520"')}`
   + `<figcaption><span class="on-phone">On a laptop? Scan</span><span class="on-desk">Scan with your phone</span></figcaption></figure>`;
@@ -233,14 +241,27 @@ const waitLine = (ms) => `<p class="so-wait" data-left="${Math.max(0, Math.round
 
 // The countdown ticks down by itself, the code cells mirror the one real input, and a sixth digit
 // sends the code. All of it is decoration over plain forms that work without script.
+// L6 / L7 (sheet-loading-actions): once a form is on its way, its own words say so and it can't be
+// sent twice. The number turns muted and the action becomes "Texting you a code…" (muted, not a
+// button); the six digits stay and CHECKING… takes the note's place. Done after the submit event, so
+// the form's own data has already gone.
 const SO_JS = `(function(){
 document.querySelectorAll('.so-wait[data-left]').forEach(function(w){var until=Date.now()+Number(w.dataset.left),l=w.querySelector('.left');
 function tick(){var s=Math.max(0,Math.ceil((until-Date.now())/1000));l.textContent=Math.floor(s/60)+':'+('0'+s%60).slice(-2);if(s>0)return setTimeout(tick,500);var c=document.querySelector('.digits input[disabled]');if(c){c.disabled=false;w.remove();c.focus()}else location.href='/web'}tick()});
 var d=document.querySelector('.digits'),i=d&&d.querySelector('input');if(!i)return;var cells=d.querySelectorAll('.cell');
 function draw(){var v=i.value,f=document.activeElement===i;cells.forEach(function(c,k){c.textContent=v[k]||(f&&k===v.length?'|':'');c.classList.toggle('on',k<v.length);c.classList.toggle('cur',f&&k===v.length)})}
-i.addEventListener('input',function(){d.classList.remove('bad');draw();if(i.value.length===6&&i.form&&!i.form.dataset.sent){i.form.dataset.sent='1';i.form.requestSubmit?i.form.requestSubmit():i.form.submit()}});
-i.addEventListener('paste',function(){setTimeout(function(){i.dispatchEvent(new Event('input'))},0)});i.addEventListener('focus',draw);i.addEventListener('blur',draw);draw();
-document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(){var b=f.querySelector('[type=submit]');if(b)b.setAttribute('aria-busy','true')})});
+i.addEventListener('input',function(){d.classList.remove('bad');i.removeAttribute('aria-invalid');draw();if(i.value.length===6&&i.form&&!i.form.dataset.sent){i.form.dataset.sent='1';i.form.requestSubmit?i.form.requestSubmit():i.form.submit()}});
+i.addEventListener('paste',function(){setTimeout(function(){i.dispatchEvent(new Event('input'))},0)});
+i.addEventListener('focus',function(){if(d.classList.contains('bad'))try{i.select()}catch(x){}draw()});i.addEventListener('blur',draw);if(d.classList.contains('bad')&&document.activeElement===i)try{i.select()}catch(x){}draw();
+})();
+(function(){document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(e){if(f.dataset.busy){e.preventDefault();return}f.dataset.busy='1';
+setTimeout(function(){var n=f.querySelector('#number'),b=f.querySelector('button[type=submit]'),c=f.querySelector('.digits input');
+if(n&&b){n.readOnly=true;var s=document.createElement('span');s.className='act busy';s.setAttribute('role','status');s.textContent='Texting you a code\u2026';b.replaceWith(s)}
+else if(c){c.readOnly=true;var g=f.querySelector('.digits');g.classList.remove('bad');var p=document.createElement('p');p.className='lbl checking';p.setAttribute('role','status');p.textContent='CHECKING\u2026';
+f.querySelectorAll('.code-f>.hand,.code-f>form,.code-f>.so-wait,.code-f>.so-quiet').forEach(function(x){x.remove()});g.after(p)}
+else if(b)b.setAttribute('aria-busy','true')},0)})});
+// Back to a page the browser kept: its forms were mid-send. The sign-in again, fresh (a GET: nothing re-posts).
+window.addEventListener('pageshow',function(e){if(e.persisted)location.replace(/^\\/web\\/(signin|code)$/.test(location.pathname)?'/web':location.href)});
 })();`;
 
 const signedOutPage = (title, body) => webPage({ title, header: "", body, css: SO_CSS, script: SO_JS });
@@ -254,9 +275,10 @@ export function joinBlock(joinNumber) {
     return `<section class="so-join" aria-labelledby="dj-title">${label("NEW TO REASON")}<h2 id="dj-title" class="so-h2">We can't finish joining right now.</h2>`
       + `<p class="so-quiet">Reason's line isn't taking new people for the moment. Nothing on your side went wrong.</p>${hand("i'll be back soon.", { tilt: true })}</section>`;
   }
+  // Desktop sign-in (reference desk-sign-in): the QR card first, then "or Text Reason →" and its hint.
   return `<section class="so-join" aria-labelledby="dj-title">${label("NEW TO REASON")}<h2 id="dj-title" class="so-h2">Your first text<br><em>is the sign-up.</em></h2>`
-    + action("Text Reason", { href: smsHref(joinNumber) })
     + qr(joinNumber)
+    + textReason(smsHref(joinNumber), { lead: "or Text Reason", cls: "tr-or" })
     + `${hand("then come back here to sign in.")}</section>`;
 }
 
@@ -299,12 +321,15 @@ export function maskedNumber(number) {
  */
 export function renderCode({ number = "", joinNumber = null, formToken = "", error = null, askedAt = clock.now() }) {
   const kind = error?.kind ?? "";
+  // A wrong or expired code stays in the six cells, its underlines in pen (sheet 6B); typing again replaces it.
+  const typedCode = (kind === "wrong" || kind === "expired") && /^\d{1,6}$/.test(String(error?.code ?? "")) ? String(error.code) : "";
   const ttlMin = Math.round(CODE_TTL_MS / 60000);
   const again = (inner) => `<form method="POST" action="/web/signin">${hidden("f", formToken)}${hidden("number", number)}${hidden("again", "1")}${inner}</form>`;
+  const alert = (t) => `<p class="hand" id="code-note" role="alert">${esc(t)}</p>`;
   let note = hand("it fills in by itself if your browser offers it.");
-  if (kind === "wrong") note = hand("that's not it. try again?", { role: "alert" });
-  if (kind === "expired") note = `${hand("that one expired.", { role: "alert" })}${again(action("Send a fresh one", { cls: "act-sm" }))}`;
-  if (kind === "tries") note = `${hand("let's pause a minute.", { role: "alert" })}${waitLine(error.waitMs)}`;
+  if (kind === "wrong") note = alert("that's not it. try again?");
+  if (kind === "expired") note = `${alert("that one expired.")}${again(action("Send a fresh one", { cls: "act-sm" }))}`;
+  if (kind === "tries") note = `${alert("let's pause a minute.")}${waitLine(error.waitMs)}`;
   if (kind === "resend") {
     const left = Math.ceil((error.leftMs ?? 0) / 60000);
     note = `${hand("i've sent a few. give it a moment.", { role: "alert" })}${left > 0 ? `<p class="so-quiet">The last code still works for ${left} minute${left === 1 ? "" : "s"}.</p>` : ""}`;
@@ -315,7 +340,7 @@ export function renderCode({ number = "", joinNumber = null, formToken = "", err
     + `<div class="so-lead"><h1 id="so-title" class="h1">Check your texts.</h1><p class="so-sub">Six digits, sent to ${esc(maskedNumber(number))}.</p></div>`
     + `<form method="POST" action="/web/code">${hidden("f", formToken)}${hidden("number", number)}${hidden("t", String(askedAt))}`
     + `<fieldset class="code-f"><legend class="sr">Six-digit code</legend><label class="sr" for="code">The six-digit code from your texts</label>`
-    + `<div class="digits${bad ? " bad" : ""}"><input id="code" ${codeInputAttrs({ autofocus: kind !== "tries" })} required${kind === "tries" ? " disabled" : ""}${bad ? ` aria-invalid="true"` : ""}>`
+    + `<div class="digits${bad ? " bad" : ""}"><input id="code" ${codeInputAttrs({ autofocus: kind !== "tries" })} required${typedCode ? ` value="${typedCode}"` : ""}${kind === "tries" ? " disabled" : ""}${bad ? ` aria-invalid="true" aria-describedby="code-note"` : ""}>`
     + `${'<span class="cell" aria-hidden="true"></span>'.repeat(6)}</div>${note}</fieldset></form>`
     + `<div class="so-acts">${kind === "resend" || kind === "tries" ? "" : again(typed("SEND A NEW CODE"))}<p class="lbl">CODE GOOD FOR ${ttlMin} MIN</p></div>`
     + `</section>${typed("NEW TO REASON? START WITH A TEXT →", { href: "/web?join=1", cls: "so-new" })}</main>`;
@@ -334,9 +359,9 @@ export function renderJoin({ joinNumber = null }) {
     return signedOutPage("Reason — joining", body);
   }
   const body = backHead("← SIGN IN", "/web")
-    + `<main class="so"><section class="so-in so-solo" aria-labelledby="so-title">`
+    + `<main class="so"><section class="so-in so-solo so-6d" aria-labelledby="so-title">`
     + `<h1 id="so-title" class="h1">Your first text<br><em>is the sign-up.</em></h1>`
-    + action("Text Reason", { href: smsHref(joinNumber) })
+    + textReason(smsHref(joinNumber))
     + qr(joinNumber)
     + hand("then come back here to sign in.")
     + `</section></main>`;
@@ -526,7 +551,7 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
       // Expired is this browser's clock, not the code's: it asked longer ago than a code lives. The
       // same words for every number, so they say nothing about whose it is.
       const kind = clock.now() - askedAt > CODE_TTL_MS ? "expired" : "wrong";
-      return page(200, renderCode({ number, joinNumber, formToken, askedAt, error: { kind } }));
+      return page(200, renderCode({ number, joinNumber, formToken, askedAt, error: { kind, code: String(form.get("code") ?? "").replace(/\D/g, "").slice(0, 6) } }));
     }
     log({ web_signin_ok: true });
     // The session cookie on every path, so the browser is theirs on their pages and events too;

@@ -11,12 +11,18 @@
 //   - dashed hairline rules, hard-offset shadows with no blur, nearly square corners, stamps
 //   - text actions: never a box around a control (§1.2); a primary action is serif italic with →
 //   - motion: new lines rise 6px and fade in over 0.3s; reduced motion means none at all (§2 Motion)
-//   - focus: a 2px ink outline offset 3px on everything you can reach by keyboard (§5)
+//   - focus (v2 §4g, reference sheet-focus): one 2px ink ring 3px out, :focus-visible only, never a
+//     glow; destructive actions ring in pen; the input line has no ring (its rule thickens to 2px and
+//     the caret is pen); icon buttons ring their whole 44px target (round for + and the mic, square
+//     for send); rows and cards are one target (cards 4px out); a skip link on a paper slip is the
+//     first Tab on every page
+//   - every "Text Reason →" opens Messages with "hey" typed, and says so under it (textReason)
 //
 // Fonts are self-hosted (assets/fonts/*-web.woff2, SIL OFL, cut to Latin) and served at
 // /web/fonts/<name>.woff2 by src/http.js, never fetched from Google; Courier New is the system's.
 import { readFileSync } from "node:fs";
 import { esc } from "./render.js";
+import { LOAD_CSS, loadJs } from "./webloading.js";
 import { webIconLinks, NOTIFY_JS, NOTIFY_CSS } from "./webnotify.js";
 
 /** The handoff's colour table (§2), exactly. `deep` = deeper ground, `lifted` = lifted paper, `hair` = hairline. */
@@ -75,6 +81,14 @@ export const typed = (text, { href = "", type = "", cls = "", attrs = "" } = {})
   : `<button class="act2${cls ? ` ${cls}` : ""}" type="${type || "submit"}"${attrs}>${esc(text)}</button>`;
 /** A stamp: typed bold capitals in a 1.5px outline, tilted. `tone` pen (done/joined) | ink | muted. */
 export const stamp = (text, tone = "pen") => `<span class="stamp stamp-${tone}">${esc(text)}</span>`;
+/** The typed hint under every "Text Reason →" (v2 handoff §7): the number itself is never shown. */
+export const TEXT_HINT = "OPENS MESSAGES WITH \u201cHEY\u201d READY TO SEND";
+/**
+ * "Text Reason →" (or "or Text Reason →"), an sms: link that opens Messages with "hey" ready to send,
+ * and the typed hint under it. `href` is the sms: link (websignin.js smsHref); nothing else is drawn.
+ */
+export const textReason = (href, { lead = "Text Reason", cls = "" } = {}) =>
+  `<div class="tr${cls ? ` ${cls}` : ""}">${action(lead, { href })}<span class="tr-h">${TEXT_HINT}</span></div>`;
 /** The dashed hairline. */
 export const rule = () => `<hr class="rule">`;
 
@@ -104,6 +118,15 @@ const tint = `function tint(){var t=document.documentElement.dataset.theme,c=t==
 export const OG_KEY = "reason-web-og";
 // A signed-in page names the theme the person chose on Web (`data-account-theme`, accountThemed below);
 // this browser's own switch is brought in line with it first, so every browser opens in the same one.
+// A page's lifetime (for webloading.js, which swaps one Web page for the next in place): every interval,
+// timeout, live stream and window/document listener a page's own script makes is noted here, so the
+// page being left can be ended (PAGE.end()) before the next one's script runs. Nothing is left running.
+const PAGE_JS = `(function(){var W=window,D=document;if(W.__reasonPage)return;var L=[],I=[],T=[],E=[],ael=EventTarget.prototype.addEventListener,si=W.setInterval,st=W.setTimeout,ci=W.clearInterval,ct=W.clearTimeout;`
+  + `W.__reasonPage={on:function(o,t,f,c){return ael.call(o,t,f,c)},later:function(f,ms){return st.call(W,f,ms)},cancel:function(t){ct.call(W,t)},`
+  + `end:function(){L.forEach(function(x){x[0].removeEventListener(x[1],x[2],x[3])});I.forEach(function(i){ci.call(W,i)});T.forEach(function(t){ct.call(W,t)});E.forEach(function(e){try{e.close()}catch(x){}});L=[];I=[];T=[];E=[]}};`
+  + `W.setInterval=function(){var i=si.apply(W,arguments);I.push(i);return i};W.setTimeout=function(){var t=st.apply(W,arguments);if(T.length>500)T=T.slice(-250);T.push(t);return t};`
+  + `[W,D].forEach(function(o){o.addEventListener=function(t,f,c){L.push([o,t,f,c]);return ael.call(o,t,f,c)}});`
+  + `if(W.EventSource){var ES=W.EventSource;W.EventSource=function(u,o){var e=new ES(u,o);E.push(e);return e};W.EventSource.prototype=ES.prototype}})();`;
 const HEAD_JS = `(function(){try{${tint}var h=document.documentElement,a=h.getAttribute('data-account-theme');`
   + `if(a==='paper'||a==='night')localStorage.setItem('${THEME_KEY}',a==='paper'?'light':'dark');else if(a==='auto')localStorage.removeItem('${THEME_KEY}');`
   + `var t=localStorage.getItem('${THEME_KEY}');if(t==='light'||t==='dark'){h.dataset.theme=t;tint()}h.classList.add('js');if(localStorage.getItem('${OG_KEY}')==='off')h.classList.add('og-off');`
@@ -148,7 +171,17 @@ html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--ground);color:var(--ink);font:400 16px/1.55 var(--sans);-webkit-font-smoothing:antialiased;min-height:100vh;min-height:100dvh;display:flex;flex-direction:column}
 a{color:var(--ink)}a:hover{color:var(--hov)}
 :focus-visible{outline:2px solid var(--ink);outline-offset:3px}
-input:focus-visible{outline:none}
+a:focus-visible,button:focus-visible,summary:focus-visible,[tabindex]:focus-visible{border-radius:3px}
+input:not([type=radio]):not([type=checkbox]):focus-visible{outline:none}
+input,textarea{caret-color:var(--pen)}
+[tabindex="-1"]:focus{outline:none}
+.card:focus-visible,a.card:focus-visible,.card a.card-a:focus-visible{outline-offset:4px;border-radius:4px}
+.danger:focus-visible,.fg-go:focus-visible,.every:focus-visible,.ff:focus-visible{outline-color:var(--pen)}
+.ic:focus-visible,.menu-b:focus-visible{border-radius:50%}
+.send:focus-visible{border-radius:3px}
+.skip{position:fixed;left:var(--gut);top:12px;z-index:100;background:var(--lifted);border-radius:3px;padding:10px 14px;font:400 12px/1.3 var(--mono);letter-spacing:.14em;color:var(--ink);text-decoration:none;white-space:nowrap}
+.skip-to{position:absolute;width:1px;height:1px;overflow:hidden}
+.skip:not(:focus){position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip:rect(0 0 0 0)}
 button{font:inherit;color:inherit}
 .sr{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;margin:0;padding:0;border:0}
 .wm{font:italic 400 22px/1 var(--serif);letter-spacing:-.01em;display:inline-flex;align-items:center;text-decoration:none;color:var(--ink);min-height:44px}
@@ -184,8 +217,12 @@ button{font:inherit;color:inherit}
 .th-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .th-o{position:relative;min-height:44px;display:inline-flex;align-items:center;cursor:pointer;font:italic 400 20px/1 var(--serif);color:var(--muted)}
 .th-o input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
+.th-o input:focus-visible{outline:none}
 .th-o input:checked+span{color:var(--ink);text-decoration:underline;text-decoration-color:var(--hair);text-underline-offset:5px}
-.th-o input:focus-visible+span{outline:2px solid var(--ink);outline-offset:3px}
+.th-o input:focus-visible+span{outline:2px solid var(--ink);outline-offset:3px;border-radius:3px}
+.tr{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.tr .act{min-height:48px}
+.tr-h{font:400 11px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
 .th-dot{color:var(--muted)}
 .foot{padding:28px var(--gut) 32px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
 .loader{display:none}
@@ -197,6 +234,7 @@ html.loading.loaded .loader{opacity:0}
 @keyframes ing{to{width:1.55ch}}
 @media (min-width:900px){.wm{font-size:26px}.wm .bub{width:.577em;height:.577em}.lbl{font-size:11px}.hand{font-size:22px}.h1{font-size:64px}.act{font-size:32px}.act2{font-size:12px}}
 @media (max-width:359px){:root{--gut:20px}.h1{font-size:38px}}
+${LOAD_CSS}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}html.loading .loader{display:none}}
 `;
 
@@ -210,6 +248,7 @@ html.loading.loaded .loader{opacity:0}
  */
 export function webPage({ title = "Reason", header = "", body = "", css = "", script = "", bodyClass = "", loader = false, foot = "", connect = "" }) {
   const footer = foot;
+  const skipped = skipTo(`${header}${body}`);
   return `<!doctype html>
 <html lang="en"${loader ? ` data-loader="1"` : ""}><head>
 <meta charset="utf-8">
@@ -221,8 +260,38 @@ export function webPage({ title = "Reason", header = "", body = "", css = "", sc
 <meta name="theme-color" content="${TOKENS.night.ground}" data-auto="${TOKENS.night.ground}" media="(prefers-color-scheme: dark)">
 ${webIconLinks()}
 <title>${esc(title)}</title>
+<script>${PAGE_JS}</script>
 <script>${HEAD_JS}</script>
 <style>${KIT_CSS}${NOTIFY_CSS}${css}</style>
-</head><body${bodyClass ? ` class="${esc(bodyClass)}"` : ""}>${loader ? `<div class="loader" role="status" aria-label="Loading"><p>reas${bubble(4)}n<span class="ing">ing</span></p></div>` : ""}
-${header}${body}${footer}<script>${script}${THEME_JS}${NOTIFY_JS}</script></body></html>`;
+</head><body${bodyClass ? ` class="${esc(bodyClass)}"` : ""}>${skipped.link}${loader ? `<div class="loader" role="status" aria-label="Loading"><p>reas${bubble(4)}n<span class="ing">ing</span></p></div>` : ""}
+${skipped.html}${footer}<script>${script};${THEME_JS};${NOTIFY_JS};${LOAD_JS}</script></body></html>`;
 }
+
+const LOAD_JS = loadJs(wordmark({ href: "/web" }));
+
+/**
+ * The skip link (§4g): the first Tab on every page. On a page with the thread it goes to the thread
+ * (`SKIP TO THE THREAD ↓`): to its newest end, at the top of the composer, so the composer is one
+ * Tab after it and the page does not jump to the oldest message. Anywhere else it goes to the page's
+ * main content (`SKIP TO CONTENT ↓`).
+ */
+export function skipTo(html) {
+  let out = String(html);
+  const thread = out.indexOf('<ol class="thread"');
+  if (thread >= 0) {
+    const open = '<div class="composer">';
+    const comp = out.indexOf(open, thread);
+    out = comp >= 0
+      ? `${out.slice(0, comp + open.length)}<span class="skip-to" id="thread" tabindex="-1"></span>${out.slice(comp + open.length)}`
+      : out.replace('<ol class="thread"', '<ol class="thread" id="thread" tabindex="-1"');
+    return { html: out, link: `<a class="skip" href="#thread">SKIP TO THE THREAD ↓</a>` };
+  }
+  // Anywhere else: the main's own id, else the first id inside it (the page's headline, as a rule), which
+  // a browser starts the next Tab from; with neither, #content, which the loader's script lands on main.
+  const at = out.search(/<main\b/);
+  if (at < 0) return { html: out, link: "" };
+  const inMain = out.slice(at, out.indexOf("</main>", at) >>> 0);
+  const id = /^<main\b[^>]*\sid="([^"]+)"/.exec(inMain)?.[1] ?? /\sid="([^"]+)"/.exec(inMain)?.[1] ?? "content";
+  return { html: out, link: `<a class="skip" href="#${esc(id)}">SKIP TO CONTENT ↓</a>` };
+}
+

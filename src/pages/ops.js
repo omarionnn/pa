@@ -222,13 +222,30 @@ function focusMatches(id, focus) {
  * is stale, which is itself a red: a green from forty minutes ago is not a green. `focus` is the
  * check an alert link named.
  */
-export function renderOps({ report, now = Date.now(), focus = null, events = null }) {
+/**
+ * Reason Web's maintenance switch (E5, src/pages/webedge.js): on until a time, or off. While it is on
+ * every /web page says "Tidying up for a few minutes" with BACK BY ABOUT {time} ET; it turns itself
+ * off at that time. Plain posts that come back to the page, like the events buttons.
+ */
+function webSection(web) {
+  if (!web) return "";
+  const on = web.on
+    ? `<p class="okline"><b>Web is paused</b> · back by about ${esc(web.label)} ET</p>`
+      + `<form class="act-ev" method="POST" action="/ops"><input type="hidden" name="action" value="web_maint_off"><button class="btn sm" data-busy="Working…">Open Web again</button></form>`
+    : `<p class="okline">Web is open. Pausing it shows everybody on /web a calm "back by about" page until the time you set; texting is untouched.</p>`;
+  const form = `<form class="act-ev" method="POST" action="/ops"><input type="hidden" name="action" value="web_maint_on">`
+    + `<label class="sx" for="web-until">Back by (Eastern, HH:MM, or minutes from now) </label><input id="web-until" name="until" required pattern="\\d{1,4}m?|\\d{1,2}:\\d{2}" placeholder="15:30" size="6"> `
+    + `<button class="btn sm" data-busy="Working…">${web.on ? "Change the time" : "Pause Web"}</button></form>`;
+  return `<section class="sec" id="web"><h2>Reason Web</h2>${on}${form}${web.error ? `<p class="okline"><b>${esc(web.error)}</b></p>` : ""}</section>`;
+}
+
+export function renderOps({ report, now = Date.now(), focus = null, events = null, web = null }) {
   const head = `<noscript><meta http-equiv="refresh" content="${REFRESH_MS / 1000}"></noscript>`;
   const checkAgain = `<form class="act" method="POST" action="/ops"><button class="btn" name="action" value="check">Check again</button></form>`;
   if (!report) {
     const body = `<section class="sb s-warn" data-at="${now}" data-now="${now}"><div class="sb-head"><div><h1><span class="sd"></span>Checking</h1>`
       + `<p class="sx"><span data-checked>The first check runs a few seconds after start.</span> · <span data-upd>updated just now</span></p></div>${checkAgain}</div></section>`
-      + eventsSection(events, now);
+      + eventsSection(events, now) + webSection(web);
     return shell({ title: "Reason status", body, pill: "Checking", css: CSS, head, script: JS });
   }
   const age = now - report.at;
@@ -269,7 +286,7 @@ export function renderOps({ report, now = Date.now(), focus = null, events = nul
   const fold = `<details class="fine"><summary><span class="led"></span>${fine.length} ${fine.length === 1 ? "check" : "checks"} fine<span class="chev" aria-hidden="true">▸</span></summary>${groups}${offLine}</details>`;
 
   const people = peopleSection(report.people ?? [], now);
-  const body = `${bar}<div class="cols"><div>${okLine}${problems}${fold}${eventsSection(events, now)}</div>${people}</div>`;
+  const body = `${bar}<div class="cols"><div>${okLine}${problems}${fold}${eventsSection(events, now)}${webSection(web)}</div>${people}</div>`;
   return shell({ title: "Reason status", body, pill: pillFor(verdict), css: CSS, head, script: JS });
 }
 

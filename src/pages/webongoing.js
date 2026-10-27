@@ -20,6 +20,7 @@
 import { esc, renderNotFound } from "./render.js";
 import { webPage, label, hand, action, typed, stamp, APPROVAL_NUDGE } from "./webkit.js";
 import { SECURITY_HEADERS, sessionAccount } from "./websignin.js";
+import { renderWebNotFound } from "./webedge.js";
 import { findItem, ongoing, clockOf, periodOf } from "../ongoing.js";
 import { clock, config } from "../config.js";
 
@@ -528,6 +529,7 @@ export function ongoingRequest({ kind = null, id = null, method = "GET", headers
   if (!kind) return redirect("/web?tab=ongoing");
   if (kind === "hand" || kind === "back") return seeAllPage(account, kind, query, now);
   const item = id ? findItem(account.conversation_id, kind, id, now) : null;
-  if (!item) return page(404, renderNotFound());
+  // A row that's gone (finished and cleared, or never this person's): E1, with the way back (src/pages/webedge.js).
+  if (!item) return page(404, renderWebNotFound({ signedIn: true }));
   return page(200, renderDetail(item, { now }));
 }
