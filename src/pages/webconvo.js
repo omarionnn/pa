@@ -701,12 +701,12 @@ var TB=${TAKE_BACK_MS};
 function sentAt(li,at){li.querySelectorAll('.tb').forEach(function(x){x.remove()});if(li.dataset.state==='sending'){state(li,'sending');return}if(!li.isConnected||!li.dataset.pending||li.querySelector('.st,.retry'))return;var s=document.createElement('p');s.className='st';s.textContent='SENT \\u00b7 '+fmt(at||Date.now());li.appendChild(s)}
 function takeBack(li,p){if(!li||!p.at||offline())return;var left=TB-(Date.now()-p.at);if(left<300)return;
 var w=document.createElement('span');w.className='tb';var b=document.createElement('button');b.type='button';b.className='tb-b';b.textContent='take it back';w.appendChild(b);
-var l=document.createElement('span');l.className='tb-l';l.setAttribute('aria-hidden','true');l.style.animationDelay=(left-TB)+'ms';w.appendChild(l);li.appendChild(w);
+var l=document.createElement('span');l.className='tb-l';l.setAttribute('aria-hidden','true');l.style.animationDelay=(left-TB)+'ms';w.appendChild(l);li.appendChild(w);if(window.reasonInk)reasonInk(b,'pen-in');
 var t=setTimeout(function(){if(li.querySelector('.tb'))sentAt(li,p.at)},left);
 b.onclick=function(){if(b.disabled)return;b.disabled=true;clearTimeout(t);
 fetch('/web/send/cancel',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,c:R.c})})
 .then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){if(!j||!j.ok){sentAt(li,p.at);return}
-li.taken=true;forget(p.id);delete li.dataset.pending;li.removeAttribute('data-state');li.textContent='';var g=document.createElement('p');g.className='hand tb-gone';g.setAttribute('role','status');g.textContent='taken back. nothing sent.';li.appendChild(g);
+li.taken=true;forget(p.id);delete li.dataset.pending;li.removeAttribute('data-state');li.textContent='';var g=document.createElement('p');g.className='hand tb-gone';g.setAttribute('role','status');g.textContent='taken back. nothing sent.';li.appendChild(g);if(window.reasonInk)reasonInk(g,'pen-in');
 if(li.counted&&waiting){waiting--;if(!waiting)working(false)}setTimeout(function(){li.remove()},2000)}).catch(function(){sentAt(li,p.at)})}}
 R.api={uid:uid,post:post,pendingLine:pendingLine,state:state};
 // Which Web chat this tab is in, for an Ongoing detail opened from it (src/pages/webongoing.js); the shared thread clears it.
