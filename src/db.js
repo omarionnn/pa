@@ -9987,6 +9987,11 @@ addColumnIfMissing("confirmations", "thread_key", "TEXT");
 // …and each Web chat's short title (src/webchats.js), written once when its first reply lands.
 addColumnIfMissing("web_chats", "title", "TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS messages_chat_at ON messages (conversation_id, chat_id, at, id) WHERE chat_id IS NOT NULL");
+// …and where a row came from when that is not the conversation itself: 'ops' for the owner's status
+// alerts and other operator notices (OPS_KEY_PREFIXES, tagged by their sender's outbox key). They stay
+// in the thread; Home's Overnight lists only what Reason did for the person (src/daily.js, 10-27).
+addColumnIfMissing("messages", "source", "TEXT");
+
 
 // Temporal columns on person_facts
 addColumnIfMissing("person_facts", "valid_from", "INTEGER");
@@ -10037,6 +10042,29 @@ function historyOn() {
  */
 export const HISTORY_EXCLUDED_KEYS = ["pcode:", "esign:", "wsign:"];
 
+/**
+ * Outbox keys of operator notices: the status check's texts (`ops:`, src/ops.js), alerts raised at the
+ * point of failure (`incident:`, src/incidents.js) and "a new event was made" (`event-created:`,
+ * src/eventtools.js). Their history row is tagged `source = 'ops'` — the sender says what it is, so
+ * nothing has to read the words to tell an alert from news.
+ */
+export const OPS_KEY_PREFIXES = ["ops:", "incident:", "event-created:"];
+export const opsSourceOf = (idemKey) => OPS_KEY_PREFIXES.some(p => String(idemKey ?? "").startsWith(p)) ? "ops" : null;
+
+// Rows written before the tag (10-27): the keyed notices by their outbox key, and the status check's
+// texts — sent under an automatic key until then — by what only that code wrote: the status page's
+// link, or the check's fixed opening line. Every part of a split message goes with its first.
+{
+  const base = (col) => `CASE WHEN instr(${col}, '#') > 0 THEN substr(${col}, 1, instr(${col}, '#') - 1) ELSE ${col} END`;
+  const keyed = OPS_KEY_PREFIXES.map(() => "substr(o.idem_key, 1, ?) = ?").join(" OR ");
+  db.prepare(`UPDATE messages SET source = 'ops' WHERE source IS NULL AND role = 'assistant' AND (
+      text LIKE '%/ops?k=%' OR text LIKE 'Reason check —%'
+      OR outbox_id IN (SELECT o.id FROM outbox o WHERE ${keyed} OR ${base("o.idem_key")} IN (
+        SELECT ${base("h.idem_key")} FROM outbox h JOIN messages hm ON hm.outbox_id = h.id
+        WHERE hm.text LIKE '%/ops?k=%' OR hm.text LIKE 'Reason check —%')))`)
+    .run(...OPS_KEY_PREFIXES.flatMap(p => [p.length, p]));
+}
+
 let webChatReplyHook = null;
 /** src/webchats.js's titler: called with (conversationId, chatId) for each reply row written into a Web chat. */
 export function setWebChatReplyHook(f) { webChatReplyHook = typeof f === "function" ? f : null; }
@@ -10046,7 +10074,7 @@ export function setWebChatReplyHook(f) { webChatReplyHook = typeof f === "functi
  * outbox_id for Reason's, so a retried webhook or a second markOutboundSent writes nothing twice.
  * Returns the row id, or null when nothing was written (switch off, duplicate, empty).
  */
-export function writeMessage({ conversationId, role, channel, externalId = null, outboxId = null, text = "", media = [], at = clock.now(), chatId = null }) {
+export function writeMessage({ conversationId, role, channel, externalId = null, outboxId = null, text = "", media = [], at = clock.now(), chatId = null, source = null }) {
   if (!historyOn()) return null;
   if (!conversationId || !role || !channel) return null;
   const body = String(text ?? "");
@@ -10056,9 +10084,9 @@ export function writeMessage({ conversationId, role, channel, externalId = null,
   // chat this conversation owns. Anything else is the shared thread's.
   const chat = channel === "web" ? webChatOf(chatId) : null;
   const ownChat = chat && webChatOwner(chat) === conversationId ? chat : null;
-  const r = db.prepare(`INSERT OR IGNORE INTO messages (conversation_id, role, channel, external_id, outbox_id, text, media, at, chat_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, role, channel, externalId == null ? null : String(externalId), outboxId ?? null, body, JSON.stringify(atts), at, ownChat);
+  const r = db.prepare(`INSERT OR IGNORE INTO messages (conversation_id, role, channel, external_id, outbox_id, text, media, at, chat_id, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, role, channel, externalId == null ? null : String(externalId), outboxId ?? null, body, JSON.stringify(atts), at, ownChat, source === "ops" ? "ops" : null);
   if (!r.changes) return null;
   const id = Number(r.lastInsertRowid);
   if (ownChat) db.prepare("UPDATE web_chats SET last_at = ? WHERE id = ?").run(Math.max(at, clock.now()), ownChat);
@@ -10165,7 +10193,7 @@ function historyFromOutbound(row) {
   return writeMessage({
     conversationId: row.conversation_id, role: "assistant", channel: row.channel,
     externalId: row.message_id ?? null, outboxId: row.id, text: row.body ?? "", media, at: row.sent_at ?? clock.now(),
-    chatId: row.chat_id ?? null,
+    chatId: row.chat_id ?? null, source: opsSourceOf(row.idem_key),
   });
 }
 
