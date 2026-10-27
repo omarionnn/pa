@@ -379,6 +379,7 @@ test("13. D2 (owner 10-26): the Face ID line only when the card flow really will
   // purchase row: awaiting_approval + authorization + expiry), a new open yes still promises nothing:
   // whether the NEXT confirm pauses, and with which unlock, is AgentCard's call at that confirm.
   db.markAgentcardPurchase("buy-1", { status: "awaiting_approval", authorizationId: "cauth_test", approvalExpiresAt: clock.now() + 15 * 60_000 });
+  assert.equal(db.getAgentcardPurchase("buy-1").status, "awaiting_approval");
   const again = words(page.renderDetail(og.findItem(C, "approval", ids.approval)));
   assert.ok(!again.includes("Face ID"));
   assert.match(again, /Nothing is charged until you say so in the chat\./);
