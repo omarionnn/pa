@@ -439,19 +439,15 @@ export class Runtime extends EventEmitter {
       //
       // `keep` is the short line the thread keeps for an event whose full text is only for this
       // turn's decision — a sweep's bundle of unread mail. See userMessageFor in src/agent.js.
-      // The hard line, before the model sees a word of it. A message somebody sent is screened
-      // (src/harm.js); an event turn is Reason talking to itself and is not. On 'harm' there is no
-      // turn: the model never reads it, no tool can run, and the line back is code's.
-      const screened = await this._screen({ conversationId, text, kind, meta });
-      if (screened.refused) return screened.reply;
-      // A standing check-in asked them something, and this is the next thing they said: it is the
-      // answer to it. Code's, not the model's, because it has to hold over weeks — the turn that
-      // asked is forty trimmed messages back by the time this one runs — and it is read at the next
-      // firing so the check-in picks up where the last one left off. See src/series.js.
-      if (kind === "user") {
-        const reported = series.noteReport({ conversationId, text });
-        if (reported) this.log({ series_report: reported.series, conversation: conversationId });
-      }
+      // The hard line. A message somebody sent is screened (src/harm.js); an event turn is Reason
+      // talking to itself and is not. The screen is on the subscription and runs ALONGSIDE the turn
+      // (2026-10-27), not in front of it: its verdict is `pending` until it answers, and until then
+      // every tool waits for it (runTool) and so does the reply (below). On 'harm' the turn's
+      // reply is thrown away unsent, the thread is put back as it was, and the line back is code's.
+      const screened = this._screen({ conversationId, text, kind, meta });
+      // The said check's CLI, started now so its cold start is paid while the turn runs (src/said.js).
+      const warmCheck = kind === "user" ? said.warmCheck(conversationId) : null;
+      let refusedHarm = false;
       // One thought, one answer (src/onethought.js). A text of theirs that lands while this turn is
       // working, and is read as adding to what it is working on, is handed to this turn — on its
       // next tool result, or by a recompose before anything is sent — instead of getting a turn and
@@ -496,11 +492,28 @@ export class Runtime extends EventEmitter {
       // written, each piece through the same floor as the reply. Only a user turn from Web, cleared by
       // the screen, that nothing else holds back, on the CLI backend; never the rewrite below. With the
       // switch off this turn is exactly what it always was.
-      const draft = kind === "user" && meta.channel === "web" && !shouldSend && screened.verdict === "clear"
+      // A draft shows nothing until the screen has said clear (webdraft `screen`).
+      const draft = kind === "user" && meta.channel === "web" && !shouldSend && (screened.verdict === "clear" || screened.verdict === "pending")
         && this.runTurn !== realRunTurn && webdraft.streamOn(conversationId)
-        ? webdraft.startDraft({ conversationId, log: this.log }) : null;
+        ? webdraft.startDraft({ conversationId, log: this.log, screen: screened.ready ?? null }) : null;
       try {
-        reply = await this._afterScreen(screened, await this.runTurn(turnArgs(draft ? { draft } : {})), { conversationId, text, meta });
+        const first = await this.runTurn(turnArgs(draft ? { draft } : {}));
+        // The reply waits for the verdict. Almost always it is in long before the turn is done.
+        if (screened.ready) await screened.ready;
+        if (screened.verdict === "harm") {
+          refusedHarm = true;
+          draft?.end();
+          return await screened.refuse();
+        }
+        // A standing check-in asked them something, and this is the next thing they said: it is the
+        // answer to it. Code's, not the model's, because it has to hold over weeks — the turn that
+        // asked is forty trimmed messages back by the time this one runs — and it is read at the next
+        // firing so the check-in picks up where the last one left off. See src/series.js.
+        if (kind === "user") {
+          const reported = series.noteReport({ conversationId, text });
+          if (reported) this.log({ series_report: reported.series, conversation: conversationId });
+        }
+        reply = await this._afterScreen(screened, first, { conversationId, text, meta });
         reply = await this._takeInFolded({ fold, screened, conversationId, meta, reply, turnArgs, onSuperseded: draft ? () => draft.taken() : null });
         // No text is folded in from here: the reply is settled, and one that lands now gets a turn
         // of its own after it (Router.deliver's loop).
@@ -510,7 +523,7 @@ export class Runtime extends EventEmitter {
         // only when something is standing, so almost every reply pays nothing for it.
         if (kind === "user" && reply && reply.trim() !== "NO_REPLY") {
           // A reply the tab already watched pass this check, word for word, is not asked twice (src/webdraft.js).
-          const check = draft ? await draft.check(reply) : await said.checkDraft({ conversationId, draft: reply, log: this.log });
+          const check = draft ? await draft.check(reply) : await said.checkDraft({ conversationId, draft: reply, log: this.log, warm: warmCheck });
           if (!check.ok) {
             // What the tab was shown goes; the rewrite arrives whole.
             draft?.taken();
@@ -532,11 +545,13 @@ export class Runtime extends EventEmitter {
         throw e;
       } finally {
         doneDoing();
+        warmCheck?.cancel();
         onethought.end(fold);
         // A read that finished in the instant between the last check and here: never shown, so
-        // back on the pile for a turn of its own rather than lost.
+        // back on the pile for a turn of its own rather than lost. A turn refused for harm keeps
+        // none of what it took in: those texts get turns (and screens) of their own.
         if (fold && !failed) {
-          const left = onethought.takeUnseen(fold).map(a => a.row).filter(Boolean);
+          const left = (refusedHarm ? fold.added.slice() : onethought.takeUnseen(fold)).map(a => a.row).filter(Boolean);
           if (left.length) {
             db.reholdInbound(left.map(r => ({ ...r, held_times: Math.max(0, (r.held_times ?? 0) - 1) })), { readyAt: clock.now(), downSince: null });
             fold.added = fold.added.filter(a => !left.includes(a.row));
@@ -718,68 +733,78 @@ export class Runtime extends EventEmitter {
   }
 
   /**
-   * The harm screen on one inbound message, and everything code does with the verdict.
+   * The harm screen on one inbound message, and everything code does with the verdict. Started,
+   * not awaited: it returns `{ verdict: "pending", ready, refuse }` and the verdict lands in that
+   * same object. On the subscription a screen is a ~3 s cold CLI start, so it runs beside the turn
+   * instead of in front of it, and it stays fail-safe because nothing can leave before it answers:
+   * every tool awaits `ready` (runTool) and so does the reply (_turn).
    *
-   * 'harm': no model turn. The thread keeps their line and the refusal, the refusal is sent, a
-   * ledger row and a strike are written, and enough strikes pause that person's Reason and tell
-   * the master — the count and the kind, never the words. The master is refused and never paused.
+   * 'harm': nothing the turn did goes anywhere. Its reply is dropped unsent (`refuse`), the thread
+   * keeps only their line and the refusal, the refusal is sent, a ledger row and a strike are
+   * written, and enough strikes pause that person's Reason and tell the master — the count and the
+   * kind, never the words. The master is refused and never paused.
    *
    * 'crisis', 'borderline' and 'unscreened' all run the turn, with the verdict handed to every tool
    * so the outward ones refuse. What differs is afterwards (see _afterScreen).
    */
-  async _screen({ conversationId, text, kind, meta }) {
+  _screen({ conversationId, text, kind, meta }) {
     if (kind !== "user" || !String(text ?? "").trim()) return { verdict: "clear" };
     const me = accounts.ownerOf(conversationId);
     const who = me.name === "the person I work for" ? "them" : me.name;
-    // The thread as it stood when the message came in, kept for a second look (below). A Web-only
-    // chat's own thread, never the shared one's (db.historyKeyFor).
+    // The thread as it stood when the message came in, kept for a second look (below) and to put
+    // back on 'harm'. A Web-only chat's own thread, never the shared one's (db.historyKeyFor).
     const historyId = meta.channel === "web" ? db.historyKeyFor(conversationId, meta.chatId) : conversationId;
     const messages = db.loadConversation(historyId);
     const ask = () => Promise.resolve()
       .then(() => this.screen({ text, messages, who }))
       .catch(e => ({ verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] }));
-    const read = await ask();
-    const verdict = harm.VERDICTS.includes(read?.verdict) ? read.verdict : "unscreened";
-    const out = { verdict, category: read?.category ?? "", note: read?.note ?? "", error: read?.error };
-    if (verdict !== "clear") this.log({ harm_screen: verdict, category: out.category, conversation: conversationId, ...(out.error ? { why: out.error } : {}) });
-    if (read?.skipped) this.log({ harm_screen_skipped: read.skipped, conversation: conversationId });
+    // `out` is the very object every tool's ctx carries and _afterScreen reads: the verdict lands
+    // in it in place, so a tool waiting on `ready` reads the answer, not the `pending` it started on.
+    const out = { verdict: "pending", category: "", note: "" };
+    // 'harm': the turn that ran beside the screen is thrown away. Nothing it did left the machine
+    // (every tool waited and then refused), and the thread goes back to exactly how it stood, plus
+    // their words and code's answer, so the next turn knows this happened and never sees a reply
+    // nobody was sent.
+    out.refuse = async () => {
+      db.saveConversation(historyId, [...messages, ...harm.historyLines({ who, text })]);
+      const strike = this._countStrike(conversationId, out);
+      await this._emit({ conversationId, text: harm.REFUSAL_LINE, meta });
+      await this._pauseIfReached(conversationId, strike, meta);
+      Object.assign(out, { refused: true, reply: harm.REFUSAL_LINE, strike });
+      return harm.REFUSAL_LINE;
+    };
+    out.ready = ask().then((read) => {
+      const verdict = harm.VERDICTS.includes(read?.verdict) ? read.verdict : "unscreened";
+      Object.assign(out, { verdict, category: read?.category ?? "", note: read?.note ?? "", error: read?.error });
+      if (verdict !== "clear") this.log({ harm_screen: verdict, category: out.category, conversation: conversationId, ...(out.error ? { why: out.error } : {}) });
+      if (read?.skipped) this.log({ harm_screen_skipped: read.skipped, conversation: conversationId });
 
-    // A screen that could not run is not 'clear', and it is not 'harm' either: nobody has read the
-    // message. The turn's hands stay tied, but the first outward tool it reaches for asks the
-    // screen once more (runTool awaits this) instead of refusing on the spot — so a timeout no
-    // longer turns "book me a table" into "what is it for?". Only a real 'clear' unties them.
-    // Whatever the second read says becomes this turn's verdict, in place: `out` is the very object
-    // every tool's ctx carries and _afterScreen reads, so a crisis still gets its line, a borderline
-    // reply is still screened on the way out, and 'harm' still gets code's refusal and a strike.
-    // Asked at most once a turn; a turn that never reaches for an outward tool never pays for it.
-    if (verdict === "unscreened") {
-      // Counted, never with the words, so a run of messages nobody read can be seen (below).
-      db.recordHarmEvent({ conversationId, verdict: "unscreened", category: out.error?.startsWith("rate_limited") ? "rate_limited" : "", note: "" });
-      let again = null;
-      out.recheck = () => (again ??= ask().then(r => {
-        const v = harm.VERDICTS.includes(r?.verdict) ? r.verdict : "unscreened";
-        Object.assign(out, { verdict: v, category: r?.category ?? "", note: r?.note ?? "", error: r?.error, rechecked: true });
-        this.log({ harm_rescreen: v, category: out.category, conversation: conversationId, ...(out.error ? { why: out.error } : {}) });
-        if (v === "crisis") db.recordHarmEvent({ conversationId, verdict: v, category: out.category || "self_harm", note: out.note });
-        return out;
-      }));
-    }
-
-    if (verdict === "crisis") {
+      // A screen that could not run is not 'clear', and it is not 'harm' either: nobody has read the
+      // message. The turn's hands stay tied, but the first outward tool it reaches for asks the
+      // screen once more (runTool awaits this) instead of refusing on the spot — so a timeout no
+      // longer turns "book me a table" into "what is it for?". Only a real 'clear' unties them.
+      // Whatever the second read says becomes this turn's verdict, in place, so a crisis still gets
+      // its line, a borderline reply is still screened on the way out, and 'harm' still gets code's
+      // refusal and a strike. Asked at most once a turn; a turn that never reaches for an outward
+      // tool never pays for it.
+      if (verdict === "unscreened") {
+        // Counted, never with the words, so a run of messages nobody read can be seen (below).
+        db.recordHarmEvent({ conversationId, verdict: "unscreened", category: out.error?.startsWith("rate_limited") ? "rate_limited" : "", note: "" });
+        let again = null;
+        out.recheck = () => (again ??= ask().then(r => {
+          const v = harm.VERDICTS.includes(r?.verdict) ? r.verdict : "unscreened";
+          Object.assign(out, { verdict: v, category: r?.category ?? "", note: r?.note ?? "", error: r?.error, rechecked: true });
+          this.log({ harm_rescreen: v, category: out.category, conversation: conversationId, ...(out.error ? { why: out.error } : {}) });
+          if (v === "crisis") db.recordHarmEvent({ conversationId, verdict: v, category: out.category || "self_harm", note: out.note });
+          return out;
+        }));
+      }
       // Written down so "has this come up before" is answerable, but never a strike: this person
       // is the one at risk, and pausing them would be the one wrong thing to do.
-      db.recordHarmEvent({ conversationId, verdict, category: out.category || "self_harm", note: out.note });
+      if (verdict === "crisis") db.recordHarmEvent({ conversationId, verdict, category: out.category || "self_harm", note: out.note });
       return out;
-    }
-    if (verdict !== "harm") return out;
-
-    // Their words and the answer go into the thread, so the next turn knows this happened and does
-    // not pick up a conversation the model never had.
-    db.saveConversation(historyId, [...db.loadConversation(historyId), ...harm.historyLines({ who, text })]);
-    const strike = this._countStrike(conversationId, out);
-    await this._emit({ conversationId, text: harm.REFUSAL_LINE, meta });
-    await this._pauseIfReached(conversationId, strike, meta);
-    return { ...out, refused: true, reply: harm.REFUSAL_LINE, strike };
+    });
+    return out;
   }
 
   /** One 'harm' refusal, as a strike and a ledger row. */

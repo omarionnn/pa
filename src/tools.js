@@ -8748,10 +8748,14 @@ async function runToolInner(name, rawInput, ctx) {
   // A screen that could not run has nobody's read behind it, so before refusing, the message is
   // screened once more (Runtime._screen's `recheck`, at most once a turn) and the check below reads
   // whatever that says. Only a real 'clear' lets the tool through.
+  // A screen still running (Runtime._screen runs it beside the turn) holds EVERY tool, the safe ones
+  // too, until it answers: nothing a turn does may rest on a message nobody has read yet.
+  if (ctx.harm?.verdict === "pending" && ctx.harm.ready) await ctx.harm.ready;
   if (ctx.harm?.verdict === "unscreened" && typeof ctx.harm.recheck === "function" && !SAFE_WHILE_SCREENED.has(name)) {
     await ctx.harm.recheck();
   }
-  if (ctx.harm && ctx.harm.verdict !== "clear" && !SAFE_WHILE_SCREENED.has(name)) {
+  // 'harm' holds every tool: that turn is thrown away (Runtime._screen), so nothing may rest on it.
+  if (ctx.harm && ctx.harm.verdict !== "clear" && (ctx.harm.verdict === "harm" || !SAFE_WHILE_SCREENED.has(name))) {
     const v = ctx.harm.verdict;
     const refusal = {
       ok: false, blocked: "harm_screen",

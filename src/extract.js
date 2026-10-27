@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { config, clock } from "./config.js";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
@@ -6,16 +5,12 @@ import { rememberOnce, distinct } from "./samefact.js";
 import { vectorsFor, embed, embedAndStore } from "./embedding.js";
 import { runClaudeCli } from "./backends/cli.js";
 import * as background from "./background.js";
-import { callApi, cachedSystem } from "./spend.js";
 
-let client;
-const anthropic = () => (client ??= new Anthropic());
 
 /**
- * Where extraction and the profile run. On the claude-cli backend — which is how Reason is deployed —
- * Reason's own subscription, through the background lane, and never the paid API: it is background
- * work, nobody waits on it, and on the API it was what emptied the key (2026-10-25). The API only on
- * the API backend, where there is no CLI.
+ * Where extraction and the profile run: Reason's own subscription, through the background lane, and
+ * never the paid API (owner, 2026-10-27; on the API it was what emptied the key 2026-10-25). It is
+ * background work and nobody waits on it.
  */
 export const onSubscription = () => process.env.REASON_BACKEND === "claude-cli";
 
@@ -327,34 +322,13 @@ export function batchPrompt(conversationId, events, context) {
 const empty = (shown, via) => ({ facts: [], episodes: [], entities: [], relations: [], shown, via });
 const tidyResult = (v, shown, via) => ({ facts: v?.facts || [], episodes: [], entities: v?.entities || [], relations: v?.relations || [], shown, via });
 
-/** One read of a batch, on the subscription (claude-cli backend) or the API (api backend). */
+/** One read of a batch, on the subscription, never the paid API. */
 async function extractMessages(conversationId, events, context) {
   const { prompt, shown } = batchPrompt(conversationId, events, context);
-  if (onSubscription()) {
-    const r = await runClaudeCli({ prompt, system: SYSTEM, jsonSchema: EXTRACT_TOOL.input_schema, model: config.extractionCliModel, timeoutMs: config.extractionCliTimeoutMs, feature: "extraction" });
-    if (!r.ok) throw new Error(r.error ?? `the CLI reported an error: ${String(r.envelope?.result ?? "").split("\n")[0] || "no detail"}`);
-    const v = r.envelope?.structured_output && typeof r.envelope.structured_output === "object" ? r.envelope.structured_output : JSON.parse(String(r.envelope?.result ?? ""));
-    return tidyResult(v, shown, "cli");
-  }
-  try {
-    const res = await callApi({
-      feature: "extraction", client: anthropic(),
-      params: {
-        model: config.extractionModel,
-        max_tokens: 1000 + 300 * (events.length - 1),
-        system: cachedSystem(SYSTEM),
-        tools: [EXTRACT_TOOL],
-        tool_choice: { type: "tool", name: "extracted" },
-        messages: [{ role: "user", content: prompt }],
-      },
-      options: { timeout: config.extractionTimeoutMs, maxRetries: 1 },
-    });
-    const block = res.content.find(b => b.type === "tool_use" && b.name === "extracted");
-    return block ? tidyResult(block.input, shown, "api") : empty(shown, "api");
-  } catch (e) {
-    if (String(e).includes("timeout") || String(e).includes("abort")) return empty(shown, "api");
-    throw e;
-  }
+  const r = await runClaudeCli({ prompt, system: SYSTEM, jsonSchema: EXTRACT_TOOL.input_schema, model: config.extractionCliModel, timeoutMs: config.extractionCliTimeoutMs, feature: "extraction" });
+  if (!r.ok) throw new Error(r.error ?? `the CLI reported an error: ${String(r.envelope?.result ?? "").split("\n")[0] || "no detail"}`);
+  const v = r.envelope?.structured_output && typeof r.envelope.structured_output === "object" ? r.envelope.structured_output : JSON.parse(String(r.envelope?.result ?? ""));
+  return tidyResult(v, shown, "cli");
 }
 
 /**
@@ -475,28 +449,7 @@ const profilePrompt = (candidates, max) => `Today is ${savedOn(clock.now())}. Ch
   `#${f.id} [${f.about}] (${savedOn(f.created_at)}${f.source === "inferred" ? ", inferred" : ", they said it"}${f.category ? `, ${f.category}` : ""}) ${f.fact}`
 ).join("\n");
 
-/** The model's choice over the API: `[{ id, same_as }]`, best first. Throws when it cannot be asked. */
-async function chooseViaModel(candidates, max) {
-  const res = await callApi({
-    feature: "profile", client: anthropic(),
-    params: {
-      model: config.profileModel,
-      max_tokens: 1500,
-      system: cachedSystem(PROFILE_SYSTEM),
-      tools: [PROFILE_TOOL],
-      // Not forced: the profile model refuses a forced tool choice (400, 2026-10-19). The prompt
-      // asks for the tool, and no tool call reads as a failure, which falls back to the score.
-      tool_choice: { type: "auto" },
-      messages: [{ role: "user", content: profilePrompt(candidates, max) }],
-    },
-    options: { timeout: config.extractionTimeoutMs, maxRetries: 1 },
-  });
-  const block = res.content.find(b => b.type === "tool_use" && b.name === "profile");
-  if (!block) throw new Error("the profile model answered without choosing");
-  return block.input?.picks ?? [];
-}
-
-/** The same choice on the subscription, as structured output. Throws when it cannot be asked. */
+/** The model's choice, on the subscription: `[{ id, same_as }]`, best first. Throws when it cannot be asked. */
 async function chooseViaCli(candidates, max) {
   const r = await runClaudeCli({ prompt: profilePrompt(candidates, max), system: PROFILE_SYSTEM.replace("Answer only by calling the profile tool.", "Answer with the picks only."), jsonSchema: PROFILE_TOOL.input_schema, model: config.profileCliModel, timeoutMs: config.extractionCliTimeoutMs, feature: "profile" });
   if (!r.ok) throw new Error(r.error ?? "the CLI reported an error");
@@ -505,8 +458,8 @@ async function chooseViaCli(candidates, max) {
   return v.picks;
 }
 
-/** Who chooses the profile: the subscription on the claude-cli backend, the API with a key, else nobody (the score). */
-const defaultChoose = () => (onSubscription() ? chooseViaCli : process.env.ANTHROPIC_API_KEY ? chooseViaModel : null);
+/** Who chooses the profile: the subscription on the claude-cli backend, else nobody (the score). Never the paid API. */
+const defaultChoose = () => (onSubscription() ? chooseViaCli : null);
 
 /**
  * The profile: the facts most worth having in front of Reason on every turn, one line each.
@@ -515,7 +468,7 @@ const defaultChoose = () => (onSubscription() ? chooseViaCli : process.env.ANTHR
  * 2026-10-19 the owner's profile spent six of its fifteen lines on getting into Speedrun, in six
  * wordings, and opened with a late-night snack. Comparing embeddings cannot sort that out — those
  * six wordings score 0.71-0.83 against each other, the same band as genuinely different facts — so
- * a model reads them and chooses (`chooseViaModel`), one line per thing, newest where they differ.
+ * a model reads them and chooses (`chooseViaCli`), one line per thing, newest where they differ.
  * It is told nothing is deleted, and nothing is: what is passed over is still saved and searchable,
  * and the ids it calls restatements are recorded so a search does not offer them again.
  *

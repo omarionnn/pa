@@ -53,8 +53,9 @@ const BUILT_INS = [
  * pictures prints one JSON event per line and the envelope is the last `result` event rather than
  * the whole of stdout — see `envelopeFrom`. A run without pictures is exactly what it always was.
  */
-export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], model = cliConfig.model, partial = false }) {
-  const withImages = images.length > 0;
+export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], model = cliConfig.model, partial = false, streamIn = false, effort = null }) {
+  // `streamIn` (startWarm, below): the message goes down stdin later, the way pictures already do.
+  const withImages = images.length > 0 || streamIn;
   // `partial` (REASON_WEB_DRAFTS, src/webdraft.js): the same run, printed one event per line with the
   // reply's words as they are written, so an open Web tab can watch it grow. Same envelope at the end.
   const streamOut = withImages || partial;
@@ -63,6 +64,7 @@ export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null
     ...(streamOut ? ["--output-format", "stream-json", "--verbose"] : ["--output-format", "json"]),
     ...(partial ? ["--include-partial-messages"] : []),
     "--model", model,
+    ...(effort ? ["--effort", effort] : []),
     "--system-prompt", system,
     "--strict-mcp-config",
     "--permission-mode", "bypassPermissions",
@@ -81,7 +83,7 @@ export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null
 
   // Pictures first, then the words: "Claude works best when images come before text" (vision
   // docs), the same order src/agent.js uses on the API path.
-  const stdin = withImages
+  const stdin = streamIn ? null : withImages
     ? JSON.stringify({ type: "user", message: { role: "user", content: [...images, { type: "text", text: prompt }] } }) + "\n"
     : null;
   return { args, stdin, streamed: streamOut };
@@ -127,14 +129,16 @@ function told(run) {
  */
 export function runClaudeCli({ feature = "other", ...args }) {
   return runOnce(args).then(r => {
+    // A warm start nobody asked anything of never reached the model: nothing to count.
+    if (r.cancelled) return r;
     told({ feature, model: args.model ?? cliConfig.model, ok: r.ok, interrupted: !!r.interrupted,
       error: r.ok ? null : (r.error ?? String(r.envelope?.result ?? "").split("\n")[0] ?? "the CLI reported an error"), usage: r.envelope?.usage ?? null });
     return r;
   });
 }
 
-function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, onEvent = null }) {
-  const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, jsonSchema, images, model, partial: typeof onEvent === "function" });
+function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, onEvent = null, input = null, effort = null }) {
+  const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, jsonSchema, images, model, partial: typeof onEvent === "function", streamIn: !!input, effort });
 
   return new Promise((resolve) => {
     // The subscription login is an OAuth credential, not an API key. An empty ANTHROPIC_API_KEY
@@ -145,7 +149,7 @@ function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = []
 
     let child;
     try {
-      child = spawn(cliConfig.bin, args, { env: childEnv, stdio: [stdin ? "pipe" : "ignore", "pipe", "pipe"] });
+      child = spawn(cliConfig.bin, args, { env: childEnv, stdio: [stdin || input ? "pipe" : "ignore", "pipe", "pipe"] });
     } catch (e) {
       return resolve({ ok: false, error: `could not run '${cliConfig.bin}': ${e.message}` });
     }
@@ -158,12 +162,23 @@ function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = []
     let stdout = "";
     let stderr = "";
     let killed = false;
+    let cancelled = false;
     // Wall time, and time the machine spent asleep counts towards it: a run that was going when
     // the lid shut is killed within seconds of it opening again. Left that way on purpose. Its
     // connection to the model has been dead for as long as the machine was, so the useful thing is
     // to stop waiting on it and let whoever owns the turn start a clean one — which for a timer is
     // the next sweep (Runtime.tick). It is why a timeout here must never be the end of anything.
-    const timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, timeoutMs);
+    let timer = null;
+    const arm = (ms) => { clearTimeout(timer); timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, ms); };
+    // A warm start (startWarm): started now, asked later. It waits at most WARM_IDLE_MS for its
+    // question, and the run's own timeout counts from the question, not from the start.
+    if (input) {
+      child.stdin.on("error", () => {});
+      arm(WARM_IDLE_MS);
+      Promise.resolve(input).then(
+        (s) => { if (s == null) { cancelled = true; child.kill("SIGKILL"); } else { arm(timeoutMs); child.stdin.end(s); } },
+        () => { cancelled = true; child.kill("SIGKILL"); });
+    } else arm(timeoutMs);
 
     // `onEvent` hears each event line as it is printed (src/webdraft.js). It never changes the run.
     let pending = "";
@@ -187,6 +202,7 @@ function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = []
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
+      if (cancelled) return resolve({ ok: false, cancelled: true, error: "the warm start was never asked anything" });
       if (killed) return resolve({ ok: false, error: `the CLI did not finish inside ${timeoutMs}ms`, stderr });
       // Stopped from outside rather than finished. `systemctl restart` signals every process in the
       // unit's cgroup (KillMode=control-group is the default), so the CLI gets the same SIGTERM the
@@ -245,21 +261,75 @@ const WATCH_SCHEMA = {
   additionalProperties: false,
 };
 
-/** Structured output from one no-tools CLI call, or null if anything at all went wrong. */
-async function structured({ prompt, system, schema, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, feature = "other" }) {
-  const r = await runClaudeCli({ prompt, system, jsonSchema: schema, model, timeoutMs, feature });
+/**
+ * Fail fast (owner, 2026-10-27). A side call (the harm screen, the said check, the mid-turn read, the
+ * judge) whose CLI run failed outright — signed out, out of its limit, could not start — says so,
+ * and for SIDE_OUT_MS after it every side call answers with that error at once instead of burning
+ * another ~5 s cold start on the same wall. Each caller already treats an error as its safe answer
+ * (the screen as `unscreened`, the check as ok, the judge as `unclear`). A timeout or an answer off
+ * the schema is about that one question and trips nothing.
+ */
+export const SIDE_OUT_MS = 30_000;
+let sideOut = { until: 0, why: "" };
+export function sideCallsOut(at = Date.now()) { return at < sideOut.until ? sideOut.why : null; }
+export function resetSideCalls() { sideOut = { until: 0, why: "" }; }
+// No binary at all (`could not run`) fails in a millisecond on its own, so there is nothing to save.
+const trips = (r) => !r.ok && !r.interrupted && !r.cancelled && !/did not finish inside|could not run/.test(r.error ?? "")
+  && !(r.envelope && !r.envelope.is_error);
+
+/** How long a warm start waits for its question before it is put down. */
+const WARM_IDLE_MS = Number(process.env.REASON_CLI_WARM_IDLE_MS || 10 * 60_000);
+
+/** What one side call's run came to, as `{ value }`, `{ refusal, error }` or `{ error }`. */
+function readStructured(r) {
   // The platform's own safeguards declined to read the message at all (`stop_reason: "refusal"`,
   // the result naming the AUP). Reported as its own thing rather than as a generic error, because
   // for the harm screen it is an answer: the strongest one there is.
   if (r.envelope?.stop_reason === "refusal") return { refusal: true, error: String(r.envelope.result ?? "").split("\n")[0] };
-  if (!r.ok) return { error: r.error ?? `the CLI reported an error: ${String(r.envelope?.result ?? "").split("\n")[0] || "no detail"}` };
+  if (!r.ok) {
+    const error = r.error ?? `the CLI reported an error: ${String(r.envelope?.result ?? "").split("\n")[0] || "no detail"}`;
+    if (trips(r)) sideOut = { until: Date.now() + SIDE_OUT_MS, why: `the CLI failed just now (${error.slice(0, 120)}), so side calls skip it for a moment` };
+    return { error };
+  }
   // Newer CLI builds put a schema'd answer under `structured_output`; older ones in `result`.
   if (r.envelope?.structured_output && typeof r.envelope.structured_output === "object") return { value: r.envelope.structured_output, usage: r.envelope.usage ?? null };
   try { return { value: JSON.parse(String(r.envelope.result ?? "")), usage: r.envelope.usage ?? null }; }
   catch { return { error: `the answer was not JSON: ${String(r.envelope.result ?? "").slice(0, 120)}` }; }
 }
 
-/** One JSON-schema answer from the CLI, for a side call whose API ask could not run. */
+/** Structured output from one no-tools CLI call, or `{ error }` if anything at all went wrong. */
+async function structured({ prompt, system, schema, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, feature = "other", effort = null }) {
+  const out = sideCallsOut();
+  if (out) return { error: out };
+  return readStructured(await runClaudeCli({ prompt, system, jsonSchema: schema, model, timeoutMs, feature, effort }));
+}
+
+/**
+ * A side call started before its question is known, so its ~3 s cold start overlaps the turn
+ * instead of following it (the said check, src/said.js). `ask(prompt)` sends the one question and
+ * answers like `structured`; `cancel()` puts it down unasked, which never reaches the model and is
+ * not counted. Asked or not, it is one process and one question.
+ */
+export function startWarm({ system, schema, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, feature = "other", effort = null }) {
+  if (sideCallsOut()) return null;
+  let send;
+  const input = new Promise((res) => { send = res; });
+  const run = runClaudeCli({ system, jsonSchema: schema, model, timeoutMs, feature, effort, input });
+  let asked = false;
+  return {
+    ask(prompt) {
+      if (asked) return Promise.resolve({ error: "a warm start answers one question" });
+      asked = true;
+      const out = sideCallsOut();
+      if (out) { send(null); return Promise.resolve({ error: out }); }
+      send(JSON.stringify({ type: "user", message: { role: "user", content: prompt } }) + "\n");
+      return run.then(readStructured);
+    },
+    cancel() { if (!asked) { asked = true; send(null); } },
+  };
+}
+
+/** One JSON-schema answer from the CLI: every side call's one path (never the paid API). */
 export const askStructuredViaCli = (args) => structured(args);
 
 /**
@@ -289,7 +359,7 @@ export async function judgeViaCli({ summary, reply, instructions }) {
  * config.harmTimeoutMs): it is one short question on every message, so it is run on a faster model
  * than the turn and given seconds, not minutes.
  */
-export async function screenViaCli({ prompt, instructions, verdicts, categories, model = process.env.REASON_HARM_CLI_MODEL || "sonnet", timeoutMs = Number(process.env.REASON_HARM_TIMEOUT_MS || 45_000) }) {
+export async function screenViaCli({ prompt, instructions, verdicts, categories, model = process.env.REASON_HARM_CLI_MODEL || "haiku", timeoutMs = Number(process.env.REASON_HARM_CLI_TIMEOUT_MS || 20_000) }) {
   const schema = {
     type: "object",
     properties: {

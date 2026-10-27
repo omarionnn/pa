@@ -109,7 +109,7 @@ export function shapeDraft(conversationId, raw, { complete = false } = {}) {
  * check rejected the finished reply); `end()` takes back what is left once the reply has gone, and
  * stops. `check(text)` is the said check for the finished reply, shared with the piece that matches it.
  */
-export function startDraft({ conversationId, log = () => {}, check = checkDraft, emit = (e) => draftEvents.emit("draft", e) }) {
+export function startDraft({ conversationId, log = () => {}, check = checkDraft, emit = (e) => draftEvents.emit("draft", e), screen = null }) {
   let msg = null, seq = 0, shownFrom = -1, shown = "", busy = false, again = false, stopped = false;
   // One said check per exact text, shared: the finished reply's own check reuses a piece's, in flight or done.
   const checks = new Map();
@@ -154,6 +154,8 @@ export function startDraft({ conversationId, log = () => {}, check = checkDraft,
         const shaped = shapeDraft(conversationId, m.text.slice(0, upto), { complete: m.done });
         if (shaped.stop) { stop("floor"); break; }
         if (shaped.hold || shaped.text === shown) continue;
+        // Nothing shows before the harm screen has passed the message as clear (Runtime._screen).
+        if (screen && (await screen)?.verdict !== "clear") { stop("screen"); break; }
         const v = await checkOnce(shaped.text);
         if (stopped) break;
         if (!v.ok) { stop("said_check"); break; }

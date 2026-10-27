@@ -151,11 +151,10 @@ test("3: a CLI limit on a batch gives every row its try back (an outage, not a b
   assert.ok(rows.every(r => r.state === "pending" && r.attempts === 0 && r.retry_at > t), JSON.stringify(rows));
 });
 
-test("2: on the claude-cli backend extraction never constructs a paid call, even with a key in the environment", env({ REASON_BACKEND: "claude-cli", ANTHROPIC_API_KEY: "sk-test" }, async () => {
+test("2: extraction and the profile never construct a paid call, on any backend (2026-10-27)", env({ REASON_BACKEND: "claude-cli", ANTHROPIC_API_KEY: "sk-test" }, async () => {
   assert.equal(extract.onSubscription(), true);
   const src = readFileSync("src/extract.js", "utf8");
-  // The CLI branch returns before the API one; the API branch is reached only off the subscription.
-  assert.ok(src.indexOf("if (onSubscription())") < src.indexOf('feature: "extraction", client: anthropic()'));
+  assert.doesNotMatch(src, /@anthropic-ai\/sdk|callApi|chooseViaModel|ANTHROPIC_API_KEY/);
 }));
 
 // ---------- the guardrail: background work never crowds out a reply ----------
@@ -216,61 +215,53 @@ test("guardrail: background CLI work has no API fallback anywhere — extraction
 
 // ---------- 4. the latency-critical checks: Haiku, cached, CLI fallback ----------
 
-test("4: the per-message checks are on claude-haiku-5-5 with small max_tokens", () => {
-  assert.equal(config.harmModel, "claude-haiku-5-5");
-  assert.equal(config.midTurnModel, "claude-haiku-5-5");
+test("4: the per-message checks are on the subscription's small model", () => {
+  if (!process.env.REASON_HARM_CLI_MODEL) assert.equal(config.harmCliModel, "haiku");
+  if (!process.env.REASON_SAID_CHECK_CLI_MODEL) assert.equal(config.saidCheckCliModel, "haiku");
+  if (!process.env.REASON_MIDTURN_CLI_MODEL) assert.equal(config.midTurnCliModel, "haiku");
 });
 
-test("4: the harm screen sends its instructions cached, and counts the call", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: null }, async () => {
-  let seen;
-  harm.setScreenClient({ messages: { create: async (p) => { seen = p; return { content: [{ type: "tool_use", name: "verdict", input: { verdict: "clear" } }], usage: { input_tokens: 40, output_tokens: 12, cache_read_input_tokens: 900, cache_creation_input_tokens: 0 } }; } } });
+test("4: the harm screen of a text never asks the API, even with a key and no CLI backend", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: null }, async () => {
+  let apiAsks = 0;
+  harm.setScreenClient({ messages: { create: async () => { apiAsks++; return { content: [{ type: "tool_use", name: "verdict", input: { verdict: "clear" } }] }; } } });
   try {
     const r = await harm.screen({ text: "book me a table friday" });
-    assert.equal(r.verdict, "clear");
-    assert.equal(seen.system[0].cache_control.type, "ephemeral");
-    assert.equal(seen.model, "claude-haiku-5-5");
-    const u = usageRows().at(-1);
-    assert.equal(u.feature, "harm");
-    assert.equal(u.via, "api");
-    assert.equal(u.cache_read_tokens, 900);
-    assert.ok(u.cost_usd > 0 && u.cost_usd < 0.0001, String(u.cost_usd));
+    assert.equal(r.verdict, "unscreened", "no CLI here: unread, never 'clear', never the API");
+    assert.equal(apiAsks, 0);
+    assert.equal(usageRows().filter(u => u.via === "api").length, 0);
   } finally { harm.setScreenClient(null); }
 }));
 
-test("4: out of credit, the harm screen falls back to the CLI — and the next message skips the API", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
+test("4: on the claude-cli backend the harm screen is the CLI's alone — a dry key changes nothing", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
   let apiAsks = 0, cliAsks = 0;
   harm.setScreenClient({ messages: { create: async () => { apiAsks++; throw LOW_CREDIT; } } });
   harm.setCliScreen(async () => { cliAsks++; return { verdict: "clear" }; });
   try {
-    assert.equal((await harm.screen({ text: "hey" })).via, "cli_fallback");
-    assert.equal(apiAsks, 1, "no credit is not re-asked");
-    assert.equal((await harm.screen({ text: "and again" })).via, "cli_fallback");
-    assert.equal(apiAsks, 1, "known out of credit: straight to the CLI");
+    assert.equal((await harm.screen({ text: "hey" })).verdict, "clear");
+    assert.equal((await harm.screen({ text: "and again" })).verdict, "clear");
+    assert.equal(apiAsks, 0);
     assert.equal(cliAsks, 2);
-    assert.equal(usageRows().filter(r => r.low_credit).length, 1);
+    assert.equal(usageRows().filter(r => r.low_credit).length, 0);
   } finally { harm.setScreenClient(null); harm.setCliScreen(null); }
 }));
 
-test("4: the pre-send check (said ledger) falls back to the CLI when the API cannot answer", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
+test("4: the pre-send check (said ledger) is on the subscription, with a warm CLI", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
   const src = readFileSync("src/said.js", "utf8");
   const check = src.slice(src.indexOf("export async function checkDraft"));
-  assert.doesNotMatch(check, /cli: false/);
   assert.match(check, /feature: "said_check"/);
+  assert.match(check, /warm \}\)\)\.value/);
+  assert.doesNotMatch(src, /@anthropic-ai\/sdk|callApi|ANTHROPIC_API_KEY/);
 }));
 
-test("4: askJson out of credit goes to the CLI, and a subscription-only ask never touches the API", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
-  let apiAsks = 0;
-  const sdk = { messages: { create: async () => { apiAsks++; throw LOW_CREDIT; } } };
-  await assert.rejects(askJson({ system: "s", prompt: "p", schema: { type: "object" }, client: sdk }), /credit balance.*cli: could not run/);
-  assert.equal(apiAsks, 1);
-  apiAsks = 0;
-  await assert.rejects(askJson({ system: "s", prompt: "p", schema: { type: "object" }, client: sdk, api: false }), /kept to the subscription/);
-  assert.equal(apiAsks, 0);
+test("4: askJson is the subscription's only: with a key in the environment it never touches the API", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
+  await assert.rejects(askJson({ system: "s", prompt: "p", schema: { type: "object" } }), /^Error: cli: could not run/);
+  assert.equal(usageRows().filter(r => r.via === "api").length, 0);
+  assert.doesNotMatch(readFileSync("src/onethought.js", "utf8"), /@anthropic-ai\/sdk|callApi|ANTHROPIC_API_KEY/);
 }));
 
-test("4: the said-ledger's record (after the reply) is kept to the subscription on the claude-cli backend", () => {
+test("4: the said-ledger's record (after the reply) is kept to the subscription, through the background lane", () => {
   const src = readFileSync("src/said.js", "utf8");
-  assert.match(src, /REASON_BACKEND === "claude-cli"\s*\? await background\.enqueue\(`said:[^\n]*feature: "said_record", api: false/);
+  assert.match(src, /REASON_BACKEND === "claude-cli"\s*\? await background\.enqueue\(`said:[^\n]*feature: "said_record"/);
 });
 
 test("4: the purchases note makes no side call at all — no API, no CLI (2026-10-27)", () => {
@@ -303,13 +294,13 @@ test("5: the status page row says today and 7d by feature, and counts subscripti
   assert.match(row.detail, /subscription: 2 runs today \(extraction 1, reply 1\)/);
 });
 
-test("5: a paid call refused for want of credit is on the row and turns the pre-reply row red, past the cap amber — both on ops' alert path", async () => {
+test("5: a paid call refused for want of credit is on the row, past the cap amber — both on ops' alert path", async () => {
   const now = clock.now();
   spend.recordApi({ feature: "said_check", model: "claude-haiku-5-5", error: LOW_CREDIT, at: now });
-  // Said on the spend row, and texted by the pre-reply checks' own row (fallbackCheck), not twice.
+  // Said on the spend row. The pre-reply checks are on the subscription (2026-10-27): their row stays ok.
   assert.equal(spend.spendCheck({ now }).state, "ok");
   assert.match(spend.spendCheck({ now }).detail, /1 paid call refused for credit in the last hour/);
-  assert.equal(spend.fallbackCheck().state, "bad");
+  assert.equal(spend.fallbackCheck().state, "ok");
   db.db.exec("DELETE FROM model_usage");
   spend.recordApi({ feature: "reply", model: "claude-opus-5-5", usage: { input_tokens: 300_000 }, at: now });
   assert.equal(spend.spendCheck({ now, cap: 1 }).state, "warn");
@@ -338,69 +329,19 @@ test("6: phone calls keep their own backend and model — the API, on whatever R
   assert.equal(typeof voice.callBackendName, "function");
 });
 
-test("owner: the pre-reply checks on the subscription for want of credit text the owner ONCE, and once 'back on the API'", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
+test("owner: the Pre-reply checks row says the subscription, and a dry key never texts about it", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
   db.db.exec("DELETE FROM ops_checks WHERE id = 'api_fallback'");
   db.opsDelete("alerted:api_fallback");
   const sent = [];
   const runtime = { say: (c, text) => sent.push({ c, text }) };
-  const report = (at) => ({ at, checks: [{ id: "api_fallback", group: "money", label: "Pre-reply checks", ...spend.fallbackCheck() }], verdict: spend.fallbackCheck().state === "ok" ? "ok" : "bad" });
-  let dry = true;
-  harm.setScreenClient({ messages: { create: async () => { if (dry) throw LOW_CREDIT; return { stop_reason: "tool_use", content: [{ type: "tool_use", name: "verdict", input: { verdict: "clear", reason: "fine" } }], usage: { input_tokens: 10, output_tokens: 5 } }; } } });
-  harm.setCliScreen(async () => ({ verdict: "clear" }));
-  try {
-    const t0 = clock.now();
-    assert.equal(spend.fallbackCheck().state, "ok", "no paid call on record: nothing to say");
-    // Many messages while the key is dry, across many ops passes.
-    for (let i = 0; i < 6; i++) {
-      assert.equal((await harm.screen({ text: `message ${i}` })).via, "cli_fallback");
-      spend.resetApiOut(); // the pause lapsing: the next message asks the API again and is refused again
-      ops.settle({ report: report(t0 + i * ops.ALERT_AFTER_MS), runtime });
-    }
-    assert.equal(sent.length, 1, "one text for the whole episode, not one per message");
-    assert.equal(sent[0].c, config.ownerConversation, "only ever the owner");
-    assert.match(sent[0].text, /The API key ran dry, so the pre-reply checks switched to the subscription; replies may be a few seconds slower until you top up\./);
-    assert.match(sent[0].text, /Status page: \S+/, "with the /ops link");
-    assert.doesNotMatch(sent[0].text, /API spend/, "the spend row does not text the same thing twice");
-    // A quiet night with no messages is not a recovery.
-    ops.settle({ report: report(t0 + 20 * ops.ALERT_AFTER_MS), runtime });
-    assert.equal(sent.length, 1);
-    // Topped up: the next paid check works, and the owner hears it once.
-    dry = false;
-    const back = await harm.screen({ text: "after the top-up" });
-    assert.equal(back.verdict, "clear");
-    assert.notEqual(back.via, "cli_fallback", "answered by the API");
-    ops.settle({ report: report(t0 + 21 * ops.ALERT_AFTER_MS), runtime });
-    ops.settle({ report: report(t0 + 22 * ops.ALERT_AFTER_MS), runtime });
-    assert.equal(sent.length, 2);
-    assert.match(sent[1].text, /^Back on the API: the pre-reply checks are using the API key again/);
-    assert.ok(sent.every(s => s.c === config.ownerConversation));
-  } finally { harm.setScreenClient(null); harm.setCliScreen(null); }
-}));
-
-test("owner: one slow minute is a blip; four failures in a row over two minutes is 'failing' and says so in the same one text", env({ REASON_BACKEND: "claude-cli" }, () => {
-  const now = clock.now();
-  const fail = (feature, at) => spend.recordApi({ feature, model: "claude-haiku-5-5", error: new Error("500 overloaded"), at });
-  // Two messages' harm screens (two asks each) inside a minute: still a blip.
-  for (const at of [now, now + 1, now + 30_000, now + 30_001]) fail("harm", at);
-  assert.equal(spend.fallbackCheck().state, "ok", "four failures inside a minute");
-  db.db.exec("DELETE FROM model_usage");
-  fail("said_check", now);
+  const report = (at) => ({ at, checks: [{ id: "api_fallback", group: "money", label: "Pre-reply checks", ...spend.fallbackCheck() }], verdict: "ok" });
+  // A dry key on record (a phone call refused for credit) does not touch the text-side checks.
+  spend.recordApi({ feature: "call_harm", model: "claude-haiku-5-5", error: LOW_CREDIT });
+  const t0 = clock.now();
+  for (let i = 0; i < 4; i++) ops.settle({ report: report(t0 + i * ops.ALERT_AFTER_MS), runtime });
   assert.equal(spend.fallbackCheck().state, "ok");
-  fail("harm", now + 60_000); fail("harm", now + 60_001);
-  fail("onethought", now + 2 * 60_000 + 2);
-  const fb = spend.fallbackCheck();
-  assert.equal(fb.state, "bad");
-  assert.match(fb.alert, /^The API key is failing, so the pre-reply checks switched to the subscription/);
-  // A reply's own paid call is not a pre-reply check and does not count either way.
-  spend.recordApi({ feature: "reply", model: "claude-opus-5-5", usage: { input_tokens: 5 }, at: now + 3 * 60_000 });
-  assert.equal(spend.fallbackCheck().state, "bad");
-}));
-
-test("owner: on the API backend the text does not promise a subscription fallback that is not there", env({ REASON_BACKEND: null }, () => {
-  spend.recordApi({ feature: "harm", model: "claude-haiku-5-5", error: LOW_CREDIT });
-  const fb = spend.fallbackCheck();
-  assert.equal(fb.state, "bad");
-  assert.match(fb.alert, /^The API key ran dry, and with no subscription to fall back to the pre-reply checks are not running until you top up\.$/);
+  assert.match(spend.fallbackCheck().detail, /subscription, never the paid API/);
+  assert.equal(sent.length, 0);
 }));
 
 test("guardrail: the said-ledger's record on the subscription goes through the background lane — it waits out a reply in flight", env({ REASON_BACKEND: "claude-cli", ANTHROPIC_API_KEY: "sk-test" }, async () => {
