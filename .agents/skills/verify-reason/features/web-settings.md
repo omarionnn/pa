@@ -57,7 +57,17 @@ switch saves back), `src/deliver.js` (`keptOnWeb`), `src/db.js` (`accounts.web_r
 node --test test/web-settings.test.js test/web-settings-migration.test.js
 eval "$(bin/caged.sh env | sed 's/^/export /')" \
   && REASON_DB_PATH=$(mktemp -d)/settings.db node bin/web-settings-drive.mjs   # 29 steps, all ok
+eval "$(bin/caged.sh env | sed 's/^/export /')" \
+  && REASON_DB_PATH=$(mktemp -d)/index.db node bin/web-settings-index-drive.mjs [outDir]   # 13 steps, Chromium
 ```
+
+**Desktop section index (10-27).** The → is a scroll-spy (IntersectionObserver, `aria-current="true"`),
+not the hash: it used to read only `location.hash`, so a page reached at `#invites` (← SETTINGS from an
+invite, or the 303 after making one) kept → INVITES while the owner read the top. A hash or a click
+holds its section until the reader wheels/touches/keys; the crossing line slides from 30% to the
+bottom over the last 70% of a viewport so short end sections each get the →. Smooth scroll only
+under `prefers-reduced-motion: no-preference`; phones draw no index. `bin/web-settings-index-drive.mjs`
+wheels through all six in Chromium; live: `REASON_INDEX_URL=… REASON_INDEX_COOKIE='reason_page=…'`.
 
 Live proof (Hetzner only): a throwaway owner `page_sessions` row → GET the public page and every
 edit state, save a reach value and restore the original at once, revoke only a second throwaway session, make an invite and cancel it
