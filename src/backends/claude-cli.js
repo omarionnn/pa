@@ -113,6 +113,8 @@ async function runTurnOnCli({
   // A photo note the last turn was still writing goes down before this turn reads anything, so a
   // follow-up about the photo still finds what it showed.
   await notesPending.get(conversationId);
+  // The thread this turn reads and adds to: the conversation's, or a Web-only chat's own (src/db.js historyKeyFor).
+  const historyId = toolCtx.historyId ?? conversationId;
   // Whose Reason this is: the person in front of it, not whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
   const speaker = me.name === "the person I work for" ? "them" : me.name;
@@ -130,7 +132,7 @@ async function runTurnOnCli({
   // What they have really bought (src/purchasesnote.js), on a message that is about buying — the same
   // read as the API path, started now for the same reason: its side call runs while the rest is
   // gathered, never in front of the reply. Shown Reason's last message, from the thread as it stands.
-  const purchasesPending = startPurchasesNote(conversationId, { text, kind, messages: loadConversation(conversationId), log });
+  const purchasesPending = startPurchasesNote(conversationId, { text, kind, messages: loadConversation(historyId), log });
   // A fresh source ledger for the reply check (src/offers.js), same as the API path.
   beginOfferTurn(conversationId, text, kind);
   const { blocks, notes, seen, viewedMediaIds } = await images(attachments, { log, cover: reviewed.cover });
@@ -161,8 +163,8 @@ async function runTurnOnCli({
   // Where the outbox stood before this turn, so that what the turn texted them along the way can be
   // told apart from what was already there. Turns for one conversation run one at a time.
   const mark = outboxMark();
-  const before = loadConversation(conversationId);
-  saveConversation(conversationId, [...before, { role: "user", content: forHistory }]);
+  const before = loadConversation(historyId);
+  saveConversation(historyId, [...before, { role: "user", content: forHistory }]);
   try {
     // The API path keeps the model's own tool calls and their results in the message list, so it
     // can see the confirmation it opened two turns ago. A fresh CLI process cannot: the history
@@ -170,8 +172,10 @@ async function runTurnOnCli({
     // "yeah that's it" lands on a question that was never put to them. Spelling the open
     // confirmations out restores what the API path gets for free; it does not add anything the
     // model could not have had.
+    // Only the asks made in THIS thread (a Web-only chat's, or the shared one's): one asked elsewhere
+    // can't be answered here (src/trust.js recordConfirmation).
     const pending = pendingConfirmations(conversationId)
-      .filter(x => !x.granted_at)
+      .filter(x => !x.granted_at && (x.thread_key ?? null) === (historyId !== conversationId ? historyId : null))
       .map(x => `  - confirmation #${x.id} (${x.action}), asked ${stamp(x.asked_at)}: ${x.summary}`);
 
     // Replies in this thread that never arrived, told about exactly once. Same read as the API path
@@ -282,15 +286,15 @@ async function runTurnOnCli({
 
     // The conversation already has the inbound line; add what Reason said to it, then cut the whole
     // thread to size (src/thread.js) — it used to grow without end.
-    saveThread(conversationId, [
-      ...loadConversation(conversationId),
+    saveThread(historyId, [
+      ...loadConversation(historyId),
       ...along.map(content => ({ role: "assistant", content })),
       { role: "assistant", content: reply },
     ]);
 
     return quiet.silent ? null : reply;
   } catch (e) {
-    if (takeBackLine(conversationId, forHistory)) log({ cli_turn_line_taken_back: conversationId });
+    if (takeBackLine(historyId, forHistory)) log({ cli_turn_line_taken_back: conversationId });
     throw e;
   }
 }

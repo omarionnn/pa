@@ -214,7 +214,7 @@ export function restoreSaved(conv, key) {
  * within half an hour. History on Web starts when Web did, so older things have nowhere to point.
  */
 export function messageFor(conv, item) {
-  const q = (sql, ...a) => ONE(`SELECT id FROM messages WHERE conversation_id = ? AND deleted_at IS NULL AND role = 'assistant' AND ${sql} ORDER BY at, id LIMIT 1`, conv, ...a)?.id ?? null;
+  const q = (sql, ...a) => ONE(`SELECT id FROM messages WHERE conversation_id = ? AND chat_id IS NULL AND deleted_at IS NULL AND role = 'assistant' AND ${sql} ORDER BY at, id LIMIT 1`, conv, ...a)?.id ?? null;
   if (item.kind === "page") return q("instr(text, ?) > 0", `/${item.id}`);
   if (item.kind === "event") return q("instr(text, ?) > 0", item.row.public_id);
   if (item.kind === "album") return q("instr(text, ?) > 0", `${item.row.public_id}/album`);

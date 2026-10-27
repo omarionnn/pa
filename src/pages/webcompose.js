@@ -123,14 +123,14 @@ function micOffHtml() {
  */
 // `slot` is the conversation's own control inside the line, before the mic (the thread's TODAY ↓,
 // src/pages/webconvo.js TODAY_SLOT): the one hook the thread has into this composer.
-export function composerHtml({ csrf, sendId, maxText, slot = "", draft = "" }) {
+export function composerHtml({ csrf, sendId, maxText, slot = "", draft = "", chat = "" }) {
   const picks = Object.entries(PICKS);
   return `<div class="composer">`
     + micOffHtml()
     + `<div class="cdrop" aria-hidden="true"><div>${DROP_SVG}<span class="hand">let go. i’ll read it.</span><span class="lbl">ON DESKTOP, DROP ANYWHERE</span></div></div>`
     + `<p class="lbl fromvoice" hidden>FROM YOUR VOICE · EDIT ANYTHING</p>`
     + `<div class="upl" hidden><ul class="on-line" aria-label="Attached"></ul><div class="upfail" role="status" hidden><div class="uf-list"></div><p class="lbl uf-lim">${esc(LIMITS_LINE)}</p></div></div>`
-    + `<form class="cform" method="POST" action="/web/send"><input type="hidden" name="c" value="${esc(csrf)}"><input type="hidden" name="id" value="${esc(sendId)}">`
+    + `<form class="cform" method="POST" action="/web/send"><input type="hidden" name="c" value="${esc(csrf)}"><input type="hidden" name="id" value="${esc(sendId)}">${chat ? `<input type="hidden" name="chat" value="${esc(chat)}">` : ""}`
     + `<button class="ic c-add" type="button" aria-label="Add a photo or file" aria-haspopup="dialog" aria-expanded="false" hidden>${PLUS_SVG}</button>`
     + picks.map(([k, p]) => `<input class="c-file" data-pick="${k}" type="file" accept="${esc(p.accept)}"${p.capture ? ` capture="${p.capture}"` : ""}${k === "camera" ? "" : " multiple"} hidden tabindex="-1" aria-hidden="true">`).join("")
     + `<label class="sr" for="c-input">Message Reason</label><textarea id="c-input" name="text" rows="1" maxlength="${Number(maxText)}" placeholder="Tell Reason what you need" autocomplete="off" enterkeyhint="send" required${draft ? " data-draft" : ""}>${esc(draft)}</textarea>`
@@ -315,7 +315,7 @@ body.listening{overflow:hidden}
 export const COMPOSE_JS = String.raw`(function(){
 var R=window.REASON_WEB||{},A=R.api,form=document.querySelector('.cform');if(!form||!A)return;
 var comp=form.closest('.composer'),box=document.getElementById('c-input'),add=form.querySelector('.c-add'),mic=form.querySelector('.c-mic'),upl=comp.querySelector('.upl'),shelf=comp.querySelector('.on-line'),fail=comp.querySelector('.upfail'),failList=comp.querySelector('.uf-list'),note=comp.querySelector('.c-note'),sheet=comp.querySelector('.addsheet'),fromVoice=comp.querySelector('.fromvoice'),moff=comp.querySelector('.micoff'),body=document.body,onit=document.querySelector('.onit');
-if(box.hasAttribute('data-draft')){try{history.replaceState(null,'','/web?thread')}catch(e){}setTimeout(function(){fit();if(matchMedia('(hover:hover)').matches){box.focus({preventScroll:true});box.setSelectionRange(box.value.length,box.value.length)}},0)}
+if(box.hasAttribute('data-draft')){try{var cq=new URLSearchParams(location.search).get('chat');history.replaceState(null,'',cq?'/web?chat='+encodeURIComponent(cq):'/web?thread')}catch(e){}setTimeout(function(){fit();if(matchMedia('(hover:hover)').matches){box.focus({preventScroll:true});box.setSelectionRange(box.value.length,box.value.length)}},0)}
 var files=[],blobs={},noteT=0,LIM=R.lim||{each:20971520,fit:7340032,files:6};
 function say(t){if(!note)return;note.textContent=t;note.hidden=!t;clearTimeout(noteT);if(t)noteT=setTimeout(function(){note.hidden=true},9000)}
 R.say=say;

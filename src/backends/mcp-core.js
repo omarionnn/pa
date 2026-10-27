@@ -81,7 +81,7 @@ export async function mcpDispatch(msg, { conversationId, channels = null, calls 
       const input = msg.params?.arguments ?? {};
       const out = await runTool(name, input, {
         conversationId,
-        messages: loadConversation(conversationId),
+        messages: loadConversation(toolCtx?.historyId ?? conversationId),
         channels,
         calls,
         // Everything the turn was handed, including `taskId` — the task this turn was woken for,

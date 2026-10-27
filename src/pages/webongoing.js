@@ -398,7 +398,10 @@ const headBlock = (status, title, { pen = false, sub = "" } = {}) => `<div class
  * (src/ongoing.js draftFor, looked up again server-side from kind:id in the session's own rows).
  * A NEEDS YOU row only wants their answer, so it opens the plain thread.
  */
-export const talkHref = (x) => (x?.kind && x.id && x.state !== "needs" ? `/web?thread&about=${encodeURIComponent(`${x.kind}:${x.id}`)}` : "/web?thread");
+export const talkHref = (x) => (x?.kind && x.id && x.state !== "needs"
+  // An approval asked in a Web-only chat can only be answered in that chat (src/trust.js).
+  ? `/web?${x.chat ? `chat=${encodeURIComponent(x.chat)}&` : "thread&"}about=${encodeURIComponent(`${x.kind}:${x.id}`)}`
+  : "/web?thread");
 
 /** The detail page's body, by what the row is. Everything on it is a field the row really has. */
 function detailBody(x, tz) {

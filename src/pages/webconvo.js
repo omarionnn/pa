@@ -32,7 +32,8 @@
 // way the stream is the path a reply takes (owner 10-26: replies must feel instant). The 4 s poll of
 // /web/history is only the fallback: it runs while the stream is not open, or once it has been silent
 // past two of its 15 s `ping` events (a stream dead without an error), never alongside a live one.
-import { timingSafeEqual, createHash } from "node:crypto";
+import { timingSafeEqual, createHash, randomBytes } from "node:crypto";
+import { renderWebNotFound } from "./webedge.js";
 import * as db from "../db.js";
 import { WEB, webStreamOrigin, siteOrigin } from "../web.js";
 import { config, clock } from "../config.js";
@@ -307,8 +308,8 @@ export function listHtml(lines, { now = clock.now(), folds = null, conversationI
 }
 
 /** One page of history drawn: its lines with finished tasks settled (src/settle.js), as the thread shows it. */
-export function pageHtml(lines, { conversationId, service = null, now = clock.now(), keep = null }) {
-  const folds = settle.foldsFor(conversationId, lines.map(m => m.id));
+export function pageHtml(lines, { conversationId, service = null, now = clock.now(), keep = null, chat = "" }) {
+  const folds = settle.foldsFor(conversationId, lines.map(m => m.id), { chat });
   // A window that ends before a task's last message (Saved's ?at=) draws that task's lines as they are,
   // and the message somebody came to find is never folded away.
   const here = new Set(lines.map(m => m.id));
@@ -579,8 +580,8 @@ export function tabBar(current, count) {
 
 /** The one-line composer. `sendId` makes even a no-script post one turn however often it is resent. */
 // `+` and the mic (composer 01–04, Listening) are drawn and run by src/pages/webcompose.js.
-function composer({ csrf, sendId, slot = "", draft = "" }) {
-  return composerHtml({ csrf, sendId, maxText: MAX_TEXT, slot, draft });
+function composer({ csrf, sendId, slot = "", draft = "", chat = "" }) {
+  return composerHtml({ csrf, sendId, maxText: MAX_TEXT, slot, draft, chat });
 }
 
 /** How many Ongoing rows show before "See all N →" (owner, 10-26): needs-you first, then soonest due. */
@@ -641,7 +642,7 @@ var tf=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'});func
 function times(root){(root||document).querySelectorAll('time[datetime]').forEach(function(t){var d=Date.parse(t.dateTime);if(d)t.textContent=fmt(d)})}times();
 if(box){box.addEventListener('focus',function(){body.classList.add('typing')});box.addEventListener('blur',function(){body.classList.remove('typing')})}
 if(!form)return;
-var KEY='reason-web-pending:'+R.k,waiting=0,until=0,live=false,es=null,lost=0;
+var CQ=R.chat?'&chat='+encodeURIComponent(R.chat):'',KEY='reason-web-pending:'+R.k,waiting=0,until=0,live=false,es=null,lost=0;
 function noteLine(t){if(!net)return;if(t){net.textContent=t;net.hidden=false}else net.hidden=true}
 function offline(){return navigator.onLine===false}
 function near(){return window.innerHeight+window.scrollY>=document.body.scrollHeight-200}
@@ -653,7 +654,7 @@ function uid(){if(window.crypto&&crypto.randomUUID)return crypto.randomUUID();va
 function working(on,u){until=on?(u||Date.now()+120000):0;if(onit)onit.hidden=!on;if(on&&near())bottom()}
 setInterval(function(){if(until&&Date.now()>until)working(false)},1000);
 // From the arrival, a message moves you into the thread once Reason has it.
-if(!list){R.api={uid:uid,post:function(p){keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));location.href='/web?thread'},pendingLine:function(){return document.createElement('li')},state:function(li,st){if(st==='failed'&&R.say)R.say("that didn't go. try it again?")}};
+if(!list){R.api={uid:uid,post:function(p){keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));location.href=R.chat?'/web?chat='+R.chat:'/web?thread'},pendingLine:function(){return document.createElement('li')},state:function(li,st){if(st==='failed'&&R.say)R.say("that didn't go. try it again?")}};
 form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.trim(),fs=R.takeFiles?R.takeFiles():[];if(!t&&!fs.length)return;var p={id:uid(),text:t};if(fs.length)p.files=fs;R.api.post(p)});return}
 var loaded=!R.defer,lastPoll=0,calm2=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
 function line(m){var li=document.createElement('li');li.className='msg arrive '+(m.role==='user'?'you':'re');li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;if(m.day)li.dataset.day=m.day;if(m.where)li.dataset.where=m.where;li.innerHTML=m.html;times(li);return li}
@@ -674,7 +675,7 @@ if(st==='sending'||st==='waiting'){var s=document.createElement('p');s.className
 else if(st==='failed'){var b=document.createElement('button');b.type='button';b.className='retry';b.textContent="didn't go. tap to try again.";b.onclick=function(){if(li.retry)return li.retry();send(stored(li),li)};var n=document.createElement('p');n.className='st';n.textContent="IT WON'T SEND TWICE";li.appendChild(b);li.appendChild(n)}}
 function expired(){if(!window.reasonMidTask||!window.reasonMidTask(waiting>0||!!until))location.href='/web?out=1'}
 function send(p,li,tries){tries=tries||0;if(offline()){state(li,'waiting');return}state(li,'sending');
-fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c,files:(p.files||[]).map(function(f){return f.id}).filter(Boolean).join(','),voice:p.voice?String(p.voice):''})})
+fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c,chat:R.chat||'',files:(p.files||[]).map(function(f){return f.id}).filter(Boolean).join(','),voice:p.voice?String(p.voice):''})})
 .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(j){j.status=r.status;return j})})
 .then(function(j){if(j.status===401){expired();return}if(j.ok){if(j.duplicate&&li.isConnected&&li.dataset.pending){li.remove();forget(p.id)}if(li.isConnected&&!j.duplicate){state(li,'sent');li.querySelectorAll('.st').forEach(function(x){x.remove()});waiting++;working(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,'failed')})
 .catch(function(){if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
@@ -693,9 +694,9 @@ function workIs(w){var lw=document.querySelector('.longwork');if(!lw)return;if(!
 // S3: a task that finished while this page was open settles in place: its lines become one DONE line.
 function tidyDays(){list.querySelectorAll('li.day').forEach(function(d){var n=d.nextElementSibling;if(!n||n.classList.contains('day'))d.remove()})}
 function settleIn(a){(a||[]).forEach(function(s){var was=list.querySelector('.done[data-task="'+s.task+'"]');if(was&&was.dataset.ids===s.ids.join(' '))return;var at=list.querySelector('.msg:not(.done)[data-id="'+s.ids[s.ids.length-1]+'"]')||was;if(!at)return;if(was&&at!==was)was.remove();var t=document.createElement('ol');t.innerHTML=s.html;var li=t.firstElementChild;if(!li)return;times(li);at.replaceWith(li);s.ids.forEach(function(id){var o=list.querySelector('.msg:not(.done)[data-id="'+id+'"]');if(o)o.remove()});doneInit(li.parentNode)});tidyDays();where()}
-var polling=false;function poll(){if(polling||!loaded)return;polling=true;lastPoll=Date.now();fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);settleIn(j.settled);ogLook();if('work' in j)workIs(j.work);if(R.doing)R.doing(j.doing);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
+var polling=false;function poll(){if(polling||!loaded)return;polling=true;lastPoll=Date.now();fetch('/web/history?after='+R.last+CQ,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);settleIn(j.settled);ogLook();if('work' in j)workIs(j.work);if(R.doing)R.doing(j.doing);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
 var beat=0;setInterval(function(){if(!live||Date.now()-beat>40000)poll()},4000);
-function stream(){if(!window.EventSource)return;try{es=R.stream.indexOf('http')===0?new EventSource(R.stream+'?after='+R.last,{withCredentials:true}):new EventSource(R.stream+'?after='+R.last)}catch(x){return}es.onopen=function(){live=true;beat=Date.now();if(lost){lost=0;noteLine('')}};
+function stream(){if(!window.EventSource)return;try{es=R.stream.indexOf('http')===0?new EventSource(R.stream+'?after='+R.last+(R.chat?'&chat='+encodeURIComponent(R.chat):''),{withCredentials:true}):new EventSource(R.stream+'?after='+R.last+(R.chat?'&chat='+encodeURIComponent(R.chat):''))}catch(x){return}es.onopen=function(){live=true;beat=Date.now();if(lost){lost=0;noteLine('')}};
 es.addEventListener('ping',function(){beat=Date.now()});
 es.addEventListener('message',function(e){beat=Date.now();try{add(JSON.parse(e.data))}catch(x){}ogLook()});
 es.addEventListener('typing',function(e){try{var t=JSON.parse(e.data);working(t.on,t.until);if(R.doing)R.doing(t.on?t.doing:null)}catch(x){}ogLook()});
@@ -707,7 +708,7 @@ document.addEventListener('visibilitychange',function(){if(!document.hidden)poll
 // L2: ↑ FINDING EARLIER MESSAGES… where the button was, a ghost above the day it lands on; the page
 // stays where it is while the earlier day arrives above it.
 var loading=false;function older(){if(loading||!R.more)return;loading=true;start.innerHTML=R.finding;start.classList.add('finding');var a=list.querySelector('.msg'),top=a?a.getBoundingClientRect().top:0;
-fetch('/web/history?before='+R.first,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){var t=document.createElement('ol');t.innerHTML=j.html||'';
+fetch('/web/history?before='+R.first+(R.chat?'&chat='+encodeURIComponent(R.chat):''),{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){var t=document.createElement('ol');t.innerHTML=j.html||'';
 var fd=list.firstElementChild;if(fd&&fd.classList.contains('day')&&t.querySelector('li.day[data-day="'+fd.dataset.day+'"]'))fd.remove();
 t.querySelectorAll('.msg[data-id]').forEach(function(li){if(has(li.dataset.id))li.remove()});
 var anchor=list.firstChild;times(t);while(t.firstChild)list.insertBefore(t.firstChild,anchor);tidyDays();doneInit();
@@ -738,7 +739,7 @@ stream();if(R.more)hook();bottom();where()}
 // L1: the thread opens with its composer and tabs already live; the newest page comes from the server.
 // Slow (over 8 s) or failed, it says so in the same place, with a way to try again.
 function opening(){var l1=document.querySelector('.l1');function slow(){if(!l1)return;var s=l1.querySelector('[role=status]');if(s)s.textContent='STILL LOOKING…';l1.querySelector('.l1-slow').hidden=false;l1.querySelector('.l1-again').hidden=false}var tm=setTimeout(slow,8000);
-fetch('/web/history',{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}if(!r.ok)throw 1;return r.json()}).then(function(j){clearTimeout(tm);var t=document.createElement('ol');t.innerHTML=j.html||'';t.querySelectorAll('.msg[data-id]').forEach(function(li){if(has(li.dataset.id))li.remove()});
+fetch('/web/history'+(R.chat?'?chat='+encodeURIComponent(R.chat):''),{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}if(!r.ok)throw 1;return r.json()}).then(function(j){clearTimeout(tm);var t=document.createElement('ol');t.innerHTML=j.html||'';t.querySelectorAll('.msg[data-id]').forEach(function(li){if(has(li.dataset.id))li.remove()});
 t.querySelectorAll('.msg[data-cid]').forEach(function(li){var p=list.querySelector('.msg[data-pending="'+li.dataset.cid+'"]');if(p){p.remove();forget(li.dataset.cid)}});
 var anchor=list.firstChild;while(t.firstChild)list.insertBefore(t.firstChild,anchor);
 R.first=j.first||0;R.last=Math.max(R.last,j.last||0);R.more=!!j.more;if(l1)l1.remove();list.removeAttribute('aria-busy');
@@ -758,12 +759,12 @@ export function streamPath() {
   return origin ? `${origin}/web/live` : "/web/stream";
 }
 
-function boot({ csrf, lines = [], more = false, conversationId = "", deferred = false, og = "" }) {
-  // `k` keys this tab's unsent messages to ONE conversation: a tab later signed in as somebody else never resends them.
-  const k = createHash("sha256").update(`pending:${conversationId}`).digest("base64url").slice(0, 12);
+function boot({ csrf, lines = [], more = false, conversationId = "", deferred = false, og = "", chat = "" }) {
+  // `k` keys this tab's unsent messages to ONE conversation (and one Web chat): a tab later signed in as somebody else never resends them.
+  const k = createHash("sha256").update(`pending:${conversationId}${chat ? `#${chat}` : ""}`).digest("base64url").slice(0, 12);
   // A deferred page (L1) learns first/last from its first /web/history; until then it polls nothing.
   const first = deferred ? 0 : lines[0]?.id ?? 0, last = deferred ? 0 : lines.reduce((n, m) => Math.max(n, m.id), 0);
-  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},k:${JSON.stringify(k)},stream:${JSON.stringify(streamPath())},defer:${deferred ? "true" : "false"},ph:${JSON.stringify(PLACEHOLDER)},finding:${JSON.stringify(FINDING)},ogv:${JSON.stringify(String(og))}};`;
+  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},k:${JSON.stringify(k)},stream:${JSON.stringify(streamPath())},defer:${deferred ? "true" : "false"},ph:${JSON.stringify(PLACEHOLDER)},finding:${JSON.stringify(FINDING)},ogv:${JSON.stringify(String(og))},chat:${JSON.stringify(String(chat))}};`;
 }
 
 const NET = `<p class="netline" role="status" hidden></p>`;
@@ -771,20 +772,22 @@ const NET = `<p class="netline" role="status" hidden></p>`;
 /**
  * The thread. `firstVisit` draws 5C in its place (once); `approvals` the one loud thing at the foot.
  */
-export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), found = null, deferred = false, work = null, draft = "" }) {
+export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), found = null, deferred = false, work = null, draft = "", chat = "" }) {
   if (firstVisit) return renderFirstVisit({ account });
   const conv = account?.conversation_id ?? "";
   const service = serviceOf(conv);
+  // A Web-only chat (owner 10-27) starts here: nothing before it lives in the texts.
   const startLine = more
     ? `<button class="act2" type="button">↑ SHOW EARLIER MESSAGES</button>`
-    : lines.length ? label(`Your conversation before ${dayFmt().format(lines[0].at)} stays in your texts.`) : "";
+    : lines.length && !chat ? label(`Your conversation before ${dayFmt().format(lines[0].at)} stays in your texts.`) : "";
   // SR4: a label is always who · where · when; what the card is waiting for is said inside the card.
   const asked = approvals[0]?.at ?? approvals[0]?.asked_at ?? null;
   const askedIn = asked ? [...lines].reverse().find(m => m.role === "assistant" && m.at <= asked + 60_000) : null;
   const apprLbl = `REASON · ${(askedIn?.source ?? sourceLabel(null, service)).toUpperCase()} · ${timeFmt().format(asked ?? askedIn?.at ?? now)}`;
-  const appr = approvals.length ? `<div class="msg re approval">${label(apprLbl)}${approvalCard({ title: approvals[0].title, money: approvals[0].money, href: approvals[0].href })}</div>` : "";
+  // A Web-only chat is only that exchange: a pending approval stays in Ongoing (the margin, the tab's count), not in its lines.
+  const appr = approvals.length && !chat ? `<div class="msg re approval">${label(apprLbl)}${approvalCard({ title: approvals[0].title, money: approvals[0].money, href: approvals[0].href })}</div>` : "";
   const count = items.length + approvals.length + back.length;
-  const drawn = pageHtml(lines, { conversationId: conv, service, now, keep: found });
+  const drawn = pageHtml(lines, { conversationId: conv, service, now, keep: found, chat });
   // L1: with script, the page opens with its composer and tabs live and the thread's place held by
   // ruled lines; the newest page arrives from /web/history. Without script it is all here at once.
   const thread = deferred
@@ -794,16 +797,16 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
   const body = topBar({ csrf, where: WHERE_NOTE }) + NET
     + `<main class="wrapc"><section class="convo" aria-labelledby="c-h"><h1 id="c-h" class="sr">Your conversation with Reason</h1>`
     + (deferred ? `<div class="start"></div>` : "") + thread
-    + (lines.length ? "" : `<div class="empty">${hand("nothing here yet. whatever you tell me here or by text shows up in this thread.", { tilt: true })}</div>`)
+    + (lines.length || chat ? "" : `<div class="empty">${hand("nothing here yet. whatever you tell me here or by text shows up in this thread.", { tilt: true })}</div>`)
     + appr + onIt(true) + longWorkHtml(work)
-    + needsYes(approvals)
-    + composer({ csrf, sendId, slot: TODAY_SLOT, draft })
+    + (chat ? "" : needsYes(approvals))
+    + composer({ csrf, sendId, slot: TODAY_SLOT, draft, chat })
     + `</section>${ongoingMargin(items, approvals, { back })}</main>`
     + `<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing${count ? `, ${count} ${count === 1 ? "thing" : "things"}` : ""}"><span aria-hidden="true">ONGOING${count ? ` · ${count}` : ""}</span></button>`
     + tabBar("chat", count) + listeningHtml();
   // Saved's FIND IT IN THE CHAT → (src/pages/websaved.js): the thread opened at that message, scrolled to it.
   const toFound = found ? `(function(){var e=document.getElementById('m-${Number(found)}');if(e)e.scrollIntoView({block:'center'})})();` : "";
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred, og: ogVersion(ogMargin({ items, approvals, back })) }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred, og: ogVersion(ogMargin({ items, approvals, back })), chat }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
 }
 
 /** S2: the "where you are" note, two slots that crossfade. Filled and shown by the page's script. */
@@ -832,7 +835,7 @@ export function longWorkHtml(work) {
 }
 
 /** B / B2, the arrival: the greeting, the composer, then what's in hand or where to start, then iMessage. */
-export function renderHome({ account, csrf, sendId, items = [], approvals = [], back = [], pick = "" }) {
+export function renderHome({ account, csrf, sendId, items = [], approvals = [], back = [], pick = "", chat = newWebChatId() }) {
   const name = String(account?.name ?? "").trim();
   // The approval stays on paper; what's already in hand is quiet rows between dashed rules, as on Ongoing (STAGING-REVIEW 7).
   const middle = items.length
@@ -840,11 +843,28 @@ export function renderHome({ account, csrf, sendId, items = [], approvals = [], 
     : `<section class="start-w" aria-label="You could start with" hidden>${label("YOU COULD START WITH")}${EXAMPLES.map(t => `<button class="ex" type="button" data-text="${esc(t)}">"${esc(t)}"</button>`).join("")}</section>`;
   const body = topBar({ csrf, extra: typed("THE THREAD →", { href: "/web?thread" }) }) + NET
     + `<main class="home"><h1 class="greet">${esc(greeting(name))}</h1>`
-    + composer({ csrf, sendId })
+    // Home's composer starts a fresh Web-only chat (owner 10-27); "Continue the thread →", the Chat
+    // tab and "The thread" still open the one shared conversation.
+    + composer({ csrf, sendId, chat })
     + (approvals.length ? `<section class="approval" aria-label="Needs you">${approvalCard({ title: approvals[0].title, money: approvals[0].money, href: approvals[0].href })}</section>` : "")
     + middle + pick + `</main>`
     + tabBar("chat", items.length + approvals.length + back.length) + listeningHtml();
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, conversationId: account?.conversation_id }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, conversationId: account?.conversation_id, chat }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
+}
+
+/** A new Web chat's id, minted by the page that may start it (claimed by its first send). */
+export const newWebChatId = () => randomBytes(16).toString("base64url");
+/**
+ * The Web chat a request names (`?chat=` or the form's `chat`): "" for the shared thread, the id
+ * for one of THIS conversation's chats (or one not claimed yet), null for anything else — another
+ * account's chat or a malformed id, which every caller answers as not found.
+ */
+export function chatFrom(conv, raw) {
+  const v = String(raw ?? "");
+  if (!v) return "";
+  if (!db.WEB_CHAT_RE.test(v)) return null;
+  const owner = db.webChatOwner(v);
+  return owner && owner !== conv ? null : v;
 }
 
 /** 5C, shown once: the same Reason, and what stays where. */
@@ -902,6 +922,14 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   if (method === "GET" && db.markWebNoticeSeen(conv)) return renderFirstVisit({ account });
   const { items, approvals, back } = ongoing(conv, now);
   if (query.tab === "ongoing") return renderOngoing({ csrf, items, approvals, back });
+  // ?chat=<id>: one Web-only chat, only its own lines (owner 10-27). Somebody else's is E1.
+  if (query.chat != null) {
+    const chat = chatFrom(conv, query.chat);
+    if (!chat) return { status: 404, body: renderWebNotFound({ signedIn: true }) };
+    const about = /^(task|timer|series|approval):(\d{1,15})$/.exec(String(query.about ?? ""));
+    const draft = about ? draftFor(findItem(conv, about[1], about[2], now)) : "";
+    return renderConversation({ account, csrf, lines: [], more: false, sendId, items, approvals, back, now, deferred: true, work: workOf(conv), chat, draft });
+  }
   // ?at=<id> (Saved's FIND IT IN THE CHAT →): the thread around one of this conversation's own messages, drawn at once (no L1).
   const at = /^\d{1,15}$/.test(String(query.at ?? "")) ? Number(query.at) : null;
   const from = at ? db.messagesFor(conv, { after: at - 1, limit: PAGE }) : [];
@@ -927,22 +955,25 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
 export function historyRequest({ account, query = {}, now = clock.now() }) {
   const conv = account.conversation_id;
   const service = serviceOf(conv);
+  // A Web-only chat's own lines, or the shared thread's (chat_id IS NULL). Another account's chat: 404.
+  const chat = chatFrom(conv, query.chat);
+  if (chat == null) return json(404, { ok: false, error: "not_found" });
   const num = (v) => (/^\d{1,15}$/.test(String(v ?? "")) ? Number(v) : null);
   if (query.after != null) {
     const after = num(query.after) ?? 0;
-    const rows = db.messagesFor(conv, { after, limit: 200 });
+    const rows = db.messagesFor(conv, { after, limit: 200, chat });
     // What is still being worked at length (L10), finished tasks to settle in place (S3), and `doing`:
     // what Reason is doing on this conversation's turn right now (src/doing.js), or null.
-    return json(200, { messages: rows.map(r => rowOut(r, { conversationId: conv, service, now })), work: workOf(conv), settled: settledLately(conv, { service, now }), doing: doingFor(conv) });
+    return json(200, { messages: rows.map(r => rowOut(r, { conversationId: conv, service, now })), work: workOf(conv), settled: settledLately(conv, { service, now, chat }), doing: doingFor(conv) });
   }
   // A page: the newest (the thread opening, L1) or the one before row `before` (L2). `html` is the
   // page drawn as the thread draws it — day labels, "Continued on Web", finished tasks settled.
   const before = num(query.before);
-  const rows = db.messagesBefore(conv, { before, limit: PAGE + 1 });
+  const rows = db.messagesBefore(conv, { before, limit: PAGE + 1, chat });
   const more = rows.length > PAGE;
   const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service, now }));
-  const start = !more && lines.length ? `Your conversation before ${dayFmt().format(lines[0].at)} stays in your texts.` : null;
-  const html = pageHtml(lines, { conversationId: conv, service, now });
+  const start = !more && lines.length && !chat ? `Your conversation before ${dayFmt().format(lines[0].at)} stays in your texts.` : null;
+  const html = pageHtml(lines, { conversationId: conv, service, now, chat });
   const first = lines[0]?.id ?? 0, last = lines.reduce((n, m) => Math.max(n, m.id), 0);
   return json(200, { messages: lines, html, more, start, first, last, ...(before == null ? { work: workOf(conv) } : {}) });
 }
@@ -951,13 +982,13 @@ export function historyRequest({ account, query = {}, now = clock.now() }) {
  * Tasks that finished in the last few minutes, settled: what a page that showed their messages one by
  * one swaps in (the DONE line, JUST NOW). `ids` are every message folded into it.
  */
-export function settledLately(conversationId, { service = serviceOf(conversationId), now = clock.now() } = {}) {
+export function settledLately(conversationId, { service = serviceOf(conversationId), now = clock.now(), chat = "" } = {}) {
   const done = db.db.prepare("SELECT id FROM tasks WHERE conversation_id = ? AND state = 'done' AND finished_at >= ?").all(conversationId, now - settle.JUST_NOW_MS).map(r => r.id);
   if (!done.length) return [];
   const ids = db.db.prepare(`SELECT DISTINCT m.id FROM task_messages l JOIN messages m ON m.conversation_id = l.conversation_id
       AND ((l.outbox_id IS NOT NULL AND m.outbox_id = l.outbox_id) OR (l.external_id IS NOT NULL AND m.role = 'user' AND m.external_id = l.external_id))
     WHERE l.conversation_id = ? AND l.task_id IN (${done.map(() => "?").join(",")})`).all(conversationId, ...done).map(r => r.id);
-  const { folds } = settle.foldsFor(conversationId, ids);
+  const { folds } = settle.foldsFor(conversationId, ids, { chat });
   return [...folds.values()].filter(f => done.includes(f.task.id))
     .map(f => ({ task: f.task.id, ids: f.rows.map(r => r.id), html: doneHtml(f, { conversationId, service, now }) }));
 }
@@ -985,8 +1016,12 @@ export const ACK_WAIT_MS = 1500;
  */
 export async function sendRequest({ account, headers = {}, readBody, router, log = () => {}, ackWaitMs = ACK_WAIT_MS }) {
   const wantsJson = String(headers.accept ?? "").includes("application/json");
-  const fail = (status, error) => (wantsJson ? json(status, { ok: false, error }) : { status: 303, headers: { ...SECURITY_HEADERS, Location: "/web?thread", "Content-Length": 0 }, body: "" });
   const form = new URLSearchParams((await readBody()) ?? "");
+  // A Web-only chat (Home's composer, owner 10-27): the id the page minted, claimed for THIS
+  // conversation by its first send. Malformed, or somebody else's: refused, never answered there.
+  const chatRaw = String(form.get("chat") ?? "");
+  const back = chatRaw && db.WEB_CHAT_RE.test(chatRaw) ? `/web?chat=${chatRaw}` : "/web?thread";
+  const fail = (status, error) => (wantsJson ? json(status, { ok: false, error }) : { status: 303, headers: { ...SECURITY_HEADERS, Location: back, "Content-Length": 0 }, body: "" });
   const token = readCookie(headers.cookie);
   if (!sameOrigin(headers) || !same(headers["x-reason-csrf"] || form.get("c"), db.pageSessionCsrf(token))) {
     log({ web_send_refused: "origin_or_token" });
@@ -1002,6 +1037,7 @@ export async function sendRequest({ account, headers = {}, readBody, router, log
   if (files.length > 6 || files.some(f => !/^[A-Za-z0-9_-]{22}$/.test(f))) return fail(400, "bad_file");
   if (!router) return fail(503, "unavailable");
   const conv = account.conversation_id;
+  if (chatRaw && !db.claimWebChat(conv, chatRaw)) { log({ web_send_refused: "chat" }); return fail(404, "not_found"); }
   if (files.length && !(await import("../webuploads.js")).attachmentsFor(conv, files)) return fail(400, "bad_file");
   if (!underLimit(conv)) { log({ web_send_refused: "rate_limited" }); return fail(429, "slow_down"); }
   // S2: what kind of device this was typed on, for "today, on your laptop". Kept by the message's own id.
@@ -1012,15 +1048,15 @@ export async function sendRequest({ account, headers = {}, readBody, router, log
       // A voice note with no words yet is heard first (src/webmedia.js prepareSend), so the words are the message.
       const prep = files.length ? await prepareSend({ conversationId: conv, text, files, log }) : { text, attachments: [] };
       if (!prep) return { ok: false, error: "failed" };
-      return router.deliver({ channel: WEB, externalId: id, conversationId: conv, text: prep.text, ...(prep.attachments.length ? { attachments: prep.attachments } : {}), at: clock.now() });
+      return router.deliver({ channel: WEB, externalId: id, conversationId: conv, text: prep.text, ...(prep.attachments.length ? { attachments: prep.attachments } : {}), ...(chatRaw ? { chatId: db.webChatRoute(chatRaw) } : {}), at: clock.now() });
     })
     .catch((e) => { log({ web_send_failed: (e?.message ?? String(e)).split("\n")[0] }); return { ok: false, error: "failed" }; });
   const quick = await Promise.race([delivering, new Promise(r => setTimeout(() => r(null), ackWaitMs).unref?.())]);
   log({ web_send: quick ? (quick.duplicate ? "duplicate" : quick.refused ?? (quick.ok === false ? "failed" : "done")) : "accepted" });
   if (quick && quick.refused) return fail(403, quick.refused);
   if (quick && quick.ok === false && quick.error === "failed") return fail(500, "failed");
-  if (!wantsJson) return { status: 303, headers: { ...SECURITY_HEADERS, Location: "/web?thread", "Content-Length": 0 }, body: "" };
-  return json(200, { ok: true, id, duplicate: !!quick?.duplicate });
+  if (!wantsJson) return { status: 303, headers: { ...SECURITY_HEADERS, Location: back, "Content-Length": 0 }, body: "" };
+  return json(200, { ok: true, id, duplicate: !!quick?.duplicate, ...(chatRaw ? { chat: chatRaw } : {}) });
 }
 
 /**
@@ -1033,6 +1069,9 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
   const conv = account.conversation_id;
   const service = serviceOf(conv);
   const startAfter = Number(/^\d{1,15}$/.test(String(headers["last-event-id"] ?? "")) ? headers["last-event-id"] : (/^\d{1,15}$/.test(String(query.after ?? "")) ? query.after : 0));
+  // One Web-only chat's rows, or the shared thread's; another account's chat is refused outright.
+  const chat = chatFrom(conv, query.chat);
+  if (chat == null) return json(404, { ok: false, error: "not_found" });
   return {
     status: 200,
     headers: { ...SECURITY_HEADERS, "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no", Connection: "keep-alive", ...extraHeaders },
@@ -1054,7 +1093,7 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
       };
       const flush = () => {
         if (!stillHers()) { write("event: signedout\ndata: {}\n\n"); return end("signed_out"); }
-        for (const r of db.messagesFor(conv, { after: last, limit: 200 })) {
+        for (const r of db.messagesFor(conv, { after: last, limit: 200, chat })) {
           last = Math.max(last, r.id);
           write(`id: ${r.id}\nevent: message\ndata: ${JSON.stringify(rowOut(r, { conversationId: conv, service }))}\n\n`);
         }
@@ -1065,7 +1104,7 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
       let lastState = null;
       const pushState = () => {
         if (closed) return;
-        const s = JSON.stringify({ work: workOf(conv), settled: settledLately(conv, { service }) });
+        const s = JSON.stringify({ work: workOf(conv), settled: settledLately(conv, { service, chat }) });
         if (s !== lastState) { lastState = s; write(`event: state\ndata: ${s}\n\n`); }
       };
       const onRow = (e) => { if (e?.conversationId !== conv) return; try { flush(); pushState(); } catch { end("failed"); } };

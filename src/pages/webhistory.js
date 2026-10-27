@@ -62,7 +62,7 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 export function historyDays(conv) {
   const service = serviceOf(conv);
   const days = new Map();
-  const rows = db.db.prepare("SELECT channel, at FROM messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY at DESC, id DESC").all(conv);
+  const rows = db.db.prepare("SELECT channel, at FROM messages WHERE conversation_id = ? AND chat_id IS NULL AND deleted_at IS NULL ORDER BY at DESC, id DESC").all(conv);
   for (const r of rows) {
     const k = dayKey(r.at);
     let d = days.get(k);
@@ -91,7 +91,7 @@ export function historyList(conv, now = clock.now()) {
 /** One day's lines, oldest first, as the thread draws them. */
 export function dayLines(conv, key) {
   const noon = noonOf(key);
-  const rows = db.db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND deleted_at IS NULL AND at >= ? AND at < ?
+  const rows = db.db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND chat_id IS NULL AND deleted_at IS NULL AND at >= ? AND at < ?
     ORDER BY at ASC, id ASC`).all(conv, noon - 40 * 36e5, noon + 40 * 36e5).filter(r => dayKey(r.at) === key);
   const service = serviceOf(conv);
   return rows.map(r => rowOut({ ...r, media: (() => { try { return JSON.parse(r.media || "[]"); } catch { return []; } })() }, { conversationId: conv, service }));
@@ -106,7 +106,7 @@ export function searchMessages(conv, q, { limit = MAX_HITS } = {}) {
   if (!words.length) return { total: 0, hits: [] };
   // SQLite's lower() folds A–Z only, so the words are matched here, the way the page marks them
   // ("café" finds "CAFÉ"); one person's history is small enough to read through.
-  const all = db.db.prepare(`SELECT id, role, channel, text, at FROM messages WHERE conversation_id = ? AND deleted_at IS NULL
+  const all = db.db.prepare(`SELECT id, role, channel, text, at FROM messages WHERE conversation_id = ? AND chat_id IS NULL AND deleted_at IS NULL
     ORDER BY at DESC, id DESC`).all(conv).filter(r => { const t = String(r.text ?? "").toLowerCase(); return words.every(w => t.includes(w)); });
   return { total: all.length, hits: all.slice(0, limit) };
 }
@@ -250,6 +250,27 @@ function dayRow(d, now, first) {
   return `<li><a class="dy" href="/web/memory/history?day=${d.key}"><span class="dy-d">${esc(dayName(d.key, now))}</span>`
     + `<span class="dy-go" aria-hidden="true">→</span><span class="dy-m">${esc(d.places.join(" + "))} · ${n}</span></a></li>`;
 }
+/**
+ * One past Web-only chat (Home's composer, owner 10-27), in a day row's own style: what they opened
+ * it with, then `WEB CHAT · <day> · N MESSAGES`; it opens the chat itself. PROVISIONAL placement,
+ * pending design (SCOPE-v2 Q-v2-51).
+ */
+function chatRow(c, now) {
+  const first = String(c.first ?? "").replace(/\s+/g, " ").trim();
+  const title = first ? (first.length > 48 ? `${first.slice(0, 47).trimEnd()}…` : first) : "A Web chat";
+  return `<li><a class="dy" href="/web?chat=${esc(c.id)}"><span class="dy-d">${esc(title)}</span>`
+    + `<span class="dy-go" aria-hidden="true">→</span><span class="dy-m">WEB CHAT · ${esc(dayName(dayKey(c.last_at), now).toUpperCase())} · ${plural(c.count, "MESSAGE", "MESSAGES")}</span></a></li>`;
+}
+/** 7A's list: the days and months of the shared thread, each Web chat just above the day it was last used on. */
+function listHtml(conv, days, months, now) {
+  const rows = [
+    ...days.map((d, i) => ({ key: d.key, html: dayRow(d, now, i === 0) })),
+    ...months.map(m => ({ key: m.key, html: monthRow(m, now) })),
+    ...db.listWebChats(conv).map(c => ({ key: `${dayKey(c.last_at)}~`, at: c.last_at, html: chatRow(c, now) })),
+  ];
+  rows.sort((a, b) => (a.key === b.key ? (b.at ?? 0) - (a.at ?? 0) : a.key < b.key ? 1 : -1));
+  return rows.map(r => r.html).join("");
+}
 function monthRow(m, now) {
   return `<li><a class="dy" href="/web/memory/history?month=${m.key}"><span class="dy-d">${esc(monthName(m.key, now))}</span>`
     + `<span class="dy-go" aria-hidden="true">→</span><span class="dy-m">${plural(m.count, "MESSAGE", "MESSAGES")} · ${plural(m.days, "DAY", "DAYS")}</span></a></li>`;
@@ -302,8 +323,9 @@ export function renderHistory({ account, query = {}, now = clock.now() }) {
   if (q) inner = hitsHtml(conv, q, now);
   else {
     const { days, months } = historyList(conv, now);
-    inner = days.length || months.length
-      ? `<ul class="days">${days.map((d, i) => dayRow(d, now, i === 0)).join("")}${months.map(m => monthRow(m, now)).join("")}</ul>`
+    const list = listHtml(conv, days, months, now);
+    inner = list
+      ? `<ul class="days">${list}</ul>`
       : `<p class="nomore">Nothing here yet.</p>`;
   }
   const body = `<header class="hh">${typed("← MEMORY", { href: "/web/memory" })}</header>`

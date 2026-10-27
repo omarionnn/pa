@@ -123,16 +123,19 @@ export function linkTurn({ conversationId, taskIds = [], handles = [], outboxAft
 const parse = (r) => ({ ...r, media: (() => { try { return JSON.parse(r.media || "[]"); } catch { return []; } })() });
 
 /** [{ task_id, message_id }] for these history rows (or, with `taskIds`, for every row of those tasks). */
-function links(conversationId, { messageIds = null, taskIds = null }) {
+// `chat`: one thread only — "" the shared one, or a Web-only chat's id — so a task's DONE line never
+// gathers another thread's messages, and never hides a line from the page it belongs to.
+function links(conversationId, { messageIds = null, taskIds = null, chat = "" }) {
   const by = messageIds ? ["m.id", messageIds] : ["l.task_id", taskIds];
   if (!by[1]?.length) return [];
   const q = by[1].map(() => "?").join(",");
+  const inChat = "COALESCE(m.chat_id, '') = ?";
   const viaOut = db.db.prepare(`SELECT l.task_id, m.id AS message_id FROM task_messages l
     JOIN messages m ON m.conversation_id = l.conversation_id AND m.outbox_id = l.outbox_id
-    WHERE l.conversation_id = ? AND l.outbox_id IS NOT NULL AND m.deleted_at IS NULL AND ${by[0]} IN (${q})`).all(conversationId, ...by[1]);
+    WHERE l.conversation_id = ? AND l.outbox_id IS NOT NULL AND m.deleted_at IS NULL AND ${inChat} AND ${by[0]} IN (${q})`).all(conversationId, String(chat ?? ""), ...by[1]);
   const viaIn = db.db.prepare(`SELECT l.task_id, m.id AS message_id FROM task_messages l
     JOIN messages m ON m.conversation_id = l.conversation_id AND m.external_id = l.external_id AND m.role = 'user'
-    WHERE l.conversation_id = ? AND l.external_id IS NOT NULL AND m.deleted_at IS NULL AND ${by[0]} IN (${q})`).all(conversationId, ...by[1]);
+    WHERE l.conversation_id = ? AND l.external_id IS NOT NULL AND m.deleted_at IS NULL AND ${inChat} AND ${by[0]} IN (${q})`).all(conversationId, String(chat ?? ""), ...by[1]);
   return [...viaOut, ...viaIn];
 }
 
@@ -143,15 +146,15 @@ function links(conversationId, { messageIds = null, taskIds = null }) {
  *
  * Returns { owner: Map(messageId → taskId), folds: Map(taskId → { task, rows, lastId }) }.
  */
-export function foldsFor(conversationId, messageIds = []) {
+export function foldsFor(conversationId, messageIds = [], { chat = "" } = {}) {
   const owner = new Map(), folds = new Map();
   const ids = [...new Set(messageIds.map(Number).filter(Boolean))];
   if (!ids.length) return { owner, folds };
-  const first = links(conversationId, { messageIds: ids });
+  const first = links(conversationId, { messageIds: ids, chat });
   if (!first.length) return { owner, folds };
-  // Every message of the tasks seen here, then every task those messages belong to as well.
-  const all = links(conversationId, { taskIds: [...new Set(first.map(l => l.task_id))] });
-  const more = links(conversationId, { messageIds: [...new Set(all.map(l => l.message_id))] });
+  // Every message of the tasks seen here, then every task those messages belong to as well — this thread's only.
+  const all = links(conversationId, { taskIds: [...new Set(first.map(l => l.task_id))], chat });
+  const more = links(conversationId, { messageIds: [...new Set(all.map(l => l.message_id))], chat });
   const byMsg = new Map();
   for (const l of [...all, ...more]) {
     if (!byMsg.has(l.message_id)) byMsg.set(l.message_id, new Set());
@@ -217,7 +220,7 @@ export function doneLine({ task, rows }, { now = clock.now(), tz = config.tz, so
  * (it is unless they keep results on Web, src/deliver.js keptOnWeb). Null otherwise.
  */
 export function longWork(conversationId) {
-  const last = db.db.prepare("SELECT id FROM messages WHERE conversation_id = ? AND role = 'user' AND deleted_at IS NULL ORDER BY at DESC, id DESC LIMIT 1").get(conversationId);
+  const last = db.db.prepare("SELECT id FROM messages WHERE conversation_id = ? AND chat_id IS NULL AND role = 'user' AND deleted_at IS NULL ORDER BY at DESC, id DESC LIMIT 1").get(conversationId);
   if (!last) return null;
   const tids = [...new Set(links(conversationId, { messageIds: [last.id] }).map(l => l.task_id))];
   const t = tids.map(id => db.getTask(conversationId, id)).filter(x => x && x.state === "running").sort((a, b) => b.id - a.id)[0];

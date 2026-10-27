@@ -350,7 +350,9 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // picture without a host to fetch it from, and the same note-taker without a second model.
   images = imagesFor, capture = captureViaApi,
   ...toolCtx }) {
-  let messages = trimHistory(loadConversation(conversationId));
+  // A Web-only chat reads and keeps its own thread (src/db.js historyKeyFor); tools still act for the person.
+  const historyId = toolCtx.historyId ?? conversationId;
+  let messages = trimHistory(loadConversation(historyId));
   // A fresh source ledger for the reply check (src/offers.js): what this turn's tools fetch, and
   // their own message, are what a dollar figure in the reply can be checked against.
   beginOfferTurn(conversationId, text, kind);
@@ -611,7 +613,7 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
     }
   }
   // Cut to size on the way in, so every count-based mark (the confirm gate's) moves with it.
-  saveThread(conversationId, withoutToolImages(messages), { max: MAX_HISTORY });
+  saveThread(historyId, withoutToolImages(messages), { max: MAX_HISTORY });
   if (quiet.silent) return null;
   return reply;
 }

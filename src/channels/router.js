@@ -223,7 +223,9 @@ export class Router {
     // The master's reply might be the answer to somebody's access request. Read before their turn,
     // by the same judge the confirm gate uses, with every fact around it owned by code: a real new
     // message from the master's own number, tied to one request, single use, with an expiry.
-    if (isOperator) {
+    // Never from a Web-only chat (owner 10-27): those asks were put in the shared thread, and a "yes"
+    // typed in a chat about something else is not an answer to them.
+    if (isOperator && !(inbound.channel === web.WEB && db.webChatOf(inbound.chatId))) {
       const answered = await this.#readAccessAnswer({ conversationId, inbound, address });
       // If that message WAS the answer, code has already replied to both of them. Running a model
       // turn on top would mean the master gets told twice, in two voices, about one decision.
@@ -378,8 +380,9 @@ export class Router {
     // with it: one that adds to that request is folded into the turn working on it, instead of
     // getting a turn and a second answer of its own (src/onethought.js). Not awaited — the webhook
     // is answered now and the read runs alongside the turn, which waits for it before it sends.
+    // Never read into a turn for another chat (a Web-only chat and the shared thread are two talks).
     const working = onethought.activeFor(conversationId);
-    if (working) onethought.track(working, this.#readMidTurn(conversationId, working, { externalId: inbound.externalId, text: under ? `${under}\n${inbound.text}` : inbound.text }));
+    if (working && (working.webChat ?? null) === (inbound.channel === web.WEB ? db.webChatOf(inbound.chatId) : null)) onethought.track(working, this.#readMidTurn(conversationId, working, { externalId: inbound.externalId, text: under ? `${under}\n${inbound.text}` : inbound.text }));
 
     // Somebody is already waiting out this conversation's window; this message just joined their
     // turn. Answering the webhook now is the right thing anyway: the provider wants a 2xx, not a
@@ -456,7 +459,8 @@ export class Router {
         this.log({ midturn: "left", inbound: externalId, conversation: conversationId, why: "attachments" });
         return { left: "attachments" };
       }
-      const thread = db.loadConversation(conversationId);
+      // The thread this turn is in: a Web-only chat's own (fold.webChat), or the shared one.
+      const thread = db.loadConversation(working.webChat ? db.historyKeyFor(conversationId, db.webChatRoute(working.webChat)) : conversationId);
       // One budget for the whole read, inside what the send waits for (onethought.READ_BUDGET_MS):
       // past it the text is left held and gets its own turn, never folded after the reply has gone.
       let timer;
@@ -536,6 +540,7 @@ export class Router {
     // the model has started. The runtime adopts this for the turn; anything folded into a turn that
     // never ran goes back on the pile in the `finally` below.
     const fold = onethought.begin(conversationId, { text: held.map(h => h.text).join("\n") });
+    fold.webChat = last.channel === web.WEB ? db.webChatOf(last.chat_id) : null;
     const bubble = this.#bubble(conversationId, {
       channel: last.channel, address: last.address, chatId: last.chat_id ?? null, service: last.service ?? null,
     });
@@ -577,6 +582,7 @@ export class Router {
           db.writeMessage({
             conversationId, role: "user", channel: h.channel, externalId: h.external_id,
             text: texts[i] || h.text || "", media: h.attachments ?? [], at: h.arrived_at ?? clock.now(),
+            chatId: h.chat_id ?? null,
           });
         } catch { /* best-effort */ }
       }
@@ -586,11 +592,14 @@ export class Router {
       // context — it would treat "Yes" as a reply to the last text. When there IS a pending
       // verification and the single text IS a clear yes or no, handle it here instead of running a
       // model turn that has no idea about the call.
-      const pendingCall = db.pendingCallVerification(conversationId);
+      // A call's check is texted to their phone and answered in the shared thread only, never from a Web-only chat.
+      const pendingCall = fold.webChat ? null : db.pendingCallVerification(conversationId);
       if (pendingCall && said.length === 1) {
         const answer = readYesNo(said[0]);
         if (answer === "yes" || answer === "no") {
-          const messages = db.loadConversation(conversationId);
+          // The thread this was said in: a Web-only chat keeps its own (db.historyKeyFor).
+          const historyId = last.channel === web.WEB ? db.historyKeyFor(conversationId, last.chat_id) : conversationId;
+          const messages = db.loadConversation(historyId);
           const who = accounts.ownerOf(conversationId);
           const name = who?.name || "them";
           messages.push({ role: "user", content: `[${stamp()}] ${name}: ${said[0]}` });
@@ -598,7 +607,7 @@ export class Router {
             ? "Got it — carrying on with the call."
             : "Understood — I won't do that.";
           messages.push({ role: "assistant", content: ack });
-          db.saveConversation(conversationId, messages);
+          db.saveConversation(historyId, messages);
           if (answer === "yes") {
             db.updateCall(conversationId, pendingCall.id, { verified_at: clock.now(), verified_how: "text" });
           }
