@@ -1,10 +1,10 @@
 // The contact card, once, to the owner's own thread — and nobody else.
 //
 // Owner-only CLI run on the server (`/opt/reason`), for when the card itself changes (10-25: the
-// photo's bubble went brand orange) and the owner wants to see the new one on his phone. Everybody
+// photo's bubble went brand orange; 10-27: the Web handoff's italic "r" + outlined bubble) and the owner wants to see the new one on his phone. Everybody
 // else keeps the card they already saved; new people get the new one from offerContactCard.
 //
-//   sudo -u reason node --env-file=.env scripts/card-to-owner.js --confirm=card-orange-1025
+//   sudo -u reason node --env-file=.env scripts/card-to-owner.js --confirm=card-mark-1027
 //
 // Same send as offerContactCard (router.sendMediaUrl with the live content-addressed /reason-<sha8>.vcf). The owner
 // is announce.js's ownerRecipient(): exactly one owner number, dm:owner preferred, or it refuses.
@@ -16,7 +16,7 @@ import { config } from "../src/config.js";
 import { contactCardUrl, lineNumber } from "../src/contact.js";
 import { ownerRecipient } from "./announce.js";
 
-export const SEND_ID = "card-orange-1025";
+export const SEND_ID = "card-mark-1027";
 export const LINE = "my contact card has a new look — here it is. save it over the old one if you like.";
 
 export const markerFor = (id, dataDir = config.dataDir) => join(dataDir, `card-to-owner-${id}.sent`);
