@@ -1038,7 +1038,7 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   if (dailyAllowedFor(conv)) {
     if (method === "GET") { try { daily.noteLook(conv, now); } catch { /* never costs a page */ } }
     // A fault drawing the edition never costs Home: today's Home is drawn instead.
-    try { return renderDaily({ edition: daily.editionFor(conv, { now }), csrf, now, stampMarkup: daily.stampMarkupFn(), stamps: daily.stampsReady() }); } catch { /* below */ }
+    try { return renderDaily({ edition: daily.editionFor(conv, { now }), csrf, now, stampMarkup: daily.stampMarkupFn() }); } catch { /* below */ }
   }
   return renderHome({ account, csrf, sendId, items, approvals, back, pick: pickUp(conv, service) });
 }

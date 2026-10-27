@@ -23,8 +23,8 @@ export function dailySamples(now = Date.UTC(2026, 9, 27, 13, 0)) {
       { id: "watch:2", name: "Flights to Lisbon under $300", status: "NOW $342", urgent: false, detail: "Waiting for $300 or less." },
       { id: "watch:3", name: "The green Arc'teryx shell back in medium", status: "NO CHANGE", urgent: false, detail: "Last looked 2 hours ago." },
     ],
-    question: { id: "guess:7", guessId: 7, text: "Do you usually take the window seat?", why: "That's my guess from what you've told me. Say if it's right and I'll stop guessing.", options: ["Yes, that's right", "No"] },
-    newestStamp: { id: "st1", type: "long_hold", name: "The long hold", detail: "52 MIN", story: "I sat on hold with Delta for 52 minutes so you didn't have to.", earnedAt: now - D, shape: "round", ink: "pen", rotation: -8, ariaLabel: "Stamp: The long hold, 52 minutes" },
+    question: { id: "guess:7", guessId: 7, text: "Prefers the window seat on long flights.", why: "That's my guess from what you've told me. Say if it's right and I'll stop guessing.", options: ["Yes, that's right", "No"] },
+    newestStamp: { id: "st1", type: "long_hold", name: "The long hold", detail: "52 MIN", story: "I sat on hold for 52 minutes so you didn't have to. When somebody finally picked up, I took it from there.", earnedAt: now - D, shape: "round", ink: "pen", rotation: -8, ariaLabel: "Stamp: The long hold, 52 minutes" },
     pickup,
   };
   const first = { ...base, issueNumber: 1, first: true, greeting: "first edition. it'll fill up as I do things for you.", pickup: null };
@@ -38,12 +38,4 @@ export function dailySamples(now = Date.UTC(2026, 9, 27, 13, 0)) {
     linesOut: full.linesOut.slice(0, 2), pickup,
   };
   return { full, first, quiet, missed };
-}
-
-/** A stand-in for src/stamps.js stampMarkup in staging: the reference's round stamp, drawn the same way. */
-export function sampleStampMarkup(s, { size: scale = 0.8 } = {}) {
-  const size = Math.round(120 * scale);
-  const [eyebrow, ...rest] = s.name.toUpperCase().split(" ");
-  return `<span role="img" aria-label="${s.ariaLabel}" style="width:${size}px;height:${size}px;flex-shrink:0;border-radius:50%;border:3px double var(--pen);color:var(--pen);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;transform:rotate(${s.rotation}deg);font-family:var(--mono);font-weight:700;text-align:center">`
-    + `<span style="font-size:10px;letter-spacing:.12em">${eyebrow}</span><span style="font-size:13px;letter-spacing:.06em">${rest.join(" ")}</span><span style="font-size:9px;letter-spacing:.12em">${s.detail}</span></span>`;
 }

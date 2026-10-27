@@ -43,6 +43,7 @@ const db = await import("../src/db.js");
 const background = await import("../src/background.js");
 const { renderDaily } = await import("../src/pages/webdaily.js");
 const { clock, config } = await import("../src/config.js");
+const stamps = await import("../src/stamps.js");
 
 const OWNER = "+12025551234", KOFI = "+14155559876";
 const OWNER_C = "dm:owner", KOFI_C = `dm:fake:${KOFI}`;
@@ -59,7 +60,7 @@ beforeEach(() => {
   daily.resetDaily();
   db.db.exec(`DELETE FROM accounts; DELETE FROM threads; DELETE FROM messages; DELETE FROM page_sessions; DELETE FROM web_chats; DELETE FROM confirmations;
     DELETE FROM tasks; DELETE FROM timers; DELETE FROM series; DELETE FROM watches; DELETE FROM guesses; DELETE FROM person_facts; DELETE FROM people; DELETE FROM memories; DELETE FROM pending_inbound;
-    DELETE FROM daily_editions; DELETE FROM daily_looks; DELETE FROM daily_questions;`);
+    DELETE FROM daily_editions; DELETE FROM stamps; DELETE FROM daily_looks; DELETE FROM daily_questions;`);
   at(TUE_9AM - 30 * D);
   for (const [c, a, n, op] of [[OWNER_C, OWNER, "Omari Nyarko", true], [KOFI_C, KOFI, "Kofi", false]]) {
     db.upsertAccount({ conversationId: c, channel: "fake", address: a, name: n, isOperator: op });
@@ -364,11 +365,21 @@ test("15. the day starts at their real midnight, clocks changing or not", () => 
   }
 });
 
+test("16. new in your book, for real: a stamp earned this week (src/stamps.js), gone after 7 days", async () => {
+  say(OWNER_C, "user", "ok", TUE_9AM - 12 * H);
+  stamps.award(OWNER_C, { type: "long_hold", ref: "call:1", at: TUE_9AM - 2 * D, detail: { minutes: 52 } });
+  const html = (await get(browser(OWNER_C))).body;
+  assert.match(html, /<a class="dd-nb" href="\/web\/stamps"><span class="dd-nbs"><span class="stp" role="img" aria-label="Stamp: The long hold, 52 minutes"/);
+  assert.match(html, /NEW IN YOUR BOOK<\/span><span class="dd-nbl">I sat on hold for 52 minutes so you didn&#39;t have to\.<\/span>/);
+  at(TUE_9AM + 6 * D);
+  assert.doesNotMatch((await get(browser(OWNER_C))).body, /NEW IN YOUR BOOK/);
+});
+
 test("13. new in your book: hidden without a stamp; drawn by src/stamps.js when there is one", () => {
   const base = daily.editionFor(OWNER_C);
   assert.doesNotMatch(renderDaily({ edition: base, csrf: "x" }), /NEW IN YOUR BOOK/);
   const stamp = { id: "s1", type: "long_hold", name: "The long hold", detail: "52 MIN", story: "I sat on hold for 52 minutes so you didn't have to.", earnedAt: TUE_9AM - D, shape: "round", ink: "pen", rotation: -8, ariaLabel: "Stamp: The long hold, 52 minutes" };
-  const html = renderDaily({ edition: { ...base, newestStamp: stamp }, csrf: "x", stamps: true, stampMarkup: (s, { size }) => `<span role="img" aria-label="${s.ariaLabel}" data-size="${size}"></span>` });
+  const html = renderDaily({ edition: { ...base, newestStamp: stamp }, csrf: "x", stampMarkup: (s, { size }) => `<span role="img" aria-label="${s.ariaLabel}" data-size="${size}"></span>` });
   assert.match(html, /<a class="dd-nb" href="\/web\/stamps"><span class="dd-nbs"><span role="img" aria-label="Stamp: The long hold, 52 minutes" data-size="0.8"><\/span><\/span><span class="dd-nbt"><span class="dd-lbl sm">NEW IN YOUR BOOK<\/span><span class="dd-nbl">I sat on hold for 52 minutes so you didn&#39;t have to\.<\/span>/);
   assert.match(html, /href="\/web\/stamps">STAMPS</);
 });

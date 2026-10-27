@@ -2,7 +2,7 @@
 // exactly; HANDOFF.md §1). Shown in place of today's Home when REASON_WEB_DAILY allows the session's
 // conversation (src/dailyflag.js); the data is src/daily.js.
 //
-//   header      wordmark; HOME · THE THREAD · STAMPS (HOME current, a 1.5px pen underline)
+//   header      src/pages/webdailyhead.js: wordmark; HOME · THE THREAD · STAMPS (HOME current, pen underline)
 //   masthead    NO. n · THE {WEEKDAY} EDITION, the full date, Reason's Caveat greeting, a double rule
 //   Overnight   newest first, at most 5 then "N more in the thread": decision (two replies a tap sends
 //               into the thread through /web/send, as if typed), update (into the thread at that
@@ -16,19 +16,12 @@
 // No composer (Home's fresh Web chat lives on the thread page while this is on: webconvo NEW_CHAT,
 // SCOPE-v2 Q-v2-54). Every action is a real form: it works without script and lands back here.
 import { esc } from "./render.js";
-import { webPage, wordmark } from "./webkit.js";
+import { webPage } from "./webkit.js";
+import { dailyHeader, DAILY_HEAD_CSS } from "./webdailyhead.js";
 import { DECISION, ANSWERS, FIRST_EMPTY, SIGN_OFF, OVERNIGHT_MAX, timeLabel, sendIdFor } from "../daily.js";
 import { clock } from "../config.js";
 
 const hidden = (n, v) => `<input type="hidden" name="${n}" value="${esc(v)}">`;
-
-/** The shared top of the daily screens: HOME · THE THREAD · STAMPS (STAMPS only when that page exists). */
-export function dailyHead(active = "home", { stamps = false } = {}) {
-  const link = (key, text, href) => `<a href="${href}"${active === key ? ` aria-current="page"` : ""}>${text}</a>`;
-  return `<header class="dh">${wordmark({ href: "/web?home" })}<nav class="dh-n" aria-label="Reason">`
-    + link("home", "HOME", "/web?home") + link("thread", "THE THREAD", "/web?thread") + (stamps ? link("stamps", "STAMPS", "/web/stamps") : "")
-    + `</nav></header>`;
-}
 
 const weekday = (day) => new Date(`${day}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
 const fullDate = (day) => `${new Date(`${day}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" })}.`;
@@ -80,11 +73,14 @@ function questionHtml(q, csrf) {
     + `<a class="dd-mem" href="/web/memory">YOUR ANSWER GOES TO MEMORY →</a></section>`;
 }
 
+/** The story's first sentence: the card's one line (the book tells the rest). */
+const firstSentence = (t) => /^.*?[.!?](?=\s|$)/.exec(String(t ?? "").trim())?.[0] ?? String(t ?? "").trim();
+
 /** New in your book: the newest stamp of the last 7 days, drawn by src/stamps.js (`markup`), linking to Stamps. */
 function stampHtml(stamp, markup) {
   if (!stamp || !markup) return "";
   return `<a class="dd-nb" href="/web/stamps"><span class="dd-nbs">${markup}</span><span class="dd-nbt"><span class="dd-lbl sm">NEW IN YOUR BOOK</span>`
-    + `<span class="dd-nbl">${esc(stamp.story || stamp.name)}</span></span></a>`;
+    + `<span class="dd-nbl">${esc(firstSentence(stamp.story) || stamp.name)}</span></span></a>`;
 }
 
 function pickupHtml(p, { now, tz }) {
@@ -99,11 +95,11 @@ function pickupHtml(p, { now, tz }) {
 
 /**
  * The edition page. `edition` is src/daily.js editionFor's; `stampMarkup` draws the newest stamp
- * (src/stamps.js) when that build is in; `stamps` says whether /web/stamps exists for the header.
+ * (src/stamps.js). The header is the one Home and Stamps share (src/pages/webdailyhead.js).
  */
-export function renderDaily({ edition: ed, csrf, now = clock.now(), stampMarkup = null, stamps = false }) {
+export function renderDaily({ edition: ed, csrf, now = clock.now(), stampMarkup = null }) {
   const aside = questionHtml(ed.question, csrf) + stampHtml(ed.newestStamp, ed.newestStamp && stampMarkup ? stampMarkup(ed.newestStamp, { size: 0.8 }) : "");
-  const body = dailyHead("home", { stamps })
+  const body = dailyHeader("home")
     + `<main class="dd" id="edition"><div class="dd-mast"><p class="dd-lbl">NO. ${Number(ed.issueNumber)} · THE ${esc(weekday(ed.date).toUpperCase())} EDITION</p>`
     + `<h1 class="dd-date">${esc(fullDate(ed.date))}</h1><p class="dd-greet">${esc(ed.greeting)}</p>`
     + `<div class="dd-rule" aria-hidden="true"><span></span><span></span></div></div>`
@@ -114,13 +110,8 @@ export function renderDaily({ edition: ed, csrf, now = clock.now(), stampMarkup 
 }
 
 // Every size, colour and space from reference/home.html, on the kit's tokens (Paper and Night).
-export const CSS = `
+export const CSS = `${DAILY_HEAD_CSS}
 body{min-height:100vh}
-.dh{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px 24px;padding:22px clamp(20px,4vw,48px)}
-.dh .wm{font-size:26px}.dh .wm .bub{width:.577em;height:.577em}
-.dh-n{display:flex;flex-wrap:wrap;gap:4px 28px;font:400 12px/1.2 var(--mono);letter-spacing:.14em}
-.dh-n a{text-decoration:none;padding:14px 0;min-height:44px;display:inline-flex;align-items:center;box-sizing:border-box;border-bottom:1.5px solid transparent}
-.dh-n a[aria-current=page]{border-bottom-color:var(--pen)}
 .dd{flex-grow:1;width:100%;max-width:1080px;margin:0 auto;padding:56px 24px 48px;display:flex;flex-direction:column;gap:48px}
 .dd-lbl{margin:0;font:400 12px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
 .dd-lbl.sm{font-size:11px}.dd-lbl.xs{font-size:11.5px}
