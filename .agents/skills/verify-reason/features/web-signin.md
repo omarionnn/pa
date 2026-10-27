@@ -48,8 +48,8 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 - **Enumeration** — a known and an unknown number get byte-identical pages (only the echoed number
   differs); the join block is on every page; no account is ever created by typing a number.
 - **The join block** (owner decisions 1 + 2) — "New to Reason? A text from your phone finishes
-  joining…", an `sms:<live line>?&body=Hi` button, a QR of that same link (`qrSvg`, inline SVG,
-  level M) and the number written out via `prettyNumber`. The number is `web.joinNumber(router)` →
+  joining…", a "Text Reason →" link `sms:<live line>&body=Hey` (Messages opens with Hey typed) and a QR
+  of that same link (`qrSvg`, inline SVG, level M). The number is never written on the page (owner 10-26). The number is `web.joinNumber(router)` →
   the first LIVE channel's — never a string, never the linq adapter (registered, `not_connected` on
   live). No live line → "Reason's texting line isn't connected right now…" and no number, no QR.
 - **The session** — on a right code: `startPageSession("wsign:<conv>", token, { conversationId })`,
@@ -78,33 +78,50 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   `web_signin_ok`, `web_signout` — never a number, code or token.
 - **Copy** — intent only (no phrase to type; `test/no-command-phrases.test.js` scans `src/`): the
   sms: body "Hi" is prefilled, never dictated. Page kit: `shell` with pill "Web", wordmark, PAPER,
-  brand orange, theme switch.
-- **The look** (PR #170, the marketing site's) — Instrument Serif italic headlines, the mono eyebrow
-  "Your personal concierge", an orange Caveat note + squiggle arrow per screen (`NOTES`), dashed
-  rules. The two faces are Latin subsets in `assets/fonts/*-web.woff2`, served by `webFont` at
-  `GET|HEAD /web/fonts/{serif,hand}.woff2` (`font/woff2`, a week's cache, nosniff, CORP
-  same-origin; any other name, method or `REASON_WEB` off → the flat 404). `font-src 'self' data:`
-  is also what lets the wordmark's embedded face render.
+  brand pen red (#b03030), theme switch.
+- **The look** (design handoff 2026-10-26, `~/Desktop/reason-web-handoff-2026-10-26`, kit =
+  `src/pages/webkit.js`): Paper / Night tokens hex for hex (`TOKENS`), the four voices (Instrument
+  Serif italic = your words + primary actions, Inter = Reason, Courier caps = labels, Caveat in pen =
+  the margin voice), the wordmark bubble in pen (#b03030 / #e8765c — Web only; brand.js unchanged),
+  dashed rules, hard-offset shadows, text actions with →, focus = 2px ink outline offset 3px, reduced
+  motion = none. Theme = Paper · Night · Auto radio group (`themeSwitch`), the same `reason-theme`
+  localStorage word every page reads. Fonts self-hosted, Latin subsets in `assets/fonts/*-web.woff2`
+  (OFL), served by `webFont` at `GET|HEAD /web/fonts/{serif,roman,hand,handbold,sans}.woff2`
+  (`font/woff2`, a week's cache, nosniff, CORP same-origin; other names / off → flat 404).
+- **The screens** (sheet 6): 6A `renderSignin` ("What's your number?", PHONE NUMBER underline, Caveat
+  "the same line you already text me on.", "Text me a code →"; phones: "NEW TO REASON? START WITH A
+  TEXT →" → `/web?join=1`; ≥900px: the join column — QR, "or text <live number>", "then come back here
+  to sign in."). 6B `renderCode` ("Check your texts.", "Six digits, sent to ••• ••• 0142." from the
+  TYPED number, six cells over one `autocomplete=one-time-code` input, the sixth digit submits).
+  Code notes, each about THIS BROWSER only (never the number): wrong "that's not it. try again?";
+  expired "that one expired." + "Send a fresh one →" when the page's own hidden `t` is older than a
+  code's life; too many tries (5 wrong / 15 min per browser) "let's pause a minute." + `TRY AGAIN IN
+  m:ss` (`db.pageAttemptsClearAt`); resend limit (`again=1`, 3 per 15 min per browser, `RESEND`)
+  "i've sent a few. give it a moment." + how long the last code still works — nothing is texted.
+  The sign-in step's hourly gate shows the same pause line (`db.signinRequestsClearAt`). 6D
+  `renderJoin` (live number + QR + "Text Reason →"), 6E with no live line (no number, no QR). 6F:
+  `?out=1` after sign-out, or a cookie whose session no longer exists → Caveat "you've been signed
+  out. everything's still here." (role=status).
 
 ## How to get to it (user POV)
 
-- Open `/web` → "Pick up where you left off." → your number → "Text me a code" → the code arrives
-  in your Reason texts (iPhone offers it above the keyboard on the Web host) → "Sign in" → "You're
-  in, <name>." → "Sign out of this browser" at the bottom.
-- Never texted Reason? The same page's "New to Reason?" → "Text Reason" (phone) or scan the QR /
-  type the number (desktop) → your first text joins you under the existing admission rules → come
-  back and sign in by number.
+- Open `/web` → "What's your number?" → "Text me a code →" → "Check your texts." → the six digits
+  (iPhone offers the code above the keyboard; the sixth digit signs in) → 5C "One Reason. Pick up
+  anywhere." once → the arrival. Sign out: SETTINGS (desktop) or the ⋯ menu (phone).
+- Never texted Reason? Phone: "NEW TO REASON? START WITH A TEXT →" → "Text Reason →"; desktop: the
+  right-hand column's QR / number → your first text joins you → come back and sign in by number.
 
 ## Driving it with the harness
 
 ```bash
 cd ~/Desktop/pa
+node --test test/web-design.test.js     # 29: tokens, motion, focus, every screen state's copy + roles, a11y, no-phrase scan, cards/lists/media, /web/live CORS
 node --test test/web-signin.test.js      # 20: off=404 identical, owner mode, enumeration, QR, no-live/linq, happy path, wrong/reused/expired/flood/4th request, two users, decision 4, sign-out, idle/old, paused, CSRF/origin, headers, copy, the look + /web/fonts
 node --test test/web-join-number.test.js # the live-line rule with the real Linq + Sendblue classes
 node --test test/no-command-phrases.test.js test/code-guards.test.js
 # in process, cage env, throwaway DB, real Runtime + Router + outbox + FakeChannel (no model):
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/web.db node .agents/skills/verify-reason/bin/web-drive.mjs
-node .agents/skills/verify-reason/bin/web-preview.mjs [outDir] [prefix] [siteIndexHtml]   # signin, code, join (desktop QR + number), landing; with the site index also <prefix>vs-site.png. Served with the real CSP + /web/fonts
+node .agents/skills/verify-reason/bin/web-preview.mjs [outDir] [referenceDir]   # every Web screen at 390/1280 × Paper/Night + compare-<screen>.png beside the handoff's reference page; real CSP + /web/fonts (default ~/Desktop/reason-web-design-previews)
 ```
 
 Over HTTP on the cage: `REASON_WEB=on bin/caged.sh start`, then `curl -si 127.0.0.1:<port>/web` → 200,
@@ -119,8 +136,12 @@ connected); a stranger's number mints nothing and answers the same bytes.
 
 - **Two form tokens, two pages.** Comparing pages across two browsers must normalise the hidden
   `f` as well as the echoed number, or "identical" fails for the wrong reason.
-- **The shell's CSS always carries `.w-qr`**, and the wordmark is an inline `<svg>`: assert the join
-  block's absence on `<figure class="w-qr"` / `sms:`, never on `w-qr` or `<svg`.
+- **The page CSS always carries `.qr`**, and the wordmark is an inline `<svg>`: assert the join
+  block's absence on `<figure class="qr"` / `sms:`, never on `qr` or `<svg`.
+- **Comparing code pages across numbers**: normalise the masked last four (`••• ••• NNNN`, echoed
+  from what was typed), the hidden `t` and the form token — nothing else may differ.
+- **The sixth digit submits the code form** (page script): a preview that fills six digits navigates
+  away; set `form.dataset.sent` first to hold it.
 - **The cookie is shared** (decision 3): signing out of Web signs that browser out of pages and events
   too, and an idle-expired Web session (30 days) deletes the row other pages were using. Intended.
 - **Live since 2026-10-26 17:30 UTC with `REASON_WEB=owner`; at `https://heyreason.com/web` since

@@ -79,7 +79,7 @@ const step = (name, ok, detail = "") => { if (!ok) fails++; console.log(`${ok ? 
 const until = async (pred, ms = 3000) => { const end = Date.now() + ms; while (!(await pred()) && Date.now() < end) await new Promise(r => setTimeout(r, 15)); return pred(); };
 const signIn = (conv) => { const t = `drive-${conv.length}-${Math.random().toString(36).slice(2)}`; db.startPageSession(`wsign:${conv}`, t, { conversationId: conv }); return { cookie: `reason_page=${t}`, token: t }; };
 const H = (b, extra = {}) => ({ cookie: b.cookie, origin: BASE, "sec-fetch-site": "same-origin", ...extra });
-const page = async (b) => { const r = await fetch(`${BASE}/web`, { headers: H(b) }); return { status: r.status, body: await r.text(), headers: r.headers }; };
+const page = async (b, q = "") => { const r = await fetch(`${BASE}/web${q}`, { headers: H(b) }); return { status: r.status, body: await r.text(), headers: r.headers }; };
 const csrfOf = (body) => /name="c" value="([^"]+)"/.exec(body)?.[1];
 const post = async (b, csrf, id, text, extra = {}) => {
   const r = await fetch(`${BASE}/web/send`, { method: "POST", headers: H(b, { "content-type": "application/x-www-form-urlencoded", accept: "application/json", "x-reason-csrf": csrf, ...extra }), body: new URLSearchParams({ id, text, c: csrf }) });
@@ -111,11 +111,14 @@ step("a text from Kofi's phone is answered by text and is history", phone.sent.a
 
 // 2. The page: Kofi's conversation, labelled, with the first-visit boundary note and the composer.
 const kofi = signIn(KOFI_C);
-const p1 = await page(kofi);
+const p0 = await page(kofi);
+step("GET /web, first visit: 200, the 5C note (once)", p0.status === 200 && /One Reason\.<br><em>Pick up anywhere\.<\/em>/.test(p0.body));
+const home = await page(kofi);
+step("GET /web next: the arrival — greeting, composer, 'pick up from iMessage' with his last text; no 5C again", /What(&#39;|')s good, Kofi\?/.test(home.body) && /pick up from iMessage/.test(home.body) && /weekend away in november\?/.test(home.body) && !/Pick up anywhere/.test(home.body));
+const p1 = await page(kofi, "?thread");
 const csrf = csrfOf(p1.body);
-step("GET /web: 200, the conversation, iMessage labels, boundary note, composer", p1.status === 200 && /weekend away in november\?/.test(p1.body) && /You · iMessage/.test(p1.body) && /One Reason\. Pick up anywhere\./.test(p1.body) && /placeholder="Tell Reason what you need"/.test(p1.body) && !!csrf);
-step("CSP allows the stream and history calls to this host only (connect-src 'self')", /connect-src 'self'/.test(p1.headers.get("content-security-policy") ?? ""));
-step("the boundary note does not come back on the next visit", !/One Reason\. Pick up anywhere\./.test((await page(kofi)).body));
+step("GET /web?thread: the conversation, IMESSAGE labels, composer", p1.status === 200 && /weekend away in november\?/.test(p1.body) && /YOU · IMESSAGE · /.test(p1.body) && /placeholder="Tell Reason what you need"/.test(p1.body) && !!csrf);
+step("CSP: connect-src is this host (and only the pages host when it qualifies)", /connect-src 'self'( https:\/\/files\.[^ ;]+)?;/.test(p1.headers.get("content-security-policy") ?? ""));
 
 // 3. A Web message with the stream open: it and its reply arrive live, nothing is texted.
 const s = listen(kofi, db.messagesFor(KOFI_C).at(-1).id);
@@ -158,7 +161,7 @@ const noAnswerYet = !db.messagesFor(KOFI_C).some(m => m.text === "re: slow: comp
 release();
 const landed = await until(() => db.messagesFor(KOFI_C).some(m => m.role === "assistant" && /compare three inns/.test(m.text)));
 step("a slow turn: acknowledged at once, tab closed, answer lands anyway", slow.status === 200 && noAnswerYet && landed);
-step("back on the page, the answer is there", /compare three inns/.test((await page(kofi)).body.split(`<ol class="c-list"`)[1] ?? ""));
+step("back on the page, the answer is there", /compare three inns/.test((await page(kofi, "?thread")).body.split(`<ol class="thread"`)[1] ?? ""));
 
 // 7. Decision 9: back on the phone, the next text carries the Web line once.
 await router.deliver({ channel: "fake", externalId: "k-t2", from: KOFI, text: "on my phone now", chatId: null, at: Date.now() });

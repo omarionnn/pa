@@ -372,6 +372,12 @@ export const config = {
   // admission, nothing is written to the per-message history, and no tool list changes. Off is the
   // default and is what live runs until the owner says otherwise (§7 decision 10).
   web: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_WEB ?? "").trim().toLowerCase()),
+  // Where Reason Web's live stream is heard from (src/web.js webStreamOrigin). The website's proxy
+  // holds a stream back until it ends, so the page listens on the pages host instead, which reaches
+  // Reason directly. Unset: on, when the pages host sits under the website's domain (the session
+  // cookie is already shared there); "off": the page's own /web/stream and the 4 s poll; an https
+  // origin: that one.
+  webStream: String(process.env.REASON_WEB_STREAM ?? "").trim(),
   // How long an album's photos are kept after the organizer releases it (spec: three days). The ONE
   // retention setting — every expiry, every line that names it, reads this (src/albums.js RETENTION).
   albumRetentionDays: Number(process.env.REASON_ALBUM_RETENTION_DAYS || 3),

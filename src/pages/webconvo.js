@@ -1,41 +1,47 @@
-// Reason Web, phase W2: the conversation (docs/plans/reason-web-phase1.md §4.3–4.4, §6 W2; spec §4, §9).
+// Reason Web: the conversation (W2, docs/plans/reason-web-phase1.md §4.3–4.4), in the design handoff's
+// look (~/Desktop/reason-web-handoff-2026-10-26: "Chat · mobile", "Desktop · conversation", B / B2
+// arrival, sheets 4, 5 and 9). The kit it is drawn with is src/pages/webkit.js.
 //
 // Signed in, /web is the person's ONE conversation with Reason: their lines and Reason's from the
 // per-message history W0 writes (db `messages`), each labelled with where it was said (iMessage or
-// Web) and when, newest at the bottom, older pages fetched as they scroll up. Under it a composer
+// Web) and when, newest at the bottom, older pages fetched on request. Under it a one-line composer
 // that posts into the SAME conversation through the web channel (Router.deliver, `channel: "web"`):
 // the conversation id is the session's, never anything the browser names.
 //
-// The rules this file keeps, each pinned in test/web-convo.test.js:
-//   - one conversation per session: history, the stream and the send all resolve the conversation
-//     from the cookie; an id in a query or a body is never read as one
-//   - a reply goes where the person is chatting: a Web message is answered in the browser (the web
-//     adapter's send is an in-process event and a history row), never texted too — that is W0's
-//     router; this file only shows it
-//   - one message, one turn: every message carries a browser-made id, and Router.deliver's claim on
-//     `<conversation>:<id>` swallows a retry, a refresh resending, a second tab, a lost answer
-//   - the work is the server's: a send is acknowledged as soon as Reason has the message, the turn
-//     runs on without the tab, and the answer is in history whenever they come back
-//   - the history boundary is explained once, on the first visit (`accounts.web_notice_seen_at`),
-//     never as a recurring popup (spec §9)
-//   - safe rendering: every word is escaped; the only markup made from a message is a link, and only
-//     for http(s) addresses; nothing the model writes is ever HTML here
+// Screens here:
+//   home      the arrival (B / B2): the greeting, the composer, what's already in hand (only real
+//             open tasks and timers) or three example requests, then "pick up from iMessage"
+//   thread    the conversation itself (?thread, or straight after a Web message)
+//   first     5C, once (`accounts.web_notice_seen_at`): "One Reason. Pick up anywhere."
+//   ongoing   the mobile Ongoing tab: what Reason holds, or "Nothing left to chase."
+//   soon      MEMORY and SETTINGS, which arrive in later phases: a calm page, not a dead link
 //
-// Live updates are Server-Sent Events (`/web/stream`), per session, with the session re-checked on a
-// timer so a signed-out browser stops hearing. A stream is closed after a short while and the browser
-// reconnects with the last id it has (Last-Event-ID), so a proxy that limits how long one response may
-// run (the site's Netlify rewrite) costs a reconnect, not a message; while an answer is awaited the
-// page also asks `/web/history?after=` every few seconds, so a proxy that buffers the stream costs
-// seconds, not the reply.
-import { timingSafeEqual } from "node:crypto";
+// The rules this file keeps, each pinned in test/web-convo.test.js and test/web-design.test.js:
+//   - one conversation per session: history, the stream and the send resolve it from the cookie
+//   - a reply goes where the person is chatting: a Web message is answered in the browser, never texted too
+//   - one message, one turn: every message carries a browser-made id; Router.deliver's claim on
+//     `<conversation>:<id>` swallows a retry, a refresh resending, a second tab, a lost answer
+//   - the work is the server's: a send is acknowledged as soon as Reason has the message
+//   - safe rendering: every word is escaped; a line's markup is made HERE, from escaped text — a link
+//     only for http(s), a list only from lines that start like one, a card only for Reason's own hosts.
+//     The browser inserts that server-made markup; it never builds markup from a message itself.
+//
+// Live updates are Server-Sent Events. The website's proxy (heyreason.com/web, Netlify) buffers a
+// stream until it ends, so when src/web.js webStreamOrigin names the pages host the page listens there
+// (/web/live, CORS for the website's origin only, the shared cookie); otherwise at /web/stream. Either
+// way the stream is the path a reply takes (owner 10-26: replies must feel instant). The 4 s poll of
+// /web/history is only the fallback: it runs while the stream is not open, or once it has been silent
+// past two of its 15 s `ping` events (a stream dead without an error), never alongside a live one.
+import { timingSafeEqual, createHash } from "node:crypto";
 import * as db from "../db.js";
-import { WEB } from "../web.js";
+import { WEB, webStreamOrigin, siteOrigin } from "../web.js";
 import { config, clock } from "../config.js";
-import { shell, esc, foot } from "./render.js";
+import { esc } from "./render.js";
 import { readCookie } from "./access.js";
-import { WEB_CSS, SECURITY_HEADERS, note, sameOrigin, sessionAccount, greeting } from "./websignin.js";
+import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting } from "./websignin.js";
+import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch } from "./webkit.js";
 
-/** How many lines a page of history holds, first load and each scroll back. */
+/** How many lines a page of history holds, first load and each "show earlier". */
 export const PAGE = 40;
 /** The longest message the composer takes; the same cap is held on the server. */
 export const MAX_TEXT = 4000;
@@ -43,15 +49,26 @@ export const MAX_TEXT = 4000;
 export const SEND_LIMIT = 20;
 /** How long one stream response runs before the browser is asked to reconnect (under Netlify's proxy limit). */
 export const STREAM_MS = 20_000;
+/** The same, on the pages host, which nothing in between cuts short. */
+export const LIVE_STREAM_MS = 5 * 60_000;
 /** How often an open stream re-checks that the browser is still signed in. */
 export const STREAM_RECHECK_MS = 10_000;
+/** A Web message this recent means they are mid-conversation: /web opens on the thread, not the arrival. */
+export const THREAD_RECENT_MS = 30 * 60_000;
 
-// The approved wording (spec §9, plan §5): the boundary, once, on first Web use.
+// The first-visit note, 5C (owner copy in the handoff).
 export const BOUNDARY = {
-  title: "One Reason. Pick up anywhere.",
-  body: "Start on Web, continue in iMessage, or switch back. Reason keeps the context, so you don't have to explain again. See your full conversation on Web. Messages from Web won't appear in your iMessage thread.",
-  support: "This is the same Reason you text. Web shows your full history; iMessage shows the messages sent there. Replies go to the place you're chatting, not both.",
+  title: "One Reason.",
+  titleEm: "Pick up anywhere.",
+  body: "This is the same Reason you text. What you send here stays here; it won't show up in your iMessage thread.",
+  note: "either place works. i'll keep up.",
 };
+/** B2: three requests to start with. Tapping one fills the composer; nothing is sent until they send it. */
+export const EXAMPLES = [
+  "Call health services and book a checkup for me.",
+  "Find a plumber who can come this week.",
+  "Every Sunday, remind me to call home.",
+];
 
 const same = (a, b) => {
   const x = Buffer.from(String(a ?? "")), y = Buffer.from(String(b ?? ""));
@@ -65,27 +82,19 @@ export function sourceLabel(channel, service = null) {
   return String(service ?? "").toUpperCase() === "SMS" ? "SMS" : "iMessage";
 }
 
-/**
- * One history row as the browser gets it. `cid` is the browser's own id for a line sent from Web
- * (the part after the conversation prefix Router.deliver put on it), so the page can swap its
- * "sending" bubble for the real one; nothing else about the row's bookkeeping leaves the server.
- */
-export function rowOut(row, { conversationId, service = null }) {
-  const prefix = `${conversationId}:`;
-  const ext = String(row.external_id ?? "");
-  return {
-    id: row.id,
-    role: row.role === "user" ? "user" : "assistant",
-    source: sourceLabel(row.channel, service),
-    web: row.channel === WEB,
-    text: String(row.text ?? ""),
-    files: (row.media ?? []).map(m => String(m?.filename ?? "")).filter(Boolean).slice(0, 6),
-    at: row.at,
-    cid: row.role === "user" && row.channel === WEB && ext.startsWith(prefix) ? ext.slice(prefix.length) : null,
-  };
-}
+const timeFmt = () => new Intl.DateTimeFormat("en-US", { timeZone: config.tz, hour: "numeric", minute: "2-digit" });
+const dayFmt = () => new Intl.DateTimeFormat("en-US", { timeZone: config.tz, weekday: "short", month: "short", day: "numeric" });
+const dayKey = (at) => new Intl.DateTimeFormat("en-CA", { timeZone: config.tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
 
-const serviceOf = (conversationId) => db.getThread(conversationId)?.service ?? null;
+// ---------------------------------------------------------------- what a line is made of
+
+/** A photo, a voice note or a file, by its type. Only the kind and the name ever leave the server. */
+function mediaKind(m) {
+  const t = String(m?.mimeType ?? m?.type ?? "").toLowerCase();
+  if (t.startsWith("image/")) return "photo";
+  if (t.startsWith("audio/")) return "voice";
+  return "file";
+}
 
 /** Text with its links made tappable, everything else escaped. http(s) only; trailing punctuation stays text. */
 export function linkify(text) {
@@ -102,193 +111,486 @@ export function linkify(text) {
   return out + esc(s.slice(last));
 }
 
-const timeFmt = () => new Intl.DateTimeFormat("en-US", { timeZone: config.tz, hour: "numeric", minute: "2-digit" });
-const dayFmt = () => new Intl.DateTimeFormat("en-US", { timeZone: config.tz, weekday: "short", month: "short", day: "numeric" });
-const dayKey = (at) => new Intl.DateTimeFormat("en-CA", { timeZone: config.tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(at);
+const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ""; } };
+const monthFmt = (tz) => new Intl.DateTimeFormat("en-US", { timeZone: tz || config.tz, month: "short" });
+const dateFmt = (tz) => new Intl.DateTimeFormat("en-US", { timeZone: tz || config.tz, day: "numeric" });
 
-/** One line of the conversation, server-drawn. The page's script draws new ones with the same markup. */
-function lineHtml(m) {
-  const who = m.role === "user" ? "You" : "Reason";
-  const files = m.files.length ? `<p class="c-files">${m.files.map(f => `<span>${esc(f)}</span>`).join("")}</p>` : "";
-  return `<li class="c-msg ${m.role === "user" ? "c-you" : "c-re"}" data-id="${m.id}" data-at="${m.at}" data-web="${m.web ? 1 : 0}"${m.cid ? ` data-cid="${esc(m.cid)}"` : ""}>`
-    + `<p class="c-meta">${who} · ${esc(m.source)} · <time datetime="${new Date(m.at).toISOString()}">${esc(timeFmt().format(m.at))}</time></p>`
-    + `<div class="c-text">${linkify(m.text)}</div>${files}</li>`;
+/**
+ * A link to one of Reason's own hosts, as a paper card: the typed domain, a serif title, "Open →".
+ * An event link with a known date gets the date block. Titles come from this conversation's own
+ * rows only (a page it made, an event it organises or was let into); anything else is a plain card
+ * with a plain title, so a pasted link never reads somebody else's page title out.
+ */
+export function linkCard(url, conversationId) {
+  let u;
+  try { u = new URL(url); } catch { return null; }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  const host = u.hostname.toLowerCase();
+  const pages = hostOf(config.pagesUrl), events = hostOf(config.eventsUrl) || pages;
+  if (!host || (host !== pages && host !== events)) return null;
+  const path = u.pathname.replace(/\/+$/, "");
+  let title = "A page Reason made", date = null, m;
+  if ((m = /^\/e\/([A-Za-z0-9_-]{4,64})(?:\/|$)/.exec(path))) {
+    title = "An event";
+    const ev = db.eventByPublicId(m[1]);
+    const mine = ev && (ev.organizer_conversation_id === conversationId || db.attendeeRow(ev.id, conversationId)?.state === "joined");
+    if (mine) {
+      title = ev.name;
+      if (ev.starts_at) date = { mon: monthFmt(ev.tz).format(ev.starts_at).toUpperCase(), day: dateFmt(ev.tz).format(ev.starts_at) };
+    }
+  } else if (/^(?:\/p)?\/i\/[A-Za-z0-9_-]{8,64}$/.test(path)) {
+    title = "An invite to Reason";
+  } else if ((m = /^(?:\/p)?\/([A-Za-z0-9_-]{6,64})$/.exec(path))) {
+    const page = db.getPageIn(conversationId, m[1]);
+    if (page?.title) title = page.title;
+  }
+  const domain = esc(host.toUpperCase());
+  const attrs = `href="${esc(url)}" rel="noopener noreferrer nofollow" target="_blank"`;
+  if (date) {
+    return `<a class="card lcard ev" ${attrs}><span class="ev-date"><span class="ev-mon">${esc(date.mon)}</span><span class="ev-day">${esc(date.day)}</span></span>`
+      + `<span class="ev-txt"><span class="lc-dom">${domain}</span><span class="ev-t">${esc(title)}</span><span class="lc-go">Open <span aria-hidden="true">→</span></span></span></a>`;
+  }
+  return `<a class="card lcard" ${attrs}><span class="lc-dom">${domain}</span><span class="lc-t">${esc(title)}</span><span class="lc-go">Open <span aria-hidden="true">→</span></span></a>`;
 }
 
-/** The lines with a day marker where the day changes and a "continued" marker where the place does. */
+const LIST_ITEM = /^\s*(?:(\d{1,2})[.)]|[-•*])\s+(\S.*)$/;
+const PRICE = /^(.*?\S)\s*(?:[—–-]|:)?\s+(\$[\d,]+(?:\.\d{2})?)$/;
+
+/**
+ * Reason's words as blocks: paragraphs (blank-line separated), and lists — consecutive lines that
+ * start "1." / "1)" / "-" / "•" — drawn as typed 01 02 03 in pen between dashed rules. A link to
+ * one of Reason's own hosts becomes a card under the words (and leaves the sentence when it stood
+ * alone on its line). Everything is escaped first; only those shapes ever become markup.
+ */
+export function reasonBody(text, conversationId) {
+  const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
+  const cards = [];
+  const seen = new Set();
+  const cardFor = (url) => { if (seen.has(url)) return true; const c = linkCard(url, conversationId); if (c) { seen.add(url); cards.push(c); } return !!c; };
+  // Cards first, so a link that is the whole line can leave it.
+  const kept = lines.map((l) => {
+    const urls = [...l.matchAll(/https?:\/\/[^\s<>"'`]+/g)].map(m => m[0].replace(/[.,!?;:)\]]+$/, ""));
+    let out = l;
+    for (const url of urls) if (cardFor(url) && l.trim().replace(/[.,!?;:)\]]+$/, "") === url) out = "";
+    return out;
+  });
+  let html = "", para = [], list = [];
+  const flushPara = () => { if (para.length) { html += `<p>${linkify(para.join("\n"))}</p>`; para = []; } };
+  const flushList = () => {
+    if (!list.length) return;
+    // A numbered item keeps its own number (a reply split across texts still reads 01, 02, 03).
+    html += `<ol class="rl">${list.map(({ n: own, text: item }, i) => {
+      const p = PRICE.exec(item);
+      const n = String(own ?? (list[0].n ?? 1) + i).padStart(2, "0");
+      return `<li><span class="rl-n" aria-hidden="true">${n}</span><span class="rl-t">${linkify(p ? p[1] : item)}</span>${p ? `<span class="rl-p">${esc(p[2])}</span>` : ""}</li>`;
+    }).join("")}</ol>`;
+    list = [];
+  };
+  for (let i = 0; i < kept.length; i++) {
+    const l = kept[i], orig = lines[i];
+    const item = LIST_ITEM.exec(orig);
+    if (item && l.trim()) { flushPara(); list.push({ n: item[1] ? Number(item[1]) : null, text: item[2] }); continue; }
+    if (!l.trim()) { flushList(); flushPara(); continue; }
+    flushList();
+    para.push(l);
+  }
+  flushList(); flushPara();
+  return html + cards.join("");
+}
+
+/** One line's inside, server-made from escaped text (also sent to the page for lines that arrive live). */
+function lineInner(m, conversationId) {
+  const who = m.role === "user" ? "YOU" : "REASON";
+  const voice = m.media.some(x => x.kind === "voice");
+  const lbl = `<p class="lbl"><span>${who}${voice ? " · VOICE" : ""} · ${esc(m.source.toUpperCase())} · </span><time datetime="${new Date(m.at).toISOString()}">${esc(timeFmt().format(m.at))}</time></p>`;
+  const photos = m.media.filter(x => x.kind === "photo").map(() => `<div class="photo" role="img" aria-label="${m.role === "user" ? "Photo you sent" : "Photo from Reason"}"><span class="lbl">PHOTO</span></div>`).join("");
+  const files = m.media.filter(x => x.kind === "file").map(x => `<span class="slip">${esc(x.name.toUpperCase())}</span>`).join("");
+  let words = "";
+  if (m.text.trim()) {
+    if (m.role === "user") words = voice ? `<p class="said hand">${esc(m.text)}</p>` : `<div class="said">${linkify(m.text)}</div>`;
+    else words = `<div class="rsay">${reasonBody(m.text, conversationId)}</div>`;
+  }
+  return `${lbl}${photos}${files}${words}`;
+}
+
+/**
+ * One history row as the browser gets it. `cid` is the browser's own id for a line sent from Web
+ * (the part after the conversation prefix Router.deliver put on it), so the page can swap its
+ * "sending" line for the real one; `html` is the line drawn here; nothing else about the row's
+ * bookkeeping leaves the server.
+ */
+export function rowOut(row, { conversationId, service = null }) {
+  const prefix = `${conversationId}:`;
+  const ext = String(row.external_id ?? "");
+  const m = {
+    id: row.id,
+    role: row.role === "user" ? "user" : "assistant",
+    source: sourceLabel(row.channel, service),
+    web: row.channel === WEB,
+    text: String(row.text ?? ""),
+    media: (row.media ?? []).slice(0, 6).map(x => ({ kind: mediaKind(x), name: String(x?.filename ?? "").slice(0, 80) || "FILE" })),
+    at: row.at,
+    cid: row.role === "user" && row.channel === WEB && ext.startsWith(prefix) ? ext.slice(prefix.length) : null,
+  };
+  m.files = m.media.filter(x => x.kind === "file").map(x => x.name);
+  m.html = lineInner(m, conversationId);
+  return m;
+}
+
+const serviceOf = (conversationId) => db.getThread(conversationId)?.service ?? null;
+
+function lineHtml(m) {
+  return `<li class="msg ${m.role === "user" ? "you" : "re"}" data-id="${m.id}" data-at="${m.at}" data-web="${m.web ? 1 : 0}"${m.cid ? ` data-cid="${esc(m.cid)}"` : ""}>${m.html}</li>`;
+}
+
+const dayName = (at, now) => {
+  const d = dayKey(at);
+  return d === dayKey(now) ? "TODAY" : d === dayKey(now - 864e5) ? "YESTERDAY" : dayFmt().format(at).toUpperCase();
+};
+const continued = (where) => `<li class="cont" role="separator" aria-label="Continued ${esc(where)}"><span aria-hidden="true"></span><span class="hand">Continued ${esc(where)}</span><span aria-hidden="true"></span></li>`;
+
+/** The lines with a day label where the day changes and a "Continued on Web" mark where the place does. */
 export function listHtml(lines, { now = clock.now() } = {}) {
   let out = "", day = null, web = null;
-  const today = dayKey(now), yesterday = dayKey(now - 864e5);
   for (const m of lines) {
     const d = dayKey(m.at);
-    if (d !== day) {
-      out += `<li class="c-day" role="separator"><span>${d === today ? "Today" : d === yesterday ? "Yesterday" : esc(dayFmt().format(m.at))}</span></li>`;
-      day = d;
-    }
-    if (web !== null && m.web !== web && m.role === "user") {
-      out += `<li class="c-div" role="separator"><span>Continued ${m.web ? "on Web" : `in ${esc(m.source)}`}</span></li>`;
-    }
+    if (d !== day) { out += `<li class="day" role="separator">${label(dayName(m.at, now))}</li>`; day = d; }
+    if (web !== null && m.web !== web && m.role === "user") out += continued(m.web ? "on Web" : `in ${m.source}`);
     if (m.role === "user") web = m.web;
     out += lineHtml(m);
   }
   return out;
 }
 
-/** The line at the very top once there is nothing older: history starts the day Web was switched on (no backfill). */
-function startLine(lines, more) {
-  if (more) return `<button class="w-link c-older" type="button">Show earlier messages</button>`;
-  if (!lines.length) return "";
-  return `<p>Your conversation before ${esc(dayFmt().format(lines[0].at))} stays in your texts.</p>`;
-}
+// ---------------------------------------------------------------- what Reason holds
 
-const SEND_SVG = `<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16V4M4.5 9.5 10 4l5.5 5.5"/></svg>`;
-
-const CSS = `
-.wrap{padding-bottom:1rem}
-.c-app{display:grid;grid-template-columns:minmax(0,1fr);gap:2rem}
-.c-head{margin:.2rem 0 1.4rem}
-.c-head .kicker{font:400 .72rem/1.4 var(--mono);text-transform:uppercase;letter-spacing:.14em;color:var(--dim);margin:0 0 .5rem}
-.c-head h1{font:italic 400 clamp(2.1rem,8vw,2.8rem)/1.08 var(--serif);letter-spacing:-.02em;margin:0}
-.c-head .w-note{margin:.6rem 0 0;font-size:1.3rem}
-.c-note{margin:0 0 1.6rem;padding:1.1rem 1.15rem 1rem;border:1px dashed var(--rule);border-radius:6px;background:color-mix(in srgb,var(--card) 70%,transparent)}
-.c-note h2{font-size:1.55rem;margin:0 0 .45rem}
-.c-note p{margin:.35rem 0;color:var(--dim);font-size:.97rem}
-.c-note .w-link{margin-top:.45rem;font-size:.92rem}
-.c-start{text-align:center;color:var(--dim);font-size:.88rem;min-height:1.2rem;margin:0 0 .6rem}
-.c-start p{margin:0}
-.c-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:1.05rem}
-.c-msg{max-width:100%}
-.c-meta{font:400 .68rem/1.3 var(--mono);text-transform:uppercase;letter-spacing:.12em;color:var(--dim);margin:0 0 .3rem}
-.c-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:1.02rem;line-height:1.55}
-.c-text a{color:inherit;text-decoration-color:var(--accent);text-underline-offset:3px}
-.c-you{align-self:flex-end;max-width:min(86%,32rem);background:color-mix(in srgb,var(--ink) 6%,var(--card));border:1px solid var(--line);border-radius:14px 14px 4px 14px;padding:.7rem .95rem .8rem}
-.c-re{align-self:flex-start;max-width:min(94%,36rem);padding:0 .1rem}
-.c-you[data-state] .c-meta{color:var(--dim)}
-.c-you[data-state="failed"]{border-color:var(--warn)}
-.c-you[data-state="failed"] .c-meta{color:var(--warn)}
-.c-retry{font:inherit;font-size:.9rem;margin-top:.35rem}
-.c-files{margin:.4rem 0 0;display:flex;flex-wrap:wrap;gap:.35rem}
-.c-files span{font:400 .72rem/1.3 var(--mono);padding:.2rem .45rem;border:1px solid var(--line);border-radius:3px;color:var(--dim)}
-.c-day,.c-div{display:flex;align-items:center;gap:.8rem;color:var(--dim);font:400 .68rem/1.3 var(--mono);text-transform:uppercase;letter-spacing:.14em;margin:.4rem 0}
-.c-day::before,.c-day::after,.c-div::before,.c-div::after{content:"";flex:1;border-top:1px dashed var(--rule)}
-.c-div{font:400 1.15rem/1 var(--hand);text-transform:none;letter-spacing:0;color:var(--accent)}
-.c-empty{color:var(--dim);text-align:center;margin:2.5rem 0}
-.c-typing{display:flex;align-items:center;gap:.55rem;margin:1rem 0 0;color:var(--dim);font:400 .68rem/1.3 var(--mono);text-transform:uppercase;letter-spacing:.12em}
-.c-typing[hidden]{display:none}
-.c-dots{display:inline-flex;gap:4px}
-.c-dots i{width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:.35;animation:c-b 1.2s infinite ease-in-out}
-.c-dots i:nth-child(2){animation-delay:.15s}.c-dots i:nth-child(3){animation-delay:.3s}
-@keyframes c-b{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
-@media (prefers-reduced-motion:reduce){.c-dots i{animation:none;opacity:.7}}
-.c-compose{position:sticky;bottom:0;margin:1.4rem -1.15rem 0;padding:.75rem 1.15rem calc(.75rem + env(safe-area-inset-bottom));background:var(--bg);border-top:1px dashed var(--rule);z-index:2}
-.c-box{display:flex;align-items:flex-end;gap:.55rem;border:1px solid var(--edge,#ccc);border-radius:14px;background:var(--card);padding:.45rem .45rem .45rem .9rem}
-.c-box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 30%,transparent)}
-.c-box textarea{flex:1;border:0;outline:0;resize:none;background:transparent;color:var(--ink);font:inherit;font-size:1.02rem;line-height:1.45;padding:.45rem 0;max-height:12rem;min-height:1.5rem}
-.c-box textarea::placeholder{color:var(--dim);opacity:1}
-.c-send{flex:none;width:2.6rem;height:2.6rem;border-radius:10px;border:1px solid var(--ink);background:var(--ink);color:var(--bg);display:grid;place-items:center;cursor:pointer}
-.c-send svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
-.c-send:focus-visible,.w-link:focus-visible,.c-text a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.c-under{margin:.45rem 0 0;text-align:center;color:var(--dim);font-size:.82rem}
-.c-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.c-out{margin:2rem 0 0;text-align:center;font-size:.9rem}
-@media (min-width:900px){.wrap{max-width:46rem}.c-head h1{font-size:3rem}}
-`;
-// Room for W3: the Ongoing panel becomes a second column of .c-app at desktop widths. Not built here.
+const STATE_WORDS = {
+  running: ["WORKING", "working on it"],
+  waiting: ["WAITING", "waiting to hear back"],
+  waiting_on_other: ["WAITING", "waiting to hear back"],
+  waiting_on_you: ["NEEDS YOU", "waiting on you"],
+  blocked: ["STUCK", "stuck. i'll say why in the chat"],
+};
+const whenFmt = () => new Intl.DateTimeFormat("en-US", { timeZone: config.tz, weekday: "short", hour: "numeric", minute: "2-digit" });
 
 /**
- * The signed-in page: the conversation, the composer, and — on the first visit only — the boundary.
- * `sendId` is a fresh id for the no-script form, so even a plain form post is one turn however
- * often the browser resends it.
+ * What Reason is holding for this conversation right now: its open tasks and its pending timers,
+ * nothing invented. Phase 2 draws the full Ongoing; this is what the arrival's ALREADY IN HAND, the
+ * Ongoing tab and the desktop margin show until then.
  */
-export function renderConversation({ account, csrf, lines, more, firstVisit, sendId, now = clock.now() }) {
-  const name = String(account?.name ?? "").trim();
-  const notice = firstVisit
-    ? `<aside class="c-note" aria-labelledby="c-note-h"><h2 id="c-note-h">${esc(BOUNDARY.title)}</h2><p>${esc(BOUNDARY.body)}</p><p>${esc(BOUNDARY.support)}</p><button class="w-link" type="button" data-close>Got it</button></aside>`
-    : "";
-  const body = `<div class="c-app"><div class="c-main">`
-    + `<div class="c-head"><p class="kicker">Your personal concierge</p><h1>${esc(greeting(name))}</h1>${note("same conversation, wherever you are.")}</div>`
-    + notice
-    + `<section class="c-log" aria-label="Your conversation with Reason">`
-    + `<div class="c-start">${startLine(lines, more)}</div>`
-    + `<ol class="c-list" role="log" aria-live="polite" aria-relevant="additions">${listHtml(lines, { now })}</ol>`
-    + (lines.length ? "" : `<p class="c-empty">Nothing here yet. Whatever you tell Reason here or by text shows up in this conversation.</p>`)
-    + `<p class="c-typing" hidden role="status"><span class="c-dots" aria-hidden="true"><i></i><i></i><i></i></span><span>Reason is working on it</span></p>`
-    + `</section>`
-    + `<form class="c-compose" method="POST" action="/web/send"><input type="hidden" name="c" value="${esc(csrf)}"><input type="hidden" name="id" value="${esc(sendId)}">`
-    + `<div class="c-box"><label class="c-sr" for="c-input">Message Reason</label><textarea id="c-input" name="text" rows="1" maxlength="${MAX_TEXT}" placeholder="Tell Reason what you need" required></textarea>`
-    + `<button class="c-send" type="submit" aria-label="Send">${SEND_SVG}</button></div>`
-    + `<p class="c-under">Replies come here, not to your phone as well.</p></form>`
-    + `<form class="w-form c-out" method="POST" action="/web/signout"><input type="hidden" name="c" value="${esc(csrf)}"><button class="w-link" type="submit">Sign out of this browser</button></form>`
-    + `</div></div>`
-    + foot();
-  const first = lines[0]?.id ?? 0, last = lines.reduce((n, m) => Math.max(n, m.id), 0);
-  const boot = `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"}};`;
-  return shell({ title: "Reason", body, pill: "Web", css: WEB_CSS + CSS, referrer: "same-origin", script: boot + CLIENT_JS });
+export function inHand(conversationId) {
+  const tasks = db.listTasks(conversationId).map(t => {
+    const [status, words] = STATE_WORDS[t.state] ?? ["IN HAND", "in hand"];
+    return { kind: "task", title: String(t.title ?? "").trim(), status, words, needs: t.state === "waiting_on_you" };
+  });
+  const timers = db.listTimers(conversationId).map(t => ({
+    kind: "timer", title: String(t.note ?? "").trim() || (t.call_goal ? "A call" : "A reminder"),
+    status: t.call_goal ? "CALL" : "REMINDER", when: whenFmt().format(t.fire_at), needs: false,
+  }));
+  return [...tasks, ...timers].filter(x => x.title);
 }
 
-// The page's script. DOM only (textContent, createElement): no message ever becomes HTML in the
-// browser either. Same markup as lineHtml/listHtml above.
+/** Approvals Reason is waiting on (asked, not answered) in the last day: the one loud thing. */
+export function waitingApprovals(conversationId, now = clock.now()) {
+  return db.pendingConfirmations(conversationId)
+    .filter(c => c.granted_at == null && now - c.asked_at < 24 * 60 * 60_000)
+    .map(c => ({ title: String(c.summary ?? "").trim(), money: /\$|charge|pay|buy|purchase|order/i.test(`${c.action} ${c.stakes} ${c.summary}`) }))
+    .filter(c => c.title)
+    .slice(0, 1);
+}
+
+// ---------------------------------------------------------------- the look
+const CSS = `
+.top{padding:20px var(--gut) 0;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.top nav{display:none;align-items:center;gap:28px}
+.menu-b{width:44px;height:44px;margin-right:-10px;border:0;background:transparent;display:grid;place-items:center;cursor:pointer;color:var(--ink)}
+.menu-b svg{width:20px;height:20px;fill:currentColor}
+.menu{position:fixed;inset:0;z-index:40;background:var(--ground);padding:20px var(--gut) 32px;display:flex;flex-direction:column;gap:24px;overflow:auto}
+.menu[hidden]{display:none}
+.menu-h{display:flex;justify-content:space-between;align-items:center}
+.menu ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.menu li{border-bottom:1px dashed var(--hair)}
+.menu li .act{min-height:60px}
+.menu form{margin:0}
+.wrapc{flex:1 0 auto;width:100%;max-width:1200px;margin:0 auto;padding:8px var(--gut) 0;display:flex;flex-wrap:wrap;gap:72px;align-items:flex-start}
+.convo{flex:999 1 540px;min-width:0;display:flex;flex-direction:column;gap:26px}
+.thread{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:26px}
+.start{align-self:center;text-align:center}
+.start .lbl{white-space:normal}
+.day{text-align:center}
+.cont{display:flex;align-items:center;gap:14px;margin-top:-14px}
+.cont>span:not(.hand){flex:1;border-top:1px dashed var(--hair)}
+.cont .hand{font-size:23px}
+.msg{display:flex;flex-direction:column;gap:8px;min-width:0}
+.msg .lbl time{font:inherit}
+.you{align-self:flex-end;align-items:flex-end;max-width:85%}
+.said{margin:0;text-align:right;font:italic 400 23px/1.25 var(--serif);white-space:pre-wrap;overflow-wrap:anywhere}
+.said.hand{font:400 26px/1.15 var(--hand);color:var(--pen)}
+.said a,.rsay a{color:inherit;text-decoration-color:var(--pen);text-underline-offset:3px}
+.re{align-self:stretch}
+.rsay{display:flex;flex-direction:column;gap:12px;max-width:34em}
+.rsay p{margin:0;font-size:16px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+.rl{margin:2px 0;padding:0;list-style:none}
+.rl li{display:grid;grid-template-columns:36px minmax(0,1fr) auto;gap:0 8px;padding:12px 0;border-top:1px dashed var(--hair);font-size:16px;line-height:1.5;align-items:baseline}
+.rl li:last-child{border-bottom:1px dashed var(--hair)}
+.rl-n{font:400 13px/1 var(--mono);color:var(--pen)}
+.rl-t{overflow-wrap:anywhere}
+.rl-p{font:400 14px/1 var(--mono)}
+.lcard{text-decoration:none;color:var(--ink);padding:18px;display:flex;flex-direction:column;gap:8px;align-self:flex-start;min-width:min(320px,100%);max-width:100%}
+.lc-dom{font:400 10.5px/1.3 var(--mono);letter-spacing:.1em;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lc-t{font:italic 400 24px/1.15 var(--serif);overflow-wrap:anywhere}
+.lc-go{font-size:14px;font-weight:500}
+.ev{flex-direction:row;padding:0;gap:0;overflow:hidden}
+.ev-date{width:92px;flex:none;background:var(--deep);border-right:1px solid var(--hair);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;padding:12px 0}
+.ev-mon{font:400 11px/1 var(--mono);letter-spacing:.1em;color:var(--pen)}
+.ev-day{font:italic 400 36px/1 var(--serif)}
+.ev-txt{padding:14px 16px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.ev-t{font-size:15px;font-weight:600}
+.ev .lc-go{font-size:13px}
+.photo{width:220px;max-width:100%;height:160px;background:var(--photo);border:6px solid var(--lifted);box-shadow:var(--shp);transform:rotate(2deg);display:grid;place-items:center}
+.re .photo{transform:rotate(-1.5deg)}
+.slip{display:inline-flex;align-items:center;background:var(--lifted);border:1px solid var(--hair);border-radius:2px;box-shadow:var(--sh);padding:12px 14px;transform:rotate(-.6deg);font:400 12px/1.2 var(--mono);letter-spacing:.04em;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.msg[data-state=sending],.msg[data-state=waiting]{opacity:.6}
+.st{margin:0;font:400 10.5px/1.4 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.msg[data-state=sending] .st,.msg[data-state=waiting] .st{color:var(--ink)}
+.st.fade{transition:opacity .6s ease .4s;opacity:0}
+.retry{min-height:44px;border:0;background:transparent;padding:0;cursor:pointer;font:400 22px/1.1 var(--hand);color:var(--pen)}
+.retry+.st{font-size:10px;letter-spacing:.12em}
+.approval{display:flex;flex-direction:column;gap:10px}
+.onit .hand{font-size:23px}
+.netline{position:sticky;top:0;z-index:7;background:var(--ground);margin:0;padding:18px var(--gut);text-align:center;font:400 22px/1.2 var(--hand);color:var(--pen);border-bottom:1px dashed var(--hair)}
+.netline[hidden]{display:none}
+.composer{position:sticky;bottom:0;z-index:5;background:var(--ground);padding:8px 0 calc(16px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:6px}
+.cform{display:flex;align-items:center;gap:10px;border-top:1px solid var(--ink);padding:6px 0 0;margin:0}
+.cform input[type=text]{flex:1;min-width:0;height:44px;border:0;border-radius:0;background:transparent;font:italic 400 21px/1 var(--serif);color:var(--ink);padding:0;-webkit-appearance:none;appearance:none}
+.cform input[type=text]::placeholder{color:var(--muted);opacity:1}
+.cform input[type=text]:focus-visible{outline:none}
+.cform:focus-within{border-top-width:2px;padding-top:5px}
+.send{width:44px;height:44px;flex:none;border:0;border-radius:2px;background:var(--ink);color:var(--ground);display:grid;place-items:center;cursor:pointer}
+.send svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.cform input:placeholder-shown~.send{display:none}
+.under{margin:0;font-size:13px;color:var(--muted)}
+.og{display:none;flex:1 1 300px;max-width:340px;flex-direction:column;gap:28px;padding-top:8px;position:sticky;top:24px}
+.og h2{margin:0;font:italic 400 32px/1.1 var(--serif)}
+.og-sec{display:flex;flex-direction:column}
+.og-sec h3{margin:0 0 4px;font:400 12px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
+.og-sec h3.pen{color:var(--pen)}
+.og-row{padding:14px 0;border-bottom:1px dashed var(--hair);display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.og-row:last-child{border-bottom:0}
+.og-row b{font-size:15px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.og-row .lbl{flex:none;font-size:11px;letter-spacing:.1em}
+.og-row .when{flex:none;font:italic 400 20px/1 var(--serif)}
+.empty{display:flex;flex-direction:column;gap:20px}
+.empty .h2{margin:0;font:italic 400 32px/1.1 var(--serif)}
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:6;background:var(--ground);border-top:1px solid var(--hair);padding:6px 24px calc(14px + env(safe-area-inset-bottom));display:flex;justify-content:space-around}
+.tabs a{min-width:120px;min-height:48px;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;font:italic 400 22px/1 var(--serif);color:var(--muted)}
+.tabs a[aria-current=page]{color:var(--ink)}
+.tabs .n{font:700 12px/1 var(--mono);font-style:normal;color:var(--pen)}
+body.has-tabs{padding-bottom:84px}
+body.has-tabs .composer{bottom:76px}
+body.typing .tabs{display:none}
+body.typing.has-tabs .composer{bottom:0}
+body.has-tabs .foot{display:none}
+.home{flex:1 0 auto;width:100%;max-width:760px;margin:0 auto;padding:48px var(--gut) 64px;display:flex;flex-direction:column;gap:40px}
+.greet{margin:0;text-align:center;font:italic 400 42px/1.08 var(--serif);letter-spacing:-.02em;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
+.home .composer{position:static;padding:0;background:transparent}
+.home .cform{margin-top:-8px;padding:8px 0;border-bottom:1px solid var(--hair)}
+.home .under{display:none}
+.home .cform input[type=text]{height:52px;font-size:24px}
+.start-w,.inhand{display:flex;flex-direction:column;gap:6px;margin-top:24px}
+.start-w[hidden]{display:none}
+.start-w .lbl,.inhand>.lbl{font-size:12px;margin:0 0 8px}
+.ex{align-self:flex-start;min-height:48px;border:0;background:transparent;padding:0;cursor:pointer;font:italic 400 24px/1.2 var(--serif);color:var(--ink);text-align:left}
+.ex:hover{color:var(--hov)}
+.slips{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
+.slipc{text-decoration:none;color:var(--ink);padding:18px;display:flex;flex-direction:column;gap:10px;min-height:120px}
+.slipc .t{font-size:16px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
+.slipc .hand{transform:rotate(-1deg);transform-origin:left}
+.slipc .when{font:italic 400 20px/1 var(--serif)}
+.pick{text-decoration:none;color:var(--ink);display:flex;flex-direction:column;gap:12px;margin-top:24px}
+.pick-h{display:flex;align-items:center;gap:16px}
+.pick-h .hand{font-size:26px;flex:none}
+.pick-h .dash{flex:1;border-top:1px dashed var(--hair)}
+.pick-q{display:flex;flex-direction:column;gap:10px;padding-left:20px;border-left:1px solid var(--hair)}
+.pick-q .y{align-self:flex-end;font:italic 400 22px/1.25 var(--serif);color:var(--muted);text-align:right;overflow-wrap:anywhere}
+.pick-q .r{font-size:17px;line-height:1.5;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.pick-go{align-self:flex-end;font:italic 400 26px/1 var(--serif);min-height:48px;display:inline-flex;align-items:center}
+.pick-n{font-size:14px;color:var(--muted)}
+.pick:hover .pick-go{color:var(--hov)}
+.solo{flex:1 0 auto;width:100%;max-width:640px;margin:0 auto;padding:40px 32px;display:flex;flex-direction:column;justify-content:center;gap:22px}
+.solo p.body{margin:0;font-size:17px;line-height:1.6}
+.solo p.quiet{margin:0;font-size:16px;line-height:1.55;color:var(--muted)}
+.ghost{background:var(--lifted);border:1px solid var(--hair);border-radius:4px;padding:18px;opacity:.5;display:flex;flex-direction:column;gap:6px}
+.ghost b{font-size:16px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.og-m{flex:1 0 auto;padding:0 32px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;text-align:center}
+.og-m .h1{font-size:44px;line-height:1.08}
+.og-m .hand{font-size:24px;line-height:1.25;transform:rotate(-1.5deg)}
+.og-list{flex:1 0 auto;padding:24px var(--gut);display:flex;flex-direction:column;gap:28px}
+.og-list .h1{font-size:44px}
+.soon form{margin:0}
+.soon .themes{margin-top:8px}
+@media (min-width:900px){
+.top{padding:22px clamp(20px,4vw,48px)}
+.top nav{display:flex}
+.menu-b{display:none}
+.wrapc{padding:16px clamp(20px,4vw,48px) 0}
+.convo,.thread{gap:36px}
+.lbl{font-size:11px}
+.said{font-size:26px;line-height:1.3}
+.said.hand{font-size:30px}
+.rsay p{font-size:18px;line-height:1.6}
+.rl li{grid-template-columns:40px minmax(0,1fr) auto;font-size:17px;padding:14px 0}
+.lc-t{font-size:26px}
+.lcard{padding:18px 22px}
+.photo{width:280px;height:200px;border-width:8px;transform:rotate(1.5deg)}
+.you{max-width:75%}
+.cont .hand{font-size:26px}
+.cform input[type=text]{height:48px;font-size:24px}
+.cform{padding-top:10px}
+.composer{padding:12px 0 24px;margin-top:12px}
+.og{display:flex}
+.tabs{display:none}
+body.has-tabs{padding-bottom:0}
+body.has-tabs .composer{bottom:0}
+body.has-tabs .foot{display:flex}
+.home{padding:110px 24px 64px;gap:48px}
+.greet{font-size:64px}
+.home .cform input[type=text]{font-size:26px}
+.start-w,.inhand,.pick{margin-top:56px}
+.ex{font-size:26px}
+.slips{grid-template-columns:repeat(3,minmax(0,1fr))}
+.pick{margin-top:64px}
+.pick-h .hand{font-size:28px}
+.solo .h1{font-size:64px}
+.og-m{display:none}
+}
+@media (max-width:359px){.greet{font-size:34px}.lbl{font-size:10px;letter-spacing:.12em}.rsay p{font-size:15px}}
+`;
+
+const MENU_SVG = `<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>`;
+const SEND_SVG = `<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 16V4M4.5 9.5 10 4l5.5 5.5"/></svg>`;
+
+const signOutForm = (csrf, cls = "act2") => `<form method="POST" action="/web/signout"><input type="hidden" name="c" value="${esc(csrf)}"><button class="${cls}" type="submit">SIGN OUT OF THIS BROWSER</button></form>`;
+
+/** The top of every signed-in screen: the wordmark home; MEMORY and SETTINGS on desktop; a menu on phones. */
+function topBar({ csrf, extra = "" }) {
+  return `<header class="top">${wordmark({ href: "/web" })}`
+    + `<nav aria-label="Account">${extra}${typed("MEMORY", { href: "/web/memory" })}${typed("SETTINGS", { href: "/web/settings" })}</nav>`
+    + `<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">${MENU_SVG}</button></header>`
+    + `<div class="menu" id="menu" hidden role="dialog" aria-modal="true" aria-label="Menu"><div class="menu-h">${wordmark()}<button class="act2 menu-x" type="button">CLOSE</button></div>`
+    + `<ul><li>${action("The thread", { href: "/web?thread" })}</li><li>${action("Memory", { href: "/web/memory" })}</li><li>${action("Settings", { href: "/web/settings" })}</li></ul>`
+    + `${themeSwitch("th-menu")}${signOutForm(csrf)}</div>`;
+}
+
+function tabBar(current, count) {
+  return `<nav class="tabs" aria-label="Sections"><a href="/web?thread"${current === "chat" ? ` aria-current="page"` : ""}>Chat</a>`
+    + `<a href="/web?tab=ongoing"${current === "ongoing" ? ` aria-current="page"` : ""}>Ongoing${count ? `<span class="n" aria-label="${count} ${count === 1 ? "thing" : "things"}">${count}</span>` : ""}</a></nav>`;
+}
+
+/** The one-line composer. `sendId` makes even a no-script post one turn however often it is resent. */
+function composer({ csrf, sendId }) {
+  return `<div class="composer"><form class="cform" method="POST" action="/web/send"><input type="hidden" name="c" value="${esc(csrf)}"><input type="hidden" name="id" value="${esc(sendId)}">`
+    // No "+" (attach) and no mic (speak) until they work (owner, 10-26): the input runs edge to edge.
+    + `<label class="sr" for="c-input">Message Reason</label><input id="c-input" type="text" name="text" maxlength="${MAX_TEXT}" placeholder="Tell Reason what you need" autocomplete="off" enterkeyhint="send" required>`
+    + `<button class="send" type="submit" aria-label="Send">${SEND_SVG}</button></form>`
+    + `<p class="under">Replies come here, not to your phone as well.</p></div>`;
+}
+
+function ongoingMargin(items, approvals) {
+  const needs = items.filter(x => x.needs);
+  const rest = items.filter(x => !x.needs);
+  if (!items.length && !approvals.length) {
+    return `<aside class="og" aria-label="Ongoing"><h2>Ongoing</h2><div class="empty"><p class="h2">Nothing left<br>to chase.</p>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</div></aside>`;
+  }
+  const row = (x) => `<div class="og-row"><b>${esc(x.title)}</b>${x.when ? `<span class="when">${esc(x.when)}</span>` : `<span class="lbl">${esc(x.status)}</span>`}</div>`;
+  return `<aside class="og" aria-label="Ongoing"><h2>Ongoing</h2>`
+    + (approvals.length || needs.length ? `<section class="og-sec"><h3 class="pen">NEEDS YOU</h3>${approvals.map(a => `<div class="card appr"><p class="appr-t">${esc(a.title)}</p><p class="lbl">${a.money ? "NOTHING CHARGED YET" : "NOTHING BOOKED YET"}</p></div>`).join("")}${needs.map(row).join("")}</section>` : "")
+    + (rest.length ? `<section class="og-sec"><h3>IN HAND</h3>${rest.map(row).join("")}</section>` : "")
+    + `</aside>`;
+}
+
+/** "pick up from iMessage": the last two texts, quoted, the whole block one link into the thread. */
+function pickUp(conversationId, service) {
+  const recent = db.messagesBefore(conversationId, { limit: 80 }).filter(r => r.channel !== WEB && String(r.text ?? "").trim());
+  const two = recent.slice(-2);
+  if (!two.length) return "";
+  const last = two[two.length - 1];
+  const where = sourceLabel(last.channel, service);
+  return `<a class="pick" href="/web?thread" aria-label="Pick up from ${esc(where)}: continue the thread"><span class="pick-h">${hand(`pick up from ${where}`, { tag: "span" })}<span class="dash" aria-hidden="true"></span>`
+    + `<span class="lbl">LAST TEXT · <time datetime="${new Date(last.at).toISOString()}">${esc(timeFmt().format(last.at))}</time></span></span>`
+    + `<span class="pick-q">${two.map(r => `<span class="${r.role === "user" ? "y" : "r"}">${esc(String(r.text).slice(0, 400))}</span>`).join("")}</span>`
+    + `<span class="pick-go">Continue the thread <span aria-hidden="true">→</span></span><span class="pick-n">Same Reason, same thread. What you send here stays on Web.</span></a>`;
+}
+
+// ---------------------------------------------------------------- the page's script
+// DOM only for anything the person typed (textContent); a line Reason's server drew arrives as `html`
+// it made from escaped text, the same markup as the page's own. Same ids, claims and retries as W2.
 const CLIENT_JS = `(function(){
-var R=window.REASON_WEB,list=document.querySelector(".c-list"),typing=document.querySelector(".c-typing"),form=document.querySelector(".c-compose"),box=document.getElementById("c-input"),start=document.querySelector(".c-start"),empty=document.querySelector(".c-empty");
-if(!list||!form)return;
-var KEY="reason-web-pending",waiting=0,typingUntil=0,live=false,es=null;
-var tf=new Intl.DateTimeFormat(undefined,{hour:"numeric",minute:"2-digit"});
-function fmt(at){try{return tf.format(new Date(at))}catch(e){return""}}
-document.querySelectorAll(".c-msg time").forEach(function(t){var li=t.closest(".c-msg");t.textContent=fmt(Number(li.dataset.at))});
-var close=document.querySelector(".c-note [data-close]");if(close)close.onclick=function(){close.closest(".c-note").remove();box.focus()};
-function near(){return window.innerHeight+window.scrollY>=document.body.scrollHeight-160}
+var R=window.REASON_WEB,list=document.querySelector('.thread'),onit=document.querySelector('.onit'),form=document.querySelector('.cform'),box=document.getElementById('c-input'),start=document.querySelector('.start'),net=document.querySelector('.netline'),body=document.body;
+var mb=document.querySelector('.menu-b'),menu=document.getElementById('menu');
+document.querySelectorAll('form[action="/web/signout"]').forEach(function(f){f.addEventListener('submit',function(){try{Object.keys(sessionStorage).forEach(function(k){if(k.indexOf('reason-web-pending')===0)sessionStorage.removeItem(k)})}catch(x){}})});
+if(mb&&menu){var mx=menu.querySelector('.menu-x');function shut(){menu.hidden=true;mb.setAttribute('aria-expanded','false');mb.focus()}mb.onclick=function(){menu.hidden=false;mb.setAttribute('aria-expanded','true');mx.focus()};mx.onclick=shut;document.addEventListener('keydown',function(e){if(menu.hidden)return;if(e.key==='Escape')shut();else if(e.key==='Tab'){var f=menu.querySelectorAll('a,button,input:not([type=hidden])'),a=f[0],z=f[f.length-1];if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}}})}
+document.querySelectorAll('.start-w[hidden]').forEach(function(s){s.hidden=false});
+document.querySelectorAll('.ex').forEach(function(b){b.onclick=function(){box.value=b.dataset.text;box.dispatchEvent(new Event('input'));box.focus()}});
+var tf=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'});function fmt(at){try{return tf.format(new Date(at)).toUpperCase()}catch(e){return''}}
+function times(root){(root||document).querySelectorAll('time[datetime]').forEach(function(t){var d=Date.parse(t.dateTime);if(d)t.textContent=fmt(d)})}times();
+if(box){box.addEventListener('focus',function(){body.classList.add('typing')});box.addEventListener('blur',function(){body.classList.remove('typing')})}
+if(!form)return;
+var KEY='reason-web-pending:'+R.k,waiting=0,until=0,live=false,es=null,lost=0;
+function noteLine(t){if(!net)return;if(t){net.textContent=t;net.hidden=false}else net.hidden=true}
+function offline(){return navigator.onLine===false}
+function near(){return window.innerHeight+window.scrollY>=document.body.scrollHeight-200}
 function bottom(){window.scrollTo(0,document.body.scrollHeight)}
-function linkify(el,s){var re=/https?:\\/\\/[^\\s<>"'\`]+/g,last=0,m;while((m=re.exec(s))){var u=m[0],t=/[.,!?;:)\\]]+$/.exec(u);if(t)u=u.slice(0,-t[0].length);el.appendChild(document.createTextNode(s.slice(last,m.index)));var a=document.createElement("a");a.href=u;a.rel="noopener noreferrer nofollow";a.target="_blank";a.textContent=u;el.appendChild(a);last=m.index+u.length;re.lastIndex=last}el.appendChild(document.createTextNode(s.slice(last)))}
-function line(m){var li=document.createElement("li");li.className="c-msg "+(m.role==="user"?"c-you":"c-re");li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;
-var meta=document.createElement("p");meta.className="c-meta";meta.textContent=(m.role==="user"?"You":"Reason")+" \\u00b7 "+m.source+" \\u00b7 ";var t=document.createElement("time");t.dateTime=new Date(m.at).toISOString();t.textContent=fmt(m.at);meta.appendChild(t);li.appendChild(meta);
-var tx=document.createElement("div");tx.className="c-text";linkify(tx,m.text);li.appendChild(tx);
-if(m.files&&m.files.length){var f=document.createElement("p");f.className="c-files";m.files.forEach(function(n){var s=document.createElement("span");s.textContent=n;f.appendChild(s)});li.appendChild(f)}return li}
-function add(m){if(list.querySelector('.c-msg[data-id="'+m.id+'"]'))return;if(empty){empty.remove();empty=null}
-var stick=near(),li=line(m);
-if(m.cid){var p=list.querySelector('.c-msg[data-pending="'+m.cid+'"]');if(p){p.replaceWith(li);forget(m.cid);if(stick)bottom();return}}
-var after=null;list.querySelectorAll(".c-msg[data-id]").forEach(function(o){var a=Number(o.dataset.at),i=Number(o.dataset.id);if(a<m.at||(a===m.at&&i<m.id))after=o});
-var firstPending=list.querySelector(".c-msg[data-pending]");
-if(after&&after.nextSibling&&!(firstPending&&after.nextSibling===firstPending))list.insertBefore(li,after.nextSibling);else if(firstPending&&(!after||after.nextSibling===firstPending))list.insertBefore(li,firstPending);else if(after)list.appendChild(li);else list.insertBefore(li,list.firstChild);
-if(m.id>R.last)R.last=m.id;
-if(m.role==="assistant"){waiting=Math.max(0,waiting-1);setTyping(false)}
-if(stick)bottom()}
-function setTyping(on,until){typingUntil=on?(until||Date.now()+120000):0;typing.hidden=!on}
-setInterval(function(){if(typingUntil&&Date.now()>typingUntil)setTyping(false)},1000);
-function pend(){try{return JSON.parse(sessionStorage.getItem(KEY)||"[]")}catch(e){return[]}}
+function pend(){try{return JSON.parse(sessionStorage.getItem(KEY)||'[]')}catch(e){return[]}}
 function keep(a){try{sessionStorage.setItem(KEY,JSON.stringify(a))}catch(e){}}
 function forget(cid){keep(pend().filter(function(p){return p.id!==cid}))}
-function uid(){if(window.crypto&&crypto.randomUUID)return crypto.randomUUID();var a=new Uint8Array(16);crypto.getRandomValues(a);return Array.prototype.map.call(a,function(b){return("0"+b.toString(16)).slice(-2)}).join("")}
-function pendingLine(p){var li=line({id:"",role:"user",source:"Web",web:true,text:p.text,at:Date.now()});li.removeAttribute("data-id");li.dataset.pending=p.id;li.dataset.state="sending";li.querySelector(".c-meta").textContent="You \\u00b7 Web \\u00b7 Sending\\u2026";list.appendChild(li);if(empty){empty.remove();empty=null}bottom();return li}
-function state(li,s){if(!li)return;li.dataset.state=s;var meta=li.querySelector(".c-meta");var r=li.querySelector(".c-retry");if(r)r.remove();
-if(s==="sent")meta.textContent="You \\u00b7 Web \\u00b7 Sent";else if(s==="sending")meta.textContent="You \\u00b7 Web \\u00b7 Sending\\u2026";
-else{meta.textContent="You \\u00b7 Web \\u00b7 Not sent yet";var b=document.createElement("button");b.type="button";b.className="w-link c-retry";b.textContent="Try again";b.onclick=function(){send({id:li.dataset.pending,text:li.querySelector(".c-text").textContent},li)};li.appendChild(b)}}
-function send(p,li,tries){tries=tries||0;state(li,"sending");
-fetch("/web/send",{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json","X-Reason-Csrf":R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c})})
+function uid(){if(window.crypto&&crypto.randomUUID)return crypto.randomUUID();var a=new Uint8Array(16);crypto.getRandomValues(a);return Array.prototype.map.call(a,function(b){return('0'+b.toString(16)).slice(-2)}).join('')}
+function working(on,u){until=on?(u||Date.now()+120000):0;if(onit)onit.hidden=!on;if(on&&near())bottom()}
+setInterval(function(){if(until&&Date.now()>until)working(false)},1000);
+// From the arrival, a message moves you into the thread once Reason has it.
+if(!list){form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.trim();if(!t)return;var p={id:uid(),text:t};keep(pend().concat([p]));location.href='/web?thread'});return}
+function line(m){var li=document.createElement('li');li.className='msg arrive '+(m.role==='user'?'you':'re');li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;li.innerHTML=m.html;times(li);return li}
+function add(m){if(list.querySelector('.msg[data-id="'+m.id+'"]'))return;var stick=near(),li=line(m);
+if(m.cid){var p=list.querySelector('.msg[data-pending="'+m.cid+'"]');if(p){p.replaceWith(li);forget(m.cid);var s=document.createElement('p');s.className='st';s.textContent='SENT';li.appendChild(s);setTimeout(function(){s.classList.add('fade');setTimeout(function(){s.remove()},1100)},1200);if(stick)bottom();return}}
+var after=null;list.querySelectorAll('.msg[data-id]').forEach(function(o){var a=Number(o.dataset.at),i=Number(o.dataset.id);if(a<m.at||(a===m.at&&i<m.id))after=o});
+var fp=list.querySelector('.msg[data-pending]');
+if(after&&after.nextSibling&&!(fp&&after.nextSibling===fp))list.insertBefore(li,after.nextSibling);else if(fp&&(!after||after.nextSibling===fp))list.insertBefore(li,fp);else if(after)list.appendChild(li);else list.insertBefore(li,list.firstChild);
+if(m.id>R.last)R.last=m.id;if(m.role==='assistant'){waiting=Math.max(0,waiting-1);if(!waiting)working(false)}if(stick)bottom()}
+function pendingLine(p){var li=document.createElement('li');li.className='msg you arrive';li.dataset.pending=p.id;var l=document.createElement('p');l.className='lbl';l.textContent='YOU \\u00b7 WEB';var s=document.createElement('div');s.className='said';s.textContent=p.text;li.appendChild(l);li.appendChild(s);list.appendChild(li);bottom();return li}
+function state(li,st){if(!li)return;li.dataset.state=st;li.querySelectorAll('.st,.retry').forEach(function(x){x.remove()});
+if(st==='sending'||st==='waiting'){var s=document.createElement('p');s.className='st';s.textContent=st==='sending'?'SENDING\\u2026':'WAITING TO SEND';li.appendChild(s)}
+else if(st==='failed'){var b=document.createElement('button');b.type='button';b.className='retry';b.textContent="didn't go. tap to try again.";b.onclick=function(){send({id:li.dataset.pending,text:li.querySelector('.said').textContent},li)};var n=document.createElement('p');n.className='st';n.textContent="IT WON'T SEND TWICE";li.appendChild(b);li.appendChild(n)}}
+function expired(){if(waiting>0||until){var last=list.querySelector('.msg.you:last-of-type .said');var m=document.querySelector('main');var h='<section class="solo" aria-labelledby="ex-h"><h1 id="ex-h" class="h1">Still working on it.<br><em>Sign back in to see.</em></h1><div class="ghost" aria-hidden="true"><span class="lbl">WORKING</span><b></b></div><a class="act" href="/web?out=1">Sign in <span aria-hidden="true">\\u2192</span></a></section>';
+m.innerHTML=h;var b=m.querySelector('.ghost b');b.textContent=last?last.textContent:'';document.querySelectorAll('.composer,.tabs,.onit').forEach(function(x){x.remove()})}else location.href='/web?out=1'}
+function send(p,li,tries){tries=tries||0;if(offline()){state(li,'waiting');return}state(li,'sending');
+fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c})})
 .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(j){j.status=r.status;return j})})
-.then(function(j){if(j.status===401){location.reload();return}if(j.ok){if(li.isConnected&&!j.duplicate){state(li,"sent");waiting++;setTyping(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,"failed")})
-.catch(function(){if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,"failed")})}
-form.addEventListener("submit",function(e){e.preventDefault();var text=box.value.replace(/\\s+$/,"");if(!text.trim())return;var p={id:uid(),text:text};keep(pend().concat([p]));box.value="";grow();send(p,pendingLine(p))});
-box.addEventListener("keydown",function(e){if(e.key==="Enter"&&!e.shiftKey&&!e.isComposing&&!matchMedia("(pointer:coarse)").matches){e.preventDefault();form.requestSubmit()}});
-function grow(){box.style.height="auto";box.style.height=Math.min(box.scrollHeight,192)+"px"}box.addEventListener("input",grow);
-// A tab reloaded mid-send: whatever it had not yet seen in history is shown again and sent again
-// under the SAME id, which the server's claim turns into nothing if it already arrived.
-pend().forEach(function(p){if(list.querySelector('.c-msg[data-cid="'+p.id+'"]')){forget(p.id);return}send(p,pendingLine(p))});
-var polling=false;function poll(){if(polling)return;polling=true;fetch("/web/history?after="+R.last,{credentials:"same-origin",headers:{Accept:"application/json"}}).then(function(r){if(r.status===401){location.reload();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add)}).catch(function(){}).then(function(){polling=false})}
-setInterval(function(){if(waiting>0||typingUntil||!live)poll()},4000);
-function stream(){if(!window.EventSource)return;es=new EventSource("/web/stream?after="+R.last);es.onopen=function(){live=true};
-es.addEventListener("message",function(e){try{add(JSON.parse(e.data))}catch(x){}});
-es.addEventListener("typing",function(e){try{var t=JSON.parse(e.data);setTyping(t.on,t.until)}catch(x){}});
-es.addEventListener("signedout",function(){es.close();location.reload()});
+.then(function(j){if(j.status===401){expired();return}if(j.ok){if(j.duplicate&&li.isConnected&&li.dataset.pending){li.remove();forget(p.id)}if(li.isConnected&&!j.duplicate){state(li,'sent');li.querySelectorAll('.st').forEach(function(x){x.remove()});waiting++;working(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,'failed')})
+.catch(function(){if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
+form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.replace(/\\s+$/,'');if(!t.trim())return;var p={id:uid(),text:t};keep(pend().concat([p]));box.value='';box.dispatchEvent(new Event('input'));send(p,pendingLine(p))});
+// A tab reloaded mid-send (or arriving from the home screen): whatever it has not yet seen in history
+// is shown again and sent again under the SAME id, which the server's claim turns into nothing if it already arrived.
+pend().forEach(function(p){if(list.querySelector('.msg[data-cid="'+p.id+'"]')){forget(p.id);return}send(p,pendingLine(p))});
+window.addEventListener('offline',function(){noteLine("you're offline. i'll send it when you're back.")});
+window.addEventListener('online',function(){noteLine('');list.querySelectorAll('.msg[data-state=waiting]').forEach(function(li){send({id:li.dataset.pending,text:li.querySelector('.said').textContent},li)});poll()});
+if(offline())noteLine("you're offline. i'll send it when you're back.");
+var polling=false;function poll(){if(polling)return;polling=true;fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
+var beat=0;setInterval(function(){if(!live||Date.now()-beat>40000)poll()},4000);
+function stream(){if(!window.EventSource)return;try{es=R.stream.indexOf('http')===0?new EventSource(R.stream+'?after='+R.last,{withCredentials:true}):new EventSource(R.stream+'?after='+R.last)}catch(x){return}es.onopen=function(){live=true;beat=Date.now();if(lost){lost=0;noteLine('')}};
+es.addEventListener('ping',function(){beat=Date.now()});
+es.addEventListener('message',function(e){beat=Date.now();try{add(JSON.parse(e.data))}catch(x){}});
+es.addEventListener('typing',function(e){try{var t=JSON.parse(e.data);working(t.on,t.until)}catch(x){}});
+es.addEventListener('signedout',function(){es.close();expired()});
 es.onerror=function(){live=false}}
 stream();
-document.addEventListener("visibilitychange",function(){if(!document.hidden)poll()});
+document.addEventListener('visibilitychange',function(){if(!document.hidden)poll()});
 var loading=false;function older(){if(loading||!R.more)return;loading=true;var h=document.body.scrollHeight;
-fetch("/web/history?before="+R.first,{credentials:"same-origin",headers:{Accept:"application/json"}}).then(function(r){return r.json()}).then(function(j){var ms=j.messages||[];var anchor=list.firstChild;
-ms.forEach(function(m){if(!list.querySelector('.c-msg[data-id="'+m.id+'"]'))list.insertBefore(line(m),anchor)});
-if(ms.length)R.first=ms[0].id;R.more=!!j.more;start.textContent="";if(!R.more&&j.start){var s=document.createElement("p");s.textContent=j.start;start.appendChild(s)}
+fetch('/web/history?before='+R.first,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){return r.json()}).then(function(j){var ms=j.messages||[];var anchor=list.firstChild;
+ms.forEach(function(m){if(!list.querySelector('.msg[data-id="'+m.id+'"]'))list.insertBefore(line(m),anchor)});
+if(ms.length)R.first=ms[0].id;R.more=!!j.more;start.textContent='';if(!R.more&&j.start){var s=document.createElement('p');s.className='lbl';s.textContent=j.start;start.appendChild(s)}
 window.scrollBy(0,document.body.scrollHeight-h)}).catch(function(){}).then(function(){loading=false;if(R.more)hook()})}
-function hook(){start.textContent="";var b=document.createElement("button");b.type="button";b.className="w-link c-older";b.textContent="Show earlier messages";b.onclick=older;start.appendChild(b)}
-if(R.more){hook();if(window.IntersectionObserver)new IntersectionObserver(function(es){if(es[0].isIntersecting)older()},{rootMargin:"200px 0px 0px 0px"}).observe(start)}
+function hook(){start.textContent='';var b=document.createElement('button');b.type='button';b.className='act2';b.textContent='\\u2191 SHOW EARLIER MESSAGES';b.onclick=older;start.appendChild(b)}
+if(R.more)hook();
 bottom();
 })();`;
 
@@ -297,17 +599,120 @@ const json = (status, obj, extra = {}) => {
   return { status, headers: { "Content-Type": "application/json; charset=utf-8", ...SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body), ...extra }, body };
 };
 
-/** GET /web signed in: the latest page of the conversation, and the boundary if this is the first visit. */
-export function conversationPage({ account, headers, sendId, method = "GET" }) {
+/** Where the page listens for new lines: the pages host when it qualifies (src/web.js), else here. */
+export function streamPath() {
+  const origin = webStreamOrigin();
+  return origin ? `${origin}/web/live` : "/web/stream";
+}
+
+function boot({ csrf, lines = [], more = false, conversationId = "" }) {
+  // `k` keys this tab's unsent messages to ONE conversation: a tab later signed in as somebody else never resends them.
+  const k = createHash("sha256").update(`pending:${conversationId}`).digest("base64url").slice(0, 12);
+  const first = lines[0]?.id ?? 0, last = lines.reduce((n, m) => Math.max(n, m.id), 0);
+  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},k:${JSON.stringify(k)},stream:${JSON.stringify(streamPath())}};`;
+}
+
+const NET = `<p class="netline" role="status" hidden></p>`;
+
+/**
+ * The thread. `firstVisit` draws 5C in its place (once); `approvals` the one loud thing at the foot.
+ */
+export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], now = clock.now() }) {
+  if (firstVisit) return renderFirstVisit({ account });
+  const startLine = more
+    ? `<button class="act2" type="button">↑ SHOW EARLIER MESSAGES</button>`
+    : lines.length ? label(`Your conversation before ${dayFmt().format(lines[0].at)} stays in your texts.`) : "";
+  const appr = approvals.length ? `<div class="msg re approval">${label("REASON · WAITING ON YOU")}${approvalCard({ title: approvals[0].title, money: approvals[0].money })}</div>` : "";
+  const body = topBar({ csrf }) + NET
+    + `<main class="wrapc"><section class="convo" aria-labelledby="c-h"><h1 id="c-h" class="sr">Your conversation with Reason</h1>`
+    + `<div class="start">${startLine}</div>`
+    + `<ol class="thread" role="log" aria-live="polite" aria-relevant="additions">${listHtml(lines, { now })}</ol>`
+    + (lines.length ? "" : `<div class="empty">${hand("nothing here yet. whatever you tell me here or by text shows up in this thread.", { tilt: true })}</div>`)
+    + appr + onIt(true)
+    + composer({ csrf, sendId })
+    + `</section>${ongoingMargin(items, approvals)}</main>`
+    + tabBar("chat", items.length + approvals.length);
+  return webPage({ title: "Reason", body, css: CSS, script: boot({ csrf, lines, more, conversationId: account?.conversation_id }) + CLIENT_JS, bodyClass: "has-tabs", loader: true });
+}
+
+/** B / B2, the arrival: the greeting, the composer, then what's in hand or where to start, then iMessage. */
+export function renderHome({ account, csrf, sendId, items = [], approvals = [], pick = "" }) {
+  const name = String(account?.name ?? "").trim();
+  const slips = items.slice(0, 3).map(x => `<a class="card slipc" href="/web?thread"><span class="lbl">${esc(x.status)}</span><span class="t">${esc(x.title)}</span>${x.when ? `<span class="when">${esc(x.when)}</span>` : hand(x.words, { tag: "span" })}</a>`).join("");
+  const middle = items.length
+    ? `<section class="inhand" aria-label="Already in hand">${label("ALREADY IN HAND")}<div class="slips">${slips}</div></section>`
+    : `<section class="start-w" aria-label="You could start with" hidden>${label("YOU COULD START WITH")}${EXAMPLES.map(t => `<button class="ex" type="button" data-text="${esc(t)}">"${esc(t)}"</button>`).join("")}</section>`;
+  const body = topBar({ csrf, extra: typed("THE THREAD →", { href: "/web?thread" }) }) + NET
+    + `<main class="home"><h1 class="greet">${esc(greeting(name))}</h1>`
+    + composer({ csrf, sendId })
+    + (approvals.length ? `<section class="approval" aria-label="Needs you">${approvalCard({ title: approvals[0].title, money: approvals[0].money })}</section>` : "")
+    + middle + pick + `</main>`
+    + tabBar("chat", items.length + approvals.length);
+  return webPage({ title: "Reason", body, css: CSS, script: boot({ csrf, conversationId: account?.conversation_id }) + CLIENT_JS, bodyClass: "has-tabs", loader: true });
+}
+
+/** 5C, shown once: the same Reason, and what stays where. */
+export function renderFirstVisit() {
+  const body = `<header class="top">${wordmark({ href: "/web" })}</header><main class="solo" aria-labelledby="fv-h">`
+    + `<h1 id="fv-h" class="h1">${esc(BOUNDARY.title)}<br><em>${esc(BOUNDARY.titleEm)}</em></h1>`
+    + `<p class="body">${esc(BOUNDARY.body)}</p>${hand(BOUNDARY.note, { tilt: true })}${action("Got it", { href: "/web" })}</main>`;
+  return webPage({ title: "Reason", body, css: CSS });
+}
+
+/** The mobile Ongoing tab. Real rows when Reason holds anything; otherwise "Nothing left to chase." */
+export function renderOngoing({ csrf, items = [], approvals = [] }) {
+  const count = items.length + approvals.length;
+  const inner = count
+    ? `<main class="og-list"><h1 class="h1">Ongoing</h1>${label(`${count} ${count === 1 ? "THING" : "THINGS"}`)}${ongoingMargin(items, approvals).replace('class="og"', 'class="og og-tab"').replace("<h2>Ongoing</h2>", "")}</main>`
+    : `<main class="og-m"><h1 class="h1">Nothing left<br>to chase.</h1>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</main>`;
+  const css = `${CSS}.og-tab{display:flex;position:static;max-width:none;padding:0}`;
+  return webPage({ title: "Reason — Ongoing", body: topBar({ csrf }) + inner + tabBar("ongoing", count), css, script: CLIENT_JS, bodyClass: "has-tabs" });
+}
+
+/** MEMORY and SETTINGS before their phases: a calm page in the same voice, with the two settings that already work. */
+export function soonPage({ which, account, headers }) {
+  const csrf = db.pageSessionCsrf(readCookie(headers?.cookie));
+  const memory = which === "memory";
+  const body = topBar({ csrf }) + `<main class="solo soon" aria-labelledby="soon-h">`
+    + label(memory ? "MEMORY" : "SETTINGS")
+    + `<h1 id="soon-h" class="h1">${memory ? "What Reason <em>remembers</em>" : "Settings"}</h1>`
+    + `<p class="quiet">${memory ? "Seeing, correcting and forgetting what Reason knows about you is coming to this page." : "Choosing how Reason reaches you, your browsers and your invites are coming to this page."}</p>`
+    + hand(memory ? "until then, just ask me in the chat what i remember." : "until then, just ask me in the chat.", { tilt: true })
+    + (memory ? "" : `<hr class="rule">${label("THEME")}${themeSwitch("th-set")}<hr class="rule">${signOutForm(csrf)}`)
+    + action("Back to the thread", { href: "/web?thread" })
+    + `</main>`;
+  void account;
+  return webPage({ title: memory ? "Reason — Memory" : "Reason — Settings", body, css: CSS, script: CLIENT_JS });
+}
+
+/** 9B: something went wrong. Nothing was lost. Drawn by src/http.js when a Web request throws. */
+export function renderError() {
+  const body = `<header class="top">${wordmark({ href: "/web" })}</header><main class="solo" aria-labelledby="er-h">`
+    + `<h1 id="er-h" class="h1">Something went wrong.<br><em>Nothing was lost.</em></h1>`
+    + `<p class="quiet">Your messages and anything I'm working on are safe.</p>${action("Try again", { href: "/web" })}</main>`;
+  return webPage({ title: "Reason", body, css: CSS });
+}
+
+/**
+ * GET /web signed in. `view`: the thread (?thread), the Ongoing tab (?tab=ongoing), or — by default —
+ * the arrival, unless they sent something on Web in the last half hour (then the thread they're in).
+ * The first real view ever is 5C instead, once.
+ */
+export function conversationPage({ account, headers, sendId, method = "GET", query = {}, now = clock.now() }) {
   const conv = account.conversation_id;
   const service = serviceOf(conv);
+  const csrf = db.pageSessionCsrf(readCookie(headers.cookie));
+  // Spent only by a real view (GET); a HEAD carries no body to show it in.
+  if (method === "GET" && db.markWebNoticeSeen(conv)) return renderFirstVisit({ account });
+  const items = inHand(conv);
+  const approvals = waitingApprovals(conv, now);
+  if (query.tab === "ongoing") return renderOngoing({ csrf, items, approvals });
   const rows = db.messagesBefore(conv, { limit: PAGE + 1 });
   const more = rows.length > PAGE;
   const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service }));
-  // Spent only by a real view (GET); a HEAD carries no body to show it in.
-  const firstVisit = method === "GET" ? db.markWebNoticeSeen(conv) : false;
-  const csrf = db.pageSessionCsrf(readCookie(headers.cookie));
-  return renderConversation({ account, csrf, lines, more, firstVisit, sendId });
+  const recentWeb = lines.some(m => m.web && m.role === "user" && now - m.at < THREAD_RECENT_MS);
+  if (query.thread != null || recentWeb) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, now });
+  return renderHome({ account, csrf, sendId, items, approvals, pick: pickUp(conv, service) });
 }
 
 /**
@@ -354,7 +759,7 @@ export const ACK_WAIT_MS = 1500;
  */
 export async function sendRequest({ account, headers = {}, readBody, router, log = () => {}, ackWaitMs = ACK_WAIT_MS }) {
   const wantsJson = String(headers.accept ?? "").includes("application/json");
-  const fail = (status, error) => (wantsJson ? json(status, { ok: false, error }) : { status: 303, headers: { ...SECURITY_HEADERS, Location: "/web", "Content-Length": 0 }, body: "" });
+  const fail = (status, error) => (wantsJson ? json(status, { ok: false, error }) : { status: 303, headers: { ...SECURITY_HEADERS, Location: "/web?thread", "Content-Length": 0 }, body: "" });
   const form = new URLSearchParams((await readBody()) ?? "");
   const token = readCookie(headers.cookie);
   if (!sameOrigin(headers) || !same(headers["x-reason-csrf"] || form.get("c"), db.pageSessionCsrf(token))) {
@@ -377,7 +782,7 @@ export async function sendRequest({ account, headers = {}, readBody, router, log
   log({ web_send: quick ? (quick.duplicate ? "duplicate" : quick.refused ?? (quick.ok === false ? "failed" : "done")) : "accepted" });
   if (quick && quick.refused) return fail(403, quick.refused);
   if (quick && quick.ok === false && quick.error === "failed") return fail(500, "failed");
-  if (!wantsJson) return { status: 303, headers: { ...SECURITY_HEADERS, Location: "/web", "Content-Length": 0 }, body: "" };
+  if (!wantsJson) return { status: 303, headers: { ...SECURITY_HEADERS, Location: "/web?thread", "Content-Length": 0 }, body: "" };
   return json(200, { ok: true, id, duplicate: !!quick?.duplicate });
 }
 
@@ -387,13 +792,13 @@ export async function sendRequest({ account, headers = {}, readBody, router, log
  * `signedout` when the session stops being good. Resumes after `Last-Event-ID` (or `?after=`). The
  * session is re-read every STREAM_RECHECK_MS and before every push, so a sign-out elsewhere ends it.
  */
-export function streamRequest({ account, headers = {}, query = {}, router = null, log = () => {}, streamMs = STREAM_MS, recheckMs = STREAM_RECHECK_MS }) {
+export function streamRequest({ account, headers = {}, query = {}, router = null, log = () => {}, streamMs = STREAM_MS, recheckMs = STREAM_RECHECK_MS, extraHeaders = {} }) {
   const conv = account.conversation_id;
   const service = serviceOf(conv);
   const startAfter = Number(/^\d{1,15}$/.test(String(headers["last-event-id"] ?? "")) ? headers["last-event-id"] : (/^\d{1,15}$/.test(String(query.after ?? "")) ? query.after : 0));
   return {
     status: 200,
-    headers: { ...SECURITY_HEADERS, "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no", Connection: "keep-alive" },
+    headers: { ...SECURITY_HEADERS, "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no", Connection: "keep-alive", ...extraHeaders },
     stream(res, req) {
       let last = startAfter, closed = false;
       const webCh = router?.get?.(WEB) ?? null;
@@ -421,7 +826,8 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
         write(`event: typing\ndata: ${JSON.stringify({ on: !!e.on, until: e.until || 0 })}\n\n`);
       };
       // Timers first: `end` clears them, and the first flush may already end the stream.
-      const beat = setInterval(() => write(": ping\n\n"), 15_000);
+      // A named event, not a comment, so the page can tell a live stream from a silently dead one.
+      const beat = setInterval(() => write("event: ping\ndata: {}\n\n"), 15_000);
       const check = setInterval(() => { if (!stillHers()) { write("event: signedout\ndata: {}\n\n"); end("signed_out"); } }, recheckMs);
       const stop = setTimeout(() => end("cycle"), streamMs);
       for (const t of [beat, check, stop]) t.unref?.();
@@ -433,4 +839,22 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
       try { flush(); } catch (e) { log({ web_stream_failed: (e?.message ?? String(e)).split("\n")[0] }); end("failed"); }
     },
   };
+}
+
+/**
+ * GET /web/live: the same stream, asked for from the pages host (files.heyreason.com), which reaches
+ * Reason without the website's buffering proxy. A browser asking across hosts must be the website's
+ * own page (Origin = REASON_SITE_URL's origin, exactly); it gets CORS with credentials for that one
+ * origin and nothing else. With no Origin it is a same-host request and needs no CORS. Anything
+ * else — another site, another subdomain — is refused before the session is even looked at again.
+ */
+export function liveStreamRequest({ account, headers = {}, query = {}, router = null, log = () => {} }) {
+  const origin = String(headers.origin ?? "").trim();
+  const site = siteOrigin();
+  if (origin && origin !== site) {
+    log({ web_live_refused: "origin" });
+    return json(403, { ok: false, error: "not_from_this_page" });
+  }
+  const cors = origin ? { "Access-Control-Allow-Origin": site, "Access-Control-Allow-Credentials": "true", Vary: "Origin" } : {};
+  return streamRequest({ account, headers, query, router, log, streamMs: LIVE_STREAM_MS, extraHeaders: cors });
 }
