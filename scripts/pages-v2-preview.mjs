@@ -3,6 +3,7 @@
 // link-preview cards). SAMPLE DATA ONLY: a temp directory, a fake channel, nothing is sent anywhere.
 //
 //   node scripts/pages-v2-preview.mjs <out-dir>
+//   node scripts/pages-v2-preview.mjs <out-dir> --print   (§4h item 8: each kind printed, Paper + Night)
 //
 // Writes <out-dir>/pages-<screen>-<390|1280>-<paper|night>.png, og-private.png, og-event.png and an
 // index.json of what it drew. scripts/pages-v2-compare.py puts each beside its reference page.
@@ -11,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const OUT = resolve(process.argv[2] || "./pages-v2-preview");
+const PRINT = process.argv.includes("--print");
 mkdirSync(OUT, { recursive: true });
 const PORT = 47000 + Math.floor(Math.random() * 900);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -178,7 +180,33 @@ const SHOTS = [
   ["edge-archived", `/p/${oldPage.id}`, ownerT],
 ];
 const index = [];
-for (const [name, path, token] of SHOTS) {
+// --print: how each page kind comes out on paper. An A4-wide print-media screenshot (what the sheet
+// shows) and the browser's own page.pdf(), for a reader on Paper and one who chose Night.
+const plain = db.createPage(OWNER, { title: "Coffee at home, a short guide", subtitle: "Beans, grind, water, ratio.", blocks: [
+  { type: "text", text: "Start with whole beans and a burr grinder. Use 15 grams of water for every gram of coffee." },
+  { type: "cards", items: [{ title: "Chemex", note: "Clean, bright cup." }, { title: "AeroPress", note: "Forgiving, quick." }] },
+  { type: "callout", tone: "note", title: "If it tastes sour", text: "Grind finer." },
+] });
+const PRINTS = [["shortlist", `/p/${shortlist.id}`, ownerT], ["day", `/p/${dayPage.id}`, ownerT], ["call", `/p/${callPage.id}`, ownerT],
+  ["event", `/e/${ev.public_id}`, kofiT], ["album", `/e/${ev.public_id}/album`, kofiT], ["receipt", `/p/${receiptPage.id}`, ownerT],
+  ["page", `/p/${plain.id}`, sess(OWNER, plain.id)]];
+for (const [name, path, token] of PRINT ? PRINTS : []) {
+  for (const theme of ["paper", "night"]) {
+    const ctx = await browser.newContext({ viewport: { width: 794, height: 1123 }, deviceScaleFactor: 2, colorScheme: theme === "night" ? "dark" : "light" });
+    if (token) await ctx.addCookies([{ name: "reason_page", value: token, url: BASE }]);
+    if (theme === "night") await ctx.addInitScript(() => { try { localStorage.setItem("reason-theme", "dark"); } catch {} });
+    const p = await ctx.newPage();
+    const res = await p.goto(`${BASE}${path}`, { waitUntil: "networkidle" });
+    await p.evaluate(() => document.fonts.ready);
+    await p.emulateMedia({ media: "print" });
+    const file = join(OUT, `4h-print-${name}-${theme}.png`);
+    await p.screenshot({ path: file, fullPage: true });
+    await p.pdf({ path: join(OUT, `4h-print-${name}-${theme}.pdf`), format: "A4", printBackground: true });
+    index.push({ name, theme, status: res.status(), file });
+    await ctx.close();
+  }
+}
+for (const [name, path, token] of PRINT ? [] : SHOTS) {
   for (const [w, h] of [[390, 844], [1280, 900]]) {
     for (const scheme of ["light", "dark"]) {
       const ctx = await browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: 2, colorScheme: scheme });
@@ -194,16 +222,18 @@ for (const [name, path, token] of SHOTS) {
   }
 }
 // The two link-preview cards, as a phone fetches them.
-for (const [name, path] of [["og-private", "/p/og/private.png"], ["og-event", `/e/${ev.public_id}/cover.jpg`]]) {
+for (const [name, path] of PRINT ? [] : [["og-private", "/p/og/private.png"], ["og-event", `/e/${ev.public_id}/cover.jpg`]]) {
   const r = await fetch(`${BASE}${path}`);
   const bytes = Buffer.from(await r.arrayBuffer());
   writeFileSync(join(OUT, `${name}.${path.endsWith(".png") ? "png" : "jpg"}`), bytes);
   index.push({ name, status: r.status, bytes: bytes.length });
 }
 // And what each private page tells a link preview.
-const head = await (await fetch(`${BASE}/p/${shortlist.id}?k=${shortlist.owner_key}`)).text();
-index.push({ name: "gate-og", tags: [...head.matchAll(/<meta property="og:[^>]+>/g)].map(m => m[0]) });
+if (!PRINT) {
+  const head = await (await fetch(`${BASE}/p/${shortlist.id}?k=${shortlist.owner_key}`)).text();
+  index.push({ name: "gate-og", tags: [...head.matchAll(/<meta property="og:[^>]+>/g)].map(m => m[0]) });
+}
 writeFileSync(join(OUT, "index.json"), JSON.stringify(index, null, 2));
 await browser.close();
 server.close();
-console.log(JSON.stringify(index.map(i => [i.name, i.w ?? "", i.scheme ?? "", i.status]), null, 0));
+console.log(JSON.stringify(index.map(i => [i.name, i.w ?? "", i.scheme ?? i.theme ?? "", i.status]), null, 0));
