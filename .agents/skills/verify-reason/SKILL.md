@@ -648,7 +648,7 @@ Reason Web v2 edge (body=hey + hint, code-error pen, loading L3–L7, E1 404, E5
 focus F1): [features/web-edge.md](features/web-edge.md); driven in Chromium by `test/web-edge-browser.test.js`.
 Reason Web §4h small details (pen writes in, stamp lands, paper grain, late night): [features/web-motion.md](features/web-motion.md);
 driven in Chromium by `test/web-4h-motion-browser.test.js`.
-Pages Reason makes v2 (`REASON_PAGES_V2`): [features/pages-v2.md](features/pages-v2.md); `scripts/pages-v2-preview.mjs` + `scripts/pages-v2-compare.mjs`.
+Pages Reason makes v2 (`REASON_PAGES_V2`): [features/pages-v2.md](features/pages-v2.md); `scripts/pages-v2-preview.mjs` + `scripts/pages-v2-compare.mjs`. Print (§4h-8, `src/pages/print.js`): same file, "Print"; `pages-v2-preview.mjs <dir> --print`.
 
 ## Facts worth not rediscovering
 
