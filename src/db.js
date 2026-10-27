@@ -2004,6 +2004,9 @@ export function factKey(fact) {
   return normalize(fact);
 }
 
+/** The memory page's five headings (Reason Web, handoff §5), in the page's order. See `memoryFacts`. */
+export const MEMORY_GROUPS = ["preferences", "people", "places", "routines", "why"];
+
 /**
  * What the extraction model calls the person whose conversation this is when it does not use their
  * name. They are not a second person: a fact filed under "user" is a fact about them, and left as
@@ -2287,8 +2290,9 @@ export function personFacts(personId) {
  * a trailing full stop (`factKey`), because the thing writing most of these is a model re-reading
  * the same messages every turn and phrasing them slightly differently each time.
  */
-export function remember(conversationId, about, fact, { source = "user_stated", confidence = 1.0, category = "", sourceMessageIds = [] } = {}) {
+export function remember(conversationId, about, fact, { source = "user_stated", confidence = 1.0, category = "", group = "", sourceMessageIds = [] } = {}) {
   const clean = String(fact).trim();
+  const filed = MEMORY_GROUPS.includes(group) ? group : "";
   const key = factKey(clean);
   const subject = resolveSubject(conversationId, about);
 
@@ -2366,14 +2370,14 @@ export function remember(conversationId, about, fact, { source = "user_stated", 
     }
     const now = clock.now();
     if (stale) {
-      db.prepare("UPDATE person_facts SET status = 'active', valid_from = ?, valid_to = NULL, superseded_by = NULL, confidence = ?, source = ?, source_message_ids = ?, category = ? WHERE id = ?")
-        .run(now, confidence, source, JSON.stringify(sourceMessageIds), category, stale.id);
+      db.prepare("UPDATE person_facts SET status = 'active', valid_from = ?, valid_to = NULL, superseded_by = NULL, confidence = ?, source = ?, source_message_ids = ?, category = ?, memory_group = ? WHERE id = ?")
+        .run(now, confidence, source, JSON.stringify(sourceMessageIds), category, filed, stale.id);
       factId = stale.id;
     } else {
       const r = db.prepare(
-        `INSERT INTO person_facts (person_id, fact, created_at, valid_from, status, confidence, source, source_message_ids, category)
-         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`
-      ).run(person.id, clean, now, now, confidence, source, JSON.stringify(sourceMessageIds), category);
+        `INSERT INTO person_facts (person_id, fact, created_at, valid_from, status, confidence, source, source_message_ids, category, memory_group)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
+      ).run(person.id, clean, now, now, confidence, source, JSON.stringify(sourceMessageIds), category, filed);
       factId = Number(r.lastInsertRowid);
     }
   }
@@ -8477,6 +8481,9 @@ db.exec(`
 addColumnIfMissing("guesses", "evidence", "TEXT NOT NULL DEFAULT '[]'");
 addColumnIfMissing("guesses", "use", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("guesses", "last_supported_at", "INTEGER");
+// "No" to a guess on the memory page (Reason Web). The row stays, so `noteGuess` finds the same
+// words again and hands back this one rather than suggesting it afresh; every list leaves it out.
+addColumnIfMissing("guesses", "dismissed_at", "INTEGER");
 
 /** Where a guess came from. Both are things `remember` refuses to save as facts. */
 export const GUESS_SOURCES = ["i_worked_it_out", "i_saw_it_in_a_photo", "i_noticed_a_pattern"];
@@ -8506,7 +8513,7 @@ export function getGuess(conversationId, id) {
 
 /** The ones still guesses. A confirmed one is a fact now and belongs in the facts section. */
 export function listGuesses(conversationId, { includeConfirmed = false, includePatterns = false, limit = 40 } = {}) {
-  const where = ["conversation_id = ?"];
+  const where = ["conversation_id = ?", "dismissed_at IS NULL"];
   const args = [conversationId];
   if (!includeConfirmed) where.push("confirmed_at IS NULL");
   if (!includePatterns) { where.push("how != ?"); args.push(PATTERN_SOURCE); }
@@ -8548,6 +8555,17 @@ export function correctGuess(conversationId, id, { guess = null, about = null } 
   return { ok: true, was: row, guess: getGuess(conversationId, id) };
 }
 
+/**
+ * "No, that's not right", from the memory page: the guess stops being shown or used, and because the
+ * row stays (marked), the same words noted again find it and are not suggested a second time.
+ */
+export function dismissGuess(conversationId, id) {
+  const row = getGuess(conversationId, id);
+  if (!row || row.dismissed_at || row.confirmed_at) return { ok: false, error: `There is no open guess #${id} here.` };
+  db.prepare("UPDATE guesses SET dismissed_at = ? WHERE id = ?").run(clock.now(), id);
+  return { ok: true, was: row };
+}
+
 /** Gone, really: a guess somebody has corrected should not sit on disk being wrong. */
 export function dropGuess(conversationId, id) {
   const row = getGuess(conversationId, id);
@@ -8559,7 +8577,7 @@ export function dropGuess(conversationId, id) {
 // ---------- patterns: rhythms across weeks ----------
 
 export function listPatterns(conversationId, { limit = 20 } = {}) {
-  return db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND how = ? AND confirmed_at IS NULL
+  return db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND how = ? AND confirmed_at IS NULL AND dismissed_at IS NULL
     ORDER BY noted_at DESC, id DESC LIMIT ?`).all(conversationId, PATTERN_SOURCE, limit)
     .map(r => ({ ...r, evidence: parseEvidence(r.evidence) }));
 }
@@ -8590,7 +8608,7 @@ export function supportPattern(conversationId, id, at = clock.now(), { evidence 
 }
 
 export function patternsUnsupportedSince(conversationId, before) {
-  return db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND how = ? AND confirmed_at IS NULL
+  return db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND how = ? AND confirmed_at IS NULL AND dismissed_at IS NULL
       AND COALESCE(last_supported_at, noted_at) < ?`)
     .all(conversationId, PATTERN_SOURCE, before)
     .map(r => ({ ...r, evidence: parseEvidence(r.evidence) }));
@@ -8775,7 +8793,7 @@ export function dropWhy(conversationId, id) {
 // person's Reason.
 
 export function getFact(conversationId, id) {
-  return db.prepare(`SELECT f.id, f.fact, f.created_at, f.confidence, f.source, f.category, f.source_message_ids,
+  return db.prepare(`SELECT f.id, f.fact, f.created_at, f.confidence, f.source, f.category, f.memory_group, f.source_message_ids,
     p.name AS about, p.id AS person_id
     FROM person_facts f JOIN people p ON p.id = f.person_id
     WHERE f.id = ? AND p.conversation_id = ? AND f.status = 'active'`).get(id, conversationId) ?? null;
@@ -8806,8 +8824,9 @@ export function correctFact(conversationId, id, { fact }) {
   const clean = String(fact ?? "").trim();
   if (!clean) return { ok: false, error: `A correction needs the new wording in 'instead'.` };
   if (clean === row.fact) return { ok: true, unchanged: true, was: row, fact: row };
-  const clash = db.prepare("SELECT id FROM person_facts WHERE person_id = ? AND fact = ? AND id != ? AND status = 'active'")
-    .get(row.person_id, clean, id);
+  // The same fact across case and a trailing full stop is the same fact (`factKey`), as `remember` reads it.
+  const clash = db.prepare("SELECT id, fact FROM person_facts WHERE person_id = ? AND id != ? AND status = 'active'")
+    .all(row.person_id, id).find(r => factKey(r.fact) === factKey(clean));
   if (clash) {
     return {
       ok: false,
@@ -8817,15 +8836,16 @@ export function correctFact(conversationId, id, { fact }) {
   }
   const now = clock.now();
   const r = db.prepare(
-    `INSERT INTO person_facts (person_id, fact, created_at, valid_from, status, confidence, source, source_message_ids, category)
-     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+    `INSERT INTO person_facts (person_id, fact, created_at, valid_from, status, confidence, source, source_message_ids, category, memory_group)
+     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
   ).run(row.person_id, clean, now, now,
     row.confidence ?? 1.0, row.source ?? "user_stated",
-    row.source_message_ids ?? "[]", row.category ?? "");
+    row.source_message_ids ?? "[]", row.category ?? "", row.memory_group ?? "");
   const newId = Number(r.lastInsertRowid);
   db.prepare("UPDATE person_facts SET status = 'corrected', valid_to = ?, superseded_by = ? WHERE id = ?")
     .run(now, newId, id);
   db.prepare("UPDATE people SET updated_at = ? WHERE id = ?").run(now, row.person_id);
+  outOfProfile(conversationId, id);
   return { ok: true, was: row, newId, fact: getFact(conversationId, newId) };
 }
 
@@ -8834,7 +8854,61 @@ export function dropFact(conversationId, id) {
   const row = getFact(conversationId, id);
   if (!row) return { ok: false, error: `There is no saved fact #${id} here.` };
   db.prepare("UPDATE person_facts SET status = 'deleted', valid_to = ? WHERE id = ?").run(clock.now(), id);
+  outOfProfile(conversationId, id);
   return { ok: true, was: row };
+}
+
+/**
+ * The profile (src/extract.js `rebuildProfile`) is a saved block of text that rides on every turn
+ * (src/memorynote.js) and is rebuilt on the background lane, which may be minutes away. A fact taken
+ * back that was in it would ride along until then, so the block goes now when it carried that fact;
+ * the caller schedules the rebuild.
+ */
+function outOfProfile(conversationId, factId) {
+  const p = getProfile(conversationId);
+  if (!p) return;
+  let ids = [];
+  try { ids = JSON.parse(p.fact_ids || "[]"); } catch { ids = []; }
+  if (ids.includes(Number(factId))) invalidateProfile(conversationId);
+}
+
+// ---------- the memory page's groups (Reason Web, handoff §5) ----------
+//
+// The page files every fact under one of five headings. Which one is a reading of what the fact
+// means, so a model chooses it — the extractor as it writes (src/extract.js `group`), or the
+// background filer for every row written without one (src/factgroups.js). Kept on the row so the
+// page is one read and the same fact never moves between visits.
+
+/** Every active fact of one conversation, with its subject and group, newest first. No cap: the page lists them all. */
+export function memoryFacts(conversationId) {
+  return db.prepare(`SELECT f.id, f.fact, f.created_at, f.source, f.category, f.memory_group, p.name AS about, p.key AS about_key
+    FROM person_facts f JOIN people p ON p.id = f.person_id
+    WHERE p.conversation_id = ? AND f.status = 'active'
+    ORDER BY f.created_at DESC, f.id DESC`).all(conversationId);
+}
+
+/** Active facts with no group yet, all from one conversation (the one with the oldest), oldest first. */
+export function unfiledFacts({ limit = 60, skip = [] } = {}) {
+  // `skip`: ids the filer has given up on, so one stubborn row never holds up every other conversation.
+  const ids = [...skip].map(Number).filter(Number.isInteger);
+  const not = ids.length ? ` AND f.id NOT IN (${ids.map(() => "?").join(",")})` : "";
+  const first = db.prepare(`SELECT p.conversation_id FROM person_facts f JOIN people p ON p.id = f.person_id
+    WHERE f.status = 'active' AND f.memory_group = ''${not} ORDER BY f.id LIMIT 1`).get(...ids);
+  if (!first) return [];
+  return db.prepare(`SELECT f.id, f.fact, f.category, p.name AS about, p.key AS about_key, p.conversation_id
+    FROM person_facts f JOIN people p ON p.id = f.person_id
+    WHERE p.conversation_id = ? AND f.status = 'active' AND f.memory_group = ''${not} ORDER BY f.id LIMIT ?`).all(first.conversation_id, ...ids, limit);
+}
+
+/** How many active facts still have no group, across every conversation. */
+export function unfiledCount() {
+  return db.prepare("SELECT COUNT(*) AS n FROM person_facts WHERE status = 'active' AND memory_group = ''").get().n;
+}
+
+/** File one fact under one of the five groups. Anything else is refused. */
+export function fileFact(id, group) {
+  if (!MEMORY_GROUPS.includes(group)) return false;
+  return db.prepare("UPDATE person_facts SET memory_group = ? WHERE id = ?").run(group, id).changes > 0;
 }
 
 // ---------- the hard line, counted ----------
@@ -9631,6 +9705,7 @@ addColumnIfMissing("person_facts", "confidence", "REAL NOT NULL DEFAULT 1.0");
 addColumnIfMissing("person_facts", "source", "TEXT NOT NULL DEFAULT 'user_stated'");
 addColumnIfMissing("person_facts", "source_message_ids", "TEXT NOT NULL DEFAULT '[]'");
 addColumnIfMissing("person_facts", "category", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("person_facts", "memory_group", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("saved_places", "mode", "TEXT");
 addColumnIfMissing("saved_places", "travel_minutes", "INTEGER");
 addColumnIfMissing("saved_places", "route_description", "TEXT");
@@ -9895,11 +9970,11 @@ export function supersedeFact(conversationId, oldId, newFact) {
   if (!old) return null;
   const now = clock.now();
   const r = db.prepare(
-    `INSERT INTO person_facts (person_id, fact, created_at, valid_from, status, confidence, source, source_message_ids, category)
-     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+    `INSERT INTO person_facts (person_id, fact, created_at, valid_from, status, confidence, source, source_message_ids, category, memory_group)
+     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
   ).run(old.person_id, newFact, now, now,
     old.confidence ?? 1.0, old.source ?? "user_stated",
-    old.source_message_ids ?? "[]", old.category ?? "");
+    old.source_message_ids ?? "[]", old.category ?? "", old.memory_group ?? "");
   const newId = Number(r.lastInsertRowid);
   db.prepare("UPDATE person_facts SET status = 'corrected', valid_to = ?, superseded_by = ? WHERE id = ?")
     .run(now, newId, oldId);

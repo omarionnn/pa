@@ -1701,6 +1701,9 @@ export class Runtime extends EventEmitter {
       if (onSubscription()) {
         const background = await import("./background.js");
         background.enqueue("extract", () => processQueue({ log: this.log })).catch(e => this.log({ extraction_error: (e?.message ?? String(e)).split("\n")[0] }));
+        // Facts saved without a memory-page heading (src/factgroups.js), a batch at a time on the same lane.
+        const groups = await import("./factgroups.js");
+        if (groups.anyUnfiled()) background.enqueue("factgroups", () => groups.fileFacts({ log: this.log })).catch(e => this.log({ fact_groups_error: (e?.message ?? String(e)).split("\n")[0] }));
         return 0;
       }
       return await processQueue({ log: this.log });

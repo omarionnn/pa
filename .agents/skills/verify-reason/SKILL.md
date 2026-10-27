@@ -381,6 +381,17 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
 
 See [features/scheduled-calls.md](features/scheduled-calls.md).
 
+**7 — Reason Web memory, over real HTTP.** The page, CORRECT/FORGET as links, the form posts and the
+script's JSON posts, guesses yes/no, cross-account and cross-site refusals, checked against the store,
+`recall` and the profile note. The filer gets a scripted reader; no model is called.
+
+```bash
+eval "$(bin/caged.sh env | sed 's/^/export /')" \
+  && REASON_DB_PATH=$(mktemp -d)/mem.db node bin/web-memory-drive.mjs   # 17 steps, all ok
+```
+
+See [features/web-memory.md](features/web-memory.md).
+
 ### Baseline — 3,878 pass, **0 failures** after Reason Web Settings (wt/web-settings, 2026-10-26)
 
 `/web/settings` real end to end: reach preference honoured by `src/deliver.js` (`keptOnWeb`), browsers list + revoke, connected, invites, theme per account. 21 pinned tests (`test/web-settings.test.js`, `test/web-settings-migration.test.js`); `bin/web-settings-drive.mjs` under `caged.sh env`: 17 steps, all ok. `npm run test:offline` under `env -i`: **4,000 tests, 3,878 passing, 0 failing, 122 skipped.** See [features/web-settings.md](features/web-settings.md).
