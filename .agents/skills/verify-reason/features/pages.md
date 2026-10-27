@@ -77,9 +77,9 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
 - **Form buttons answer the tap.** (owner, 2026-10-25) Every submit button on a Reason page (event
   join / sign-in / gate / resend / save / sign out, the page code gate and its resend, the /ops
   password gate and event actions, Spotify join, remote sign-in Start) carries `data-busy` words
-  ("Sending code…", "Checking…", "Joining…"). `BUSY` in `src/pages/render.js`, riding inside
+  ("Sending code…", "Checking…", "Joining…"). `BUSY_JS`/`BUSY_CSS` in `src/pages/render.js`, riding inside
   `THEME.js`/`THEME.css` so every page with the switch has it: on submit the button shows an
-  orange-topped ring + those words at the same width, is aria-busy + aria-disabled (never
+  pen-topped ring (`--mark`) + those words at the same width, is aria-busy + aria-disabled (never
   `disabled` — that would drop its own name=value, e.g. the code gate's `send=1`), a polite
   status line says the words to a screen reader, and the form refuses a second submit. Listener on
   window, so a form a page script already took over (/ops "Check again", remote sign-in box) is
@@ -123,7 +123,7 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   `src/pages/render.js`: "Made by" / "Written by" + mark, a notice's "— nothing was changed" after
   it) and sits top left on both link-preview card designs (`cardHtml`, `src/pages/card.js`). No
   dot-and-"Reason" mark is left anywhere. The bubble's colour is `WORDMARK_BUBBLE` /
-  `WORDMARK_BUBBLE_DARK` in `src/pages/wordmark.js` — the brand orange since 2026-10-25 (owner).
+  `WORDMARK_BUBBLE_DARK` in `src/pages/wordmark.js` = `BRAND_PEN` / `BRAND_PEN_DARK` (brick red since 2026-10-26).
 
 ## How to get to it (user POV)
 
@@ -170,7 +170,7 @@ The result's `link` is `ownerUrl(page)` — `/p/<id>?k=<owner_key>`, the exact l
 A fresh curl is a new browser, so the key alone gets the gate; the code gets the page:
 
 ```bash
-P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
+P=$(cat "${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/port")
 curl -si "http://127.0.0.1:$P/p/<id>?k=<key>" | head -30     # 401, gate WITH "Text me the code"
 curl -si -X POST -d code=<CODE> "http://127.0.0.1:$P/p/<id>" | head -30
                                                              # 200, Set-Cookie: reason_page=<tok>, the page
@@ -190,7 +190,7 @@ unchanged and `revision` has gone up.
 | Request | Status | Body |
 |---|---|---|
 | proved browser (`reason_page` cookie) | 200 | the page, interactive (`checkAccess` → `allow`) |
-| right key, new browser | 401 | the gate **with** "Text me the code" and the page's preview tags — differs from the plain gate (`gateFor`, `canSend`) |
+| right key, new browser | 401 | the gate **with** "Text me the code" and the page's preview tags — differs from the plain gate (`gateFor`, `canSend`). Under `REASON_PAGES_V2` (live) the tags are the private og ("A page Reason made for you", `/og/private.png`), never the page's words |
 | right code, `POST /p/<id>` | 200 | the page + `Set-Cookie` |
 | no key | 401 | the plain code gate |
 | wrong key | 401 | the code gate, byte for byte the same |
@@ -202,7 +202,7 @@ page, a wrong key and an imaginary id have to be indistinguishable — a page id
 authentication story, so "this id is real" is itself a secret. Driven 2026-10-10:
 
 ```bash
-P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
+P=$(cat "${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/port")
 b() { curl -s "$@" | shasum -a 256 | cut -c1-16; }
 b "http://127.0.0.1:$P/p/<id>"                  # real page, no key
 b "http://127.0.0.1:$P/p/<id>?k=zzzzzzzzzzzz"   # real page, wrong key

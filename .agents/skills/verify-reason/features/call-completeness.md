@@ -82,7 +82,8 @@ receive a phone call (no ElevenLabs key, no number), but it can answer the custo
 ElevenLabs uses, with the cage's own bearer. That runs the real call model, harm screen and tools — when the cage has a key. Since #115 it
 has none: a turn answers "Sorry — something broke on my end. Say that again?" (`voice_turn_threw`
 "Could not resolve authentication method") and `show` reads `lookups: []`; that still proves the
-endpoint, the bearer and the call row (2026-10-25). The recipe below is the 2026-10-23 drive.
+endpoint, the bearer and the call row (2026-10-25; the same on 2026-10-27 at `00f3300`, with
+`harm_screen_skipped: no_model` and `voice_turn_threw` in `serve.log`). The recipe below is the 2026-10-23 drive.
 Driven 2026-10-23 at `b2861c2`:
 
 ```bash
@@ -93,7 +94,7 @@ bin/evidence.sh run "$dir" 02-gold -- bin/call-turn.sh "can you check what the p
 bin/evidence.sh run "$dir" 03-ok   -- bin/call-turn.sh "no, it's okay."
 bin/evidence.sh run "$dir" 04-again -- bin/call-turn.sh "what was that number again?"
 bin/evidence.sh run "$dir" 05-show -- bin/call-turn.sh show
-grep -E 'voice_turn"|call_tool"|call_llm_first' "${TMPDIR:-/tmp}/reason-verify/serve.log"
+grep -E 'voice_turn"|call_tool"|call_llm_first' "${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/serve.log"
 bin/caged.sh stop
 ```
 
@@ -131,7 +132,7 @@ call after PR #59 (3.5–6.3s on call 38 before it).
   is in the path before dismissing it.
 - `bin/call-turn.sh` turns run Reason's real tools: `web_search` hits the network and costs a
   search. `message_send` fails at the cage's closed channel, as every send does there.
-- `doctor.sh live` does not checksum `src/calls/*`; compare `voice.js` by hand (SKILL.md, Launch C).
+- `doctor.sh live` checksums every file under `src/` since 2026-10-24, `src/calls/*` included (SKILL.md, Launch C).
 - Never place a live call to prove this. Never forward `voicemail_detection` (see the voicemail work).
 - Hetzner timestamps are UTC; compare with ET carefully when matching a call to its rows.
 - Never read call transcripts out of the live database into a report.

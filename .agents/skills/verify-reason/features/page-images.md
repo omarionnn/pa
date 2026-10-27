@@ -90,6 +90,12 @@ const r = await runTool("image_generate", { prompt: "…", aspect_ratio: "16:9",
 
 Keep the filename at least 8 characters of `[A-Za-z0-9_-]` or the `/img/` route will not match it.
 
+**In a worktree with no `.env`, `REASON_PUBLIC_URL` is unset**, so the URL comes back
+`http://127.0.0.1:<port>/img/…` and `page_create` refuses it ("needs an https url"). Export
+`REASON_PUBLIC_URL=https://reason.tail3753c7.ts.net` for the in-process drive — only the string is
+used; a generated picture is never fetched (`preparePictures` skips `kind: "generated"`). Driven
+2026-10-27: fake provider → `/img/` 200 `image/png`, page `<img>` present, no paid call.
+
 **Export `GEMINI_API_KEY= OPENAI_API_KEY=` before using the fake.** If the fake ever answers
 `ok: false` and `config.openaiKey` is set, `image_generate` retries on `openaiImageProvider()` — a
 real, paid OpenAI generation, from a drive that was meant to be free. Blank keys also stop the
@@ -121,7 +127,7 @@ node --env-file-if-exists=.env -e '
 '
 
 ls -l "$REASON_IMAGEN_OUTPUT"
-P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
+P=$(cat "${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/port")
 curl -si "http://127.0.0.1:$P/img/<file>.png" | head -5
 ```
 

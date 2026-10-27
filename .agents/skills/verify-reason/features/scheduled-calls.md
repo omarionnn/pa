@@ -72,7 +72,7 @@ eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" \
 
 `bin/timer-call-drive.mjs` runs the real `timer_set`, the real Runtime sweep, the real `call_place`
 and settle paths against the fake call provider and the fake texting channel, in process, under the
-cage's blanked env: 20 steps, `all ok`. It proves the call is placed with the goal and the opening
+cage's blanked env: 20 steps, `all ok` (again 2026-10-27 at `00f3300`). It proves the call is placed with the goal and the opening
 line, no text first, the cancel, the unanswered call's single text, the cap text, the provider
 failure text, the series, and the set-time refusal.
 

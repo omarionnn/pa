@@ -362,12 +362,14 @@ the same two flags) and read `public_id` with `bin/peek.sh sql "SELECT public_id
 
 ## Gotchas
 
-- **Two "Text me a code" sends in the same millisecond lose the second text** (open product gap,
-  2026-10-25): `sendSigninCode` in `src/pages/event.js` keys the text `esign:<conv>:<ms>`, so the
-  second send mints a new code — expiring the first — and its text is deduped as a repeat. The
-  person holds only the dead code. `bin/events-drive.mjs` fired its two sends back to back and
-  failed "who's going: opted-in names" about one run in three until it waited 5 ms and then for the
-  new text itself (never a fixed sleep: the route doesn't await the send). 10/10 after.
+- **Two "Text me a code" sends in the same millisecond** used to lose the second text (keyed
+  `esign:<conv>:<ms>`); fixed in #147 — `sendSigninCode` in `src/pages/event.js` now keys it
+  `esign:<conv>:<code row id>`. `bin/events-drive.mjs` still waits for the new text itself.
+- **Wrong passwords on the cage trip the attempt limit fast** (3 free per `ip:127.0.0.1`, then 30 s
+  doubling): the right password then answers "Too many wrong tries…". Wait it out between probes.
+- **Sign in by number needs a member's ACCOUNT.** The organizer `dm:owner` has no `accounts` row on a
+  fresh cage, so `POST /e/<id>/signin` with the owner number sends nothing — same as a stranger.
+  Use a joined guest (`bin/events-drive.mjs` does).
 
 - The cage (`bin/caged.sh start`) serves the pages at `http://127.0.0.1:<port>/e/<id>` once an event
   exists in its DB — `curl` them to see the HTML a stranger gets. Its texting channels are not

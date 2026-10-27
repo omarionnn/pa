@@ -78,7 +78,13 @@ answers nothing).** Driven 2026-10-25 at `f3669e8`, in process under `caged.sh e
 `meal_estimate {type: "plate", items: ["jollof rice"], kcal_low: 400, kcal_likely: 550, kcal_high:
 700, protein_g: 12, carbs_g: 80, fat_g: 18, confidence: "medium"}` → `logged: true`, `entry_id: 1`,
 reply "Roughly 550 kcal (400 to 700), about 10 g protein, 80 g carbs, 20 g fat" (grams said rounded);
-`meal_query {period: "today"}` → `count: 1`.
+`meal_query {period: "today"}` → `count: 1`. Re-driven 2026-10-27 at `00f3300` on a fresh
+`REASON_DB_PATH`, plus the untested paths: the same estimate again with `media_id: 101` (an
+**integer** — a string is `Bad input`) → same `entry_id`, `duplicate: true`; `meal_correct
+{entry_id: 1, …}` → `new_id: 2`, row 1 `active = 0`, row 2 `original_id = 1`; a second correct of
+1 → `entry was already corrected`; `meal_log_consent {consent: "stop_numbers"}` → the next
+`meal_estimate` refuses. A `stop_numbers` left in the cage's own `dm:owner` outlives a later
+`yes` (separate settings), so use a fresh DB for a clean run.
 
 **Caged instance — a full inbound (needs a model the cage no longer has):**
 

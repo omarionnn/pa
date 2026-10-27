@@ -4,8 +4,8 @@ Signed in, `https://heyreason.com/web` is the person's ONE conversation with Rea
 W1's "You're in, <name>." landing): their lines and Reason's from the W0 per-message history
 (`messages`), each labelled who · where · when (`You · iMessage · 6:42 PM`, `Reason · Web · …`),
 newest at the bottom, older pages on scroll, a composer that posts into the SAME conversation through
-the web channel, and live updates. **Behind `REASON_WEB`** like W1 (`owner` on live: only the owner).
-Not deployed with this PR; the owner approves the look first.
+the web channel, and live updates. **Behind `REASON_WEB`** like W1 (`on` on live since 2026-10-27
+05:04 UTC: everyone with a Reason).
 
 Source: `src/pages/webconvo.js` (the page, `/web/history`, `/web/send`, `/web/stream`, the copy, the
 client script), `src/pages/websignin.js` (`webRequest` dispatches `history|stream|send`, signed in
@@ -33,9 +33,10 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
 - **The screens**: `/web` = the arrival (B/B2: "What's good, <first>?", the composer, ALREADY IN HAND
   slips only from real open tasks + pending timers (`inHand`) else YOU COULD START WITH — three
   examples that fill the composer — then the unboxed "pick up from iMessage" block with the last
-  two non-Web texts) unless they sent on Web in the last 30 min; `/web?thread` = the thread;
+  two non-Web texts) unless they sent on Web in the last 30 min (`THREAD_RECENT_MS`; `/web?home` skips
+  that rule — sign-in and the logo land there, #203/#206); `/web?thread` = the thread;
   `/web?tab=ongoing` = the phone's Ongoing tab (rows or "Nothing left to chase.");
-  `/web/settings` = Settings ([web-settings.md](web-settings.md)); `/web/memory` "coming soon" until the Memory PR. Desktop: MEMORY /
+  `/web/settings` = Settings ([web-settings.md](web-settings.md)); `/web/memory` = Memory ([web-memory.md](web-memory.md)); `/web/saved` = Saved ([web-saved.md](web-saved.md)). Desktop: SAVED / MEMORY /
   SETTINGS typed links, the Ongoing margin (empty state or IN HAND rows). Phone: ⋯ menu, Chat /
   Ongoing tab bar (hides while typing). A pending, unanswered confirmation (last 24 h) shows the
   approval card (no approve button; Caveat "just tell me in the chat when you want it.").
@@ -146,7 +147,7 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
 
 ```bash
 cd ~/Desktop/pa
-node --test test/web-design.test.js  # 29: the design states, cards/lists/media, /web/live CORS over real HTTP
+node --test test/web-design.test.js  # 33: the design states, cards/lists/media, /web/live CORS over real HTTP
 node --test test/web-convo.test.js   # 18: isolation (page/history/stream), forged ids, Web-only reply, same id = one turn (2 tabs), tab close, boundary once, decision 9 (x2), refusals, rate limit, safe rendering, stream (resume/typing/sign-out), paging, the page's form
 node --test test/web-w0.test.js test/web-signin.test.js test/domains.test.js   # W0/W1 still hold (W0's two text→web→text expectations now carry WEB_HINT)
 # over REAL HTTP on loopback, cage env, throwaway DB, real Router/Runtime/outbox/WebChannel + FakeChannel, scripted model:

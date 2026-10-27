@@ -90,6 +90,13 @@ VALUES ('verify:seed:1','dm:owner','sendblue','<owner>','seed','queued',0,<now m
 the two "heads up — that text … never actually went out" notices, which fail too), then holds; no
 new `incident:` outbox rows.
 
+Instead of `TMPDIR=/tmp/rvcage`, `REASON_VERIFY_RUN=/tmp/rv-<n> REASON_VERIFY_PORT=<port>` on every
+`caged.sh`/`inbound.sh`/`peek.sh` call works the same (the DB is then `/tmp/rv-<n>/reason.db`, the
+pid `/tmp/rv-<n>/pid`; swap 8796 below for that port). A worktree with no `.env` also needs
+`REASON_MASTER_NUMBER=+12025551234` on `caged.sh start`, or the inbound lands in the access queue
+and no send is attempted. Re-driven 2026-10-27 at `00f3300` that way: the same incident row, log
+line and three `failed` outbox rows; the watchdog run below gave 3 sends.
+
 **`/alive`:** `curl -s 127.0.0.1:8796/alive`.
 
 **Watchdog against the cage.** Never without `REASON_WATCHDOG_SEND_URL` pointed at a capture

@@ -50,16 +50,16 @@ calls the tools; the reply is a short list with prices, times, stops and links.
 ## Driving it with the harness
 
 **Offline first** — `node --test test/flight-search.test.js test/flights.test.js` (87 pass at
-`b04eb74`); the suite hands a fake sidecar in through `ctx.fli`, so no Python and no Google.
+`b04eb74`, 32 + 56 = 88 at `00f3300`); the suite hands a fake sidecar in through `ctx.fli`, so no Python and no Google.
 `test/fixtures/fli/` holds recorded Google responses (incl. `refused-rpc13.txt`).
 
 **On the cage, for real (Drive 2).** This Mac has no Fli; make a throwaway venv and point the cage at
 it (Python 3.12 — the Mac's 3.9 can't install `flights`):
 
 ```bash
-uv venv /tmp/fli-venv-verify --python 3.12
-VIRTUAL_ENV=/tmp/fli-venv-verify uv pip install -r ~/Desktop/pa/scripts/fli-requirements.txt
-export FLI_PYTHON=/tmp/fli-venv-verify/bin/python    # before caged.sh start AND the in-process drive
+uv venv "${REASON_VERIFY_RUN:-/tmp/rv}-fli-venv" --python 3.12
+VIRTUAL_ENV="${REASON_VERIFY_RUN:-/tmp/rv}-fli-venv" uv pip install -r ~/Desktop/pa/scripts/fli-requirements.txt
+export FLI_PYTHON="${REASON_VERIFY_RUN:-/tmp/rv}-fli-venv"/bin/python    # before caged.sh start AND the in-process drive
 ```
 
 Then, with `caged.sh env` exported, `runTool("flight_search", {origin:"JFK,EWR,LGA",
@@ -70,8 +70,10 @@ destination:"MIA", depart_date:"<future YYYY-MM-DD>", max_stops:"NON_STOP", show
 `ok:false`, "One date sweep per request". End state: three `flight_searches` rows for `dm:owner`
 (`bin/peek.sh sql "select id,kind,outcome,found from flight_searches"`), `provider_calls` row
 `fli` with calls 3 / failures 0, and `flightSearchCheck()` → `ok`, "healthy · last search …".
-Seen exactly so on 2026-10-25 from this Mac (37 nonstops, from $195). `rm -rf /tmp/fli-venv-verify`
-after.
+Seen exactly so on 2026-10-25 from this Mac (37 nonstops, from $195). On 2026-10-27 the same drive
+from this Mac came back `couldnt_check`, kind `blocked`, with the route `link`, the sweep at the
+back-off, `flight_searches` outcome `blocked` and `/ops` `bad`, `quiet:true` — Google refusing this
+Mac's address that hour, not the code; don't retry to "check". `rm -rf "${REASON_VERIFY_RUN:-/tmp/rv}-fli-venv"` after.
 
 Without `FLI_PYTHON` the same drive is the not-installed path: `couldnt_check`, kind `down`, a
 `link` ("Flights from JFK to MIA on <date> one way"), and `/ops` reads `off`. That path needs no
@@ -80,7 +82,7 @@ Google traffic, so it is the default cage drive; driven so 2026-10-25 at #114.
 **The quiet /ops row, no Google traffic** — with `caged.sh env` exported, `db.recordProviderCall({provider:"fli",
 day, ok:false, status:0, ms:240, error:"blocked: …"})`, then `ops.flightSearchCheck({sidecar:{installed:()=>true}})`
 → `bad`, `quiet:true`; `ops.settle({report:{at, checks:[row]}})` three hours on → `changes: []`.
-Record `"down: …"` instead → `quiet:false` (that one still texts). Seen exactly so 2026-10-25.
+Record `"down: …"` instead → no `quiet` key (that one still texts). Re-driven so 2026-10-27. Seen exactly so 2026-10-25.
 
 **On Hetzner — the gated smoke test, once, by hand only** (after an install or a Fli upgrade; never
 on a schedule, never from /ops):

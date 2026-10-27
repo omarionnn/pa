@@ -12,7 +12,7 @@
 #     bin/call-turn.sh can drive a call turn here and nothing signed for the live install gets in
 #
 # It runs serve.js with `--log`, which is the only thing that turns the router's own decision log
-# on (src/serve.js:25). Without it `log` is a no-op and every routing decision is invisible —
+# on (src/serve.js:33). Without it `log` is a no-op and every routing decision is invisible —
 # `auto_admitted`, `duplicate`, `not_served`, `blocked`, `asked_master_about` — so a drive that
 # took a different branch than you think looks identical to one that worked. It does NOT set
 # REASON_LOG_CONTENT: message bodies stay out of the log, and `bin/peek.sh thread` is where to

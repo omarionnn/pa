@@ -88,7 +88,9 @@ node --env-file-if-exists=.env -e '
 unverified, one `next_step`, `cart_transferred: false`. `deal_watch_set`: a turn whose text lacks
 `said` → refused; an `event` turn → "only starts on a turn they started"; a `user` turn with the
 words → `watch.id`, `every_hours: 12`, a `watches` row with `kind='price'`, `every_ms=43200000` and an
-`action_ledger` row `deal_watch_set` / `watch:1`; the same call again → `already_watching`.
+`action_ledger` row `deal_watch_set` / `watch:1` (columns `action`, `target`); the same call again →
+`already_watching`. Re-driven exactly so 2026-10-27 at `00f3300`. `shop_handoff`'s fields are under
+`.handoff` (`link`, `verified`, `unverified`, `next_step`, `cart_transferred`).
 
 **Live, read-only.** `SELECT source, count(*) FROM offers GROUP BY source` and
 `SELECT count(*) FROM watches WHERE kind='price'` over ssh (2026-10-24: 8 `agentcard_catalog`,

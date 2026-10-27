@@ -12,7 +12,8 @@ already uses, they type it, and that browser is theirs. Signed in, `/web` is now
 **Behind `REASON_WEB`** (`off` | `owner` | `on`, like `REASON_EVENTS`): off, `/web/*` is the same flat
 404 as a made-up path; `owner`, only the owner's number is ever texted a code (anybody else's gets the
 identical page and nothing); `on`, anybody with a Reason. **Live with `REASON_WEB=owner`** since
-2026-10-26 17:30 UTC.
+2026-10-26 17:30 UTC; **`REASON_WEB=on` (everyone)** since 2026-10-27 05:04 UTC (rollback
+`/opt/reason/.env.bak-weblaunch`).
 
 Source: `src/pages/websignin.js` (every decision: who a browser is, which account a number opens, the
 codes, CSRF/origin, the join block, the pages), `src/pages/qr.js` (the QR encoder, no dependency),
@@ -48,10 +49,11 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 - **Enumeration** — a known and an unknown number get byte-identical pages (only the echoed number
   differs); the join block is on every page; no account is ever created by typing a number.
 - **The join block** (owner decisions 1 + 2) — "New to Reason? A text from your phone finishes
-  joining…", a "Text Reason →" link `sms:<live line>&body=Hey` (Messages opens with Hey typed) and a QR
+  joining…", a "Text Reason →" link `sms:<live line>&body=hey` (`smsHref`; Messages opens with "hey" typed; see [web-edge.md](web-edge.md) SR8) and a QR
   of that same link (`qrSvg`, inline SVG, level M). The number is never written on the page (owner 10-26). The number is `web.joinNumber(router)` →
   the first LIVE channel's — never a string, never the linq adapter (registered, `not_connected` on
-  live). No live line → "Reason's texting line isn't connected right now…" and no number, no QR.
+  live). No live line → "We can't finish joining right now." + "Reason's line isn't taking new people
+  for the moment. Nothing on your side went wrong." + Caveat "i'll be back soon." — no number, no QR.
 - **The session** — on a right code: `startPageSession("wsign:<conv>", token, { conversationId })`,
   cookie `reason_page` with `Path=/`, **`Domain=heyreason.com`** whenever the request is under the
   website's domain or came through it signed (`cookieDomain`; decision 3 — one sign-in for Web, pages
@@ -64,7 +66,9 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 - **Where sign-in lands** (owner, 10-27) — the right code redirects to **`/web?home`**, and `?home` is
   always the arrival: it skips the 30-minute rule (`THREAD_RECENT_MS`) that makes plain `/web` open the
   thread for someone mid-conversation. 5C still comes first, once; its "Got it" goes to `/web?home`
-  too. `web-drive.mjs` checks the Location and a Web message 5 minutes old.
+  too. `web-drive.mjs` checks the Location and a Web message 5 minutes old. **The wordmark (logo)
+  always goes Home too** (#206): every Web top bar, the signed-out heads, 5C, 9B, E1/E5 and the loader
+  link `/web?home`, never plain `/web` (`test/web-logo-home.test.js`).
 - **CSRF + origin** — every `/web/*` POST must come from one of Reason's hosts (`Origin` must be the
   request host, `REASON_SITE_URL`, `REASON_PAGES_URL` or `REASON_PUBLIC_URL`; `Sec-Fetch-Site`
   `cross-site` refused; no `Origin` allowed through). Before sign-in: a form token in cookie
@@ -77,11 +81,12 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 - **Headers** — `SECURITY_HEADERS` on every answer: CSP (`default-src 'none'`, inline style/script
   for the shell's theme switch, `img-src 'self' data:`, `font-src 'self' data:`, `form-action
   'self'`, `frame-ancestors 'none'`), `nosniff`, `Referrer-Policy: same-origin` (header and the
-  shell's `<meta>`; see the browser gotcha), `X-Frame-Options: DENY`, `no-store`. No
-  `og:`/`twitter:` tags on any Web page. Logs: `web_signin_code_sent`, `web_signin_failed`,
+  shell's `<meta>`; see the browser gotcha), `X-Frame-Options: DENY`, `no-store`. Since #210
+  the signed-out `/web` pages carry the /web link card (`linkCardTags`, src/pages/sitecard.js; see
+  [web-shell.md](web-shell.md)); signed-in pages carry no `og:`/`twitter:` tags. Logs: `web_signin_code_sent`, `web_signin_failed`,
   `web_signin_ok`, `web_signout` — never a number, code or token.
 - **Copy** — intent only (no phrase to type; `test/no-command-phrases.test.js` scans `src/`): the
-  sms: body "Hi" is prefilled, never dictated. Page kit: `shell` with pill "Web", wordmark, PAPER,
+  sms: body "hey" is prefilled, never dictated. Page kit: `shell` with pill "Web", wordmark, PAPER,
   brand pen red (#9c3b2e), theme switch.
 - **The look** (design handoff 2026-10-26, `~/Desktop/reason-web-handoff-2026-10-26`, kit =
   `src/pages/webkit.js`): Paper / Night tokens hex for hex (`TOKENS`), the four voices (Instrument
@@ -94,7 +99,7 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   (`font/woff2`, a week's cache, nosniff, CORP same-origin; other names / off → flat 404).
 - **The screens** (sheet 6): 6A `renderSignin` ("What's your number?", PHONE NUMBER underline, Caveat
   "the same line you already text me on.", "Text me a code →"; phones: "NEW TO REASON? START WITH A
-  TEXT →" → `/web?join=1`; ≥900px: the join column — QR, "or text <live number>", "then come back here
+  TEXT →" → `/web?join=1`; ≥900px: the join column — QR, then "or Text Reason →" + its hint (no number written), "then come back here
   to sign in."). 6B `renderCode` ("Check your texts.", "Six digits, sent to ••• ••• 0142." from the
   TYPED number, six cells over one `autocomplete=one-time-code` input, the sixth digit submits).
   Code notes, each about THIS BROWSER only (never the number): wrong "that's not it. try again?";
@@ -113,14 +118,15 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   (iPhone offers the code above the keyboard; the sixth digit signs in) → 5C "One Reason. Pick up
   anywhere." once → the arrival. Sign out: SETTINGS (desktop) or the ⋯ menu (phone).
 - Never texted Reason? Phone: "NEW TO REASON? START WITH A TEXT →" → "Text Reason →"; desktop: the
-  right-hand column's QR / number → your first text joins you → come back and sign in by number.
+  right-hand column's QR / "or Text Reason →" → your first text joins you → come back and sign in by number.
 
 ## Driving it with the harness
 
 ```bash
 cd ~/Desktop/pa
-node --test test/web-design.test.js     # 29: tokens, motion, focus, every screen state's copy + roles, a11y, no-phrase scan, cards/lists/media, /web/live CORS
-node --test test/web-signin.test.js      # 20: off=404 identical, owner mode, enumeration, QR, no-live/linq, happy path, wrong/reused/expired/flood/4th request, two users, decision 4, sign-out, idle/old, paused, CSRF/origin, headers, copy, the look + /web/fonts
+node --test test/web-design.test.js     # 33: tokens, motion, focus, every screen state's copy + roles, a11y, no-phrase scan, cards/lists/media, /web/live CORS
+node --test test/web-signin.test.js      # 25: off=404 identical, owner mode, enumeration, QR, no-live/linq, happy path, wrong/reused/expired/flood/4th request, two users, decision 4, sign-out, idle/old, paused, CSRF/origin, headers, copy, the look + /web/fonts, lands on /web?home
+node --test test/web-logo-home.test.js test/wordmark-one-line.test.js test/wordmark-text.test.js   # 3 + 3 + 3: logo → /web?home, wordmark one line + reads "reason"
 node --test test/web-join-number.test.js # the live-line rule with the real Linq + Sendblue classes
 node --test test/no-command-phrases.test.js test/code-guards.test.js
 # in process, cage env, throwaway DB, real Runtime + Router + outbox + FakeChannel (no model):
@@ -131,7 +137,7 @@ node .agents/skills/verify-reason/bin/web-preview.mjs [outDir] [referenceDir]   
 Over HTTP on the cage: `REASON_WEB=on bin/caged.sh start`, then `curl -si 127.0.0.1:<port>/web` → 200,
 the form, a `Set-Cookie: reason_web_form=…` and the security headers; without the flag the cage
 answers `{"error":"not found"}` exactly as `/no-such-thing`. The cage's texting channels are
-`not_connected`, so its join block says the line isn't connected (no `sms:`/QR) — correct there; the
+`not_connected`, so its join block says "We can't finish joining right now." (no `sms:`/QR) — correct there; the
 drive covers the button with a FakeChannel. A `POST /web/signin` on the cage with a seeded account's
 number mints a `page_codes` row under `wsign:<conv>` and logs `web_signin_code_sent … ok:false` (not
 connected); a stranger's number mints nothing and answers the same bytes.
@@ -175,4 +181,5 @@ connected); a stranger's number mints nothing and answers the same bytes.
   once-only boundary notice column (`web_notice_seen_at`; W1 shows the notice statically on the
   landing), the `(web)` hint after a Web→text switch (decision 9).
 
-- **Wordmark text (10-27).** The bubble is drawn, so its o rides as a zero-size inline `.wm-o` (`WORDMARK_O`, src/pages/wordmark.js); the Web kit wraps the mark in one inline `.wm-w` so `innerText` (Reason's own page reader, src/browser.js) reads "reason", not "reas\nn". Pinned: test/wordmark-text.test.js (textContent, innerText, a copy, same pixels); `bin/wordmark.mjs` expects text "reason".
+- **Wordmark text (10-27).** The bubble is drawn, so its o rides as a zero-size inline `.wm-o` (`WORDMARK_O`, src/pages/wordmark.js); the Web kit wraps the mark in one inline `.wm-w` so `innerText` (Reason's own page reader, src/browser.js) reads "reason", not "reas\nn". Pinned: test/wordmark-text.test.js (textContent, innerText, a copy, same pixels); `bin/wordmark.mjs` expects text "reason". The run never wraps (#205, `.wm-w{white-space:nowrap}`):
+a squeezed phone top bar split it "reas◯ / n"; pinned at 320/375/390 in test/wordmark-one-line.test.js.
