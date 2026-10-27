@@ -123,7 +123,7 @@ function micOffHtml() {
  */
 // `slot` is the conversation's own control inside the line, before the mic (the thread's TODAY ↓,
 // src/pages/webconvo.js TODAY_SLOT): the one hook the thread has into this composer.
-export function composerHtml({ csrf, sendId, maxText, slot = "" }) {
+export function composerHtml({ csrf, sendId, maxText, slot = "", draft = "" }) {
   const picks = Object.entries(PICKS);
   return `<div class="composer">`
     + micOffHtml()
@@ -133,7 +133,7 @@ export function composerHtml({ csrf, sendId, maxText, slot = "" }) {
     + `<form class="cform" method="POST" action="/web/send"><input type="hidden" name="c" value="${esc(csrf)}"><input type="hidden" name="id" value="${esc(sendId)}">`
     + `<button class="ic c-add" type="button" aria-label="Add a photo or file" aria-haspopup="dialog" aria-expanded="false" hidden>${PLUS_SVG}</button>`
     + picks.map(([k, p]) => `<input class="c-file" data-pick="${k}" type="file" accept="${esc(p.accept)}"${p.capture ? ` capture="${p.capture}"` : ""}${k === "camera" ? "" : " multiple"} hidden tabindex="-1" aria-hidden="true">`).join("")
-    + `<label class="sr" for="c-input">Message Reason</label><textarea id="c-input" name="text" rows="1" maxlength="${Number(maxText)}" placeholder="Tell Reason what you need" autocomplete="off" enterkeyhint="send" required></textarea>`
+    + `<label class="sr" for="c-input">Message Reason</label><textarea id="c-input" name="text" rows="1" maxlength="${Number(maxText)}" placeholder="Tell Reason what you need" autocomplete="off" enterkeyhint="send" required${draft ? " data-draft" : ""}>${esc(draft)}</textarea>`
     + slot
     + `<button class="ic c-mic" type="button" aria-label="Speak instead" hidden>${MIC_SVG}</button>`
     + `<button class="send" type="submit" aria-label="Send">${SEND_SVG}</button></form>`
@@ -315,6 +315,7 @@ body.listening{overflow:hidden}
 export const COMPOSE_JS = String.raw`(function(){
 var R=window.REASON_WEB||{},A=R.api,form=document.querySelector('.cform');if(!form||!A)return;
 var comp=form.closest('.composer'),box=document.getElementById('c-input'),add=form.querySelector('.c-add'),mic=form.querySelector('.c-mic'),upl=comp.querySelector('.upl'),shelf=comp.querySelector('.on-line'),fail=comp.querySelector('.upfail'),failList=comp.querySelector('.uf-list'),note=comp.querySelector('.c-note'),sheet=comp.querySelector('.addsheet'),fromVoice=comp.querySelector('.fromvoice'),moff=comp.querySelector('.micoff'),body=document.body,onit=document.querySelector('.onit');
+if(box.hasAttribute('data-draft')){try{var q=new URLSearchParams(location.search);q.delete('about');q.set('thread','');history.replaceState(null,'','/web?'+q.toString().replace('thread=','thread'))}catch(e){}if(matchMedia('(hover:hover)').matches){box.focus({preventScroll:true});box.setSelectionRange(box.value.length,box.value.length)}}
 var files=[],blobs={},noteT=0,LIM=R.lim||{each:20971520,fit:7340032,files:6};
 function say(t){if(!note)return;note.textContent=t;note.hidden=!t;clearTimeout(noteT);if(t)noteT=setTimeout(function(){note.hidden=true},9000)}
 R.say=say;

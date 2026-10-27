@@ -180,7 +180,7 @@ function chargedDuring(conversationId, from, to) {
 
 function taskItem(conversationId, t, name, now) {
   const tz = config.tz;
-  const base = { kind: "task", id: t.id, href: `/web/ongoing/task/${t.id}`, title: titled("task", conversationId, t, t.title, name), task: t };
+  const base = { kind: "task", id: t.id, href: `/web/ongoing/task/${t.id}`, title: titled("task", conversationId, t, t.title, name), drafts: parseJson(t.drafts), task: t };
   const sheet = t.sheet ?? {};
   if (t.state === "waiting_on_you") {
     const asked = sheet.needs?.asked_at ?? null;
@@ -219,7 +219,7 @@ function taskItem(conversationId, t, name, now) {
 function backItem(conversationId, t, name, now = clock.now()) {
   const res = parseJson(t.result_json) ?? {};
   const at = t.finished_at ? whenWord(t.finished_at, now) : null;
-  const base = { kind: "task", id: t.id, href: `/web/ongoing/task/${t.id}`, title: titled("task", conversationId, t, t.title, name), group: "back", needs: false, due: t.finished_at, started: t.finished_at, task: t };
+  const base = { kind: "task", id: t.id, href: `/web/ongoing/task/${t.id}`, title: titled("task", conversationId, t, t.title, name), drafts: parseJson(t.drafts), group: "back", needs: false, due: t.finished_at, started: t.finished_at, task: t };
   if (t.state === "done") {
     return { ...base, state: "ready", status: "READY", words: "done", meta: at ? `DONE · ${at}` : null,
       result: { headline: res.headline ?? null, facts: res.facts ?? [], note: res.note ?? (res.headline || res.facts?.length ? null : t.outcome || null) } };
@@ -236,6 +236,7 @@ function timerItem(conversationId, t, name) {
   return { kind: "timer", id: t.id, href: `/web/ongoing/timer/${t.id}`, group: "hand", state: "scheduled", needs: false, due: t.fire_at,
     started: t.created_at ?? null, meta: "ONCE", next_: nextWords(t.fire_at, tz),
     title: titled("timer", conversationId, t, t.note, name) || (t.call_goal ? "A call" : "A reminder"),
+    drafts: parseJson(t.drafts),
     status: t.call_goal ? "CALL" : "REMINDER", call: !!t.call_goal,
     when: `${fmt(tz, { weekday: "short" }).format(t.fire_at)} ${clockOf(t.fire_at, tz)}`,
     time: clockOf(t.fire_at, tz), period: periodOf(t.fire_at, tz), date: dayShort(t.fire_at, tz), every: null, everyLong: null,
@@ -251,6 +252,7 @@ function seriesItem(conversationId, s, name) {
   return { kind: "series", id: s.id, href: `/web/ongoing/series/${s.id}`, group: "hand", state: "scheduled", needs: false, due: next,
     started: s.created_at ?? null, meta: every.long || null, next_: nextWords(next, tz),
     title: titled("series", conversationId, s, s.what, name), status: every.short, call: !!s.call_goal,
+    drafts: parseJson(s.drafts),
     when: next ? `${fmt(tz, { weekday: "short" }).format(next)} ${clockOf(next, tz)}` : every.short,
     time: next ? clockOf(next, tz) : null, period: next ? periodOf(next, tz) : "", date: next ? dayShort(next, tz) : null,
     every: every.short, everyLong: every.long, description: plainNote(s.call_goal || s.what, { name }), next };
@@ -292,7 +294,7 @@ export function approvalItem(conversationId, c, now = clock.now()) {
   const row = c.action === "purchase_confirm" ? purchaseFor(conversationId, c) : null;
   const rows = [];
   let total = c.amount_cents != null ? money(c.amount_cents) : null;
-  let detail = null, nudge = null;
+  let detail = null, nudge = null, about = null;
   if (row) {
     const cart = parseJson(row.cart_json) ?? {};
     total = money(row.amount_cents);
@@ -304,6 +306,7 @@ export function approvalItem(conversationId, c, now = clock.now()) {
       if (f.travelers.length) rows.push([f.travelers.length > 1 ? "TRAVELERS" : "TRAVELER", f.travelers.join(", ").toUpperCase()]);
       detail = `${total}${f.from && f.to ? `, ${f.from} to ${f.to}` : ""}.`;
       nudge = f.from && f.to ? `the ${f.from}–${f.to} flight needs a yes` : null;
+      about = f.from && f.to ? `the ${f.from}–${f.to} flight` : null;
     } else {
       if (row.merchant) rows.push(["SHOP", row.merchant.toUpperCase()]);
       const items = Array.isArray(cart.items) && cart.items.length
@@ -317,6 +320,7 @@ export function approvalItem(conversationId, c, now = clock.now()) {
       if (cart.ceiling_cents && cart.ceiling_cents > row.amount_cents) rows.push(["HOLD UP TO", money(cart.ceiling_cents)]);
       detail = `${total} all-in${row.merchant ? ` from ${row.merchant}` : ""}.`;
       nudge = row.merchant ? `the ${row.merchant} order needs a yes` : null;
+      about = row.merchant ? `the ${row.merchant} order` : null;
     }
   } else {
     rows.push(["WHAT", ACTION_WORDS[c.action] ?? String(c.action).replace(/_/g, " ").toUpperCase()]);
@@ -328,7 +332,7 @@ export function approvalItem(conversationId, c, now = clock.now()) {
   return {
     kind: "approval", id: c.id, href: `/web/ongoing/approval/${c.id}`, group: "needs", state: "approval", status: "NEEDS YOU", needs: true, due: c.asked_at, at: c.asked_at,
     started: c.asked_at, meta: `ASKED ${whenWord(c.asked_at, now, tz)}`,
-    title: String(c.summary ?? "").trim(), detail, money: money_, rows, total,
+    title: String(c.summary ?? "").trim(), detail, money: money_, rows, total, about,
     // No Face ID promise here (owner 10-26 D2: only when the card flow really will prompt). Reason
     // can't know that while the yes is still open: AgentCard decides at the confirm, which runs only
     // after the yes, whether to pause for the passkey ("a confirm MAY pause", vault_approval_required +
@@ -368,6 +372,29 @@ export function ongoing(conversationId, now = clock.now()) {
     .sort((a, b) => b.finished_at - a.finished_at || a.id - b.id)
     .map(t => backItem(conversationId, t, name, now)).filter(x => x.title);
   return { approvals: approvals(conversationId, now), items, back };
+}
+
+/**
+ * What "Talk about it in the chat →" puts in the composer for one row (owner 10-27): a short message in
+ * the person's own voice that fits the row's state. The draft the title summarise wrote for that state
+ * when there is one (src/itemtitle.js); otherwise a plain one built from the row's own title. Never
+ * sent for them; empty for a row that only wants their answer (NEEDS YOU: the question is theirs to answer).
+ */
+export function draftFor(x) {
+  if (!x || x.state === "needs") return "";
+  const own = x.drafts?.[x.state];
+  if (typeof own === "string" && own.trim()) return own.trim();
+  const t = String(x.title ?? "").trim();
+  switch (x.state) {
+    case "waiting": return x.waitingOn ? `Any word back from ${x.waitingOn} yet?` : t ? `Any news on ${t}?` : "Any news?";
+    case "working": return t ? `How's ${t} going?` : "How's it going?";
+    case "stuck": return t ? `What would get ${t} going again?` : "What would get it going again?";
+    case "scheduled": return t ? `Can we change ${t}?` : "Can we change it?";
+    case "ready": return t ? `Can I see ${t}?` : "Can I see it?";
+    case "failed": return t ? `What's next for ${t}?` : "What's next?";
+    case "approval": return x.about ? `Can I see the details of ${x.about}?` : "Can I see the details first?";
+    default: return t ? `About ${t}:` : "";
+  }
 }
 
 /** One row for a detail page, by kind and id, in this conversation only. Null when it isn't theirs or isn't there. */

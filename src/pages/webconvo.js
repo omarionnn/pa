@@ -38,7 +38,7 @@ import { WEB, webStreamOrigin, siteOrigin } from "../web.js";
 import { config, clock } from "../config.js";
 import { esc } from "./render.js";
 import { readCookie } from "./access.js";
-import { ongoing, approvals as pendingApprovals } from "../ongoing.js";
+import { ongoing, findItem, draftFor, approvals as pendingApprovals } from "../ongoing.js";
 import { ogMargin, ogVersion, ogTabMain, OG_TAB_LIVE_JS, homeRows, needsYes, countLine, OG_CSS, NINE_D_JS, NINE_D_CSS, OG_POLL_JS } from "./webongoing.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting } from "./websignin.js";
 import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch, bubble, OG_KEY } from "./webkit.js";
@@ -578,8 +578,8 @@ export function tabBar(current, count) {
 
 /** The one-line composer. `sendId` makes even a no-script post one turn however often it is resent. */
 // `+` and the mic (composer 01–04, Listening) are drawn and run by src/pages/webcompose.js.
-function composer({ csrf, sendId, slot = "" }) {
-  return composerHtml({ csrf, sendId, maxText: MAX_TEXT, slot });
+function composer({ csrf, sendId, slot = "", draft = "" }) {
+  return composerHtml({ csrf, sendId, maxText: MAX_TEXT, slot, draft });
 }
 
 /** How many Ongoing rows show before "See all N →" (owner, 10-26): needs-you first, then soonest due. */
@@ -770,7 +770,7 @@ const NET = `<p class="netline" role="status" hidden></p>`;
 /**
  * The thread. `firstVisit` draws 5C in its place (once); `approvals` the one loud thing at the foot.
  */
-export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), found = null, deferred = false, work = null }) {
+export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), found = null, deferred = false, work = null, draft = "" }) {
   if (firstVisit) return renderFirstVisit({ account });
   const conv = account?.conversation_id ?? "";
   const service = serviceOf(conv);
@@ -796,7 +796,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     + (lines.length ? "" : `<div class="empty">${hand("nothing here yet. whatever you tell me here or by text shows up in this thread.", { tilt: true })}</div>`)
     + appr + onIt(true) + longWorkHtml(work)
     + needsYes(approvals)
-    + composer({ csrf, sendId, slot: TODAY_SLOT })
+    + composer({ csrf, sendId, slot: TODAY_SLOT, draft })
     + `</section>${ongoingMargin(items, approvals, { back })}</main>`
     + `<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing${count ? `, ${count} ${count === 1 ? "thing" : "things"}` : ""}"><span aria-hidden="true">ONGOING${count ? ` · ${count}` : ""}</span></button>`
     + tabBar("chat", count) + listeningHtml();
@@ -909,7 +909,12 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service, now }));
   if (found) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, found, work: workOf(conv) });
   const recentWeb = lines.some(m => m.web && m.role === "user" && now - m.at < THREAD_RECENT_MS);
-  if (query.thread != null || recentWeb) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, deferred: true, work: workOf(conv) });
+  // ?about=<kind>:<id> (an Ongoing detail's "Talk about it in the chat →"): the thread, with a draft about
+  // that row of THEIRS ready in the composer — never sent for them. The row is looked up in this
+  // conversation only, so no link can put somebody else's words (or a stranger's) in the line.
+  const about = /^(task|timer|series|approval):(\d{1,15})$/.exec(String(query.about ?? ""));
+  const draft = about ? draftFor(findItem(conv, about[1], about[2], now)) : "";
+  if (query.thread != null || recentWeb || about) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, deferred: true, work: workOf(conv), draft });
   return renderHome({ account, csrf, sendId, items, approvals, back, pick: pickUp(conv, service) });
 }
 
