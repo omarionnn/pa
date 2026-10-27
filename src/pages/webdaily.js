@@ -13,8 +13,8 @@
 //   pick up     the thread's last two lines, the last one's time, "Continue the thread →"
 //   sign-off    "see you tomorrow. or don't, I'll keep the page."
 //
-// No composer (Home's fresh Web chat lives on the thread page while this is on: webconvo NEW_CHAT,
-// SCOPE-v2 Q-v2-54). Every action is a real form: it works without script and lands back here.
+// No composer: "Continue the thread →" is how they chat, in the one thread shared with their texts
+// (owner 10-27 07:08, SCOPE-v2 Q-v2-54). Every action is a real form: it works without script and lands back here.
 import { esc } from "./render.js";
 import { webPage } from "./webkit.js";
 import { dailyHeader, DAILY_HEAD_CSS } from "./webdailyhead.js";
@@ -35,7 +35,7 @@ function overnightItem(x, { csrf, now, tz, last }) {
   let foot = "";
   if (x.kind === "decision") {
     const acts = (x.actions?.length ? x.actions : DECISION);
-    foot = `<form class="dd-acts" method="POST" action="/web/send">${hidden("c", csrf)}${hidden("id", sendIdFor())}${x.chat ? hidden("chat", x.chat) : ""}`
+    foot = `<form class="dd-acts" method="POST" action="/web/send">${hidden("c", csrf)}${hidden("id", sendIdFor())}`
       + acts.map(a => `<button class="${a.primary ? "dd-p" : "dd-s"}" type="submit" name="text" value="${esc(a.reply)}">${esc(a.label)}</button>`).join("")
       + `</form>`;
   } else {

@@ -1,14 +1,19 @@
-// Reason Web, Web-only chats (owner 10-27 01:15). Home's composer starts a fresh chat: a clean page with
-// only that exchange; "Continue the thread →", the Chat tab and "The thread" still open the one shared
-// conversation. One pinned test per rule:
+// Reason Web, one thread only (owner 10-27 07:08). Web-only chats (#209) are retired: nothing starts one,
+// every composer posts to the one thread shared with their texts, and the chats already made stay
+// readable. One pinned test per rule:
 //
-//   1. Home carries a fresh chat id; the thread links stay the shared thread
-//   2. a Web chat's message and reply live in that chat only; the reply is never texted
-//   3. the model reads and writes the chat's own thread (historyId), tools act for the person
-//   4. a chat can't be read, streamed or sent into by another account
-//   5. a task started in a Web chat shows in Ongoing; proactive texts keep their normal channel
+//   1. Home's composer and the thread's name no chat; no new-chat entry anywhere; /web?newchat is the thread
+//   2. a stale post naming a chat lands in the shared thread and claims no chat
+//   3. an old chat opens read-only: all its lines, no composer, "Continue the thread"; its reads stay its own
+//   4. another account can't open, read or stream somebody's old chat; a stale post never reaches it
+//   5. a turn still keyed to an old chat reads its own thread (historyId), tools act for the person
 //   6. one turn is one chat: held shared + chat messages are never answered together
-//   7. Chat history lists past Web chats (provisional placement, Q-v2-51); the day view stays the shared thread
+//   7. Chat history lists old chats, each opening read-only; the day view stays the shared thread
+//   8. an approval asked in an old chat is adopted by the shared thread, granted only by a reply after that
+//   9. a task's DONE line gathers only its own thread's lines
+//  10. from a Web-chat turn, no tool reaches the phone
+//  11. the approval's Ongoing link is the shared thread; confirm_pending in the shared thread adopts it
+//  12. a yes in a Web-chat turn never verifies a call whose check went to their phone
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -123,71 +128,161 @@ function openStream(h, b, query = {}, opts = {}) {
   return { out, res, events, close: () => req.emit("close") };
 }
 
-// ---------- isolation ----------
-
+// ---------- old chats ----------
 
 const CHAT = "AAAAAAAAAAAAAAAAAAAAAA";
 const CHAT2 = "BBBBBBBBBBBBBBBBBBBBBB";
-const sendIn = (h, b, chat, id, text) => send(h, b, { id, text, extra: { chat } });
+const NEVER = "CCCCCCCCCCCCCCCCCCCCCC";
+/** A Web-only chat made before they were retired, as its rows were written then. */
+function oldChat(conv, chat, lines) {
+  assert.equal(db.claimWebChat(conv, chat), true);
+  const start = clock.now() - HOUR;
+  return lines.map(([role, text], i) => db.writeMessage({ conversationId: conv, role, channel: "web", text, at: start + i * 1000, chatId: db.webChatRoute(chat) }));
+}
+/** A message still routed to an old chat (held there before the retirement): the router keeps its own thread. */
+const intoOldChat = (h, chat, id, text) => h.router.deliver({ channel: "web", externalId: id, conversationId: OWNER_C, text, chatId: db.webChatRoute(chat), at: clock.now() });
+const NEW_CHAT_RE = /NEW WEB CHAT|New Web chat|newchat/;
 
-test("1. Home's composer carries a fresh chat id; Continue the thread, the Chat tab and The thread stay the shared thread", async () => {
+test("1. Home's composer and the thread's name no chat; no new-chat entry anywhere; /web?newchat is the thread", async () => {
   const h = harness();
   const omari = { ...browser(OWNER_C), conv: OWNER_C };
-  await call(h, { b: omari });
+  const shared = await thread(h, omari);
   const home = (await call(h, { b: omari, query: { home: "" } })).body;
-  const id = /<input type="hidden" name="chat" value="([A-Za-z0-9_-]{22})">/.exec(home)?.[1];
-  assert.ok(id, "a minted chat id in Home's form");
-  assert.match(home, new RegExp(`chat:"${id}"`), "and in the page's boot");
-  assert.match(home, /location\.href=R\.chat\?'\/web\?chat='\+R\.chat:'\/web\?thread'/);
+  for (const [name, html] of [["thread", shared], ["home", home]]) {
+    assert.match(html, /<form class="cform" method="POST" action="\/web\/send">/, `${name}: a composer`);
+    assert.ok(!/name="chat"/.test(html), `${name}: its form names no chat`);
+    assert.ok(!/chat:"[A-Za-z0-9_-]{22}"/.test(html), `${name}: its boot names no chat`);
+    assert.doesNotMatch(html, NEW_CHAT_RE, `${name}: no new-chat entry`);
+  }
   assert.match(home, /href="\/web\?thread"[^>]*>THE THREAD/);
   assert.match(home, /<nav class="tabs"[^>]*><a href="\/web\?thread"/);
-  const again = (await call(h, { b: omari, query: { home: "" } })).body;
-  assert.notEqual(/name="chat" value="([^"]+)"/.exec(again)[1], id, "every Home is a new chat");
-  // The shared thread's composer names no chat.
-  assert.ok(!/name="chat"/.test(await thread(h, omari)));
+  // The daily edition Home too.
+  process.env.REASON_WEB_DAILY = "owner";
+  try {
+    const daily = (await call(h, { b: omari, query: { home: "" } })).body;
+    assert.match(daily, /EDITION/, "the daily edition is drawn");
+    assert.ok(!/class="cform"/.test(daily), "it has no composer");
+    assert.doesNotMatch(daily, NEW_CHAT_RE);
+    assert.doesNotMatch((await call(h, { b: omari, query: { thread: "" } })).body, NEW_CHAT_RE);
+    const go = await call(h, { b: omari, query: { newchat: "" } });
+    assert.equal(go.status, 303);
+    assert.equal(go.headers.Location, "/web?thread");
+  } finally { process.env.REASON_WEB_DAILY = ""; }
+  assert.equal((await call(h, { b: omari, query: { newchat: "" } })).headers.Location, "/web?thread");
+  // Home's post (no chat) lands in the shared thread.
+  const out = await send(h, omari, { id: "home-0001-aaaa", text: "plan my saturday" });
+  assert.equal(out.status, 200);
+  assert.ok(!("chat" in JSON.parse(out.body)));
+  assert.ok(await until(() => db.messagesFor(OWNER_C).length === 2));
+  assert.deepEqual(rowsOf(OWNER_C), [["user", "web", "plan my saturday"], ["assistant", "web", "re: plan my saturday"]]);
+  assert.ok(db.messagesFor(OWNER_C).every(m => m.chat_id == null));
+  assert.equal(h.turns[0].historyId ?? OWNER_C, OWNER_C, "the shared model thread");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM web_chats").get().n, 0, "no chat was started");
 });
 
-test("2. a Web chat's message and reply stay in that chat and are never texted; the shared thread doesn't see them", async () => {
+test("2. a stale post naming a chat lands in the shared thread and claims no chat", async () => {
   const h = harness();
-  await textIn(h, { from: OWNER, id: "t1", body: "from my phone" });
-  const sentBefore = h.fake.sent.length;
   const omari = { ...browser(OWNER_C), conv: OWNER_C };
-  const out = await sendIn(h, omari, CHAT, "wc-0001-aaaa", "plan my saturday");
-  assert.equal(out.status, 200);
-  assert.equal(JSON.parse(out.body).chat, CHAT);
-  assert.ok(await until(() => db.messagesFor(OWNER_C, { chat: CHAT }).length === 2));
-  assert.equal(h.fake.sent.length, sentBefore, "nothing texted");
-  assert.deepEqual(db.messagesFor(OWNER_C, { chat: CHAT }).map(m => [m.role, m.channel, m.text]), [["user", "web", "plan my saturday"], ["assistant", "web", "re: plan my saturday"]]);
-  assert.ok(!db.messagesFor(OWNER_C).some(m => /saturday/.test(m.text)), "the shared thread has none of it");
+  oldChat(OWNER_C, CHAT, [["user", "old chat line"], ["assistant", "old chat reply"]]);
+  const sentBefore = h.fake.sent.length;
+  for (const [i, chat] of [CHAT, NEVER, "short"].entries()) {
+    const out = await send(h, omari, { id: `stale-000${i}-aaaa`, text: `stale ${i}`, extra: { chat } });
+    assert.equal(out.status, 200, chat);
+    const j = JSON.parse(out.body);
+    assert.equal(j.ok, true);
+    assert.ok(!("chat" in j), "the answer names no chat");
+  }
+  assert.ok(await until(() => db.messagesFor(OWNER_C).length === 6));
+  assert.deepEqual(db.messagesFor(OWNER_C).filter(m => m.role === "user").map(m => [m.text, m.chat_id ?? null]), [["stale 0", null], ["stale 1", null], ["stale 2", null]]);
+  assert.deepEqual(db.messagesFor(OWNER_C, { chat: CHAT }).map(m => m.text), ["old chat line", "old chat reply"], "the old chat is untouched");
+  assert.equal(db.webChatOwner(NEVER) ?? null, null, "never claimed");
+  assert.ok(h.turns.every(t => (t.historyId ?? OWNER_C) === OWNER_C));
+  assert.equal(h.fake.sent.length, sentBefore, "a Web message's reply is not texted");
+  // The form (no script) lands back on the thread.
+  const form = await call(h, { sub: "send", method: "POST", b: omari, body: new URLSearchParams({ id: "stale-form-aaaa", text: "form post", c: omari.csrf, chat: CHAT }).toString() });
+  assert.equal(form.status, 303);
+  assert.equal(form.headers.Location, "/web?thread");
+});
+
+test("3. an old chat opens read-only with all its lines; its history and stream stay its own", async () => {
+  const h = harness();
+  const omari = { ...browser(OWNER_C), conv: OWNER_C };
+  await textIn(h, { from: OWNER, id: "t1", body: "from my phone" });
+  oldChat(OWNER_C, CHAT, [["user", "plan my saturday"], ["assistant", "re: plan my saturday"]]);
+  oldChat(OWNER_C, CHAT2, [["user", "something else"]]);
+  // The shared thread doesn't see them.
+  assert.ok(!db.messagesFor(OWNER_C).some(m => /saturday|something else/.test(m.text)));
   assert.ok((await history(h, omari, { after: "0" })).messages.every(m => !/saturday/.test(m.text)));
-  // The chat's own page, catch-up and older page.
+  // Its own reads still work.
   assert.deepEqual((await history(h, omari, { after: "0", chat: CHAT })).messages.map(m => m.text), ["plan my saturday", "re: plan my saturday"]);
   assert.deepEqual((await history(h, omari, { chat: CHAT })).messages.map(m => m.text), ["plan my saturday", "re: plan my saturday"]);
+  // The page: drawn whole on the server, no composer, the closed foot.
   await call(h, { b: omari });
   const page = await call(h, { b: omari, query: { chat: CHAT } });
   assert.equal(page.status, 200);
-  assert.match(page.body, new RegExp(`name="chat" value="${CHAT}"`), "its composer keeps sending into it");
-  assert.ok(!/stays in your texts/.test(page.body));
-  // A second chat is its own page too.
-  await sendIn(h, omari, CHAT2, "wc-0002-aaaa", "something else");
-  assert.ok(await until(() => db.messagesFor(OWNER_C, { chat: CHAT2 }).length === 2));
-  assert.equal(db.messagesFor(OWNER_C, { chat: CHAT }).length, 2);
+  const log = /<ol class="thread"[^>]*>([\s\S]*?)<\/ol>/.exec(page.body)?.[1] ?? "";
+  assert.match(log, /plan my saturday/);
+  assert.match(log, /re: plan my saturday/);
+  assert.ok(!/something else|from my phone/.test(page.body), "only its own lines");
+  assert.ok(!/class="cform"/.test(page.body), "no composer");
+  assert.ok(!/name="chat"/.test(page.body));
+  assert.ok(page.body.includes(convo.CLOSED_CHAT), "the closed foot");
+  assert.match(convo.CLOSED_CHAT, /href="\/web\?thread"[^>]*>Continue the thread/);
+  assert.match(page.body, new RegExp(`chat:"${CHAT}"`), "the page's own reads stay the chat's");
+  // A chat id that was never started is not found.
+  assert.equal((await call(h, { b: omari, query: { chat: NEVER } })).status, 404);
+  // With a detail's about + click id it is the shared thread, talking about that row.
+  const withAbout = await call(h, { b: omari, query: { chat: CHAT, about: "task:1", k: "click-kkkkkkkkkkkk" } });
+  assert.equal(withAbout.status, 200);
+  assert.match(withAbout.body, /chat:"",ab:"task:1",ak:"click-kkkkkkkkkkkk"/);
+  assert.match(withAbout.body, /class="cform"/);
   // The stream for the chat carries the chat's rows only.
   const s = openStream(h, omari, { chat: CHAT });
   await textIn(h, { from: OWNER, id: "t2", body: "phone again" });
-  await sendIn(h, omari, CHAT, "wc-0003-aaaa", "and sunday");
-  await until(() => db.messagesFor(OWNER_C, { chat: CHAT }).length === 4);
+  db.writeMessage({ conversationId: OWNER_C, role: "assistant", channel: "web", text: "a late chat line", chatId: db.webChatRoute(CHAT) });
+  db.writeMessage({ conversationId: OWNER_C, role: "assistant", channel: "web", text: "late in chat two", chatId: db.webChatRoute(CHAT2) });
+  await until(() => s.events().some(e => e.event === "message" && e.data.text === "a late chat line"), 1500);
   s.close();
   const texts = s.events().filter(e => e.event === "message").map(e => e.data.text);
-  assert.ok(texts.includes("and sunday"));
-  assert.ok(!texts.includes("phone again") && !texts.includes("something else"));
+  assert.ok(texts.includes("a late chat line"), JSON.stringify(texts));
+  assert.ok(!texts.includes("phone again") && !texts.includes("late in chat two"), JSON.stringify(texts));
 });
 
-test("3. the model reads and writes the chat's own thread; its tools still act for the person", async () => {
+test("4. another account can't open, read or stream somebody's old chat; a stale post never reaches it", async () => {
   const h = harness();
+  oldChat(OWNER_C, CHAT, [["user", "my private chat"], ["assistant", "ok"]]);
+  const kofi = { ...browser(KOFI_C), conv: KOFI_C };
+  await call(h, { b: kofi });
+  assert.equal((await call(h, { b: kofi, query: { chat: CHAT } })).status, 404);
+  assert.equal((await call(h, { sub: "history", b: kofi, query: { chat: CHAT, after: "0" } })).status, 404);
+  assert.equal((await call(h, { sub: "history", b: kofi, query: { chat: CHAT } })).status, 404);
+  assert.equal(convo.streamRequest({ account: db.getAccount(KOFI_C), headers: headersFor(kofi), query: { chat: CHAT } }).status, 404);
+  assert.ok(!(await call(h, { b: kofi, query: { chat: CHAT } })).body.includes("my private chat"));
+  // Kofi's post naming Omari's chat is just a message in Kofi's own thread.
+  const out = await send(h, kofi, { id: "wc-0202-aaaa", text: "let me in", extra: { chat: CHAT } });
+  assert.equal(out.status, 200);
+  assert.ok(await until(() => db.messagesFor(KOFI_C).some(m => m.text === "let me in")));
+  assert.equal(db.webChatOwner(CHAT), OWNER_C);
+  assert.ok(!db.messagesFor(OWNER_C, { chat: CHAT }).some(m => m.text === "let me in"));
+  assert.ok(!db.messagesFor(OWNER_C).some(m => m.text === "let me in"));
+  // Malformed ids are refused.
   const omari = { ...browser(OWNER_C), conv: OWNER_C };
+  await call(h, { b: omari });
+  assert.equal((await call(h, { b: omari, query: { chat: "../../x" } })).status, 404);
+  assert.equal(convo.chatFrom(OWNER_C, CHAT), CHAT);
+  assert.equal(convo.chatFrom(KOFI_C, CHAT), null, "another's");
+  assert.equal(convo.chatFrom(OWNER_C, NEVER), null, "unclaimed");
+  assert.equal(convo.chatFrom(OWNER_C, ""), "");
+  // Kofi's own rows never carry Omari's chat id even if forged on the route.
+  db.writeMessage({ conversationId: KOFI_C, role: "user", channel: "web", text: "forged", chatId: db.webChatRoute(CHAT) });
+  assert.ok(!db.messagesFor(KOFI_C, { chat: CHAT }).length);
+});
+
+test("5. a turn still keyed to an old chat reads its own thread; its tools still act for the person", async () => {
+  const h = harness();
+  db.claimWebChat(OWNER_C, CHAT);
   await textIn(h, { from: OWNER, id: "t1", body: "shared hello" });
-  await sendIn(h, omari, CHAT, "wc-0101-aaaa", "only in the chat");
+  await intoOldChat(h, CHAT, "wc-0101-aaaa", "only in the chat");
   assert.ok(await until(() => h.turns.length === 2));
   const [shared, chat] = h.turns;
   assert.equal(shared.historyId, undefined, "a text reads the shared thread");
@@ -196,50 +291,6 @@ test("3. the model reads and writes the chat's own thread; its tools still act f
   assert.equal(db.historyKeyFor(OWNER_C, db.webChatRoute(CHAT)), `${OWNER_C}#web:${CHAT}`);
   assert.equal(db.historyKeyFor(KOFI_C, db.webChatRoute(CHAT)), KOFI_C, "never another account's chat key");
   assert.equal(db.historyKeyFor(OWNER_C, null), OWNER_C);
-});
-
-test("4. another account can't open, read, stream or send into somebody's chat", async () => {
-  const h = harness();
-  const omari = { ...browser(OWNER_C), conv: OWNER_C };
-  await sendIn(h, omari, CHAT, "wc-0201-aaaa", "my private chat");
-  assert.ok(await until(() => db.messagesFor(OWNER_C, { chat: CHAT }).length === 2));
-  const kofi = { ...browser(KOFI_C), conv: KOFI_C };
-  await call(h, { b: kofi });
-  assert.equal((await call(h, { b: kofi, query: { chat: CHAT } })).status, 404);
-  assert.equal((await call(h, { sub: "history", b: kofi, query: { chat: CHAT, after: "0" } })).status, 404);
-  assert.equal((await call(h, { sub: "history", b: kofi, query: { chat: CHAT } })).status, 404);
-  assert.equal(convo.streamRequest({ account: db.getAccount(KOFI_C), headers: headersFor(kofi), query: { chat: CHAT } }).status, 404);
-  const turns = h.turns.length;
-  const out = await sendIn(h, kofi, CHAT, "wc-0202-aaaa", "let me in");
-  assert.equal(out.status, 404);
-  assert.equal(h.turns.length, turns, "no turn ran");
-  assert.equal(db.webChatOwner(CHAT), OWNER_C);
-  assert.ok(!db.messagesFor(OWNER_C, { chat: CHAT }).some(m => m.text === "let me in"));
-  // Malformed ids are refused too.
-  await call(h, { b: omari });
-  assert.equal((await call(h, { b: omari, query: { chat: "../../x" } })).status, 404);
-  assert.equal((await sendIn(h, omari, "short", "wc-0203-aaaa", "x")).status, 404);
-  // Kofi's own rows never carry Omari's chat id even if forged on the route.
-  db.writeMessage({ conversationId: KOFI_C, role: "user", channel: "web", text: "forged", chatId: db.webChatRoute(CHAT) });
-  assert.ok(!db.messagesFor(KOFI_C, { chat: CHAT }).length);
-});
-
-test("5. a task started in a Web chat shows in Ongoing; proactive texts keep the person's normal channel", async () => {
-  const og = await import("../src/ongoing.js");
-  const h = harness({ turn: async ({ conversationId, text }) => {
-    db.createTask(conversationId, { title: "find a dinner spot", goal: "a booked table", maxAttempts: 3, label: "Dinner spot" });
-    return `on it: ${text}`;
-  } });
-  const omari = { ...browser(OWNER_C), conv: OWNER_C };
-  await sendIn(h, omari, CHAT, "wc-0301-aaaa", "find me dinner");
-  assert.ok(await until(() => db.messagesFor(OWNER_C, { chat: CHAT }).length === 2));
-  assert.ok(og.ongoing(OWNER_C).items.some(x => x.title === "Dinner spot"), "in Ongoing, under the person");
-  // A timer, a task wake, an approval: whereTo with no channel is the person's thread (their phone).
-  const before = h.fake.sent.length;
-  await h.runtime._emit({ conversationId: OWNER_C, text: "your reminder", meta: {} });
-  assert.ok(await until(() => h.fake.sent.length === before + 1));
-  assert.equal(h.fake.sent.at(-1).text.startsWith("your reminder"), true);
-  assert.ok(!db.messagesFor(OWNER_C, { chat: CHAT }).some(m => m.text === "your reminder"), "never into the Web chat");
 });
 
 test("6. one turn is one chat: held shared and chat messages are taken apart, oldest first", () => {
@@ -252,13 +303,12 @@ test("6. one turn is one chat: held shared and chat messages are taken apart, ol
   assert.deepEqual(db.takePendingInbound(OWNER_C), []);
 });
 
-test("7. Chat history lists past Web chats, each opening its chat; the day view stays the shared thread", async () => {
+test("7. Chat history lists old chats, each opening read-only; the day view stays the shared thread", async () => {
   const hist = await import("../src/pages/webhistory.js");
   const h = harness();
-  const omari = { ...browser(OWNER_C), conv: OWNER_C };
   await textIn(h, { from: OWNER, id: "t1", body: "phone line" });
-  await sendIn(h, omari, CHAT, "wc-0401-aaaa", "Plan a birthday dinner for Ama");
-  assert.ok(await until(() => db.messagesFor(OWNER_C, { chat: CHAT }).length === 2));
+  assert.ok(await until(() => db.messagesFor(OWNER_C).length === 2));
+  oldChat(OWNER_C, CHAT, [["user", "Plan a birthday dinner for Ama"], ["assistant", "On it."]]);
   const page = hist.renderHistory({ account: db.getAccount(OWNER_C) });
   assert.match(page, new RegExp(`<a class="dy" href="/web\\?chat=${CHAT}"><span class="dy-d">Plan a birthday dinner for Ama</span><span class="dy-go" aria-hidden="true">→</span><span class="dy-m">WEB CHAT · [^<]+ · 2 MESSAGES</span>`));
   const dayRows = [...page.matchAll(/<a class="dy" href="\/web\/memory\/history\?day=/g)].length;
@@ -266,35 +316,58 @@ test("7. Chat history lists past Web chats, each opening its chat; the day view 
   const key = hist.dayKey(clock.now());
   assert.ok(hist.dayLines(OWNER_C, key).every(m => !/birthday/.test(m.html)), "the day is the shared thread's");
   assert.equal(hist.searchMessages(OWNER_C, "birthday").total, 0);
+  // Its link opens it read-only.
+  const omari = { ...browser(OWNER_C), conv: OWNER_C };
+  await call(h, { b: omari });
+  const opened = await call(h, { b: omari, query: { chat: CHAT } });
+  assert.equal(opened.status, 200);
+  assert.match(opened.body, /Plan a birthday dinner for Ama/);
+  assert.ok(!/class="cform"/.test(opened.body));
   // Kofi's history never lists Omari's chat.
   assert.ok(!hist.renderHistory({ account: db.getAccount(KOFI_C) }).includes(CHAT));
 });
 
-test("8. review: an approval asked in one thread is granted only by that thread's answer; another thread's trims never move its mark", async () => {
+test("8. an approval asked in an old chat is adopted by the shared thread and granted only by a reply after that", async () => {
   const trust = await import("../src/trust.js");
   const { saveThread } = await import("../src/thread.js");
   db.db.exec("DELETE FROM confirmations");
   db.claimWebChat(OWNER_C, CHAT);
   const key = db.historyKeyFor(OWNER_C, db.webChatRoute(CHAT));
   const line = (t) => ({ role: "user", content: `[Mon 9:00am] Omari (web): ${t}` });
-  const chatThread = [line("buy the headphones")];
-  const asked = trust.requestConfirmation({ conversationId: OWNER_C, messages: chatThread, historyId: key, action: "purchase_confirm", summary: "Buy the headphones for $80", stakes: "money" });
-  const yes = async () => ({ verdict: "yes" });
-  // The shared thread, with plenty said after: none of it answers an ask made in the chat.
-  const shared = [line("a"), line("b"), line("sure, go for it")];
-  const there = await trust.recordConfirmation({ conversationId: OWNER_C, messages: shared, confirmationId: asked.confirmation_id, judge: yes });
-  assert.equal(there.ok, false);
-  assert.equal(there.state, "asked_elsewhere");
-  // The shared thread is cut to size: the chat's mark stays where it was.
+  const asked = trust.requestConfirmation({ conversationId: OWNER_C, messages: [line("buy the headphones")], historyId: key, action: "purchase_confirm", summary: "Buy the headphones for $80", stakes: "money" });
+  assert.equal(db.getConfirmation(OWNER_C, asked.confirmation_id).thread_key, key);
+  // The shared thread is cut to size before anything checks it: the chat's mark stays where it was.
   saveThread(OWNER_C, Array.from({ length: 400 }, (_, i) => line(`old ${i}`)), { max: 50 });
   assert.equal(db.getConfirmation(OWNER_C, asked.confirmation_id).asked_after_msgs, 1);
-  // In the chat, no reply yet is still no reply; its own yes grants it.
-  assert.equal((await trust.recordConfirmation({ conversationId: OWNER_C, messages: chatThread, historyId: key, confirmationId: asked.confirmation_id, judge: yes })).state, "waiting_for_yes");
-  const ok = await trust.recordConfirmation({ conversationId: OWNER_C, messages: [...chatThread, line("yes do it")], historyId: key, confirmationId: asked.confirmation_id, judge: yes });
+  let judged = 0;
+  const yes = async () => { judged++; return { verdict: "yes" }; };
+  // The shared thread checks it: it moves here, and a yes said before that was never said to it.
+  const shared = [line("a"), line("b"), line("sure, go for it")];
+  const first = await trust.recordConfirmation({ conversationId: OWNER_C, messages: shared, confirmationId: asked.confirmation_id, judge: yes });
+  assert.equal(first.ok, false);
+  assert.equal(first.state, "waiting_for_yes");
+  assert.equal(judged, 0, "nothing was read as its answer");
+  const row = db.getConfirmation(OWNER_C, asked.confirmation_id);
+  assert.equal(row.thread_key, null, "adopted by the shared thread");
+  assert.equal(row.asked_after_msgs, 3, "counted from the shared thread's owner texts now");
+  // A turn still keyed to the old chat keeps the old scoping: it can't answer it any more.
+  assert.equal((await trust.recordConfirmation({ conversationId: OWNER_C, messages: [line("buy"), line("yes")], historyId: key, confirmationId: asked.confirmation_id, judge: yes })).state, "asked_elsewhere");
+  // A shared-thread reply after adoption grants it.
+  const ok = await trust.recordConfirmation({ conversationId: OWNER_C, messages: [...shared, line("yes do it")], confirmationId: asked.confirmation_id, judge: yes });
   assert.equal(ok.ok, true);
-  // And the other way round: a shared-thread ask is never answered from a Web chat.
+  assert.equal(ok.state, "granted");
+  assert.equal(ok.quote, "yes do it");
+  // A shared-thread ask is never answered from a Web-chat turn.
   const sharedAsk = trust.requestConfirmation({ conversationId: OWNER_C, messages: [line("book it")], action: "browser_submit", summary: "Book the table", stakes: "commitment" });
   assert.equal((await trust.recordConfirmation({ conversationId: OWNER_C, messages: [line("x"), line("yes")], historyId: key, confirmationId: sharedAsk.confirmation_id, judge: yes })).state, "asked_elsewhere");
+  // A yes already given in the old chat keeps its count when adopted.
+  const given = trust.requestConfirmation({ conversationId: OWNER_C, messages: [line("order it")], historyId: key, action: "purchase_confirm", summary: "Order the charger", stakes: "money" });
+  assert.equal((await trust.recordConfirmation({ conversationId: OWNER_C, messages: [line("order it"), line("yes")], historyId: key, confirmationId: given.confirmation_id, judge: yes })).state, "granted");
+  assert.equal(trust.adoptWebChatAsks(OWNER_C, [line("1"), line("2"), line("3"), line("4"), line("5")]), 1);
+  const g = db.getConfirmation(OWNER_C, given.confirmation_id);
+  assert.equal(g.thread_key, null);
+  assert.equal(g.asked_after_msgs, 1, "a granted ask keeps its count");
+  assert.equal((await trust.recordConfirmation({ conversationId: OWNER_C, messages: [line("x")], confirmationId: given.confirmation_id, judge: yes })).state, "granted");
 });
 
 test("9. review: a task's DONE line only gathers its own thread's messages; neither page loses a line to the other", async () => {
@@ -326,7 +399,7 @@ test("10. review: from a Web chat's turn, no tool reaches the person's own phone
   assert.equal(h.fake.sent.length, 0);
 });
 
-test("11. review: an approval asked in a Web chat is answered there; a chat's yes never answers an access or call check", async () => {
+test("11. an old chat's approval: its Ongoing link is the shared thread; confirm_pending there adopts it", async () => {
   const trust = await import("../src/trust.js");
   const og = await import("../src/ongoing.js");
   const page = await import("../src/pages/webongoing.js");
@@ -335,30 +408,30 @@ test("11. review: an approval asked in a Web chat is answered there; a chat's ye
   const key = db.historyKeyFor(OWNER_C, db.webChatRoute(CHAT));
   const asked = trust.requestConfirmation({ conversationId: OWNER_C, messages: [], historyId: key, action: "purchase_confirm", summary: "Buy the headphones", stakes: "money" });
   const x = og.findItem(OWNER_C, "approval", asked.confirmation_id);
-  assert.equal(x.chat, CHAT);
-  assert.equal(page.talkHref(x), `/web?chat=${CHAT}&about=${encodeURIComponent(`approval:${asked.confirmation_id}`)}`, "no click id until a detail page draws it");
-  // That link opens the chat with the draft in its composer.
-  const h = harness();
-  const omari = { ...browser(OWNER_C), conv: OWNER_C };
-  await call(h, { b: omari });
-  const r = await call(h, { b: omari, query: { chat: CHAT, about: `approval:${asked.confirmation_id}`, k: "click-kkkkkkkkkkkk" } });
-  assert.match(r.body, new RegExp(`chat:"${CHAT}",ab:"approval:${asked.confirmation_id}",ak:"click-kkkkkkkkkkkk"`), "Reason speaks first there");
-  // The model's own pending list in a Web chat is that chat's only.
+  assert.ok(!("chat" in x), "an approval carries no chat");
+  const about = encodeURIComponent(`approval:${asked.confirmation_id}`);
+  assert.equal(page.talkHref(x), `/web?thread&about=${about}`, "no click id until a detail page draws it");
+  const href = /<div class="ogd-foot"><a class="act[^"]*" href="([^"]+)"/.exec(page.renderDetail(x))?.[1]?.replace(/&amp;/g, "&");
+  assert.match(href, new RegExp(`^/web\\?thread&about=${about}&k=[A-Za-z0-9_-]{16}$`));
+  // The model's pending list: a turn still keyed to the chat sees the chat's ask only (old scoping)…
   const { runTool } = await import("../src/tools.js");
   const sharedAsk = trust.requestConfirmation({ conversationId: OWNER_C, messages: [], action: "browser_submit", summary: "Book the table", stakes: "commitment" });
   const inChat = await runTool("confirm_pending", {}, { conversationId: OWNER_C, historyId: key, messages: [] });
   assert.deepEqual(inChat.waiting_on_an_answer.map(w => w.confirmation_id), [asked.confirmation_id]);
+  // …and the shared thread adopts it, so it lists both.
   const inShared = await runTool("confirm_pending", {}, { conversationId: OWNER_C, messages: [] });
-  assert.deepEqual(inShared.waiting_on_an_answer.map(w => w.confirmation_id), [sharedAsk.confirmation_id]);
+  assert.deepEqual(inShared.waiting_on_an_answer.map(w => w.confirmation_id).sort((a, b) => a - b), [asked.confirmation_id, sharedAsk.confirmation_id].sort((a, b) => a - b));
+  assert.equal(db.getConfirmation(OWNER_C, asked.confirmation_id).thread_key, null);
+  assert.deepEqual((await runTool("confirm_pending", {}, { conversationId: OWNER_C, historyId: key, messages: [] })).waiting_on_an_answer ?? [], [], "the old chat has nothing left to answer");
 });
 
-test("12. review: a yes typed in a Web chat never verifies a call whose check went to their phone", async () => {
+test("12. review: a yes in a Web chat's turn never verifies a call whose check went to their phone", async () => {
   db.db.exec("DELETE FROM calls");
   const call_ = db.createCall(OWNER_C, { provider: "fake", toNumber: OWNER, isOwner: true, goal: "check in", facts: [] });
   db.updateCall(OWNER_C, call_.id, { verify_sent_at: clock.now(), verify_sent_after_msgs: 0 });
   const h = harness();
-  const omari = { ...browser(OWNER_C), conv: OWNER_C };
-  await sendIn(h, omari, CHAT, "wc-0501-aaaa", "yes");
+  db.claimWebChat(OWNER_C, CHAT);
+  await intoOldChat(h, CHAT, "wc-0501-aaaa", "yes");
   assert.ok(await until(() => db.messagesFor(OWNER_C, { chat: CHAT }).length === 2));
   assert.equal(h.turns.length, 1, "the chat's own turn ran");
   assert.equal(db.pendingCallVerification(OWNER_C)?.id, call_.id, "still waiting on the phone's answer");

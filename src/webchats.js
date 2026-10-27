@@ -1,24 +1,14 @@
-// Reason Web, recent Web-only chats (owner 10-27 01:58): what Home's composer will offer on hover/focus
-// (the panel itself is the UI agent's, SCOPE-v2 Q-v2-51), and each chat's short title.
-//
-//   GET /web/chats/recent  → { chats: [{ id, title, preview, updatedAt, needsYou, working }] }
-//
-// The session's own conversation only, newest first, at most RECENT_LIMIT. `needsYou`: an approval
-// asked in that chat (confirmations.thread_key) is still open. `working`: a turn for that chat is
-// running (src/onethought.js) or its message is still held to be taken (pending_inbound).
+// Reason Web, each earlier Web-only chat's short title, for Chat history (src/pages/webhistory.js).
+// Web-only chats were retired by the owner 10-27 07:08 (one shared thread only), so nothing starts a new
+// one and GET /web/chats/recent is gone; the ones already made stay readable, titled as below.
 //
 // The title is written ONCE, when the chat's first reply lands: one cheap summarise on the claude-cli
 // subscription path (never the billed API), or the first words of their first message when the CLI is
 // not the backend or the summarise fails. A later reply never retitles it.
 import * as db from "./db.js";
-import { clock } from "./config.js";
 import { askStructuredViaCli } from "./backends/cli.js";
 import { normTitle } from "./itemtitle.js";
-import * as onethought from "./onethought.js";
-import { APPROVAL_WINDOW_MS } from "./ongoing.js";
 
-export const RECENT_LIMIT = 5;
-export const PREVIEW_MAX = 80;
 const FALLBACK_WORDS = 6, FALLBACK_CHARS = 48;
 export const UNTITLED = "A Web chat";
 
@@ -30,32 +20,6 @@ export function fallbackTitle(first) {
   const t = oneLine(first);
   if (!t) return UNTITLED;
   return cut(t.split(" ").slice(0, FALLBACK_WORDS).join(" "), FALLBACK_CHARS);
-}
-
-/** A message as the preview line: one line, at most PREVIEW_MAX characters. */
-export const previewOf = (text) => cut(oneLine(text), PREVIEW_MAX);
-
-/** This conversation's latest Web chats, most recently used first. Never anybody else's. */
-export function recentChats(conversationId, { now = clock.now(), limit = RECENT_LIMIT } = {}) {
-  if (!conversationId) return [];
-  const rows = db.db.prepare(`SELECT c.id, c.title, c.last_at,
-      (SELECT text FROM messages f WHERE f.conversation_id = c.conversation_id AND f.chat_id = c.id AND f.deleted_at IS NULL AND f.role = 'user' ORDER BY f.at, f.id LIMIT 1) AS first,
-      (SELECT text FROM messages l WHERE l.conversation_id = c.conversation_id AND l.chat_id = c.id AND l.deleted_at IS NULL AND TRIM(l.text) <> '' ORDER BY l.at DESC, l.id DESC LIMIT 1) AS last
-    FROM web_chats c
-    WHERE c.conversation_id = ? AND EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id AND m.chat_id = c.id AND m.deleted_at IS NULL)
-    ORDER BY c.last_at DESC, c.created_at DESC, c.id LIMIT ?`).all(conversationId, limit);
-  const turn = onethought.activeFor(conversationId);
-  const asking = db.db.prepare(`SELECT 1 FROM confirmations WHERE conversation_id = ? AND thread_key = ?
-    AND granted_at IS NULL AND refused_at IS NULL AND consumed_at IS NULL AND asked_at > ? AND TRIM(COALESCE(summary, '')) <> '' LIMIT 1`);
-  const held = db.db.prepare("SELECT 1 FROM pending_inbound WHERE conversation_id = ? AND channel = 'web' AND chat_id = ? LIMIT 1");
-  return rows.map(r => ({
-    id: r.id,
-    title: r.title || fallbackTitle(r.first),
-    preview: previewOf(r.last),
-    updatedAt: r.last_at,
-    needsYou: !!asking.get(conversationId, `${conversationId}#web:${r.id}`, now - APPROVAL_WINDOW_MS),
-    working: (turn?.webChat ?? null) === r.id || !!held.get(conversationId, db.webChatRoute(r.id)),
-  }));
 }
 
 // ---------------------------------------------------------------- the title, once

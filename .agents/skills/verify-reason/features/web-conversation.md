@@ -103,45 +103,25 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
   `pcode:`/`esign:`/`wsign:` key, `webAllowedFor`) takes it atomically and ends with
   `\n\nOur full conversation, the Web part included, is on Reason Web.` Once per switch.
 
-### Web-only chats (owner 10-27)
+### One shared thread (owner 10-27 07:08; Web-only chats from #209 retired)
 
-- **Home's composer starts a fresh chat.** `renderHome` mints a 22-char id (`newWebChatId`) into the
-  form (`chat` hidden field) and `R.chat`; the page goes to `/web?chat=<id>`. "Continue the thread →",
-  the Chat tab, "THE THREAD →" and the menu's "The thread" stay `/web?thread` (the one shared conversation).
-- **Storage.** `web_chats(id, conversation_id, created_at, last_at)`; `messages.chat_id` (null = the
-  shared thread). The first send claims the id for the session's conversation (`db.claimWebChat`);
-  another account's id or a malformed one → 404, no turn. `chatFrom` gates `?chat=` on the page,
-  `/web/history`, `/web/stream` and `/web/live`.
-- **Routing.** The send goes to `router.deliver` with `chatId: "web:<id>"` (the existing chatId plumbing):
-  held row `chat_id` → `writeMessage(chatId)` → runtime meta → reply on the web channel → outbox
-  `chat_id` → `historyFromOutbound` → the chat's row. Never texted. `takePendingInbound` takes one
-  chat's rows per turn; a mid-turn read only folds into the same chat's turn.
-- **Model context.** `db.historyKeyFor(conv, chatId)` = `<conv>#web:<id>`: the turn's `historyId`
-  (runtime turnArgs → claude-cli / agent / mcp-core `messages`, harm screen). Tools still get the
-  person's `conversationId`, so memory, tasks, Ongoing, Saved and approvals are shared.
-- **Proactive** (timers, wakes, approvals) has no channel → the thread route, unchanged.
-- **Approvals per thread.** `confirmations.thread_key` = the asking thread's history key (null = shared);
-  only that thread's answer grants it (`asked_elsewhere` otherwise); Ongoing links a chat's approval to
-  `/web?chat=<id>&about=approval:<id>`. A chat's "yes" never answers an access request or a call check.
-- **No phone from a chat turn.** message_send to self, send_picture, voice notes to self, mark_moment,
-  reply_to → `status: web_chat`.
-- **Chat history** (/web/memory/history) lists each chat as a day-style row (`WEB CHAT · <DAY> · N
-  MESSAGES`) → `/web?chat=<id>`; days, a day's lines and search are `chat_id IS NULL` only.
-  Provisional placement: SCOPE-v2 Q-v2-51.
-- **Titles.** `web_chats.title`, written ONCE when the chat's first reply row lands (`db.setWebChatReplyHook`
-  → `src/webchats.js titleWebChat`): one claude-cli summarise (`feature: "chat_title"`, only when
-  `REASON_BACKEND=claude-cli`, never under the test runner; `REASON_WEB_CHAT_TITLES=0` turns it off), else
-  the first 6 words / 48 chars of the first message (`"A Web chat"` when it had none). `UPDATE … WHERE
-  title IS NULL`, so a later reply never retitles. Chat history's row shows it.
-- **Recent chats** (owner 10-27 01:58, for Home's composer hover; the panel is the UI agent's, Q-v2-51):
-  `GET /web/chats/recent` → `{ chats: [{ id, title, preview, updatedAt, needsYou, working }] }`, the
-  session's own chats with messages, latest 5 by `last_at`. Signed out 401; another origin or a
-  missing/wrong `x-reason-csrf` header (`REASON_WEB.c`) 403; non-GET 405. `preview` = last non-empty
-  message, one line, ≤80 chars. `needsYou` = an open confirmation (24 h) whose `thread_key` is the chat's
-  history key; `working` = `onethought.activeFor(conv).webChat` is this chat, or a `pending_inbound` row
-  for `web:<id>`.
-- Tests: `node --test test/web-chats.test.js test/web-recent-chats.test.js`. Preview: `bin/web-chats-preview.mjs`.
-  Drive: `bin/web-recent-chats-drive.mjs` under `caged.sh env` (real HTTP, no model; fallback titles).
+- **Nothing starts a Web-only chat.** No NEW WEB CHAT →, no menu "New Web chat"; `/web?newchat` → 303
+  `/web?thread`. Home's composer (old Home, `renderHome`) and every other composer carry no `chat`
+  field; `POST /web/send` ignores a stale `chat` and the message lands in the shared thread
+  (`chat_id` NULL), claiming no chat. `GET /web/chats/recent` is removed.
+- **Earlier chats stay, read-only.** `web_chats` + `messages.chat_id` are kept. `/web?chat=<id>` (own,
+  existing chat only; `chatFrom` → 404 for another account's, an unknown or a malformed id) draws all
+  its lines server-side with `CLOSED_CHAT` in the composer's place ("Continue the thread →").
+  `/web/history` and `/web/live` with `?chat=` still read only that chat (cross-account → 404).
+  Chat history lists each as `WEB CHAT · <DAY> · N MESSAGES` with its title (`src/webchats.js`).
+- **Approvals asked in an old chat** (`confirmations.thread_key` = `<conv>#web:<id>`) move to the shared
+  thread the first time the shared thread looks (`db.adoptWebChatAsks` via `trust.adoptWebChatAsks` in the
+  claude-cli context build, `confirm_pending`, `recordConfirmation`): thread_key NULL, count reset, so
+  only a reply after that grants it. Ongoing/daily links go to `/web?thread&about=approval:<id>`.
+  A turn still keyed to a Web chat keeps the old scoping (never answers an access or call check).
+- **Speak-first** (#211/#213) always speaks in the shared thread; `/web/about` ignores `chat`.
+- Tests: `node --test test/web-chats.test.js` (+ titles). Preview: `bin/web-chats-preview.mjs`
+  (Home, the thread, an earlier chat read-only, Chat history).
 
 ## Proving it
 

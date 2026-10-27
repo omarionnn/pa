@@ -178,22 +178,22 @@ function taskMessageIds(conversationId, taskIds) {
   return out;
 }
 
-/** Overnight: everything since `since`, newest first. Each `{ id, at, kind, headline, detail?, threadMessageId?, href?, chat?, actions? }`. */
+/** Overnight: everything since `since`, newest first. Each `{ id, at, kind, headline, detail?, threadMessageId?, href?, actions? }`. */
 export function overnightFor(conversationId, since, now = clock.now()) {
   const out = [];
-  // Approvals asked in the window: the decision, answered by a reply in the thread it was asked in.
+  // Approvals asked in the window: the decision, answered by a reply in the one shared thread (owner 10-27 07:08).
   const open = pendingApprovals(conversationId, now);
   const asks = open.filter(a => a.at >= since && a.at <= now);
   for (const a of asks) {
-    // A tap sends plain words ("Yes, go ahead."), which answer whatever is waiting in that thread. So the
-    // buttons show only when this is the one approval waiting there; otherwise it links to where it's answered.
-    const alone = open.filter(o => (o.chat ?? null) === (a.chat ?? null)).length === 1;
-    const href = a.chat ? `/web?chat=${a.chat}` : "/web?thread";
+    // A tap sends plain words ("Yes, go ahead."), which answer whatever is waiting in the thread. So the
+    // buttons show only when this is the one approval waiting; otherwise it links to where it's answered.
+    const alone = open.length === 1;
+    const href = "/web?thread";
     out.push(alone
       ? { id: `approval:${a.id}`, at: a.at, kind: "decision", headline: cut(oneLine(a.title), 140), detail: a.detail ?? null,
-        threadMessageId: null, chat: a.chat ?? null, href: a.href, actions: DECISION.map(x => ({ ...x })) }
+        threadMessageId: null, href: a.href, actions: DECISION.map(x => ({ ...x })) }
       : { id: `approval:${a.id}`, at: a.at, kind: "update", headline: cut(oneLine(a.title), 140), detail: a.detail ?? null,
-        threadMessageId: null, chat: a.chat ?? null, href, linkText: "Answer it in the thread" });
+        threadMessageId: null, href, linkText: "Answer it in the thread" });
   }
   // Tasks that finished: done (the DONE stamp and its one line) or stopped (an update into the thread).
   const finished = db.tasksFinishedSince(conversationId, since).filter(t => t.finished_at <= now && (t.state === "done" || t.state === "failed"));

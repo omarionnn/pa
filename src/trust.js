@@ -52,6 +52,14 @@ export function ownerTexts(messages = []) {
 }
 
 /**
+ * In the shared thread, an ask still open in an earlier Web-only chat moves here, counted from these
+ * `messages` (src/db.js adoptWebChatAsks): one thread only, owner 10-27 07:08.
+ */
+export function adoptWebChatAsks(conversationId, messages) {
+  try { return db.adoptWebChatAsks(conversationId, ownerTexts(messages).length); } catch { return 0; }
+}
+
+/**
  * Step 1 of the gate. Records what Reason is about to do, in words, before asking.
  * Returns the confirmation id the model must carry into the committing tool.
  */
@@ -108,6 +116,7 @@ export function normalizeTarget(t) {
  * `judge` is injectable so tests can state what a reply means and exercise the bookkeeping.
  */
 export async function recordConfirmation({ conversationId, messages, confirmationId, judge = judgeReply, historyId = null }) {
+  if (!historyId || historyId === conversationId) adoptWebChatAsks(conversationId, messages);
   const c = db.getConfirmation(conversationId, confirmationId);
   if (!c) return { ok: false, error: `No confirmation #${confirmationId} in this conversation.` };
   // Asked in one thread (the shared one, or a Web-only chat), answered only there: the count below is

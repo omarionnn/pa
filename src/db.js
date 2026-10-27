@@ -2935,6 +2935,18 @@ export function pendingConfirmations(conversationId) {
     AND refused_at IS NULL AND consumed_at IS NULL ORDER BY asked_at DESC LIMIT 10`).all(conversationId);
 }
 
+/**
+ * Web-only chats are retired (owner 10-27 07:08): an ask still open in one moves to the shared thread,
+ * where it is now answered. Its count restarts at `ownerTexts` (that thread's owner texts so far), so
+ * only a reply from here on can be its yes. A yes already given keeps its count. Returns how many moved.
+ */
+export function adoptWebChatAsks(conversationId, ownerTexts) {
+  return db.prepare(`UPDATE confirmations SET thread_key = NULL,
+      asked_after_msgs = CASE WHEN granted_at IS NULL THEN ? ELSE asked_after_msgs END
+    WHERE conversation_id = ? AND thread_key LIKE '%#web:%' AND refused_at IS NULL AND consumed_at IS NULL`)
+    .run(Math.max(0, Number(ownerTexts) || 0), conversationId).changes;
+}
+
 // ---------- connected accounts ----------
 // `account` runs through all of these and means the same thing everywhere: a string picks the row for
 // that one address, and leaving it out means any address. Leaving it out is what every caller written
