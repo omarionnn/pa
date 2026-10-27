@@ -100,6 +100,9 @@ async function runTurnOnCli({
   // What the thread keeps in place of `text`, when they should differ — see userMessageFor in
   // src/agent.js. Same rule on both backends, for the same reason.
   keep = null,
+  // A Web turn's drafter (src/webdraft.js, REASON_WEB_DRAFTS): hears the reply as it is written.
+  // Taken out here so it never rides into a tool's context.
+  draft = null,
   // Injectable so the whole turn is testable with no CLI, no network and no port: what the model
   // is handed, what the history keeps and what the record says are all decided in this function.
   run = runClaudeCli, images = imagesFor, pdfs = pdfsFor, startMcp = startMcpHttp,
@@ -240,7 +243,7 @@ async function runTurnOnCli({
     const mcp = await startMcp({ conversationId, channels, calls, onTool: log, toolCtx });
     let r;
     try {
-      r = await run({ prompt, system: systemFor(me), mcpUrl: mcp.url, images: blocks, log, feature: kind === "event" ? "proactive" : "reply" });
+      r = await run({ prompt, system: systemFor(me), mcpUrl: mcp.url, images: blocks, log, feature: kind === "event" ? "proactive" : "reply", ...(draft ? { onEvent: draft.feed } : {}) });
     } finally {
       await mcp.close();
     }

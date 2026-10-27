@@ -47,6 +47,7 @@ import * as eventRides from "./eventrides.js";
 import { sweepListNotes } from "./events.js";
 import { sweep as sweepAlbums } from "./albums.js";
 import * as dailyEdition from "./daily.js";
+import * as webdraft from "./webdraft.js";
 
 const MIN = 60_000;
 // Sweep turns a held thing may be put to the model in before it is let go. See `notice` below.
@@ -491,8 +492,15 @@ export class Runtime extends EventEmitter {
       let failed = false;
       // What the open Web tab says under "on it." while this turn reads what it was handed (src/doing.js).
       const doneDoing = doing.begin(conversationId, attachments);
+      // REASON_WEB_DRAFTS (src/webdraft.js): a Web message's reply grows in the open tab as it is
+      // written, each piece through the same floor as the reply. Only a user turn from Web, cleared by
+      // the screen, that nothing else holds back, on the CLI backend; never the rewrite below. With the
+      // switch off this turn is exactly what it always was.
+      const draft = kind === "user" && meta.channel === "web" && !shouldSend && screened.verdict === "clear"
+        && this.runTurn !== realRunTurn && webdraft.streamOn(conversationId)
+        ? webdraft.startDraft({ conversationId, log: this.log }) : null;
       try {
-        reply = await this._afterScreen(screened, await this.runTurn(turnArgs()), { conversationId, text, meta });
+        reply = await this._afterScreen(screened, await this.runTurn(turnArgs(draft ? { draft } : {})), { conversationId, text, meta });
         reply = await this._takeInFolded({ fold, screened, conversationId, meta, reply, turnArgs });
         // No text is folded in from here: the reply is settled, and one that lands now gets a turn
         // of its own after it (Router.deliver's loop).
@@ -501,8 +509,12 @@ export class Runtime extends EventEmitter {
         // so, or asks a question already settled, is rewritten once before it goes. API-only and
         // only when something is standing, so almost every reply pays nothing for it.
         if (kind === "user" && reply && reply.trim() !== "NO_REPLY") {
-          const check = await said.checkDraft({ conversationId, draft: reply, log: this.log });
+          // A reply the tab already watched pass this same check, word for word, is not asked twice.
+          if (draft) await draft.idle();
+          const check = draft?.passed(reply) ? { ok: true } : await said.checkDraft({ conversationId, draft: reply, log: this.log });
           if (!check.ok) {
+            // What the tab was shown goes; the rewrite arrives whole.
+            draft?.taken();
             if (!db.retractDraft(conversationId, reply)) this.log({ draft_not_retracted: conversationId });
             this.log({ draft_rewritten: conversationId, why: check.note.slice(0, 200) });
             // The re-ask is code's, not theirs: the line it leaves in the thread comes off again.
@@ -515,6 +527,7 @@ export class Runtime extends EventEmitter {
         }
       } catch (e) {
         failed = true;
+        draft?.end();
         // An interrupted turn hands back what it took in, with its own texts (Router.#handBack).
         if (fold && e && typeof e === "object") e.foldedRows = onethought.foldedRows(fold);
         throw e;
@@ -642,6 +655,8 @@ export class Runtime extends EventEmitter {
         // question is worse. Taken rather than left, so it cannot fire on a later turn.
         await this._fireHeldReaction(conversationId, false);
       }
+      // The reply has gone (or there is none): the tab's growing copy is taken back, after the real one.
+      draft?.end();
       // Which task these messages belong to (Reason Web's DONE line, src/settle.js): this turn's texts
       // and what it sent, for every task it worked on or woke for. Written down, never guessed later.
       try {
