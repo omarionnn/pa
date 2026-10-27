@@ -121,7 +121,9 @@ function micOffHtml() {
  * `+` and the mic appear only once the page's script is running and can make them work; without it
  * the line is the plain form that posts.
  */
-export function composerHtml({ csrf, sendId, maxText }) {
+// `slot` is the conversation's own control inside the line, before the mic (the thread's TODAY ↓,
+// src/pages/webconvo.js TODAY_SLOT): the one hook the thread has into this composer.
+export function composerHtml({ csrf, sendId, maxText, slot = "" }) {
   const picks = Object.entries(PICKS);
   return `<div class="composer">`
     + micOffHtml()
@@ -132,6 +134,7 @@ export function composerHtml({ csrf, sendId, maxText }) {
     + `<button class="ic c-add" type="button" aria-label="Add a photo or file" aria-haspopup="dialog" aria-expanded="false" hidden>${PLUS_SVG}</button>`
     + picks.map(([k, p]) => `<input class="c-file" data-pick="${k}" type="file" accept="${esc(p.accept)}"${p.capture ? ` capture="${p.capture}"` : ""}${k === "camera" ? "" : " multiple"} hidden tabindex="-1" aria-hidden="true">`).join("")
     + `<label class="sr" for="c-input">Message Reason</label><textarea id="c-input" name="text" rows="1" maxlength="${Number(maxText)}" placeholder="Tell Reason what you need" autocomplete="off" enterkeyhint="send" required></textarea>`
+    + slot
     + `<button class="ic c-mic" type="button" aria-label="Speak instead" hidden>${MIC_SVG}</button>`
     + `<button class="send" type="submit" aria-label="Send">${SEND_SVG}</button></form>`
     + `<div class="dict" hidden><button class="ic d-stop" type="button" aria-label="Stop without sending"><span class="rec" aria-hidden="true"></span></button>`

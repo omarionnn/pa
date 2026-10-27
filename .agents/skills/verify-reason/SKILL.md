@@ -631,6 +631,9 @@ All executable, all run from `.agents/skills/verify-reason/`.
 to drive it here, and what end state proves it. That map is the maintained source — when you change
 behaviour, change its feature file in the same commit.
 
+Reason Web thread scrolling (S2 note, S3 DONE lines, TODAY ↓, L1/L2/L10, SR4): [features/web-thread.md](features/web-thread.md);
+`bin/web-thread-preview.mjs` drives and draws it beside the reference boards.
+
 Reason Web Saved (phone tab S-A/S-B, desktop list + opened page, pin/remove): [features/web-saved.md](features/web-saved.md).
 Reason Web Ongoing (tab, margin, at volume + See all 2A–2C, home rows, details 2A–2E + approval, 9D): [features/web-ongoing.md](features/web-ongoing.md);
 `bin/web-ongoing-preview.mjs` draws every state beside the handoff's reference pages.

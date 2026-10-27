@@ -9659,6 +9659,33 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS messages_inbound_once ON messages (conversation_id, channel, external_id) WHERE external_id IS NOT NULL AND role = 'user';
   CREATE UNIQUE INDEX IF NOT EXISTS messages_outbox_once ON messages (outbox_id) WHERE outbox_id IS NOT NULL;
 
+  -- Which messages belong to which task (Reason Web v2, "done things settle", src/settle.js). Written
+  -- at the end of a turn that worked on a task — started it, updated it, finished it, or was its own
+  -- wake — for that turn's own texts (by their handle, = messages.external_id) and what it sent (by
+  -- outbox row, = messages.outbox_id). Never guessed from words or from time.
+  CREATE TABLE IF NOT EXISTS task_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    task_id INTEGER NOT NULL,
+    external_id TEXT,
+    outbox_id INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS task_messages_in ON task_messages (conversation_id, task_id, external_id) WHERE external_id IS NOT NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS task_messages_out ON task_messages (conversation_id, task_id, outbox_id) WHERE outbox_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS task_messages_task ON task_messages (conversation_id, task_id);
+
+  -- The kind of device a Web message was typed on (phone | tablet | computer), read off the sending
+  -- browser's User-Agent at the moment it was sent; keyed by the browser's own message id. The
+  -- thread's "where you are" note says "on your phone" / "on your laptop" from this, never a guess.
+  CREATE TABLE IF NOT EXISTS web_devices (
+    conversation_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    device TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, client_id)
+  );
+
   CREATE TABLE IF NOT EXISTS fact_embeddings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id TEXT NOT NULL,

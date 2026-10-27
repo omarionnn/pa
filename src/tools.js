@@ -1,6 +1,7 @@
 // Every tool: a JSON schema the model sees, a zod check on what it sends, and a run() that touches the DB.
 // Guards live here, never in routing. The result is the only thing the model may treat as true.
 import * as onethought from "./onethought.js";
+import { taskOfCall } from "./settle.js";
 import { carServicesAt } from "./rides.js";
 import { withCoords } from "./ridelinks.js";
 import { PLAYBOOKS } from "./playbooks.js";
@@ -8703,6 +8704,8 @@ export async function runTool(name, rawInput, ctx) {
     };
   }
   const out = await runToolInner(name, rawInput, ctx);
+  // The task this call worked on, for the turn to write its messages down under (src/settle.js).
+  if (ctx?.turnTasks) { const t = taskOfCall(name, rawInput, out); if (t) ctx.turnTasks.add(t); }
   if (ctx?.conversationId && !ECHOES_MODEL.test(String(name))) offers.noteSource(ctx.conversationId, out);
   // Anything they texted since the last tool call rides on this result, first, so the turn has it
   // while it can still change the work.
