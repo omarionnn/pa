@@ -324,7 +324,7 @@ function stage(html, { signedOut = false, loader = false, state = "", head = "" 
   let out = html
     .replace(/(href|action|src|data-src)="(\/web(?:\/[a-z0-9_-]+)*(?:\?[^"#]*)?)(#[^"]*)?"/g, (m, attr, url, hash = "") => { const to = local(url, signedOut); return to ? `${attr}="${to}${hash}"` : m; })
     .replace(/location\.(href|replace)(=|\()'(\/web[^']*)'/g, (m, how, op, url) => { const to = local(url, signedOut); return to ? `location.${how}${op}'${to}'` : m; })
-    .replace(/<form method="POST"/g, `<form method="GET"`);
+    .replace(/<form([^>]*?) method="POST"/g, `<form$1 method="GET"`);
   if (!/<meta name="robots" content="[^"]*noindex/.test(out)) out = out.replace("<head>", `<head>\n<meta name="robots" content="noindex">`);
   out = out.replace("<head>", `<head>\n${head}${loader ? LOADER : ""}${SHIM}`);
   return out.replace(/<\/body>/, `${state}${TAG}</body>`);
