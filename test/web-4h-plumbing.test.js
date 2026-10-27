@@ -227,6 +227,33 @@ test("take it back: tapped before the send has even been claimed, the claim then
   assert.deepEqual([none.status, none.error], [404, "not_found"]);
 });
 
+test("take it back: tapped before this browser's send has even been read, it waits for that send and wins", async () => {
+  config.burstQuietMs = 60_000;
+  const h = harness();
+  const kofi = browser(KOFI_C);
+  const tapping = cancel(h, kofi, "tb-0008-aaaa");
+  await new Promise(r => setTimeout(r, 120));
+  await send(h, kofi, "tb-0008-aaaa", "the send that arrived second");
+  const out = await tapping;
+  assert.deepEqual([out.status, out.cancelled], [200, true]);
+  h.release();
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(h.turns.length, 0);
+  assert.deepEqual(userRows(KOFI_C), []);
+});
+
+test("take it back: claimed but not yet held (deliver awaiting a read receipt) is still in time, and the hold never happens", async () => {
+  const h = harness();
+  const key = `${KOFI_C}:tb-0009-aaaa`;
+  db.claimInbound({ channel: "web", externalId: key, conversationId: KOFI_C, text: "x" });
+  // Not in deliver's pre-hold window: claimed with nothing held means a turn took it.
+  assert.deepEqual(h.router.takeBack({ conversationId: KOFI_C, id: "tb-0009-aaaa" }), { ok: false, why: "started" });
+  h.router.preHold.set(key, clock.now());
+  assert.deepEqual(h.router.takeBack({ conversationId: KOFI_C, id: "tb-0009-aaaa" }), { ok: true, cancelled: true });
+  assert.ok(db.inboundCancelled("web", key), "deliver checks this right before holdInbound and drops the message");
+  assert.equal(h.router.takeBack({ conversationId: KOFI_C, id: "tb-0009-aaaa" }).already, true);
+});
+
 test("take it back: same-origin and the session's own secret, POST only, signed in only", async () => {
   const h = harness();
   const kofi = browser(KOFI_C);
@@ -319,6 +346,18 @@ test("while you were out: landing on Home first, the line waits for the thread; 
   assert.equal(awayOn((await call(h, { b: laptop, query: { thread: "" } })).body)?.text, "while you were out: 1 done.", "each browser has its own return");
 });
 
+test("while you were out: sending something is being here — a person chatting for hours is never 'out'", async () => {
+  const h = harness();
+  const kofi = browser(KOFI_C);
+  await call(h, { b: kofi, query: { thread: "" } });
+  clock.skip(2 * HOUR);
+  await send(h, kofi, "here-0001-aaaa", "still here");
+  const t = db.createTask(KOFI_C, { title: "a", goal: "g", maxAttempts: 3, label: "Watched it finish" });
+  db.finishTask(KOFI_C, t.id, { state: "done", outcome: "ok" });
+  clock.skip(2 * HOUR);
+  assert.equal(awayOn((await call(h, { b: kofi, query: { thread: "" } })).body), null);
+});
+
 test("while you were out: the line goes under the thread's TODAY, or a TODAY of its own when today has no lines yet", () => {
   const now = clock.now();
   const day = new Intl.DateTimeFormat("en-CA", { timeZone: config.tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
@@ -380,6 +419,7 @@ test("the working line counts: the PDF loop reports each file as it starts it, a
 test("the working line counts: the status label carries the same words, changed at most every 3 s", () => {
   assert.match(COMPOSE_JS, /dNext='Reason is '\+\(t\?String\(t\)\.replace\(\/(?:…|\\u2026)\\s\*\/,', '\)/);
   assert.match(COMPOSE_JS, /wait=3000-\(Date\.now\(\)-dLast\)/);
-  assert.match(COMPOSE_JS, /onit\.setAttribute\('aria-label',dNext\)/);
+  assert.match(COMPOSE_JS, /onit\.setAttribute\('aria-label',dNext\);dSr\.textContent=dNext/);
+  assert.match(COMPOSE_JS, /hh\.setAttribute\('aria-hidden','true'\)/, "the visible line is not read at every step");
   assert.match(COMPOSE_JS, /R\.doing=function\(t\)\{var h=onit&&onit\.querySelector\('\.hand'\);if\(h\)h\.textContent=t\?String\(t\):'on it\.';dLabel\(t\)\}/);
 });

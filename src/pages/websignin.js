@@ -418,6 +418,10 @@ export async function webRequest(args) {
 
 /** A signed-in Web page drawn somewhere else (an Ongoing detail): told its person's theme and form secret, like every other. */
 export function webSignedIn(out, headers) {
+  // §4h: an Ongoing page drawn is a visit too (it shows the very rows "while you were out" counts).
+  if (out?.status === 200 && typeof out.body === "string" && out.body.startsWith("<!doctype html>") && sessionAccount(headers)) {
+    try { db.webVisit(readCookie(headers?.cookie), { awayMs: WEB_AWAY_MS }); } catch { /* never costs a page */ }
+  }
   return themedForAccount(out, headers);
 }
 

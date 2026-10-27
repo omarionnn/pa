@@ -12,8 +12,8 @@ Source: `src/db.js` (`page_sessions.web_seen_at / web_away_from / web_away_to`, 
 
 ## What a person sees
 
-- **While you were out (1).** A signed-in page GET (`/web`, memory, settings, saved) is a visit by this browser
-  (stream/polls/posts are not). A visit ≥3 h after the last starts a return; the next shared-thread view
+- **While you were out (1).** A signed-in page GET (`/web`, memory, settings, saved, Ongoing pages) is a visit by this browser;
+  a Web send is presence (moves last-seen, never starts a return); stream/polls are neither. A visit ≥3 h after the last starts a return; the next shared-thread view
   (`/web?thread`, or `/web` opening on the thread) shows ONE Caveat pen line under `TODAY`
   ("while you were out: 2 done, 1 needs you." — zero parts left out; "2 need you" plural), and spends it.
   Counts: Ongoing's BACK TO YOU `ready` tasks finished in [last visit, return], plus needs-you tasks whose
@@ -38,7 +38,9 @@ The one transition is the `pending_inbound` row's DELETE: the turn starts by del
 (`takePendingInbound` / `takePendingByHandle`), cancel deletes the same row; synchronous, in one IMMEDIATE
 transaction → exactly one wins. `cancelled_at` is written only with a won delete (idempotent second tap).
 A cancel that lands before Router.deliver's claim (send still in flight) inserts the claim row as cancelled,
-so the claim finds a duplicate. Keys are `<session conversation>:<browser id>`: another person's id is 404.
+so the claim finds a duplicate; a tap whose send has not reached the server yet waits up to 1.5 s for it
+(`CANCEL_WAIT_MS`). Claimed but not yet held (deliver awaiting a read receipt): `Router.preHold` lets the take-back
+win and deliver drops it right before `holdInbound` (synchronous check). Keys are `<session conversation>:<browser id>`: another person's id is 404.
 
 ## Drive it
 

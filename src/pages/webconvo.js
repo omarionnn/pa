@@ -690,16 +690,16 @@ function expired(){if(!window.reasonMidTask||!window.reasonMidTask(waiting>0||!!
 function send(p,li,tries){tries=tries||0;if(offline()){state(li,'waiting');return}state(li,'sending');
 fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c,chat:R.chat||'',files:(p.files||[]).map(function(f){return f.id}).filter(Boolean).join(','),voice:p.voice?String(p.voice):''})})
 .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(j){j.status=r.status;return j})})
-.then(function(j){if(li.taken)return;if(j.status===401){expired();return}if(j.ok){if(j.duplicate&&li.isConnected&&li.dataset.pending){li.remove();forget(p.id)}if(li.isConnected&&!j.duplicate){state(li,'sent');li.querySelectorAll('.st').forEach(function(x){x.remove()});waiting++;working(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,'failed')})
-.catch(function(){if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
+.then(function(j){if(li.taken)return;if(j.status===401){expired();return}if(j.ok){if(j.duplicate&&li.isConnected&&li.dataset.pending){li.remove();forget(p.id)}if(li.isConnected&&!j.duplicate){state(li,'sent');li.querySelectorAll('.st').forEach(function(x){x.remove()});waiting++;li.counted=1;working(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,'failed')})
+.catch(function(){if(li.taken)return;if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
 function post(p,li){p.at=p.at||Date.now();keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));var l=li||pendingLine(p);takeBack(l,p);send(p,l)}
 // §4h "take it back": for 5 s after a send, and only until Reason starts on it (its own line arrives
 // in place of this one), a real button under the message, a pen line draining under it. Tapped, the
 // server takes it back if the turn has not taken it (POST /web/send/cancel); too late, it is SENT.
 // The send is never held for it: it went at once, and this only races the turn's own start.
 var TB=${TAKE_BACK_MS};
-function sentAt(li,at){li.querySelectorAll('.tb').forEach(function(x){x.remove()});if(!li.isConnected||!li.dataset.pending||li.querySelector('.st,.retry'))return;var s=document.createElement('p');s.className='st';s.textContent='SENT \\u00b7 '+fmt(at||Date.now());li.appendChild(s)}
-function takeBack(li,p){var left=TB-(Date.now()-(p.at||Date.now()));if(!li||left<300||offline())return;
+function sentAt(li,at){li.querySelectorAll('.tb').forEach(function(x){x.remove()});if(li.dataset.state==='sending'){state(li,'sending');return}if(!li.isConnected||!li.dataset.pending||li.querySelector('.st,.retry'))return;var s=document.createElement('p');s.className='st';s.textContent='SENT \\u00b7 '+fmt(at||Date.now());li.appendChild(s)}
+function takeBack(li,p){if(!li||!p.at||offline())return;var left=TB-(Date.now()-p.at);if(left<300)return;
 var w=document.createElement('span');w.className='tb';var b=document.createElement('button');b.type='button';b.className='tb-b';b.textContent='take it back';w.appendChild(b);
 var l=document.createElement('span');l.className='tb-l';l.setAttribute('aria-hidden','true');l.style.animationDelay=(left-TB)+'ms';w.appendChild(l);li.appendChild(w);
 var t=setTimeout(function(){if(li.querySelector('.tb'))sentAt(li,p.at)},left);
@@ -707,7 +707,7 @@ b.onclick=function(){if(b.disabled)return;b.disabled=true;clearTimeout(t);
 fetch('/web/send/cancel',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,c:R.c})})
 .then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){if(!j||!j.ok){sentAt(li,p.at);return}
 li.taken=true;forget(p.id);delete li.dataset.pending;li.removeAttribute('data-state');li.textContent='';var g=document.createElement('p');g.className='hand tb-gone';g.setAttribute('role','status');g.textContent='taken back. nothing sent.';li.appendChild(g);
-if(waiting)waiting--;if(!waiting)working(false);setTimeout(function(){li.remove()},2000)}).catch(function(){sentAt(li,p.at)})}}
+if(li.counted&&waiting){waiting--;if(!waiting)working(false)}setTimeout(function(){li.remove()},2000)}).catch(function(){sentAt(li,p.at)})}}
 R.api={uid:uid,post:post,pendingLine:pendingLine,state:state};
 // Which Web chat this tab is in, for an Ongoing detail opened from it (src/pages/webongoing.js); the shared thread clears it.
 try{if(R.chat)sessionStorage.setItem('reason-web-chat',R.chat);else sessionStorage.removeItem('reason-web-chat')}catch(x){}
@@ -827,7 +827,7 @@ export function awayWords({ done = 0, needs = 0 } = {}) {
 export function awayFor(conversationId, ret, held = null) {
   if (!ret) return null;
   const { items, approvals, back } = held ?? ongoing(conversationId);
-  const within = (t) => Number.isFinite(t) && t >= ret.from && t <= ret.to;
+  const within = (t) => Number.isFinite(t) && t > ret.from && t <= ret.to;
   const done = back.filter(x => x.state === "ready" && within(x.task?.finished_at)).length;
   const needs = items.filter(x => x.needs && within(x.asked)).length + approvals.filter(a => within(a.at)).length;
   return awayWords({ done, needs });
@@ -1128,6 +1128,8 @@ export async function aboutRequest({ account, headers = {}, readBody, runtime, l
 export const ACK_WAIT_MS = 1500;
 /** Sends still on their way to Router.deliver's claim, `<conversation>:<browser id>`: a take-back that lands first is written down so the claim finds it. */
 const inFlight = new Set();
+/** How long a take-back for an id not seen yet waits for its send to arrive before it is "not found". */
+export const CANCEL_WAIT_MS = 1500;
 
 /**
  * POST /web/send: one message into the person's conversation. Same-origin and the session's own
@@ -1162,6 +1164,8 @@ export async function sendRequest({ account, headers = {}, readBody, router, log
   if (chatRaw && !db.claimWebChat(conv, chatRaw)) { log({ web_send_refused: "chat" }); return fail(404, "not_found"); }
   if (files.length && !(await import("../webuploads.js")).attachmentsFor(conv, files)) return fail(400, "bad_file");
   if (!underLimit(conv)) { log({ web_send_refused: "rate_limited" }); return fail(429, "slow_down"); }
+  // §4h: sending is being here — this browser's last-seen moves on (never starts a return).
+  try { db.webPresent(token); } catch { /* never costs a send */ }
   // S2: what kind of device this was typed on, for "today, on your laptop". Kept by the message's own id.
   try { settle.noteWebDevice(conv, id, settle.deviceClass(headers["user-agent"])); } catch { /* never costs a send */ }
 
@@ -1204,7 +1208,14 @@ export async function cancelRequest({ account, headers = {}, readBody, router, l
   if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) return json(400, { ok: false, error: "bad_id" });
   if (!router?.takeBack) return json(503, { ok: false, error: "unavailable" });
   const conv = account.conversation_id;
-  const out = router.takeBack({ conversationId: conv, id, inFlight: inFlight.has(`${conv}:${id}`) });
+  const key = `${conv}:${id}`;
+  let out = router.takeBack({ conversationId: conv, id, inFlight: inFlight.has(key) });
+  // Tapped before this browser's /web/send has even been read (two connections race): give that send
+  // a moment to arrive, so a tap in time is never answered "not found" while the message goes out.
+  for (let waited = 0; !out.ok && out.why === "not_found" && waited < CANCEL_WAIT_MS; waited += 50) {
+    await new Promise(r => setTimeout(r, 50));
+    out = router.takeBack({ conversationId: conv, id, inFlight: inFlight.has(key) });
+  }
   if (out.ok) return json(200, { ok: true, cancelled: true, ...(out.already ? { already: true } : {}) });
   if (out.why === "started") return json(409, { ok: false, error: "too_late" });
   return json(404, { ok: false, error: "not_found" });

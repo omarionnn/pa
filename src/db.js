@@ -9582,6 +9582,17 @@ export function webVisit(token, { awayMs, now = clock.now() } = {}) {
   return { returned: false };
 }
 
+/** This browser is here (it sent something): its last-seen moves on, without starting a return. */
+export function webPresent(token, now = clock.now()) {
+  if (!token) return false;
+  return db.prepare("UPDATE page_sessions SET web_seen_at = ? WHERE token = ? AND conversation_id IS NOT NULL").run(now, String(token)).changes === 1;
+}
+
+/** Taken back after its claim but before it was held (src/channels/router.js takeBack): the hold then never happens. */
+export function markInboundCancelled(channel, externalId, now = clock.now()) {
+  return db.prepare("UPDATE inbound_messages SET cancelled_at = ? WHERE channel = ? AND external_id = ? AND cancelled_at IS NULL").run(now, channel, externalId).changes === 1;
+}
+
 /**
  * The return this browser has not been shown yet, spent as it is read (once per return): `{ from, to }`
  * or null. One older than `within` is spent and dropped: it belongs to a return that is over.
