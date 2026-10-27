@@ -55,7 +55,7 @@ export function deviceOf(row, conversationId) {
   }
   // Reason's line on Web answers the browser that last wrote: that device.
   return db.db.prepare(`SELECT d.device FROM messages m JOIN web_devices d
-      ON d.conversation_id = m.conversation_id AND m.external_id = m.conversation_id || ':' || d.client_id
+      ON d.conversation_id = m.conversation_id AND d.client_id = substr(m.external_id, length(m.conversation_id) + 2)
     WHERE m.conversation_id = ? AND m.channel = 'web' AND m.role = 'user' AND m.deleted_at IS NULL AND m.at <= ?
     ORDER BY m.at DESC, m.id DESC LIMIT 1`).get(conversationId, row.at ?? clock.now())?.device ?? null;
 }

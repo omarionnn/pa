@@ -305,8 +305,16 @@ export function listHtml(lines, { now = clock.now(), folds = null, conversationI
 }
 
 /** One page of history drawn: its lines with finished tasks settled (src/settle.js), as the thread shows it. */
-export function pageHtml(lines, { conversationId, service = null, now = clock.now() }) {
+export function pageHtml(lines, { conversationId, service = null, now = clock.now(), keep = null }) {
   const folds = settle.foldsFor(conversationId, lines.map(m => m.id));
+  // A window that ends before a task's last message (Saved's ?at=) draws that task's lines as they are,
+  // and the message somebody came to find is never folded away.
+  const here = new Set(lines.map(m => m.id));
+  for (const [tid, f] of [...folds.folds]) {
+    if (here.has(f.lastId) && !(keep != null && f.rows.some(r => r.id === keep))) continue;
+    folds.folds.delete(tid);
+    for (const [mid, t] of [...folds.owner]) if (t === tid) folds.owner.delete(mid);
+  }
   return listHtml(lines, { now, folds, conversationId, service });
 }
 
@@ -670,7 +678,7 @@ if(offline())noteLine("you're offline. i'll send it when you're back.");
 function workIs(w){var lw=document.querySelector('.longwork');if(!lw)return;if(!w){lw.hidden=true;return}lw.dataset.task=w.taskId;lw.querySelector('.lw-line').textContent=w.line;lw.querySelector('.lw-note').textContent=w.note;if(lw.hidden){lw.hidden=false;if(near())bottom()}}
 // S3: a task that finished while this page was open settles in place: its lines become one DONE line.
 function tidyDays(){list.querySelectorAll('li.day').forEach(function(d){var n=d.nextElementSibling;if(!n||n.classList.contains('day'))d.remove()})}
-function settleIn(a){(a||[]).forEach(function(s){if(list.querySelector('.done[data-task="'+s.task+'"]'))return;var at=list.querySelector('.msg:not(.done)[data-id="'+s.ids[s.ids.length-1]+'"]');if(!at)return;var t=document.createElement('ol');t.innerHTML=s.html;var li=t.firstElementChild;if(!li)return;times(li);at.replaceWith(li);s.ids.forEach(function(id){var o=list.querySelector('.msg:not(.done)[data-id="'+id+'"]');if(o)o.remove()});doneInit(li.parentNode)});tidyDays();where()}
+function settleIn(a){(a||[]).forEach(function(s){var was=list.querySelector('.done[data-task="'+s.task+'"]');if(was&&was.dataset.ids===s.ids.join(' '))return;var at=list.querySelector('.msg:not(.done)[data-id="'+s.ids[s.ids.length-1]+'"]')||was;if(!at)return;if(was&&at!==was)was.remove();var t=document.createElement('ol');t.innerHTML=s.html;var li=t.firstElementChild;if(!li)return;times(li);at.replaceWith(li);s.ids.forEach(function(id){var o=list.querySelector('.msg:not(.done)[data-id="'+id+'"]');if(o)o.remove()});doneInit(li.parentNode)});tidyDays();where()}
 var polling=false;function poll(){if(polling||!loaded)return;polling=true;lastPoll=Date.now();fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);settleIn(j.settled);if('work' in j)workIs(j.work);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
 var beat=0;setInterval(function(){if(!live||Date.now()-beat>40000)poll()},4000);
 function stream(){if(!window.EventSource)return;try{es=R.stream.indexOf('http')===0?new EventSource(R.stream+'?after='+R.last,{withCredentials:true}):new EventSource(R.stream+'?after='+R.last)}catch(x){return}es.onopen=function(){live=true;beat=Date.now();if(lost){lost=0;noteLine('')}};
@@ -687,7 +695,7 @@ var loading=false;function older(){if(loading||!R.more)return;loading=true;start
 fetch('/web/history?before='+R.first,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){var t=document.createElement('ol');t.innerHTML=j.html||'';
 var fd=list.firstElementChild;if(fd&&fd.classList.contains('day')&&t.querySelector('li.day[data-day="'+fd.dataset.day+'"]'))fd.remove();
 t.querySelectorAll('.msg[data-id]').forEach(function(li){if(has(li.dataset.id))li.remove()});
-var anchor=list.firstChild;times(t);while(t.firstChild)list.insertBefore(t.firstChild,anchor);doneInit();
+var anchor=list.firstChild;times(t);while(t.firstChild)list.insertBefore(t.firstChild,anchor);tidyDays();doneInit();
 if(j.first)R.first=j.first;R.more=!!j.more;start.classList.remove('finding');start.textContent='';if(!R.more&&j.start){var s=document.createElement('p');s.className='lbl';s.textContent=j.start;start.appendChild(s)}
 if(a)window.scrollBy(0,a.getBoundingClientRect().top-top);where()}).catch(function(){}).then(function(){loading=false;start.classList.remove('finding');if(R.more)hook()})}
 function hook(){start.textContent='';var b=document.createElement('button');b.type='button';b.className='act2';b.textContent='\\u2191 SHOW EARLIER MESSAGES';b.onclick=older;start.appendChild(b)}
@@ -715,7 +723,9 @@ stream();if(R.more)hook();bottom();where()}
 // L1: the thread opens with its composer and tabs already live; the newest page comes from the server.
 // Slow (over 8 s) or failed, it says so in the same place, with a way to try again.
 function opening(){var l1=document.querySelector('.l1');function slow(){if(!l1)return;var s=l1.querySelector('[role=status]');if(s)s.textContent='STILL LOOKING…';l1.querySelector('.l1-slow').hidden=false;l1.querySelector('.l1-again').hidden=false}var tm=setTimeout(slow,8000);
-fetch('/web/history',{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}if(!r.ok)throw 1;return r.json()}).then(function(j){clearTimeout(tm);var t=document.createElement('ol');t.innerHTML=j.html||'';var anchor=list.firstChild;while(t.firstChild)list.insertBefore(t.firstChild,anchor);
+fetch('/web/history',{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}if(!r.ok)throw 1;return r.json()}).then(function(j){clearTimeout(tm);var t=document.createElement('ol');t.innerHTML=j.html||'';t.querySelectorAll('.msg[data-id]').forEach(function(li){if(has(li.dataset.id))li.remove()});
+t.querySelectorAll('.msg[data-cid]').forEach(function(li){var p=list.querySelector('.msg[data-pending="'+li.dataset.cid+'"]');if(p){p.remove();forget(li.dataset.cid)}});
+var anchor=list.firstChild;while(t.firstChild)list.insertBefore(t.firstChild,anchor);
 R.first=j.first||0;R.last=Math.max(R.last,j.last||0);R.more=!!j.more;if(l1)l1.remove();list.removeAttribute('aria-busy');
 start.textContent='';if(!R.more&&j.start){var s=document.createElement('p');s.className='lbl';s.textContent=j.start;start.appendChild(s)}
 if('work' in j)workIs(j.work);ready()}).catch(function(e){if(e!==0){clearTimeout(tm);slow()}})}
@@ -759,7 +769,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
   const apprLbl = `REASON · ${(askedIn?.source ?? sourceLabel(null, service)).toUpperCase()} · ${timeFmt().format(asked ?? askedIn?.at ?? now)}`;
   const appr = approvals.length ? `<div class="msg re approval">${label(apprLbl)}${approvalCard({ title: approvals[0].title, money: approvals[0].money, href: approvals[0].href })}</div>` : "";
   const count = items.length + approvals.length + back.length;
-  const drawn = pageHtml(lines, { conversationId: conv, service, now });
+  const drawn = pageHtml(lines, { conversationId: conv, service, now, keep: found });
   // L1: with script, the page opens with its composer and tabs live and the thread's place held by
   // ruled lines; the newest page arrives from /web/history. Without script it is all here at once.
   const thread = deferred

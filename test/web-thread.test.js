@@ -273,9 +273,15 @@ test("S3: a done task settles into one DONE line at its last message; open work 
   assert.ok(!/dl-fresh/.test(done[0]), "six days on, no 'just wrapped' line");
   assert.ok(!html.includes(`data-id="${a.id}" data-at`), "the folded messages are not drawn on their own");
   for (const r of [between, d, shared]) assert.match(html, new RegExp(`<li class="msg (you|re)" id="m-${r.id}" data-id="${r.id}"`), "everything else stays as it was");
-  // The fold comes with the page that holds its last message; an older page skips its earlier lines.
+  // The fold comes with the page that holds its last message. A window that ends before it (Saved's
+  // ?at=, or an older page whose newer half is already folded on screen, which the page script drops)
+  // draws the lines as they are; and the message somebody came to find is never folded away.
   const older = convo.pageHtml(lines.filter(m => m.id === a.id || m.id === between.id), { conversationId: KOFI_C, now });
-  assert.ok(!/class="msg done"/.test(older) && !older.includes(`data-id="${a.id}"`) && older.includes(`data-id="${between.id}"`));
+  assert.ok(!/class="msg done"/.test(older) && older.includes(`data-id="${a.id}"`) && older.includes(`data-id="${between.id}"`));
+  const kept = convo.pageHtml(lines, { conversationId: KOFI_C, now, keep: b2.id });
+  assert.ok(!kept.includes(`data-task="${t.id}"`) && kept.includes(`id="m-${b2.id}"`), "?at= a folded message: drawn, findable");
+  const page = convo.renderConversation({ account: db.getAccount(KOFI_C), csrf: "c", lines: [], more: false, sendId: "s" });
+  assert.match(page, /if\(has\(li\.dataset\.id\)\)li\.remove\(\)\}\);\s*var anchor=list\.firstChild;times\(t\);while\(t\.firstChild\)list\.insertBefore\(t\.firstChild,anchor\);tidyDays\(\)/, "older lines already folded on screen are dropped");
 });
 
 test("S3: the DONE line's meta — JUST NOW · money · where for a task just finished (with the Caveat line), else day · where · time", () => {
