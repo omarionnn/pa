@@ -417,7 +417,7 @@ test("the page itself: the composer posts to /web/send with the session's secret
   assert.equal(out.headers["Cache-Control"], "no-store");
   const body = out.body;
   assert.match(body, /<form class="cform" method="POST" action="\/web\/send"><input type="hidden" name="c" value="[^"]+"><input type="hidden" name="id" value="[0-9a-f-]{36}">/);
-  assert.match(body, /<label class="sr" for="c-input">Message Reason<\/label><input id="c-input" type="text" name="text"/);
+  assert.match(body, /<label class="sr" for="c-input">Message Reason<\/label><textarea id="c-input" name="text"/);
   assert.match(body, /placeholder="Tell Reason what you need"/);
   assert.match(body, /<button class="send" type="submit" aria-label="Send">/);
   assert.match(body, /<ol class="thread" role="log" aria-live="polite"/);

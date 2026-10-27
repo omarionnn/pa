@@ -23,6 +23,7 @@ import { checkUrl } from "./pictures.js";
 import { pdfText } from "./pdf.js";
 import { hear, hearingStatus, cannotHearLine } from "./voice.js";
 import { clock } from "./config.js";
+import { fitPhoto, FIT_BYTES } from "./webshrink.js";
 import { readCookie } from "./pages/access.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount } from "./pages/websignin.js";
 
@@ -74,7 +75,7 @@ async function pagesOf(bytes, read = pdfText) {
  * POST /web/upload. The body is the file itself; `X-Reason-Name` its name (URI-encoded),
  * `X-Reason-Voice: 1` for a recording from the mic (with `X-Reason-Seconds`).
  */
-export async function uploadRequest({ account, headers = {}, readBody, log = () => {}, readPdf = pdfText }) {
+export async function uploadRequest({ account, headers = {}, readBody, log = () => {}, readPdf = pdfText, fit = fitPhoto, listen = hear, canHear = hearingStatus }) {
   const token = readCookie(headers.cookie);
   if (!sameOrigin(headers) || !same(headers["x-reason-csrf"], db.pageSessionCsrf(token))) {
     log({ web_upload_refused: "origin_or_token" });
@@ -90,15 +91,41 @@ export async function uploadRequest({ account, headers = {}, readBody, log = () 
   try { name = decodeURIComponent(String(headers["x-reason-name"] ?? "")); } catch { name = ""; }
   const voice = String(headers["x-reason-voice"] ?? "") === "1";
   const seconds = Math.min(600, Math.max(0, Math.round(Number(headers["x-reason-seconds"]) || 0)));
-  const m = uploads.store({ conversationId: conv, bytes, name: voice ? `voice-note` : name, voice, extra: voice && seconds ? { seconds } : {} });
+  // A photo bigger than the model looks at is made to fit here (src/webshrink.js), not refused.
+  let body = bytes;
+  const what = voice ? null : uploads.classify(bytes);
+  if (what?.kind === "image" && bytes.length <= uploads.LIMITS.image && bytes.length > FIT_BYTES) {
+    const f = await fit(bytes);
+    if (!f.ok) { log({ web_upload_refused: "could_not_fit", bytes: bytes.length }); return json(413, { ok: false, error: "too_big", kind: "image" }); }
+    body = f.bytes;
+    if (f.changed) name = (name.replace(/\.[A-Za-z0-9]{2,5}$/, "") || "photo") + ".jpg";
+  }
+  const m = uploads.store({ conversationId: conv, bytes: body, name: voice ? `voice-note` : name, voice, extra: voice && seconds ? { seconds } : {} });
   if (m.error) {
     log({ web_upload_refused: m.error, bytes: bytes.length });
     return json(m.error === "too_big" ? 413 : m.error === "unsupported" ? 415 : 400, { ok: false, error: m.error, ...(m.kind ? { kind: m.kind } : {}) });
   }
   let rec = m;
   if (m.kind === "pdf") { const pages = await pagesOf(bytes, readPdf); if (pages) rec = uploads.update(m.id, { pages }) ?? m; }
+  // Voice, sheet-voice 4B / L9 where the browser hears nothing itself (Firefox): the words written
+  // down here, now, so they can be shown before the note is sent. Kept on the upload, so the send
+  // that follows never listens twice (prepareSend).
+  let words = null;
+  if (rec.kind === "voice" && String(headers["x-reason-hear"] ?? "") === "1" && canHear().ok) {
+    let r = null;
+    try { r = await listen({ url: uploads.uploadUrl(rec.id, rec.name), filename: rec.name }); } catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+    if (r?.ok && !r.silent && String(r.text ?? "").trim()) {
+      words = String(r.text).trim();
+      rec = uploads.update(rec.id, { transcript: words }) ?? rec;
+      log({ web_voice_heard_early: rec.name, chars: words.length });
+    } else {
+      // Tried once and nothing came of it: marked, so the send that follows doesn't listen again.
+      rec = uploads.update(rec.id, { unheard: true }) ?? rec;
+      log({ web_voice_unheard_early: rec.name, why: r?.error ?? (r?.silent ? "silent" : "no words") });
+    }
+  }
   log({ web_upload: rec.kind, bytes: rec.bytes });
-  return json(200, { ok: true, id: rec.id, kind: rec.kind, name: rec.name, label: uploads.slipLabel(rec), pages: rec.pages ?? null, seconds: rec.seconds ?? null, src: uploads.uploadPath(rec.id, rec.name) });
+  return json(200, { ok: true, id: rec.id, kind: rec.kind, name: rec.name, label: uploads.slipLabel(rec), pages: rec.pages ?? null, seconds: rec.seconds ?? null, src: uploads.uploadPath(rec.id, rec.name), ...(words ? { words } : {}) });
 }
 
 /**
@@ -123,7 +150,7 @@ export async function prepareSend({ conversationId, text = "", files = [], liste
     const kept = uploads.meta(a.web_upload)?.transcript;
     if (kept) { words = kept; Object.assign(a, { transcribed: "server", transcript: kept }); continue; }
     let r = null;
-    if (canHear().ok) {
+    if (canHear().ok && !uploads.meta(a.web_upload)?.unheard) {
       try { r = await listen({ url: a.url, filename: a.filename }); } catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
     }
     if (r?.ok && !r.silent && String(r.text ?? "").trim()) {
