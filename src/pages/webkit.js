@@ -119,6 +119,44 @@ export const NOTHING_CHARGED = "Nothing is charged until you say so in the chat.
 export const onIt = (hidden = false) =>
   `<div class="onit" role="status" aria-label="Reason is working on it"${hidden ? " hidden" : ""}><span class="ring">${bubble(4)}</span><span class="hand">on it.</span></div>`;
 
+// ---------------------------------------------------------------- §4h: paper grain, late night, motion
+// v4 handoff §4h items 2, 3 and 7 (reference sheet-small-details.html), hex for hex.
+/** The sheet's fractal-noise tile (160px), laid over the ground only: never on text or lifted paper. */
+export const GRAIN = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .35 0 0 0 0 .28 0 0 0 0 .2 0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.35'/%3E%3C/svg%3E")`;
+/** Night's ground between 11 PM and 5 AM on the person's own clock. Nothing else changes. */
+export const LATE_GROUND = "#221a13";
+// One source for the hour test, run in the browser (its own clock) and here in the tests.
+const LATE_SRC = "function(d){var h=d.getHours();return h>=23||h<5}";
+/** Late night: 23:00 up to (not including) 05:00, in the clock of the Date given (the browser's local time). */
+export const isLateNight = new Function(`return ${LATE_SRC}`)();
+// Set before first paint; re-checked every minute. `late-go` lets the ground fade over 2s only when it
+// turns while the page is open (never on load, never on a theme switch).
+const LATE_HEAD = `var late=${LATE_SRC};if(late(new Date()))h.classList.add('late');`;
+const LATE_TICK = `var late=${LATE_SRC};setInterval(function(){var on=late(new Date());if(on===h.classList.contains('late'))return;h.classList.add('late-go');h.classList.toggle('late',on);setTimeout(function(){h.classList.remove('late-go')},2100)},60000);`;
+// The grain sits on every surface drawn in the ground itself (the page, and the sticky/fixed bars and
+// sheets that cover it), tiled from one anchor (the viewport, attachment fixed), so no bar shows a seam at
+// its edge; the site does the same. Off for prefers-contrast: more.
+const GROUND_SURFACES = "body,.top,.netline,.composer,.tabs,.menu,.listen,.fg-wrap,.loader";
+const MOTION_CSS = `@property --ground{syntax:"<color>";inherits:true;initial-value:${TOKENS.paper.ground}}
+:root{--grain:${GRAIN}}
+@media (prefers-contrast:more){:root{--grain:none}}
+html :is(${GROUND_SURFACES}){background-image:var(--grain);background-size:160px 160px;background-attachment:fixed}
+:root.late[data-theme=dark]{--ground:${LATE_GROUND}}
+@media (prefers-color-scheme:dark){:root.late:not([data-theme=light]){--ground:${LATE_GROUND}}}
+:root.late-go{transition:--ground 2s ease}
+.pen-in{animation:pen-in .5s cubic-bezier(.4,.1,.3,1) both;width:fit-content;max-width:100%}
+@keyframes pen-in{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0)}}
+.stamp-in{animation:stamp-in .45s cubic-bezier(.3,1.4,.5,1) both}
+@keyframes stamp-in{0%{opacity:0;scale:1.8}58%{opacity:1;scale:.92}100%{opacity:1;scale:1}}
+`;
+/**
+ * The browser half of items 2 and 3: `reasonInk(el, 'pen-in' | 'stamp-in')` plays the arrival once on an
+ * element that has just appeared live. Callers only ever pass something new (a live event, or a line
+ * the page's own script just drew after a send); nothing drawn at load or brought back from history.
+ * The stamp's own tilt stays in `transform`; the press is `scale`, so the two never fight.
+ */
+export const INK_JS = `window.reasonInk=function(el,c){if(!el||!el.classList)return;el.classList.remove(c);void el.offsetWidth;el.classList.add(c);el.addEventListener('animationend',function f(){el.classList.remove(c);el.removeEventListener('animationend',f)})};`;
+
 // ---------------------------------------------------------------- theme
 const THEME_KEY = "reason-theme";
 const tint = `function tint(){var t=document.documentElement.dataset.theme,c=t==='dark'?'${TOKENS.night.ground}':t==='light'?'${TOKENS.paper.ground}':null;document.querySelectorAll('meta[name=theme-color]').forEach(function(m){m.setAttribute('content',c||m.getAttribute('data-auto'))})}`;
@@ -139,12 +177,12 @@ const PAGE_JS = `(function(){var W=window,D=document;if(W.__reasonPage)return;va
 const HEAD_JS = `(function(){try{${tint}var h=document.documentElement,a=h.getAttribute('data-account-theme');`
   + `if(a==='paper'||a==='night')localStorage.setItem('${THEME_KEY}',a==='paper'?'light':'dark');else if(a==='auto')localStorage.removeItem('${THEME_KEY}');`
   + `var t=localStorage.getItem('${THEME_KEY}');if(t==='light'||t==='dark'){h.dataset.theme=t;tint()}h.classList.add('js');if(localStorage.getItem('${OG_KEY}')==='off')h.classList.add('og-off');`
-  + `if(h.dataset.loader&&!sessionStorage.getItem('reason-web-loaded')&&!matchMedia('(prefers-reduced-motion: reduce)').matches)h.classList.add('loading')}catch(e){}})();`;
+  + `${LATE_HEAD}if(h.dataset.loader&&!sessionStorage.getItem('reason-web-loaded')&&!matchMedia('(prefers-reduced-motion: reduce)').matches)h.classList.add('loading')}catch(e){}})();`;
 // The Paper · Night · Auto radio group, wherever it is drawn; and the loader's exit.
 const THEME_JS = `(function(){${tint}var h=document.documentElement;
 function show(){var cur=h.dataset.theme==='light'?'paper':h.dataset.theme==='dark'?'night':'auto';document.querySelectorAll('.themes').forEach(function(f){f.hidden=false;f.querySelectorAll('input').forEach(function(i){i.checked=i.value===cur})})}
 function apply(n){var v=n==='paper'?'light':n==='night'?'dark':'';
-try{if(v)localStorage.setItem('${THEME_KEY}',v);else localStorage.removeItem('${THEME_KEY}')}catch(x){}if(v)h.dataset.theme=v;else delete h.dataset.theme;tint();show();keep(n)}window.reasonTheme=apply;
+try{if(v)localStorage.setItem('${THEME_KEY}',v);else localStorage.removeItem('${THEME_KEY}')}catch(x){}if(v)h.dataset.theme=v;else delete h.dataset.theme;tint();show();keep(n);try{document.dispatchEvent(new Event('reason-theme'))}catch(x){}}window.reasonTheme=apply;${LATE_TICK}
 document.addEventListener('change',function(e){var i=e.target;if(!i||!i.closest||!i.closest('.themes'))return;apply(i.value)});show();
 function keep(n){var c=h.getAttribute('data-c');if(!c||!h.hasAttribute('data-account-theme'))return;h.setAttribute('data-account-theme',n);try{fetch('/web/settings',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded',Accept:'application/json'},body:'do=theme&theme='+encodeURIComponent(n)+'&c='+encodeURIComponent(c)})}catch(x){}}
 if(h.classList.contains('loading')){var t0=Date.now();try{sessionStorage.setItem('reason-web-loaded','1')}catch(x){}window.addEventListener('load',function(){setTimeout(function(){h.classList.add('loaded');setTimeout(function(){h.classList.remove('loading','loaded')},420)},Math.max(0,1200-(Date.now()-t0)))})}})();`;
@@ -246,7 +284,7 @@ html.loading.loaded .loader{opacity:0}
 @keyframes ing{to{width:1.55ch}}
 @media (min-width:900px){.wm{font-size:26px}.wm .bub{width:.577em;height:.577em}.wm-w .bub{margin-top:calc(.2115em + 1.5px)}.lbl{font-size:11px}.hand{font-size:22px}.h1{font-size:64px}.act{font-size:32px}.act2{font-size:12px}}
 @media (max-width:359px){:root{--gut:20px}.h1{font-size:38px}}
-${LOAD_CSS}
+${MOTION_CSS}${LOAD_CSS}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}html.loading .loader{display:none}}
 `;
 
@@ -272,7 +310,7 @@ export function webPage({ title = "Reason", header = "", body = "", css = "", sc
 <meta name="theme-color" content="${TOKENS.night.ground}" data-auto="${TOKENS.night.ground}" media="(prefers-color-scheme: dark)">
 ${webIconLinks()}
 ${head ? `${head}\n` : ""}<title>${esc(title)}</title>
-<script>${PAGE_JS}</script>
+<script>${PAGE_JS}${INK_JS}</script>
 <script>${HEAD_JS}</script>
 <style>${KIT_CSS}${NOTIFY_CSS}${css}</style>
 </head><body${bodyClass ? ` class="${esc(bodyClass)}"` : ""}>${skipped.link}${loader ? `<div class="loader" role="status" aria-label="Loading"><p><span class="wm-w">reas${bubble(4)}${WORDMARK_O}n<span class="ing">ing</span></span></p></div>` : ""}
