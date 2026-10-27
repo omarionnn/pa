@@ -406,6 +406,10 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
+### Baseline — 4,220 pass, 0 failures after the wax-seal book (wt/stamps-wax, 2026-10-27)
+
+`npm run test:offline` under `env -i`: 4,334 tests, 4,220 passing, 0 failing. New: `test/stamps-wax.test.js` (18); `bin/web-seals-drive.mjs`: 12 steps, all ok. See [features/web-stamps-wax.md](features/web-stamps-wax.md).
+
 ### Baseline — 4,175 pass, 0 failures after Stamps (wt/stamps, 2026-10-27)
 
 `npm run test:offline` under `env -i`: 4,297 tests, 4,175 passing, 0 failing, 122 skipped. New: `test/stamps.test.js` (12), `test/stamps-web.test.js` (12); `bin/web-stamps-drive.mjs`: 11 steps, all ok. See [features/web-stamps.md](features/web-stamps.md).
@@ -674,6 +678,7 @@ Reason Web §4h small details (pen writes in, stamp lands, paper grain, late nig
 driven in Chromium by `test/web-4h-motion-browser.test.js`.
 Reason Web daily edition Home (REASON_WEB_DAILY; edition table, overnight claude-cli greeting, one question → Memory): [features/web-daily.md](features/web-daily.md); `test/web-daily.test.js`.
 Reason Web Stamps + shared stamps (`REASON_WEB_DAILY`; awarding at real completions, the book, share/revoke, `/s/<id>` + og card, redaction): [features/web-stamps.md](features/web-stamps.md); `bin/web-stamps-drive.mjs` drives and draws it beside `reference/stamps.html`.
+Reason Web wax-seal book (`REASON_STAMPS_WAX` on top of `REASON_WEB_DAILY`; seals, patch/ticket/suite key, compliments card + story, Home tile): [features/web-stamps-wax.md](features/web-stamps-wax.md); `bin/web-seals-drive.mjs` drives and draws it.
 Reason Web shell (wordmark text + nowrap, logo → `/web?home`, link cards for `/web`, `/privacy`, `/terms`): [features/web-shell.md](features/web-shell.md).
 Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start the cage with `REASON_PAGES_V2=1`): [features/pages-v2.md](features/pages-v2.md); `scripts/pages-v2-preview.mjs` + `scripts/pages-v2-compare.mjs`. Print (§4h-8, `src/pages/print.js`): same file, "Print"; `pages-v2-preview.mjs <dir> --print`.
 

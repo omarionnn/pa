@@ -299,7 +299,7 @@ test("REDACTION: merchant, company, city, price and person never reach the share
   const SECRETS = ["Comcast", "Xfinity", "Walgreens", "Lisbon", "Portugal", "$40", "SAVED", "40 dollars", "Kofi", "Mensah", "Nyarko", "replacement lamp"];
   const detail = { place: "Comcast Xfinity (Dr. Kofi Mensah)", merchant: "Walgreens", savedCents: 4000, city: "Lisbon, Portugal", what: "replacement lamp", minutes: 52, days: 9, count: 3, presses: 3 };
   const b = browser(OWNER_C);
-  for (const type of stamps.TYPES) {
+  for (const type of stamps.TYPES.filter(t => !stamps.CATALOG[t].waxOnly)) {
     const id = seed(OWNER_C, type, { detail, at: T0 + stamps.TYPES.indexOf(type) * 1000 });
     const { json } = await share(b, id);
     const sid = json.url.split("/").pop();

@@ -36,7 +36,7 @@
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
-//   GET  /web/stamps, POST /web/api/stamps/{id}/share[/revoke], GET …/{id}/image.png   Stamps (src/pages/webstamps.js; REASON_WEB_DAILY)
+//   GET  /web/stamps, POST /web/api/stamps/{id}/share[/revoke], GET …/{id}/image.png, …/{id}/story.png   Stamps (src/pages/webstamps.js; REASON_WEB_DAILY)
 //   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)
 //   GET  /web/icons/{file}            Web's favicons and home-screen icon (src/pages/webnotify.js)
 //   GET  /web/saved[/<kind>/<id>], POST /web/saved/pin|remove|restore   Saved (src/pages/websaved.js; index src/saved.js)
@@ -305,7 +305,7 @@ export function createServer({ router, runtime, log = () => {} }) {
         ?? /^\/web\/(chats\/recent)$/.exec(url.pathname)
         ?? /^\/web\/(daily\/(?:answer|later))$/.exec(url.pathname)
         ?? /^\/web\/(send\/cancel)$/.exec(url.pathname)
-        ?? /^\/web\/(stamps|api\/stamps\/\d{1,12}\/(?:share(?:\/revoke)?|image\.png))$/.exec(url.pathname)
+        ?? /^\/web\/(stamps|api\/stamps\/\d{1,12}\/(?:share(?:\/revoke)?|image\.png|story\.png))$/.exec(url.pathname)
         ?? /^\/web\/(saved(?:\/(?:pin|remove|restore|(?:page|call|receipt|event|album)\/[A-Za-z0-9_-]{1,40}|page\/[A-Za-z0-9_-]{1,40}\/frame))?)$/.exec(url.pathname);
       if (webRoute && webOn()) {
         let out;

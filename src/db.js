@@ -5819,6 +5819,7 @@ export function finishResearch(conversationId, id, { cutShort = "" } = {}) {
   const now = clock.now();
   db.prepare("UPDATE research SET state = 'done', cut_short = ?, updated_at = ?, finished_at = ? WHERE id = ? AND conversation_id = ?")
     .run(cutShort ?? "", now, now, id, conversationId);
+  emitCompletion("research", { conversationId, id });
   return getResearch(conversationId, id);
 }
 
@@ -5839,6 +5840,7 @@ export function markResearchEnough(conversationId, id, { why = "" } = {}) {
   db.prepare(`UPDATE research SET state = 'done', queries = '[]', enough_at = ?, enough_why = ?, updated_at = ?, finished_at = ?
     WHERE id = ? AND conversation_id = ? AND enough_at IS NULL`)
     .run(now, String(why ?? "").slice(0, 300), now, now, id, conversationId);
+  emitCompletion("research", { conversationId, id });
   return getResearch(conversationId, id);
 }
 
@@ -10143,7 +10145,8 @@ historyBus.setMaxListeners(0);
 /**
  * Errands finishing, as events (2026-10-27, src/stamps.js): `task` { conversationId, id } when a task
  * is closed done, `call` { conversationId, id } when a call's outcome is written, `purchase`
- * { buyConversationId } when an order is placed or a ticket issued. Told after the write, and a
+ * { buyConversationId } when an order is placed or a ticket issued, `research` { conversationId, id }
+ * when a research run is closed done. Told after the write, and a
  * listener's failure never costs the write. Nobody listens unless src/stamps.js is loaded.
  */
 export const completionBus = new EventEmitter();
