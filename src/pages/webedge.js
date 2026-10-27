@@ -92,7 +92,7 @@ const EDGE_CSS = `
 @media (min-width:900px){.eg-head{padding:22px clamp(20px,4vw,48px)}.eg{padding:60px 32px 80px}.eg .h1{font-size:64px}.eg .act{font-size:28px}.eg-m .tr .act{font-size:30px}.torn{width:180px;height:124px}.eg-ring{width:140px;height:140px}.eg-q{font-size:18px}.eg-m .hand{font-size:26px}}
 `;
 
-const head = () => `<header class="eg-head">${wordmark({ href: "/web" })}</header>`;
+const head = () => `<header class="eg-head">${wordmark({ href: "/web?home" })}</header>`;
 const siteLink = () => {
   const site = String(config.siteUrl || "").replace(/\/+$/, "");
   if (!site) return "";
