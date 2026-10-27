@@ -282,7 +282,10 @@ test("browsers: sessions never used since browsers were noted are one quiet coun
   const me = browser(OWNER_C);
   const body = await page(h, me);
   assert.equal((body.match(/class="br-row/g) ?? []).length, 1, "only this one is listed");
-  assert.match(body, /<p class="st-quiet">And 3 older sign-ins from Reason's pages, from before browsers were noted\. Signing out everywhere ends them too\.<\/p>/);
+  assert.match(body, /<p class="st-quiet">And 3 other sign-ins that haven't opened Reason Web, like Reason's pages\. Signing out everywhere ends them too\.<\/p>/);
+  assert.match(body, /class="br-row here"/, "this browser is listed");
+  db.db.prepare("DELETE FROM page_sessions WHERE token LIKE 'page-1-%' OR token LIKE 'page-2-%'").run();
+  assert.match(await page(h, me), /And 1 other sign-in that hasn't opened Reason Web, like Reason's pages\. Signing out everywhere ends it too\./);
   await post(h, me, { do: "everywhere" });
   assert.equal(db.pageSessionsFor(OWNER_C).length, 0);
 });

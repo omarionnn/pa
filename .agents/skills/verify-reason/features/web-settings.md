@@ -23,7 +23,7 @@ switch saves back), `src/deliver.js` (`keptOnWeb`), `src/db.js` (`accounts.web_r
 - **Private by default** — NOT drawn (`PRIVATE_BY_DEFAULT = false`): approvals are asked in the
   text with their details today (SCOPE.md question).
 - **Signed-in browsers** — every `page_sessions` row of this person still inside 90 d / 30 d idle;
-  device from `user_agent` ("Chrome on Mac"); rows never used on Web since then (no user agent: Reason-page code sessions, /ops) are one quiet count ("And N older sign-ins…"), ended by Sign out everywhere; last
+  device from `user_agent` ("Chrome on Mac"); rows never used on Web since then (no user agent: Reason-page code sessions, /ops) are one quiet count ("And N other sign-ins that haven't opened Reason Web…"), ended by Sign out everywhere; last
   active (NOW / N MIN AGO / N HOURS AGO / OCT 19). SIGN OUT carries a hash of the token
   (`sessionHandle`), matched only among this person's rows. Sign out everywhere deletes all of them
   and clears this cookie (→ `/web?out=1`).

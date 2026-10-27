@@ -231,7 +231,7 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
       + `</div>`;
   }).join("");
   const browsersSec = `<section class="st-sec" id="browsers" aria-labelledby="br-h"><h2 id="br-h">SIGNED-IN BROWSERS</h2>${rows}`
-    + (older ? `<p class="st-quiet">And ${older} older sign-in${older === 1 ? "" : "s"} from Reason's pages, from before browsers were noted. Signing out everywhere ends ${older === 1 ? "it" : "them"} too.</p>` : "")
+    + (older ? `<p class="st-quiet">And ${older} other sign-in${older === 1 ? "" : "s"} that ${older === 1 ? "hasn't" : "haven't"} opened Reason Web, like Reason's pages. Signing out everywhere ends ${older === 1 ? "it" : "them"} too.</p>` : "")
     + post(csrf, "everywhere", `<button class="every" type="submit">Sign out everywhere</button>`)
     + saved(done === "browsers") + `</section>`;
 
