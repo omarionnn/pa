@@ -409,7 +409,7 @@ Per-person switch `invite_allowances.enabled`; `scripts/grant-invites.js <number
 ### Baseline — 3,687 pass, **0 failures** after the invite card (#159, 2026-10-26)
 
 Per-inviter card `GET /i/{token}/card.png` (also `/p/i/…`; src/invitecard.js, fonts inline from assets/fonts, cached `data/invite-cards/<sha16>.png` by name + INVITE_CARD_VERSION, `assets/og.png` if no browser). Invite og:title "Reason — your personal concierge", description "Free for you, for good.". Caged check: insert an `invites` row (node:sqlite), `curl -o x.png 127.0.0.1:8796/p/i/<token>/card.png` → 200 image/png 1200×630; POST → 405; unknown token → 404. **3,809 tests, 3,687 passing, 0 failing, 122 skipped.**
-**Cached pictures carry the pen (2026-10-26, #178):** the invite card, the drawn event cover (`g-<id>-<hash>.jpg`, `?v=g…`) and the page card (`<id>-r<rev>-<BRAND_ART>.png`, `?v=<rev>-<BRAND_ART>`) are drawn once and kept. When the pen in `src/pages/brand.js` changes, bump `BRAND_ART` and `INVITE_CARD_VERSION`. Prove it on the live card's pixels, not the HTML: #175 went live with red pages and orange cards.
+**Cached pictures carry the pen (2026-10-26, #177 + #178):** the invite card (`INVITE_CARD_VERSION`), the drawn event cover (`DRAWN_COVER_VERSION` in src/eventcover.js; `g-<id>-<hash>.jpg`, `?v=g…`) and the page card (`<id>-r<rev>-<BRAND_ART>.png`, `?v=<rev>-<BRAND_ART>`) are each drawn once and kept. When the pen in `src/pages/brand.js` changes, bump all three. Prove it on the live card's pixels, not the HTML: #175 went live with red pages and orange cards.
 
 ### Baseline — 3,682 pass, **0 failures** after the invite page v2 (#156, 2026-10-25)
 
