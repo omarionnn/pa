@@ -17,6 +17,7 @@
 // one copy is display:none (which also takes it out of the accessibility tree), never moved by script.
 import { TOKENS, WEB_FONTS } from "./webkit.js";
 import { THEME, iconLinks } from "./render.js";
+import { WORDMARK_O as WM_O } from "./wordmark.js";
 
 export const PRIVATE_FOOT = "Only you can see this page. Reply to Reason to change anything.";
 export const PUBLIC_FOOT = "Anyone with this link can see it. Made with Reason.";
@@ -240,8 +241,6 @@ details.join>summary::-webkit-details-marker{display:none}
 `;
 
 // ---------------------------------------------------------------- small parts
-// The o the bubble stands for: in the text, never seen, so copy-paste and readers get "reason", not "reasn".
-const WM_O = `<span style="position:absolute;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap">o</span>`;
 const BUBBLE = "M20 5C28.8 5 36 10.9 36 18.2S28.8 31.4 20 31.4c-1.9 0-3.7-.3-5.4-.8L7 35l2.3-6.6C6.3 26.1 4 22.4 4 18.2 4 10.9 11.2 5 20 5z";
 export const wordmark = () =>
   `<span class="wm" role="img" aria-label="reason">reas<svg aria-hidden="true" viewBox="0 0 40 40"><path d="${BUBBLE}" fill="none" stroke="var(--pen)" stroke-width="5" stroke-linejoin="round"/></svg>${WM_O}n</span>`;
