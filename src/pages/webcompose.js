@@ -297,7 +297,7 @@ a.slip.fslip:hover{color:var(--hov)}
 .listen[data-mode=paused] .ls-int{color:inherit}
 body.listening{overflow:hidden}
 @media (min-width:900px){.photo img{height:100%}.cform textarea{font-size:24px;min-height:48px}.home .cform textarea{font-size:26px}
-.addsheet{position:absolute;left:0;right:0;bottom:0;padding:20px 24px 30px;box-shadow:var(--sh)}
+.addsheet{position:absolute;left:-12px;right:auto;width:380px;bottom:calc(100% - 4px);padding:20px 24px 24px;border:1px solid var(--hair);border-radius:4px;box-shadow:var(--sh2)}
 .ls-top{padding:22px clamp(20px,4vw,48px)}.ls-on,.ls-paused{font-size:12px}
 .ls-main{gap:56px;padding:40px 24px}.ls-ring{width:220px;height:220px}.ls-ring>div{width:150px;height:150px}.ls-ring .bub{width:64px;height:64px}
 .ls-words{font-size:clamp(36px,5vw,60px);max-width:16em;align-self:center}.listen[data-mode=paused] .ls-words{font-size:clamp(34px,4.4vw,52px)}

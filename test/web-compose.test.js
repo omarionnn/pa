@@ -491,6 +491,9 @@ test("3D: 'on it.' says what Reason is doing from the turn's own record — read
   assert.equal(doing.lineFor([]), null);
   // While a turn with the lease runs, the open tab's history says so; when it ends, it doesn't.
   doing.resetDoing();
+  // The turn below waits on a promise with no timer behind it, and the send's own wait is unref'd:
+  // something has to keep the loop awake while it's held.
+  const awake = setInterval(() => {}, 50);
   let release;
   const gate = new Promise(r => { release = r; });
   const h = harness({ turn: async ({ text }) => { await gate; return `re: ${text}`; } });
@@ -504,6 +507,7 @@ test("3D: 'on it.' says what Reason is doing from the turn's own record — read
   release();
   assert.ok(await until(() => hist().doing === null));
   assert.equal(doing.doingFor(KOFI_C, { at: Date.now() + doing.STALE_MS + 1 }), null);
+  clearInterval(awake);
 });
 
 test("3A + 4A–4E as drawn: the + sheet, the slips' states, FROM YOUR VOICE, PAUSED + SENDING IN, writing it down…, I can't hear you yet.", () => {
