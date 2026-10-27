@@ -40,6 +40,8 @@ import { esc } from "./render.js";
 import { readCookie } from "./access.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting } from "./websignin.js";
 import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch } from "./webkit.js";
+import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot, COMPOSE_CSS, COMPOSE_JS } from "./webcompose.js";
+import { prepareSend } from "../webmedia.js";
 
 /** How many lines a page of history holds, first load and each "show earlier". */
 export const PAGE = 40;
@@ -88,14 +90,6 @@ const dayKey = (at) => new Intl.DateTimeFormat("en-CA", { timeZone: config.tz, y
 
 // ---------------------------------------------------------------- what a line is made of
 
-/** A photo, a voice note or a file, by its type. Only the kind and the name ever leave the server. */
-function mediaKind(m) {
-  const t = String(m?.mimeType ?? m?.type ?? "").toLowerCase();
-  if (t.startsWith("image/")) return "photo";
-  if (t.startsWith("audio/")) return "voice";
-  return "file";
-}
-
 /** Text with its links made tappable, everything else escaped. http(s) only; trailing punctuation stays text. */
 export function linkify(text) {
   const s = String(text ?? "");
@@ -129,6 +123,7 @@ export function linkCard(url, conversationId) {
   const pages = hostOf(config.pagesUrl), events = hostOf(config.eventsUrl) || pages;
   if (!host || (host !== pages && host !== events)) return null;
   const path = u.pathname.replace(/\/+$/, "");
+  if (/^\/web(?:\/|$)/.test(path)) return null; // Web's own addresses (a file, the thread) are links, not page cards
   let title = "A page Reason made", date = null, m;
   if ((m = /^\/e\/([A-Za-z0-9_-]{4,64})(?:\/|$)/.exec(path))) {
     title = "An event";
@@ -203,14 +198,15 @@ function lineInner(m, conversationId) {
   const who = m.role === "user" ? "YOU" : "REASON";
   const voice = m.media.some(x => x.kind === "voice");
   const lbl = `<p class="lbl"><span>${who}${voice ? " · VOICE" : ""} · ${esc(m.source.toUpperCase())} · </span><time datetime="${new Date(m.at).toISOString()}">${esc(timeFmt().format(m.at))}</time></p>`;
-  const photos = m.media.filter(x => x.kind === "photo").map(() => `<div class="photo" role="img" aria-label="${m.role === "user" ? "Photo you sent" : "Photo from Reason"}"><span class="lbl">PHOTO</span></div>`).join("");
-  const files = m.media.filter(x => x.kind === "file").map(x => `<span class="slip">${esc(x.name.toUpperCase())}</span>`).join("");
+  // 4B: photos in their paper frames, file slips, a voice note's words then ▶ (src/pages/webcompose.js).
+  const { photos, files, play, voice: note } = mediaHtml(m);
+  const said = m.role === "user" ? (voice && note?.transcript ? note.transcript : ownWords(m.text, m.media)) : m.text;
   let words = "";
-  if (m.text.trim()) {
-    if (m.role === "user") words = voice ? `<p class="said hand">${esc(m.text)}</p>` : `<div class="said">${linkify(m.text)}</div>`;
-    else words = `<div class="rsay">${reasonBody(m.text, conversationId)}</div>`;
+  if (said.trim()) {
+    if (m.role === "user") words = voice ? `<p class="said hand">${esc(said)}</p>` : `<div class="said">${linkify(said)}</div>`;
+    else words = `<div class="rsay">${reasonBody(said, conversationId)}</div>`;
   }
-  return `${lbl}${photos}${files}${words}`;
+  return `${lbl}${photos}${files}${words}${play}`;
 }
 
 /**
@@ -228,7 +224,7 @@ export function rowOut(row, { conversationId, service = null }) {
     source: sourceLabel(row.channel, service),
     web: row.channel === WEB,
     text: String(row.text ?? ""),
-    media: (row.media ?? []).slice(0, 6).map(x => ({ kind: mediaKind(x), name: String(x?.filename ?? "").slice(0, 80) || "FILE" })),
+    media: mediaOut(row, conversationId),
     at: row.at,
     cid: row.role === "user" && row.channel === WEB && ext.startsWith(prefix) ? ext.slice(prefix.length) : null,
   };
@@ -294,7 +290,7 @@ export function inHand(conversationId) {
 export function waitingApprovals(conversationId, now = clock.now()) {
   return db.pendingConfirmations(conversationId)
     .filter(c => c.granted_at == null && now - c.asked_at < 24 * 60 * 60_000)
-    .map(c => ({ title: String(c.summary ?? "").trim(), money: /\$|charge|pay|buy|purchase|order/i.test(`${c.action} ${c.stakes} ${c.summary}`) }))
+    .map(c => ({ title: String(c.summary ?? "").trim(), at: c.asked_at, money: /\$|charge|pay|buy|purchase|order/i.test(`${c.action} ${c.stakes} ${c.summary}`) }))
     .filter(c => c.title)
     .slice(0, 1);
 }
@@ -488,12 +484,9 @@ function tabBar(current, count) {
 }
 
 /** The one-line composer. `sendId` makes even a no-script post one turn however often it is resent. */
+// `+` and the mic (composer 01–04, Listening) are drawn and run by src/pages/webcompose.js.
 function composer({ csrf, sendId }) {
-  return `<div class="composer"><form class="cform" method="POST" action="/web/send"><input type="hidden" name="c" value="${esc(csrf)}"><input type="hidden" name="id" value="${esc(sendId)}">`
-    // No "+" (attach) and no mic (speak) until they work (owner, 10-26): the input runs edge to edge.
-    + `<label class="sr" for="c-input">Message Reason</label><input id="c-input" type="text" name="text" maxlength="${MAX_TEXT}" placeholder="Tell Reason what you need" autocomplete="off" enterkeyhint="send" required>`
-    + `<button class="send" type="submit" aria-label="Send">${SEND_SVG}</button></form>`
-    + `<p class="under">Replies come here, not to your phone as well.</p></div>`;
+  return composerHtml({ csrf, sendId, maxText: MAX_TEXT });
 }
 
 function ongoingMargin(items, approvals) {
@@ -548,31 +541,35 @@ function uid(){if(window.crypto&&crypto.randomUUID)return crypto.randomUUID();va
 function working(on,u){until=on?(u||Date.now()+120000):0;if(onit)onit.hidden=!on;if(on&&near())bottom()}
 setInterval(function(){if(until&&Date.now()>until)working(false)},1000);
 // From the arrival, a message moves you into the thread once Reason has it.
-if(!list){form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.trim();if(!t)return;var p={id:uid(),text:t};keep(pend().concat([p]));location.href='/web?thread'});return}
+if(!list){R.api={uid:uid,post:function(p){keep(pend().concat([p]));location.href='/web?thread'},pendingLine:function(){return document.createElement('li')},state:function(){}};
+form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.trim(),fs=R.takeFiles?R.takeFiles():[];if(!t&&!fs.length)return;var p={id:uid(),text:t};if(fs.length)p.files=fs;R.api.post(p)});return}
 function line(m){var li=document.createElement('li');li.className='msg arrive '+(m.role==='user'?'you':'re');li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;li.innerHTML=m.html;times(li);return li}
 function add(m){if(list.querySelector('.msg[data-id="'+m.id+'"]'))return;var stick=near(),li=line(m);
-if(m.cid){var p=list.querySelector('.msg[data-pending="'+m.cid+'"]');if(p){p.replaceWith(li);forget(m.cid);var s=document.createElement('p');s.className='st';s.textContent='SENT';li.appendChild(s);setTimeout(function(){s.classList.add('fade');setTimeout(function(){s.remove()},1100)},1200);if(stick)bottom();return}}
+if(m.cid){var p=list.querySelector('.msg[data-pending="'+m.cid+'"]');if(p){p.replaceWith(li);forget(m.cid);li.classList.add('just');var s=document.createElement('p');s.className='st';s.textContent='SENT \\u00b7 '+fmt(m.at);li.appendChild(s);setTimeout(function(){s.classList.add('fade');setTimeout(function(){s.remove();li.classList.remove('just')},1100)},1200);if(stick)bottom();return}}
 var after=null;list.querySelectorAll('.msg[data-id]').forEach(function(o){var a=Number(o.dataset.at),i=Number(o.dataset.id);if(a<m.at||(a===m.at&&i<m.id))after=o});
 var fp=list.querySelector('.msg[data-pending]');
 if(after&&after.nextSibling&&!(fp&&after.nextSibling===fp))list.insertBefore(li,after.nextSibling);else if(fp&&(!after||after.nextSibling===fp))list.insertBefore(li,fp);else if(after)list.appendChild(li);else list.insertBefore(li,list.firstChild);
 if(m.id>R.last)R.last=m.id;if(m.role==='assistant'){waiting=Math.max(0,waiting-1);if(!waiting)working(false)}if(stick)bottom()}
-function pendingLine(p){var li=document.createElement('li');li.className='msg you arrive';li.dataset.pending=p.id;var l=document.createElement('p');l.className='lbl';l.textContent='YOU \\u00b7 WEB';var s=document.createElement('div');s.className='said';s.textContent=p.text;li.appendChild(l);li.appendChild(s);list.appendChild(li);bottom();return li}
+function pendingLine(p){var li=document.createElement('li');li.className='msg you arrive';li.dataset.pending=p.id;if(p.files&&p.files.length&&R.drawFiles)R.drawFiles(li,p);else{var s=document.createElement('div');s.className='said';s.textContent=p.text;li.appendChild(s)}list.appendChild(li);bottom();return li}
+function stored(li){return pend().filter(function(x){return x.id===li.dataset.pending})[0]||{id:li.dataset.pending,text:(li.querySelector('.said')||{}).textContent||''}}
 function state(li,st){if(!li)return;li.dataset.state=st;li.querySelectorAll('.st,.retry').forEach(function(x){x.remove()});
 if(st==='sending'||st==='waiting'){var s=document.createElement('p');s.className='st';s.textContent=st==='sending'?'SENDING\\u2026':'WAITING TO SEND';li.appendChild(s)}
-else if(st==='failed'){var b=document.createElement('button');b.type='button';b.className='retry';b.textContent="didn't go. tap to try again.";b.onclick=function(){send({id:li.dataset.pending,text:li.querySelector('.said').textContent},li)};var n=document.createElement('p');n.className='st';n.textContent="IT WON'T SEND TWICE";li.appendChild(b);li.appendChild(n)}}
+else if(st==='failed'){var b=document.createElement('button');b.type='button';b.className='retry';b.textContent="didn't go. tap to try again.";b.onclick=function(){if(li.retry)return li.retry();send(stored(li),li)};var n=document.createElement('p');n.className='st';n.textContent="IT WON'T SEND TWICE";li.appendChild(b);li.appendChild(n)}}
 function expired(){if(waiting>0||until){var last=list.querySelector('.msg.you:last-of-type .said');var m=document.querySelector('main');var h='<section class="solo" aria-labelledby="ex-h"><h1 id="ex-h" class="h1">Still working on it.<br><em>Sign back in to see.</em></h1><div class="ghost" aria-hidden="true"><span class="lbl">WORKING</span><b></b></div><a class="act" href="/web?out=1">Sign in <span aria-hidden="true">\\u2192</span></a></section>';
 m.innerHTML=h;var b=m.querySelector('.ghost b');b.textContent=last?last.textContent:'';document.querySelectorAll('.composer,.tabs,.onit').forEach(function(x){x.remove()})}else location.href='/web?out=1'}
 function send(p,li,tries){tries=tries||0;if(offline()){state(li,'waiting');return}state(li,'sending');
-fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c})})
+fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c,files:(p.files||[]).map(function(f){return f.id}).filter(Boolean).join(','),voice:p.voice?String(p.voice):''})})
 .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(j){j.status=r.status;return j})})
 .then(function(j){if(j.status===401){expired();return}if(j.ok){if(j.duplicate&&li.isConnected&&li.dataset.pending){li.remove();forget(p.id)}if(li.isConnected&&!j.duplicate){state(li,'sent');li.querySelectorAll('.st').forEach(function(x){x.remove()});waiting++;working(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,'failed')})
 .catch(function(){if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
-form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.replace(/\\s+$/,'');if(!t.trim())return;var p={id:uid(),text:t};keep(pend().concat([p]));box.value='';box.dispatchEvent(new Event('input'));send(p,pendingLine(p))});
+function post(p,li){keep(pend().concat([p]));send(p,li||pendingLine(p))}
+R.api={uid:uid,post:post,pendingLine:pendingLine,state:state};
+form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.replace(/\\s+$/,''),fs=R.takeFiles?R.takeFiles():[];if(!t.trim()&&!fs.length)return;var p={id:uid(),text:t.trim()?t:''};if(fs.length)p.files=fs;box.value='';box.dispatchEvent(new Event('input'));post(p)});
 // A tab reloaded mid-send (or arriving from the home screen): whatever it has not yet seen in history
 // is shown again and sent again under the SAME id, which the server's claim turns into nothing if it already arrived.
 pend().forEach(function(p){if(list.querySelector('.msg[data-cid="'+p.id+'"]')){forget(p.id);return}send(p,pendingLine(p))});
 window.addEventListener('offline',function(){noteLine("you're offline. i'll send it when you're back.")});
-window.addEventListener('online',function(){noteLine('');list.querySelectorAll('.msg[data-state=waiting]').forEach(function(li){send({id:li.dataset.pending,text:li.querySelector('.said').textContent},li)});poll()});
+window.addEventListener('online',function(){noteLine('');list.querySelectorAll('.msg[data-state=waiting]').forEach(function(li){if(li.retry)return li.retry();send(stored(li),li)});poll()});
 if(offline())noteLine("you're offline. i'll send it when you're back.");
 var polling=false;function poll(){if(polling)return;polling=true;fetch('/web/history?after='+R.last,{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){expired();throw 0}return r.json()}).then(function(j){(j.messages||[]).forEach(add);if(lost){lost=0;if(!offline())noteLine('')}}).catch(function(e){if(e!==0&&!offline()){lost++;if(lost>1)noteLine("lost the line for a sec. nothing's lost.")}}).then(function(){polling=false})}
 var beat=0;setInterval(function(){if(!live||Date.now()-beat>40000)poll()},4000);
@@ -622,7 +619,10 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
   const startLine = more
     ? `<button class="act2" type="button">↑ SHOW EARLIER MESSAGES</button>`
     : lines.length ? label(`Your conversation before ${dayFmt().format(lines[0].at)} stays in your texts.`) : "";
-  const appr = approvals.length ? `<div class="msg re approval">${label("REASON · WAITING ON YOU")}${approvalCard({ title: approvals[0].title, money: approvals[0].money })}</div>` : "";
+  const asked = approvals[0]?.at ?? null;
+  const askedIn = asked ? [...lines].reverse().find(m => m.role === "assistant" && m.at <= asked + 60_000) : null;
+  const apprLbl = asked ? `REASON · ${(askedIn?.source ?? sourceLabel(null, serviceOf(account?.conversation_id))).toUpperCase()} · ${timeFmt().format(asked)}` : "REASON · WAITING ON YOU";
+  const appr = approvals.length ? `<div class="msg re approval">${label(apprLbl)}${approvalCard({ title: approvals[0].title, money: approvals[0].money })}</div>` : "";
   const body = topBar({ csrf }) + NET
     + `<main class="wrapc"><section class="convo" aria-labelledby="c-h"><h1 id="c-h" class="sr">Your conversation with Reason</h1>`
     + `<div class="start">${startLine}</div>`
@@ -631,8 +631,8 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     + appr + onIt(true)
     + composer({ csrf, sendId })
     + `</section>${ongoingMargin(items, approvals)}</main>`
-    + tabBar("chat", items.length + approvals.length);
-  return webPage({ title: "Reason", body, css: CSS, script: boot({ csrf, lines, more, conversationId: account?.conversation_id }) + CLIENT_JS, bodyClass: "has-tabs", loader: true });
+    + tabBar("chat", items.length + approvals.length) + listeningHtml();
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: account?.conversation_id }) + composeBoot() + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
 }
 
 /** B / B2, the arrival: the greeting, the composer, then what's in hand or where to start, then iMessage. */
@@ -647,8 +647,8 @@ export function renderHome({ account, csrf, sendId, items = [], approvals = [], 
     + composer({ csrf, sendId })
     + (approvals.length ? `<section class="approval" aria-label="Needs you">${approvalCard({ title: approvals[0].title, money: approvals[0].money })}</section>` : "")
     + middle + pick + `</main>`
-    + tabBar("chat", items.length + approvals.length);
-  return webPage({ title: "Reason", body, css: CSS, script: boot({ csrf, conversationId: account?.conversation_id }) + CLIENT_JS, bodyClass: "has-tabs", loader: true });
+    + tabBar("chat", items.length + approvals.length) + listeningHtml();
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, conversationId: account?.conversation_id }) + composeBoot() + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
 }
 
 /** 5C, shown once: the same Reason, and what stays where. */
@@ -769,14 +769,23 @@ export async function sendRequest({ account, headers = {}, readBody, router, log
   const id = String(form.get("id") ?? "");
   if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) return fail(400, "bad_id");
   const text = String(form.get("text") ?? "").replace(/\r\n?/g, "\n").replace(/\s+$/, "");
-  if (!text.trim()) return fail(400, "empty");
+  // Photos, PDFs, a voice note: uploads this conversation made (src/webmedia.js), named by id.
+  const files = String(form.get("files") ?? "").split(",").map(s => s.trim()).filter(Boolean);
+  if (!text.trim() && !files.length) return fail(400, "empty");
   if (text.length > MAX_TEXT) return fail(413, "too_long");
+  if (files.length > 6 || files.some(f => !/^[A-Za-z0-9_-]{22}$/.test(f))) return fail(400, "bad_file");
   if (!router) return fail(503, "unavailable");
   const conv = account.conversation_id;
+  if (files.length && !(await import("../webuploads.js")).attachmentsFor(conv, files)) return fail(400, "bad_file");
   if (!underLimit(conv)) { log({ web_send_refused: "rate_limited" }); return fail(429, "slow_down"); }
 
   const delivering = Promise.resolve()
-    .then(() => router.deliver({ channel: WEB, externalId: id, conversationId: conv, text, at: clock.now() }))
+    .then(async () => {
+      // A voice note with no words yet is heard first (src/webmedia.js prepareSend), so the words are the message.
+      const prep = files.length ? await prepareSend({ conversationId: conv, text, files, log }) : { text, attachments: [] };
+      if (!prep) return { ok: false, error: "failed" };
+      return router.deliver({ channel: WEB, externalId: id, conversationId: conv, text: prep.text, ...(prep.attachments.length ? { attachments: prep.attachments } : {}), at: clock.now() });
+    })
     .catch((e) => { log({ web_send_failed: (e?.message ?? String(e)).split("\n")[0] }); return { ok: false, error: "failed" }; });
   const quick = await Promise.race([delivering, new Promise(r => setTimeout(() => r(null), ackWaitMs).unref?.())]);
   log({ web_send: quick ? (quick.duplicate ? "duplicate" : quick.refused ?? (quick.ok === false ? "failed" : "done")) : "accepted" });
