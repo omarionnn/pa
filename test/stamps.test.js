@@ -253,3 +253,17 @@ test("stampMarkup: CSS stamp, role=img with the full label, its tilt, three tier
   assert.equal(stamps.stampMarkup(null), "");
   assert.match(stamps.blankMarkup("whole_trip"), /dashed[\s\S]*>\?</);
 });
+
+test("on: a conversation with no account of its own (a group, an event thread) earns nothing and is told nothing", () => {
+  process.env.REASON_WEB_DAILY = "on";
+  doneTask("group:fake:abc");
+  assert.deepEqual(typesOf("group:fake:abc"), []);
+  assert.equal(told.length, 0);
+});
+
+test("on: a stamp earned in the small hours is kept but never mentioned before 7 AM on their clock", () => {
+  process.env.REASON_WEB_DAILY = "on";
+  doneTask(KOFI_C, { at: NIGHT });
+  assert.deepEqual(typesOf(KOFI_C), ["first", "night_shift"]);
+  assert.equal(told.length, 0, "no text at 3 AM");
+});

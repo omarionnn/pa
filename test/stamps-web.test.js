@@ -104,6 +104,11 @@ test("flag off: /web/stamps is the same E1 404 as before, and the API is a 404",
   const k = browser(KOFI_C);
   assert.equal((await call({ b: k })).status, 404);
   assert.equal((await call({})).status, 404, "signed out");
+  const post = await call({ sub: `api/stamps/${id}/share`, method: "POST", body: "{}" });
+  assert.deepEqual([post.status, JSON.parse(post.body)], [404, { error: "not found" }], "the server's flat 404, as before");
+  const img = await call({ sub: `api/stamps/${id}/image.png`, b: k });
+  assert.equal(img.status, 404);
+  assert.match(img.body, /This page isn’t here/);
 });
 
 test("empty: PAGE 1 · NO STAMPS YET, the header with STAMPS current, eight blank spots, two hints, the keep line", async () => {
@@ -187,7 +192,7 @@ test("share: signed in + same origin + the session secret; 12 base62 at heyreaso
   assert.equal((await share(browser(KOFI_C), id)).out.status, 404, "not in owner mode for Kofi");
   process.env.REASON_WEB_DAILY = "on";
   assert.equal((await share(browser(KOFI_C), id)).out.status, 404, "and never somebody else's stamp");
-  assert.equal((await call({ sub: `api/stamps/${id}/share`, method: "POST", body: "{}" })).status, 401, "signed out");
+  assert.equal((await call({ sub: `api/stamps/${id}/share`, method: "POST", body: "{}" })).status, 404, "signed out: nothing here");
   // The page shows the link and Stop sharing; no-script revoke comes back to the page.
   let h = (await call({ b, query: { stamp: String(id) } })).body;
   assert.match(h, new RegExp(`Link: https://heyreason.test/s/${m[1]}`));

@@ -53,6 +53,8 @@ export const LONG_HOLD_S = 30 * 60;
 export const EARLY_DAYS = 7;
 /** Night shift: finished between midnight and 6 in the morning on their clock, with no word from them in the hour before. */
 export const NIGHT_FROM = 0, NIGHT_TO = 6, NIGHT_QUIET_MS = 60 * 60_000;
+/** A new stamp is never mentioned before 7 in the morning on their clock (the stamp itself is kept). */
+export const QUIET_UNTIL = 7;
 /** A call outcome that was a real conversation with somebody (src/calls/outcome.js). */
 const TALKED = new Set(["confirmed", "answered", "needs_owner"]);
 
@@ -240,6 +242,8 @@ export function tellLine(types) {
 function tellNew(conversationId, ids) {
   // Outbound: only when the flag is fully on, only for a conversation it allows, only with a server teller.
   if (!ids.length || dailyMode() !== "on" || !dailyAllowedFor(conversationId) || typeof teller !== "function") return;
+  // Never in the small hours on their clock: the book shows it either way, the text simply isn't sent.
+  if (hourIn(clock.now(), tzFor(conversationId)) < QUIET_UNTIL) return;
   const rows = ids.map(id => ONE("SELECT id, type, told_at FROM stamps WHERE id = ?", id)).filter(r => r && !r.told_at);
   if (!rows.length) return;
   const line = tellLine(rows.map(r => r.type));
@@ -253,9 +257,9 @@ function tellNew(conversationId, ids) {
   if (tellDelayMs > 0) { const t = setTimeout(send, tellDelayMs); t.unref?.(); } else send();
 }
 
-/** Award what one completion earned, live. Only for a conversation REASON_WEB_DAILY allows. */
+/** Award what one completion earned, live. Only for a person's own conversation (an account) that REASON_WEB_DAILY allows. */
 export function awardLive(conversationId, candidates) {
-  if (!dailyAllowedFor(conversationId)) return [];
+  if (!dailyAllowedFor(conversationId) || !db.getAccount(conversationId)) return [];
   const ids = [];
   for (const c of candidates) {
     const id = award(conversationId, c);
@@ -534,6 +538,7 @@ export function noteShareOpened(shareId, { log = () => {} } = {}) {
  * page's CTA puts it on the homepage link). Counted against that share; anything else is ignored.
  */
 export function noteShareSignup(ref, { log = () => {} } = {}) {
+  if (dailyMode() === "off") return false;
   const m = /^s_([0-9A-Za-z]{12})$/.exec(String(ref ?? ""));
   if (!m) return false;
   const r = db.db.prepare("UPDATE stamp_shares SET signups = signups + 1 WHERE share_id = ?").run(m[1]);

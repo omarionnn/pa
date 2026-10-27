@@ -370,7 +370,7 @@ export async function shareRequest({ shareId, sub = null, method = "GET", log = 
     // Turned off: the generic card, so an old preview shows nothing of the stamp.
     const png = v.revoked ? null : await stampCardPng(stamps.publicFace(v.stamp), stamps.publicLine(v.stamp, v.first)).catch(() => null);
     const bytes = png ?? genericOg();
-    return { status: 200, headers: { "Content-Type": "image/png", "Content-Length": bytes.length, "Cache-Control": png ? "public, max-age=3600" : "no-store", "X-Robots-Tag": "noindex", "X-Content-Type-Options": "nosniff" }, body: bytes };
+    return { status: 200, headers: { "Content-Type": "image/png", "Content-Length": bytes.length, "Cache-Control": png ? "public, max-age=300" : "no-store", "X-Robots-Tag": "noindex", "X-Content-Type-Options": "nosniff" }, body: bytes };
   }
   if (v.revoked) {
     // E2, the existing "turned off" screen, its faces from Web's own font path (served under /web on every host).

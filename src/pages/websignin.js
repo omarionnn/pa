@@ -518,10 +518,11 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
       const out = await stampsRequest({ account, path: sub === "stamps" ? "" : sub.slice("api/stamps/".length), method, query, headers, readBody, sec: SECURITY_HEADERS, log });
       if (out) return out;
     }
-    // Not for this browser: what any address Web doesn't have answers (E1), so with the flag off nothing changed.
-    if (sub !== "stamps" || method !== "GET" && method !== "HEAD") {
-      const body = JSON.stringify({ ok: false, error: account ? "not_found" : "signed_out" });
-      return { status: account ? 404 : 401, headers: { "Content-Type": "application/json; charset=utf-8", ...SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) }, body };
+    // Not for this browser: exactly what these addresses answered before they existed — E1 for a GET,
+    // the server's flat JSON 404 for anything else — so with the flag off nothing changed.
+    if (method !== "GET" && method !== "HEAD") {
+      const body = JSON.stringify({ error: "not found" });
+      return { status: 404, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) }, body };
     }
     const { renderWebNotFound } = await import("./webedge.js");
     return page(404, renderWebNotFound({ signedIn: !!account }));
