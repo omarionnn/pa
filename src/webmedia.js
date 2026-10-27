@@ -119,6 +119,9 @@ export async function prepareSend({ conversationId, text = "", files = [], liste
       uploads.update(a.web_upload, { transcript: words.trim() });
       continue;
     }
+    // Heard already (a retried send): the same words, never a second listen.
+    const kept = uploads.meta(a.web_upload)?.transcript;
+    if (kept) { words = kept; Object.assign(a, { transcribed: "server", transcript: kept }); continue; }
     let r = null;
     if (canHear().ok) {
       try { r = await listen({ url: a.url, filename: a.filename }); } catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
@@ -164,8 +167,14 @@ function serveUpload(m, opts) {
 }
 
 const AUDIO_MIME = { ".caf": "audio/x-caf", ".m4a": "audio/mp4", ".mp4": "audio/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".opus": "audio/ogg", ".aac": "audio/aac", ".amr": "audio/amr", ".webm": "audio/webm" };
-const cache = new Map(); // url → { bytes, mime }, a few recent CDN fetches
-const remember = (url, v) => { cache.set(url, v); while (cache.size > 24) cache.delete(cache.keys().next().value); return v; };
+const cache = new Map(); // url → { bytes, mime }, a few recent CDN fetches, at most CACHE_BYTES in all
+const CACHE_BYTES = 64 * 1024 * 1024;
+const remember = (url, v) => {
+  cache.set(url, v);
+  let total = 0; for (const x of cache.values()) total += x.bytes.length;
+  while (cache.size > 1 && (cache.size > 24 || total > CACHE_BYTES)) { const k = cache.keys().next().value; total -= cache.get(k).bytes.length; cache.delete(k); }
+  return v;
+};
 
 /** One CDN file, fetched the careful way (https only, never this machine's network, capped). */
 async function fetchRemote(a, { fetchImpl = globalThis.fetch } = {}) {
@@ -174,12 +183,25 @@ async function fetchRemote(a, { fetchImpl = globalThis.fetch } = {}) {
     const got = await fetchImage({ url: a.url, filename: a.filename, fetchImpl });
     return got.ok ? remember(a.url, { bytes: Buffer.from(got.base64, "base64"), mime: got.mediaType }) : null;
   }
-  const ok = checkUrl(a.url);
-  if (!ok.ok) return null;
   try {
-    const res = await fetchImpl(ok.url, { redirect: "follow", signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) return null;
-    const bytes = Buffer.from(await res.arrayBuffer());
+    // Every hop re-checked (https, never this machine's network), like fetchImage; the body capped as it streams.
+    let target = a.url, res = null;
+    for (let hop = 0; hop < 4; hop++) {
+      const ok = checkUrl(target);
+      if (!ok.ok) return null;
+      res = await fetchImpl(ok.url, { redirect: "manual", signal: AbortSignal.timeout(20_000) });
+      if (![301, 302, 303, 307, 308].includes(res.status)) break;
+      const next = res.headers?.get?.("location");
+      if (!next || hop === 3) return null;
+      target = new URL(next, ok.url).href;
+    }
+    if (!res?.ok) return null;
+    if (Number(res.headers?.get?.("content-length") ?? 0) > uploads.MAX_UPLOAD_BYTES) return null;
+    const chunks = []; let size = 0;
+    if (res.body && typeof res.body[Symbol.asyncIterator] === "function") {
+      for await (const c of res.body) { size += c.length; if (size > uploads.MAX_UPLOAD_BYTES) return null; chunks.push(Buffer.from(c)); }
+    } else chunks.push(Buffer.from(await res.arrayBuffer()));
+    const bytes = Buffer.concat(chunks);
     if (!bytes.length || bytes.length > uploads.MAX_UPLOAD_BYTES) return null;
     const ext = extname(String(a.filename || a.url).split("?")[0]).toLowerCase();
     const mime = a.kind === "pdf" ? "application/pdf" : (AUDIO_MIME[ext] ?? "application/octet-stream");

@@ -268,12 +268,17 @@ test("a voice note with no words (Firefox): heard on the server by Reason's own 
   const prep = await media.prepareSend({ conversationId: KOFI_C, text: "", files: [id], canHear: () => ({ ok: true }), listen: async ({ url }) => { asked++; assert.ok(uploads.localUpload(url), "the listener reads the file from disk"); return { ok: true, text: "book the 7pm table" }; } });
   assert.equal(asked, 1);
   assert.equal(prep.text, "book the 7pm table");
+  // A retried send (the browser's id again) reuses the words: still one listen.
+  const retry = await media.prepareSend({ conversationId: KOFI_C, text: "", files: [id], canHear: () => ({ ok: true }), listen: async () => { asked++; return { ok: true, text: "other" }; } });
+  assert.equal(asked, 1, "never heard twice for one note");
+  assert.equal(retry.text, "book the 7pm table");
   assert.equal(prep.attachments[0].transcribed, "server");
   // The router's listening then leaves it alone.
   let again = 0;
   const out = await voice.hearInto(prep.text, prep.attachments, { status: () => ({ ok: true }), listen: async () => { again++; return { ok: true, text: "x" }; } });
   assert.equal(again, 0, "never heard twice");
   assert.equal(out, "book the 7pm table");
+  uploads.update(id, { transcript: null });
   // Nothing could hear it: it goes in unheard, the way a texted note does — and the thread never shows that framing.
   const none = await media.prepareSend({ conversationId: KOFI_C, text: "", files: [id], canHear: () => ({ ok: false }) });
   assert.match(none.text, /^\[they sent a voice note \(voice-note\.webm\)\. you cannot listen to it/);

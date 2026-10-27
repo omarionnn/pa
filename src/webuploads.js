@@ -104,6 +104,7 @@ export function store({ conversationId, bytes, name = "", voice = false, extra =
   if (buf.length > LIMITS[what.kind]) return { error: "too_big", kind: what.kind, limit: LIMITS[what.kind] };
   mkdirSync(dir(), { recursive: true, mode: 0o700 });
   prune();
+  if (keptBytes(conversationId) + buf.length > QUOTA_BYTES) return { error: "too_big", kind: what.kind, limit: QUOTA_BYTES };
   const id = randomBytes(16).toString("base64url");
   const m = { id, conversationId, kind: what.kind, mime: what.mime, ext: what.ext, name: cleanName(name, what.ext), bytes: buf.length, at: clock.now(), ...extra };
   writeFileSync(filePath(m), buf, { mode: 0o600 });
@@ -118,6 +119,20 @@ export function update(id, patch) {
   const next = { ...m, ...patch, id: m.id, conversationId: m.conversationId };
   writeFileSync(metaPath(id), JSON.stringify(next), { mode: 0o600 });
   return next;
+}
+
+/** What one conversation may keep here at once (30 days of it). */
+export const QUOTA_BYTES = 300 * 1024 * 1024;
+/** The bytes this conversation's uploads take now. */
+export function keptBytes(conversationId) {
+  let total = 0;
+  let names = [];
+  try { names = readdirSync(dir()); } catch { return 0; }
+  for (const f of names) {
+    if (!f.endsWith(".json")) continue;
+    try { const m = JSON.parse(readFileSync(join(dir(), f), "utf8")); if (m.conversationId === conversationId) total += Number(m.bytes) || 0; } catch { /* half-written; skip */ }
+  }
+  return total;
 }
 
 let lastPrune = 0;

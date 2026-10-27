@@ -192,6 +192,16 @@ test("board D: holding the mic opens Listening; words in Caveat, not-final ones 
     await page.locator(".listen").waitFor({ state: "hidden" });
     await page.waitForTimeout(400);
     assert.equal(userRows().length, before, "nothing was sent");
+    // Space keeps it open (focus starts on Send it, and Space must not press it).
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down(); await page.waitForTimeout(650); await page.mouse.up();
+    await page.locator(".listen").waitFor({ state: "visible" });
+    await page.keyboard.press("Space");
+    await page.waitForTimeout(300);
+    assert.ok(await page.locator(".listen").isVisible(), "Space did not send");
+    assert.equal(userRows().length, before);
+    await page.locator(".ls-never").click();
+    await page.locator(".listen").waitFor({ state: "hidden" });
     // Again, and this time pause: it sends by itself.
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down(); await page.waitForTimeout(650); await page.mouse.up();

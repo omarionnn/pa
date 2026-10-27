@@ -606,7 +606,7 @@ function uid(){if(window.crypto&&crypto.randomUUID)return crypto.randomUUID();va
 function working(on,u){until=on?(u||Date.now()+120000):0;if(onit)onit.hidden=!on;if(on&&near())bottom()}
 setInterval(function(){if(until&&Date.now()>until)working(false)},1000);
 // From the arrival, a message moves you into the thread once Reason has it.
-if(!list){R.api={uid:uid,post:function(p){keep(pend().concat([p]));location.href='/web?thread'},pendingLine:function(){return document.createElement('li')},state:function(){}};
+if(!list){R.api={uid:uid,post:function(p){keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));location.href='/web?thread'},pendingLine:function(){return document.createElement('li')},state:function(li,st){if(st==='failed'&&R.say)R.say("that didn't go. try it again?")}};
 form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.trim(),fs=R.takeFiles?R.takeFiles():[];if(!t&&!fs.length)return;var p={id:uid(),text:t};if(fs.length)p.files=fs;R.api.post(p)});return}
 function line(m){var li=document.createElement('li');li.className='msg arrive '+(m.role==='user'?'you':'re');li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;li.innerHTML=m.html;times(li);return li}
 function add(m){if(list.querySelector('.msg[data-id="'+m.id+'"]'))return;unempty();var stick=near(),li=line(m);
@@ -628,7 +628,7 @@ fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Typ
 .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(j){j.status=r.status;return j})})
 .then(function(j){if(j.status===401){expired();return}if(j.ok){if(j.duplicate&&li.isConnected&&li.dataset.pending){li.remove();forget(p.id)}if(li.isConnected&&!j.duplicate){state(li,'sent');li.querySelectorAll('.st').forEach(function(x){x.remove()});waiting++;working(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,'failed')})
 .catch(function(){if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
-function post(p,li){keep(pend().concat([p]));send(p,li||pendingLine(p))}
+function post(p,li){keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));send(p,li||pendingLine(p))}
 R.api={uid:uid,post:post,pendingLine:pendingLine,state:state};
 form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.replace(/\\s+$/,''),fs=R.takeFiles?R.takeFiles():[];if(!t.trim()&&!fs.length)return;var p={id:uid(),text:t.trim()?t:''};if(fs.length)p.files=fs;box.value='';box.dispatchEvent(new Event('input'));post(p)});
 // A tab reloaded mid-send (or arriving from the home screen): whatever it has not yet seen in history

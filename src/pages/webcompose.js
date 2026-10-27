@@ -209,6 +209,7 @@ var R=window.REASON_WEB||{},A=R.api,form=document.querySelector('.cform');if(!fo
 var comp=form.closest('.composer'),box=document.getElementById('c-input'),add=form.querySelector('.c-add'),pick=form.querySelector('.c-file'),mic=form.querySelector('.c-mic'),shelf=comp.querySelector('.on-line'),note=comp.querySelector('.c-note'),body=document.body;
 var files=[],blobs={},noteT=0;
 function say(t){if(!note)return;note.textContent=t;note.hidden=!t;clearTimeout(noteT);if(t)noteT=setTimeout(function(){note.hidden=true},9000)}
+R.say=say;
 function sync(){var any=files.length>0;form.classList.toggle('has-files',any);comp.classList.toggle('has-files',any);box.required=!any;shelf.hidden=!any}
 function slip(f){var li=document.createElement('li');if(f.kind==='image')li.className='ph';if(f.busy)li.dataset.busy='1';
 if(f.kind==='image'){var th=document.createElement(f.preview?'img':'span');th.className='th';if(f.preview){th.src=f.preview;th.alt=''}li.appendChild(th)}
@@ -230,9 +231,9 @@ R.takeFiles=function(){var out=files.filter(function(f){return f.id}).map(functi
 function clk(s){s=Math.max(0,Math.round(s||0));return Math.floor(s/60)+':'+('0'+s%60).slice(-2)}
 // A message with files, drawn the moment it's sent (4B): photos framed, slips, a voice note's words then ▶.
 R.drawFiles=function(li,p){var fs=p.files||[],v=null;
-fs.forEach(function(f){if(f.kind==='image'){var a=document.createElement('div');a.className='photo';var im=document.createElement('img');im.alt='Photo you sent';im.src=(f.id&&blobs[f.id])||f.preview||f.src||'';a.appendChild(im);li.appendChild(a)}});
+fs.forEach(function(f){if(f.kind==='image'){var a=document.createElement('div');a.className='photo';var im=document.createElement('img');im.alt='Photo you sent';im.src=(f.id&&blobs[f.id])||f.src||f.preview||'';a.appendChild(im);li.appendChild(a)}});
 fs.forEach(function(f){if(f.kind==='pdf'||f.kind==='file'){var s=document.createElement('span');s.className='slip';s.textContent=f.label||String(f.name||'').toUpperCase();li.appendChild(s)}else if(f.kind==='voice')v=f});
-if(v){if(p.text){var w=document.createElement('p');w.className='said hand';w.textContent=p.text;li.appendChild(w)}var b=document.createElement('button');b.type='button';b.className='vplay';b.dataset.src=(v.id&&blobs[v.id])||v.preview||v.src||'';b.setAttribute('aria-label','Play voice note'+(v.seconds?', '+v.seconds+' seconds':''));b.innerHTML=${JSON.stringify(PLAY_SVG + WAVE_SVG + `<span class="vt"></span>`)};b.querySelector('.vt').textContent=v.seconds?clk(v.seconds):'';li.appendChild(b)}
+if(v){if(p.text){var w=document.createElement('p');w.className='said hand';w.textContent=p.text;li.appendChild(w)}var b=document.createElement('button');b.type='button';b.className='vplay';b.dataset.src=(v.id&&blobs[v.id])||v.src||v.preview||'';b.setAttribute('aria-label','Play voice note'+(v.seconds?', '+v.seconds+' seconds':''));b.innerHTML=${JSON.stringify(PLAY_SVG + WAVE_SVG + `<span class="vt"></span>`)};b.querySelector('.vt').textContent=v.seconds?clk(v.seconds):'';li.appendChild(b)}
 else if(p.text){var s=document.createElement('div');s.className='said';s.textContent=p.text;li.appendChild(s)}};
 form.addEventListener('submit',function(e){if(files.some(function(f){return f.busy})){e.preventDefault();e.stopImmediatePropagation();Promise.all(files.map(function(f){return f.wait})).then(function(){if(files.length||box.value.trim())form.requestSubmit?form.requestSubmit():form.dispatchEvent(new Event('submit',{cancelable:true}))})}},true);
 if(add&&pick&&window.fetch&&window.FormData){add.hidden=false;add.onclick=function(){pick.click()};pick.onchange=function(){take(pick.files);pick.value=''};
@@ -269,7 +270,7 @@ if(r.full&&r.spoke&&Date.now()-r.last>2600&&(!r.sr||r.fin||r.int))stop(true);
 if(s>300)stop(true)}
 function openFull(){if(!ls)return;lsF.textContent='';lsI.textContent='';lsT.textContent='0:00';ls.hidden=false;body.classList.add('listening');ls.querySelector('.ls-send').focus()}
 function close(){comp.classList.remove('dictating');dict.hidden=true;if(ls){ls.hidden=true;body.classList.remove('listening')}}
-function stop(send){var r=rec;if(!r||r.done)return;r.done=true;rec=null;clearInterval(r.tick);close();var seconds=Math.max(1,Math.round((Date.now()-r.t0)/1000)),words=((r.fin||'')+' '+(r.int||'')).replace(/\\s+/g,' ').trim();
+function stop(send){var r=rec;if(!r||r.done)return;r.done=true;rec=null;clearInterval(r.tick);close();var seconds=Math.max(1,Math.round((Date.now()-r.t0)/1000)),words=((r.fin||'')+' '+(r.int||'')).replace(/\\s+/g,' ').trim().slice(0,R.max||4000);
 try{r.sr&&r.sr.stop()}catch(x){}
 var finish=function(){if(r.stream)r.stream.getTracks().forEach(function(t){t.stop()});try{r.ac&&r.ac.close()}catch(x){}if(!send){mic.focus();return}
 var blob=r.chunks.length?new Blob(r.chunks,{type:(r.mr&&r.mr.mimeType)||r.chunks[0].type||'audio/webm'}):null;
@@ -286,7 +287,8 @@ mic.addEventListener('contextmenu',function(e){e.preventDefault()});
 mic.addEventListener('click',function(e){if(held===-1){held=0;return}held=0;start(false)});
 dict.querySelector('.d-send').onclick=function(){stop(true)};dict.querySelector('.d-stop').onclick=function(){stop(false)};
 if(ls){ls.querySelector('.ls-send').onclick=function(){stop(true)};ls.querySelector('.ls-never').onclick=function(){stop(false)}}
-document.addEventListener('keydown',function(e){if(!rec)return;if(e.key==='Escape'){e.preventDefault();stop(false)}else if(rec.full&&(e.key===' '||e.code==='Space')&&!(e.target&&e.target.tagName==='BUTTON')){e.preventDefault();rec.last=Date.now()}
+document.addEventListener('keyup',function(e){if(rec&&rec.full&&(e.key===' '||e.code==='Space'))e.preventDefault()},true);
+document.addEventListener('keydown',function(e){if(!rec)return;if(e.key==='Escape'){e.preventDefault();stop(false)}else if(rec.full&&(e.key===' '||e.code==='Space')){e.preventDefault();rec.last=Date.now()}
 else if(rec.full&&e.key==='Tab'){var f=ls.querySelectorAll('button'),a=f[0],z=f[f.length-1];if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}}});
 })();
 // Playing a voice note in the thread: one at a time.
