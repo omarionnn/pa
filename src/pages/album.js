@@ -99,7 +99,7 @@ function addButton() {
 function closedPage(ev, album, { organizer = false }) {
   const body = `<div class="hero"><p class="kicker">${organizer ? "Your event" : "An event"}</p><h1>${esc(ev.name)}</h1></div>`
     + `<div class="t">${p(`This album closed on ${albums.expiryLine(album, ev)}, ${albums.RETENTION.words} after it was released, and its photos were deleted — as the note before uploading said. Anything already saved to a phone is still there.`)}</div>`;
-  return shell({ title: `${ev.name} — album`, body, pill: "Album", css: CSS });
+  return shell({ title: `${ev.name} — album`, body, pill: "Album", url: `${events.eventUrl(ev)}/album`, css: CSS });
 }
 
 /** The attendee album, for one guest: everything once released and checked in; otherwise their own. */
@@ -124,7 +124,7 @@ export function renderAlbum({ ev, conversationId, seeAll = false }) {
     if (photos.length) body += `<p class="al-h">Your photos</p>${grid(ev, photos, "", { viewer: conversationId })}<p class="al-note">Yours to remove any time.</p>`;
     body += `<div class="al-row">${addButton()}</div>`;
   }
-  return shell({ title: `${ev.name} — album`, body, pill: "Album", css: CSS });
+  return shell({ title: `${ev.name} — album`, body, pill: "Album", url: `${events.eventUrl(ev)}/album`, css: CSS });
 }
 
 /**
@@ -166,6 +166,7 @@ function renderAlbumV2({ ev, conversationId, all = false }) {
     downloadHref: view.all && n ? `${base(ev)}/download` : "",
     addLine: "Text Reason a photo to add it.",
     why,
+    url: `${events.eventUrl(ev)}/album`,
     // LP3: the album's link previews as its event's own card, under the album's name.
     head: [
       `<meta property="og:type" content="website">`, `<meta property="og:site_name" content="Reason">`,
@@ -205,7 +206,7 @@ export function renderManage({ ev, conversationId, done = "" }) {
   body += highlights.length ? grid(ev, highlights, "al-hi", { organizer: true }) : `<div class="t">${p("None pinned. Pin any photo below to put it on top — optional, any time.")}</div>`;
   body += `<p class="al-h">Everyone's photos</p>`;
   body += photos.length ? grid(ev, photos, "", { organizer: true }) : `<div class="t">${p("Nothing yet. Photos guests send Reason for this event land here.")}</div>`;
-  return shell({ title: `${ev.name} — album`, body, pill: "Album", css: CSS });
+  return shell({ title: `${ev.name} — album`, body, pill: "Album", url: `${events.eventUrl(ev)}/album`, css: CSS });
 }
 
 /** The gate for a browser Reason does not recognize: the event's name, and a code to the link's owner. */
@@ -221,7 +222,7 @@ export function renderGate({ ev, action, token, sent = false, error = "" }) {
         + `<div class="t">${p("The code works once, for 15 minutes. If it doesn't arrive, this link isn't yours.")}</div>`
       : `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="step" value="send">`
         + `<button class="ev-btn" type="submit" data-busy="Sending code…">Text me a code</button></form>`);
-  return shell({ title: ev.name, body, pill: "Album", css: CSS });
+  return shell({ title: ev.name, body, pill: "Album", url: `${events.eventUrl(ev)}/album`, css: CSS });
 }
 
 /** Whose link this is: the organizer's, or a joined guest's. Null for anything else. */
