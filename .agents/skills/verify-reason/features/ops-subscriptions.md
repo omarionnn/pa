@@ -14,7 +14,8 @@ The owner opens `/ops` and sees how close each Claude subscription is to its lim
   window or `status: rejected`. Amber/red go through `settle`, so the owner is texted once per
   episode (after the 4-minute blip window), and "back to normal" once when it resets.
 - **Where Reason's numbers come from.** A streamed CLI run (pictures) prints a `rate_limit_event`;
-  `cliRuns` in `src/backends/cli.js` hands every finished run to `subusage.noteCliRun`, which counts
+  `cliRuns` (an EventEmitter in `src/backends/cli.js`) emits every finished run and `src/subusage.js`
+  listens with `cliRuns.on("run", …)`, handing it to `noteCliRun`, which counts
   it (`provider_calls` as `claude-subscription`) and keeps the reading. Text turns use
   `--output-format json`, which carries no rate-limit field, so `subusage.backstop` reads
   `GET https://api.anthropic.com/api/oauth/usage` with the CLI's token from

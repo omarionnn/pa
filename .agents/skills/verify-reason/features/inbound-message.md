@@ -135,7 +135,7 @@ Which branch the router actually took is in `serve.log`, because `caged.sh` runs
 Diff the line count around a drive rather than reading the whole file:
 
 ```bash
-LOG="${TMPDIR:-/tmp}/reason-verify/serve.log"; BEFORE=$(wc -l < "$LOG")
+LOG="${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/serve.log"; BEFORE=$(wc -l < "$LOG")
 bin/inbound.sh text "what time is it in lisbon"
 tail -n +$((BEFORE+1)) "$LOG"
 ```
@@ -144,7 +144,7 @@ For the access path, drive a number that is **not** the owner — `inbound.sh` a
 `REASON_MASTER_NUMBER`, so this one is a hand-rolled curl with a fresh handle:
 
 ```bash
-P=$(cat "${TMPDIR:-/tmp}/reason-verify/port"); S=$(cat "${TMPDIR:-/tmp}/reason-verify/secret")
+P=$(cat "${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/port"); S=$(cat "${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/secret")
 curl -s -X POST "http://127.0.0.1:$P/channels/sendblue/webhook" \
   -H 'content-type: application/json' -H "sb-signing-secret: $S" \
   -d '{"content":"hey is this reason?","number":"+12125550199","from_number":"+12125550199",
@@ -162,7 +162,7 @@ Auth is the one sub-feature no helper drives — `inbound.sh` always sends the r
 covers it:
 
 ```bash
-P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
+P=$(cat "${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/port")
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "http://127.0.0.1:$P/channels/sendblue/webhook" \
   -H 'content-type: application/json' -H 'sb-signing-secret: nope' \
   -d '{"content":"hi","number":"+10000000000","message_handle":"probe-401"}'   # → 401

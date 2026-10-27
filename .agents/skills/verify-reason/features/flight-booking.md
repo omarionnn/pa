@@ -81,7 +81,7 @@ email, phone}` → `confirmed:false` and a `read_back`; `flight_travelers` lists
 returns `[]` for any other conversation; `bin/peek.sh sql "select * from flight_travelers"` shows
 `details` as `enc:v1:…` with no name, birth date, email or phone in the clear; `flight_book` on a
 search that doesn't exist → "There is no option 1 in flight search 1". Driven so 2026-10-25 at the
-#111 merge with #112. (The field is `born_on`, not `date_of_birth`, and gender is lower-case.)
+#111 merge with #112, and every value above again on 2026-10-27 at `00f3300`. (The field is `born_on`, not `date_of_birth`, and gender is lower-case.)
 
 **Owner-only, one drive process per value** (`caged.sh env` exported, `REASON_FLIGHT_BOOKING=<v> node
 --env-file-if-exists=.env drive.mjs`). Driven 2026-10-25 for the `owner` value: `owner` → `dm:owner`

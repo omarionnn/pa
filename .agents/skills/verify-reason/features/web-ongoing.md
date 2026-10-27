@@ -93,12 +93,13 @@ handoff 2026-10-26, "3 · Ongoing", sheets 2/3, 9D). Model: `src/ongoing.js` (`o
   double tap is one message), then runs ONE `runtime.event` on channel web with
   `speakFirstPrompt(itemRecord(...))` (src/ongoing.js): the row's full record, per-state real moves,
   approval ends on APPROVAL_NUDGE, never words to type. The reply lands in the shared thread or that
-  Web chat; never texted.
+  Web chat; never texted. The event runs `fromOwner: true` (#213), so the first line is written to
+  `messages` for EVERY account, not only the operator's (before, a non-owner's never reached history).
 - **Scheduled description.** `blurb` (tasks/timers/series), written by the same summarise as `label`
-  (src/itemtitle.js `line`); else `plainNote` → `tidyLine`: no (asides), no @handles, no shouting caps,
+  (src/itemtitle.js `line`); else `plainNote` → `tidyLine` (src/ongoing.js): no (asides), no @handles, no shouting caps,
   brand casing (GitHub, iMessage…). A row that already has a `label` but no `blurb` (the model titled it
   through a tool, or it predates #211) asks for its description alone when the detail draws it:
-  `queueBlurb` (src/ongoing.js `describe`) → `db.setItemBlurb`, which writes only `blurb`.
+  src/ongoing.js `describe` → `queueBlurb` (src/itemtitle.js) → `db.setItemBlurb`, which writes only `blurb`.
   Backfill: `scripts/backfill-blurbs.js [--write]` (claude-cli only, `blurb` only where empty). Prove it
   on a copy first: on the box, `sqlite3 -readonly …/reason.db ".backup /tmp/blurbs-copy.db"`, then run with
   `REASON_DB_PATH=/tmp/blurbs-copy.db REASON_DATA_DIR=/tmp/blurbs-data` from a scratch copy of the branch.

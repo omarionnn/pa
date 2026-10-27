@@ -98,7 +98,13 @@ if [ "$TARGET" = "live" ]; then
     say "GET /health" "NO USABLE ANSWER from $URL — not provable"; echo "$h" | head -c 300; exit 1
   fi
   read_health "$h" || fail=1
-  say "agentcard webhook" "$(curl -s -o /dev/null -w '%{http_code}' -m 8 -X POST "$URL/agentcard/webhook" -H 'content-type: application/json' -d '{}') on an unsigned POST (401 = route up, failing closed)"
+  # An unsigned POST to a live webhook is opt-in: the verdict below says live is read-only, and a
+  # routine doctor run should not POST there at all. REASON_DOCTOR_POST_PROBE=1 turns it back on.
+  if [ "${REASON_DOCTOR_POST_PROBE:-}" = 1 ]; then
+    say "agentcard webhook" "$(curl -s -o /dev/null -w '%{http_code}' -m 8 -X POST "$URL/agentcard/webhook" -H 'content-type: application/json' -d '{}') on an unsigned POST (401 = route up, failing closed)"
+  else
+    say "agentcard webhook" "not probed (an unsigned POST to live; REASON_DOCTOR_POST_PROBE=1 sends one, 401 = failing closed)"
+  fi
 
   echo
   echo "VERDICT  this is the LIVE instance people are texting. Read-only only: /health, GET /p/<id>,"

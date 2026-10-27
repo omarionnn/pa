@@ -64,9 +64,10 @@ node .agents/skills/verify-reason/bin/album-preview.mjs ~/Desktop   # three PNGs
 
 Over HTTP on the cage: start it as `REASON_EVENTS=on REASON_EVENT_ALBUMS=on bin/caged.sh start`,
 make an event + a page session in its database under `caged.sh env` (see `album-drive.mjs` for the
-calls), then `curl -si http://127.0.0.1:8796/e/<id>/album/manage` → the gate (200, "Text me a
-code"), with `-H 'Cookie: reason_page=<token>'` for the organizer → 200 with `Check-in list`, and a
-stranger's token → 404. Driven 2026-10-26 at the PR's head (see Baseline).
+calls), then `curl -si "http://127.0.0.1:<port>/e/<id>/album/manage?t=<events.organizer_token>"` → the
+gate (200, "Text me a code"; without `?t=`, or `?t=nope`, it is 404), with `-H 'Cookie:
+reason_page=<token>'` for the organizer (no `?t=` needed) → 200 with `Check-in list`, and a
+stranger's token → 404. Re-driven 2026-10-27 over `00f3300`. Driven 2026-10-26 at the PR's head (see Baseline).
 
 - **The organizer is nudged to check people in, never bypassed** (owner, 2026-10-26). `albums.release`
   returns `joined` / `checked_in` and, when not everyone who joined is in, `nudge` (`checkinNudge`):

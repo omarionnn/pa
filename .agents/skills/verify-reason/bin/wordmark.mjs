@@ -11,8 +11,11 @@
 // its first visible thing is the wordmark (reas + brand-red bubble + n, text "reason": the o rides hidden), at the start of the top line, in the inline Instrument
 // Serif italic at 21.6px, the site's #2a2520 in light / the page's light ink in dark, bubble brand red #9c3b2e (dark: #d46a5c),
 // with no old dot-and-"Reason" left in the top line. `--site` also measures the live marketing
-// site's .nav-mark at 1280 and requires the same width, type size and bubble size (needs the network,
+// site's nav mark (`a.wordmark`) at 1280 and requires the same width, type size and bubble size (needs the network,
 // reads only). `--shot` saves the 390px light event join page.
+// 2026-10-27: since Site v4 the site's mark is 64px wide, 24px type, bubble 16.5×14; every page's is
+// still 52px, 21.6px, 10.1×10.8, so `--site` FAILs at 1280 on all of them. That is the pages not
+// following the redesign (an owner call), not a broken page; the 390px rows and the no-flag run pass.
 const { mkdtempSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
@@ -84,8 +87,10 @@ try {
     const p = await b.newPage({ viewport: { width: 1280, height: 900 } });
     await p.goto("https://heyreason.com/", { waitUntil: "networkidle" });
     await p.evaluate(() => document.fonts.ready);
-    ref = await p.evaluate(() => { const r = document.querySelector(".nav-mark").getBoundingClientRect(), o = document.querySelector(".nav-mark svg").getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(o.width * 10) / 10 + "×" + Math.round(o.height * 10) / 10, fs: getComputedStyle(document.querySelector(".nav-mark")).fontSize }; });
-    console.log(`site .nav-mark at 1280: ${ref.w}px wide, bubble ${ref.h}px, ${ref.fs} type`);
+    // Site v4 (10-27) renamed the nav mark `.nav-mark` → `a.wordmark` (href="#top"); try both.
+    ref = await p.evaluate(() => { const m = document.querySelector("a.wordmark, .nav-mark"); if (!m) return null; const r = m.getBoundingClientRect(), o = m.querySelector("svg").getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(o.width * 10) / 10 + "×" + Math.round(o.height * 10) / 10, fs: getComputedStyle(m).fontSize }; });
+    if (!ref) throw new Error("no a.wordmark (or .nav-mark) on https://heyreason.com/ — the site's nav mark moved again");
+    console.log(`site wordmark at 1280: ${ref.w}px wide, bubble ${ref.h}px, ${ref.fs} type`);
     await p.close();
   }
   for (const scheme of ["light", "dark"]) for (const [name, make, intro] of pages) for (const w of [390, 1280]) {

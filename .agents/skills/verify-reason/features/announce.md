@@ -66,6 +66,10 @@ node scripts/announce.js --send --confirm=events-1025 --gap-seconds=3
 End state seen: seeded 1d, 3d, 40d, mode-off and Tokyo-at-night people → dry run `recipients: 2`,
 `opted-out 1, quiet-hours 1`; the send put four `POST /api/send-message` on the fake, bubble 1 then
 the link per person, 3 s apart; a rerun sent nothing and the dry run then read `already-sent 2`.
+Re-driven 2026-10-27 at `00f3300` with the same five people, identical counts and 4 posts. Quiet
+hours are the real clock: at 08:00 UTC everybody on the default New York zone is in their night, so
+seed the "should get it" people with `db.setNoticeWindow(c, { tz: "Asia/Tokyo" })` (or whatever
+zone is daytime) and the night one with a zone that is not.
 
 Live: the dry run only, read-only. Check it wrote nothing: the script prints a `warning: this
 process changed N rows` line on stderr if anything did.
@@ -79,7 +83,8 @@ process changed N rows` line on stderr if anything did.
   warning line names it; the dry run's own queries write nothing (pinned in the test).
 - `sqlite3 -readonly` on a WAL database with no `-shm` file fails "unable to open database file".
 - **Live's `accounts` table has no `state` column** (2026-10-25: `pragma table_info(accounts)`; the
-  `CREATE TABLE IF NOT EXISTS` gained it after live's table existed and no migration adds it). The
+  `CREATE TABLE IF NOT EXISTS` gained it after live's table existed; `src/db.js` now has
+  `addColumnIfMissing("accounts", "state", …)`, so a restart on current code adds it). The
   first live dry run therefore read every person as opted-out (`recipients: 0, opted-out 8`); the
-  script now reads a missing column as active. Prove live-shaped behaviour on a `.backup` copy of
+  script still reads a missing column as active. Prove live-shaped behaviour on a `.backup` copy of
   the live db in a `sudo -u reason mktemp -d` dir with `REASON_DB_PATH` pointed at it, then delete it.

@@ -66,7 +66,7 @@ db.db.prepare("INSERT INTO agentcard_purchases (conversation_id, buy_conversatio
 db.db.prepare("INSERT INTO agentcard_purchases (conversation_id, buy_conversation_id, status, amount_cents, merchant, created_at, updated_at) VALUES (?, 'd2', 'cart_shown', 100, 'Target', ?, ?)").run(OWNER_C, Date.now(), Date.now());
 
 let list = await (await get("/web/saved")).text();
-step("list: ALL 3 (a shown cart is not a receipt)", /aria-current="true">ALL 3</.test(list) && !/Target/.test(list));
+step("list: ALL 3 (a shown cart is not a receipt)", /aria-current="true">ALL 3</.test(list) && !/(?<!Event)Target/.test(list));  // not EventTarget in the loading kit's script
 step("list: BOOKED + CALL · 1:42 meta", />BOOKED<\/span><span class="sv-m">CALL · 1:42 · /.test(list));
 step("list: PAID receipt", />PAID<\/span><span class="sv-m">RECEIPT · /.test(list));
 step("list: nothing of Kofi's", !/Kofi/.test(list));

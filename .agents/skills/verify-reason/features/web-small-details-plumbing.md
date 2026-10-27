@@ -44,7 +44,7 @@ win and deliver drops it right before `holdInbound` (synchronous check). Keys ar
 
 ## Drive it
 
-- Offline: `env -i PATH=$PATH HOME=$HOME node --test test/web-4h-plumbing.test.js` (16).
+- Offline: `env -i PATH=$PATH HOME=$HOME node --test test/web-4h-plumbing.test.js` (19).
 - Staging: `npm run web:staging` → `take-it-back.html`, `taken-back.html`, `while-you-were-out.html`, `working-counts.html`.
 - Live (Hetzner): throwaway account + short-lived page_session row; set its `web_seen_at` 4 h back and finish a
   throwaway task, then GET `/web?thread` (line once, gone on refresh). Take-back: POST /web/send then

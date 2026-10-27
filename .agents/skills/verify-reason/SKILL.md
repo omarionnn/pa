@@ -98,7 +98,7 @@ lives in `$TMPDIR/reason-verify/` (`pid`, `port`, `secret`, `owner`, `serve.log`
 plus the `images/`, `profiles/` and `shots/` roots it creates up front.
 
 **`serve.log` carries the router's own decision log**, because `caged.sh` runs `serve.js --log`.
-That flag is the only thing that turns it on (`src/serve.js:30–31`; without it `log` is `() => {}`),
+That flag is the only thing that turns it on (`src/serve.js:33`, `verbose = process.argv.includes("--log")`; without it `log` is `() => {}`),
 and it is what makes a drive readable: `{"inbound":…,"auto_admitted":"+1…"}`,
 `{"inbound":…,"duplicate":true}`, `{"inbound":…,"not_served":…,"why":…}`,
 `{"webhook":"sendblue","status":200,"delivered":1}`, every `{"tool":…,"out":…}`, and the
@@ -239,6 +239,8 @@ timer and thread counts. It exits non-zero and says so when the instance is not 
 On live it also reports the outside watchdog (`reason-watchdog.timer` state + last run,
 `data/watchdog.json`'s age) and the server's own `GET /alive` on its `REASON_PORT` (8788);
 `ActiveState=inactive` with no last run, or `/alive` → `not found`, means that code is not deployed.
+Live doctor sends **no POST** by default: the AgentCard webhook probe (an unsigned POST, 401 =
+failing closed) runs only with `REASON_DOCTOR_POST_PROBE=1`.
 
 ## Drive
 
@@ -274,7 +276,7 @@ the second call proves nothing. The sender is the `number` field, set from `REAS
 To drive the auth failure, which no helper covers, post with a wrong secret by hand:
 
 ```bash
-P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
+P=$(cat "${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/port")
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "http://127.0.0.1:$P/channels/sendblue/webhook" \
   -H 'content-type: application/json' -H 'sb-signing-secret: nope' \
   -d '{"content":"hi","number":"+10000000000","message_handle":"probe-401"}'   # → 401
@@ -310,7 +312,7 @@ be their own words from this message" however `ctx.messages` reads (2026-10-24).
 **3 — An HTTP route.** For what a browser or a phone fetches.
 
 ```bash
-P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
+P=$(cat "${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/port")
 curl -s "http://127.0.0.1:$P/health" | node -e 'console.log(JSON.stringify(JSON.parse(require("node:fs").readFileSync(0,"utf8")),null,2))'
 curl -si "http://127.0.0.1:$P/p/<id>?k=<owner-key>" | head -40    # 401 + the code gate: a fresh curl is a new browser (features/pages.md)
 curl -si "http://127.0.0.1:$P/p/<id>"                             # the same page without the key
@@ -393,6 +395,13 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
 ```
 
 See [features/web-memory.md](features/web-memory.md) and [features/web-history.md](features/web-history.md).
+
+### Baseline — 4,151 pass, 0 failures on main after #217 (00f3300, 2026-10-27)
+
+`npm run test:offline` under `env -i`: 4,273 tests, 4,151 passing, 122 skipped, 0 failing, ~65s.
+Every web/events/album/timer drive above (each with `REASON_DB_PATH=$(mktemp -d)/x.db`) all ok;
+`doctor.sh live`: pid 713098, all 210 `src/` checksums same as main. Drives refuse to start without
+a fresh temp `REASON_DB_PATH`; `caged.sh env` alone is not enough.
 
 ### Baseline — 3,952 pass, 0 failures after Reason Web v2 Settings + notifications (wt/v2-settings, 2026-10-27)
 
@@ -649,7 +658,8 @@ focus F1): [features/web-edge.md](features/web-edge.md); driven in Chromium by `
 Reason Web §4h plumbing (while you were out, take it back, working line counts): [features/web-small-details-plumbing.md](features/web-small-details-plumbing.md); `test/web-4h-plumbing.test.js`.
 Reason Web §4h small details (pen writes in, stamp lands, paper grain, late night): [features/web-motion.md](features/web-motion.md);
 driven in Chromium by `test/web-4h-motion-browser.test.js`.
-Pages Reason makes v2 (`REASON_PAGES_V2`): [features/pages-v2.md](features/pages-v2.md); `scripts/pages-v2-preview.mjs` + `scripts/pages-v2-compare.mjs`. Print (§4h-8, `src/pages/print.js`): same file, "Print"; `pages-v2-preview.mjs <dir> --print`.
+Reason Web shell (wordmark text + nowrap, logo → `/web?home`, link cards for `/web`, `/privacy`, `/terms`): [features/web-shell.md](features/web-shell.md).
+Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start the cage with `REASON_PAGES_V2=1`): [features/pages-v2.md](features/pages-v2.md); `scripts/pages-v2-preview.mjs` + `scripts/pages-v2-compare.mjs`. Print (§4h-8, `src/pages/print.js`): same file, "Print"; `pages-v2-preview.mjs <dir> --print`.
 
 ## Facts worth not rediscovering
 
@@ -674,7 +684,7 @@ Pages Reason makes v2 (`REASON_PAGES_V2`): [features/pages-v2.md](features/pages
   real-model test lanes, which run on the subscription (see below) — prompt evals that only need the
   model, not the cage, included: see the proactive-catches entry in [features/README.md](features/README.md).
 - **On the cage, an API-backend turn can end with no words** and the reply becomes the hardcoded
-  "ugh my bad, something broke on my end. say that again?" (`src/agent.js:537`). Seen 2026-10-23:
+  "ugh my bad, something broke on my end. say that again?" (`src/agent.js:568`). Seen 2026-10-23:
   `memory_page` → `request_done` → an empty final message, 1 of 3 identical asks. Live runs the
   `claude-cli` backend and has never sent that line, so it is an API-path gap; re-ask before calling
   a feature broken.
@@ -756,5 +766,8 @@ Pages Reason makes v2 (`REASON_PAGES_V2`): [features/pages-v2.md](features/pages
   Hetzner's, set 2026-10-26 when the domain moved; before that `https://files.reason.omarinyarko.com`, and `https://reason.omarinyarko.com/p` until 2026-10-24) builds the page link
   as `https://files.heyreason.com/<id>?k=…`, no `/p`; `REASON_PUBLIC_URL=https://reason.tail3753c7.ts.net` builds `/img/…`. Swap either
   host for `127.0.0.1:<caged port>` before curling.
-- Worktrees have no `.env`; `ln -s ~/Desktop/pa/.env <worktree>/.env` (gitignored) before
-  `caged.sh start` from one, or the cage comes up with no backend.
+- Worktrees have no `.env`; for verification leave it so — the cage runs on defaults (owner
+  `+12025551234`, no `/ops` password, the API backend with no key, so no model turn), which is what
+  every no-model drive wants. Never link or copy the real `.env` into a worktree. With no `.env`,
+  `REASON_PUBLIC_URL` is unset, so tool URLs come back `http://127.0.0.1:<port>` and page image
+  blocks refuse them: export an https `REASON_PUBLIC_URL` for in-process drives.

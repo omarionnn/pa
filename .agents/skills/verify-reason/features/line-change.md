@@ -32,7 +32,9 @@ Somebody who used to text the 808 number texts the 656 number for the first time
 Offline: `node --test test/linechange.test.js`.
 
 On the cage (2026-10-24): seed one pre-cutoff inbound for a made-up number, then post as that
-number. `REASON_AUTO_ADMIT=1` in `.env` lets the stranger in.
+number. `REASON_AUTO_ADMIT=1` in `.env` lets the stranger in (a worktree with no `.env`: start the
+cage with `REASON_AUTO_ADMIT=1 REASON_MASTER_NUMBER=+12025551234 bin/caged.sh start`, or the
+stranger lands in the approval queue and no `line_change_told` is logged).
 
 ```bash
 cd ~/Desktop/pa && eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')"
@@ -51,7 +53,8 @@ bin/peek.sh sql "SELECT * FROM line_change_cards"
 
 **End state.** `serve.log`: `{"inbound":…,"auto_admitted":"+12025550123"}` then
 `{"line_change_told":"dm:sendblue:+12025550123","card":"failed","card_why":"sendblue is not connected…","line":"failed"}`
-(the cage cannot send — that is the cage holding), then the turn. `line_change_cards` has one row
+(the cage cannot send — that is the cage holding; with no `.env` the why is `REASON_PUBLIC_URL is
+not set, so there is no address to serve the card from` — same pass, 2026-10-27), then the turn. `line_change_cards` has one row
 for that conversation with `card_ok = 0` and the why; the second message adds no row and no
 `line_change_told` line.
 

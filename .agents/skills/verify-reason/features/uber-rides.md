@@ -18,7 +18,7 @@ that logs `ride_link_rebuilt`), `src/rides.js` (the NYC boxes and the verified c
 (`UBER_CLIENT_ID`, `UBER_CLIENT_SECRET`, `REASON_UBER_SANDBOX`, `UBER_API_BASE`), `src/db.js`
 (`uber_rides`, `oauth_tokens`, `oauth_states`).
 Find lines: `grep -n 'case "uber_' src/tools.js`.
-Tests: the link in `test/sites.test.js` (46 in the file; rides from ~line 437), `test/rides.test.js`
+Tests: the link in `test/sites.test.js` (46 in the file; the Uber link from ~line 425, "the uber deep link"), `test/rides.test.js`
 (5: the NYC geofence and the two verified numbers), `test/ridelinks.test.js` (4: coordinates and the
 outbox rebuild), `test/uber.test.js` (14) against `test/fixture-uber.js`; the sign-in plumbing in
 `test/signin.test.js` (21), `test/signin-window.test.js` (11), `test/signin-remote.test.js` (44).
@@ -83,7 +83,8 @@ await runTool("uber_link", { pickup_latitude: 40.7484, pickup_longitude: -73.985
 await runTool("uber_connect", {}, ctx)   // → ok:false, blocked:"not_for_rides"
 ```
 
-Driven 2026-10-23 at `226ff17`: both answers exactly as above.
+Driven 2026-10-23 at `226ff17`: both answers exactly as above; again 2026-10-27 at `00f3300` (plus the
+`not_connected` drive below; the callback answered 400).
 
 Pinned by these: callback with bad/expired state, identity-only vs ride access, token refresh,
 scope refusal, the gate, the quote ownership check.
@@ -99,7 +100,7 @@ node --env-file-if-exists=.env -e '
   const { runTool } = await import("./src/tools.js");
   console.log(JSON.stringify(await runTool("uber_options", {}, { conversationId: "dm:owner", messages: [] })).slice(0,300));
 '
-P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
+P=$(cat "${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/port")
 curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:$P/uber/callback?state=nope&code=x"   # not a 5xx
 curl -s "http://127.0.0.1:$P/health" | grep -o '"uber":{[^}]*}'   # app_configured:false, missing, redirect_uri, sandbox
 cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh stop

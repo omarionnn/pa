@@ -70,7 +70,7 @@ real hashes, real declines, and the gate, caps, ledger and webhook handler all r
 
 ```bash
 cd ~/Desktop/pa
-node --test test/agentcard.test.js        # 52/52 at 587f67a (35 at ef7040a)
+node --test test/agentcard.test.js        # 55/55 at 00f3300 (52 at 587f67a, 35 at ef7040a)
 node --test test/purchasesnote.test.js test/agentcard-token-seal.test.js test/oauth-token-seal.test.js \
   test/shopping-sandbox-fixes.test.js     # 22 + 5 + 5 + 5 at 587f67a; agentcard + purchasesnote 82 at b04eb74; purchasesnote 30 at f3669e8 (#108)
 ```
@@ -93,7 +93,8 @@ REASON_VERIFY_RUN=/tmp/reason-verify-place REASON_VERIFY_PORT=$P .agents/skills/
 **End state (driven 2026-10-26 on the cage, port 8813):** `{"error":"rejected: no
 AGENTCARD_WEBHOOK_SECRET on this machine"} HTTP 401`, `serve.log` has one
 `agentcard_webhook_rejected`, and the schema lists `placement_fail_code`, `placement_fail_reason`,
-`placement_failed_at`, `placement_failures`. The signed path — match by conversation, the
+`placement_failed_at`, `placement_failures` (re-driven so 2026-10-27 at `00f3300`, port 8822, with the
+`vault_enroll` / `buy_things` / `purchase_track` → `not_configured` drive below). The signed path — match by conversation, the
 store-rejected re-ask with the ceiling, the stop on the second failure, the code and reason on
 `purchase_track` — is the pinned test above; it needs the fixture's signed deliveries and is never
 driven against the live webhook.
@@ -118,7 +119,7 @@ node --env-file-if-exists=.env -e '
   console.log(JSON.stringify(await runTool("vault_enroll", {}, { conversationId: "dm:owner", messages: [] })));
   console.log(JSON.stringify(capabilitiesNow({ conversationId: "dm:owner" }).find(c => c.name === "buy_things")));
 '   # → {"ok":false,"status":"not_configured",…} and status "not connected"
-P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
+P=$(cat "${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/port")
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "http://127.0.0.1:$P/agentcard/webhook" \
   -H 'content-type: application/json' -d '{"id":"evt_x","type":"vault.card_stored"}'
   # → 401 {"error":"rejected: no AGENTCARD_WEBHOOK_SECRET on this machine"} — the cage's blank secret
@@ -127,6 +128,9 @@ cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh stop
 
 **The live instance, read-only.** Three things say whether AgentCard is really wired on Hetzner,
 none of which writes anything:
+(The unsigned POST below writes nothing, but it is still a POST to a live webhook: leave it out of
+any pass run under a no-POST-to-live rule — `bin/doctor.sh live` skips it unless
+`REASON_DOCTOR_POST_PROBE=1`.)
 
 ```bash
 bin/doctor.sh live                                      # service, code checksum, /health
