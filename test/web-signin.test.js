@@ -592,9 +592,12 @@ test("every answer carries the security headers; the pages carry no preview tags
   const b = await fresh(h);
   const s = await signedIn(h);
   const answers = [await req(h), await ask(h, b, NOBODY, { expectText: false }), await typeCode(h, b, NOBODY, "000000"), await req(h, { cookie: s.jar }), await req(h, { sub: "signin", method: "GET" })];
-  for (const out of answers) {
+  const { linkCardTags } = await import("../src/pages/sitecard.js");
+  for (const [i, out] of answers.entries()) {
     for (const [k, v] of Object.entries(ws.SECURITY_HEADERS)) assert.equal(out.headers[k], v, k);
-    assert.doesNotMatch(String(out.body), /og:|twitter:/);
+    // Signed out: only the fixed /web card (owner 10-27), nothing drawn from the request. Signed in: none.
+    if (i < 3) assert.ok(String(out.body).includes(linkCardTags("web")), `signed-out answer ${i} carries the /web card`);
+    assert.doesNotMatch(String(out.body).replace(linkCardTags("web"), ""), /og:|twitter:/);
     assert.doesNotMatch(String(out.body), /808/);
   }
   assert.equal(answers.at(-1).status, 303, "GET on a POST-only step just goes back to /web");
@@ -666,4 +669,48 @@ test("5C still comes first, once, after the first sign-in — and its Got it goe
   assert.match(note.body, /One Reason\.<br><em>Pick up anywhere\.<\/em>/);
   assert.match(note.body, /href="\/web\?home"/);
   assert.match((await req(h, { query: { home: "" }, cookie: s.jar })).body, /What(&#39;|')s good, Kofi\?/);
+});
+
+// ---------- the link card (src/pages/sitecard.js): what iMessage and facebookexternalhit read ----------
+
+/** One head tag's content, by property or name. */
+const metaOf = (html, key) => new RegExp(`<meta (?:property|name)="${key.replace(":", "\\:")}" content="([^"]*)">`).exec(html)?.[1] ?? null;
+
+test("signed-out /web, fetched like a crawler (no cookie, no origin), is a 200 carrying the full Reason on the web card", async () => {
+  const h = harness();
+  const out = await req(h, { origin: null });
+  assert.equal(out.status, 200, "a crawler gets the page itself, never a redirect");
+  assert.match(out.body, SIGNIN);
+  const head = out.body.slice(0, out.body.indexOf("</head>"));
+  assert.equal(metaOf(head, "og:title"), "Reason on the web");
+  assert.equal(metaOf(head, "og:description"), "Pick up your conversation with Reason from any browser.");
+  assert.equal(metaOf(head, "og:site_name"), "Reason");
+  assert.equal(metaOf(head, "og:url"), "https://heyreason.test/web");
+  assert.match(metaOf(head, "og:image"), /^https:\/\/heyreason\.test\/og-web\.png\?v=\d+$/);
+  assert.equal(metaOf(head, "og:image:width"), "1200");
+  assert.equal(metaOf(head, "og:image:height"), "630");
+  assert.equal(metaOf(head, "twitter:card"), "summary_large_image");
+  assert.equal(metaOf(head, "twitter:image"), metaOf(head, "og:image"));
+  // The join page and the code page are signed out too, and carry the same card.
+  assert.equal(metaOf((await req(h, { query: { join: "1" } })).body, "og:title"), "Reason on the web");
+});
+
+test("a signed-in /web never carries a link card, so nothing private can end up in a preview", async () => {
+  const h = harness();
+  const s = await signedIn(h);
+  await firstVisit(h, s.jar);
+  const out = await req(h, { cookie: s.jar });
+  assert.match(out.body, /What(&#39;|')s good, Kofi\?/);
+  assert.doesNotMatch(out.body, /property="og:|name="twitter:/);
+});
+
+test("/privacy and /terms carry their own full link cards, on the legal card picture", async () => {
+  const { privacyPage, termsPage } = await import("../src/pages/site.js");
+  for (const [html, path] of [[privacyPage(), "/privacy"], [termsPage(), "/terms"]]) {
+    assert.match(metaOf(html, "og:title"), /^Reason · (Privacy|Terms)$/);
+    assert.ok(metaOf(html, "og:description"));
+    assert.equal(metaOf(html, "og:url"), `https://heyreason.test${path}`);
+    assert.match(metaOf(html, "og:image"), /^https:\/\/heyreason\.test\/og-legal\.png\?v=\d+$/);
+    assert.equal(metaOf(html, "twitter:card"), "summary_large_image");
+  }
 });
