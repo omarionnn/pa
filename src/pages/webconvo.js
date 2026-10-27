@@ -286,8 +286,13 @@ export function inHand(conversationId) {
   const titled = (kind, row, text) => {
     const label = String(row.label ?? "").trim();
     if (label) return label;
-    queueTitle(kind, conversationId, row.id, text, { name });
-    return cleanTitle(text, { name });
+    // A series' firing is titled through its series (the title then reaches every firing).
+    if (kind === "timer" && row.series_id) {
+      const s = db.getSeries(conversationId, row.series_id);
+      if (s?.label) return s.label;
+      if (s) queueTitle("series", conversationId, s.id, s.what, { name });
+    } else queueTitle(kind, conversationId, row.id, text, { name });
+    return cleanTitle(text, { name }) || String(text ?? "").trim().slice(0, 48);
   };
   const tasks = db.listTasks(conversationId).map(t => {
     const [status, words] = STATE_WORDS[t.state] ?? ["IN HAND", "in hand"];
@@ -531,7 +536,7 @@ export const OG_TOP = 3;
  * "HIDE →": the page slides it away and the thread takes the width; "ONGOING N" in the top bar brings it back.
  */
 function ongoingMargin(items, approvals, { all = false, tab = false } = {}) {
-  const head = tab ? "" : `<div class="og-h"><h2>Ongoing</h2><button class="act2 og-hide" type="button" aria-controls="og">HIDE <span aria-hidden="true">→</span></button></div>`;
+  const head = tab ? "" : `<div class="og-h"><h2>Ongoing</h2><button class="act2 og-hide" type="button" aria-controls="og" aria-expanded="true">HIDE <span aria-hidden="true">→</span></button></div>`;
   const aside = (inner, cls = "") => `<aside class="og${tab ? " og-tab" : ""}${cls}" id="og" aria-label="Ongoing">${head}${inner}</aside>`;
   if (!items.length && !approvals.length) {
     return aside(`<div class="empty"><p class="h2">Nothing left<br>to chase.</p>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</div>`);

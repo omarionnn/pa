@@ -74,7 +74,7 @@ test("1. three rows show: needs-you first, then soonest due; See all N → opens
 test("2. HIDE → beside the heading; the thread takes the width; ONGOING N in the top bar; remembered per device", () => {
   db.createTimer(C, { fireAt: clock.now() + H, note: "n", label: "One" });
   const s = page();
-  assert.match(s, /<div class="og-h"><h2>Ongoing<\/h2><button class="act2 og-hide" type="button" aria-controls="og">HIDE <span aria-hidden="true">→<\/span><\/button><\/div>/);
+  assert.match(s, /<div class="og-h"><h2>Ongoing<\/h2><button class="act2 og-hide" type="button" aria-controls="og" aria-expanded="true">HIDE <span aria-hidden="true">→<\/span><\/button><\/div>/);
   assert.match(s, /<nav aria-label="Account"><a class="act2 og-back" href="#og" aria-controls="og">ONGOING 1<\/a>/);
   assert.match(s, /\.og-back\{display:none\}/);
   assert.match(s, /html\.og-off \.wrapc>\.og\{display:none\}/);
@@ -155,6 +155,11 @@ test("4d. no title yet: ONE background summarise per row, written once, never ov
   assert.equal(process.env.REASON_BACKEND, undefined);
   assert.equal(await it.summariseTitle("anything"), null);
   assert.equal(it.queueTitle("timer", C, 999, "x"), null);
+  process.env.REASON_BACKEND = "claude-cli";
+  try {
+    assert.equal(await it.summariseTitle("anything"), null, "never the real CLI under the test runner");
+    assert.equal(it.queueTitle("timer", C, 998, "x"), null);
+  } finally { delete process.env.REASON_BACKEND; }
   // A series' title reaches its pending firing.
   const s = series.start({ conversationId: C, what: "gua sha", repeat: { kind: "daily", hour: 22 } });
   db.setItemLabel("series", C, s.series.series_id, "Daily gua sha");
