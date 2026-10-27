@@ -69,7 +69,7 @@ function fact(conv, about, text, group = "", category = "") {
   return db.remember(conv, about, text, { group, category }).factId;
 }
 const sectionOf = (html, title) => {
-  const i = html.indexOf(`>${title}</h2>`);
+  const i = html.search(new RegExp(`>${title} · \\d+</h2>`));
   if (i < 0) return null;
   const end = html.indexOf("</section>", i);
   return html.slice(i, end);
@@ -91,15 +91,15 @@ test("the list: grouped under the five headings in order, empty ones not drawn, 
   assert.match(sectionOf(h, "PEOPLE"), /Juno: is your dog/);
   assert.match(sectionOf(h, "WHY"), /No red-eyes/);
   assert.equal(sectionOf(h, "PLACES"), null, "an empty group is not drawn");
-  const order = ["PREFERENCES", "PEOPLE", "ROUTINES", "WHY"].map(t => h.indexOf(`>${t}</h2>`));
+  const order = ["PREFERENCES", "PEOPLE", "ROUTINES", "WHY"].map(t => h.indexOf(`>${t} · 1</h2>`));
   assert.deepEqual([...order].sort((a, b) => a - b), order);
   assert.match(h, /href="\/web\?thread"[^>]*>← BACK TO THE CHAT/);
-  assert.match(h, /MANAGE CHAT HISTORY/);
+  assert.match(h, /href="\/web\/memory\/history">MANAGE CHAT HISTORY →/);
   assert.doesNotMatch(h, /coming|Nothing saved yet/);
   // Four groups: none spans; an odd count makes the last one wide, as WHY is in the reference.
   assert.doesNotMatch(h, /grp wide/);
   fact(OWNER_C, "Omari", "Work is in Midtown", "places");
-  assert.match((await call({ b })).body, /class="grp wide" aria-labelledby="gh-why"/);
+  assert.match((await call({ b })).body, /class="grp wide" id="grp-why" aria-labelledby="gh-why"/);
 });
 
 test("a fact not filed yet stands under its category's heading, and the whys table is WHY", async () => {
@@ -231,7 +231,7 @@ test("REASON THINKS…: real guesses in the margin; yes saves a fact in their na
   const g1 = db.noteGuess(OWNER_C, { about: "Omari", guess: "you like places with a fireplace" });
   const g2 = db.noteGuess(OWNER_C, { about: "Omari", guess: "often up past midnight", how: "i_noticed_a_pattern" });
   const h = (await call({ b })).body;
-  assert.match(h, /<h2 class="gh pen" id="gh-guess">REASON THINKS…<\/h2>/);
+  assert.match(h, /<h2 class="gh pen gc-l" id="gh-guess" tabindex="-1">REASON THINKS… · 2 GUESSES<\/h2>/);
   assert.match(h, /<p class="gs-t">you like places with a fireplace\.<\/p>/);
   assert.match(h, /<p class="gs-t">often up past midnight\.<\/p>/, "patterns are guesses too");
   assert.match(h, /name="answer" value="yes">Yes, that's right<\/button>/);
