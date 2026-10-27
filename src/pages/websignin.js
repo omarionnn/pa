@@ -233,11 +233,11 @@ const waitLine = (ms) => `<p class="so-wait" data-left="${Math.max(0, Math.round
 // sends the code. All of it is decoration over plain forms that work without script.
 const SO_JS = `(function(){
 document.querySelectorAll('.so-wait[data-left]').forEach(function(w){var until=Date.now()+Number(w.dataset.left),l=w.querySelector('.left');
-function tick(){var s=Math.max(0,Math.ceil((until-Date.now())/1000));l.textContent=Math.floor(s/60)+':'+('0'+s%60).slice(-2);if(s>0)setTimeout(tick,500);else location.reload()}tick()});
+function tick(){var s=Math.max(0,Math.ceil((until-Date.now())/1000));l.textContent=Math.floor(s/60)+':'+('0'+s%60).slice(-2);if(s>0)return setTimeout(tick,500);var c=document.querySelector('.digits input[disabled]');if(c){c.disabled=false;w.remove();c.focus()}else location.href='/web'}tick()});
 var d=document.querySelector('.digits'),i=d&&d.querySelector('input');if(!i)return;var cells=d.querySelectorAll('.cell');
 function draw(){var v=i.value,f=document.activeElement===i;cells.forEach(function(c,k){c.textContent=v[k]||(f&&k===v.length?'|':'');c.classList.toggle('on',k<v.length);c.classList.toggle('cur',f&&k===v.length)})}
 i.addEventListener('input',function(){d.classList.remove('bad');draw();if(i.value.length===6&&i.form&&!i.form.dataset.sent){i.form.dataset.sent='1';i.form.requestSubmit?i.form.requestSubmit():i.form.submit()}});
-i.addEventListener('focus',draw);i.addEventListener('blur',draw);draw();
+i.addEventListener('paste',function(){setTimeout(function(){i.dispatchEvent(new Event('input'))},0)});i.addEventListener('focus',draw);i.addEventListener('blur',draw);draw();
 document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(){var b=f.querySelector('[type=submit]');if(b)b.setAttribute('aria-busy','true')})});
 })();`;
 

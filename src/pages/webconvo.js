@@ -30,7 +30,7 @@
 // stream until it ends, so when src/web.js webStreamOrigin names the pages host the page listens there
 // (/web/live, CORS for the website's origin only, the shared cookie); otherwise at /web/stream. Either
 // way a 4 s poll of /web/history runs whenever the stream isn't live, so nothing waits on it.
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual, createHash } from "node:crypto";
 import * as db from "../db.js";
 import { WEB, webStreamOrigin, siteOrigin } from "../web.js";
 import { config, clock } from "../config.js";
@@ -131,7 +131,7 @@ export function linkCard(url, conversationId) {
   if ((m = /^\/e\/([A-Za-z0-9_-]{4,64})(?:\/|$)/.exec(path))) {
     title = "An event";
     const ev = db.eventByPublicId(m[1]);
-    const mine = ev && (ev.organizer_conversation_id === conversationId || !!db.attendeeRow(ev.id, conversationId));
+    const mine = ev && (ev.organizer_conversation_id === conversationId || db.attendeeRow(ev.id, conversationId)?.state === "joined");
     if (mine) {
       title = ev.name;
       if (ev.starts_at) date = { mon: monthFmt(ev.tz).format(ev.starts_at).toUpperCase(), day: dateFmt(ev.tz).format(ev.starts_at) };
@@ -356,7 +356,7 @@ const CSS = `
 .retry+.st{font-size:10px;letter-spacing:.12em}
 .approval{display:flex;flex-direction:column;gap:10px}
 .onit .hand{font-size:23px}
-.netline{margin:0;padding:18px var(--gut);text-align:center;font:400 22px/1.2 var(--hand);color:var(--pen);border-bottom:1px dashed var(--hair)}
+.netline{position:sticky;top:0;z-index:7;background:var(--ground);margin:0;padding:18px var(--gut);text-align:center;font:400 22px/1.2 var(--hand);color:var(--pen);border-bottom:1px dashed var(--hair)}
 .netline[hidden]{display:none}
 .composer{position:sticky;bottom:0;z-index:5;background:var(--ground);padding:8px 0 calc(16px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:6px}
 .cform{display:flex;align-items:center;gap:4px;border-top:1px solid var(--ink);padding:6px 0 0;margin:0}
@@ -530,14 +530,15 @@ function pickUp(conversationId, service) {
 const CLIENT_JS = `(function(){
 var R=window.REASON_WEB,list=document.querySelector('.thread'),onit=document.querySelector('.onit'),form=document.querySelector('.cform'),box=document.getElementById('c-input'),start=document.querySelector('.start'),net=document.querySelector('.netline'),body=document.body;
 var mb=document.querySelector('.menu-b'),menu=document.getElementById('menu');
-if(mb&&menu){var mx=menu.querySelector('.menu-x');function shut(){menu.hidden=true;mb.setAttribute('aria-expanded','false');mb.focus()}mb.onclick=function(){menu.hidden=false;mb.setAttribute('aria-expanded','true');mx.focus()};mx.onclick=shut;document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!menu.hidden)shut()})}
+document.querySelectorAll('form[action="/web/signout"]').forEach(function(f){f.addEventListener('submit',function(){try{Object.keys(sessionStorage).forEach(function(k){if(k.indexOf('reason-web-pending')===0)sessionStorage.removeItem(k)})}catch(x){}})});
+if(mb&&menu){var mx=menu.querySelector('.menu-x');function shut(){menu.hidden=true;mb.setAttribute('aria-expanded','false');mb.focus()}mb.onclick=function(){menu.hidden=false;mb.setAttribute('aria-expanded','true');mx.focus()};mx.onclick=shut;document.addEventListener('keydown',function(e){if(menu.hidden)return;if(e.key==='Escape')shut();else if(e.key==='Tab'){var f=menu.querySelectorAll('a,button,input:not([type=hidden])'),a=f[0],z=f[f.length-1];if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}}})}
 document.querySelectorAll('.start-w[hidden]').forEach(function(s){s.hidden=false});
 document.querySelectorAll('.ex').forEach(function(b){b.onclick=function(){box.value=b.dataset.text;box.dispatchEvent(new Event('input'));box.focus()}});
 var tf=new Intl.DateTimeFormat(undefined,{hour:'numeric',minute:'2-digit'});function fmt(at){try{return tf.format(new Date(at)).toUpperCase()}catch(e){return''}}
 function times(root){(root||document).querySelectorAll('time[datetime]').forEach(function(t){var d=Date.parse(t.dateTime);if(d)t.textContent=fmt(d)})}times();
 if(box){box.addEventListener('focus',function(){body.classList.add('typing')});box.addEventListener('blur',function(){body.classList.remove('typing')})}
 if(!form)return;
-var KEY='reason-web-pending',waiting=0,until=0,live=false,es=null,lost=0;
+var KEY='reason-web-pending:'+R.k,waiting=0,until=0,live=false,es=null,lost=0;
 function noteLine(t){if(!net)return;if(t){net.textContent=t;net.hidden=false}else net.hidden=true}
 function offline(){return navigator.onLine===false}
 function near(){return window.innerHeight+window.scrollY>=document.body.scrollHeight-200}
@@ -566,7 +567,7 @@ m.innerHTML=h;var b=m.querySelector('.ghost b');b.textContent=last?last.textCont
 function send(p,li,tries){tries=tries||0;if(offline()){state(li,'waiting');return}state(li,'sending');
 fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c})})
 .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(j){j.status=r.status;return j})})
-.then(function(j){if(j.status===401){expired();return}if(j.ok){if(li.isConnected&&!j.duplicate){state(li,'sent');li.querySelectorAll('.st').forEach(function(x){x.remove()});waiting++;working(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,'failed')})
+.then(function(j){if(j.status===401){expired();return}if(j.ok){if(j.duplicate&&li.isConnected&&li.dataset.pending){li.remove();forget(p.id)}if(li.isConnected&&!j.duplicate){state(li,'sent');li.querySelectorAll('.st').forEach(function(x){x.remove()});waiting++;working(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,'failed')})
 .catch(function(){if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
 form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.replace(/\\s+$/,'');if(!t.trim())return;var p={id:uid(),text:t};keep(pend().concat([p]));box.value='';box.dispatchEvent(new Event('input'));send(p,pendingLine(p))});
 // A tab reloaded mid-send (or arriving from the home screen): whatever it has not yet seen in history
@@ -605,9 +606,11 @@ export function streamPath() {
   return origin ? `${origin}/web/live` : "/web/stream";
 }
 
-function boot({ csrf, lines = [], more = false }) {
+function boot({ csrf, lines = [], more = false, conversationId = "" }) {
+  // `k` keys this tab's unsent messages to ONE conversation: a tab later signed in as somebody else never resends them.
+  const k = createHash("sha256").update(`pending:${conversationId}`).digest("base64url").slice(0, 12);
   const first = lines[0]?.id ?? 0, last = lines.reduce((n, m) => Math.max(n, m.id), 0);
-  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},stream:${JSON.stringify(streamPath())}};`;
+  return `window.REASON_WEB={c:${JSON.stringify(String(csrf ?? ""))},first:${Number(first)},last:${Number(last)},more:${more ? "true" : "false"},k:${JSON.stringify(k)},stream:${JSON.stringify(streamPath())}};`;
 }
 
 const NET = `<p class="netline" role="status" hidden></p>`;
@@ -630,7 +633,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     + composer({ csrf, sendId })
     + `</section>${ongoingMargin(items, approvals)}</main>`
     + tabBar("chat", items.length + approvals.length);
-  return webPage({ title: "Reason", body, css: CSS, script: boot({ csrf, lines, more }) + CLIENT_JS, bodyClass: "has-tabs", loader: true });
+  return webPage({ title: "Reason", body, css: CSS, script: boot({ csrf, lines, more, conversationId: account?.conversation_id }) + CLIENT_JS, bodyClass: "has-tabs", loader: true });
 }
 
 /** B / B2, the arrival: the greeting, the composer, then what's in hand or where to start, then iMessage. */
@@ -646,7 +649,7 @@ export function renderHome({ account, csrf, sendId, items = [], approvals = [], 
     + (approvals.length ? `<section class="approval" aria-label="Needs you">${approvalCard({ title: approvals[0].title, money: approvals[0].money })}</section>` : "")
     + middle + pick + `</main>`
     + tabBar("chat", items.length + approvals.length);
-  return webPage({ title: "Reason", body, css: CSS, script: boot({ csrf }) + CLIENT_JS, bodyClass: "has-tabs", loader: true });
+  return webPage({ title: "Reason", body, css: CSS, script: boot({ csrf, conversationId: account?.conversation_id }) + CLIENT_JS, bodyClass: "has-tabs", loader: true });
 }
 
 /** 5C, shown once: the same Reason, and what stays where. */

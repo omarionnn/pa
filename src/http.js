@@ -82,7 +82,7 @@ import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
 import { webRequest, webFont, SECURITY_HEADERS as WEB_SECURITY_HEADERS } from "./pages/websignin.js";
-import { webOn, joinNumber } from "./web.js";
+import { webOn, joinNumber, siteOrigin } from "./web.js";
 import * as eventsmod from "./events.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -231,6 +231,14 @@ export function createServer({ router, runtime, log = () => {} }) {
       if (fontOut) {
         res.writeHead(fontOut.status, fontOut.headers);
         return res.end(req.method === "HEAD" ? "" : fontOut.body);
+      }
+      // A browser reconnecting the live stream across hosts sends Last-Event-ID, which needs a preflight:
+      // answered for the website's own origin only, carrying nothing (src/pages/webconvo.js liveStreamRequest).
+      if (url.pathname === "/web/live" && req.method === "OPTIONS" && webOn()) {
+        const site = siteOrigin();
+        const ok = !!site && String(req.headers.origin ?? "") === site;
+        res.writeHead(ok ? 204 : 403, ok ? { "Access-Control-Allow-Origin": site, "Access-Control-Allow-Credentials": "true", "Access-Control-Allow-Methods": "GET", "Access-Control-Allow-Headers": "last-event-id", "Access-Control-Max-Age": "600", Vary: "Origin", "Content-Length": 0 } : { "Content-Length": 0 });
+        return res.end();
       }
       const webRoute = /^\/web(?:\/(signin|code|signout|history|stream|live|send|memory|settings))?$/.exec(url.pathname);
       if (webRoute && webOn()) {

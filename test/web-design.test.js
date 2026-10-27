@@ -465,11 +465,44 @@ test("/web/live on the pages host: not sent round to the website; CORS with cred
     const out = await get("/web/live", { origin: "https://heyreason.test" });
     assert.equal(out.status, 401);
     assert.ok(!out.body.includes("hello"));
+    // The reconnect preflight (Last-Event-ID): the website's origin only, and it carries nothing.
+    const pre = (origin) => new Promise((resolve, reject) => { const r = request({ host: "127.0.0.1", port, path: "/web/live", method: "OPTIONS", headers: { host: "files.heyreason.test", origin, "access-control-request-headers": "last-event-id" } }, (res) => { res.resume(); res.on("end", () => resolve(res)); }); r.on("error", reject); r.end(); });
+    const good = await pre("https://heyreason.test");
+    assert.equal(good.statusCode, 204);
+    assert.equal(good.headers["access-control-allow-headers"], "last-event-id");
+    assert.equal(good.headers["access-control-allow-origin"], "https://heyreason.test");
+    const bad = await pre("https://evil.test");
+    assert.equal(bad.statusCode, 403);
+    assert.equal(bad.headers["access-control-allow-origin"], undefined);
     // Everything else under /web on the pages host is still sent round to the website.
     assert.equal((await get("/web/stream", { cookie: `reason_page=${tok}` })).status, 301);
   } finally {
     server.close();
   }
+});
+
+test("review fixes: unsent messages are keyed to ONE conversation and cleared on sign-out; a countdown never re-POSTs; a pasted code draws and sends", () => {
+  const k = (conv) => /k:"([^"]+)"/.exec(wc.renderConversation({ account: db.getAccount(conv), csrf: "c", lines: [], more: false, sendId: "s" }))?.[1];
+  assert.ok(k(KOFI_C) && k(AMA_C) && k(KOFI_C) !== k(AMA_C), "two people, two keys");
+  assert.equal(/k:"([^"]+)"/.exec(wc.renderHome({ account: db.getAccount(KOFI_C), csrf: "c", sendId: "s" }))?.[1], k(KOFI_C), "home → thread hand-off uses the same key");
+  const t = allScreens().thread;
+  assert.match(t, /var KEY='reason-web-pending:'\+R\.k/);
+  assert.match(t, /form\[action="\/web\/signout"\][^]*?sessionStorage\.removeItem/);
+  const code = allScreens().codeTries;
+  assert.ok(!/location\.reload\(\)/.test(code), "a 429 answered a POST: reloading it would re-POST");
+  assert.match(code, /c\.disabled=false;w\.remove\(\)/);
+  assert.match(allScreens().signinPause, /else location\.href='\/web'/);
+  assert.match(allScreens().code, /i\.addEventListener\('paste',function\(\)\{setTimeout\(function\(\)\{i\.dispatchEvent\(new Event\('input'\)\)/);
+});
+
+test("review fixes: a guest who left never reads the event's name off a card", () => {
+  db.db.prepare(`INSERT INTO events (public_id, organizer_conversation_id, name, name_key, starts_at, tz, password_hash, organizer_token, created_at, updated_at)
+    VALUES ('evtpublicid00002', ?, 'Secret dinner', 'secret dinner', NULL, 'America/New_York', 'x', 'orgtoken-design-2', ?, ?)`).run(AMA_C, clock.now(), clock.now());
+  const ev = db.eventByPublicId("evtpublicid00002");
+  db.db.prepare("INSERT INTO event_attendees (event_id, conversation_id, via, token, state, joined_at, updated_at) VALUES (?, ?, 'link', 'att-token-design', 'left', ?, ?)").run(ev.id, KOFI_C, clock.now(), clock.now());
+  assert.ok(!wc.reasonBody("https://events.heyreason.test/e/evtpublicid00002", KOFI_C).includes("Secret dinner"));
+  db.db.prepare("UPDATE event_attendees SET state = 'joined' WHERE conversation_id = ?").run(KOFI_C);
+  assert.ok(wc.reasonBody("https://events.heyreason.test/e/evtpublicid00002", KOFI_C).includes("Secret dinner"));
 });
 
 test("Web's pen is Web's: brand orange on every other page is unchanged", async () => {

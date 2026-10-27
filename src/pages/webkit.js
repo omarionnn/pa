@@ -154,7 +154,7 @@ button{font:inherit;color:inherit}
 .onit .hand{font-size:24px}
 @keyframes breathe{0%,100%{transform:scale(1);border-color:var(--hair)}50%{transform:scale(1.06);border-color:var(--pen)}}
 .arrive{animation:arrive .3s ease-out both}
-@keyframes arrive{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes arrive{from{opacity:0;transform:translateY(6px)}}
 .themes{border:0;margin:0;padding:0;min-width:0}
 .themes[hidden]{display:none}
 .th-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
