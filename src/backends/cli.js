@@ -10,6 +10,7 @@
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
+import { StringDecoder } from "node:string_decoder";
 
 /**
  * Every finished run, told as `run` with { ok, stdout } — stdout only for a streamed run, which is
@@ -52,12 +53,15 @@ const BUILT_INS = [
  * pictures prints one JSON event per line and the envelope is the last `result` event rather than
  * the whole of stdout — see `envelopeFrom`. A run without pictures is exactly what it always was.
  */
-export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], model = cliConfig.model }) {
+export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], model = cliConfig.model, partial = false }) {
   const withImages = images.length > 0;
+  // `partial` (REASON_WEB_DRAFTS, src/webdraft.js): the same run, printed one event per line with the
+  // reply's words as they are written, so an open Web tab can watch it grow. Same envelope at the end.
+  const streamOut = withImages || partial;
   const args = [
-    ...(withImages
-      ? ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
-      : ["-p", prompt, "--output-format", "json"]),
+    ...(withImages ? ["-p", "--input-format", "stream-json"] : ["-p", prompt]),
+    ...(streamOut ? ["--output-format", "stream-json", "--verbose"] : ["--output-format", "json"]),
+    ...(partial ? ["--include-partial-messages"] : []),
     "--model", model,
     "--system-prompt", system,
     "--strict-mcp-config",
@@ -80,7 +84,7 @@ export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null
   const stdin = withImages
     ? JSON.stringify({ type: "user", message: { role: "user", content: [...images, { type: "text", text: prompt }] } }) + "\n"
     : null;
-  return { args, stdin, streamed: withImages };
+  return { args, stdin, streamed: streamOut };
 }
 
 /**
@@ -129,8 +133,8 @@ export function runClaudeCli({ feature = "other", ...args }) {
   });
 }
 
-function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs }) {
-  const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, jsonSchema, images, model });
+function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, onEvent = null }) {
+  const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, jsonSchema, images, model, partial: typeof onEvent === "function" });
 
   return new Promise((resolve) => {
     // The subscription login is an OAuth credential, not an API key. An empty ANTHROPIC_API_KEY
@@ -161,7 +165,21 @@ function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = []
     // the next sweep (Runtime.tick). It is why a timeout here must never be the end of anything.
     const timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, timeoutMs);
 
-    child.stdout.on("data", (d) => { stdout += d; });
+    // `onEvent` hears each event line as it is printed (src/webdraft.js). It never changes the run.
+    let pending = "";
+    const utf8 = onEvent ? new StringDecoder("utf8") : null; // a character split across two chunks stays whole
+    child.stdout.on("data", (d) => {
+      stdout += d;
+      if (!onEvent) return;
+      pending += utf8.write(d);
+      let k;
+      while ((k = pending.indexOf("\n")) >= 0) {
+        const line = pending.slice(0, k);
+        pending = pending.slice(k + 1);
+        if (!line.trim()) continue;
+        try { onEvent(JSON.parse(line)); } catch { /* a listener is never worth a turn */ }
+      }
+    });
     child.stderr.on("data", (d) => { stderr += d; });
     child.on("error", (e) => {
       clearTimeout(timer);

@@ -195,7 +195,13 @@ const rows = [
   row("user", "web", "Hold the Wednesday one.", at(0, 10, 19)),
 ];
 const lines = rows.map(r => wc.rowOut(r, { conversationId: CONV, service: "iMessage" }));
-const reply = wc.rowOut({ id: 9999, role: "assistant", channel: "web", text: "Got it. (Staging: this is a sample reply, nothing was sent.)", media: [], at: now, external_id: null }, { conversationId: CONV });
+// REASON_WEB_DRAFTS is on here: the sample reply grows a sentence at a time over a stand-in live
+// stream, each piece drawn by the real wc.draftHtml, then the saved line replaces it.
+const REPLY = "Got it, I'll hold the Wednesday one. I'll check the fare again tonight and tell you before I book anything. If it drops before then, you'll hear from me first. (Staging: a sample reply, nothing was sent.)";
+const reply = wc.rowOut({ id: 9999, role: "assistant", channel: "web", text: REPLY, media: [], at: now, external_id: null }, { conversationId: CONV });
+// The person's own line as the live stream confirms it (prod sends this row before Reason starts).
+const MINE = wc.rowOut({ id: 9998, role: "user", channel: "web", text: "__T__", media: [], at: now, external_id: `${CONV}:__C__` }, { conversationId: CONV });
+const PIECES = REPLY.match(/[^.!?]+[.!?)]+\)?\s*/g).map(x => x).reduce((a, x) => [...a, (a.at(-1) ?? "") + x], []).map(t => wc.draftHtml(t.trim(), { conversationId: CONV, service: "iMessage" }));
 const MEDIA = { "staging:photo": "media/photo.svg", "staging:voice": "media/voice.wav", "staging:pdf": "media/lease-2026.pdf" };
 // The thread's media addresses (/web/media/m/<row>/<i>) point at the sample files written below.
 const mediaMap = {};
@@ -422,12 +428,21 @@ function local(url, signedOut) {
 }
 // The memory page swaps a corrected line in place from the answer's html: the real row, "got it." beside it.
 const GOT = wm.rowHtml({ key: "__K__", raw: "__T__", line: "__T__" }, { gotIt: true });
-const SHIM = `<script>(function(){var f=window.fetch,sent=0,n=0,R=${JSON.stringify(reply)},GOT=${JSON.stringify(GOT)};
+const SHIM = `<script>(function(){var f=window.fetch,sent=0,n=0,R=${JSON.stringify(reply)},GOT=${JSON.stringify(GOT)},P=${JSON.stringify(PIECES)},U=${JSON.stringify(MINE)},es=null;
+function now(h){return h.replace(/datetime="[^"]*"/,'datetime="'+new Date().toISOString()+'"')}
+function ES(){var me=this;me.l={};es=me;setTimeout(function(){if(me.onopen)me.onopen()},0);setInterval(function(){me.fire('ping',{})},10000)}
+ES.prototype.addEventListener=function(t,fn){(this.l[t]=this.l[t]||[]).push(fn)};ES.prototype.close=function(){};
+ES.prototype.fire=function(t,d){(this.l[t]||[]).forEach(function(fn){fn({data:JSON.stringify(d)})})};
+function play(q){if(!es){sent++;return}var e=es,t=esc(q.get('text')||''),c=q.get('id')||'';
+e.fire('message',Object.assign({},U,{id:U.id+Math.floor(Math.random()*1e6),at:Date.now(),cid:c,text:t,plain:t,html:now(U.html.split('__T__').join(t))}));
+e.fire('typing',{on:true,until:Date.now()+60000,doing:null});var i=0;
+setTimeout(function step(){if(i<P.length){e.fire('draft',{html:now(P[i++])});setTimeout(step,650);return}
+var m=Object.assign({},R,{id:R.id+Math.floor(Math.random()*1e6),at:Date.now(),html:now(R.html)});e.fire('message',m);e.fire('draft',{html:null});e.fire('typing',{on:false,until:0})},2200)}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function ans(b,st){return new Promise(function(r){setTimeout(function(){r(new Response(JSON.stringify(b),{status:st||200,headers:{'Content-Type':'application/json'}}))},700)})}
 window.fetch=function(u,o){u=String(u);o=o||{};if(u.indexOf('/web/')!==0)return f.apply(this,arguments);var h=o.headers||{};
 if(u.indexOf('/web/send/cancel')===0)return ans(window.STG_CANCEL==='late'?{ok:false,error:'too_late'}:{ok:true,cancelled:true},window.STG_CANCEL==='late'?409:200);
-if(u.indexOf('/web/send')===0){if(window.STG_SEND==='hang')return new Promise(function(){});sent++;return ans({ok:true})}
+if(u.indexOf('/web/send')===0){if(window.STG_SEND==='hang')return new Promise(function(){});var q=new URLSearchParams(String(o.body||''));setTimeout(function(){play(q)},750);return ans({ok:true})}
 if(u.indexOf('/web/upload')===0){var t=String(h['Content-Type']||''),nm=decodeURIComponent(h['X-Reason-Name']||'file');
 if(window.STG_UPLOAD)return ans({ok:false,error:window.STG_UPLOAD},413);
 if(!/^image\\/|^application\\/pdf|^audio\\//.test(t))return ans({ok:false,error:'unsupported'},415);
@@ -436,7 +451,7 @@ if(!o.method||o.method==='GET'){if(u.indexOf('/web/memory/history')===0)return f
 if(u.indexOf('/web/memory/correct')===0){var q=new URLSearchParams(String(o.body||''));return ans({ok:true,html:GOT.split('__K__').join(esc(q.get('k'))).split('__T__').join(esc(q.get('text')))})}
 if(u.indexOf('/web/memory/')===0||u.indexOf('/web/ongoing/state')===0)return ans({ok:true});
 var b={messages:[],more:false};if(sent){sent--;var m=Object.assign({},R,{id:R.id+Math.floor(Math.random()*1e6),at:Date.now()});b.messages=[m]}return ans(b)};
-try{window.EventSource=undefined}catch(e){}})();</script>`;
+try{window.EventSource=ES}catch(e){}})();</script>`;
 const LOADER = `<script>try{sessionStorage.removeItem('reason-web-loaded')}catch(e){}</script>`;
 const TAG = `<style>.stg-tag{position:fixed;right:10px;bottom:10px;z-index:9999;font:11px/1 "Courier New",Courier,monospace;letter-spacing:.12em;text-transform:uppercase;background:#9c3b2e;color:#fff;padding:7px 9px;text-decoration:none;opacity:.9}.stg-tag:hover{color:#fff;opacity:1}</style><a class="stg-tag" href="index.html">STAGING · sample data · all screens</a>`;
 

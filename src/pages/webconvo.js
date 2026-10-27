@@ -47,6 +47,7 @@ import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot
 import { prepareSend } from "../webmedia.js";
 import * as settle from "../settle.js";
 import { doingFor, doingEvents } from "../doing.js";
+import { draftEvents, draftNow } from "../webdraft.js";
 import { dailyAllowedFor } from "../dailyflag.js";
 import * as daily from "../daily.js";
 import { renderDaily } from "./webdaily.js";
@@ -249,6 +250,11 @@ export function rowOut(row, { conversationId, service = null, now = clock.now() 
   m.dayLabel = dayName(m.at, now);
   m.where = settle.whereWords({ at: m.at, device: settle.deviceOf(row, conversationId), now });
   return m;
+}
+
+/** A reply still being written (src/webdraft.js), as the same inner markup a saved Reason line on Web gets. */
+export function draftHtml(text, { conversationId, service = null, now = clock.now() }) {
+  return lineInner({ id: 0, role: "assistant", source: sourceLabel(WEB, service), web: true, text: String(text ?? ""), media: [], at: now }, conversationId);
 }
 
 const serviceOf = (conversationId) => db.getThread(conversationId)?.service ?? null;
@@ -669,8 +675,11 @@ function pend(){try{return JSON.parse(sessionStorage.getItem(KEY)||'[]')}catch(e
 function keep(a){try{sessionStorage.setItem(KEY,JSON.stringify(a))}catch(e){}}
 function forget(cid){keep(pend().filter(function(p){return p.id!==cid}))}
 function uid(){if(window.crypto&&crypto.randomUUID)return crypto.randomUUID();var a=new Uint8Array(16);crypto.getRandomValues(a);return Array.prototype.map.call(a,function(b){return('0'+b.toString(16)).slice(-2)}).join('')}
-function working(on,u){until=on?(u||Date.now()+120000):0;if(onit){if(on&&onit.hidden&&window.reasonInk)reasonInk(onit.querySelector('.hand'),'pen-in');onit.hidden=!on}if(on&&near())bottom()}
-setInterval(function(){if(until&&Date.now()>until)working(false)},1000);
+// REASON_WEB_DRAFTS: the reply as it is written (src/webdraft.js), one ordinary Reason line that grows; the saved one takes its place.
+var dli=null,dat=0;
+function working(on,u){until=on?(u||Date.now()+120000):0;if(onit){if(on&&onit.hidden&&!dli&&window.reasonInk)reasonInk(onit.querySelector('.hand'),'pen-in');onit.hidden=!on||!!dli}if(on&&near())bottom()}
+setInterval(function(){if(until&&Date.now()>until)working(false);if(dli&&Date.now()-dat>120000)draft(null)},1000);
+function draft(h){if(!list)return;if(!h){if(dli){dli.remove();dli=null;if(onit)onit.hidden=!until}return}unempty();var stick=near();if(!dli){dli=document.createElement('li');dli.className='msg re arrive';dli.dataset.draft=1;list.appendChild(dli)}dli.innerHTML=h;times(dli);dat=Date.now();if(onit)onit.hidden=true;if(stick)bottom()}
 // From the arrival, a message moves you into the thread once Reason has it.
 if(!list){R.api={uid:uid,post:function(p){p.at=p.at||Date.now();keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));location.href='/web?thread'},pendingLine:function(){return document.createElement('li')},state:function(li,st){if(st==='failed'&&R.say)R.say("that didn't go. try it again?")}};
 form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.trim(),fs=R.takeFiles?R.takeFiles():[];if(!t&&!fs.length)return;var p={id:uid(),text:t};if(fs.length)p.files=fs;R.api.post(p)});return}
@@ -678,7 +687,7 @@ var loaded=!R.defer,lastPoll=0,calm2=window.matchMedia&&matchMedia('(prefers-red
 function line(m){var li=document.createElement('li');li.className='msg arrive '+(m.role==='user'?'you':'re');li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;if(m.day)li.dataset.day=m.day;if(m.where)li.dataset.where=m.where;li.innerHTML=m.html;times(li);return li}
 function has(id){return list.querySelector('.msg[data-id="'+id+'"]')||list.querySelector('.done[data-ids~="'+id+'"]')}
 function dayCheck(li,m){if(!m.day)return;var p=li.previousElementSibling;while(p&&!p.dataset.day)p=p.previousElementSibling;if(p&&p.dataset.day===m.day)return;var d=document.createElement('li');d.className='day';d.setAttribute('role','separator');d.dataset.day=m.day;if(m.where)d.dataset.where=m.where;var l=document.createElement('p');l.className='lbl';l.textContent=m.dayLabel||'';d.appendChild(l);li.parentNode.insertBefore(d,li)}
-function add(m){if(has(m.id))return;unempty();var stick=near(),li=line(m);
+function add(m){if(has(m.id))return;unempty();var stick=near(),li=line(m);if(m.role==='assistant'&&dli){li.classList.remove('arrive');dli.remove();dli=null}
 if(m.cid){var p=list.querySelector('.msg[data-pending="'+m.cid+'"]');if(p){p.replaceWith(li);dayCheck(li,m);forget(m.cid);li.classList.add('just');var s=document.createElement('p');s.className='st';s.textContent='SENT \\u00b7 '+fmt(m.at);li.appendChild(s);setTimeout(function(){s.classList.add('fade');setTimeout(function(){s.remove();li.classList.remove('just')},1100)},1200);if(stick)bottom();where();return}}
 var after=null;list.querySelectorAll('.msg[data-id]').forEach(function(o){var a=Number(o.dataset.at),i=Number(o.dataset.id);if(a<m.at||(a===m.at&&i<m.id))after=o});
 var fp=list.querySelector('.msg[data-pending]');
@@ -738,6 +747,7 @@ function stream(){if(!window.EventSource)return;try{es=R.stream.indexOf('http')=
 es.addEventListener('ping',function(){beat=Date.now()});
 es.addEventListener('message',function(e){beat=Date.now();try{add(JSON.parse(e.data))}catch(x){}ogLook()});
 es.addEventListener('typing',function(e){try{var t=JSON.parse(e.data);working(t.on,t.until);if(R.doing)R.doing(t.on?t.doing:null)}catch(x){}ogLook()});
+es.addEventListener('draft',function(e){try{draft(JSON.parse(e.data).html)}catch(x){}});
 es.addEventListener('doing',function(e){try{if(R.doing)R.doing(JSON.parse(e.data).doing)}catch(x){}});
 es.addEventListener('state',function(e){beat=Date.now();try{var j=JSON.parse(e.data);settleIn(j.settled);workIs(j.work)}catch(x){}ogLook()});
 es.addEventListener('signedout',function(){es.close();expired()});
@@ -1256,6 +1266,7 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
         db.historyBus.off("state", onRow);
         webCh?.events?.off?.("typing", onTyping);
         doingEvents.off("change", onDoing);
+        draftEvents.off("draft", onDraft);
         clearInterval(beat); clearInterval(check); clearTimeout(stop);
         log({ web_stream_end: why });
         try { res.end(); } catch { /* already gone */ }
@@ -1282,6 +1293,12 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
         write(`event: typing\ndata: ${JSON.stringify({ on: !!e.on, until: e.until || 0, doing: e.on ? doingFor(conv) : null })}\n\n`);
       };
       const onDoing = (c) => { if (c !== conv || !stillHers()) return; write(`event: doing\ndata: ${JSON.stringify({ doing: doingFor(conv) })}\n\n`); };
+      // REASON_WEB_DRAFTS (src/webdraft.js): the reply so far, drawn exactly as a Reason line is, or null
+      // to take it back. Only what already passed the reply's floor ever reaches here.
+      const onDraft = (e) => {
+        if (e?.conversationId !== conv || !stillHers()) return;
+        write(`event: draft\ndata: ${JSON.stringify({ html: e.text ? draftHtml(e.text, { conversationId: conv, service }) : null })}\n\n`);
+      };
       // Timers first: `end` clears them, and the first flush may already end the stream.
       // A named event, not a comment, so the page can tell a live stream from a silently dead one.
       const beat = setInterval(() => { write("event: ping\ndata: {}\n\n"); try { pushState(); } catch { /* the ping still goes */ } }, 15_000);
@@ -1295,8 +1312,11 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
       db.historyBus.on("state", onRow);
       webCh?.events?.on?.("typing", onTyping);
       doingEvents.on("change", onDoing);
+      draftEvents.on("draft", onDraft);
       // A tab that opens (or comes back) mid-turn hears what Reason is doing now, not only at the next change.
       if (doingFor(conv)) onDoing(conv);
+      // Same for a reply being written: a stream that cycled mid-turn picks the draft up where it is.
+      if (draftNow(conv)) onDraft({ conversationId: conv, text: draftNow(conv) });
       try { flush(); pushState(); } catch (e) { log({ web_stream_failed: (e?.message ?? String(e)).split("\n")[0] }); end("failed"); }
     },
   };

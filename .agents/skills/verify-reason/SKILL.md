@@ -396,6 +396,16 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
 
 See [features/web-memory.md](features/web-memory.md) and [features/web-history.md](features/web-history.md).
 
+**8b — Reason Web drafts (`REASON_WEB_DRAFTS`), one real claude-cli turn in Chromium.** A scratch
+instance on this Mac (never Hetzner, never `.env`) with the switch on; the reply must show as a draft
+before the saved line lands, and no draft may be left behind. Steps and env in the feature file.
+
+```bash
+node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i get from lisbon airport to the centre?"   # "ok — first words …"
+```
+
+See [features/web-drafts.md](features/web-drafts.md).
+
 ### Baseline — 4,175 pass, 0 failures after Stamps (wt/stamps, 2026-10-27)
 
 `npm run test:offline` under `env -i`: 4,297 tests, 4,175 passing, 0 failing, 122 skipped. New: `test/stamps.test.js` (12), `test/stamps-web.test.js` (12); `bin/web-stamps-drive.mjs`: 11 steps, all ok. See [features/web-stamps.md](features/web-stamps.md).
