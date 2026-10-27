@@ -189,7 +189,7 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
         // arriving with confetti on it is an animation on a URL, and the sentence it belongs to
         // is still to come.
         : await router.sendParts({ channel: name, to, parts, chatId, replyTo, sendStyle, ...durable });
-      if (target && r.ok) { for (const p of parts) { try { db.writeMessage({ conversationId, role: "assistant", channel: name, text: p }); } catch { /* never costs a send */ } } }
+      if (target && r.ok) { for (const p of parts) { try { db.writeMessage({ conversationId, role: "assistant", channel: name, text: p, source: db.opsSourceOf(idempotencyKey) }); } catch { /* never costs a send */ } } }
       if (!r.ok && !r.queued) {
         warn(`could not send over ${name}: ${r.error}`);
         if (route.started) log({ started_message_failed: conversationId, over: name, why: r.error });
@@ -207,7 +207,7 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
     const r = target ? await target.send({ to, text: one, sendStyle }) : await router.send({ channel: name, to, text: one, chatId, replyTo, sendStyle, ...durable });
     // The console has no outbox, so its history row is written here; every other channel's is
     // written when the outbox marks the row sent (db.markOutboundSent).
-    if (target && r.ok) { try { db.writeMessage({ conversationId, role: "assistant", channel: name, text: one }); } catch { /* never costs a send */ } }
+    if (target && r.ok) { try { db.writeMessage({ conversationId, role: "assistant", channel: name, text: one, source: db.opsSourceOf(idempotencyKey) }); } catch { /* never costs a send */ } }
     // A queued message is not a failure to report to stderr and forget — it is a row that will
     // either arrive or be reported. Only a dead one is worth shouting about here.
     if (!r.ok && !r.queued) {

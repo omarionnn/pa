@@ -763,7 +763,9 @@ export function settle({ report, runtime = null, log = () => {}, silent = new Se
   db.opsSet("report", JSON.stringify(report));
   const text = alertText(changes, report);
   if (text && runtime?.say) {
-    try { runtime.say(config.ownerConversation, text, { toMaster: true }); } catch (e) { log({ ops_alert_failed: short(e) }); }
+    // Under an `ops:` key, so its history row is tagged an operator notice (db.OPS_KEY_PREFIXES) and
+    // never shows as news on Web's Home.
+    try { runtime.say(config.ownerConversation, text, { toMaster: true, idempotencyKey: `ops:check:${report.at ?? Date.now()}:${randomBytes(4).toString("hex")}` }); } catch (e) { log({ ops_alert_failed: short(e) }); }
   }
   log({ ops: report.verdict, checks: report.checks.length, changed: changes.length, texted: !!text });
   return { changes, text };

@@ -67,6 +67,7 @@ import { webMovedTo } from "./pages/siteproxy.js";
 import { checkAccess, trySubmittedCode, requestCode, codeHost, readCookie, readCookies, cookieHeader, clearCookieHeader, pageUrl, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
 import * as ops from "./ops.js";
+import { guardResponse } from "./opsredact.js";
 import * as subusage from "./subusage.js";
 import { renderOps } from "./pages/ops.js";
 import { settleCall, fillLateDetails, reconcileOrder } from "./tools.js";
@@ -112,6 +113,8 @@ export function createServer({ router, runtime, log = () => {} }) {
   stamps.installStamps({ tell: typeof runtime?._tell === "function" ? (c, text, meta) => runtime._tell(c, text, meta) : null, log });
   return nodeCreateServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
+    // The status page's key goes out on the status page only: never on Web, a page, or anything else (src/opsredact.js).
+    if (url.pathname !== "/ops" && url.pathname !== "/ops.json") guardResponse(res);
     const send = (status, body) => {
       const payload = JSON.stringify(body);
       res.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) });
