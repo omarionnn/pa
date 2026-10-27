@@ -160,7 +160,7 @@ test("8C: off by default; the button is drawn only for script; on is saved for T
   let body = await page(h, me);
   assert.match(body, /<section class="st-sec" id="notify" aria-labelledby="nt-h"><h2 id="nt-h">BROWSER NOTIFICATIONS<\/h2><p class="nt-p">Off\. Reason texts you for <em>timely decisions<\/em> instead\.<\/p><p class="nt-q">Turn these on if you'd rather hear from Reason in this browser than by text, while it's open\.<\/p><button class="nt-on" type="button" hidden data-busy="Turning on…"/);
   assert.match(body, /<p class="hand tilt nt-ask" hidden>your browser will ask first\.<\/p>/);
-  assert.match(body, /Notification\.requestPermission\(\)/, "the browser is asked first");
+  assert.match(body, /Notification\.requestPermission\(ok\)/, "the browser is asked first (promise or callback form)");
   assert.match(body, /if\(p!=='granted'\)throw 'no'/, "nothing is saved unless it says yes");
   // The script's save.
   const on = await post(h, me, { do: "notify", on: "1" }, { headers: { accept: "application/json" } });

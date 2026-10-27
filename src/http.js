@@ -502,7 +502,7 @@ export function createServer({ router, runtime, log = () => {} }) {
           log({ spotify_join: email, conversation: row.conversation_id });
           runtime.say(config.ownerConversation,
             `${who.name || "Someone"} wants to connect their Spotify. Their email is ${email}.`
-            + ` Add it in the Spotify developer dashboard under User Management, then tell me and I will send them the link.`);
+            + ` Add it in the Spotify developer dashboard under User Management, then tell me and I will send them the link.`, { toMaster: true });
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
           return res.end(spotify.joinPage({ done: true }));
         }

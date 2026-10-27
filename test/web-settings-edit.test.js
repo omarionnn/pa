@@ -78,8 +78,9 @@ function harness({ turn = async () => "ok" } = {}) {
   router.register(consoleChannel);
   const fake = router.register(new FakeChannel({ number: "+16562167455" }));
   const web = router.register(new WebChannel());
-  runtime.on("outbound", async ({ conversationId, text, channel: name, to, chatId, fromOwner, replyTo }) => {
-    await deliver({ conversationId, text, media: null, channel: name, to, chatId, fromOwner, replyTo });
+  // As src/serve.js wires it: `say` lines carry toMaster through.
+  runtime.on("outbound", async ({ conversationId, text, channel: name, to, chatId, fromOwner, replyTo, toMaster }) => {
+    await deliver({ conversationId, text, media: null, channel: name, to, chatId, fromOwner, replyTo, toMaster: !!toMaster });
   });
   return { router, runtime, deliver, fake, web, logs };
 }
@@ -229,7 +230,7 @@ test("delivery under 'nothing', end to end: a reminder lands on Web and is not t
   assert.ok(await until(() => h.fake.sent.some(m => m.text.includes("123456"))), "the code is texted");
   // A line Reason says itself for the operator (src/tools.js access requests) carries toMaster through `say`.
   h.runtime.say(OWNER_C, "Kofi wants in.", { toMaster: true });
-  await new Promise(r2 => setTimeout(r2, 20));
+  assert.ok(await until(() => h.fake.sent.some(m => m.text.includes("Kofi wants in"))), "an operator line is texted under 'nothing'");
   db.setWebReach(OWNER_C, "text");
 });
 
@@ -249,6 +250,15 @@ test("delivery under 'only what needs a yes', end to end: the turn that asks is 
   assert.ok(await until(() => db.messagesFor(OWNER_C).some(m => m.channel === "web" && m.text.includes("three quotes"))), "the update waits on Web");
   assert.equal(h.fake.sent.filter(m => m.text.includes("three quotes")).length, 0);
   db.setWebReach(OWNER_C, "text");
+});
+
+test("operator lines Reason says with no key (status-page alerts, a Spotify join, an invite request) are marked toMaster, so they are always texted", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
+  assert.match(src("ops.js"), /runtime\.say\(config\.ownerConversation, text, \{ toMaster: true \}\)/);
+  assert.match(src("http.js"), /then tell me and I will send them the link\.`, \{ toMaster: true \}\)/);
+  assert.match(src("tools.js"), /ctx\.events\?\.say\(config\.ownerConversation, out\.toMaster, \{ toMaster: true \}\)/);
+  assert.match(src("serve.js"), /toMaster: !!toMaster/);
 });
 
 // ---------- 5C: Sign out everywhere? ----------
