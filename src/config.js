@@ -372,6 +372,9 @@ export const config = {
   // admission, nothing is written to the per-message history, and no tool list changes. Off is the
   // default and is what live runs until the owner says otherwise (§7 decision 10).
   web: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_WEB ?? "").trim().toLowerCase()),
+  // Pages Reason makes, v2 (handoff 2026-10-27 P1–P6, E2–E4, link previews; src/pages/made.js). HELD
+  // for the owner: off, every page, event and album draws exactly as before. "1" turns it on.
+  pagesV2: ["1", "true", "on", "yes"].includes(String(process.env.REASON_PAGES_V2 ?? "").trim().toLowerCase()),
   // Where Reason Web's live stream is heard from (src/web.js webStreamOrigin). The website's proxy
   // holds a stream back until it ends, so the page listens on the pages host instead, which reaches
   // Reason directly. Unset: on, when the pages host sits under the website's domain (the session

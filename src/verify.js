@@ -11,6 +11,7 @@
 // already on the sheet, and the page is rendered by the same code that serves it.
 import { webLookup } from "./weblookup.js";
 import { renderPage } from "./pages/render.js";
+import { renderMadePage } from "./pages/madedata.js";
 import { parseSheet, peopleOn, stakesOf } from "./sheet.js";
 import { normalizeNumber } from "./config.js";
 
@@ -234,7 +235,8 @@ export function checkAsk({ action, stakes = "", target = "", amount = null, deta
 export function verifyPage(page) {
   if (!page) return { ok: false, error: "There is no page, so there is no link. Do not send one." };
   let html;
-  try { html = renderPage(page, { interactive: true, forName: "" }); }
+  // A designed page (Pages v2, src/pages/madedata.js) is checked as the page it draws as.
+  try { html = renderMadePage(page, { interactive: true }) ?? renderPage(page, { interactive: true, forName: "" }); }
   catch (e) {
     return { ok: false, error: `That page was made but does not render (${(e?.message ?? String(e)).split("\n")[0]}), so the link would open to nothing. Do not send it; give them the answer as text instead.` };
   }

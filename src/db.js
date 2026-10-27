@@ -1362,6 +1362,13 @@ addColumnIfMissing("accounts", "language", "TEXT NOT NULL DEFAULT ''");
 // link so a person can keep it rather than hunt for the newest of nine. NULL is every ordinary
 // page and always will be — a role is claimed, never inferred. See pageWithRole.
 addColumnIfMissing("pages", "role", "TEXT");
+// A page's state on the server (Pages v2, E4, 2026-10-27): 'active', or 'archived' once the thing
+// it was for is finished and it has been put away in Saved. Its owner opening an archived link is
+// told where it went (src/pages/made.js renderArchived); anybody else sees exactly what they saw
+// before, so the state is never something a stranger can read off a link. The owner is the
+// conversation_id the row already carries.
+addColumnIfMissing("pages", "state", "TEXT NOT NULL DEFAULT 'active'");
+addColumnIfMissing("pages", "archived_at", "INTEGER");
 // Which job a timer, a watcher or a thing that really went out belongs to (2026-10-06). Written at
 // the moment each one is made, which is the whole point: "forget the trip" has to be able to find
 // everything running for the trip by LOOKING IT UP rather than by the model remembering what it
@@ -5276,6 +5283,25 @@ export function updatePage(conversationId, id, { title, blocks, subtitle, closin
   return getPage(id);
 }
 
+
+/** Put a page away (E4). Its owner's link then says where it went; the row and its content stay. */
+export function archivePage(conversationId, id) {
+  const r = db.prepare("UPDATE pages SET state = 'archived', archived_at = ? WHERE id = ? AND conversation_id = ? AND state != 'archived'")
+    .run(clock.now(), id, conversationId);
+  return r.changes > 0;
+}
+
+/** Bring an archived page back to its link. */
+export function restorePage(conversationId, id) {
+  const r = db.prepare("UPDATE pages SET state = 'active', archived_at = NULL WHERE id = ? AND conversation_id = ? AND state = 'archived'")
+    .run(id, conversationId);
+  return r.changes > 0;
+}
+
+/** One purchase by its row id, scoped to the conversation it was made for (a receipt page, Pages v2 P6). */
+export function agentcardPurchaseById(conversationId, id) {
+  return db.prepare("SELECT * FROM agentcard_purchases WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
+}
 
 // ---------- documents: a file Reason really wrote ----------
 /**

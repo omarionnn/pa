@@ -30,10 +30,11 @@ import * as events from "../events.js";
 import * as accounts from "../accounts.js";
 import { readCookie, readCookies, cookieHeader, clearCookieHeader, requestCode, SESSION_TTL_MS } from "./access.js";
 import { shell, esc, renderNotFound, codeInputAttrs, foot, sentLine } from "./render.js";
-import { normalizeNumber, clock } from "../config.js";
+import { normalizeNumber, clock, config } from "../config.js";
 import { prettyNumber } from "../invites.js";
 import { coverUrl, coverFile, previewFile, INVITE_LINE, COVER_W, COVER_H } from "../eventcover.js";
 import { albumRequest } from "./album.js";
+import * as made from "./made.js";
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-Length": Buffer.byteLength(body), ...extra }), body });
@@ -143,7 +144,82 @@ function detailsBlock(ev, att) {
 const joinPath = (ev) => `/e/${ev.public_id}/join`;
 const whoPath = (ev, token) => `/e/${ev.public_id}/who?t=${encodeURIComponent(token)}`;
 
+// ---------------------------------------------------------------- Pages v2 (P4 / PD4), held
+/** The tilted date card's three lines, in the event's own zone: NOV · 14. Only ever drawn when the time may be shown. */
+export function dateCard(ev) {
+  if (ev.starts_at == null) return null;
+  const d = new Date(ev.starts_at);
+  return { mon: d.toLocaleString("en-US", { timeZone: ev.tz, month: "short" }).toUpperCase(), day: d.toLocaleString("en-US", { timeZone: ev.tz, day: "numeric" }), to: "" };
+}
+const timeOnly = (ev) => new Date(ev.starts_at).toLocaleString("en-US", { timeZone: ev.tz, weekday: "short", hour: "numeric", minute: "2-digit" });
+
+/** The join form, in the v2 page's own type. The same fields, the same words and the same POST as renderJoin. */
+function joinFormV2(ev, { account, error, values }) {
+  const signedIn = !!account;
+  const field = (name, label, type = "text", extra = "") =>
+    `<label for="${name}">${esc(label.toUpperCase())}<input id="${name}" name="${name}" type="${type}" ${extra} value="${type === "password" ? "" : esc(values[name] ?? "")}"></label>`;
+  return `<form class="jf" method="POST" action="${esc(joinPath(ev))}">`
+    + (error ? `<p class="err" role="alert">${esc(error)}</p>` : "")
+    + field("password", "Event password", "password", `autocomplete="off" required maxlength="200"`)
+    + (signedIn ? "" : field("display_name", "Your name (what other guests see)", "text", `required maxlength="40" autocomplete="name"`))
+    + field("instagram", "Instagram (optional)", "text", `maxlength="60" autocapitalize="off" placeholder="@yourhandle"`)
+    + `<label class="check"><input type="checkbox" name="in_directory" value="1"${(values.in_directory ?? true) ? " checked" : ""}> <span>Show me on the who's-going page (name and Instagram, never your number)</span></label>`
+    + (signedIn
+      ? `<p class="quiet">${esc(`You're signed in to Reason${account.name ? ` as ${account.name}` : ""}, so this just adds you to the event — its updates come to your Reason conversation.`)}</p>`
+      : `<p class="quiet">Joining gives you access to Reason, your personal concierge, which can help you with everything about this event (and more). Joining starts a text conversation between you and Reason — that's where you'll get the event's updates.</p>`
+        + `<a class="typed" href="${esc(signinPath(ev))}">ALREADY USE REASON? SIGN IN WITH YOUR NUMBER</a>`)
+    + `<button class="go" type="submit" data-busy="Joining…">Join →</button></form>`;
+}
+
+/** P4 for anybody the link reaches: only what the organizer made public, then "Are you in?". */
+function renderJoinV2({ ev, account = null, error = "", values = {} }) {
+  const facts = [
+    ["When", ev.time_public && ev.starts_at != null ? timeOnly(ev) : ""],
+    ["Where", ev.location_public ? ev.location : ""],
+  ];
+  return made.renderEvent({
+    title: ev.name, host: events.organizerName(ev) || "", description: ev.description,
+    date: ev.time_public ? dateCard(ev) : null,
+    facts,
+    rsvp: { joinHtml: joinFormV2(ev, { account, error, values }), open: !!error },
+    coming: null, calendarHref: "",
+    head: headFor(ev),
+  });
+}
+
+/** P4 for somebody on the event: the released details, who's coming, the calendar. */
+function renderJoinedV2({ ev, att }) {
+  const v = events.guestView(ev, att);
+  const list = ev.guest_list_visible ? events.directoryEntries(ev).map(e => e.name).filter(Boolean) : null;
+  const going = db.joinedCount(ev.id);
+  return made.renderEvent({
+    title: ev.name, host: events.organizerName(ev) || "", description: ev.description,
+    date: v.when ? dateCard(ev) : null,
+    facts: [["When", v.when ? timeOnly(ev) : ""], ["Where", v.where ?? ""]],
+    rsvp: { joined: true },
+    coming: list,
+    calendarHref: v.when ? `/e/${ev.public_id}/calendar.ics` : "",
+    head: headFor(ev),
+    foot: `Shared with the ${going} ${going === 1 ? "person" : "people"} on this event. Made with Reason.`,
+  }).replace(`</aside>`, `<form method="POST" action="${esc(`/e/${ev.public_id}/signout`)}" style="margin:0"><button class="typed mut" type="submit">SIGN OUT OF THIS BROWSER</button></form></aside>`);
+}
+
+/** The event as a calendar file, for somebody on it, once its time is out (ADD TO MY CALENDAR →). */
+export function calendarFile(ev, att) {
+  const v = events.guestView(ev, att);
+  if (!v.when || ev.starts_at == null) return null;
+  const t = (ms) => new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const line = (s) => String(s ?? "").replace(/\\/g, "\\\\").replace(/[,;]/g, (m) => `\\${m}`).replace(/\r?\n/g, "\\n");
+  return [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Reason//Events//EN", "BEGIN:VEVENT",
+    `UID:${ev.public_id}@reason`, `DTSTAMP:${t(clock.now())}`, `DTSTART:${t(ev.starts_at)}`, `DTEND:${t(ev.starts_at + 2 * 60 * 60_000)}`,
+    `SUMMARY:${line(ev.name)}`, ...(v.where ? [`LOCATION:${line(v.where)}`] : []), `URL:${events.eventUrl(ev)}`,
+    "END:VEVENT", "END:VCALENDAR", "",
+  ].join("\r\n");
+}
+
 export function renderJoin({ ev, account = null, error = "", values = {} }) {
+  if (config.pagesV2) return renderJoinV2({ ev, account, error, values });
   const signedIn = !!account;
   const field = (name, label, type = "text", extra = "") =>
     `<label for="${name}">${esc(label)}</label><input id="${name}" name="${name}" type="${type}" ${extra} value="${type === "password" ? "" : esc(values[name] ?? "")}">`;
@@ -180,6 +256,7 @@ export function finishStep({ ev, claim, lineNumber }) {
 }
 
 export function renderJoined({ ev, att }) {
+  if (config.pagesV2) return renderJoinedV2({ ev, att });
   const dir = ev.guest_list_visible ? `<a class="ev-btn" href="${esc(whoPath(ev, att.token))}">See who's going</a>` : "";
   const body = `${intro(ev)}<h2>You're in</h2>${detailsBlock(ev, att)}<div class="t">${p("Your welcome is in your texts with Reason, and event updates will come there too.")}</div>${dir}`;
   return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
@@ -440,6 +517,16 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   if (method !== "GET" && method !== "HEAD" && !(method === "POST" && sub === "join")) {
     return page(405, renderNotFound(), { Allow: "GET, HEAD" });
   }
+  // ADD TO MY CALENDAR → (Pages v2): only for somebody on the event, only once its time is out.
+  if (sub === "calendar.ics" && config.pagesV2) {
+    if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
+    const att = mine?.role === "guest" ? mine.att : null;
+    const ics = ev.status !== "cancelled" && att ? calendarFile(ev, att) : null;
+    if (!ics) return page(404, renderNotFound());
+    return { status: 200, headers: { "Content-Type": "text/calendar; charset=utf-8", "Content-Disposition": `attachment; filename="event.ics"`, "Content-Length": Buffer.byteLength(ics), "Cache-Control": "private, no-store" }, body: ics };
+  }
+  // E2 (Pages v2): a cancelled event's link is turned off, and says only that.
+  if (config.pagesV2 && ev.status === "cancelled") return page(410, made.renderTurnedOff({ siteUrl: config.siteUrl }));
   // Cancelled: nothing but the name and that it is off, in the page and in its preview alike.
   if (ev.status !== "active") return page(200, shell({ title: ev.name, body: closedBody(ev), pill: "Event", head: ev.status === "cancelled" ? "" : headFor(ev), css: CSS }));
   // The organizer opening their own event's link gets their own page, never a guest's.

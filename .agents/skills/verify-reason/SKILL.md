@@ -646,6 +646,7 @@ Reason Web Ongoing (tab, margin, at volume + See all 2A–2C, home rows, details
 `bin/web-ongoing-preview.mjs` draws every state beside the handoff's reference pages. `bin/web-ongoing-live-drive.mjs` proves D5 (margin, rail, tab badge and the phone tab follow live).
 Reason Web v2 edge (body=hey + hint, code-error pen, loading L3–L7, E1 404, E5 maintenance switch, keyboard
 focus F1): [features/web-edge.md](features/web-edge.md); driven in Chromium by `test/web-edge-browser.test.js`.
+Pages Reason makes v2 (`REASON_PAGES_V2`): [features/pages-v2.md](features/pages-v2.md); `scripts/pages-v2-preview.mjs` + `scripts/pages-v2-compare.mjs`.
 
 ## Facts worth not rediscovering
 

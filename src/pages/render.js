@@ -951,7 +951,7 @@ export function closingLine(page) {
  *   (db.relatedPages). Drawn only on the owner's own interactive view and never on a print,
  *   because the links carry each page's owner key — see relatedSection.
  */
-export function renderPage(page, { interactive = false, picked = {}, forName = "", language = "", printing = false, related = [] } = {}) {
+export function renderPage(page, { interactive = false, picked = {}, forName = "", language = "", printing = false, related = [], previewHead = null } = {}) {
   const said = !!topLine(forName, language);
   // Belt and braces with the caller: the owner's keys only go into HTML the owner is reading.
   const rel = interactive && !printing ? relatedSection(related) : "";
@@ -974,7 +974,7 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
   return shell({
     title: page.title, body, script,
     css: `${hasCopy ? COPY_CSS : ""}${said ? SAY_CSS : ""}${rel ? REL_CSS : ""}`,
-    head: printing ? "" : `\n${previewTags(page)}`,
+    head: printing ? "" : `\n${previewHead ?? previewTags(page)}`,
     top,
     intro: !printing,
     // Light · Dark · Auto is a choice a reader makes in a browser. A printed document is already
@@ -1096,7 +1096,7 @@ export function codeInputAttrs({ autofocus = false } = {}) {
  * Graph tags ride on the gate so the card drawn under the link in the owner's own thread is still
  * the page's, not a lock. The bare gate carries none and stays byte-identical to not-found.
  */
-export function renderCodeGate({ title = "Private page", error = "", ownerName = "the owner", canSend = false, sent = false, preview = null, passwordHref = null } = {}) {
+export function renderCodeGate({ title = "Private page", error = "", ownerName = "the owner", canSend = false, sent = false, preview = null, passwordHref = null, head = "" } = {}) {
   const offer = canSend && !sent;
   const words = canSend
     ? (sent
@@ -1117,7 +1117,7 @@ export function renderCodeGate({ title = "Private page", error = "", ownerName =
     + `</form>`
     + (passwordHref ? `<a class="alt-link" href="${esc(passwordHref)}">Use the password instead</a>` : "")
     + `<p class="meta">If ${esc(ownerName)} did not expect this, close the tab — nothing has been shown.</p></div>`;
-  return shell({ title, body, pill: "Private", head: preview ? `\n${previewTags(preview)}` : "" });
+  return shell({ title, body, pill: "Private", head: preview ? `\n${previewTags(preview)}` : (head ? `\n${head}` : "") });
 }
 
 /**

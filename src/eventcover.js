@@ -26,6 +26,7 @@ import { join, basename } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import * as db from "./db.js";
 import * as events from "./events.js";
+import { eventOgHtml, ogFontCss } from "./pages/made.js";
 import { config, clock } from "./config.js";
 import { esc } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE_DARK } from "./pages/wordmark.js";
@@ -121,7 +122,30 @@ const drawnKey = (name) => sha(`${DRAWN_COVER_VERSION}\n${name}`);
 
 /** The address's version: a new picture is a new address, so no phone keeps showing an old one. */
 export function coverTag(ev) {
-  return hasUploaded(ev) ? `u${ev.cover_version}` : `g${drawnKey(ev.name).slice(0, 10)}`;
+  if (hasUploaded(ev)) return `u${ev.cover_version}`;
+  if (config.pagesV2) return `v${sha(v2Card(ev).key).slice(0, 10)}`;
+  return `g${drawnKey(ev.name).slice(0, 10)}`;
+}
+
+/**
+ * Pages v2 (LP3, preview-event): with no organizer's picture, the event's card is the paper card —
+ * the tilted date, the name, who's hosting and where — drawn from what the organizer made public
+ * and nothing else. The date only when the time is public, the place only when the place is: a
+ * forwarded link shows this card to anyone. `key` is everything on it, so a change is a new address.
+ */
+export function v2Card(ev) {
+  const date = ev.time_public && ev.starts_at != null ? {
+    mon: new Date(ev.starts_at).toLocaleString("en-US", { timeZone: ev.tz, month: "short" }).toUpperCase(),
+    day: new Date(ev.starts_at).toLocaleString("en-US", { timeZone: ev.tz, day: "numeric" }),
+    to: "",
+  } : null;
+  const place = ev.location_public ? String(ev.location || "") : "";
+  const host = events.organizerName(ev) || "";
+  const hostName = (() => { try { return new URL(events.eventUrl(ev)).host.toUpperCase(); } catch { return "EVENTS.HEYREASON.COM"; } })();
+  return {
+    key: JSON.stringify(["v2-1", ev.name, host, place, date]),
+    html: () => eventOgHtml({ title: String(ev.name ?? ""), host, place, date, hostName, fontCss: ogFontCss() }),
+  };
 }
 
 /** Where the card's picture is fetched from. Public: it is only ever what a stranger may see. */
@@ -135,6 +159,12 @@ export function coverUrl(ev) {
  */
 export async function coverFile(ev) {
   if (hasUploaded(ev)) return join(DIR(), basename(ev.cover_file));
+  if (config.pagesV2) {
+    const card = v2Card(ev);
+    const file = join(DIR(), `v-${ev.public_id}-${sha(card.key).slice(0, 16)}.jpg`);
+    if (existsSync(file) && readFileSync(file).length) return file;
+    return await draw(card.html(), file);
+  }
   const file = join(DIR(), `g-${ev.public_id}-${drawnKey(ev.name).slice(0, 16)}.jpg`);
   if (existsSync(file) && readFileSync(file).length) return file;
   return await draw(generatedHtml(ev.name), file);
