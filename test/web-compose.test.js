@@ -323,7 +323,7 @@ test("4A: Reason's own page and event links are paper cards; Web's own addresses
   db.writeMessage({ conversationId: KOFI_C, role: "assistant", channel: "web", text: "Found it.", at: ask - 1000 });
   const lines = db.messagesFor(KOFI_C).map(r => convo.rowOut(r, { conversationId: KOFI_C }));
   const page = convo.renderConversation({ account: db.getAccount(KOFI_C), csrf: "c", lines, more: false, sendId: "s", items: [], approvals: convo.waitingApprovals(KOFI_C) });
-  assert.match(page, /<div class="msg re approval"><p class="lbl">REASON · WEB · [0-9]{1,2}:[0-9]{2} [AP]M<\/p><div class="card appr"><p class="lbl pen">NEEDS YOUR APPROVAL<\/p><p class="appr-t">Hold the Hudson inn, \$540<\/p><p class="lbl">NOTHING CHARGED YET<\/p><\/div><p class="hand">just tell me in the chat when you want it\.<\/p>/);
+  assert.match(page, /<div class="msg re approval"><p class="lbl">REASON · WEB · [0-9]{1,2}:[0-9]{2} [AP]M<\/p><div class="card appr"><p class="lbl pen">NEEDS YOUR APPROVAL<\/p><p class="appr-t">Hold the Hudson inn, \$540<\/p><p class="lbl">NOTHING CHARGED YET<\/p><a class="appr-go" href="\/web\/ongoing\/approval\/\d+">Review details <span aria-hidden="true">→<\/span><\/a><\/div><p class="hand">just tell me in the chat when you want it\.<\/p>/);
   assert.ok(!/reply ["“']?book it/i.test(page), "never a phrase to type");
 });
 

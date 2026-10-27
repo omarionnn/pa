@@ -616,6 +616,9 @@ All executable, all run from `.agents/skills/verify-reason/`.
 to drive it here, and what end state proves it. That map is the maintained source — when you change
 behaviour, change its feature file in the same commit.
 
+Reason Web Ongoing (tab, margin, details 2A–2E + approval, 9D): [features/web-ongoing.md](features/web-ongoing.md);
+`bin/web-ongoing-preview.mjs` draws every state beside the handoff's reference pages.
+
 ## Facts worth not rediscovering
 
 - **The live instance is Hetzner, not a port on this Mac.** Since 2026-10-12 nothing on this

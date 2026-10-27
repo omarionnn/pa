@@ -38,7 +38,8 @@ import { WEB, webStreamOrigin, siteOrigin } from "../web.js";
 import { config, clock } from "../config.js";
 import { esc } from "./render.js";
 import { readCookie } from "./access.js";
-import { cleanTitle, queueTitle } from "../itemtitle.js";
+import { ongoing, approvals as pendingApprovals } from "../ongoing.js";
+import { ogMargin, needsYes, countLine, OG_CSS, NINE_D_JS, NINE_D_CSS, OG_POLL_JS } from "./webongoing.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting } from "./websignin.js";
 import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch, OG_KEY } from "./webkit.js";
 import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot, COMPOSE_CSS, COMPOSE_JS } from "./webcompose.js";
@@ -261,58 +262,18 @@ export function listHtml(lines, { now = clock.now() } = {}) {
 
 // ---------------------------------------------------------------- what Reason holds
 
-const STATE_WORDS = {
-  running: ["WORKING", "working on it"],
-  waiting: ["WAITING", "waiting to hear back"],
-  waiting_on_other: ["WAITING", "waiting to hear back"],
-  waiting_on_you: ["NEEDS YOU", "waiting on you"],
-  blocked: ["STUCK", "stuck. i'll say why in the chat"],
-};
-const whenFmt = () => new Intl.DateTimeFormat("en-US", { timeZone: config.tz, weekday: "short", hour: "numeric", minute: "2-digit" });
-
 /**
- * What Reason is holding for this conversation right now: its open tasks and its pending timers,
- * nothing invented. Phase 2 draws the full Ongoing; this is what the arrival's ALREADY IN HAND, the
- * Ongoing tab and the desktop margin show until then.
+ * What Reason is holding for this conversation right now — its open tasks, its pending reminders and
+ * its standing ones, nothing invented (src/ongoing.js): needs-you first, then whatever is due soonest.
+ * What the arrival's ALREADY IN HAND, the Ongoing tab and the desktop margin show.
  */
 export function inHand(conversationId) {
-  const name = db.getAccount(conversationId)?.name || config.ownerName;
-  // The row's own short title (src/itemtitle.js); until it has one, Reason's note cleaned up, and a
-  // one-time title asked for in the background so the next view reads like the person would say it.
-  const titled = (kind, row, text) => {
-    const label = String(row.label ?? "").trim();
-    if (label) return label;
-    // A series' firing is titled through its series (the title then reaches every firing).
-    if (kind === "timer" && row.series_id) {
-      const s = db.getSeries(conversationId, row.series_id);
-      if (s?.label) return s.label;
-      if (s) queueTitle("series", conversationId, s.id, s.what, { name });
-    } else queueTitle(kind, conversationId, row.id, text, { name });
-    return cleanTitle(text, { name }) || String(text ?? "").trim().slice(0, 48);
-  };
-  const tasks = db.listTasks(conversationId).map(t => {
-    const [status, words] = STATE_WORDS[t.state] ?? ["IN HAND", "in hand"];
-    return { kind: "task", title: titled("task", t, t.title), status, words, needs: t.state === "waiting_on_you", due: t.next_wake_at ?? null };
-  });
-  const timers = db.listTimers(conversationId).map(t => ({
-    kind: "timer", title: titled("timer", t, t.note) || (t.call_goal ? "A call" : "A reminder"),
-    status: t.call_goal ? "CALL" : "REMINDER", when: whenFmt().format(t.fire_at), needs: false, due: t.fire_at,
-  }));
-  // Needs-you first, then whatever is due soonest; nothing due last.
-  const rank = (x) => [x.needs ? 0 : 1, Number.isFinite(x.due) ? x.due : Infinity];
-  return [...tasks, ...timers].filter(x => x.title).sort((a, b) => {
-    const [an, ad] = rank(a), [bn, bd] = rank(b);
-    return an - bn || (ad === bd ? 0 : ad < bd ? -1 : 1);
-  });
+  return ongoing(conversationId).items;
 }
 
 /** Approvals Reason is waiting on (asked, not answered) in the last day: the one loud thing. */
 export function waitingApprovals(conversationId, now = clock.now()) {
-  return db.pendingConfirmations(conversationId)
-    .filter(c => c.granted_at == null && now - c.asked_at < 24 * 60 * 60_000)
-    .map(c => ({ title: String(c.summary ?? "").trim(), at: c.asked_at, money: /\$|charge|pay|buy|purchase|order/i.test(`${c.action} ${c.stakes} ${c.summary}`) }))
-    .filter(c => c.title)
-    .slice(0, 1);
+  return pendingApprovals(conversationId, now);
 }
 
 // ---------------------------------------------------------------- the look
@@ -493,7 +454,7 @@ body.has-tabs .foot{display:flex}
 .og-m{display:none}
 }
 @media (max-width:359px){.greet{font-size:34px}.lbl{font-size:10px;letter-spacing:.12em}.rsay p{font-size:15px}}
-`;
+${OG_CSS}${NINE_D_CSS}`;
 
 const MENU_SVG = `<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>`;
 const SEND_SVG = `<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 16V4M4.5 9.5 10 4l5.5 5.5"/></svg>`;
@@ -522,7 +483,7 @@ function composer({ csrf, sendId }) {
 }
 
 /** How many Ongoing rows show before "See all N →" (owner, 10-26): needs-you first, then soonest due. */
-export const OG_TOP = 3;
+export { OG_TOP } from "./webongoing.js";
 
 /**
  * The Ongoing list: the desktop margin, or (`tab`) the mobile Ongoing tab's body. The top OG_TOP rows
@@ -530,34 +491,8 @@ export const OG_TOP = 3;
  * back). Without script it is a link to the same list drawn open (`all`). The margin also carries
  * "HIDE →": the page slides it away and the thread takes the width; a thin vertical typed "ONGOING · N" at the right edge brings it back (handoff §3, sheet 3).
  */
-function ongoingMargin(items, approvals, { all = false, tab = false } = {}) {
-  const head = tab ? "" : `<div class="og-h"><h2>Ongoing</h2><button class="act2 og-hide" type="button" aria-controls="og" aria-expanded="true">HIDE <span aria-hidden="true">→</span></button></div>`;
-  const aside = (inner, cls = "") => `<aside class="og${tab ? " og-tab" : ""}${cls}" id="og" aria-label="Ongoing">${head}${inner}</aside>`;
-  if (!items.length && !approvals.length) {
-    return aside(`<div class="empty"><p class="h2">Nothing left<br>to chase.</p>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</div>`);
-  }
-  const needs = items.filter(x => x.needs);
-  const rest = items.filter(x => !x.needs);
-  const total = approvals.length + items.length;
-  let i = 0;
-  const fold = () => (i++ >= OG_TOP ? " og-x" : "");
-  const row = (x) => `<div class="og-row${fold()}"><b>${esc(x.title)}</b>${x.when ? `<span class="when">${esc(x.when)}</span>` : `<span class="lbl">${esc(x.status)}</span>`}</div>`;
-  const appr = (a) => `<div class="card appr${fold()}"><p class="appr-t">${esc(a.title)}</p><p class="lbl">${a.money ? "NOTHING CHARGED YET" : "NOTHING BOOKED YET"}</p></div>`;
-  const section = (h, cls, rows) => {
-    const from = i;
-    const inner = rows();
-    return `<section class="og-sec${from >= OG_TOP ? " og-x" : ""}"><h3${cls}>${h}</h3>${inner}</section>`;
-  };
-  const back = tab ? "/web?tab=ongoing" : "/web?thread";
-  const more = total > OG_TOP
-    ? `<a class="og-all" href="${back}${all ? "" : "&amp;all=1"}" aria-controls="og" aria-expanded="${all}" data-n="${total}">${all ? "Show fewer" : `See all ${total} <span aria-hidden="true">→</span>`}</a>`
-    : "";
-  return aside(
-    (approvals.length || needs.length ? section("NEEDS YOU", ` class="pen"`, () => approvals.map(appr).join("") + needs.map(row).join("")) : "")
-    + (rest.length ? section("IN HAND", "", () => rest.map(row).join("")) : "")
-    + more,
-    all ? " all" : "",
-  );
+function ongoingMargin(items, approvals, { all = false, tab = false, back = [] } = {}) {
+  return ogMargin({ items, approvals, back }, { all, tab });
 }
 
 /** "pick up from iMessage": the last two texts, quoted, the whole block one link into the thread. */
@@ -621,8 +556,7 @@ function stored(li){return pend().filter(function(x){return x.id===li.dataset.pe
 function state(li,st){if(!li)return;li.dataset.state=st;li.querySelectorAll('.st,.retry').forEach(function(x){x.remove()});
 if(st==='sending'||st==='waiting'){var s=document.createElement('p');s.className='st';s.textContent=st==='sending'?'SENDING\\u2026':'WAITING TO SEND';li.appendChild(s)}
 else if(st==='failed'){var b=document.createElement('button');b.type='button';b.className='retry';b.textContent="didn't go. tap to try again.";b.onclick=function(){if(li.retry)return li.retry();send(stored(li),li)};var n=document.createElement('p');n.className='st';n.textContent="IT WON'T SEND TWICE";li.appendChild(b);li.appendChild(n)}}
-function expired(){if(waiting>0||until){var last=list.querySelector('.msg.you:last-of-type .said');var m=document.querySelector('main');var h='<section class="solo" aria-labelledby="ex-h"><h1 id="ex-h" class="h1">Still working on it.<br><em>Sign back in to see.</em></h1><div class="ghost" aria-hidden="true"><span class="lbl">WORKING</span><b></b></div><a class="act" href="/web?out=1">Sign in <span aria-hidden="true">\\u2192</span></a></section>';
-m.innerHTML=h;var b=m.querySelector('.ghost b');b.textContent=last?last.textContent:'';document.querySelectorAll('.composer,.tabs,.onit').forEach(function(x){x.remove()})}else location.href='/web?out=1'}
+function expired(){if(!window.reasonMidTask||!window.reasonMidTask(waiting>0||!!until))location.href='/web?out=1'}
 function send(p,li,tries){tries=tries||0;if(offline()){state(li,'waiting');return}state(li,'sending');
 fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c,files:(p.files||[]).map(function(f){return f.id}).filter(Boolean).join(','),voice:p.voice?String(p.voice):''})})
 .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(j){j.status=r.status;return j})})
@@ -680,7 +614,7 @@ const NET = `<p class="netline" role="status" hidden></p>`;
 /**
  * The thread. `firstVisit` draws 5C in its place (once); `approvals` the one loud thing at the foot.
  */
-export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], now = clock.now(), all = false }) {
+export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), all = false }) {
   if (firstVisit) return renderFirstVisit({ account });
   const startLine = more
     ? `<button class="act2" type="button">↑ SHOW EARLIER MESSAGES</button>`
@@ -688,35 +622,36 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
   const asked = approvals[0]?.at ?? null;
   const askedIn = asked ? [...lines].reverse().find(m => m.role === "assistant" && m.at <= asked + 60_000) : null;
   const apprLbl = asked ? `REASON · ${(askedIn?.source ?? sourceLabel(null, serviceOf(account?.conversation_id))).toUpperCase()} · ${timeFmt().format(asked)}` : "REASON · WAITING ON YOU";
-  const appr = approvals.length ? `<div class="msg re approval">${label(apprLbl)}${approvalCard({ title: approvals[0].title, money: approvals[0].money })}</div>` : "";
-  const count = items.length + approvals.length;
+  const appr = approvals.length ? `<div class="msg re approval">${label(apprLbl)}${approvalCard({ title: approvals[0].title, money: approvals[0].money, href: approvals[0].href })}</div>` : "";
+  const count = items.length + approvals.length + back.length;
   const body = topBar({ csrf }) + NET
     + `<main class="wrapc"><section class="convo" aria-labelledby="c-h"><h1 id="c-h" class="sr">Your conversation with Reason</h1>`
     + `<div class="start">${startLine}</div>`
     + `<ol class="thread" role="log" aria-live="polite" aria-relevant="additions">${listHtml(lines, { now })}</ol>`
     + (lines.length ? "" : `<div class="empty">${hand("nothing here yet. whatever you tell me here or by text shows up in this thread.", { tilt: true })}</div>`)
     + appr + onIt(true)
+    + needsYes(approvals)
     + composer({ csrf, sendId })
-    + `</section>${ongoingMargin(items, approvals, { all })}</main>`
+    + `</section>${ongoingMargin(items, approvals, { all, back })}</main>`
     + `<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing${count ? `, ${count} ${count === 1 ? "thing" : "things"}` : ""}"><span aria-hidden="true">ONGOING${count ? ` · ${count}` : ""}</span></button>`
     + tabBar("chat", count) + listeningHtml();
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: account?.conversation_id }) + composeBoot() + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: account?.conversation_id }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
 }
 
 /** B / B2, the arrival: the greeting, the composer, then what's in hand or where to start, then iMessage. */
-export function renderHome({ account, csrf, sendId, items = [], approvals = [], pick = "" }) {
+export function renderHome({ account, csrf, sendId, items = [], approvals = [], back = [], pick = "" }) {
   const name = String(account?.name ?? "").trim();
-  const slips = items.slice(0, 3).map(x => `<a class="card slipc" href="/web?thread"><span class="lbl">${esc(x.status)}</span><span class="t">${esc(x.title)}</span>${x.when ? `<span class="when">${esc(x.when)}</span>` : hand(x.words, { tag: "span" })}</a>`).join("");
+  const slips = items.slice(0, 3).map(x => `<a class="card slipc" href="${esc(x.href || "/web?thread")}"><span class="lbl">${esc(x.status)}</span><span class="t">${esc(x.title)}</span>${x.when ? `<span class="when">${esc(x.when)}</span>` : hand(x.words, { tag: "span" })}</a>`).join("");
   const middle = items.length
     ? `<section class="inhand" aria-label="Already in hand">${label("ALREADY IN HAND")}<div class="slips">${slips}</div></section>`
     : `<section class="start-w" aria-label="You could start with" hidden>${label("YOU COULD START WITH")}${EXAMPLES.map(t => `<button class="ex" type="button" data-text="${esc(t)}">"${esc(t)}"</button>`).join("")}</section>`;
   const body = topBar({ csrf, extra: typed("THE THREAD →", { href: "/web?thread" }) }) + NET
     + `<main class="home"><h1 class="greet">${esc(greeting(name))}</h1>`
     + composer({ csrf, sendId })
-    + (approvals.length ? `<section class="approval" aria-label="Needs you">${approvalCard({ title: approvals[0].title, money: approvals[0].money })}</section>` : "")
+    + (approvals.length ? `<section class="approval" aria-label="Needs you">${approvalCard({ title: approvals[0].title, money: approvals[0].money, href: approvals[0].href })}</section>` : "")
     + middle + pick + `</main>`
-    + tabBar("chat", items.length + approvals.length) + listeningHtml();
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, conversationId: account?.conversation_id }) + composeBoot() + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
+    + tabBar("chat", items.length + approvals.length + back.length) + listeningHtml();
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, conversationId: account?.conversation_id }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
 }
 
 /** 5C, shown once: the same Reason, and what stays where. */
@@ -728,13 +663,13 @@ export function renderFirstVisit() {
 }
 
 /** The mobile Ongoing tab. Real rows when Reason holds anything; otherwise "Nothing left to chase." */
-export function renderOngoing({ csrf, items = [], approvals = [], all = false }) {
-  const count = items.length + approvals.length;
+export function renderOngoing({ csrf, items = [], approvals = [], back = [], all = false }) {
+  const count = items.length + approvals.length + back.length;
   const inner = count
-    ? `<main class="og-list"><h1 class="h1">Ongoing</h1>${label(`${count} ${count === 1 ? "THING" : "THINGS"}`)}${ongoingMargin(items, approvals, { all, tab: true })}</main>`
+    ? `<main class="og-list"><h1 class="h1">Ongoing</h1>${label(countLine({ items, approvals, back }))}${ongoingMargin(items, approvals, { all, tab: true, back })}</main>`
     : `<main class="og-m"><h1 class="h1">Nothing left<br>to chase.</h1>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</main>`;
   const css = `${CSS}.og-tab{display:flex;position:static;max-width:none;padding:0}`;
-  return webPage({ title: "Reason — Ongoing", body: topBar({ csrf }) + inner + tabBar("ongoing", count), css, script: CLIENT_JS, bodyClass: "has-tabs" });
+  return webPage({ title: "Reason — Ongoing", body: topBar({ csrf }) + inner + tabBar("ongoing", count), css, script: NINE_D_JS + OG_POLL_JS + CLIENT_JS, bodyClass: "has-tabs" });
 }
 
 /** MEMORY and SETTINGS before their phases: a calm page in the same voice, with the two settings that already work. */
@@ -772,16 +707,15 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   const csrf = db.pageSessionCsrf(readCookie(headers.cookie));
   // Spent only by a real view (GET); a HEAD carries no body to show it in.
   if (method === "GET" && db.markWebNoticeSeen(conv)) return renderFirstVisit({ account });
-  const items = inHand(conv);
-  const approvals = waitingApprovals(conv, now);
+  const { items, approvals, back } = ongoing(conv, now);
   const all = query.all != null;
-  if (query.tab === "ongoing") return renderOngoing({ csrf, items, approvals, all });
+  if (query.tab === "ongoing") return renderOngoing({ csrf, items, approvals, back, all });
   const rows = db.messagesBefore(conv, { limit: PAGE + 1 });
   const more = rows.length > PAGE;
   const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service }));
   const recentWeb = lines.some(m => m.web && m.role === "user" && now - m.at < THREAD_RECENT_MS);
-  if (query.thread != null || recentWeb) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, now, all });
-  return renderHome({ account, csrf, sendId, items, approvals, pick: pickUp(conv, service) });
+  if (query.thread != null || recentWeb) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, all });
+  return renderHome({ account, csrf, sendId, items, approvals, back, pick: pickUp(conv, service) });
 }
 
 /**

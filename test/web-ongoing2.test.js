@@ -50,7 +50,7 @@ test("1. three rows show: needs-you first, then soonest due; See all N → opens
   assert.deepEqual(wc.inHand(C).map(x => x.title), ["Speedrun reply", "Soonest", "Second", "Third", "Late one"]);
 
   const s = page();
-  const shown = [...s.matchAll(/<div class="og-row( og-x)?"><b>([^<]+)<\/b>/g)].map(m => [m[2], !m[1]]);
+  const shown = [...s.matchAll(/<a class="og-row( og-x)?" href="[^"]*" data-state="[^"]*"[^>]*><span class="og-top"><b>([^<]+)<\/b>/g)].map(m => [m[2], !m[1]]);
   assert.deepEqual(shown, [["Speedrun reply", true], ["Soonest", true], ["Second", true], ["Third", false], ["Late one", false]]);
   assert.match(s, /<a class="og-all" href="\/web\?thread&amp;all=1" aria-controls="og" aria-expanded="false" data-n="5">See all 5 <span aria-hidden="true">→<\/span><\/a><\/aside>/);
   assert.match(s, /\.og \.og-x\{display:none\}\n\.og\.all \.og-x\{display:flex\}/);
