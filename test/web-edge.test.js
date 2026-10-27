@@ -203,7 +203,7 @@ test("F1: the skip link is the first thing in every page; the thread's lands at 
   assert.ok(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])), `reading order ${order}`);
   const signin = ws.renderSignin({ joinNumber: LINE, formToken: "t" });
   assert.match(signin, /<body><a class="skip" href="#content">SKIP TO CONTENT ↓<\/a>/);
-  assert.match(signin, /<main class="so"><span class="skip-to" id="content" tabindex="-1"><\/span>/);
+  assert.match(signin, /<span class="skip-to" id="content" tabindex="-1"><\/span><main class="so">/);
   assert.deepEqual(kit.skipTo('<main id="m">x</main>'), { html: '<main id="m">x</main>', link: '<a class="skip" href="#m">SKIP TO CONTENT ↓</a>' });
   assert.deepEqual(kit.skipTo("<div>no main</div>"), { html: "<div>no main</div>", link: "" });
   assert.match(kit.KIT_CSS, /\.skip-to\{position:absolute;width:1px;height:1px;overflow:hidden\}/);
@@ -260,7 +260,7 @@ test("E5: the switch is a row in ops_state with a return time; it lapses at that
 test("E5: the page: the mark in a dashed ring, BACK BY ABOUT {time} ET, Tidying up for a few minutes., texting still works", () => {
   const until = Date.UTC(2026, 9, 26, 19, 30);
   const h = words(edge.renderMaintenance({ until, joinNumber: LINE }));
-  assert.match(h, /<main class="eg eg-m" aria-labelledby="eg-h"><span class="skip-to" id="content" tabindex="-1"><\/span><div class="eg-ring" aria-hidden="true"><svg class="bub"[^]*?<\/svg><\/div><p class="lbl">BACK BY ABOUT 3:30 PM ET<\/p><h1 id="eg-h" class="h1">Tidying up <em>for a few minutes\.<\/em><\/h1><p class="eg-q">The web is paused while we work on it\. Texting Reason still works, and nothing you’ve handed over stops\.<\/p><p class="hand">text me in the meantime\. i’m still here\.<\/p><div class="tr">/);
+  assert.match(h, /<main class="eg eg-m" aria-labelledby="eg-h"><div class="eg-ring" aria-hidden="true"><svg class="bub"[^]*?<\/svg><\/div><p class="lbl">BACK BY ABOUT 3:30 PM ET<\/p><h1 id="eg-h" class="h1">Tidying up <em>for a few minutes\.<\/em><\/h1><p class="eg-q">The web is paused while we work on it\. Texting Reason still works, and nothing you’ve handed over stops\.<\/p><p class="hand">text me in the meantime\. i’m still here\.<\/p><div class="tr">/);
   assert.match(h, /\.eg-ring\{align-self:flex-start;width:120px;height:120px;border-radius:50%;border:1px dashed var\(--hair\)/);
   // With no live line there is nothing to text: no link, no promise that texting works.
   const none = edge.renderMaintenance({ until, joinNumber: null });

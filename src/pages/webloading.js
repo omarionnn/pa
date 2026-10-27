@@ -13,7 +13,7 @@
 // here waits on a timer except the 8 s "still looking": the lines stay exactly as long as the real
 // request takes. Without script every link is an ordinary link and the server draws the page.
 //
-// Which links: the Ongoing tab, a row's detail, Saved, or any link that opts in with
+// Which links: the Ongoing tab, a row's detail, Saved, Ongoing's See all pages, or any link that opts in with
 // data-load="ongoing|detail|list" (a list also takes data-title). Reduced motion: lines are still.
 
 /** After this long a loading screen says it is taking a while (§4d L5). */
@@ -64,24 +64,24 @@ ${[30, 40, 48, 50, 55, 62, 70, 80, 85, 90, 95, 100].map(w => `.ln.w${w}{width:${
 
 // The client half. Guarded so a page swapped in (its own copy of this script runs) never doubles up.
 export const loadJs = (wordmarkHtml) => `(function(){if(window.reasonLoad||!window.fetch||!window.DOMParser||!history.pushState)return;
-var C=${JSON.stringify(LOAD_COPY)},WM=${JSON.stringify(String(wordmarkHtml)).replace(/</g, "\\u003c")},SLOW=${SLOW_MS},ctl=null,slowT=0,shown=location.pathname+location.search;
+var C=${JSON.stringify(LOAD_COPY)},LIST={'/web/saved':'Saved','/web/ongoing/hand':'In hand','/web/ongoing/back':'Back to you'},WM=${JSON.stringify(String(wordmarkHtml)).replace(/</g, "\\u003c")},SLOW=${SLOW_MS},ctl=null,slowT=0,shown=location.pathname+location.search;
 function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e}
 function ln(w,cls){return el('span','ln'+(w?' w'+w:'')+(cls?' '+cls:''))}
 function lines(ws,wide){var d=el('div','ld-lines'+(wide?' wide':''));d.setAttribute('aria-hidden','true');ws.forEach(function(w){d.appendChild(ln(w))});return d}
 function ghostRow(w){var r=el('div','ld-row');r.setAttribute('aria-hidden','true');r.appendChild(ln(w));r.appendChild(ln('','r'));return r}
 function kindOf(a){var k=a.getAttribute('data-load');if(k)return k;var u;try{u=new URL(a.href,location.href)}catch(e){return''}
 if(u.origin!==location.origin)return'';if(u.pathname==='/web'&&u.searchParams.get('tab')==='ongoing')return'ongoing';
-if(/^\\/web\\/ongoing\\/(approval|task|timer|series)\\/\\d{1,12}$/.test(u.pathname))return'detail';if(u.pathname==='/web/saved')return'list';return''}
+if(/^\\/web\\/ongoing\\/(approval|task|timer|series)\\/\\d{1,12}$/.test(u.pathname))return'detail';if(u.pathname==='/web/saved'||/^\\/web\\/ongoing\\/(hand|back)$/.test(u.pathname))return'list';return''}
 // What the page already knows about Ongoing: each group's heading (with its count) and how many rows it shows.
 function groups(){var og=document.getElementById('og'),out=[];
-if(og)og.querySelectorAll('.og-sec').forEach(function(s){var h=s.querySelector('h2,h3');if(!h)return;out.push({t:h.textContent,pen:h.classList.contains('pen'),cards:s.querySelectorAll('.appr').length,rows:s.querySelectorAll('.og-row').length})});
-if(!og&&document.querySelector('.appr'))out.push({t:'NEEDS YOU',pen:true,cards:1,rows:0});
+if(og)og.querySelectorAll('.og-sec').forEach(function(s){var h=s.querySelector('h2,h3');if(!h)return;out.push({t:h.textContent,pen:h.classList.contains('pen'),cards:s.querySelectorAll('.appr,.og-vc').length,rows:s.querySelectorAll('.og-row,.ogv').length})});
+if(!og&&document.querySelector('.appr,.og-vc'))out.push({t:'NEEDS YOU',pen:true,cards:1,rows:0});
 if(!og)out.push({t:'IN HAND',pen:false,cards:0,rows:3});return out}
 var STATE={approval:'NEEDS YOUR APPROVAL',working:'WORKING ON IT',needs:'WAITING ON YOU',stuck:'STUCK',ready:'READY',failed:"DIDN'T WORK",scheduled:'SCHEDULED'};
 // What a row link says about the page it opens: its status, and its title.
-function known(a){var card=a.closest('.appr'),row=a.closest('[data-state]')||a,t='',s='',pen=false;
-if(card){var at=card.querySelector('.appr-t');t=at?at.textContent:'';s=STATE.approval;pen=true}
-else{var b=row.querySelector('.og-top b,b,.t');t=b?b.textContent:'';var st=row.getAttribute('data-state'),l=row.querySelector('.lbl');s=STATE[st]&&st!=='waiting'?STATE[st]:(l?l.textContent:'');pen=st==='needs'}
+function known(a){var card=a.closest('.appr,.og-vc'),row=a.closest('[data-state]')||a,t='',s='',pen=false;
+if(card){var at=card.querySelector('.appr-t,.ogv-t');t=at?at.textContent:'';s=STATE.approval;pen=true}
+else{var b=row.querySelector('.og-top b,.ogv-t,b,.t');t=b?b.textContent:'';var st=row.getAttribute('data-state'),l=row.querySelector('.lbl');s=STATE[st]&&st!=='waiting'?STATE[st]:(l?l.textContent:'');pen=st==='needs'}
 return{t:t,s:s,pen:pen,title:a.getAttribute('data-title')||''}}
 function status(text){var p=el('p','lbl','');p.setAttribute('role','status');p.textContent=text;return p}
 function draw(k,info){var main=el('main','ld'),st;
@@ -122,7 +122,7 @@ fetch(url,{credentials:'same-origin',redirect:'manual',headers:{Accept:'text/htm
 if(r.type==='opaqueredirect'||r.status===0||(r.status>=300&&r.status<400)||r.status===401){clearTimeout(slowT);location.href=url;return}
 return r.text().then(function(t){if(mine!==ctl)return;clearTimeout(slowT);if(!/^<!doctype html>/i.test(t.trim()))return failed(main,url);swap(t)})})
 .catch(function(e){if(e&&e.name==='AbortError')return;failed(main,url)})}
-function go(a,k){var info=k==='detail'?known(a):k==='ongoing'?groups():{title:a.getAttribute('data-title')||''},url=new URL(a.href,location.href).href;
+function go(a,k){var info=k==='detail'?known(a):k==='ongoing'?groups():{title:a.getAttribute('data-title')||LIST[new URL(a.href,location.href).pathname]||''},url=new URL(a.href,location.href).href;
 var main=draw(k,info);history.pushState({reasonLoad:1},'',url);shown=location.pathname+location.search;load(main,url,k,info)}
 document.addEventListener('click',function(e){if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
 var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;if(!a||a.target||a.hasAttribute('download')||a.getAttribute('aria-current')==='page')return;

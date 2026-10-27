@@ -258,7 +258,7 @@ const LOAD_JS = loadJs(wordmark({ href: "/web" }));
  * The skip link (§4g): the first Tab on every page. On a page with the thread it goes to the thread
  * (`SKIP TO THE THREAD ↓`): to its newest end, at the top of the composer, so the composer is one
  * Tab after it and the page does not jump to the oldest message. Anywhere else it goes to the page's
- * main content (`SKIP TO CONTENT ↓`): a main without an id gets a focusable mark at its top (tabindex=-1,
+ * main content (`SKIP TO CONTENT ↓`): a main without an id gets a focusable mark just before it (tabindex=-1,
  * so it takes focus without a ring, and out of the layout).
  */
 export function skipTo(html) {
@@ -275,7 +275,7 @@ export function skipTo(html) {
   const main = /<main\b([^>]*)>/.exec(out);
   if (!main) return { html: out, link: "" };
   const id = /\sid="([^"]+)"/.exec(main[1])?.[1];
-  if (!id) out = out.replace(main[0], `${main[0]}<span class="skip-to" id="content" tabindex="-1"></span>`);
+  if (!id) out = out.replace(main[0], `<span class="skip-to" id="content" tabindex="-1"></span>${main[0]}`);
   return { html: out, link: `<a class="skip" href="#${esc(id || "content")}">SKIP TO CONTENT ↓</a>` };
 }
 

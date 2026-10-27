@@ -133,7 +133,7 @@ test("L6 + L7 + 6B: the code is on its way, then being checked; a wrong one stay
     assert.equal((await page.locator("#code-note").textContent()).trim(), "that's not it. try again?");
     assert.deepEqual(await page.locator(".digits .cell").allTextContents(), ["0", "0", "0", "0", "0", "0"]);
     const lines = await page.locator(".digits .cell").evaluateAll(cs => cs.map(c => getComputedStyle(c).borderBottomColor));
-    assert.deepEqual([...new Set(lines)], ["rgb(176, 48, 48)"], "every underline in pen");
+    assert.deepEqual([...new Set(lines)], ["rgb(156, 59, 46)"], "every underline in pen");
     // Typing again replaces the wrong code (it was selected on focus), and the pen goes.
     await page.locator("#code").press("1");
     assert.equal(await page.locator("#code").inputValue(), "1");
@@ -190,7 +190,7 @@ test("L4: a row's detail shows what's known (status, title) at once, then ruled 
   try {
     const href = `/web/ongoing/task/${ids.waiting}`;
     const h = await hold(page, `**${href}`);
-    await page.click(`a.og-row[href="${href}"]`);
+    await page.click(`a.ogv[href="${href}"]`);
     await h.asked;
     const main = page.locator("main.ld.ld-d");
     await main.waitFor();
@@ -293,6 +293,6 @@ test("F1: the first Tab is the skip link on a paper slip; it lands one Tab befor
     // The input line: no ring; its rule thickens to 2px ink; the caret is pen.
     await page.focus("#c-input");
     const line = await page.evaluate(() => { const i = document.getElementById("c-input"), f = i.closest(".cform"); return [getComputedStyle(i).outlineStyle, getComputedStyle(f).borderTopWidth, getComputedStyle(i).caretColor]; });
-    assert.deepEqual(line, ["none", "2px", "rgb(176, 48, 48)"]);
+    assert.deepEqual(line, ["none", "2px", "rgb(156, 59, 46)"]);
   } finally { await ctx.close(); }
 });
