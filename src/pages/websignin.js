@@ -414,8 +414,8 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     return convo.streamRequest({ account, headers, query, router, log });
   }
 
-  // ---- Memory (src/pages/webmemory.js): the list, and correct / forget / a guess answered. Signed in only. ----
-  if (sub === "memory" || /^memory\/(correct|forget|guess)$/.test(sub ?? "")) {
+  // ---- Memory (src/pages/webmemory.js): the list, correct / forget / a guess answered, and chat history (webhistory.js). Signed in only. ----
+  if (sub === "memory" || /^memory\/(correct|forget|guess|history)$/.test(sub ?? "")) {
     if (!account) {
       if (String(headers.accept ?? "").includes("application/json")) {
         const body = JSON.stringify({ ok: false, error: "signed_out" });
@@ -425,6 +425,13 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     }
     const { memoryRequest } = await import("./webmemory.js");
     return await memoryRequest({ account, action: sub === "memory" ? null : sub.slice("memory/".length), method, query, headers, readBody, log });
+  }
+
+  // ---- Saved (src/pages/websaved.js): the list, one item opened, the page itself framed, pin / remove / restore ----
+  if (sub === "saved" || String(sub ?? "").startsWith("saved/")) {
+    if (!account) return redirect("/web");
+    const { savedRequest } = await import("./websaved.js");
+    return await savedRequest({ account, path: sub === "saved" ? "" : sub.slice("saved/".length), method, query, headers, readBody, log });
   }
 
   // ---- Settings (src/pages/websettings.js): the page, and its one POST for every control ----

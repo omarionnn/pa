@@ -4,8 +4,32 @@ What Reason is holding for the signed-in person, drawn from the rows that ARE th
 handoff 2026-10-26, "3 · Ongoing", sheets 2/3, 9D). Model: `src/ongoing.js` (`ongoing`, `findItem`,
 `approvals`, `stepsOf`, `resultFor`). Drawing + routes: `src/pages/webongoing.js` (`ogMargin`,
 `renderDetail`, `ongoingRequest`, `NINE_D_JS`, `OG_POLL_JS`). Wired into `src/pages/webconvo.js`
-(`inHand`/`waitingApprovals` delegate; `ongoingMargin` → `ogMargin`; PR #179's top-3 / See all /
-HIDE → / sticky bar kept) and `src/http.js` (`ongoingRoute`). Behind `REASON_WEB` like the rest.
+(`inHand`/`waitingApprovals` delegate; `ongoingMargin` → `ogMargin`; HIDE → / sticky bar kept;
+`renderHome` → `homeRows`) and `src/http.js` (`ongoingRoute`). Behind `REASON_WEB` like the rest.
+
+## At volume (handoff v2 sheet 2A/2B/2C, PR v2-ongoing)
+
+- **Counts.** Every group heading `NEEDS YOU · 2` / `IN HAND · 9` / `BACK TO YOU · 6`; page line
+  `17 THINGS · 2 NEED YOU` (`countLine`).
+- **Top 3 per group.** IN HAND (soonest due) and BACK TO YOU (newest) show 3, then serif italic
+  "See all N →" (`.og-more`) → `/web/ongoing/hand` | `/web/ongoing/back`. NEEDS YOU is never cut:
+  the first approval on its card, the rest as `APPROVE` rows (+ `ASKED <when>` on the phone).
+- **Volume switch.** A group past 3 → every row is the quiet `vRow` (`.ogv`: title clamps at 2 lines,
+  status `white-space:nowrap`), the margin's card is 2C's (`.og-vc.m`, the card is the link), scheduled
+  rows say `Mon 9:00` (phone, serif) / `MON` (margin, typed); ≥6 days out the date. Fewer → the
+  ongoing-mobile rows (checklists, Caveat lines) as before.
+- **Meta lines** (`item.meta`, src/ongoing.js `whenWord`): working `2 OF 3` + `WORKING · STARTED 2:55 PM`
+  (no steps: `STARTED YESTERDAY`), `WORKING · CALLING NOW` while `db.taskCallLive` (a calls row with
+  this `task_id`, placing/ringing/in_progress, < 2 h old); waiting `ON THE STORE · SINCE TUE`
+  (`sheet.waiting[0].since`); stuck `SINCE <blocked.at>`; series `EVERY MONDAY`; timer `ONCE`; done
+  `DONE · <when>`, failed `STOPPED · <when>`; approval `ASKED <when>`.
+- **See all (2B)** `renderSeeAll`: ← ONGOING, `In hand` / `Back to you`, `9 THINGS · NEWEST FIRST`,
+  filter links `ALL 9 · WORKING 4 · WAITING 3 · [STUCK n ·] SCHEDULED 2` (`?f=`; only kinds with rows;
+  unknown → ALL), every row with its meta. Newest = `started` (task/series `created_at`, timer
+  `created_at` — column added by this PR, NULL for older timers → sorted last). Empty group → 303
+  `/web?tab=ongoing`. Async (lazy-imports webconvo for the tab bar), http.js awaits it.
+- **Home (SR7).** The approval card stays on paper; ALREADY IN HAND = top 3 `vRow`s in
+  `.home-l` (dashed rule above and below, dashed between), then "See all N →" to the tab.
 
 ## Sub-features
 
@@ -46,13 +70,15 @@ From the chat: the approval card's "Review details →", or the pen "needs a yes
 
 ## Driving it with the harness
 
+- `node --test test/web-ongoing-volume.test.js` — volume 2A/2B/2C, meta lines, See all routes
+  (through the real server), home rows, timers.created_at.
 - `node --test test/web-ongoing.test.js test/web-ongoing2.test.js` — every group/state/detail,
   plumbing, cross-account 404s, 9D markup (seed: `test/fixture-ongoing.js`).
 - `node .agents/skills/verify-reason/bin/web-ongoing-preview.mjs` — ongoing-<state>-<390|1280>-
   <paper|night>.png + compare-ongoing-<state>.png into ~/Desktop/reason-web-design-previews.
 - Live (Hetzner only, read-only): temporary owner `page_sessions` row (conversation `dm:owner`),
   `curl -b reason_page=<tok> https://heyreason.com/web?tab=ongoing` and each
-  `/web/ongoing/<kind>/<id>` the owner really has; `/web/ongoing/state` → `{count, needs}`; another
+  `/web/ongoing/<kind>/<id>` the owner really has, `/web/ongoing/hand` and `/web/ongoing/back` (?f=…); `/web/ongoing/state` → `{count, needs}`; another
   id → 404. DELETE the session row after. A kind with no real row: make a far-future timer on
   `dm:owner` (fire_at years out), fetch it, then `UPDATE timers SET cancelled_at=…` / delete it.
 

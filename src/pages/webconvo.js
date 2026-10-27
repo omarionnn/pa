@@ -39,7 +39,7 @@ import { config, clock } from "../config.js";
 import { esc } from "./render.js";
 import { readCookie } from "./access.js";
 import { ongoing, approvals as pendingApprovals } from "../ongoing.js";
-import { ogMargin, needsYes, countLine, OG_CSS, NINE_D_JS, NINE_D_CSS, OG_POLL_JS } from "./webongoing.js";
+import { ogMargin, homeRows, needsYes, countLine, OG_CSS, NINE_D_JS, NINE_D_CSS, OG_POLL_JS } from "./webongoing.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting } from "./websignin.js";
 import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch, bubble, OG_KEY } from "./webkit.js";
 import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot, COMPOSE_CSS, COMPOSE_JS } from "./webcompose.js";
@@ -245,7 +245,7 @@ const serviceOf = (conversationId) => db.getThread(conversationId)?.service ?? n
 
 const placeAttrs = (m) => ` data-day="${esc(m.day ?? dayKey(m.at))}"${m.where ? ` data-where="${esc(m.where)}"` : ""}`;
 function lineHtml(m) {
-  return `<li class="msg ${m.role === "user" ? "you" : "re"}" data-id="${m.id}" data-at="${m.at}" data-web="${m.web ? 1 : 0}"${m.cid ? ` data-cid="${esc(m.cid)}"` : ""}${placeAttrs(m)}>${m.html}</li>`;
+  return `<li class="msg ${m.role === "user" ? "you" : "re"}" id="m-${m.id}" data-id="${m.id}" data-at="${m.at}" data-web="${m.web ? 1 : 0}"${m.cid ? ` data-cid="${esc(m.cid)}"` : ""}${placeAttrs(m)}>${m.html}</li>`;
 }
 
 const dayName = (at, now) => {
@@ -445,10 +445,7 @@ html:not(.js) .l1,html:not(.js) .thread[aria-busy]{display:none}
 .og.going{transform:translateX(48px);opacity:0}
 .og h2{margin:0;font:italic 400 32px/1.1 var(--serif)}
 .og-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
-.og .og-x{display:none}
-.og.all .og-x{display:flex}
-.og-all{align-self:flex-start;min-height:44px;display:inline-flex;align-items:center;margin-top:-12px;font:400 12px/1.3 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--ink);text-decoration:none}
-.og-all:hover,.og-hide:hover,.og-back:hover{color:var(--pen)}
+.og-hide:hover,.og-back:hover{color:var(--pen)}
 .og-back{display:none;position:fixed;right:0;top:50%;transform:translateY(-50%);z-index:15;min-width:44px;min-height:44px;padding:20px 12px;border:0;border-left:1px dashed var(--hair);background:var(--ground);cursor:pointer;color:var(--ink);font:400 12px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;writing-mode:vertical-rl}
 html.og-off .wrapc>.og{display:none}
 .og-sec{display:flex;flex-direction:column}
@@ -461,10 +458,10 @@ html.og-off .wrapc>.og{display:none}
 .og-row .when{flex:none;font:italic 400 20px/1 var(--serif)}
 .empty{display:flex;flex-direction:column;gap:20px}
 .empty .h2{margin:0;font:italic 400 32px/1.1 var(--serif)}
-.tabs{position:fixed;left:0;right:0;bottom:0;z-index:6;background:var(--ground);border-top:1px solid var(--hair);padding:6px 24px calc(14px + env(safe-area-inset-bottom));display:flex;justify-content:space-around}
-.tabs a{min-width:120px;min-height:48px;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;font:italic 400 22px/1 var(--serif);color:var(--muted)}
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:6;background:var(--ground);border-top:1px solid var(--hair);padding:6px 16px calc(22px + env(safe-area-inset-bottom));display:flex;justify-content:space-around}
+.tabs a{min-width:96px;min-height:48px;display:inline-flex;align-items:center;justify-content:center;gap:6px;text-decoration:none;font:italic 400 21px/1 var(--serif);color:var(--muted)}
 .tabs a[aria-current=page]{color:var(--ink)}
-.tabs .n{font:700 12px/1 var(--mono);font-style:normal;color:var(--pen)}
+.tabs .n{font:700 11px/1 var(--mono);font-style:normal;color:var(--pen)}
 body.has-tabs{padding-bottom:84px}
 body.has-tabs .composer{bottom:76px}
 body.typing .tabs{display:none}
@@ -481,11 +478,6 @@ body.has-tabs .foot{display:none}
 .start-w .lbl,.inhand>.lbl{font-size:12px;margin:0 0 8px}
 .ex{align-self:flex-start;min-height:48px;border:0;background:transparent;padding:0;cursor:pointer;font:italic 400 24px/1.2 var(--serif);color:var(--ink);text-align:left}
 .ex:hover{color:var(--hov)}
-.slips{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}
-.slipc{text-decoration:none;color:var(--ink);padding:18px;display:flex;flex-direction:column;gap:10px;min-height:120px}
-.slipc .t{font-size:16px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
-.slipc .hand{transform:rotate(-1deg);transform-origin:left}
-.slipc .when{font:italic 400 20px/1 var(--serif)}
 .pick{text-decoration:none;color:var(--ink);display:flex;flex-direction:column;gap:12px;margin-top:24px}
 .pick-h{display:flex;align-items:center;gap:16px}
 .pick-h .hand{font-size:26px;flex:none}
@@ -541,7 +533,6 @@ body.has-tabs .foot{display:flex}
 .home .cform input[type=text]{font-size:26px}
 .start-w,.inhand,.pick{margin-top:56px}
 .ex{font-size:26px}
-.slips{grid-template-columns:repeat(3,minmax(0,1fr))}
 .pick{margin-top:64px}
 .pick-h .hand{font-size:28px}
 .solo .h1{font-size:64px}
@@ -551,6 +542,9 @@ body.has-tabs .foot{display:flex}
 @media (max-width:359px){.greet{font-size:34px}.lbl{font-size:10px;letter-spacing:.12em}.rsay p{font-size:15px}}
 ${OG_CSS}${NINE_D_CSS}`;
 
+/** The conversation's look, for Ongoing's See all page (src/pages/webongoing.js) that shares its tab bar. */
+export const CONVO_CSS = CSS;
+
 const MENU_SVG = `<svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>`;
 const SEND_SVG = `<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 16V4M4.5 9.5 10 4l5.5 5.5"/></svg>`;
 
@@ -559,16 +553,18 @@ const signOutForm = (csrf, cls = "act2") => `<form method="POST" action="/web/si
 /** The top of every signed-in screen: the wordmark home; MEMORY and SETTINGS on desktop; a menu on phones. */
 function topBar({ csrf, extra = "", where = "" }) {
   return `<header class="top">${wordmark({ href: "/web" })}${where}`
-    + `<nav aria-label="Account">${extra}${typed("MEMORY", { href: "/web/memory" })}${typed("SETTINGS", { href: "/web/settings" })}</nav>`
+    + `<nav aria-label="Account">${extra}${typed("SAVED", { href: "/web/saved" })}${typed("MEMORY", { href: "/web/memory" })}${typed("SETTINGS", { href: "/web/settings" })}</nav>`
     + `<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">${MENU_SVG}</button></header>`
     + `<div class="menu" id="menu" hidden role="dialog" aria-modal="true" aria-label="Menu"><div class="menu-h">${wordmark()}<button class="act2 menu-x" type="button">CLOSE</button></div>`
     + `<ul><li>${action("The thread", { href: "/web?thread" })}</li><li>${action("Memory", { href: "/web/memory" })}</li><li>${action("Settings", { href: "/web/settings" })}</li></ul>`
     + `${themeSwitch("th-menu")}${signOutForm(csrf)}</div>`;
 }
 
-function tabBar(current, count) {
+/** The phone's three tabs (v2 handoff): Chat · Ongoing (its count in pen) · Saved, the current one in ink. */
+export function tabBar(current, count) {
   return `<nav class="tabs" aria-label="Sections"><a href="/web?thread"${current === "chat" ? ` aria-current="page"` : ""}>Chat</a>`
-    + `<a href="/web?tab=ongoing"${current === "ongoing" ? ` aria-current="page"` : ""}>Ongoing${count ? `<span class="n" aria-label="${count} ${count === 1 ? "thing" : "things"}">${count}</span>` : ""}</a></nav>`;
+    + `<a href="/web?tab=ongoing"${current === "ongoing" ? ` aria-current="page"` : ""}>Ongoing${count ? `<span class="n" aria-label="${count} ${count === 1 ? "thing" : "things"}">${count}</span>` : ""}</a>`
+    + `<a href="/web/saved"${current === "saved" ? ` aria-current="page"` : ""}>Saved</a></nav>`;
 }
 
 /** The one-line composer. `sendId` makes even a no-script post one turn however often it is resent. */
@@ -581,13 +577,13 @@ function composer({ csrf, sendId, slot = "" }) {
 export { OG_TOP } from "./webongoing.js";
 
 /**
- * The Ongoing list: the desktop margin, or (`tab`) the mobile Ongoing tab's body. The top OG_TOP rows
- * show; the rest are drawn but folded, and "See all N →" opens them in place ("Show fewer" folds them
- * back). Without script it is a link to the same list drawn open (`all`). The margin also carries
- * "HIDE →": the page slides it away and the thread takes the width; a thin vertical typed "ONGOING · N" at the right edge brings it back (handoff §3, sheet 3).
+ * The Ongoing list: the desktop margin, or (`tab`) the mobile Ongoing tab's body (src/pages/webongoing.js):
+ * counts on every heading, each group's top OG_TOP, then "See all N →" to the group's own page (handoff
+ * v2, sheet 2). The margin also carries "HIDE →": the page slides it away and the thread takes the
+ * width; a thin vertical typed "ONGOING · N" at the right edge brings it back (handoff §3, sheet 3).
  */
-function ongoingMargin(items, approvals, { all = false, tab = false, back = [] } = {}) {
-  return ogMargin({ items, approvals, back }, { all, tab });
+function ongoingMargin(items, approvals, { tab = false, back = [] } = {}) {
+  return ogMargin({ items, approvals, back }, { tab });
 }
 
 /** "pick up from iMessage": the last two texts, quoted, the whole block one link into the thread. */
@@ -611,11 +607,10 @@ var R=window.REASON_WEB,list=document.querySelector('.thread'),onit=document.que
 var mb=document.querySelector('.menu-b'),menu=document.getElementById('menu');
 var bar=document.querySelector('.top'),og=document.getElementById('og'),H=document.documentElement;
 function stuck(){if(bar)bar.classList.toggle('stuck',window.scrollY>4)}window.addEventListener('scroll',stuck,{passive:true});stuck();
-if(og){var hb=og.querySelector('.og-hide'),back=document.querySelector('.og-back'),all=og.querySelector('.og-all'),calm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+if(og){var hb=og.querySelector('.og-hide'),back=document.querySelector('.og-back'),calm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
 function keepOff(off){try{if(off)localStorage.setItem('${OG_KEY}','off');else localStorage.removeItem('${OG_KEY}')}catch(e){}}
 if(hb)hb.onclick=function(){keepOff(true);if(calm){H.classList.add('og-off');if(back)back.focus();return}og.classList.add('going');setTimeout(function(){H.classList.add('og-off');og.classList.remove('going');if(back)back.focus()},320)};
-if(back)back.onclick=function(e){e.preventDefault();keepOff(false);if(!calm)og.classList.add('going');H.classList.remove('og-off');requestAnimationFrame(function(){requestAnimationFrame(function(){og.classList.remove('going')})});if(hb)hb.focus()};
-if(all)all.onclick=function(e){e.preventDefault();var open=og.classList.toggle('all');all.setAttribute('aria-expanded',open?'true':'false');all.innerHTML=open?'Show fewer':'See all '+all.dataset.n+' <span aria-hidden="true">\\u2192</span>'}}
+if(back)back.onclick=function(e){e.preventDefault();keepOff(false);if(!calm)og.classList.add('going');H.classList.remove('og-off');requestAnimationFrame(function(){requestAnimationFrame(function(){og.classList.remove('going')})});if(hb)hb.focus()}}
 document.querySelectorAll('form[action="/web/signout"]').forEach(function(f){f.addEventListener('submit',function(){try{Object.keys(sessionStorage).forEach(function(k){if(k.indexOf('reason-web-pending')===0)sessionStorage.removeItem(k)})}catch(x){}})});
 if(mb&&menu){var mx=menu.querySelector('.menu-x');function shut(){menu.hidden=true;mb.setAttribute('aria-expanded','false');mb.focus()}mb.onclick=function(){menu.hidden=false;mb.setAttribute('aria-expanded','true');mx.focus()};mx.onclick=shut;document.addEventListener('keydown',function(e){if(menu.hidden)return;if(e.key==='Escape')shut();else if(e.key==='Tab'){var f=menu.querySelectorAll('a,button,input:not([type=hidden])'),a=f[0],z=f[f.length-1];if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}}})}
 document.querySelectorAll('.start-w[hidden]').forEach(function(s){s.hidden=false});
@@ -751,7 +746,7 @@ const NET = `<p class="netline" role="status" hidden></p>`;
 /**
  * The thread. `firstVisit` draws 5C in its place (once); `approvals` the one loud thing at the foot.
  */
-export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), all = false, deferred = false, work = null }) {
+export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), found = null, deferred = false, work = null }) {
   if (firstVisit) return renderFirstVisit({ account });
   const conv = account?.conversation_id ?? "";
   const service = serviceOf(conv);
@@ -778,10 +773,12 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     + appr + onIt(true) + longWorkHtml(work)
     + needsYes(approvals)
     + composer({ csrf, sendId, slot: TODAY_SLOT })
-    + `</section>${ongoingMargin(items, approvals, { all, back })}</main>`
+    + `</section>${ongoingMargin(items, approvals, { back })}</main>`
     + `<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing${count ? `, ${count} ${count === 1 ? "thing" : "things"}` : ""}"><span aria-hidden="true">ONGOING${count ? ` · ${count}` : ""}</span></button>`
     + tabBar("chat", count) + listeningHtml();
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
+  // Saved's FIND IT IN THE CHAT → (src/pages/websaved.js): the thread opened at that message, scrolled to it.
+  const toFound = found ? `(function(){var e=document.getElementById('m-${Number(found)}');if(e)e.scrollIntoView({block:'center'})})();` : "";
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
 }
 
 /** S2: the "where you are" note, two slots that crossfade. Filled and shown by the page's script. */
@@ -812,9 +809,9 @@ export function longWorkHtml(work) {
 /** B / B2, the arrival: the greeting, the composer, then what's in hand or where to start, then iMessage. */
 export function renderHome({ account, csrf, sendId, items = [], approvals = [], back = [], pick = "" }) {
   const name = String(account?.name ?? "").trim();
-  const slips = items.slice(0, 3).map(x => `<a class="card slipc" href="${esc(x.href || "/web?thread")}"><span class="lbl">${esc(x.status)}</span><span class="t">${esc(x.title)}</span>${x.when ? `<span class="when">${esc(x.when)}</span>` : hand(x.words, { tag: "span" })}</a>`).join("");
+  // The approval stays on paper; what's already in hand is quiet rows between dashed rules, as on Ongoing (STAGING-REVIEW 7).
   const middle = items.length
-    ? `<section class="inhand" aria-label="Already in hand">${label("ALREADY IN HAND")}<div class="slips">${slips}</div></section>`
+    ? `<section class="inhand" aria-label="Already in hand">${label("ALREADY IN HAND")}${homeRows(items)}</section>`
     : `<section class="start-w" aria-label="You could start with" hidden>${label("YOU COULD START WITH")}${EXAMPLES.map(t => `<button class="ex" type="button" data-text="${esc(t)}">"${esc(t)}"</button>`).join("")}</section>`;
   const body = topBar({ csrf, extra: typed("THE THREAD →", { href: "/web?thread" }) }) + NET
     + `<main class="home"><h1 class="greet">${esc(greeting(name))}</h1>`
@@ -834,10 +831,10 @@ export function renderFirstVisit() {
 }
 
 /** The mobile Ongoing tab. Real rows when Reason holds anything; otherwise "Nothing left to chase." */
-export function renderOngoing({ csrf, items = [], approvals = [], back = [], all = false }) {
+export function renderOngoing({ csrf, items = [], approvals = [], back = [] }) {
   const count = items.length + approvals.length + back.length;
   const inner = count
-    ? `<main class="og-list"><h1 class="h1">Ongoing</h1>${label(countLine({ items, approvals, back }))}${ongoingMargin(items, approvals, { all, tab: true, back })}</main>`
+    ? `<main class="og-list"><h1 class="h1">Ongoing</h1>${label(countLine({ items, approvals, back }))}${ongoingMargin(items, approvals, { tab: true, back })}</main>`
     : `<main class="og-m"><h1 class="h1">Nothing left<br>to chase.</h1>${hand("whatever you hand me shows up here while i work.", { tilt: true })}</main>`;
   const css = `${CSS}.og-tab{display:flex;position:static;max-width:none;padding:0}`;
   return webPage({ title: "Reason — Ongoing", body: topBar({ csrf }) + inner + tabBar("ongoing", count), css, script: NINE_D_JS + OG_POLL_JS + CLIENT_JS, bodyClass: "has-tabs" });
@@ -879,13 +876,17 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   // Spent only by a real view (GET); a HEAD carries no body to show it in.
   if (method === "GET" && db.markWebNoticeSeen(conv)) return renderFirstVisit({ account });
   const { items, approvals, back } = ongoing(conv, now);
-  const all = query.all != null;
-  if (query.tab === "ongoing") return renderOngoing({ csrf, items, approvals, back, all });
-  const rows = db.messagesBefore(conv, { limit: PAGE + 1 });
-  const more = rows.length > PAGE;
+  if (query.tab === "ongoing") return renderOngoing({ csrf, items, approvals, back });
+  // ?at=<id> (Saved's FIND IT IN THE CHAT →): the thread around one of this conversation's own messages, drawn at once (no L1).
+  const at = /^\d{1,15}$/.test(String(query.at ?? "")) ? Number(query.at) : null;
+  const from = at ? db.messagesFor(conv, { after: at - 1, limit: PAGE }) : [];
+  const found = from[0]?.id === at ? at : null;
+  const rows = found ? [...db.messagesBefore(conv, { before: found, limit: 11 }), ...from] : db.messagesBefore(conv, { limit: PAGE + 1 });
+  const more = found ? rows.length - from.length > 10 : rows.length > PAGE;
   const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service, now }));
+  if (found) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, found, work: workOf(conv) });
   const recentWeb = lines.some(m => m.web && m.role === "user" && now - m.at < THREAD_RECENT_MS);
-  if (query.thread != null || recentWeb) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, all, deferred: true, work: workOf(conv) });
+  if (query.thread != null || recentWeb) return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, deferred: true, work: workOf(conv) });
   return renderHome({ account, csrf, sendId, items, approvals, back, pick: pickUp(conv, service) });
 }
 

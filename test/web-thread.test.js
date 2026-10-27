@@ -272,7 +272,7 @@ test("S3: a done task settles into one DONE line at its last message; open work 
   assert.match(done[0], /<div class="fold" id="fold-\d+"><p class="q-you">call the dentist and get me in this week<\/p><p class="q-re">calling now\.<\/p><p class="q-re">thursday 3pm with dr\. patel\.<\/p><\/div>/);
   assert.ok(!/dl-fresh/.test(done[0]), "six days on, no 'just wrapped' line");
   assert.ok(!html.includes(`data-id="${a.id}" data-at`), "the folded messages are not drawn on their own");
-  for (const r of [between, d, shared]) assert.match(html, new RegExp(`<li class="msg (you|re)" data-id="${r.id}"`), "everything else stays as it was");
+  for (const r of [between, d, shared]) assert.match(html, new RegExp(`<li class="msg (you|re)" id="m-${r.id}" data-id="${r.id}"`), "everything else stays as it was");
   // The fold comes with the page that holds its last message; an older page skips its earlier lines.
   const older = convo.pageHtml(lines.filter(m => m.id === a.id || m.id === between.id), { conversationId: KOFI_C, now });
   assert.ok(!/class="msg done"/.test(older) && !older.includes(`data-id="${a.id}"`) && older.includes(`data-id="${between.id}"`));
