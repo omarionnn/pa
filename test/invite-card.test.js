@@ -1,5 +1,5 @@
 // The forwarded invite link's card (owner, 2026-10-25): "<Name> thinks you should join reason" in the
-// homepage's italic serif, "Free for you, for good." in the site's orange handwriting, on the site's
+// homepage's italic serif, "Free for you, for good." in the brand-red handwriting, on the site's
 // paper. One picture per inviter name, drawn once and kept; the fonts ride inline.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
@@ -11,17 +11,17 @@ const dir = mkdtempSync(join(tmpdir(), "reason-invite-card-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_DATA_DIR = join(dir, "data");
 const card = await import("../src/invitecard.js");
-const { PAPER, BRAND_ORANGE } = await import("../src/pages/brand.js");
+const { PAPER, BRAND_PEN } = await import("../src/pages/brand.js");
 const { config } = await import("../src/config.js");
 after(() => rmSync(dir, { recursive: true, force: true }));
 
-test("the card says who, in the headline face, with the handwritten line in brand orange on the site's paper", () => {
+test("the card says who, in the headline face, with the handwritten line in brand red on the site's paper", () => {
   const html = card.inviteCardHtml("Kofi");
   assert.match(html, /<h1>Kofi thinks you should join <span class="wordmark"/, "the inviter's name, then the wordmark");
   assert.match(html, /<p class="hand">Free for you, for good\.<\/p>/);
   assert.match(html, /@font-face\{font-family:"Card Serif";font-style:italic;font-weight:400;src:url\(data:font\/woff2;base64,/, "Instrument Serif italic inline, no network");
   assert.match(html, /@font-face\{font-family:"Card Hand";font-weight:400;src:url\(data:font\/woff2;base64,/, "Caveat inline");
-  assert.ok(html.includes(`color:${BRAND_ORANGE}`), "handwriting in brand orange");
+  assert.ok(html.includes(`color:${BRAND_PEN}`), "handwriting in brand red");
   assert.ok(html.includes(PAPER.bg), "the site's paper");
   assert.doesNotMatch(html, /fonts\.googleapis/);
 });
