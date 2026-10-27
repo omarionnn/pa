@@ -22,6 +22,7 @@
 // it is used.
 import { renderNotice } from "./render.js";
 import { config } from "../config.js";
+import { linkCardTags } from "./sitecard.js";
 
 /** Where this install is reachable, for the page to name its own address honestly. */
 const where = () => config.publicUrl || `http://127.0.0.1:${config.port}`;
@@ -81,7 +82,7 @@ export function privacyPage() {
     kicker: "What Reason keeps, and what it does not",
     meta: `Reason at ${where()} · last changed 2026-10-05`,
     indexable: true,
-    head: verificationTag(),
+    head: `\n${[verificationTag(), linkCardTags("privacy")].filter(Boolean).join("\n")}`,
     links: [{ label: "Terms of service", href: "/terms" }, { label: "Home", href: "/" }],
     lines: [
       "Reason is your personal concierge, over text. This explains what it stores, what leaves the machine it runs on, and how to get rid of all of it. It is written against the code, which is public: github.com/omarionnn/pa",
@@ -169,7 +170,7 @@ export function termsPage() {
     kicker: "What Reason is, what it promises, and what it does not",
     meta: `Reason at ${where()} · last changed 2026-10-06`,
     indexable: true,
-    head: verificationTag(),
+    head: `\n${[verificationTag(), linkCardTags("terms")].filter(Boolean).join("\n")}`,
     links: [{ label: "Privacy policy", href: "/privacy" }, { label: "Home", href: "/" }],
     lines: [
       "Reason is your personal concierge, over text. It is free software under the MIT licence, and this install of it is run by one person, who gave you the number. These terms are between you and that person.",
