@@ -381,16 +381,18 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
 
 See [features/scheduled-calls.md](features/scheduled-calls.md).
 
-**7 — Reason Web memory, over real HTTP.** The page, CORRECT/FORGET as links, the form posts and the
-script's JSON posts, guesses yes/no, cross-account and cross-site refusals, checked against the store,
-`recall` and the profile note. The filer gets a scripted reader; no model is called.
+**7 — Reason Web memory + chat history, over real HTTP.** The page, CORRECT/FORGET as links, the form
+posts and the script's JSON posts, guesses yes/no, at volume (counts, Show N more, a filter, the guess
+card, search with pen underlines), chat history (days, a day read-only, search, 404, signed out),
+cross-account and cross-site refusals, checked against the store, `recall` and the profile note. The
+filer gets a scripted reader; no model is called.
 
 ```bash
 eval "$(bin/caged.sh env | sed 's/^/export /')" \
-  && REASON_DB_PATH=$(mktemp -d)/mem.db node bin/web-memory-drive.mjs   # 17 steps, all ok
+  && REASON_DB_PATH=$(mktemp -d)/mem.db node bin/web-memory-drive.mjs   # 27 steps, all ok
 ```
 
-See [features/web-memory.md](features/web-memory.md).
+See [features/web-memory.md](features/web-memory.md) and [features/web-history.md](features/web-history.md).
 
 **8 — Reason Web Saved, over real HTTP.** The list (kinds, find, groups), an opened page framed from
 its own route, FIND IT IN THE CHAT into the thread, PIN / REMOVE / PUT IT BACK form posts, refusals.
