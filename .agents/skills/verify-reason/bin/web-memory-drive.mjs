@@ -86,7 +86,7 @@ groups.setFilingReader(async (rows) => rows.map(r => ({ id: r.id, group: pick[r.
 const filed = (await groups.fileFacts()) + (await groups.fileFacts());
 step("the filer files each conversation's facts, one conversation per read", filed === 5 && db.unfiledCount() === 0, `${filed} filed`);
 p = await get(owner);
-const at = (t) => p.body.indexOf(`>${t}</h2>`);
+const at = (t) => p.body.search(new RegExp(`>${t} · \\d+</h2>`));
 step("grouped PREFERENCES, PEOPLE, ROUTINES in order; PLACES and WHY not drawn",
   at("PREFERENCES") > 0 && at("PREFERENCES") < at("PEOPLE") && at("PEOPLE") < at("ROUTINES") && at("PLACES") < 0 && at("WHY") < 0);
 step("somebody else's fact reads as a line (Juno: is your dog)", p.body.includes("Juno: is your dog"));
@@ -123,7 +123,43 @@ r = await post(owner, "guess", { c: owner.csrf, id: String(g2.id), answer: "no" 
 p = await get(owner);
 step("No → dismissed, and the same words noted again are not suggested", r.status === 303 && !p.body.includes("REASON THINKS") && db.noteGuess(OWNER_C, { about: "Omari", guess: "Saturdays are for your family" }).already_guessed && !(await get(owner)).body.includes("Saturdays are for"));
 
-// 6. Refusals over the wire.
+// 6. At volume (Gap 6): counts, top 3 + Show N more, a filter, guesses in one card, search.
+for (const x of ["Oat milk, always", "Morning flights", "No cilantro", "Dog-friendly places only when Juno comes"]) db.remember(OWNER_C, "Omari", x, { group: "preferences" });
+db.remember(OWNER_C, "Juno", "Juno's vet is Dr. Lee, Thursdays", { group: "people" });
+db.noteGuess(OWNER_C, { about: "Juno", guess: "you'd rather not leave Juno overnight" });
+db.noteGuess(OWNER_C, { about: "Omari", guess: "you like jazz" });
+p = await get(owner);
+// Unfiled lines (a guess just confirmed) stand under their fallback heading, so count with the page's own groupOf.
+const { groupOf } = await imp("src/pages/webmemory.js");
+const facts = db.memoryFacts(OWNER_C), prefN = facts.filter(f => groupOf(f, db.personKey("Omari")) === "preferences").length;
+step("6A: ALL n and per-group counts are the store's", p.body.includes(`>ALL ${facts.length}<`) && p.body.includes(`>PREFERENCES · ${prefN}</h2>`) && p.body.includes(`>PREFERENCES ${prefN}</a>`));
+step("6A: three lines shown, Show N more → to the whole group", p.body.includes(`Show ${prefN - 3} more <span aria-hidden="true">→</span>`) && p.body.includes('href="/web/memory?g=preferences#gh-preferences"'));
+const filt = await get(owner, "?g=preferences");
+step("a filter shows the whole group, marked current", filt.body.includes('href="/web/memory?g=preferences" aria-current="true"') && !/class="fr" [^>]*hidden>/.test(filt.body));
+step("6A: guesses in one card with the count and SEE ALL ↓", p.body.includes("REASON THINKS… · 2 GUESSES</h2>") && p.body.includes(">SEE ALL ↓</button>"));
+const found = await get(owner, "?q=dog");
+step("6B: search underlines in pen, brings Juno's vet, the guess in Caveat, the count, the no-match line",
+  found.body.includes("<mark>dog</mark>") && found.body.includes("Dr. Lee") && found.body.includes("reason thinks: you") && /\d FACTS · 1 GUESS</.test(found.body)
+  && found.body.includes("Nothing else matches. You can tell Reason something new in the chat.") && !found.body.includes("jazz"));
+step("MANAGE CHAT HISTORY → leads to /web/memory/history", p.body.includes('href="/web/memory/history">MANAGE CHAT HISTORY'));
+
+// 7. Chat history (Gap 7): days, a day read-only, search; only their own.
+const now = Date.now();
+db.writeMessage({ conversationId: OWNER_C, role: "user", channel: "web", externalId: "d1", text: "find me a table at the hudson inn", at: now - 60_000 });
+db.writeMessage({ conversationId: OWNER_C, role: "assistant", channel: "fake", outboxId: 9001, text: "on it. the hudson inn has 7pm.", at: now - 30_000 });
+db.writeMessage({ conversationId: KOFI_C, role: "user", channel: "fake", externalId: "k1", text: "kofi hudson secret", at: now - 20_000 });
+const hget = async (b, q = "") => { const r = await fetch(`${BASE}/web/memory/history${q}`, { headers: H(b), redirect: "manual" }); return { status: r.status, body: await r.text(), loc: r.headers.get("location") }; };
+let h = await hget(owner);
+step("7A: Today, WEB + IMESSAGE · 2 MESSAGES, FIND A MESSAGE, the note", h.status === 200 && h.body.includes('<span class="dy-d">Today</span>') && h.body.includes("WEB + IMESSAGE · 2 MESSAGES") && h.body.includes(">FIND A MESSAGE</label>") && h.body.includes("deleting history isn"));
+const key = /href="\/web\/memory\/history\?day=([\d-]+)"/.exec(h.body)?.[1];
+h = await hget(owner, `?day=${key}`);
+step("7B: the day read-only, labels, no composer, Go to chat →", h.body.includes("READ-ONLY") && h.body.includes("YOU · WEB · ") && h.body.includes("REASON · ") && !h.body.includes("<textarea") && !h.body.includes("<form") && h.body.includes('href="/web?thread">Go to chat'));
+h = await hget(owner, "?q=hudson");
+step("search: both lines, underlined, never another account's", h.body.includes(">2 MESSAGES<") && h.body.includes("<mark>hudson</mark>") && !h.body.includes("kofi"));
+const nod = await hget(owner, "?day=2001-01-01"), anonH = await hget(null);
+step("an empty day is a 404; signed out → /web", nod.status === 404 && anonH.status === 303 && anonH.loc === "/web");
+
+// 8. Refusals over the wire.
 const x1 = await post(owner, "forget", { k: `fact-${kofis}` }, J(owner));
 const x2 = await post(owner, "correct", { c: owner.csrf, k: `fact-${kofis}`, text: "x" });
 step("another account's fact id: 404 both ways, untouched", x1.status === 404 && x2.status === 404 && db.getFact(KOFI_C, kofis)?.fact === "Runs on Saturdays");

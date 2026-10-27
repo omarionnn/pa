@@ -58,19 +58,74 @@ export function memoryView(account) {
   const conv = account.conversation_id;
   const ownKey = db.personKey(account.name ?? "");
   const by = new Map(GROUPS.map(([k]) => [k, []]));
+  // `subject` is who a line is about when that is somebody other than them (search's "related" below).
+  const subjectOf = (about, key) => (key && key !== ownKey ? { subject: String(about ?? "").trim(), subjectKey: key } : { subject: "", subjectKey: "" });
   for (const f of db.memoryFacts(conv)) {
     const own = !!ownKey && f.about_key === ownKey;
-    by.get(groupOf(f, ownKey)).push({ key: `fact-${f.id}`, kind: "fact", id: f.id, raw: f.fact, line: lineFor(f.about, f.fact, { own }), at: f.created_at });
+    by.get(groupOf(f, ownKey)).push({ key: `fact-${f.id}`, kind: "fact", id: f.id, raw: f.fact, line: lineFor(f.about, f.fact, { own }), at: f.created_at, ...subjectOf(f.about, f.about_key) });
   }
   for (const w of db.listWhys(conv, { limit: 200 })) {
-    const own = !!ownKey && db.personKey(w.about) === ownKey;
-    by.get("why").push({ key: `why-${w.id}`, kind: "why", id: w.id, raw: w.why, line: lineFor(w.about, w.why, { own }), at: w.stated_at });
+    const k = db.personKey(w.about);
+    const own = !!ownKey && k === ownKey;
+    by.get("why").push({ key: `why-${w.id}`, kind: "why", id: w.id, raw: w.why, line: lineFor(w.about, w.why, { own }), at: w.stated_at, ...subjectOf(w.about, k) });
   }
   const groups = GROUPS.map(([key, title]) => ({ key, title, rows: by.get(key).sort((a, b) => b.at - a.at) })).filter(g => g.rows.length);
   const guesses = [...db.listGuesses(conv, { includePatterns: true, limit: 40 })]
-    .map(g => ({ id: g.id, text: lineFor(g.about, g.guess, { own: !!ownKey && db.personKey(g.about) === ownKey }) }));
-  return { groups, guesses, empty: !groups.length };
+    .map(g => { const k = db.personKey(g.about); return { id: g.id, text: lineFor(g.about, g.guess, { own: !!ownKey && k === ownKey }), ...subjectOf(g.about, k) }; });
+  const total = groups.reduce((n, g) => n + g.rows.length, 0);
+  return { groups, guesses, total, empty: !groups.length };
 }
+
+// ---------------------------------------------------------------- finding a fact (6B)
+
+export const MAX_QUERY = 100;
+/** What was typed in FIND A FACT, tidied: one line, at most MAX_QUERY characters. */
+export const cleanQuery = (q) => String(q ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_QUERY);
+const wordsOf = (q) => cleanQuery(q).toLowerCase().split(" ").filter(Boolean);
+const hasAll = (text, words) => { const t = String(text).toLowerCase(); return words.length > 0 && words.every(w => t.includes(w)); };
+const re = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const names = (text, name) => name.length > 1 && new RegExp(`(^|[^\\p{L}\\p{N}])${re(name.toLowerCase())}($|[^\\p{L}\\p{N}])`, "u").test(String(text).toLowerCase());
+
+/** `text` escaped, every place a searched word appears underlined in pen (`<mark>`). */
+export function markedHtml(text, query) {
+  const t = String(text ?? "");
+  const words = wordsOf(query);
+  if (!words.length) return esc(t);
+  const low = t.toLowerCase();
+  const on = new Array(t.length).fill(false);
+  for (const w of words) for (let i = low.indexOf(w); i >= 0; i = low.indexOf(w, i + 1)) for (let j = i; j < i + w.length; j++) on[j] = true;
+  let out = "", i = 0;
+  while (i < t.length) {
+    let j = i;
+    while (j < t.length && on[j] === on[i]) j++;
+    out += on[i] ? `<mark>${esc(t.slice(i, j))}</mark>` : esc(t.slice(i, j));
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * Search across every group and the guesses. A line matches when it holds every word typed; and
+ * because a fact is about somebody, the other lines about the same person come with it (search
+ * "dog" and "Juno is your dog" brings Juno's vet too), after the direct matches. Never them: a line
+ * about their own self is not "related" to everything else they said.
+ */
+export function searchView(view, query) {
+  const words = wordsOf(query);
+  const rows = view.groups.flatMap(g => g.rows);
+  const direct = new Set(rows.filter(r => hasAll(r.line, words)));
+  const gDirect = new Set(view.guesses.filter(g => hasAll(g.text, words)));
+  const subjects = new Map();
+  for (const x of [...direct, ...gDirect]) if (x.subjectKey) subjects.set(x.subjectKey, x.subject);
+  const related = (x) => (x.subjectKey && subjects.has(x.subjectKey)) || [...subjects.values()].some(n => names(x.line ?? x.text, n));
+  const facts = [...direct, ...rows.filter(r => !direct.has(r) && related(r))];
+  const guesses = [...gDirect, ...view.guesses.filter(g => !gDirect.has(g) && related(g))];
+  return { query: cleanQuery(query), facts, guesses };
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+/** `3 FACTS · 1 GUESS`. */
+export const searchCount = (s) => `${plural(s.facts.length, "FACT", "FACTS")} · ${plural(s.guesses.length, "GUESS", "GUESSES")}`;
 
 /** One saved row by its page key ("fact-12", "why-3"), inside this conversation only. */
 export function findRow(conv, key) {
@@ -91,9 +146,9 @@ const withStop = (t) => (/[.!?…]$/.test(t) ? t : `${t}.`);
 const hidden = (n, v) => `<input type="hidden" name="${n}" value="${esc(v)}">`;
 
 /** One line between dashed rules, CORRECT and FORGET beside it (they show on hover, focus or a tap). */
-export function rowHtml(r, { gotIt = false } = {}) {
+export function rowHtml(r, { gotIt = false, query = "", hidden = false } = {}) {
   const what = `<span class="sr"> “${esc(r.line)}”</span>`;
-  return `<div class="fr" id="f-${r.key}" tabindex="-1" data-k="${r.key}" data-raw="${esc(r.raw)}"><p class="ft">${esc(r.line)}</p>`
+  return `<div class="fr" id="f-${r.key}" tabindex="-1" data-k="${r.key}" data-raw="${esc(r.raw)}"${hidden ? " hidden" : ""}><p class="ft">${query ? markedHtml(r.line, query) : esc(r.line)}</p>`
     + (gotIt ? `<span class="got" role="status">got it.</span>` : "")
     + `<span class="fa"><a class="fx fc" href="/web/memory?correct=${r.key}#f-${r.key}">CORRECT${what}</a>`
     + `<a class="fx ff" href="/web/memory?forget=${r.key}">FORGET${what}</a></span></div>`;
@@ -118,8 +173,30 @@ export function forgetHtml(r, { csrf }) {
     + `<button class="fg-go" type="submit">Forget it</button><a class="fx fg-keep" href="/web/memory#f-${r.key}">KEEP IT</a></form></div></div>`;
 }
 
-function guessHtml(g, csrf) {
-  return `<div class="gs" id="g-${g.id}"><p class="gs-t">${esc(withStop(g.text))}</p>`
+/** How many lines a group shows before "Show N more →" (Gap 6). */
+export const TOP = 3;
+
+/** ALL 48 · PREFERENCES 19 · …: one link per group that has anything, the one in view underlined. */
+export function filtersHtml(view, current = "") {
+  const one = (key, text) => `<a class="flt-a" href="/web/memory${key ? `?g=${key}` : ""}"${current === key ? ` aria-current="true"` : ""}>${text}</a>`;
+  return `<nav class="flt" aria-label="Filter">${one("", `ALL ${view.total}`)}${view.groups.map(g => one(g.key, `${g.title} ${g.rows.length}`)).join("")}</nav>`;
+}
+
+/**
+ * REASON THINKS… · N GUESSES, collapsed into one paper card: the newest guess, then SEE ALL ↓ for the
+ * rest (a GET without script, in place with it). Every guess keeps its own Yes / No.
+ */
+export function guessCard(guesses, csrf, { all = false, g = "" } = {}) {
+  const n = guesses.length;
+  const toggle = n > 1
+    ? `<form class="gc-f" method="GET" action="/web/memory#gh-guess">${g ? hidden("g", g) : ""}${all ? "" : hidden("guesses", "all")}`
+      + `<button class="fx gc-t" type="submit" aria-controls="gs-list" aria-expanded="${all}">${all ? "FOLD ↑" : "SEE ALL ↓"}</button></form>` : "";
+  return `<div class="card gc"><div class="gc-h"><h2 class="gh pen gc-l" id="gh-guess" tabindex="-1">REASON THINKS… · ${plural(n, "GUESS", "GUESSES")}</h2>${toggle}</div>`
+    + `<div class="gs-list" id="gs-list">${guesses.map((x, i) => guessHtml(x, csrf, { hidden: !all && i > 0 })).join("")}</div></div>`;
+}
+
+function guessHtml(g, csrf, { hidden: hide = false } = {}) {
+  return `<div class="gs" id="g-${g.id}"${hide ? " hidden" : ""}><p class="gs-t">${esc(withStop(g.text))}</p>`
     + `<form class="gs-a" method="POST" action="/web/memory/guess">${hidden("c", csrf)}${hidden("id", String(g.id))}`
     + `<button class="gs-y" type="submit" name="answer" value="yes">Yes, that's right</button>`
     + `<button class="gs-n" type="submit" name="answer" value="no">No<span class="sr">, that's not it: ${esc(withStop(g.text))}</span></button></form></div>`;
@@ -176,8 +253,59 @@ const CSS = `
 .fg-go:hover{color:var(--pen);text-decoration:underline;text-underline-offset:4px}
 .fg-keep{min-height:48px;font-size:12px}
 html.fg-open body{overflow:hidden}
+.fr[hidden],.gs[hidden],.clr[hidden]{display:none}
+.find{display:flex;flex-direction:column;gap:6px;margin:0}
+.find-l{height:44px;border-bottom:1px solid var(--ink);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.find-in{flex:1;min-width:0;height:44px;border:0;border-radius:0;background:transparent;padding:0;font:italic 400 20px/1 var(--serif);color:var(--ink);caret-color:var(--pen);-webkit-appearance:none;appearance:none}
+.find-in::placeholder{color:var(--muted);opacity:1}
+.find-in::-webkit-search-cancel-button,.find-in::-webkit-search-decoration{-webkit-appearance:none;appearance:none;display:none}
+.find-l:focus-within{border-bottom-width:2px}
+.clr{margin:0;font-size:11.5px}
+.flt{display:flex;gap:0 16px;flex-wrap:wrap;margin-top:-8px}
+.flt-a{min-height:44px;display:inline-flex;align-items:center;text-decoration:none;font:400 11px/1 var(--mono);letter-spacing:.12em;color:var(--muted)}
+.flt-a[aria-current]{color:var(--ink);text-decoration:underline;text-decoration-thickness:1.5px;text-underline-offset:10px}
+.flt-a:hover{color:var(--hov)}
+.mem-body{display:flex;flex-direction:column;gap:22px}
+.mem-body:empty{display:none}
+.more{align-self:flex-start;min-height:44px;display:inline-flex;align-items:center;gap:.25em;text-decoration:none;font:italic 400 19px/1.15 var(--serif)}
+.gc{padding:16px 18px;display:flex;flex-direction:column;gap:6px}
+.gc-h{display:flex;justify-content:space-between;align-items:baseline;gap:0 12px;flex-wrap:wrap}
+.gc-l{margin:0;font-size:10.5px;color:var(--pen)}
+.gc-f{margin:0}
+.gc-t{margin:0;font-size:11.5px;white-space:nowrap}
+.gc .gs-list{gap:6px}
+.gc .gs+.gs{padding-top:10px;border-top:1px dashed var(--hair)}
+.gc .gs-t{font-size:22px}
+.gc .gs-a{gap:22px}
+.gc .gs-y,.gc .gs-n{min-height:48px;font-size:18px}
+.mem-found{display:flex;flex-direction:column}
+.cnt{margin:0 0 6px;font:400 11px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
+mark{background:transparent;color:inherit;border-bottom:2px solid var(--pen)}
+.sg{margin:6px 0 0;font-size:21px;overflow-wrap:anywhere}
+.sg+.sg{margin-top:2px}
+.nomore{margin:8px 0 0;font-size:14px;line-height:1.5;color:var(--muted)}
+@media (max-width:899px){
+.mh{padding:20px 24px 14px}
+.mem{padding:28px 24px 20px}
+.mem .h1{font-size:34px}
+.mem-sub{display:none}
+.mem.searching,.mem.searching .mem-body{gap:18px}
+.fr{padding:11px 0}
+.ft{line-height:1.45}
+}
 @media (max-width:359px){.mh,.mem{padding-left:20px;padding-right:20px}}
 @media (min-width:900px){
+.find{max-width:560px}
+.find-in{font-size:22px}
+.flt{gap:0 22px;margin-top:-28px}
+.flt-a{font-size:12px}
+.mem-body{gap:56px}
+.mem-found{max-width:720px}
+.gs-aside{order:1;max-width:360px!important;flex-basis:320px!important}
+.gs-aside .gc{margin:0}
+.more{font-size:20px}
+.sg{font-size:24px}
+.nomore{font-size:15px}
 .mh{padding:22px clamp(20px,4vw,48px)}
 .back{font-size:12px}
 .mem{padding:48px clamp(20px,4vw,48px) 64px;gap:56px}
@@ -209,7 +337,7 @@ html.fg-open body{overflow:hidden}
 
 // Keeps the page where it is: CORRECT and FORGET open in place, and each save is a fetch that swaps
 // in the server's own line. Without script every one of these is the link or form it already is.
-const JS = `(function(){var C=(window.REASON_MEM||{}).c||'';var live=document.getElementById('mem-live');
+const JS = `(function(){var C=(window.REASON_MEM||{}).c||'';var live=document.getElementById('mem-live'),refresh=null;
 function say(t){if(live){live.textContent='';setTimeout(function(){live.textContent=t},30)}}
 function post(url,data){data.c=C;return fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':C},body:new URLSearchParams(data)}).then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(j){if(!r.ok||!j.ok)throw j;return j})})}
 function el(html){var d=document.createElement('div');d.innerHTML=html;return d.firstElementChild}
@@ -228,9 +356,17 @@ document.body.appendChild(w);document.documentElement.classList.add('fg-open');v
 function close(){w.remove();document.documentElement.classList.remove('fg-open');document.removeEventListener('keydown',key);if(opener&&opener.focus)opener.focus()}
 function key(e){if(e.key==='Escape')close();if(e.key==='Tab'){var a=[go,keep],i=a.indexOf(document.activeElement);e.preventDefault();a[(i+(e.shiftKey?a.length-1:1))%a.length].focus()}}
 document.addEventListener('keydown',key);keep.addEventListener('click',close);
-go.addEventListener('click',function(){if(go.getAttribute('aria-busy'))return;go.setAttribute('aria-busy','true');post('/web/memory/forget',{k:k}).then(function(){var sec=row.closest('.grp'),next=row.nextElementSibling;opener=next&&next.classList.contains('fr')?next:(sec&&sec.querySelector('.gh'));row.remove();close();say('Forgotten.');tidy(sec)}).catch(function(j){go.removeAttribute('aria-busy');var e=w.querySelector('[role=alert]');e.textContent=(j&&j.say)||"that didn't go through. try again?";e.hidden=false})})}
+go.addEventListener('click',function(){if(go.getAttribute('aria-busy'))return;go.setAttribute('aria-busy','true');post('/web/memory/forget',{k:k}).then(function(){var sec=row.closest('.grp'),next=row.nextElementSibling,nk=next&&next.dataset?next.dataset.k:'',gid=sec&&sec.id;row.remove();opener=null;close();say('Forgotten.');tidy(sec);if(refresh)refresh(function(){var t=(nk&&document.getElementById('f-'+nk))||(gid&&document.querySelector('#'+gid+' .gh'))||document.getElementById('mem-h');if(t){if(t.hidden)t.hidden=false;t.focus()}})}).catch(function(j){go.removeAttribute('aria-busy');var e=w.querySelector('[role=alert]');e.textContent=(j&&j.say)||"that didn't go through. try again?";e.hidden=false})})}
 document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a.fc,a.ff');if(!a)return;var row=a.closest('.fr');if(!row||!row.dataset.k)return;e.preventDefault();if(a.classList.contains('fc'))edit(row);else forget(row)});
-document.querySelectorAll('form.gs-a').forEach(function(f){f.addEventListener('submit',function(){f.querySelectorAll('button').forEach(function(b){b.setAttribute('aria-busy','true')})})});
+document.addEventListener('submit',function(e){var f=e.target;if(f.classList&&f.classList.contains('gs-a'))f.querySelectorAll('button').forEach(function(b){b.setAttribute('aria-busy','true')})});
+var body=document.getElementById('mem-body'),main=document.querySelector('main.mem'),fq=document.querySelector('form.find'),q=document.getElementById('mem-q'),clr=document.querySelector('.find .clr'),seq=0,timer=0;
+function load(url,then){var n=++seq;fetch(url,{credentials:'same-origin',headers:{'Accept':'text/html'}}).then(function(r){if(!r.ok)throw r;return r.text()}).then(function(t){if(n!==seq)return;var d=new DOMParser().parseFromString(t,'text/html'),nb=d.getElementById('mem-body');if(!nb){location.href=url;return}body.innerHTML=nb.innerHTML;var nm=d.querySelector('main.mem');if(nm&&main)main.className=nm.className;history.replaceState(null,'',url);if(then)then()}).catch(function(){if(n===seq)location.href=url})}
+refresh=function(then){load(location.pathname+location.search,then)};
+function find(){clearTimeout(timer);var v=q.value.replace(/\\s+/g,' ').trim();if(clr)clr.hidden=!v;load(v?'/web/memory?q='+encodeURIComponent(v):'/web/memory')}
+if(fq&&q){fq.addEventListener('submit',function(e){e.preventDefault();find()});q.addEventListener('input',function(){clearTimeout(timer);timer=setTimeout(find,250)});q.addEventListener('keydown',function(e){if(e.key==='Escape'&&q.value){q.value='';find()}})}
+if(clr)clr.addEventListener('click',function(e){e.preventDefault();q.value='';find();q.focus()});
+document.addEventListener('click',function(e){var m=e.target.closest&&e.target.closest('a.more[data-more]');if(!m)return;e.preventDefault();var sec=m.closest('.grp'),first=null;sec.querySelectorAll('.fr[hidden]').forEach(function(r){r.hidden=false;if(!first)first=r});m.remove();if(first)first.focus()});
+document.addEventListener('submit',function(e){var f=e.target;if(!f.classList||!f.classList.contains('gc-f'))return;e.preventDefault();var b=f.querySelector('button'),open=b.getAttribute('aria-expanded')!=='true',gs=document.querySelectorAll('#gs-list .gs');gs.forEach(function(g,i){if(i>0)g.hidden=!open});b.setAttribute('aria-expanded',open?'true':'false');b.textContent=open?'FOLD \\u2191':'SEE ALL \\u2193';if(open&&gs[1])gs[1].querySelector('.gs-t').setAttribute('tabindex','-1'),gs[1].querySelector('.gs-t').focus()});
 document.addEventListener('animationend',function(e){if(e.target.classList&&e.target.classList.contains('got'))e.target.remove()});
 var sc=document.querySelector('.fg-wrap .fg-go');if(sc){sc.focus();var kp=document.querySelector('.fg-wrap .fg-keep');document.addEventListener('keydown',function(e){if(e.key==='Escape'&&kp)location.href=kp.href})}
 var got=document.querySelector('.got');if(got){var r=got.closest('.fr');if(r)r.focus({preventScroll:true})}
@@ -242,29 +378,54 @@ var got=document.querySelector('.got');if(got){var r=got.closest('.fr');if(r)r.f
  */
 export function renderMemory({ account, csrf, state = {} }) {
   const view = memoryView(account);
+  const q = cleanQuery(state.q);
+  const only = view.groups.some(g => g.key === state.g) ? state.g : "";
   let card = "";
-  const groupsHtml = view.groups.map((g, i, all) => {
-    const wide = all.length % 2 === 1 && i === all.length - 1;
-    const rows = g.rows.map(r => {
-      if (state.correct === r.key) return editHtml(r, { csrf, error: state.error });
-      if (state.forget === r.key) card = forgetHtml(r, { csrf });
-      return rowHtml(r, { gotIt: state.fixed === r.key });
-    }).join("");
-    return `<section class="grp${wide ? " wide" : ""}" aria-labelledby="gh-${g.key}"><h2 class="gh" id="gh-${g.key}">${g.title}</h2>${rows}</section>`;
-  }).join("");
-  const empty = view.empty
-    ? `<div class="mem-empty"><p class="e1">Nothing saved yet.</p>${hand("i'll jot things down as i learn them.")}</div>` : "";
+  const line = (r, opts) => {
+    if (state.correct === r.key) return editHtml(r, { csrf, error: state.error });
+    if (state.forget === r.key) card = forgetHtml(r, { csrf });
+    return rowHtml(r, { gotIt: state.fixed === r.key, ...opts });
+  };
+  const named = [state.correct, state.forget, state.fixed].filter(Boolean);
   const guesses = view.guesses.length
-    ? `<aside class="gs-aside" aria-labelledby="gh-guess"><h2 class="gh pen" id="gh-guess">REASON THINKS…</h2><div class="gs-list">${view.guesses.map(g => guessHtml(g, csrf)).join("")}</div></aside>` : "";
+    ? `<aside class="gs-aside" aria-labelledby="gh-guess">${guessCard(view.guesses, csrf, { all: state.guesses === "all", g: only })}</aside>` : "";
+  let inner;
+  if (view.empty) {
+    inner = `<div class="mem-cols">${guesses}<div class="mem-empty"><p class="e1">Nothing saved yet.</p>${hand("i'll jot things down as i learn them.")}</div></div>`;
+  } else if (q) {
+    // 6B: one list across every group, guesses in Caveat after the facts, then the no-match line.
+    const s = searchView(view, q);
+    inner = `<div class="mem-found"><p class="cnt" role="status">${searchCount(s)}</p>`
+      + s.facts.map(r => line(r, { query: q })).join("")
+      + s.guesses.map(x => `<p class="hand sg">reason thinks: ${markedHtml(withStop(lowerFirst(x.text)), q)}</p>`).join("")
+      + `<p class="nomore">Nothing else matches. You can tell Reason something new in the chat.</p></div>`;
+  } else {
+    const shown = only ? view.groups.filter(g => g.key === only) : view.groups;
+    const groupsHtml = shown.map((g, i, all) => {
+      const wide = all.length % 2 === 1 && i === all.length - 1;
+      // Open in full when filtered, or when a no-script visit names a line past the first three.
+      const open = !!only || g.rows.slice(TOP).some(r => named.includes(r.key));
+      const rows = g.rows.map((r, j) => line(r, { hidden: !open && j >= TOP })).join("");
+      const more = !open && g.rows.length > TOP
+        ? `<a class="more" href="/web/memory?g=${g.key}#gh-${g.key}" data-more="${g.key}">Show ${g.rows.length - TOP} more <span aria-hidden="true">→</span></a>` : "";
+      return `<section class="grp${wide ? " wide" : ""}" id="grp-${g.key}" aria-labelledby="gh-${g.key}"><h2 class="gh" id="gh-${g.key}" tabindex="-1">${g.title} · ${g.rows.length}</h2>${rows}${more}</section>`;
+    }).join("");
+    inner = filtersHtml(view, only) + `<div class="mem-cols">${guesses}<div class="mem-groups">${groupsHtml}</div></div>`;
+  }
+  const find = view.empty ? "" : `<form class="find" role="search" method="GET" action="/web/memory">`
+    + `<label class="lbl" for="mem-q">FIND A FACT</label><div class="find-l">`
+    + `<input class="find-in" id="mem-q" name="q" type="search" value="${esc(q)}" placeholder="dentist, aisle seats, juno…" maxlength="${MAX_QUERY}" autocomplete="off" enterkeyhint="search">`
+    + `<a class="fx clr" href="/web/memory"${q ? "" : " hidden"}>CLEAR</a><button class="sr" type="submit">Find</button></div></form>`;
   const body = `<header class="mh">${typed("← BACK TO THE CHAT", { href: "/web?thread", cls: "back" })}${wordmark({ href: "/web" })}</header>`
-    + `<main class="mem" aria-labelledby="mem-h"><div class="mem-lead"><h1 id="mem-h" class="h1">What Reason <em>remembers</em></h1>`
+    + `<main class="mem${q ? " searching" : ""}" aria-labelledby="mem-h"><div class="mem-lead"><h1 id="mem-h" class="h1" tabindex="-1">What Reason <em>remembers</em></h1>`
     + `<p class="mem-sub">See it, correct it, or ask Reason to forget it.</p></div>`
     + `<p class="sr" role="status" id="mem-live">${state.gone ? "Forgotten." : state.answered ? "Got it." : ""}</p>`
-    + `<div class="mem-cols">${empty || `<div class="mem-groups">${groupsHtml}</div>`}${guesses}</div>`
-    + `<a class="mem-manage" href="/web?thread">MANAGE CHAT HISTORY →</a>`
+    + find + `<div id="mem-body" class="mem-body">${inner}</div>`
+    + `<a class="mem-manage" href="/web/memory/history">MANAGE CHAT HISTORY →</a>`
     + `</main>${card}`;
   return webPage({ title: "Reason — Memory", body, css: CSS, script: `window.REASON_MEM={c:${JSON.stringify(String(csrf ?? ""))}};${card ? "document.documentElement.classList.add('fg-open');" : ""}` + JS });
 }
+const lowerFirst = (t) => (/^[A-Z][a-z]/.test(t) ? t[0].toLowerCase() + t.slice(1) : t);
 
 // ---------------------------------------------------------------- changing it
 
@@ -357,6 +518,12 @@ function rowFor(account, key, opts) {
 export async function memoryRequest({ account, action = null, method, query = {}, headers = {}, readBody, log = () => {} }) {
   const conv = account.conversation_id;
   const csrf = db.pageSessionCsrf(readCookie(headers.cookie));
+  if (action === "history") {
+    if (method !== "GET" && method !== "HEAD") return html(405, renderNotFound());
+    const { renderHistory } = await import("./webhistory.js");
+    const out = renderHistory({ account, query });
+    return out ? html(200, out) : html(404, renderNotFound());
+  }
   if (!action) {
     if (method !== "GET" && method !== "HEAD") return html(405, renderNotFound());
     const pick = (v) => (KEY.test(String(v ?? "")) && findRow(conv, v) ? String(v) : "");
@@ -364,6 +531,7 @@ export async function memoryRequest({ account, action = null, method, query = {}
     const state = {
       correct: pick(query.correct), forget: pick(query.forget), fixed: pick(query.fixed),
       error: errors[query.err] ?? "", gone: query.gone != null, answered: query.answered != null,
+      q: cleanQuery(query.q), g: String(query.g ?? ""), guesses: query.guesses === "all" ? "all" : "",
     };
     return html(200, renderMemory({ account, csrf, state }));
   }

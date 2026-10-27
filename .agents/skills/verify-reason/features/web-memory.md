@@ -3,8 +3,11 @@
 Signed in, `https://heyreason.com/web/memory` is "What Reason remembers": every active fact on the
 person's Reason, one per line between dashed rules, under PREFERENCES · PEOPLE · PLACES · ROUTINES ·
 WHY (an empty heading is not drawn), Reason's unconfirmed guesses under REASON THINKS… in Caveat and
-pen (desktop: the right margin), and MANAGE CHAT HISTORY → (view-only v1: the thread, `/web?thread`).
-Design: handoff 2026-10-26 §5, reference `desk-memory-*`, `sheet-memory-*` 7A/7B/7C.
+pen (desktop: the right margin), and MANAGE CHAT HISTORY → (`/web/memory/history`, see
+[web-history.md](web-history.md)). At volume (v2, Gap 6): FIND A FACT, filters with counts, 3 lines per
+group + "Show N more →", guesses in one card, search.
+Design: handoff 2026-10-26 §5, reference `desk-memory-*`, `sheet-memory-*` 7A/7B/7C; v2 handoff
+(`~/Desktop/reason-web-handoff-v2-2026-10-26`) §4c item 6, reference `sheet-memory-volume-*` 6A/6B.
 
 Source: `src/pages/webmemory.js` (page, states, `/web/memory/correct|forget|guess`, client script),
 `src/pages/websignin.js` (dispatch, signed in only), `src/http.js` (route), `src/factgroups.js` (the
@@ -37,15 +40,29 @@ background filer), `src/db.js` (`person_facts.memory_group`, `MEMORY_GROUPS`, `m
 - **Guesses.** `listGuesses({ includePatterns: true })`. Yes → `remember(..., user_stated)` +
   `confirmGuess`; No → `dismissGuess` (row kept with `dismissed_at`, so `noteGuess` of the same words
   returns it and nothing lists or uses it again — patterns included).
+- **At volume (6A).** `FIND A FACT` is a GET form (`?q=`); filters `ALL n · PREFERENCES n · …` are
+  links (`?g=<group>`, `aria-current` on the one in view; a group with nothing is not a filter);
+  headings read `PREFERENCES · 19`; each group draws every line but folds all past `TOP` (3) with
+  `hidden`, then "Show N more →" (`?g=<group>`; the script unfolds in place). A no-script visit naming a
+  folded line (`?correct=` / `?forget=` / `?fixed=`) opens its group. Guesses: one paper card
+  `REASON THINKS… · N GUESSES`, the newest open, `SEE ALL ↓` a real submit button in a GET form
+  (`?guesses=all`, then `FOLD ↑`; the script toggles in place with `aria-expanded`). Phone: card above
+  the groups (DOM order too); desktop: the right margin.
+- **Search (6B).** `searchView`: lines holding every word typed (any case), then lines about the same
+  person (a non-owner `about` of a direct match, or naming them), never their own self as "related";
+  guesses the same way, drawn `reason thinks: …` in Caveat. Matches `<mark>` (2px pen underline),
+  `N FACTS · N GUESS(ES)` (role=status), CLEAR, and always "Nothing else matches. You can tell Reason
+  something new in the chat." Query capped at 100 chars, escaped. The script searches as you type
+  (fetches the page, swaps `#mem-body`, `history.replaceState`), falling back to the plain GET.
 - **Refusals.** Every id is looked up in the session's conversation (another account's → 404);
   POSTs need `sameOrigin` + the session's csrf (`c` or `X-Reason-Csrf`); signed out → `/web` (401 JSON).
 
 ## Drive
 
 ```bash
-node --test test/web-memory.test.js                       # 11 pinned
+node --test test/web-memory.test.js test/web-memory-volume.test.js test/web-history.test.js   # 11 + 10 + 7 pinned
 eval "$(bin/caged.sh env | sed 's/^/export /')" \
-  && REASON_DB_PATH=$(mktemp -d)/mem.db node bin/web-memory-drive.mjs   # 17 steps over real HTTP, no model
+  && REASON_DB_PATH=$(mktemp -d)/mem.db node bin/web-memory-drive.mjs   # 27 steps over real HTTP (memory, volume, history), no model
 ```
 
 ## End state that proves it
