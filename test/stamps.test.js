@@ -78,8 +78,9 @@ test("the flag file: off by default, owner, on (every spelling the brief names)"
   assert.equal(dailyAllowedFor(""), false);
 });
 
-test("the catalog: nine types, one shape and one ink each, and a fixed tilt -8..+7", () => {
-  assert.deepEqual(stamps.TYPES.sort(), ["abroad", "early", "first", "human", "long_hold", "night_shift", "price_drop", "three_in_one", "whole_trip"]);
+test("the catalog: nine typed kinds plus the wax book's two one-offs, one shape and one ink each, and a fixed tilt -8..+7", () => {
+  assert.deepEqual(stamps.TYPES.sort(), ["abroad", "anniversary", "early", "first", "human", "long_hold", "night_shift", "price_drop", "suite_key", "three_in_one", "whole_trip"]);
+  assert.deepEqual(stamps.TYPES.filter(t => stamps.CATALOG[t].waxOnly).sort(), ["anniversary", "suite_key"]);
   for (const k of Object.values(stamps.CATALOG)) {
     assert.ok(["round", "rect", "oval", "ring"].includes(k.shape));
     assert.ok(["rust", "ink"].includes(k.ink));

@@ -23,7 +23,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
-import { dailyMode, dailyAllowedFor } from "./dailyflag.js";
+import { dailyMode, dailyAllowedFor, waxLook } from "./dailyflag.js";
+import { WAX, words, fullDate, postmarkDate } from "./seal.js";
 import { holdSeconds } from "./calls/hold.js";
 import { isSuccess } from "./calls/outcome.js";
 
@@ -42,6 +43,9 @@ export const CATALOG = {
   first: { name: "First errand", shape: "round", ink: "ink", eyebrow: "THE", main: "FIRST ERRAND", hint: "the first thing I finish for you", earnable: true },
   whole_trip: { name: "A whole trip", shape: "ring", ink: "ink", eyebrow: "A WHOLE", main: "TRIP", hint: "a whole trip, start to finish", earnable: false },
   three_in_one: { name: "Three in one", shape: "oval", ink: "ink", eyebrow: "", main: "THREE IN ONE", hint: "three errands in one text", earnable: true },
+  // Wax book only (REASON_STAMPS_WAX): one-offs kept outside the book. Never drawn by the typed look.
+  anniversary: { name: "A year of things handled", shape: "round", ink: "ink", eyebrow: "", main: "ONE YEAR", hint: "a year together", earnable: true, waxOnly: true },
+  suite_key: { name: "The suite key", shape: "round", ink: "ink", eyebrow: "", main: "SUITE KEY", hint: "a call, research, a purchase and one more, inside two hours", earnable: true, waxOnly: true },
 };
 export const TYPES = Object.keys(CATALOG);
 /** The order blank spots offer their hints in: the most within reach first. */
@@ -233,7 +237,13 @@ let logger = () => {};
 
 /** The line a new stamp is mentioned with in the thread: one line, no confetti. */
 export function tellLine(types) {
-  const names = types.map(t => CATALOG[t]?.name).filter(Boolean);
+  if (waxLook()) {
+    const seals = types.map(t => SEALS[t]?.name).filter(Boolean);
+    if (!seals.length) return "";
+    const said = seals.length === 1 ? seals[0] : `${seals.slice(0, -1).join(", ")} and ${seals.at(-1)}`;
+    return `That one went into your book: ${said}.`;
+  }
+  const names = types.filter(t => !CATALOG[t]?.waxOnly).map(t => CATALOG[t]?.name).filter(Boolean);
   if (!names.length) return "";
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
   return `That one earned a stamp for your book: ${list}.`;
@@ -281,9 +291,20 @@ const onPurchase = ({ buyConversationId }) => {
     if (p) awardLive(p.conversation_id, candidatesForPurchase(p));
   } catch (e) { logger({ stamp_award_failed: (e?.message ?? String(e)).split("\n")[0] }); }
 };
+/** After any finished errand (research included): the suite key and the anniversary, if this one completed them. */
+const onAny = (conversationId) => {
+  try {
+    if (!conversationId || !dailyAllowedFor(conversationId) || !db.getAccount(conversationId)) return;
+    awardLive(conversationId, [...suiteCandidates(conversationId), ...anniversaryCandidates(conversationId)]);
+  } catch (e) { logger({ stamp_award_failed: (e?.message ?? String(e)).split("\n")[0] }); }
+};
 db.completionBus.on("task", onTask);
 db.completionBus.on("call", onCall);
 db.completionBus.on("purchase", onPurchase);
+db.completionBus.on("task", ({ conversationId }) => onAny(conversationId));
+db.completionBus.on("call", ({ conversationId }) => onAny(conversationId));
+db.completionBus.on("research", ({ conversationId }) => onAny(conversationId));
+db.completionBus.on("purchase", ({ buyConversationId }) => { try { onAny(db.getAgentcardPurchase(buyConversationId)?.conversation_id); } catch { /* never costs the write */ } });
 
 /**
  * The server's half: how a stamp is mentioned (runtime._tell) and where its log lines go. Without it
@@ -305,6 +326,7 @@ export function backfill(conversationId, { dryRun = false } = {}) {
   for (const t of ALL("SELECT * FROM tasks WHERE conversation_id = ? AND state = 'done' AND finished_at IS NOT NULL ORDER BY finished_at, id", conversationId)) found.push(...candidatesForTask(t));
   for (const c of ALL("SELECT * FROM calls WHERE conversation_id = ? AND outcome_kind <> '' ORDER BY id", conversationId)) found.push(...candidatesForCall(c));
   for (const p of purchasesDone(conversationId)) found.push(...candidatesForPurchase(p));
+  found.push(...suiteCandidates(conversationId, { all: true, dryRun }), ...anniversaryCandidates(conversationId));
   const seen = new Set(), counts = {};
   for (const c of found.sort((a, b) => a.at - b.at)) {
     const key = `${c.type}\u0000${c.ref}`;
@@ -374,6 +396,8 @@ function messageNear(conversationId, at) {
 /** One row → the summary every screen draws from. */
 export function summarize(row) {
   if (!row || !CATALOG[row.type]) return null;
+  if (CATALOG[row.type].waxOnly && !waxLook()) return null;
+  if (waxLook()) return waxSummary(row);
   const k = CATALOG[row.type];
   const d = parse(row.detail_json, {});
   const tz = tzFor(row.conversation_id);
@@ -417,7 +441,8 @@ export function stampFor(conversationId, id) {
  */
 export function newestStamp(conversationId, { days = 7, now = clock.now() } = {}) {
   if (!conversationId) return null;
-  const row = ONE("SELECT * FROM stamps WHERE conversation_id = ? AND earned_at >= ? ORDER BY earned_at DESC, id DESC LIMIT 1", conversationId, now - days * 86_400_000);
+  const outside = waxLook() ? OUTSIDE.map(t => `'${t}'`).join(",") : "'anniversary','suite_key'";
+  const row = ONE(`SELECT * FROM stamps WHERE conversation_id = ? AND earned_at >= ? AND type NOT IN (${outside}) ORDER BY earned_at DESC, id DESC LIMIT 1`, conversationId, now - days * 86_400_000);
   return summarize(row);
 }
 
@@ -591,4 +616,252 @@ export function blankMarkup(type, { size = 1 } = {}) {
   const round = k.shape === "round" || k.shape === "ring" || k.shape === "oval";
   return `<span class="stp-blank" role="img" aria-label="Blank spot, not earned yet" style="width:${px(w * size)};height:${px(h * size)};margin:${px(m * size)} 0;border-radius:${round ? "50%" : "4px"};`
     + `border:1.5px dashed color-mix(in srgb,var(--muted,#78705f) 40%,var(--hair,#d4c9b5));color:var(--muted,#78705f);display:grid;place-items:center;font:italic 400 34px/1 var(--serif,'Instrument Serif',Georgia,serif);box-sizing:border-box">?</span>`;
+}
+
+// ---------------------------------------------------------------- the suite key (a job) and the anniversary
+// The suite key (handoff "Kept outside the book", board S2): a call, the research, an online purchase and
+// one more errand, all finished within two hours of the first step's start. Those steps are logged as
+// one job, with its start time, in `stamp_jobs`; the key's ref is that job. One errand never counts twice:
+// a task a call or a research run belongs to is the same errand as that call or run.
+export const SUITE_WINDOW_MS = 2 * 60 * 60_000;
+db.db.exec(`
+  CREATE TABLE IF NOT EXISTS stamp_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'suite',
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER NOT NULL,
+    steps_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(conversation_id, kind, started_at)
+  );
+`);
+
+/** Every finished errand with when it started and when it finished: `{ kind, id, start, end }`. */
+function steps(conversationId) {
+  const out = [], tied = new Set();
+  for (const c of ALL("SELECT id, task_id, outcome_kind, created_at, COALESCE(ended_at, updated_at) AS e FROM calls WHERE conversation_id = ? AND outcome_kind <> ''", conversationId)) {
+    if (!isSuccess(c.outcome_kind)) continue;
+    out.push({ kind: "call", id: c.id, start: c.created_at, end: c.e });
+    if (c.task_id != null) tied.add(c.task_id);
+  }
+  try {
+    for (const r of ALL("SELECT id, task_id, created_at, finished_at FROM research WHERE conversation_id = ? AND state = 'done' AND finished_at IS NOT NULL", conversationId)) {
+      out.push({ kind: "research", id: r.id, start: r.created_at, end: r.finished_at });
+      if (r.task_id != null) tied.add(r.task_id);
+    }
+  } catch { /* no research table on an old install */ }
+  for (const p of purchasesDone(conversationId)) out.push({ kind: "purchase", id: p.id, start: p.created_at, end: p.updated_at });
+  for (const t of ALL("SELECT id, created_at, finished_at FROM tasks WHERE conversation_id = ? AND state = 'done' AND finished_at IS NOT NULL", conversationId)) {
+    if (!tied.has(t.id)) out.push({ kind: "task", id: t.id, start: t.created_at, end: t.finished_at });
+  }
+  return out.filter(x => Number.isFinite(x.start) && Number.isFinite(x.end)).sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+/** The steps from `first` on that make a suite: one call, one research, one purchase, one more; null when they don't. */
+function suiteFrom(all, first) {
+  const inside = all.filter(x => x.start >= first.start && x.end <= first.start + SUITE_WINDOW_MS);
+  const pick = (k) => inside.find(x => x.kind === k);
+  const call = pick("call"), research = pick("research"), purchase = pick("purchase");
+  if (!call || !research || !purchase) return null;
+  const more = inside.find(x => x !== call && x !== research && x !== purchase);
+  if (!more) return null;
+  const four = [call, research, purchase, more].sort((a, b) => a.start - b.start);
+  return { startedAt: four[0].start, finishedAt: Math.max(...four.map(x => x.end)), steps: four };
+}
+
+/**
+ * The suite key, if the errands on record now make one: the job is logged (once per start) and the key
+ * is the candidate. `all`: look at every window (backfill), not only ones that end with the newest step.
+ */
+export function suiteCandidates(conversationId, { all = false, dryRun = false } = {}) {
+  const list = steps(conversationId);
+  if (list.length < 4) return [];
+  const newestEnd = Math.max(...list.map(x => x.end));
+  const out = [], used = new Set();
+  for (const first of list) {
+    const job = suiteFrom(list, first);
+    if (!job || job.steps.some(x => used.has(`${x.kind}:${x.id}`))) continue;
+    if (!all && job.finishedAt !== newestEnd) continue;
+    job.steps.forEach(x => used.add(`${x.kind}:${x.id}`));
+    let jobId = ONE("SELECT id FROM stamp_jobs WHERE conversation_id = ? AND kind = 'suite' AND started_at = ?", conversationId, job.startedAt)?.id ?? null;
+    if (jobId == null && !dryRun) {
+      jobId = Number(db.db.prepare("INSERT OR IGNORE INTO stamp_jobs (conversation_id, kind, started_at, finished_at, steps_json, created_at) VALUES (?, 'suite', ?, ?, ?, ?)")
+        .run(conversationId, job.startedAt, job.finishedAt, JSON.stringify(job.steps.map(({ kind, id, start, end }) => ({ kind, id, start, end }))), clock.now()).lastInsertRowid) || null;
+    }
+    out.push({ type: "suite_key", ref: `job:${jobId ?? job.startedAt}`, at: job.finishedAt, detail: { startedAt: job.startedAt, minutes: Math.round((job.finishedAt - job.startedAt) / 60_000), steps: job.steps.length } });
+  }
+  return out;
+}
+
+/** The anniversary ticket: a year after the account began. Its serial is the place among everyone who reached a year. */
+export function anniversaryCandidates(conversationId, { now = clock.now() } = {}) {
+  const acct = db.getAccount(conversationId);
+  if (!acct?.created_at) return [];
+  const at = acct.created_at + 365 * 86_400_000;
+  if (at > now) return [];
+  if (ONE("SELECT 1 AS x FROM stamps WHERE conversation_id = ? AND type = 'anniversary'", conversationId)) return [];
+  const before = ONE("SELECT COUNT(*) AS n FROM stamps WHERE type = 'anniversary' AND earned_at <= ?", at)?.n ?? 0;
+  return [{ type: "anniversary", ref: "anniversary", at, detail: { serial: before + 1, from: acct.created_at } }];
+}
+
+/** Award the anniversary if a year has passed (the book and Home ask; nothing else marks a date). */
+export function checkAnniversary(conversationId) {
+  try { return awardLive(conversationId, anniversaryCandidates(conversationId)); } catch { return []; }
+}
+
+// ---------------------------------------------------------------- the wax book (REASON_STAMPS_WAX)
+// Every kind of seal: its wax (the kind of errand), its name, the ring text, the line a stranger may see.
+// Stored types stay as they were (the typed look still draws the same rows); this is how each reads in wax.
+// Numbers are spelled out, the ring ends " ·", and nothing here may name a place, a price or a person
+// unless it is the owner's own (`ring`, `story`, `line`); `pub*` are what leaves the book.
+const W = (n) => words(n);
+const U = (s) => String(s).toUpperCase();
+/** Kept outside the book: not a seal, never on a page. */
+export const OUTSIDE = ["first", "anniversary", "suite_key"];
+export const SEALS = {
+  long_hold: {
+    wax: "oxblood", name: "Held on your behalf", hint: "a long hold, sat through for you",
+    ring: d => Number.isFinite(d.minutes) ? `HELD ON YOUR BEHALF · ${U(W(d.minutes))} MINUTES ·` : "HELD ON YOUR BEHALF · ON YOUR BEHALF ·",
+    aria: d => Number.isFinite(d.minutes) ? `${W(d.minutes)} minutes` : "",
+    who: d => Number.isFinite(d.minutes) ? `held for ${W(d.minutes)} minutes` : "held the line",
+  },
+  night_shift: {
+    wax: "green", name: "Attended to overnight", hint: "something finished while you slept",
+    ring: () => "ATTENDED TO OVERNIGHT · WHILE YOU SLEPT ·", aria: () => "while you slept",
+    who: () => "attended to it overnight",
+  },
+  price_drop: {
+    wax: "oxblood", name: "A better rate, secured", hint: "a watched price that fell",
+    ring: d => d.savedCents >= 100 ? `A BETTER RATE, SECURED · ${U(W(Math.round(d.savedCents / 100)))} DOLLARS ·` : "A BETTER RATE, SECURED · ON YOUR BEHALF ·",
+    pubRing: () => "A BETTER RATE, SECURED · ON YOUR BEHALF ·",
+    aria: d => d.savedCents >= 100 ? `${W(Math.round(d.savedCents / 100))} dollars` : "", pubAria: () => "",
+    who: () => "secured a better rate",
+  },
+  human: {
+    wax: "black", name: "Spoke to the manager", hint: "a phone menu, beaten to a person",
+    ring: () => "SPOKE TO THE MANAGER · ON YOUR BEHALF ·", aria: () => "",
+    who: () => "spoke to the manager",
+  },
+  early: {
+    wax: "green", name: "Well ahead of the occasion", hint: "a booking made a week ahead",
+    ring: d => Number.isFinite(d.days) ? `WELL AHEAD OF THE OCCASION · ${U(W(d.days))} DAYS ·` : "WELL AHEAD OF THE OCCASION ·",
+    aria: d => Number.isFinite(d.days) ? `${W(d.days)} days ahead` : "",
+    who: d => Number.isFinite(d.days) ? `saw to it ${W(d.days)} days ahead` : "saw to it well ahead",
+  },
+  abroad: {
+    wax: "navy", name: "Arrangements abroad", hint: "arrangements in another country",
+    ring: d => Number.isFinite(d.nights) ? `ARRANGEMENTS ABROAD · ${U(W(d.nights))} NIGHTS ·` : "ARRANGEMENTS ABROAD · ON YOUR BEHALF ·",
+    aria: d => Number.isFinite(d.nights) ? `${W(d.nights)} nights` : "",
+    who: d => Number.isFinite(d.nights) ? `made arrangements abroad for ${W(d.nights)} nights` : "made arrangements abroad",
+  },
+  whole_trip: {
+    wax: "navy", name: "A whole trip", hint: "a whole trip, start to finish",
+    ring: () => "A WHOLE TRIP · START TO FINISH ·", aria: () => "start to finish",
+    who: () => "arranged a whole trip, start to finish,",
+  },
+  three_in_one: {
+    wax: "black", name: "Three in one", hint: "three errands in one text",
+    ring: () => "THREE IN ONE · A SINGLE TEXT ·",
+    aria: d => `${W(Number.isFinite(d.count) ? d.count : 3)} errands from a single text`,
+    who: d => `handled ${W(Number.isFinite(d.count) ? d.count : 3)} errands from a single text`,
+  },
+  // Outside the book. `first` shared under the typed look keeps a page: it reads in the patch's green.
+  first: { wax: "green", name: "The first errand", hint: "the first thing I finish for you", ring: () => "THE FIRST ERRAND · ON YOUR BEHALF ·", aria: () => "", who: () => "ran a first errand" },
+  anniversary: { wax: "green", name: "A year of things handled", hint: "a year together", ring: () => "A YEAR OF THINGS HANDLED ·", aria: () => "", who: () => "handled a year of things" },
+  suite_key: { wax: "black", name: "The suite key", hint: "a call, research, a purchase and one more, inside two hours", ring: () => "THE SUITE KEY ·", aria: () => "", who: () => "saw four errands through inside two hours" },
+};
+/** The order not-yet spots offer their hints in: the most within reach first. */
+export const SEAL_HINT_ORDER = ["three_in_one", "night_shift", "whole_trip", "long_hold", "human", "early", "price_drop", "abroad"];
+
+const sealAria = (type, d, pub = false) => {
+  const k = SEALS[type];
+  const extra = (pub && k.pubAria ? k.pubAria(d) : k.aria(d)) || "";
+  return `${WAX[k.wax].label} seal: ${k.name.toLowerCase()}${extra ? `, ${extra}` : ""}`;
+};
+const sentenceCase = (s) => s ? s[0].toUpperCase() + s.slice(1) : s;
+
+/** "Today", "Yesterday", or "On Monday, the twenty-sixth of October": how the story begins. */
+function whenSaid(at, tz, now = clock.now()) {
+  const day = (ms) => dayIn(ms, tz);
+  if (day(at) === day(now)) return "Today";
+  if (day(at) === day(now - 86_400_000)) return "Yesterday";
+  return `On ${fullDate(at, tz)},`;
+}
+
+/** Two or three sentences in Reason's voice, ending "It was no trouble." The owner's own book only. */
+function waxStory(type, d, at, tz) {
+  const when = whenSaid(at, tz);
+  const place = d.place ? String(d.place) : "";
+  switch (type) {
+    case "long_hold": return `${when} I held for ${Number.isFinite(d.minutes) ? `${W(d.minutes)} minutes` : "a long while"}${place ? ` with ${place}` : ""} on your behalf. When someone picked up, I took it from there. It was no trouble.`;
+    case "human": return `${place ? `${place}'s line` : "The line"} began with a phone menu. I worked my way through it and spoke to a person on your behalf. It was no trouble.`;
+    case "night_shift": return `I finished this at ${clockTime(d.time ?? at, tz).toLowerCase()}, while you slept. It was done before your morning began. It was no trouble.`;
+    case "price_drop": return `I kept an eye on the price, and it fell by ${W(Math.round((d.savedCents ?? 0) / 100))} dollars. I bought it at the lower one. It was no trouble.`;
+    case "early": return `I had this booked ${Number.isFinite(d.days) ? `${W(d.days)} days` : "well"} ahead, before it could become a rush. It was no trouble.`;
+    case "three_in_one": return `One text, ${W(d.count ?? 3)} errands. I saw each of them through. It was no trouble.`;
+    case "first": return "The first thing you asked of me, done. This is where the book begins. It was no trouble.";
+    case "anniversary": return "A year of things handled. It was no trouble.";
+    case "suite_key": return `A call, the research, a purchase online and one more besides, all inside ${W(d.minutes ?? 120)} minutes. It was no trouble.`;
+    default: return "It was no trouble.";
+  }
+}
+
+/** Home's one line under the name ("Fifty-two minutes with [airline]. It was no trouble."). */
+function waxLine(type, d) {
+  const place = d.place ? String(d.place) : "";
+  switch (type) {
+    case "long_hold": return `${sentenceCase(Number.isFinite(d.minutes) ? `${W(d.minutes)} minutes` : "A long hold")}${place ? ` with ${place}` : ""}. It was no trouble.`;
+    case "human": return `A person on the line${place ? ` at ${place}` : ""}. It was no trouble.`;
+    case "night_shift": return "Done while you slept. It was no trouble.";
+    case "price_drop": return d.savedCents >= 100 ? `${sentenceCase(W(Math.round(d.savedCents / 100)))} dollars less than it was. It was no trouble.` : "A lower price than it was. It was no trouble.";
+    case "early": return Number.isFinite(d.days) ? `${sentenceCase(W(d.days))} days ahead. It was no trouble.` : "Well ahead. It was no trouble.";
+    case "three_in_one": return `${sentenceCase(W(d.count ?? 3))} errands from a single text. It was no trouble.`;
+    default: return "It was no trouble.";
+  }
+}
+
+/** One row → the wax book's summary (also everything the typed look's StampSummary had). */
+function waxSummary(row) {
+  const k = SEALS[row.type];
+  if (!k) return null;
+  const d = parse(row.detail_json, {});
+  const tz = tzFor(row.conversation_id);
+  let messageId = row.message_id ?? null;
+  if (messageId == null) {
+    messageId = messageNear(row.conversation_id, row.earned_at);
+    if (messageId != null) { try { db.db.prepare("UPDATE stamps SET message_id = ? WHERE id = ?").run(messageId, row.id); } catch { /* read-only is fine */ } }
+  }
+  return {
+    id: row.id, type: row.type, name: k.name, wax: k.wax,
+    ring: k.ring(d), postmarkDate: postmarkDate(row.earned_at, tz),
+    detail: "", story: waxStory(row.type, d, row.earned_at, tz), line: waxLine(row.type, d),
+    earnedAt: row.earned_at, rotation: row.rotation, ariaLabel: sealAria(row.type, d),
+    outside: OUTSIDE.includes(row.type), values: d,
+    date: monthDay(row.earned_at, tz),
+    href: messageId != null ? `/web?at=${messageId}` : "/web?thread",
+  };
+}
+
+/**
+ * A seal as a stranger may see it: its wax, its name, the public ring and label, the duration or count,
+ * the date in full, and — only when the owner leaves it on — the first name. Nothing else.
+ */
+export function publicSeal(row, first = "") {
+  const k = SEALS[row.type] ?? SEALS.first;
+  const d = typeof row.detail_json === "string" ? parse(row.detail_json, {}) : (row.values ?? {});
+  const tz = tzFor(row.conversation_id);
+  const whose = first ? `${first}'s` : "my";
+  const did = k.who(d);
+  return {
+    type: row.type, wax: k.wax, name: k.name, rotation: row.rotation ?? 0,
+    ring: (k.pubRing ?? k.ring)(d),
+    postmarkDate: postmarkDate(row.earned_at, tz),
+    ariaLabel: sealAria(row.type, d, true),
+    who: `who ${did} on ${whose} behalf`,
+    whoWith: (name) => `who ${did} on ${name ? `${name}'s` : "my"} behalf`,
+    said: `Reason ${did} on ${whose} behalf.`,
+    story: `My concierge ${did.replace(/,$/, "")} so I didn't have to.`,
+    when: U(fullDate(row.earned_at, tz)),
+  };
 }

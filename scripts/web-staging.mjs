@@ -39,6 +39,8 @@ Object.assign(process.env, {
   REASON_EVENTS_URL: "https://events.heyreason.com", REASON_PUBLIC_URL: "https://reason.example.test", REASON_SITE_URL: "https://heyreason.com", REASON_WEB: "on",
   // No background title-writing (a model call) for a row without a label: every sample row has one.
   REASON_ITEM_TITLES: "0",
+  // Staging shows the wax-seal book (prod keeps it behind REASON_STAMPS_WAX until the owner says go).
+  REASON_STAMPS_WAX: "on",
 });
 
 const imp = (p) => import(new URL(p, root));
@@ -268,8 +270,13 @@ const stampSample = (list) => list.map(([type, detail], i) => {
 });
 const STAMPS_MANY = stampSample([["first", {}], ["night_shift", { time: now }], ["three_in_one", { count: 3 }], ["early", { days: 9 }], ["human", { place: "a cable company" }], ["price_drop", { savedCents: 4000 }],
   ["night_shift", { time: now }], ["long_hold", { minutes: 41 }], ["early", { days: 12 }], ["human", { place: "the airline" }], ["price_drop", { savedCents: 1800 }], ["long_hold", { minutes: 52 }]]);
-const stampsPage = (all, o = {}) => wst.renderStamps({ all, first: "Ama", csrf: "staging", now, ...o });
-const sharePublic = wst.renderSharePage({ face: stampsMod.publicFace(STAMPS_MANY.at(-1).row), line: stampsMod.publicLine(STAMPS_MANY.at(-1).row, "Ama"), shareId: "Sample12abcd" });
+const wx = await imp("src/pages/webseals.js");
+const stampsPage = (all, o = {}) => wx.renderSealBook({ all, first: "Ama", csrf: "staging", now, ...o });
+const SEAL_PUB = stampsMod.publicSeal(STAMPS_MANY.at(-1).row, "Ama");
+const sharePublic = wx.renderSealSharePage({ pub: SEAL_PUB, shareId: "Sample12abcd" });
+// Home's "New in your book", in wax: the newest seal (a held call, yesterday).
+const WAX_NEWEST = stampSample([["long_hold", { minutes: 52, place: "the airline" }]]).map(s => ({ ...s, earnedAt: now - STAMP_DAY }))[0];
+const picture = (src, alt, w) => kit.webPage({ title: alt, body: `<main style="padding:32px;display:flex;flex-direction:column;gap:16px;align-items:flex-start">${kit.label(alt.toUpperCase())}<img src="${src}" alt="${alt}" style="max-width:100%;width:${w}px;height:auto;border-radius:3px"></main>` });
 
 // ---------------------------------------------------------------- every screen
 // [file, group, title, note, html, { signedOut, state, head }]
@@ -295,7 +302,7 @@ const S = [
 
   // The daily edition (REASON_WEB_DAILY): Home as a morning paper. Sample editions (scripts/web-daily-sample.mjs).
   ...Object.entries({ full: ["Daily edition", "Overnight (decision / update / done), Lines out, One question, New in your book, pick up."], first: ["Daily edition · first day", "NO. 1, \"Nothing yet.\""], quiet: ["Daily edition · quiet night", "Nothing happened overnight."], missed: ["Daily edition · missed days", "\"welcome back. here's what happened since Friday.\""] })
-    .map(([k, [title, note]]) => [`daily-${k}`, "Home and thread", title, note, wd.renderDaily({ edition: dailySamples()[k], csrf: "staging", now: Date.UTC(2026, 9, 27, 13, 0), stampMarkup }), {}]),
+    .map(([k, [title, note]]) => [`daily-${k}`, "Home and thread", title, note, wd.renderDaily({ edition: { ...dailySamples()[k], newestStamp: dailySamples()[k].newestStamp ? WAX_NEWEST : undefined }, csrf: "staging", now: Date.UTC(2026, 9, 27, 13, 0), stampMarkup }), {}]),
 
   ["sending", "Sending", "Sending…", "A message on its way (5A).", convo(), { state: STATE.sending }],
   ["take-it-back", "Sending", "Take it back", "§4h: for 5 s after a send, until Reason starts on it; the pen line drains right to left.", convo(), { state: STATE.takeBack }],
@@ -369,13 +376,17 @@ const S = [
   ["settings-theme-night", "Settings", "Settings · theme Night", "", settings({ theme: "night", done: "theme" }), {}],
   ["settings-nothing-connected", "Settings", "Settings · nothing connected, no invites", "", settings({ connected: [], invitesView: null, browsers: browsers.slice(0, 1) }), {}],
 
-  ["stamps", "Stamps", "Stamps · many pages", "Page 2 of 2, NEW on the newest, share panel for The long hold, two hints on the blank spots.", stampsPage(STAMPS_MANY), {}],
-  ["stamps-page1", "Stamps", "Stamps · an earlier page", "A full page: no blank spots.", stampsPage(STAMPS_MANY, { page: 1 }), {}],
-  ["stamps-first", "Stamps", "Stamps · first stamp", "One stamp, seven blank spots.", stampsPage(STAMPS_MANY.slice(0, 1)), {}],
-  ["stamps-empty", "Stamps", "Stamps · empty", "Hints only; nothing to share yet.", stampsPage([]), {}],
+  ["stamps", "Stamps", "Stamps · the book, last page", "Wax seals tilted on a paper sheet, NEW on the newest, two not-yet spots engraved, the aside: story, SHARE IT (the compliments card), the first-errand patch kept outside.", stampsPage(STAMPS_MANY), {}],
+  ["stamps-page1", "Stamps", "Stamps · an earlier page", "A full page of eight: no not-yet spots.", stampsPage(STAMPS_MANY, { page: 1 }), {}],
+  ["stamps-first", "Stamps", "Stamps · first seal", "One seal, two not-yet spots, the patch outside the book.", stampsPage(STAMPS_MANY.slice(0, 2)), {}],
+  ["stamps-patch-only", "Stamps", "Stamps · only the first errand", "No seals yet; the first-errand patch kept outside the book.", stampsPage(STAMPS_MANY.slice(0, 1)), {}],
+  ["stamps-empty", "Stamps", "Stamps · empty", "Nothing earned yet: two not-yet spots.", stampsPage([]), {}],
   ["stamps-shared", "Stamps", "Stamps · a link exists", "The link written out, STOP SHARING.", stampsPage(STAMPS_MANY, { share: { share_id: "Sample12abcd", show_name: 1 } }), {}],
-  ["stamp-share-public", "Stamps", "Shared stamp · public page", "heyreason.com/s/<id>: no sign-in, noindex.", sharePublic, so],
-  ["stamp-share-off", "Stamps", "Shared stamp · turned off", "Stop sharing → 410.", madeMod.renderTurnedOff({ host: "HEYREASON.COM", siteUrl: "https://heyreason.com" }), so],
+  ["stamp-card", "Stamps", "Share card · 1200×630", "Save image and the link preview (og:image), first name on.", picture("media/stamp-card.png", "Share card", 1200), {}],
+  ["stamp-card-noname", "Stamps", "Share card · first name off", "“…on my behalf.”", picture("media/stamp-card-noname.png", "Share card, no name", 1200), {}],
+  ["stamp-story", "Stamps", "Story image · 9:16", "1080×1920: the sealed card, the line, HEYREASON.COM.", picture("media/stamp-story.png", "Story image", 405), {}],
+  ["stamp-share-public", "Stamps", "Shared seal · public page", "heyreason.com/s/<id>: no sign-in, noindex.", sharePublic, so],
+  ["stamp-share-off", "Stamps", "Shared seal · turned off", "Stop sharing → 410.", madeMod.renderTurnedOff({ host: "HEYREASON.COM", siteUrl: "https://heyreason.com" }), so],
 
   ["loader", "Global", "Loader", "The reas◯n·ing loader (plays on every load here).", home(), {}],
   ["error", "Global", "Something went wrong", "", wc.renderError(), {}],
@@ -423,6 +434,8 @@ function local(url, signedOut) {
   if (p === "/web/saved/remove") return "saved-removed.html";
   if (p === "/web/saved/pin" || p === "/web/saved/restore") return "saved.html";
   if (mediaMap[p]) return mediaMap[p];
+  const sp = /^\/web\/api\/stamps\/\d+\/(image|story)\.png$/.exec(p);
+  if (sp) return `media/stamp-${sp[1] === "image" ? "card" : "story"}${sp[1] === "image" && qs.get("name") === "0" ? "-noname" : ""}.png`;
   return { "/web/memory/correct": "memory-got-it.html", "/web/memory/forget": "memory.html", "/web/memory/guess": "memory.html", "/web/settings": "settings.html",
     "/web/signin": "code.html", "/web/code": "home.html", "/web/signout": "signed-out.html", "/web/send": "conversation.html" }[p] ?? null;
 }
@@ -450,6 +463,8 @@ var k=/^image\\//.test(t)?'image':/^audio\\//.test(t)?'voice':'pdf';return ans({
 if(!o.method||o.method==='GET'){if(u.indexOf('/web/memory/history')===0)return f(/[?&]q=./.test(u)?'history-search.html':'history.html');if(u.indexOf('/web/memory')===0)return f(/[?&]q=./.test(u)?'memory-search.html':'memory.html')}
 if(u.indexOf('/web/memory/correct')===0){var q=new URLSearchParams(String(o.body||''));return ans({ok:true,html:GOT.split('__K__').join(esc(q.get('k'))).split('__T__').join(esc(q.get('text')))})}
 if(u.indexOf('/web/memory/')===0||u.indexOf('/web/ongoing/state')===0)return ans({ok:true});
+if(/^\/web\/api\/stamps\/\d+\/share\/revoke/.test(u))return ans({ok:true,revoked:true});
+if(/^\/web\/api\/stamps\/\d+\/share/.test(u))return ans({url:'https://heyreason.com/s/Sample12abcd'});
 var b={messages:[],more:false};if(sent){sent--;var m=Object.assign({},R,{id:R.id+Math.floor(Math.random()*1e6),at:Date.now()});b.messages=[m]}return ans(b)};
 try{window.EventSource=ES}catch(e){}})();</script>`;
 const LOADER = `<script>try{sessionStorage.removeItem('reason-web-loaded')}catch(e){}</script>`;
@@ -459,7 +474,8 @@ function stage(html, { signedOut = false, loader = false, state = "", head = "" 
   let out = html
     .replace(/(href|action|src|data-src)="(\/web(?:\/[A-Za-z0-9_-]+)*(?:\?[^"#]*)?)(#[^"]*)?"/g, (m, attr, url, hash = "") => { const to = local(url, signedOut); return to ? `${attr}="${to}${hash}"` : m; })
     .replace(/location\.(href|replace)(=|\()'(\/web[^']*)'/g, (m, how, op, url) => { const to = local(url, signedOut); return to ? `location.${how}${op}'${to}'` : m; })
-    .replace(/<form([^>]*?) method="POST"/g, `<form$1 method="GET"`);
+    .replace(/<form([^>]*?) method="POST"/g, `<form$1 method="GET"`)
+    .replace(`save.href='/web/api/stamps/'+id+'/image.png?name='+(on()?1:0)`, `save.href='media/stamp-card'+(on()?'':'-noname')+'.png'`);
   if (!/<meta name="robots" content="[^"]*noindex/.test(out)) out = out.replace("<head>", `<head>\n<meta name="robots" content="noindex">`);
   out = out.replace("<head>", `<head>\n${head}${loader ? LOADER : ""}${SHIM}`);
   return out.replace(/<\/body>/, `${state}${TAG}</body>`);
@@ -486,6 +502,15 @@ try {
   writeFileSync(join(outDir, "media", "photo.svg"), PHOTO_SVG);
   writeFileSync(join(outDir, "media", "voice.wav"), silentWav());
   writeFileSync(join(outDir, "media", "lease-2026.pdf"), PDF);
+  // The seal's pictures, drawn by the server's own renderer (src/pages/card.js headless Chromium).
+  {
+    const { shootWithChromium } = await imp("src/pages/card.js");
+    const fontCss = wx.sealFontCss();
+    const draw = async (name, html, size) => writeFileSync(join(outDir, "media", name), await shootWithChromium(html, size));
+    await draw("stamp-card.png", wx.sealCardHtml({ pub: SEAL_PUB, first: "Ama", fontCss }), { width: 1200, height: 630 });
+    await draw("stamp-card-noname.png", wx.sealCardHtml({ pub: SEAL_PUB, first: "", fontCss }), { width: 1200, height: 630 });
+    await draw("stamp-story.png", wx.sealStoryHtml({ pub: SEAL_PUB, first: "", fontCss }), { width: 1080, height: 1920 });
+  }
   // Saved's paper card frames the real page, as /web/saved/page/<id>/frame draws it.
   for (const id of new Set([SV.dinner, SV.lisbon, "lisbon4"])) writeFileSync(join(outDir, `saved-frame-${id}.html`), sv.renderFrame(db.getPageIn(CONV, id)));
   for (const [file, , , , html, o] of S) writeFileSync(join(outDir, `${file}.html`), stage(html, { ...o, loader: file === "loader" }));

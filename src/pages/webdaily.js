@@ -15,6 +15,7 @@
 //
 // No composer: "Continue the thread →" is how they chat, in the one thread shared with their texts
 // (owner 10-27 07:08, SCOPE-v2 Q-v2-54). Every action is a real form: it works without script and lands back here.
+import { seal } from "../seal.js";
 import { esc } from "./render.js";
 import { webPage } from "./webkit.js";
 import { dailyHeader, DAILY_HEAD_CSS } from "./webdailyhead.js";
@@ -83,6 +84,16 @@ function stampHtml(stamp, markup) {
     + `<span class="dd-nbl">${esc(firstSentence(stamp.story) || stamp.name)}</span></span></a>`;
 }
 
+/**
+ * New in your book, wax (REASON_STAMPS_WAX; reference/home.html): the newest seal at 104px, tilted, no
+ * postmark, its name and one line. The seal's words are said by the text beside it, so it is hidden from
+ * a screen reader there.
+ */
+function sealTile(stamp) {
+  return `<a class="dd-nb" href="/web/stamps"><span class="dd-nbs" aria-hidden="true" style="transform:rotate(${Number(stamp.rotation) || 0}deg)">${seal({ wax: stamp.wax, ring: stamp.ring, postmark: false, size: 104 })}</span>`
+    + `<span class="dd-nbt"><span class="dd-lbl sm">NEW IN YOUR BOOK</span><span class="dd-nbn">${esc(stamp.name)}.</span><span class="dd-nbw">${esc(stamp.line)}</span></span></a>`;
+}
+
 function pickupHtml(p, { now, tz }) {
   if (!p) return "";
   const head = p.surface === "web" ? "pick up where you left off" : `pick up from ${p.where}`;
@@ -98,7 +109,7 @@ function pickupHtml(p, { now, tz }) {
  * (src/stamps.js). The header is the one Home and Stamps share (src/pages/webdailyhead.js).
  */
 export function renderDaily({ edition: ed, csrf, now = clock.now(), stampMarkup = null }) {
-  const aside = questionHtml(ed.question, csrf) + stampHtml(ed.newestStamp, ed.newestStamp && stampMarkup ? stampMarkup(ed.newestStamp, { size: 0.8 }) : "");
+  const aside = questionHtml(ed.question, csrf) + (ed.newestStamp?.wax ? sealTile(ed.newestStamp) : stampHtml(ed.newestStamp, ed.newestStamp && stampMarkup ? stampMarkup(ed.newestStamp, { size: 0.8 }) : ""));
   const body = dailyHeader("home")
     + `<main class="dd" id="edition"><div class="dd-mast"><p class="dd-lbl">NO. ${Number(ed.issueNumber)} · THE ${esc(weekday(ed.date).toUpperCase())} EDITION</p>`
     + `<h1 class="dd-date">${esc(fullDate(ed.date))}</h1><p class="dd-greet">${esc(ed.greeting)}</p>`
@@ -159,6 +170,8 @@ body{min-height:100vh}
 .dd-nbs{flex-shrink:0;display:inline-flex}
 .dd-nbt{display:flex;flex-direction:column;gap:6px}
 .dd-nbl{font-size:16px;line-height:1.45;color:var(--ink)}
+.dd-nbn{font:italic 400 22px/1.2 var(--serif);color:var(--ink)}
+.dd-nbw{font-size:15px;line-height:1.45;color:var(--muted)}
 .dd-foot{width:100%;max-width:1080px;margin:0 auto;padding:8px 24px 64px;display:flex;flex-direction:column;gap:28px}
 .dd-pk{text-decoration:none;display:flex;flex-direction:column;gap:12px}
 .dd-pkh{display:flex;align-items:center;gap:16px;flex-wrap:wrap}

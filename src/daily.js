@@ -409,6 +409,7 @@ export const stampMarkupFn = () => (typeof stampsModule?.stampMarkup === "functi
 /** Is the Stamps page in this build (so the header may link to it)? */
 export const stampsReady = () => typeof stampsModule?.newestStamp === "function";
 function newestStamp(conversationId) {
+  try { stampsModule?.checkAnniversary?.(conversationId); } catch { /* the year is marked by the book too */ }
   try { return stampsModule?.newestStamp ? stampsModule.newestStamp(conversationId, { days: 7 }) ?? null : null; } catch { return null; }
 }
 

@@ -16,7 +16,8 @@ import { join } from "node:path";
 import { createHash, timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
 import * as stamps from "../stamps.js";
-import { dailyAllowedFor } from "../dailyflag.js";
+import { dailyAllowedFor, waxLook } from "../dailyflag.js";
+import { renderSealBook, renderSealSharePage, sealCardHtml, sealStoryHtml, sealFontCss, SEAL_CARD_VERSION } from "./webseals.js";
 import { config } from "../config.js";
 import { webPage, wordmark, label, hand, action, TOKENS, BUBBLE_PATH } from "./webkit.js";
 import { WORDMARK_O } from "./wordmark.js";
@@ -209,24 +210,37 @@ export const ogAlt = (face, line) => `${face.ariaLabel}. ${line}`;
 let shooter = null;
 /** Tests hand in their own drawing; the server draws with card.js's headless Chromium. */
 export function setStampShooter(fn) { shooter = fn; }
-async function shoot(html) {
-  if (shooter) return await shooter(html);
+async function shoot(html, size = null) {
+  if (shooter) return await shooter(html, size);
   const { shootWithChromium } = await import("./card.js");
-  return await shootWithChromium(html);
+  return await shootWithChromium(html, size ?? undefined);
 }
 // One drawing at a time, and a minute's rest after a failure: the card is fetched without sign-in.
 let drawing = Promise.resolve();
 let failedAt = 0;
 /** The card's PNG for this face and line, drawn once and kept under data/cards (keyed on what is on it). */
 export async function stampCardPng(face, line) {
-  const key = createHash("sha256").update(JSON.stringify({ v: STAMP_OG_VERSION, face, line })).digest("hex").slice(0, 20);
+  return await drawnPng({ v: STAMP_OG_VERSION, face, line }, () => stampOgHtml({ face, line, fontCss: ogFontCss() }));
+}
+/**
+ * A wax seal's picture: "card" (1200×630, og:image and Save image) or "story" (1080×1920). Drawn from
+ * publicSeal only (src/stamps.js), the first name only when it is passed.
+ */
+export async function sealPng(pub, first, kind = "card") {
+  const { whoWith, ...face } = pub;
+  const size = kind === "story" ? { width: 1080, height: 1920 } : { width: 1200, height: 630 };
+  const who = whoWith(first);
+  return await drawnPng({ v: `w${SEAL_CARD_VERSION}`, kind, face, who }, () => (kind === "story" ? sealStoryHtml : sealCardHtml)({ pub, first, fontCss: sealFontCss() }), size);
+}
+async function drawnPng(keyOf, html, size = null) {
+  const key = createHash("sha256").update(JSON.stringify(keyOf)).digest("hex").slice(0, 20);
   const dir = join(config.dataDir, "cards");
   const file = join(dir, `stamp-${key}.png`);
   if (existsSync(file)) return readFileSync(file);
   if (!shooter && Date.now() - failedAt < 60_000) return null;
   const run = drawing.then(async () => {
     if (existsSync(file)) return readFileSync(file);
-    const png = await shoot(stampOgHtml({ face, line, fontCss: ogFontCss() }));
+    const png = await shoot(html(), size);
     if (!png?.length) { failedAt = Date.now(); return null; }
     mkdirSync(dir, { recursive: true });
     writeFileSync(file, png);
@@ -269,22 +283,34 @@ export async function stampsRequest({ account, path = "", method = "GET", query 
     const all = bookOf(conv);
     const selectedId = /^\d{1,12}$/.test(String(query.stamp ?? "")) ? Number(query.stamp) : null;
     const page = /^\d{1,4}$/.test(String(query.page ?? "")) ? Number(query.page) : null;
+    const csrf = db.pageSessionCsrf(readCookie(headers.cookie)) ?? "";
+    if (waxLook()) {
+      if (stamps.checkAnniversary(conv).length) all.splice(0, all.length, ...bookOf(conv));
+      const sel = (selectedId != null ? all.find(s => s.id === selectedId && !s.outside) : null) ?? all.filter(s => !s.outside).at(-1) ?? null;
+      const share = sel ? stamps.activeShare(sel.id) : null;
+      return html(200, renderSealBook({ all, page, selectedId, first, csrf, tz: stamps.tzFor(conv), share }));
+    }
     const v = bookView(all, { page, selectedId });
     const share = v.selected ? stamps.activeShare(v.selected.id) : null;
-    const csrf = db.pageSessionCsrf(readCookie(headers.cookie)) ?? "";
     return html(200, renderStamps({ all, page, selectedId, first, csrf, tz: stamps.tzFor(conv), share }));
   }
 
-  const m = /^(\d{1,12})\/(share|share\/revoke|image\.png)$/.exec(path);
+  const m = /^(\d{1,12})\/(share|share\/revoke|image\.png|story\.png)$/.exec(path);
   if (!m) return null;
   const id = Number(m[1]);
   const stamp = stamps.stampFor(conv, id);
   const wantsJson = String(headers.accept ?? "").includes("application/json") || String(headers["content-type"] ?? "").includes("application/json");
 
-  if (m[2] === "image.png") {
+  if (m[2] === "image.png" || m[2] === "story.png") {
     if (method !== "GET" && method !== "HEAD") return html(405, "", { Allow: "GET, HEAD" });
-    if (!stamp) return json(404, { ok: false, error: "not_found" }, sec);
+    if (!stamp || (m[2] === "story.png" && !waxLook())) return json(404, { ok: false, error: "not_found" }, sec);
     const row = db.db.prepare("SELECT * FROM stamps WHERE id = ?").get(id);
+    if (waxLook()) {
+      const kind = m[2] === "story.png" ? "story" : "card";
+      const png = await sealPng(stamps.publicSeal(row), query.name === "0" ? "" : first, kind);
+      if (!png) return json(503, { ok: false, error: "no_picture" }, sec);
+      return { status: 200, headers: { ...sec, "Content-Type": "image/png", "Content-Length": png.length, "Content-Disposition": `attachment; filename="reason-seal-${row.type.replace(/_/g, "-")}${kind === "story" ? "-story" : ""}.png"` }, body: png };
+    }
     const face = stamps.publicFace(row);
     const line = stamps.publicLine(row, query.name === "0" ? "" : first);
     const png = await stampCardPng(face, line);
@@ -368,7 +394,7 @@ export async function shareRequest({ shareId, sub = null, method = "GET", log = 
   if (method !== "GET" && method !== "HEAD") return { status: 405, headers: { ...PUBLIC_HEADERS, Allow: "GET, HEAD", "Content-Length": 0 }, body: "" };
   if (sub === "og.png") {
     // Turned off: the generic card, so an old preview shows nothing of the stamp.
-    const png = v.revoked ? null : await stampCardPng(stamps.publicFace(v.stamp), stamps.publicLine(v.stamp, v.first)).catch(() => null);
+    const png = v.revoked ? null : await (waxLook() ? sealPng(stamps.publicSeal(v.stamp), v.first) : stampCardPng(stamps.publicFace(v.stamp), stamps.publicLine(v.stamp, v.first))).catch(() => null);
     const bytes = png ?? genericOg();
     return { status: 200, headers: { "Content-Type": "image/png", "Content-Length": bytes.length, "Cache-Control": png ? "public, max-age=300" : "no-store", "X-Robots-Tag": "noindex", "X-Content-Type-Options": "nosniff" }, body: bytes };
   }
@@ -378,7 +404,8 @@ export async function shareRequest({ shareId, sub = null, method = "GET", log = 
     return { status: 410, headers: { "Content-Type": "text/html; charset=utf-8", ...PUBLIC_HEADERS, "Content-Length": Buffer.byteLength(body) }, body };
   }
   if (method === "GET") stamps.noteShareOpened(shareId, { log });
-  const face = stamps.publicFace(v.stamp);
-  const body = renderSharePage({ face, line: stamps.publicLine(v.stamp, v.first), shareId });
+  const body = waxLook()
+    ? renderSealSharePage({ pub: stamps.publicSeal(v.stamp, v.first), shareId })
+    : renderSharePage({ face: stamps.publicFace(v.stamp), line: stamps.publicLine(v.stamp, v.first), shareId });
   return { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", ...PUBLIC_HEADERS, "Content-Length": Buffer.byteLength(body) }, body };
 }
