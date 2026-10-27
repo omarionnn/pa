@@ -11,6 +11,11 @@
 export const BRAND_PEN = "#b03030";
 export const BRAND_PEN_DARK = "#e8765c";
 
+// A page's card is drawn once and kept on disk with the pen in its pixels, so its file name and `?v=`
+// include this. Bump it with the pen (and INVITE_CARD_VERSION, DRAWN_COVER_VERSION for the other kept
+// pictures) and every card is drawn again at a new address; #175 changed the pen without it.
+export const BRAND_ART = "pen2";
+
 // The light page is the marketing site's paper (~/Desktop/reason-site-new/public/styles.css, owner
 // 2026-10-25): its ground, raised paper, warm fill, rule and ink, copied hex for hex, plus the same
 // faint fractal-noise grain the site lays over its body. Every page Reason serves reads its light

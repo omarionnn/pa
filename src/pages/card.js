@@ -19,7 +19,7 @@ import { config } from "../config.js";
 import { esc, madeFor, topLine } from "./render.js";
 import { imageModelFor } from "../imagen.js";
 import { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE_DARK } from "./wordmark.js";
-import { BRAND_PEN } from "./brand.js";
+import { BRAND_PEN, BRAND_ART } from "./brand.js";
 
 export const CARD_W = 1200;
 export const CARD_H = 630;
@@ -128,9 +128,9 @@ ${subtitle ? `<p class="sub">${esc(subtitle)}</p>` : ""}
 </body></html>`;
 }
 
-/** Where this page's picture is kept. Revision in the name, so a change is a new picture. */
+/** Where this page's picture is kept. Revision and pen in the name, so a change is a new picture. */
 export function cardPath(page) {
-  return join(config.dataDir, "cards", `${page.id}-r${page.revision ?? 1}.png`);
+  return join(config.dataDir, "cards", `${page.id}-r${page.revision ?? 1}-${BRAND_ART}.png`);
 }
 
 export class NoCardRenderer extends Error {}
