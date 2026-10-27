@@ -2823,11 +2823,15 @@ export function listActions(conversationId, { since = null, limit = 50 } = {}) {
 }
 
 // ---------- confirmations ----------
-export function askConfirmation({ conversationId, action, summary, stakes, target = "", askedAfterMsgs, taskId = null, amount = null }) {
+export function askConfirmation({ conversationId, action, summary, stakes, target = "", askedAfterMsgs, taskId = null, amount = null, threadKey = null }) {
   const cents = Number.isFinite(Number(amount)) && amount !== null && amount !== "" ? Math.round(Number(amount) * 100) : null;
+  // `thread_key`: the Web-only chat the ask was made in (its history key, src/db.js historyKeyFor);
+  // null = the shared thread. `asked_after_msgs` counts THAT thread's messages, and only that thread's
+  // answer can grant it.
+  const key = threadKey && threadKey !== conversationId ? String(threadKey) : null;
   const r = db.prepare(`INSERT INTO confirmations
-    (conversation_id, action, summary, stakes, target, asked_at, asked_after_msgs, task_id, amount_cents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, action, summary, stakes, target, clock.now(), askedAfterMsgs, taskId, cents);
+    (conversation_id, action, summary, stakes, target, asked_at, asked_after_msgs, task_id, amount_cents, thread_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, action, summary, stakes, target, clock.now(), askedAfterMsgs, taskId, cents, key);
   return getConfirmation(conversationId, Number(r.lastInsertRowid));
 }
 
@@ -2843,12 +2847,18 @@ export function askConfirmation({ conversationId, action, summary, stakes, targe
  * once the thread was full. Floored at zero: a mark older than everything left means everything
  * left came after it, which is exactly what zero says. See saveThread in src/thread.js.
  */
-export function shiftThreadMarks(conversationId, { ownerTexts = 0, userLines = 0 } = {}) {
+export function shiftThreadMarks(historyId, { ownerTexts = 0, userLines = 0 } = {}) {
+  // `historyId` is the thread that was cut: a conversation's own, or one Web-only chat's
+  // ("<conversation>#web:<chat>"). Only the marks made in THAT thread move.
+  const cut = /^(.*)#web:[A-Za-z0-9_-]{22}$/.exec(String(historyId ?? ""));
+  const conversationId = cut ? cut[1] : historyId;
   if (ownerTexts > 0) {
     db.prepare(`UPDATE confirmations SET asked_after_msgs = MAX(0, asked_after_msgs - ?)
-      WHERE conversation_id = ? AND refused_at IS NULL AND consumed_at IS NULL AND granted_at IS NULL`)
-      .run(ownerTexts, conversationId);
+      WHERE conversation_id = ? AND COALESCE(thread_key, '') = ? AND refused_at IS NULL AND consumed_at IS NULL AND granted_at IS NULL`)
+      .run(ownerTexts, conversationId, cut ? String(historyId) : "");
   }
+  // A call's check is texted to their phone: it lives in the shared thread only.
+  if (cut) return;
   if (userLines > 0) {
     db.prepare(`UPDATE calls SET verify_sent_after_msgs = MAX(0, verify_sent_after_msgs - ?)
       WHERE conversation_id = ? AND verify_sent_at IS NOT NULL AND verified_at IS NULL AND verify_sent_after_msgs IS NOT NULL`)
@@ -9837,6 +9847,9 @@ db.exec(`
 
 // Web-only chats (owner 10-27): the chat a row belongs to; null = the shared thread (iMessage + Web).
 addColumnIfMissing("messages", "chat_id", "TEXT");
+// …and the thread an approval was asked in (its history key; null = the shared thread), so only an
+// answer in that same thread can grant it (src/trust.js recordConfirmation).
+addColumnIfMissing("confirmations", "thread_key", "TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS messages_chat_at ON messages (conversation_id, chat_id, at, id) WHERE chat_id IS NOT NULL");
 
 // Temporal columns on person_facts

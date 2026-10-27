@@ -308,8 +308,8 @@ export function listHtml(lines, { now = clock.now(), folds = null, conversationI
 }
 
 /** One page of history drawn: its lines with finished tasks settled (src/settle.js), as the thread shows it. */
-export function pageHtml(lines, { conversationId, service = null, now = clock.now(), keep = null }) {
-  const folds = settle.foldsFor(conversationId, lines.map(m => m.id));
+export function pageHtml(lines, { conversationId, service = null, now = clock.now(), keep = null, chat = "" }) {
+  const folds = settle.foldsFor(conversationId, lines.map(m => m.id), { chat });
   // A window that ends before a task's last message (Saved's ?at=) draws that task's lines as they are,
   // and the message somebody came to find is never folded away.
   const here = new Set(lines.map(m => m.id));
@@ -787,7 +787,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
   // A Web-only chat is only that exchange: a pending approval stays in Ongoing (the margin, the tab's count), not in its lines.
   const appr = approvals.length && !chat ? `<div class="msg re approval">${label(apprLbl)}${approvalCard({ title: approvals[0].title, money: approvals[0].money, href: approvals[0].href })}</div>` : "";
   const count = items.length + approvals.length + back.length;
-  const drawn = pageHtml(lines, { conversationId: conv, service, now, keep: found });
+  const drawn = pageHtml(lines, { conversationId: conv, service, now, keep: found, chat });
   // L1: with script, the page opens with its composer and tabs live and the thread's place held by
   // ruled lines; the newest page arrives from /web/history. Without script it is all here at once.
   const thread = deferred
@@ -962,7 +962,7 @@ export function historyRequest({ account, query = {}, now = clock.now() }) {
     const rows = db.messagesFor(conv, { after, limit: 200, chat });
     // What is still being worked at length (L10), finished tasks to settle in place (S3), and `doing`:
     // what Reason is doing on this conversation's turn right now (src/doing.js), or null.
-    return json(200, { messages: rows.map(r => rowOut(r, { conversationId: conv, service, now })), work: workOf(conv), settled: settledLately(conv, { service, now }), doing: doingFor(conv) });
+    return json(200, { messages: rows.map(r => rowOut(r, { conversationId: conv, service, now })), work: workOf(conv), settled: settledLately(conv, { service, now, chat }), doing: doingFor(conv) });
   }
   // A page: the newest (the thread opening, L1) or the one before row `before` (L2). `html` is the
   // page drawn as the thread draws it — day labels, "Continued on Web", finished tasks settled.
@@ -971,7 +971,7 @@ export function historyRequest({ account, query = {}, now = clock.now() }) {
   const more = rows.length > PAGE;
   const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service, now }));
   const start = !more && lines.length && !chat ? `Your conversation before ${dayFmt().format(lines[0].at)} stays in your texts.` : null;
-  const html = pageHtml(lines, { conversationId: conv, service, now });
+  const html = pageHtml(lines, { conversationId: conv, service, now, chat });
   const first = lines[0]?.id ?? 0, last = lines.reduce((n, m) => Math.max(n, m.id), 0);
   return json(200, { messages: lines, html, more, start, first, last, ...(before == null ? { work: workOf(conv) } : {}) });
 }
@@ -980,13 +980,13 @@ export function historyRequest({ account, query = {}, now = clock.now() }) {
  * Tasks that finished in the last few minutes, settled: what a page that showed their messages one by
  * one swaps in (the DONE line, JUST NOW). `ids` are every message folded into it.
  */
-export function settledLately(conversationId, { service = serviceOf(conversationId), now = clock.now() } = {}) {
+export function settledLately(conversationId, { service = serviceOf(conversationId), now = clock.now(), chat = "" } = {}) {
   const done = db.db.prepare("SELECT id FROM tasks WHERE conversation_id = ? AND state = 'done' AND finished_at >= ?").all(conversationId, now - settle.JUST_NOW_MS).map(r => r.id);
   if (!done.length) return [];
   const ids = db.db.prepare(`SELECT DISTINCT m.id FROM task_messages l JOIN messages m ON m.conversation_id = l.conversation_id
       AND ((l.outbox_id IS NOT NULL AND m.outbox_id = l.outbox_id) OR (l.external_id IS NOT NULL AND m.role = 'user' AND m.external_id = l.external_id))
     WHERE l.conversation_id = ? AND l.task_id IN (${done.map(() => "?").join(",")})`).all(conversationId, ...done).map(r => r.id);
-  const { folds } = settle.foldsFor(conversationId, ids);
+  const { folds } = settle.foldsFor(conversationId, ids, { chat });
   return [...folds.values()].filter(f => done.includes(f.task.id))
     .map(f => ({ task: f.task.id, ids: f.rows.map(r => r.id), html: doneHtml(f, { conversationId, service, now }) }));
 }
@@ -1102,7 +1102,7 @@ export function streamRequest({ account, headers = {}, query = {}, router = null
       let lastState = null;
       const pushState = () => {
         if (closed) return;
-        const s = JSON.stringify({ work: workOf(conv), settled: settledLately(conv, { service }) });
+        const s = JSON.stringify({ work: workOf(conv), settled: settledLately(conv, { service, chat }) });
         if (s !== lastState) { lastState = s; write(`event: state\ndata: ${s}\n\n`); }
       };
       const onRow = (e) => { if (e?.conversationId !== conv) return; try { flush(); pushState(); } catch { end("failed"); } };

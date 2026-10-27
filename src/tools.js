@@ -11501,7 +11501,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         }
       }
       const put = trust.requestConfirmation({
-        conversationId: c, messages: ctx.messages ?? [],
+        conversationId: c, messages: ctx.messages ?? [], historyId: ctx.historyId ?? null,
         action: input.action, summary: input.summary, stakes: input.stakes ?? "", target: input.target ?? "",
         taskId: onTask ? onTask.id : null, amount: input.amount ?? null,
       });
@@ -11564,7 +11564,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // ctx.judge lets tests state what a reply means; in production it is the real judge call.
       return await trust.recordConfirmation({
         conversationId: c, messages: ctx.messages ?? [],
-        confirmationId: input.confirmation_id, judge: ctx.judge,
+        confirmationId: input.confirmation_id, judge: ctx.judge, historyId: ctx.historyId ?? null,
       });
 
     case "confirm_pending": {

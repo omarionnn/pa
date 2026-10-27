@@ -55,9 +55,11 @@ export function ownerTexts(messages = []) {
  * Step 1 of the gate. Records what Reason is about to do, in words, before asking.
  * Returns the confirmation id the model must carry into the committing tool.
  */
-export function requestConfirmation({ conversationId, messages, action, summary, stakes, target = "", taskId = null, amount = null }) {
+export function requestConfirmation({ conversationId, messages, action, summary, stakes, target = "", taskId = null, amount = null, historyId = null }) {
   const c = db.askConfirmation({
     amount,
+    // The thread `messages` is: a Web-only chat's own, or the shared one (src/db.js historyKeyFor).
+    threadKey: historyId,
     conversationId, action: toolName(action), summary, stakes, target: normalizeTarget(target),
     askedAfterMsgs: ownerTexts(messages).length,
     // Which job this ask belongs to, when there is one. It is what lets a task refuse to close as
@@ -105,9 +107,18 @@ export function normalizeTarget(t) {
  *
  * `judge` is injectable so tests can state what a reply means and exercise the bookkeeping.
  */
-export async function recordConfirmation({ conversationId, messages, confirmationId, judge = judgeReply }) {
+export async function recordConfirmation({ conversationId, messages, confirmationId, judge = judgeReply, historyId = null }) {
   const c = db.getConfirmation(conversationId, confirmationId);
   if (!c) return { ok: false, error: `No confirmation #${confirmationId} in this conversation.` };
+  // Asked in one thread (the shared one, or a Web-only chat), answered only there: the count below is
+  // that thread's, and a "yes" said somewhere else was never said to this ask.
+  const here = historyId && historyId !== conversationId ? String(historyId) : null;
+  if (!c.consumed_at && !c.refused_at && !c.granted_at && (c.thread_key ?? null) !== here) {
+    return {
+      ok: false, state: "asked_elsewhere",
+      error: `Confirmation #${confirmationId} was asked in ${c.thread_key ? "another Web chat" : "their main thread"}, not this one, so nothing here answers it. If they want it now, ask again here with confirm_request and wait for their reply.`,
+    };
+  }
   if (c.consumed_at) return { ok: false, state: "spent", error: `Confirmation #${confirmationId} was already used for ${c.action}. Ask again.` };
   if (c.refused_at) return { ok: false, state: "refused", error: `Confirmation #${confirmationId} was refused. Do not retry unless they bring it up.` };
   if (c.granted_at) return { ok: true, state: "granted", confirmation_id: c.id, action: c.action, quote: c.granted_quote };

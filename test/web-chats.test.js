@@ -269,3 +269,45 @@ test("7. Chat history lists past Web chats, each opening its chat; the day view 
   // Kofi's history never lists Omari's chat.
   assert.ok(!hist.renderHistory({ account: db.getAccount(KOFI_C) }).includes(CHAT));
 });
+
+test("8. review: an approval asked in one thread is granted only by that thread's answer; another thread's trims never move its mark", async () => {
+  const trust = await import("../src/trust.js");
+  const { saveThread } = await import("../src/thread.js");
+  db.db.exec("DELETE FROM confirmations");
+  db.claimWebChat(OWNER_C, CHAT);
+  const key = db.historyKeyFor(OWNER_C, db.webChatRoute(CHAT));
+  const line = (t) => ({ role: "user", content: `[Mon 9:00am] Omari (web): ${t}` });
+  const chatThread = [line("buy the headphones")];
+  const asked = trust.requestConfirmation({ conversationId: OWNER_C, messages: chatThread, historyId: key, action: "purchase_confirm", summary: "Buy the headphones for $80", stakes: "money" });
+  const yes = async () => ({ verdict: "yes" });
+  // The shared thread, with plenty said after: none of it answers an ask made in the chat.
+  const shared = [line("a"), line("b"), line("sure, go for it")];
+  const there = await trust.recordConfirmation({ conversationId: OWNER_C, messages: shared, confirmationId: asked.confirmation_id, judge: yes });
+  assert.equal(there.ok, false);
+  assert.equal(there.state, "asked_elsewhere");
+  // The shared thread is cut to size: the chat's mark stays where it was.
+  saveThread(OWNER_C, Array.from({ length: 400 }, (_, i) => line(`old ${i}`)), { max: 50 });
+  assert.equal(db.getConfirmation(OWNER_C, asked.confirmation_id).asked_after_msgs, 1);
+  // In the chat, no reply yet is still no reply; its own yes grants it.
+  assert.equal((await trust.recordConfirmation({ conversationId: OWNER_C, messages: chatThread, historyId: key, confirmationId: asked.confirmation_id, judge: yes })).state, "waiting_for_yes");
+  const ok = await trust.recordConfirmation({ conversationId: OWNER_C, messages: [...chatThread, line("yes do it")], historyId: key, confirmationId: asked.confirmation_id, judge: yes });
+  assert.equal(ok.ok, true);
+  // And the other way round: a shared-thread ask is never answered from a Web chat.
+  const sharedAsk = trust.requestConfirmation({ conversationId: OWNER_C, messages: [line("book it")], action: "browser_submit", summary: "Book the table", stakes: "commitment" });
+  assert.equal((await trust.recordConfirmation({ conversationId: OWNER_C, messages: [line("x"), line("yes")], historyId: key, confirmationId: sharedAsk.confirmation_id, judge: yes })).state, "asked_elsewhere");
+});
+
+test("9. review: a task's DONE line only gathers its own thread's messages; neither page loses a line to the other", async () => {
+  const settle = await import("../src/settle.js");
+  db.db.exec("DELETE FROM task_messages");
+  db.claimWebChat(OWNER_C, CHAT);
+  const t = db.createTask(OWNER_C, { title: "t", goal: "g", maxAttempts: 3, label: "Dinner" });
+  const inChat = db.writeMessage({ conversationId: OWNER_C, role: "user", channel: "web", externalId: `${OWNER_C}:c-1`, text: "find dinner", chatId: db.webChatRoute(CHAT) });
+  const inShared = db.writeMessage({ conversationId: OWNER_C, role: "user", channel: "fake", externalId: "s-1", text: "any luck?" });
+  settle.linkTurn({ conversationId: OWNER_C, taskIds: [t.id], handles: [`${OWNER_C}:c-1`, "s-1"] });
+  db.finishTask(OWNER_C, t.id, { state: "done", outcome: "booked" });
+  const shared = settle.foldsFor(OWNER_C, [inShared]);
+  assert.deepEqual([...shared.folds.values()].map(f => f.rows.map(r => r.id)), [[inShared]], "the shared fold has none of the chat's lines");
+  const chat = settle.foldsFor(OWNER_C, [inChat], { chat: CHAT });
+  assert.deepEqual([...chat.folds.values()].map(f => f.lastId), [inChat], "the chat settles at its own last line, so it is drawn");
+});

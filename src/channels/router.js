@@ -457,7 +457,8 @@ export class Router {
         this.log({ midturn: "left", inbound: externalId, conversation: conversationId, why: "attachments" });
         return { left: "attachments" };
       }
-      const thread = db.loadConversation(conversationId);
+      // The thread this turn is in: a Web-only chat's own (fold.webChat), or the shared one.
+      const thread = db.loadConversation(working.webChat ? db.historyKeyFor(conversationId, db.webChatRoute(working.webChat)) : conversationId);
       // One budget for the whole read, inside what the send waits for (onethought.READ_BUDGET_MS):
       // past it the text is left held and gets its own turn, never folded after the reply has gone.
       let timer;
@@ -593,7 +594,9 @@ export class Router {
       if (pendingCall && said.length === 1) {
         const answer = readYesNo(said[0]);
         if (answer === "yes" || answer === "no") {
-          const messages = db.loadConversation(conversationId);
+          // The thread this was said in: a Web-only chat keeps its own (db.historyKeyFor).
+          const historyId = last.channel === web.WEB ? db.historyKeyFor(conversationId, last.chat_id) : conversationId;
+          const messages = db.loadConversation(historyId);
           const who = accounts.ownerOf(conversationId);
           const name = who?.name || "them";
           messages.push({ role: "user", content: `[${stamp()}] ${name}: ${said[0]}` });
@@ -601,7 +604,7 @@ export class Router {
             ? "Got it — carrying on with the call."
             : "Understood — I won't do that.";
           messages.push({ role: "assistant", content: ack });
-          db.saveConversation(conversationId, messages);
+          db.saveConversation(historyId, messages);
           if (answer === "yes") {
             db.updateCall(conversationId, pendingCall.id, { verified_at: clock.now(), verified_how: "text" });
           }
