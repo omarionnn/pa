@@ -104,9 +104,15 @@ export function approvalCard({ title, money = false, href = "" }) {
   return `<div class="card appr"><p class="lbl pen">NEEDS YOUR APPROVAL</p><p class="appr-t">${esc(title)}</p>`
     + `<p class="lbl">${money ? "NOTHING CHARGED YET" : "NOTHING BOOKED YET"}</p>`
     + (href ? `<a class="appr-go" href="${esc(href)}">Review details <span aria-hidden="true">→</span></a>` : "")
-    + `</div>${hand(APPROVAL_NUDGE)}`;
+    + `</div>${hand(APPROVAL_NUDGE)}${money ? `<p class="appr-q">${NOTHING_CHARGED}</p>` : ""}`;
 }
 export const APPROVAL_NUDGE = "just tell me in the chat when you want it.";
+/**
+ * Under a money approval's nudge (owner 10-26 D2), in place of the design's "You'll get a Face ID
+ * prompt before anything is charged.": Reason can't know in advance that AgentCard will prompt
+ * (src/ongoing.js approvalItem), so it never promises one.
+ */
+export const NOTHING_CHARGED = "Nothing is charged until you say so in the chat.";
 
 /** The "on it." mark: the bubble in pen inside a 40px hairline ring that breathes. role=status. */
 export const onIt = (hidden = false) =>
@@ -206,6 +212,7 @@ button{font:inherit;color:inherit}
 .appr{padding:18px;display:flex;flex-direction:column;gap:8px;max-width:420px}
 .appr .lbl{font-size:10.5px;letter-spacing:.1em}
 .appr-t{margin:0;font-size:16px;font-weight:600}
+.appr-q{margin:0;font-size:15px;line-height:1.5;color:var(--muted)}
 .appr-go{font-size:14px;font-weight:500;text-decoration:none;min-height:44px;display:inline-flex;align-items:center;align-self:flex-start}
 .onit{display:flex;align-items:center;gap:14px}
 .onit[hidden]{display:none}

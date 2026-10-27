@@ -195,7 +195,7 @@ test("6. details 2A–2E and the approval: ← ONGOING, a typed status, a serif 
   assert.match(d("task", o.id), /<p class="res-b">Texted the three-story roundup<\/p>/);
 });
 
-test("7. the approval detail: only the fields its record has, NOTHING CHARGED YET stamp, chat-driven, Face ID only for AgentCard", () => {
+test("7. the approval detail: only the fields its record has, NOTHING CHARGED YET stamp, chat-driven, never a Face ID promise", () => {
   const ids = seedOngoing(C);
   const a = words(page.renderDetail(og.findItem(C, "approval", ids.approval)));
   assert.match(a, /<p class="lbl pen">NEEDS YOUR APPROVAL<\/p><h1 class="h1">Buy the CeraVe PM lotion from Target<\/h1>/);
@@ -207,7 +207,8 @@ test("7. the approval detail: only the fields its record has, NOTHING CHARGED YE
   assert.ok(!/DATES|ROOM|DRIVE|CANCEL BY|\[[A-Z$]/.test(main), "nothing the record doesn't have, no placeholders");
   assert.match(a, /<span class="stamp below stamp-pen">NOTHING CHARGED YET<\/span>/);
   assert.match(a, /<p class="hand big">just tell me in the chat when you want it\.<\/p>/);
-  assert.match(a, /You'll get a Face ID prompt before anything is charged\./);
+  assert.match(a, /<p class="hand big">just tell me in the chat when you want it\.<\/p><p class="q">Nothing is charged until you say so in the chat\.<\/p><\/div>/);
+  assert.ok(!a.includes("Face ID"));
   assert.match(a, /Reply in the chat <span aria-hidden="true">→<\/span>/);
   assert.ok(!/<button[^>]*>[^<]*(Approve|Book|Buy|Yes)/i.test(a), "no approve button");
   assert.ok(!/reply "|say "|type "/i.test(a), "no command phrases");
@@ -215,7 +216,7 @@ test("7. the approval detail: only the fields its record has, NOTHING CHARGED YE
   const c = db.askConfirmation({ conversationId: C, action: "call_place", summary: "Call the dentist to move Tuesday", stakes: "third_party", target: "+12125550100", askedAfterMsgs: 0 });
   const call = page.renderDetail(og.findItem(C, "approval", c.id));
   assert.match(call, /<dt>WHAT<\/dt>[^]*<dd>CALL<\/dd>[^]*<dt>TO<\/dt>[^]*<dd>\+12125550100<\/dd>/);
-  assert.ok(!call.includes("Face ID") && !call.includes("TOTAL"));
+  assert.ok(!call.includes("Face ID") && !call.includes("TOTAL") && !call.includes("Nothing is charged"));
   assert.match(call, /NOTHING BOOKED YET/);
   // A day old: no longer drawn as one that needs them, even by its address.
   clock.skip(og.APPROVAL_WINDOW_MS + 1);
@@ -364,4 +365,33 @@ test("12. live on the phone's Ongoing tab: the list and the tab's count follow w
   assert.match(s, /fetch\('\/web\/ongoing\/state\?draw=tab&v='\+encodeURIComponent\(v\)/);
   assert.match(s, /if\(!m\|\|m\.contains\(document\.activeElement\)\)return/);
   for (const js of s.match(/<script[^>]*>([\s\S]*?)<\/script>/g).map(t => t.replace(/^<script[^>]*>|<\/script>$/g, ""))) assert.doesNotThrow(() => new Function(js));
+});
+
+test("13. D2 (owner 10-26): the Face ID line only when the card flow really will prompt, which Reason can't know before the yes; so every money ask says nothing is charged until they say so", () => {
+  const ids = seedOngoing(C);
+  const conv = (m) => words(wc.renderConversation({ account: { conversation_id: C, name: "Omari" }, csrf: "c", lines: [], more: false, sendId: "s", ...m }));
+  const NOTHING = /<p class="hand">just tell me in the chat when you want it\.<\/p><p class="appr-q">Nothing is charged until you say so in the chat\.<\/p>/;
+  // The AgentCard purchase ask: the detail and the chat's own approval card, never a Face ID promise.
+  assert.equal("faceId" in og.findItem(C, "approval", ids.approval), false);
+  assert.match(words(page.renderDetail(og.findItem(C, "approval", ids.approval))), /<p class="q">Nothing is charged until you say so in the chat\.<\/p>/);
+  assert.match(conv(og.ongoing(C)), NOTHING);
+  // Even when AgentCard has already paused this cart once for the passkey (the real signal, kept on the
+  // purchase row: awaiting_approval + authorization + expiry), a new open yes still promises nothing:
+  // whether the NEXT confirm pauses, and with which unlock, is AgentCard's call at that confirm.
+  db.markAgentcardPurchase("buy-1", { status: "awaiting_approval", authorizationId: "cauth_test", approvalExpiresAt: clock.now() + 15 * 60_000 });
+  assert.equal(db.getAgentcardPurchase("buy-1").status, "awaiting_approval");
+  const again = words(page.renderDetail(og.findItem(C, "approval", ids.approval)));
+  assert.ok(!again.includes("Face ID"));
+  assert.match(again, /Nothing is charged until you say so in the chat\./);
+  assert.ok(!conv(og.ongoing(C)).includes("Face ID"));
+  // An ask that spends nothing (a call): neither line, on the detail or the chat card.
+  db.db.exec("DELETE FROM confirmations; DELETE FROM agentcard_purchases;");
+  const c = db.askConfirmation({ conversationId: C, action: "call_place", summary: "Call the dentist to move Tuesday", stakes: "third_party", target: "+12125550100", askedAfterMsgs: 0 });
+  const call = words(page.renderDetail(og.findItem(C, "approval", c.id)));
+  const chat = conv(og.ongoing(C));
+  assert.match(chat, /NEEDS YOUR APPROVAL[^]*Call the dentist to move Tuesday[^]*NOTHING BOOKED YET/);
+  for (const h of [call, chat]) assert.ok(!h.includes("Face ID") && !h.includes("Nothing is charged"));
+  // The nudge is unchanged and no command phrase crept in.
+  assert.match(chat, /<p class="hand">just tell me in the chat when you want it\.<\/p>/);
+  assert.ok(!/book it|reply "|say "|type "/i.test(chat + call));
 });
