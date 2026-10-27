@@ -209,7 +209,7 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
   const ph = (t) => `<button class="ph" type="submit" name="reach" value="${other}" aria-describedby="reach-how">${esc(t)}</button>`;
   const reachSec = `<section class="st-sec" id="reach" aria-labelledby="reach-h"><h2 id="reach-h">HOW REASON REACHES YOU</h2>`
     + post(csrf, "reach", `<p class="reach-p">${r.sentence(ph(r.first), ph(r.second))}</p>`)
-    + `<p class="sr" id="reach-how">Switches between texting you everything and keeping routine results here.</p>`
+    + `<p class="sr" id="reach-how">${reach === "web" ? "Now: routine results stay here. Choosing switches to texting you everything." : "Now: everything is texted to you. Choosing switches to keeping routine results here."}</p>`
     + hand("or just ask me to text you for one thing.")
     + saved(done === "reach")
     + (PRIVATE_BY_DEFAULT ? `<p class="priv d-only"><span class="lbl" style="display:inline">PRIVATE BY DEFAULT · </span>Sensitive texts only say "Reason needs your approval." The details wait here, behind sign-in.</p>` : "")
@@ -280,6 +280,7 @@ function same(a, b) {
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", ...SECURITY_HEADERS, ...extra });
 const back = (done, anchor) => ({ status: 303, headers: HTML({ Location: `/web/settings${done ? `?done=${done}` : ""}#${anchor}`, "Content-Length": 0 }), body: "" });
 const json = (status, obj) => { const body = JSON.stringify(obj); return { status, headers: { "Content-Type": "application/json; charset=utf-8", ...SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) }, body }; };
+const NOT_HERE = "That didn't come from this page.";
 const sessionsOf = (conv) => db.pageSessionsFor(conv, { maxAgeMs: SESSION_TTL_MS, idleMs: WEB_IDLE_MS });
 
 /** What the page shows for one person, read fresh. */
@@ -312,7 +313,7 @@ export async function settingsRequest({ account, method, query = {}, headers = {
   const form = new URLSearchParams((await readBody()) ?? "");
   if (!sameOrigin(headers) || !same(headers["x-reason-csrf"] || form.get("c"), db.pageSessionCsrf(token))) {
     log({ web_settings_refused: "origin_or_token" });
-    return wantsJson ? json(403, { ok: false, error: "not_from_this_page" }) : { status: 403, headers: HTML({ "Content-Type": "text/plain; charset=utf-8" }), body: "That didn't come from this page." };
+    return wantsJson ? json(403, { ok: false, error: "not_from_this_page" }) : { status: 403, headers: HTML({ "Content-Type": "text/plain; charset=utf-8", "Content-Length": Buffer.byteLength(NOT_HERE) }), body: NOT_HERE };
   }
   const what = form.get("do");
 

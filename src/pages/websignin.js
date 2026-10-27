@@ -379,13 +379,13 @@ export async function webRequest(args) {
 
 /**
  * Every signed-in page opens in the theme its person chose on Web (Settings), on any browser: the
- * page is told the choice and the session's form secret (webkit accountThemed). A read only — the
- * session was already checked by whatever drew the page; a page for nobody's session is untouched.
+ * page is told the choice and the session's form secret (webkit accountThemed). Only for a session
+ * that is still good; a page for nobody's session (or a lapsed one) is untouched.
  */
 function themedForAccount(out, headers) {
   if (out?.status !== 200 || typeof out.body !== "string" || !out.body.startsWith("<!doctype html>")) return out;
   const token = readCookie(headers?.cookie);
-  const conv = token ? db.pageSessionConversation(token) : null;
+  const conv = token ? db.pageSessionOwner(token, SESSION_TTL_MS, { idleMs: WEB_IDLE_MS }) : null;
   if (!conv || !webAllowedFor(conv)) return out;
   const body = accountThemed(out.body, { theme: db.webTheme(conv), csrf: db.pageSessionCsrf(token) });
   return { ...out, body, headers: { ...out.headers, "Content-Length": Buffer.byteLength(body) } };
