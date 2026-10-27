@@ -475,3 +475,60 @@ test("accessibility: real buttons and forms, labelled groups, the busy state, no
   assert.match(body, /\.st-nav a\{min-height:44px/);
   void DAY;
 });
+
+// ---------- the section index: → follows the section in view (owner 10-27: it sat on INVITES) ----------
+
+/** Runs the page's own script against a small stand-in DOM: six sections at `tops` (viewport px). */
+async function runIndex(body, { hash = "", tops = [0, 900, 1500, 2100, 2700, 3300] } = {}) {
+  const { runInNewContext } = await import("node:vm");
+  const js = body.match(/<script>(\(function\(\)\{var g=document\.querySelector\('\.th-g'\)[^]*?\}\)\(\););/)?.[1];
+  assert.ok(js, "the page's script is there");
+  const ids = [...body.matchAll(/<nav class="st-nav"[^]*?<\/nav>/g)][0][0].match(/href="#\w+"/g).map(h => h.slice(7, -1));
+  const attr = () => { const m = new Map(); return { setAttribute: (k, v) => m.set(k, String(v)), removeAttribute: k => m.delete(k), getAttribute: k => m.get(k) ?? null, m }; };
+  const links = ids.map((id, i) => { const a = attr(); a.setAttribute("href", `#${id}`); if (i === 0) a.setAttribute("aria-current", "true"); a.addEventListener = (t, f) => { a[`on${t}`] = f; }; return a; });
+  const secs = Object.fromEntries(ids.map((id, i) => [id, { id, getBoundingClientRect: () => ({ top: tops[i] - win.scrollY }) }]));
+  const on = {}; let io = null;
+  const win = {
+    innerHeight: 800, scrollY: 0, location: { hash }, navigator: {}, isSecureContext: true,
+    addEventListener: (t, f) => { (on[t] ??= []).push(f); },
+    IntersectionObserver: class { constructor(f) { io ??= f; } observe() {} },
+    document: { documentElement: { dataset: {}, getAttribute: () => null, scrollHeight: 4000 }, querySelector: () => null, querySelectorAll: s => (s === ".st-nav a" ? links : []), getElementById: id => secs[id] ?? null },
+  };
+  win.window = win;
+  runInNewContext(js, win);
+  const current = () => ids.filter((_, i) => links[i].getAttribute("aria-current") === "true");
+  const scrollTo = (y) => { win.scrollY = y; for (const f of on.scroll ?? []) f(); io?.([]); };
+  const fire = (t) => { for (const f of on[t] ?? []) f(); };
+  return { current, scrollTo, fire, links, ids, win };
+}
+
+test("the section index: the server draws → on the first section; the script is there to move it", async () => {
+  const body = await page(harness(), browser(OWNER_C));
+  assert.match(body, /<nav class="st-nav"[^>]*><a href="#reach" aria-current="true">/);
+  assert.equal((body.match(/<nav class="st-nav"[^]*?<\/nav>/)[0].match(/aria-current/g) ?? []).length, 1, "one item only");
+  assert.match(body, /new IntersectionObserver\(spy/, "a scroll-spy watches the sections");
+  assert.match(body, /\.st-side\{[^}]*position:sticky/, "the index stays pinned on desktop");
+  assert.match(body, /@media \(prefers-reduced-motion:no-preference\)\{html\{scroll-behavior:smooth\}\}/, "smooth only when motion is welcome");
+});
+
+test("the section index: → follows the scroll through all six, and a #hash opens on its section until you scroll", async () => {
+  const body = await page(harness(), browser(OWNER_C));
+  const t = await runIndex(body);
+  assert.deepEqual(t.current(), ["reach"], "no hash: the first section");
+  const seen = [];
+  for (const y of [0, 700, 1300, 1900, 2500, 3200]) { t.scrollTo(y); seen.push(t.current()[0]); }
+  assert.deepEqual(seen, t.ids);
+  t.win.document.documentElement.scrollHeight = 3300 + 800; t.scrollTo(3300); // the bottom of the page: the last one
+  assert.deepEqual(t.current(), ["theme"]);
+
+  // The bug: reached at #invites (← SETTINGS from an invite, or after making one), → stayed on INVITES
+  // while the reader looked at the top. Now the hash only holds it until they scroll.
+  const h = await runIndex(body, { hash: "#invites" });
+  assert.deepEqual(h.current(), ["invites"], "the hash names the current item on load");
+  h.scrollTo(0); assert.deepEqual(h.current(), ["invites"], "the browser's own jump does not move it");
+  h.fire("wheel"); h.scrollTo(0); assert.deepEqual(h.current(), ["reach"], "the reader scrolls to the top: → HOW I REACH YOU");
+
+  // A click holds the clicked section while the smooth scroll runs past the others.
+  h.links[h.ids.indexOf("connected")].onclick();
+  h.scrollTo(900); assert.deepEqual(h.current(), ["connected"]);
+});
