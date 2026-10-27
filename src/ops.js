@@ -763,7 +763,7 @@ export function settle({ report, runtime = null, log = () => {}, silent = new Se
   db.opsSet("report", JSON.stringify(report));
   const text = alertText(changes, report);
   if (text && runtime?.say) {
-    try { runtime.say(config.ownerConversation, text); } catch (e) { log({ ops_alert_failed: short(e) }); }
+    try { runtime.say(config.ownerConversation, text, { toMaster: true }); } catch (e) { log({ ops_alert_failed: short(e) }); }
   }
   log({ ops: report.verdict, checks: report.checks.length, changed: changes.length, texted: !!text });
   return { changes, text };

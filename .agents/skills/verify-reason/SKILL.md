@@ -394,6 +394,9 @@ eval "$(bin/caged.sh env | sed 's/^/export /')" \
 
 See [features/web-memory.md](features/web-memory.md) and [features/web-history.md](features/web-history.md).
 
+### Baseline — 3,952 pass, 0 failures after Reason Web v2 Settings + notifications (wt/v2-settings, 2026-10-27)
+
+v2 Settings edit states 5A–5D (four-value reach honoured by `keptOnWeb`, sign-out-everywhere confirm, invite just made + cancel from Web), L8 busy words, theme switch in Settings only, notifications 8A–8C (`/web/signal`, tab title + filled favicon, in-app line, per-browser notifications), Web icons I1. `test/web-settings-edit.test.js` (11), `test/web-notify.test.js` (13); `bin/web-settings-drive.mjs`: 29 steps, all ok. `npm run test:offline` under `env -i`: 4,075 tests, 3,952 passing; 1 load flake (`flight-search` sidecar) passes alone. See [features/web-settings.md](features/web-settings.md), [features/web-notify.md](features/web-notify.md).
 **8 — Reason Web Saved, over real HTTP.** The list (kinds, find, groups), an opened page framed from
 its own route, FIND IT IN THE CHAT into the thread, PIN / REMOVE / PUT IT BACK form posts, refusals.
 

@@ -187,7 +187,7 @@ const browsers = [
 ];
 const connected = [{ name: "AGENTCARD", phone: "CARD · AGENTCARD", on: true }, { name: "GOOGLE", on: true }, { name: "SPOTIFY", on: true }, { name: "UBER", on: true }];
 const invitesView = { links_you_can_still_make: 2, links: [
-  { invite: { token: "Qm7TzK2pLx9vBc4N", state: "unused" } }, { invite: { token: "Hd3RwA8sYe1uJf6P", state: "redeemed" } }, { invite: { token: "Vn5GkM0qTb2zXr7L", state: "canceled" } },
+  { invite: { id: 1, token: "Qm7TzK2pLx9vBc4N", state: "unused" } }, { invite: { id: 2, token: "Hd3RwA8sYe1uJf6P", state: "redeemed" } }, { invite: { id: 3, token: "Vn5GkM0qTb2zXr7L", state: "canceled" } },
 ] };
 const settings = (o = {}) => st.renderSettings({ csrf: "staging", reach: "text", browsers, current: "staging-here", connected, invitesView, theme: "auto", now, ...o });
 
@@ -279,9 +279,15 @@ const S = [
   ["history-search", "Memory", "Chat history · search", "Matches underlined in pen.", history({ q: "dentist" }), {}],
 
   ["settings", "Settings", "Settings", "Reach (text me for everything), browsers, connected, invites, theme.", settings(), {}],
-  ["settings-reach-web", "Settings", "Settings · keep routine results here", "The other reach choice, just saved.", settings({ reach: "web", done: "reach" }), {}],
+  ["settings-reach-web", "Settings", "Settings · keep routine results here", "Reach at timely decisions.", settings({ reach: "web" }), {}],
+  ["settings-reach-edit", "Settings", "Settings · 5A reach choices", "The radio list of four, Save → / CANCEL.", st.renderReachEdit({ csrf: "staging", reach: "web" }), {}],
+  ["settings-reach-saved", "Settings", "Settings · 5B saved", "Only what needs a yes, just saved.", st.renderReachSaved({ reach: "yes" }), {}],
+  ["settings-signout-all", "Settings", "Settings · 5C sign out everywhere?", "", st.renderSignOutAll({ csrf: "staging", count: 5 }), {}],
+  ["settings-invite-just-made", "Settings", "Settings · 5D invite just made", "Copy it → / SHARE show where the browser can do them.", st.renderInviteMade({ invite: { id: 1, token: "Qm7TzK2pLx9vBc4NabcdEFGH12345678", state: "unused" }, left: 1 }), {}],
+  ["settings-notify", "Settings", "Settings · 8C browser notifications", "", st.renderNotifySub({ csrf: "staging", reach: "web" }), {}],
+  ["settings-notify-on", "Settings", "Settings · 8C on in this browser", "", settings({ notify: true }), {}],
   ["settings-browser-out", "Settings", "Settings · signed a browser out", "", settings({ browsers: browsers.filter(b => b.token !== "staging-work"), done: "browsers" }), {}],
-  ["settings-invite-made", "Settings", "Settings · invite made", "", settings({ invitesView: { ...invitesView, links_you_can_still_make: 1, links: [{ invite: { token: "Pw4XcN9rLd2kSt8Z", state: "unused" } }, ...invitesView.links] }, done: "invite" }), {}],
+  ["settings-invite-canceled", "Settings", "Settings · invite canceled", "", settings({ done: "invite-canceled" }), {}],
   ["settings-invite-name", "Settings", "Settings · invite needs a name", "", settings({ done: "invite-name" }), {}],
   ["settings-theme-night", "Settings", "Settings · theme Night", "", settings({ theme: "night", done: "theme" }), {}],
   ["settings-nothing-connected", "Settings", "Settings · nothing connected, no invites", "", settings({ connected: [], invitesView: null, browsers: browsers.slice(0, 1) }), {}],

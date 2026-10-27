@@ -12,7 +12,7 @@
 // The rule now: a message with no channel goes to the thread that conversation lives in. The
 // console is only for a conversation that has no thread at all, which is the terminal itself.
 import * as db from "./db.js";
-import { config } from "./config.js";
+import { config, clock } from "./config.js";
 import { outgoingParts } from "./plain.js";
 import { WEB, webAllowedFor } from "./web.js";
 
@@ -72,35 +72,55 @@ async function sendEach(target, { to, parts }) {
  * marks it sent — otherwise it rode out again on the next message while the first copy retried.
  */
 /**
- * "Keep routine results here" (Reason Web Settings, 2026-10-26): should this message stay on Web
- * instead of being texted? Only when ALL of these hold, so anything else goes exactly as before:
- *   - Reason started it (a reply always goes back the way it came) and it is words, not a recording
- *   - it is a job's result: the turn ran for a task (`fromTask`) and that task is now `done`. A task
- *     waiting on them, one that failed, a reminder, an approval, a code, a notice: all still texted
- *     ("Text me for timely decisions")
- *   - the person chose it (accounts.web_reach = 'web'), Web may reach them, and the web channel is
- *     registered to take it
+ * How long after Reason asked for a yes a message it starts still counts as the one asking. An
+ * approval is asked inside the turn that writes the message, so this only has to cover one turn; it
+ * errs long, because the safe mistake under "only what needs a yes" is texting one message too many.
  */
-export function keptOnWeb({ router, conversationId, route, fromTask = null, media = null }) {
-  if (!route?.started || media || fromTask == null) return false;
+export const ASKS_FOR_A_YES_MS = 15 * 60_000;
+
+/** Is Reason waiting on a yes it asked for just now? An unanswered approval, asked within the window. */
+export function asksForAYes(conversationId, now = clock.now()) {
+  return db.pendingConfirmations(conversationId).some(c => c.granted_at == null && now - c.asked_at <= ASKS_FOR_A_YES_MS);
+}
+
+/**
+ * How Reason reaches you (Reason Web Settings, Gap 5): should this message stay on Web instead of
+ * being texted? Never, unless ALL of these hold, so anything else goes exactly as before:
+ *   - Reason started it (a reply always goes back the way it came) and it is words, not a recording
+ *   - it is Reason's own line: no keyed system message (a sign-in code, an alert to the operator, an
+ *     event host's message, the line changing) is ever kept, only a timer's
+ *   - not a line for the operator about somebody else (`toMaster`)
+ *   - Web may reach them and the web channel is registered to take it
+ *   - and what they chose (accounts.web_reach) keeps it:
+ *       everything ('text')            nothing is kept
+ *       timely decisions ('web')       a job's result: the turn ran for a task that is now `done`
+ *       only what needs a yes ('yes')  all of it, except a message asking for a yes just now
+ *       nothing ('none')               all of it
+ */
+export function keptOnWeb({ router, conversationId, route, fromTask = null, media = null, idempotencyKey = null, toMaster = false }) {
+  if (!route?.started || media || toMaster) return false;
+  if (idempotencyKey != null && !String(idempotencyKey).startsWith("timer:")) return false;
   if (route.channel === WEB || route.channel === "console") return false;
   if (!webAllowedFor(conversationId) || !router?.get?.(WEB)) return false;
-  if (db.webReach(conversationId) !== "web") return false;
-  return db.getTask(conversationId, fromTask)?.state === "done";
+  const reach = db.webReach(conversationId);
+  if (reach === "none") return true;
+  if (reach === "yes") return !asksForAYes(conversationId);
+  if (reach === "web") return fromTask != null && db.getTask(conversationId, fromTask)?.state === "done";
+  return false;
 }
 
 /** The one line a text carries after a switch from Web (decision 9): intent, not instructions. */
 export const WEB_HINT = "Our full conversation, the Web part included, is on Reason Web.";
 
 export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (line) => console.error(line) }) {
-  return async function deliver({ conversationId, text, media, channel, to: toIn, chatId: chatIn, fromOwner, isOperator, replyTo = null, sendStyle = null, idempotencyKey = null, fromTask = null }) {
+  return async function deliver({ conversationId, text, media, channel, to: toIn, chatId: chatIn, fromOwner, isOperator, replyTo = null, sendStyle = null, idempotencyKey = null, fromTask = null, toMaster = false }) {
     const route = whereTo({ conversationId, channel, to: toIn, chatId: chatIn });
     let { channel: name, to, chatId } = route;
-    // A finished job's result for somebody who keeps those on Web: written to Web (their history,
-    // their open tabs) and not texted. Same address, so it is the same person's history row.
-    if (keptOnWeb({ router, conversationId, route, fromTask, media })) {
+    // A message their reach setting keeps on Web: written to Web (their history, their open tabs)
+    // and not texted. Same address, so it is the same person's history row.
+    if (keptOnWeb({ router, conversationId, route, fromTask, media, idempotencyKey, toMaster })) {
       name = WEB; chatId = null; replyTo = null; sendStyle = null;
-      log({ kept_on_web: conversationId, task: fromTask });
+      log({ kept_on_web: conversationId, task: fromTask, reach: db.webReach(conversationId) });
     }
     const target = name === "console" ? consoleChannel : null;
     // Does the thing this is going to draw markdown? Asked of the adapter rather than assumed, and
