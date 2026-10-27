@@ -148,7 +148,10 @@ test("the wordmark: reas◯n with the bubble in pen, skewed −10°; the loader 
 test("the theme switch is Paper · Night · Auto as a real radio group, hidden until it can work", () => {
   const s = kit.themeSwitch();
   assert.match(s, /^<fieldset class="themes" hidden><legend class="sr">Theme<\/legend>/);
-  for (const [v, t] of [["paper", "Paper"], ["night", "Night"], ["auto", "Auto"]]) assert.match(s, new RegExp(`<input type="radio" name="theme" value="${v}"[^>]*><span>${t}</span>`));
+  for (const [v, t] of [["paper", "Paper"], ["night", "Night"], ["auto", "Auto"]]) assert.match(s, new RegExp(`<input type="radio" name="theme-th" value="${v}"[^>]*><span>${t}</span>`));
+  // Every copy on a page is its own group, so the menu, footer and Settings copies each keep their tick.
+  const names = (html) => new Set([...html.matchAll(/<input type="radio" name="(theme[^"]*)"/g)].map(m => m[1]));
+  for (const [name, html] of Object.entries(allScreens())) assert.equal(names(html).size, (html.match(/class="themes"/g) || []).length, `${name}: one group per switch`);
   // The choice is the one every Reason page reads.
   assert.match(allScreens().signin, /localStorage\.getItem\('reason-theme'\)/);
   for (const [name, html] of Object.entries(allScreens())) assert.match(html, /class="themes"/, `${name} carries the switch`);

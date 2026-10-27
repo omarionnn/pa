@@ -104,12 +104,15 @@ const HEAD_JS = `(function(){try{${tint}var h=document.documentElement,t=localSt
 // The Paper · Night · Auto radio group, wherever it is drawn; and the loader's exit.
 const THEME_JS = `(function(){${tint}var h=document.documentElement;
 function show(){var cur=h.dataset.theme==='light'?'paper':h.dataset.theme==='dark'?'night':'auto';document.querySelectorAll('.themes').forEach(function(f){f.hidden=false;f.querySelectorAll('input').forEach(function(i){i.checked=i.value===cur})})}
-document.addEventListener('change',function(e){var i=e.target;if(!i||i.name!=='theme')return;var v=i.value==='paper'?'light':i.value==='night'?'dark':'';
+document.addEventListener('change',function(e){var i=e.target;if(!i||!i.closest||!i.closest('.themes'))return;var v=i.value==='paper'?'light':i.value==='night'?'dark':'';
 try{if(v)localStorage.setItem('${THEME_KEY}',v);else localStorage.removeItem('${THEME_KEY}')}catch(x){}if(v)h.dataset.theme=v;else delete h.dataset.theme;tint();show()});show();
 if(h.classList.contains('loading')){var t0=Date.now();try{sessionStorage.setItem('reason-web-loaded','1')}catch(x){}window.addEventListener('load',function(){setTimeout(function(){h.classList.add('loaded');setTimeout(function(){h.classList.remove('loading','loaded')},420)},Math.max(0,1200-(Date.now()-t0)))})}})();`;
-/** Paper · Night · Auto, a real radio group. Hidden until the script can make it work (no dead controls). */
+/**
+ * Paper · Night · Auto, a real radio group. Hidden until the script can make it work (no dead controls).
+ * Each copy on a page (menu, footer, Settings) is its own group, named by its id, so every copy shows its tick.
+ */
 export function themeSwitch(id = "th") {
-  const opt = (v, t) => `<label class="th-o"><input type="radio" name="theme" value="${v}"${v === "auto" ? " checked" : ""}><span>${t}</span></label>`;
+  const opt = (v, t) => `<label class="th-o"><input type="radio" name="theme-${id}" value="${v}"${v === "auto" ? " checked" : ""}><span>${t}</span></label>`;
   return `<fieldset class="themes" hidden><legend class="sr">Theme</legend><div class="th-row" id="${id}">${opt("paper", "Paper")}<span class="th-dot" aria-hidden="true">·</span>${opt("night", "Night")}<span class="th-dot" aria-hidden="true">·</span>${opt("auto", "Auto")}</div></fieldset>`;
 }
 
