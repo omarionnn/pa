@@ -12,7 +12,7 @@ a webhook is never held; `call_status` awaits it before it reports.
 Source: `src/calls/goalmet.js` (`judgeable`, `judgeGoal`, `settleGoal`, `goalPending`), `src/calls/outcome.js`
 (`goal_met`), `src/tools.js` (`settleCall`, `fillLateDetails`, `call_status`, `callView` is_it_done),
 `src/stamps.js` (`TALKED`).
-Tests: `test/call-goalmet.test.js` (6), `test/call-handling.test.js` (the two-successes test).
+Tests: `test/call-goalmet.test.js` (8), `test/call-handling.test.js` (the two-successes test).
 
 ## Drive
 

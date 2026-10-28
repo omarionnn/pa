@@ -47,10 +47,10 @@ beforeEach(() => {
   db.upsertAccount({ conversationId: C, channel: "fake", address: "+12025551234", name: "Omari Nyarko", isOperator: true });
 });
 
-function call({ is_owner = 0, direction = "out", ...fields } = {}) {
+function call({ is_owner = 0, direction = "out", brief = "{}", ...fields } = {}) {
   const now = Date.now();
-  const r = db.db.prepare(`INSERT INTO calls (conversation_id, provider, to_number, goal, is_owner, direction, created_at, updated_at) VALUES (?, 'fake', '+16165550100', ?, ?, ?, ?, ?)`)
-    .run(C, "Reach Jeffrey and ask him to call Omari back when he gets a chance.", is_owner, direction, now, now);
+  const r = db.db.prepare(`INSERT INTO calls (conversation_id, provider, to_number, goal, is_owner, direction, brief, created_at, updated_at) VALUES (?, 'fake', '+16165550100', ?, ?, ?, ?, ?, ?)`)
+    .run(C, "Reach Jeffrey and ask him to call Omari back when he gets a chance.", is_owner, direction, brief, now, now);
   return db.updateCall(C, Number(r.lastInsertRowid), { state: "completed", transcript: JEFF, outcome_kind: "dropped_before_confirmation", ended_at: now, ...fields });
 }
 const says = (met, why = "Jeffrey took the message.") => async () => ({ value: { met, why } });
@@ -68,6 +68,28 @@ test("only a third-party call that reached a person and settled nothing is asked
   assert.equal(goal.judgeable(call({ outcome_kind: "confirmed" })), false);
   assert.equal(goal.judgeable(call({ outcome_kind: "line_silent" })), false);
   assert.equal(goal.judgeable(call({ transcript: "Reason: Hello?\nThem: ...\nReason: Hello?" })), false);
+  // Cleared to book: only the read-back gate settles it.
+  assert.equal(goal.judgeable(call({ brief: JSON.stringify({ approved: { book: true } }) })), false);
+});
+
+test("a transcript that grew while it was being read is read again", async () => {
+  const row = call({ transcript: "Reason: Hi, is this Jeffrey?\nThem: Yeah, this is me." });
+  const seen = [];
+  const ask = async ({ prompt }) => {
+    seen.push(prompt);
+    if (seen.length === 1) { db.updateCall(C, row.id, { transcript: JEFF }); return { value: { met: false, why: "cut off" } }; }
+    return { value: { met: true, why: "took the message" } };
+  };
+  const r = await goal.settleGoal(C, row, { ask });
+  assert.equal(seen.length, 2);
+  assert.match(seen[1], /For sure\. I will\./);
+  assert.equal(r.outcome_kind, "goal_met");
+});
+
+test("an answer of no on the whole transcript is asked once", async () => {
+  let n = 0;
+  await goal.settleGoal(C, call(), { ask: async () => { n++; return { value: { met: false, why: "no" } }; } });
+  assert.equal(n, 1);
 });
 
 test("the Jeffrey call: the model says the goal was met → goal_met, and the book gets its first seal", async () => {
@@ -76,7 +98,6 @@ test("the Jeffrey call: the model says the goal was met → goal_met, and the bo
   assert.deepEqual(db.db.prepare("SELECT type FROM stamps").all(), []);
   const r = await goal.settleGoal(C, row, { ask: says(true) });
   assert.equal(r.outcome_kind, "goal_met");
-  assert.equal(r.outcome, outcome.OUTCOMES.goal_met.label);
   assert.deepEqual(db.db.prepare("SELECT type, ref FROM stamps").all().map(x => ({ ...x })), [{ type: "first", ref: "first" }]);
 });
 

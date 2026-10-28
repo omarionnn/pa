@@ -14,7 +14,7 @@
 // or an answer off the schema all leave the row as it was.
 import * as db from "../db.js";
 import { askStructuredViaCli } from "../backends/cli.js";
-import { OUTCOMES, theySpoke } from "./outcome.js";
+import { theySpoke } from "./outcome.js";
 
 const SCHEMA = {
   type: "object",
@@ -43,8 +43,13 @@ export function judgeable(row, transcript = row?.transcript) {
   if (!row || Number(row.is_owner) === 1 || String(row.direction ?? "out") !== "out") return false;
   if (row.outcome_kind !== "dropped_before_confirmation") return false;
   if (!String(row.goal ?? "").trim()) return false;
+  // A call cleared to book, or one that got as far as a commitment, is settled by the read-back gate
+  // and nothing else: the model is never the route by which something counts as booked.
+  if (parse(row.brief)?.approved?.book === true) return false;
+  if (row.conversation_id && db.callCommitments(row.conversation_id, row.id).length) return false;
   return theySpoke(transcript) === true;
 }
+const parse = (s) => { try { return typeof s === "string" ? JSON.parse(s) : (s ?? {}); } catch { return {}; } };
 
 /**
  * The model's read: `{ met, why }`, or null when it could not be asked or did not answer cleanly.
@@ -81,12 +86,22 @@ export function settleGoal(conversationId, row, { ask, log = () => {} } = {}) {
   if (!judgeable(row)) return Promise.resolve(row);
   if (pending.has(row.id)) return pending.get(row.id);
   const run = (async () => {
-    const verdict = await judgeGoal(row, ask ? { ask } : {});
-    const now = db.getCall(conversationId, row.id) ?? row;
-    if (!verdict) { log({ call_goal_unjudged: row.id }); return now; }
-    log({ call_goal: row.id, met: verdict.met });
-    if (!verdict.met || now.outcome_kind !== "dropped_before_confirmation") return now;
-    return db.updateCall(conversationId, row.id, { outcome_kind: "goal_met", outcome: OUTCOMES.goal_met.label });
+    let read = row;
+    // A transcript can still be arriving (Bland's lands seconds after the call ends, and a late
+    // webhook fills the rest in): when the row's has grown since it was read, it is read again.
+    for (let tries = 0; tries < 3; tries++) {
+      const verdict = await judgeGoal(read, ask ? { ask } : {});
+      const now = db.getCall(conversationId, row.id) ?? read;
+      if (verdict) log({ call_goal: row.id, met: verdict.met });
+      else log({ call_goal_unjudged: row.id });
+      if (verdict?.met && now.outcome_kind === "dropped_before_confirmation") {
+        // Only the kind: `outcome` stays the provider's own word for how the call went.
+        return db.updateCall(conversationId, row.id, { outcome_kind: "goal_met" });
+      }
+      if (!judgeable(now) || String(now.transcript ?? "").length <= String(read.transcript ?? "").length) return now;
+      read = now;
+    }
+    return db.getCall(conversationId, row.id) ?? row;
   })().catch(e => { log({ call_goal_failed: (e?.message ?? String(e)).split("\n")[0] }); return row; })
     .finally(() => pending.delete(row.id));
   pending.set(row.id, run);

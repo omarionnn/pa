@@ -10916,7 +10916,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         }
         // Whether it did what it was for is still being read: say what happened once that is known.
         const judging = goalPending(r.id);
-        if (judging) { await judging; r = db.getCall(c, r.id) ?? r; }
+        // Capped: a slow read never holds the status up for long, and the row says what it says.
+        if (judging) { await Promise.race([judging, new Promise(res => setTimeout(res, 20_000).unref?.())]); r = db.getCall(c, r.id) ?? r; }
         out.push(callView(r, me.name));
       }
       const missingAudio = out.filter(cv => cv && cv.recording_missing_why);
