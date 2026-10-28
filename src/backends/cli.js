@@ -71,6 +71,13 @@ export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null
     "--permission-prompts", "none",
     "--disallowedTools", ...BUILT_INS,
     "--max-turns", String(mcpUrl ? cliConfig.maxTurns : 1),
+    // A run with no MCP server has no tools at all: the built-ins are denied above and there is
+    // nothing else to call (the side calls answer a schema; a call turn writes TOOL lines as text).
+    // Without this the CLI still puts its whole built-in tool set in front of the model — 12.7k
+    // tokens of schema on a 100-token question, measured 2026-10-27 (540 with `--tools ""`), and a
+    // slower boot. NEVER on a turn with tools: `--tools ""` also removes `ToolSearch`, and with it
+    // the deferral that keeps ~107k tokens of Reason's own schemas out of every call.
+    ...(mcpUrl ? [] : ["--tools", ""]),
   ];
 
   // The tools are served over loopback HTTP by the Reason process itself (mcp-http.js), so the
@@ -137,15 +144,29 @@ export function runClaudeCli({ feature = "other", ...args }) {
   });
 }
 
+/**
+ * The environment a CLI child is started with.
+ *
+ * The subscription login is an OAuth credential, not an API key. An empty ANTHROPIC_API_KEY in the
+ * environment (which is how the offline suite runs) would make the CLI try to use it and fail, so it
+ * is removed rather than blanked.
+ *
+ * CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC turns off the CLI's update check, telemetry and error
+ * reporting for the child. None of it is part of a turn, and on the server (2 vCPU, two or three
+ * CLIs booting at once at the start of a turn) it halved the boot: 1.46 s → 0.70 s wall, 1.31 s →
+ * 0.71 s CPU, four paired measurements on 2026-10-27. The model call itself is untouched.
+ */
+export function childEnvFor(env = process.env) {
+  const childEnv = { ...env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
+  delete childEnv.ANTHROPIC_API_KEY;
+  return childEnv;
+}
+
 function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, onEvent = null, input = null, effort = null }) {
   const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, jsonSchema, images, model, partial: typeof onEvent === "function", streamIn: !!input, effort });
 
   return new Promise((resolve) => {
-    // The subscription login is an OAuth credential, not an API key. An empty ANTHROPIC_API_KEY
-    // in the environment (which is how the offline suite runs) would make the CLI try to use it
-    // and fail, so it is removed rather than blanked.
-    const childEnv = { ...process.env };
-    delete childEnv.ANTHROPIC_API_KEY;
+    const childEnv = childEnvFor(process.env);
 
     let child;
     try {
