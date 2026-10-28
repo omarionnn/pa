@@ -170,6 +170,13 @@ await router.deliver({ channel: "fake", externalId: "k-t2", from: KOFI, text: "o
 await router.deliver({ channel: "fake", externalId: "k-t3", from: KOFI, text: "and again", chatId: null, at: Date.now() });
 const texts = phone.sent.slice(-2).map(m => m.text);
 step("decision 9: the first text after Web carries the line, the next does not", texts[0] === `re: on my phone now\n\n${WEB_HINT}` && texts[1] === "re: and again", JSON.stringify(texts));
+// Owner 10-27 "should say it only once": a second switch from Web never earns it again.
+await post(kofi, csrf, "drive-w-0004", "back on web");
+await until(() => db.messagesFor(KOFI_C).some(m => m.text === "re: back on web"));
+await router.deliver({ channel: "fake", externalId: "k-t4", from: KOFI, text: "phone again", chatId: null, at: Date.now() });
+await until(() => phone.sent.some(m => m.text.startsWith("re: phone again")));
+const again = phone.sent.at(-1).text;
+step("decision 9: once per person: a second switch from Web does not repeat the line", again === "re: phone again" && phone.sent.filter(m => m.text.includes(WEB_HINT)).length === 1 && !!db.getThread(KOFI_C).web_hint_told_at, JSON.stringify(again));
 
 // 8. Refusals over the wire.
 const anon = await fetch(`${BASE}/web/history?after=0`);

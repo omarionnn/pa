@@ -10,7 +10,7 @@
 //     on, and the answer is in history when they come back
 //   - the history boundary note shows once (first visit), never again
 //   - decision 9: after a switch from Web to texting, Reason's next text carries one line about Web,
-//     once per switch; never on a code; not after a long gap
+//     once per person ever (owner 10-27); never on a code; not after a long gap
 //   - signed out, cross-site, or without the session's secret: refused, no turn
 //   - safe rendering: a message's words are never markup; only http(s) links become links
 //   - the stream hears its own conversation only, passes typing for its own person only, and ends on sign-out
@@ -262,7 +262,7 @@ test("the history boundary note shows on the first Web visit only, never as a re
 
 // ---------- decision 9 ----------
 
-test("decision 9: after a switch from Web to texting, the next text carries one line about Web, once per switch", async () => {
+test("decision 9: after their first switch from Web to texting, the next text carries one line about Web, once per person ever", async () => {
   const h = harness();
   const kofi = { ...browser(KOFI_C), conv: KOFI_C };
   await send(h, kofi, { id: "d9-web-0001", text: "plan saturday" });
@@ -272,18 +272,22 @@ test("decision 9: after a switch from Web to texting, the next text carries one 
   await textIn(h, { id: "t1", body: "on my phone now" });
   assert.equal(h.fake.sent.at(-1).text, `re: on my phone now\n\n${WEB_HINT}`);
   await textIn(h, { id: "t2", body: "and another" });
-  assert.equal(h.fake.sent.at(-1).text, "re: and another", "once per switch");
+  assert.equal(h.fake.sent.at(-1).text, "re: and another", "not on the next text");
+  assert.ok(db.getThread(KOFI_C).web_hint_told_at, "and they are marked told");
 
-  // A second switch earns it again.
-  await send(h, kofi, { id: "d9-web-0002", text: "back on web" });
-  await until(() => h.web.recent.length === 2);
-  await textIn(h, { id: "t3", body: "phone again" });
-  assert.equal(h.fake.sent.at(-1).text, `re: phone again\n\n${WEB_HINT}`);
-  assert.equal(h.fake.sent.filter(m => m.text.includes(WEB_HINT)).length, 2);
+  // Owner 10-27: "should say it only once". A second switch, and a third, never earn it again.
+  for (const [i, w] of [["2", "back on web"], ["5", "web once more"]]) {
+    await send(h, kofi, { id: `d9-web-000${i}`, text: w });
+    await until(() => h.web.recent.some(m => m.text.includes(w)));
+    await textIn(h, { id: `t3-${i}`, body: `phone again ${i}` });
+    assert.equal(h.fake.sent.at(-1).text, `re: phone again ${i}`, "never a second time");
+  }
+  assert.equal(h.fake.sent.filter(m => m.text.includes(WEB_HINT)).length, 1, "said exactly once");
+  assert.equal(db.getThread(KOFI_C).web_hint_due, 0, "and no switch is left owing it");
 
   // A text long after the last Web message is not a mid-task switch.
   await send(h, kofi, { id: "d9-web-0003", text: "one more on web" });
-  await until(() => h.web.recent.length === 3);
+  await until(() => h.web.recent.some(m => m.text.includes("one more on web")));
   clock.skip(13 * HOUR);
   await textIn(h, { id: "t4", body: "next day" });
   assert.equal(h.fake.sent.at(-1).text, "re: next day");

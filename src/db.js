@@ -1515,6 +1515,21 @@ addColumnIfMissing("threads", "last_channel", "TEXT");
 // Reason's next text to them, within the switch window, carries one line saying the whole
 // conversation is on Web; taken (cleared) by that text.
 addColumnIfMissing("threads", "web_hint_due", "INTEGER NOT NULL DEFAULT 0");
+// When that line was said to this person. Once per PERSON, not per switch (owner 10-27: "should say
+// it only once"): someone who moves between Web and texting all day heard it on every switch. Once
+// set, no switch earns it again. Anyone whose outbox already carries the line was told before this
+// column existed, so they are marked told as it is added and never hear it a second time.
+{
+  const hadTold = db.prepare("PRAGMA table_info(threads)").all().some(c => c.name === "web_hint_told_at");
+  addColumnIfMissing("threads", "web_hint_told_at", "INTEGER");
+  if (!hadTold) {
+    db.prepare(`UPDATE threads SET web_hint_told_at = (
+        SELECT MIN(created_at) FROM outbox o WHERE o.conversation_id = threads.conversation_id
+          AND o.body LIKE '%the Web part included, is on Reason Web.%')
+      WHERE web_hint_told_at IS NULL AND EXISTS (SELECT 1 FROM outbox o WHERE o.conversation_id = threads.conversation_id
+          AND o.body LIKE '%the Web part included, is on Reason Web.%')`).run();
+  }
+}
 // The first time this person opened their conversation on Web: the history boundary is explained
 // once, then never again (spec §9: "not a recurring popup").
 addColumnIfMissing("accounts", "web_notice_seen_at", "INTEGER");
@@ -3719,9 +3734,9 @@ export function upsertThread({ conversationId, channel, address, chatId = null, 
     return getThread(conversationId);
   }
   // A text right after Web, within the same stretch of work, is a switch (decision 9): the next text
-  // Reason sends carries the one line about Web. Once per switch — takeWebHint clears it.
+  // Reason sends carries the one line about Web — unless they have been told already, ever.
   const before = getThread(conversationId);
-  if (before?.last_channel === "web" && now - (before.updated_at ?? 0) < WEB_SWITCH_WINDOW_MS) {
+  if (before?.last_channel === "web" && !before.web_hint_told_at && now - (before.updated_at ?? 0) < WEB_SWITCH_WINDOW_MS) {
     db.prepare("UPDATE threads SET web_hint_due = ? WHERE conversation_id = ?").run(now, conversationId);
   }
   db.prepare(`INSERT INTO threads (conversation_id, channel, address, chat_id, is_owner, service, last_inbound_id, last_channel, created_at, updated_at)
@@ -3741,15 +3756,19 @@ export function upsertThread({ conversationId, channel, address, chatId = null, 
 export const WEB_SWITCH_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 /**
- * Is the decision-9 line owed on this text? Yes exactly once per switch, and only within the same
- * window the switch was judged by: a switch whose reply never went out does not ride on a reminder
- * days later. Taking it clears it either way.
+ * Is the decision-9 line owed on this text? Yes exactly once per PERSON (web_hint_told_at), on the
+ * first switch, and only within the same window the switch was judged by: a switch whose reply never
+ * went out does not ride on a reminder days later. Taking it clears it either way, and a yes marks
+ * them told in the same statement, so no later switch and no second send can repeat it.
  */
 export function takeWebHint(conversationId, now = clock.now()) {
-  const r = db.prepare("SELECT web_hint_due AS due FROM threads WHERE conversation_id = ?").get(conversationId);
+  const r = db.prepare("SELECT web_hint_due AS due, web_hint_told_at AS told FROM threads WHERE conversation_id = ?").get(conversationId);
   if (!r?.due) return false;
-  const took = db.prepare("UPDATE threads SET web_hint_due = 0 WHERE conversation_id = ? AND web_hint_due = ?").run(conversationId, r.due).changes === 1;
-  return took && now - r.due < WEB_SWITCH_WINDOW_MS;
+  const fresh = !r.told && now - r.due < WEB_SWITCH_WINDOW_MS;
+  const took = db.prepare(`UPDATE threads SET web_hint_due = 0,
+      web_hint_told_at = CASE WHEN ? THEN ? ELSE web_hint_told_at END
+    WHERE conversation_id = ? AND web_hint_due = ? AND web_hint_told_at IS ?`).run(fresh ? 1 : 0, now, conversationId, r.due, r.told ?? null).changes === 1;
+  return took && fresh;
 }
 
 export function getThread(conversationId) {
