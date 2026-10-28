@@ -7820,13 +7820,24 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
   // "completed" would file an answering machine's greeting as a person spoken to. The row knew it was
   // a machine during the call; that beats the platform's word for how the call ended.
   const machine = callOutcome.reachedMachine(row) && SPOKE_TO_SOMETHING.includes(live.state);
+  // The line connected and nobody on their side said a word (the 2026-10-27 call to the Strand:
+  // three turns from Reason, three "..." back). The platform says `completed`, and its outcome word
+  // for that is "they answered", which nobody did. Only when nothing during the call already said a
+  // person was there — an `answered` or a `confirmed` on the row beats a transcript of dots.
+  const silent = !machine && live.state === "completed"
+    && (!row.outcome_kind || row.outcome_kind === "line_silent") && callOutcome.theySpoke(live.transcript) === false;
   let r = db.updateCall(conversationId, row.id, {
     state: machine ? "voicemail" : live.state,
-    outcome: machine ? (row.outcome || live.outcome || "") : (live.outcome ?? ""),
-    summary: live.summary ?? "",
+    outcome: machine ? (row.outcome || live.outcome || "") : silent ? callOutcome.OUTCOMES.line_silent.label : (live.outcome ?? ""),
+    summary: callOutcome.callSummary({ row, providerSummary: live.summary, silent, ownerName: accounts.ownerOf(conversationId)?.name }),
     transcript: live.transcript ?? "", duration_s: live.durationS ?? null, cost_cents: live.costCents ?? null,
   });
   if (LIVE_STATES.includes(live.state)) return r;
+  // Settled once as a silent line from a transcript that was still arriving, and this delivery has
+  // them talking: a conversation that settled nothing, as `fillLateDetails` does for the same case.
+  if (r.outcome_kind === "line_silent" && !silent && callOutcome.theySpoke(live.transcript) === true) {
+    r = db.updateCall(conversationId, r.id, { outcome_kind: "dropped_before_confirmation" });
+  }
 
   if (Number.isFinite(live.durationS) && live.durationS > 0) {
     accounts.countUse(conversationId, "call_minutes", live.durationS);
@@ -7850,6 +7861,7 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
       gaveUpOnHold: Number(r.hold_gave_up) === 1,
       voicemail: Number(r.voicemail_left) === 1,
       spoke: SPOKE_TO_SOMETHING.includes(live.state),
+      silent,
     });
     r = db.updateCall(conversationId, r.id, { outcome_kind: kind });
   }
@@ -8067,9 +8079,20 @@ export function owedLateDetails(row, now = clock.now()) {
 export function fillLateDetails(conversationId, row, live) {
   if (!live || LIVE_STATES.includes(live.state)) return row;
   const fields = {};
-  if (!row.summary && live.summary) fields.summary = live.summary;
+  if (!row.summary && live.summary) {
+    fields.summary = callOutcome.callSummary({ row, providerSummary: live.summary, ownerName: accounts.ownerOf(conversationId)?.name });
+  }
   if ((row.cost_cents === null || row.cost_cents === undefined) && Number.isFinite(live.costCents)) fields.cost_cents = live.costCents;
-  if ((live.transcript ?? "").length > (row.transcript ?? "").length) fields.transcript = live.transcript;
+  if ((live.transcript ?? "").length > (row.transcript ?? "").length) {
+    fields.transcript = live.transcript;
+    // Filed as a silent line from a transcript that was still arriving, and the rest of it has them
+    // talking: it was a conversation that settled nothing, which is what an unconfirmed call is.
+    if (row.outcome_kind === "line_silent" && callOutcome.theySpoke(live.transcript) === true) {
+      fields.outcome_kind = "dropped_before_confirmation";
+      fields.outcome = live.outcome || "";
+      fields.summary = callOutcome.callSummary({ row, providerSummary: live.summary, ownerName: accounts.ownerOf(conversationId)?.name });
+    }
+  }
   return Object.keys(fields).length ? db.updateCall(conversationId, row.id, fields) : row;
 }
 

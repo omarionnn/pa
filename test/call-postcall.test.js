@@ -389,6 +389,64 @@ test("a third-party call becomes an event turn, with the whole transcript and th
   assert.equal(db.usageToday(C, day).proactive, 1);
 });
 
+test("a silent line is filed as nobody speaking, not as 'they answered', and the summary is ours", async () => {
+  // The 2026-10-27 call to the Strand: connected, Reason spoke three times, and every turn back was
+  // "..." — digital silence. The row said "they answered", and ElevenLabs' summary said "The AI agent
+  // called Omari", which Reason could later read back as a call to the owner.
+  const call = thirdPartyCall({ goal: "ask whether they have Thank God for Cats in stock" });
+  const runtime = fakeRuntime();
+  await deliver(payload({
+    conversation_id: "conv_out",
+    metadata: { call_duration_secs: 9, termination_reason: "end_call tool was called" },
+    summary: "The AI agent called Omari to inquire about the stock. Despite repeated attempts, no audible response from the user.",
+    transcript: [
+      { role: "agent", message: "Hi, this is an AI assistant calling for Omari." },
+      { role: "user", message: "..." },
+      { role: "agent", message: "Are you still on the line?" },
+      { role: "user", message: "..." },
+    ],
+  }), { bytes: mp3, runtime });
+
+  const row = db.getCall(C, call.id);
+  assert.equal(row.state, "completed");
+  assert.equal(row.outcome_kind, "line_silent");
+  assert.doesNotMatch(row.outcome, /answered/);
+  assert.match(row.outcome, /silent — nobody spoke/);
+  assert.doesNotMatch(row.summary, /called Omari/);
+  assert.match(row.summary, new RegExp(`^Reason called \\${PLACE} on Omari's behalf \\(Omari was not on the call\\)`));
+  assert.match(row.summary, /Thank God for Cats/);
+  assert.match(row.summary, /Nobody on their side spoke/);
+  // What Reason is told to report from: the silence, in the row's words.
+  assert.match(runtime.events[0].text, /outcome: the line was silent — nobody spoke/);
+  assert.doesNotMatch(runtime.events[0].text, /called Omari/);
+
+  // Settling the same call again (a poll after the webhook) keeps it silent.
+  await settleCall(C, db.getCall(C, call.id), {
+    state: "completed", outcome: "they answered", summary: "The AI agent called Omari.",
+    transcript: "Reason: Hi?\nThem: ...", durationS: 9,
+  });
+  assert.equal(db.getCall(C, call.id).outcome_kind, "line_silent");
+  assert.doesNotMatch(db.getCall(C, call.id).summary, /called Omari/);
+
+  // And one whose transcript turns out to have them talking is not a silent line after all.
+  await settleCall(C, db.getCall(C, call.id), {
+    state: "completed", outcome: "they answered", summary: "They have two copies.",
+    transcript: "Reason: hi\nThem: yes, we have two copies", durationS: 9,
+  });
+  assert.equal(db.getCall(C, call.id).outcome_kind, "dropped_before_confirmation");
+  assert.equal(db.getCall(C, call.id).outcome, "they answered");
+});
+
+test("a third-party call where they did speak keeps the service's notes, behind who was really called", async () => {
+  const call = thirdPartyCall();
+  await deliver(payload({ conversation_id: "conv_out", summary: "The AI agent called Omari about a table." }), { bytes: mp3 });
+  const row = db.getCall(C, call.id);
+  assert.notEqual(row.outcome_kind, "line_silent");
+  assert.equal(row.outcome, "they answered");
+  assert.match(row.summary, new RegExp(`^Reason called \\${PLACE} on Omari's behalf \\(Omari was not on the call\\), to: ask for a table`));
+  assert.match(row.summary, /The call service's notes: The AI agent called Omari about a table\./);
+});
+
 test("a third-party call with no audio tells Reason to say so rather than imply a recording", () => {
   const call = thirdPartyCall();
   db.updateCall(C, call.id, { recording_state: "missing", recording_why: "the provider never gave it to Reason" });

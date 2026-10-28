@@ -649,7 +649,9 @@ test("the summary and the cost arrive after the call ends, and call_status goes 
   const view = (await runTool("call_status", { call_id: row.id }, { conversationId: C, calls })).calls[0];
   assert.equal(later.seen.length, 1, "a finished call that is still owed details is asked about once more");
   assert.equal(view.cost, "$0.05");
-  assert.equal(view.what_was_said, "It was a brief test call.");
+  // Their notes, behind who was really called: a provider's summary can take the owner named in the
+  // greeting for the person rung (the 2026-10-27 Strand call).
+  assert.match(view.what_was_said, /^Reason called \+12125559999 on Omari's behalf .*The call service's notes: It was a brief test call\.$/);
 
   const after = db.getCall(C, row.id);
   assert.equal(after.ended_at, settled.ended_at, "it ended when it ended");
@@ -668,7 +670,7 @@ test("a webhook retry fills in what the first delivery was too early to carry", 
   assert.equal(out.body.already, true);
   const after = db.getCall(C, row.id);
   assert.equal(after.cost_cents, 5);
-  assert.equal(after.summary, "They have a table at 8.");
+  assert.match(after.summary, /The call service's notes: They have a table at 8\.$/);
 });
 
 test("a call still unsummarised a week on is left alone", async () => {
