@@ -38,7 +38,9 @@ test("the most-used tools are marked always-load and nothing else is", () => {
   const chars = MCP_TOOLS.filter(t => t._meta).reduce((n, t) => n + JSON.stringify({ d: t.description, s: t.inputSchema }).length, 0);
   assert.ok(chars < 45_000, `${chars} chars of always-load schema`);
   // A tool that is not flagged carries no _meta at all, so the list the CLI reads is unchanged for it.
-  assert.equal(MCP_TOOLS.find(t => t.name === "page_create")?._meta, undefined);
+  const pageCreate = MCP_TOOLS.find(t => t.name === "page_create");
+  assert.ok(pageCreate, "page_create exists");
+  assert.equal(pageCreate._meta, undefined);
 });
 
 test("tools/list for a conversation carries the flag through", async () => {
@@ -46,5 +48,7 @@ test("tools/list for a conversation carries the flag through", async () => {
   assert.equal(listed.find(t => t.name === "web_search")?._meta?.["anthropic/alwaysLoad"], true);
   const r = await mcpDispatch({ jsonrpc: "2.0", id: 1, method: "tools/list" }, { conversationId: C });
   assert.equal(r.result.tools.find(t => t.name === "remember")?._meta?.["anthropic/alwaysLoad"], true);
-  assert.equal(r.result.tools.find(t => t.name === "research")?._meta, undefined);
+  const research = r.result.tools.find(t => t.name === "research");
+  assert.ok(research, "research exists");
+  assert.equal(research._meta, undefined);
 });
