@@ -585,9 +585,13 @@ test("what a confirmation rests on is recorded, so he can see which kind he has"
   assert.match(outcome.ownerLine("confirmed", { reference: "XK-1" }), /reference XK-1/);
 });
 
-test("exactly one outcome counts as success, and a warm call with no confirmation is not it", () => {
+test("two outcomes count as success, and a warm call with no confirmation is neither", () => {
+  // `goal_met` is never derived here: only the model's read of a transcript sets it (src/calls/goalmet.js).
   const successes = outcome.OUTCOME_KINDS.filter(outcome.isSuccess);
-  assert.deepEqual(successes, ["confirmed"]);
+  assert.deepEqual(successes, ["confirmed", "goal_met"]);
+  for (const s of [{}, { spoke: true }, { state: "completed" }, { state: "completed", spoke: true, asked: true }]) {
+    assert.notEqual(outcome.outcomeFor(s), "goal_met");
+  }
   // Reached a person, had a lovely chat, settled nothing.
   assert.equal(outcome.outcomeFor({ state: "completed", spoke: true }), "dropped_before_confirmation");
   // Reached a person and got the answers it rang for: that is `answered`, which is not success.
