@@ -50,6 +50,7 @@ import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./
 import * as callErrand from "./calls/errand.js";
 import { safeToRedial, stillOpen } from "./calls/redial.js";
 import * as callOutcome from "./calls/outcome.js";
+import { settleGoal, goalPending } from "./calls/goalmet.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
@@ -7869,6 +7870,11 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
     });
     r = db.updateCall(conversationId, r.id, { outcome_kind: kind });
   }
+  // Somebody was reached and nothing was agreed — but a message passed on or a question answered
+  // needed no agreement (call 46). Whether this call did what it was for is the model's read of the
+  // transcript against the goal (src/calls/goalmet.js), asked in the background so a webhook is never
+  // held open on it; `call_status` waits for it before it says what happened.
+  settleGoal(conversationId, r, { log: ctx.log ?? (() => {}) });
   // Whether there is audio is now a settled fact. Save it once, here, and write down which it is —
   // a file, or a reason there is not one.
   if (r.recording_state === "pending") r = await fileRecording(conversationId, r, live, ctx);
@@ -8097,7 +8103,11 @@ export function fillLateDetails(conversationId, row, live) {
       fields.summary = callOutcome.callSummary({ row, providerSummary: live.summary, ownerName: accounts.ownerOf(conversationId)?.name });
     }
   }
-  return Object.keys(fields).length ? db.updateCall(conversationId, row.id, fields) : row;
+  if (!Object.keys(fields).length) return row;
+  const r = db.updateCall(conversationId, row.id, fields);
+  // The rest of the transcript is what the goal is read against; settleGoal asks once per call.
+  if (fields.transcript) settleGoal(conversationId, r);
+  return r;
 }
 
 /**
@@ -8426,10 +8436,13 @@ function callView(r, who) {
     // nothing, and a call that dropped can already have got what it came for.
     ...(going || !r.outcome_kind ? {} : {
       what_happened: callOutcome.OUTCOMES[r.outcome_kind]?.label ?? r.outcome_kind,
-      // The line that stops a warm transcript becoming a claim. Exactly one outcome is a success, and
-      // for that one the owner is also told what the confirmation rests on — "they gave me a reference"
-      // and "they said yes" are different promises and he can see which he has.
-      is_it_done: callOutcome.isSuccess(r.outcome_kind)
+      // The line that stops a warm transcript becoming a claim. Two outcomes are a success: `goal_met`
+      // (a message passed on, a question answered — nothing agreed, so nothing is called booked), and
+      // `confirmed`, where the owner is also told what the confirmation rests on — "they gave me a
+      // reference" and "they said yes" are different promises and he can see which he has.
+      is_it_done: r.outcome_kind === "goal_met"
+        ? `Yes — the call did what it was for (the transcript shows it). Nothing was booked or agreed on it, so say what was done, not that anything is confirmed or booked.`
+        : callOutcome.isSuccess(r.outcome_kind)
         ? (r.confirmation_ref
           ? `Yes — confirmed, reference ${r.confirmation_ref}. Give ${who} the reference.`
           : r.confirmation_strength === "promised_in_writing"
@@ -10909,6 +10922,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           catch (e) { live = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
           if (live?.ok) r = going ? await settleCall(c, row, live, ctx) : fillLateDetails(c, row, live);
         }
+        // Whether it did what it was for is still being read: say what happened once that is known.
+        const judging = goalPending(r.id);
+        // Capped: a slow read never holds the status up for long, and the row says what it says.
+        if (judging) { await Promise.race([judging, new Promise(res => setTimeout(res, 20_000).unref?.())]); r = db.getCall(c, r.id) ?? r; }
         out.push(callView(r, me.name));
       }
       const missingAudio = out.filter(cv => cv && cv.recording_missing_why);

@@ -60,7 +60,7 @@ export const NIGHT_FROM = 0, NIGHT_TO = 6, NIGHT_QUIET_MS = 60 * 60_000;
 /** A new stamp is never mentioned before 7 in the morning on their clock (the stamp itself is kept). */
 export const QUIET_UNTIL = 7;
 /** A call outcome that was a real conversation with somebody (src/calls/outcome.js). */
-const TALKED = new Set(["confirmed", "answered", "needs_owner"]);
+const TALKED = new Set(["confirmed", "goal_met", "answered", "needs_owner"]);
 
 // ---------------------------------------------------------------- tables
 db.db.exec(`
