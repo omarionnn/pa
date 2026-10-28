@@ -10,10 +10,32 @@ import { sealTravelers } from "../privacy.js";
 
 export const PROTOCOL_VERSION = "2024-11-05";
 
+/**
+ * The tools the model is handed whole, up front.
+ *
+ * Claude Code defers a large tool set: with ~290 tools (~107k tokens of schema) the model is shown
+ * names only and has to spend a model round on `ToolSearch` before its first real call. In 48 h of
+ * live traffic (2026-10-25 → 27) that round ran on 43 of 58 tool-using turns and cost 2.3 s at p50,
+ * 4.3 s at p90. These tools made ~190 of ~230 real tool calls in the same 48 h (journal counts,
+ * re-checked 2026-10-28); marked `anthropic/alwaysLoad`, their full schemas (~35k chars ≈ 9k
+ * tokens, cached) are in the prompt from the start and the model calls them directly. The CLI reads
+ * the flag off `_meta` for `--mcp-config` servers (proved live on 2.1.296 with a 301-tool server:
+ * num_turns 2 instead of 3). Nothing is removed; the other tools are still there to search for.
+ * Never widen this to every tool: that puts all ~107k tokens of schema into every call.
+ */
+export const ALWAYS_LOAD = new Set([
+  "web_search", "web_lookup", "gmail_search", "task_update", "timer_set", "spotify_now_playing",
+  "remember", "browser_read", "recall", "call_place", "confirm_record", "browser_open",
+  "message_send", "task_start",
+]);
+
 // A tool's own description, plus any feature rule it shares with the rest of its group (see
 // playbookExtra in src/tools.js). The CLI defers tools, so the model reads this only when it loads
-// the tool, which is exactly when the rule matters.
-const asMcp = (t) => ({ name: t.name, description: t.description + playbookExtra(t.name), inputSchema: t.input_schema });
+// the tool, which is exactly when the rule matters — or from the start, for the ones above.
+const asMcp = (t) => ({
+  name: t.name, description: t.description + playbookExtra(t.name), inputSchema: t.input_schema,
+  ...(ALWAYS_LOAD.has(t.name) ? { _meta: { "anthropic/alwaysLoad": true } } : {}),
+});
 
 export const MCP_TOOLS = tools.map(asMcp);
 
