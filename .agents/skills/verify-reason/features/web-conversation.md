@@ -101,7 +101,10 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
 - **Decision 9** — a TEXT inbound whose thread `last_channel` was `web` within 12 h sets
   `threads.web_hint_due`; the next text to them (`deliver`, not web/console, `toOwner`, not a
   `pcode:`/`esign:`/`wsign:` key, `webAllowedFor`) takes it atomically and ends with
-  `\n\nOur full conversation, the Web part included, is on Reason Web.` Once per switch.
+  `\n\nOur full conversation, the Web part included, is on Reason Web.` Once per PERSON, ever
+  (owner 10-27): taking it sets `threads.web_hint_told_at`, and a told thread is never made due again.
+  The column's migration marks anyone whose outbox already carries the line as told. Pinned by
+  test/web-hint-once.test.js; the drive's step 7 checks a second switch stays silent.
 
 ### One shared thread (owner 10-27 07:08; Web-only chats from #209 retired)
 

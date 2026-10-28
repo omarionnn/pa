@@ -109,7 +109,7 @@ export function keptOnWeb({ router, conversationId, route, fromTask = null, medi
   return false;
 }
 
-/** The one line a text carries after a switch from Web (decision 9): intent, not instructions. */
+/** The one line a text carries after their first switch from Web (decision 9), once per person ever: intent, not instructions. */
 export const WEB_HINT = "Our full conversation, the Web part included, is on Reason Web.";
 
 export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (line) => console.error(line) }) {
@@ -164,7 +164,7 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
     }
 
     // Decision 9 (docs/plans/reason-web-phase1.md §7): the first text to them after they moved from
-    // Web to texting mid-task says, once, that the whole conversation is on Web. Their own texts
+    // Web to texting mid-task says that the whole conversation is on Web — once per person, ever (db.takeWebHint). Their own texts
     // only (never a code, never a third party), and taken atomically so a second send cannot repeat it.
     if (name !== WEB && name !== "console" && durable.toOwner && !media
       && !db.HISTORY_EXCLUDED_KEYS.some(p => String(idempotencyKey ?? "").startsWith(p))
