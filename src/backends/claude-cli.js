@@ -62,19 +62,83 @@ export const sessionFor = (historyId, now = Date.now()) => {
   return s && now - s.at < SESSION_FRESH_MS ? s.id : null;
 };
 
-/** One line per stored message, in the order they happened. */
-function renderHistory(messages) {
-  const lines = [];
-  for (const m of messages.slice(-MAX_HISTORY)) {
-    if (m.role === "user" && typeof m.content === "string") lines.push(m.content);
-    else if (m.role === "assistant" && typeof m.content === "string") lines.push(`Reason: ${m.content}`);
-    else if (m.role === "assistant" && Array.isArray(m.content)) {
-      const text = m.content.filter(b => b.type === "text").map(b => b.text).join(" ").trim();
-      if (text) lines.push(`Reason: ${text}`);
+/** One stored message as the line the model reads, or null for one it is never shown. */
+function renderLine(m) {
+  if (m.role === "user" && typeof m.content === "string") return m.content;
+  if (m.role === "assistant" && typeof m.content === "string") return `Reason: ${m.content}`;
+  if (m.role === "assistant" && Array.isArray(m.content)) {
+    const text = m.content.filter(b => b.type === "text").map(b => b.text).join(" ").trim();
+    return text ? `Reason: ${text}` : null;
+  }
+  return null;
+}
+
+/** One line per stored message, in the order they happened: the newest MAX_HISTORY. */
+export const renderHistory = (messages) => messages.slice(-MAX_HISTORY).map(renderLine).filter(Boolean);
+
+/**
+ * The history, split so the prompt cache can hold it.
+ *
+ * Every turn used to paste the last 40 messages into the user prompt. Once a thread is past 40 the
+ * window slides, so that block was different on every turn and the whole of it was written to the
+ * cache again each time: 23k tokens per reply at p50 (model_usage, 10-25 → 10-27), 79% of what a
+ * reply costs, on top of the ~97k that were read. The API caches a prefix only where a breakpoint
+ * was set, and Claude Code sets one on the system prompt and one on the last message — so a
+ * history block inside the user message can never be a hit, even byte-identical (proved live
+ * 2026-10-28: two-block user message, same first block, 0 read / 19k written both times), while
+ * the same block appended to the system prompt is (16.3k read, 2.9k written on the second turn).
+ *
+ * So the older part of the history rides at the end of the system prompt as an ANCHOR that stays
+ * byte-identical from turn to turn, and only what came after it goes in the user message. The
+ * anchor is the whole window when it is set (the model sees exactly what it did before); it is
+ * set again when more than ANCHOR_RECENT_MAX messages have followed it, when it is older than
+ * ANCHOR_MAX_MS (the cache is cold by then anyway), or when its end can no longer be found in the
+ * thread. Between anchors the model sees the same 40 messages plus up to 20 newer ones — never
+ * fewer than today, never anything the thread does not hold (src/thread.js keeps 60).
+ *
+ * In memory only: a restart anchors afresh on the next turn, which costs what every turn cost
+ * before. Nothing is ever dropped to fit: a system prompt that would pass SYSTEM_MAX_BYTES (the
+ * argument limit is 128 KiB on Linux) goes without an anchor and the history rides in the user
+ * message as it always did.
+ */
+const anchors = new Map();
+export const ANCHOR_RECENT_MAX = 20;
+export const ANCHOR_MAX_MS = 2 * 60 * 60_000;
+export const SYSTEM_MAX_BYTES = 110_000;
+const ANCHOR_HEAD = "The conversation so far, oldest first. Anything said after these lines is in the message below, under \"The conversation so far, continued\"; the new message is there too.";
+
+export function historyParts(historyId, messages, { system = "", now = Date.now(), log = () => {} } = {}) {
+  const lines = renderHistory(messages);
+  const a = anchors.get(historyId);
+  if (a && now - a.at < ANCHOR_MAX_MS) {
+    // The anchor's end, found by its last two lines (a user line carries a timestamp, so the pair
+    // is as good as unique; one assistant line — "Reason: on it." — is not). Last match wins.
+    let idx = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (lines[i] === a.tail[1] && (a.tail[0] == null || lines[i - 1] === a.tail[0])) { idx = i; break; }
+    }
+    if (idx >= 0 && lines.length - 1 - idx <= ANCHOR_RECENT_MAX) {
+      log({ history_anchor: "kept", recent: lines.length - 1 - idx, conversation: historyId });
+      return { anchor: a.text, recent: lines.slice(idx + 1) };
     }
   }
-  return lines.join("\n");
+  if (!lines.length) { anchors.delete(historyId); return { anchor: "", recent: [] }; }
+  const text = lines.join("\n");
+  if (Buffer.byteLength(system) + Buffer.byteLength(ANCHOR_HEAD) + Buffer.byteLength(text) + 4 > SYSTEM_MAX_BYTES) {
+    anchors.delete(historyId);
+    log({ history_anchor: "too_long", lines: lines.length, conversation: historyId });
+    return { anchor: "", recent: lines };
+  }
+  anchors.set(historyId, { text, tail: [lines.at(-2) ?? null, lines.at(-1)], at: now });
+  log({ history_anchor: a ? "reset" : "new", lines: lines.length, conversation: historyId });
+  return { anchor: text, recent: [] };
 }
+
+/** The system prompt a turn runs under: the person's, with the history anchor at its end. */
+export const systemWithAnchor = (system, anchor) => anchor ? `${system}\n\n${ANCHOR_HEAD}\n${anchor}` : system;
+
+/** For tests: forget every anchor, as a restart does. */
+export const resetAnchors = () => anchors.clear();
 
 /**
  * Take back the line a turn wrote before it ran, now that the turn has died.
@@ -249,8 +313,15 @@ async function runTurnOnCli({
       // (src/said.js) — the same block as the API path.
       ...(kind === "event" ? [saidLedger.declinedNote(conversationId)] : [openWorkNote(conversationId), keptNote(conversationId), saidLedger.standingNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
 
-    const history = renderHistory(before);
-    const prompt = (history ? `The conversation so far:\n${history}\n\n` : "")
+    // The history: its older part at the end of the system prompt, where the cache keeps it, and
+    // what came after that here (see historyParts).
+    const systemBase = systemFor(me);
+    const parts = historyParts(historyId, before, { system: systemBase, log });
+    const system = systemWithAnchor(systemBase, parts.anchor);
+    const history = parts.recent.join("\n");
+    const prompt = (history
+      ? `${parts.anchor ? "The conversation so far, continued (the earlier part is at the end of your instructions)" : "The conversation so far"}:\n${history}\n\n`
+      : parts.anchor ? "The conversation so far is at the end of your instructions.\n\n" : "")
       + (pending.length ? `Questions you already asked and are still waiting on:\n${pending.join("\n")}\nIf the new message answers one of these, confirm_record THAT id. Do not ask again.\n\n` : "")
       + (notice ? `${notice}\n\n` : "")
       + `The new message:\n${line}\n\n`
@@ -279,6 +350,7 @@ async function runTurnOnCli({
     const mcp = await startMcp({ conversationId, channels, calls, onTool, onToolStart, toolCtx });
     // Every fresh turn runs under a session id of Reason's choosing, so the rewrite can name it.
     const sessionId = randomUUID();
+    const stored = continueSession ? sessions.get(historyId) : null;
     const resuming = continueSession ? sessionFor(historyId) : null;
     // A continued session already holds the history, the notes and the draft: it is handed the new
     // line alone, with the same closing instruction, under the same system prompt (a cache hit).
@@ -291,10 +363,12 @@ async function runTurnOnCli({
       // handed back, or any streamed delta is the model at work. The CLI's own `system` init line
       // is not, and a resume the CLI refuses prints nothing of the model's at all.
       const heard = draft ? (e) => { if (e?.type === "assistant" || e?.type === "user" || e?.type === "stream_event") tookPart = true; draft.feed(e); } : null;
-      const common = { system: systemFor(me), mcpUrl: mcp.url, images: blocks, log, feature, ...(heard ? { onEvent: heard } : {}) };
+      const common = { system, mcpUrl: mcp.url, images: blocks, log, feature, ...(heard ? { onEvent: heard } : {}) };
       if (resuming) {
         sessions.delete(historyId);
-        r = await run({ ...common, prompt: resumePrompt, resume: resuming });
+        // Under the system prompt the session was started with, anchor and all: the same bytes, so
+        // the whole prefix is a cache hit, even if the anchor has moved on since.
+        r = await run({ ...common, system: stored?.system ?? system, prompt: resumePrompt, resume: resuming });
         // The session could not be continued at all — gone from disk, a CLI that would not resume:
         // no envelope, not a timeout, and the model never did a thing (no tool call reached Reason's
         // MCP server, no word of a reply was heard). Then the long way, which is what every rewrite
@@ -319,7 +393,7 @@ async function runTurnOnCli({
     }
     // A turn that finished is the one a rewrite would continue. A resumed turn is not kept: a
     // session is continued once, and a second check does not run on a rewrite.
-    if (r.ok && !resuming) sessions.set(historyId, { id: sessionId, at: Date.now() });
+    if (r.ok && !resuming) sessions.set(historyId, { id: sessionId, at: Date.now(), system });
 
     if (!r.ok) {
       log({ cli_failed: r.error ?? r.envelope?.result });
