@@ -701,7 +701,8 @@ can't open photos on this setup" — which was the live Reason, on a real phone.
 **Two texts seconds apart are one thought.** Reason used to answer the first half of a message
 before the second half arrived — "which ones? looks like the rest of your message got cut off" to a
 text whose link was pasted a second later. Now an arriving message waits a short quiet window
-(`REASON_BURST_QUIET_MS`, 2.5s) to see whether more is coming; each new text from the same person
+(`REASON_BURST_QUIET_MS`, 2.5s; a Reason Web message, which arrives whole, waits
+`REASON_BURST_QUIET_WEB_MS`, 0.5s) to see whether more is coming; each new text from the same person
 restarts the window, and everything that landed runs as **one** turn, in order. A hard ceiling
 (`REASON_BURST_MAX_MS`, 8s from the first text) answers somebody who never stops typing. A burst
 costs one turn off the day's allowance, not one per text, and a lone message is never held longer
