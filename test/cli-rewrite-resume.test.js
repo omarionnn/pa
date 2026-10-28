@@ -100,6 +100,19 @@ test("a resume the CLI refuses falls back to the full turn in the same call, and
   assert.equal(rows.filter(m => m.role === "assistant" && m.content === "earlier i said 7, it moved: 8pm").length, 1);
 });
 
+test("a resumed run the model took part in and that then failed is a failed turn, never run twice", async () => {
+  for (const failure of [
+    { ok: false, envelope: { is_error: true, result: "API Error: 529 overloaded" }, error: "the CLI reported an error" },
+    { ok: false, error: "the CLI did not finish inside 300000ms" },
+  ]) {
+    const b = backend((args, n) => n === 1 ? { ok: true, envelope: { result: "draft" } } : failure);
+    await b.turn();
+    await assert.rejects(() => b.turn({ text: "[note]", keep: onethought.CODE_LINE, continueSession: true }));
+    assert.equal(b.calls.length, 2, `no second attempt after: ${failure.error}`);
+    assert.equal(b.calls[1].resume, b.calls[0].sessionId);
+  }
+});
+
 test("a turn stopped by a restart during the resume is not run again here: that is the drain's job", async () => {
   const b = backend((args, n) => n === 1 ? { ok: true, envelope: { result: "draft" } } : { ok: false, interrupted: true, error: "the CLI was stopped by SIGTERM before it finished" });
   await b.turn();

@@ -281,13 +281,17 @@ async function runTurnOnCli({
       if (resuming) {
         sessions.delete(historyId);
         r = await run({ ...common, prompt: resumePrompt, resume: resuming });
-        if (!r.ok && !r.interrupted) {
-          // The session could not be continued (gone from disk, a CLI that would not resume): the
-          // long way, which is what every rewrite did before. Logged, because a resume that never
-          // works is the old cost back with none of the saving.
-          log({ cli_resume_failed: conversationId, why: String(r.error ?? r.envelope?.result ?? "").split("\n")[0].slice(0, 160) });
+        // The session could not be continued at all — gone from disk, a CLI that would not resume:
+        // no envelope, and not a timeout. Then the long way, which is what every rewrite did before.
+        // Logged, because a resume that never works is the old cost back with none of the saving.
+        // A run the model DID take part in and that then failed (an error envelope, a timeout after
+        // tools ran) is a failed turn exactly as before — never run twice, or a text it sent along
+        // the way could go twice.
+        const neverStarted = !r.ok && !r.interrupted && !r.envelope && !/did not finish inside/.test(r.error ?? "");
+        if (neverStarted) {
+          log({ cli_resume_failed: conversationId, why: String(r.error ?? "").split("\n")[0].slice(0, 160) });
           r = await run({ ...common, prompt, sessionId });
-        } else log({ cli_resumed: conversationId });
+        } else if (r.ok) log({ cli_resumed: conversationId });
       } else {
         r = await run({ ...common, prompt, sessionId });
       }
