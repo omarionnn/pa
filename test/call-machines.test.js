@@ -311,3 +311,18 @@ test("a machine reached after a person answered does not rewrite what the person
   assert.equal(r.toolCalls[0].function.name, "end_call");
   assert.equal(db.getCall(C, call.id).outcome_kind, "answered");
 });
+
+test("hold after a person answered is waited out, and a farewell message is not spoken into a recording", async () => {
+  const held = strandCall({ outcome_kind: "answered", parties_told: "[1]" });
+  const r1 = await turn(held, rounds(
+    scripted({ tool: "machine_on_the_line", input: { what: "hold_or_queue" } }),
+    scripted({ tool: "skip_turn", input: { reason: "put through to reservations" } }),
+  ), theyAnswer("Please hold while we connect you."));
+  assert.equal(r1.toolCalls[0].function.name, "skip_turn");
+  assert.equal(db.getCall(C, held.id).outcome_kind, "answered");
+
+  const rec = strandCall();
+  await turn(rec, rounds(scripted({ tool: "machine_on_the_line", input: { what: "recorded_message" } }), scripted({ tool: "skip_turn", input: { reason: "x" } })), theyAnswer(STRAND_RECORDING));
+  const r2 = await turn(db.getCall(C, rec.id), scripted({ tool: "end_call", input: { reason: "recording", message: "Thanks, goodbye!" } }), theyAnswer("Goodbye."));
+  assert.equal(JSON.parse(r2.toolCalls[0].function.arguments).message, undefined);
+});

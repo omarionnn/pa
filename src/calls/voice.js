@@ -1734,6 +1734,11 @@ export async function* voiceTurn({
         continue;
       }
 
+      // Hanging up on a menu or a recording: nothing is said into it, not even a farewell message.
+      if (system?.name === "end_call" && callOutcome.onAMachine(call) && system.input?.message) {
+        system = { ...system, input: { reason: String(system.input?.reason ?? "") } };
+      }
+
       // The hang-up after a machine answered. Whatever is in `message` is what the mailbox gets, and
       // it is the only thing that makes this a voicemail left rather than a machine reached.
       if (system?.name === "end_call" && callOutcome.reachedMachine(call)) {

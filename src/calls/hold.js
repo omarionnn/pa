@@ -184,8 +184,14 @@ export function noteMachineLine(call, { what = "", deadEnd = false, heard = "", 
   const kindNow = String(call?.outcome_kind ?? "");
   if (kindNow && !["machine_menu", "machine_recording", "voicemail_no_message"].includes(kindNow)) {
     patch(call, keep);
+    // Put through to a mailbox or a dead end: done. Put on hold or through to a menu: the rest of the
+    // errand may still be on the other side of it, so wait or press like any other.
+    if (deadEnd === true || what === "mailbox_not_taking_messages" || what === "voicemail_greeting") {
+      return { ok: true, machine: true, endNow: true, kind: kindNow };
+    }
     return {
-      ok: true, machine: true, endNow: true, kind: kindNow,
+      ok: true, machine: true, kind: kindNow,
+      instruction: `Nobody is listening, so say nothing to it. Press the option for a person if one fits, or call skip_turn and keep listening.`,
     };
   }
 
