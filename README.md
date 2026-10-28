@@ -1016,7 +1016,7 @@ saying it failed or saying it was done.
 
 **"It worked" has to be earned.** The outcome is a closed set
 (`src/calls/outcome.js`): `confirmed`, `answered`, `voicemail_left`, `no_answer`,
-`dropped_before_confirmation`, `refused_by_them`, `needs_owner`, `hold_gave_up`,
+`dropped_before_confirmation`, `line_silent`, `refused_by_them`, `needs_owner`, `hold_gave_up`,
 `could_not_understand`. Exactly one of them is a success, and `confirmed` is unreachable without a
 read-back **and** their yes. The word you see is derived from whether that evidence exists, never from
 how the transcript reads — "great, I'll get that sorted for you" is a warm, cooperative, completely

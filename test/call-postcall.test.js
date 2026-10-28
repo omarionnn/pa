@@ -420,14 +420,21 @@ test("a silent line is filed as nobody speaking, not as 'they answered', and the
   assert.match(runtime.events[0].text, /outcome: the line was silent — nobody spoke/);
   assert.doesNotMatch(runtime.events[0].text, /called Omari/);
 
-  // A second delivery of the same call (webhook after a poll) keeps it silent.
-  await deliver(payload({
-    conversation_id: "conv_out",
-    summary: "The AI agent called Omari.",
-    transcript: [{ role: "agent", message: "Hi?" }, { role: "user", message: "..." }],
-  }), { bytes: mp3 });
+  // Settling the same call again (a poll after the webhook) keeps it silent.
+  await settleCall(C, db.getCall(C, call.id), {
+    state: "completed", outcome: "they answered", summary: "The AI agent called Omari.",
+    transcript: "Reason: Hi?\nThem: ...", durationS: 9,
+  });
   assert.equal(db.getCall(C, call.id).outcome_kind, "line_silent");
   assert.doesNotMatch(db.getCall(C, call.id).summary, /called Omari/);
+
+  // And one whose transcript turns out to have them talking is not a silent line after all.
+  await settleCall(C, db.getCall(C, call.id), {
+    state: "completed", outcome: "they answered", summary: "They have two copies.",
+    transcript: "Reason: hi\nThem: yes, we have two copies", durationS: 9,
+  });
+  assert.equal(db.getCall(C, call.id).outcome_kind, "dropped_before_confirmation");
+  assert.equal(db.getCall(C, call.id).outcome, "they answered");
 });
 
 test("a third-party call where they did speak keeps the service's notes, behind who was really called", async () => {

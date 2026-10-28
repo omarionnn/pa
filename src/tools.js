@@ -7833,6 +7833,11 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
     transcript: live.transcript ?? "", duration_s: live.durationS ?? null, cost_cents: live.costCents ?? null,
   });
   if (LIVE_STATES.includes(live.state)) return r;
+  // Settled once as a silent line from a transcript that was still arriving, and this delivery has
+  // them talking: a conversation that settled nothing, as `fillLateDetails` does for the same case.
+  if (r.outcome_kind === "line_silent" && !silent && callOutcome.theySpoke(live.transcript) === true) {
+    r = db.updateCall(conversationId, r.id, { outcome_kind: "dropped_before_confirmation" });
+  }
 
   if (Number.isFinite(live.durationS) && live.durationS > 0) {
     accounts.countUse(conversationId, "call_minutes", live.durationS);
