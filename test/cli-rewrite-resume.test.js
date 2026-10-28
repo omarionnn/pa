@@ -113,6 +113,77 @@ test("a resumed run the model took part in and that then failed is a failed turn
   }
 });
 
+test("a resumed child that called a tool and then died with no envelope is a failed turn, never run twice", async () => {
+  // The child ran message_send through Reason's MCP server, then was killed (OOM, a crash): no
+  // envelope, not a timeout, not a signal the CLI reports. Before 10-28 that read as "the resume
+  // never ran" and the full turn ran again — and the text could go twice.
+  const logs = [];
+  let hooks = null;
+  const withMcp = async (args) => { hooks = args; return { url: "http://127.0.0.1:1/mcp", close: async () => {} }; };
+  const b = backend((args, n) => {
+    if (n === 1) return { ok: true, envelope: { result: "draft" } };
+    hooks.onTool({ tool: "message_send", input: { text: "on it" }, out: "sent" });
+    return { ok: false, error: "the CLI returned no JSON (exit 1): " };
+  });
+  await b.turn({ startMcp: withMcp });
+  await assert.rejects(() => b.turn({ text: "[note]", keep: onethought.CODE_LINE, continueSession: true, startMcp: withMcp, log: (e) => logs.push(e) }));
+  assert.equal(b.calls.length, 2, "no second attempt after a tool ran");
+  assert.equal(b.calls[1].resume, b.calls[0].sessionId);
+  assert.ok(logs.some(e => e.cli_resume_died_after_acting === C), "and the journal says why there was no fallback");
+  assert.ok(!logs.some(e => e.cli_resume_failed), "not logged as a resume that never ran");
+  assert.ok(logs.some(e => e.tool === "message_send"), "the tool call still reaches the log");
+});
+
+test("a tool that only STARTED before the child died still counts: the fallback never runs", async () => {
+  // The child dies while message_send is still under way: `onTool` has not fired yet, only
+  // `onToolStart`. Found in review 10-28 — with completion alone the window was narrower, not shut.
+  let hooks = null;
+  const withMcp = async (args) => { hooks = args; return { url: "http://127.0.0.1:1/mcp", close: async () => {} }; };
+  const b = backend((args, n) => {
+    if (n === 1) return { ok: true, envelope: { result: "draft" } };
+    hooks.onToolStart({ tool: "message_send" });
+    return { ok: false, error: "the CLI returned no JSON (exit 137): " };
+  });
+  await b.turn({ startMcp: withMcp });
+  await assert.rejects(() => b.turn({ text: "[note]", keep: onethought.CODE_LINE, continueSession: true, startMcp: withMcp }));
+  assert.equal(b.calls.length, 2, "no second attempt after a tool started");
+});
+
+test("the real MCP dispatch tells onToolStart before the tool runs, and even when the tool throws", async () => {
+  const { mcpDispatch } = await import("../src/backends/mcp-core.js");
+  const order = [];
+  const call = { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "no_such_tool_" + Date.now(), arguments: {} } };
+  const r = await mcpDispatch(call, { conversationId: C, onToolStart: (e) => order.push(`start:${e.tool}`), onTool: (e) => order.push(`done:${e.tool}`) });
+  assert.equal(order[0], `start:${call.params.name}`, "told at dispatch");
+  assert.ok(r, "answered one way or the other");
+});
+
+test("a resumed child that began a reply on the draft feed and then died is not run twice either", async () => {
+  const b = backend((args, n) => {
+    if (n === 1) return { ok: true, envelope: { result: "draft" } };
+    args.onEvent({ type: "system", subtype: "init" });
+    args.onEvent({ type: "stream_event", event: { type: "message_start" } });
+    args.onEvent({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "ok so" } } });
+    return { ok: false, error: "the CLI returned no JSON (exit 1): " };
+  });
+  const draft = { feed: () => {} };
+  await b.turn({ draft });
+  await assert.rejects(() => b.turn({ text: "[note]", keep: onethought.CODE_LINE, continueSession: true, draft }));
+  assert.equal(b.calls.length, 2, "no second attempt after partial text");
+});
+
+test("a resume the CLI refuses with only its own init line printed still falls back", async () => {
+  const b = backend((args, n) => {
+    if (n === 1) return { ok: true, envelope: { result: "draft" } };
+    if (args.resume) { args.onEvent({ type: "system", subtype: "init" }); return { ok: false, error: "No conversation found with session ID" }; }
+    return { ok: true, envelope: { result: "again" } };
+  });
+  const draft = { feed: () => {} };
+  await b.turn({ draft });
+  assert.equal(await b.turn({ text: "[note]", keep: onethought.CODE_LINE, continueSession: true, draft }), "again");
+  assert.equal(b.calls.length, 3);
+});
+
 test("a turn stopped by a restart during the resume is not run again here: that is the drain's job", async () => {
   const b = backend((args, n) => n === 1 ? { ok: true, envelope: { result: "draft" } } : { ok: false, interrupted: true, error: "the CLI was stopped by SIGTERM before it finished" });
   await b.turn();
