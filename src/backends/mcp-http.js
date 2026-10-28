@@ -15,7 +15,7 @@ import { mcpDispatch } from "./mcp-core.js";
  * reach it: it binds the loopback interface on a port the OS picks, and it is shut the moment
  * the turn is over.
  */
-export function startMcpHttp({ conversationId, channels = null, calls = null, onTool = () => {}, toolCtx = {} } = {}) {
+export function startMcpHttp({ conversationId, channels = null, calls = null, onTool = () => {}, onToolStart = () => {}, toolCtx = {} } = {}) {
   const server = createServer(async (req, res) => {
     if (req.method === "DELETE") { res.writeHead(204).end(); return; }       // session teardown
     if (req.method !== "POST") { res.writeHead(405).end(); return; }
@@ -34,7 +34,7 @@ export function startMcpHttp({ conversationId, channels = null, calls = null, on
     const out = [];
     for (const one of batch) {
       try {
-        const r = await mcpDispatch(one, { conversationId, channels, calls, onTool, toolCtx });
+        const r = await mcpDispatch(one, { conversationId, channels, calls, onTool, onToolStart, toolCtx });
         if (r) out.push(r);
       } catch (e) {
         if (one.id !== undefined) {

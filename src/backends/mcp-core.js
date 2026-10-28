@@ -77,7 +77,7 @@ export function mcpToolsFor(conversationId) {
  * the tools on one backend and silently did not on the other, which is how the cancel rails ended
  * up unprovable live. Production sets nothing here beyond `channels` and `calls`.
  */
-export async function mcpDispatch(msg, { conversationId, channels = null, calls = null, onTool = () => {}, toolCtx = {} } = {}) {
+export async function mcpDispatch(msg, { conversationId, channels = null, calls = null, onTool = () => {}, onToolStart = () => {}, toolCtx = {} } = {}) {
   const reply = (result) => ({ jsonrpc: "2.0", id: msg.id, result });
 
   switch (msg.method) {
@@ -101,6 +101,11 @@ export async function mcpDispatch(msg, { conversationId, channels = null, calls 
     case "tools/call": {
       const name = msg.params?.name;
       const input = msg.params?.arguments ?? {};
+      // Told BEFORE the tool runs. `onTool` below fires once it has finished, and a CLI child that
+      // dies while a message_send or a buy is still under way would otherwise leave no trace of
+      // it in time for the turn to know the model acted (src/backends/claude-cli.js, the resume
+      // fallback). A tool that throws reaches this too, and never reaches `onTool`.
+      onToolStart({ tool: name });
       const out = await runTool(name, input, {
         conversationId,
         messages: loadConversation(toolCtx?.historyId ?? conversationId),

@@ -266,7 +266,17 @@ async function runTurnOnCli({
     // `taskId` — which task this turn is a wake for, when it is one — is a turn extra like any
     // other and rides in `toolCtx`, exactly as it does on the API path. That is what lets a check
     // which reads the job's sheet find the right one on both backends.
-    const mcp = await startMcp({ conversationId, channels, calls, onTool: log, toolCtx });
+    // Whether the model took part in the run at all. A tool it called comes through Reason's own
+    // MCP server, so this is certain — and it is marked as the call STARTS, not when it ends: a
+    // child that dies while the tool is still running (or a tool that throws after it sent) would
+    // otherwise leave no trace in time. A word it began is heard on the draft feed when that is on.
+    // Read only on a resumed run that ended with no envelope: a child that was killed AFTER a
+    // message_send, a buy or a call has no envelope either, and before this was checked the
+    // fallback below re-ran the whole turn and those tools could fire twice.
+    let tookPart = false;
+    const onToolStart = () => { tookPart = true; };
+    const onTool = (e) => { tookPart = true; log(e); };
+    const mcp = await startMcp({ conversationId, channels, calls, onTool, onToolStart, toolCtx });
     // Every fresh turn runs under a session id of Reason's choosing, so the rewrite can name it.
     const sessionId = randomUUID();
     const resuming = continueSession ? sessionFor(historyId) : null;
@@ -277,20 +287,29 @@ async function runTurnOnCli({
     const feature = kind === "event" ? "proactive" : "reply";
     let r;
     try {
-      const common = { system: systemFor(me), mcpUrl: mcp.url, images: blocks, log, feature, ...(draft ? { onEvent: draft.feed } : {}) };
+      // The draft feed, when it is on, also tells `tookPart`: an assistant message, a tool result
+      // handed back, or any streamed delta is the model at work. The CLI's own `system` init line
+      // is not, and a resume the CLI refuses prints nothing of the model's at all.
+      const heard = draft ? (e) => { if (e?.type === "assistant" || e?.type === "user" || e?.type === "stream_event") tookPart = true; draft.feed(e); } : null;
+      const common = { system: systemFor(me), mcpUrl: mcp.url, images: blocks, log, feature, ...(heard ? { onEvent: heard } : {}) };
       if (resuming) {
         sessions.delete(historyId);
         r = await run({ ...common, prompt: resumePrompt, resume: resuming });
         // The session could not be continued at all — gone from disk, a CLI that would not resume:
-        // no envelope, and not a timeout. Then the long way, which is what every rewrite did before.
-        // Logged, because a resume that never works is the old cost back with none of the saving.
+        // no envelope, not a timeout, and the model never did a thing (no tool call reached Reason's
+        // MCP server, no word of a reply was heard). Then the long way, which is what every rewrite
+        // did before. Logged, because a resume that never works is the old cost back with none of
+        // the saving.
         // A run the model DID take part in and that then failed (an error envelope, a timeout after
-        // tools ran) is a failed turn exactly as before — never run twice, or a text it sent along
-        // the way could go twice.
-        const neverStarted = !r.ok && !r.interrupted && !r.envelope && !/did not finish inside/.test(r.error ?? "");
+        // tools ran, a child killed after a tool call and so with no envelope) is a failed turn
+        // exactly as before — never run twice, or a text it sent along the way could go twice.
+        const noEnvelope = !r.ok && !r.interrupted && !r.envelope && !/did not finish inside/.test(r.error ?? "");
+        const neverStarted = noEnvelope && !tookPart;
         if (neverStarted) {
           log({ cli_resume_failed: conversationId, why: String(r.error ?? "").split("\n")[0].slice(0, 160) });
           r = await run({ ...common, prompt, sessionId });
+        } else if (noEnvelope) {
+          log({ cli_resume_died_after_acting: conversationId, why: String(r.error ?? "").split("\n")[0].slice(0, 160) });
         } else if (r.ok) log({ cli_resumed: conversationId });
       } else {
         r = await run({ ...common, prompt, sessionId });
