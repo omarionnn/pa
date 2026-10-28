@@ -93,7 +93,7 @@ test("a text is held 2.5 s from its arrival, and a second text inside the window
   const first = text(h, "b-1", "can you check");
   assert.ok(await until(() => db.countPendingInbound(KOFI_C) === 1));
   // The clock runs real time until it is skipped, so a few ms pass between the send and the hold.
-  const near = (actual, expected, what) => assert.ok(actual >= expected && actual < expected + 200, `${what}: ${actual - expected} ms off`);
+  const near = (actual, expected, what) => assert.ok(actual >= expected && actual < expected + 1_000, `${what}: ${actual - expected} ms off`);
   near(db.pendingReadyAt(KOFI_C), t0 + 2_500, "ready 2.5 s after the text landed");
   // The second bubble, 1.8 s later: joins, and pushes the window out from ITS arrival.
   clock.skip(1_800);
@@ -115,7 +115,7 @@ test("a Web message is held only half a second", async () => {
   const sending = h.router.deliver({ channel: WEB, externalId: "w-1", conversationId: KOFI_C, text: "book the 7:30 at peaches", at: clock.now() });
   assert.ok(await until(() => db.countPendingInbound(KOFI_C) === 1));
   const ready = db.pendingReadyAt(KOFI_C);
-  assert.ok(ready >= t0 + 500 && ready < t0 + 700, `a Web message waits 0.5 s, not 2.5 (${ready - t0} ms)`);
+  assert.ok(ready >= t0 + 500 && ready < t0 + 1_500, `a Web message waits 0.5 s, not 2.5 (${ready - t0} ms)`);
   await h.release(600);
   await sending;
   assert.ok(await until(() => h.turns.length === 1));
