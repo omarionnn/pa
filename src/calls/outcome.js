@@ -22,7 +22,8 @@ import { FINAL_STATES } from "./provider.js";
  * Every outcome a call can have, and what each one means for what may be said and done next.
  *
  * - `success` — may this be reported to the owner as the thing he asked for, having happened?
- *   Exactly one outcome has it. That is the point.
+ *   Two outcomes have it: `confirmed` (agreed, through the read-back gate) and `goal_met` (nothing to
+ *   agree, and the model read that the call did what it was for). A warm call is neither.
  * - `spokeToHuman` — was there a person? Separates "nobody picked up" from "somebody said no".
  * - `redial` — `"no"` never, `"ask"` only to find out what happened, `"retry"` the same goal again.
  *   This is what `./redial.js` reads; see the `dropped_before_confirmation` note below, which is the
@@ -33,6 +34,17 @@ export const OUTCOMES = {
     success: true, spokeToHuman: true, redial: "no",
     label: "they confirmed it",
     what: "A person agreed to the thing that was asked for, read back, and said yes to it.",
+  },
+  goal_met: {
+    // Call 46 (2026-10-27): "reach Jeffrey and ask him to call Omari back" — Jeff said it was him and
+    // "For sure. I will." Done, and there was never anything to read back or agree. The other success,
+    // and a narrower one than `confirmed`: nothing was booked or committed, the call simply did what it
+    // was for (a message to the right person, a question answered, the information got). Never derived
+    // by `outcomeFor`; only the model's read of the transcript against the goal sets it, after the call
+    // (./goalmet.js), and only from `dropped_before_confirmation`.
+    success: true, spokeToHuman: true, redial: "no",
+    label: "it got what it rang for",
+    what: "A person was reached and the call did what it was for — nothing was booked or agreed, because nothing needed to be.",
   },
   answered: {
     success: false, spokeToHuman: true, redial: "no",
