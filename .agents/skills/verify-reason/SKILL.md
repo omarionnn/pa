@@ -380,6 +380,16 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
+Machines on a call Reason places (a recording, a menu, a mailbox, hold) are driven on the real model
+through claude-cli, not the cage and not the API — `call-turn.sh` would bill the API:
+
+```bash
+D=$(mktemp -d) && env -i PATH=$PATH HOME=$HOME USER=$USER LOGNAME=$USER REASON_DB_PATH=$D/machines.db \
+  node bin/call-machines-drive.mjs        # five cases from live call 45's words, "ok" each
+```
+
+See [features/call-machines.md](features/call-machines.md).
+
 **6 — A scheduled call, with the fake provider.** "Call me at 7": the real `timer_set`, the real
 Runtime sweep and `call_place`, the fake call provider and the fake channel, in process under the
 cage's env. No model, no phone, nothing leaves the machine.

@@ -1014,10 +1014,18 @@ Reason tells them it has to check, texts you the exact difference mid-call, and 
 you do not answer, **the call ends having agreed to nothing**, and the summary says that rather than
 saying it failed or saying it was done.
 
+**A machine is not a person.** On a call to anyone but you, the line opens silent: Reason hears what
+answered before it says a word. A recorded message, a phone menu, hold music or a mailbox gets no
+"hi, I'm an AI assistant…" — Reason stays quiet, presses the key that reaches a person when the menu
+offers one, waits within the hold budget, and hangs up at once when the recording says nobody can be
+reached by phone (keeping what it said, like an email address, for the recap to you). The disclosure is
+said by code, word for word, in front of its first words to the first person who actually picks up.
+
 **"It worked" has to be earned.** The outcome is a closed set
 (`src/calls/outcome.js`): `confirmed`, `answered`, `voicemail_left`, `no_answer`,
 `dropped_before_confirmation`, `line_silent`, `refused_by_them`, `needs_owner`, `hold_gave_up`,
-`could_not_understand`. Exactly one of them is a success, and `confirmed` is unreachable without a
+`could_not_understand`, and for machines `machine_menu`, `machine_recording`, `machine_dead_end`,
+`voicemail_full`, `voicemail_no_message`. Exactly one of them is a success, and `confirmed` is unreachable without a
 read-back **and** their yes. The word you see is derived from whether that evidence exists, never from
 how the transcript reads — "great, I'll get that sorted for you" is a warm, cooperative, completely
 non-committal sentence, and a summary written from the feel of a call says the table is booked. Where a

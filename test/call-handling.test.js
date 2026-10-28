@@ -196,7 +196,7 @@ test("a menu key is pressed, re-sent once, and then refused so a stuck menu is n
   const third = hold.notePress(call, { tones: "2" });
   assert.equal(third.ok, false);
   assert.equal(third.stuck, true);
-  assert.match(third.error, /Say something out loud instead/);
+  assert.match(third.error, /option for a person you have not tried/);
   assert.deepEqual(hold.pressed(call), ["2", "2"]);
 });
 

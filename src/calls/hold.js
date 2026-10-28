@@ -110,6 +110,139 @@ export const NEW_PERSON_TOOL = {
   },
 };
 
+/**
+ * Reason's own read of a machine that is not a person (2026-10-27, call 45 to the Strand).
+ *
+ * There is no signal on the turn itself that a recording is speaking: their `voicemail_detection` is
+ * a model's judgement as well, and Twilio's carrier-level AMD (`twilio_machine_detection` on the
+ * outbound-call request) arrives as a separate webhook event at any point in the call — even after it
+ * — so it cannot decide what the next spoken word is, and it costs extra per call. The model hearing
+ * the words is the only thing placed to tell "Strand Books, how can I help?" from "our flagship store
+ * is open every day…". So it says which it is, and code does the rest: the row, the hang-up on a dead
+ * end, and keeping every word off the line until a person is there.
+ */
+export const MACHINE_TOOL = {
+  name: "machine_on_the_line",
+  description: "What answered is a recording or a machine, not a person: a phone menu, a recorded message"
+    + " (hours, an announcement), a voicemail greeting, a mailbox that is full or not taking messages, or"
+    + " hold music / a queue. Call this as soon as you can tell, INSTEAD of speaking — nobody is listening."
+    + " Call it again if what you hear changes (a menu hands you to a mailbox, a recording turns into hold"
+    + " music). Never say anything to a machine except to leave a voicemail when told how.",
+  input_schema: {
+    type: "object",
+    properties: {
+      what: {
+        type: "string",
+        enum: ["phone_menu", "recorded_message", "voicemail_greeting", "mailbox_not_taking_messages", "hold_or_queue"],
+        description: "phone_menu: it offers options or asks for an extension. recorded_message: an announcement with no"
+          + " options. voicemail_greeting: a mailbox inviting you to leave a message. mailbox_not_taking_messages: a mailbox"
+          + " that is full, unavailable or not accepting messages. hold_or_queue: music, 'please hold', a queue position.",
+      },
+      dead_end: {
+        type: "boolean",
+        description: "True only if the recording itself says nobody can be reached by phone this way — they do not take"
+          + " phone inquiries, they are closed for good, the number is not in service — AND it offers no option for a person.",
+      },
+      heard: {
+        type: "string",
+        description: "In one or two short sentences, what it said that the person you work for can use: another way to"
+          + " reach them (an email address, a website), opening hours, why nobody can take the call. Empty if nothing.",
+      },
+    },
+    required: ["what"],
+  },
+};
+
+/** The `what` values above, mapped to the outcome the row carries while (and if) the call ends on it. */
+const MACHINE_OUTCOME = {
+  phone_menu: "machine_menu",
+  recorded_message: "machine_recording",
+  hold_or_queue: "machine_recording",
+  mailbox_not_taking_messages: "voicemail_full",
+};
+
+/**
+ * A machine answered, as Reason read it. Writes it on the row and says what happens next:
+ *
+ *   `{endNow: true}` — a dead end or a mailbox that takes nothing. Code hangs up at once, without a
+ *                      word: talking into a recording that has just said nobody is there is the thing
+ *                      call 45 did, and waiting for a timeout is a minute of billing for nothing.
+ *   otherwise        — an instruction for the model: stay quiet and press, wait, or leave a message.
+ *
+ * A voicemail greeting goes through `noteMachine`, the existing voicemail path, unchanged.
+ */
+export function noteMachineLine(call, { what = "", deadEnd = false, heard = "", log = () => {} } = {}) {
+  const said = String(heard ?? "").replace(/\s+/g, " ").trim().slice(0, 400);
+  // What it said is kept even when the next thing it says is different: the menu that read out an
+  // email address is still the place the email address came from.
+  const keep = said ? { machine_heard: said } : {};
+  log({ call_machine: call?.id, what, dead_end: deadEnd === true, heard: said.slice(0, 80) });
+
+  // A person already settled something on this call — answered, confirmed, paused for the owner — and
+  // a handover then reached a machine. What the person did stands: the row is not rewritten as "no
+  // person was reached", which would also make an agreed booking look safe to ring back and make again.
+  const kindNow = String(call?.outcome_kind ?? "");
+  if (kindNow && !["machine_menu", "machine_recording", "voicemail_no_message"].includes(kindNow)) {
+    patch(call, keep);
+    // Put through to a mailbox or a dead end: done. Put on hold or through to a menu: the rest of the
+    // errand may still be on the other side of it, so wait or press like any other.
+    if (deadEnd === true || what === "mailbox_not_taking_messages" || what === "voicemail_greeting") {
+      return { ok: true, machine: true, endNow: true, kind: kindNow };
+    }
+    return {
+      ok: true, machine: true, kind: kindNow,
+      instruction: `Nobody is listening, so say nothing to it. Press the option for a person if one fits, or call skip_turn and keep listening.`,
+    };
+  }
+
+  if (what === "voicemail_greeting") {
+    patch(call, keep);
+    return noteMachine(call, { reason: said || "voicemail greeting", log });
+  }
+  if (deadEnd === true || what === "mailbox_not_taking_messages") {
+    const kind = what === "mailbox_not_taking_messages" ? "voicemail_full" : "machine_dead_end";
+    patch(call, {
+      ...keep, voicemail_left: 0, hold_since: null, outcome_kind: kind,
+      outcome: kind === "voicemail_full" ? "a mailbox answered and is not taking messages" : "a recording said nobody can be reached by phone this way",
+    });
+    return { ok: true, machine: true, endNow: true, kind };
+  }
+  const kind = MACHINE_OUTCOME[what] ?? "machine_recording";
+  patch(call, { ...keep, outcome_kind: kind, outcome: kind === "machine_menu" ? "a phone menu answered; no person yet" : "a recording answered; no person yet" });
+  return {
+    ok: true, machine: true, kind,
+    instruction: kind === "machine_menu"
+      ? `Nobody is listening, so say nothing to it. If you have heard an option that fits what this call is for, or one`
+        + ` for a person (operator, reception, "any other enquiry", 0), press it now with play_keypad_touch_tone. If it`
+        + ` asks for an extension you were not given and offers nothing that fits, press 0 once. If it is still reading`
+        + ` its options, call skip_turn and keep listening. When a person comes on, just talk to them: who you are is`
+        + ` said for you in front of your first words.`
+      : `Nobody is listening, so say nothing to it: call skip_turn and keep listening — a menu or a person usually follows.`
+        + ` When a person comes on, just talk to them: who you are is said for you in front of your first words.`,
+  };
+}
+
+/**
+ * The disclosure is owed to whoever is on the line, and nobody has heard it yet.
+ *
+ * Only on a call whose opening waited for their side (`opening_waits`, written by `call_place` when
+ * the provider placed it that way) — a call placed the old way spoke it at pick-up, and saying it twice
+ * is how a call stops sounding like a person. And only while nobody has been told: a handover to a new
+ * person is `newParty`'s business, which has the model say it.
+ */
+export function openingOwed(call) {
+  return Number(call?.opening_waits) === 1 && Number(call?.is_owner) !== 1
+    && currentParty(call) === 1 && partiesTold(call).length === 0 && String(call?.announcement ?? "").trim() !== "";
+}
+
+/** A person is on the line after a menu or recording: the row stops saying it was a machine. */
+export function notePerson(call, { log = () => {} } = {}) {
+  if (!["machine_menu", "machine_recording"].includes(String(call?.outcome_kind ?? ""))) return false;
+  patch(call, { outcome_kind: "", outcome: "" });
+  log({ call_person_after_machine: call?.id });
+  return true;
+}
+
 // ---------- the clock ----------
 
 /** Is this call on hold right now? */
@@ -310,9 +443,11 @@ export function notePress(call, { tones = "", log = () => {} } = {}) {
     log({ call_menu_stuck: call.id, tones: t, tried: sameInARow });
     return {
       ok: false, stuck: true,
+      // Not "say something out loud": words to a menu are taken as words to a person, and would spend
+      // the disclosure on it (see `holdBack` in ./voice.js).
       error: `You have already pressed ${t} ${sameInARow} times and the menu has not reacted. Do not press it again.`
-        + ` Say something out loud instead — most menus put you through to a person if you ask, or there is an`
-        + ` option for one. If there is genuinely no way through, say so and end the call.`,
+        + ` If there is an option for a person you have not tried (operator, reception, 0), press that instead.`
+        + ` If there is genuinely no way through, call end_call without saying anything.`,
     };
   }
   patch(call, { menu_presses: JSON.stringify([...history, t].slice(-12)) });
@@ -345,7 +480,10 @@ export function noteMachine(call, { reason = "", log = () => {} } = {}) {
   return {
     ok: true, machine: true,
     instruction: `A machine answered and nobody is listening, so do not ask anything and do not wait for a reply.`
-      + ` Leave ONE message now: call end_call with its "message" argument set to the whole voicemail —`
+      // Not every errand is one a mailbox can do anything with. Asked for by the owner 2026-10-27:
+      // "leave a short message only when the goal suits it".
+      + ` If a message would do nothing for what this call is for, call end_call with no message and say nothing.`
+      + ` Otherwise leave ONE short message now: call end_call with its "message" argument set to the whole voicemail —`
       + ` who you are (an AI assistant calling for ${owner}), what the call is about in one or two plain`
       + ` sentences from what this call is for, and how to reach ${owner} back if you were given a way.`
       + ` Put every word inside "message" and write nothing outside it: the call ends as soon as the message`
@@ -380,6 +518,19 @@ export function noteVoicemail(call, { message = "", log = () => {} } = {}) {
  * call, and only the things a model gets wrong on its own are in here.
  */
 export const WAITING_RULES = [
+  // Call 45 (2026-10-27): the Strand's line answered with a ninety-second recording of opening hours
+  // that ended "we're not accepting customer phone inquiries… email web@strandbooks.com… if you know
+  // your party's extension, dial it now". Reason said "This is a recorded message, and it says they
+  // aren't taking customer phone inquiries" OUT LOUD, into it, pressed nothing, and the menu timed out
+  // into a mailbox that was not taking messages either.
+  `FIRST, every time their side speaks before a person has: is it a PERSON or a MACHINE? A person answers like a`
+  + ` person — "Strand, how can I help?", "hello?". A machine reads things out: opening hours, "press 1 for…",`
+  + ` "if you know your party's extension", "please hold", music, a voicemail greeting. If it is a machine,`
+  + ` call machine_on_the_line and write NO words at all — nothing you write reaches a machine usefully, and`
+  + ` describing the recording out loud is talking into it. Then do what it tells you.`,
+  `If the recording says they do not take calls or inquiries by phone, are closed for good, or the mailbox is full or`
+  + ` not taking messages, and it offers no option for a person: that is a dead end — say so with machine_on_the_line`
+  + ` (dead_end true), with any other way to reach them it gave in "heard", and the call is ended for you.`,
   `If you are put on hold, or you hear music, ringing, or a recorded message repeating: call skip_turn and say nothing.`,
   `Never talk to hold music and never fill a silence with chatter. You are being timed; you do not have to watch the clock.`,
   // Said out loud, to hold music, in the 2026-10-07 rehearsal: "The call is on hold, so I should stay
@@ -400,14 +551,15 @@ export const WAITING_RULES = [
   + ` itself and do not wait for a person — a menu will not put you through on its own.`,
   `Hear the options out before choosing, so you pick the right one rather than the first one. But if the`
   + ` menu has read the option you need, that is your turn to press it.`,
-  `If none of the options fit, press the one for a person, or say something out loud — most menus put you`
-  + ` through to somebody if you ask.`,
+  // Not "say something out loud" any more: words on a line where only a machine has spoken are taken as
+  // Reason talking to a person (see `openingOwed`), so the disclosure would be spent on the menu.
+  `If none of the options fit, press the one for a person (operator, reception, "all other enquiries"), or 0.`,
   // The 2026-10-13 call to Jeffrey: "straight away" had it calling this four seconds in, over the
   // greeting, and the forwarded tool hung the call up at the beep with nothing said. The tool is now
   // Reason's own step — it answers with how to leave the message — so the only timing that matters is
   // that the greeting has finished.
-  `If a machine answers instead of a person, let the greeting finish, then call voicemail_detection.`
-  + ` Say nothing to the greeting. You will be told how to leave the message.`,
+  `If a voicemail greeting answers, let it finish, then call machine_on_the_line with what "voicemail_greeting".`
+  + ` Say nothing to the greeting. You will be told whether and how to leave the message.`,
   `If somebody different comes on the line, or you are put through to another person, call new_person_on_the_line FIRST,`
   + ` before you say anything to them, and do what it tells you.`,
   `If the same person comes back after holding, thank them for coming back and carry on — do not start again.`,

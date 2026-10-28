@@ -1491,6 +1491,10 @@ addColumnIfMissing("calls", "errand_id", "INTEGER");
 addColumnIfMissing("calls", "voicemail_left", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("calls", "attempt", "INTEGER NOT NULL DEFAULT 1");
 addColumnIfMissing("calls", "told_at", "INTEGER");
+// Machines on outbound calls (2026-10-27, call 45): whether this call's opening waited for their side
+// to speak instead of being spoken at pick-up, and what a recording said that the owner can use.
+addColumnIfMissing("calls", "opening_waits", "INTEGER");
+addColumnIfMissing("calls", "machine_heard", "TEXT");
 addColumnIfMissing("usage", "calls", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("usage", "call_seconds", "INTEGER NOT NULL DEFAULT 0");
 // Connected accounts used to be install-wide, from when there was only ever one person. With a
@@ -4932,6 +4936,7 @@ export function updateCall(conversationId, id, fields) {
     // The 2026-10-07 addendum: the second check on an owner call, and what the call ran under.
     "verified_at", "verified_how", "verify_tries", "verify_sent_at", "verify_sent_after_msgs",
     "profile", "tts_model",
+    "opening_waits", "machine_heard",
   ];
   const sets = ["updated_at = ?"];
   const args = [clock.now()];

@@ -48,7 +48,7 @@ import {
   VOICE_RULES, LANGUAGE_RULE, ownerLanguageRule, announcementAgainIn, ownerCallFrame, thirdPartyFrame,
 } from "./voice-prompt.js";
 import * as hold from "./hold.js";
-import { WAITING_TOOLS, NEW_PERSON_TOOL, WAITING_RULES } from "./hold.js";
+import { WAITING_TOOLS, NEW_PERSON_TOOL, MACHINE_TOOL, WAITING_RULES } from "./hold.js";
 import * as callOutcome from "./outcome.js";
 import * as commit from "./commit.js";
 import { PROPOSE_TOOL, CONFIRM_TOOL, RELEASE_TOOL } from "./commit.js";
@@ -150,7 +150,8 @@ export const SYSTEM_TOOLS = [
  * exist to STOP things happening: `propose_commitment` is how a call finds out it may not agree, and
  * `new_person_on_the_line` is how a disclosure gets repeated to somebody who has not heard it.
  */
-export const CALL_TOOLS = [NEW_PERSON_TOOL, PROPOSE_TOOL, CONFIRM_TOOL, RELEASE_TOOL, QUOTE_TOOL];
+// `machine_on_the_line` (2026-10-27) only writes down what answered and decides the hang-up on a dead end.
+export const CALL_TOOLS = [NEW_PERSON_TOOL, MACHINE_TOOL, PROPOSE_TOOL, CONFIRM_TOOL, RELEASE_TOOL, QUOTE_TOOL];
 
 /** Their names, for the dispatcher that runs them here instead of forwarding them to the platform. */
 export const CALL_TOOL_NAMES = CALL_TOOLS.map(t => t.name);
@@ -175,7 +176,17 @@ export function withoutSilenceMarker(spoken) {
 }
 
 /** Tools that end or hand over a turn: the line stays as it is, no "one sec" in front of them. */
-const SILENT_TOOLS = new Set(["end_call", "skip_turn", "transfer_to_number", "voicemail_detection", "language_detection", "play_keypad_touch_tone"]);
+/**
+ * Tools that mean "nobody to talk to yet" — waiting, a key, a machine named, or a handover the model
+ * is about to be told how to open. Words written in the same round as one of these were about the
+ * line, not to anybody on it, and are not said while nobody has been heard (see `holdBack`).
+ */
+const QUIET_ON_A_MACHINE = new Set(["skip_turn", "play_keypad_touch_tone", "voicemail_detection", "machine_on_the_line", "new_person_on_the_line"]);
+
+/** The first turn on a line that opened silent and has stayed silent. */
+export const LINE_OPENED = `[The call has just connected and nothing has been heard from their side yet.]`;
+
+const SILENT_TOOLS = new Set(["end_call", "skip_turn", "transfer_to_number", "voicemail_detection", "language_detection", "play_keypad_touch_tone", "machine_on_the_line"]);
 
 /** The filler that buys thinking time before a tool, rather than dead air. Their own suggestion. */
 export const THINKING_FILLER = "... ";
@@ -486,6 +497,9 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
   // What this call may agree to, and the questions it has to come back with. Off the row, so a call
   // placed an hour ago is still held to the brief it was placed under rather than to a default.
   const brief = callBrief(call);
+  // Nobody has been told who is calling yet, because the line opened silent (see `place` in
+  // ./elevenlabs.js). Read once here so the prompt and `voiceTurn` agree on it for this turn.
+  const openingOwed = hold.openingOwed(call);
 
   const parts = [
     thirdPartyFrame({
@@ -497,6 +511,7 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
       // version cannot be a call with weaker rules on it.
       rules: callRulesFor({ ownerName }),
       announcement: call.announcement ?? "",
+      openingOwed,
     }),
     `--- you are ON A PHONE CALL right now ---`,
     VOICE_RULES,
@@ -531,6 +546,10 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
     systemTools: SYSTEM_TOOLS,
     language: callLanguage(call).language,
     brief,
+    // Until a person has been heard, nothing the model writes is spoken as it streams — see the
+    // hold-back in `voiceTurn`.
+    openingOwed,
+    machineOnLine: callOutcome.onAMachine(call),
   };
 }
 
@@ -841,6 +860,12 @@ export function runCallTool(name, input = {}, { call, context, log = () => {}, t
       // later point this code runs again for the same party.
       if (r.announce) hold.markAnnounced(call, { party: r.party, log });
       return { ok: true, ...r, say: r.note };
+    }
+    case "machine_on_the_line": {
+      const r = hold.noteMachineLine(call, {
+        what: String(input.what ?? ""), deadEnd: input.dead_end === true, heard: String(input.heard ?? ""), log,
+      });
+      return r.endNow ? { ok: true, endNow: true, kind: r.kind } : { ok: true, kind: r.kind, say: r.instruction };
     }
     case "propose_commitment": {
       const details = proposedDetails(call, input);
@@ -1451,8 +1476,27 @@ export async function* voiceTurn({
   yield chunk({ role: "assistant" });
 
   const messages = withCallRecord(endOnTheirSide(context.messages), db.callLookups(call));
+  // A line that opened silent and stayed silent: the platform hands the turn over with nothing from
+  // either side yet, and the call model refuses a request with no messages in it.
+  if (!messages.length) messages.push({ role: "user", content: LINE_OPENED });
   let said = "";
   let filled = false;
+  // Nobody on their side has been told who is calling, or only a machine has spoken. Either way the
+  // words this turn writes are NOT streamed as they come: until the round's tools are known there is
+  // no telling a reply to a person from a note about a recording, and call 45 said "This is a recorded
+  // message, and it says they aren't taking customer phone inquiries" into the recording. Held to the
+  // end of each round, then dropped (it waited, pressed a key, or named a machine) or said — with the
+  // disclosure, verbatim, in front of it when nobody has heard it yet.
+  let holdBack = context.kind === "third_party" && (context.openingOwed === true || context.machineOnLine === true);
+  // Anything said to somebody who has not heard who is calling — even an apology — goes after the
+  // disclosure. The held-words release below is the ordinary route; this is for the two fallbacks.
+  const openingIfOwed = function* () {
+    if (context.kind !== "third_party" || !hold.openingOwed(call) || callOutcome.reachedMachine(call)) return;
+    hold.markAnnounced(call, { party: 1, log });
+    said = String(call.announcement).trim();
+    log({ call_opening_said: call.id, at: "fallback" });
+    yield chunk({ content: said });
+  };
   // Scratch for things that may happen at most ONCE in a turn however many rounds it takes. See the
   // `new_person_on_the_line` branch in `runCallTool`.
   const turnState = {};
@@ -1484,7 +1528,9 @@ export async function* voiceTurn({
       const toolUses = [];
       let roundText = "";
 
+      const held = [];
       const emit = function* (pieces) {
+        if (holdBack) { held.push(...pieces); return; }
         for (const piece of pieces) {
           let { spoken, links } = withoutSpokenLinks(piece);
           if (links.length && context.kind === "owner") {
@@ -1569,7 +1615,7 @@ export async function* voiceTurn({
           yield* emit(splitter.push(ev.text ?? ""));
           continue;
         }
-        if (ev?.type === "tool_start" && !filled && !SILENT_TOOLS.has(ev.name)) {
+        if (ev?.type === "tool_start" && !filled && !holdBack && !SILENT_TOOLS.has(ev.name)) {
           // The filler goes out as the tool call begins, while the model is still writing its
           // input — a whole text message, for message_send. Waiting for the block to close put it
           // 8–11 seconds into the turn (call 35, 2026-10-21).
@@ -1581,6 +1627,34 @@ export async function* voiceTurn({
         if (ev?.type === "tool_use") toolUses.push(ev);
       }
       yield* emit(splitter.flush());
+
+      if (holdBack && held.length) {
+        // A recording or menu is on the line and the model is hanging up: nobody hears the goodbye,
+        // and saying it would spend the disclosure on a machine and file it as a person.
+        const hangingUpOnAMachine = callOutcome.onAMachine(call) && toolUses.some(t => t.name === "end_call");
+        if (hangingUpOnAMachine || toolUses.some(t => QUIET_ON_A_MACHINE.has(t.name))) {
+          // It waited, pressed a key, or said a machine answered: whatever it wrote was about the line,
+          // not to anybody on it. Logged, because the prompt says to write nothing and this is the floor.
+          log({ call_machine_words_dropped: call.id, text: held.join(" ").slice(0, 120) });
+          // Never said, so never a voicemail either: the mailbox branch below reads `roundText`.
+          roundText = "";
+        } else {
+          holdBack = false;
+          // Words for somebody: a person has come on. The row stops saying it was a machine, and the
+          // disclosure goes first if nobody has heard it — word for word, from the row, by code. Not
+          // on a voicemail: the message itself says who is calling (`noteMachine` in ./hold.js).
+          const mailbox = callOutcome.reachedMachine(call);
+          if (!mailbox) hold.notePerson(call, { log });
+          if (!mailbox && hold.openingOwed(call)) {
+            hold.markAnnounced(call, { party: 1, log });
+            said = String(call.announcement).trim();
+            if (!firstContentAt) firstContentAt = clock.now();
+            log({ call_opening_said: call.id });
+            yield chunk({ content: said });
+          }
+          yield* emit(held);
+        }
+      }
 
       // Reason spoke instead of waiting, so whatever it was holding for has happened. The whole hold
       // detector is this line and `skip_turn` below: no regex over the transcript, no listening for
@@ -1660,6 +1734,11 @@ export async function* voiceTurn({
         continue;
       }
 
+      // Hanging up on a menu or a recording: nothing is said into it, not even a farewell message.
+      if (system?.name === "end_call" && callOutcome.onAMachine(call) && system.input?.message) {
+        system = { ...system, input: { reason: String(system.input?.reason ?? "") } };
+      }
+
       // The hang-up after a machine answered. Whatever is in `message` is what the mailbox gets, and
       // it is the only thing that makes this a voicemail left rather than a machine reached.
       if (system?.name === "end_call" && callOutcome.reachedMachine(call)) {
@@ -1703,6 +1782,13 @@ export async function* voiceTurn({
           log({ call_language_switch: call.id, to, kind: context.kind });
         }
       }
+      // A key pressed or a wait begun before anybody has been spoken to is a machine on the line, even
+      // when the model went straight to the key without naming it (the claude-cli run of the menu case,
+      // 2026-10-27). Written so a call that ends on the menu is not filed as a person who answered.
+      if (system && context.kind === "third_party" && hold.openingOwed(call) && !call.outcome_kind
+        && (system.name === "play_keypad_touch_tone" || system.name === "skip_turn")) {
+        hold.noteMachineLine(call, { what: system.name === "play_keypad_touch_tone" ? "phone_menu" : "recorded_message", log });
+      }
       if (system) {
         yield chunk({
           tool_calls: [{
@@ -1724,6 +1810,14 @@ export async function* voiceTurn({
       const callUses = toolUses.filter(t => (context.callTools ?? []).some(d => d.name === t.name));
       if (callUses.length) {
         if (round === MAX_VOICE_TOOL_ROUNDS) {
+          // A machine on the line hears nothing useful from an apology: the turn just ends quietly.
+          if (callOutcome.onAMachine(call) || callOutcome.reachedMachine(call)) {
+            yield chunk({}, "stop");
+            yield SSE_DONE;
+            log({ voice_turn_out_of_rounds: call.id, kind: context.kind, on: "call_tools", machine: true, ...timing() });
+            return;
+          }
+          yield* openingIfOwed();
           yield chunk({ content: said ? " Let me come back to you on that one." : "Sorry — let me check on that and come back to you." });
           yield chunk({}, "stop");
           yield SSE_DONE;
@@ -1764,6 +1858,13 @@ export async function* voiceTurn({
               + ` something out loud to the person on the line, who has been waiting through all of this.`;
           }
           log({ call_side_tool: t.name, call_id: call.id, ok: out?.ok !== false });
+          // A recording said nobody can be reached this way, or a mailbox takes nothing. Hung up by code,
+          // now, without a word: there is nothing to say to it and every second is billed.
+          if (out?.endNow) {
+            yield* endCallChunks(chunk, "a recording said nobody can be reached this way");
+            log({ voice_turn: call.id, kind: context.kind, machine_dead_end: out.kind, rounds: round, ...timing() });
+            return;
+          }
           results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
         }
         messages.push({
@@ -1869,7 +1970,8 @@ export async function* voiceTurn({
     // a phone call can give, and an unframed one is worse than that.
     if (!said) {
       log({ voice_turn_nothing_said: call.id, kind: context.kind, ...timing() });
-      yield chunk({ content: "Sorry — bear with me one moment." });
+      yield* openingIfOwed();
+      yield chunk({ content: said ? " Sorry — bear with me one moment." : "Sorry — bear with me one moment." });
     }
     yield chunk({}, "stop");
   } catch (e) {
@@ -1880,7 +1982,10 @@ export async function* voiceTurn({
       return;
     }
     log({ voice_turn_threw: call.id, why: (e?.message ?? String(e)).split("\n")[0], ...timing() });
-    yield chunk({ content: said ? " Sorry, something broke on my end there." : "Sorry — something broke on my end. Say that again?" });
+    const before = said;
+    yield* openingIfOwed();
+    const lead = said !== before ? " " : "";
+    yield chunk({ content: before ? " Sorry, something broke on my end there." : `${lead}Sorry — something broke on my end. Say that again?` });
     yield chunk({}, "stop");
   }
   yield SSE_DONE;
