@@ -7823,7 +7823,7 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
   // A menu, a recording, a dead end or a full mailbox — written during the call by Reason's own read of
   // it (`noteMachineLine` in src/calls/hold.js). The platform's word for that is "they answered" (call
   // 45, the Strand), which nobody did, so the row's own words are kept.
-  const recording = !machine && callOutcome.answeredByMachine(row);
+  const recording = !machine && callOutcome.answeredByMachine(row) && SPOKE_TO_SOMETHING.includes(live.state);
   // The line connected and nobody on their side said a word (the 2026-10-27 call to the Strand:
   // three turns from Reason, three "..." back). The platform says `completed`, and its outcome word
   // for that is "they answered", which nobody did. Only when nothing during the call already said a

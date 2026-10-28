@@ -178,6 +178,17 @@ export function noteMachineLine(call, { what = "", deadEnd = false, heard = "", 
   const keep = said ? { machine_heard: said } : {};
   log({ call_machine: call?.id, what, dead_end: deadEnd === true, heard: said.slice(0, 80) });
 
+  // A person already settled something on this call — answered, confirmed, paused for the owner — and
+  // a handover then reached a machine. What the person did stands: the row is not rewritten as "no
+  // person was reached", which would also make an agreed booking look safe to ring back and make again.
+  const kindNow = String(call?.outcome_kind ?? "");
+  if (kindNow && !["machine_menu", "machine_recording", "voicemail_no_message"].includes(kindNow)) {
+    patch(call, keep);
+    return {
+      ok: true, machine: true, endNow: true, kind: kindNow,
+    };
+  }
+
   if (what === "voicemail_greeting") {
     patch(call, keep);
     return noteMachine(call, { reason: said || "voicemail greeting", log });
@@ -426,9 +437,11 @@ export function notePress(call, { tones = "", log = () => {} } = {}) {
     log({ call_menu_stuck: call.id, tones: t, tried: sameInARow });
     return {
       ok: false, stuck: true,
+      // Not "say something out loud": words to a menu are taken as words to a person, and would spend
+      // the disclosure on it (see `holdBack` in ./voice.js).
       error: `You have already pressed ${t} ${sameInARow} times and the menu has not reacted. Do not press it again.`
-        + ` Say something out loud instead — most menus put you through to a person if you ask, or there is an`
-        + ` option for one. If there is genuinely no way through, say so and end the call.`,
+        + ` If there is an option for a person you have not tried (operator, reception, 0), press that instead.`
+        + ` If there is genuinely no way through, call end_call without saying anything.`,
     };
   }
   patch(call, { menu_presses: JSON.stringify([...history, t].slice(-12)) });

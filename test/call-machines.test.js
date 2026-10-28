@@ -281,3 +281,33 @@ test("if the turn breaks before the first words to a person, the apology still c
   assert.ok(r.said.startsWith(`${ANN} Sorry`), r.said);
   assert.equal(db.getCall(C, call.id).parties_told, "[1]");
 });
+
+// ---------- review findings (PR #232) ----------
+
+test("hanging up on a recording says nothing into it and leaves the row a machine", async () => {
+  const call = strandCall();
+  await turn(call, scripted({ tool: "machine_on_the_line", input: { what: "recorded_message" } }), theyAnswer(STRAND_RECORDING));
+  const r = await turn(db.getCall(C, call.id), scripted("Okay, nobody's there, hanging up.", { tool: "end_call", input: { reason: "only a recording" } }),
+    [...theyAnswer(STRAND_RECORDING), { role: "user", content: "Thank you for calling, goodbye." }]);
+  assert.equal(r.said, "");
+  assert.equal(r.toolCalls[0].function.name, "end_call");
+  const row = db.getCall(C, call.id);
+  assert.equal(row.outcome_kind, "machine_recording");
+  assert.equal(row.parties_told, "[]");
+});
+
+test("a menu that ignores a key is not answered by talking to it", async () => {
+  const hold = await import("../src/calls/hold.js");
+  const call = strandCall({ menu_presses: JSON.stringify(["0", "0"]) });
+  const r = hold.notePress(call, { tones: "0" });
+  assert.equal(r.ok, false);
+  assert.doesNotMatch(r.error, /out loud/i);
+  assert.match(r.error, /end_call without saying anything/);
+});
+
+test("a machine reached after a person answered does not rewrite what the person did", async () => {
+  const call = strandCall({ outcome_kind: "answered", parties_told: "[1]" });
+  const r = await turn(call, scripted({ tool: "machine_on_the_line", input: { what: "mailbox_not_taking_messages" } }), theyAnswer(STRAND_MAILBOX));
+  assert.equal(r.toolCalls[0].function.name, "end_call");
+  assert.equal(db.getCall(C, call.id).outcome_kind, "answered");
+});

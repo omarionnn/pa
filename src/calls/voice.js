@@ -1629,7 +1629,10 @@ export async function* voiceTurn({
       yield* emit(splitter.flush());
 
       if (holdBack && held.length) {
-        if (toolUses.some(t => QUIET_ON_A_MACHINE.has(t.name))) {
+        // A recording or menu is on the line and the model is hanging up: nobody hears the goodbye,
+        // and saying it would spend the disclosure on a machine and file it as a person.
+        const hangingUpOnAMachine = callOutcome.onAMachine(call) && toolUses.some(t => t.name === "end_call");
+        if (hangingUpOnAMachine || toolUses.some(t => QUIET_ON_A_MACHINE.has(t.name))) {
           // It waited, pressed a key, or said a machine answered: whatever it wrote was about the line,
           // not to anybody on it. Logged, because the prompt says to write nothing and this is the floor.
           log({ call_machine_words_dropped: call.id, text: held.join(" ").slice(0, 120) });
@@ -1802,6 +1805,14 @@ export async function* voiceTurn({
       const callUses = toolUses.filter(t => (context.callTools ?? []).some(d => d.name === t.name));
       if (callUses.length) {
         if (round === MAX_VOICE_TOOL_ROUNDS) {
+          // A machine on the line hears nothing useful from an apology: the turn just ends quietly.
+          if (callOutcome.onAMachine(call) || callOutcome.reachedMachine(call)) {
+            yield chunk({}, "stop");
+            yield SSE_DONE;
+            log({ voice_turn_out_of_rounds: call.id, kind: context.kind, on: "call_tools", machine: true, ...timing() });
+            return;
+          }
+          yield* openingIfOwed();
           yield chunk({ content: said ? " Let me come back to you on that one." : "Sorry — let me check on that and come back to you." });
           yield chunk({}, "stop");
           yield SSE_DONE;

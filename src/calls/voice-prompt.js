@@ -165,7 +165,8 @@ export function thirdPartyFrame({ ownerName, goal, facts = [], rules = [], annou
       ? `Nothing has been said on this call yet: the line opened on whatever answered. When a PERSON speaks, your`
         + ` reply starts with this line, said for you word for word: "${announcement}". Do not say it yourself and do`
         + ` not reword it. It already greets them, so your own words follow straight on with what you are calling about,`
-        + ` in one short sentence. If nothing has been heard from them yet, say one short "hello?" and nothing else.`
+        + ` in one short sentence. If nothing has been heard from them yet, say one short "hello?" and nothing else —`
+        + ` the line above goes in front of it.`
       : announcement
         ? `Your opening line was already spoken for you, word for word: "${announcement}". Do not say it again and do not reword it.`
         : ``,
