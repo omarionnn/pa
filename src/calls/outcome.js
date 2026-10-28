@@ -100,6 +100,34 @@ export const OUTCOMES = {
     label: "reached voicemail, left nothing",
     what: "A machine picked up and no message was left, so they do not know Reason rang.",
   },
+  // A machine that is not a mailbox (2026-10-27, call 45 to the Strand): a recorded message read out
+  // their hours and said they take no phone inquiries, and Reason's disclosure was spoken over it as
+  // though somebody had picked up. The row then said "they answered". Each of these is written while
+  // the call is on — `noteMachineLine` in ./hold.js — from Reason's own read of what it heard.
+  machine_menu: {
+    success: false, spokeToHuman: false, redial: "retry",
+    label: "got a phone menu and never reached a person",
+    what: "A recorded phone menu answered, and no person came on before the call ended.",
+  },
+  machine_recording: {
+    success: false, spokeToHuman: false, redial: "retry",
+    label: "only reached a recorded message",
+    what: "A recorded message answered, and no person came on before the call ended.",
+  },
+  machine_dead_end: {
+    // `redial: "no"`: the recording itself said nobody can be reached by ringing (they take no phone
+    // inquiries, or they are closed for good). Ringing again hears the same recording; the next step
+    // is whatever the recording offered instead — an email address, a website.
+    success: false, spokeToHuman: false, redial: "no",
+    label: "a recording said they don't take calls this way",
+    what: "A recorded message said nobody can be reached by phone this way, so Reason hung up without speaking.",
+  },
+  voicemail_full: {
+    // A mailbox that will not take a message is not a message left: nothing is waiting for them.
+    success: false, spokeToHuman: false, redial: "retry",
+    label: "reached a mailbox that isn't taking messages",
+    what: "A voicemail box answered but said it is not accepting messages, so nothing was left.",
+  },
   no_answer: {
     success: false, spokeToHuman: false, redial: "retry",
     label: "could not reach them",
@@ -129,6 +157,18 @@ export const isOutcome = (k) => Object.hasOwn(OUTCOMES, String(k ?? ""));
  * completed conversation, and "completed" is the word for having spoken to a person.
  */
 export const reachedMachine = (row) => ["voicemail_left", "voicemail_no_message"].includes(String(row?.outcome_kind ?? ""));
+
+/**
+ * A recorded menu or message is on the line and no person has come on yet. Not a mailbox: whatever is
+ * said next is not a voicemail, it is either a key press, silence, or — once somebody picks up — the
+ * first words to a person, who is owed the disclosure first.
+ */
+export const MACHINE_WAITING_KINDS = ["machine_menu", "machine_recording"];
+export const onAMachine = (row) => MACHINE_WAITING_KINDS.includes(String(row?.outcome_kind ?? ""));
+
+/** Every outcome that means a machine answered and no person was ever spoken to. */
+export const MACHINE_KINDS = ["voicemail_left", "voicemail_no_message", "voicemail_full", "machine_dead_end", ...MACHINE_WAITING_KINDS];
+export const answeredByMachine = (row) => MACHINE_KINDS.includes(String(row?.outcome_kind ?? ""));
 
 /**
  * Did the other side say anything at all, going by the transcript the call row keeps?
@@ -162,6 +202,12 @@ export function callSummary({ row = {}, providerSummary = "", silent = false, ow
   const goal = String(row.goal ?? "").trim().replace(/[.!?]+$/, "");
   const head = `Reason called ${row.to_number || "a third party"} on ${owner}'s behalf (${owner} was not on the call)${goal ? `, to: ${goal}` : ""}.`;
   if (silent) return `${head} Nobody on their side spoke — every turn from them was silence — so nothing was asked or answered.`;
+  // A machine, not a person — said by us from the row, because the call service's own notes call a
+  // recorded message "the user" (call 45: "The user's response was an automated message").
+  if (answeredByMachine(row) && row.outcome_kind !== "voicemail_left") {
+    const heard = String(row.machine_heard ?? "").trim();
+    return `${head} ${OUTCOMES[row.outcome_kind].what}${heard ? ` What the recording said that matters: ${heard}` : ""}`;
+  }
   return theirs ? `${head} The call service's notes: ${theirs}` : "";
 }
 

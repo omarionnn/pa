@@ -212,7 +212,7 @@ test("a third-party call's context cannot reach a thread, a memory or a tool", (
   // none of them may be a route back to the thread, the calendar or a file. Each only writes down
   // something about the call it is already on, and two of the five exist to STOP things happening.
   assert.deepEqual(ctx.callTools.map(t => t.name).sort(), [
-    "confirm_commitment", "new_person_on_the_line", "note_answer", "propose_commitment", "release_commitment",
+    "confirm_commitment", "machine_on_the_line", "new_person_on_the_line", "note_answer", "propose_commitment", "release_commitment",
   ]);
   for (const t of ctx.callTools) {
     assert.ok(!/calendar|memory|email|file|page|thread|photo|drive|contact/i.test(t.name), `${t.name} is not a call-side tool`);

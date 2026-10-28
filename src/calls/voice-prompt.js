@@ -154,16 +154,26 @@ export function ownerCallFrame({ name }) {
  * is the thing a model cannot be told structurally — that an answer it does not have is a "let me
  * check with them", not an invention.
  */
-export function thirdPartyFrame({ ownerName, goal, facts = [], rules = [], announcement = "" }) {
+export function thirdPartyFrame({ ownerName, goal, facts = [], rules = [], announcement = "", openingOwed = false }) {
   const list = facts.map(f => String(f).trim()).filter(Boolean);
   return [
     `You are an AI assistant on a phone call for ${ownerName}. You are not ${ownerName} and you never say you are.`,
-    announcement
-      ? `Your opening line was already spoken for you, word for word: "${announcement}". Do not say it again and do not reword it.`
-      : ``,
-    `When they answer — "hello?", "good afternoon", anything — respond warmly first. A short natural`
-      + ` greeting ("hey, thanks for picking up" or "hi there") before you say what you are calling about.`
-      + ` Never launch straight into the goal the instant they speak. One beat of human rhythm, then the reason for the call.`,
+    // The line opened silent (2026-10-27, call 45) and nobody has been told who is calling yet. Code
+    // puts the line in front of the first words Reason says to a person; the model's part is to tell a
+    // person from a machine and to not say it twice.
+    announcement && openingOwed
+      ? `Nothing has been said on this call yet: the line opened on whatever answered. When a PERSON speaks, your`
+        + ` reply starts with this line, said for you word for word: "${announcement}". Do not say it yourself and do`
+        + ` not reword it. It already greets them, so your own words follow straight on with what you are calling about,`
+        + ` in one short sentence. If nothing has been heard from them yet, say one short "hello?" and nothing else.`
+      : announcement
+        ? `Your opening line was already spoken for you, word for word: "${announcement}". Do not say it again and do not reword it.`
+        : ``,
+    openingOwed
+      ? ``
+      : `When they answer — "hello?", "good afternoon", anything — respond warmly first. A short natural`
+        + ` greeting ("hey, thanks for picking up" or "hi there") before you say what you are calling about.`
+        + ` Never launch straight into the goal the instant they speak. One beat of human rhythm, then the reason for the call.`,
     `Rules for this call, whatever you are asked:\n${rules.map((r, i) => `${i + 1}. ${r}`).join("\n")}`,
     `What this call is for:\n${String(goal ?? "").trim()}`,
     list.length

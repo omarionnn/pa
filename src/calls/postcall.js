@@ -33,6 +33,7 @@ import { config, clock, stamp } from "../config.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING } from "./provider.js";
 import { mimeFor } from "./recordings.js";
 import * as fromcall from "./fromcall.js";
+import * as callOutcome from "./outcome.js";
 
 /** The route ElevenLabs is pointed at for post-call deliveries. Quoted in the setup checklist. */
 export const POST_CALL_PATH = "/calls/elevenlabs/post-call";
@@ -99,7 +100,8 @@ export async function postCallRequest({
 
   const wrote = writeCallIntoThread({ row: settled, live, log });
   // Third-party calls: transcript doesn't go into conversations.messages but should feed memory.
-  if (!settled.is_owner && SPOKE_TO_SOMETHING.includes(settled.state)) {
+  // Not when only a machine answered: a recording's opening hours are not something a person said.
+  if (!settled.is_owner && SPOKE_TO_SOMETHING.includes(settled.state) && !callOutcome.answeredByMachine(settled)) {
     const turns = Array.isArray(live?.turns) && live.turns.length
       ? live.turns
       : turnsFromTranscriptString(live?.transcript ?? settled.transcript ?? "");
@@ -325,8 +327,16 @@ export function thirdPartyEvent({ row, live }) {
     : row.recording_state === "missing"
       ? `There is NO audio for this call: ${row.recording_why || "the provider never gave it to Reason"}. Every call is meant to be recorded, so say that plainly rather than implying a recording exists.`
       : `There is no audio, because nobody was on the call.`;
+  // Only a machine answered (2026-10-27, call 45). Said outright, because the transcript's "Them:"
+  // lines read like a person, and the next step is whatever the recording offered instead of a person.
+  const heard = String(row.machine_heard ?? "").trim();
+  const machine = callOutcome.answeredByMachine(row) && row.outcome_kind !== "voicemail_left"
+    ? `\nNo person was reached: only a machine answered (${callOutcome.OUTCOMES[row.outcome_kind].label}).`
+      + `${heard ? ` What the recording said that matters: ${heard}` : ""}`
+      + ` If it gave another way to reach them — an email address, a website, hours to ring back — that is the next step: offer it.`
+    : "";
   return `the call you placed to ${row.to_number} has ended. goal: ${row.goal}.`
-    + ` outcome: ${outcome}.${what ? ` summary: ${what}${/[.!?]$/.test(what) ? "" : "."}` : ""}`
+    + ` outcome: ${outcome}.${what ? ` summary: ${what}${/[.!?]$/.test(what) ? "" : "."}` : ""}${machine}`
     + `${row.duration_s ? ` it ran ${Math.round(row.duration_s)} seconds.` : ""}`
     + `\nwhat was actually said:\n${row.transcript || live?.transcript || "(no transcript came back)"}`
     + `\n${audio}`

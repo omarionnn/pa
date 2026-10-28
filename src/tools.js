@@ -7820,15 +7820,19 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
   // "completed" would file an answering machine's greeting as a person spoken to. The row knew it was
   // a machine during the call; that beats the platform's word for how the call ended.
   const machine = callOutcome.reachedMachine(row) && SPOKE_TO_SOMETHING.includes(live.state);
+  // A menu, a recording, a dead end or a full mailbox — written during the call by Reason's own read of
+  // it (`noteMachineLine` in src/calls/hold.js). The platform's word for that is "they answered" (call
+  // 45, the Strand), which nobody did, so the row's own words are kept.
+  const recording = !machine && callOutcome.answeredByMachine(row);
   // The line connected and nobody on their side said a word (the 2026-10-27 call to the Strand:
   // three turns from Reason, three "..." back). The platform says `completed`, and its outcome word
   // for that is "they answered", which nobody did. Only when nothing during the call already said a
   // person was there — an `answered` or a `confirmed` on the row beats a transcript of dots.
-  const silent = !machine && live.state === "completed"
+  const silent = !machine && !recording && live.state === "completed"
     && (!row.outcome_kind || row.outcome_kind === "line_silent") && callOutcome.theySpoke(live.transcript) === false;
   let r = db.updateCall(conversationId, row.id, {
     state: machine ? "voicemail" : live.state,
-    outcome: machine ? (row.outcome || live.outcome || "") : silent ? callOutcome.OUTCOMES.line_silent.label : (live.outcome ?? ""),
+    outcome: machine || recording ? (row.outcome || live.outcome || "") : silent ? callOutcome.OUTCOMES.line_silent.label : (live.outcome ?? ""),
     summary: callOutcome.callSummary({ row, providerSummary: live.summary, silent, ownerName: accounts.ownerOf(conversationId)?.name }),
     transcript: live.transcript ?? "", duration_s: live.durationS ?? null, cost_cents: live.costCents ?? null,
   });
@@ -10791,6 +10795,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // guessed at.
         ...(placed.profile ? { profile: placed.profile } : {}),
         ...(placed.ttsModel ? { tts_model: placed.ttsModel } : {}),
+        // The line opens silent and the disclosure is owed to the first person heard (see `place` in
+        // src/calls/elevenlabs.js). Written before anyone can have picked up: the platform has only
+        // just been asked to dial.
+        ...(placed.openingWaits ? { opening_waits: 1 } : {}),
       });
       // Counted now rather than at the top, because a call that was refused before it was dialled
       // cost nobody anything and should not use up somebody's day.

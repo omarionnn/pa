@@ -226,6 +226,14 @@ export class ElevenLabsCallProvider extends CallProvider {
     // starts — both kinds of call go through the one agent and the row says which profile that was,
     // rather than the record claiming a tuning that was never applied.
     const chosen = agentIdFor(kind, { agentId: this.agentId });
+    // A third-party call does NOT speak at pick-up. Call 45 (2026-10-27): the disclosure went out the
+    // instant the Strand's line connected, over a recorded hours message, and was cut off by it. Their
+    // docs: "first_message — if empty, the agent waits for the user to start the discussion". So the
+    // line opens on whatever answers, Reason's endpoint hears it first, and the disclosure is put in
+    // front of Reason's first words to a PERSON by code (`openingOwed` in ./hold.js) — still verbatim,
+    // still before anything else, never said to a menu. The owner's own calls keep the spoken opener:
+    // he is expecting Reason.
+    const waits = kind !== "owner";
     const body = {
       agent_id: chosen.agentId,
       agent_phone_number_id: this.phoneNumberId,
@@ -234,7 +242,9 @@ export class ElevenLabsCallProvider extends CallProvider {
         // What the agent says before anything else, word for word. Everything else on this call is
         // generated turn by turn by Reason's own endpoint; this one line is not.
         conversation_config_override: {
-          agent: { first_message: ann.announcement },
+          // Sent as "" rather than left off, so an opener ever typed on the agent itself cannot be the
+          // first thing a business hears.
+          agent: { first_message: waits ? "" : ann.announcement },
           // One pinned voice, when the owner has picked one. Left off entirely otherwise, so the
           // agent's own configured voice is used rather than an empty id being sent.
           ...(this.voiceId ? { tts: { voice_id: this.voiceId } } : {}),
@@ -285,6 +295,8 @@ export class ElevenLabsCallProvider extends CallProvider {
       ok: true, externalId: String(conversation), state: "placing",
       callSid: json?.callSid ?? json?.call_sid ?? null,
       profile: chosen.profile, separateAgent: chosen.separate, ttsModel: ttsModel().model,
+      // Whether the announcement is still owed when the line opens. `call_place` writes it on the row.
+      openingWaits: waits,
     };
   }
 

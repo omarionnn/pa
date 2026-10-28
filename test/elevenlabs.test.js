@@ -180,11 +180,11 @@ test("one placed call: the documented endpoint, the announcement verbatim, the v
   assert.equal(req.body.to_number, PLACE);
 
   const init = req.body.conversation_initiation_client_data;
-  // The disclosure, word for word, as the agent's first message. Not pasted into a prompt.
-  assert.equal(init.conversation_config_override.agent.first_message, ANN);
-  assert.match(init.conversation_config_override.agent.first_message, /AI assistant/);
-  assert.match(init.conversation_config_override.agent.first_message, /Omari/);
-  assert.match(init.conversation_config_override.agent.first_message, /recorded/);
+  // A third-party call opens silent (2026-10-27, call 45: the disclosure was spoken over a recorded
+  // menu). The disclosure is still verbatim and still first — put in front of Reason's first words to
+  // a person by code, see test/call-machines.test.js — so the provider is told the line waits.
+  assert.equal(init.conversation_config_override.agent.first_message, "");
+  assert.equal(r.openingWaits, true);
   // One pinned voice, every call.
   assert.equal(init.conversation_config_override.tts.voice_id, "voice_test");
   // max_duration_seconds is NOT sent as an override — ElevenLabs rejects it unless the agent
