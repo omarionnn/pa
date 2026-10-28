@@ -67,6 +67,16 @@ export const OUTCOMES = {
     // is one that goes back to ASK what happened, which is a different goal.
     what: "The line went down while this was being settled. Whether it went through is NOT known.",
   },
+  line_silent: {
+    // The 2026-10-27 call to the Strand: the line connected, Reason spoke three times, and every turn
+    // from their side was silence ("..."). The platform calls that `completed`, which this file used
+    // to file as a person reached and the line dropped mid-errand — "whether it went through is not
+    // known" about a call where nothing was said to anybody. Nobody heard the question, so nothing
+    // can have gone through, and ringing again is simply trying again.
+    success: false, spokeToHuman: false, redial: "retry",
+    label: "the line was silent — nobody spoke",
+    what: "The call connected but nobody on their side said a word, so nothing was asked or answered.",
+  },
   hold_gave_up: {
     success: false, spokeToHuman: false, redial: "retry",
     label: "nobody came to the phone in time",
@@ -119,6 +129,41 @@ export const isOutcome = (k) => Object.hasOwn(OUTCOMES, String(k ?? ""));
  * completed conversation, and "completed" is the word for having spoken to a person.
  */
 export const reachedMachine = (row) => ["voicemail_left", "voicemail_no_message"].includes(String(row?.outcome_kind ?? ""));
+
+/**
+ * Did the other side say anything at all, going by the transcript the call row keeps?
+ *
+ * `true` when any "Them:" line carries a letter or a digit; a provider writes "..." for a turn that
+ * was only silence or line noise, and that is not somebody speaking. `null` when there is nothing to
+ * go on — no transcript, or no line from Reason either — because a transcript that has not arrived
+ * yet is not evidence of a silent line (Bland's lands seconds after the call says it is over).
+ */
+export function theySpoke(transcript) {
+  const lines = String(transcript ?? "").split("\n").map(l => l.trim()).filter(Boolean);
+  const theirs = lines.filter(l => /^them:/i.test(l)).map(l => l.slice(5));
+  if (theirs.some(t => /[\p{L}\p{N}]/u.test(t))) return true;
+  if (!lines.some(l => /^reason:/i.test(l))) return null;
+  return false;
+}
+
+/**
+ * The summary written onto a call row, framed by what Reason knows rather than by the provider.
+ *
+ * A provider's auto-summary only sees the transcript and the variables it was given, and on the
+ * Strand call it wrote "The AI agent called Omari" — the owner's name was in the greeting, so it took
+ * him for the person rung. That row is read back later as what happened, so a call made FOR somebody
+ * opens with who was actually called, and a silent line says so in our words instead of theirs. A
+ * call to the owner himself is framed correctly by the provider and is left as it is.
+ */
+export function callSummary({ row = {}, providerSummary = "", silent = false, ownerName = "" } = {}) {
+  const theirs = String(providerSummary ?? "").trim();
+  if (Number(row.is_owner) === 1) return theirs;
+  const owner = String(ownerName ?? "").trim() || "the owner";
+  const goal = String(row.goal ?? "").trim().replace(/[.!?]+$/, "");
+  const head = `Reason called ${row.to_number || "a third party"} on ${owner}'s behalf (${owner} was not on the call)${goal ? `, to: ${goal}` : ""}.`;
+  if (silent) return `${head} Nobody on their side spoke — every turn from them was silence — so nothing was asked or answered.`;
+  return theirs ? `${head} The call service's notes: ${theirs}` : "";
+}
 
 /**
  * The only route to `confirmed`, and it is a gate rather than a formatter.
@@ -183,11 +228,12 @@ export function confirmationFrom(evidence = {}) {
  *
  * @param {{state?: string, pausedForOwner?: boolean, voicemail?: boolean, gaveUpOnHold?: boolean,
  *          theyDeclined?: boolean, spoke?: boolean, unclear?: string[], asked?: boolean,
- *          placed?: boolean, blockedWhy?: string}} _
+ *          placed?: boolean, blockedWhy?: string, silent?: boolean}} _
  */
 export function outcomeFor({
   state = "", pausedForOwner = false, voicemail = false, gaveUpOnHold = false,
   theyDeclined = false, spoke = false, unclear = [], asked = false, placed = true, blockedWhy = "",
+  silent = false,
 } = {}) {
   if (blockedWhy || placed === false) return "blocked";
   if (pausedForOwner) return "needs_owner";
@@ -200,6 +246,8 @@ export function outcomeFor({
   if (unclear.length && spoke) return "could_not_understand";
   if (state === "failed") return "failed";
   if (["no_answer", "busy", "declined"].includes(state)) return "no_answer";
+  // Connected, and nobody said a word. Before the reached-a-person branch, which it is not.
+  if (silent && state === "completed") return "line_silent";
   // Reached a person. Either it got what it rang to ask, or the line went down mid-errand. There is
   // no third option here on purpose: "completed" with nothing achieved is the case the owner is
   // worried about, and it lands on `dropped_before_confirmation`, which reads as unfinished.

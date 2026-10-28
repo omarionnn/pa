@@ -326,7 +326,7 @@ export function thirdPartyEvent({ row, live }) {
       ? `There is NO audio for this call: ${row.recording_why || "the provider never gave it to Reason"}. Every call is meant to be recorded, so say that plainly rather than implying a recording exists.`
       : `There is no audio, because nobody was on the call.`;
   return `the call you placed to ${row.to_number} has ended. goal: ${row.goal}.`
-    + ` outcome: ${outcome}.${what ? ` their summary: ${what}.` : ""}`
+    + ` outcome: ${outcome}.${what ? ` summary: ${what}${/[.!?]$/.test(what) ? "" : "."}` : ""}`
     + `${row.duration_s ? ` it ran ${Math.round(row.duration_s)} seconds.` : ""}`
     + `\nwhat was actually said:\n${row.transcript || live?.transcript || "(no transcript came back)"}`
     + `\n${audio}`

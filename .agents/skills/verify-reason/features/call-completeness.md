@@ -30,6 +30,16 @@ files but not mapped here.
 - **Cross-channel proof.** Call turns go to `event_log` with `channel = 'call'` and are enqueued
   for extraction; a call fact appears in `remembered()`; `correctFact` supersedes a call-originated
   fact; one user's call fact is invisible to another; facts under 0.5 confidence are skipped.
+- **Silent line + our own summary (2026-10-27).** A `completed` call whose transcript has Reason
+  lines and no "Them:" line with a letter or digit (`theySpoke` in `src/calls/outcome.js`) settles as
+  `outcome_kind = line_silent`, outcome "the line was silent — nobody spoke" (not "they answered"),
+  redial `retry`. A third-party call's summary is `callSummary`: "Reason called <number> on <owner>'s
+  behalf (<owner> was not on the call), to: <goal>." then the provider's text as "The call service's
+  notes: …", or a silence line when nobody spoke. Owner calls keep the provider summary. Applied in
+  `settleCall` and `fillLateDetails` (`src/tools.js`). Tests: `test/call-postcall.test.js` (silent
+  line; spoken third-party framing), `test/call-handling.test.js` (`theySpoke`/`outcomeFor`).
+  Proof: `/tmp/silent-verify/replay.mjs` replays live calls row 44 (the Strand) through `settleCall`
+  in a temp DB → `line_silent`, no "called Omari".
 - **Extraction guard.** `worthExtracting` is false for under 12 characters or filler. Those turns
   still reach `event_log` (the thread record) and are NOT enqueued.
 - **Detail-hiding texted-yes.** The text reads `On the phone with you now — reply "yes" to confirm

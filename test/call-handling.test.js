@@ -853,3 +853,20 @@ test("third-party calls are held in the quiet window; the owner's own never are"
   // An empty window turns it off rather than blocking everything.
   assert.equal(brief.withinCallingHours({ now: night, window: "" }).ok, true);
 });
+
+test("whether they spoke is read from the transcript, and dots are not speech", async () => {
+  const outcome = await import("../src/calls/outcome.js");
+  assert.equal(outcome.theySpoke("Reason: hi\nThem: ...\nReason: hello?\nThem: …"), false);
+  assert.equal(outcome.theySpoke("Reason: hi\nThem: ...\nThem: yes, two copies"), true);
+  assert.equal(outcome.theySpoke("Reason: hola\nThem: sí"), true);
+  // Nothing to go on is not a silent line: Bland's transcript can land after the call says done.
+  assert.equal(outcome.theySpoke(""), null);
+  assert.equal(outcome.theySpoke("Them: ..."), null);
+  assert.equal(outcome.outcomeFor({ state: "completed", spoke: true, silent: true }), "line_silent");
+  assert.equal(outcome.outcomeFor({ state: "completed", spoke: true, silent: true, voicemail: true }), "voicemail_left");
+  assert.equal(outcome.reachedAPerson("line_silent"), false);
+  assert.equal(outcome.redialMode("line_silent"), "retry");
+  assert.equal(outcome.ownerLine("line_silent", { place: "the Strand" }), "the Strand: the line was silent — nobody spoke.");
+  // The owner's own call is framed right by the provider and left alone.
+  assert.equal(outcome.callSummary({ row: { is_owner: 1 }, providerSummary: "Omari called Reason." }), "Omari called Reason.");
+});
