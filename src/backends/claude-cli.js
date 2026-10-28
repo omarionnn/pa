@@ -43,8 +43,24 @@ import { runClaudeCli } from "./cli.js";
 import { adoptWebChatAsks } from "../trust.js";
 import { whileTurn } from "../background.js";
 import { startMcpHttp } from "./mcp-http.js";
+import { randomUUID } from "node:crypto";
 
 const MAX_HISTORY = 40;
+
+/**
+ * The CLI session each thread's last turn ran in, so a rewrite can continue it (see `continueSession`
+ * in runTurnOnCli). One per thread, replaced by every finished turn; a resumed one is dropped after
+ * use, so a session is never continued twice. In memory only: a restart forgets them, and a rewrite
+ * then runs the long way, which is exactly what it did before.
+ */
+const sessions = new Map();
+/** How long a finished turn's session stays resumable: the rewrite follows the check, within seconds. */
+const SESSION_FRESH_MS = 10 * 60_000;
+/** The session a thread's last turn ran in, if it is fresh. For tests. */
+export const sessionFor = (historyId, now = Date.now()) => {
+  const s = sessions.get(historyId);
+  return s && now - s.at < SESSION_FRESH_MS ? s.id : null;
+};
 
 /** One line per stored message, in the order they happened. */
 function renderHistory(messages) {
@@ -103,6 +119,12 @@ async function runTurnOnCli({
   // A Web turn's drafter (src/webdraft.js, REASON_WEB_DRAFTS): hears the reply as it is written.
   // Taken out here so it never rides into a tool's context.
   draft = null,
+  // The said check's rewrite (Runtime._turn): this turn continues the CLI session the draft was
+  // written in, when it is still fresh, instead of running the whole turn again from a rendered
+  // history. The model then sees exactly what it did — its tool results, its own draft — and the
+  // prefix is a cache hit; a rewrite cost a second full turn (8–15 s) before 2026-10-28. With no
+  // fresh session (a restart in between) the turn runs the long way, as it always did.
+  continueSession = false,
   // Injectable so the whole turn is testable with no CLI, no network and no port: what the model
   // is handed, what the history keeps and what the record says are all decided in this function.
   run = runClaudeCli, images = imagesFor, pdfs = pdfsFor, startMcp = startMcpHttp,
@@ -245,12 +267,36 @@ async function runTurnOnCli({
     // other and rides in `toolCtx`, exactly as it does on the API path. That is what lets a check
     // which reads the job's sheet find the right one on both backends.
     const mcp = await startMcp({ conversationId, channels, calls, onTool: log, toolCtx });
+    // Every fresh turn runs under a session id of Reason's choosing, so the rewrite can name it.
+    const sessionId = randomUUID();
+    const resuming = continueSession ? sessionFor(historyId) : null;
+    // A continued session already holds the history, the notes and the draft: it is handed the new
+    // line alone, with the same closing instruction, under the same system prompt (a cache hit).
+    const resumePrompt = `The new message:\n${line}\n\nReply as Reason, in one short text. Use your tools for anything real.`
+      + ` If nothing is worth sending, reply with exactly NO_REPLY.`;
+    const feature = kind === "event" ? "proactive" : "reply";
     let r;
     try {
-      r = await run({ prompt, system: systemFor(me), mcpUrl: mcp.url, images: blocks, log, feature: kind === "event" ? "proactive" : "reply", ...(draft ? { onEvent: draft.feed } : {}) });
+      const common = { system: systemFor(me), mcpUrl: mcp.url, images: blocks, log, feature, ...(draft ? { onEvent: draft.feed } : {}) };
+      if (resuming) {
+        sessions.delete(historyId);
+        r = await run({ ...common, prompt: resumePrompt, resume: resuming });
+        if (!r.ok && !r.interrupted) {
+          // The session could not be continued (gone from disk, a CLI that would not resume): the
+          // long way, which is what every rewrite did before. Logged, because a resume that never
+          // works is the old cost back with none of the saving.
+          log({ cli_resume_failed: conversationId, why: String(r.error ?? r.envelope?.result ?? "").split("\n")[0].slice(0, 160) });
+          r = await run({ ...common, prompt, sessionId });
+        } else log({ cli_resumed: conversationId });
+      } else {
+        r = await run({ ...common, prompt, sessionId });
+      }
     } finally {
       await mcp.close();
     }
+    // A turn that finished is the one a rewrite would continue. A resumed turn is not kept: a
+    // session is continued once, and a second check does not run on a rewrite.
+    if (r.ok && !resuming) sessions.set(historyId, { id: sessionId, at: Date.now() });
 
     if (!r.ok) {
       log({ cli_failed: r.error ?? r.envelope?.result });

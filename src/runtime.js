@@ -531,9 +531,11 @@ export class Runtime extends EventEmitter {
             if (!db.retractDraft(conversationId, reply)) this.log({ draft_not_retracted: conversationId });
             this.log({ draft_rewritten: conversationId, why: check.note.slice(0, 200) });
             // The re-ask is code's, not theirs: the line it leaves in the thread comes off again.
+            // `continueSession`: on the CLI backend the rewrite continues the session the draft was
+            // written in rather than running the whole turn again (src/backends/claude-cli.js).
             reply = await this._afterScreen(screened, await this.runTurn(turnArgs({
               text: `[Your draft reply was NOT sent. ${check.note} Write the reply again with that fixed; keep everything else that was right.\nThe draft:\n\"\"\"${reply.slice(0, 3_000)}\"\"\"]`,
-              keep: onethought.CODE_LINE, attachments: [],
+              keep: onethought.CODE_LINE, attachments: [], continueSession: true,
             })), { conversationId, text, meta });
             db.dropUserLineEndingWith(conversationId, onethought.CODE_LINE);
           }

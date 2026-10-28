@@ -53,7 +53,7 @@ const BUILT_INS = [
  * pictures prints one JSON event per line and the envelope is the last `result` event rather than
  * the whole of stdout — see `envelopeFrom`. A run without pictures is exactly what it always was.
  */
-export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], model = cliConfig.model, partial = false, streamIn = false, effort = null }) {
+export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], model = cliConfig.model, partial = false, streamIn = false, effort = null, sessionId = null, resume = null }) {
   // `streamIn` (startWarm, below): the message goes down stdin later, the way pictures already do.
   const withImages = images.length > 0 || streamIn;
   // `partial` (REASON_WEB_DRAFTS, src/webdraft.js): the same run, printed one event per line with the
@@ -78,6 +78,12 @@ export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null
     // slower boot. NEVER on a turn with tools: `--tools ""` also removes `ToolSearch`, and with it
     // the deferral that keeps ~107k tokens of Reason's own schemas out of every call.
     ...(mcpUrl ? [] : ["--tools", ""]),
+    // A turn runs under a session id Reason chose (`sessionId`), so that a rewrite of its draft can
+    // continue that very session (`resume`) with the prefix cached and the tool results in hand,
+    // instead of running the whole turn again — src/backends/claude-cli.js `continueSession`. Both
+    // need the CLI's session persistence, so `--no-session-persistence` must never be added here.
+    ...(sessionId ? ["--session-id", sessionId] : []),
+    ...(resume ? ["--resume", resume] : []),
   ];
 
   // The tools are served over loopback HTTP by the Reason process itself (mcp-http.js), so the
@@ -162,8 +168,8 @@ export function childEnvFor(env = process.env) {
   return childEnv;
 }
 
-function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, onEvent = null, input = null, effort = null }) {
-  const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, jsonSchema, images, model, partial: typeof onEvent === "function", streamIn: !!input, effort });
+function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, onEvent = null, input = null, effort = null, sessionId = null, resume = null }) {
+  const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, jsonSchema, images, model, partial: typeof onEvent === "function", streamIn: !!input, effort, sessionId, resume });
 
   return new Promise((resolve) => {
     const childEnv = childEnvFor(process.env);
