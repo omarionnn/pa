@@ -350,6 +350,9 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // Injectable the same way the CLI backend's are, so one test can hand both backends the same
   // picture without a host to fetch it from, and the same note-taker without a second model.
   images = imagesFor, capture = captureViaApi,
+  // The CLI backend's "continue the draft's session" (src/backends/claude-cli.js). The API path keeps
+  // the message list in process and has nothing to continue; taken out so it never reaches a tool.
+  continueSession = false, // eslint-disable-line no-unused-vars
   ...toolCtx }) {
   // A Web-only chat reads and keeps its own thread (src/db.js historyKeyFor); tools still act for the person.
   const historyId = toolCtx.historyId ?? conversationId;
