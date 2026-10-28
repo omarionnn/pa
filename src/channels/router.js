@@ -58,6 +58,16 @@ export const EVENT_CARD_LINE = "save me as Reason so you can find me for event u
 /** The one question a new guest is asked: what they do, and what they could use a hand with. */
 export const EVENT_QUESTION = "quick one so i'm actually useful past this party: what do you do, and is there anything you could use a hand with?";
 
+/**
+ * How long a message on this channel waits for the rest of its thought before its turn starts
+ * (config.burstQuietMs). A Web message arrives whole, so it waits the shorter Web window — never
+ * longer than the text one, so the switch that turns holding off (`REASON_BURST_QUIET_MS=0`) still
+ * turns it off everywhere, and a test that widens the window to hold everything holds Web too.
+ */
+export function quietWindowFor(channel) {
+  return channel === web.WEB ? Math.min(config.burstQuietWebMs, config.burstQuietMs) : config.burstQuietMs;
+}
+
 export class Router {
   /**
    * `judge` is what reads the master's reply to an access request. Injectable for the same reason
@@ -373,7 +383,7 @@ export class Router {
       conversationId, channel: inbound.channel, address, chatId: inbound.chatId ?? null,
       externalId: inbound.externalId, text: under ? `${under}\n${inbound.text}` : inbound.text,
       attachments, service: inbound.service ?? null, isOperator,
-      quietMs: Math.max(0, config.burstQuietMs), maxMs: Math.max(0, config.burstMaxMs),
+      quietMs: Math.max(0, quietWindowFor(inbound.channel)), maxMs: Math.max(0, config.burstMaxMs),
     });
 
     // The "…" bubble, for the wait AND the turn. It goes up here rather than at the turn, because

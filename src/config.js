@@ -426,12 +426,22 @@ export const config = {
   // Past the burst window on purpose is not needed: bad deliveries fail in milliseconds.
   webhookAnswerMs: Number(process.env.REASON_WEBHOOK_ANSWER_MS ?? 5_000),
   //
-  // 4 seconds since 2026-10-24 (was 2.5): "No I want to watch when I leave work so somewhere around
-  // work" and "And I'd watch it on Tuesday" were one thought sent as two bubbles and got two
-  // conflicting answers. Most of that fix is the mid-turn fold-in (src/onethought.js), which catches
-  // a bubble however late it lands while the answer is still being worked on; the wider window only
-  // catches more of them before any work starts, at 1.5s more on a lone text.
-  burstQuietMs: Number(process.env.REASON_BURST_QUIET_MS ?? 4_000),
+  // 4 seconds from 2026-10-24 to 2026-10-28 (was 2.5): "No I want to watch when I leave work so
+  // somewhere around work" and "And I'd watch it on Tuesday" were one thought sent as two bubbles
+  // and got two conflicting answers. Most of that fix is the mid-turn fold-in (src/onethought.js),
+  // which catches a bubble however late it lands while the answer is still being worked on; the
+  // wider window only catches more of them before any work starts, at 1.5s more on a lone text.
+  //
+  // Back to 2.5 seconds on 2026-10-28 (owner, after the speed audit of 10-27): in 48 h of live
+  // traffic the 4 s window was the single largest fixed cost on every message and caught one
+  // two-bubble burst — whose bubbles were 30 s apart, outside any window. Ten texts joined a wait;
+  // ~200 paid the 4 s. A bubble that lands after the window still folds into the turn.
+  burstQuietMs: Number(process.env.REASON_BURST_QUIET_MS ?? 2_500),
+  // Reason Web sends one whole message at a time — the composer posts the words and any files
+  // together, and "take it back" (Router.takeBack) works before the hold and mid-turn, not only
+  // inside the window — so a Web message waits only half a second for a second one. Never longer
+  // than the text window: REASON_BURST_QUIET_MS=0 still turns holding off everywhere.
+  burstQuietWebMs: Number(process.env.REASON_BURST_QUIET_WEB_MS ?? 500),
   burstMaxMs: Number(process.env.REASON_BURST_MAX_MS ?? 10_000),
   // A text that lands while a request is being worked on is read — continuation, new request, or
   // chat — by one small side call (src/onethought.js), on the subscription through the CLI, never
