@@ -424,6 +424,10 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
+### Baseline — 4,298 pass, 2 flaky after "owner" means this thread (fix/owner-means-this-thread, 2026-10-28)
+
+`npm test` with no .env: 4,414 tests, 4,298 passing, 2 failing, 114 skipped, both in `test/flights.test.js` (`ref` reads `.elements` of undefined under full-suite load). That file alone is 56/56 both with and without this change, so they are a load flake, not a regression. New: `test/owner-means-this-thread.test.js` (11, 8 of them fail on the old code). Real-model lane `REASON_BACKEND=claude-cli node --import ./test/paid-key-guard.js --test test/flow-owner-thread.test.js`: the model sent `to:"owner"` from a tester's thread and it reached the tester. See [features/confirm-gate.md](features/confirm-gate.md).
+
 ### Baseline — 4,220 pass, 0 failures after the wax-seal book (wt/stamps-wax, 2026-10-27)
 
 `npm run test:offline` under `env -i`: 4,334 tests, 4,220 passing, 0 failing. New: `test/stamps-wax.test.js` (18); `bin/web-seals-drive.mjs`: 12 steps, all ok. See [features/web-stamps-wax.md](features/web-stamps-wax.md).
