@@ -65,6 +65,8 @@ const EMPTY = "dm:staging-empty";
 const YOU = "+1 (555) 010-0142";
 db.upsertAccount({ conversationId: CONV, channel: "fake", address: "+15550100142", name: "Ama Owusu", isOperator: false });
 db.upsertAccount({ conversationId: EMPTY, channel: "fake", address: "+15550100143", name: "Kojo Mensah", isOperator: false });
+// Both were texting long before Web history began, so each thread's top says the rest stays in the texts.
+db.db.prepare("UPDATE accounts SET created_at = ?").run(Date.now() - 60 * 864e5);
 db.db.prepare("INSERT INTO pages (id, conversation_id, title, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)").run("lisbon4", CONV, "Four days in Lisbon", "[]", Date.now(), Date.now());
 const account = db.getAccount(CONV);
 const emptyAccount = db.getAccount(EMPTY);
