@@ -204,6 +204,7 @@ export const COMPOSE_CSS = `
 .uf-lim{font-size:10px}
 .addsheet{position:fixed;left:0;right:0;bottom:0;z-index:65;background:var(--lifted);border-top:1px solid var(--hair);padding:20px 24px calc(30px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:4px}
 .addsheet[hidden]{display:none}
+.addsheet{transform:translateY(calc((1 - var(--as,1)) * 100%))}
 .composer.sheet-on{z-index:66}
 body.dropping .composer{z-index:71}
 .as-h{font-size:11px}
@@ -300,7 +301,7 @@ a.slip.fslip:hover{color:var(--hov)}
 .listen[data-mode=paused] .ls-int{color:inherit}
 body.listening{overflow:hidden}
 @media (min-width:900px){.photo img{height:100%}.cform textarea{font-size:24px;min-height:48px}.home .cform textarea{font-size:26px}
-.addsheet{position:absolute;left:-12px;right:auto;width:380px;bottom:calc(100% - 4px);padding:20px 24px 24px;border:1px solid var(--hair);border-radius:4px;box-shadow:var(--sh2)}
+.addsheet{position:absolute;left:-12px;right:auto;width:380px;bottom:calc(100% - 4px);padding:20px 24px 24px;border:1px solid var(--hair);border-radius:4px;box-shadow:var(--sh2);transform:translateY(calc((1 - var(--as,1)) * 12px));opacity:clamp(0,var(--as,1),1)}
 .ls-top{padding:22px clamp(20px,4vw,48px)}.ls-on,.ls-paused{font-size:12px}
 .ls-main{gap:56px;padding:40px 24px}.ls-ring{width:220px;height:220px}.ls-ring>div{width:150px;height:150px}.ls-ring .bub{width:64px;height:64px}
 .ls-words{font-size:clamp(36px,5vw,60px);max-width:16em;align-self:center}.listen[data-mode=paused] .ls-words{font-size:clamp(34px,4.4vw,52px)}
@@ -368,12 +369,15 @@ else if(p.text){var s=document.createElement('div');s.className='said';s.textCon
 form.addEventListener('submit',function(e){if(files.some(function(f){return f.state==='up'})){e.preventDefault();e.stopImmediatePropagation();Promise.all(files.map(function(f){return f.wait})).then(function(){if(files.some(function(f){return f.state==='ready'})||box.value.trim())form.requestSubmit?form.requestSubmit():form.dispatchEvent(new Event('submit',{cancelable:true}))})}},true);
 // ---- + and its sheet (3A), and the drop (3E) ----
 var picks={};comp.querySelectorAll('.c-file').forEach(function(i){picks[i.dataset.pick]=i;i.onchange=function(){take(i.files);i.value=''}});
-function sheetOpen(on){sheet.hidden=!on;comp.classList.toggle('sheet-on',!!on);add.setAttribute('aria-expanded',on?'true':'false');if(on)sheet.querySelector('.as-pick').focus()}
-if(add&&sheet&&window.fetch){add.hidden=false;add.onclick=function(){sheetOpen(sheet.hidden)};
+// The sheet rises and falls on a spring (apple-motion; src/pages/motion.js) as --as, 0 shut to 1 open, so
+// a tap outside while it is still rising turns it round from where it is. Hidden again once it is down.
+var sheetOn=false,sv=sheet&&window.reasonSpring?window.reasonSpring(0,function(v){sheet.style.setProperty('--as',v)},{precision:0.002,onRest:function(v){if(!v&&!sheetOn)sheet.hidden=true}}):null;if(sv)sv.set(0);
+function sheetOpen(on){sheetOn=!!on;sheet.inert=!sheetOn;comp.classList.toggle('sheet-on',sheetOn);add.setAttribute('aria-expanded',on?'true':'false');if(on){sheet.hidden=false;if(sv)sv.to(1);sheet.querySelector('.as-pick').focus({preventScroll:true})}else if(sv)sv.to(0);else sheet.hidden=true}
+if(add&&sheet&&window.fetch){add.hidden=false;add.onclick=function(){sheetOpen(!sheetOn)};
 sheet.querySelectorAll('.as-pick').forEach(function(b){b.onclick=function(){sheetOpen(false);var i=picks[b.dataset.pick];if(i)i.click();add.focus()}});
 sheet.querySelector('.as-never').onclick=function(){sheetOpen(false);add.focus()};
-document.addEventListener('keydown',function(e){if(sheet.hidden)return;if(e.key==='Escape'){e.preventDefault();sheetOpen(false);add.focus()}else if(e.key==='Tab'){var f=sheet.querySelectorAll('button'),a=f[0],z=f[f.length-1];if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}}});
-document.addEventListener('pointerdown',function(e){if(!sheet.hidden&&!sheet.contains(e.target)&&!add.contains(e.target))sheetOpen(false)});
+document.addEventListener('keydown',function(e){if(!sheetOn)return;if(e.key==='Escape'){e.preventDefault();sheetOpen(false);add.focus()}else if(e.key==='Tab'){var f=sheet.querySelectorAll('button'),a=f[0],z=f[f.length-1];if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}}});
+document.addEventListener('pointerdown',function(e){if(sheetOn&&!sheet.contains(e.target)&&!add.contains(e.target))sheetOpen(false)});
 var depth=0;function hasFiles(e){var t=e.dataTransfer&&e.dataTransfer.types;return !!t&&Array.prototype.indexOf.call(t,'Files')>=0}
 document.addEventListener('dragenter',function(e){if(!hasFiles(e))return;e.preventDefault();depth++;body.classList.add('dropping')});
 document.addEventListener('dragover',function(e){if(!hasFiles(e))return;e.preventDefault();e.dataTransfer.dropEffect='copy'});

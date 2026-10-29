@@ -77,7 +77,7 @@ test("2. HIDE → beside the heading; the thread takes the width; a vertical ONG
   assert.match(s, /\.og-back\{display:none;position:fixed;right:0;top:50%;[^}]*writing-mode:vertical-rl\}/);
   assert.match(s, /html\.og-off \.wrapc>\.og\{display:none\}/);
   assert.match(s, /html\.og-off \.og-back\{display:flex/);
-  assert.match(s, /\.og\.going\{transform:translateX\(48px\);opacity:0\}/, "slides away");
+  assert.match(s, /\.og\{[^}]*transform:translateX\(calc\(var\(--og,0\) \* 48px\)\)/, "slides away on a spring (--og)");
   assert.match(s, /\.convo\{flex:999 1 540px/, "the thread grows into the room");
   // Applied before first paint, so a hidden panel never flashes in.
   assert.equal(kit.OG_KEY, "reason-web-og");

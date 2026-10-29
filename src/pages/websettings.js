@@ -162,6 +162,9 @@ a.iv-link{text-decoration:none}
 .th-g button{min-height:44px;border:0;background:transparent;padding:0;cursor:pointer;font:italic 400 26px/1.2 var(--serif);color:var(--muted)}
 .th-g button[aria-checked=true]{color:var(--ink)}
 .th-g .dot{color:var(--hair)}
+.th-g{position:relative}
+.th-u{position:absolute;left:0;top:0;width:1px;height:1.5px;background:var(--ink);transform-origin:0 0;pointer-events:none}
+.st-arr{display:none}
 .out{font-size:12px;letter-spacing:.14em;align-self:flex-start}
 .d-only{display:none}
 .busy,.busy:hover{color:var(--muted);cursor:default;pointer-events:none}
@@ -215,6 +218,9 @@ a.iv-link{text-decoration:none}
 .st-nav a{min-height:44px;display:inline-flex;align-items:center;text-decoration:none;font:400 12px/1.3 var(--mono);letter-spacing:.14em;color:var(--muted)}
 .st-nav a[aria-current]{color:var(--ink)}
 .st-nav a[aria-current]::before{content:"\\2192\\00a0"}
+.st-nav.sprung{position:relative}
+.st-nav.sprung a[aria-current]::before{visibility:hidden}
+.st-arr{display:flex;align-items:center;position:absolute;left:0;top:0;height:44px;font:400 12px/1 var(--mono);color:var(--ink);pointer-events:none}
 @media (prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
 .st-main{flex:999 1 520px;gap:56px;padding-top:8px}
 .st-sec{gap:16px;padding-bottom:48px}
@@ -264,16 +270,24 @@ a.iv-link{text-decoration:none}
 // choice; 5D copies and shares the link; 8C asks the browser before it saves anything. All of it over
 // forms that already work without script, and nothing drawn that can't work (no dead controls).
 const JS = `(function(){var g=document.querySelector('.th-g'),H=document.documentElement;
+var S=window.reasonSpring,ul=function(){},arTo=function(){};
 function mark(){var t=H.dataset.theme,cur=t==='light'?'paper':t==='dark'?'night':'auto';g.querySelectorAll('button').forEach(function(b){b.setAttribute('aria-checked',String(b.value===cur));b.tabIndex=b.value===cur?0:-1})}
-if(g){mark();g.addEventListener('click',function(e){var b=e.target.closest('button');if(!b||!window.reasonTheme)return;e.preventDefault();window.reasonTheme(b.value);mark();b.focus()});
+if(g&&S){var u=document.createElement('span'),uy=0;u.className='th-u';u.setAttribute('aria-hidden','true');g.appendChild(u);
+var ux=S(0,paint),uw=S(0,paint);function paint(){u.style.transform='translate('+ux.value+'px,'+uy+'px) scaleX('+uw.value+')'}
+ul=function(jump){var b=g.querySelector('button[aria-checked="true"]');if(!b)return;uy=b.offsetTop+b.offsetHeight-10;if(jump){ux.set(b.offsetLeft);uw.set(b.offsetWidth)}else{ux.to(b.offsetLeft);uw.to(b.offsetWidth)}}}
+if(g){mark();ul(true);g.addEventListener('click',function(e){var b=e.target.closest('button');if(!b||!window.reasonTheme)return;e.preventDefault();window.reasonTheme(b.value);mark();ul(false);b.focus()});
 g.addEventListener('keydown',function(e){var k=e.key,bs=[].slice.call(g.querySelectorAll('button')),i=bs.indexOf(document.activeElement);if(i<0)return;var n=k==='ArrowRight'||k==='ArrowDown'?(i+1)%bs.length:k==='ArrowLeft'||k==='ArrowUp'?(i+bs.length-1)%bs.length:-1;if(n<0)return;e.preventDefault();bs[n].click()})}
+var nv=document.querySelector('.st-nav');
+if(nv&&S){var ar=document.createElement('span');ar.className='st-arr';ar.setAttribute('aria-hidden','true');ar.textContent='\\u2192';nv.classList.add('sprung');nv.appendChild(ar);
+var ay=S(0,function(v){ar.style.transform='translateY('+v+'px)'});arTo=function(jump){var a=nv.querySelector('a[aria-current]');if(!a)return;var y=a.offsetTop+(a.offsetHeight-44)/2;if(jump)ay.set(y);else ay.to(y)}}
+function snap(){ul(true);arTo(true)}window.addEventListener('resize',snap,{passive:true});if(document.fonts&&document.fonts.ready)document.fonts.ready.then(snap);
 var nav=[].slice.call(document.querySelectorAll('.st-nav a')),secs=nav.map(function(a){return document.getElementById(a.getAttribute('href').slice(1))}).filter(Boolean),held=null;
-function cur(id){nav.forEach(function(a){if(a.getAttribute('href')==='#'+id)a.setAttribute('aria-current','true');else a.removeAttribute('aria-current')})}
+function cur(id){nav.forEach(function(a){if(a.getAttribute('href')==='#'+id)a.setAttribute('aria-current','true');else a.removeAttribute('aria-current')});arTo(false)}
 function left(){return document.documentElement.scrollHeight-innerHeight-scrollY}
 function spy(){if(held||!secs.length)return;var band=innerHeight*.7,line=innerHeight-band*Math.min(1,Math.max(0,left())/band),id=secs[0].id;secs.forEach(function(s){if(s.getBoundingClientRect().top<line+1)id=s.id});cur(id)}
 function hold(){var s=secs.filter(function(s){return '#'+s.id===location.hash})[0];if(s){held=s.id;cur(s.id)}}
 function free(){if(held){held=null;spy()}}
-if(secs.length){hold();window.addEventListener('hashchange',hold);nav.forEach(function(a){a.addEventListener('click',function(){held=a.getAttribute('href').slice(1);cur(held)})});
+if(secs.length){hold();arTo(true);window.addEventListener('hashchange',hold);nav.forEach(function(a){a.addEventListener('click',function(){held=a.getAttribute('href').slice(1);cur(held)})});
 ['wheel','touchstart','keydown','mousedown'].forEach(function(t){window.addEventListener(t,free,{passive:true})});
 var io=window.IntersectionObserver&&new IntersectionObserver(spy,{rootMargin:'0px 0px -70% 0px'});if(io)secs.forEach(function(s){io.observe(s)});
 window.addEventListener('scroll',function(){if(!io||left()<innerHeight*.7)spy()},{passive:true})}
