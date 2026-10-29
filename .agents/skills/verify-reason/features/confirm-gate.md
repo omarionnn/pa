@@ -36,6 +36,16 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   a yes. `"ok but make it 9 instead"` contains "ok" and is **not** a yes — a word list booked the
   8:00 he had just rejected, which is the exact failure this exists to prevent.
 - **Their words go on the record.** `granted_quote` is the owner's sentence verbatim.
+- **"owner" is the person in this conversation, never the operator's phone.** `addressedToOwner`
+  treats `owner`/`me`/`self`/`myself`/`user` as this conversation's person, and `ownAddress` in
+  `src/tools.js` is the only place that turns it into a number: the operator's thread reads config
+  first (as before), anybody else's reads their account then their thread, and with neither nothing
+  is sent. Covers `message_send`, `voice_note_send`, `send_picture` and every document handover;
+  `call_place` already used `me.address`. Before 10-28 all four read `config.ownerNumbers[0]` first,
+  so testers' "on it" texts and Yaw's flight link went to Omari (outbox 443, 1850, 1901). Drive:
+  `node --test test/owner-means-this-thread.test.js`, then the claude-cli lane
+  `test/flow-owner-thread.test.js`. The cage cannot prove a send (blanked channels), so the fake
+  channel's `sent[].to` is the proof.
 - **A yes is pinned.** `target` is checked, so a yes for one phone number cannot be spent on
   another, and a yes for an 8:00 booking cannot be carried to a 9:00 one.
 - **A yes is spent once.** `consumed_at`.

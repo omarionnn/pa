@@ -1422,10 +1422,30 @@ const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_co
  */
 function addressedToOwner(conversationId, to) {
   const t = String(to ?? "").trim();
-  if (t.toLowerCase() === "owner") return true;
+  if (SELF_TOKENS.has(t.toLowerCase())) return true;
   const mine = accounts.ownerOf(conversationId).address;
   const n = normalizeNumber(t);
   return !!n && !!mine && normalizeNumber(mine) === n;
+}
+
+// The `to` values that name this conversation's own person. A schema token, not a reading of what
+// anybody said: the model writes one of these when it means "the person I am talking to".
+const SELF_TOKENS = new Set(["owner", "me", "self", "myself", "user"]);
+
+/**
+ * The number a send to "owner" is delivered to: this conversation's own person, never anybody else's.
+ *
+ * Until 10-28 every send to "owner" went to `config.ownerNumbers[0]` first, the operator's phone,
+ * so a tester asking for a flight link on a call had it texted to Omari instead (outbox 1850).
+ * The operator's own thread is unchanged: config first, as before. Anybody else's is their account's
+ * address, then their thread's. If neither is known it returns "" and the caller sends nothing,
+ * because the only fallback left would be somebody else's phone.
+ */
+function ownAddress(conversationId, thread = db.getThread(conversationId)) {
+  const me = accounts.ownerOf(conversationId);
+  if (me.isOperator) return config.ownerNumbers[0] ?? thread?.address ?? "owner";
+  const mine = me.address && me.address !== "console" ? me.address : "";
+  return mine || thread?.address || "";
 }
 
 /**
@@ -3811,11 +3831,11 @@ export const tools = [
   },
   {
     name: "message_send",
-    description: "Text someone. 'owner' reaches the person you work for; a phone number in E.164 reaches anyone else — and texting anyone else needs the confirm gate first, with the exact number and the exact words shown to the owner. Fails honestly when no texting channel is connected; check capabilities before you promise to text anybody.",
+    description: "Text someone. 'owner' reaches the person in this conversation, the one you work for, on their own number; a phone number in E.164 reaches anyone else — and texting anyone else needs the confirm gate first, with the exact number and the exact words shown to the owner. Fails honestly when no texting channel is connected; check capabilities before you promise to text anybody.",
     input_schema: {
       type: "object",
       properties: {
-        to: { type: "string", description: "'owner', or a phone number in E.164 like +14155559876" },
+        to: { type: "string", description: "'owner' for the person in this conversation, or a phone number in E.164 like +14155559876" },
         text: { type: "string", description: "Exactly what to send. Plain text, in your own voice, short." },
         style: {
           type: "string",
@@ -3942,7 +3962,7 @@ export const tools = [
     input_schema: {
       type: "object",
       properties: {
-        to: { type: "string", description: "'owner', or a phone number in E.164. Anyone but the owner needs the confirm gate first." },
+        to: { type: "string", description: "'owner' for the person in this conversation, or a phone number in E.164. Anyone but them needs the confirm gate first." },
         file: { type: "string", description: "The audio file to send, as a path that came back from a tool in this conversation — never one typed from memory." },
         text: { type: "string", description: "A short line to go with it. Optional." },
         confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
@@ -3964,11 +3984,11 @@ export const tools = [
   },
   {
     name: "call_place",
-    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes. Every call to anyone but the owner opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. A call to the owner opens with a plain greeting instead: nothing is announced at the person who set this up, and they are told once by text that calls are recorded. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in the goal or the facts — the call is refused before it is dialled.",
+    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person in this conversation, the one you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes. Every call to anyone but the owner opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. A call to the owner opens with a plain greeting instead: nothing is announced at the person who set this up, and they are told once by text that calls are recorded. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in the goal or the facts — the call is refused before it is dialled.",
     input_schema: {
       type: "object",
       properties: {
-        to: { type: "string", description: "'owner', or a phone number in E.164 like +12125551234" },
+        to: { type: "string", description: "'owner' for the person in this conversation, or a phone number in E.164 like +12125551234" },
         goal: { type: "string", description: "What you are ringing to achieve, specific enough that the result settles it: 'ask if they have a table for 4 at 8pm Saturday, and if not the nearest time'." },
         facts: { type: "array", items: { type: "string" }, description: "The ONLY things this call may tell them. Name, party size, a phone number to hold it under — whatever the job needs and nothing more. Everything you leave out stays private. NEVER payment details: no card number, no expiry, no security code, no bank details, no PIN, for any reason, not even to hold a booking. A call carrying them is refused before it is dialled." },
         max_minutes: { type: "integer", description: "Hang up after this long. Default from config." },
@@ -4133,7 +4153,7 @@ export const tools = [
       type: "object",
       properties: {
         document_id: { type: "string", description: "The id document_create or document_list gave you." },
-        to: { type: "string", description: "A phone number in E.164, e.g. +14155559876, or 'owner' for the person whose Reason this is. Defaults to them." },
+        to: { type: "string", description: "A phone number in E.164, e.g. +14155559876, or 'owner' for the person in this conversation, whose Reason this is. Defaults to them." },
         say: { type: "string", description: "One short line to go with the file. To anybody but them it is written properly and signed as their assistant." },
       },
       required: ["document_id"],
@@ -8260,7 +8280,8 @@ async function handOverDocument({ doc, to, say = "", ctx, c, me, name = "documen
 
   const thread = db.getThread(c);
   const channelName = thread?.channel ?? router.list()[0]?.name;
-  const address = toOwner ? (config.ownerNumbers[0] ?? thread?.address ?? "owner") : normalizeNumber(to);
+  const address = toOwner ? ownAddress(c, thread) : normalizeNumber(to);
+  if (!address) return { ok: false, out: { sent: false, error: "There is no number on file for the person in this conversation, so nothing was sent. Say that plainly." } };
   const chatId = toOwner || normalizeNumber(thread?.address) === address ? (thread?.chat_id ?? null) : null;
 
   // Everything about reaching somebody who is not the person Reason works for, before the file goes
@@ -10121,8 +10142,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const thread = db.getThread(c);
       const channelName = thread?.channel ?? router.list()[0]?.name;
       const to = toOwner
-        ? (config.ownerNumbers[0] ?? thread?.address ?? "owner")
+        ? ownAddress(c, thread)
         : normalizeNumber(input.to);
+      if (toOwner && !to) return { ok: false, error: "There is no number on file for the person in this conversation, so nothing was sent. Say that plainly; do not say you sent it." };
       if (!toOwner && !to) return { ok: false, error: `'${input.to}' is not a phone number. Use E.164, e.g. +14155559876, or 'owner'.` };
 
       // Everything about reaching somebody who is not the person Reason works for: the draft-only
@@ -10523,7 +10545,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (toOwner && ctx.historyId && ctx.historyId !== c) return { ok: false, status: "web_chat", error: "This is a Web-only chat: a voice note would go to their phone, so none was sent. Say it in your reply instead." };
       const thread = db.getThread(c);
       const channelName = thread?.channel ?? router.list()[0]?.name;
-      const to = toOwner ? (config.ownerNumbers[0] ?? thread?.address ?? "owner") : normalizeNumber(input.to);
+      const to = toOwner ? ownAddress(c, thread) : normalizeNumber(input.to);
+      if (toOwner && !to) return { ok: false, error: "There is no number on file for the person in this conversation, so nothing was sent. Say that plainly." };
       if (!toOwner && !to) return { ok: false, error: `'${input.to}' is not a phone number. Use E.164, e.g. +14155559876, or 'owner'.` };
 
       // The file first, because this is where it usually stops.
@@ -10571,7 +10594,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!/^https:\/\/\S+$/.test(url)) return { ok: false, error: `'${input.url}' is not a valid https URL.` };
       const thread = db.getThread(c);
       const channelName = thread?.channel ?? router.list()[0]?.name;
-      const to = config.ownerNumbers[0] ?? thread?.address;
+      const to = ownAddress(c, thread);
       if (!to) return { ok: false, error: "No address to send to." };
       const chatId = thread?.chat_id ?? null;
       let r;
