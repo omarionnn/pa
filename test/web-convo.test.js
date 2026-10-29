@@ -393,6 +393,7 @@ test("the stream: catch-up after Last-Event-ID, live lines as they land, typing 
 test("long history pages back: forty at a time, oldest first within a page, and the start says what came before", async () => {
   const h = harness();
   for (let i = 0; i < 95; i++) { clock.skip(1000); db.writeMessage({ conversationId: KOFI_C, role: i % 2 ? "assistant" : "user", channel: "fake", externalId: i % 2 ? null : `p${i}`, text: `line ${i}` }); }
+  db.db.prepare("UPDATE accounts SET created_at = 1 WHERE conversation_id = ?").run(KOFI_C);
   const kofi = { ...browser(KOFI_C), conv: KOFI_C };
   const page = await thread(h, kofi);
   assert.match(page, /line 94/);
@@ -409,6 +410,36 @@ test("long history pages back: forty at a time, oldest first within a page, and 
   assert.match(p3.start, /^Your conversation before .+ stays in your texts\.$/);
   // Each line says who and where: iMessage for the texts.
   assert.deepEqual([...new Set(p3.messages.map(m => m.source))], ["iMessage"]);
+});
+
+// The note at the top dates the day Web's history began (never backfilled), not the first stored line.
+test("the older-texts note: dated the day Web history began, shown on an empty thread, absent for someone who started after", async () => {
+  const h = harness();
+  const day = (at) => new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short", month: "short", day: "numeric" }).format(at);
+  const webStart = clock.now();
+  // Somebody else's line is the first anything was kept: Web history starts here.
+  db.writeMessage({ conversationId: AMA_C, role: "user", channel: "fake", externalId: "a0", text: "first kept", at: webStart });
+  // Kofi (Kwesi's shape): texting since well before, his first stored line two days later.
+  db.db.prepare("UPDATE accounts SET created_at = ? WHERE conversation_id = ?").run(webStart - 14 * 864e5, KOFI_C);
+  const kofi = { ...browser(KOFI_C), conv: KOFI_C };
+  // (2) Empty thread with an older conversation: the note, never a blank thread.
+  const empty = await history(h, kofi);
+  assert.equal(empty.messages.length, 0);
+  assert.equal(empty.start, `Your conversation before ${day(webStart)} stays in your texts.`);
+  assert.match(convo.renderConversation({ account: db.getAccount(KOFI_C), csrf: "c", lines: [], more: false, sendId: "s" }),
+    new RegExp(`Your conversation before ${day(webStart)} stays in your texts\\.`));
+  // (1) His first stored line is later; the note still dates Web history's start.
+  clock.skip(2 * 864e5);
+  db.writeMessage({ conversationId: KOFI_C, role: "user", channel: "fake", externalId: "k0", text: "back on web", at: clock.now() });
+  const one = await history(h, kofi);
+  assert.equal(one.messages.length, 1);
+  assert.equal(one.start, `Your conversation before ${day(webStart)} stays in your texts.`);
+  assert.notEqual(day(webStart), day(clock.now()));
+  // (3) Ama's whole conversation began on Web's watch: nothing is missing, so no note.
+  db.db.prepare("UPDATE accounts SET created_at = ? WHERE conversation_id = ?").run(webStart, AMA_C);
+  const ama = await history(h, { ...browser(AMA_C), conv: AMA_C });
+  assert.equal(ama.start, null);
+  assert.ok(!convo.renderConversation({ account: db.getAccount(AMA_C), csrf: "c", lines: [], more: false, sendId: "s" }).includes("stays in your texts"));
 });
 
 test("the page itself: the composer posts to /web/send with the session's secret and a fresh id, labelled for screen readers", async () => {
