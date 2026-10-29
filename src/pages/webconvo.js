@@ -646,7 +646,7 @@ var calm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').match
 function ogEl(){return document.getElementById('og')}
 // The margin slides on a spring (apple-motion; src/pages/motion.js): --og on <html>, 0 in place to 1 gone,
 // so a margin redrawn live mid-slide keeps its place. The fade beside it stays timed (.fading).
-var hiding=false,og2=window.reasonSpring?window.reasonSpring(0,function(v){H.style.setProperty('--og',v)},{precision:0.001,onRest:function(v){if(v!==1||!hiding)return;hiding=false;var o=ogEl();H.classList.add('og-off');if(o)o.classList.remove('fading');og2.set(0);if(back)back.focus()}}):null;
+var hiding=false,og2=window.reasonSpring?window.reasonSpring(0,function(v){H.style.setProperty('--og',v)},{precision:0.005,onRest:function(v){if(v!==1||!hiding)return;hiding=false;var o=ogEl();H.classList.add('og-off');if(o)o.classList.remove('fading');og2.set(0);if(back)back.focus()}}):null;
 function keepOff(off){try{if(off)localStorage.setItem('${OG_KEY}','off');else localStorage.removeItem('${OG_KEY}')}catch(e){}}
 // Delegated, so a margin redrawn live (below) keeps HIDE working.
 document.addEventListener('click',function(e){var o=ogEl(),t=o&&e.target&&e.target.closest?e.target.closest('.og-hide'):null;if(!t||!o.contains(t))return;

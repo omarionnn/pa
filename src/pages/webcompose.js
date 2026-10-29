@@ -371,8 +371,8 @@ form.addEventListener('submit',function(e){if(files.some(function(f){return f.st
 var picks={};comp.querySelectorAll('.c-file').forEach(function(i){picks[i.dataset.pick]=i;i.onchange=function(){take(i.files);i.value=''}});
 // The sheet rises and falls on a spring (apple-motion; src/pages/motion.js) as --as, 0 shut to 1 open, so
 // a tap outside while it is still rising turns it round from where it is. Hidden again once it is down.
-var sheetOn=false,sv=sheet&&window.reasonSpring?window.reasonSpring(0,function(v){sheet.style.setProperty('--as',v)},{precision:0.001,onRest:function(v){if(!v&&!sheetOn)sheet.hidden=true}}):null;if(sv)sv.set(0);
-function sheetOpen(on){sheetOn=!!on;comp.classList.toggle('sheet-on',sheetOn);add.setAttribute('aria-expanded',on?'true':'false');if(on){sheet.hidden=false;if(sv)sv.to(1);sheet.querySelector('.as-pick').focus({preventScroll:true})}else if(sv)sv.to(0);else sheet.hidden=true}
+var sheetOn=false,sv=sheet&&window.reasonSpring?window.reasonSpring(0,function(v){sheet.style.setProperty('--as',v)},{precision:0.002,onRest:function(v){if(!v&&!sheetOn)sheet.hidden=true}}):null;if(sv)sv.set(0);
+function sheetOpen(on){sheetOn=!!on;sheet.inert=!sheetOn;comp.classList.toggle('sheet-on',sheetOn);add.setAttribute('aria-expanded',on?'true':'false');if(on){sheet.hidden=false;if(sv)sv.to(1);sheet.querySelector('.as-pick').focus({preventScroll:true})}else if(sv)sv.to(0);else sheet.hidden=true}
 if(add&&sheet&&window.fetch){add.hidden=false;add.onclick=function(){sheetOpen(!sheetOn)};
 sheet.querySelectorAll('.as-pick').forEach(function(b){b.onclick=function(){sheetOpen(false);var i=picks[b.dataset.pick];if(i)i.click();add.focus()}});
 sheet.querySelector('.as-never').onclick=function(){sheetOpen(false);add.focus()};

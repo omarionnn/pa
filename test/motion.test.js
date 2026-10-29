@@ -74,6 +74,13 @@ test("a 0–1 value settles to its precision, not the pixel default", () => {
   assert.equal(s.value, 1);
 });
 
+test("a first frame stamped before to() was called doesn't run it backwards", () => {
+  const s = createSpring(0, () => {});
+  now = 1000; s.to(100);
+  const q = queue; queue = []; q.forEach(f => f(990)); // rAF's time is the frame's start, which can precede to()
+  assert.ok(s.value >= 0);
+});
+
 test("a stalled tab doesn't fling it: one long frame counts as 1/30 s", () => {
   const s = createSpring(0, () => {});
   s.to(100);

@@ -21,7 +21,7 @@ export function createSpring(initial, onUpdate, opts) {
   function calm() { return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches; }
   function rest() { value = target; velocity = 0; frame = 0; onUpdate(value); if (onRest) onRest(value); }
   function step(now) {
-    var dt = Math.min((now - last) / 1000, 1 / 30); // a stalled tab doesn't fling it
+    var dt = Math.min(Math.max(0, (now - last) / 1000), 1 / 30); // a stalled tab doesn't fling it; a frame stamped before to() doesn't run it backwards
     last = now;
     for (var i = 0; i < 4; i++) { // substeps keep stiff springs stable
       var h = dt / 4;
