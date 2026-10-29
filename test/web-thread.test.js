@@ -368,6 +368,7 @@ test("L2: ↑ FINDING EARLIER MESSAGES… and a ghost above the day; the older p
   const b = browser(KOFI_C);
   const base = clock.now() - 3 * DAY;
   for (let i = 0; i < convo.PAGE + 5; i++) row({ role: i % 2 ? "assistant" : "user", text: `line ${i}`, at: base + i * MIN });
+  db.db.prepare("UPDATE accounts SET created_at = ? WHERE conversation_id = ?").run(base - DAY, KOFI_C);
   const first = await history(h, b);
   assert.equal(first.more, true);
   const older = await history(h, b, { before: String(first.first) });

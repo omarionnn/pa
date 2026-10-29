@@ -44,7 +44,8 @@ before(async () => {
   config.web = true;
   db.upsertAccount({ conversationId: C, channel: "fake", address: KOFI, name: "Kofi", isOperator: false });
   db.upsertThread({ conversationId: C, channel: "fake", address: KOFI, isOwner: true, service: "iMessage" });
-  db.db.exec("UPDATE accounts SET contact_card_sent_at = 1");
+  // Kofi texted before Web history began, so the thread's top says the rest stays in the texts.
+  db.db.exec("UPDATE accounts SET contact_card_sent_at = 1, created_at = 1");
   db.markWebNoticeSeen(C);
   const now = Date.now();
   // Midnight today in New York, so "today" and "yesterday" are those days whatever time the suite runs.

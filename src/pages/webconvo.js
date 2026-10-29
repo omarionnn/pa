@@ -863,6 +863,16 @@ export function withAway(html, away, now = clock.now()) {
 }
 
 /**
+ * The note at the top of the shared thread: dated the day Web's history began (it was never
+ * backfilled), and only when this person's conversation is older than that. An empty thread still
+ * gets it; a conversation that began on Web's watch, or a Web-only chat, has nothing missing.
+ */
+export function olderNote(conversationId, chat = "") {
+  const at = chat ? null : db.historyStartFor(conversationId);
+  return at == null ? null : `Your conversation before ${dayFmt().format(at)} stays in your texts.`;
+}
+
+/**
  * The thread. `firstVisit` draws 5C in its place (once); `approvals` the one loud thing at the foot.
  */
 export function renderConversation({ account, csrf, lines, more, firstVisit = false, sendId, items = [], approvals = [], back = [], now = clock.now(), found = null, deferred = false, work = null, chat = "", about = null, away = null }) {
@@ -872,7 +882,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
   // A Web-only chat (owner 10-27) starts here: nothing before it lives in the texts.
   const startLine = more
     ? `<button class="act2" type="button">↑ SHOW EARLIER MESSAGES</button>`
-    : lines.length && !chat ? label(`Your conversation before ${dayFmt().format(lines[0].at)} stays in your texts.`) : "";
+    : (() => { const n = olderNote(conv, chat); return n ? label(n) : ""; })();
   // SR4: a label is always who · where · when; what the card is waiting for is said inside the card.
   const asked = approvals[0]?.at ?? approvals[0]?.asked_at ?? null;
   const askedIn = asked ? [...lines].reverse().find(m => m.role === "assistant" && m.at <= asked + 60_000) : null;
@@ -1078,7 +1088,7 @@ export function historyRequest({ account, query = {}, now = clock.now() }) {
   const rows = db.messagesBefore(conv, { before, limit: PAGE + 1, chat });
   const more = rows.length > PAGE;
   const lines = (more ? rows.slice(1) : rows).map(r => rowOut(r, { conversationId: conv, service, now }));
-  const start = !more && lines.length && !chat ? `Your conversation before ${dayFmt().format(lines[0].at)} stays in your texts.` : null;
+  const start = more ? null : olderNote(conv, chat);
   const html = pageHtml(lines, { conversationId: conv, service, now, chat });
   const first = lines[0]?.id ?? 0, last = lines.reduce((n, m) => Math.max(n, m.id), 0);
   return json(200, { messages: lines, html, more, start, first, last, ...(before == null ? { work: workOf(conv) } : {}) });

@@ -10215,6 +10215,21 @@ export function markWebNoticeSeen(conversationId) {
 }
 
 /**
+ * When Web's history begins for this conversation, if it holds less than the conversation: the day
+ * the `messages` table began (never backfilled, so its oldest row site-wide), when this person's
+ * account or texts are older than that. Null when nothing is missing (their whole conversation
+ * started after Web history did) or when there is no history yet.
+ */
+export function historyStartFor(conversationId) {
+  const start = db.prepare("SELECT MIN(at) AS at FROM messages").get()?.at;
+  if (start == null) return null;
+  const began = db.prepare(`SELECT MIN(t) AS at FROM (
+      SELECT created_at AS t FROM accounts WHERE conversation_id = ?
+      UNION ALL SELECT MIN(at) FROM event_log WHERE conversation_id = ?)`).get(conversationId, conversationId)?.at;
+  return began != null && began < start ? start : null;
+}
+
+/**
  * The history row for a message that just left through the outbox. To the person whose Reason it
  * is only (`to_owner`): a text Reason sent somebody else on their behalf is that errand's business,
  * recorded by the tool that sent it, not a line in this person's conversation.
