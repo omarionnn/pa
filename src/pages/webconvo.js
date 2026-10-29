@@ -475,8 +475,8 @@ html:not(.js) .l1,html:not(.js) .thread[aria-busy]{display:none}
 .send svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .cform input:placeholder-shown~.send{display:none}
 .under{margin:0;font-size:13px;color:var(--muted)}
-.og{display:none;flex:1 1 300px;max-width:340px;flex-direction:column;gap:28px;padding-top:8px;position:sticky;top:104px;transition:transform .32s ease,opacity .32s ease}
-.og.going{transform:translateX(48px);opacity:0}
+.og{display:none;flex:1 1 300px;max-width:340px;flex-direction:column;gap:28px;padding-top:8px;position:sticky;top:104px;transform:translateX(calc(var(--og,0) * 48px));transition:opacity .32s ease}
+.og.fading{opacity:0}
 .og h2{margin:0;font:italic 400 32px/1.1 var(--serif)}
 .og-h{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
 .og-hide:hover,.og-back:hover{color:var(--pen)}
@@ -644,11 +644,14 @@ var bar=document.querySelector('.top'),og=document.getElementById('og'),H=docume
 function stuck(){if(bar)bar.classList.toggle('stuck',window.scrollY>4)}window.addEventListener('scroll',stuck,{passive:true});stuck();
 var calm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches,back=document.querySelector('.og-back'),tabN=document.querySelector('.tabs a[href="/web?tab=ongoing"]');
 function ogEl(){return document.getElementById('og')}
+// The margin slides on a spring (apple-motion; src/pages/motion.js): --og on <html>, 0 in place to 1 gone,
+// so a margin redrawn live mid-slide keeps its place. The fade beside it stays timed (.fading).
+var hiding=false,og2=window.reasonSpring?window.reasonSpring(0,function(v){H.style.setProperty('--og',v)},{precision:0.001,onRest:function(v){if(v!==1||!hiding)return;hiding=false;var o=ogEl();H.classList.add('og-off');if(o)o.classList.remove('fading');og2.set(0);if(back)back.focus()}}):null;
 function keepOff(off){try{if(off)localStorage.setItem('${OG_KEY}','off');else localStorage.removeItem('${OG_KEY}')}catch(e){}}
 // Delegated, so a margin redrawn live (below) keeps HIDE working.
 document.addEventListener('click',function(e){var o=ogEl(),t=o&&e.target&&e.target.closest?e.target.closest('.og-hide'):null;if(!t||!o.contains(t))return;
-keepOff(true);if(calm){H.classList.add('og-off');if(back)back.focus();return}o.classList.add('going');setTimeout(function(){H.classList.add('og-off');o.classList.remove('going');if(back)back.focus()},320)});
-if(back)back.onclick=function(e){var o=ogEl();e.preventDefault();keepOff(false);if(o&&!calm)o.classList.add('going');H.classList.remove('og-off');requestAnimationFrame(function(){requestAnimationFrame(function(){if(o)o.classList.remove('going')})});var hb=o&&o.querySelector('.og-hide');if(hb)hb.focus()};
+keepOff(true);if(calm||!og2){H.classList.add('og-off');if(back)back.focus();return}hiding=true;o.classList.add('fading');og2.to(1)});
+if(back)back.onclick=function(e){var o=ogEl();e.preventDefault();keepOff(false);H.classList.remove('og-off');hiding=false;if(o&&og2&&!calm){og2.set(1);o.classList.add('fading');void o.offsetWidth;o.classList.remove('fading');og2.to(0)}var hb=o&&o.querySelector('.og-hide');if(hb)hb.focus()};
 // The margin, the rail's ONGOING · N and the tab's count follow the list live (owner 10-26 D5): asked
 // for beside every poll and stream event; the html comes back only when the list really changed.
 function ogCount(n){var w=n===1?' thing':' things';if(back){back.setAttribute('aria-label','Show Ongoing'+(n?', '+n+w:''));var s=back.querySelector('span');if(s)s.textContent='ONGOING'+(n?' \\u00b7 '+n:'')}

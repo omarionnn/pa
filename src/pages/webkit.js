@@ -26,6 +26,7 @@ import { WORDMARK_O } from "./wordmark.js";
 import { LOAD_CSS, loadJs } from "./webloading.js";
 import { webIconLinks, NOTIFY_JS, NOTIFY_CSS } from "./webnotify.js";
 import { WEB_PRINT_CSS } from "./print.js";
+import { SPRING_JS } from "./motion.js";
 
 /** The handoff's colour table (§2), exactly. `deep` = deeper ground, `lifted` = lifted paper, `hair` = hairline. */
 export const TOKENS = {
@@ -311,7 +312,7 @@ export function webPage({ title = "Reason", header = "", body = "", css = "", sc
 <meta name="theme-color" content="${TOKENS.night.ground}" data-auto="${TOKENS.night.ground}" media="(prefers-color-scheme: dark)">
 ${webIconLinks()}
 ${head ? `${head}\n` : ""}<title>${esc(title)}</title>
-<script>${PAGE_JS}${INK_JS}</script>
+<script>${PAGE_JS}${INK_JS}${SPRING_JS}</script>
 <script>${HEAD_JS}</script>
 <style>${KIT_CSS}${WEB_PRINT_CSS}${NOTIFY_CSS}${css}</style>
 </head><body${bodyClass ? ` class="${esc(bodyClass)}"` : ""}>${skipped.link}${loader ? `<div class="loader" role="status" aria-label="Loading"><p><span class="wm-w">reas${bubble(4)}${WORDMARK_O}n<span class="ing">ing</span></span></p></div>` : ""}
