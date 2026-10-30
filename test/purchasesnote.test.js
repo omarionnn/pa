@@ -88,6 +88,9 @@ function theMorning() {
 }
 
 /** A CLI turn (the backend the live Reason runs on) with the CLI, pictures and MCP all stubbed. */
+// The thread's older part rides at the end of the system prompt (the anchor, src/backends/claude-cli.js),
+// so `lastSystem` is where the stale line lives; `prompt` is the user message, where the record sits.
+let lastSystem = "";
 async function cliTurn(text, { images = async () => ({ blocks: [], notes: [], seen: [], viewedMediaIds: [] }) } = {}) {
   let prompt;
   await runTurnViaCli({
@@ -95,7 +98,7 @@ async function cliTurn(text, { images = async () => ({ blocks: [], notes: [], se
     startMcp: async () => ({ url: "http://127.0.0.1:1/mcp", close: async () => {} }),
     images,
     recall: async () => [],
-    run: async (args) => { prompt = args.prompt; return { ok: true, envelope: { result: "ok" } }; },
+    run: async (args) => { prompt = args.prompt; lastSystem = args.system; return { ok: true, envelope: { result: "ok" } }; },
   });
   return prompt;
 }
@@ -119,7 +122,7 @@ test("pinned 2026-10-24: the thread says ordered, the row says cancelled — the
   // The owner's own words, on the backend the live Reason runs on: the block is in the very prompt
   // that still carries the old "ordered".
   const prompt = await cliTurn(ASK);
-  assert.match(prompt, /the cerave's ordered/, "the stale claim is still in the thread...");
+  assert.match(lastSystem, /the cerave's ordered/, "the stale claim is still in the thread (the anchor, at the end of the system prompt)...");
   assert.match(prompt, /CANCELLED by the shop, not coming/, "...and the record that overrides it is right there");
   assert.ok(prompt.indexOf("PURCHASES ON RECORD") > prompt.indexOf("The new message:"), "beside the message it bears on");
   assert.doesNotMatch(JSON.stringify(db.loadConversation(C)), /PURCHASES ON RECORD/, "never saved into the thread");

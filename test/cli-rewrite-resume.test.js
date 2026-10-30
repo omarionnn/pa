@@ -47,7 +47,7 @@ test("every turn runs under a session id of Reason's own, and the rewrite resume
   const run1 = b.calls[0];
   assert.match(run1.sessionId, UUID, "the turn names its session");
   assert.equal(run1.resume, undefined);
-  assert.match(run1.prompt, /The conversation so far:/);
+  assert.match(run1.prompt, /The conversation so far/);
   assert.equal(sessionFor(C), run1.sessionId, "the finished turn's session is the one a rewrite continues");
 
   const note = `[Your draft reply was NOT sent. It changes what you told them earlier. Write the reply again with that fixed.\nThe draft:\n"""it's at 8 now"""]`;
@@ -57,7 +57,7 @@ test("every turn runs under a session id of Reason's own, and the rewrite resume
   assert.equal(run2.resume, run1.sessionId, "the rewrite continues the draft's session");
   assert.equal(run2.sessionId, undefined, "and does not start a new one");
   assert.equal(run2.system, run1.system, "same system prompt, so the prefix is a cache hit");
-  assert.ok(!/The conversation so far:/.test(run2.prompt), "the history is not pasted again: the session has it");
+  assert.ok(!/The conversation so far/.test(run2.prompt), "the history is not pasted again: the session has it");
   assert.match(run2.prompt, /The new message:\n.*Your draft reply was NOT sent/s);
   assert.match(run2.prompt, /Reply as Reason, in one short text/);
   assert.equal(run2.mcpUrl, run1.mcpUrl, "tools are still on hand for the rewrite");
@@ -75,7 +75,7 @@ test("with no fresh session to continue, the rewrite runs the long way, exactly 
   const run = b.calls.at(-1);
   assert.equal(run.resume, undefined);
   assert.match(run.sessionId, UUID);
-  assert.match(run.prompt, /The conversation so far:/, "the full prompt, history included");
+  assert.match(run.prompt, /The conversation so far/, "the full prompt, history included");
 });
 
 test("a resume the CLI refuses falls back to the full turn in the same call, and says so", async () => {
@@ -93,7 +93,7 @@ test("a resume the CLI refuses falls back to the full turn in the same call, and
   assert.equal(b.calls[1].resume, sid);
   assert.equal(b.calls[2].resume, undefined);
   assert.match(b.calls[2].sessionId, UUID);
-  assert.match(b.calls[2].prompt, /The conversation so far:/);
+  assert.match(b.calls[2].prompt, /The conversation so far/);
   assert.ok(logs.some(e => e.cli_resume_failed === C), "the failed resume is logged");
   // The thread holds the inbound line and the one reply — not two of either.
   const rows = db.loadConversation(C);

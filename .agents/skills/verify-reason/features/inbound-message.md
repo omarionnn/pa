@@ -251,3 +251,13 @@ answering, and slash/case normalisation.
   disabled state lives only in GitHub's workflow settings, not in the repo. The guard is the code
   fix. If it ever happens again, compare the
   Sendblue list with the live `outbox` before blaming the model.
+- **The older history is in the system prompt, not the message** (#239, speed item 6). On
+  claude-cli each thread keeps an in-memory anchor — the newest-40 window when it was set — at the
+  end of the system prompt, byte-identical turn to turn, and only lines after it go in the user
+  message under "The conversation so far, continued". Journal: `{"history_anchor":"new"|"kept"|
+  "reset"|"too_long",…}`. It is kept only while every line of it still reads the same in the thread
+  (a forget/redaction or a scrubbed event password inside it resets it) and is reset after 20 newer
+  messages or 2 h; a restart re-anchors. Driven on the cage over the subscription 2026-10-30
+  (`REASON_VERIFY_BACKEND=claude-cli`, three texts): `new` then `kept`, "and that plus 3?" → "87"
+  (the model read the anchor), third reply 46.3k cache read / 4.6k written against 0 / 50.7k on
+  the first. Live proof is `model_usage` cache_read_tokens vs cache_write_tokens for feature=reply.
