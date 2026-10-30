@@ -79,6 +79,19 @@ files but not mapped here.
   signed post-call delivery (real field shapes, call 32's 1.193) → `remote_hung_up`, `cost_cents`
   119; a swept call → `lost`, then a late 1002 delivery → `platform_error` with code and reason
   (`call_end_corrected`); `call-report.js` on the cage DB prints the totals.
+- **Re-asks join the running turn (#275).** ElevenLabs re-asks a turn it judged failed, 4–6 times
+  ~1–1.5 s apart. In `llmRequest` (`sharedTurn` in `src/calls/voice.js`) a request whose history has
+  nothing new from their side (`theirSideKey`: trailing assistant/system/quiet-line messages ignored)
+  attaches to the in-flight turn — buffered chunks replayed (minus a holding line already handed out
+  and minus the request's own trailing assistant text), then live; one model run, tools once, no
+  `call_turns` row of its own; logs `voice_turn_attached {buffered, readers, since_first_ms}`. New
+  words cancel it: `voice_turn_superseded {reason: new_from_their_side | socket_closed | aborted}`,
+  and every reader still gets `finish_reason: "stop"` + `[DONE]`. A closed socket keeps the turn
+  `ATTACH_GRACE_MS` (3 s) for a retry, with no side-effecting tool started while unread. An empty
+  turn on hold leaves as `skip_turn` (`voice_empty_turn_waits`). Tests: `test/call-reask.test.js` (7).
+  Cage drive 2026-10-30 (`/tmp/reask-drive/burst.mjs`, four identical posts at once, then a
+  new-words pair): 1 turn + 3 `voice_turn_attached`, all four streams `stop` + `[DONE]`; the pair →
+  `voice_turn_superseded new_from_their_side`, old stream `stop` + `[DONE]`.
 - **No thinking pass before the first word (PR #59).** `claude-sonnet-5-5` thinks before every reply
   by default — ~3.5s of silence on the line (call 38: 4–6s per turn). `apiRequestFor` sends
   `thinking: { type: config.callThinking }`, default `between_tools` (`REASON_CALL_THINKING`; empty
