@@ -18,6 +18,7 @@ import { createHash } from "node:crypto";
 import * as db from "../db.js";
 import { webAllowedFor } from "../web.js";
 import { readCookie, SESSION_TTL_MS } from "./access.js";
+import { sawBrowserZone } from "../zone.js";
 
 // ---------------------------------------------------------------- icons
 // The handoff's files (assets/ in the v2 zip), drawn in Reason's own pen (src/pages/brand.js): the
@@ -80,6 +81,8 @@ export async function signalRequest({ method = "GET", headers = {}, idleMs = Inf
   const token = readCookie(headers?.cookie);
   const conv = db.pageSessionPeek(token, SESSION_TTL_MS, { idleMs });
   if (!conv || !webAllowedFor(conv)) return json(401, { ok: false, error: "signed_out" });
+  // The browser's own zone rides on the poll: a guess for the zone question, never their answer.
+  try { sawBrowserZone(conv, String(headers?.["x-reason-tz"] ?? "").slice(0, 64)); } catch {}
   return json(200, await signalFor(conv, token));
 }
 
@@ -94,6 +97,7 @@ export const NOTIFY_CSS = `.nt-line{flex:0 0 auto;width:100%;margin:0;padding:14
 .nt-line a{flex:none;min-height:44px;display:inline-flex;align-items:center;text-decoration:none;font:italic 400 19px/1.2 var(--serif)}
 `;
 export const NOTIFY_JS = `(function(){var H=document.documentElement;if(!H.hasAttribute('data-c')||!window.fetch)return;
+var TZ='';try{TZ=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}
 var TITLE=${JSON.stringify(NEEDS_TITLE)},base=document.title,links=[].slice.call(document.querySelectorAll('link[rel=icon][data-needs]')),saw=null,first=true,gone=false,timer=0,busy=false,again=false;
 function get(k){try{return JSON.parse(localStorage.getItem(k)||'[]')}catch(e){return[]}}function put(k,v){try{localStorage.setItem(k,JSON.stringify(v.slice(-50)))}catch(e){}}
 function night(){var t=H.dataset.theme;return t==='dark'||(t!=='light'&&!!window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)}
@@ -114,5 +118,5 @@ if(j.needs.length){if(document.title!==TITLE)document.title=TITLE;icon(true)}els
 if(j.notify&&document.hidden&&window.Notification&&Notification.permission==='granted'){var told=get('reason-web-notified'),ask=fresh.filter(function(n){return n.approval&&told.indexOf(n.id)<0});
 if(ask.length){ask.forEach(function(n){told.push(n.id)});put('reason-web-notified',told);try{new Notification('Reason',{body:${JSON.stringify(NOTIFY_TEXT)},tag:'reason-needs-you',silent:true})}catch(e){}}}
 line(j.needs);first=false}
-function look(){clearTimeout(timer);if(gone)return;if(busy){again=true;return}busy=true;fetch('/web/signal',{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){if(r.status===401){gone=true;throw 0}return r.json()}).then(function(j){if(j&&j.ok)tell(j)}).catch(function(){}).then(function(){busy=false;clearTimeout(timer);if(gone)return;if(again){again=false;look()}else timer=setTimeout(look,document.hidden?4000:12000)})}
+function look(){clearTimeout(timer);if(gone)return;if(busy){again=true;return}busy=true;fetch('/web/signal',{credentials:'same-origin',headers:{Accept:'application/json','X-Reason-Tz':TZ}}).then(function(r){if(r.status===401){gone=true;throw 0}return r.json()}).then(function(j){if(j&&j.ok)tell(j)}).catch(function(){}).then(function(){busy=false;clearTimeout(timer);if(gone)return;if(again){again=false;look()}else timer=setTimeout(look,document.hidden?4000:12000)})}
 document.addEventListener('visibilitychange',look);look()})();`;

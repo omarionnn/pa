@@ -29,6 +29,8 @@ import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource 
 import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
 
 import { recordApi } from "./spend.js";
+import * as zonescope from "./zonescope.js";
+import "./zone.js";
 
 const client = new Anthropic();
 
@@ -125,7 +127,7 @@ How you work:
 - Never ask permission to finish what they asked for: if it needs a lookup you can do, do it now and answer. Permission questions are only for spending money, sending as them, or the irreversible.
 - "Closest", "nearest", "nearby" always say closest to WHAT (home, work, a named place), from what they told you. Keep one anchor per answer and announce a change: "you said around work, so I switched from home — Regal is closer to work."
 - Claims about their life ("you're off at 8") come only from what they actually told you or what is saved; otherwise ask or hedge. Timing that rests on an assumption (travel time, runtime) says the assumption.
-- Timers: use them to come back at real times (day-of reminder, "how was it?" the morning after, nudging when something has been open too long). When a timer event arrives, decide whether a message is worth sending; if not, reply with exactly NO_REPLY. Asked to be CALLED, woken or rung at a time → timer_set with then_call (why you're ringing); "remind me" alone is a text. One line back: you'll ring them then.
+- Timers: use them to come back at real times (day-of reminder, "how was it?" the morning after, nudging when something has been open too long). When a timer event arrives, decide whether a message is worth sending; if not, reply with exactly NO_REPLY. Asked to be CALLED, woken or rung at a time → timer_set with then_call (why you're ringing); "remind me" alone is a text. One line back: you'll ring them then. A stretch of time from now ("in 10 minutes") is `relative: true` — it never waits on their time zone. A clock time or a day for somebody whose zone you have not confirmed comes back held with your best guess: ask that once, in your own words with the reason, and their answer (time_zone) finishes it.
 - Anything they want on a repeat is a SERIES, not a reminder you re-set each time. "Check in with me every monday about the job search", "remind me every day at 7 to work out", "every two weeks ask if i've invoiced" → timer_set with \`repeat\`, once. Say the schedule back in plain words, ONE line, with what it is about: "every monday 9am, i'll ask how the search is going". Not the rule, not a list. their_time when they named the hour; an hour you picked is pulled out of their night.
 - A check-in that fires is about the thing AND about what has changed since the last one. You are shown what they said last time: use it. "last monday you said two applications were out — any replies?" is the shape. Never the same line twice, never a list of everything, never two check-ins in one message. If this moment is not one for it, NO_REPLY — it comes round again.
 - Stop means stop, and pause means pause. "Stop checking in about that", "i got the job" → series_end. "Pause the workout reminders", "not this month" → series_pause, and series_resume when they come back. Confirm in ONE line. A bare "stop" or "never mind the monday thing" with more than one check-in running: series_list first and ask which, in one short line — never guess, and never stop all of them. "What are you checking in on?" is answered from series_list, never from memory.
@@ -346,7 +348,15 @@ function requestsNote(reqs) {
  * Run one turn. `text` is an inbound user message, or an event (timer fired) when kind === "event".
  * Returns reply text, or null when Reason chooses silence.
  */
-export async function runTurn({ conversationId, text, kind = "user", attachments = [], events, log = () => {}, channels = null, calls = null, keep = null,
+/**
+ * One turn, on THEIR clock: inside it `config.tz` (and so every stamp, parsed time and day boundary)
+ * is the zone they confirmed, or the install's until they have (src/zone.js, src/zonescope.js).
+ */
+export function runTurn(args) {
+  return zonescope.runFor(args?.conversationId, () => runTurnOnTheirClock(args));
+}
+
+async function runTurnOnTheirClock({ conversationId, text, kind = "user", attachments = [], events, log = () => {}, channels = null, calls = null, keep = null,
   // Injectable the same way the CLI backend's are, so one test can hand both backends the same
   // picture without a host to fetch it from, and the same note-taker without a second model.
   images = imagesFor, capture = captureViaApi,

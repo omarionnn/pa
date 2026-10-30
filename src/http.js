@@ -58,6 +58,7 @@
 // page answered 404 while a private one answered 401, and that sorted guessed links into real and
 // imaginary. Keep any new page route on the same footing.
 import { createServer as nodeCreateServer } from "node:http";
+import * as zonescope from "./zonescope.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import * as accounts from "./accounts.js";
 import * as db from "./db.js";
@@ -111,7 +112,10 @@ const MAX_BODY = 1_000_000;
 export function createServer({ router, runtime, log = () => {} }) {
   // A new stamp is mentioned in the thread through the runtime's own send, and only while REASON_WEB_DAILY is on.
   stamps.installStamps({ tell: typeof runtime?._tell === "function" ? (c, text, meta) => runtime._tell(c, text, meta) : null, log });
-  return nodeCreateServer(async (req, res) => {
+  // Each request opens a scope with no person in it; the moment a signed-in cookie names one
+  // (db.pageSessionOwner / pageSessionPeek), times on that page are drawn on their clock.
+  return nodeCreateServer((req, res) => zonescope.runOpen(() => handleRequest(req, res)));
+  async function handleRequest(req, res) {
     const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
     // The status page's key goes out on the status page only: never on Web, a page, or anything else (src/opsredact.js).
     if (url.pathname !== "/ops" && url.pathname !== "/ops.json") guardResponse(res);
@@ -735,7 +739,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       log({ http: url.pathname, threw: (e?.message ?? String(e)).split("\n")[0] });
       return send(500, { error: "server error" });
     }
-  });
+  }
 }
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });

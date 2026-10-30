@@ -3,6 +3,8 @@
 // screenshots. Each one can still be pointed somewhere else individually, but the default is that
 // they are all together — a deployment where half the state is on a volume and half is not is a
 // deployment that silently forgets things.
+import * as zonescope from "./zonescope.js";
+
 const DATA_DIR = (process.env.REASON_DATA_DIR || "data").replace(/\/+$/, "");
 
 export const config = {
@@ -18,7 +20,15 @@ export const config = {
   // sets theirs by telling Reason (the my_name tool), which goes on their account row.
   ownerLanguage: process.env.REASON_OWNER_LANGUAGE || "",
   ownerCity: process.env.REASON_OWNER_CITY || "New York",
-  tz: process.env.REASON_TZ || "America/New_York",
+  // The install's zone, and the fallback for anyone who has not confirmed theirs. Read inside a
+  // person's turn or Web request, `config.tz` is THEIR confirmed zone (src/zonescope.js), which is
+  // how every reminder, stamp and day boundary follows them without each reader being told.
+  installTz: process.env.REASON_TZ || "America/New_York",
+  get tz() { return zonescope.current() || this.installTz; },
+  set tz(v) { this.installTz = v; },
+  // Asking a person their zone before the first clock-time action (src/zone.js). Off: nobody is
+  // asked and everyone stays on the install's zone, as before.
+  tzAsk: process.env.REASON_TZ_ASK === "on",
   fallbacks: process.env.REASON_FALLBACKS !== "off",
   // How long an explicit yes counts for, in minutes. After this a guarded tool asks again.
   confirmWindowMin: Number(process.env.REASON_CONFIRM_WINDOW_MIN || 10),
@@ -1043,9 +1053,13 @@ export function isOwnerNumber(n) {
 }
 
 export function stamp(ms = clock.now()) {
+  // Their zone's short name rides along only when it is not the install's, so a person in Chicago
+  // reads "… 9:35 AM CDT" and builds times with the right offset, and every Eastern stamp is
+  // exactly what it always was.
+  const other = config.tz !== config.installTz;
   return new Date(ms).toLocaleString("en-US", {
     timeZone: config.tz, weekday: "short", month: "short", day: "numeric", year: "numeric",
-    hour: "numeric", minute: "2-digit",
+    hour: "numeric", minute: "2-digit", ...(other ? { timeZoneName: "short" } : {}),
   });
 }
 

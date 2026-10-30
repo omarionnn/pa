@@ -103,6 +103,9 @@ import * as purchasesNoteMod from "./purchasesnote.js";
 import * as incidents from "./incidents.js";
 import { TITLE_HINT, normTitle, queueTitle } from "./itemtitle.js";
 import { resultFor } from "./ongoing.js";
+import * as zone from "./zone.js";
+import * as zonescope from "./zonescope.js";
+const confirmedZoneOf = (c) => { try { return zone.confirmedZone(c); } catch { return ""; } };
 
 /**
  * What image_generate tells the model. Sending is the default because a person who asks for a
@@ -518,6 +521,7 @@ const SPENDS_MONEY = new Set(["browser_submit", "purchase_confirm", "uber_reques
  * this list is refused on such a turn — a new tool is held until somebody puts it here on purpose.
  */
 export const SAFE_WHILE_SCREENED = new Set([
+  "time_zone",
   "capabilities", "recall", "my_name", "set_place", "memory_page", "memory_search", "graph_lookup", "media_reviewed", "photo_look", "ledger_list", "task_list", "timer_list", "series_list",
   "goal_list",
   // Events: reading your own event list and your own guest list reaches nobody.
@@ -1744,6 +1748,10 @@ async function calendarFor(conversationId, tool, doing, account = "") {
   // whole path exists to prevent. With neither, the zone is empty and settleTime refuses.
   let timeZone = zone.timeZone;
   let zoneFrom = timeZone ? "their calendar" : "";
+  // The zone they CONFIRMED beats the calendar's (src/zone.js): "3pm" is 3pm where they are, and a
+  // calendar left on its sign-up zone is a guess where their answer is an answer.
+  const confirmed = confirmedZoneOf(conversationId);
+  if (confirmed) { timeZone = confirmed; zoneFrom = "what they told you their zone is"; }
   if (!google.isZone(timeZone)) {
     const theirs = db.noticePrefs(conversationId).tz;
     if (google.isZone(theirs)) { timeZone = theirs; zoneFrom = "what they told you their zone is"; }
@@ -3160,6 +3168,7 @@ export const tools = [
         note: { type: "string", description: "What future-Reason should do when this fires. With `repeat` this is what the check-ins are ABOUT, in your own words ('how the job search is going'), because it is what you will be shown every time it comes round." },
         title: { type: "string", description: TITLE_HINT },
         then_call: { type: "string", description: "Only when they asked for a CALL at this time. Why you are ringing, as the first words of the call, said to them: 'you asked me to call at 7 to get you up', 'you wanted a nudge to leave for the airport'. The call opens with exactly this after their name, and the rest of the call is you as usual. Nothing is texted first; if the call cannot be placed or they do not pick up, one text says so. Never a third party: this always rings the person you are talking to." },
+        relative: { type: "boolean", description: "True when they gave a stretch of time from NOW rather than a clock time or a day — \"in 10 minutes\", \"in 2 hours\", \"in half an hour\". Those need no time zone, so they are never held for one. Leave it out for \"at 9\", \"tomorrow\", \"tonight\", \"friday\"." },
         their_time: { type: "boolean", description: "For a one-off `then_call`: false ONLY when you picked the time yourself. Then a time in their night (23:00-08:00) is moved to 8am. When they named it — a 6:30 wake-up — leave this out or pass true: it rings at 6:30." },
         plan_id: { type: "integer", description: "Plan this timer belongs to, if any" },
         task_id: { type: "integer", description: "The job this belongs to, if it belongs to one. Name it: it is how \"never mind, forget the trip\" finds this and stops it, instead of leaving it running after the job is called off." },
@@ -4750,6 +4759,21 @@ export const tools = [
       + " This is what answers 'are you watching my email', 'why haven't you told me anything', 'have you noticed anything' — never memory, and never a guess."
       + " When it says watching is false, nothing is being watched at all and you say that plainly.",
     input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "time_zone",
+    description: "Keep the time zone they confirmed or named. Call it when they answer your zone question (yes to your guess → that zone; \"no, I'm in Denver\" → America/Denver),"
+      + " when they tell you their zone changed (they moved, or said yes to switching while travelling), or any time they correct it."
+      + " From then on every reminder, calendar time, call and stamp is in this zone. If a clock-time action was held for this answer,"
+      + " this call does it and returns the result in `done` — do not do it again, and do not ask them to repeat it; say what was set, in one line, in their time.",
+    input_schema: {
+      type: "object",
+      properties: {
+        zone: { type: "string", description: "IANA name: America/New_York, America/Chicago, America/Denver, America/Los_Angeles, Europe/London, Africa/Accra. From a city they named, the city's zone." },
+        their_words: { type: "string", description: "What they said, word for word." },
+      },
+      required: ["zone", "their_words"],
+    },
   },
   {
     name: "notice_settings",
@@ -6526,7 +6550,7 @@ const S = {
   timer_set: z.object({
     fire_at: z.string().optional(), note: z.string().min(1).max(500),
     plan_id: z.number().int().optional(), task_id: z.number().int().optional(),
-    then_call: z.string().max(300).optional(), their_time: z.boolean().optional(),
+    then_call: z.string().max(300).optional(), their_time: z.boolean().optional(), relative: z.boolean().optional(),
     repeat: z.object({
       kind: z.string().max(40),
       hour: z.number(),
@@ -6926,6 +6950,7 @@ const S = {
     urgent_why: z.string().max(300).optional(),
   }),
   notice_status: z.object({}),
+  time_zone: z.object({ zone: z.string().min(1).max(64), their_words: z.string().min(1).max(500) }),
   notice_settings: z.object({
     per_day: z.number().int().min(0).max(20).optional(),
     every_minutes: z.number().int().min(5).max(60 * 24).optional(),
@@ -8793,6 +8818,13 @@ export async function runTool(name, rawInput, ctx) {
     };
   }
   const out = await runToolInner(name, rawInput, ctx);
+  // A shared location on another clock from the zone they confirmed: asked about once, never applied.
+  if (name === "get_location" && out?.ok && out.latitude != null && ctx?.conversationId) {
+    try {
+      const moved = zone.sawLocation(ctx.conversationId, out.latitude, out.longitude);
+      if (moved) out.time_zone_check = moved;
+    } catch {}
+  }
   // The task this call worked on, for the turn to write its messages down under (src/settle.js).
   if (ctx?.turnTasks) { const t = taskOfCall(name, rawInput, out); if (t) ctx.turnTasks.add(t); }
   if (ctx?.conversationId && !ECHOES_MODEL.test(String(name))) offers.noteSource(ctx.conversationId, out);
@@ -8848,6 +8880,10 @@ async function runToolInner(name, rawInput, ctx) {
   // table this touches is already keyed by `c` — which is what keeps one person's Reason out of
   // another's rather than any check added later.
   const me = accounts.ownerOf(c);
+  // Their zone, before the first thing with a clock time in it (src/zone.js): held, asked once, and
+  // finished by their answer. A time "in 10 minutes" from now is never held.
+  const zoneHeld = zone.gate(c, name, input);
+  if (zoneHeld) return zoneHeld;
 
   // Fail closed on a conversation that is nobody's: with no account there is nobody to authorize
   // anything, so a yes typed there authorizes nothing. In practice an unadmitted number never
@@ -12936,6 +12972,27 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const caps = capabilitiesNow({ channels: ctx.channels, calls: ctx.calls, conversationId: c, ownerName: me.name });
       const watching = caps.find(x => x.name === "notice");
       return notice.status({ conversationId: c, connected: watching?.status === "live" || watching?.status === "partly live" });
+    }
+    case "time_zone": {
+      const saved = zone.confirm(c, String(input.zone).trim());
+      if (!saved.ok) return saved;
+      zonescope.setCurrent(saved.zone);
+      trust.ledgerWrite({ conversationId: c, action: "time_zone", input, out: { ok: true, zone: saved.zone }, target: saved.zone });
+      const kept = {
+        ok: true, zone: saved.zone, name: saved.name,
+        ...(saved.changed_from ? { changed_from: saved.changed_from } : {}),
+        note: `Saved. Their reminders, calendar times, calls and stamps are on ${saved.name} from now on.`,
+      };
+      if (!saved.held) return kept;
+      // The thing they asked for before the question, done now on the confirmed clock — the same
+      // path as any call, every other check included, so the answer cannot carry it past one.
+      const done = await runToolInner(saved.held.tool, saved.held.input, ctx);
+      return {
+        ...kept, held_action: saved.held.tool, done,
+        note: done?.ok === false
+          ? `Their zone is saved, but what was held (${saved.held.tool}) did not go through — the result is in \`done\`. Deal with that as you would any refusal.`
+          : `Their zone is saved AND what they asked for before the question is now done (${saved.held.tool}, result in \`done\`). Do not call it again. Tell them in one line what is set, in their time.`,
+      };
     }
     case "notice_settings": {
       if (input.per_day === undefined && input.every_minutes === undefined) {
