@@ -52,6 +52,7 @@ import { dailyAllowedFor, stampsOpen, stampsAllowedFor, waxLook } from "../daily
 import { newestStamp } from "../stamps.js";
 import * as daily from "../daily.js";
 import { renderDaily, sealTile, SEAL_TILE_CSS } from "./webdaily.js";
+import { webReplyAllowedFor, quoteFor, canReplyTo, quoteHtml, REPLY_BUTTON, REPLY_CHIP, REPLY_CSS, REPLY_JS, replyFor } from "./webreply.js";
 import { readLine, notesHtml, noteText } from "./webnotes.js";
 
 /** How many lines a page of history holds, first load and each "show earlier". */
@@ -213,20 +214,24 @@ export function reasonBody(text, conversationId) {
 function lineInner(m, conversationId) {
   const who = m.role === "user" ? "YOU" : "REASON";
   const voice = m.media.some(x => x.kind === "voice");
-  const lbl = `<p class="lbl"><span>${who}${voice ? " · VOICE" : ""} · ${esc(m.source.toUpperCase())} · </span><time datetime="${new Date(m.at).toISOString()}">${esc(timeFmt().format(m.at))}</time></p>`;
+  // REASON_WEB_REPLY (src/pages/webreply.js): a Reply button at the end of the label, shown on hover or a tap.
+  const lbl = `<p class="lbl"><span>${who}${voice ? " · VOICE" : ""} · ${esc(m.source.toUpperCase())} · </span><time datetime="${new Date(m.at).toISOString()}">${esc(timeFmt().format(m.at))}</time>${m.canReply ? REPLY_BUTTON : ""}</p>`;
   // 4B: photos in their paper frames, file slips, a voice note's words then ▶ (src/pages/webcompose.js).
   const { photos, files, play, voice: note } = mediaHtml(m);
   const read = m.role === "user" ? readLine(m.text) : null;
   const said = m.role === "user" ? (voice && note?.transcript ? note.transcript : read.words) : m.text;
   // A shared location, an inline reply, a contact card: drawn as what they are, never the note itself.
-  const notes = read ? notesHtml(read.notes, m.media) : "";
+  // Where a reply's quote line is drawn (REASON_WEB_REPLY), it already says which message this answers:
+  // the "IN REPLY TO" tag from the same note is not drawn as well.
+  const shown = read ? (m.quote ? read.notes.filter(n => n.kind !== "reply") : read.notes) : [];
+  const notes = read ? notesHtml(shown, m.media) : "";
   let words = "";
   if (said.trim()) {
     if (m.role === "user") words = voice ? `<p class="said hand">${esc(said)}</p>` : `<div class="said">${linkify(said)}</div>`;
     else words = `<div class="rsay">${reasonBody(said, conversationId)}</div>`;
   }
-  m.plain = said.trim() ? said : read?.notes.length && !m.media.length ? read.notes.map(noteText).join(" · ") : [...m.media.filter(x => x.kind === "file").map(x => x.name), ...m.media.filter(x => x.kind === "image").map(() => "a photo")].filter(Boolean).join(" · ");
-  return `${lbl}${notes}${photos}${files}${words}${play}`;
+  m.plain = said.trim() ? said : shown.length && !m.media.length ? shown.map(noteText).join(" · ") : [...m.media.filter(x => x.kind === "file").map(x => x.name), ...m.media.filter(x => x.kind === "image").map(() => "a photo")].filter(Boolean).join(" · ");
+  return `${lbl}${m.quote ? quoteHtml(m.quote) : ""}${notes}${photos}${files}${words}${play}`;
 }
 
 /**
@@ -235,7 +240,7 @@ function lineInner(m, conversationId) {
  * "sending" line for the real one; `html` is the line drawn here; nothing else about the row's
  * bookkeeping leaves the server.
  */
-export function rowOut(row, { conversationId, service = null, now = clock.now() }) {
+export function rowOut(row, { conversationId, service = null, now = clock.now(), reply = undefined }) {
   const prefix = `${conversationId}:`;
   const ext = String(row.external_id ?? "");
   const m = {
@@ -248,6 +253,11 @@ export function rowOut(row, { conversationId, service = null, now = clock.now() 
     at: row.at,
     cid: row.role === "user" && row.channel === WEB && ext.startsWith(prefix) ? ext.slice(prefix.length) : null,
   };
+  // REASON_WEB_REPLY: the message this one answers (its quote line), and whether it can be replied to here.
+  // `reply: false` for a page with no composer (a day in History): neither is drawn there.
+  const replies = reply ?? webReplyAllowedFor(conversationId);
+  m.quote = replies ? quoteFor(conversationId, row) : null;
+  m.canReply = !!(replies && canReplyTo(conversationId, row));
   m.files = m.media.filter(x => x.kind === "file").map(x => x.name);
   m.html = lineInner(m, conversationId);
   // S2: the day and the device, for the "where you are" note (src/settle.js); never guessed.
@@ -281,7 +291,8 @@ function groupChoices(html) {
     const parts = [...run.matchAll(CARD_LINE)];
     if (parts.length < 2) return run;
     const ids = parts.map(p => p[1]);
-    return `<li class="msg re choices" id="m-${ids.at(-1)}" data-id="${ids.at(-1)}" data-ids="${ids.join(" ")}"${parts[0][2]}>${parts[0][3]}<div class="crow">${parts.map(p => p[4]).join("")}</div></li>`;
+    // One Reply for a whole row of cards would name only one of them, so a joined row has none (REASON_WEB_REPLY).
+    return `<li class="msg re choices" id="m-${ids.at(-1)}" data-id="${ids.at(-1)}" data-ids="${ids.join(" ")}"${parts[0][2]}>${parts[0][3].replace(REPLY_BUTTON, "")}<div class="crow">${parts.map(p => p[4]).join("")}</div></li>`;
   });
 }
 
@@ -629,8 +640,8 @@ export function tabBar(current, count) {
 
 /** The one-line composer. `sendId` makes even a no-script post one turn however often it is resent. */
 // `+` and the mic (composer 01–04, Listening) are drawn and run by src/pages/webcompose.js.
-function composer({ csrf, sendId, slot = "", chat = "" }) {
-  return composerHtml({ csrf, sendId, maxText: MAX_TEXT, slot, chat });
+function composer({ csrf, sendId, slot = "", chat = "", lead = "" }) {
+  return composerHtml({ csrf, sendId, maxText: MAX_TEXT, slot, chat, lead });
 }
 
 /** How many Ongoing rows show before "See all N →" (owner, 10-26): needs-you first, then soonest due. */
@@ -714,7 +725,7 @@ form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.tr
 var loaded=!R.defer,lastPoll=0,calm2=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
 function line(m){var li=document.createElement('li');li.className='msg arrive '+(m.role==='user'?'you':'re');li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;if(m.day)li.dataset.day=m.day;if(m.where)li.dataset.where=m.where;li.innerHTML=m.html;times(li);return li}
 function has(id){return list.querySelector('.msg[data-id="'+id+'"]')||list.querySelector('.done[data-ids~="'+id+'"]')||list.querySelector('.choices[data-ids~="'+id+'"]')}
-function joinCard(li){var a=li.querySelector(':scope>.photo.choice');if(!a||li.querySelector('.rsay,.said'))return false;var p=li.previousElementSibling;if(!p||!p.classList.contains('re')||!p.querySelector('.photo.choice')||p.querySelector('.rsay,.said'))return false;var row=p.querySelector('.crow');if(!row){row=document.createElement('div');row.className='crow';p.querySelectorAll(':scope>.photo.choice').forEach(function(x){row.appendChild(x)});p.appendChild(row);p.classList.add('choices');p.dataset.ids=p.dataset.id}row.appendChild(a);p.dataset.ids+=' '+li.dataset.id;p.dataset.id=li.dataset.id;li.remove();return true}
+function joinCard(li){var a=li.querySelector(':scope>.photo.choice');if(!a||li.querySelector('.rsay,.said'))return false;var p=li.previousElementSibling;if(!p||!p.classList.contains('re')||!p.querySelector('.photo.choice')||p.querySelector('.rsay,.said'))return false;var row=p.querySelector('.crow');if(!row){row=document.createElement('div');row.className='crow';p.querySelectorAll(':scope>.photo.choice').forEach(function(x){row.appendChild(x)});p.appendChild(row);p.classList.add('choices');p.dataset.ids=p.dataset.id}row.appendChild(a);var rb=p.querySelector(':scope>.lbl .rp');if(rb)rb.remove();p.dataset.ids+=' '+li.dataset.id;p.dataset.id=li.dataset.id;li.remove();return true}
 function dayCheck(li,m){if(!m.day)return;var p=li.previousElementSibling;while(p&&!p.dataset.day)p=p.previousElementSibling;if(p&&p.dataset.day===m.day)return;var d=document.createElement('li');d.className='day';d.setAttribute('role','separator');d.dataset.day=m.day;if(m.where)d.dataset.where=m.where;var l=document.createElement('p');l.className='lbl';l.textContent=m.dayLabel||'';d.appendChild(l);li.parentNode.insertBefore(d,li)}
 function add(m){if(has(m.id))return;unempty();var stick=near(),li=line(m);if(m.role==='assistant'&&dli){li.classList.remove('arrive');dli.remove();dli=null}
 if(m.cid){var p=list.querySelector('.msg[data-pending="'+m.cid+'"]');if(p){p.replaceWith(li);dayCheck(li,m);forget(m.cid);li.classList.add('just');var s=document.createElement('p');s.className='st';s.textContent='SENT \\u00b7 '+fmt(m.at);li.appendChild(s);setTimeout(function(){s.classList.add('fade');setTimeout(function(){s.remove();li.classList.remove('just')},1100)},1200);if(stick)bottom();where();return}}
@@ -724,7 +735,7 @@ if(after&&after.nextSibling&&!(fp&&after.nextSibling===fp))list.insertBefore(li,
 if(!joinCard(li))dayCheck(li,m);
 if(m.id>R.last)R.last=m.id;if(m.role==='assistant'){waiting=Math.max(0,waiting-1);if(!waiting)working(false)}if(stick)bottom();where()}
 function unempty(){var e=document.querySelector('.convo>.empty');if(e)e.remove()}
-function pendingLine(p){unempty();var li=document.createElement('li');li.className='msg you arrive';li.dataset.pending=p.id;if(p.files&&p.files.length&&R.drawFiles)R.drawFiles(li,p);else{var s=document.createElement('div');s.className='said';s.textContent=p.text;li.appendChild(s)}list.appendChild(li);bottom();return li}
+function pendingLine(p){unempty();var li=document.createElement('li');li.className='msg you arrive';li.dataset.pending=p.id;if(p.rq&&R.rqLine)li.appendChild(R.rqLine(p.rq));if(p.files&&p.files.length&&R.drawFiles)R.drawFiles(li,p);else{var s=document.createElement('div');s.className='said';s.textContent=p.text;li.appendChild(s)}list.appendChild(li);bottom();return li}
 function stored(li){return pend().filter(function(x){return x.id===li.dataset.pending})[0]||{id:li.dataset.pending,text:(li.querySelector('.said')||{}).textContent||''}}
 function state(li,st){if(!li)return;li.dataset.state=st;li.querySelectorAll('.st,.retry').forEach(function(x){x.remove()});
 if(st==='failed'||st==='waiting')li.querySelectorAll('.tb').forEach(function(x){x.remove()});
@@ -732,7 +743,7 @@ if((st==='sending'&&!li.querySelector('.tb'))||st==='waiting'){var s=document.cr
 else if(st==='failed'){var b=document.createElement('button');b.type='button';b.className='retry';b.textContent="didn't go. tap to try again.";b.onclick=function(){if(li.retry)return li.retry();send(stored(li),li)};var n=document.createElement('p');n.className='st';n.textContent="IT WON'T SEND TWICE";li.appendChild(b);li.appendChild(n)}}
 function expired(){if(!window.reasonMidTask||!window.reasonMidTask(waiting>0||!!until))location.href='/web?out=1'}
 function send(p,li,tries){tries=tries||0;if(offline()){state(li,'waiting');return}state(li,'sending');
-fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c,files:(p.files||[]).map(function(f){return f.id}).filter(Boolean).join(','),voice:p.voice?String(p.voice):''})})
+fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c,files:(p.files||[]).map(function(f){return f.id}).filter(Boolean).join(','),voice:p.voice?String(p.voice):'',re:p.re?String(p.re):''})})
 .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(j){j.status=r.status;return j})})
 .then(function(j){if(li.taken)return;if(j.status===401){expired();return}if(j.ok){if(j.duplicate&&li.isConnected&&li.dataset.pending){li.remove();forget(p.id)}if(li.isConnected&&!j.duplicate){state(li,'sent');li.querySelectorAll('.st').forEach(function(x){x.remove()});waiting++;li.counted=1;working(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,'failed')})
 .catch(function(){if(li.taken)return;if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
@@ -761,7 +772,7 @@ fetch('/web/about',{method:'POST',credentials:'same-origin',headers:{'Content-Ty
 // arrival) is shown at once and sent again under the SAME id once the thread is here, which the
 // server's claim turns into nothing if it already arrived.
 var carried=pend().map(function(p){return{p:p,li:pendingLine(p)}});
-form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.replace(/\\s+$/,''),fs=R.takeFiles?R.takeFiles():[];if(!t.trim()&&!fs.length)return;var p={id:uid(),text:t.trim()?t:''};if(fs.length)p.files=fs;box.value='';box.dispatchEvent(new Event('input'));post(p)});
+form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.replace(/\\s+$/,''),fs=R.takeFiles?R.takeFiles():[];if(!t.trim()&&!fs.length)return;var p={id:uid(),text:t.trim()?t:''};if(fs.length)p.files=fs;var rq=R.rp&&R.rp();if(rq){p.re=rq.id;p.rq=rq}box.value='';box.dispatchEvent(new Event('input'));post(p)});
 window.addEventListener('offline',function(){noteLine("you're offline. i'll send it when you're back.")});
 window.addEventListener('online',function(){noteLine('');list.querySelectorAll('.msg[data-state=waiting]').forEach(function(li){if(li.retry)return li.retry();send(stored(li),li)});poll()});
 if(offline())noteLine("you're offline. i'll send it when you're back.");
@@ -916,6 +927,8 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
   // A Web-only chat is only that exchange: a pending approval stays in Ongoing (the margin, the tab's count), not in its lines.
   const appr = approvals.length && !chat ? `<div class="msg re approval">${label(apprLbl)}${approvalCard({ title: approvals[0].title, money: approvals[0].money, href: approvals[0].href })}</div>` : "";
   const count = items.length + approvals.length + back.length;
+  // REASON_WEB_REPLY (src/pages/webreply.js): the composer's "replying to" line and the page's part, in the shared thread only.
+  const replying = !chat && webReplyAllowedFor(conv);
   const drawn = withAway(pageHtml(lines, { conversationId: conv, service, now, keep: found, chat }), away, now);
   // L1: with script, the page opens with its composer and tabs live and the thread's place held by
   // ruled lines; the newest page arrives from /web/history. Without script it is all here at once.
@@ -930,13 +943,13 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     + appr + onIt(true) + longWorkHtml(work)
     + (chat ? "" : needsYes(approvals))
     // An earlier Web-only chat (#209, retired by the owner 10-27 07:08) is kept to read; everything goes on in the one thread.
-    + (chat ? CLOSED_CHAT : composer({ csrf, sendId, slot: TODAY_SLOT }))
+    + (chat ? CLOSED_CHAT : composer({ csrf, sendId, slot: TODAY_SLOT, lead: replying ? REPLY_CHIP : "" }))
     + `</section>${ongoingMargin(items, approvals, { back })}</main>`
     + `<button class="og-back" type="button" aria-controls="og" aria-expanded="false" aria-label="Show Ongoing${count ? `, ${count} ${count === 1 ? "thing" : "things"}` : ""}"><span aria-hidden="true">ONGOING${count ? ` · ${count}` : ""}</span></button>`
     + tabBar("chat", count) + listeningHtml();
   // Saved's FIND IT IN THE CHAT → (src/pages/websaved.js): the thread opened at that message, scrolled to it.
   const toFound = found ? `(function(){var e=document.getElementById('m-${Number(found)}');if(e)e.scrollIntoView({block:'center'})})();` : "";
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, lines, more, conversationId: conv, deferred, og: ogVersion(ogMargin({ items, approvals, back })), chat, about, away: away ? { text: away, day: dayKey(now) } : null }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS + (replying ? REPLY_CSS : ""), script: boot({ csrf, lines, more, conversationId: conv, deferred, og: ogVersion(ogMargin({ items, approvals, back })), chat, about, away: away ? { text: away, day: dayKey(now) } : null }) + composeBoot() + NINE_D_JS + (replying ? REPLY_JS : "") + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
 }
 
 /** The foot of an earlier Web-only chat, in the composer's place: it is read-only, and the thread is where to go on. */
@@ -1222,6 +1235,13 @@ export async function sendRequest({ account, headers = {}, readBody, router, log
   if (!router) return fail(503, "unavailable");
   const conv = account.conversation_id;
   if (files.length && !(await import("../webuploads.js")).attachmentsFor(conv, files)) return fail(400, "bad_file");
+  // REASON_WEB_REPLY: `re` is the history row they pressed Reply on, looked up in the SESSION's conversation
+  // only (src/pages/webreply.js); the browser never names a handle. One that is gone, someone else's, or
+  // never had a handle is not a reason to lose the message: it goes as an ordinary one, and that is logged.
+  const reRaw = String(form.get("re") ?? "");
+  if (reRaw && !/^\d{1,15}$/.test(reRaw)) return fail(400, "bad_reply");
+  const under = reRaw && webReplyAllowedFor(conv) ? replyFor(conv, Number(reRaw)) : null;
+  if (reRaw && !under) log({ web_reply_unknown: reRaw });
   if (!underLimit(conv)) { log({ web_send_refused: "rate_limited" }); return fail(429, "slow_down"); }
   // §4h: sending is being here — this browser's last-seen moves on (never starts a return).
   try { db.webPresent(token); } catch { /* never costs a send */ }
@@ -1237,7 +1257,7 @@ export async function sendRequest({ account, headers = {}, readBody, router, log
       if (!prep) return { ok: false, error: "failed" };
       // §4h: taken back while it was still on its way here. Nothing is delivered (the claim would refuse it anyway).
       if (db.inboundCancelled(WEB, key)) return { ok: true, duplicate: true, cancelled: true };
-      return router.deliver({ channel: WEB, externalId: id, conversationId: conv, text: prep.text, ...(prep.attachments.length ? { attachments: prep.attachments } : {}), at: clock.now() });
+      return router.deliver({ channel: WEB, externalId: id, conversationId: conv, text: prep.text, ...(prep.attachments.length ? { attachments: prep.attachments } : {}), ...(under ? { replyTo: under.replyTo, threadRoot: under.threadRoot } : {}), at: clock.now() });
     })
     .catch((e) => { log({ web_send_failed: (e?.message ?? String(e)).split("\n")[0] }); return { ok: false, error: "failed" }; });
   // Kept until the delivery settles; once Router.deliver has claimed the id, the claim's own row decides a take-back instead.

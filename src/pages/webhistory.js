@@ -95,7 +95,7 @@ export function dayLines(conv, key) {
   const rows = db.db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND chat_id IS NULL AND deleted_at IS NULL AND at >= ? AND at < ?
     ORDER BY at ASC, id ASC`).all(conv, noon - 40 * 36e5, noon + 40 * 36e5).filter(r => dayKey(r.at) === key);
   const service = serviceOf(conv);
-  return rows.map(r => rowOut({ ...r, media: (() => { try { return JSON.parse(r.media || "[]"); } catch { return []; } })() }, { conversationId: conv, service }));
+  return rows.map(r => rowOut({ ...r, media: (() => { try { return JSON.parse(r.media || "[]"); } catch { return []; } })() }, { conversationId: conv, service, reply: false }));
 }
 
 const cleanQuery = (q) => String(q ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_QUERY);
