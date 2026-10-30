@@ -13,13 +13,20 @@
 //      the walk carries on along the new way; at the gate, after the event's start, "You made it." and the
 //      ARRIVED stamp, the escort ends and stops reading location;
 //   5. MORE shows the map (and only MORE does); END ESCORT ends; Switch to Route keeps the place;
-//   6. reduced motion: the drift and the status pulse are off.
+//   6. reduced motion: the drift and the status pulse are off;
+//   7. a REAL trip (REASON_DIRECTIONS=owner, a throwaway database): made by the `directions` tool from a
+//      live position to a looked-up place, its link opens on the code gate (no place, no address shown),
+//      "Text me the code" texts the owner, the code signs the browser in and lands on the page; a fake-GPS
+//      walk along the real route reads the escort's moments, a wrong turn reroutes through the trip's own
+//      reroute (signed-in only, nothing stored), and arrival after the start is "You made it.", before it
+//      "You're early. It starts at <start>."
 //
 //   node .agents/skills/verify-reason/bin/directions-drive.mjs [outDir] [--reference <hand-off screens dir>]
 //
 // Not covered: a real iPhone or Android phone outdoors at walking pace. Say so wherever this is quoted.
 import { createServer } from "node:http";
-import { mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -27,7 +34,15 @@ import { chromium } from "playwright";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, "../../../..");
+// Section 7's real trip lives on a throwaway database, never the real one, with the flag at "owner".
+const DRIVE_DB_DIR = mkdtempSync(join(tmpdir(), "reason-directions-drive-"));
+Object.assign(process.env, { REASON_DB_PATH: join(DRIVE_DB_DIR, "reason.db"), REASON_DIRECTIONS: "owner", REASON_CONVERSATION: "dm:owner", REASON_OWNER_NAME: "Omari", REASON_TZ: "America/New_York" });
+delete process.env.REASON_PAGES_URL;
 const { directionsRequest, sampleTrip } = await import(`${REPO}/src/pages/directions.js`);
+const { runTool } = await import(`${REPO}/src/tools.js`);
+const db = await import(`${REPO}/src/db.js`);
+const { config: REASON_CONFIG } = await import(`${REPO}/src/config.js`);
+const { fromMetres } = await import(`${REPO}/src/pages/directionsclient.js`);
 const { lineOf, project } = await import(`${REPO}/src/pages/directionsclient.js`);
 
 const args = process.argv.slice(2);
@@ -59,6 +74,39 @@ function osrmAnswer(from) {
   for (const s of turns) steps.push(step(s === trip.steps.at(-1) ? "arrive" : s.turn === "roundabout" ? "roundabout" : "turn", s.turn === "roundabout" ? undefined : s.turn, s, "", 100));
   return { code: "Ok", routes: [{ geometry: { type: "LineString", coordinates: coords }, legs: [{ steps }] }] };
 }
+// ---------- section 7's real trip: a made-up walk in Manhattan, answered as OSRM would ----------
+// Union Square, north 160 m up Broadway, right 130 m along East 17th Street, left 100 m up Park Avenue
+// South to the door, which is on the right. The OSRM answer is the shape FOSSGIS's foot router sends.
+const REAL_FROM = { lat: 40.7359, lng: -73.9911 };
+const at = (east, north) => fromMetres({ x: east, y: north }, REAL_FROM);
+const REAL_PTS = [at(0, 0), at(0, 80), at(0, 160), at(65, 160), at(130, 160), at(130, 210), at(130, 260)];
+const REAL_LINE = lineOf(REAL_PTS);
+const REAL_TO = REAL_PTS.at(-1);
+const realRouted = [];
+const serverLog = [];
+const told = [];
+const OWNER_PHONE = { _tell: async (c, text, meta) => { told.push({ c, text, meta }); return { ok: true }; } };
+function realAnswer(from) {
+  const pr = project(from, REAL_LINE);
+  const rest = REAL_LINE.points.slice(pr.seg + 1);
+  const coords = [from, pr.at, ...rest].map((p) => [p.lng, p.lat]);
+  const st = (type, modifier, p, name, distance, extra = {}) => ({ maneuver: { type, modifier, location: [p.lng, p.lat], ...extra }, name, distance });
+  const turns = [st("turn", "right", REAL_PTS[2], "East 17th Street", 130), st("turn", "left", REAL_PTS[4], "Park Avenue South", 100), st("arrive", "right", REAL_TO, "", 0)];
+  const ahead = turns.filter((t) => project({ lng: t.maneuver.location[0], lat: t.maneuver.location[1] }, REAL_LINE).along > pr.along + 1);
+  const firstName = pr.along < 160 ? "Broadway" : pr.along < 290 ? "East 17th Street" : "Park Avenue South";
+  const steps = [st("depart", undefined, from, firstName, Math.max(40, Math.round((ahead[0] ? project({ lng: ahead[0].maneuver.location[0], lat: ahead[0].maneuver.location[1] }, REAL_LINE).along : REAL_LINE.total) - pr.along)), { bearing_after: 0 }), ...ahead];
+  const distance = REAL_LINE.total - pr.along + pr.off;
+  return { code: "Ok", routes: [{ distance, duration: distance / 1.25, geometry: { type: "LineString", coordinates: coords }, legs: [{ steps }] }] };
+}
+/** Overpass, as it answers for the box round the walk: the three streets, a park, a café near the door. */
+const REAL_OVERPASS = { elements: [
+  { type: "way", tags: { highway: "primary", name: "Broadway" }, geometry: [at(-3, -200), at(-3, 400)].map((p) => ({ lat: p.lat, lon: p.lng })) },
+  { type: "way", tags: { highway: "residential", name: "East 17th Street" }, geometry: [at(-200, 163), at(400, 163)].map((p) => ({ lat: p.lat, lon: p.lng })) },
+  { type: "way", tags: { highway: "primary", name: "Park Avenue South" }, geometry: [at(133, -200), at(133, 400)].map((p) => ({ lat: p.lat, lon: p.lng })) },
+  { type: "way", tags: { leisure: "park" }, geometry: [at(20, 20), at(100, 20), at(100, 120), at(20, 120), at(20, 20)].map((p) => ({ lat: p.lat, lon: p.lng })) },
+  { type: "node", lat: at(160, 270).lat, lon: at(160, 270).lng, tags: { amenity: "cafe", name: "Daily Provisions" } },
+] };
+
 let BASE = "";
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
@@ -68,8 +116,17 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     return res.end(JSON.stringify(osrmAnswer({ lng: Number(osrm[1]), lat: Number(osrm[2]) })));
   }
-  const config = { directionsOn: true, directionsSample: true, directionsRouting: `${BASE}/osrm` };
-  const out = await directionsRequest({ method: req.method, pathname: url.pathname, req, config });
+  const realOsrm = /^\/osrm-real\/route\/v1\/foot\/([-\d.]+),([-\d.]+);/.exec(url.pathname);
+  if (realOsrm) {
+    realRouted.push(url.pathname);
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify(realAnswer({ lng: Number(realOsrm[1]), lat: Number(realOsrm[2]) })));
+  }
+  const sample = /^\/d\/sample(\/|$)/.test(url.pathname);
+  const config = sample
+    ? { directionsOn: true, directionsSample: true, directionsRouting: `${BASE}/osrm` }
+    : { ...REASON_CONFIG, directionsOn: "owner", directionsSample: false, directionsRouting: `${BASE}/osrm-real` };
+  const out = await directionsRequest({ method: req.method, pathname: url.pathname, req, config, key: url.searchParams.get("k"), headers: req.headers, runtime: OWNER_PHONE, log: (l) => serverLog.push(l) });
   if (!out) { res.writeHead(404).end("not found"); return; }
   res.writeHead(out.status, out.headers);
   res.end(out.body);
@@ -92,8 +149,8 @@ const STATES = [
 // The sample event starts at 19:00 UTC (7 PM in Accra) on the server's day; the walk ends five minutes after.
 const startsAt = trip.startsAt;
 
-async function newPage(browser, { theme = "light", reduced = false, geo = true, clock = null } = {}) {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, reducedMotion: reduced ? "reduce" : "no-preference", permissions: geo ? ["geolocation"] : [], timezoneId: "Africa/Accra" });
+async function newPage(browser, { theme = "light", reduced = false, geo = true, clock = null, tz = "Africa/Accra" } = {}) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, reducedMotion: reduced ? "reduce" : "no-preference", permissions: geo ? ["geolocation"] : [], timezoneId: tz });
   if (geo) await context.setGeolocation({ latitude: route.points[0].lat, longitude: route.points[0].lng, accuracy: 6 });
   await context.addInitScript((t) => {
     try { localStorage.setItem("reason-theme", t); } catch { /* no storage */ }
@@ -153,9 +210,11 @@ print(f"{sum(px) / total:.2f} {over / total * 100:.2f}")
 
 const browser = await chromium.launch({ args: ["--use-gl=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
 
+// DIRECTIONS_DRIVE_ONLY=real runs section 7 alone (a quick re-check of the real trip).
+const ONLY_REAL = process.env.DIRECTIONS_DRIVE_ONLY === "real";
 // ---------- 1. every state, both themes ----------
 const diffs = [];
-for (const [themeName, themeValue] of [["paper", "light"], ["night", "dark"]]) {
+for (const [themeName, themeValue] of ONLY_REAL ? [] : [["paper", "light"], ["night", "dark"]]) {
   for (const [name, hash] of STATES) {
     const { context, page } = await newPage(browser, { theme: themeValue, geo: false });
     await page.goto(`${PAGE}${hash}`, { waitUntil: "load" });
@@ -183,6 +242,7 @@ if (diffs.length) {
   writeFileSync(join(outDir, "reference-diff.json"), JSON.stringify(diffs, null, 2));
 }
 
+if (!ONLY_REAL) {
 // ---------- 2. the share tap starts location, once ----------
 {
   const { context, page } = await newPage(browser, { geo: true });
@@ -324,8 +384,123 @@ if (diffs.length) {
   await context.close();
 }
 
+}
+
+// ---------- 7. a real trip: made by the tool, opened through the code gate, walked with fake GPS ----------
+{
+  // Their wall clock two hours from now, as the person would say it: the event's start.
+  const nyNow = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(Date.now() + 2 * 3600e3));
+  const part = (t) => nyNow.find((x) => x.type === t).value;
+  const arriveBy = `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:00`;
+  const realFetch = async (u, opts) => {
+    const s = String(u);
+    if (s.includes("/osrm-real/")) return fetch(s, opts);
+    if (/overpass/.test(s)) return { ok: true, json: async () => REAL_OVERPASS };
+    throw new Error(`the drive's trip asked the network for ${s}`);
+  };
+  const geocode = async (q) => (/joe coffee/i.test(q) ? { lat: REAL_TO.lat, lng: REAL_TO.lng, display_name: "Joe Coffee, 131, East 21st Street, Manhattan, New York" } : null);
+  const routingWas = REASON_CONFIG.directionsRouting;
+  REASON_CONFIG.directionsRouting = `${BASE}/osrm-real`;
+  const made = await runTool("directions", { to: "Joe Coffee, 131 E 21st St", place_name: "Joe Coffee", from_latitude: REAL_FROM.lat, from_longitude: REAL_FROM.lng, arrive_by: arriveBy }, { conversationId: "dm:owner", fetchImpl: realFetch, geocode });
+  REASON_CONFIG.directionsRouting = routingWas;
+  check("real trip: the directions tool made it, with a private link and the start", made.ok === true && /\/d\/[A-Za-z0-9]{12}\?k=/.test(made.link || "") && !!made.be_there_by, JSON.stringify(made).slice(0, 160));
+  const id = /\/d\/([A-Za-z0-9]{12})\?k=([A-Za-z0-9]{12})/.exec(made.link || "");
+  const row = id ? db.getTrip(id[1]) : null;
+  check("real trip: stored with the map filled and the steps named", !!row && row.trip.map.major.length === 2 && row.trip.steps.some((st) => /East 17th Street/.test(st.instr)) && row.trip.side === "right", row ? JSON.stringify(row.trip.steps.map((st) => st.instr)) : "no row");
+  const startsLabel = row ? row.trip.startsLabel : "";
+  const keyed = `${BASE}/d/${id ? id[1] : "x"}?k=${id ? id[2] : "x"}`;
+  const before = row ? JSON.stringify(db.getTrip(row.id)) : "";
+
+  // The link, on a browser that has never signed in: the gate, never the place.
+  const signedIn = async (clockAt) => {
+    const ctx = await newPage(browser, { geo: true, clock: clockAt, tz: "America/New_York" });
+    await ctx.context.setGeolocation({ latitude: REAL_FROM.lat, longitude: REAL_FROM.lng, accuracy: 6 });
+    return ctx;
+  };
+  const { context, page } = await signedIn(row ? row.trip.startsAt + 5 * 60000 : Date.now());
+  await page.goto(keyed, { waitUntil: "load" });
+  const gateHtml = await page.content();
+  check("real trip: a new browser gets the code gate, with no place, address or coordinates", /Private page/.test(gateHtml) && !/Joe Coffee|21st|40\.73|-73\.99/.test(gateHtml));
+  const bare = await (await fetch(`${BASE}/d/${id ? id[1] : "x"}`)).text();
+  const ghost = await (await fetch(`${BASE}/d/NoSuchTrip12`)).text();
+  check("real trip: the bare link and an unknown id answer the same bytes", bare === ghost);
+  await page.click("button[name=send]");
+  await page.waitForLoadState("load");
+  const code = told.length ? (/\b(\d{6})\b/.exec(told.at(-1).text) || [])[1] : null;
+  check("real trip: Text me the code texts the owner, once, kept out of the conversation", told.length === 1 && told[0].c === "dm:owner" && /^pcode:/.test(told[0].meta.idempotencyKey) && !!code);
+  await page.fill("input[name=code]", code || "000000");
+  await Promise.all([page.waitForURL(/\/d\/[A-Za-z0-9]{12}$/), page.click("button.go:not([name])")]);
+  await page.waitForSelector("#app > *", { timeout: 8000 });
+  check("real trip: the code signs the browser in and lands on the page, without the key in the address", !/k=/.test(page.url()) && /Joe Coffee/.test(await page.textContent("#app")));
+  // The gate answered 401 on purpose; what counts from here on is the signed-in page.
+  page.errors.length = 0;
+  const json = await page.evaluate(() => JSON.parse(document.getElementById("trip").textContent));
+  check("real trip: the page's trip is real (no demo previews) and carries nothing only the server keeps", json.demo === undefined && json._raw === undefined && json.streets === undefined && json.steps.length >= 3);
+
+  // Escort, from the share tap, along the real route.
+  await page.goto(`${page.url()}#ask`, { waitUntil: "load" });
+  check("real trip: the Ask screen says location is never kept", /NEVER KEPT/.test(await page.textContent("#app")));
+  await page.click("#a-share");
+  await page.waitForSelector("#e-status");
+  const caption = async () => ((await page.textContent(".cap.on", { timeout: 500 }).catch(() => "")) || "").replace(/\s+/g, " ").trim();
+  const seen = [];
+  const note = async () => { const t = await caption(); if (!seen.length || seen.at(-1) !== t) seen.push(t); };
+  const realAt = (along) => { let i = 0; while (i < REAL_LINE.cum.length - 2 && REAL_LINE.cum[i + 1] < along) i += 1; const a = REAL_LINE.points[i], b = REAL_LINE.points[i + 1]; const t = Math.min(1, Math.max(0, (along - REAL_LINE.cum[i]) / (REAL_LINE.cum[i + 1] - REAL_LINE.cum[i] || 1))); return { latitude: a.lat + (b.lat - a.lat) * t, longitude: a.lng + (b.lng - a.lng) * t }; };
+  const feed = async (p, wait = 1000) => { await context.setGeolocation({ ...p, accuracy: 6 }); for (let k = 0; k < wait; k += 250) { await page.waitForTimeout(250); await note(); } };
+  let along = 0;
+  const walk = async (to, step = 10) => { while (along < to) { along = Math.min(to, along + step); await feed(realAt(along)); } };
+  await feed(realAt(0), 1500);
+  await walk(170);
+  const idx = (re) => seen.findIndex((t) => re.test(t));
+  check("real walk: Just start walking → Yes, this way ✓ → Right, soon → Right here, from the real GPS",
+    idx(/Just start walking/) >= 0 && idx(/Yes, this way/) > idx(/Just start walking/) && idx(/Right, soon/) > idx(/Yes, this way/) && idx(/Right here/) > idx(/Right, soon/), JSON.stringify(seen.map((t) => t.slice(0, 26))));
+  const soon = seen.find((t) => /Right, soon/.test(t)) || "";
+  check("real walk: the turn names the real street", /INTO EAST 17TH STREET/.test(soon), soon);
+
+  // A wrong turn: on along East 17th Street to 220 m, then 75 m south down a street that is not the way.
+  await walk(220);
+  const off = realAt(220);
+  seen.length = 0;
+  for (let n = 10; n <= 75; n += 10) await feed({ latitude: off.latitude - n / 111195, longitude: off.longitude }, 1000);
+  await feed({ latitude: off.latitude - 80 / 111195, longitude: off.longitude }, 2500);
+  await note();
+  check("real walk: off the route asks the trip's own reroute once, through Reason's server", realRouted.length === 2, `routed=${realRouted.length}`);
+  check("real walk: \"No worries, here's a new way.\"", seen.some((t) => /No worries, here.s a new way/.test(t)), JSON.stringify(seen.map((t) => t.slice(0, 30))));
+  check("real walk: nothing about the walk is stored, and no position is logged", row && JSON.stringify(db.getTrip(row.id)) === before && !/40\.73|-73\.9/.test(JSON.stringify(serverLog)), JSON.stringify(serverLog).slice(0, 160));
+  along = 220;
+  await feed(realAt(along), 1500);
+  seen.length = 0;
+  await walk(REAL_LINE.total - 1, 15);
+  await feed(realAt(REAL_LINE.total - 1), 4500);
+  const end = await caption();
+  check("real walk: the last 50 m says which side, from the router", seen.some((t) => /It’s on your right/.test(t)), JSON.stringify(seen.map((t) => t.slice(0, 26))));
+  check("real walk: after the start, 'You made it.' with the ARRIVED stamp", /You made it/.test(end) && /ARRIVED/.test(end), end.slice(0, 80));
+  check("real walk: arrival stops location", (await page.textContent("#e-status-t")).trim() === "ESCORT ENDED" && (await page.evaluate(() => window.__geo.clear)) >= 1);
+  await page.screenshot({ path: join(outDir, "real-walk-arrived.png") });
+  const state = await context.storageState();
+  await context.close();
+
+  // The same trip, the same signed-in browser, arriving 40 minutes before the start.
+  const early = await newPage(browser, { geo: true, clock: row ? row.trip.startsAt - 40 * 60000 : Date.now(), tz: "America/New_York" });
+  await early.context.addCookies(state.cookies);
+  await early.context.setGeolocation({ latitude: REAL_FROM.lat, longitude: REAL_FROM.lng, accuracy: 6 });
+  await early.page.goto(`${BASE}/d/${id ? id[1] : "x"}#ask`, { waitUntil: "load" });
+  await early.page.click("#a-share");
+  await early.page.waitForSelector("#e-status");
+  for (let a = 0; a <= REAL_LINE.total; a += 15) { await early.context.setGeolocation({ ...realAt(Math.min(a, REAL_LINE.total - 1)), accuracy: 6 }); await early.page.waitForTimeout(400); }
+  await early.context.setGeolocation({ ...realAt(REAL_LINE.total - 1), accuracy: 6 });
+  await early.page.waitForTimeout(4500);
+  const e = ((await early.page.textContent(".cap.on")) || "").replace(/\s+/g, " ");
+  check(`real walk: before the start, "You're early. It starts at ${startsLabel}." and what is nearby`, new RegExp(`You.re early\\. It starts at ${startsLabel.replace(":", "\\:")}\\.`).test(e) && /NEARBY · DAILY PROVISIONS/.test(e), e.slice(0, 90));
+  await early.page.screenshot({ path: join(outDir, "real-walk-early.png") });
+  const errs = [...page.errors, ...early.page.errors].filter((x) => !/favicon/i.test(x));
+  check("real trip: no console error or CSP violation", errs.length === 0, errs.slice(0, 2).join(" | "));
+  await early.context.close();
+}
+
 await browser.close();
 server.close();
+rmSync(DRIVE_DB_DIR, { recursive: true, force: true });
 writeFileSync(join(outDir, "results.json"), JSON.stringify(results, null, 2));
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} ok · evidence ${outDir}`);

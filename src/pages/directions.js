@@ -6,13 +6,23 @@
 // Off unless REASON_DIRECTIONS is on (config.directionsOn): every /d/ path then answers nothing, so the
 // route falls through to the normal not-found page. REASON_DIRECTIONS_SAMPLE serves the sample trip below
 // (made-up data, the handoff's Garden Room) so the page runs end to end locally. A real trip is made once
-// by Reason, with its routing key, and stored; that hookup is not wired here (see the PR).
+// by Reason (the `directions` tool, src/trips.js), stored, and opened at /d/<id> by its owner only: the
+// private pages' code gate (src/pages/access.js) stands in front of it, and its link previews as every
+// private page does, never with the place or an address.
 //
 // The routing key is never in the page: the reroute goes through this server, which calls the routing
 // service at REASON_DIRECTIONS_ROUTING_URL (an OSRM-compatible foot router) and returns only the route.
 import { readFileSync } from "node:fs";
+import { timingSafeEqual } from "node:crypto";
 import { webFont } from "./webkit.js";
 import { fromPx, haversine } from "./directionsclient.js";
+import { walkRoute } from "../walk.js";
+
+// A real trip needs the database, the code gate and the pages' look; the sample and the static staging
+// build need none of it, so it is loaded on the first real trip's request.
+let REAL = null;
+const real = () => (REAL ??= Promise.all([import("../db.js"), import("../trips.js"), import("./access.js"), import("./render.js"), import("./madedata.js")])
+  .then(([db, trips, access, render, made]) => ({ db, ...trips, ...access, renderCodeGate: render.renderCodeGate, privateHead: made.privateHead, PRIVATE_OG_VERSION: made.PRIVATE_OG_VERSION })));
 
 const CSS = readFileSync(new URL("./directions.css", import.meta.url), "utf8");
 const SCRIPT = readFileSync(new URL("./directionsclient.js", import.meta.url), "utf8");
@@ -159,57 +169,54 @@ ${CSS}
 }
 
 // ---------- the reroute (the one call that leaves the phone) ----------
-const MANEUVER_WORD = { left: "Turn left", right: "Turn right", "slight left": "Bear left", "slight right": "Bear right", "sharp left": "Turn sharply left", "sharp right": "Turn sharply right", straight: "Keep straight", uturn: "Turn around" };
-
-/** Turns one OSRM step into the page's step. A step with no street is described by what it does, never a blank. */
-function stepFromOsrm(s, i, placeName) {
-  const m = s.maneuver || {};
-  const name = (s.name || "").trim();
-  const isRound = /roundabout/.test(m.type || "");
-  const isArrive = m.type === "arrive";
-  const turn = isRound ? "roundabout" : /left/.test(m.modifier || "") ? "left" : /right/.test(m.modifier || "") ? "right" : "straight";
-  const isStart = m.type === "depart";
-  const verb = isArrive ? "You’ve arrived" : isStart ? "Start walking" : isRound ? "Roundabout: take the exit" : MANEUVER_WORD[m.modifier] || "Keep going";
-  const instr = isArrive ? placeName : name ? `${verb} on ${name}` : isStart ? "Start walking" : `${verb}, along the way ahead`;
-  const dist = Math.round(s.distance || 0);
-  const [lng, lat] = m.location || [0, 0];
-  return {
-    n: String(i + 1).padStart(2, "0"),
-    instr,
-    turn,
-    street: (name || "THE WAY AHEAD").toUpperCase(),
-    fact: name ? name.toUpperCase() : "THE WAY AHEAD",
-    mark: name ? "" : "Keep on the way in front of you. The lane has no name.",
-    d: `${dist} m`,
-    lat,
-    lng,
-  };
-}
-
 /**
  * Asks the routing service for a walk from the phone's position to the trip's destination. Returns the
  * route and steps the page replaces its own with, or an error status. Nothing about the position is
- * kept or logged.
+ * kept or logged: the log line has the step count and a rounded distance to the door, never a place.
  */
-export async function reroute(trip, from, { routingUrl, fetchImpl = fetch, log = () => {} } = {}) {
+export async function reroute(trip, from, { routingUrl, fetchImpl = fetch, log = () => {}, streets = [] } = {}) {
   if (!routingUrl) return { status: 503, body: { error: "no_routing" } };
-  const url = `${routingUrl.replace(/\/+$/, "")}/route/v1/foot/${from.lng},${from.lat};${trip.destination.lng},${trip.destination.lat}?overview=full&geometries=geojson&steps=true`;
-  try {
-    const res = await fetchImpl(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(8000) });
-    if (!res.ok) throw new Error(`routing ${res.status}`);
-    const data = await res.json();
-    const r = data && data.routes && data.routes[0];
-    if (!r || !r.geometry || r.geometry.coordinates.length < 2) throw new Error("no route");
-    const route = r.geometry.coordinates.map(([lng, lat]) => ({ lat, lng }));
-    const steps = (r.legs || []).flatMap((leg) => leg.steps || []).filter((s) => s.maneuver).map((s, i) => stepFromOsrm(s, i, trip.name));
-    if (!steps.length) throw new Error("no steps");
-    log({ directions: "reroute", ok: true, steps: steps.length, metres: Math.round(haversine(from, trip.destination)) });
-    return { status: 200, body: { route, steps, destination: trip.destination } };
-  } catch (e) {
-    log({ directions: "reroute", ok: false, why: (e?.message ?? String(e)).split("\n")[0] });
-    return { status: 502, body: { error: "routing_failed" } };
+  const out = await walkRoute(from, trip.destination, { routingUrl, fetchImpl, placeName: trip.name, streets });
+  if (!out.ok) {
+    log({ directions: "reroute", ok: false, why: out.why || out.error });
+    return { status: out.status || 502, body: { error: "routing_failed" } };
   }
+  log({ directions: "reroute", ok: true, steps: out.steps.length, metres: Math.round(haversine(from, trip.destination) / 50) * 50 });
+  return { status: 200, body: { route: out.route, steps: out.steps, destination: trip.destination } };
 }
+
+// ---------- who may open a real trip (the private pages' gate, src/pages/access.js) ----------
+function sameKey(a, b) {
+  const x = Buffer.from(String(a ?? "")), y = Buffer.from(String(b ?? ""));
+  return x.length === y.length && x.length > 0 && timingSafeEqual(x, y);
+}
+
+/**
+ * Can this browser open this trip? Only its owner's own browser: a session proved on any of their pages
+ * (Web, a page, an event) opens it. Anybody else, the owner's link on a new browser included, gets the
+ * code gate, and only a request carrying the owner's key may ask for a code to be texted.
+ */
+function tripAccess(R, row, cookie, key) {
+  const via_key = sameKey(key, row?.owner_key);
+  const owner = cookie ? R.db.pageSessionOwner(cookie, R.SESSION_TTL_MS) : null;
+  if (row && owner && owner === row.conversation_id) return { allow: true, via_key };
+  const failed = row ? R.db.failedPageAttempts(row.id, R.ATTEMPT_WINDOW_MS) : 0;
+  if (failed >= R.MAX_FAILED_ATTEMPTS) return { allow: false, reason: "rate_limited", via_key };
+  return { allow: false, reason: "code_needed", via_key };
+}
+
+/** The locked screen. It previews as every private page does: never the place, never an address. */
+function tripGate(R, access, row, { status = 401, sent = false, error = "", config }) {
+  const canSend = !!(access.via_key && row);
+  const og = config.pagesV2 ? R.privateHead(`${R.pageUrl("og/private.png")}?v=${R.PRIVATE_OG_VERSION}`) : "";
+  return {
+    status,
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Referrer-Policy": "no-referrer" },
+    body: R.renderCodeGate({ title: "Private page", error, ownerName: config.ownerName, canSend, sent: canSend && sent, head: canSend ? og : "" }),
+  };
+}
+
+const tripTitle = (row) => `Directions to ${row.trip.name}`;
 
 async function readSmallBody(req, max = 1024) {
   return new Promise((resolve, reject) => {
@@ -225,9 +232,13 @@ async function readSmallBody(req, max = 1024) {
   });
 }
 
-/** The page's routes. Returns the response to send, or null when the path is not a directions path. */
-export async function directionsRequest({ method, pathname, req, config, fetchImpl, log = () => {} }) {
+/**
+ * The page's routes. Returns the response to send, or null when the path is not a directions path.
+ * `pathname` may carry the files host's /p prefix (Caddy rewrites files.heyreason.com/* under /p).
+ */
+export async function directionsRequest({ method, pathname: rawPath, req, config, fetchImpl, key = null, headers = {}, runtime = null, log = () => {} }) {
   if (!config.directionsOn) return null;
+  const pathname = String(rawPath ?? "").replace(/^\/p(?=\/d\/)/, "");
   const isGet = method === "GET" || method === "HEAD";
 
   if (isGet && pathname === "/d/app.js") {
@@ -243,7 +254,8 @@ export async function directionsRequest({ method, pathname, req, config, fetchIm
 
   const m = /^\/d\/([A-Za-z0-9_-]{1,40})(\/reroute)?$/.exec(pathname);
   if (!m) return null;
-  const trip = m[1] === "sample" && config.directionsSample ? sampleTrip() : null;
+  if (m[1] !== "sample") return tripRequest({ id: m[1], reroutePath: !!m[2], method, req, config, fetchImpl, key, headers, runtime, log });
+  const trip = config.directionsSample ? sampleTrip() : null;
   if (!trip) return null;
 
   if (m[2]) {
@@ -262,3 +274,66 @@ export async function directionsRequest({ method, pathname, req, config, fetchIm
   return { status: 200, headers: HTML_HEADERS, body: directionsPage(trip) };
 }
 
+/** A real trip's routes: the page, its code gate, and the reroute, for the trip's owner only. */
+async function tripRequest({ id, reroutePath, method, req, config, fetchImpl, key, headers, runtime, log }) {
+  const R = await real();
+  const isGet = method === "GET" || method === "HEAD";
+  const found = R.db.getTrip(id);
+  // "owner": only the owner's trips open; anybody else's id answers exactly as one that never existed.
+  const row = found && R.tripsOnFor(found.conversation_id) ? found : null;
+  const cookie = R.readCookie(headers?.cookie);
+  const access = tripAccess(R, row, cookie, key);
+
+  if (reroutePath) {
+    if (method !== "POST") return null;
+    if (!row || !access.allow) return { status: 403, headers: JSON_HEADERS, body: JSON.stringify({ error: "not_yours" }) };
+    let body;
+    try { body = JSON.parse(await readSmallBody(req)); } catch { return { status: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "bad_request" }) }; }
+    const lat = Number(body?.lat), lng = Number(body?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      return { status: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "bad_request" }) };
+    }
+    const out = await reroute(row.trip, { lat, lng }, { routingUrl: config.directionsRouting, fetchImpl, log, streets: R.tripStreets(row) });
+    return { status: out.status, headers: JSON_HEADERS, body: JSON.stringify(out.body) };
+  }
+
+  if (method === "POST") {
+    let raw = "";
+    try { raw = await readSmallBody(req, 2048); } catch { return tripGate(R, access, row, { status: 400, config }); }
+    const form = new URLSearchParams(raw);
+    const pagelike = row ? { id: row.id, conversation_id: row.conversation_id, title: tripTitle(row) } : null;
+    if (form.has("send")) {
+      // "Text me the code": only the owner's own link, on a real trip, ever makes their phone buzz.
+      if (!access.via_key || !row || access.reason === "rate_limited") return tripGate(R, access, row, { config });
+      const asked = R.requestCode(pagelike);
+      if (!asked.ok) {
+        return tripGate(R, access, row, { sent: true, config, error: `Reason has already texted ${config.ownerName} a code. Use that one, or try again in about ${Math.ceil(asked.retry_after_s / 60)} minutes.` });
+      }
+      if (runtime?._tell) {
+        Promise.resolve(runtime._tell(row.conversation_id, asked.line, { idempotencyKey: `pcode:${row.id}:${asked.id}` }))
+          .catch((e) => log({ trip_code_text_failed: row.id, why: (e?.message ?? String(e)).split("\n")[0] }));
+      }
+      log({ trip_code_sent: row.id });
+      return tripGate(R, access, row, { sent: true, config });
+    }
+    if (!row) return tripGate(R, access, row, { config, error: "That code is not right." });
+    const tried = R.trySubmittedCode({ page: pagelike, code: form.get("code") ?? "" });
+    if (!tried.ok) {
+      const why = tried.reason === "rate_limited"
+        ? `Too many wrong codes. Try again in about ${Math.ceil((tried.retry_after_s ?? 900) / 60)} minutes.`
+        : `That code is not right.${tried.tries_left ? ` ${tried.tries_left} ${tried.tries_left === 1 ? "try" : "tries"} left.` : ""}`;
+      return tripGate(R, access, row, { status: tried.reason === "rate_limited" ? 429 : 401, config, error: why });
+    }
+    log({ trip_opened: row.id });
+    // Back to the page itself, now signed in, without the key in the address bar.
+    return { status: 303, headers: { Location: row.id, "Cache-Control": "no-store", "Set-Cookie": R.cookieHeader(tried.token, { path: "/", headers }) }, body: "" };
+  }
+
+  if (!isGet) return null;
+  if (row && access.allow) {
+    // A map that never came (Overpass was down when the trip was made) is asked for again, behind the page.
+    if (method === "GET") R.refillIfBare(row, { fetchImpl, log });
+    return { status: 200, headers: HTML_HEADERS, body: directionsPage(R.pageTrip(row)) };
+  }
+  return tripGate(R, access, row, { status: access.reason === "rate_limited" ? 429 : 401, config, error: access.reason === "rate_limited" ? "Too many wrong codes. Try again in about 15 minutes." : "" });
+}

@@ -578,6 +578,19 @@ db.exec(`
     created_at INTEGER NOT NULL,
     last_seen_at INTEGER NOT NULL
   );
+  -- A walk Reason made (src/trips.js): the directions page at /d/<id>. trip is the page's JSON (the
+  -- route, the steps, the map's shapes); streets is the named ways near it, kept only to name a
+  -- reroute's steps and never sent to the page. Nothing of the walk itself is kept: a position the
+  -- phone sends to find a new way is answered and dropped. The row goes at expires_at.
+  CREATE TABLE IF NOT EXISTS trips (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    owner_key TEXT NOT NULL,
+    trip TEXT NOT NULL,
+    streets TEXT,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
   -- The one-time codes themselves, and every attempt at one. The attempts are what the rate limit
   -- is counted from, so guessing is bounded by a table rather than by whatever is in memory.
   CREATE TABLE IF NOT EXISTS page_codes (
@@ -5487,6 +5500,55 @@ export function deletePage(conversationId, id) {
   db.prepare("DELETE FROM page_sessions WHERE page_id = ? AND conversation_id IS NULL").run(id);
   db.prepare("DELETE FROM pages WHERE id = ?").run(id);
   return page;
+}
+
+// ---------- trips: the walks Reason made (src/trips.js) ----------
+// The id is the link and the key is the owner's half of it, as for a page; the code gate and the
+// signed-in browsers are the pages' own tables, keyed by the trip's id.
+export const TRIP_ID_LENGTH = 12;
+
+function rowToTrip(r) {
+  if (!r) return null;
+  return { id: r.id, conversation_id: r.conversation_id, owner_key: r.owner_key, trip: JSON.parse(r.trip), streets: r.streets ? JSON.parse(r.streets) : [], created_at: r.created_at, expires_at: r.expires_at };
+}
+
+export function createTrip(conversationId, trip, { expiresAt }) {
+  const now = clock.now();
+  // A walk is only worth keeping until it is walked: anything already out of date goes first.
+  deleteExpiredTrips(now);
+  const id = linkToken(TRIP_ID_LENGTH);
+  db.prepare("INSERT INTO trips (id, conversation_id, owner_key, trip, streets, created_at, expires_at) VALUES (?, ?, ?, ?, NULL, ?, ?)")
+    .run(id, conversationId, pageKey(), JSON.stringify({ ...trip, id }), now, expiresAt);
+  return getTrip(id);
+}
+
+/** By id, while it lasts. An expired trip is gone on the read that finds it. */
+export function getTrip(id, now = clock.now()) {
+  const t = rowToTrip(db.prepare("SELECT * FROM trips WHERE id = ?").get(String(id ?? "")));
+  if (t && t.expires_at <= now) { deleteTrip(t.id); return null; }
+  return t;
+}
+
+export function updateTrip(id, trip, { streets } = {}) {
+  db.prepare("UPDATE trips SET trip = ?, streets = COALESCE(?, streets) WHERE id = ?")
+    .run(JSON.stringify({ ...trip, id }), streets ? JSON.stringify(streets) : null, id);
+  return getTrip(id);
+}
+
+export function tripsFor(conversationId) {
+  return db.prepare("SELECT * FROM trips WHERE conversation_id = ? AND expires_at > ? ORDER BY created_at DESC").all(conversationId, clock.now()).map(rowToTrip);
+}
+
+export function deleteTrip(id) {
+  for (const t of ["page_codes", "page_attempts"]) db.prepare(`DELETE FROM ${t} WHERE page_id = ?`).run(id);
+  db.prepare("DELETE FROM page_sessions WHERE page_id = ? AND conversation_id IS NULL").run(id);
+  return db.prepare("DELETE FROM trips WHERE id = ?").run(id).changes === 1;
+}
+
+export function deleteExpiredTrips(now = clock.now()) {
+  const gone = db.prepare("SELECT id FROM trips WHERE expires_at <= ?").all(now);
+  for (const { id } of gone) deleteTrip(id);
+  return gone.length;
 }
 
 // ---------- page access: codes, signed-in browsers, rate limit ----------

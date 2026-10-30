@@ -156,6 +156,9 @@ const TABLES = [
   // Reason Web's thread (src/settle.js): which of their messages belong to which task, and the kind
   // of device each Web message was typed on. About them and their conversation, so exported and deleted.
   "task_messages", "web_devices",
+  // The walks Reason made for them (src/trips.js): where from, where to, and the streets between.
+  // Where somebody walks from is as personal as anything here, so exported and deleted.
+  "trips",
 ];
 
 /**

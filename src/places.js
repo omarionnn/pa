@@ -32,14 +32,22 @@ export async function reverseGeocode(lat, lng, { fetchImpl = fetch, timeoutMs = 
   finally { clearTimeout(t); }
 }
 
-export async function geocode(query, { fetchImpl = fetch, timeoutMs = 3000 } = {}) {
+/**
+ * A place's coordinates from words. `near` ({ lat, lng }) prefers matches around there (Nominatim's
+ * viewbox; `bounded` keeps to it, `span` degrees each way), so "Joe Coffee" from Union Square is the
+ * one down the road, not one in Queens.
+ */
+export async function geocode(query, { fetchImpl = fetch, timeoutMs = 3000, near = null, bounded = false, span = 0.15 } = {}) {
   const q = String(query ?? "").trim();
   if (!q) return null;
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
+  const box = near && Number.isFinite(near.lat) && Number.isFinite(near.lng)
+    ? `&viewbox=${(near.lng - span).toFixed(4)},${(near.lat + span).toFixed(4)},${(near.lng + span).toFixed(4)},${(near.lat - span).toFixed(4)}${bounded ? "&bounded=1" : ""}`
+    : "";
   try {
     const res = await fetchImpl(
-      `${NOMINATIM}/search?q=${encodeURIComponent(q)}&format=json&limit=1`,
+      `${NOMINATIM}/search?q=${encodeURIComponent(q)}&format=json&limit=1${box}`,
       { signal: ac.signal, headers: { "user-agent": UA } },
     );
     if (!res.ok) return null;

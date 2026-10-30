@@ -675,7 +675,7 @@ function boot() {
         '<button type="button" class="action rise" id="a-share" style="font-size:34px;animation-delay:.8s">Share my location →</button>' +
         '<a class="textbtn rise" href="#route" id="a-not" style="padding-left:0;color:var(--text-2);animation-delay:.9s">NOT NOW · SHOW THE ROUTE</a>' +
       '</div>' +
-      '<p class="label" style="position:absolute;left:24px;right:24px;bottom:10px;margin:0;font-size:.56rem;opacity:.8">LOCATION IS USED ON THIS PHONE. IT GOES TO REASON ONLY TO FIND A NEW WAY.</p>');
+      '<p class="label" style="position:absolute;left:24px;right:24px;bottom:10px;margin:0;font-size:.56rem;opacity:.8">LOCATION IS USED ON THIS PHONE. IT GOES TO REASON ONLY TO FIND A NEW WAY, AND IS NEVER KEPT.</p>');
     // Both permissions are asked in this one tap (iOS needs the orientation request inside a gesture).
     $('a-share').addEventListener('click', () => startLive(true));
     $('a-not').addEventListener('click', () => { lsSet('reason.dir.last', 'route'); });
@@ -838,9 +838,10 @@ function boot() {
       case 'welcome': return { hand: 'Welcome back, here’s where you are.', sub: 'STRAIGHT ON' + (d !== null ? ' · ' + turnWord(step).toUpperCase() + ' IN ' + d + ' M' : '') };
       case 'battery': return { hand: 'Battery’s low. Switch to Route to save it?', action: 'Switch to Route →', href: '#route' };
       case 'lost': return { hand: 'Lost signal for a bit, but I still know the way.', sub: 'NO SIGNAL · ROUTE SAVED ON THIS PAGE' };
-      case 'arrive': return { hand: 'It’s on your ' + (T.side === 'left' ? 'left' : 'right') + '. Look for the gate.', sub: (T.entrance || '') + ' · ' + Math.round(v.dd) + ' M' };
+      // A real trip knows the side only when the router said it, and the door only when Reason was told.
+      case 'arrive': return { hand: (T.side === 'left' ? 'It’s on your left.' : T.side === 'right' || T.demo ? 'It’s on your right.' : 'It’s just ahead.') + (T.entrance ? ' Look for the gate.' : ''), sub: (T.entrance ? T.entrance + ' · ' : '') + Math.round(v.dd) + ' M' };
       case 'arrived': return { hand: 'You made it.', fs: '3.8rem', stamp: 'ARRIVED ' + clockNow(), action: T.links && T.links.event ? (T.links.event.label || 'See the event →') : null, href: T.links && T.links.event ? T.links.event.url : null };
-      case 'early': return { hand: 'You’re early. It starts at ' + (T.startsLabel || 'the start') + '.', fs: '2.9rem', sub: 'NEARBY · ' + (T.nearby || ''), action: T.links && T.links.event ? (T.links.event.label || 'See the event →') : null, href: T.links && T.links.event ? T.links.event.url : null };
+      case 'early': return { hand: 'You’re early. It starts at ' + (T.startsLabel || 'the start') + '.', fs: '2.9rem', sub: T.nearby ? 'NEARBY · ' + T.nearby : '', action: T.links && T.links.event ? (T.links.event.label || 'See the event →') : null, href: T.links && T.links.event ? T.links.event.url : null };
       case 'ended': return {};
       default: return { word: 'Keep going.' };
     }
