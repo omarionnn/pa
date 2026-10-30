@@ -62,7 +62,8 @@ test("the CLI backend hands its turn extras to the MCP server it starts", async 
     cancelRoutes: { marker: "mine" },
     lookup: "a stand-in",
   });
-  assert.deepEqual(started.toolCtx, { cancelRoutes: { marker: "mine" }, lookup: "a stand-in" });
+  // `kind` rides along too, as on the API path: a tool tells their own request from Reason's own turn (src/zone.js).
+  assert.deepEqual(started.toolCtx, { kind: "user", cancelRoutes: { marker: "mine" }, lookup: "a stand-in" });
   // The injectables are how a turn is driven, not something a tool should ever see.
   for (const k of ["run", "images", "startMcp", "text", "conversationId"]) {
     assert.ok(!(k in started.toolCtx), `${k} leaked into the tool context`);

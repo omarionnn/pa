@@ -14,7 +14,14 @@ let resolver = () => "";
 export function setResolver(fn) { resolver = typeof fn === "function" ? fn : () => ""; }
 
 /** The zone of the work running now, or "" outside any person's scope. */
-export function current() { return scope.getStore()?.tz || ""; }
+export function current() { return enabled() ? scope.getStore()?.tz || "" : ""; }
+
+let enabled = () => true;
+/** config.js says whether per-person clocks are on at all; off, every read is the install's zone. */
+export function setEnabled(fn) { enabled = typeof fn === "function" ? fn : () => true; }
+
+/** Run `fn` with no person's clock: for loops shared by everyone that one person's work started. */
+export function outside(fn) { return scope.exit(fn); }
 
 /** Run `fn` on this conversation's clock. */
 export function runFor(conversationId, fn) {

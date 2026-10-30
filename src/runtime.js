@@ -15,6 +15,7 @@ import { parallelClient } from "./parallel.js";
 import { checkWatch as realCheckWatch } from "./watch.js";
 import * as deals from "./deals.js";
 import { runTurnViaCli as cliRunTurn } from "./backends/claude-cli.js";
+import * as zonescope from "./zonescope.js";
 import { mimeFor } from "./calls/recordings.js";
 import { findConverter, runConverter, VOICE_AFCONVERT_ARGS, VOICE_FFMPEG_ARGS, effectAllowed } from "./expressive.js";
 import * as accounts from "./accounts.js";
@@ -204,7 +205,10 @@ export class Runtime extends EventEmitter {
     this.parallel = parallel ?? parallelClient();
     // The API path is the default and is not conditional on anything. REASON_BACKEND=claude-cli
     // swaps in the subscription backend for the owner's own local testing; see the README.
-    this.runTurn = runTurn ?? (process.env.REASON_BACKEND === "claude-cli" ? cliRunTurn : realRunTurn);
+    const turn = runTurn ?? (process.env.REASON_BACKEND === "claude-cli" ? cliRunTurn : realRunTurn);
+    // Every turn on THEIR clock (src/zonescope.js), whichever backend runs it: the stamps the model
+    // reads and every time parsed or shown inside it are in the zone they confirmed.
+    this.runTurn = (args) => zonescope.runFor(args?.conversationId, () => turn(args));
     // The harm screen in front of every message a person sends, and the one behind a borderline
     // reply. Injectable for the same reason runTurn is: what happens on each verdict — no turn,
     // tools refused, the strike, the pause, the crisis line — is code's to guarantee and is proved

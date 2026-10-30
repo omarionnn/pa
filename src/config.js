@@ -1019,6 +1019,8 @@ let offsetMs = 0;
  */
 export const RECORDING_RIDES_MS = 60 * 60_000;
 
+zonescope.setEnabled(() => config.tzAsk);
+
 export const clock = {
   now: () => Date.now() + offsetMs,
   skip: (ms) => { offsetMs += ms; },

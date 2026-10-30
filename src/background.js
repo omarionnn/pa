@@ -17,6 +17,7 @@
 import { config } from "./config.js";
 import { readOutage } from "./down.js";
 import { onCliRun } from "./backends/cli.js";
+import * as zonescope from "./zonescope.js";
 
 const POLL_MS = 1_000;
 
@@ -83,7 +84,8 @@ const sleep = (ms) => new Promise(r => { const t = setTimeout(r, ms); t.unref?.(
 
 function pump() {
   if (lane.pumping) return lane.pumping;
-  lane.pumping = (async () => {
+  // Shared by everyone: never on the clock of whichever person's turn happened to start it.
+  lane.pumping = zonescope.outside(() => (async () => {
     try {
       while (lane.jobs.size) {
         const b = blocked();
@@ -98,7 +100,7 @@ function pump() {
     } finally {
       lane.pumping = null;
     }
-  })();
+  })());
   return lane.pumping;
 }
 

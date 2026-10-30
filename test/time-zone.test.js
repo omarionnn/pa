@@ -100,7 +100,7 @@ test("'remind me at 9' with no confirmed zone: held, nothing set, the guess and 
   assert.match(out.guess.because, /312 area code/);
   assert.match(out.error, /do NOT call timer_set again/);
   assert.equal(db.listTimers(CONV).length, 0);
-  assert.equal(db.zoneRow(CONV).pending.tool, "timer_set");
+  assert.equal(db.zoneRow(CONV).pending[0].tool, "timer_set");
 });
 
 test("their yes finishes the held reminder at 9 THEIR time, without being asked again", async () => {
@@ -108,7 +108,7 @@ test("their yes finishes the held reminder at 9 THEIR time, without being asked 
   await runTool("timer_set", { fire_at: `${wall}-04:00`, note: "call the landlord" }, ctx());
   const out = await runTool("time_zone", { zone: "America/Chicago", their_words: "yep" }, ctx());
   assert.equal(out.ok, true);
-  assert.equal(out.held_action, "timer_set");
+  assert.deepEqual(out.held_actions, ["timer_set"]);
   assert.equal(out.done.ok, true);
   const timers = db.listTimers(CONV);
   assert.equal(timers.length, 1);
@@ -228,4 +228,67 @@ test("the operator starts confirmed on the install's zone; nobody else is touche
   assert.equal(zone.confirmedZone("dm:owner"), "America/New_York");
   assert.equal(zone.confirmedZone(CONV), "");
   assert.equal(zone.preconfirmOperator(), 0, "once");
+});
+
+test("the operator is never asked, even on an account made after boot", async () => {
+  db.upsertAccount({ conversationId: "dm:owner", channel: "fake", address: "+12025551234", name: "Omari", isOperator: true });
+  db.upsertThread({ conversationId: "dm:owner", channel: "fake", address: "+12025551234", isOwner: true, service: "iMessage" });
+  const wall = wallInTwoDays("America/New_York");
+  const out = await runTool("timer_set", { fire_at: `${wall}-05:00`, note: "x" }, { conversationId: "dm:owner" });
+  assert.equal(out.ok, true);
+  assert.equal(zone.confirmedZone("dm:owner"), "America/New_York");
+});
+
+// ---- from the review (2026-10-30) ----
+
+test("two clock times in one turn are both held and both done by the one answer", async () => {
+  const nine = wallInTwoDays("America/Chicago");
+  const five = nine.replace("09:00", "17:00");
+  await runTool("timer_set", { fire_at: `${nine}-04:00`, note: "landlord" }, ctx());
+  await runTool("timer_set", { fire_at: `${five}-04:00`, note: "gym" }, ctx());
+  const out = await runTool("time_zone", { zone: "America/Chicago", their_words: "yes" }, ctx());
+  assert.deepEqual(out.held_actions, ["timer_set", "timer_set"]);
+  const hours = db.listTimers(CONV).map(t => new Date(t.fire_at).toLocaleTimeString("en-US", { timeZone: "America/Chicago", hour: "numeric" })).sort();
+  assert.deepEqual(hours, ["5 PM", "9 AM"]);
+});
+
+test("a timer Reason sets on its own turn (a firing, a check-in) never asks", async () => {
+  const wall = wallInTwoDays("America/New_York");
+  const out = await runTool("timer_set", { fire_at: `${wall}-04:00`, note: "follow up" }, { conversationId: CONV, kind: "event" });
+  assert.equal(out.ok, true);
+  assert.equal(db.zoneRow(CONV).pending, null);
+});
+
+test("a UTC time written while the zone was a guess goes back to the wall clock the model read first", () => {
+  // 13:00Z on Nov 2 is 8am Eastern (EST): the model meant 8am, so 8am Chicago.
+  const r = zone.rewriteForZone("timer_set", { fire_at: "2026-11-02T13:00:00Z" }, "America/Chicago");
+  assert.equal(r.fire_at, "2026-11-02T08:00:00-06:00");
+  assert.equal(zone.rewriteForZone("calendar_create", { start: "2026-10-31T13:00:00Z" }, "America/Chicago").start, "2026-10-31T09:00:00");
+});
+
+test("London's repeated 1:30 is the first one (BST), like New York's", () => {
+  assert.equal(new Date(zone.wallToInstant("2026-10-25T01:30", "Europe/London")).toISOString(), "2026-10-25T00:30:00.000Z");
+});
+
+test("the switch off is the old behaviour exactly: a confirmed zone changes no clock", () => {
+  db.setZoneFields(CONV, { confirmed: "America/Chicago" });
+  config.tzAsk = false;
+  const at = Date.UTC(2026, 9, 30, 15, 0);
+  assert.equal(zonescope.runFor(CONV, () => stamp(at)), "Fri, Oct 30, 2026, 11:00 AM");
+  assert.equal(zonescope.runFor(CONV, () => config.tz), "America/New_York");
+});
+
+test("a tool call runs on its person's clock whoever calls it (the CLI's tool calls come in as their own requests)", async () => {
+  db.setZoneFields(CONV, { confirmed: "America/Chicago" });
+  const wall = wallInTwoDays("America/Chicago");
+  const fireAt = zone.isoIn(zone.wallToInstant(wall, "America/Chicago"), "America/Chicago");
+  const out = await runTool("timer_set", { fire_at: fireAt, note: "x" }, ctx());
+  assert.match(out.timer.fires_at, /9:00 AM C[DS]T$/);
+});
+
+test("caps and spend are counted on the install's day, not the person's", async () => {
+  const accounts = await import("../src/accounts.js");
+  db.setZoneFields(CONV, { confirmed: "Asia/Tokyo" });
+  const at = Date.UTC(2026, 9, 30, 20, 0); // Oct 30 in New York, Oct 31 in Tokyo
+  assert.equal(zonescope.runFor(CONV, () => accounts.today(at)), "2026-10-30");
 });

@@ -18,7 +18,7 @@ import * as zonescope from "./zonescope.js";
 
 const HOUR = 3_600_000;
 /** How long a held action waits for the answer before it is dropped rather than done stale. */
-export const PENDING_TTL_MS = 12 * HOUR;
+export const PENDING_TTL_MS = 2 * HOUR;
 
 // ---------- names ----------
 
@@ -158,15 +158,22 @@ const CLOCK_TOOLS = {
  * Before a clock-time action: null to go ahead, or the refusal that holds the action and hands the
  * model the guess to ask about. Asked once per action; a held action is replaced by the newest.
  */
-export function gate(conversationId, name, input, { now = clock.now() } = {}) {
+export function gate(conversationId, name, input, { now = clock.now(), kind = "user" } = {}) {
   if (!config.tzAsk || !conversationId) return null;
+  // Only on something THEY asked for. A timer firing or a check-in Reason starts itself never asks
+  // (nobody existing is messaged about this unprompted); those keep the old clock until they confirm.
+  if (kind && kind !== "user") return null;
   const needs = CLOCK_TOOLS[name];
   if (!needs || !needs(input ?? {})) return null;
   const row = db.zoneRow(conversationId);
   if (!row) return null;
   if (row.confirmed && isIana(row.confirmed)) return null;
+  // The operator's zone is known (owner, 2026-10-30) — an account made after boot is confirmed here.
+  if (row.isOperator) { db.setZoneFields(conversationId, { confirmed: config.installTz, confirmedAt: now }); return null; }
   const guess = guessZone(conversationId);
-  db.setZoneFields(conversationId, { pending: { tool: name, input, guess: guess.zone, at: now } });
+  // Every clock-time call of the turn is held ("at 9 and again at 5" is two), each kept until the answer.
+  const held = heldList(row.pending).filter(p => now - Number(p.at || 0) <= PENDING_TTL_MS);
+  db.setZoneFields(conversationId, { pending: [...held, { tool: name, input, guess: guess.zone, at: now }].slice(-5) });
   return {
     ok: false, status: "confirm_time_zone", held: true,
     guess: { zone: guess.zone, name: `${guess.label} time`, because: guess.because, signal: guess.signal },
@@ -180,6 +187,12 @@ export function gate(conversationId, name, input, { now = clock.now() } = {}) {
 
 // ---------- the answer ----------
 
+/** Held calls, whether stored as one (before 2026-10-30's review) or a list. */
+function heldList(pending) {
+  if (!pending) return [];
+  return (Array.isArray(pending) ? pending : [pending]).filter(p => p && p.tool);
+}
+
 const WALL = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/;
 
 /** "2026-11-01T01:30:00" read as a wall clock in `tz`, to an instant. DST gaps roll forward. */
@@ -190,8 +203,8 @@ export function wallToInstant(wall, tz) {
   // Two candidates — the offset either side of a DST change. The one that reads back as the same
   // wall clock wins (the earlier, when a fall-back hour happens twice); a spring-forward hour that
   // never happens rolls FORWARD (2:30 that night is 3:30), never back an hour.
-  const t1 = asUtc - offsetMin(tz, asUtc) * 60_000;
-  const t2 = asUtc - offsetMin(tz, t1) * 60_000;
+  const t1 = asUtc - offsetMin(tz, asUtc - 12 * HOUR) * 60_000;
+  const t2 = asUtc - offsetMin(tz, asUtc + 12 * HOUR) * 60_000;
   const reads = (t) => t + offsetMin(tz, t) * 60_000 === asUtc;
   const fits = [t1, t2].filter(reads);
   return fits.length ? Math.min(...fits) : Math.max(t1, t2);
@@ -210,17 +223,27 @@ export function isoIn(ms, tz) {
  * The held action, re-read in the confirmed zone. The clock time they SAID is kept — "9 tomorrow" is
  * 9 in the zone they confirmed, whatever offset was written while the zone was a guess.
  */
-export function rewriteForZone(name, input, tz) {
+export function rewriteForZone(name, input, tz, { wroteIn = config.installTz } = {}) {
   const out = { ...(input ?? {}) };
+  // The clock time as they said it. A written offset ("09:00-04:00") keeps its wall clock; a UTC
+  // "Z" was converted from the clock the model was reading (the install's, before they confirmed),
+  // so it goes back to that wall clock first — "13:00Z" written for 9am Eastern is 9am, not 1pm.
+  const wallOf = (v) => {
+    const t = String(v).trim();
+    const m = WALL.exec(t);
+    if (!m) return null;
+    if (/Z$/i.test(t)) { const at = Date.parse(t); return Number.isFinite(at) ? isoIn(at, wroteIn).slice(0, 19) : null; }
+    return m[1];
+  };
   if (name === "timer_set" && typeof out.fire_at === "string") {
-    const m = WALL.exec(out.fire_at.trim());
-    if (m) { const t = wallToInstant(m[1], tz); if (Number.isFinite(t)) out.fire_at = isoIn(t, tz); }
+    const w = wallOf(out.fire_at);
+    if (w) { const t = wallToInstant(w.length === 16 ? `${w}:00` : w, tz); if (Number.isFinite(t)) out.fire_at = isoIn(t, tz); }
   }
   if (/calendar_(create|change)$/.test(name)) {
     for (const k of ["start", "end"]) {
       if (typeof out[k] !== "string") continue;
-      const m = WALL.exec(out[k].trim());
-      if (m) out[k] = m[1];
+      const w = wallOf(out[k]);
+      if (w) out[k] = w;
     }
   }
   if (name === "commitment_set") out.time_zone = tz;
@@ -237,12 +260,11 @@ export function confirm(conversationId, tz, { now = clock.now() } = {}) {
   const before = db.zoneRow(conversationId);
   if (!before) return { ok: false, error: "No account for this conversation." };
   db.setZoneFields(conversationId, { confirmed: tz, confirmedAt: now, pending: null, travelAsked: "" });
-  const p = before.pending;
-  const fresh = p && p.tool && now - Number(p.at || 0) <= PENDING_TTL_MS;
+  const fresh = heldList(before.pending).filter(p => now - Number(p.at || 0) <= PENDING_TTL_MS);
   return {
     ok: true, zone: tz, name: `${zoneLabel(tz, now)} time`,
     changed_from: before.confirmed && before.confirmed !== tz ? before.confirmed : "",
-    held: fresh ? { tool: p.tool, input: rewriteForZone(p.tool, p.input, tz) } : null,
+    held: fresh.map(p => ({ tool: p.tool, input: rewriteForZone(p.tool, p.input, tz) })),
   };
 }
 

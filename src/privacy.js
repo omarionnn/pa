@@ -158,7 +158,7 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
     // ever read for today, so an old day is pure residue; a told row this old is past anything it
     // could still be protecting against being said twice.
     del("notice_budget", n(db.prepare("DELETE FROM notice_budget WHERE day < ?")
-      .run(new Date(records).toLocaleDateString("en-CA", { timeZone: config.tz }))));
+      .run(new Date(records).toLocaleDateString("en-CA", { timeZone: config.installTz }))));
     del("noticed_rows", n(db.prepare("DELETE FROM notice_seen WHERE first_seen < ?").run(records)));
     // Research, oldest first and children with it, so nothing is left pointing at a parent that
     // has gone.

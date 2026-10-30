@@ -633,7 +633,7 @@ export const money = (cents) => `$${(cents / 100).toFixed(2)}`;
 
 /** The day a cap is counted against, in the install's timezone rather than UTC. */
 export function spendDay(nowMs = clock.now()) {
-  return new Date(nowMs).toLocaleDateString("en-CA", { timeZone: config.tz });
+  return new Date(nowMs).toLocaleDateString("en-CA", { timeZone: config.installTz });
 }
 
 /**

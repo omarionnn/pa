@@ -1750,7 +1750,7 @@ async function calendarFor(conversationId, tool, doing, account = "") {
   let zoneFrom = timeZone ? "their calendar" : "";
   // The zone they CONFIRMED beats the calendar's (src/zone.js): "3pm" is 3pm where they are, and a
   // calendar left on its sign-up zone is a guess where their answer is an answer.
-  const confirmed = confirmedZoneOf(conversationId);
+  const confirmed = config.tzAsk ? confirmedZoneOf(conversationId) : "";
   if (confirmed) { timeZone = confirmed; zoneFrom = "what they told you their zone is"; }
   if (!google.isZone(timeZone)) {
     const theirs = db.noticePrefs(conversationId).tz;
@@ -8807,7 +8807,13 @@ const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memor
 /** Tools that put words in front of somebody: held while a text of theirs is waiting to be read. */
 const SPEAKS = new Set(["message_send", "voice_note_send", "voice_note_say"]);
 
-export async function runTool(name, rawInput, ctx) {
+export function runTool(name, rawInput, ctx) {
+  // On the clock of the person this call is for, whoever called it — the CLI backend's tool calls
+  // arrive as their own HTTP requests, outside the turn's scope (src/zonescope.js).
+  return zonescope.runFor(ctx?.conversationId, () => runToolOnTheirClock(name, rawInput, ctx));
+}
+
+async function runToolOnTheirClock(name, rawInput, ctx) {
   // One thought, one answer (src/onethought.js). They texted while this turn was working, and the
   // text adds to what it is working on: a message about to go out was written without it, so it is
   // not sent — the model is handed the new text instead, to write the one message that uses it.
@@ -8882,7 +8888,7 @@ async function runToolInner(name, rawInput, ctx) {
   const me = accounts.ownerOf(c);
   // Their zone, before the first thing with a clock time in it (src/zone.js): held, asked once, and
   // finished by their answer. A time "in 10 minutes" from now is never held.
-  const zoneHeld = zone.gate(c, name, input);
+  const zoneHeld = zone.gate(c, name, input, { kind: ctx.kind });
   if (zoneHeld) return zoneHeld;
 
   // Fail closed on a conversation that is nobody's: with no account there is nobody to authorize
@@ -12983,15 +12989,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(saved.changed_from ? { changed_from: saved.changed_from } : {}),
         note: `Saved. Their reminders, calendar times, calls and stamps are on ${saved.name} from now on.`,
       };
-      if (!saved.held) return kept;
-      // The thing they asked for before the question, done now on the confirmed clock — the same
-      // path as any call, every other check included, so the answer cannot carry it past one.
-      const done = await runToolInner(saved.held.tool, saved.held.input, ctx);
+      if (!saved.held.length) return kept;
+      // What they asked for before the question, done now on the confirmed clock — the same path as
+      // any call, every other check included, so the answer cannot carry it past one.
+      const done = [];
+      for (const h of saved.held) done.push({ tool: h.tool, out: await runToolInner(h.tool, h.input, ctx) });
+      const failed = done.filter(d => d.out?.ok === false);
       return {
-        ...kept, held_action: saved.held.tool, done,
-        note: done?.ok === false
-          ? `Their zone is saved, but what was held (${saved.held.tool}) did not go through — the result is in \`done\`. Deal with that as you would any refusal.`
-          : `Their zone is saved AND what they asked for before the question is now done (${saved.held.tool}, result in \`done\`). Do not call it again. Tell them in one line what is set, in their time.`,
+        ...kept, held_actions: done.map(d => d.tool), done: done.length === 1 ? done[0].out : done,
+        note: failed.length
+          ? `Their zone is saved, but ${failed.length === done.length ? "what was held" : "part of what was held"} (${failed.map(d => d.tool).join(", ")}) did not go through — see \`done\`. Deal with that as you would any refusal; whatever did go through, do not do again.`
+          : `Their zone is saved AND what they asked for before the question is now done (${done.map(d => d.tool).join(", ")}, result in \`done\`). Do not call it again. Tell them in one line what is set, in their time.`,
       };
     }
     case "notice_settings": {
