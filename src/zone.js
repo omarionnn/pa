@@ -19,6 +19,8 @@ import * as zonescope from "./zonescope.js";
 const HOUR = 3_600_000;
 /** How long a held action waits for the answer before it is dropped rather than done stale. */
 export const PENDING_TTL_MS = 2 * HOUR;
+/** Held calls closer together than this are one message's ("at 9 and at 5"), not a correction. */
+const SAME_TURN_MS = 2 * 60_000;
 
 // ---------- names ----------
 
@@ -156,7 +158,7 @@ const CLOCK_TOOLS = {
 
 /**
  * Before a clock-time action: null to go ahead, or the refusal that holds the action and hands the
- * model the guess to ask about. Asked once per action; a held action is replaced by the newest.
+ * model the guess to ask about. Asked once per action.
  */
 export function gate(conversationId, name, input, { now = clock.now(), kind = "user" } = {}) {
   if (!config.tzAsk || !conversationId) return null;
@@ -171,8 +173,12 @@ export function gate(conversationId, name, input, { now = clock.now(), kind = "u
   // The operator's zone is known (owner, 2026-10-30) — an account made after boot is confirmed here.
   if (row.isOperator) { db.setZoneFields(conversationId, { confirmed: config.installTz, confirmedAt: now }); return null; }
   const guess = guessZone(conversationId);
-  // Every clock-time call of the turn is held ("at 9 and again at 5" is two), each kept until the answer.
-  const held = heldList(row.pending).filter(p => now - Number(p.at || 0) <= PENDING_TTL_MS);
+  // Every clock-time call of the turn is held ("at 9 and again at 5" is two). The same call again (a
+  // retry after this refusal) is held once; the same tool from an earlier message is a correction
+  // ("make it 10") and replaces what was held, so the answer never does both.
+  const same = (p) => p.tool === name && JSON.stringify(p.input) === JSON.stringify(input);
+  const held = heldList(row.pending).filter(p => now - Number(p.at || 0) <= PENDING_TTL_MS
+    && !same(p) && !(p.tool === name && now - Number(p.at || 0) > SAME_TURN_MS));
   db.setZoneFields(conversationId, { pending: [...held, { tool: name, input, guess: guess.zone, at: now }].slice(-5) });
   return {
     ok: false, status: "confirm_time_zone", held: true,
@@ -203,8 +209,9 @@ export function wallToInstant(wall, tz) {
   // Two candidates — the offset either side of a DST change. The one that reads back as the same
   // wall clock wins (the earlier, when a fall-back hour happens twice); a spring-forward hour that
   // never happens rolls FORWARD (2:30 that night is 3:30), never back an hour.
-  const t1 = asUtc - offsetMin(tz, asUtc - 12 * HOUR) * 60_000;
-  const t2 = asUtc - offsetMin(tz, asUtc + 12 * HOUR) * 60_000;
+  // ±26 h: past the widest offsets (UTC+14), never as far as the next change.
+  const t1 = asUtc - offsetMin(tz, asUtc - 26 * HOUR) * 60_000;
+  const t2 = asUtc - offsetMin(tz, asUtc + 26 * HOUR) * 60_000;
   const reads = (t) => t + offsetMin(tz, t) * 60_000 === asUtc;
   const fits = [t1, t2].filter(reads);
   return fits.length ? Math.min(...fits) : Math.max(t1, t2);

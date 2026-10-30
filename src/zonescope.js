@@ -25,9 +25,13 @@ export function outside(fn) { return scope.exit(fn); }
 
 /** Run `fn` on this conversation's clock. */
 export function runFor(conversationId, fn) {
+  // Already on this person's clock (a tool call inside their turn): the same scope, so a zone they
+  // confirm mid-turn holds for the rest of the turn.
+  const s = scope.getStore();
+  if (s && conversationId && s.conv === conversationId) return fn();
   let tz = "";
   try { tz = conversationId ? resolver(conversationId) || "" : ""; } catch { tz = ""; }
-  return scope.run({ tz }, fn);
+  return scope.run({ tz, conv: conversationId || "" }, fn);
 }
 
 /** An open scope whose person is not known yet (an HTTP request before its cookie is read). */
@@ -37,6 +41,7 @@ export function runOpen(fn) { return scope.run({ tz: "" }, fn); }
 export function enter(conversationId) {
   const s = scope.getStore();
   if (!s || s.tz || !conversationId) return;
+  s.conv = conversationId;
   try { s.tz = resolver(conversationId) || ""; } catch {}
 }
 

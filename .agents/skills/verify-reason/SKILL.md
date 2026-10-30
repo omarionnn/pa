@@ -426,7 +426,7 @@ See [features/web-drafts.md](features/web-drafts.md).
 
 ### Baseline — per-person time zone (wt/user-timezone, 2026-10-30)
 
-`npm run test:offline` under `env -i`: 4,522 tests, 4,405 passing, 115 skipped, 2 failing — both `test/flights.test.js` (the known load flake; 56/56 alone). New: `test/time-zone.test.js` (23). Cage over the subscription: 3 turns, see [features/time-zone.md](features/time-zone.md).
+`npm run test:offline` under `env -i`: 4,525 tests, 4,410 passing, 115 skipped, 0 failing. New: `test/time-zone.test.js` (26). Cage over the subscription: 3 turns, see [features/time-zone.md](features/time-zone.md).
 
 ### Baseline — 4,298 pass, 2 flaky after "owner" means this thread (fix/owner-means-this-thread, 2026-10-28)
 

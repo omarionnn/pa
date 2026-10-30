@@ -32,7 +32,7 @@ Source: `src/zone.js`, `src/zonescope.js`, `src/config.js` (`installTz`, `tz` ge
 zone order, `get_location` hook), `src/db.js` (`zoneRow`, `setZoneFields`), `src/runtime.js`,
 `src/agent.js`, `src/backends/claude-cli.js` (`kind` into the MCP tool ctx), `src/http.js`,
 `src/pages/webnotify.js`, `src/background.js` (lane runs outside any person's scope), `src/serve.js`.
-Tests: `test/time-zone.test.js` (23).
+Tests: `test/time-zone.test.js` (26).
 
 ## Drive (cage, subscription — a handful of turns)
 

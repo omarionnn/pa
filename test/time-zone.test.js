@@ -292,3 +292,30 @@ test("caps and spend are counted on the install's day, not the person's", async 
   const at = Date.UTC(2026, 9, 30, 20, 0); // Oct 30 in New York, Oct 31 in Tokyo
   assert.equal(zonescope.runFor(CONV, () => accounts.today(at)), "2026-10-30");
 });
+
+test("a retry of the held call is held once; a correction from a later message replaces it", async () => {
+  const nine = wallInTwoDays("America/Chicago");
+  await runTool("timer_set", { fire_at: `${nine}-04:00`, note: "landlord" }, ctx());
+  await runTool("timer_set", { fire_at: `${nine}-04:00`, note: "landlord" }, ctx());
+  assert.equal(db.zoneRow(CONV).pending.length, 1);
+  clock.skip(5 * 60_000);
+  await runTool("timer_set", { fire_at: `${nine.replace("09:00", "10:00")}-04:00`, note: "landlord" }, ctx());
+  assert.equal(db.zoneRow(CONV).pending.length, 1);
+  await runTool("time_zone", { zone: "America/Chicago", their_words: "yes, make it 10" }, ctx());
+  const [t, ...rest] = db.listTimers(CONV);
+  assert.equal(rest.length, 0);
+  assert.equal(new Date(t.fire_at).toLocaleTimeString("en-US", { timeZone: "America/Chicago", hour: "numeric" }), "10 AM");
+});
+
+test("DST far from UTC: Auckland's missing 2:30 rolls forward, its repeated 2:30 is the first", () => {
+  assert.equal(zone.isoIn(zone.wallToInstant("2026-09-27T02:30", "Pacific/Auckland"), "Pacific/Auckland"), "2026-09-27T03:30:00+13:00");
+  assert.equal(zone.isoIn(zone.wallToInstant("2026-04-05T02:30", "Pacific/Auckland"), "Pacific/Auckland"), "2026-04-05T02:30:00+13:00");
+});
+
+test("a zone confirmed mid-turn holds for the rest of that turn", async () => {
+  await zonescope.runFor(CONV, async () => {
+    assert.equal(config.tz, "America/New_York");
+    await runTool("time_zone", { zone: "America/Chicago", their_words: "chicago" }, ctx());
+    assert.equal(config.tz, "America/Chicago");
+  });
+});
