@@ -31,8 +31,9 @@ export function everydaySeals() {
 }
 
 // REASON_STAMPS_TIERS (off | on, 2026-10-30): one seal per kind, never two alike. An everyday seal earned
-// again counts up instead of adding a copy, and at 10, 25, 50 and 100 the same seal is upgraded in place
-// (a numbered ribbon, then gold). Needs REASON_STAMPS_EVERYDAY. Off: the book is as #251 drew it.
+// again counts up instead of adding a copy, and at its kind's milestones (stamps.js TIERS: research 500 /
+// 1000 / 2000, a call 25 / 100 / 250) the same seal is upgraded in place (a numbered ribbon, then gold).
+// Needs REASON_STAMPS_EVERYDAY. Off: the book is as #251 drew it.
 export function sealTiers() {
   return everydaySeals() && ["1", "true", "on", "yes"].includes(String(process.env.REASON_STAMPS_TIERS ?? "").trim().toLowerCase());
 }

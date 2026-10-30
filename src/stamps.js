@@ -571,7 +571,11 @@ export function newestStamp(conversationId, { days = 7, now = clock.now() } = {}
   if (!conversationId) return null;
   if (everydaySeals()) {
     // The book as drawn: an everyday seal earned again is new only when it reached a tier.
-    return listStamps(conversationId).filter(s => !OUTSIDE.includes(s.type) && s.earnedAt >= now - days * 86_400_000).at(-1) ?? null;
+    // Without its row: the daily edition stores this, and the row carries the place and the ref.
+    const s = listStamps(conversationId).filter(s => !OUTSIDE.includes(s.type) && s.earnedAt >= now - days * 86_400_000).at(-1);
+    if (!s) return null;
+    const { row, ...summary } = s;
+    return summary;
   }
   const outside = waxLook() ? OUTSIDE.map(t => `'${t}'`).join(",") : "'anniversary','suite_key'";
   const row = ONE(`SELECT * FROM stamps WHERE conversation_id = ? AND earned_at >= ? AND type NOT IN (${outside}) ORDER BY earned_at DESC, id DESC LIMIT 1`, conversationId, now - days * 86_400_000);
