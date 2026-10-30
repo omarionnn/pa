@@ -19,6 +19,7 @@ import { timingSafeEqual } from "node:crypto";
 import * as db from "./db.js";
 import * as uploads from "./webuploads.js";
 import { fetchImage } from "./media.js";
+import { cardFile } from "./choicecards.js";
 import { checkUrl } from "./pictures.js";
 import { pdfText } from "./pdf.js";
 import { hear, hearingStatus, cannotHearLine } from "./voice.js";
@@ -251,6 +252,11 @@ export async function serveRowMedia({ account, rowId, index, headers = {}, metho
   try { media = JSON.parse(row?.media || "[]"); } catch { media = []; }
   const a = media[Number(index)];
   if (!a?.url) return notFound();
+  // A choice card Reason drew (src/choicecards.js): its own file on this machine, by name only.
+  if (String(a.url).startsWith("card:")) {
+    const file = cardFile(String(a.url).slice(5));
+    return file && existsSync(file) ? bytesOut({ bytes: readFileSync(file), mime: "image/jpeg", name: a.filename, headers, method }) : notFound();
+  }
   const id = uploads.uploadIdOf(a.url);
   if (id) {
     const m = uploads.meta(id);

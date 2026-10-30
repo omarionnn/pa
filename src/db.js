@@ -10435,7 +10435,11 @@ function historyFromOutbound(row) {
   if (!row || !historyOn()) return null;
   if (!row.to_owner) return null;
   if (HISTORY_EXCLUDED_KEYS.some(p => String(row.idem_key ?? "").startsWith(p))) return null;
-  const media = row.media ? [{ kind: "file", mimeType: row.media.mimeType ?? null, filename: row.media.filename ?? null }] : [];
+  // A choice card is a picture Reason drew, kept on this machine, so Web can draw it in the thread too.
+  const card = /[\\/]choice-cards[\\/]([0-9a-f]{20}\.jpg)$/.exec(String(row.media?.file ?? ""));
+  const media = !row.media ? []
+    : card ? [{ kind: "image", mimeType: "image/jpeg", filename: row.media.filename ?? null, url: `card:${card[1]}`, choice: true }]
+      : [{ kind: "file", mimeType: row.media.mimeType ?? null, filename: row.media.filename ?? null }];
   return writeMessage({
     conversationId: row.conversation_id, role: "assistant", channel: row.channel,
     externalId: row.message_id ?? null, outboxId: row.id, text: row.body ?? "", media, at: row.sent_at ?? clock.now(),
@@ -12425,4 +12429,54 @@ export function setZoneFields(conversationId, { confirmed, confirmedAt, web, pla
 export function preconfirmOperatorZone(tz, at = clock.now()) {
   return db.prepare(`UPDATE accounts SET notice_tz = ?, tz_confirmed_at = ?
     WHERE is_operator = 1 AND (notice_tz IS NULL OR notice_tz = '')`).run(tz, at).changes;
+}
+
+// ---------- choice cards (src/choicecards.js) ----------
+// One row per set of options Reason showed: what each number was, the provider handle of each card
+// (so an inline reply on card 3 is read as card 3), and until when their next message may be the
+// answer. A new set closes the one before; an answer or the clock closes it too.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS choice_sets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    options TEXT NOT NULL,
+    handles TEXT NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    shown_at INTEGER,
+    expires_at INTEGER NOT NULL,
+    closed_at INTEGER,
+    reads INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS choice_sets_conv ON choice_sets(conversation_id, id);
+`);
+
+const choiceOut = (r) => r ? { ...r, options: JSON.parse(r.options || "[]"), handles: JSON.parse(r.handles || "[]") } : null;
+
+export function openChoiceSet({ conversationId, kind, options, state, expiresAt, at = clock.now() }) {
+  db.prepare("UPDATE choice_sets SET closed_at = ? WHERE conversation_id = ? AND closed_at IS NULL").run(at, conversationId);
+  const id = db.prepare("INSERT INTO choice_sets (conversation_id, kind, options, state, created_at, shown_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(conversationId, kind, JSON.stringify(options), state, at, state === "text" ? at : null, expiresAt).lastInsertRowid;
+  return choiceOut(db.prepare("SELECT * FROM choice_sets WHERE id = ?").get(id));
+}
+export function setChoiceState(id, state) {
+  db.prepare("UPDATE choice_sets SET state = ?, closed_at = CASE WHEN ? = 'dropped' THEN ? ELSE closed_at END WHERE id = ?").run(state, state, clock.now(), id);
+}
+export function setChoiceShown(id, { handles = [], state = "shown", at = clock.now() } = {}) {
+  db.prepare("UPDATE choice_sets SET handles = ?, state = ?, shown_at = ?, closed_at = CASE WHEN ? = 'dropped' THEN ? ELSE closed_at END WHERE id = ?")
+    .run(JSON.stringify(handles), state, at, state, at, id);
+}
+/** The set their next message may be answering: open, shown (or written as a list), not expired. */
+export function openChoiceFor(conversationId, now = clock.now()) {
+  return choiceOut(db.prepare(`SELECT * FROM choice_sets WHERE conversation_id = ? AND closed_at IS NULL
+    AND state IN ('shown', 'partial', 'text') AND expires_at > ? AND reads < ? ORDER BY id DESC LIMIT 1`).get(conversationId, now, CHOICE_READS));
+}
+/** How many of their messages a set is read against before it is let go: a pick, a question about one, a pick. */
+export const CHOICE_READS = 3;
+export function countChoiceRead(id) {
+  db.prepare("UPDATE choice_sets SET reads = reads + 1 WHERE id = ?").run(id);
+}
+export function closeChoiceSets(conversationId, at = clock.now()) {
+  return db.prepare("UPDATE choice_sets SET closed_at = ? WHERE conversation_id = ? AND closed_at IS NULL").run(at, conversationId).changes;
 }

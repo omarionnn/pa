@@ -27,6 +27,8 @@ import { checkTickets } from "./ticketcheck.js";
 import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
 import { sendTapback } from "./tapbacks.js";
+import * as choices from "./choicecards.js";
+import { whereTo } from "./deliver.js";
 import { sweepRetention } from "./privacy.js";
 import * as remote from "./remote.js";
 import * as notice from "./notice.js";
@@ -342,6 +344,19 @@ export class Runtime extends EventEmitter {
    * Never allowed to cost anybody a reply. The words have already gone by the time this runs, and a
    * failure here is a missing tapback and a log line, not an error anybody hears about.
    */
+  /** The cards show_choices drew this turn, sent behind the reply's words (src/choicecards.js). Never throws. */
+  async _sendChoiceCards(conversationId, withWords, meta = {}) {
+    try {
+      return await choices.sendQueued(conversationId, {
+        router: this.turnExtras?.channels ?? null, withWords, log: this.log,
+        route: whereTo({ conversationId, channel: meta.channel ?? null, to: meta.to ?? null, chatId: meta.chatId ?? null }),
+      });
+    } catch (e) {
+      this.log({ choice_cards_error: conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
+      return null;
+    }
+  }
+
   async _fireHeldReaction(conversationId, withWords) {
     const held = db.takeHeldReaction(conversationId);
     if (!held) return null;
@@ -424,6 +439,11 @@ export class Runtime extends EventEmitter {
       // Same for a "what's new" claim: a turn that said it would mention something and then sent
       // nothing leaves a claim behind, and this turn's reply is not the one it was made about.
       db.dropWhatsNewClaim(conversationId);
+      // And cards a turn drew and never sent (it said nothing): they were about that turn's line.
+      try {
+        const stale = choices.takeQueued(conversationId);
+        if (stale) db.setChoiceState(stale.setId, "dropped");
+      } catch { /* never costs the turn */ }
       // `answering` is the router's note of which text this turn is for. It decides the pin below,
       // and it reaches the tools so a task started this turn can keep the handle it was asked under.
       // `pinTo` is a caller's note of where a late reply belongs when the turn does not say — a
@@ -649,6 +669,8 @@ export class Runtime extends EventEmitter {
         // The tapback the react tool held back because they had asked something. Words won, so now
         // it rides alongside them — and only now, and only if the words really went out.
         await this._fireHeldReaction(conversationId, out?.ok !== false);
+        // Choice cards the turn drew (show_choices): after the line above them, one bubble each, in order.
+        await this._sendChoiceCards(conversationId, out?.ok !== false, meta);
         // What this reply asserted and asked, written down once it has really gone (src/said.js),
         // so a later message that changes a value has to say so and a settled question stays closed.
         // Off the reply's path: nothing waits for it.

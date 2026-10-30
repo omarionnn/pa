@@ -39,6 +39,7 @@ import { clock, config, normalizeNumber, stamp } from "../config.js";
 import { OutageError, downLine, leftWhileDownLine } from "../down.js";
 import * as onethought from "../onethought.js";
 import * as web from "../web.js";
+import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 
 /** What somebody whose event code did not work is told, by why. */
@@ -371,6 +372,9 @@ export class Router {
     const under = (inbound.replyTo || inbound.threadRoot)
       ? replies.inboundReplyLine(conversationId, inbound.replyTo, inbound.threadRoot, { except: inbound.externalId })
       : "";
+    // Options Reason just showed (src/choicecards.js): what each number was, and which card an
+    // inline reply or a tapback is on when the provider says. Empty with nothing open.
+    const picking = choices.inboundChoiceLine(conversationId, { text: inbound.text, replyTo: inbound.replyTo ?? null });
     // §4h: taken back between the claim and here (takeBack). Checked with no await before the hold.
     if (inbound.channel === web.WEB) {
       this.preHold.delete(inbound.externalId);
@@ -381,7 +385,7 @@ export class Router {
     }
     const window = db.holdInbound({
       conversationId, channel: inbound.channel, address, chatId: inbound.chatId ?? null,
-      externalId: inbound.externalId, text: under ? `${under}\n${inbound.text}` : inbound.text,
+      externalId: inbound.externalId, text: [under, picking, inbound.text].filter(Boolean).join("\n"),
       attachments, service: inbound.service ?? null, isOperator,
       quietMs: Math.max(0, quietWindowFor(inbound.channel)), maxMs: Math.max(0, config.burstMaxMs),
     });

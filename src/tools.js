@@ -57,6 +57,7 @@ import * as invites from "./invites.js";
 import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink } from "./eventtools.js";
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
+import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import * as rhythms from "./rhythms.js";
@@ -141,6 +142,8 @@ const OUTSIDE_WORLD = new Set(["flight_book", "account_connect", "account_revoke
   // about judgement, and the only way to answer it later is a row naming the moment the model
   // thought it had. The reply itself is not sent by a tool, so this row is where the effect lands.
   "mark_moment",
+  // Choice cards fetch each option's photo from the shop or the listing, and land on their phone.
+  "show_choices",
   // A page is a thing the owner can open from a link, and sharing one makes it public. "What
   // did you do today" has to be able to answer "you made this page, and you shared it".
   "page_create", "page_update", "page_delete",
@@ -345,7 +348,8 @@ export function toolsFor(conversationId) {
     && (bookingOk || !FLIGHT_BOOKING_TOOLS.has(t.name))
     && eventToolVisible(t.name, conversationId)
     && albumToolVisible(t.name, conversationId)
-    && directionsToolVisible(t.name, conversationId))
+    && directionsToolVisible(t.name, conversationId)
+    && choiceToolVisible(t.name, conversationId))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t));
 }
 
@@ -4294,6 +4298,7 @@ export const tools = [
   ...ALBUM_TOOL_DEFS,
   // Walking directions and Escort (src/directionstools.js, src/trips.js), behind REASON_DIRECTIONS.
   ...DIRECTIONS_TOOL_DEFS,
+  ...CHOICE_TOOL_DEFS,
   {
     name: "capabilities",
     description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things. Its `whats_new` list is what 'what's new' and 'what can you do now' are answered from.",
@@ -6790,6 +6795,7 @@ const S = {
   ...EVENT_SCHEMAS,
   ...ALBUM_SCHEMAS,
   ...DIRECTIONS_SCHEMAS,
+  ...CHOICE_SCHEMAS,
   invites_list: z.object({}),
   invite_link_create: z.object({}),
   invite_link_cancel: z.object({ number: z.number().int().min(1), replace: z.boolean().optional() }),
@@ -11316,6 +11322,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // ---------- walking directions (src/directionstools.js) ----------
     case "directions":
       return await runDirectionsTool(name, input, { ...ctx, conversationId: c });
+
+    // ---------- choice cards (src/choicecards.js) ----------
+    case "show_choices":
+      return await runChoiceTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- invites (src/invites.js) ----------
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };
