@@ -214,7 +214,8 @@ export function withoutSelfNote(text) {
  *     and the why is a note to itself, not a text;
  *   - a real reply with the marker on its own last line is the real reply, marker off.
  *
- * The marker inside a sentence ("i'd have said NO_REPLY to that") is left alone — that is prose.
+ * A marker anywhere else — a middle line, inside a sentence — is not this function's call: it is
+ * taken off at the last step before anything is sent (withoutNoReply, below).
  */
 const SILENCE_LINE = /^\W*NO_REPLY\W*$/;
 export function readSilence(text) {
@@ -228,6 +229,48 @@ export function readSilence(text) {
     lines.pop();
   }
   return { text: stripped ? lines.join("\n").trim() : s, silent: false, stripped };
+}
+
+/**
+ * The silence marker taken off a message at the last step before it goes to a person — the one
+ * place that decides it, called by every outbound path (src/deliver.js, src/outbox.js,
+ * src/channels/router.js sendNow and sendMediaUrl).
+ *
+ * readSilence above reads a whole reply: marker first means quiet, marker last is dropped. It used
+ * to leave a marker on a middle line or inside a sentence alone as "prose" (#43, 2026-10-18). No
+ * case was ever behind that: nothing Reason does has a reason to text the word NO_REPLY to anybody,
+ * and when the model writes it mid-reply it is the marker leaking, not a sentence about it. So here
+ * it comes off wherever it is, as a whole word, in capitals, with any markdown wrapped round it
+ * ("**NO_REPLY**", "`NO_REPLY`"). "no reply" in ordinary words, and no_reply@ in an address, stay.
+ *
+ * What is left is tidied only where the marker was: the space it leaves, a line it leaves with
+ * nothing on it, the blank lines either side. `empty` is true when nothing worth sending is left —
+ * the caller then sends nothing. `path` names the caller in the `no_reply_stripped` log line, which
+ * never carries the message.
+ */
+const NO_REPLY_WORD = /[ \t]*(?<!\w)[*_`~]*NO_REPLY[*_`~]*(?!\w)[ \t]*/g;
+const MEANINGFUL = /[\p{L}\p{N}\p{Extended_Pictographic}]/u;
+export function withoutNoReply(text, { path = null, log = null } = {}) {
+  const s = String(text ?? "");
+  if (!s.includes("NO_REPLY")) return { text: s, stripped: false, empty: false };
+  let stripped = false;
+  const lines = [];
+  for (const line of s.replace(/\r\n?/g, "\n").split("\n")) {
+    const out = line.replace(NO_REPLY_WORD, (m, at, whole) => {
+      stripped = true;
+      const after = whole[at + m.length];
+      // At either end of the line, or right before punctuation, the marker and its spaces just go;
+      // between two words it leaves one space.
+      return at === 0 || after === undefined || /[.,!?;:)\]]/.test(after) ? "" : " ";
+    });
+    if (out === line) { lines.push(line); continue; }
+    if (MEANINGFUL.test(out)) lines.push(out);
+  }
+  if (!stripped) return { text: s, stripped: false, empty: false };
+  const rest = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  const empty = !MEANINGFUL.test(rest);
+  try { log?.({ no_reply_stripped: path ?? "unknown", ...(empty ? { dropped: true } : {}) }); } catch { /* a log line never costs a send */ }
+  return { text: empty ? "" : rest, stripped: true, empty };
 }
 
 /**

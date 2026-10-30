@@ -33,6 +33,10 @@ import * as db from "./db.js";
 import { config, clock } from "./config.js";
 import { freshRideLinks } from "./ridelinks.js";
 import * as incidents from "./incidents.js";
+import { withoutNoReply } from "./plain.js";
+
+/** What a send returns when the silence marker was all there was: nothing went, on purpose. */
+const NOTHING_LEFT = Object.freeze({ ok: false, not_sent: true, silent: true, retryable: false, error: "Not sent: once NO_REPLY was taken off there was nothing left to send." });
 
 const SEC = 1000;
 
@@ -61,6 +65,13 @@ export function backoffMs(attempts) {
  * `queued: true` on a failure means "not delivered yet, but not lost either".
  */
 export async function sendDurable({ channel, router, conversationId, to, text, chatId = null, media = null, sendStyle = null, replyTo = null, idempotencyKey = null, toOwner = false, log = () => {} }) {
+  // The silence marker off before the row is written, so the history the row becomes never has it
+  // either (src/plain.js withoutNoReply). Only the marker and no file: nothing is sent.
+  const quiet = withoutNoReply(text, { path: "outbox", log });
+  if (quiet.stripped) {
+    if (quiet.empty && !media) return { ...NOTHING_LEFT };
+    text = quiet.text;
+  }
   // A ride link goes out as today's builder makes it, wherever the words came from (src/ridelinks.js).
   text = await freshRideLinks(text, { conversationId, log });
   const idemKey = idempotencyKey || `auto:${channel}:${conversationId}:${to}:${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
@@ -102,8 +113,12 @@ export async function sendDurable({ channel, router, conversationId, to, text, c
  */
 export async function sendSequence({ channel, router, conversationId, to, parts, chatId = null, replyTo = null, sendStyle = null, idempotencyKey = null, toOwner = false, log = () => {} }) {
   const texts = [];
-  for (const t of (parts ?? []).map(t => String(t ?? "")).filter(t => t.trim())) texts.push(await freshRideLinks(t, { conversationId, log }));
-  if (!texts.length) return { ok: false, error: "there was nothing to send", retryable: false };
+  // Each part with the silence marker off (src/plain.js withoutNoReply); a part that was only the
+  // marker is no part at all.
+  const given = (parts ?? []).map(t => String(t ?? "")).filter(t => t.trim());
+  const clean = given.map(t => withoutNoReply(t, { path: "outbox_parts", log })).filter(q => !q.empty).map(q => q.text);
+  for (const t of clean) texts.push(await freshRideLinks(t, { conversationId, log }));
+  if (!texts.length) return given.length ? { ...NOTHING_LEFT } : { ok: false, error: "there was nothing to send", retryable: false };
   if (texts.length === 1) {
     return await sendDurable({ channel, router, conversationId, to, text: texts[0], chatId, replyTo, sendStyle, idempotencyKey, toOwner, log });
   }

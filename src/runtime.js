@@ -1229,7 +1229,9 @@ export class Runtime extends EventEmitter {
       // Written, and it went nowhere: no row, so nothing will retry it and nothing will report it.
       // A message that failed INSIDE the outbox is different — that has a row, and the outbox
       // tells them at the top of their next turn — so only this case comes back for another try.
-      if (sent?.ok === false && !db.outboundUnder(key).length) {
+      // `silent` is not that: the reply was only the silence marker once it was read (src/deliver.js),
+      // which is the reminder deciding to say nothing, the same as a NO_REPLY turn.
+      if (sent?.ok === false && !sent.silent && !db.outboundUnder(key).length) {
         throw new Error(`the reminder was written and could not be handed over: ${sent.error ?? "no reason given"}`);
       }
     };
