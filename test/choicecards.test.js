@@ -46,7 +46,7 @@ beforeEach(() => {
   clock.reset();
   cc._setPlaceLook(async () => null);   // never a real model in the suite; the look tests set their own
   process.env.REASON_CHOICE_CARDS = "on";
-  db.db.exec("DELETE FROM choice_sets; DELETE FROM seen_urls; DELETE FROM accounts;");
+  db.db.exec("DELETE FROM choice_sets; DELETE FROM seen_urls; DELETE FROM accounts; DELETE FROM place_photos;");
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
   db.rememberSeenUrls(C, PAGES, { kind: "page" });
   PHOTOS.forEach((u, i) => db.rememberSeenUrls(C, [u], { kind: "search", from: PAGES[i] }));
@@ -554,4 +554,59 @@ test("a place page read that comes back with no pictures (Parallel Extract on li
   const no = async () => { throw new Error("not called"); };
   assert.equal((await cc.readPlacePage("https://dir.example/e", { read: async () => ({ ok: true, images: [] }), plain: no })).ok, true);
   assert.equal((await cc.readPlacePage("http://dir.example/f", { read: async () => words, plain: no })).text, "words");
+});
+
+// ---------- "<name> interior" search + the per-place cache ----------
+
+test("interior search: asks for '<name> <area> interior', keeps only results naming THIS place and its area, and marks them seen", async () => {
+  let asked = null;
+  const client = { imageSearch: async (a) => { asked = a; return { ok: true, results: [
+    { image_url: "https://img.example/1.jpg", page_url: "https://yelp.example/biz/devocion-new-york-flatiron", title: "Devoción Flatiron interior" },
+    { image_url: "https://img.example/2.jpg", page_url: "https://yelp.example/biz/devocion-brooklyn", title: "Devoción Williamsburg" },
+    { image_url: "https://img.example/3.jpg", page_url: "https://x.example/blue-bottle", title: "Blue Bottle Flatiron" },
+  ] }; } };
+  const keep = await cc.interiorSearch(C, { name: "Devoción", brand: "Flatiron" }, client);
+  assert.deepEqual(asked.queries, ["Devoción Flatiron interior"]);
+  assert.deepEqual(keep, ["https://img.example/1.jpg"]);
+  assert.ok(db.hasSeenUrl(C, "https://img.example/1.jpg"));
+  assert.deepEqual(await cc.interiorSearch(C, { name: "X" }, null), []);
+});
+
+test("interior search runs only when the place's own pictures have no inside shot, and its inside photo then leads", async () => {
+  const page = "https://dir.example/dev";
+  const front = "https://dir.example/front.jpg", inside = "https://img.example/dev-room.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [front], { kind: "page", from: page });
+  let searches = 0;
+  const client = { imageSearch: async () => { searches++; return { ok: true, results: [{ image_url: inside, page_url: "https://yelp.example/devocion-flatiron", title: "Devoción Flatiron" }] }; } };
+  const look = async ({ photos }) => new Map(photos.map((p, k) => [k + 1, p.u === inside ? { shows: "inside", room: 3, other: false } : { shows: "outside", room: 3, other: false }]));
+  const fetchPhoto = photosBy({ [front]: [1200, 900], [inside]: [1600, 1000] });
+  const r = await cc.rankPlacePhotos(C, { name: "Devoción", brand: "Flatiron", url: page }, { fetchPhoto, lookup: async () => null, look, search: client });
+  assert.deepEqual(r.map(x => x.u), [inside, front]);
+  assert.equal(searches, 1);
+  const look2 = async ({ photos }) => new Map(photos.map((p, k) => [k + 1, { shows: "inside", room: 3, other: false }]));
+  await cc.rankPlacePhotos(C, { name: "Devoción", brand: "Flatiron", url: page }, { fetchPhoto, lookup: async () => null, look: look2, search: client });
+  assert.equal(searches, 1);
+});
+
+test("the chosen place photo is kept per place: the next set reuses it with no page read, search or look", async () => {
+  const page = "https://dir.example/blue";
+  const room = "https://dir.example/room.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [room], { kind: "page", from: page });
+  const looked = [];
+  const lookPlace = async ({ photos }) => { looked.push(...photos.map(p => p.u)); return new Map(photos.map((p, k) => [k + 1, { shows: "inside", room: 3, other: false }])); };
+  const fetchPhoto = photosBy({ [room]: [1600, 1000], [PHOTOS[1]]: [900, 900] });
+  const places = { kind: "places", options: [{ name: "Blue", url: page }, { name: "Q", image_url: PHOTOS[1] }] };
+  const logs = [];
+  await cc.runChoiceTool("show_choices", places, ctx({ fetchPhoto, lookup: async () => null, lookPlace, log: (x) => logs.push(x) }));
+  assert.equal(db.placePhotoFor(cc.placeKey({ url: page }), 0).url, room);
+  looked.length = 0;
+  cc.takeQueued(C);
+  await cc.runChoiceTool("show_choices", places, ctx({ fetchPhoto, lookup: async () => { throw new Error("no read"); }, lookPlace, log: (x) => logs.push(x) }));
+  assert.ok(!looked.includes(room));   // the cached place is not read or looked at again
+  assert.ok(logs.some(x => x.choice_place_photo && x.n === 1 && x.cached === true));
+  // Older than the keep: looked at again.
+  clock.skip(cc.PLACE_PHOTO_TTL_MS + 1);
+  assert.equal(db.placePhotoFor(cc.placeKey({ url: page }), clock.now() - cc.PLACE_PHOTO_TTL_MS), null);
 });

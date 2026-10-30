@@ -27,6 +27,13 @@ else the set is a numbered list. Log `choice_place_photo {n, shows}`. Tests stub
 Moodap's Flatiron pages carry neighbours' Street View frames even at the top (The Qi page → Bluestone's
 and Devoción's), which is why fronts need their own name.
 
+Then, only when the place's own pictures have no inside shot: Parallel image search "<name> <area>
+interior" (`interiorSearch`; results kept only if their title/page names the place AND the area), looked
+at the same way. The chosen photo is kept per place for 14 days (`place_photos`, key = page url or
+name|area; log `cached: true`). The Mac cage has no place-photo source (no PARALLEL_API_KEY, OSM times
+out): prove places on the server from a scratch copy (/tmp/rp + a DB `.backup`, run as `reason`).
+Live 2026-10-30: Joe Flatiron → its cups (walk-up window), Devoción → inside (search), Bluestone → inside.
+
 ## Owner-only
 `REASON_CHOICE_CARDS=owner`: `toolsFor` hides show_choices from every conversation whose account is
 not `is_operator`. Cage 2026-10-30: a tester number (no REASON_MASTER_NUMBER) asked for cleansers to
