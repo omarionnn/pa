@@ -353,8 +353,9 @@ return new Promise(function(res){if(file.size<=LIM.fit||!/^image\/(jpeg|png|webp
 function send1(f){var v=f.kind==='voice';f.state='up';if(v)f.hidden=true;draw();
 if(f.file.size>LIM.each){f.wait=Promise.resolve();f.state='failed';f.final=true;f.hidden=false;draw();return}
 f.wait=(v?Promise.resolve(f.file):shrink(f.file)).then(function(b){return upload(b,v?'voice-note':f.file.name,v?{'X-Reason-Voice':'1','X-Reason-Seconds':String(f.seconds||1)}:null)}).then(function(j){if(j.status===401){location.href='/web?out=1';return}
+if(j.ok&&j.dropped){files=files.filter(function(g){return g!==f});draw();return}
 if(!j.ok){f.state='failed';f.final=j.status===413||j.status===415;f.hidden=false;draw();return}f.id=j.id;f.src=j.src;f.name=j.name;if(!v){f.kind=j.kind;f.label=j.label}f.state='ready';if(f.preview)blobs[j.id]=f.preview;draw()}).catch(function(){f.state='failed';f.hidden=false;draw()})}
-function take(list){say('');Array.prototype.slice.call(list||[]).slice(0,Math.max(0,LIM.files-files.length)).forEach(function(file){
+function take(list){say('');Array.prototype.slice.call(list||[]).filter(function(file){return !/\.pluginPayloadAttachment$/i.test(file.name||'')}).slice(0,Math.max(0,LIM.files-files.length)).forEach(function(file){
 var img=/^image\//.test(file.type)||/\.(heic|heif)$/i.test(file.name),vid=/^video\//.test(file.type),f={file:file,name:file.name||'file',label:String(file.name||'file').toUpperCase(),kind:img?'image':vid?'video':'file',state:'up',preview:img&&/^image\/(jpeg|png|gif|webp)$/.test(file.type)?URL.createObjectURL(file):''};
 files.push(f);send1(f)});if(files.length&&!matchMedia('(pointer:coarse)').matches)box.focus()}
 // Hand the attached files to the message being sent: the ones that made it; the failed ones are left out (3C).

@@ -94,6 +94,7 @@ import { isAudio, cannotHearLine } from "../voice.js";
 import { checkReaction, checkSendStyle } from "../expressive.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import { reverseGeocode } from "../places.js";
+import { isLinkPreviewAttachment } from "../linkpreview.js";
 
 /** POST /api/upload-file: "Maximum file size: 100 MB" (api-v2/media). */
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
@@ -998,6 +999,12 @@ export class SendblueChannel extends Channel {
     // is the dedupe key and each part is its own at-least-once delivery; `baseHandle` is what says
     // these three webhooks were one thing somebody sent.
     const { base, partIndex } = splitHandle(externalId);
+    // iMessage's link card on a webhook of its own, with nothing else on it (src/linkpreview.js):
+    // not something anybody sent, so no turn, no reply, no row — the link it belongs to is already
+    // in the words of the message it came with.
+    if (previewOnly(event)) {
+      return { status: 200, body: { ok: true, ignored: "link preview card only" }, inbound: [] };
+    }
     const attachment = attachmentOf(event.media_url);
 
     return {
@@ -1125,6 +1132,7 @@ export class SendblueChannel extends Channel {
       const handle = String(m.message_handle ?? "");
       const from = normalizeNumber(m.number || m.from_number || "");
       if (!handle || !from) continue;
+      if (previewOnly(m)) continue;
       const { base, partIndex } = splitHandle(handle);
       const attachment = attachmentOf(m.media_url);
       messages.push({
@@ -1259,6 +1267,8 @@ export function attachmentOf(mediaUrl) {
   const url = String(mediaUrl ?? "").trim();
   if (!url) return null;
   const filename = url.split("?")[0].split("/").pop() || url;
+  // The link card iMessage sends with a URL is not an attachment anybody chose (src/linkpreview.js).
+  if (isLinkPreviewAttachment({ filename })) return null;
   const lower = filename.toLowerCase();
   const kind = VOICE_EXTS.some(e => lower.endsWith(e)) ? "voice"
     : AUDIO_EXTS.some(e => lower.endsWith(e)) ? "audio"
@@ -1268,6 +1278,17 @@ export function attachmentOf(mediaUrl) {
             : CONTACT_EXTS.some(e => lower.endsWith(e)) ? "contact"
               : "file";
   return { url, filename, kind };
+}
+
+/**
+ * A webhook whose only content is iMessage's link card: no words, no location, no app card, no
+ * effect. Dropped at the door rather than handed to the router as an empty message.
+ */
+function previewOnly(event) {
+  if (!isLinkPreviewAttachment({ url: event?.media_url })) return false;
+  if (String(event.content ?? "").trim()) return false;
+  if (event.message_type === "location" || event.app_card) return false;
+  return true;
 }
 
 /**
