@@ -23,6 +23,10 @@ const imp = (p) => import(new URL(p, root));
 const cx = await imp("src/pages/webconnect.js");
 const st = await imp("src/pages/websettings.js");
 const kit = await imp("src/pages/webkit.js");
+const shop = await imp("src/shopconnect.js");
+// Any store: Amazon with its own icon (read live from amazon.com), and a store Reason never heard of.
+await shop.ensureStoreIcon("amazon", { timeoutMs: 6000 });
+shop.rememberStore("bluebottlecoffee", { name: "Blue Bottle Coffee", host: "bluebottlecoffee.com" });
 
 const fields = [
   { key: "email", label: "Email", required: true, handling: "standard", input: { kind: "text", autoComplete: "email" } },
@@ -42,10 +46,13 @@ const S = [
   ["target-expired", "6 · Link ran out", html(cx.renderView(v("expired", "target"), { staging: true }))],
   ["target-failed", "7 · Sign-in didn't go through", html(cx.renderView(v("failed", "target"), { staging: true }))],
   ["walmart-signin", "8 · Same page, Walmart", html(cx.renderView(v("signin", "walmart", rq(fields)), { staging: true }))],
+  ["amazon-signin", "8a · Any store: Amazon, its own icon", html(cx.renderView(v("signin", "amazon", rq(fields)), { staging: true }))],
+  ["amazon-connected", "8b · Amazon connected ✓", html(cx.renderView(v("connected", "amazon"), { staging: true }))],
+  ["unknown-signin", "8c · A store Reason never heard of (monogram)", html(cx.renderView(v("signin", "bluebottlecoffee", rq(fields)), { staging: true }))],
   ["card", "9 · Add a card (owner-only)", html(cx.renderView(v("card", "", null, "card"), { staging: true }))],
   ["card-saved", "10 · Card saved", html(cx.renderView(v("connected", "", null, "card"), { staging: true, card: { brand: "visa", last4: "4242" } }))],
   ["card-expired", "11 · Card link ran out", html(cx.renderView(v("expired", "", null, "card"), { staging: true }))],
-  ["settings-shopping", "12 · Settings → Shopping", st.renderSettings({ csrf: "x", reach: "text", browsers: [], connected: [], shopping: { stores: [{ store: "target", name: "Target", connectedAt: Date.parse("2026-10-30T17:00:00Z") }], card: { brand: "visa", last4: "4242" } } })],
+  ["settings-shopping", "12 · Settings → Shopping", st.renderSettings({ csrf: "x", reach: "text", browsers: [], connected: [], shopping: { stores: [{ store: "target", name: "Target", connectedAt: Date.parse("2026-10-30T17:00:00Z") }, { store: "amazon", name: "Amazon", connectedAt: Date.parse("2026-10-30T18:00:00Z") }, { store: "bluebottlecoffee", name: "Blue Bottle Coffee", connectedAt: Date.parse("2026-10-30T18:30:00Z") }], card: { brand: "visa", last4: "4242" } } })],
   ["settings-shopping-empty", "13 · Settings → Shopping, nothing yet", st.renderSettings({ csrf: "x", reach: "text", browsers: [], connected: [], shopping: { stores: [], card: null } })],
 ];
 

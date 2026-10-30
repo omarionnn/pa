@@ -424,6 +424,10 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
+### Baseline — Connect any store (wt/connect-any-store, 2026-10-30)
+
+`npm run test:offline` under `env -i`: 4,645 tests, 4,530 passing, 0 failing. `test/shopconnect.test.js` 22 (+6: key from domain, tool keys by start URL, sign-in wall learned + one signed-in retry + monogram page, Amazon page with its fetched icon kept, remembered per store + Settings, icon fetch refuses private hosts). Cage (owner, no Crossmint server key): Amazon sign-in link 200 with its own icon (x-icon from amazon.com), Blue Bottle Coffee 200 with the monogram, stranger 410. See [features/shop-connect.md](features/shop-connect.md).
+
 ### Baseline — place cards show the room (wt/choice-interiors, 2026-10-30)
 
 `npm run test:offline` under `env -i`: 4,605 tests, 4,490 passing, 115 skipped, 0 failing. `test/choicecards.test.js` 42 (look stubbed). Cage over the subscription (owner): places ask → 2 cards, Bluestone's counter (inside) and Devoción's signed storefront; a directory page whose top photos were the neighbours' street views → numbered list, no wrong photo. See [features/choice-cards.md](features/choice-cards.md).

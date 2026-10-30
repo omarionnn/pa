@@ -19,8 +19,9 @@ import { SECURITY_HEADERS } from "./websignin.js";
 import * as shop from "../shopconnect.js";
 
 // ---------------------------------------------------------------- store marks
-// Drawn, not the stores' artwork: a plain mark in each store's colour, so the page says whose sign-in
-// this is at a glance. Unknown stores get the first letter on a hairline ring.
+// Target, Walmart and Best Buy are drawn: a plain mark in each store's colour. Any other store shows
+// its site's own icon in its own colours (src/storeicons.js, kept by src/shopconnect.js); a store with
+// none gets its first letter on a hairline ring, so there is never a broken image.
 const MARKS = {
   target: `<svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18" fill="#cc0000"/><circle cx="20" cy="20" r="12" fill="#fff"/><circle cx="20" cy="20" r="6.5" fill="#cc0000"/></svg>`,
   walmart: `<svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="19" fill="#0071ce"/><g fill="#ffc220">${[0, 60, 120, 180, 240, 300].map((a) => `<rect x="18.4" y="6.5" width="3.2" height="9" rx="1.6" transform="rotate(${a} 20 20)"/>`).join("")}</g></svg>`,
@@ -28,6 +29,10 @@ const MARKS = {
 };
 export function storeMark(store) {
   if (MARKS[store]) return `<span class="cx-mark">${MARKS[store]}</span>`;
+  const icon = shop.storeIcon(store);
+  if (/^data:image\/(png|jpeg|gif|webp|x-icon|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(icon)) {
+    return `<span class="cx-mark cx-mark-i"><img src="${icon}" alt="" width="44" height="44" decoding="async"></span>`;
+  }
   const n = shop.storeName(store) || "?";
   return `<span class="cx-mark cx-mark-x" aria-hidden="true">${esc(n.slice(0, 1).toUpperCase())}</span>`;
 }
@@ -42,6 +47,8 @@ const CSS = `
 .cx-who{display:flex;align-items:center;gap:12px}
 .cx-mark{width:44px;height:44px;flex:none;display:grid;place-items:center}
 .cx-mark svg{width:44px;height:44px;display:block}
+.cx-mark-i{border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 0 0 1px var(--hair)}
+.cx-mark-i img{width:44px;height:44px;display:block;object-fit:contain}
 .cx-mark-x{border:1px solid var(--hair);border-radius:50%;font:italic 400 24px/1 var(--serif);color:var(--ink)}
 .cx-lead{display:flex;flex-direction:column;gap:12px}
 .cx-sub{margin:0;font-size:17px;line-height:1.5;color:var(--muted);max-width:30em}
@@ -293,6 +300,13 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
   const link = shop.linkFor(token);
   if (!link || !shop.connectAllowedFor(link.conversation_id)) return send(renderEnded({ view: { state: "expired" } }));
   const view = shop.linkView(link);
+  // The store's own icon, fetched once and kept; a slow or iconless site just gets the monogram.
+  // The page waits 3 seconds at most; a fetch still going finishes in the background for next time.
+  if (!verb && view.store) {
+    let timer;
+    await Promise.race([shop.ensureStoreIcon(view.store, { timeoutMs: 2500 }).catch(() => ""), new Promise((r) => { timer = setTimeout(r, 3000); })]);
+    clearTimeout(timer);
+  }
   if (verb === "state") return json(200, { state: view.state });
   if (verb === "answer" || verb === "card") {
     if (method !== "POST") return json(405, { ok: false });

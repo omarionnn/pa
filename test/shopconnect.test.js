@@ -95,7 +95,7 @@ let failMessages = false;
 const q = (sql) => db.db.prepare(sql);
 before(() => { shop._setFetch(fakeFetch); shop.attach({ say: (c, t) => said.push({ c, t }), base: "https://heyreason.test/web/connect" }); });
 after(() => rmSync(dir, { recursive: true, force: true }));
-beforeEach(() => { reset(); said.length = 0; for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments"]) db.db.exec(`DELETE FROM ${t}`); });
+beforeEach(() => { reset(); said.length = 0; for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments", "shop_store_info"]) db.db.exec(`DELETE FROM ${t}`); });
 
 /** Runs a sign-in checkout at Target to its first question and returns the texted link's token. */
 async function signinLink(conv = OMARI) {
@@ -342,4 +342,127 @@ test("owner-only: nobody else sees the tools or the pages", async () => {
   process.env.REASON_SHOP_CONNECT = "owner";
   const page = await connectRequest({ sub: token, method: "GET" });
   assert.match(page.body, /This link has run out/, "Ama's link opens nothing while the flag is owner-only");
+});
+
+// ---------------------------------------------------------------- 6. any store (owner 10-30)
+const icons = await import("../src/storeicons.js");
+const { shoppingSection } = await import("../src/pages/websettings.js");
+// A fake web for store icons: amazon.com has an apple-touch-icon; everything else has nothing.
+const PNG64 = (() => { const b = Buffer.alloc(40); Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b); b.writeUInt32BE(64, 16); b.writeUInt32BE(64, 20); return b; })();
+let webHits;
+const page = (status, body, type) => ({ status, ok: status < 300, headers: { get: (h) => (h === "content-type" ? type : h === "location" ? null : null) }, arrayBuffer: async () => Buffer.from(body) });
+function fakeWeb(url) {
+  webHits.push(url);
+  if (url === "https://www.amazon.com/") return page(200, `<html><head><link rel="icon" href="/favicon.ico"><link rel="apple-touch-icon" sizes="180x180" href="https://m.media-amazon.com/touch-icon.png"></head></html>`, "text/html");
+  if (url === "https://m.media-amazon.com/touch-icon.png") return page(200, PNG64, "image/png");
+  return page(404, "", "text/html");
+}
+const publicDns = async (host) => [{ address: /(^|\.)evil\.example$/.test(host) ? "127.0.0.1" : "93.184.216.34", family: 4 }];
+let retried;
+beforeEach(() => { webHits = []; retried = []; icons._setNet({ fetch: async (u) => fakeWeb(u), lookup: publicDns }); shop._setFollow((id) => retried.push(id)); });
+
+test("any store: its key is its site's name, its name is the one it was given, else its key capitalised", () => {
+  assert.equal(shop.storeKey("https://www.amazon.com/dp/B0CX"), "amazon");
+  assert.equal(shop.storeKey("Amazon"), "amazon");
+  assert.equal(shop.storeKey("bestbuy.com"), "bestbuy", "known stores keep their keys");
+  assert.equal(shop.storeKey("Home Depot"), "homedepot");
+  assert.equal(shop.storeKey("https://shop.blue-bottle.co.uk/beans"), "bluebottle");
+  assert.equal(shop.storeKey("Blue Bottle"), null, "a bare unknown name is keyed by the start URL instead");
+  assert.equal(shop.storeName("acmecoffee"), "Acmecoffee");
+  shop.rememberStore("acmecoffee", { name: "Acme Coffee", host: "https://www.acmecoffee.com/x" });
+  assert.equal(shop.storeName("acmecoffee"), "Acme Coffee");
+  assert.equal(shop.storeHost("acmecoffee"), "acmecoffee.com");
+  shop.rememberStore("acmecoffee", { name: "ACME!!" });
+  assert.equal(shop.storeName("acmecoffee"), "Acme Coffee", "the first name given sticks");
+  for (const [k, n] of [["costco", "Costco"], ["cvs", "CVS"], ["walgreens", "Walgreens"], ["sephora", "Sephora"], ["ulta", "Ulta"], ["nike", "Nike"], ["apple", "Apple"]]) assert.equal(shop.storeName(k), n);
+});
+
+test("the tool keys an unknown store by its start URL and remembers what it's called", async () => {
+  const out = await runTool("store_checkout", { store: "Acme Coffee", start_url: "https://www.acmecoffee.com/beans", what: "Buy one bag of house beans.", item: "a bag of house beans", max_usd: 25 }, { conversationId: OMARI });
+  const r = typeof out === "string" ? JSON.parse(out) : out;
+  assert.notEqual(r.ok, false, JSON.stringify(r));
+  const run = q("SELECT * FROM shop_runs").get();
+  assert.equal(run.store, "acmecoffee");
+  assert.equal(run.mode, "guest", "an unknown store starts as a guest");
+  assert.equal(shop.storeName("acmecoffee"), "Acme Coffee");
+});
+
+test("an unknown store's sign-in wall: remembered for that store, retried signed in, the link names it, a monogram", async () => {
+  shop.rememberStore("acmecoffee", { name: "Acme Coffee", host: "acmecoffee.com" });
+  const first = await shop.startCheckout({ conversationId: OMARI, store: "acmecoffee", startUrl: "https://www.acmecoffee.com/beans", what: "Buy one bag of beans.", item: "a bag of beans", maxUsd: 25 });
+  assert.equal(first.plan, "guest");
+  runs[first.runId].status = "blocked";
+  runs[first.runId].result = { code: "merchant.no_safe_path", summary: "Checkout requires you to sign in or create an account." };
+  const out = await shop.step(first.runId);
+  assert.equal(shop.needsSignIn("acmecoffee"), true, "learned for the store");
+  assert.ok(out.retried, "went again signed in");
+  assert.deepEqual(retried, [out.retried]);
+  const again = shop.runRow(out.retried);
+  assert.equal(again.mode, "sign_in");
+  assert.equal(again.start_url, "https://www.acmecoffee.com/beans");
+  assert.equal(again.max_usd, 25);
+  // The retried run asks to sign in: one text, naming the store, with the link.
+  runs[out.retried].status = "awaiting_input";
+  runs[out.retried].requiredAction = SIGNIN("req_acme_1");
+  await shop.step(out.retried);
+  assert.match(said.at(-1).t, /^Acme Coffee needs you signed in/);
+  const token = said.at(-1).t.split("/").pop();
+  const html = (await connectRequest({ sub: token })).body;
+  assert.match(html, /Sign in to Acme Coffee\./);
+  assert.match(html, /ACME COFFEE · VIA CROSSMINT/);
+  assert.match(html, /cx-mark-x" aria-hidden="true">A</, "no icon on its site: the monogram");
+  assert.doesNotMatch(html, /<img/, "never a broken image");
+  // A guest run blocked by anything else is not a sign-in wall: no link, nothing learned.
+  shop.rememberStore("beanery", { name: "Beanery", host: "beanery.com" });
+  const oos = await shop.startCheckout({ conversationId: OMARI, store: "beanery", startUrl: "https://beanery.com/x", what: "Buy beans.", maxUsd: 20 });
+  runs[oos.runId].status = "blocked";
+  runs[oos.runId].result = { code: "merchant.no_safe_path", summary: "The item is out of stock." };
+  const o2 = await shop.step(oos.runId);
+  assert.equal(o2.retried, undefined);
+  assert.equal(shop.needsSignIn("beanery"), false);
+});
+
+test("Amazon's page: its name everywhere and its own icon, fetched once and kept", async () => {
+  const out = await shop.startCheckout({ conversationId: OMARI, store: "amazon", startUrl: "https://www.amazon.com/dp/B0", what: "Buy one cable.", maxUsd: 15 });
+  assert.equal(out.plan, "sign_in", "Amazon is known to need an account");
+  runs[out.runId].status = "awaiting_input";
+  runs[out.runId].requiredAction = SIGNIN("req_amzn_1");
+  await shop.step(out.runId);
+  assert.match(said.at(-1).t, /^Amazon needs you signed in/);
+  const token = said.at(-1).t.split("/").pop();
+  const html = (await connectRequest({ sub: token })).body;
+  assert.match(html, /Sign in to Amazon\./);
+  assert.match(html, /AMAZON · VIA CROSSMINT/);
+  assert.match(html, /<img src="data:image\/png;base64,/);
+  assert.doesNotMatch(html, /Sign in to Target|TARGET ·/, "nothing of another store");
+  const hits = webHits.length;
+  await connectRequest({ sub: token });
+  assert.equal(webHits.length, hits, "kept: not fetched again");
+});
+
+test("remembered per store: connected Amazon is reused, other stores are not; the learned wall is the store's", async () => {
+  shop.markConnected(OMARI, "amazon");
+  shop.learnSignIn("acmecoffee");
+  assert.equal(shop.checkoutPlan(OMARI, "amazon"), "signed");
+  assert.equal(shop.checkoutPlan(OMARI, "acmecoffee"), "sign_in");
+  assert.equal(shop.checkoutPlan(OMARI, "sephora"), "guest");
+  assert.equal(shop.checkoutPlan(AMA, "amazon"), "sign_in", "someone else's Amazon is not Omari's");
+  shop.markConnected(OMARI, "acmecoffee");
+  shop.rememberStore("acmecoffee", { name: "Acme Coffee" });
+  const listed = shop.connectedStores(OMARI).map((s) => s.name).sort();
+  assert.deepEqual(listed, ["Acme Coffee", "Amazon"]);
+  const sec = shoppingSection({ csrf: "x", shopping: { stores: shop.connectedStores(OMARI), card: null } });
+  assert.match(sec, /Acme Coffee/);
+  assert.match(sec, /Amazon/);
+});
+
+test("store icons: only public https hosts, tiny favicons refused, bytes must be an image", async () => {
+  assert.equal(await icons.fetchIcon("evil.example"), "", "a name that resolves to loopback is never fetched");
+  assert.equal(webHits.length, 0);
+  for (const ip of ["127.0.0.1", "10.1.2.3", "169.254.169.254", "192.168.0.1", "172.20.0.1", "::1", "fd00::1", "::ffff:127.0.0.1"]) assert.equal(icons.privateAddress(ip), true, ip);
+  assert.equal(icons.privateAddress("93.184.216.34"), false);
+  const tiny = Buffer.from(PNG64); tiny.writeUInt32BE(16, 16);
+  assert.equal(icons.sniff(tiny).px, 16);
+  assert.equal(icons.sniff(Buffer.from("<html>not an image</html>")), null);
+  assert.deepEqual(icons.iconLinks(`<link rel="mask-icon" href="/m.svg"><link rel="shortcut icon" href="/f.ico"><link rel="apple-touch-icon" href="/t.png">`, "https://x.com/"), ["https://x.com/t.png", "https://x.com/f.ico"]);
 });
