@@ -315,7 +315,7 @@ test("photos, voice notes and files already in history: a tilted frame, a Caveat
   assert.match(m.html, /YOU · VOICE · IMESSAGE · /);
   assert.match(m.html, /<p class="said hand">also see if they take dogs<\/p><button type="button" class="vplay" data-src="\/web\/media\/m\/\d+\/0" aria-label="Play voice note">/);
   const p = wc.rowOut(row({ role: "user", channel: "fake", text: "", media: [{ mimeType: "image/jpeg", filename: "IMG.JPG" }, { mimeType: "application/pdf", filename: "lease.pdf" }] }), { conversationId: KOFI_C });
-  assert.match(p.html, /<div class="photo" role="img" aria-label="Photo you sent"><span class="lbl">PHOTO<\/span><\/div><span class="slip fslip"><span class="fn">LEASE\.PDF<\/span><\/span>/, "an item with no address to serve is still drawn");
+  assert.match(p.html, /<div class="photo" role="img" aria-label="Photo you sent"><span class="lbl">PHOTO<\/span><\/div><span class="slip fslip fchip"><svg class="fc-i"[^]*?<span class="fn">lease\.pdf<\/span><span class="fs">PDF<\/span><\/span><\/span>/, "an item with no address to serve is still drawn");
   const q = wc.rowOut(row({ role: "user", channel: "fake", text: "", media: [{ kind: "image", filename: "IMG.HEIC", url: "https://secret.example/p" }] }), { conversationId: KOFI_C });
   assert.match(q.html, /<a class="photo" href="\/web\/media\/m\/\d+\/0" target="_blank" rel="noopener"><img src="\/web\/media\/m\/\d+\/0" alt="Photo you sent"/, "a texted photo is served from Web's own address");
   assert.ok(!JSON.stringify(q).includes("secret.example"), "a media address never leaves the server");

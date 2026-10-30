@@ -196,7 +196,7 @@ test("3B + 3C + 3D: UPLOADING… then READY; a failed slip with the Caveat + lim
     await page.press("#c-input", "Enter");
     const mine = page.locator(".msg.you[data-cid]").last();
     await mine.locator("a.slip.fslip", { hasText: "LEASE.PDF" }).waitFor();
-    assert.equal(await mine.locator("a.slip.fslip .fs").textContent(), "TAP TO OPEN");
+    assert.match(await mine.locator("a.slip.fslip .fs").textContent(), /^PDF · .* · OPEN$/);
     assert.match(await mine.locator("a.slip.fslip").getAttribute("href"), /^\/web\/media\/u\/[A-Za-z0-9_-]{22}\/lease\.pdf$/);
     assert.equal(await mine.locator('img[alt="Photo you sent"]').count(), 1);
     const last = userRows().at(-1);
