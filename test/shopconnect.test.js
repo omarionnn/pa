@@ -357,7 +357,7 @@ const iconSite = (seen) => async (url) => {
 };
 const publicDns = async () => [{ address: "93.184.216.34", family: 4 }];
 
-test("any store: its key and name come from its site; an unknown one draws a clean monogram, never a broken image", async () => {
+test("any store: its key and name come from its site; the page names it in text, never a logo", async () => {
   assert.equal(shop.storeKey("https://www.amazon.com/dp/B0"), "amazon");
   assert.equal(shop.storeKey("shop.costco.com"), "costco");
   assert.equal(shop.storeKey("argos.co.uk"), "argos");
@@ -376,9 +376,10 @@ test("any store: its key and name come from its site; an unknown one draws a cle
   try {
     assert.equal(await shop.ensureIcon("pinkfrogshop"), "");
     assert.ok(seen.every((u) => u.startsWith("https://pinkfrogshop.com/")), seen.join(" "));
-    const { storeMark } = await import("../src/pages/webconnect.js");
-    assert.match(storeMark("pinkfrogshop"), /cx-mark-x[^>]*>P</);
-    assert.doesNotMatch(storeMark("pinkfrogshop"), /<img/);
+    const { renderView } = await import("../src/pages/webconnect.js");
+    const page = renderView({ state: "signin", store: "pinkfrogshop", kind: "signin", request: { requestId: "r", question: "", fields: [] } }).html;
+    assert.match(page, /Sign in to Pinkfrogshop\./);
+    assert.doesNotMatch(page, /<img\b/, "no store icon");
     // a private address is never fetched
     shop.noteStore({ store: "evil", url: "https://evil.ts.net/" });
     seen.length = 0;
@@ -427,7 +428,7 @@ test("a store whose name resolves to a private or internal address is never fetc
   } finally { shop._setIconFetch(null); }
 });
 
-test("Amazon's page: 'Sign in to Amazon' with Amazon's own icon, fetched once and kept", async () => {
+test("Amazon's page: 'Sign in to Amazon', in text: no logo, and the page never fetches one", async () => {
   const seen = [];
   shop._setIconFetch(iconSite(seen), publicDns);
   try {
@@ -440,12 +441,10 @@ test("Amazon's page: 'Sign in to Amazon' with Amazon's own icon, fetched once an
     const token = said.at(-1).t.split("/").pop();
     const page = await connectRequest({ sub: token, method: "GET" });
     assert.equal(page.status, 200);
-    assert.match(page.body, /Amazon/);
-    assert.match(page.body, /<img src="data:image\/png;base64,/);
+    assert.match(page.body, /Sign in to Amazon\./);
+    assert.doesNotMatch(page.body, /<img\b/, "no store icon on the page (owner 10-30: never a store's logo)");
     assert.doesNotMatch(page.body, /src="https?:/, "the browser never calls the store");
-    const n = seen.length;
-    await connectRequest({ sub: token, method: "GET" });
-    assert.equal(seen.length, n, "kept, not fetched again");
+    assert.equal(seen.length, 0, "drawing the page fetches nothing from the store");
   } finally { shop._setIconFetch(null); }
 });
 
@@ -479,4 +478,121 @@ test("a guest run that failed for another reason is not retried", async () => {
   runs[card.runId].status = "failed";
   runs[card.runId].result = { code: "card.auth_declined" };
   assert.ok(!(await shop.step(card.runId)).retried, "a declined card is not a sign-in wall");
+});
+
+// ---------------------------------------------------------------- 7. the redesign (card and store sign-in handoff, 10-30)
+const visible = (html) => html.replace(/<script\b[\s\S]*?<\/script>/g, "").replace(/<style\b[\s\S]*?<\/style>/g, "").replaceAll("&#39;", "'").replaceAll("&amp;", "&");
+
+test("a code asked again after a code was answered reads as 'that code didn't match'", async () => {
+  const { runId, token } = await signinLink();
+  await shop.answerLink(token, { requestId: "req_signin_1", answers: { email: EMAIL, password: { protectedInputId: "pi_1" } } });
+  runs[runId].requiredAction = OTP("req_otp_1");
+  await shop.step(runId);
+  const first = shop.linkView(shop.linkFor(token));
+  assert.equal(first.state, "code", "a first code after the password is a plain code ask");
+  assert.equal(first.answered, true);
+  assert.ok((await shop.answerLink(token, { requestId: "req_otp_1", answers: { code: { protectedInputId: "pi_code_1" } } })).ok);
+  runs[runId].requiredAction = OTP("req_otp_2");
+  await shop.step(runId);
+  assert.equal(shop.linkView(shop.linkFor(token)).state, "wrongcode");
+  const page = visible((await connectRequest({ sub: token, method: "GET" })).body);
+  assert.match(page, /That code didn't match\./);
+  assert.match(page, /aria-invalid|class="pf-fld err"/, "the code line is drawn in its error state");
+  assert.match(page, /that's not it\. check for a newer text or email\?/);
+  assert.ok((await shop.answerLink(token, { requestId: "req_otp_2", answers: { code: { protectedInputId: "pi_code_2" } } })).ok, "and it can be answered");
+});
+
+test("a connected store that asks to sign in again: texted as 'signed me out', the page says so first", async () => {
+  shop.markConnected(OMARI, "target");
+  const out = await shop.startCheckout({ conversationId: OMARI, store: "target", startUrl: "https://www.target.com/p/1", what: "Buy one cable.", item: "a USB-C cable", maxUsd: 15 });
+  assert.equal(out.plan, "signed");
+  runs[out.runId].status = "awaiting_input";
+  runs[out.runId].requiredAction = SIGNIN("req_again_1");
+  await shop.step(out.runId);
+  assert.match(said.at(-1).t, /^Target signed me out\./);
+  const token = said.at(-1).t.split("/").pop();
+  const view = shop.linkView(shop.linkFor(token));
+  assert.equal(view.state, "signin");
+  assert.equal(view.again, true);
+  const page = visible((await connectRequest({ sub: token, method: "GET" })).body);
+  assert.match(page, /Target signed me out\./);
+  assert.match(page, /a USB-C cable/);
+  assert.match(page, /data-step="signin"[^>]*inert/, "the form is one step away, still mounted");
+});
+
+test("no Crossmint, no store logo, no email in any screen, in Settings or in the texted link", async () => {
+  const { renderView } = await import("../src/pages/webconnect.js");
+  const { renderSettings } = await import("../src/pages/websettings.js");
+  const fields = SIGNIN("r").request.interaction.fields;
+  const rq = { requestId: "r", question: "", fields };
+  const views = [
+    ...["signin", "retry", "checking", "connected", "failed", "expired"].map((state) => ({ state, store: "target", kind: "signin", request: rq })),
+    { state: "signin", store: "target", kind: "signin", request: rq, again: true, item: "a cable" },
+    { state: "code", store: "walmart", kind: "signin", request: { requestId: "r", question: "", fields: OTP("r").request.interaction.fields } },
+    { state: "wrongcode", store: "bestbuy", kind: "signin", request: { requestId: "r", question: "", fields: OTP("r").request.interaction.fields } },
+    { state: "card", kind: "card" }, { state: "connected", kind: "card" }, { state: "expired", kind: "card" }, { state: "expired" },
+  ];
+  const shopping = { stores: [{ store: "target", name: "Target", connectedAt: clock.now() }], card: { brand: "visa", last4: "4242" }, lastUsed: { store: "Target", at: clock.now() } };
+  const pages = [
+    ...views.flatMap((v) => [renderView(v).html, renderView(v, { staging: true, card: { brand: "visa", last4: "4242" } }).html]),
+    renderSettings({ csrf: "x", shopping }), renderSettings({ csrf: "x", shopping, confirmCard: true }), renderSettings({ csrf: "x", shopping: { stores: [], card: null } }),
+  ];
+  for (const html of pages) {
+    const seen = visible(html);
+    assert.doesNotMatch(seen, /crossmint/i, "Crossmint is never named on a page");
+    assert.doesNotMatch(seen, /<img\b/, "no store icon");
+    assert.doesNotMatch(seen, /#cc0000|#0071ce|#0046be|#ffc220|#fff200/i, "no store colours");
+    assert.doesNotMatch(seen, /signed in as|@example\.com/i, "never their email");
+    assert.doesNotMatch(seen, /guest/i, "no guest option");
+    assert.doesNotMatch(seen, /text me when|i'll text you when it's done|deletes it|saved address/i);
+  }
+  await signinLink();
+  assert.doesNotMatch(said.at(-1).t, /crossmint/i);
+  assert.match(said.at(-1).t, /Your password goes straight to Target, not to me\./);
+});
+
+test("SEALED sits only over sealed fields, never over the email we draw ourselves", async () => {
+  const { token } = await signinLink();
+  const page = visible((await connectRequest({ sub: token, method: "GET" })).body);
+  const email = /<div class="pf-fld[^"]*"><label class="pf-l" for="f-email">([^<]*)<\/label><input[^>]*>/.exec(page);
+  assert.ok(email, "the email field is ours, a real label + input");
+  assert.doesNotMatch(email[0], /SEALED/);
+  assert.match(email[0], /autocomplete="email"/);
+  assert.match(page, /id="f-password-l">PASSWORD<span class="pf-seal">/, "the password's label says SEALED");
+});
+
+test("Settings: the card's last use comes from this person's own paid payments; forgetting it asks first", async () => {
+  const { settingsView, renderSettings } = await import("../src/pages/websettings.js");
+  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_1', 'visa', '4242', ?)").run(OMARI, clock.now());
+  const ins = db.db.prepare("INSERT INTO shop_payments (conversation_id, run_id, request_id, amount, currency, amount_kind, merchant_name, status, created_at, answered_at) VALUES (?, 'run_x', ?, '9.79', 'USD', 'exact', ?, ?, ?, ?)");
+  const oct28 = Date.parse("2026-10-28T18:00:00Z"), oct29 = Date.parse("2026-10-29T18:00:00Z");
+  assert.equal(shop.lastPaid(OMARI), null);
+  ins.run(OMARI, "rq_paid", "Target", "paid", oct28, oct28);
+  ins.run(OMARI, "rq_declined", "Walmart", "declined", oct29, oct29);
+  ins.run(AMA, "rq_other", "Best Buy", "paid", oct29, oct29);
+  assert.deepEqual(shop.lastPaid(OMARI), { store: "Target", at: oct28 }, "only a paid one, only theirs");
+  const view = settingsView({ conversation_id: OMARI }, "tok");
+  const page = visible(renderSettings({ csrf: "x", ...view }));
+  assert.match(page, /LAST USED<\/span><p class="shp-u">Target · Oct 28</);
+  assert.match(page, /VISA •••• 4242/);
+  assert.match(page, /href="\/web\/settings\?confirm=card#shopping">Forget it</, "Forget it is a link to the confirm, not a removal");
+  assert.doesNotMatch(page, /name="do" value="card-remove"/, "nothing removes the card from the first screen");
+  const confirm = visible(renderSettings({ csrf: "x", ...view, confirmCard: true }));
+  assert.match(confirm, /Forget this card\?/);
+  assert.match(confirm, /name="do" value="card-remove"[\s\S]*Forget it<\/button>/);
+  assert.match(confirm, /KEEP IT/);
+  assert.match(page, /Signing out of your last store erases every saved sign-in\./);
+  assert.match(page, /Your account on the store doesn't change\./);
+});
+
+test("a code field of our own is six cells that submit as one answer; a sealed one stays Crossmint's slot", async () => {
+  const { renderView } = await import("../src/pages/webconnect.js");
+  const std = [{ key: "code", label: "Code", required: true, handling: "standard", input: { kind: "text", autoComplete: "one-time-code", inputMode: "numeric" } }];
+  const page = visible(renderView({ state: "code", store: "target", kind: "signin", request: { requestId: "r", question: "", fields: std } }).html);
+  assert.equal((page.match(/aria-label="Digit \d of 6"/g) ?? []).length, 6);
+  assert.match(page, /<input type="hidden" name="code" value="">/, "one named input carries the code");
+  assert.equal((page.match(/autocomplete="one-time-code"/g) ?? []).length, 1, "the first cell takes the phone's autofill");
+  const sealedPage = visible(renderView({ state: "code", store: "target", kind: "signin", request: { requestId: "r", question: "", fields: OTP("r").request.interaction.fields } }).html);
+  assert.match(sealedPage, /data-protected="code"/);
+  assert.doesNotMatch(sealedPage, /Digit 1 of 6|name="code"/, "a sealed code is never an input of ours");
 });

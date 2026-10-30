@@ -21,7 +21,9 @@
 //   Invites                  src/invites.js: what is left, every link with its state, make one (5D,
 //                            ?invite=<id>: the link to copy or share), cancel an unused one.
 //   Shopping                 src/shopconnect.js (REASON_SHOP_CONNECT): the stores they signed into for
-//                            Crossmint checkouts and the card Crossmint keeps for them; remove either.
+//                            checkouts (StoreManage: SIGN OUT), and the card kept for them (CardManage:
+//                            last used, Replace card →, Forget it → the confirm, ?confirm=card, drawn
+//                            inside this section: CardRemove). Drawn with src/pages/paperkit.js.
 //   Theme                    accounts.web_theme, so every browser opens in it (webkit accountThemed).
 //                            The only theme switch on Web.
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -34,6 +36,7 @@ import { config, clock } from "../config.js";
 import { readCookie, clearCookieHeader, SESSION_TTL_MS } from "./access.js";
 import { esc, renderNotFound } from "./render.js";
 import { webPage, wordmark, hand, stamp } from "./webkit.js";
+import { PAPER_CSS, paper, go, two, forget, actions } from "./paperkit.js";
 import { sameOrigin, SECURITY_HEADERS, WEB_IDLE_MS } from "./websignin.js";
 
 /**
@@ -144,11 +147,19 @@ const CSS = `
 .cn li{display:contents}
 .cn-n{font:400 14px/1.4 var(--mono);letter-spacing:.06em}
 .cn-s{font:400 19px/1.2 var(--hand);color:var(--pen)}
-.shp{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
-.shp li{display:flex;align-items:center;gap:4px 16px;padding:8px 0;border-bottom:1px dashed var(--hair);flex-wrap:wrap}
-.shp li>div{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px}
-.shp form{margin:0}
-.shp+.act2{margin-top:10px}
+.shp-h{margin:0;font:italic 400 26px/1.3 var(--serif)}
+.shp-h em{color:var(--muted)}
+.shp-p{margin:0;font-size:16px;line-height:1.6;color:var(--muted);max-width:34em}
+#shopping .pf-rows{margin-top:4px}
+#shopping .pf-row{padding:16px 0}
+.shp-n{margin:0;font-size:16px;font-weight:600}
+.shp-v{margin:6px 0 0;font:400 22px/1.3 var(--mono);letter-spacing:.08em}
+.shp-u{margin:6px 0 0;font-size:16px}
+.shp-b{display:flex;flex-direction:column;gap:14px}
+.shp-b+.shp-b{margin-top:28px}
+#shopping .pf-go,#shopping .pf-x{font-size:26px}
+#shopping .pf-paper{margin-top:8px;max-width:420px}
+#shopping .pf-acts{margin-top:4px}
 .st-quiet{margin:10px 0 0;font-size:14px;line-height:1.5;color:var(--muted)}
 #invites{gap:4px}
 .inv-n{margin:6px 0 10px;font:italic 400 38px/1 var(--serif)}
@@ -352,26 +363,47 @@ export function notifyBody({ csrf, reach = "text", on = false, done = "", sub = 
  * this browser's own notifications setting.
  */
 /**
- * Shopping: each store they signed into for Crossmint checkouts, and the card Crossmint keeps. Remove
- * either here. `shopping` is null when the flag keeps it from this person (the section is not drawn).
+ * Shopping (card and store sign-in handoff, StoreManage + CardManage + CardRemove, owner 10-30): each
+ * store they signed into, with SIGN OUT; the card on file with where it was last used, Replace card →
+ * and Forget it, which asks first (`confirmCard`, ?confirm=card) right here in the section. Never a
+ * store logo, never their email, never an expiry, and never Crossmint's name. `shopping` is null when
+ * the flag keeps it from this person (the section is not drawn).
  */
-export function shoppingSection({ csrf, shopping, done = "" }) {
+export function shoppingSection({ csrf, shopping, done = "", confirmCard = false }) {
   const day = (ms) => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: config.tz });
-  const stores = shopping.stores.map((s) => `<li><div><span class="cn-n">${esc(s.name)}</span><span class="cn-s">signed in since ${esc(day(s.connectedAt))}</span></div>`
-    + post(csrf, "store-remove", `${hidden("s", s.store)}<button class="act2 inv-x" type="submit" data-busy="REMOVING…" aria-label="Remove ${esc(s.name)}">REMOVE</button>`) + `</li>`).join("");
-  const card = shopping.card
-    ? `<li><div><span class="cn-n">${esc((shopping.card.brand || "Card").replace(/^./, (c) => c.toUpperCase()))} ···· ${esc(shopping.card.last4 || "")}</span><span class="cn-s">kept by Crossmint</span></div>`
-      + post(csrf, "card-remove", `<button class="act2 inv-x" type="submit" data-busy="REMOVING…" aria-label="Remove the card">REMOVE</button>`) + `</li>`
-    : "";
-  return `<section class="st-sec" id="shopping" aria-labelledby="sh-h"><h2 id="sh-h">SHOPPING</h2>`
-    + (stores || card ? `<ul class="shp">${stores}${card}</ul>` : `<p class="st-quiet">No stores yet. When a store needs you signed in to check out, I'll text you a link.</p>`)
-    + (shopping.card ? "" : `<a class="act2" href="/web/connect/new-card">ADD A CARD →</a>`)
-    + `<p class="st-quiet">Your passwords and card number are kept by Crossmint, never by Reason. Removing your last store erases every saved sign-in there.</p>`
-    + saved(done === "store-removed", "removed. i won't use it again.") + saved(done === "card-removed", "card removed.")
+  const lbl = (t, pen = false) => `<span class="pf-l${pen ? " pen" : ""}">${esc(t)}</span>`;
+  const stores = shopping.stores.length
+    ? `<div class="pf-rows">${shopping.stores.map((s) => `<div class="pf-row"><div><p class="shp-n">${esc(s.name)}</p>${lbl(`SIGNED IN SINCE ${day(s.connectedAt).toUpperCase()}`)}</div>`
+      + post(csrf, "store-remove", `${hidden("s", s.store)}<button class="act2 pf-two" type="submit" data-busy="SIGNING OUT…" aria-label="Sign out of ${esc(s.name)}">SIGN OUT</button>`) + `</div>`).join("")}</div>`
+    : `<p class="st-quiet">No stores yet. When a store needs you signed in to check out, I'll text you a link.</p>`;
+  const storeBlock = `<div class="shp-b"><p class="shp-h">Your stores. <em>Where I can check out.</em></p>`
+    + `<p class="shp-p">Signing out stops me buying there. Your account on the store doesn't change.</p>${stores}</div>`;
+  const c = shopping.card;
+  const cardText = c ? `${(c.brand || "card").toUpperCase()} •••• ${c.last4 || "····"}` : "";
+  let cardBlock;
+  if (c && confirmCard) {
+    cardBlock = `<div class="shp-b" role="group" aria-labelledby="cr-h"><p class="shp-h" id="cr-h">Forget this card? <em>I won't be able to buy anything.</em></p>`
+      + `<p class="shp-p">To buy something later, you'd add a card again.</p>${paper({ label: "CARD", big: cardText })}`
+      + actions(post(csrf, "card-remove", forget("Forget it", { attrs: ` data-busy="FORGETTING…"` })), two("KEEP IT", { href: "/web/settings#shopping" }))
+      + `<p class="shp-p">Anything already bought still arrives. This only stops new checkouts.</p></div>`;
+  } else if (c) {
+    const used = shopping.lastUsed;
+    cardBlock = `<div class="shp-b"><p class="shp-h">Your card. <em>One on file.</em></p>`
+      + `<p class="shp-p">The card I pay with at checkout, only after you text yes to the total.</p>`
+      + `<div class="pf-rows"><div class="pf-row"><div>${lbl("CARD")}<p class="shp-v">${esc(cardText)}</p></div>${lbl("IN USE")}</div>`
+      + (used ? `<div class="pf-row"><div>${lbl("LAST USED")}<p class="shp-u">${esc([used.store, day(used.at)].filter(Boolean).join(" · "))}</p></div></div>` : "")
+      + `</div>${actions(go("Replace card", { href: "/web/connect/new-card" }), forget("Forget it", { href: "/web/settings?confirm=card#shopping" }))}`
+      + `<p class="shp-p">One card at a time. Replacing it swaps the old card out. Anything already ordered still arrives.</p></div>`;
+  } else {
+    cardBlock = `<div class="shp-b"><p class="shp-h">Your card. <em>None yet.</em></p>${actions(go("Add a card", { href: "/web/connect/new-card" }))}</div>`;
+  }
+  return `<section class="st-sec" id="shopping" aria-labelledby="sh-h"><h2 id="sh-h">SHOPPING</h2>${storeBlock}${cardBlock}`
+    + `<p class="st-quiet">Store passwords are sealed and go straight to the store. Your card is kept securely; I only see its brand and last four. Signing out of your last store erases every saved sign-in.</p>`
+    + saved(done === "store-removed", "signed out. i won't use it again.") + saved(done === "card-removed", "card forgotten.")
     + `</section>`;
 }
 
-export function renderSettings({ csrf, reach = "text", browsers = [], current = "", connected = [], invitesView = null, shopping = null, theme = null, notify = false, done = "", now = clock.now() }) {
+export function renderSettings({ csrf, reach = "text", browsers = [], current = "", connected = [], invitesView = null, shopping = null, theme = null, notify = false, done = "", confirmCard = false, now = clock.now() }) {
   if (!REACH[reach]) reach = "text";
   const ph = (t) => `<a class="ph" href="/web/settings?edit=reach" aria-describedby="reach-how">${t}</a>`;
   const reachSec = `<section class="st-sec" id="reach" aria-labelledby="reach-h"><h2 id="reach-h">HOW REASON REACHES YOU</h2>`
@@ -440,13 +472,13 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
     + saved(done === "theme") + `</div>`
     + `<form method="POST" action="/web/signout" class="out-f">${hidden("c", csrf)}<button class="act2 out" type="submit" data-busy="SIGNING OUT…">SIGN OUT OF THIS BROWSER</button></form></section>`;
 
-  const shoppingSec = shopping ? shoppingSection({ csrf, shopping, done }) : "";
+  const shoppingSec = shopping ? shoppingSection({ csrf, shopping, done, confirmCard }) : "";
   const shown = SECTIONS.filter(([id]) => (id !== "invites" || invitesView) && (id !== "shopping" || shopping));
   const body = `<header class="st-head"><a class="act2" href="/web?thread">← BACK TO THE CHAT</a>${wordmark({ href: "/web?home" })}</header>`
     + `<main class="st"><div class="st-side"><h1 class="st-h1">Settings</h1><nav class="st-nav" aria-label="Settings sections">`
     + shown.map(([id, t], i) => `<a href="#${id}"${i === 0 ? ` aria-current="true"` : ""}>${t}</a>`).join("")
     + `</nav></div><div class="st-main">${reachSec}${browsersSec}${notifySec}${connectedSec}${shoppingSec}${invitesSec}${themeSec}</div></main>`;
-  return webPage({ title: "Reason — Settings", body, css: CSS, script: JS });
+  return webPage({ title: "Reason — Settings", body, css: CSS + PAPER_CSS, script: JS });
 }
 
 // ---------------------------------------------------------------- the edit states (one screen each)
@@ -525,7 +557,7 @@ export function settingsView(account, token) {
     current: token,
     connected: connections(conv),
     invitesView: myInvitesView(conv),
-    shopping: shop.connectAllowedFor(conv) ? { stores: shop.connectedStores(conv), card: shop.cardOf(conv) } : null,
+    shopping: shop.connectAllowedFor(conv) ? { stores: shop.connectedStores(conv), card: shop.cardOf(conv), lastUsed: shop.lastPaid(conv) } : null,
     theme: db.webTheme(conv),
     notify: db.pageSessionNotify(token),
   };
@@ -547,7 +579,7 @@ function settingsPage({ account, token, query }) {
     if (!inv || inv.state !== "unused") return null;
     return renderInviteMade({ invite: inv, left: invites.myInvites(conv).links_you_can_still_make });
   }
-  return renderSettings({ csrf, ...settingsView(account, token), done });
+  return renderSettings({ csrf, ...settingsView(account, token), done, confirmCard: query.confirm === "card" });
 }
 
 /**

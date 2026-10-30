@@ -30,7 +30,21 @@ The JWKS Crossmint trusts (issuer https://heyreason.com) must hold that kid.
 Key = the store's site (`storeKey`: amazon.com → amazon, shop.costco.com → costco, argos.co.uk → argos);
 `STORES` are hints (name, site, `signIn: "required"`). Unknown store → guest; a guest run that ends
 `merchant.no_safe_path` at a sign-in wall marks `shop_sites.sign_in = required` and restarts the same
-checkout signed in, once (`shop_run_asks.retried`). Page mark: drawn SVG (Target/Walmart/Best Buy) →
-the store's icon fetched server-side (https only, no private hosts, ≤200KB, image/* only) and kept as a
-data: URL → a serif monogram. Offline: section 6 of test/shopconnect.test.js. Real-network spot check
+checkout signed in, once (`shop_run_asks.retried`). The pages never show a store logo, icon or colour
+(owner 10-30): the store is named in text. `ensureIcon` (https only, no private hosts, ≤200KB) is still
+in src/shopconnect.js but no page calls it any more. Offline: section 6 of test/shopconnect.test.js. Real-network spot check
 (Amazon, Sephora, Costco, Trader Joe's, Etsy) all returned an icon in ≤1.4s.
+
+## Paper redesign (2026-10-30, card and store sign-in handoff)
+Every screen is drawn with src/pages/paperkit.js (frame, underlined field, sealed slot, note, text
+actions, lifted paper + stamp, step checklist, six-cell code input). States by `linkView`:
+signin (+ `again` → "Target signed me out" first, when a connected store's checkout is asked to sign in
+again) · code · **wrongcode** (a code asked again after a code was answered) · retry · checking ·
+connected · failed · expired. No-account and, for the card, saving/error are steps on the same page
+(`#step-<name>` opens one). Settings → Shopping: stores with SIGN OUT; the card with LAST USED (latest
+`shop_payments` row with status `paid`, theirs only, `shop.lastPaid`), Replace card →, Forget it →
+`?confirm=card` (the confirm, inside the section). Copy never names Crossmint (pages, Settings, the
+texted link), never shows an email, never offers guest checkout.
+- Offline: section 7 of test/shopconnect.test.js.
+- Look: `node scripts/connect-staging.mjs` → dist/connect-staging (screens.json maps each to its
+  handoff screen); `--deploy` → https://connect--reason-web-staging.netlify.app (alias, never prod).
