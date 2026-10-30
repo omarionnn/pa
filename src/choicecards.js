@@ -266,7 +266,9 @@ const OUTSIDE = /exterior|outside|outdoor|storefront|store[-_]?front|facade|faç
 const NOT_A_ROOM = /logo|icon|favicon|sprite|badge|avatar|menu|\bcup|cup[-_s]|mug|latte|cappuccino|espresso[-_]?shot|coffee[-_]?bag|beans?\b|bag[-_]|product|merch|packag|gift|card[-_]|dish|plate|food|pastr|croissant|cake|sandwich|cocktail|drink|bottle|\bcan[-_]|placeholder|blank|pixel|spacer|headshot|portrait|team|staff|qr|banner|campaign|promo|wholesale|membership|subscri|bundle|bags?\b|bags?[-_]|thumbnail|preview[-_]images|sampling|cupping|recipe|gift/i;
 
 /** The same picture whatever size copy: what "already on a card" is checked against. */
-const photoKey = (u) => { try { const x = new URL(u.replace(/&amp;/g, "&")); return x.origin + x.pathname.replace(/\/(?:w|width)[\/_=-]?\d{2,4}\//i, "/"); } catch { return u; } };
+const photoKey = (u) => { try { const x = new URL(u.replace(/&amp;/g, "&")); return x.origin + x.pathname.replace(/\/(?:w|width)[\/_=-]?\d{2,4}\//i, "/") + (x.searchParams.get("panoid") ?? ""); } catch { return u; } };
+/** One picture's fingerprint, by its bytes: the same everywhere a set is checked for repeats. */
+const uriSum = (uri) => createHash("sha1").update(String(uri)).digest("hex");
 
 /** One photo, one candidate: a CDN's ?width= copies of the same picture collapse to the biggest. */
 export function biggestCopies(urls) {
@@ -354,8 +356,9 @@ const LOOK_SCHEMA = {
           shows: { type: "string", enum: ["inside", "outside", "product_or_food", "logo_or_menu", "people_closeup", "other"] },
           room: { type: "integer", minimum: 0, maximum: 3, description: "how much of the place's room or front you can see: 0 none (a close-up), 1 a sliver behind the subject, 2 part of it, 3 clearly — you could tell what it is like to be there" },
           other_business: { type: "boolean", description: "true if signage or text shows a DIFFERENT business than the one named" },
+          own_name: { type: "boolean", description: "true only if the named place's own name is readable in the photo (a sign, an awning, a window)" },
         },
-        required: ["n", "shows", "room", "other_business"],
+        required: ["n", "shows", "room", "other_business", "own_name"],
         additionalProperties: false,
       },
     },
@@ -363,7 +366,7 @@ const LOOK_SCHEMA = {
   required: ["photos"],
   additionalProperties: false,
 };
-const LOOK_SYSTEM = "You sort photos for a card that helps someone choose where to go. For each numbered photo, judge its SUBJECT — what the photographer pointed the camera at: inside (the room itself: seating, counter, bar, the space), outside (storefront, facade, entrance, street view), product_or_food (cups, drinks, dishes, beans, merchandise — even when held in hands or set on a table indoors), logo_or_menu, people_closeup, or other. A close-up of cups on a window ledge is product_or_food, not inside. Then rate room 0–3: how much of the place's room or front is actually visible. Set other_business true only when a sign, awning or text in the photo names a different business than the one given. Answer for every photo.";
+const LOOK_SYSTEM = "You sort photos for a card that helps someone choose where to go. For each numbered photo, judge its SUBJECT — what the photographer pointed the camera at: inside (the room itself: seating, counter, bar, the space), outside (storefront, facade, entrance, street view), product_or_food (cups, drinks, dishes, beans, merchandise — even when held in hands or set on a table indoors), logo_or_menu, people_closeup, or other. A close-up of cups on a window ledge is product_or_food, not inside. Then rate room 0–3: how much of the place's room or front is actually visible. Set other_business true only when a sign, awning or text in the photo names a different business than the one given; set own_name true only when the given place's own name is readable in it. Answer for every photo.";
 const SHOWS_SCORE = { inside: 10, outside: 5, other: 0, people_closeup: -2, product_or_food: -8, logo_or_menu: -10 };
 
 export async function lookAtPlacePhotos({ name, photos }, { run = null, model = process.env.REASON_PLACE_LOOK_MODEL || "haiku", timeoutMs = Number(process.env.REASON_PLACE_LOOK_TIMEOUT_MS || 30_000) } = {}) {
@@ -381,7 +384,9 @@ export async function lookAtPlacePhotos({ name, photos }, { run = null, model = 
     const room = Number.isInteger(x.room) ? Math.max(0, Math.min(3, x.room)) : 0;
     // "inside" with hardly any room in view is a close-up that happens to be indoors.
     const shows = (x.shows === "inside" || x.shows === "outside") && room < 2 ? "other" : x.shows;
-    out.set(x.n, { shows, room, other: !!x.other_business });
+    // A front proves nothing without its name on it: a directory's street views are the neighbours.
+    const other = !!x.other_business || (shows === "outside" && x.own_name !== true);
+    out.set(x.n, { shows, room, other });
   }
   return out.size ? out : null;
 }
@@ -413,9 +418,9 @@ export async function rankPlacePhotos(conversationId, o, { fetchImpl, fetchPhoto
   }
   cands = biggestCopies([...new Set(cands)]);
   // Only the place's OWN pictures: the one passed, the page's top few (og:image first — further down
-  // a directory's page is every other cafe nearby), and anything whose address says it is the inside.
+  // a directory's page is every other cafe nearby, even a photo whose name says "interior").
   const own = cands.map((u, i) => ({ u, i, h: roomHint(u) }))
-    .filter((x, k) => k < TOP_OF_PAGE + (img ? 1 : 0) || x.h >= 3)   // further down: only a labeled interior (a directory's strip of street views is the neighbours)
+    .filter((x, k) => k < TOP_OF_PAGE + (img ? 1 : 0))   // further down, a directory's page is the neighbours — their rooms, their fronts
     .filter(x => x.h > -3)
     .sort((a, b) => b.h - a.h || a.i - b.i).slice(0, max);
   const fetched = (await Promise.all(own.map(async ({ u, i }) => {
@@ -424,30 +429,34 @@ export async function rankPlacePhotos(conversationId, o, { fetchImpl, fetchPhoto
     if (!got?.ok || !got.base64) return null;
     const mediaType = got.mediaType ?? "image/jpeg";
     const dims = imageDims(Buffer.from(got.base64.slice(0, 200_000), "base64"));
-    return { u, i, dims, mediaType, base64: got.base64, sum: createHash("sha1").update(got.base64).digest("hex"), score: roomScore(u, dims), uri: `data:${mediaType};base64,${got.base64}` };
+    return { u, i, dims, mediaType, base64: got.base64, sum: uriSum(`data:${mediaType};base64,${got.base64}`), score: roomScore(u, dims), uri: `data:${mediaType};base64,${got.base64}` };
   }))).filter(x => x && x.score > -3);
-  if (!fetched.length) return [];
+  if (!fetched.length) return Object.assign([], { rejected: new Set() });
   // Then look. A look that fails leaves the address-and-shape order, which is never worse than before.
   const seeable = fetched.filter(x => VISION_TYPES.has(x.mediaType) && x.base64.length < 3_500_000);
   const seen = seeable.length ? await Promise.resolve(look({ name: o.name, photos: seeable })).catch(() => null) : null;
   let ranked = fetched;
+  const rejected = new Set();
   if (seen) {
     ranked = fetched.map(x => {
       const k = seeable.indexOf(x);
       const v = k >= 0 ? seen.get(k + 1) : null;
-      return v ? { ...x, shows: v.shows, other: v.other, score: x.score + SHOWS_SCORE[v.shows] + 2 * (v.room ?? 0) } : x;
-    }).filter(x => !x.other && x.shows !== "logo_or_menu");
+      // A photo it was shown and did not answer for is not trusted either.
+      if (!v) return k >= 0 ? { ...x, other: true } : x;
+      return { ...x, shows: v.shows, other: v.other, score: x.score + SHOWS_SCORE[v.shows] + 2 * (v.room ?? 0) };
+    }).filter(x => (x.other || x.shows === "logo_or_menu") ? (rejected.add(x.sum), false) : true);
   }
   // A cup or a dish only as the last resort (score already far below any room): a place whose own
   // pictures are all its coffee still shows its own coffee, never somebody else's door.
-  return ranked.sort((a, b) => b.score - a.score || a.i - b.i).map(({ base64, ...x }) => x);
+  // `rejected`: what was seen to be another business or a logo — the fallback may not draw it either.
+  return Object.assign(ranked.sort((a, b) => b.score - a.score || a.i - b.i).map(({ base64, ...x }) => x), { rejected });
 }
 
 /** The best picture of one place not already on a card in this set: { ok, uri, url, shows } or { ok: false }. */
 export function pickPlacePhoto(ranked, taken = new Set()) {
   const best = (ranked ?? []).find(x => !taken.has(photoKey(x.u)) && !taken.has(x.sum));
   if (!best) return { ok: false, why: "no picture of the place itself could be used" };
-  taken.add(photoKey(best.u)); taken.add(best.sum); taken.add(createHash("sha1").update(best.uri).digest("hex"));
+  taken.add(photoKey(best.u)); taken.add(best.sum);
   return { ok: true, uri: best.uri, url: best.u, score: best.score, shows: best.shows ?? null };
 }
 
@@ -594,8 +603,9 @@ export async function runChoiceTool(name, input, ctx) {
     let got = room?.ok ? room : await photoFor(c, o.image_url, { ...ctx, pageUrl: o.url ?? null }).catch(e => ({ ok: false, why: e?.message ?? String(e) }));
     // The ordinary path keeps the one-photo-per-set rule too (a chain's og:image on two branches).
     if (ranks && got.ok && !room?.ok) {
-      const sum = createHash("sha1").update(got.uri).digest("hex");
+      const sum = uriSum(got.uri);
       if (taken.has(sum)) got = { ok: false, why: "the only picture of it is already on another card" };
+      else if (ranks[i]?.rejected?.has(sum)) got = { ok: false, why: "its only picture shows another business or a logo" };
       else taken.add(sum);
     }
     photos.push(got);

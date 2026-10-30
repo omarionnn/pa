@@ -15,6 +15,18 @@ not contradicted by the photo's file name ("_12oz_"). Anything not backed is lef
 tool's note (log `choice_cards_unbacked`). No listing / photo from elsewhere / different product → no
 price, no size. Places are never checked. Offline: the "listing check" tests in test/choicecards.test.js.
 
+## Places: the room, not the cup (2026-10-30)
+`rankPlacePhotos`: candidates = the passed image_url + the place page's top 4 pictures (size copies
+collapsed; further down a directory page is the neighbours). Up to 6 fetched, then ONE claude-cli call
+(haiku, `feature: "place_photo"`, `REASON_PLACE_LOOK_MODEL`) labels each: inside / outside /
+product_or_food / logo_or_menu / people_closeup / other, room 0–3, other_business, own_name.
+Rules: inside+room≥2 best, then an outside shot ONLY if this place's name is readable on it, then its
+own coffee as last resort; another business, a logo, an unsigned front, a photo it didn't answer for:
+never. No repeats in a set. Nothing usable → photoFor, which may not draw a rejected or repeated photo →
+else the set is a numbered list. Log `choice_place_photo {n, shows}`. Tests stub the look (`_setPlaceLook`).
+Moodap's Flatiron pages carry neighbours' Street View frames even at the top (The Qi page → Bluestone's
+and Devoción's), which is why fronts need their own name.
+
 ## Owner-only
 `REASON_CHOICE_CARDS=owner`: `toolsFor` hides show_choices from every conversation whose account is
 not `is_operator`. Cage 2026-10-30: a tester number (no REASON_MASTER_NUMBER) asked for cleansers to

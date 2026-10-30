@@ -404,20 +404,16 @@ test("a CDN's width copies of one photo are one candidate (the biggest); banners
   assert.equal(cc.roomHint("https://b.example/BL_2022RetailBags_105466.jpg"), -3);
 });
 
-test("places: a chain's page lists every branch — a wide photo far down the page is not this place; a labeled interior anywhere is", async () => {
+test("places: a chain's or directory's page lists the neighbours — even one named 'interior' far down the page is not this place", async () => {
   const page = "https://chain.example/flatiron";
   const og = "https://chain.example/flatiron-hero.jpg";
   const filler = [1, 2, 3, 4, 5].map(n => `https://chain.example/nav-${n}.jpg`);
-  const otherBranch = "https://chain.example/Dumbo_2.jpg";
+  const otherBranch = "https://chain.example/Dumbo_2.jpg", theirRoom = "https://chain.example/bluestone-interior.jpg";
   db.rememberSeenUrls(C, [page], { kind: "page" });
-  db.rememberSeenUrls(C, [og, ...filler, otherBranch], { kind: "page", from: page });
-  const dims = { [og]: [1000, 1000], [otherBranch]: [2000, 1000], ...Object.fromEntries(filler.map(u => [u, [900, 1200]])) };
+  db.rememberSeenUrls(C, [og, ...filler, otherBranch, theirRoom], { kind: "page", from: page });
+  const dims = { [og]: [1000, 1000], [otherBranch]: [2000, 1000], [theirRoom]: [1600, 1000], ...Object.fromEntries(filler.map(u => [u, [900, 1200]])) };
   const a = await cc.placePhoto(C, { name: "Chain Flatiron", url: page }, { fetchPhoto: photosBy(dims), lookup: async () => null });
   assert.equal(a.url, og);
-  const labeled = "https://chain.example/flatiron-interior-seating.jpg";
-  db.rememberSeenUrls(C, [labeled], { kind: "page", from: page });
-  const b = await cc.placePhoto(C, { name: "Chain Flatiron", url: page }, { fetchPhoto: photosBy({ ...dims, [labeled]: [1600, 1000] }), lookup: async () => null });
-  assert.equal(b.url, labeled);
 });
 
 test("size copies in the path collapse too; a Street View frame is an outside look, not a thumbnail to skip", () => {
@@ -496,7 +492,7 @@ test("places: a look that fails keeps the address-and-shape order (never worse t
 
 test("lookAtPlacePhotos: one CLI call with every photo as an image block, on the subscription's side-call path; a bad answer is null", async () => {
   const calls = [];
-  const run = async (args) => { calls.push(args); return { ok: true, envelope: { structured_output: { photos: [{ n: 1, shows: "inside", room: 3, other_business: false }, { n: 2, shows: "logo_or_menu", room: 0, other_business: false }, { n: 3, shows: "inside", room: 1, other_business: false }] } } }; };
+  const run = async (args) => { calls.push(args); return { ok: true, envelope: { structured_output: { photos: [{ n: 1, shows: "inside", room: 3, other_business: false, own_name: false }, { n: 2, shows: "logo_or_menu", room: 0, other_business: false, own_name: false }, { n: 3, shows: "inside", room: 1, other_business: false, own_name: false }, { n: 4, shows: "outside", room: 3, other_business: false, own_name: false }, { n: 5, shows: "outside", room: 3, other_business: false, own_name: true }] } } }; };
   const seen = await cc.lookAtPlacePhotos({ name: "Joe", photos: [{ mediaType: "image/jpeg", base64: "AA" }, { mediaType: "image/png", base64: "BB" }] }, { run });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].images.length, 2);
@@ -504,7 +500,8 @@ test("lookAtPlacePhotos: one CLI call with every photo as an image block, on the
   assert.equal(calls[0].feature, "place_photo");
   assert.ok(calls[0].jsonSchema);
   // An "inside" with only a sliver of room in view (cups on a window ledge) is not counted as a room.
-  assert.deepEqual([...seen.entries()], [[1, { shows: "inside", room: 3, other: false }], [2, { shows: "logo_or_menu", room: 0, other: false }], [3, { shows: "other", room: 1, other: false }]]);
+  // A front without this place's name on it can't be shown as this place (a directory's neighbours).
+  assert.deepEqual([...seen.entries()], [[1, { shows: "inside", room: 3, other: false }], [2, { shows: "logo_or_menu", room: 0, other: false }], [3, { shows: "other", room: 1, other: false }], [4, { shows: "outside", room: 3, other: true }], [5, { shows: "outside", room: 3, other: false }]]);
   assert.equal(await cc.lookAtPlacePhotos({ name: "J", photos: [{ mediaType: "image/jpeg", base64: "A" }] }, { run: async () => ({ ok: false }) }), null);
 });
 
@@ -519,4 +516,26 @@ test("places: a directory's strip of Street View frames further down is the neig
   await cc.rankPlacePhotos(C, { name: "Joe", url: page }, { fetchPhoto, lookup: async () => null });
   assert.ok(fetched.includes(own));
   assert.ok(![n1, n2, n3, n4].some(u => fetched.includes(u)));
+});
+
+test("review: the fallback never draws a photo the look rejected; a photo left out of the answer is not trusted; two street views are two photos", async () => {
+  const page = "https://dir.example/x";
+  const sign = "https://dir.example/other-cafe.jpg";
+  db.rememberSeenUrls(C, [page, sign], { kind: "page" });
+  db.rememberSeenUrls(C, [sign], { kind: "page", from: page });
+  const fetchPhoto = photosBy({ [sign]: [1600, 1000], [PHOTOS[1]]: [900, 700] });
+  const look = async ({ photos }) => new Map(photos.map((p, k) => [k + 1, { shows: "outside", room: 3, other: true }]));
+  const places = { kind: "places", options: [{ name: "X", image_url: sign, url: page }, { name: "Q", image_url: PHOTOS[1] }] };
+  const r = await cc.runChoiceTool("show_choices", places, ctx({ fetchPhoto, lookup: async () => null, lookPlace: look }));
+  assert.equal(r.fallback, "text");
+  assert.match(r.note, /another business or a logo/);
+  const a = "https://dir.example/a.jpg", b = "https://dir.example/b.jpg", p2 = "https://dir.example/y";
+  db.rememberSeenUrls(C, [p2], { kind: "page" });
+  db.rememberSeenUrls(C, [a, b], { kind: "page", from: p2 });
+  const ranked = await cc.rankPlacePhotos(C, { name: "Y", url: p2 }, { fetchPhoto: photosBy({ [a]: [1600, 900], [b]: [800, 800] }), lookup: async () => null, look: async () => new Map([[2, { shows: "inside", room: 3, other: false }]]) });
+  assert.deepEqual(ranked.map(x => x.u), [b]);
+  const sv = (id) => `https://streetviewpixels-pa.googleapis.com/v1/thumbnail?panoid=${id}&w=1024`;
+  const taken = new Set();
+  assert.equal(cc.pickPlacePhoto([{ u: sv("A"), sum: "1", uri: "u1" }], taken).ok, true);
+  assert.equal(cc.pickPlacePhoto([{ u: sv("B"), sum: "2", uri: "u2" }], taken).ok, true);
 });
