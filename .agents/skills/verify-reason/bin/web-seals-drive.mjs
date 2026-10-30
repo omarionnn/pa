@@ -118,9 +118,22 @@ await all4("seals-first", "/web/stamps");
 const kinds = [["night_shift", { time: Date.now() }], ["three_in_one", { count: 3 }], ["early", { days: 12 }], ["human", { place: "x" }], ["price_drop", { savedCents: 4000 }], ["long_hold", { minutes: 41 }]];
 for (let i = 0; i < 10; i++) { const [type, detail] = kinds[i % kinds.length]; stamps.award(C, { type, ref: `sample:${i}`, at: Date.now() - (80 - i * 7) * DAY, detail }); }
 h = await (await fetch(`${base}/web/stamps`, { headers: { cookie: `reason_page=${token}` } })).text();
-step(new RegExp(`PAGE 2 · ${11 + EVERY} SEALS SINCE`).test(h) && /aria-current="page">2</.test(h), `many: page 2 of 2, ${11 + EVERY} seals`);
-await all4("seals-many", "/web/stamps");
-await all4("seals-page1", "/web/stamps?page=1");
+// With REASON_STAMPS_TIERS=on (needs EVERYDAY) a kind is in the book once: the ten samples fold into their six
+// kinds (long_hold already there), so one page of seven; then 25 calls make Rang's first milestone, the ribbon.
+const TIERS = EVERY && process.env.REASON_STAMPS_TIERS === "on";
+if (!TIERS) {
+  step(new RegExp(`PAGE 2 · ${11 + EVERY} SEALS SINCE`).test(h) && /aria-current="page">2</.test(h), `many: page 2 of 2, ${11 + EVERY} seals`);
+  await all4("seals-many", "/web/stamps");
+  await all4("seals-page1", "/web/stamps?page=1");
+} else {
+  const once = ["Held on your behalf", "Attended to overnight", "Looked into, thoroughly"].every(n => (h.match(new RegExp(`class="sp-n">${n}<`, "g")) ?? []).length === 1);
+  step(/PAGE 1 · 7 SEALS SINCE/.test(h) && once && !/aria-current="page">2</.test(h), "tiers: ten samples fold to one seal per kind, 7 on one page");
+  for (let i = 0; i < 25; i++) stamps.award(C, { type: "rang", ref: `call:sample-${i}`, at: Date.now() - (30 - i) * DAY, detail: {} });
+  h = await (await fetch(`${base}/web/stamps`, { headers: { cookie: `reason_page=${token}` } })).text();
+  step(/PAGE 1 · 8 SEALS SINCE/.test(h) && (h.match(/class="sp-n">Rang on your behalf</g) ?? []).length === 1 && /25 times · next at 100/.test(h)
+    && /class="tier tier-2"/.test(h) && />25<\/textPath>/.test(h) && /\d+ times · next at 500|Once · next at 500/.test(h), "tiers: 25 calls = one Rang with the 25 ribbon; research counts toward 500");
+  await all4("seals-tiers", "/web/stamps");
+}
 
 // 4. Share the held call: link, public page, og card, story, revoke.
 const held = db.db.prepare("SELECT id FROM stamps WHERE conversation_id = ? AND type = 'long_hold' ORDER BY earned_at DESC LIMIT 1").get(C).id;
