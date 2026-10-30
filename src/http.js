@@ -391,6 +391,16 @@ export function createServer({ router, runtime, log = () => {} }) {
         }
       }
 
+      // ---------- Directions: the walking page (held behind REASON_DIRECTIONS; src/pages/directions.js) ----------
+      // Off unless the flag is on: directionsRequest answers nothing for any /d/ path then, so the request falls
+      // through to the normal not-found page exactly as before.
+      // `/p/d/…` is the same page arriving through the files domain, which Caddy rewrites under /p.
+      if (config.directionsOn && (url.pathname.startsWith("/d/") || url.pathname.startsWith("/p/d/"))) {
+        const { directionsRequest } = await import("./pages/directions.js");
+        const out = await directionsRequest({ method: req.method, pathname: url.pathname, req, config, key: url.searchParams.get("k"), headers: req.headers, runtime, log });
+        if (out) { res.writeHead(out.status, out.headers); return res.end(req.method === "HEAD" ? "" : out.body); }
+      }
+
       // ---------- pages ----------
       const pageRoute = /^\/p\/([A-Za-z0-9_-]{8,64})(?:\/(choice|audio|signout))?$/.exec(url.pathname);
       if (pageRoute) {

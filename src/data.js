@@ -156,6 +156,9 @@ const TABLES = [
   // Reason Web's thread (src/settle.js): which of their messages belong to which task, and the kind
   // of device each Web message was typed on. About them and their conversation, so exported and deleted.
   "task_messages", "web_devices",
+  // The walks Reason made for them (src/trips.js): where from, where to, and the streets between.
+  // Where somebody walks from is as personal as anything here, so exported and deleted.
+  "trips",
 ];
 
 /**
@@ -325,7 +328,7 @@ export function exportData({ conversation = null, audio = true, files = true } =
   // A page is only half of itself without the browsers signed in to it and the answers on it.
   // Plus the person's own event sign-in key (src/events.js signinKey), which no page row carries,
   // and every browser signed in as them, whatever page it signed in on.
-  const pageIds = [...out.tables.pages.map(p => p.id), ...(conversation ? [`esign:${conversation}`] : [])];
+  const pageIds = [...out.tables.pages.map(p => p.id), ...(out.tables.trips ?? []).map(t => t.id), ...(conversation ? [`esign:${conversation}`] : [])];
   for (const t of PAGE_CHILD_TABLES) {
     const mine = t === "page_sessions" && conversation ? " OR conversation_id = ?" : "";
     out.tables[t] = !conversation
@@ -411,9 +414,10 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   const docs = documentFiles(conversation);
 
   // Read the page ids before the pages go, or their children cannot be found afterwards.
+  // A walk's code gate keeps its codes and attempts under the trip's id, as a page's does.
   const pageIds = (conversation
-    ? db.prepare("SELECT id FROM pages WHERE conversation_id = ?").all(conversation)
-    : db.prepare("SELECT id FROM pages").all()).map(r => r.id);
+    ? db.prepare("SELECT id FROM pages WHERE conversation_id = ? UNION ALL SELECT id FROM trips WHERE conversation_id = ?").all(conversation, conversation)
+    : db.prepare("SELECT id FROM pages UNION ALL SELECT id FROM trips").all()).map(r => r.id);
 
   // Same for the handed-over work: the directories are named by job id, so they have to be listed
   // while the rows that name them are still here.

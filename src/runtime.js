@@ -1778,6 +1778,8 @@ export class Runtime extends EventEmitter {
   retention() {
     // Usage counters past 35 days (src/spend.js), on the same bounded, mostly-free pass.
     import("./spend.js").then(m => m.prune()).catch(() => {});
+    // Walks a day past their start (src/trips.js): the row and the route in it go, read or not.
+    try { db.deleteExpiredTrips(clock.now()); } catch (e) { this.log({ trips_prune_failed: (e?.message ?? String(e)).split("\n")[0] }); }
     return sweepRetention({ now: clock.now(), log: this.log });
   }
 

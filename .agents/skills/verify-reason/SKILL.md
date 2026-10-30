@@ -702,6 +702,7 @@ Reason Web daily edition Home (REASON_WEB_DAILY; edition table, overnight claude
 Reason Web Stamps + shared stamps (`REASON_WEB_DAILY`; awarding at real completions, the book, share/revoke, `/s/<id>` + og card, redaction): [features/web-stamps.md](features/web-stamps.md); `bin/web-stamps-drive.mjs` drives and draws it beside `reference/stamps.html`.
 Reason Web wax-seal book (`REASON_STAMPS_WAX` on top of `REASON_WEB_DAILY`; seals, patch/ticket/suite key, compliments card + story, Home tile): [features/web-stamps-wax.md](features/web-stamps-wax.md); `bin/web-seals-drive.mjs` drives and draws it.
 Reason Web shell (wordmark text + nowrap, logo → `/web?home`, link cards for `/web`, `/privacy`, `/terms`): [features/web-shell.md](features/web-shell.md).
+Walking directions, Route + Escort, and real trips (`REASON_DIRECTIONS` off/`owner`/on; the `directions` tool, trips at `/d/<id>` behind the code gate; `/d/sample` with `REASON_DIRECTIONS_SAMPLE`; MapLibre, no tiles/key; suncalc night switch): [features/directions.md](features/directions.md); `test/directions.test.js`, `test/trips.test.js`; `bin/directions-drive.mjs` drives the walk, diffs the hand-off's 48 screens, and walks a real trip through the gate.
 Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start the cage with `REASON_PAGES_V2=1`): [features/pages-v2.md](features/pages-v2.md); `scripts/pages-v2-preview.mjs` + `scripts/pages-v2-compare.mjs`. Print (§4h-8, `src/pages/print.js`): same file, "Print"; `pages-v2-preview.mjs <dir> --print`.
 
 ## Facts worth not rediscovering

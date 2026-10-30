@@ -56,6 +56,7 @@ import * as access from "./access.js";
 import * as invites from "./invites.js";
 import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink } from "./eventtools.js";
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
+import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import * as rhythms from "./rhythms.js";
@@ -123,6 +124,8 @@ const OUTSIDE_WORLD = new Set(["flight_book", "account_connect", "account_revoke
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
   "web_search", "research", "nearby_places", "get_location",
+  // A walk asks OpenStreetMap where the place is and how to walk there, and makes a link.
+  "directions",
   // A flight search reads Google Flights through the Fli sidecar; "what did you look up" answers
   // from these rows like any other search.
   "flight_search", "flight_dates", "flight_verify",
@@ -338,7 +341,8 @@ export function toolsFor(conversationId) {
     && (isMaster || !INVITE_MASTER_TOOLS.has(t.name))
     && (bookingOk || !FLIGHT_BOOKING_TOOLS.has(t.name))
     && eventToolVisible(t.name, conversationId)
-    && albumToolVisible(t.name, conversationId))
+    && albumToolVisible(t.name, conversationId)
+    && directionsToolVisible(t.name, conversationId))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t));
 }
 
@@ -4279,6 +4283,8 @@ export const tools = [
   ...EVENT_TOOL_DEFS,
   // An event's photo album (src/albumtools.js, src/albums.js), behind REASON_EVENT_ALBUMS.
   ...ALBUM_TOOL_DEFS,
+  // Walking directions and Escort (src/directionstools.js, src/trips.js), behind REASON_DIRECTIONS.
+  ...DIRECTIONS_TOOL_DEFS,
   {
     name: "capabilities",
     description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things. Its `whats_new` list is what 'what's new' and 'what can you do now' are answered from.",
@@ -6758,6 +6764,7 @@ const S = {
   document_delete: z.object({ document_id: z.string().min(1).max(64) }),
   ...EVENT_SCHEMAS,
   ...ALBUM_SCHEMAS,
+  ...DIRECTIONS_SCHEMAS,
   invites_list: z.object({}),
   invite_link_create: z.object({}),
   invite_link_cancel: z.object({ number: z.number().int().min(1), replace: z.boolean().optional() }),
@@ -11183,6 +11190,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // ---------- an event's photo album (src/albumtools.js) ----------
     case "album_add": case "album_remove": case "album_info": case "album_manage":
       return await runAlbumTool(name, input, { ...ctx, conversationId: c });
+
+    // ---------- walking directions (src/directionstools.js) ----------
+    case "directions":
+      return await runDirectionsTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- invites (src/invites.js) ----------
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };

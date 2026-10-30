@@ -367,6 +367,14 @@ export const config = {
   // Pages Reason makes, v2 (handoff 2026-10-27 P1–P6, E2–E4, link previews; src/pages/made.js). HELD
   // for the owner: off, every page, event and album draws exactly as before. "1" turns it on.
   pagesV2: ["1", "true", "on", "yes"].includes(String(process.env.REASON_PAGES_V2 ?? "").trim().toLowerCase()),
+  // The walking directions page (src/pages/directions.js; handoff PROMPT.md). OFF: every /d/ path answers
+  // nothing. REASON_DIRECTIONS_SAMPLE also serves the made-up sample trip. REASON_DIRECTIONS_ROUTING_URL is an
+  // OSRM-compatible foot router; the reroute calls it from the server, so no routing key reaches the page.
+  // "owner": only the owner's conversation is told about the `directions` tool and only the owner's trips open.
+  // The router defaults to FOSSGIS's free, keyless OSRM foot profile (OpenStreetMap's own website uses it).
+  directionsOn: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_DIRECTIONS ?? "").trim().toLowerCase()),
+  directionsSample: ["1", "true", "on", "yes"].includes(String(process.env.REASON_DIRECTIONS_SAMPLE ?? "").trim().toLowerCase()),
+  directionsRouting: String(process.env.REASON_DIRECTIONS_ROUTING_URL ?? "https://routing.openstreetmap.de/routed-foot").trim(),
   // Where Reason Web's live stream is heard from (src/web.js webStreamOrigin). The website's proxy
   // holds a stream back until it ends, so the page listens on the pages host instead, which reaches
   // Reason directly. Unset: on, when the pages host sits under the website's domain (the session
