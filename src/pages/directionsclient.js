@@ -23,6 +23,7 @@ export const SAY_M = 30;                 // spoken about this far out
 export const AROUND_GIVE_UP_MS = 20000;  // told "turn around" and still going this way this long...
 export const AROUND_GIVE_UP_M = 40;      // ...or this far: stop insisting, a new way from where they are
 export const AROUND_QUIET_MS = 60000;    // after giving up, "turn around" is not said again this soon
+export const GIVE_UP_TRIES = 2;          // asks for a way from here before going back to the usual direction check
 export const ARRIVE_M = 50;              // the gate shows inside this
 export const ARRIVED_M = 15;             // arrival is confirmed inside this, on 3 readings...
 export const ARRIVE_HOLD_MS = 3000;      // ...or on one, held this long
@@ -279,6 +280,9 @@ export function createEscort(trip, line) {
     aroundPath: 0,
     quietAroundUntil: 0,
     fromHere: false,
+    pendingForward: false,
+    noGiveUpUntil: 0,
+    giveupTries: 0,
     offCount: 0,
     rerouting: false,
     rerouteShowUntil: 0,
@@ -350,17 +354,24 @@ export function createEscort(trip, line) {
         // Walking far enough off the route the wrong way counts too: an ordinary reroute from there would only
         // send them back again, and "turn around" would start over.
         m.offCount = project(p, m.line).off - r.acc / 2 > OFF_M ? m.offCount + 1 : 0;
-        if (m.dir === 'around' && ((now - m.aroundAt >= AROUND_GIVE_UP_MS && m.path - m.aroundPath >= 10) || m.path - m.aroundPath >= AROUND_GIVE_UP_M || m.offCount >= OFF_COUNT)) {
+        if (m.dir === 'around' && now >= m.noGiveUpUntil && ((now - m.aroundAt >= AROUND_GIVE_UP_MS && m.path - m.aroundPath >= 10) || m.path - m.aroundPath >= AROUND_GIVE_UP_M || m.offCount >= OFF_COUNT)) {
           m.dir = 'giveup';
           m.wrong = 0;
           m.quietAroundUntil = now + AROUND_QUIET_MS;
           speak = 'Okay, new way from here.';
         }
-        if (m.dir === 'giveup' && !m.rerouting && now - m.lastReroute > REROUTE_GAP_MS) {
-          m.rerouting = true;
-          m.lastReroute = now;
-          m.forward = true;
-          reroute = true;
+        // The first ask goes at once (even right after an ordinary reroute); a failed one is retried once, then
+        // the escort goes back to judging the direction as usual rather than showing "finding a way" for ever.
+        if (m.dir === 'giveup' && !m.rerouting && now - m.lastReroute > (m.giveupTries ? REROUTE_GAP_MS : 0)) {
+          if (m.giveupTries >= GIVE_UP_TRIES) { m.dir = 'unknown'; m.giveupTries = 0; }
+          else {
+            m.giveupTries++;
+            m.rerouting = true;
+            m.lastReroute = now;
+            m.forward = true;
+            m.pendingForward = true;
+            reroute = true;
+          }
         }
 
         // Off the route: three good readings in a row, then one reroute request. Counted on each reading as it
@@ -444,7 +455,7 @@ export function createEscort(trip, line) {
     else if (m.dd < ARRIVE_M) state = 'arrive';
     else if (now < m.rerouteShowUntil) state = 'reroute';
     else if (now < m.hereUntil) state = 'here';
-    else if (m.dir === 'giveup') state = 'fromhere';
+    else if (m.dir === 'giveup' && !m.offline) state = 'fromhere';
     else if (m.dir === 'around') state = 'around';
     else if (m.dir === 'unknown') state = 'unknown';
     else if (stationary) state = 'wait';
@@ -473,8 +484,16 @@ export function createEscort(trip, line) {
     view,
     get step() { return m.step; },
     /** The person is in the middle of a walk: the reroute has come back with a new line. */
-    replaceRoute(newTrip, newLine, pos, now) {
-      m.fromHere = m.dir === 'giveup';
+    replaceRoute(newTrip, newLine, pos, now, { forward } = {}) {
+      // An ordinary reroute that was already on its way when they gave up: take its line, but the way from
+      // here (facing their way) is still to be asked, so the calm line stays and the ask goes next.
+      const answersGiveUp = m.pendingForward;
+      m.pendingForward = false;
+      m.fromHere = answersGiveUp && forward !== false;
+      // The server kept a way that turns back (nothing reasonable ahead): say so honestly, "turn around" may show.
+      // and that answer stands for a minute rather than giving up again on it.
+      if (answersGiveUp && forward === false) { m.quietAroundUntil = 0; m.noGiveUpUntil = now + AROUND_QUIET_MS; }
+      const stillGivingUp = m.dir === 'giveup' && !answersGiveUp;
       m.line = newLine;
       m.trip = newTrip;
       setSteps(newTrip.steps, newLine);
@@ -487,10 +506,11 @@ export function createEscort(trip, line) {
       m.rerouteShowUntil = now + 6000;
       m.offCount = 0;
       m.wrong = 0;
-      m.dir = 'confirmed';
+      m.dir = stillGivingUp ? 'giveup' : 'confirmed';
+      if (!stillGivingUp) m.giveupTries = 0;
       m.confirmedAt = now;
     },
-    rerouteFailed() { m.rerouting = false; },
+    rerouteFailed() { m.rerouting = false; m.pendingForward = false; },
     setOffline(v) { m.offline = !!v; },
     /** Low battery: said once an escort, for a few seconds. */
     notifyBattery(now) { if (!m.batteryShown) { m.batteryShown = true; m.batteryUntil = now + 8000; } },
@@ -1253,7 +1273,7 @@ function boot() {
       T.steps = j.steps;
       T.route = j.route;
       setRoute(line);
-      ENG.replaceRoute({ ...T, steps: j.steps, destination: DEST }, line, at, Date.now());
+      ENG.replaceRoute({ ...T, steps: j.steps, destination: DEST }, line, at, Date.now(), { forward: j.forward });
       if (location.hash === '#route') route();
     } catch (e) {
       // Silent: the old route stays on screen and the next off-route reading tries again.

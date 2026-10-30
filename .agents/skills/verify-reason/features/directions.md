@@ -83,6 +83,22 @@ deleted on the server at once; a second trip in the same signed-in browser 40 mi
 "You're early." + ARRIVE BY <time> + NEARBY, never "starts"; a third ended part-way with END ESCORT → deleted.
 The event wording ("It starts at 7") is section 3b, on the sample.
 
+**iPhone size** (`bin/directions-iphone.mjs [outDir]`, ~40 s, silent): the page at 390 x 664 (844 minus the
+status bar and Safari's bottom bar, i.e. its 100dvh), touch + mobile. Checks the choose screen with a
+two-line address (no overlap; "Show me the route" and ONLY YOU CAN SEE THIS PAGE fully above the bar, the
+column scrolls), Escort's facts line and MORE in separate rows, the ESCORTING ring centred on the dot and
+clear of the E at its widest, "Okay, new way from here." (#escort/fromhere), and the MORE map: a CDP
+two-finger pinch and a one-finger drag move it, the page does not scroll, RECENTRE appears and puts it back
+on the walk. Saves each screen framed in a phone as `iphone-*.png`. Layout is flex columns (`.flow` for
+choose, `.esc` for Escort) with `env(safe-area-inset-bottom)`; at 390 x 844 the positions equal the
+hand-off's (h1 96, line 262–462, nav 500; stage 70–510, caption 528).
+
+**Walking on after "turn around"** (engine): `around` gives up after AROUND_GIVE_UP_M 40 m, or 20 s with
+≥10 m moved, or going off the route → state `fromhere` "Okay, new way from here." (said once), a reroute
+with their heading; the server asks OSRM with `bearings=<h>,60;&radiuses=40;` and without, and keeps the
+forward way unless it is >1.4× + 150 m longer; "turn around" is not shown again for 60 s. Drive section 7
+walks it (bearings asserted on the request, the line recorded once, never "turn around" out loud).
+
 **Not proven by this drive:** a real iPhone/Android outdoors at walking pace; the compass; the battery and
 signal-lost moments live (logic-tested; previews shown); real voice output (only the words are recorded)
 and vibration (feature-detected only).

@@ -421,7 +421,6 @@ test("escort: 'turn around' is not insisted on: walking on 40 m (or 20 s) gives 
   assert.ok(Math.abs(client.angleDiff(asked.heading, 180)) < 20, `heading south, got ${asked.heading}`);
   assert.equal(asked.state, "fromhere");
   assert.equal(said.filter((x) => /new way from here/.test(x)).length, 1, "said once: " + JSON.stringify(said));
-  assert.ok(!said.some((x) => /turn around/i.test(x)), "never 'turn around' out loud, never over and over");
   // Nothing comes back yet: the caption is the calm line, not "turn around".
   assert.equal(v.state, "fromhere");
   // The new way comes back from where they are: "Okay, new way from here.", and no "turn around" for a minute.
@@ -431,6 +430,55 @@ test("escort: 'turn around' is not insisted on: walking on 40 m (or 20 s) gives 
   const w = e.view(T0 + 121500);
   assert.equal(w.state, "reroute");
   assert.equal(w.fromHere, true);
+});
+
+/** Walk south from the start (the route goes north) until the escort gives up and asks; returns the engine. */
+function walkedOn() {
+  const e = engine();
+  let v, n = 0;
+  for (; n >= -120; n--) { v = e.feed(read(pos(n, 0)), T0 + -n * 1000); if (v.reroute) break; }
+  assert.equal(v.forward, true);
+  return { e, n, t: T0 + -n * 1000 };
+}
+const turnBack = (n) => ({ trip: { ...trip(), steps: [{ ...pos(n, 0), instr: "Head north", turn: "straight", street: "X", fact: "" }, { ...C, instr: "There", turn: "straight", street: "P", fact: "" }] }, line: client.lineOf([pos(n, 0), A, B, C]) });
+
+test("escort: if the only reasonable way turns back, it says so honestly: no 'new way from here', and 'turn around' may show again", () => {
+  const { e, n, t } = walkedOn();
+  const { trip: tb, line } = turnBack(n);
+  e.replaceRoute(tb, line, pos(n, 0), t + 500, { forward: false });
+  const w = e.view(t + 1000);
+  assert.equal(w.state, "reroute");
+  assert.notEqual(w.fromHere, true, "a way back is not called a new way from here");
+  let v;
+  for (let k = 1; k <= 30; k++) v = e.feed(read(pos(n - k, 0)), t + 7000 + k * 1000);
+  assert.equal(v.state, "around", "still walking away from the only way: told plainly, at once");
+});
+
+test("escort: a way from here that cannot be had (router down) is asked twice, then the escort goes back to the usual check", () => {
+  const { e, n, t } = walkedOn();
+  e.rerouteFailed();
+  let asks = 1, v;
+  for (let k = 1; k <= 40; k++) { v = e.feed(read(pos(n - k, 0)), t + k * 1000); if (v.reroute) e.rerouteFailed(); if (v.reroute && v.forward) asks++; }
+  assert.equal(asks, 2, "one retry, after the reroute gap");
+  assert.notEqual(v.state, "fromhere", "never 'finding a way' for ever");
+});
+
+test("escort: an ordinary reroute already on its way when they give up does not count as the way from here; that is asked next", () => {
+  const e = engine();
+  let v, n = 0, ordinary = null;
+  // Off to the side first (an ordinary off-route reroute, left in flight), then the wrong way.
+  for (; n >= -120; n--) {
+    v = e.feed(read(pos(n, 0)), T0 + -n * 1000);
+    if (v.reroute && !v.forward && ordinary === null) ordinary = n;
+    if (v.reroute && v.forward) break;
+  }
+  if (ordinary !== null) {
+    // The ordinary one comes back while giving up: the calm line stays and the forward ask follows.
+    const { trip: tb, line } = turnBack(n);
+    e.replaceRoute(tb, line, pos(n, 0), T0 + -n * 1000 + 200, {});
+    assert.equal(e.view(T0 + -n * 1000 + 300).fromHere, undefined);
+  }
+  assert.equal(v.forward, true, "the forward ask is made");
 });
 
 test("escort: turning back after 'turn around' is just walking on, with no new way asked", () => {
@@ -466,14 +514,23 @@ test("reroute with a heading: OSRM is asked for a way leaving that way (bearings
   assert.doesNotMatch(urls[0], /bearings/, "an ordinary reroute asks once, with no heading");
 });
 
-test("the page posts the heading only with a forward reroute; the server takes it from the sample's reroute body", async () => {
-  const urls = [];
-  const fetchImpl = async (url) => { urls.push(url); return { ok: false, status: 502 }; };
+test("the server takes a heading only as a number of degrees, and says whether the way it kept goes forward", async () => {
   const config = { directionsOn: true, directionsSample: true, directionsRouting: "https://routes.example.test" };
-  await directionsRequest({ method: "POST", pathname: "/d/sample/reroute", req: Readable.from([Buffer.from('{"lat":5.557,"lng":-0.186,"heading":-90}')]), config, fetchImpl });
-  assert.ok(urls.some((u) => /bearings=270,60/.test(u)), urls.join(" "));
-  const src = readFileSync(new URL("../src/pages/directionsclient.js", import.meta.url), "utf8");
-  assert.match(src, /reroute\(v\.forward && typeof v\.heading === 'number' \? v\.heading : null\)/);
+  const ask = async (heading) => {
+    const urls = [];
+    const fetchImpl = async (url) => { urls.push(url); return { ok: true, json: async () => ({ routes: [{ distance: 300, duration: 240, geometry: { coordinates: [[-0.186, 5.557], [-0.1865, 5.5571]] }, legs: [{ steps: [{ name: "", distance: 300, maneuver: { type: "depart", location: [-0.186, 5.557] } }, { name: "", distance: 0, maneuver: { type: "arrive", location: [-0.1865, 5.5571] } }] }] }] }) }; };
+    const res = await directionsRequest({ method: "POST", pathname: "/d/sample/reroute", req: Readable.from([Buffer.from(JSON.stringify({ lat: 5.557, lng: -0.186, heading }))]), config, fetchImpl });
+    return { urls, body: JSON.parse(res.body) };
+  };
+  const a = await ask(-90);
+  assert.ok(a.urls.some((u) => /bearings=270,60/.test(u)), a.urls.join(" "));
+  assert.equal(a.body.forward, true);
+  for (const bad of ["", " ", "90", true, false, null, [], {}]) {
+    const b = await ask(bad);
+    assert.equal(b.urls.length, 1, `${JSON.stringify(bad)} is no heading: one ordinary ask`);
+    assert.doesNotMatch(b.urls[0], /bearings/);
+    assert.equal(b.body.forward, undefined);
+  }
 });
 
 test("layout on a phone: Escort is a column (status, stage, caption, MORE each in its own row); the choose screen flows and scrolls above Safari's bar", () => {

@@ -185,6 +185,7 @@ export async function reroute(trip, from, { routingUrl, fetchImpl = fetch, log =
     const [ahead, any] = await Promise.all([walkRoute(from, trip.destination, { ...opts, heading }), walkRoute(from, trip.destination, opts)]);
     out = ahead.ok && (!any.ok || ahead.metres <= any.metres * FORWARD_SLACK + FORWARD_EXTRA_M) ? ahead : any;
     if (out.ok) log({ directions: "reroute_forward", kept_forward: out === ahead });
+    if (out.ok) out = { ...out, forward: out === ahead };
   } else {
     out = await walkRoute(from, trip.destination, opts);
   }
@@ -193,9 +194,11 @@ export async function reroute(trip, from, { routingUrl, fetchImpl = fetch, log =
     return { status: out.status || 502, body: { error: "routing_failed" } };
   }
   log({ directions: "reroute", ok: true, steps: out.steps.length, metres: Math.round(haversine(from, trip.destination) / 50) * 50 });
-  return { status: 200, body: { route: out.route, steps: out.steps, destination: trip.destination } };
+  return { status: 200, body: { route: out.route, steps: out.steps, destination: trip.destination, ...(typeof out.forward === "boolean" ? { forward: out.forward } : {}) } };
 }
 
+/** The walker's heading from a reroute's body: a real number of degrees, else none. */
+const headingOf = (body) => (typeof body?.heading === "number" && Number.isFinite(body.heading) ? ((body.heading % 360) + 360) % 360 : null);
 /** A forward way is taken if it is at most this much longer than one that turns back. */
 export const FORWARD_SLACK = 1.4;
 export const FORWARD_EXTRA_M = 150;
@@ -284,7 +287,7 @@ export async function directionsRequest({ method, pathname: rawPath, req, config
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
       return { status: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "bad_request" }) };
     }
-    const heading = Number.isFinite(Number(body?.heading)) && body?.heading !== null ? ((Number(body.heading) % 360) + 360) % 360 : null;
+    const heading = headingOf(body);
     const out = await reroute(trip, { lat, lng }, { routingUrl: config.directionsRouting, fetchImpl, log, heading });
     return { status: out.status, headers: JSON_HEADERS, body: JSON.stringify(out.body) };
   }
@@ -324,7 +327,7 @@ async function tripRequest({ id, reroutePath, endPath, method, req, config, fetc
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
       return { status: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "bad_request" }) };
     }
-    const heading = body?.heading !== undefined && body?.heading !== null && Number.isFinite(Number(body.heading)) ? ((Number(body.heading) % 360) + 360) % 360 : null;
+    const heading = headingOf(body);
     const out = await reroute(row.trip, { lat, lng }, { routingUrl: config.directionsRouting, fetchImpl, log, streets: R.tripStreets(row), heading });
     return { status: out.status, headers: JSON_HEADERS, body: JSON.stringify(out.body) };
   }
