@@ -44,6 +44,7 @@ const ctx = (extra = {}) => ({ conversationId: C, fetchPhoto: okPhoto, shoot, lo
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
+  cc._setPlaceLook(async () => null);   // never a real model in the suite; the look tests set their own
   process.env.REASON_CHOICE_CARDS = "on";
   db.db.exec("DELETE FROM choice_sets; DELETE FROM seen_urls; DELETE FROM accounts;");
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
@@ -301,9 +302,10 @@ test("listing check runs on the real path: the listing the PHOTO came from is re
 test("listing check is for products only: a place's rating and walk are never held up against a page", async () => {
   let looked = 0;
   const places = { kind: "places", options: input().options.map(o => ({ ...o, price: "$$", detail: "4.6 ★ · 3 min walk" })) };
-  const r = await cc.runChoiceTool("show_choices", places, ctx({ lookup: async () => { looked++; return null; } }));
+  // The venue page may be read for its pictures (placePhoto) — never to judge the words on the card.
+  const r = await cc.runChoiceTool("show_choices", places, ctx({ lookup: async () => { looked++; return { ok: true, title: "Nothing alike", text: "$1", images: [] }; } }));
   assert.equal(r.ok, true);
-  assert.equal(looked, 0);
+  assert.ok(!/Left off/.test(r.note));
   db.setChoiceShown(r.set_id, { handles: [] });
   assert.equal(db.openChoiceFor(C, clock.now()).options[0].detail, "4.6 ★ · 3 min walk");
 });
@@ -316,4 +318,205 @@ test("listing check (review): a price with no $ is still checked, other currenci
   assert.equal(b.option.price, "");
   assert.equal(cc.checkAgainstListing({ name: "Hydrating Facial Cleanser", price: "17.49" }, null).option.price, "");
   assert.deepEqual(cc.pricesIn("$1,299.00 or £12 or 15.99 € or USD 7"), [1299, 12, 15.99, 7]);
+});
+
+// ---------- a place's photo: the room, not the cup (owner, 2026-10-30) ----------
+
+const png = (w, h) => { const b = Buffer.alloc(33); b.writeUInt32BE(0x89504e47, 0); b.write("IHDR", 12, "ascii"); b.writeUInt32BE(w, 16); b.writeUInt32BE(h, 20); return b; };
+const jpeg = (w, h) => Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 4, 0, 0, 0xff, 0xc0, 0, 17, 8, h >> 8, h & 255, w >> 8, w & 255, 3, 0, 0, 0]);
+const photosBy = (dims) => async ({ url }) => dims[url] ? { ok: true, mediaType: "image/png", base64: png(...dims[url]).toString("base64") } : { ok: false, why: "404" };
+
+test("imageDims reads PNG and JPEG sizes from their first bytes; garbage is null", () => {
+  assert.deepEqual(cc.imageDims(png(1600, 900)), { w: 1600, h: 900 });
+  assert.deepEqual(cc.imageDims(jpeg(1200, 800)), { w: 1200, h: 800 });
+  assert.equal(cc.imageDims(Buffer.from("hello")), null);
+});
+
+test("roomHint: an interior beats a storefront beats unknown beats a cup, logo or menu", () => {
+  const h = (u) => cc.roomHint(`https://joe.example/img/${u}.jpg`);
+  assert.deepEqual([h("flatiron-interior-seating"), h("storefront-23rd"), h("IMG_4411"), h("latte-art-cup"), h("logo"), h("fall-menu")], [3, 1, 0, -3, -3, -3]);
+  assert.equal(cc.roomHint("https://lc.example/LC_BARISTA_COUNTER_DSC5164.jpg"), 3);
+});
+
+test("places: the interior on the venue's page is chosen over the cup the model passed", async () => {
+  const page = "https://joe.example/locations/flatiron";
+  const cup = "https://joe.example/img/latte-cup.jpg";
+  const inside = "https://joe.example/img/flatiron-interior.jpg";
+  const logo = "https://joe.example/img/logo.png";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [cup, logo, inside], { kind: "page", from: page });
+  const r = await cc.placePhoto(C, { name: "Joe Coffee", image_url: cup, url: page }, { fetchPhoto: photosBy({ [cup]: [800, 1000], [inside]: [1600, 1000], [logo]: [200, 200] }), lookup: async () => null });
+  assert.equal(r.ok, true);
+  assert.equal(r.url, inside);
+});
+
+test("places: no interior — the storefront wins; with no hints at all, the wide big shot beats the tall and the tiny", async () => {
+  const page = "https://cafe.example/";
+  const front = "https://cafe.example/storefront.jpg", cup = "https://cafe.example/cappuccino.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [cup, front], { kind: "page", from: page });
+  const a = await cc.placePhoto(C, { name: "Cafe", url: page }, { fetchPhoto: photosBy({ [front]: [1200, 900], [cup]: [1200, 900] }), lookup: async () => null });
+  assert.equal(a.url, front);
+  const p2 = "https://b.example/", tall = "https://b.example/a1.jpg", wide = "https://b.example/a2.jpg", tiny = "https://b.example/a3.jpg";
+  db.rememberSeenUrls(C, [p2], { kind: "page" });
+  db.rememberSeenUrls(C, [tall, tiny, wide], { kind: "page", from: p2 });
+  const b = await cc.placePhoto(C, { name: "B", url: p2 }, { fetchPhoto: photosBy({ [tall]: [800, 1200], [wide]: [1500, 900], [tiny]: [120, 80] }), lookup: async () => null });
+  assert.equal(b.url, wide);
+});
+
+test("places: few pictures known — the venue page is read once for its own; a broken one is skipped, never drawn", async () => {
+  const page = "https://lc.example/nomad";
+  const inside = "https://lc.example/img/nomad-inside.jpg", broken = "https://lc.example/img/bar-dead.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  let reads = 0;
+  const r = await cc.placePhoto(C, { name: "La Colombe", url: page }, {
+    fetchPhoto: photosBy({ [inside]: [1400, 900] }),
+    lookup: async () => { reads++; return { ok: true, images: [broken, inside] }; },
+  });
+  assert.equal(reads, 1);
+  assert.equal(r.url, inside);
+  assert.ok(db.hasSeenUrl(C, inside));
+  const none = await cc.placePhoto(C, { name: "Nowhere", url: "https://never.example/" }, { fetchPhoto: photosBy({}), lookup: async () => null });
+  assert.equal(none.ok, false);
+});
+
+test("places on the real path: the card is drawn with the interior, and a place with nothing usable falls back to its passed photo", async () => {
+  const page = "https://joe.example/loc";
+  const cup = "https://joe.example/c/latte.jpg", inside = "https://joe.example/c/interior.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [cup, inside], { kind: "page", from: page });
+  const drawn = [];
+  const fetchPhoto = async ({ url }) => ({ ok: true, mediaType: "image/png", base64: png(url === inside ? 1600 : 700, 900).toString("base64") + (url === inside ? "" : "") , tag: url });
+  const places = { kind: "places", options: [
+    { name: "Joe", image_url: cup, url: page, price: "$$" },
+    { name: "Other", image_url: PHOTOS[1], price: "$$" },
+  ] };
+  const r = await cc.runChoiceTool("show_choices", places, ctx({ fetchPhoto, lookup: async () => null, shoot: async (h) => { drawn.push(h); return Buffer.from("J"); } }));
+  assert.equal(r.ok, true);
+  assert.equal(r.fallback, undefined);
+  assert.equal(drawn.length, 2);
+  assert.ok(drawn[0].includes(png(1600, 900).toString("base64")));
+});
+
+test("a CDN's width copies of one photo are one candidate (the biggest); banners and coffee bags are not rooms", () => {
+  assert.deepEqual(cc.biggestCopies(["https://j.example/a.jpg?v=1&width=165", "https://j.example/b.jpg", "https://j.example/a.jpg?v=1&width=360"]), ["https://j.example/a.jpg?v=1&width=360", "https://j.example/b.jpg"]);
+  assert.equal(cc.roomHint("https://b.example/BL_Scrubs-Campaign_Homepage-Banner_1600x810.jpg"), -3);
+  assert.equal(cc.roomHint("https://b.example/BL_2022RetailBags_105466.jpg"), -3);
+});
+
+test("places: a chain's page lists every branch — a wide photo far down the page is not this place; a labeled interior anywhere is", async () => {
+  const page = "https://chain.example/flatiron";
+  const og = "https://chain.example/flatiron-hero.jpg";
+  const filler = [1, 2, 3, 4, 5].map(n => `https://chain.example/nav-${n}.jpg`);
+  const otherBranch = "https://chain.example/Dumbo_2.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [og, ...filler, otherBranch], { kind: "page", from: page });
+  const dims = { [og]: [1000, 1000], [otherBranch]: [2000, 1000], ...Object.fromEntries(filler.map(u => [u, [900, 1200]])) };
+  const a = await cc.placePhoto(C, { name: "Chain Flatiron", url: page }, { fetchPhoto: photosBy(dims), lookup: async () => null });
+  assert.equal(a.url, og);
+  const labeled = "https://chain.example/flatiron-interior-seating.jpg";
+  db.rememberSeenUrls(C, [labeled], { kind: "page", from: page });
+  const b = await cc.placePhoto(C, { name: "Chain Flatiron", url: page }, { fetchPhoto: photosBy({ ...dims, [labeled]: [1600, 1000] }), lookup: async () => null });
+  assert.equal(b.url, labeled);
+});
+
+test("size copies in the path collapse too; a Street View frame is an outside look, not a thumbnail to skip", () => {
+  const m = (w) => `https://media.example/media/w/${w}/abc123.webp`;
+  assert.deepEqual(cc.biggestCopies([m(400), m(1600), m(800), "https://media.example/media/w/800/def.webp"]), [m(1600), "https://media.example/media/w/800/def.webp"]);
+  assert.equal(cc.roomHint("https://streetviewpixels-pa.googleapis.com/v1/thumbnail?panoid=x&w=1024&h=602"), 1);
+});
+
+test("places: when the only picture that loads is the logo, the selector gives up — never a logo card", async () => {
+  const page = "https://dir.example/shop/1";
+  const logo = "https://dir.example/images/logo.png", photo = "https://cdn-down.example/shops/1/0.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [photo, logo], { kind: "page", from: page });
+  const r = await cc.placePhoto(C, { name: "Shop", url: page }, { fetchPhoto: photosBy({ [logo]: [1200, 600] }), lookup: async () => null });
+  assert.equal(r.ok, false);
+});
+
+test("places: two branches whose pages lead with the same chain photo get different photos — never the same picture twice in a set", async () => {
+  const pa = "https://dir.example/joe-flatiron", pb = "https://dir.example/joe-union-square";
+  const chain = (w) => `https://media.dir.example/media/w/${w}/chain.webp`;
+  const a2 = "https://media.dir.example/media/w/800/flatiron-2.webp", b2 = "https://media.dir.example/media/w/800/union-2.webp";
+  db.rememberSeenUrls(C, [pa, pb], { kind: "page" });
+  db.rememberSeenUrls(C, [chain(1600), a2], { kind: "page", from: pa });
+  const pages = { [pa]: { ok: true, images: [chain(1600), a2] }, [pb]: { ok: true, images: [chain(1600), chain(800), b2] } };
+  const fetchPhoto = photosBy({ [chain(1600)]: [1600, 1000], [chain(800)]: [800, 500], [a2]: [800, 600], [b2]: [800, 600] });
+  const taken = new Set();
+  const a = await cc.placePhoto(C, { name: "Joe Flatiron", url: pa }, { fetchPhoto, lookup: async (u) => pages[u], taken });
+  const b = await cc.placePhoto(C, { name: "Joe Union Square", url: pb }, { fetchPhoto, lookup: async (u) => pages[u], taken });
+  assert.equal(a.url, chain(1600));
+  assert.equal(b.url, b2);
+});
+
+test("places, looked at: the inside wins over a cup and a storefront; another business's sign and a logo are never used", async () => {
+  const page = "https://dir.example/joe-us";
+  const [cup, front, inside, irving] = ["a", "b", "c", "d"].map(x => `https://media.dir.example/${x}.webp`);
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [cup, irving, front, inside], { kind: "page", from: page });
+  const dims = { [cup]: [1600, 1000], [front]: [1200, 900], [inside]: [1000, 1000], [irving]: [1600, 1000] };
+  const said = { [cup]: "product_or_food", [front]: "outside", [inside]: "inside", [irving]: "outside" };
+  let asked = null;
+  const look = async ({ name, photos }) => { asked = { name, n: photos.length }; return new Map(photos.map((p, k) => [k + 1, { shows: said[p.u], other: p.u === irving }])); };
+  const ranked = await cc.rankPlacePhotos(C, { name: "Joe Coffee", url: page }, { fetchPhoto: photosBy(dims), lookup: async () => null, look });
+  assert.deepEqual(asked, { name: "Joe Coffee", n: 4 });
+  assert.deepEqual(ranked.map(x => x.u), [inside, front, cup]);
+  // No inside photo: the storefront, still never the other cafe or the cup.
+  const r2 = await cc.rankPlacePhotos(C, { name: "Joe Coffee", url: page }, { fetchPhoto: photosBy({ [cup]: dims[cup], [front]: dims[front], [irving]: dims[irving] }), lookup: async () => null, look });
+  assert.deepEqual(r2.map(x => x.u), [front, cup]);
+  // Only its own coffee: that, as the last resort — never the other cafe.
+  const r3 = await cc.rankPlacePhotos(C, { name: "Joe Coffee", url: page }, { fetchPhoto: photosBy({ [cup]: dims[cup], [irving]: dims[irving] }), lookup: async () => null, look });
+  assert.deepEqual(r3.map(x => x.u), [cup]);
+});
+
+test("places: the ordinary fallback never repeats a photo already on a card — the set goes to a numbered list instead", async () => {
+  const shared = "https://chain.example/og.jpg";
+  db.rememberSeenUrls(C, [shared], { kind: "search" });
+  const places = { kind: "places", options: [{ name: "A", image_url: shared }, { name: "B", image_url: shared }] };
+  const r = await cc.runChoiceTool("show_choices", places, ctx({ fetchPhoto: async ({ url }) => url === shared ? { ok: true, mediaType: "image/png", base64: png(1200, 900).toString("base64") } : { ok: false }, lookup: async () => null }));
+  assert.equal(r.fallback, "text");
+  assert.match(r.note, /already on another card/);
+});
+
+test("places: a look that fails keeps the address-and-shape order (never worse than before), and the real path logs what the photo shows", async () => {
+  const page = "https://dir.example/p";
+  const a = "https://dir.example/x1.jpg", b = "https://dir.example/x2.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [a, b], { kind: "page", from: page });
+  const ranked = await cc.rankPlacePhotos(C, { name: "P", url: page }, { fetchPhoto: photosBy({ [a]: [800, 1200], [b]: [1600, 900] }), lookup: async () => null, look: async () => null });
+  assert.deepEqual(ranked.map(x => x.u), [b, a]);
+  const logs = [];
+  const places = { kind: "places", options: [{ name: "P", url: page }, { name: "Q", image_url: PHOTOS[1] }] };
+  const r = await cc.runChoiceTool("show_choices", places, ctx({ fetchPhoto: photosBy({ [a]: [800, 1200], [b]: [1600, 900], [PHOTOS[1]]: [900, 900] }), lookup: async () => null, log: (x) => logs.push(x),
+    lookPlace: async ({ photos }) => new Map(photos.map((p, k) => [k + 1, { shows: p.u === a ? "inside" : "outside", other: false }])) }));
+  assert.equal(r.ok, true);
+  assert.equal(logs.find(x => x.choice_place_photo && x.n === 1).shows, "inside");
+});
+
+test("lookAtPlacePhotos: one CLI call with every photo as an image block, on the subscription's side-call path; a bad answer is null", async () => {
+  const calls = [];
+  const run = async (args) => { calls.push(args); return { ok: true, envelope: { structured_output: { photos: [{ n: 1, shows: "inside", room: 3, other_business: false }, { n: 2, shows: "logo_or_menu", room: 0, other_business: false }, { n: 3, shows: "inside", room: 1, other_business: false }] } } }; };
+  const seen = await cc.lookAtPlacePhotos({ name: "Joe", photos: [{ mediaType: "image/jpeg", base64: "AA" }, { mediaType: "image/png", base64: "BB" }] }, { run });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].images.length, 2);
+  assert.equal(calls[0].images[1].source.media_type, "image/png");
+  assert.equal(calls[0].feature, "place_photo");
+  assert.ok(calls[0].jsonSchema);
+  // An "inside" with only a sliver of room in view (cups on a window ledge) is not counted as a room.
+  assert.deepEqual([...seen.entries()], [[1, { shows: "inside", room: 3, other: false }], [2, { shows: "logo_or_menu", room: 0, other: false }], [3, { shows: "other", room: 1, other: false }]]);
+  assert.equal(await cc.lookAtPlacePhotos({ name: "J", photos: [{ mediaType: "image/jpeg", base64: "A" }] }, { run: async () => ({ ok: false }) }), null);
+});
+
+test("places: a directory's strip of Street View frames further down is the neighbours — never this place's photo", async () => {
+  const page = "https://dir.example/cafes/joe";
+  const sv = (id) => `https://streetviewpixels-pa.googleapis.com/v1/thumbnail?panoid=${id}&w=1024&h=602`;
+  const own = sv("JOE"), [n1, n2, n3, n4] = ["BLUESTONE", "DEVOCION", "X", "Y"].map(sv);
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, ["https://dir.example/logo.png", own, "https://dir.example/a.jpg", "https://dir.example/b.jpg", n1, n2, n3, n4], { kind: "page", from: page });
+  const fetched = [];
+  const fetchPhoto = async ({ url }) => { fetched.push(url); return { ok: true, mediaType: "image/png", base64: png(1024, 602 + fetched.length).toString("base64") }; };
+  await cc.rankPlacePhotos(C, { name: "Joe", url: page }, { fetchPhoto, lookup: async () => null });
+  assert.ok(fetched.includes(own));
+  assert.ok(![n1, n2, n3, n4].some(u => fetched.includes(u)));
 });
