@@ -89,7 +89,7 @@ function stampHtml(stamp, markup) {
  * postmark, its name and one line. The seal's words are said by the text beside it, so it is hidden from
  * a screen reader there.
  */
-function sealTile(stamp) {
+export function sealTile(stamp) {
   return `<a class="dd-nb" href="/web/stamps"><span class="dd-nbs" aria-hidden="true" style="transform:rotate(${Number(stamp.rotation) || 0}deg)">${seal({ wax: stamp.wax, ring: stamp.ring, postmark: false, size: 104, tier: stamp.level, mark: stamp.tier })}</span>`
     + `<span class="dd-nbt"><span class="dd-lbl sm">NEW IN YOUR BOOK</span><span class="dd-nbn">${esc(stamp.name)}.</span><span class="dd-nbw">${esc(stamp.line)}</span></span></a>`;
 }
@@ -121,6 +121,17 @@ export function renderDaily({ edition: ed, csrf, now = clock.now(), stampMarkup 
 }
 
 // Every size, colour and space from reference/home.html, on the kit's tokens (Paper and Night).
+/** The tile's own CSS, for a Home that is not the daily edition (REASON_STAMPS_ALL; src/pages/webconvo.js renderHome). */
+export const SEAL_TILE_CSS = `
+.dd-lbl{margin:0;font:400 12px/1.4 var(--mono);letter-spacing:.14em;color:var(--muted)}
+.dd-lbl.sm{font-size:11px}
+.dd-nb{text-decoration:none;display:flex;align-items:center;gap:20px}
+.dd-nbs{flex-shrink:0;display:inline-flex}
+.dd-nbt{display:flex;flex-direction:column;gap:6px}
+.dd-nbn{font:italic 400 22px/1.2 var(--serif);color:var(--ink)}
+.dd-nbw{font-size:15px;line-height:1.45;color:var(--muted)}
+`;
+
 export const CSS = `${DAILY_HEAD_CSS}
 body{min-height:100vh}
 .dd{flex-grow:1;width:100%;max-width:1080px;margin:0 auto;padding:56px 24px 48px;display:flex;flex-direction:column;gap:48px}

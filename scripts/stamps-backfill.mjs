@@ -16,12 +16,12 @@ const only = args.find(a => a.startsWith("--conversation="))?.slice("--conversat
 
 const db = await import("../src/db.js");
 const stamps = await import("../src/stamps.js");
-const { dailyMode, dailyAllowedFor } = await import("../src/dailyflag.js");
+const { dailyMode, stampsOpen, stampsAllowedFor } = await import("../src/dailyflag.js");
 const { config } = await import("../src/config.js");
 
-const convs = only ? [only] : db.db.prepare("SELECT DISTINCT conversation_id FROM accounts").all().map(r => r.conversation_id).filter(dailyAllowedFor);
-console.log(`db: ${config.dbPath} · REASON_WEB_DAILY=${dailyMode()} · ${run ? "RUN (inserts into stamps only)" : "dry run"} · ${convs.length} conversation(s)`);
-if (!only && dailyMode() === "off") console.log("REASON_WEB_DAILY is off: nothing is allowed, nothing to do (name one with --conversation=)");
+const convs = only ? [only] : db.db.prepare("SELECT DISTINCT conversation_id FROM accounts").all().map(r => r.conversation_id).filter(stampsAllowedFor);
+console.log(`db: ${config.dbPath} · REASON_WEB_DAILY=${dailyMode()} · REASON_STAMPS_ALL=${stampsOpen() ? "on" : "off"} · ${run ? "RUN (inserts into stamps only)" : "dry run"} · ${convs.length} conversation(s)`);
+if (!only && dailyMode() === "off" && !stampsOpen()) console.log("REASON_WEB_DAILY is off: nothing is allowed, nothing to do (name one with --conversation=)");
 const before = db.db.prepare("SELECT COUNT(*) AS n FROM stamps").get().n;
 const total = {};
 for (const c of convs) {

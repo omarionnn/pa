@@ -23,7 +23,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
-import { dailyMode, dailyAllowedFor, waxLook, everydaySeals, sealTiers } from "./dailyflag.js";
+import { dailyMode, dailyAllowedFor, stampsOpen, stampsAllowedFor, waxLook, everydaySeals, sealTiers } from "./dailyflag.js";
 import { WAX, words, fullDate, postmarkDate } from "./seal.js";
 import { holdSeconds } from "./calls/hold.js";
 import { isSuccess } from "./calls/outcome.js";
@@ -318,9 +318,9 @@ function tellNew(conversationId, ids) {
   if (tellDelayMs > 0) { const t = setTimeout(send, tellDelayMs); t.unref?.(); } else send();
 }
 
-/** Award what one completion earned, live. Only for a person's own conversation (an account) that REASON_WEB_DAILY allows. */
+/** Award what one completion earned, live. Only for a person's own conversation (an account) that Stamps allows (REASON_WEB_DAILY or REASON_STAMPS_ALL). */
 export function awardLive(conversationId, candidates) {
-  if (!dailyAllowedFor(conversationId) || !db.getAccount(conversationId)) return [];
+  if (!stampsAllowedFor(conversationId) || !db.getAccount(conversationId)) return [];
   const ids = [];
   for (const c of candidates) {
     const id = award(conversationId, c);
@@ -348,7 +348,7 @@ const onResearch = ({ conversationId, id }) => {
 /** After any finished errand (research included): the suite key and the anniversary, if this one completed them. */
 const onAny = (conversationId) => {
   try {
-    if (!waxLook() || !conversationId || !dailyAllowedFor(conversationId) || !db.getAccount(conversationId)) return;
+    if (!waxLook() || !conversationId || !stampsAllowedFor(conversationId) || !db.getAccount(conversationId)) return;
     awardLive(conversationId, [...suiteCandidates(conversationId), ...anniversaryCandidates(conversationId)]);
   } catch (e) { logger({ stamp_award_failed: (e?.message ?? String(e)).split("\n")[0] }); }
 };
@@ -699,7 +699,7 @@ export function noteShareOpened(shareId, { log = () => {} } = {}) {
  * page's CTA puts it on the homepage link). Counted against that share; anything else is ignored.
  */
 export function noteShareSignup(ref, { log = () => {} } = {}) {
-  if (dailyMode() === "off") return false;
+  if (dailyMode() === "off" && !stampsOpen()) return false;
   const m = /^s_([0-9A-Za-z]{12})$/.exec(String(ref ?? ""));
   if (!m) return false;
   const r = db.db.prepare("UPDATE stamp_shares SET signups = signups + 1 WHERE share_id = ?").run(m[1]);

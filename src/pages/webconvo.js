@@ -48,9 +48,10 @@ import { prepareSend } from "../webmedia.js";
 import * as settle from "../settle.js";
 import { doingFor, doingEvents } from "../doing.js";
 import { draftEvents, draftNow } from "../webdraft.js";
-import { dailyAllowedFor } from "../dailyflag.js";
+import { dailyAllowedFor, stampsOpen, stampsAllowedFor, waxLook } from "../dailyflag.js";
+import { newestStamp } from "../stamps.js";
 import * as daily from "../daily.js";
-import { renderDaily } from "./webdaily.js";
+import { renderDaily, sealTile, SEAL_TILE_CSS } from "./webdaily.js";
 
 /** How many lines a page of history holds, first load and each "show earlier". */
 export const PAGE = 40;
@@ -604,14 +605,14 @@ const SEND_SVG = `<svg aria-hidden="true" viewBox="0 0 20 20"><path d="M10 16V4M
 
 const signOutForm = (csrf, cls = "act2") => `<form method="POST" action="/web/signout"><input type="hidden" name="c" value="${esc(csrf)}"><button class="${cls}" type="submit">SIGN OUT OF THIS BROWSER</button></form>`;
 
-/** The top of every signed-in screen: the wordmark home; MEMORY and SETTINGS on desktop; a menu on phones. */
+/** The top of every signed-in screen: the wordmark home; MEMORY and SETTINGS on desktop; a menu on phones. STAMPS too at REASON_STAMPS_ALL. */
 // There is one conversation, the thread shared with their texts (owner 10-27 07:08): nothing here starts another.
 function topBar({ csrf, extra = "", where = "" }) {
   return `<header class="top">${wordmark({ href: "/web?home" })}${where}`
-    + `<nav aria-label="Account">${extra}${typed("SAVED", { href: "/web/saved" })}${typed("MEMORY", { href: "/web/memory" })}${typed("SETTINGS", { href: "/web/settings" })}</nav>`
+    + `<nav aria-label="Account">${extra}${typed("SAVED", { href: "/web/saved" })}${stampsOpen() ? typed("STAMPS", { href: "/web/stamps" }) : ""}${typed("MEMORY", { href: "/web/memory" })}${typed("SETTINGS", { href: "/web/settings" })}</nav>`
     + `<button class="menu-b" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu">${MENU_SVG}</button></header>`
     + `<div class="menu" id="menu" hidden role="dialog" aria-modal="true" aria-label="Menu"><div class="menu-h">${wordmark()}<button class="act2 menu-x" type="button">CLOSE</button></div>`
-    + `<ul><li>${action("The thread", { href: "/web?thread" })}</li><li>${action("Memory", { href: "/web/memory" })}</li><li>${action("Settings", { href: "/web/settings" })}</li></ul>`
+    + `<ul><li>${action("The thread", { href: "/web?thread" })}</li>${stampsOpen() ? `<li>${action("Stamps", { href: "/web/stamps" })}</li>` : ""}<li>${action("Memory", { href: "/web/memory" })}</li><li>${action("Settings", { href: "/web/settings" })}</li></ul>`
     + `${signOutForm(csrf)}</div>`;
 }
 
@@ -963,7 +964,7 @@ export function longWorkHtml(work) {
 }
 
 /** B / B2, the arrival: the greeting, the composer, then what's in hand or where to start, then iMessage. */
-export function renderHome({ account, csrf, sendId, items = [], approvals = [], back = [], pick = "" }) {
+export function renderHome({ account, csrf, sendId, items = [], approvals = [], back = [], pick = "", newSeal = null }) {
   const name = String(account?.name ?? "").trim();
   // The approval stays on paper; what's already in hand is quiet rows between dashed rules, as on Ongoing (STAGING-REVIEW 7).
   const middle = items.length
@@ -974,9 +975,9 @@ export function renderHome({ account, csrf, sendId, items = [], approvals = [], 
     // Home's composer posts to the one shared thread, as every composer does (owner 10-27 07:08).
     + composer({ csrf, sendId })
     + (approvals.length ? `<section class="approval" aria-label="Needs you">${approvalCard({ title: approvals[0].title, money: approvals[0].money, href: approvals[0].href })}</section>` : "")
-    + middle + pick + `</main>`
+    + middle + (newSeal ? `<section class="newseal" aria-label="New in your book">${sealTile(newSeal)}</section>` : "") + pick + `</main>`
     + tabBar("chat", items.length + approvals.length + back.length) + listeningHtml();
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS, script: boot({ csrf, conversationId: account?.conversation_id }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS + (newSeal ? SEAL_TILE_CSS + ".newseal{margin:28px 0 0}" : ""), script: boot({ csrf, conversationId: account?.conversation_id }) + composeBoot() + NINE_D_JS + CLIENT_JS + COMPOSE_JS, bodyClass: "has-tabs", loader: true });
 }
 
 const ABOUT_RE = /^(task|timer|series|approval):(\d{1,15})$/;
@@ -1082,7 +1083,10 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
     // A fault drawing the edition never costs Home: today's Home is drawn instead.
     try { return renderDaily({ edition: daily.editionFor(conv, { now }), csrf, now, stampMarkup: daily.stampMarkupFn() }); } catch { /* below */ }
   }
-  return renderHome({ account, csrf, sendId, items, approvals, back, pick: pickUp(conv, service) });
+  // REASON_STAMPS_ALL: Home that is not the daily edition still shows a seal earned this week (wax book only).
+  let newSeal = null;
+  if (stampsOpen() && waxLook() && stampsAllowedFor(conv)) { try { const s = newestStamp(conv, { days: 7, now }); newSeal = s?.wax ? s : null; } catch { /* never costs Home */ } }
+  return renderHome({ account, csrf, sendId, items, approvals, back, pick: pickUp(conv, service), newSeal });
 }
 
 /**

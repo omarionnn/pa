@@ -37,3 +37,17 @@ export function everydaySeals() {
 export function sealTiers() {
   return everydaySeals() && ["1", "true", "on", "yes"].includes(String(process.env.REASON_STAMPS_TIERS ?? "").trim().toLowerCase());
 }
+
+// REASON_STAMPS_ALL (off | on, 2026-10-30): Stamps for everyone — the book, its STAMPS link, the "New in
+// your book" tile on Home, awards and shares — without the daily edition. Telling someone about a seal in
+// their thread stays behind REASON_WEB_DAILY=on (stamps.js tellNew), so this sends nothing. Off: Stamps is
+// wherever REASON_WEB_DAILY allows it, as before.
+export function stampsOpen() {
+  return ["1", "true", "on", "yes"].includes(String(process.env.REASON_STAMPS_ALL ?? "").trim().toLowerCase());
+}
+
+/** May this conversation have Stamps (the book, awards, shares)? REASON_WEB_DAILY's answer, or everyone at REASON_STAMPS_ALL. */
+export function stampsAllowedFor(conversationId) {
+  if (!conversationId) return false;
+  return stampsOpen() || dailyAllowedFor(conversationId);
+}
