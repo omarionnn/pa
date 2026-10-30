@@ -184,6 +184,7 @@ const DROP_FROM_EXPORT = ["oauth_states"];
 const REDACTED = "[not exported: this is a live credential]";
 
 function redactSecrets(table, rows) {
+  if (table === "trips") return rows.map(scrubTrip);
   const cols = SECRET_COLUMNS[table];
   if (!cols) return rows;
   return rows.map(r => {
@@ -191,6 +192,19 @@ function redactSecrets(table, rows) {
     for (const col of cols) out[col] = r[col] ? (REDACTED_AS[`${table}.${col}`] ?? REDACTED) : "";
     return out;
   });
+}
+
+/**
+ * A walk in an export: where it went and when, never where it started. The route, its steps, OSRM's own
+ * steps, the map round it and the streets all trace back to the start, so none of them leave; nor does
+ * the link's key, which opens the page. The row itself is deleted when the walk ends (src/trips.js endTrip).
+ */
+const TRIP_EXPORTED = ["id", "made", "name", "address", "walk", "walkM", "startsAt", "startsLabel", "arriveByLabel", "entrance", "links"];
+function scrubTrip(r) {
+  let t = {};
+  try { t = JSON.parse(r.trip); } catch { /* an unreadable row exports as nothing */ }
+  const kept = Object.fromEntries(TRIP_EXPORTED.filter((k) => t[k] !== undefined).map((k) => [k, t[k]]));
+  return { ...r, owner_key: r.owner_key ? REDACTED : "", trip: JSON.stringify({ ...kept, start: "[not exported: where the walk started]" }), streets: null };
 }
 
 // Tables keyed by page rather than by conversation: the browsers signed in to a page, the codes

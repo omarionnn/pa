@@ -19,7 +19,8 @@
 //      "Text me the code" texts the owner, the code signs the browser in and lands on the page; a fake-GPS
 //      walk along the real route reads the escort's moments, a wrong turn reroutes through the trip's own
 //      reroute (signed-in only, nothing stored), and arrival after the start is "You made it.", before it
-//      "You're early. It starts at <start>."
+//      "You're early." + ARRIVE BY <time> (an arrive-by is no event); the door line in the last 50 m;
+//      the trip deleted on the server on arrival and on END ESCORT
 //
 //   node .agents/skills/verify-reason/bin/directions-drive.mjs [outDir] [--reference <hand-off screens dir>]
 //
@@ -105,6 +106,15 @@ const REAL_OVERPASS = { elements: [
   { type: "way", tags: { highway: "primary", name: "Park Avenue South" }, geometry: [at(133, -200), at(133, 400)].map((p) => ({ lat: p.lat, lon: p.lng })) },
   { type: "way", tags: { leisure: "park" }, geometry: [at(20, 20), at(100, 20), at(100, 120), at(20, 120), at(20, 20)].map((p) => ({ lat: p.lat, lon: p.lng })) },
   { type: "node", lat: at(160, 270).lat, lon: at(160, 270).lng, tags: { amenity: "cafe", name: "Daily Provisions" } },
+] };
+/** Overpass, as it answers walk.js arrivalQuery for the door: the place's building, its main entrance on Park
+ * Avenue South, a fire exit, and a pharmacy beside the door. */
+const ll = (p) => ({ lat: p.lat, lon: p.lng });
+const REAL_ARRIVAL = { elements: [
+  { type: "way", id: 700, nodes: [701, 702, 703, 704, 701], tags: { building: "yes" } },
+  { type: "node", id: 702, ...ll(at(136, 262)), tags: { entrance: "main", "addr:street": "Park Avenue South" } },
+  { type: "node", id: 703, ...ll(at(150, 250)), tags: { entrance: "exit" } },
+  { type: "node", id: 750, ...ll(at(137, 268)), tags: { shop: "chemist", name: "Gramercy Pharmacy" } },
 ] };
 
 let BASE = "";
@@ -412,19 +422,25 @@ if (!ONLY_REAL) {
   const realFetch = async (u, opts) => {
     const s = String(u);
     if (s.includes("/osrm-real/")) return fetch(s, opts);
+    if (/overpass/.test(s) && /is_in/.test(String(opts?.body))) return { ok: true, json: async () => REAL_ARRIVAL };
     if (/overpass/.test(s)) return { ok: true, json: async () => REAL_OVERPASS };
     throw new Error(`the drive's trip asked the network for ${s}`);
   };
   const geocode = async (q) => (/joe coffee/i.test(q) ? { lat: REAL_TO.lat, lng: REAL_TO.lng, display_name: "Joe Coffee, 131, East 21st Street, Manhattan, New York" } : null);
   const routingWas = REASON_CONFIG.directionsRouting;
   REASON_CONFIG.directionsRouting = `${BASE}/osrm-real`;
-  const made = await runTool("directions", { to: "Joe Coffee, 131 E 21st St", place_name: "Joe Coffee", from_latitude: REAL_FROM.lat, from_longitude: REAL_FROM.lng, arrive_by: arriveBy }, { conversationId: "dm:owner", fetchImpl: realFetch, geocode });
-  REASON_CONFIG.directionsRouting = routingWas;
+  const makeOne = () => runTool("directions", { to: "Joe Coffee, 131 E 21st St", place_name: "Joe Coffee", from_latitude: REAL_FROM.lat, from_longitude: REAL_FROM.lng, arrive_by: arriveBy }, { conversationId: "dm:owner", fetchImpl: realFetch, geocode });
+  // The door is asked after the map, behind the tool's answer: wait for it on the row.
+  const doorOn = async (tid) => { for (let k = 0; k < 40 && tid && !db.getTrip(tid)?.trip.arrivalChecked; k++) await new Promise((r) => setTimeout(r, 100)); return db.getTrip(tid); };
+  const made = await makeOne();
   check("real trip: the directions tool made it, with a private link and the start", made.ok === true && /\/d\/[A-Za-z0-9]{12}\?k=/.test(made.link || "") && !!made.be_there_by, JSON.stringify(made).slice(0, 160));
   const id = /\/d\/([A-Za-z0-9]{12})\?k=([A-Za-z0-9]{12})/.exec(made.link || "");
-  const row = id ? db.getTrip(id[1]) : null;
+  const row = id ? await doorOn(id[1]) : null;
   check("real trip: stored with the map filled and the steps named", !!row && row.trip.map.major.length === 2 && row.trip.steps.some((st) => /East 17th Street/.test(st.instr)) && row.trip.side === "right", row ? JSON.stringify(row.trip.steps.map((st) => st.instr)) : "no row");
-  const startsLabel = row ? row.trip.startsLabel : "";
+  check("real trip: the door from OpenStreetMap — the main entrance on its street and the shop beside it, never the fire exit",
+    row?.trip.entrance === "MAIN ENTRANCE ON PARK AVENUE SOUTH, NEXT TO GRAMERCY PHARMACY" && row?.trip.look === "Look for the main entrance.", row ? `${row.trip.entrance} | ${row.trip.look}` : "no row");
+  check("real trip: an arrive-by is no event — nothing 'starts'", !!row && row.trip.startsLabel === undefined && !!row.trip.arriveByLabel && row.expires_at === row.trip.startsAt + 3600000);
+  const arriveByLabel = row ? row.trip.arriveByLabel : "";
   const keyed = `${BASE}/d/${id ? id[1] : "x"}?k=${id ? id[2] : "x"}`;
   const before = row ? JSON.stringify(db.getTrip(row.id)) : "";
 
@@ -491,6 +507,9 @@ if (!ONLY_REAL) {
   await feed(realAt(REAL_LINE.total - 1), 4500);
   const end = await caption();
   check("real walk: the last 50 m says which side, from the router", seen.some((t) => /It’s on your right/.test(t)), JSON.stringify(seen.map((t) => t.slice(0, 26))));
+  const door = seen.find((t) => /It’s on your right/.test(t)) || "";
+  check("real walk: the last 50 m names the door and its neighbour: \"Look for the main entrance.\" over MAIN ENTRANCE ON PARK AVENUE SOUTH, NEXT TO GRAMERCY PHARMACY",
+    /It’s on your right\. Look for the main entrance\./.test(door) && /MAIN ENTRANCE ON PARK AVENUE SOUTH, NEXT TO GRAMERCY PHARMACY · \d+ M/.test(door), door);
   check("real walk: after the start, 'You made it.' with the ARRIVED stamp", /You made it/.test(end) && /ARRIVED/.test(end), end.slice(0, 80));
   check("real walk: arrival stops location", (await page.textContent("#e-status-t")).trim() === "ESCORT ENDED" && (await page.evaluate(() => window.__geo.clear)) >= 1);
   const realSaid = await page.evaluate(() => window.__said);
@@ -499,25 +518,54 @@ if (!ONLY_REAL) {
   const audible = await page.evaluate(() => typeof window.speechSynthesis.speak === "function" && !("onvoiceschanged" in window.speechSynthesis) && Array.isArray(window.__said));
   check("drive is silent: speechSynthesis on the page is the recorder", audible);
   await page.screenshot({ path: join(outDir, "real-walk-arrived.png") });
+  for (let k = 0; k < 20 && row && db.db.prepare("SELECT 1 FROM trips WHERE id = ?").get(row.id); k++) await page.waitForTimeout(100);
+  check("real walk: on arrival the trip, and where it started, are deleted from the server at once",
+    !!row && !db.db.prepare("SELECT 1 FROM trips WHERE id = ?").get(row.id) && serverLog.some((l) => l.directions === "ended" && l.why === "arrived"), JSON.stringify(serverLog.filter((l) => l.directions === "ended")));
   const state = await context.storageState();
   await context.close();
 
-  // The same trip, the same signed-in browser, arriving 40 minutes before the start.
-  const early = await newPage(browser, { geo: true, clock: row ? row.trip.startsAt - 40 * 60000 : Date.now(), tz: "America/New_York" });
+  // A second trip, the same signed-in browser, arriving 40 minutes before the arrive-by; then END ESCORT on a third.
+  REASON_CONFIG.directionsRouting = `${BASE}/osrm-real`;
+  const made2 = await makeOne();
+  const made3 = await makeOne();
+  REASON_CONFIG.directionsRouting = routingWas;
+  const id2 = /\/d\/([A-Za-z0-9]{12})\?k=/.exec(made2.link || "");
+  const id3 = /\/d\/([A-Za-z0-9]{12})\?k=/.exec(made3.link || "");
+  const row2 = id2 ? await doorOn(id2[1]) : null;
+  const early = await newPage(browser, { geo: true, clock: row2 ? row2.trip.startsAt - 40 * 60000 : Date.now(), tz: "America/New_York" });
   await early.context.addCookies(state.cookies);
   await early.context.setGeolocation({ latitude: REAL_FROM.lat, longitude: REAL_FROM.lng, accuracy: 6 });
-  await early.page.goto(`${BASE}/d/${id ? id[1] : "x"}#ask`, { waitUntil: "load" });
+  await early.page.goto(`${BASE}/d/${id2 ? id2[1] : "x"}#ask`, { waitUntil: "load" });
   await early.page.click("#a-share");
   await early.page.waitForSelector("#e-status");
   for (let a = 0; a <= REAL_LINE.total; a += 15) { await early.context.setGeolocation({ ...realAt(Math.min(a, REAL_LINE.total - 1)), accuracy: 6 }); await early.page.waitForTimeout(400); }
   await early.context.setGeolocation({ ...realAt(REAL_LINE.total - 1), accuracy: 6 });
   await early.page.waitForTimeout(4500);
   const e = ((await early.page.textContent(".cap.on")) || "").replace(/\s+/g, " ");
-  check(`real walk: before the start, "You're early. It starts at ${startsLabel}." and what is nearby`, new RegExp(`You.re early\\. It starts at ${startsLabel.replace(":", "\\:")}\\.`).test(e) && /NEARBY · DAILY PROVISIONS/.test(e), e.slice(0, 90));
+  check(`real walk: 40 min before an arrive-by, "You're early." with ARRIVE BY ${arriveByLabel} and what is nearby — never "It starts at"`,
+    /You.re early\./.test(e) && !/starts/i.test(e) && e.includes(`ARRIVE BY ${arriveByLabel}`) && /NEARBY · DAILY PROVISIONS/.test(e), e.slice(0, 90));
   await early.page.screenshot({ path: join(outDir, "real-walk-early.png") });
   const errs = [...page.errors, ...early.page.errors].filter((x) => !/favicon/i.test(x));
-  check("real trip: no console error or CSP violation", errs.length === 0, errs.slice(0, 2).join(" | "));
   await early.context.close();
+
+  // END ESCORT part-way: the trip goes from the server too.
+  const ender = await newPage(browser, { geo: true, tz: "America/New_York" });
+  await ender.context.addCookies(state.cookies);
+  await ender.context.setGeolocation({ latitude: REAL_FROM.lat, longitude: REAL_FROM.lng, accuracy: 6 });
+  await ender.page.goto(`${BASE}/d/${id3 ? id3[1] : "x"}#ask`, { waitUntil: "load" });
+  await ender.page.click("#a-share");
+  await ender.page.waitForSelector("#e-status");
+  await ender.context.setGeolocation({ ...realAt(40), accuracy: 6 });
+  await ender.page.waitForTimeout(1200);
+  const kept = !!(id3 && db.getTrip(id3[1]));
+  await ender.page.click("#e-more");
+  await ender.page.waitForTimeout(400);
+  await ender.page.click("#e-end");
+  for (let k = 0; k < 20 && id3 && db.db.prepare("SELECT 1 FROM trips WHERE id = ?").get(id3[1]); k++) await ender.page.waitForTimeout(100);
+  check("real walk: END ESCORT deletes the trip from the server (kept while walking)", kept && !!id3 && !db.db.prepare("SELECT 1 FROM trips WHERE id = ?").get(id3[1]) && serverLog.some((l) => l.directions === "ended" && l.why === "ended"));
+  errs.push(...ender.page.errors.filter((x) => !/favicon/i.test(x)));
+  check("real trip: no console error or CSP violation", errs.length === 0, errs.slice(0, 2).join(" | "));
+  await ender.context.close();
 }
 
 await browser.close();

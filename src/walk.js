@@ -224,6 +224,109 @@ export function shapesFrom(data, { dest, placeName = "" } = {}) {
   return { map, streets, nearby: near };
 }
 
+// ---------- the door: entrances and landmarks at the end (Overpass) ----------
+/** How far round the end a landmark (a shop, a café, a church) is still "next to" it. */
+export const LANDMARK_M = 45;
+/** An entrance node this far from the end counts as the place's own door when no building is mapped round it. */
+export const ENTRANCE_NEAR_M = 30;
+
+/**
+ * The small question asked about the end alone: the building the end is in and its entrances (entrance=*
+ * nodes on its outline), any entrance right beside it, and the named places round it.
+ */
+export function arrivalQuery(dest) {
+  const at = `${dest.lat.toFixed(6)},${dest.lng.toFixed(6)}`;
+  const near = (m, f) => `node(around:${m},${at})${f};`;
+  return `[out:json][timeout:15];is_in(${at})->.a;way(pivot.a)["building"]->.b;.b out body;`
+    + `(node(w.b)["entrance"];${near(ENTRANCE_NEAR_M, '["entrance"]')})->.e;.e out body;`
+    + `(${["shop", "amenity", "tourism", "historic", "leisure"].map((k) => near(LANDMARK_M + 15, `["name"]["${k}"]`)).join("")})->.l;.l out body;`;
+}
+
+const ENTRANCE_KIND = { main: "MAIN ENTRANCE", yes: "ENTRANCE", home: "FRONT DOOR", staircase: "ENTRANCE", service: "SIDE ENTRANCE" };
+// Never somewhere to send a person in by.
+const NOT_A_WAY_IN = /^(exit|emergency|no)$/;
+const LANDMARK_SKIP = /^(bench|waste_basket|bicycle_parking|parking|parking_entrance|atm|vending_machine|post_box|telephone|drinking_water|recycling|charging_station|toilets|fountain|clock)$/;
+// A named point that is a whole area ("Flatiron District", tourism=attraction) is not something a door is next to.
+const isLandmark = (t) => (t.shop ? true : t.amenity ? !LANDMARK_SKIP.test(t.amenity) : t.tourism ? /^(hotel|hostel|museum|gallery)$/.test(t.tourism) : t.historic ? /^(monument|memorial|church)$/.test(t.historic) : !!t.leisure && /^(fitness_centre|sports_centre)$/.test(t.leisure));
+
+/**
+ * What the end's own door and neighbours are, from arrivalQuery's answer: { entrance, look, landmark }.
+ * `entrance` is the arrival line under the caption ("MAIN ENTRANCE ON EAST 21ST STREET, NEXT TO
+ * GRAMERCY PHARMACY"), `look` the sentence after "It's on your right." ("Look for the main entrance.").
+ * Both "" when OpenStreetMap knows nothing, so the page says what it said before.
+ */
+export function arrivalFacts(data, { dest, arriveAt = dest, placeName = "", streets = [] } = {}) {
+  const els = (data && data.elements) || [];
+  const onBuilding = new Set(els.filter((e) => e.type === "way" && Array.isArray(e.nodes)).flatMap((e) => e.nodes));
+  const same = (n) => String(n || "").trim().toLowerCase() === String(placeName).trim().toLowerCase();
+  const doors = [];
+  const marks = [];
+  for (const el of els) {
+    if (el.type !== "node" || !Number.isFinite(el.lat) || !Number.isFinite(el.lon)) continue;
+    const t = el.tags || {};
+    const p = { lat: el.lat, lng: el.lon };
+    if (t.entrance) {
+      if (NOT_A_WAY_IN.test(t.entrance) || t.access === "private" || t.access === "no") continue;
+      const own = onBuilding.has(el.id);
+      if (!own && haversine(dest, p) > ENTRANCE_NEAR_M) continue;
+      doors.push({ t, p, own, rank: (own ? 0 : 10) + (t.entrance === "main" ? 0 : t.entrance === "service" ? 4 : 2), m: haversine(arriveAt, p) });
+    } else if (t.name && !same(t.name) && isLandmark(t)) {
+      marks.push({ name: t.name.trim(), p });
+    }
+  }
+  doors.sort((a, b) => a.rank - b.rank || a.m - b.m);
+  const door = doors[0] || null;
+  const from = door ? door.p : dest;
+  const mark = marks.map((x) => ({ ...x, m: haversine(from, x.p) })).filter((x) => x.m <= LANDMARK_M).sort((a, b) => a.m - b.m)[0] || null;
+
+  const parts = [];
+  let look = "";
+  if (door) {
+    const t = door.t;
+    const label = t.ref ? `ENTRANCE ${String(t.ref).trim().toUpperCase()}` : t.name && !same(t.name) ? String(t.name).trim().toUpperCase() : ENTRANCE_KIND[t.entrance] || "ENTRANCE";
+    const street = String(t["addr:street"] || streetNear(door.p, streets, 25) || "").trim();
+    parts.push(street ? `${label} ON ${street.toUpperCase()}` : label);
+    look = t.ref ? `Look for the entrance marked ${String(t.ref).trim()}.` : `Look for the ${(ENTRANCE_KIND[t.entrance] || "ENTRANCE").toLowerCase()}.`;
+  }
+  if (mark) {
+    parts.push(`NEXT TO ${mark.name.toUpperCase()}`);
+    if (!look) look = `It’s next to ${mark.name}.`;
+  }
+  return { entrance: parts.join(", "), look, landmark: mark ? mark.name : "" };
+}
+
+/** A day is long enough for a door not to move; a failed ask is retried after ten minutes, not every trip. */
+export const ARRIVAL_CACHE_MS = 24 * 60 * 60 * 1000;
+export const ARRIVAL_RETRY_MS = 10 * 60 * 1000;
+const ARRIVAL_CACHE_MAX = 300;
+const arrivalCache = new Map();
+/** For tests: start with nothing remembered. */
+export function clearArrivalCache() { arrivalCache.clear(); }
+
+/**
+ * The end's door and neighbours, asked of Overpass once per place (cached by the end's spot, ~1 m), and
+ * never more than one ask at a time per place. Fails soft: { entrance: "", look: "" } and the page says
+ * "It's on your right" as before. Only the end is sent, never where the walk starts.
+ */
+export async function arrivalFor(dest, { fetchImpl = fetch, servers, now = Date.now(), arriveAt, placeName = "", streets = [] } = {}) {
+  const key = `${dest.lat.toFixed(5)},${dest.lng.toFixed(5)}`;
+  let hit = arrivalCache.get(key);
+  // Still being asked: share that ask. Answered: kept a day. Failed: asked again after ten minutes.
+  if (hit && hit.done && now - hit.at >= (hit.data ? ARRIVAL_CACHE_MS : ARRIVAL_RETRY_MS)) { arrivalCache.delete(key); hit = null; }
+  if (!hit) {
+    if (arrivalCache.size >= ARRIVAL_CACHE_MAX) arrivalCache.delete(arrivalCache.keys().next().value);
+    const entry = { at: now, done: false, data: null };
+    // Overpass often takes 30–45 s from a busy server; this runs behind the trip, so it can wait.
+    entry.ask = overpass(arrivalQuery(dest), { fetchImpl, servers, timeoutMs: 45000 }).catch(() => null)
+      .then((data) => { entry.data = data; entry.done = true; return data; });
+    arrivalCache.set(key, entry);
+    hit = entry;
+  }
+  const data = await hit.ask;
+  if (!data) return { ok: false, entrance: "", look: "", landmark: "" };
+  return { ok: true, ...arrivalFacts(data, { dest, arriveAt: arriveAt || dest, placeName, streets }) };
+}
+
 export async function overpass(query, { fetchImpl = fetch, timeoutMs = 15000, servers = OVERPASS } = {}) {
   for (const server of servers) {
     try {

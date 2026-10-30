@@ -18,11 +18,17 @@ import { tzFor } from "./series.js";
 import { savedPlaceFor } from "./ridelinks.js";
 import { drivingTime } from "./routing.js";
 import { haversine, lineOf, project, LONG_WALK_M } from "./pages/directionsclient.js";
-import { walkRoute, stepsFromOsrm, shapesFrom, boxAround, overpassQuery, overpass, pointAt, round6, locKey, distanceWords, minutesWords, startsLabel } from "./walk.js";
-export { walkRoute, stepsFromOsrm, shapesFrom, streetNear, distanceWords, minutesWords, startsLabel, FOLD_M } from "./walk.js";
+import { walkRoute, stepsFromOsrm, shapesFrom, boxAround, overpassQuery, overpass, pointAt, round6, locKey, distanceWords, minutesWords, startsLabel, arrivalFor } from "./walk.js";
+export { walkRoute, stepsFromOsrm, shapesFrom, streetNear, distanceWords, minutesWords, startsLabel, arrivalFacts, arrivalQuery, clearArrivalCache, FOLD_M } from "./walk.js";
 
-/** A trip lasts a day past the walk (or past being made): then the row, and the route in it, go. */
-export const TRIP_KEEP_MS = 24 * 60 * 60 * 1000;
+/**
+ * How long a trip outlives the time they meant to be there. The row holds where the walk started (the
+ * route's first point, and whatever start they gave in chat), so it goes the moment the walk ends — the
+ * page tells the server on arrival or END ESCORT (endTrip) — and this is only the backstop for a walk
+ * that was never finished on the page. An hour covers setting off late, a slow walk and a reroute or two;
+ * past that nobody is still on the way, and keeping where they set off from serves nobody.
+ */
+export const TRIP_KEEP_MS = 60 * 60 * 1000;
 /** Further than this in a straight line is not a walk at all: the tool says so and offers a ride. */
 export const MAX_WALK_M = 40000;
 /** The furthest ahead a trip can be made for. */
@@ -81,6 +87,26 @@ export async function fillTripMap(id, { fetchImpl = fetch, log = () => {}, serve
   return { ok: true };
 }
 
+/**
+ * The end's door and neighbours (walk.js arrivalFor): "MAIN ENTRANCE ON EAST 21ST STREET, NEXT TO …" under
+ * "It's on your right. Look for the main entrance." Asked after the map, never beside it (Overpass asks
+ * for two at a time at most), and cached per place. Nothing found, or Overpass down: the trip is left as
+ * it was and the page says "It's on your right", as it always did; a later open asks again.
+ */
+export async function fillArrival(id, { fetchImpl = fetch, servers, log = () => {} } = {}) {
+  const row = db.getTrip(id);
+  if (!row) return { ok: false, error: "no_trip" };
+  const t = row.trip;
+  const arriveAt = t.route && t.route.length ? t.route[t.route.length - 1] : t.destination;
+  const got = await arrivalFor(t.destination, { fetchImpl, servers, now: clock.now(), arriveAt, placeName: t.name, streets: tripStreets(row) });
+  if (!got.ok) { log({ directions: "arrival", ok: false, trip: id }); return { ok: false, error: "overpass_unreachable" }; }
+  const fresh = db.getTrip(id);
+  if (!fresh) return { ok: false, error: "no_trip" };
+  db.updateTrip(id, { ...fresh.trip, entrance: got.entrance, look: got.look, arrivalChecked: true });
+  log({ directions: "arrival", ok: true, trip: id, entrance: !!got.entrance, landmark: !!got.landmark });
+  return { ok: true, entrance: got.entrance };
+}
+
 /** The longest walk whose map is asked for; past it the box is too big for Overpass to answer in time. */
 export const MAP_MAX_M = 4000;
 /** When each trip's map was last asked for, so opening the page retries a failed fill at most this often. */
@@ -90,12 +116,16 @@ export const REFILL_GAP_MS = 10 * 60 * 1000;
 /** Opening a trip whose map never came: ask again in the background, at most every REFILL_GAP_MS. */
 export function refillIfBare(row, opts = {}) {
   const m = row?.trip?.map;
-  if (!m || m.major.length || m.minor.length || row.trip.walkM > MAP_MAX_M) return false;
+  const bareMap = !!m && !m.major.length && !m.minor.length && row.trip.walkM <= MAP_MAX_M;
+  const noDoor = !!row?.trip && !row.trip.arrivalChecked;
+  if (!bareMap && !noDoor) return false;
   if (clock.now() - (lastFill.get(row.id) ?? 0) < REFILL_GAP_MS) return false;
   // Only the last few minutes matter; anything older is forgotten, so the map never grows.
   for (const [k, at] of lastFill) if (clock.now() - at >= REFILL_GAP_MS) lastFill.delete(k);
   lastFill.set(row.id, clock.now());
-  fillTripMap(row.id, opts).catch(() => {});
+  (bareMap ? fillTripMap(row.id, opts) : Promise.resolve())
+    .then(() => (noDoor ? fillArrival(row.id, opts) : null))
+    .catch(() => {});
   return true;
 }
 
@@ -204,6 +234,9 @@ export async function makeTrip(c, input, { fetchImpl = fetch, geocode = null, lo
     return { ok: false, too_far: true, error: `That is ${distanceWords(crow)} away in a straight line, which is not a walk. Offer a ride instead (uber_link).` };
   }
 
+  // "It starts at 7" is said only of an event that starts then; a time they gave is when they want to be
+  // there, and the page says "Arrive by 7".
+  const isEvent = startsAt != null;
   if (!startsAt && input.arrive_by) {
     const at = events.parseStartsAt(input.arrive_by, tz);
     if (at == null) return { ok: false, error: "arrive_by must be their wall-clock time as YYYY-MM-DDTHH:MM." };
@@ -241,7 +274,7 @@ export async function makeTrip(c, input, { fetchImpl = fetch, geocode = null, lo
     entrance: "",
     nearby: "",
     side: walk.side,
-    ...(startsAt != null ? { startsAt, startsLabel: startsLabel(startsAt, tz) } : {}),
+    ...(startsAt != null ? { startsAt, ...(isEvent ? { startsLabel: startsLabel(startsAt, tz) } : { arriveByLabel: startsLabel(startsAt, tz) }) } : {}),
     ...(links ? { links } : {}),
     destination: { lat: round6(to.lat), lng: round6(to.lng) },
     route: walk.route,
@@ -249,10 +282,12 @@ export async function makeTrip(c, input, { fetchImpl = fetch, geocode = null, lo
     map: { major: [], minor: [], parks: [], water: [], pois: [], labels: [] },
   };
   // OSRM's own steps ride along on the row (stripped from the page) so the map fill can name the unnamed ones.
-  const row = db.createTrip(c, { ...trip, _raw: walk.raw }, { expiresAt: Math.max(now, startsAt ?? now) + TRIP_KEEP_MS });
+  const row = db.createTrip(c, { ...trip, _raw: walk.raw }, { expiresAt: tripExpiry({ now, startsAt, walkSeconds: walk.seconds }) });
   log({ directions: "trip", ok: true, trip: row.id, metres, steps: walk.steps.length });
 
   const filling = fillTripMap(row.id, { fetchImpl, log, servers }).catch((e) => ({ ok: false, error: e?.message ?? String(e) }));
+  // The door after the map, one Overpass ask at a time; the tool does not wait for it.
+  filling.then(() => fillArrival(row.id, { fetchImpl, log, servers })).catch(() => {});
   const mapped = await Promise.race([filling, new Promise((r) => setTimeout(() => r(null), mapWaitMs).unref?.())]);
 
   const leaveBy = startsAt != null ? startsAt - walk.seconds * 1000 - 5 * 60000 : null;
@@ -268,6 +303,25 @@ export async function makeTrip(c, input, { fetchImpl = fetch, geocode = null, lo
       + (startsAt != null ? " Say when to leave to be there on time." : "")
       + (far ? " It is a long walk: the page offers a ride as well; offer one in the same line (uber_link)." : ""),
   };
+}
+
+/**
+ * When a trip that was never finished on the page goes anyway: TRIP_KEEP_MS after the time they meant to
+ * be there — the event's start or their arrive-by, else the moment the walk would end if they left now.
+ */
+export function tripExpiry({ now, startsAt = null, walkSeconds = 0 }) {
+  const arrival = startsAt != null ? Math.max(startsAt, now) : now + Math.max(0, walkSeconds) * 1000;
+  return arrival + TRIP_KEEP_MS;
+}
+
+/**
+ * The walk is over (they arrived, or ended Escort): the row goes now, and with it the route, its first
+ * point and any start given in chat. The page already holds everything it needs to finish showing itself.
+ */
+export function endTrip(id, why, { log = () => {} } = {}) {
+  const gone = db.deleteTrip(id);
+  if (gone) log({ directions: "ended", trip: id, why: ["arrived", "ended", "early"].includes(why) ? why : "ended" });
+  return gone;
 }
 
 /** The page's own copy of a trip: the row's JSON without what only the server keeps. */

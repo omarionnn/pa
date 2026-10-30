@@ -386,10 +386,23 @@ const LOG_CONTENT = process.env.REASON_LOG_CONTENT === "1";
  * every field that names, dates or identifies a passenger, and the free-text fields the read-back
  * is quoted in. Ids, labels, states and totals stay readable. REASON_LOG_CONTENT does not lift it.
  */
+/**
+ * A walk's start (src/trips.js) is where somebody was standing, or said they were: kept on the trip only
+ * until the walk ends, and never in the decision log or the ledger — neither the coordinates nor the
+ * words. The link's `?k=` opens the page, so it is cut too.
+ */
+function sealWalk(value) {
+  const out = { ...value };
+  for (const k of ["from", "from_latitude", "from_longitude"]) if (k in out) out[k] = "[sealed]";
+  if (typeof out.link === "string") out.link = out.link.replace(/\?k=[^&#\s]*/, "");
+  return out;
+}
+
 export const TRAVELER_TOOLS = new Set(["flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget", "flight_book"]);
 const TRAVELER_KEYS = new Set(["given_name", "family_name", "born_on", "gender", "email", "phone", "known_traveler_number", "redress_number", "read_back", "travelers", "error", "note", "say", "said", "ask"]);
 export function sealTravelers(tool, value, depth = 0) {
   if (value === null || typeof value !== "object" || depth > 6) return value;
+  if (tool === "directions" && depth === 0 && !Array.isArray(value)) return sealWalk(value);
   const travelers = TRAVELER_TOOLS.has(tool);
   if (!travelers && !SECRET_TOOLS.has(tool)) return value;
   if (Array.isArray(value)) return value.map(v => sealTravelers(tool, v, depth + 1));

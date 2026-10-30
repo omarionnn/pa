@@ -207,6 +207,27 @@ export function mapStyle(theme, lat, shapes) {
 
 // ---------- turns and words ----------
 /** left | right | roundabout | straight, from a step. The page never says a street it does not know. */
+/**
+ * The last 50 m: which side, then the door and its neighbour when Reason found them on OpenStreetMap
+ * ("It’s on your right. Look for the main entrance." over "MAIN ENTRANCE ON EAST 21ST STREET, NEXT TO …").
+ * Without them it says only the side, as it always did.
+ */
+export function arriveCaption(T, dd) {
+  const side = T.side === 'left' ? 'It’s on your left.' : T.side === 'right' || T.demo ? 'It’s on your right.' : 'It’s just ahead.';
+  return { hand: side + (T.look ? ' ' + T.look : ''), sub: (T.entrance ? T.entrance + ' · ' : '') + Math.round(dd || 0) + ' M' };
+}
+
+/**
+ * Arriving more than ten minutes before the time: "It starts at 7" only for an event (it has a start and
+ * its link); a time they asked to be there by reads "ARRIVE BY 7", never as if something starts.
+ */
+export function earlyCaption(T) {
+  const event = !!(T.startsLabel && T.links && T.links.event);
+  const by = T.arriveByLabel || T.startsLabel || '';
+  const sub = [event || !by ? '' : 'ARRIVE BY ' + by, T.nearby ? 'NEARBY · ' + T.nearby : ''].filter(Boolean).join(' · ');
+  return { hand: event ? 'You’re early. It starts at ' + T.startsLabel + '.' : 'You’re early.', sub };
+}
+
 export function turnOf(step) {
   if (step.turn) return step.turn;
   const s = (step.instr || '').toLowerCase();
@@ -839,9 +860,9 @@ function boot() {
       case 'battery': return { hand: 'Battery’s low. Switch to Route to save it?', action: 'Switch to Route →', href: '#route' };
       case 'lost': return { hand: 'Lost signal for a bit, but I still know the way.', sub: 'NO SIGNAL · ROUTE SAVED ON THIS PAGE' };
       // A real trip knows the side only when the router said it, and the door only when Reason was told.
-      case 'arrive': return { hand: (T.side === 'left' ? 'It’s on your left.' : T.side === 'right' || T.demo ? 'It’s on your right.' : 'It’s just ahead.') + (T.entrance ? ' Look for the gate.' : ''), sub: (T.entrance ? T.entrance + ' · ' : '') + Math.round(v.dd) + ' M' };
+      case 'arrive': return arriveCaption(T, v.dd);
       case 'arrived': return { hand: 'You made it.', fs: '3.8rem', stamp: 'ARRIVED ' + clockNow(), action: T.links && T.links.event ? (T.links.event.label || 'See the event →') : null, href: T.links && T.links.event ? T.links.event.url : null };
-      case 'early': return { hand: 'You’re early. It starts at ' + (T.startsLabel || 'the start') + '.', fs: '2.9rem', sub: T.nearby ? 'NEARBY · ' + T.nearby : '', action: T.links && T.links.event ? (T.links.event.label || 'See the event →') : null, href: T.links && T.links.event ? T.links.event.url : null };
+      case 'early': return { ...earlyCaption(T), fs: '2.9rem', action: T.links && T.links.event ? (T.links.event.label || 'See the event →') : null, href: T.links && T.links.event ? T.links.event.url : null };
       case 'ended': return {};
       default: return { word: 'Keep going.' };
     }
@@ -916,6 +937,7 @@ function boot() {
       stopLive();
       if (demo) { clearTimeout(demo.timer); demo = null; }
       ENG.end();
+      endOnServer('ended');
       lastView = { ...(lastView || {}), state: 'ended', status: 'ESCORT ENDED', ended: true };
       paintEscort(lastView);
       setMore(false);
@@ -1142,7 +1164,23 @@ function boot() {
     if (location.hash === '#escort') paintEscort(v);
     lastView = v;
     if (location.hash === '#escort') paintMore(v);
-    if (v.ended) stopLive();
+    if (v.ended) { stopLive(); endOnServer(v.state); }
+  }
+
+  /**
+   * The walk is over: tell Reason once, so the stored trip (and where the walk started) is deleted now
+   * rather than an hour after it was due. The page keeps what it has; the sample is never stored.
+   */
+  let endSent = false;
+  function endOnServer(why) {
+    if (endSent || T.demo || !T.id || T.id === 'sample') return;
+    endSent = true;
+    try {
+      fetch('/d/' + encodeURIComponent(T.id) + '/end', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'same-origin', keepalive: true,
+        body: JSON.stringify({ why: why || 'ended' }),
+      }).catch(() => {});
+    } catch (e) { /* the hour's backstop deletes it */ }
   }
 
   function onGeoError(err) {
