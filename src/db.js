@@ -2978,6 +2978,10 @@ const MONEY_ASKS = new Set(["purchase", "purchase_confirm", "uber_request", "fli
 /** How long this ask stays answerable, in ms, by what it is for. */
 export function askTtlMs(row) {
   const action = String(row?.action ?? "").replace(/^mcp__[a-z0-9_-]+__/i, "");
+  // Letting somebody in: the ask lives exactly as long as their access request does
+  // (config.accessWindowMin, src/access.js readMasterReply), so the two can never disagree and a yes
+  // inside the request's window is never refused as a stale ask.
+  if (action === "access_grant") return config.accessWindowMin * 60_000;
   const h = REACH_ASKS.has(action) ? config.askTtlReachH
     : MONEY_ASKS.has(action) || row?.amount_cents != null ? config.askTtlMoneyH
     : config.askTtlDefaultH;
