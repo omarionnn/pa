@@ -355,6 +355,7 @@ const iconSite = (seen) => async (url) => {
   if (u.hostname === "amazon.com") return res(301, "", "", "https://www.amazon.com/");
   return res(404, "text/html", "nope");
 };
+const publicDns = async () => [{ address: "93.184.216.34", family: 4 }];
 
 test("any store: its key and name come from its site; an unknown one draws a clean monogram, never a broken image", async () => {
   assert.equal(shop.storeKey("https://www.amazon.com/dp/B0"), "amazon");
@@ -371,7 +372,7 @@ test("any store: its key and name come from its site; an unknown one draws a cle
   shop.noteStore({ store: "traderjoes", name: "Trader Joe's", url: "https://www.traderjoes.com/" });
   assert.equal(shop.storeName("traderjoes"), "Trader Joe's");
   const seen = [];
-  shop._setIconFetch(iconSite(seen));
+  shop._setIconFetch(iconSite(seen), publicDns);
   try {
     assert.equal(await shop.ensureIcon("pinkfrogshop"), "");
     assert.ok(seen.every((u) => u.startsWith("https://pinkfrogshop.com/")), seen.join(" "));
@@ -386,9 +387,49 @@ test("any store: its key and name come from its site; an unknown one draws a cle
   } finally { shop._setIconFetch(null); }
 });
 
+test("a store whose name resolves to a private or internal address is never fetched, nor is a redirect to one", async () => {
+  const PRIVATE = ["127.0.0.1", "10.1.2.3", "172.16.0.9", "172.31.255.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "100.101.102.103", "0.0.0.0", "::1", "fd00::1", "fc00::5", "fe80::1", "::ffff:127.0.0.1"];
+  const seen = [];
+  const site = async (url) => {
+    seen.push(url);
+    const u = new URL(url);
+    const res = (status, type, body, location) => ({ status, ok: status < 300, url, headers: { get: (h) => (h === "content-type" ? type : h === "location" ? location : null) }, arrayBuffer: async () => (typeof body === "string" ? Buffer.from(body) : body) });
+    if (u.hostname === "hopper.com") return res(302, "", "", "https://inside.hopperstatic.com/favicon.ico");
+    return res(200, "image/png", PNG);
+  };
+  try {
+    for (const [i, address] of PRIVATE.entries()) {
+      const key = `rebind${i}x`;
+      shop.noteStore({ store: key, url: `https://www.${key}.com/` });
+      shop._setIconFetch(site, async () => [{ address, family: address.includes(":") ? 6 : 4 }]);
+      seen.length = 0;
+      assert.equal(await shop.ensureIcon(key), "", address);
+      assert.equal(seen.length, 0, `${address}: nothing fetched`);
+    }
+    // one private answer among public ones is enough to refuse
+    shop.noteStore({ store: "mixedstore", url: "https://mixedstore.com/" });
+    shop._setIconFetch(site, async () => [{ address: "93.184.216.34", family: 4 }, { address: "10.0.0.1", family: 4 }]);
+    seen.length = 0;
+    assert.equal(await shop.ensureIcon("mixedstore"), "");
+    assert.equal(seen.length, 0);
+    // DNS that fails is a monogram, not a fetch
+    shop.noteStore({ store: "nodnsstore", url: "https://nodnsstore.com/" });
+    shop._setIconFetch(site, async () => { throw new Error("ENOTFOUND"); });
+    seen.length = 0;
+    assert.equal(await shop.ensureIcon("nodnsstore"), "");
+    assert.equal(seen.length, 0);
+    // a public site that redirects to a private one: the redirect is re-checked and never followed
+    shop.noteStore({ store: "hopper", url: "https://hopper.com/" });
+    shop._setIconFetch(site, async (h) => [{ address: h === "inside.hopperstatic.com" ? "127.0.0.1" : "93.184.216.34", family: 4 }]);
+    seen.length = 0;
+    assert.equal(await shop.ensureIcon("hopper"), "");
+    assert.ok(seen.length > 0 && seen.every((u) => new URL(u).hostname === "hopper.com"), seen.join(" "));
+  } finally { shop._setIconFetch(null); }
+});
+
 test("Amazon's page: 'Sign in to Amazon' with Amazon's own icon, fetched once and kept", async () => {
   const seen = [];
-  shop._setIconFetch(iconSite(seen));
+  shop._setIconFetch(iconSite(seen), publicDns);
   try {
     const out = await shop.startCheckout({ conversationId: OMARI, store: "amazon", startUrl: "https://www.amazon.com/s?k=cable", what: "Buy one USB-C cable.", item: "a USB-C cable", maxUsd: 15 });
     assert.equal(out.plan, "sign_in", "Amazon has no guest checkout");

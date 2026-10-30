@@ -93,6 +93,14 @@ test("send_picture in a tester's thread goes to the tester", async () => {
   assert.deepEqual(fake.sent.map(s => s.to), [YAW]);
 });
 
+test("send_picture with a NO_REPLY caption sends the picture and no marker", async () => {
+  const { router, fake } = harness();
+  const out = await runTool("send_picture", { url: "https://example.com/cabin.jpg", caption: "NO_REPLY" }, { conversationId: YAW_C, channels: router, messages: [] });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(fake.sent.length, 1, "the picture still went");
+  assert.doesNotMatch(JSON.stringify(fake.sent), /NO_REPLY/);
+});
+
 test("voice_note_send to:'owner' in a tester's thread goes to the tester", async (t) => {
   const { router, fake } = harness();
   const file = join(dir, "note.caf");

@@ -612,6 +612,21 @@ test("a real sentence with the marker after it keeps the sentence and drops the 
   assert.equal(r.said, "Got it, leaving it alone.");
 });
 
+test("end_call's spoken message never carries the marker: only-marker goes quietly, mixed keeps the words", async () => {
+  // The platform speaks end_call's `message` itself, so it never passed the sentence filter.
+  const logs = [];
+  const only = await drain((await llmRequest({ rawBody: bodyFor(ownerCall()), headers: AUTH, log: (e) => logs.push(e),
+    generate: scripted({ tool: "end_call", input: { reason: "done", message: "NO_REPLY" } }) })).stream);
+  assert.equal(only.toolCalls[0].function.name, "end_call", "still hangs up");
+  assert.deepEqual(JSON.parse(only.toolCalls[0].function.arguments), { reason: "done" });
+  assert.ok(logs.some(l => l.voice_no_reply_dropped && l.tool === "end_call"));
+
+  const mixed = await drain((await llmRequest({ rawBody: bodyFor(ownerCall()), headers: AUTH,
+    generate: scripted({ tool: "end_call", input: { reason: "done", message: "Okay, talk soon. NO_REPLY" } }) })).stream);
+  assert.match(JSON.parse(mixed.toolCalls[0].function.arguments).message, /^Okay, talk soon/, "the words are kept");
+  assert.doesNotMatch(mixed.toolCalls[0].function.arguments, /no[ _]?reply/i);
+});
+
 test("'no reply' in an ordinary sentence is still said", async () => {
   const call = ownerCall();
   const out = await llmRequest({ rawBody: bodyFor(call), headers: AUTH, generate: scripted("She's sent no reply yet. ", "Want me to nudge her?") });

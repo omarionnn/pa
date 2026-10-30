@@ -192,6 +192,18 @@ test("message_send to the owner needs no yes and really goes out", async () => {
   assert.match(out.note, /actually went out/i);
 });
 
+test("message_send never texts the silence marker: only-marker is not sent, a trailing marker line is dropped", async () => {
+  const { router, fake } = harness();
+  await router.deliver({ channel: "fake", externalId: "e-nr", from: OWNER, text: "hi", chatId: "chat-1", at: clock.now() });
+  const before = fake.sent.length;
+  const quiet = await runTool("message_send", { to: "owner", text: "**NO_REPLY**" }, { conversationId: config.ownerConversation, channels: router });
+  assert.equal(quiet.not_sent, true);
+  assert.equal(fake.sent.length, before, "nothing went out");
+  const out = await runTool("message_send", { to: "owner", text: "on it\nNO_REPLY" }, { conversationId: config.ownerConversation, channels: router });
+  assert.equal(out.ok, true);
+  assert.equal(fake.sent.at(-1).text, "on it");
+});
+
 test("message_send to anyone else is refused without a yes, and nothing is sent", async () => {
   const { router, fake } = harness();
   const out = await runTool("message_send", { to: STRANGER, text: "hey, omari asked me to text you" },
