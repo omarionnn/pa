@@ -110,7 +110,7 @@ async function contextDevScrape(href, { maxChars, timeoutMs }) {
   }
 }
 
-async function plainFetch(href, { maxChars, timeoutMs }) {
+export async function plainFetch(href, { maxChars, timeoutMs }) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
   try {

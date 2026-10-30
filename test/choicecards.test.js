@@ -539,3 +539,19 @@ test("review: the fallback never draws a photo the look rejected; a photo left o
   assert.equal(cc.pickPlacePhoto([{ u: sv("A"), sum: "1", uri: "u1" }], taken).ok, true);
   assert.equal(cc.pickPlacePhoto([{ u: sv("B"), sum: "2", uri: "u2" }], taken).ok, true);
 });
+
+test("a place page read that comes back with no pictures (Parallel Extract on live) is read again plainly for them", async () => {
+  const plainCalls = [];
+  const words = { ok: true, title: "Bluestone", text: "words", images: [], provider: "parallel" };
+  const html = { ok: true, title: "Bluestone", text: "words", images: ["https://cdn.example/counter.jpg"] };
+  const r = await cc.readPlacePage("https://dir.example/b", { read: async () => words, plain: async (u) => { plainCalls.push(u); return html; } });
+  assert.deepEqual(r.images, ["https://cdn.example/counter.jpg"]);
+  assert.deepEqual(plainCalls, ["https://dir.example/b"]);
+  const withPics = { ok: true, images: ["https://cdn.example/a.jpg"] };
+  assert.equal(await cc.readPlacePage("https://dir.example/c", { read: async () => withPics, plain: async () => { throw new Error("not called"); } }), withPics);
+  assert.equal((await cc.readPlacePage("https://dir.example/d", { read: async () => words, plain: async () => ({ ok: false }) })).text, "words");
+  // A read that already WAS the plain one, or an http page, is not fetched again.
+  const no = async () => { throw new Error("not called"); };
+  assert.equal((await cc.readPlacePage("https://dir.example/e", { read: async () => ({ ok: true, images: [] }), plain: no })).ok, true);
+  assert.equal((await cc.readPlacePage("http://dir.example/f", { read: async () => words, plain: no })).text, "words");
+});
