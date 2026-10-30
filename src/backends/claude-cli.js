@@ -115,9 +115,10 @@ export function historyParts(historyId, messages, { system = "", now = Date.now(
     // rewritten after it was set (db.redactFromReplies when someone asks to forget a thing,
     // db.scrubConversationText for an event password) or one put in among its lines
     // (db.insertBeforeLastAssistant) sets it again, so the model never reads text the thread no
-    // longer holds. And only while nothing of the newest MAX_HISTORY sits before it, so nothing the
-    // model saw before is missing. Read against the whole thread, not just its newest 40. Last
-    // match wins.
+    // longer holds. And only while nothing of the newest MAX_HISTORY messages (`lines`, the window
+    // the model saw before) sits before it, so nothing is missing; counted in lines, so a message
+    // that renders to nothing (a photo with no text) does not reset it every turn. Read
+    // against the whole thread, not just its newest 40. Last match wins.
     const all = messages.map(renderLine).filter(Boolean);
     const n = a.lines.length;
     let start = -1;
@@ -127,7 +128,7 @@ export function historyParts(historyId, messages, { system = "", now = Date.now(
       if (same) { start = s; break; }
     }
     const after = start >= 0 ? all.length - start - n : -1;
-    if (start >= 0 && start <= Math.max(0, all.length - MAX_HISTORY) && after <= ANCHOR_RECENT_MAX) {
+    if (start >= 0 && start <= all.length - lines.length && after <= ANCHOR_RECENT_MAX) {
       log({ history_anchor: "kept", recent: after, conversation: historyId });
       return { anchor: a.text, recent: all.slice(start + n) };
     }

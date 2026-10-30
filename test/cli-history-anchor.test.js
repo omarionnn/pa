@@ -161,3 +161,12 @@ test("a line put in before a short anchor sets it again, so nothing of the newes
   const t2 = historyParts("h", inserted, { now: 2_000 });
   assert.deepEqual([...t2.anchor.split("\n"), ...t2.recent], renderHistory(inserted), "every line shown, in order");
 });
+
+test("a message that renders to nothing (a photo with no text) does not reset the anchor on every turn", () => {
+  const msgs = [...thread(30).slice(0, -1), { role: "user", content: "" }, { role: "assistant", content: "answer 29" }];
+  const t1 = historyParts("h", msgs, { now: 1_000 });
+  const more = [...msgs, ...exchange(30)];
+  const t2 = historyParts("h", more, { now: 2_000 });
+  assert.equal(t2.anchor, t1.anchor, "kept");
+  assert.deepEqual([...t2.anchor.split("\n"), ...t2.recent].slice(-renderHistory(more).length), renderHistory(more));
+});
