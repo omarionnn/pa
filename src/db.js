@@ -4827,10 +4827,16 @@ export function listCalls(conversationId, { limit = 20 } = {}) {
  * now?" is the question asked before restarting the service.
  */
 export function lostCalls(startedBefore) {
+  // One cut-off for every state, or two: a call nobody picked up (`placing`/`ringing`) is given up on
+  // long before one somebody is talking on (`in_progress`) — see `callLostAfterMs` in tools.js.
+  const { notAnsweredBefore, inProgressBefore } = typeof startedBefore === "object" && startedBefore
+    ? startedBefore
+    : { notAnsweredBefore: startedBefore, inProgressBefore: startedBefore };
   return db.prepare(
-    `SELECT * FROM calls WHERE state IN ('placing', 'ringing', 'in_progress') AND created_at < ?
+    `SELECT * FROM calls WHERE (state IN ('placing', 'ringing') AND created_at < ?)
+      OR (state = 'in_progress' AND created_at < ?)
       ORDER BY id ASC`,
-  ).all(startedBefore).map(r => ({ ...r, facts: JSON.parse(r.facts) }));
+  ).all(notAnsweredBefore, inProgressBefore).map(r => ({ ...r, facts: JSON.parse(r.facts) }));
 }
 
 // ---------- errands: one request, several calls ----------

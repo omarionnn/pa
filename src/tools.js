@@ -7986,10 +7986,22 @@ export function queueMissedScheduledCall(conversationId, row, log = () => {}) {
 
 /**
  * How long past its own hard cap a call may still claim to be going before Reason stops believing
- * it. The platform ends a call at `callMaxMinutes`; the grace on top covers a webhook that was slow
- * rather than absent.
+ * it, by the state the row is in. The grace on top covers a webhook that was slow rather than absent.
+ *
+ * `in_progress` — somebody answered — waits on the PLATFORM's cap, not `callMaxMinutes`: since
+ * b10b6ab no per-call ceiling is sent (ElevenLabs refuses the override), so a call runs until the
+ * agent's own limit — an hour — and owner calls of 14–15 minutes have happened (calls 32, 35).
+ * Sweeping those at callMaxMinutes + grace (25 min) wrote a live 30-minute call down as lost. The
+ * larger of the two is used, so an install that really does allow longer calls is covered too.
+ *
+ * `placing`/`ringing` — nobody has answered — keeps the short window: a call that never connected
+ * has no hour to run, a missed scheduled call owes its "tried calling u" text promptly, and a stuck
+ * row counts against an errand's parallel-call limit until it is settled.
  */
-export const callLostAfterMs = () => (config.callMaxMinutes * 60 * 1000) + (15 * 60 * 1000);
+export const CALL_LOST_GRACE_MS = 15 * 60 * 1000;
+export const callLostAfterMs = (state = "in_progress") => (state === "in_progress"
+  ? Math.max(config.callMaxMinutes * 60, config.callPlatformCapSeconds || 0) * 1000
+  : config.callMaxMinutes * 60 * 1000) + CALL_LOST_GRACE_MS;
 
 // ---------------------------------------------------------------------------
 // One question, one run (2026-10-17: one question on a call became eleven runs)
@@ -8154,7 +8166,7 @@ export function settleAbandonedResearch({ now = clock.now(), log = () => {} } = 
 export async function settleLostCalls({ now = clock.now(), calls = null, log = () => {}, fetchImpl = null } = {}) {
   const out = { found: 0, settled: 0, unknown: 0, still_going: 0 };
   const ctx = fetchImpl ? { fetchImpl } : {};
-  for (const row of db.lostCalls(now - callLostAfterMs())) {
+  for (const row of db.lostCalls({ notAnsweredBefore: now - callLostAfterMs("placing"), inProgressBefore: now - callLostAfterMs("in_progress") })) {
     out.found++;
     if (calls?.name === row.provider && row.external_id) {
       let live;
