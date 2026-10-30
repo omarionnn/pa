@@ -236,17 +236,19 @@ const PRIVATE_HOST = /(^|\.)(localhost|local|internal|lan|home|arpa|ts\.net|test
 // alone proves nothing (pinkfrog.example can point at 127.0.0.1 or 169.254.169.254), so every hop is
 // resolved first and refused unless ALL its addresses are public (src/pictures.js isPrivateHost: loopback,
 // 10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10, ::1, fc00::/7, fe80::/10, v4-mapped).
-async function publicHost(hostname) {
+async function publicHost(hostname, signal) {
   const h = hostname.replace(/^\[|\]$/g, "");
   if (isIP(h)) return !isPrivateHost(h);
-  const addrs = await iconLookup(h).catch(() => []);
+  // The lookup rides the same 4s budget as the fetch: an abort mid-lookup refuses the host.
+  const aborted = new Promise((resolve) => { if (signal?.aborted) resolve([]); signal?.addEventListener?.("abort", () => resolve([]), { once: true }); });
+  const addrs = await Promise.race([iconLookup(h).catch(() => []), aborted]);
   return addrs.length > 0 && addrs.every((a) => isIP(a?.address) && !isPrivateHost(a.address));
 }
 async function fetchPublic(url, { accept, signal }) {
   for (let hop = 0; hop < 4; hop++) {
     let u; try { u = new URL(url); } catch { return null; }
     if (u.protocol !== "https:" || (u.port && u.port !== "443") || u.username || u.password) return null;
-    if (!hostOf(u.hostname) || PRIVATE_HOST.test(u.hostname) || !(await publicHost(u.hostname))) return null;
+    if (!hostOf(u.hostname) || PRIVATE_HOST.test(u.hostname) || !(await publicHost(u.hostname, signal))) return null;
     const res = await iconFetch(u.href, { redirect: "manual", signal, headers: { Accept: accept, "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" } });
     if (res.status >= 300 && res.status < 400 && res.headers?.get?.("location")) { url = new URL(res.headers.get("location"), u).href; continue; }
     return res.ok ? res : null;
