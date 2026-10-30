@@ -193,8 +193,9 @@ export function candidatesForCall(call) {
   if (talked && held >= LONG_HOLD_S) out.push({ type: "long_hold", ref: `call:${call.id}`, at, taskId: call.task_id ?? null, detail: { minutes: Math.round(held / 60), place } });
   const presses = parse(call.menu_presses, []);
   if (talked && Array.isArray(presses) && presses.length > 0) out.push({ type: "human", ref: `call:${call.id}`, at, taskId: call.task_id ?? null, detail: { place, presses: presses.length } });
-  // Rang on your behalf: a call to someone else that got what it was for, unless a rarer seal already marks it.
-  if (everydaySeals() && isSuccess(call.outcome_kind) && !Number(call.is_owner) && !out.length) {
+  // Rang on your behalf: a call Reason placed to someone else that got what it was for, unless a rarer seal
+  // marks it — judged only once the call is over, when its hold and menu presses are all in.
+  if (everydaySeals() && isSuccess(call.outcome_kind) && call.ended_at && !Number(call.is_owner) && call.direction !== "in" && !out.length) {
     out.push({ type: "rang", ref: `call:${call.id}`, at, taskId: call.task_id ?? null, detail: { place } });
   }
   if (isSuccess(call.outcome_kind)) {

@@ -384,7 +384,7 @@ const S = [
   ["settings-nothing-connected", "Settings", "Settings · nothing connected, no invites", "", settings({ connected: [], invitesView: null, browsers: browsers.slice(0, 1) }), {}],
 
   ["stamps", "Stamps", "Stamps · the book, last page", "Wax seals tilted on a paper sheet, NEW on the newest, two not-yet spots engraved, the aside: story, SHARE IT (the compliments card), the first-errand patch kept outside.", stampsPage(STAMPS_MANY), {}],
-  ["stamps-everyday", "Stamps", "Stamps · everyday seals", "Research (one a week) and a call that got what it was for land in the book: five seals, two not-yet spots, the patch outside.", stampsPage(STAMPS_EVERYDAY), {}],
+  ["stamps-everyday", "Stamps", "Stamps · everyday seals", "Research (one a week) and a call that got what it was for land in the book: five seals plus the patch outside, two not-yet spots, the patch outside.", stampsPage(STAMPS_EVERYDAY), {}],
   ["stamps-page1", "Stamps", "Stamps · an earlier page", "A full page of eight: no not-yet spots.", stampsPage(STAMPS_MANY, { page: 1 }), {}],
   ["stamps-first", "Stamps", "Stamps · first seal", "One seal, two not-yet spots, the patch outside the book.", stampsPage(STAMPS_MANY.slice(0, 2)), {}],
   ["stamps-patch-only", "Stamps", "Stamps · only the first errand", "No seals yet; the first-errand patch kept outside the book.", stampsPage(STAMPS_MANY.slice(0, 1)), {}],

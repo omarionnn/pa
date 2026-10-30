@@ -84,6 +84,22 @@ test("a call that got what it was for is Rang on your behalf; a failed call, a c
   assert.deepEqual(told, [], "owner mode: nothing is said in the thread");
 });
 
+test("an outcome written mid-call waits for the line to go down: a hold that runs past 30 min is Held, never also Rang; a ring-back in is not Rang", () => {
+  setNow(T0);
+  const id = Number(db.db.prepare("INSERT INTO calls (conversation_id, provider, to_number, goal, is_owner, created_at, updated_at, hold_total_s, menu_presses) VALUES (?, 'fake', '+18005551212', 'g', 0, ?, ?, 0, '[]')").run(OWNER_C, T0, T0).lastInsertRowid);
+  db.updateCall(OWNER_C, id, { outcome_kind: "confirmed" });
+  assert.equal(seals("rang").length, 0, "not while the call is still going");
+  db.db.prepare("UPDATE calls SET hold_total_s = ? WHERE id = ?").run(40 * 60, id);
+  setNow(T0 + 45 * 60_000);
+  db.updateCall(OWNER_C, id, { state: "completed" });
+  assert.equal(seals("long_hold").length, 1, "awarded live at the end of the call");
+  assert.equal(seals("rang").length, 0);
+  const back = endCall("goal_met", { at: T0 + DAY });
+  db.db.prepare("UPDATE calls SET direction = 'in' WHERE id = ?").run(back);
+  db.db.exec("DELETE FROM stamps WHERE type = 'rang'");
+  assert.deepEqual(stamps.backfill(OWNER_C), {}, "a call that came in is not one Reason rang");
+});
+
 test("a rarer seal on the same call wins: an IVR beaten is Spoke to the manager, not also Rang", () => {
   endCall("confirmed", { presses: [{ digit: "1" }] });
   assert.equal(seals("human").length, 1);
