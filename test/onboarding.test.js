@@ -54,11 +54,11 @@ beforeEach(() => {
  * A router over a live fake channel with a line number (so the card can go), a recorded turn, and
  * a stated read: `reads` maps what the person texts to what the model makes of it.
  */
-function harness(reads = {}, { reply = "on it" } = {}) {
+function harness(reads = {}, { reply = "on it", screen = null, channelOpts = {} } = {}) {
   const turns = [];
   const asked = [];
   const gaps = [];
-  const runtime = new Runtime({ runTurn: async ({ conversationId, text, kind, attachments }) => { turns.push({ conversationId, text, kind, attachments }); return reply; } });
+  const runtime = new Runtime({ runTurn: async ({ conversationId, text, kind, attachments }) => { turns.push({ conversationId, text, kind, attachments }); return reply; }, ...(screen ? { screen } : {}) });
   const ask = async ({ prompt, system }) => {
     const said = prompt.replace(/^Their text, verbatim:\n/, "");
     asked.push({ said, system });
@@ -67,14 +67,14 @@ function harness(reads = {}, { reply = "on it" } = {}) {
     return { value: { name: "", occupation: "", reply: "", ideas: [], ...r } };
   };
   const router = new Router({ runtime, judge: async () => ({ verdict: "unclear" }), onboard: { ask, sleep: async (ms) => { gaps.push(ms); } } });
-  const channel = router.register(new FakeChannel({ number: LINE }));
+  const channel = router.register(new FakeChannel({ number: LINE, ...channelOpts }));
   runtime.turnExtras.channels = router;
   return { runtime, router, channel, turns, asked, gaps };
 }
 
 const text = (from, body, extra = {}) => ({ channel: "fake", externalId: `m${Math.random()}`, from, text: body, at: clock.now(), ...extra });
 const to = (h, num) => h.channel.sent.filter(m => m.to === num);
-const words = (h, num) => to(h, num).map(m => m.media ? `[card ${m.media.url}]` : m.text);
+const words = (h, num) => to(h, num).map(m => m.media ? `${m.text} [card ${m.media.url}]` : m.text);
 const state = (num) => db.getAccount(conv(num))?.onboarding ?? null;
 
 const NAME = { "kofi": { kind: "answer", name: "Kofi" } };
@@ -138,7 +138,7 @@ test("a name in the very first text is never asked for: straight to step 2", asy
 
 // ---------- step 2 ----------
 
-test("their name: saved, then four bubbles in order with the card right after its line, a beat apart", async () => {
+test("their name: saved, then four bubbles in order, the card on the same message as its line, a beat apart", async () => {
   const h = harness({ ...GREET, ...NAME });
   const num = newNumber();
   await h.router.deliver(text(num, "hey"));
@@ -146,16 +146,17 @@ test("their name: saved, then four bubbles in order with the card right after it
   const before = to(h, num).length;
   await h.router.deliver(text(num, "kofi"));
   const got = words(h, num).slice(before);
-  assert.deepEqual(got.map(t => t.startsWith("[card ") ? "[card]" : t), [
-    "nice to meet you, Kofi", ob.WHAT_I_AM, ob.CARD_ASK, "[card]", ob.OCCUPATION_ASK,
+  assert.deepEqual(got.map(t => t.replace(/ \[card .*\]$/, " [card]")), [
+    "nice to meet you, Kofi", ob.WHAT_I_AM, `${ob.CARD_ASK} [card]`, ob.OCCUPATION_ASK,
   ]);
-  assert.match(got[3], /^\[card https:\/\/reason\.example\.test\/reason-[0-9a-f]{8}\.vcf\]$/);
-  assert.equal(to(h, num).slice(before).filter(m => m.media).length, 1, "the vCard is attached once");
-  assert.equal(to(h, num)[before + 3].text, "", "the card goes on its own, with no second line about it");
+  assert.match(got[2], /\[card https:\/\/reason\.example\.test\/reason-[0-9a-f]{8}\.vcf\]$/);
+  const media = to(h, num).slice(before).filter(m => m.media);
+  assert.equal(media.length, 1, "the vCard is attached once");
+  assert.equal(media[0].text, ob.CARD_ASK, "its line rides on the card's own message, so neither goes alone");
   assert.equal(db.getAccount(conv(num)).name, "Kofi");
   assert.ok(db.getAccount(conv(num)).contact_card_sent_at, "the card is marked sent, so nothing sends it again");
   assert.equal(state(num), "awaiting_occupation");
-  assert.equal(h.gaps.length, 4, "a beat between every two of the five sends");
+  assert.equal(h.gaps.length, 3, "a beat between every two of the four sends");
   for (const g of h.gaps) assert.ok(g >= 1000 && g <= 2000, `gap ${g}`);
   assert.ok(!got.some(t => /confirm|did you save|let me know when/i.test(t)), "never asks them to confirm the card");
 });
@@ -282,13 +283,187 @@ test("something real mid-flow ends it, and the normal turn does the thing first"
   assert.match(systemFor(accounts.ownerOf(conv(num))), /do not ask again/);
 });
 
-test("the read failing: the normal turn answers, and the step is left where it was", async () => {
+test("the read failing: the flow ends cleanly, the normal turn answers, and the old prompt does not run the steps again", async () => {
   const h = harness({ ...GREET });
   const num = newNumber();
   await h.router.deliver(text(num, "hey"));
   await h.router.deliver(text(num, "something the read cannot place"));
   assert.equal(h.turns.length, 1);
-  assert.equal(state(num), "awaiting_name");
+  assert.equal(state(num), "complete", "ended, not left for a second script");
+  const prompt = systemFor(accounts.ownerOf(conv(num)));
+  assert.doesNotMatch(prompt, /Early on, ask their name once/, "the prompt-led welcome is not run on top of the flow");
+  // The next text is an ordinary turn, never a flow step.
+  await h.router.deliver(text(num, "kofi"));
+  assert.equal(h.turns.length, 2);
+  assert.ok(!words(h, num).some(t => t.startsWith("nice to meet you")));
+});
+
+test("the read failing on the very first text: the old welcome runs once, alone", async () => {
+  const h = harness({});
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  assert.equal(h.turns.length, 1);
+  assert.equal(state(num), "complete");
+  assert.equal(words(h, num).filter(t => ob.OPENERS.includes(t)).length, 0);
+});
+
+// ---------- review fixes (PR #270) ----------
+
+test("the harm screen runs beside the read: anything not clear goes to the normal, screened turn and ends the flow", async () => {
+  const screened = [];
+  const screen = async ({ text }) => { screened.push(text); return /end it/.test(text) ? { verdict: "crisis", category: "self_harm" } : { verdict: "clear" }; };
+  const h = harness({ ...GREET, "kofi, honestly been wanting to end it": { kind: "answer", name: "Kofi" } }, { screen });
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  const before = to(h, num).length;
+  await h.router.deliver(text(num, "kofi, honestly been wanting to end it"));
+  assert.ok(screened.includes("kofi, honestly been wanting to end it"), "screened beside the read");
+  assert.ok(!words(h, num).slice(before).some(t => t.startsWith("nice to meet you")), "no cheerful step 2");
+  assert.equal(h.turns.length, 1, "the normal turn, which screens it and does what the verdict needs");
+  assert.equal(state(num), "complete");
+});
+
+test("a screen that could not run is not clear either", async () => {
+  const h = harness({ ...GREET, ...NAME }, { screen: async () => { throw new Error("cli down"); } });
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  assert.equal(h.turns.length, 1);
+  assert.equal(state(num), "complete");
+});
+
+test("awaiting their name with a name already on the account: never steered back to it", async () => {
+  const h = harness({ ...GREET, "what are you": { kind: "question", reply: "a friend who handles stuff over text" } });
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  db.setAccountName(conv(num), "Efua");
+  const before = to(h, num).length;
+  await h.router.deliver(text(num, "what are you"));
+  const got = words(h, num).slice(before);
+  assert.equal(got[0], "a friend who handles stuff over text");
+  assert.equal(got[1], "nice to meet you, Efua");
+  assert.ok(!got.includes(ob.STEERS.awaiting_name));
+});
+
+test("the card line never goes without the card: a recent failed try means no line", async () => {
+  const h = harness({ ...GREET, ...NAME });
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  db.markContactCardTried(conv(num));
+  const before = to(h, num).length;
+  await h.router.deliver(text(num, "kofi"));
+  assert.deepEqual(words(h, num).slice(before), ["nice to meet you, Kofi", ob.WHAT_I_AM, ob.OCCUPATION_ASK]);
+});
+
+test("the card failing to send takes its line with it — the line is on the card's own message", async () => {
+  const h = harness({ ...GREET, ...NAME }, { channelOpts: { mediaFailWith: "media fetch failed" } });
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  const before = to(h, num).length;
+  await h.router.deliver(text(num, "kofi"));
+  const got = words(h, num).slice(before);
+  assert.ok(!got.some(t => t.includes(ob.CARD_ASK)), JSON.stringify(got));
+  assert.deepEqual(got, ["nice to meet you, Kofi", ob.WHAT_I_AM], "the chain stops at the dead card; nothing jumps ahead of it");
+  assert.equal(db.getAccount(conv(num)).contact_card_sent_at ?? null, null);
+});
+
+test("bubbles keep their order through a retry: the outbox finishes the chain in order", async () => {
+  const outbox = await import("../src/outbox.js");
+  const h = harness({ ...GREET, ...NAME });
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  h.channel.failTimes = 1; // the next send (bubble 1 of step 2) is dropped once, retryably
+  const before = to(h, num).length;
+  await h.router.deliver(text(num, "kofi"));
+  assert.equal(to(h, num).length, before, "nothing jumped ahead of the dropped first bubble");
+  for (let i = 0; i < 6; i++) { clock.skip(10 * 60_000); await outbox.pass({ router: h.router }); }
+  const got = words(h, num).slice(before).map(t => t.replace(/ \[card .*\]$/, " [card]"));
+  assert.deepEqual(got, ["nice to meet you, Kofi", ob.WHAT_I_AM, `${ob.CARD_ASK} [card]`, ob.OCCUPATION_ASK]);
+  assert.ok(db.getAccount(conv(num)).contact_card_sent_at);
+});
+
+test("a restart between the step's commit and its sends: the outbox sends the step, and the next text is the next step — no steer for an unseen step", async () => {
+  const outbox = await import("../src/outbox.js");
+  const reads = { ...GREET, ...NAME, ...JOB };
+  const h1 = harness(reads);
+  const num = newNumber();
+  await h1.router.deliver(text(num, "hey"));
+  // The process dies after the first bubble of step 2 (the beat before bubble 2 never ends).
+  h1.router.onboard.sleep = async () => { throw new Error("process killed"); };
+  await h1.router.deliver(text(num, "kofi")).catch(() => {});
+  assert.equal(state(num), "awaiting_occupation", "the step and its queued bubbles were one commit");
+  // The next process: its sweep finishes the chain, in order.
+  const h2 = harness(reads);
+  for (let i = 0; i < 5; i++) await outbox.pass({ router: h2.router });
+  const sent = [...words(h1, num), ...words(h2, num)].map(t => t.replace(/ \[card .*\]$/, " [card]"));
+  assert.deepEqual(sent.slice(-4), ["nice to meet you, Kofi", ob.WHAT_I_AM, `${ob.CARD_ASK} [card]`, ob.OCCUPATION_ASK]);
+  await h2.router.deliver(text(num, "nursing student"));
+  assert.deepEqual(words(h2, num).slice(-4), [...JOB["nursing student"].ideas, ob.CLOSING]);
+  assert.ok(![...words(h1, num), ...words(h2, num)].some(t => Object.values(ob.STEERS).includes(t)));
+});
+
+test("a step's commit is all or nothing", () => {
+  const num = newNumber();
+  db.upsertAccount({ conversationId: conv(num), channel: "fake", address: num });
+  db.setOnboarding(conv(num), { state: "not_started" });
+  assert.throws(() => db.atomically(() => {
+    db.enqueueOutbound({ idemKey: `atomic-${num}`, conversationId: conv(num), channel: "fake", address: num, body: "x" });
+    db.setOnboarding(conv(num), { state: "awaiting_name" });
+    throw new Error("crash");
+  }));
+  assert.equal(state(num), "not_started");
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE idem_key = ?").get(`atomic-${num}`).n, 0);
+});
+
+test("a voice note is words by the time the flow reads it: its transcript is the answer, not a to-do", async () => {
+  const h = harness({ ...GREET, "it's kwame": { kind: "answer", name: "Kwame" } });
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  const before = to(h, num).length;
+  // The router's hear() puts the transcript in the text; the attachment rides along as kind voice.
+  h.router.hear = async () => "it's kwame";
+  await h.router.deliver(text(num, "", { attachments: [{ kind: "voice", url: "https://cdn.example.test/v.caf" }] }));
+  assert.equal(words(h, num)[before], "nice to meet you, Kwame");
+  assert.equal(h.turns.length, 0);
+});
+
+test("a picture before the to-do step is something real: the normal turn, with no to-do note", async () => {
+  const h = harness(GREET);
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  await h.router.deliver(text(num, "", { attachments: [{ kind: "image", url: "https://cdn.example.test/p.jpg", media_id: 2 }] }));
+  assert.equal(h.turns.length, 1);
+  assert.ok(!h.turns[0].text.includes("[First chat"), h.turns[0].text);
+  assert.equal(state(num), "complete");
+});
+
+test("a to-do list as the very first text: done first, never framed as the list they were asked for", async () => {
+  const h = harness({ "laundry, call mom, pay rent": { kind: "todo_list" } });
+  const num = newNumber();
+  await h.router.deliver(text(num, "laundry, call mom, pay rent"));
+  assert.ok(h.turns[0].text.startsWith(ob.TODO_FRAME_UNASKED));
+  assert.ok(!h.turns[0].text.includes("they were asked for"));
+  assert.equal(state(num), "complete");
+});
+
+test("a flow idle for a week is over: a late 'ok' gets the normal turn, not a to-do steer", async () => {
+  const h = harness({ ...GREET, ...NAME, ...JOB, "ok": { kind: "other", reply: "cool" } });
+  const num = newNumber();
+  await toTodo(h, num);
+  clock.skip(8 * 24 * 3_600_000);
+  await h.router.deliver(text(num, "ok"));
+  assert.equal(h.turns.length, 1);
+  assert.equal(state(num), "complete");
+  assert.ok(!words(h, num).includes(ob.STEERS.awaiting_todo));
+});
+
+test("the nudge's waking hour is THEIR zone, not the owner's", async () => {
+  const h = harness({ ...GREET });
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  db.db.prepare("UPDATE accounts SET notice_tz = 'Asia/Tokyo', tz_confirmed_at = 1 WHERE conversation_id = ?").run(conv(num));
+  const t = ob.scheduleNudge(conv(num));
+  const hour = (tz) => Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", hour: "2-digit" }).format(t.fire_at));
+  assert.ok(hour("Asia/Tokyo") >= 10 && hour("Asia/Tokyo") < 21, `Tokyo ${hour("Asia/Tokyo")}h`);
 });
 
 // ---------- step 4 ----------

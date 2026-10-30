@@ -23,11 +23,20 @@
 //
 // What their text MEANS (a name? a question? a real ask? a no?) is the model's read, never a regex
 // (owner rule): one structured side call on the subscription (askStructuredViaCli), never the API.
-// If that read fails, the message gets the normal turn and the step is left where it was.
+// If that read fails — or the harm screen, run beside it, says anything but clear — the flow ends
+// there and the message gets the normal, screened turn (with the prompt told the name was asked, so
+// the old prompt-led welcome never runs the same steps a second time).
+//
+// A step is one transaction: its bubbles queued in the outbox as one ordered chain (the card on the
+// same message as its line) AND the new state, together. A restart between the two cannot leave a
+// step recorded that nobody was sent, or bubbles sent for a step not recorded; the outbox finishes
+// the chain in order after a retry or a restart.
 import * as db from "./db.js";
+import * as outbox from "./outbox.js";
 import { config, clock, normalizeNumber, stamp } from "./config.js";
 import { askStructuredViaCli } from "./backends/cli.js";
-import { offerContactCard, contactCardUrl, lineNumber } from "./contact.js";
+import { contactCardUrl, lineNumber, RETRY_AFTER_MS } from "./contact.js";
+import { zoneFor } from "./zone.js";
 
 export const STATES = ["not_started", "awaiting_name", "awaiting_occupation", "awaiting_todo", "complete"];
 const ACTIVE = new Set(["not_started", "awaiting_name", "awaiting_occupation", "awaiting_todo"]);
@@ -66,8 +75,15 @@ export const GENERAL_IDEAS = [
   "I can look stuff up and come back with an actual pick, or make a call for you so you don't have to",
 ];
 
+/** A flow nobody has answered for this long is over: a late "ok" is not an answer to a step. */
+export const IDLE_MS = () => config.onboardingIdleDays * 24 * 3_600_000;
+/** Attachments that are words by the time the flow reads them (heard, read, or a link). */
+const WORDS = new Set(["voice", "contact", "link"]);
+
 /** The note the real turn gets with their to-do list. Code's line, so the history keeps it as such. */
 export const TODO_FRAME = "[First chat: this is the to-do list they were asked for (a picture or typed). Read every item on it. Do now what you really can with your tools — reminders, lookups, drafts, plans, messages with their ok. For anything you cannot do yourself (laundry, chores, anything physical), set a reminder for it at a sensible time instead. Then reply in short plain lines: first what you handled, then what you only set reminders for, so the two are clearly separate. Never say something is done unless a tool did it this turn. No markdown, no bullets.]";
+/** The same, for a list nobody asked for yet (it came before the to-do step). */
+export const TODO_FRAME_UNASKED = TODO_FRAME.replace("this is the to-do list they were asked for (a picture or typed)", "they sent a to-do list (a picture or typed)");
 
 // ---------- who is in it ----------
 
@@ -88,10 +104,18 @@ export function begin(conversationId) {
   return true;
 }
 
-/** Is this person mid-flow, with the switch still covering them? */
-export function active(conversationId) {
+/**
+ * Is this person mid-flow, with the switch still covering them? A flow idle past IDLE_MS is ended
+ * here (state 'complete'), so nothing after a week of silence is read as an answer to a step.
+ */
+export function active(conversationId, now = clock.now()) {
   const row = db.getAccount(conversationId);
-  return !!row && !row.is_operator && ACTIVE.has(row.onboarding) && coversAddress(row.address);
+  if (!row || row.is_operator || !ACTIVE.has(row.onboarding) || !coversAddress(row.address)) return false;
+  if (row.onboarding_at && now - row.onboarding_at > IDLE_MS()) {
+    finish(conversationId);
+    return false;
+  }
+  return true;
 }
 
 export function finish(conversationId) {
@@ -172,60 +196,74 @@ export async function readText({ state, text, ask = askStructuredViaCli }) {
 const pause = () => config.onboardingGapMs + Math.floor(Math.random() * 600);
 const realSleep = (ms) => new Promise(r => setTimeout(r, ms).unref?.());
 
-/** Can the card go right now? Only then is its line said: a line about a card that never comes is a lie. */
-function cardReady(router, account) {
-  if (!account || account.contact_card_sent_at) return false;
-  if (!account.channel || account.channel === "console") return false;
-  if (!contactCardUrl({ router, channel: account.channel })) return false;
-  return !!lineNumber(router, account.channel);
+/**
+ * The card's address when it can go on this step, or null. Not when it was already sent, not when
+ * a try failed inside the retry window (contact.js RETRY_AFTER_MS), not without a public address or
+ * a line number. Null means its line is not said either: it travels on the same message as the card.
+ */
+export function cardUrl(router, account, now = clock.now()) {
+  if (!account || account.contact_card_sent_at) return null;
+  if (account.contact_card_tried_at && now - account.contact_card_tried_at < RETRY_AFTER_MS) return null;
+  if (!account.channel || account.channel === "console") return null;
+  if (!lineNumber(router, account.channel)) return null;
+  return contactCardUrl({ router, channel: account.channel });
 }
 
+const live = (router, channel) => router?.get?.(channel)?.status?.().status === "live";
+
 /**
- * The bubbles, one message each, a beat apart, in order. `{ card: true }` in the list is Reason's
- * contact card, sent the moment its line has gone. Returns what was said, for the model's history.
+ * One step, committed: the bubbles queued as one ordered outbox chain (each row after the one
+ * before), the step's state, and the model's history, in ONE transaction. Then each row is tried
+ * in turn, a beat apart; the first that does not go stops the loop, and the sweep sends the rest in
+ * order once it does (outbox `after_id`). Returns what was said.
  */
-async function sendBubbles({ router, conversationId, route, bubbles, key, sleep, log }) {
-  const said = [];
-  let first = true;
-  for (const [i, b] of bubbles.entries()) {
-    if (!first) await sleep(pause());
-    first = false;
-    if (b?.card) {
-      const card = await offerContactCard({ router, account: db.getAccount(conversationId), log, line: "" });
-      if (card.outcome === "sent") said.push("[sent them Reason's contact card]");
-      else log({ onboarding_card: card.outcome, why: card.why ?? null, conversation: conversationId });
-      continue;
+async function commitStep({ router, conversationId, route, bubbles, key, write, historyLines, sleep, log }) {
+  const rows = [];
+  const canSend = live(router, route.channel);
+  if (!canSend) log({ onboarding_not_sent: conversationId, why: `${route.channel} is not connected` });
+  const said = bubbles.map(b => typeof b === "string" ? b : b.text);
+  db.atomically(() => {
+    let previous = null;
+    if (canSend) {
+      for (const [i, b] of bubbles.entries()) {
+        const { row } = db.enqueueOutbound({
+          idemKey: `${key}#${i + 1}`, conversationId, channel: route.channel, address: route.to, chatId: route.chatId ?? null,
+          body: typeof b === "string" ? b : b.text, media: b?.mediaUrl ? { mediaUrl: b.mediaUrl } : null,
+          afterId: previous, toOwner: true, maxAttempts: config.outboxMaxAttempts,
+        });
+        rows.push({ row, card: !!b?.mediaUrl });
+        previous = row.id;
+      }
+      if (rows.some(r => r.card)) db.markContactCardTried(conversationId);
     }
-    const r = await router.send({
-      channel: route.channel, to: route.to, chatId: route.chatId ?? null, text: b,
-      conversationId, toOwner: true, idempotencyKey: `${key}#${i + 1}`,
-    }).catch(e => ({ ok: false, error: e?.message }));
-    if (!r?.ok && !r?.queued) log({ onboarding_send_failed: conversationId, n: i + 1, why: r?.error ?? "unknown" });
-    said.push(b);
+    write();
+    const messages = db.loadConversation(conversationId);
+    messages.push(...historyLines(said));
+    db.saveConversation(conversationId, messages);
+  });
+  for (const [i, { row }] of rows.entries()) {
+    if (i) await sleep(pause());
+    const r = await outbox.attempt({ id: row.id, router, log });
+    if (!r.ok) { log({ onboarding_send_held: conversationId, n: i + 1, why: r.error ?? "unknown", queued: !!r.queued }); break; }
   }
+  // The card is theirs once it has gone, or is owed by the outbox (which reports it if it dies).
+  const card = rows.find(r => r.card);
+  if (card && ["sent", "queued", "sending", "unknown"].includes(db.getOutbound(card.row.id)?.state)) db.markContactCardSent(conversationId);
   return said;
 }
 
-/** Their text and what Reason said, on the model's thread, so the next real turn knows. */
-function remember(conversationId, name, text, said) {
-  const messages = db.loadConversation(conversationId);
-  messages.push({ role: "user", content: `[${stamp()}] ${name || "them"}: ${text}` });
-  if (said.length) messages.push({ role: "assistant", content: said.join("\n\n") });
-  db.saveConversation(conversationId, messages);
-}
-
-/** The one nudge, on the timer system, at a waking hour; only ever if none has gone. */
+/** The one nudge, on the timer system, at a waking hour in THEIR zone; only ever if none has gone. */
 export function scheduleNudge(conversationId, now = clock.now()) {
   db.cancelOnboardingNudges(conversationId);
   const row = db.getAccount(conversationId);
   if (!row || row.onboarding_nudged_at || !ACTIVE.has(row.onboarding) || row.onboarding === "not_started") return null;
   if (!(config.onboardingNudgeMin > 0)) return null;
-  const fireAt = wakingHour(now + config.onboardingNudgeMin * 60_000);
+  const fireAt = wakingHour(now + config.onboardingNudgeMin * 60_000, zoneFor(conversationId));
   return db.createTimer(conversationId, { fireAt, note: "first-chat nudge", label: db.ONBOARDING_NUDGE_LABEL });
 }
 
-/** The same moment, or 10am the next morning when it would land between 9pm and 10am. */
-export function wakingHour(at, tz = config.tz) {
+/** The same moment, or 10am the next morning when it would land between 9pm and 10am in `tz`. */
+export function wakingHour(at, tz = config.installTz) {
   const hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", hour: "2-digit" }).format(at));
   if (hour >= 10 && hour < 21) return at;
   const ahead = hour >= 21 ? 24 - hour + 10 : 10 - hour;
@@ -238,7 +276,7 @@ export function wakingHour(at, tz = config.tz) {
  */
 export async function fireNudge({ timer, router, key, log = () => {} }) {
   const row = db.getAccount(timer.conversation_id);
-  if (!row || row.onboarding_nudged_at || !NUDGES[row.onboarding] || !coversAddress(row.address) || !router) return null;
+  if (!row || row.onboarding_nudged_at || !NUDGES[row.onboarding] || !router || !active(row.conversation_id)) return null;
   db.setOnboarding(row.conversation_id, { nudged: true });
   const thread = db.getThread?.(row.conversation_id) ?? null;
   const text = NUDGES[row.onboarding];
@@ -260,26 +298,44 @@ const pick = (list) => list[Math.floor(Math.random() * list.length)];
 /**
  * One drained message (or burst) from somebody mid-flow. Returns `{ handled: true, step }` when the
  * flow answered it with its own bubbles, or `{ handled: false, frame? }` when the normal turn should
- * answer it (with `frame` put in front of their text for the to-do list).
+ * answer it (with `frame` put in front of their text for a to-do list).
+ *
+ * `screen` is the harm screen (Runtime.screen), run beside the read: anything it does not call
+ * clear ends the flow and goes to the normal turn, which screens it again and does what that
+ * verdict needs.
  */
-export async function handle({ router, conversationId, route, texts = [], attachments = [], ask = askStructuredViaCli, sleep = realSleep, log = () => {} }) {
+export async function handle({ router, conversationId, route, texts = [], attachments = [], ask = askStructuredViaCli, screen = null, sleep = realSleep, log = () => {} }) {
+  if (!active(conversationId)) return { handled: false };
   const row = db.getAccount(conversationId);
-  const state = row?.onboarding;
-  if (!row || !ACTIVE.has(state)) return { handled: false };
+  const state = row.onboarding;
   db.cancelOnboardingNudges(conversationId);
   const text = texts.filter(Boolean).join("\n").trim();
 
-  // A picture is something real: the to-do list on its step, before that whatever they sent it for.
-  if (attachments.length) {
+  // A voice note, a contact card or a link is words by now (heard / read upstream), so it is read
+  // like text. A picture or a document is something real: the to-do list on its step, before that
+  // whatever they sent it for.
+  const real = attachments.filter(a => !WORDS.has(a?.kind));
+  if (real.length) {
     finish(conversationId);
-    const todo = state === "awaiting_todo" && attachments.some(a => a?.kind === "image");
-    log({ onboarding: conversationId, from: state, to: "complete", why: todo ? "todo_photo" : "attachment" });
+    const todo = state === "awaiting_todo";
+    log({ onboarding: conversationId, from: state, to: "complete", why: todo ? "todo_attachment" : "attachment" });
     return { handled: false, ...(todo ? { frame: TODO_FRAME } : {}) };
   }
 
-  const read = await readText({ state, text, ask });
+  const [read, screened] = await Promise.all([
+    readText({ state, text, ask }).catch(() => null),
+    screen ? Promise.resolve().then(() => screen({ text })).catch(e => ({ verdict: "unscreened", error: e?.message })) : { verdict: "clear" },
+  ]);
+  const verdict = screened?.verdict ?? "clear";
+  if (verdict !== "clear") {
+    finish(conversationId);
+    log({ onboarding: conversationId, from: state, to: "complete", why: `screen_${verdict}` });
+    return { handled: false };
+  }
+  // No read: the flow ends rather than leaving a step for the old prompt to run again.
   if (!read) {
-    log({ onboarding_read_failed: conversationId, step: state });
+    finish(conversationId);
+    log({ onboarding_read_failed: conversationId, step: state, to: "complete" });
     return { handled: false };
   }
   log({ onboarding_read: conversationId, step: state, kind: read.kind });
@@ -289,14 +345,13 @@ export async function handle({ router, conversationId, route, texts = [], attach
     db.setAccountName(conversationId, read.name);
     name = read.name;
   }
-  if (read.occupation && state === "awaiting_occupation" && name) db.remember(conversationId, name, `works as / does: ${read.occupation}`, { source: "user_stated" });
-  else if (read.occupation && state === "awaiting_occupation") db.remember(conversationId, "me", `works as / does: ${read.occupation}`, { source: "user_stated" });
+  if (read.occupation && state === "awaiting_occupation") db.remember(conversationId, name || "me", `works as / does: ${read.occupation}`, { source: "user_stated" });
 
   // Something real ends it, and the normal turn does the thing first.
-  if (read.kind === "task" || (read.kind === "todo_list")) {
+  if (read.kind === "task" || read.kind === "todo_list") {
     finish(conversationId);
     log({ onboarding: conversationId, from: state, to: "complete", why: read.kind });
-    return { handled: false, ...(read.kind === "todo_list" ? { frame: TODO_FRAME } : {}) };
+    return { handled: false, ...(read.kind === "todo_list" ? { frame: state === "awaiting_todo" ? TODO_FRAME : TODO_FRAME_UNASKED } : {}) };
   }
 
   const detour = read.kind === "question" || read.kind === "other" || (read.kind === "greeting" && state !== "not_started");
@@ -306,8 +361,8 @@ export async function handle({ router, conversationId, route, texts = [], attach
   let next = state;
 
   const step2 = (who) => {
-    const card = cardReady(router, db.getAccount(conversationId));
-    return [MET(who), WHAT_I_AM, ...(card ? [CARD_ASK, { card: true }] : []), OCCUPATION_ASK];
+    const url = cardUrl(router, db.getAccount(conversationId));
+    return [MET(who), WHAT_I_AM, ...(url ? [{ text: CARD_ASK, mediaUrl: url }] : []), OCCUPATION_ASK];
   };
   const step3 = (ideas) => [...(ideas.length >= 2 ? ideas : GENERAL_IDEAS), CLOSING];
 
@@ -316,9 +371,10 @@ export async function handle({ router, conversationId, route, texts = [], attach
     if (read.name) { bubbles = [...(read.kind === "question" ? replyLine : []), ...step2(read.name)]; next = "awaiting_occupation"; }
     else { bubbles = [...(read.kind === "question" ? replyLine : []), pick(OPENERS)]; next = "awaiting_name"; }
   } else if (state === "awaiting_name") {
-    if (read.kind === "answer" && read.name) { bubbles = [...replyLine, ...step2(read.name)]; next = "awaiting_occupation"; }
+    if (read.name) { bubbles = [...replyLine, ...step2(read.name)]; next = "awaiting_occupation"; }
     else if (read.kind === "decline") { bubbles = step2(""); next = "awaiting_occupation"; }
-    else if (read.name) { bubbles = [...replyLine, ...step2(read.name)]; next = "awaiting_occupation"; }
+    // A name already on the account (the channel's display name, or saved some other way): not asked again.
+    else if (row.name) { bubbles = [...replyLine, ...step2(row.name)]; next = "awaiting_occupation"; }
     else if (!steered) { bubbles = [...replyLine, STEERS.awaiting_name]; }
     else { bubbles = [...replyLine, ...step2("")]; next = "awaiting_occupation"; }
   } else if (state === "awaiting_occupation") {
@@ -331,14 +387,19 @@ export async function handle({ router, conversationId, route, texts = [], attach
     else { bubbles = replyLine.length ? replyLine : [LATER]; next = "complete"; }
   }
 
-  // Written before the sends, so a second text racing these bubbles reads the step they are on.
-  if (next === "complete") finish(conversationId);
-  else if (next !== state) db.setOnboarding(conversationId, { state: next, nameAsked: next === "awaiting_name" || state === "awaiting_name" });
-  else db.setOnboarding(conversationId, { steers: steered + 1 });
+  // The step's key is fixed by where they were, so the same step run twice queues nothing twice.
+  const key = `onboard:${conversationId}:${state}:${steered}:${row.onboarding_at ?? 0}`;
+  const write = () => {
+    if (next === "complete") finish(conversationId);
+    else if (next !== state) db.setOnboarding(conversationId, { state: next, nameAsked: next === "awaiting_name" || state === "awaiting_name" });
+    else db.setOnboarding(conversationId, { steers: steered + 1 });
+  };
+  const historyLines = (said) => [
+    { role: "user", content: `[${stamp()}] ${name || "them"}: ${text}` },
+    ...(said.length ? [{ role: "assistant", content: said.map(t => t === CARD_ASK ? `${t}\n[sent them Reason's contact card with it]` : t).join("\n\n") }] : []),
+  ];
   log({ onboarding: conversationId, from: state, to: next, bubbles: bubbles.length });
-
-  const said = await sendBubbles({ router, conversationId, route, bubbles, key: `onboard:${conversationId}:${state}:${clock.now()}`, sleep, log });
-  remember(conversationId, name, text, said);
+  const said = await commitStep({ router, conversationId, route, bubbles, key, write, historyLines, sleep, log });
   if (next !== "complete") scheduleNudge(conversationId);
   return { handled: true, step: next, said };
 }

@@ -334,6 +334,8 @@ export const config = {
   onboardingGapMs: Number(process.env.REASON_ONBOARDING_GAP_MS ?? 1100),
   // The one nudge for somebody who went quiet mid-flow, this long after the last step (never at night).
   onboardingNudgeMin: Number(process.env.REASON_ONBOARDING_NUDGE_MIN ?? 240),
+  // A flow nobody has answered for this many days is over ('complete'): a late "ok" is not a step's answer.
+  onboardingIdleDays: Number(process.env.REASON_ONBOARDING_IDLE_DAYS ?? 7),
   // Per person, per day. 0 means uncapped. These exist so one person cannot run up the bill.
   maxTurnsPerDay: Number(process.env.REASON_MAX_TURNS_PER_DAY ?? 120),
   maxProactivePerDay: Number(process.env.REASON_MAX_PROACTIVE_PER_DAY ?? 8),

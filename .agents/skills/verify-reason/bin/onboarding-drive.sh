@@ -81,7 +81,7 @@ const fs = require("fs");
 const [cap, saidFile, who] = process.argv.slice(2);
 const lines = (f) => fs.readFileSync(f, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
 const sent = lines(cap).filter(r => r.method === "POST" && /send-message/.test(r.path) && r.body?.number === who)
-  .map(r => ({ at: Date.parse(r.at), reason: r.body.media_url ? `[contact card ${r.body.media_url}]` : (r.body.content ?? "") }));
+  .map(r => ({ at: Date.parse(r.at), reason: r.body.media_url ? `${r.body.content ? `${r.body.content} ` : ""}[contact card ${r.body.media_url}]` : (r.body.content ?? "") }));
 const said = lines(saidFile).map(r => ({ at: Date.parse(r.at), you: r.you }));
 let prev = null;
 for (const m of [...sent, ...said].sort((a, b) => a.at - b.at)) {
@@ -106,7 +106,7 @@ const checks = [
   ["one opener", (t.match(/I'm Reason/g) ?? []).length === 1],
   ["steered back to the name", /I didn't get your name/.test(t)],
   ["nice to meet you, Kofi", /nice to meet you, Kofi/i.test(t)],
-  ["the card right after its line", /save my contact card so my links open properly\n.*\[contact card https:\/\/cage\.example\.test\/reason-[0-9a-f]{8}\.vcf\]\n.*so what do you do\?/.test(t)],
+  ["the card on the same message as its line, then the question", /save my contact card so my links open properly \[contact card https:\/\/cage\.example\.test\/reason-[0-9a-f]{8}\.vcf\]\n.*so what do you do\?/.test(t)],
   ["the closing line, word for word", t.includes("or better yet, send me a picture of your to-do list and I'll knock them out right now.")],
   ["name saved", acct.name === "Kofi"],
   ["flow complete after the list", acct.onboarding === "complete"],

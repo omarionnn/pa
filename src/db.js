@@ -3242,6 +3242,16 @@ export function accountHistory(conversationId) {
   return db.prepare("SELECT * FROM connected_accounts WHERE conversation_id = ? ORDER BY connected_at DESC").all(conversationId);
 }
 
+/**
+ * Run `fn` (synchronous) as one transaction: everything it writes lands, or nothing does. For a
+ * caller whose writes span several helpers — the onboarding's step (its queued bubbles + its state).
+ */
+export function atomically(fn) {
+  db.exec("BEGIN IMMEDIATE");
+  try { const out = fn(); db.exec("COMMIT"); return out; }
+  catch (e) { try { db.exec("ROLLBACK"); } catch { /* already rolled back */ } throw e; }
+}
+
 // ---------- the first-chat onboarding (src/onboarding.js) ----------
 /** The label its one nudge timer carries; such a timer is code's, never listed as theirs. */
 export const ONBOARDING_NUDGE_LABEL = "onboarding:nudge";

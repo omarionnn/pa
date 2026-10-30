@@ -703,8 +703,12 @@ export class Router {
       // list — ends it and falls through to the normal turn below, which does the thing first.
       let onboardFrame = "";
       if (last.channel !== web.WEB && !fold.webChat && onboarding.active(conversationId)) {
+        const thread = db.loadConversation(conversationId);
+        const who = accounts.ownerOf(conversationId).name;
         const ob = await onboarding.handle({
           router: this, conversationId, texts: said,
+          // The harm screen beside the read, as #readMidTurn does: anything not clear leaves the flow.
+          screen: ({ text }) => this.runtime.screen?.({ text, messages: thread, who: who === "the person I work for" ? "them" : who }) ?? { verdict: "clear" },
           route: { channel: last.channel, to: last.address, chatId: last.chat_id ?? null },
           attachments: held.flatMap(h => h.attachments ?? []), log: this.log, ...this.onboard,
         });
@@ -1303,7 +1307,7 @@ export class Router {
    * those turn into once the bookkeeping is done. It is also the honest path for the console and
    * for the handful of code-written lines that belong to no conversation.
    */
-  async sendNow({ channel, to, text, chatId = null, idempotencyKey, file = null, mimeType = null, filename = null, sendStyle = null, replyTo = null }) {
+  async sendNow({ channel, to, text, chatId = null, idempotencyKey, file = null, mimeType = null, filename = null, mediaUrl = null, sendStyle = null, replyTo = null }) {
     const ch = this.get(channel);
     if (!ch) return { ok: false, retryable: false, error: `No channel called '${channel}'. Registered: ${[...this.channels.keys()].join(", ") || "none"}.` };
     // The last step before an adapter, so the silence marker is checked here too, for the console,
@@ -1315,6 +1319,12 @@ export class Router {
       text = quiet.text;
     }
     try {
+      // A file the provider fetches by address (the contact card on an onboarding outbox row,
+      // src/onboarding.js): the words and the card are one message, so neither goes without the other.
+      if (mediaUrl) {
+        if (typeof ch.sendMediaUrl !== "function") return { ok: false, retryable: false, supported: false, error: `${channel} cannot send a file by address` };
+        return await ch.sendMediaUrl({ to, text, mediaUrl, chatId, idempotencyKey });
+      }
       return file
         ? await ch.sendMedia({ to, text, file, mimeType, filename, chatId, idempotencyKey })
         // A handle only ever reaches a channel that pins. To any other it would be a field the

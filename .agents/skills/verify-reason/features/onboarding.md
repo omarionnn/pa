@@ -6,9 +6,11 @@ prompt-led model turn (owner spec, 2026-10-30):
 
 1. "hey" → ONE opener from `OPENERS` (random). A real question first → its one-line answer, then the opener.
 2. Their name → saved (`accounts.name`), then four bubbles a beat apart: "nice to meet you, <name>", what
-   Reason is, the contact-card line, **the vCard itself** (`offerContactCard`, empty text, the same
+   Reason is, the contact-card line **on the same message as the vCard** (an outbox row with
+   `media.mediaUrl` → `Router.sendNow` → `sendMediaUrl`; Sendblue shows the words then the card; the same
    `/reason-<sha8>.vcf` every card uses), then "so what do you do? student, engineer, something else?".
-   No card possible (no `REASON_PUBLIC_URL`, no line number, card already sent) → the card line is not said either.
+   No card possible (`cardUrl`: no public URL, no line number, already sent, or a failed try inside
+   `RETRY_AFTER_MS`) → the line is not said either; a card that fails takes its line with it.
 3. What they do → remembered as a fact; 2–3 model-written ideas for that work (only from a fixed list
    of things Reason really does), then `CLOSING` word for word.
 4. Their to-do list (a photo, or typed) → the normal turn, with `TODO_FRAME` in front: do what it can
@@ -28,10 +30,18 @@ master's yes. State is `accounts.onboarding` (NULL = exempt; `not_started` → `
 marks every existing account `complete`. `test` = only `REASON_ONBOARDING_NUMBERS`. A test number that
 already has an account is exempt — delete that account first to re-run it.
 
+A step is ONE transaction (`db.atomically`): its bubbles queued as an ordered outbox chain (`after_id`),
+its state, its history. The rows are then tried a beat apart; a failure stops the loop and the sweep
+finishes the chain in order — through a retry or a restart, nobody is steered back to a step they never
+saw. The harm screen (`Runtime.screen`) runs beside the read: not clear (or unscreened) → the flow ends
+and the normal, screened turn answers. A read that fails ends it too (never a second prompt-led
+welcome on top). Voice notes, contact cards and links are words by then; a picture or document is
+the to-do list on step 4 (`TODO_FRAME`), before that a real thing (no frame); a typed list before step 4
+gets `TODO_FRAME_UNASKED`. Idle past `REASON_ONBOARDING_IDLE_DAYS` (7) → `complete` on the next text.
+The nudge's waking hour is THEIR zone (`zoneFor`).
+
 Meaning is the model's: one structured side call per text (`readText`, `askStructuredViaCli`,
-`REASON_ONBOARDING_CLI_MODEL` haiku, feature `onboarding` in `model_usage`), never a regex. Read
-failed → normal turn, step unchanged. Handled steps skip the harm screen (no reply turn runs); the
-read sends anything needing care to the normal turn, which is screened.
+`REASON_ONBOARDING_CLI_MODEL` haiku, feature `onboarding` in `model_usage`), never a regex.
 
 Source: `src/onboarding.js`; hooks in `src/channels/router.js` (`deliver`: `arrivedNow` → `begin`, the
 first-text card skipped while in it; `#drainHeld`: `onboarding.handle` before requests are opened,
@@ -41,14 +51,20 @@ first-text card skipped while in it; `#drainHeld`: `onboarding.handle` before re
 
 ## Prove it
 
-- Offline: `node --test test/onboarding.test.js test/onboarding-migration.test.js` (21 + 2): opener +
+- Offline: `node --test test/onboarding.test.js test/onboarding-migration.test.js` (35 + 2; the PR #270
+  review added: screen beside the read (crisis, unscreened), failed read ends cleanly, name on the account,
+  card tried recently / card failing takes its line, order through a retry, a kill mid-step + sweep, the
+  commit is atomic, voice note as words, picture before step 4, list as the first text, 7-day idle,
+  nudge in their zone): opener +
   rotation, question-first, name → 4 bubbles + card in order with 1–2 s gaps, decline, occupation →
   ideas + exact closing, a detour at every step, second detour moves on, task ends it, read failure,
   to-do photo/typed list → the frame, existing/finished/operator/flag-off never enter, `test` mode,
   restart mid-flow (new router + runtime, same DB), the one nudge (hidden, waking hours, once, cancelled
   on reply), and the migration on a live-shaped `accounts` table.
 - Real read (subscription, ~12 haiku calls): `REASON_LIVE_ONBOARDING=1 ANTHROPIC_API_KEY= node --import
-  ./test/paid-key-guard.js --test test/onboarding-live.test.js` — 12/12 on 2026-10-30.
+  ./test/paid-key-guard.js --test test/onboarding-live.test.js` (with `REASON_BACKEND=claude-cli`) — 16/16
+  on 2026-10-30, incl. three sensitive texts read as `task` and `harm.screen` calling "kofi, honestly been
+  wanting to end it" `crisis`.
 - Cage, end to end (subscription: 4 haiku reads + ONE full turn; fake Sendblue on loopback):
 
   ```bash
@@ -60,8 +76,8 @@ first-text card skipped while in it; `#drainHeld`: `onboarding.handle` before re
   number) and tears both down; refuses unless the log says `model: the claude CLI` and Sendblue is the
   fake. Use your own `REASON_VERIFY_RUN`/port: another session's cage may own the defaults. Writes
   `transcript.txt` (both sides, gaps), `sends.jsonl`, `account.json`, `timers.json`, `serve.log`.
-  2026-10-30 (feat/first-chat-onboarding): 11/11 "all ok" — opener, the who-made-you detour answered +
-  "but wait, I didn't get your name", Kofi → 4 bubbles with the card between its line and the question
+  2026-10-30 (feat/first-chat-onboarding, again after the review fixes): 11/11 "all ok" — opener, the who-made-you detour answered +
+  "but wait, I didn't get your name", Kofi → 4 bubbles, the card on its line's own message, then the question
   (gaps 1.1–1.7 s), three nursing-specific ideas + the closing line, the typed list → a drafted email,
   a laundry reminder, the dentist named as still open; account `complete`, card sent once.
   Before (flag off): the card went out with the first "hey", then three model turns.
