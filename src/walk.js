@@ -144,9 +144,12 @@ export const locKey = (loc) => (Array.isArray(loc) ? `${round6(loc[0])},${round6
  * A walk from `from` to `to` from the foot router. Nothing about either point is logged or kept here.
  * Returns { ok, route, steps, metres, seconds, side, raw } or { ok: false, status, error }.
  */
-export async function walkRoute(from, to, { routingUrl = config.directionsRouting, fetchImpl = fetch, placeName = "", streets = [], timeoutMs = 8000 } = {}) {
+export async function walkRoute(from, to, { routingUrl = config.directionsRouting, fetchImpl = fetch, placeName = "", streets = [], timeoutMs = 8000, heading = null } = {}) {
   if (!routingUrl) return { ok: false, status: 503, error: "no_routing" };
-  const url = `${routingUrl.replace(/\/+$/, "")}/route/v1/foot/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson&steps=true`;
+  // heading: start on a way that leaves in that direction (within 60°), OSRM's own bearings, so the walk does
+  // not begin by turning them round.
+  const ahead = Number.isFinite(heading) ? `&bearings=${Math.round(((heading % 360) + 360) % 360)},60;&radiuses=40;` : "";
+  const url = `${routingUrl.replace(/\/+$/, "")}/route/v1/foot/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson&steps=true${ahead}`;
   try {
     const res = await fetchImpl(url, { headers: { accept: "application/json", "user-agent": UA }, signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) throw new Error(`routing ${res.status}`);
@@ -180,7 +183,7 @@ export function boxAround(points) {
 
 export function overpassQuery(box, dest) {
   const b = `(${box.s.toFixed(5)},${box.w.toFixed(5)},${box.n.toFixed(5)},${box.e.toFixed(5)})`;
-  return `[out:json][timeout:20];(`
+  return `[out:json][timeout:40];(`
     + `way["highway"]${b};`
     + `way["leisure"~"^(park|garden|playground)$"]${b};way["landuse"~"^(grass|recreation_ground|village_green)$"]${b};`
     + `way["natural"="water"]${b};way["waterway"="riverbank"]${b};`

@@ -128,7 +128,7 @@ const server = createServer(async (req, res) => {
   }
   const realOsrm = /^\/osrm-real\/route\/v1\/foot\/([-\d.]+),([-\d.]+);/.exec(url.pathname);
   if (realOsrm) {
-    realRouted.push(url.pathname);
+    realRouted.push(req.url);
     res.writeHead(200, { "content-type": "application/json" });
     return res.end(JSON.stringify(realAnswer({ lng: Number(realOsrm[1]), lat: Number(realOsrm[2]) })));
   }
@@ -564,8 +564,41 @@ if (!ONLY_REAL) {
   for (let k = 0; k < 20 && id3 && db.db.prepare("SELECT 1 FROM trips WHERE id = ?").get(id3[1]); k++) await ender.page.waitForTimeout(100);
   check("real walk: END ESCORT deletes the trip from the server (kept while walking)", kept && !!id3 && !db.db.prepare("SELECT 1 FROM trips WHERE id = ?").get(id3[1]) && serverLog.some((l) => l.directions === "ended" && l.why === "ended"));
   errs.push(...ender.page.errors.filter((x) => !/favicon/i.test(x)));
-  check("real trip: no console error or CSP violation", errs.length === 0, errs.slice(0, 2).join(" | "));
   await ender.context.close();
+
+  // Told "turn around" and walking on anyway (Omari's walk, 10-30): no insisting; after ~40 m a calm
+  // "Okay, new way from here.", said once, and a reroute that starts the way they are walking (bearings).
+  REASON_CONFIG.directionsRouting = `${BASE}/osrm-real`;
+  const made4 = await makeOne();
+  REASON_CONFIG.directionsRouting = routingWas;
+  const id4 = /\/d\/([A-Za-z0-9]{12})\?k=/.exec(made4.link || "");
+  const onward = await newPage(browser, { geo: true, tz: "America/New_York" });
+  await onward.context.addCookies(state.cookies);
+  await onward.context.setGeolocation({ latitude: REAL_FROM.lat, longitude: REAL_FROM.lng, accuracy: 6 });
+  await onward.page.goto(`${BASE}/d/${id4 ? id4[1] : "x"}#ask`, { waitUntil: "load" });
+  await onward.page.click("#a-share");
+  await onward.page.waitForSelector("#e-status");
+  const caps4 = [];
+  const note4 = async () => { const t = ((await onward.page.textContent(".cap.on", { timeout: 500 }).catch(() => "")) || "").replace(/\s+/g, " ").trim(); if (!caps4.length || caps4.at(-1) !== t) caps4.push(t); };
+  const at4 = async (p, wait = 900) => { await onward.context.setGeolocation({ ...p, accuracy: 6 }); for (let k = 0; k < wait; k += 300) { await onward.page.waitForTimeout(300); await note4(); } };
+  for (let a = 0; a <= 30; a += 6) await at4(realAt(a));
+  const routedBefore = realRouted.length;
+  // Back south past the start and on: the wrong way, kept up for 90 m.
+  for (let n = 24; n >= -90; n -= 6) await at4({ latitude: REAL_FROM.lat + n / 111195, longitude: REAL_FROM.lng });
+  await at4({ latitude: REAL_FROM.lat - 96 / 111195, longitude: REAL_FROM.lng }, 2500);
+  const said4 = await onward.page.evaluate(() => window.__said);
+  const asked4 = realRouted.slice(routedBefore);
+  check("wrong way kept up: 'Other way, turn around.' first, then the calm \"Okay, new way from here.\"",
+    caps4.findIndex((t) => /Other way, turn around/.test(t)) >= 0 && caps4.findIndex((t) => /Okay, new way from here/.test(t)) > caps4.findIndex((t) => /Other way, turn around/.test(t)), JSON.stringify(caps4.map((t) => t.slice(0, 28))));
+  check("wrong way kept up: \"turn around\" is shown once, not over and over", caps4.filter((t) => /turn around/i.test(t)).length === 1, JSON.stringify(caps4.map((t) => t.slice(0, 20))));
+  check("wrong way kept up (voice recorded, never played): \"Okay, new way from here.\" once, never \"turn around\"",
+    said4.filter((x) => x === "Okay, new way from here.").length === 1 && !said4.some((x) => /turn around/i.test(x)), JSON.stringify(said4));
+  check("wrong way kept up: the reroute asks for a way leaving south, the way they walk (OSRM bearings)",
+    asked4.some((u) => /bearings=(1[5-9]\d|20\d),60;/.test(u)), JSON.stringify(asked4.map((u) => u.replace(/^.*\?/, "?").slice(0, 120))));
+  await onward.page.screenshot({ path: join(outDir, "real-walk-new-way-from-here.png") });
+  errs.push(...onward.page.errors.filter((x) => !/favicon/i.test(x)));
+  await onward.context.close();
+  check("real trip: no console error or CSP violation", errs.length === 0, errs.slice(0, 2).join(" | "));
 }
 
 await browser.close();

@@ -62,7 +62,8 @@ export async function fillTripMap(id, { fetchImpl = fetch, log = () => {}, serve
   const t = row.trip;
   lastFill.set(id, clock.now());
   // A walk this long is too much map to ask Overpass for; its steps are named one by one instead.
-  const data = t.walkM > MAP_MAX_M ? null : await overpass(overpassQuery(boxAround([...t.route, t.destination]), t.destination), { fetchImpl, servers });
+  // Overpass often answers in 30–45 s; at 15 s a walk to work on 10-30 got no map at all (a red line on beige).
+  const data = t.walkM > MAP_MAX_M ? null : await overpass(overpassQuery(boxAround([...t.route, t.destination]), t.destination), { fetchImpl, servers, timeoutMs: MAP_TIMEOUT_MS });
   if (!data) {
     log({ directions: "map", ok: false, trip: id });
     await nameByReverse(id, { fetchImpl, reverse, pauseMs, log });
@@ -107,6 +108,8 @@ export async function fillArrival(id, { fetchImpl = fetch, servers, log = () => 
   return { ok: true, entrance: got.entrance };
 }
 
+/** How long one Overpass server gets to answer the map's question (it runs behind the tool's answer). */
+export const MAP_TIMEOUT_MS = 45000;
 /** The longest walk whose map is asked for; past it the box is too big for Overpass to answer in time. */
 export const MAP_MAX_M = 4000;
 /** When each trip's map was last asked for, so opening the page retries a failed fill at most this often. */

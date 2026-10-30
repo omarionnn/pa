@@ -175,16 +175,33 @@ ${CSS}
  * route and steps the page replaces its own with, or an error status. Nothing about the position is
  * kept or logged: the log line has the step count and a rounded distance to the door, never a place.
  */
-export async function reroute(trip, from, { routingUrl, fetchImpl = fetch, log = () => {}, streets = [] } = {}) {
+export async function reroute(trip, from, { routingUrl, fetchImpl = fetch, log = () => {}, streets = [], heading = null } = {}) {
   if (!routingUrl) return { status: 503, body: { error: "no_routing" } };
-  const out = await walkRoute(from, trip.destination, { routingUrl, fetchImpl, placeName: trip.name, streets });
+  const opts = { routingUrl, fetchImpl, placeName: trip.name, streets };
+  let out;
+  if (Number.isFinite(heading)) {
+    // They walked on after "turn around": a way that starts the way they face, unless it is much longer than
+    // turning back (a dead end, a river), when turning back is the reasonable way after all.
+    const [ahead, any] = await Promise.all([walkRoute(from, trip.destination, { ...opts, heading }), walkRoute(from, trip.destination, opts)]);
+    out = ahead.ok && (!any.ok || ahead.metres <= any.metres * FORWARD_SLACK + FORWARD_EXTRA_M) ? ahead : any;
+    if (out.ok) log({ directions: "reroute_forward", kept_forward: out === ahead });
+    if (out.ok) out = { ...out, forward: out === ahead };
+  } else {
+    out = await walkRoute(from, trip.destination, opts);
+  }
   if (!out.ok) {
     log({ directions: "reroute", ok: false, why: out.why || out.error });
     return { status: out.status || 502, body: { error: "routing_failed" } };
   }
   log({ directions: "reroute", ok: true, steps: out.steps.length, metres: Math.round(haversine(from, trip.destination) / 50) * 50 });
-  return { status: 200, body: { route: out.route, steps: out.steps, destination: trip.destination } };
+  return { status: 200, body: { route: out.route, steps: out.steps, destination: trip.destination, ...(typeof out.forward === "boolean" ? { forward: out.forward } : {}) } };
 }
+
+/** The walker's heading from a reroute's body: a real number of degrees, else none. */
+const headingOf = (body) => (typeof body?.heading === "number" && Number.isFinite(body.heading) ? ((body.heading % 360) + 360) % 360 : null);
+/** A forward way is taken if it is at most this much longer than one that turns back. */
+export const FORWARD_SLACK = 1.4;
+export const FORWARD_EXTRA_M = 150;
 
 // ---------- who may open a real trip (the private pages' gate, src/pages/access.js) ----------
 function sameKey(a, b) {
@@ -270,7 +287,8 @@ export async function directionsRequest({ method, pathname: rawPath, req, config
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
       return { status: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "bad_request" }) };
     }
-    const out = await reroute(trip, { lat, lng }, { routingUrl: config.directionsRouting, fetchImpl, log });
+    const heading = headingOf(body);
+    const out = await reroute(trip, { lat, lng }, { routingUrl: config.directionsRouting, fetchImpl, log, heading });
     return { status: out.status, headers: JSON_HEADERS, body: JSON.stringify(out.body) };
   }
 
@@ -309,7 +327,8 @@ async function tripRequest({ id, reroutePath, endPath, method, req, config, fetc
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
       return { status: 400, headers: JSON_HEADERS, body: JSON.stringify({ error: "bad_request" }) };
     }
-    const out = await reroute(row.trip, { lat, lng }, { routingUrl: config.directionsRouting, fetchImpl, log, streets: R.tripStreets(row) });
+    const heading = headingOf(body);
+    const out = await reroute(row.trip, { lat, lng }, { routingUrl: config.directionsRouting, fetchImpl, log, streets: R.tripStreets(row), heading });
     return { status: out.status, headers: JSON_HEADERS, body: JSON.stringify(out.body) };
   }
 
