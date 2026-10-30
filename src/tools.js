@@ -8920,13 +8920,18 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
       error: "Not sent: they texted more before this went out. Fold it in and send one message that uses it.",
     };
   }
-  // The silence marker is a reply convention, never words for somebody. A send that is only the
-  // marker is not sent; one with the marker on its own last line goes without it (src/plain.js
-  // readSilence — the same rule the turn's own reply gets).
-  if (SPEAKS.has(String(name)) && typeof rawInput?.text === "string" && rawInput.text.trim()) {
-    const quiet = readSilence(rawInput.text);
-    if (quiet.silent) return { ok: false, not_sent: true, error: "Not sent: NO_REPLY is how a reply says nothing, not something to send. If there is nothing to say, send nothing." };
-    if (quiet.stripped) rawInput = { ...rawInput, text: quiet.text };
+  // The silence marker is a reply convention, never words for somebody (src/plain.js readSilence —
+  // the same rule the turn's own reply gets). Marker on its own last line: it goes without it. Only
+  // the marker: a message or spoken note is not sent; an optional caption is dropped and the
+  // audio or picture still goes.
+  const field = SPEAKS.has(String(name)) ? "text" : name === "send_picture" ? "caption" : null;
+  if (field && typeof rawInput?.[field] === "string" && rawInput[field].trim()) {
+    const quiet = readSilence(rawInput[field]);
+    if (quiet.silent && (name === "message_send" || name === "voice_note_say")) {
+      return { ok: false, not_sent: true, error: "Not sent: NO_REPLY is how a reply says nothing, not something to send. If there is nothing to say, send nothing." };
+    }
+    if (quiet.silent) { const { [field]: _dropped, ...rest } = rawInput; rawInput = rest; }
+    else if (quiet.stripped) rawInput = { ...rawInput, [field]: quiet.text };
   }
   const out = await runToolInner(name, rawInput, ctx);
   // A shared location on another clock from the zone they confirmed: asked about once, never applied.

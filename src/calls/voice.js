@@ -1688,17 +1688,18 @@ export async function* voiceTurn({
       // the call, switching language, waiting, pressing keys and hanging up on a machine are all
       // things only ElevenLabs can do.
       let system = toolUses.find(t => SYSTEM_TOOL_NAMES.includes(t.name));
-      // end_call's `message` is spoken by the platform, so it never passed the sentence filter in
-      // `emit`: an end_call carrying "NO_REPLY" would have been read down the line as "no reply".
-      // Same floor as the spoken words: marker out, and a message that was only the marker is no
-      // message — the line goes quietly.
-      if (system && typeof system.input?.message === "string") {
-        const marker = withoutSilenceMarker(system.input.message);
-        if (marker.had) {
-          log({ voice_no_reply_dropped: call.id, kept: marker.text.length, tool: system.name });
-          const { message: _dropped, ...rest } = system.input;
-          system = { ...system, input: marker.text ? { ...rest, message: marker.text } : rest };
-        }
+      // end_call's `message` and transfer_to_number's `client_message` are spoken by the platform,
+      // so they never passed the sentence filter in `emit`: one carrying "NO_REPLY" would have been
+      // read down the line as "no reply". Same floor as the spoken words: marker out, and an
+      // argument that was only the marker is dropped — the line goes quietly, or `handOver` uses
+      // its own words.
+      for (const key of ["message", "client_message"]) {
+        if (!system || typeof system.input?.[key] !== "string") continue;
+        const marker = withoutSilenceMarker(system.input[key]);
+        if (!marker.had) continue;
+        log({ voice_no_reply_dropped: call.id, kept: marker.text.length, tool: system.name });
+        const { [key]: _dropped, ...rest } = system.input;
+        system = { ...system, input: marker.text ? { ...rest, [key]: marker.text } : rest };
       }
 
       // Waiting. The platform stays silent; the budget is ours, because their silence timer measures

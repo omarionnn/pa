@@ -413,6 +413,18 @@ test("a transfer is refused until he has said he is there, and nothing is promis
   assert.match(ok.input.client_message, /put you through/);
 });
 
+test("a transfer's spoken client_message never carries NO_REPLY: only-marker falls back to the default line", async () => {
+  db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: 1 });
+  const call = callWith(brief.buildBrief({ goal: "ask about the quote" }));
+  const m = db.createCommitment(C, { callId: call.id, what: "x", state: "paused_for_owner" });
+  db.updateCommitment(C, m.id, { owner_said: "yeah put them through" });
+  const r = await drain((await turn(call, scripted({ tool: "transfer_to_number", input: { reason: "they asked for him", client_message: "NO_REPLY" } }))).stream);
+  const t = r.toolCalls.find(c => c.function.name === "transfer_to_number");
+  assert.ok(t, "still transfers");
+  assert.doesNotMatch(t.function.arguments, /no[ _]?reply/i);
+  assert.match(JSON.parse(t.function.arguments).client_message, /put you through/);
+});
+
 test("a transfer never dials anywhere but his own number, whatever was asked for", () => {
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: 1 });
   const call = callWith(brief.buildBrief({ goal: "x" }));
