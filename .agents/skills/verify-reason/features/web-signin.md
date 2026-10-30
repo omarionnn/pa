@@ -88,7 +88,7 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 - **Copy** — intent only (no phrase to type; `test/no-command-phrases.test.js` scans `src/`): the
   sms: body "hey" is prefilled, never dictated. Page kit: `shell` with pill "Web", wordmark, PAPER,
   brand pen red (#9c3b2e), theme switch.
-- **The look** (design handoff 2026-10-26, `~/Desktop/reason-web-handoff-2026-10-26`, kit =
+- **The look** (design handoff 2026-10-26, `~/Desktop/Project files/Reason/handoffs/reason-web-handoff-2026-10-26`, kit =
   `src/pages/webkit.js`): Paper / Night tokens hex for hex (`TOKENS`), the four voices (Instrument
   Serif italic = your words + primary actions, Inter = Reason, Courier caps = labels, Caveat in pen =
   the margin voice), the wordmark bubble in pen (#9c3b2e / #d46a5c, the same pen as brand.js),
@@ -124,14 +124,14 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 
 ```bash
 cd ~/Desktop/pa
-node --test test/web-design.test.js     # 33: tokens, motion, focus, every screen state's copy + roles, a11y, no-phrase scan, cards/lists/media, /web/live CORS
+node --test test/web-design.test.js     # 34: tokens, motion, focus, every screen state's copy + roles, a11y, no-phrase scan, cards/lists/media, /web/live CORS
 node --test test/web-signin.test.js      # 25: off=404 identical, owner mode, enumeration, QR, no-live/linq, happy path, wrong/reused/expired/flood/4th request, two users, decision 4, sign-out, idle/old, paused, CSRF/origin, headers, copy, the look + /web/fonts, lands on /web?home
 node --test test/web-logo-home.test.js test/wordmark-one-line.test.js test/wordmark-text.test.js   # 3 + 3 + 3: logo → /web?home, wordmark one line + reads "reason"
 node --test test/web-join-number.test.js # the live-line rule with the real Linq + Sendblue classes
 node --test test/no-command-phrases.test.js test/code-guards.test.js
 # in process, cage env, throwaway DB, real Runtime + Router + outbox + FakeChannel (no model):
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/web.db node .agents/skills/verify-reason/bin/web-drive.mjs
-node .agents/skills/verify-reason/bin/web-preview.mjs [outDir] [referenceDir]   # every Web screen at 390/1280 × Paper/Night + compare-<screen>.png beside the handoff's reference page; real CSP + /web/fonts (default ~/Desktop/reason-web-design-previews)
+node .agents/skills/verify-reason/bin/web-preview.mjs [outDir] [referenceDir]   # every Web screen at 390/1280 × Paper/Night + compare-<screen>.png beside the handoff's reference page; real CSP + /web/fonts (default ~/Desktop/reason-web-design-previews; pass referenceDir "$HOME/Desktop/Project files/Reason/handoffs/reason-web-handoff-2026-10-26/reference" — the script's default ~/Desktop/reason-web-handoff-2026-10-26 is gone)
 ```
 
 Over HTTP on the cage: `REASON_WEB=on bin/caged.sh start`, then `curl -si 127.0.0.1:<port>/web` → 200,

@@ -97,8 +97,12 @@ bin/peek.sh sql "SELECT id, canonical_name, type, aliases FROM graph_entities"
 bin/caged.sh stop
 ```
 
-Queue rows may stay `pending` in the cage if no extraction model is reachable; that is expected
-there, and `last_error` says why.
+**The cage's extraction is not model-free.** The reader is always `claude -p` (`extractMessages`
+in `src/extract.js` calls `runClaudeCli`, whatever `REASON_BACKEND` is); only the lane differs. So
+on the API-backend, no-key cage a memorable text still spends one haiku run of this Mac's
+subscription and lands real facts: driven 2026-10-30, the text above → `{"extracted":1,…,"facts":2,
+"via":"cli"}`, queue `done`, `model_usage` `extraction|cli`, two `person_facts` rows. Queue rows
+stay `pending` (with `last_error`) only when `claude` itself cannot run.
 
 **Live, read-only:** `sqlite3 /opt/reason/data/reason.db "select state,count(*) from extraction_queue group by 1"`
 (a growing `pending` count or rows with `attempts` ≥ 3 and a `last_error` is the failure to look for),
@@ -114,5 +118,6 @@ every pass — and `select feature,via,count(*) from model_usage where feature i
   `conversation_id` filter is a cross-user leak. `graph-isolation` and `isolation-memory` pin it.
 - A correction must scrub the thread, not just the row, or Reason repeats the old wording.
 - Filler turns are not queued for extraction on calls (see `call-completeness.md`).
-- Embedding and extraction need a model key; absent one the queue backs up silently.
+- Extraction needs a working `claude` login, not a key (see the cage note above); embeddings need
+  `OPENAI_API_KEY`, and absent one `backfillEmbeddings` returns 0 (`src/extract.js:185`).
 - Don't read `person_facts` content from the live database into a report; it is the user's data.

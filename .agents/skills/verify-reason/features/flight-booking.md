@@ -72,6 +72,10 @@ with "hand over the Google Flights link"; `checkTickets()` → all zeros, no tel
 `toolsFor("dm:owner")` → 254 tools, none of `FLIGHT_BOOKING_TOOLS`, and `flight_search` still says
 "SEARCH ONLY". Driven the same again at the merge with #115/#116 (254, `not_available` twice,
 `checkTickets` all zeros, `ANTHROPIC_API_KEY` blank in the drive process since `caged.sh env` blanks it).
+Tool counts drift as tools are added — compare the booking-tool count (0 or 5), not the total: on
+2026-10-30 (feat/first-chat-onboarding) off → 255 owner / 249 other, `1` → 260 / 254, `owner` →
+260 / 249. In a worktree with no `.env`, `flight_traveler_save` throws "REASON_TOKEN_KEY is not
+set": export a throwaway `REASON_TOKEN_KEY=$(openssl rand -hex 32)` for the drive process.
 
 **The flag on, in one drive process on the cage only** (never in `/opt/reason/.env`):
 `REASON_FLIGHT_BOOKING=1 node --env-file-if-exists=.env -e '…'` with `caged.sh env` exported. The

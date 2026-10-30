@@ -30,12 +30,12 @@ Offline: `node --import ./test/paid-key-guard.js --test test/no-reply-midtext.te
 Caged, real Sendblue adapter against `bin/fake-sendblue.mjs` (loopback only):
 
 ```bash
-node bin/fake-sendblue.mjs 8834 /tmp/nr/capture.jsonl ok &        # check its "fake sendblue on" line
+node bin/fake-sendblue.mjs 8834 /tmp/nr/capture.jsonl ok &        # check its "fake sendblue on" line; under an agent runner a bare `&` dies with the command — start it under setsid (perl POSIX::setsid) and lsof the port
 REASON_VERIFY_FAKE_SENDBLUE=http://127.0.0.1:8834 bin/caged.sh start
 eval "$(bin/caged.sh env | sed 's/^/export /')"
 # from the repo: db.enqueueOutbound rows on channel sendblue to the owner —
 #   "booked for 7\nNO_REPLY\nsee you there", "**NO_REPLY** — NO_REPLY", "the real words" (afterId = the
-#   previous one), "…/settings/NO_REPLY/off and `NO_REPLY` stays" — then wait one sweep (~15 s)
+#   previous one), "…/settings/NO_REPLY/off and `NO_REPLY` stays" — then wait a few sweeps (~60 s: the rows behind the skipped one went a sweep later, 2026-10-30)
 bin/peek.sh sql "SELECT id, state, last_error FROM outbox ORDER BY id"
 ```
 

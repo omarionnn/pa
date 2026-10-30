@@ -2,7 +2,7 @@
 
 Signed in, `https://heyreason.com/web/settings` (desktop: typed index left, one page right; phone:
 one column, 8A then 8B). Every control is a plain form that posts to `POST /web/settings` with
-`do=reach|theme|browser|everywhere|notify|invite|cancel-invite`, the session's form secret (`c`) and
+`do=reach|theme|browser|everywhere|notify|invite|cancel-invite|store-remove|card-remove`, the session's form secret (`c`) and
 Reason's own origin, and comes back 303 to `/web/settings?done=<what>#<section>` ("got it.",
 role=status) or to an edit state. v2 edit states (handoff v2 §4c item 5, sheet-settings-edit 5A–5D),
 each its own `← SETTINGS` screen: `?edit=reach` (5A), `?saved=reach` (5B), `?confirm=everywhere`
@@ -41,6 +41,10 @@ switch saves back), `src/deliver.js` (`keptOnWeb`), `src/db.js` (`accounts.web_r
 - **Connected** — AgentCard (`agentcard_users.user_id` and `connectionState` not dead), Google,
   Spotify, Uber, GitHub, iCloud (`oauth_tokens` rows: google, spotify, uber, github,
   apple_calendar). Only connected ones are listed.
+- **Shopping** — drawn only where `shop.connectAllowedFor` (`REASON_SHOP_CONNECT`, see
+  [shop-connect.md](shop-connect.md)): each store they signed into + the card, each with REMOVE
+  (`do=store-remove` with `s=<store>`, theirs only / `do=card-remove`) → "removed. i won't use it
+  again." / "card removed." (`#shopping`). With it the index has seven sections, not six.
 - **Invites** — shown only where `invitesOpenFor` (owner always; others when REASON_INVITES_OPEN or
   enabled). "N left" = links still makeable (allowance − unused). JOINED / UNUSED / CANCELED stamps.
   Make an invite link = `invites.makeLink` → 5D (`?invite=<id>`, only an unused link of theirs):
@@ -54,7 +58,7 @@ switch saves back), `src/deliver.js` (`keptOnWeb`), `src/db.js` (`accounts.web_r
 ## Drive
 
 ```bash
-node --test test/web-settings.test.js test/web-settings-migration.test.js
+node --test test/web-settings.test.js test/web-settings-edit.test.js test/web-settings-migration.test.js   # 22 + 12 + 2
 eval "$(bin/caged.sh env | sed 's/^/export /')" \
   && REASON_DB_PATH=$(mktemp -d)/settings.db node bin/web-settings-drive.mjs   # 29 steps, all ok
 eval "$(bin/caged.sh env | sed 's/^/export /')" \
@@ -67,7 +71,7 @@ invite, or the 303 after making one) kept → INVITES while the owner read the t
 holds its section until the reader wheels/touches/keys; the crossing line slides from 30% to the
 bottom over the last 70% of a viewport so short end sections each get the →. Smooth scroll only
 under `prefers-reduced-motion: no-preference`; phones draw no index. `bin/web-settings-index-drive.mjs`
-wheels through all six in Chromium; live: `REASON_INDEX_URL=… REASON_INDEX_COOKIE='reason_page=…'`.
+wheels through all six in Chromium (Shopping off there); live: `REASON_INDEX_URL=… REASON_INDEX_COOKIE='reason_page=…'`.
 
 Live proof (Hetzner only): a throwaway owner `page_sessions` row → GET the public page and every
 edit state, save a reach value and restore the original at once, revoke only a second throwaway session, make an invite and cancel it

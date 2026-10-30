@@ -259,13 +259,24 @@ config.events = "owner";
   await settle();
   step("note: guest list off → welcome only, no list, no Instagram", notes(KOFI).length === n3 && toNum(KOFI).length === t3 + 1 && !/instagram/i.test(toNum(KOFI).at(-1)) && db.organizerListing(g3.id) === null);
   const g4 = await mk("Note Test Four", "notefour");
-  clock.skip(11 * 3_600_000);
+  // To a fixed local hour, not "+N hours" from whenever the drive runs (the 2026-11-01 clock change
+  // and an evening start both landed the "morning" inside quiet hours).
+  const toLocal = (hour, nextDay = false) => {
+    const tz = "America/New_York";
+    const h = (t) => Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", hour: "2-digit" }).format(t));
+    let t = clock.now() - (clock.now() % 3_600_000) + 3_600_000;
+    let crossed = false;
+    for (let i = 0; i < 72 && !(h(t) === hour && (!nextDay || crossed)); i++) { if (h(t) === 0) crossed = true; t += 3_600_000; }
+    clock.skip(t - clock.now());
+  };
+  toLocal(23);
   const n4 = notes(KOFI).length;
   await tool("event_join", { name: "Note Test Four", password: "notefour" }, C.kofi);
   await settle();
+  clock.skip(11 * 60_000); // past the note's own 10-minute due time (LIST_NOTE.backstopMs)
   const night = await runtime.eventListNotes();
   step("note: at 11pm nothing goes, the sweep holds it", notes(KOFI).length === n4 && night.later >= 1, JSON.stringify(night));
-  clock.skip(10 * 3_600_000 + 5 * 60_000);
+  toLocal(10, true);
   const m1 = await runtime.eventListNotes();
   const m2 = await runtime.eventListNotes();
   await settle();

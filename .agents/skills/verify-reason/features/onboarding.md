@@ -10,7 +10,8 @@ prompt-led model turn (owner spec, 2026-10-30):
    `media.mediaUrl` → `Router.sendNow` → `sendMediaUrl`; Sendblue shows the words then the card; the same
    `/reason-<sha8>.vcf` every card uses), then "so what do you do? student, engineer, something else?".
    No card possible (`cardUrl`: no public URL, no line number, already sent, or a failed try inside
-   `RETRY_AFTER_MS`) → the line is not said either; a card that fails takes its line with it.
+   `RETRY_AFTER_MS`) → the line is not said either; a card that fails takes its line with it, never the
+   question after it (the card row branches off the chain: the next row waits on the bubble before it).
 3. What they do → remembered as a fact; 2–3 model-written ideas for that work (only from a fixed list
    of things Reason really does), then `CLOSING` word for word.
 4. Their to-do list (a photo, or typed) → the normal turn, with `TODO_FRAME` in front: do what it can
@@ -33,11 +34,13 @@ already has an account is exempt — delete that account first to re-run it.
 A step is ONE transaction (`db.atomically`): its bubbles queued as an ordered outbox chain (`after_id`),
 its state, its history. The rows are then tried a beat apart; a failure stops the loop and the sweep
 finishes the chain in order — through a retry or a restart, nobody is steered back to a step they never
-saw. The harm screen (`Runtime.screen`) runs beside the read: not clear (or unscreened) → the flow ends
+saw. The harm screen (`Runtime.screen`) runs beside the read (an unscreened read is asked once more): not
+clear (or unscreened twice) → the flow ends
 and the normal, screened turn answers. A read that fails ends it too (never a second prompt-led
 welcome on top). Voice notes, contact cards and links are words by then; a picture or document is
 the to-do list on step 4 (`TODO_FRAME`), before that a real thing (no frame); a typed list before step 4
-gets `TODO_FRAME_UNASKED`. Idle past `REASON_ONBOARDING_IDLE_DAYS` (7) → `complete` on the next text.
+gets `TODO_FRAME_UNASKED`. Both notes live in `src/onboardframes.js` and `harm.ownWords` drops them (exact
+lines only), so the screen reads their own words. Idle past `REASON_ONBOARDING_IDLE_DAYS` (7) → `complete` on the next text.
 The nudge's waking hour is THEIR zone (`zoneFor`).
 
 Meaning is the model's: one structured side call per text (`readText`, `askStructuredViaCli`,
@@ -51,7 +54,7 @@ first-text card skipped while in it; `#drainHeld`: `onboarding.handle` before re
 
 ## Prove it
 
-- Offline: `node --test test/onboarding.test.js test/onboarding-migration.test.js` (35 + 2; the PR #270
+- Offline: `node --test test/onboarding.test.js test/onboarding-migration.test.js` (38 + 2; the PR #270
   review added: screen beside the read (crisis, unscreened), failed read ends cleanly, name on the account,
   card tried recently / card failing takes its line, order through a retry, a kill mid-step + sweep, the
   commit is atomic, voice note as words, picture before step 4, list as the first text, 7-day idle,
@@ -82,3 +85,6 @@ first-text card skipped while in it; `#drainHeld`: `onboarding.handle` before re
   a laundry reminder, the dentist named as still open; account `complete`, card sent once.
   Before (flag off): the card went out with the first "hey", then three model turns.
 - Never on live. Turning it on there is the owner's call (`.env`), after the PR merges.
+
+Known and accepted (review of #270): step order across steps while a card retry is pending; a 10:30
+nudge in half-hour time zones; a card queued then failing later still reads `contact_card_sent_at`.

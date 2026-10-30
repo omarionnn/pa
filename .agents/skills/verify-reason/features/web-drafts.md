@@ -10,7 +10,7 @@ everyone; otherwise a comma list of conversation ids. (Not `REASON_WEB_STREAM`: 
 live stream's origin.) Only a user turn from Web, cleared by the harm screen, on the claude-cli
 backend, with no `shouldSend` hold. Never the said-check rewrite.
 
-**What can never reach the tab** (`src/webdraft.js`, pinned in `test/web-stream.test.js`, 11 tests):
+**What can never reach the tab** (`src/webdraft.js`, pinned in `test/web-stream.test.js`, 14 tests):
 - anything before the said check (`src/said.js checkDraft`) passed THAT text — each piece is checked
   first; a rejected piece stops the stream and takes back what was shown; the rewrite arrives whole;
 - the words of a message that calls a tool (narration on the way to the answer); taken back if a
@@ -19,9 +19,10 @@ backend, with no `shouldSend` hold. Never the said-check rewrite.
   the figures check (`guardReply`) would mark — the stream stops instead.
 The finished reply's own said check is the matching piece's check, shared (one call, not two).
 
-**Cost.** One said-check call per shown piece when the ledger has claims (prod: API, ~1 s each; a
-fresh account with no claims: no call). Locally on the CLI fallback a check is 3–4 s, so pieces come
-in fewer, bigger steps.
+**Cost.** One said-check call per shown piece when the ledger has claims (a fresh account with no
+claims: no call). Since #227 it is on the subscription only, never the API (`src/said.js` `checkDraft`
+→ `askJson` with `config.saidCheckCliModel`, the turn's warm CLI from `warmCheck` when it has one;
+a cold `claude -p` is ~3 s, so pieces come in fewer, bigger steps; 3–4 s each seen 2026-10-27).
 
 ## Drive (real claude-cli turn, scratch instance on this Mac — never Hetzner, never `.env`)
 

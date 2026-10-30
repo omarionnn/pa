@@ -1,7 +1,9 @@
 # Reason Web — Stamps and shared stamps
 
 A passport-style book of things Reason did worth remembering (handoff 2026-10-27 "Coming back daily"
-§2 + Sharing, `reference/stamps.html`). Behind `REASON_WEB_DAILY` (off | owner | on, `src/dailyflag.js`).
+§2 + Sharing, `reference/stamps.html`). Behind `REASON_WEB_DAILY` (off | owner | on, `src/dailyflag.js`),
+or everyone at `REASON_STAMPS_ALL` (`stampsAllowedFor` = `stampsOpen() || dailyAllowedFor`; see
+[web-stamps-wax.md](web-stamps-wax.md) "Stamps for everyone").
 Code: `src/stamps.js` (catalog, tables `stamps` + `stamp_shares`, awarding, backfill, redaction,
 `newestStamp`, `stampMarkup`), `src/pages/webstamps.js` (the book, the share API, `/s/` pages, the
 1200×630 card), `src/pages/webdailyhead.js` (`dailyHeader`, shared with the daily Home),
@@ -18,7 +20,9 @@ Code: `src/stamps.js` (catalog, tables `stamps` + `stamp_shares`, awarding, back
   `early` (flight first leg ≥7 days after booking). Never awarded: `abroad`, `whole_trip` (no source).
   Unique (conversation, type, ref): never twice.
 - **Told once** in the thread, one line ("That one earned a stamp for your book: …."), ONLY at `on`,
-  through `runtime._tell` installed by `createServer`; never at `owner`, never from the backfill.
+  through `runtime._tell` installed by `createServer`; never at `owner` (nor from `REASON_STAMPS_ALL`
+  alone), never from the backfill, never before 7 AM on their clock (`QUIET_UNTIL`, `tellNew` in
+  `src/stamps.js`; the book shows it either way).
 - **The book** `/web/stamps`: PAGE N · count · SINCE MONTH, 8 spots/page (page 1 oldest, newest page
   default), NEW in pen on the newest, 44px share link `Share {name}` (`?stamp=<id>#share`, no script
   needed), blank dashed spots, ≤2 hints, aside story + keep line + thread link, Caveat count of blanks.

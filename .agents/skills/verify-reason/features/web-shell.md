@@ -37,7 +37,7 @@ The pieces every Web page shares that are not a screen of their own. Shipped 202
 ```bash
 cd ~/Desktop/pa   # or your worktree
 ANTHROPIC_API_KEY= node --test test/wordmark-text.test.js test/wordmark-one-line.test.js test/web-logo-home.test.js
-ANTHROPIC_API_KEY= node --test --test-name-pattern='link card' test/web-signin.test.js
+ANTHROPIC_API_KEY= node --test --test-name-pattern='card' test/web-signin.test.js   # 3: /web card, none signed in, /privacy + /terms
 node .agents/skills/verify-reason/bin/wordmark.mjs        # every page kind × 390/1280 × light/dark, headless
 ```
 
