@@ -118,7 +118,7 @@ function spot(s, v) {
   // A tiered seal (REASON_STAMPS_TIERS): its count and next goal under the name; the date is when its
   // tier was reached, the first one on hover.
   const first = s.count > 1 && s.firstDate ? ` title="First earned ${esc(s.firstDate)}"` : "";
-  return `<li><div style="transform:rotate(${s.rotation ?? 0}deg)">${seal({ wax: s.wax, ring: s.ring, date: s.postmarkDate, size: 160, label: s.ariaLabel, tier: s.tier })}</div>`
+  return `<li><div style="transform:rotate(${s.rotation ?? 0}deg)">${seal({ wax: s.wax, ring: s.ring, date: s.postmarkDate, size: 160, label: s.ariaLabel, tier: s.level, mark: s.tier })}</div>`
     + `<span class="sp-n">${esc(s.name)}</span>`
     + (s.countLine ? `<span class="sp-c">${esc(s.countLine)}</span>` : "")
     + `<span class="sp-f"><span class="sp-d${isNew ? " new" : ""}"${first}>${esc(s.date)}${isNew ? " · NEW" : ""}</span>`

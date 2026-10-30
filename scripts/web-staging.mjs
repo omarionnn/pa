@@ -288,20 +288,20 @@ const repeated = (spec) => {
   rows.sort((a, b) => a.earned_at - b.earned_at);
   return stampsMod.foldBook(rows.map(row => ({ ...stampsMod.summarize(row), href: "/web?thread", row })));
 };
-// Omari's book today, folded: the first errand outside, research at its true count (62 → the 50 seal), one call.
+// Omari's book today, folded: the first errand outside, research at its true count (62, plain until 500), one call.
 const STAMPS_TIERS_OWNER = repeated([["first", 1], ["looked_into", 62], ["rang", 1, { place: "" }]]);
 // The brief's example: research at four, one call.
 const STAMPS_TIERS_FOUR = repeated([["first", 1], ["looked_into", 4], ["rang", 1, { place: "" }]]);
-// Every tier side by side (a design board, not a real book): green at 1/10/25/50/100, black at 1/10/100.
+// Every tier side by side (a design board, not a real book): green at 62/500/1000/2140, black at 1/25/100/250.
 const tierBoard = () => {
   const base = repeated([["looked_into", 1], ["rang", 1, { place: "" }]]);
   const at = (s, count, j) => {
-    const tier = stampsMod.tierOf(count);
-    return { ...s, id: 9300 + j, count, tier, next: stampsMod.nextTier(count), countLine: stampsMod.countLine(count), earnedAt: now - j * STAMP_DAY,
+    const t = s.type;
+    return { ...s, id: 9300 + j, count, tier: stampsMod.tierOf(count, t), level: stampsMod.levelOf(count, t), next: stampsMod.nextTier(count, t), countLine: stampsMod.countLine(count, t), earnedAt: now - j * STAMP_DAY,
       date: stampsMod.monthDay(now - j * STAMP_DAY, "America/New_York"), rotation: [-4, 3, -2, 5, -6, 2, -3, 4][j] };
   };
   const [li, rang] = [base.find(s => s.type === "looked_into"), base.find(s => s.type === "rang")];
-  return [[li, 4], [li, 12], [li, 31], [li, 62], [li, 104], [rang, 1], [rang, 17], [rang, 120]].map(([s, n], j) => at(s, n, j)).reverse(); // the book draws newest first
+  return [[li, 62], [li, 500], [li, 1000], [li, 2140], [rang, 1], [rang, 25], [rang, 100], [rang, 250]].map(([s, n], j) => at(s, n, j)).reverse(); // the book draws newest first
 };
 const STAMPS_TIERS_BOARD = tierBoard();
 const wx = await imp("src/pages/webseals.js");
@@ -414,9 +414,9 @@ const S = [
   ["stamps", "Stamps", "Stamps · the book, last page", "Wax seals tilted on a paper sheet, NEW on the newest, two not-yet spots engraved, the aside: story, SHARE IT (the compliments card), the first-errand patch kept outside.", stampsPage(STAMPS_MANY), {}],
   ["stamps-everyday", "Stamps", "Stamps · everyday seals", "Research (one a week) and a call that got what it was for land in the book: five seals plus the patch outside, two not-yet spots, the patch outside.", stampsPage(STAMPS_EVERYDAY), {}],
   ["stamps-page1", "Stamps", "Stamps · an earlier page", "A full page of eight: no not-yet spots.", stampsPage(STAMPS_MANY, { page: 1 }), {}],
-  ["stamps-tiers-owner", "Stamps", "Stamps · one per kind (Omari's book)", "REASON_STAMPS_TIERS: research at its true count (62, the 50 seal, gold ribbon) and one call, each once; the count and next goal under the name.", stampsPage(STAMPS_TIERS_OWNER), {}],
-  ["stamps-tiers-four", "Stamps", "Stamps · one per kind (research at four)", "The plain seal until 10: \"4 times · next at 10\".", stampsPage(STAMPS_TIERS_FOUR), {}],
-  ["stamps-tiers-board", "Stamps", "Stamps · every tier side by side", "Design board: green at 1 / 10 / 25 / 50 / 100, black at 1 / 10 / 100. 10 rust ribbon, 25 + gold ring, 50 gold ribbon, 100 + double ring and gilded edge.", stampsPage(STAMPS_TIERS_BOARD), {}],
+  ["stamps-tiers-owner", "Stamps", "Stamps · one per kind (Omari's book)", "REASON_STAMPS_TIERS: research at its true count (62, the plain seal: \"62 times · next at 500\") and one call (\"Once · next at 25\"), each once.", stampsPage(STAMPS_TIERS_OWNER), {}],
+  ["stamps-tiers-four", "Stamps", "Stamps · one per kind (research at four)", "The plain seal until 500: \"4 times · next at 500\".", stampsPage(STAMPS_TIERS_FOUR), {}],
+  ["stamps-tiers-board", "Stamps", "Stamps · every tier side by side", "Design board: research at 62 / 500 / 1000 / 2140, a call at 1 / 25 / 100 / 250. Tier 2 rust ribbon, tier 3 gold ribbon + gold ring, tier 4 + double ring and gilded edge; the ribbon carries the real count.", stampsPage(STAMPS_TIERS_BOARD), {}],
   ["stamps-first", "Stamps", "Stamps · first seal", "One seal, two not-yet spots, the patch outside the book.", stampsPage(STAMPS_MANY.slice(0, 2)), {}],
   ["stamps-patch-only", "Stamps", "Stamps · only the first errand", "No seals yet; the first-errand patch kept outside the book.", stampsPage(STAMPS_MANY.slice(0, 1)), {}],
   ["stamps-empty", "Stamps", "Stamps · empty", "Nothing earned yet: two not-yet spots.", stampsPage([]), {}],

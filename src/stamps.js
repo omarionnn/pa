@@ -295,7 +295,7 @@ function bookNews(row) {
   if (!sealTiers()) return 1;
   const n = ONE("SELECT COUNT(*) AS n FROM stamps WHERE conversation_id = ? AND type = ? AND id <= ? AND ref NOT LIKE 'research:week:%'", row.conversation_id, row.type, row.id).n;
   if (n === 1) return 1;
-  return CATALOG[row.type]?.everyday && TIERS.includes(n) ? n : 0;
+  return CATALOG[row.type]?.everyday && tiersFor(row.type).includes(n) ? n : 0;
 }
 
 function tellNew(conversationId, ids) {
@@ -306,7 +306,7 @@ function tellNew(conversationId, ids) {
   const rows = ids.map(id => ONE("SELECT id, conversation_id, type, ref, told_at FROM stamps WHERE id = ?", id)).filter(r => r && !r.told_at)
     .map(r => ({ ...r, count: bookNews(r) })).filter(r => r.count);
   if (!rows.length) return;
-  const line = tellLine(rows.map(r => r.count >= TIERS[0] ? { type: r.type, count: r.count } : r.type));
+  const line = tellLine(rows.map(r => r.count > 1 ? { type: r.type, count: r.count } : r.type));
   if (!line) return;
   const send = () => {
     try {
@@ -495,21 +495,30 @@ export function summarize(row) {
 }
 
 // ---------------------------------------------------------------- one seal per kind (REASON_STAMPS_TIERS)
-/** The counts at which an everyday seal is upgraded in place. */
-export const TIERS = [10, 25, 50, 100];
-/** The tier a count has reached: 1 (the plain seal), 10, 25, 50 or 100. */
-export const tierOf = (n) => TIERS.reduce((t, x) => (n >= x ? x : t), 1);
-/** The next tier after a count, or null past the last. */
-export const nextTier = (n) => TIERS.find(x => x > n) ?? null;
+/**
+ * The counts at which an everyday seal is upgraded in place, per kind, scaled to how often the kind really
+ * happens (live 10-30: the busiest book had 66 researches in 25 days, the only call that got what it was for
+ * was one), so nobody fills a kind in a fortnight. The plain seal is tier 1; these are tiers 2, 3 and 4.
+ *   looked_into  500 / 1000 / 2000   research is the commonest thing done: ~2–3 a day at most, 500 is months
+ *   rang          25 /  100 /  250   a call that got what it was for is rare: a handful a month at most
+ */
+export const TIERS = { looked_into: [500, 1000, 2000], rang: [25, 100, 250] };
+const tiersFor = (type) => TIERS[type] ?? [];
+/** The count of the tier a count has reached for a kind: 1 (the plain seal) or one of its TIERS. */
+export const tierOf = (n, type) => tiersFor(type).reduce((t, x) => (n >= x ? x : t), 1);
+/** Which tier that is: 1 (plain) to 4 (the last), what the drawing goes by (seal.js tierArt). */
+export const levelOf = (n, type) => 1 + tiersFor(type).filter(x => n >= x).length;
+/** The next tier's count after a count for a kind, or null past the last. */
+export const nextTier = (n, type) => tiersFor(type).find(x => x > n) ?? null;
 /** A row the current book doesn't draw: research is stored both weekly and per question (candidatesForResearch). */
 export function hiddenRef(row) {
   if (row?.type !== "looked_into") return false;
   const ref = String(row.ref ?? "");
   return sealTiers() ? ref.startsWith("research:week:") : ref.startsWith("research:q:");
 }
-/** "Once · next at 10", "62 times · next at 100", "120 times": the line under a tiered seal's name. */
-export function countLine(n) {
-  const next = nextTier(n);
+/** "Once · next at 25", "62 times · next at 500", "2400 times": the line under a tiered seal's name. */
+export function countLine(n, type) {
+  const next = nextTier(n, type);
   return `${n === 1 ? "Once" : `${n} times`}${next ? ` · next at ${next}` : ""}`;
 }
 
@@ -528,10 +537,10 @@ export function foldBook(items) {
   for (const [type, list] of by) {
     const first = list[0];
     if (!CATALOG[type]?.everyday || !SEALS[type]) { out.push(first); continue; }
-    const n = list.length, tier = tierOf(n), reached = list[tier - 1], last = list.at(-1);
+    const n = list.length, tier = tierOf(n, type), reached = list[tier - 1], last = list.at(-1);
     const tz = tzFor(first.row.conversation_id), d = parse(last.row.detail_json, {});
     out.push({
-      ...first, count: n, tier, next: nextTier(n), countLine: countLine(n),
+      ...first, count: n, tier, level: levelOf(n, type), next: nextTier(n, type), countLine: countLine(n, type),
       firstAt: first.earnedAt, firstDate: first.date,
       earnedAt: reached.earnedAt, date: reached.date, postmarkDate: reached.postmarkDate,
       story: n > 1 ? tierStory(type, d, n, last.earnedAt, tz) : first.story, href: last.href,
