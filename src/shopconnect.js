@@ -328,7 +328,8 @@ function publicRequest(rq) {
     requestId: rq.requestId,
     question: String(rq.request?.question ?? rq.question ?? ""),
     expiresAt: rq.request?.expiresAt ?? rq.expiresAt ?? null,
-    fields: (rq.request?.interaction ?? rq.interaction)?.fields ?? [],
+    // Only what draws the field: a value Crossmint prefilled (an email) is never kept.
+    fields: ((rq.request?.interaction ?? rq.interaction)?.fields ?? []).map((f) => ({ key: f?.key, label: f?.label, handling: f?.handling, input: f?.input, ...(f?.required !== undefined ? { required: f.required } : {}) })),
   };
 }
 const isProtected = (f) => f?.handling === "protected";
@@ -468,27 +469,43 @@ export async function payApproved({ conversationId, paymentId, confirmationId })
   const row = paymentRow(paymentId);
   if (!row || row.conversation_id !== conversationId) return { ok: false, error: "no_such_payment" };
   if (row.status !== "asked") return { ok: false, error: `payment_${row.status}` };
-  if (row.expires_at && Date.parse(row.expires_at) < clock.now()) {
+  // Only Crossmint's exact total is ever paid: a "maximum" is a ceiling nobody agreed to as a price.
+  if (row.amount_kind !== "exact") return { ok: false, error: "not_exact_amount" };
+  // An expiry that doesn't read counts as passed.
+  if (row.expires_at && !(Date.parse(row.expires_at) >= clock.now())) {
     q("UPDATE shop_payments SET status = 'expired' WHERE id = ?").run(row.id);
     return { ok: false, error: "payment_expired" };
   }
   const card = cardOf(conversationId);
   if (!card) return { ok: false, error: "no_card" };
-  const oi = await asUser(conversationId, "/api/unstable/order-intents", {
-    method: "POST",
-    body: {
-      paymentMethodId: card.paymentMethodId,
-      amount: { value: row.amount, currency: row.currency },
-      merchant: { name: row.merchant_name, url: row.merchant_url, countryCode: row.merchant_country },
-      description: (row.item || `${row.merchant_name} order`).slice(0, 120),
-      expiresAt: new Date(clock.now() + 15 * 60_000).toISOString(),
-    },
-  });
+  // Claimed before any call, so two shop_pay calls at once can't both pay it.
+  if (q("UPDATE shop_payments SET status = 'paying' WHERE id = ? AND status = 'asked'").run(row.id).changes !== 1) return { ok: false, error: "payment_in_progress" };
+  const reopen = () => q("UPDATE shop_payments SET status = 'asked' WHERE id = ? AND status = 'paying'").run(row.id);
+  let oi;
+  try {
+    oi = await asUser(conversationId, "/api/unstable/order-intents", {
+      method: "POST",
+      body: {
+        paymentMethodId: card.paymentMethodId,
+        amount: { value: row.amount, currency: row.currency },
+        merchant: { name: row.merchant_name, url: row.merchant_url, countryCode: row.merchant_country },
+        description: (row.item || `${row.merchant_name} order`).slice(0, 120),
+        expiresAt: new Date(clock.now() + 15 * 60_000).toISOString(),
+      },
+    });
+  } catch { reopen(); return { ok: false, error: "order_intent_failed" }; }
   const orderIntentId = oi.json?.orderIntentId;
-  if (!oi.ok || !orderIntentId) return { ok: false, error: "order_intent_failed", status: oi.status };
+  // No order intent yet means nothing can be charged: the payment stays open for the same yes.
+  if (!oi.ok || !orderIntentId) { reopen(); return { ok: false, error: "order_intent_failed", status: oi.status }; }
   const part = { type: "input_response", requestId: row.request_id, action: "submit", response: { kind: "payment", orderIntentId } };
-  const r = await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(row.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } });
-  if (!r.ok) return { ok: false, error: "crossmint_refused", status: r.status };
+  // From here the card may have been offered to the store: any failure is an unknown outcome, never a retry.
+  const unknown = (status = null) => {
+    q("UPDATE shop_payments SET status = 'unknown', confirmation_id = ?, order_intent_id = ?, answered_at = ? WHERE id = ?").run(confirmationId ?? null, orderIntentId, clock.now(), row.id);
+    return { ok: false, error: "crossmint_refused", unknown_outcome: true, status };
+  };
+  let r;
+  try { r = await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(row.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } }); } catch { return unknown(); }
+  if (!r.ok) return unknown(r.status);
   q("UPDATE shop_payments SET status = 'paid', confirmation_id = ?, order_intent_id = ?, answered_at = ? WHERE id = ?").run(confirmationId ?? null, orderIntentId, clock.now(), row.id);
   return { ok: true, amount: amountText(row), merchant: row.merchant_name };
 }
@@ -534,7 +551,11 @@ export async function step(runId) {
       // Past the sign-in: the store let them in.
       if (link || run.mode === "sign_in") finishSignin(run, link);
       const row = recordPayment({ conversationId: run.conversation_id, runId, request: rq, item: run.item });
-      if (row && it.method === "card") await say(paymentAsk(row));
+      if (row && row.amount_kind !== "exact") {
+        // A ceiling, not a total: nothing to say yes to. Declined, so nothing is charged.
+        await declinePayment({ conversationId: run.conversation_id, paymentId: row.id });
+        await say(`${row.merchant_name || storeName(run.store) || "The store"} only gave me a ceiling (${amountText(row)}), not the real total, so I stopped before paying. Nothing was charged.`);
+      } else if (row && it.method === "card") await say(paymentAsk(row));
     } else if (it.kind === "form" && (it.fields ?? []).some(isProtected)) {
       if (link) {
         q("UPDATE shop_links SET request_id = ?, request_json = ? WHERE id = ?").run(requestId, JSON.stringify(publicRequest(rq)), link.id);

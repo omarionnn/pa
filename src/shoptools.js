@@ -55,9 +55,10 @@ export const SHOP_SCHEMAS = {
 };
 
 /** The gate's target for shop_pay: built from the payment row, never from the model's input. */
-export function shopPayTarget(input) {
+export function shopPayTarget(input, conversationId = null) {
   const row = shop.paymentRow(input.payment_id);
-  return row ? shop.payTarget(row) : `unknown payment #${input.payment_id}`;
+  // Someone else's payment reads as unknown: its amount and store never reach this model.
+  return row && row.conversation_id === conversationId ? shop.payTarget(row) : `unknown payment #${input.payment_id}`;
 }
 
 export async function runShopTool(name, input, { conversationId: c, confirmationId = null } = {}) {

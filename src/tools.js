@@ -124,7 +124,7 @@ export const IMAGE_GENERATE_DESC = "Draw a picture from a text description and s
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["flight_book", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
+const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -8762,7 +8762,7 @@ function uberRideLine(ride) {
  * never from the summary the model wrote, which is what makes "they agreed to this one" a fact about
  * the action rather than a fact about the description.
  */
-function confirmTargetFor(name, input) {
+function confirmTargetFor(name, input, c = null) {
   switch (name) {
     case "message_send": case "voice_note_send": case "call_place":
       return normalizeNumber(input.to) || input.to;
@@ -8818,7 +8818,7 @@ function confirmTargetFor(name, input) {
      * the gate refuses rather than authorizing a cart nobody can describe.
      */
     // A Crossmint payment, pinned to the row: Crossmint's amount, the merchant, the run and request.
-    case "shop_pay": return shopPayTarget(input);
+    case "shop_pay": return shopPayTarget(input, c);
     case "purchase_confirm": {
       const row = db.getAgentcardPurchase(input.conversation_id);
       if (!row || row.cart_hash !== input.cart_hash) return `unknown cart ${input.cart_hash} in ${input.conversation_id}`;
@@ -9050,7 +9050,7 @@ async function runToolInner(name, rawInput, ctx) {
   // collect a fresh one without the person ever being told that something may have gone through.
   // What lifts the block is a yes given since — see trust.retryBlocked.
   if (SPENDS_MONEY.has(name)) {
-    const stuck = trust.retryBlocked({ conversationId: c, action: name, target: confirmTargetFor(name, input), confirmationId: input.confirmation_id ?? null });
+    const stuck = trust.retryBlocked({ conversationId: c, action: name, target: confirmTargetFor(name, input, c), confirmationId: input.confirmation_id ?? null });
     if (stuck) {
       if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: stuck, target: targetOf(name, input) });
       return stuck;
@@ -9078,7 +9078,7 @@ async function runToolInner(name, rawInput, ctx) {
     // against that person and not only against the tool's name. browser_submit carries what it is
     // about to commit for the same reason: a yes is for the details the owner was shown, so a
     // submit whose details have moved since the ask has to ask again rather than ride the old yes.
-    const target = confirmTargetFor(name, input);
+    const target = confirmTargetFor(name, input, c);
     let gate = trust.authorizeConfirmation({ conversationId: c, action: name, confirmationId: input.confirmation_id, target });
 
     // What they have already told Reason it may do without asking, consulted BEFORE the gate stops.
@@ -11338,8 +11338,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return await runChoiceTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- Crossmint checkouts (src/shoptools.js) ----------
-    case "store_checkout": case "shop_pay": case "shop_decline":
-      return await runShopTool(name, input, { ...ctx, conversationId: c });
+    case "store_checkout": case "shop_pay": case "shop_decline": {
+      const out = await runShopTool(name, input, { ...ctx, conversationId: c });
+      // The card may have been offered to the store and nobody knows: never a retry on that yes.
+      if (name === "shop_pay" && out?.unknown_outcome) trust.noteUnknownOutcome({ conversationId: c, action: "shop_pay", target: confirmTargetFor("shop_pay", input, c), why: `Crossmint ${out.status ?? "no answer"} after the order intent` });
+      return out;
+    }
 
     // ---------- invites (src/invites.js) ----------
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };

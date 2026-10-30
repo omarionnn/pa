@@ -63,7 +63,7 @@ async function fakeFetch(url, init = {}) {
     return reply(201, { runId });
   }
   const m = /^\/api\/unstable\/agent-checkouts\/([^/]+)(\/messages)?$/.exec(p);
-  if (m && m[2]) return reply(202, { ok: true });
+  if (m && m[2]) { if (failMessages) throw new Error("socket hang up"); return reply(202, { ok: true }); }
   if (m) return reply(200, { runId: m[1], ...runs[m[1]] });
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}`, status: "active" });
   if (p.startsWith("/api/2026-09-16/payment-methods/")) return reply(init.method === "DELETE" ? 204 : 200, { ok: true });
@@ -91,6 +91,8 @@ const PAY = (requestId, value = "9.79", kind = "exact") => ({
   },
 });
 const said = [];
+let failMessages = false;
+const q = (sql) => db.db.prepare(sql);
 before(() => { shop._setFetch(fakeFetch); shop.attach({ say: (c, t) => said.push({ c, t }), base: "https://heyreason.test/web/connect" }); });
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => { reset(); said.length = 0; for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments"]) db.db.exec(`DELETE FROM ${t}`); });
@@ -207,12 +209,12 @@ test("the sign-in link is texted once per run; later questions land on the same 
 });
 
 // ---------------------------------------------------------------- 4. payment
-async function askedPayment(value = "9.79", kind = "exact") {
+async function askedPayment(value = "9.79", kind = "exact", requestId = "req_pay_9") {
   const out = await shop.startCheckout({ conversationId: OMARI, store: "bestbuy", startUrl: "https://www.bestbuy.com/", what: "Buy the BE 4' USB-C cable.", item: "a 4-ft USB-C cable", maxUsd: 15 });
   runs[out.runId].status = "awaiting_input";
-  runs[out.runId].requiredAction = PAY("req_pay_9", value, kind);
+  runs[out.runId].requiredAction = PAY(requestId, value, kind);
   await shop.step(out.runId);
-  return shop.openPayment(OMARI);
+  return db.db.prepare("SELECT * FROM shop_payments WHERE request_id = ?").get(requestId);
 }
 const owner = (t) => ({ role: "user", content: `[Fri, Oct 30, 2026, 1:00 PM] Omari: ${t}` });
 const readsYes = async () => ({ verdict: "yes" });
@@ -278,9 +280,42 @@ test("a no never pays: a refusal declines at Crossmint", async () => {
   assert.equal(calls.filter((c) => c.path === "/api/unstable/order-intents").length, 0);
 });
 
-test("a maximum is said as 'up to', never as a price", async () => {
-  await askedPayment("15.00", "maximum");
-  assert.match(said.at(-1).t, /^OK to pay up to \$15\.00 at Best Buy/);
+test("a maximum is never asked or paid: declined at Crossmint, said as a ceiling", async () => {
+  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_1', 'visa', '4242', ?)").run(OMARI, clock.now());
+  const row = await askedPayment("15.00", "maximum");
+  assert.doesNotMatch(said.at(-1).t, /OK to pay/);
+  assert.match(said.at(-1).t, /ceiling \(\$15\.00\).*Nothing was charged/);
+  assert.equal(calls.filter((c) => c.path.endsWith("/messages")).at(-1).body.parts[0].action, "decline");
+  q("UPDATE shop_payments SET status = 'asked' WHERE id = ?").run(row.id);
+  assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: row.id })).error, "not_exact_amount");
+  assert.equal(calls.filter((c) => c.path === "/api/unstable/order-intents").length, 0);
+});
+
+test("pays once even when asked twice at the same time; an unknown answer is never retried", async () => {
+  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_1', 'visa', '4242', ?)").run(OMARI, clock.now());
+  const row = await askedPayment();
+  const both = await Promise.all([shop.payApproved({ conversationId: OMARI, paymentId: row.id }), shop.payApproved({ conversationId: OMARI, paymentId: row.id })]);
+  assert.deepEqual(both.map((o) => o.ok).sort(), [false, true]);
+  assert.equal(calls.filter((c) => c.path === "/api/unstable/order-intents").length, 1);
+
+  const row2 = await askedPayment("4.20", "exact", "req_pay_unknown");
+  failMessages = true;
+  try {
+    const out = await shop.payApproved({ conversationId: OMARI, paymentId: row2.id });
+    assert.equal(out.unknown_outcome, true);
+    assert.equal(shop.paymentRow(row2.id).status, "unknown");
+    assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: row2.id })).error, "payment_unknown");
+  } finally { failMessages = false; }
+});
+
+test("an unreadable expiry counts as passed; someone else's payment reads as unknown", async () => {
+  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_1', 'visa', '4242', ?)").run(OMARI, clock.now());
+  const row = await askedPayment();
+  q("UPDATE shop_payments SET expires_at = 'soon' WHERE id = ?").run(row.id);
+  assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: row.id })).error, "payment_expired");
+  const { shopPayTarget } = await import("../src/shoptools.js");
+  assert.match(shopPayTarget({ payment_id: row.id }, AMA), /^unknown payment/);
+  assert.match(shopPayTarget({ payment_id: row.id }, OMARI), /exact 9\.79 USD/);
 });
 
 // ---------------------------------------------------------------- 5. states and the flag
