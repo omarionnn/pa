@@ -78,8 +78,41 @@ async function sharedRead(key, read) {
  * Start a run. The row is the run: a deep one is handed to the tasks machinery and whatever happens
  * to the process, the question, the remaining queries and every source read so far are still here.
  */
-export function startRun(conversationId, { question, queries = [], taskId = null, niche = "" }) {
-  return db.createResearch(conversationId, { question, queries, taskId, niche });
+export function startRun(conversationId, { question, queries = [], taskId = null, niche = "", big = false }) {
+  return db.createResearch(conversationId, { question, queries, taskId, niche, big });
+}
+
+/**
+ * Is this a big question? Read off what the model already said about it — the kind it named, how
+ * many angles it planned, how many options it named — and never off the question's words. A choice
+ * between things, or a plan wide enough to need three searches, is a question one search's worth of
+ * pages cannot answer; run #78 (four queries, six vendors) is the case this exists for.
+ */
+export function isBig({ kind = "", queries = [], options = [] } = {}) {
+  return kind === "choice" || (queries?.length ?? 0) >= 3 || (options?.length ?? 0) >= 3;
+}
+
+/**
+ * The caps a run works under: the small ones, or the big ones when the run was started big, plus
+ * one fresh slice on top when the run has been given its background follow-up. Cumulative caps are
+ * what keep a run from running away across wakes, so the follow-up's room has to be ADDED to them —
+ * otherwise the wake would find its searches already spent and carry on nothing.
+ */
+export function capsFor(run, {
+  maxSearches, maxPages, maxSeconds,
+  continueSearches = config.researchContinueSearches, continuePages = config.researchContinuePages,
+} = {}) {
+  const big = !!run?.big;
+  const caps = {
+    maxSearches: maxSearches ?? (big ? config.researchBigMaxSearches : config.researchMaxSearches),
+    maxPages: maxPages ?? (big ? config.researchBigMaxPages : config.researchMaxPages),
+    maxSeconds: maxSeconds ?? (big ? config.researchBigMaxSeconds : config.researchMaxSeconds),
+  };
+  if (run?.continue_task_id) {
+    caps.maxSearches += continueSearches;
+    caps.maxPages += continuePages;
+  }
+  return caps;
 }
 
 /**
@@ -93,9 +126,11 @@ export async function step(conversationId, researchId, {
   provider = searchProviderNow(),
   lookup = webLookup,
   robots = robotsAllows,
-  maxSearches = config.researchMaxSearches,
-  maxPages = config.researchMaxPages,
-  maxSeconds = config.researchMaxSeconds,
+  maxSearches: askedSearches,
+  maxPages: askedPages,
+  maxSeconds: askedSeconds,
+  continueSearches,
+  continuePages,
   maxNicheSearches = config.researchNicheSearches,
   niches = NICHES,
   sourceChars = config.researchSourceChars,
@@ -105,6 +140,9 @@ export async function step(conversationId, researchId, {
   const run = db.getResearch(conversationId, researchId);
   if (!run) return { ok: false, error: `There is no research #${researchId} here.` };
   if (run.state !== "open") return { ok: false, error: `Research #${researchId} is already ${run.state}.` };
+  const { maxSearches, maxPages, maxSeconds } = capsFor(run, {
+    maxSearches: askedSearches, maxPages: askedPages, maxSeconds: askedSeconds, continueSearches, continuePages,
+  });
 
   const status = searchStatus({ provider });
   const startedAt = now();
@@ -157,18 +195,30 @@ export async function step(conversationId, researchId, {
       });
     }
 
-    let stop = null;
     const readAlready = db.listResearchSources(researchId).filter(s => s.state === "read").map(s => s.url);
     const ranked = pickSources(found.results, { max: Number.POSITIVE_INFINITY, already: readAlready });
-    const room = Math.min(Math.max(maxPages - readAlready.length, 0), maxReads);
+    const pageRoom = Math.max(maxPages - readAlready.length, 0);
+    const room = Math.min(pageRoom, maxReads);
     // More worth reading than the budget allows IS the cap cutting the run short, and it has to be
     // reported rather than quietly truncating the list — an answer off four of nine sources that
     // reads like an answer off all nine is the exact thing the caps are supposed to not produce.
-    if (ranked.length > room && maxPages - readAlready.length <= maxReads) stop = "pages";
+    // (A query held to its fair share is not cut: what it did not read goes back in the pile.)
+    let stop = ranked.length > room && pageRoom <= maxReads ? "pages" : null;
+    const got = await readPicks(ranked.slice(0, room), { niche });
+    stop = got.stop ?? stop;
+    return { stop, unread: [...ranked.slice(0, room).slice(got.tried), ...ranked.slice(room)] };
+  };
 
-    for (const pick of ranked.slice(0, room)) {
-      if (db.countResearchSources(researchId, { state: "read" }) >= maxPages) { stop = "pages"; break; }
-      if (outOfTime()) { stop = "time"; break; }
+  /**
+   * Read these picks in order until the page cap or the clock stops it. Returns the cap that did,
+   * and how many picks it got through, so what it never reached can go back in the pile.
+   */
+  const readPicks = async (picks, { niche = "" } = {}) => {
+    let tried = 0;
+    for (const pick of picks) {
+      if (db.countResearchSources(researchId, { state: "read" }) >= maxPages) return { stop: "pages", tried };
+      if (outOfTime()) return { stop: "time", tried };
+      tried++;
 
       // Another run in this conversation has been to this page recently: use what it got rather
       // than paying to fetch it again. The text in its log IS what came back from the fetch, so the
@@ -177,13 +227,13 @@ export async function step(conversationId, researchId, {
         since: clock.now() - config.researchReuseSourcesMin * 60_000, exceptId: researchId,
       });
       if (sibling) {
-        const tried = `research #${sibling.research_id}`;
+        const where = `research #${sibling.research_id}`;
         db.addResearchSource(researchId, {
           url: sibling.url, site: sibling.site, title: sibling.title || pick.title, said: sibling.said,
           date: sibling.date || pick.date || "", via: sibling.via, state: sibling.state,
           why: sibling.state === "read"
-            ? `read for ${tried}, not fetched again`
-            : `${sibling.why} (already tried for ${tried}; not tried again)`,
+            ? `read for ${where}, not fetched again`
+            : `${sibling.why} (already tried for ${where}; not tried again)`,
           niche,
         });
         continue;
@@ -223,7 +273,7 @@ export async function step(conversationId, researchId, {
       db.rememberSeenUrls(conversationId, [page.url], { kind: "page" });
       db.rememberSeenUrls(conversationId, (page.images ?? []).slice(0, 10), { kind: "page", from: page.url });
     }
-    return stop;
+    return { stop: null, tried };
   };
 
   // The niche plan is deterministic from (kind, question), so which of its searches are still owed
@@ -236,13 +286,32 @@ export async function step(conversationId, researchId, {
   const nicheSearched = [];
   let nicheCut = null;
 
+  // Fair shares. Every planned query is searched before any one of them is read to the bottom:
+  // run #78 (2026-10-30) planned four queries — the networks, Stripe, the agent-payment startups,
+  // what builders say — and the first one read all eight pages, so the cap ended the run with
+  // Stripe, Skyfire and Payman never searched and the answer written off one angle of four. So each
+  // query reads at most its share of the pages still left (never fewer than two, or a query is a
+  // list of snippets), the page cap no longer stops the planned queries — a query searched with no
+  // page room left still logs its snippets, which is what makes it count — and what the shares did
+  // not reach goes back in one pile that the leftover pages are spent on afterwards, best first.
+  const readCount = () => db.countResearchSources(researchId, { state: "read" });
+  const leftovers = [];
   while (pending.length) {
     if (run.searches + searched.length >= maxSearches) { cut = "searches"; break; }
     if (outOfTime()) { cut = "time"; break; }
-    if (db.countResearchSources(researchId, { state: "read" }) >= maxPages) { cut = "pages"; break; }
 
-    cut = await runQuery(pending.shift()) ?? cut;
-    if (cut === "pages" || cut === "time") break;
+    const toRun = Math.min(pending.length, maxSearches - run.searches - searched.length);
+    const share = Math.max(2, Math.floor(Math.max(maxPages - readCount(), 0) / toRun));
+    const got = await runQuery(pending.shift(), { maxReads: share });
+    if (!got) continue;
+    leftovers.push(...got.unread);
+    if (got.stop === "time") { cut = "time"; break; }
+  }
+  if (cut !== "time" && leftovers.length) {
+    const already = db.listResearchSources(researchId).filter(s => s.state === "read").map(s => s.url);
+    const best = pickSources(leftovers, { max: Number.POSITIVE_INFINITY, already });
+    const got = await readPicks(best);
+    cut = cut ?? got.stop;
   }
 
   // The detour. It runs AFTER the planned queries and on its own allowance, so it is never what
@@ -259,7 +328,7 @@ export async function step(conversationId, researchId, {
       // forum eat the whole page budget would buy depth in the odd place at the cost of the
       // ordinary sources an answer still has to stand on.
       const place = nichePending.shift();
-      const stop = await runQuery(place.query, { niche: entry.kind, sites: place.sites, maxReads: 2 });
+      const stop = (await runQuery(place.query, { niche: entry.kind, sites: place.sites, maxReads: 2 }))?.stop;
       if (stop === "time" || stop === "pages") { nicheCut = stop; break; }
     }
     nichePending = nichePlan(run.niche, run.question, {
@@ -314,7 +383,7 @@ export async function step(conversationId, researchId, {
     // `more` is passed as the planned queries alone. A run kept open only because niche places are
     // left has no planned query outstanding, and "there are queries left" would be a false sentence
     // about the thing the model is about to go and do.
-    note: noteFor(fresh, { cut, more: pending.length > 0 && !!cut, searched, parallelPending }),
+    note: noteFor(fresh, { cut, more: pending.length > 0 && !!cut, searched, parallelPending, caps: { maxSearches, maxPages, maxSeconds } }),
   };
 }
 
@@ -449,7 +518,7 @@ export function view(run) {
   };
 }
 
-function noteFor(run, { cut, more, searched, parallelPending = false }) {
+function noteFor(run, { cut, more, searched, parallelPending = false, caps = capsFor(run) }) {
   const sources = db.listResearchSources(run.id);
   const read = sources.filter(s => s.state === "read").length;
   const sites = new Set(sources.filter(s => s.state === "read").map(s => s.site)).size;
@@ -470,10 +539,10 @@ function noteFor(run, { cut, more, searched, parallelPending = false }) {
     lines.push(`${read} page(s) across ${sites} sites were read. Answer from them: a real pick first in one or two lines with the reason, then what would change it, then the sites named plainly.`);
   }
 
-  if (cut === "searches") lines.push(`The search cap (${config.researchMaxSearches}) stopped this, and ${run.queries.length} planned quer(ies) never ran. Tell them the answer is based on a partial look and say what you did not get to.`);
-  if (cut === "pages") lines.push(`The page cap (${config.researchMaxPages}) stopped this. Say the answer is based on the pages you got, not everything there is.`);
-  if (cut === "time") lines.push(`This ran out of time (${config.researchMaxSeconds}s). Say so, and say what is missing.`);
-  if (more) lines.push("There are queries left. For a question worth more work, carry on with research(research_id) — if it is a deep run, that is what the task wake is for.");
+  if (cut === "searches") lines.push(`The search cap (${caps.maxSearches}) stopped this, and ${run.queries.length} planned quer(ies) never ran. Tell them the answer is based on a partial look and say what you did not get to.`);
+  if (cut === "pages") lines.push(`The page cap (${caps.maxPages}) stopped this. Say the answer is based on the pages you got, not everything there is.`);
+  if (cut === "time") lines.push(`This ran out of time (${caps.maxSeconds}s). Say so, and say what is missing.`);
+  if (more) lines.push("There are queries left. If this result has `follow_up`, its note says what happens to them and overrides this line; otherwise, for a question worth more work, carry on with research(research_id) — if it is a deep run, that is what the task wake is for.");
 
   const failed = sources.filter(s => s.state === "failed");
   const forbidden = sources.filter(s => s.state === "forbidden");

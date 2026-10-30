@@ -150,8 +150,26 @@ A real-sentence pass with the real model, which is what `flow-gate` is for:
 cd ~/Desktop/pa && node --test test/flow-gate.test.js      # skips without a model
 ```
 
+## Asks run out (2026-10-30)
+
+An ask is closed as a no (`expired_at`), never a yes, once it is older than its window: 12h for calls,
+texts, voice notes and DMs to someone else (`REASON_ASK_TTL_REACH_H`), 24h for money
+(`REASON_ASK_TTL_MONEY_H`) and everything else (`REASON_ASK_TTL_DEFAULT_H`). A granted yes unused past
+`REASON_CONFIRM_WINDOW_MIN` is closed the same way. Closed lazily on every pending read
+(`db.expireStaleAsks`); `confirm_record` on one returns `state: "expired"` and grants nothing, and the
+gate answers `blocked: "expired"`. The next turn they start shows each one to the model once
+(`trust.expiredAsksNote`, stamps `expiry_told_at`); nothing is ever sent because of expiry.
+
+Drive: `node --import ./test/paid-key-guard.js --test test/stale-asks.test.js` (9). Deploy sweep, from
+the repo on the server: `node --env-file-if-exists=.env scripts/expire-stale-asks.js --dry-run`, then
+without `--dry-run`. It logs one JSON line per closed ask (id, action, summary, age_h) and a count;
+asks older than 7 days close quietly (expiry_told_at set). Proof: `peek.sh confirms` shows
+`expired_at` on every row past its window and no `granted_at` written by it.
+
 ## Gotchas
 
+- **A test that grants then waits more than the window now sees `expired`, not `granted`.** That is
+  the fix: an old yes is dead. Use `clock.skip` inside the window when a test needs a live yes.
 - **A wrong `ctx` fails like a product bug.** No `messages`, or the reply not last, and the guard
   reads the wrong sentence. Shape content as `"[<stamp>] <OwnerName>: <text>"`. A `conversationId`
   with no account behind it is the same trap one step earlier: the answer is `blocked: "no_account"`,

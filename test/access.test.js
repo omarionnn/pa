@@ -287,6 +287,43 @@ test("an expired request cannot be approved", async () => {
   assert.equal(db.getAccount(`dm:fake:${KOFI}`), null, "a yes after the window grants nothing");
 });
 
+// Asks for a yes run out (2026-10-30, src/db.js askTtlMs). An access ask lives as long as the access
+// request does, so a yes the next day still lets them in.
+test("a yes 30 hours later on an access ask still lets them in", async () => {
+  const h = harness({ verdict: "yes" });
+  await h.router.deliver(texts(KOFI, "hi", "a"));
+  const req = access.requestInFrontOfMaster();
+  clock.skip(30 * 60 * 60 * 1000);
+  const out = await masterSays(h, "yes go on");
+  assert.equal(out.decided, true);
+  assert.equal(out.granted, true);
+  assert.equal(db.getAccessRequest(req.id).state, "approved");
+});
+
+test("an access ask that ran out is decided expired, never left wedged", async () => {
+  const h = harness({ verdict: "yes" });
+  await h.router.deliver(texts(KOFI, "hi", "a"));
+  const req = access.requestInFrontOfMaster();
+  // The ask closed (by a sweep, say) while the request itself is still inside its own window.
+  clock.skip(2 * DAY);
+  db.db.prepare("UPDATE confirmations SET expired_at = ? WHERE id = ?").run(clock.now(), req.confirmation_id);
+  const out = await masterSays(h, "yes go on");
+  assert.equal(out.decided, false);
+  assert.equal(out.reason, "expired");
+  assert.equal(db.getAccessRequest(req.id).state, "expired", "closed, not pending forever");
+  assert.equal(access.requestInFrontOfMaster(), null, "nothing left stuck in front of the master");
+  assert.equal(db.getAccount(`dm:fake:${KOFI}`), null, "and nothing granted");
+
+  // Eight days late, with no sweep: decided expired too.
+  await h.router.deliver(texts(AMA, "hello", "b"));
+  const ama = access.requestInFrontOfMaster();
+  clock.skip(8 * DAY);
+  const late = await masterSays(h, "yes");
+  assert.equal(late.reason, "expired");
+  assert.equal(db.getAccessRequest(ama.id).state, "expired");
+  assert.equal(access.requestInFrontOfMaster(), null);
+});
+
 test("an unclear answer grants nothing and leaves it pending", async () => {
   const h = harness({ verdict: "unclear" });
   await h.router.deliver(texts(KOFI, "hi", "a"));

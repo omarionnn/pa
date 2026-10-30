@@ -21,6 +21,15 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   outbound echo (`is_outbound`), delivery status callbacks, typing indicators, call logs, inbound
   calls, profile and contact events — each acknowledged with 200 and dropped, so Sendblue stops
   retrying and no turn is spent.
+- **iMessage's link card is not a file (2026-10-30).** A pasted link comes with
+  `<8 chars>_<UUID>.pluginPayloadAttachment` (Sendblue media_url on `inbound-file-store`), on the
+  link's own webhook or an empty `_1`/`_2` part. `src/linkpreview.js` `isLinkPreviewAttachment`
+  (extension, case-insensitive; or a pluginPayload / `URLBalloonProvider` mime/UTI) is asked by
+  Sendblue `attachmentOf`, Linq parts and `/web/upload`: the card is dropped silently, and a
+  webhook that is only the card answers `200 {"ignored":"link preview card only"}` with no turn.
+  Prove: `node --test test/link-preview-attachment.test.js`; cage (subscription): `inbound.sh file`
+  with `content` = a link + the card as `media_url` → the reply is about the link, no "file"; then
+  the card alone on `<handle>_1` via `inbound.sh -` → `ignored`, `delivered:0`, no thread line.
 - **Groups are never treated as one person's DM.** A non-empty `group_id` → 200, logged as ignored.
   Every account, ledger row and confirmation in Reason belongs to one person.
 - **Deduplication.** A retried webhook with a `message_handle` already seen is answered once.
