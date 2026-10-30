@@ -149,11 +149,12 @@ export function platformCostOf(body) {
  * streams, so this does not drift from them: the holding line, a "one sec…" filler, a canned fallback
  * ("something broke", "let me come back to you") or — anything else — the model's own words.
  */
-export function contentKind(content, { holdingLine, fillers = [], fallbacks = [], openings = [] } = {}) {
+export function contentKind(content, { holdingLine, holdingLines = [], fillers = [], fallbacks = [], openings = [] } = {}) {
   const exact = String(content ?? "");
   const s = exact.trim();
   if (!s) return null;
-  if (holdingLine && s === String(holdingLine).trim()) return "holding_line";
+  // The holding line and the late line (voice.js `LATE_LINE`) are both "holding_line".
+  if ([holdingLine, ...holdingLines].some(h => h && s === String(h).trim())) return "holding_line";
   // Exact, not trimmed: the code's filler carries its trailing space; a model's own "..." does not.
   if (fillers.some(f => exact === String(f) || exact === ` ${f}`)) return "filler";
   if (fallbacks.some(f => s === String(f).trim())) return "fallback";

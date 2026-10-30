@@ -1411,10 +1411,14 @@ test("filler: \"One sec...\" at most once per call", async () => {
   assert.match((await drain(out.stream)).said, /^One sec/);
 });
 
-test("holding line: 6 s once per call, then only a turn that reaches 15 s silent", async () => {
+test("holding line: 6 s once per call, then the late line on every turn that reaches ~9.5 s silent", async () => {
   assert.equal(voice.FIRST_WORD_DEADLINE_MS, 6_000);
-  assert.equal(voice.LATE_HOLDING_MS, 15_000);
-  assert.ok(voice.LATE_HOLDING_MS < 24_000, "still inside the platform's custom-LLM timeout");
+  assert.equal(voice.LATE_HOLDING_MS, 9_500);
+  // The agent's cascade_timeout_seconds is 15 s from the request arriving; the late line has to be
+  // out with room for TTS and the network before then.
+  assert.ok(voice.LATE_HOLDING_MS <= 15_000 - 5_000, "the late line leaves ≥5 s before the 15 s cascade timeout");
+  assert.notEqual(voice.LATE_LINE, voice.HOLDING_LINE, "not the holding line said again");
+  assert.doesNotMatch(voice.LATE_LINE, /sorry|still there|hear me|\?/i, "no apology, no presence check");
   const call = ownerCall();
   const turn = async (stallMs) => {
     const seen = [];
@@ -1427,13 +1431,72 @@ test("holding line: 6 s once per call, then only a turn that reaches 15 s silent
     return { said: (await drain(out.stream)).said, seen };
   };
   const first = await turn(250);
-  assert.equal(first.said, `${voice.HOLDING_LINE} Here.`, "the first slow turn on the call gets it");
+  assert.equal(first.said, `${voice.HOLDING_LINE} Here.`, "the first slow turn on the call gets the holding line");
   const second = await turn(250);
-  assert.equal(second.said, "Here.", "a second slow turn, short of the late deadline, does not");
+  assert.equal(second.said, "Here.", "a second slow turn, short of the late deadline, gets nothing");
   assert.ok(!second.seen.some(l => l.voice_holding_line != null));
   const third = await turn(900);
-  assert.equal(third.said, `${voice.HOLDING_LINE} Here.`, "a turn past the late deadline still gets it");
+  assert.equal(third.said, `${voice.LATE_LINE} Here.`, "a turn past the late deadline gets the late line");
   assert.equal(third.seen.find(l => l.voice_holding_line != null)?.deadline_ms, 600);
+  const fourth = await turn(900);
+  assert.equal(fourth.said, `${voice.LATE_LINE} Here.`, "and so does every one after it");
+});
+
+test("holding line: deadlines run from when the request arrived (t0), not from when the turn began", async () => {
+  // The platform's 15 s starts at arrival; context building and the screen come out of it.
+  const call = ownerCall();
+  const context = contextFor({ call, kind: "owner", callMessages: [{ role: "user", content: "hey" }] });
+  const t0 = Date.now() - 5_900; // 5.9 s already gone before this turn started
+  const turn = voice.voiceTurn({
+    context, call, t0, screen: async () => ({ verdict: "safe" }),
+    generate: stalled(800, ["Here."]),
+  });
+  const said = await timed(turn);
+  assert.equal(said[0].content, voice.HOLDING_LINE, "the 6 s deadline from t0 fell inside this turn");
+  assert.ok(said[0].ms < 700, `said before the model's first word (${said[0].ms} ms)`);
+});
+
+test("holding line: a slow tool after a fast tool start is not silence (deadlines race the tool run)", async () => {
+  // A tool started too early for "One sec..." runs for up to CALL_TOOL_BUDGET_MS, then round 2 starts:
+  // unwatched, that was 12–16 s of nothing, past the platform's 15 s cascade timeout.
+  const call = ownerCall();
+  voice.contextDeps.runTool = async () => { await new Promise(r => setTimeout(r, 1_000)); return { ok: true, found: "a thing" }; };
+  const run = async () => {
+    const out = await llmRequest({
+      rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 200, lateHoldingMs: 400,
+      screen: async () => ({ verdict: "safe" }),
+      generate: (() => {
+        let round = 0;
+        return async function* () {
+          round++;
+          if (round === 1) {
+            yield { type: "tool_start", name: "memory_search" };
+            yield { type: "tool_use", name: "memory_search", id: "tu_1", input: { query: "x" } };
+            return;
+          }
+          await new Promise(r => setTimeout(r, 600));
+          yield { type: "text", text: "Found it." };
+        };
+      })(),
+    });
+    return timed(out.stream);
+  };
+  const first = await run();
+  assert.equal(first[0].content, voice.HOLDING_LINE);
+  assert.ok(first[0].ms < 900, `spoken while the tool ran (${first[0].ms} ms), not after it`);
+  assert.equal(first.map(c => c.content).join(""), `${voice.HOLDING_LINE} Found it.`, "one line, then the answer: never two fillers");
+  const second = await run();
+  assert.equal(second[0].content, voice.LATE_LINE, "a later tool turn gets the late line");
+  assert.ok(second[0].ms < 900, `spoken while the tool ran (${second[0].ms} ms)`);
+  assert.equal(second.map(c => c.content).join(""), `${voice.LATE_LINE} Found it.`);
+});
+
+test("once-per-call record: no call means a record for this request alone, never a shared one", () => {
+  const a = voice.onceSaidFor(undefined);
+  a.filler = true; a.holding = true;
+  const b = voice.onceSaidFor(undefined);
+  assert.deepEqual(b, { filler: false, holding: false });
+  assert.deepEqual(voice.onceSaidFor({ conversation_id: "dm:x" }), { filler: false, holding: false });
 });
 
 test("holding line and filler share one turn: never both", async () => {

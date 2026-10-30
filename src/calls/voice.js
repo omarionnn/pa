@@ -228,14 +228,21 @@ export const CALL_TOOL_BUDGET_MS = 8_000;
 export const FIRST_WORD_DEADLINE_MS = 6_000;
 
 /**
- * After the holding line has been said once on a call, the deadline for any later one.
+ * The late deadline: any turn that reaches this long with nothing said gets `LATE_LINE`, every time.
  *
- * At 4 s it would have fired on 24% of turns (36 of 148 had first_word > 4 s), making it the new top
- * filler. So it is said at most once per call at `FIRST_WORD_DEADLINE_MS`; after that, only a turn
- * that reaches this long with nothing said gets it again — still well inside the platform's ~24 s
- * custom-LLM timeout (call 13), which is the thing it exists to stop.
+ * At 4 s the holding line would have fired on 24% of turns (36 of 148 had first_word > 4 s), making
+ * it the new top filler, so it is said at most once per call, at `FIRST_WORD_DEADLINE_MS`. This is
+ * the floor under every other turn. The agent's `cascade_timeout_seconds` is 15 s (live agent config,
+ * 2026-10-30), counted from the request arriving; 9.5 s from that same moment leaves room for TTS and
+ * the network before the platform gives up on the LLM and kills the call (call 13).
  */
-export const LATE_HOLDING_MS = 15_000;
+export const LATE_HOLDING_MS = 9_500;
+
+/**
+ * What is said at the late deadline. Short, and not the holding line again: a call that already
+ * heard "one moment" should not hear it a second time. Not an apology and not a presence check.
+ */
+export const LATE_LINE = "Still working on it.";
 
 /**
  * Which once-per-call lines a call has already said, by `conversation#call`. In memory: a restart
@@ -243,8 +250,11 @@ export const LATE_HOLDING_MS = 15_000;
  */
 const onceSaid = new Map();
 const ONCE_SAID_KEEP = 500;
-function onceSaidFor(call) {
-  const key = `${call?.conversation_id}#${call?.id}`;
+export function onceSaidFor(call) {
+  // No call to key it on: this request's own record, kept nowhere, rather than one shared
+  // "undefined#undefined" entry every such request would read.
+  if (call?.id == null || call?.conversation_id == null) return { filler: false, holding: false };
+  const key = `${call.conversation_id}#${call.id}`;
   let got = onceSaid.get(key);
   if (!got) {
     got = { filler: false, holding: false };
@@ -276,6 +286,7 @@ const BROKE_FIRST = "Sorry — something broke on my end. Say that again?";
  */
 export const METER_KINDS = {
   holdingLine: HOLDING_LINE,
+  holdingLines: [HOLDING_LINE, LATE_LINE],
   fillers: [THINKING_FILLER, ONE_SEC],
   fallbacks: [NOTHING_SAID_AFTER, COME_BACK_LATER, COME_BACK_CHECK, COME_BACK_LOOK, BROKE_MID, BROKE_FIRST],
 };
@@ -1545,6 +1556,10 @@ export async function* voiceTurn({
   lateHoldingMs = LATE_HOLDING_MS,
   // How old a silent turn must be before a tool start says "One sec..."; see `FILLER_AFTER_MS`.
   fillerAfterMs = FILLER_AFTER_MS,
+  // When the platform's request arrived (`Date.now()` ms). The platform's own clock — its 15 s
+  // cascade timeout — starts there, before context building and the screen, so every deadline in
+  // this turn is measured from it too. Defaults to now for a direct caller.
+  t0 = null,
   // The turn meter (src/calls/metrics.js): which tools ran and what the model used. Watched only.
   meter = null,
 }) {
@@ -1570,7 +1585,9 @@ export async function* voiceTurn({
   let filled = false;
   // The holding line, said at most once per turn — see `FIRST_WORD_DEADLINE_MS`.
   let holdingSaid = false;
-  const turnStartReal = Date.now();
+  // Which line it was (the holding line, or the late line), for `onlyHolding`.
+  let holdingText = "";
+  const turnStartReal = Number.isFinite(t0) ? t0 : Date.now();
   // What this call has already had once: the tool-start filler, the holding line at the first deadline.
   const once = onceSaidFor(call);
   // The one "something was already said" the filler and the holding line share, so a turn never
@@ -1621,27 +1638,30 @@ export async function* voiceTurn({
   const LATE = Symbol("late");
   const replyExpected = () => !holdBack && !superseded() && !hold.onHold(call) && !hold.openingOwed(call)
     && !callOutcome.MACHINE_KINDS.includes(String(call?.outcome_kind ?? ""));
-  const onlyHolding = () => holdingSaid && said === HOLDING_LINE;
+  const onlyHolding = () => holdingSaid && said === holdingText;
   const untilFirstWord = async function* (pending) {
     if (saidAnything() || !replyExpected()) return await pending;
-    // Once per call at the first deadline; after that only a turn that is about to look dead to the
-    // platform gets it again. See `LATE_HOLDING_MS`.
-    const deadlineMs = once.holding ? Math.max(firstWordDeadlineMs, lateHoldingMs) : firstWordDeadlineMs;
+    // The holding line once per call at the first deadline; after that, the late line for any turn
+    // that is about to look dead to the platform. See `LATE_HOLDING_MS`.
+    const late = once.holding;
+    const deadlineMs = late ? Math.max(firstWordDeadlineMs, lateHoldingMs) : firstWordDeadlineMs;
+    const line = late ? LATE_LINE : HOLDING_LINE;
     let timer;
-    const late = new Promise(resolve => {
+    const deadline = new Promise(resolve => {
       timer = setTimeout(() => resolve(LATE), Math.max(0, deadlineMs - (Date.now() - turnStartReal)));
       timer.unref?.();
     });
     let first;
-    try { first = await Promise.race([pending, late]); } finally { clearTimeout(timer); }
+    try { first = await Promise.race([pending, deadline]); } finally { clearTimeout(timer); }
     if (first !== LATE) return first;
     if (saidAnything() || !replyExpected()) return await pending;
     holdingSaid = true;
     once.holding = true;
-    said = HOLDING_LINE;
+    holdingText = line;
+    said = line;
     if (!firstContentAt) firstContentAt = clock.now();
-    log({ voice_holding_line: call.id, kind: context.kind, ms: Date.now() - turnStartReal, deadline_ms: deadlineMs });
-    yield chunk({ content: HOLDING_LINE });
+    log({ voice_holding_line: call?.id, kind: context.kind, ms: Date.now() - turnStartReal, deadline_ms: deadlineMs, late });
+    yield chunk({ content: line });
     return await pending;
   };
 
@@ -2115,7 +2135,10 @@ export async function* voiceTurn({
           continue;
         }
         try {
-          out = await withinBudget(contextDeps.runTool(t.name, t.input ?? {}, {
+          // Raced against the same deadlines as the model reads: a tool started early (no "One
+          // sec...", the turn was too young) can run for `toolBudgetMs`, and the next round starts
+          // after it — long enough, unwatched, for the platform's cascade timeout to end the call.
+          out = yield* untilFirstWord(withinBudget(contextDeps.runTool(t.name, t.input ?? {}, {
             ...extras,
             conversationId: context.conversationId,
             kind: "user",
@@ -2123,7 +2146,7 @@ export async function* voiceTurn({
             // yes, and on a call those words are what was said on the call. Same judge, same row.
             messages: context.messages,
             onCall: call.id,
-          }), toolBudgetMs, { name: t.name });
+          }), toolBudgetMs, { name: t.name }));
         } catch (e) {
           out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
         }
@@ -2298,7 +2321,7 @@ export async function llmRequest({
   const msgCount = Array.isArray(body.messages) ? body.messages.length : 0;
   const turn = voiceTurn({
     context, call, generate: gen, model: String(body.model ?? "reason"), log, extras,
-    signal: control.signal, toolBudgetMs, firstWordDeadlineMs, lateHoldingMs, fillerAfterMs, meter,
+    signal: control.signal, toolBudgetMs, firstWordDeadlineMs, lateHoldingMs, fillerAfterMs, t0, meter,
     ...(screen ? { screen } : {}),
   });
   return {
