@@ -20,12 +20,15 @@
 //   Connected                read only, from each integration's own store.
 //   Invites                  src/invites.js: what is left, every link with its state, make one (5D,
 //                            ?invite=<id>: the link to copy or share), cancel an unused one.
+//   Shopping                 src/shopconnect.js (REASON_SHOP_CONNECT): the stores they signed into for
+//                            Crossmint checkouts and the card Crossmint keeps for them; remove either.
 //   Theme                    accounts.web_theme, so every browser opens in it (webkit accountThemed).
 //                            The only theme switch on Web.
 import { createHash, timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
 import * as invites from "../invites.js";
 import * as agentcard from "../agentcard.js";
+import * as shop from "../shopconnect.js";
 import { invitesOpenFor } from "../tools.js";
 import { config, clock } from "../config.js";
 import { readCookie, clearCookieHeader, SESSION_TTL_MS } from "./access.js";
@@ -141,6 +144,11 @@ const CSS = `
 .cn li{display:contents}
 .cn-n{font:400 14px/1.4 var(--mono);letter-spacing:.06em}
 .cn-s{font:400 19px/1.2 var(--hand);color:var(--pen)}
+.shp{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.shp li{display:flex;align-items:center;gap:4px 16px;padding:8px 0;border-bottom:1px dashed var(--hair);flex-wrap:wrap}
+.shp li>div{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px}
+.shp form{margin:0}
+.shp+.act2{margin-top:10px}
 .st-quiet{margin:10px 0 0;font-size:14px;line-height:1.5;color:var(--muted)}
 #invites{gap:4px}
 .inv-n{margin:6px 0 10px;font:italic 400 38px/1 var(--serif)}
@@ -307,7 +315,7 @@ new Promise(function(ok){var r=Notification.requestPermission(ok);if(r&&r.then)r
 var blocked=document.querySelector('.nt-blocked');if(blocked&&(!window.Notification||Notification.permission!=='granted'))blocked.hidden=false;
 })();`;
 
-const SECTIONS = [["reach", "HOW I REACH YOU"], ["browsers", "BROWSERS"], ["notify", "NOTIFICATIONS"], ["connected", "CONNECTED"], ["invites", "INVITES"], ["theme", "THEME"]];
+const SECTIONS = [["reach", "HOW I REACH YOU"], ["browsers", "BROWSERS"], ["notify", "NOTIFICATIONS"], ["connected", "CONNECTED"], ["shopping", "SHOPPING"], ["invites", "INVITES"], ["theme", "THEME"]];
 const hidden = (name, value) => `<input type="hidden" name="${name}" value="${esc(value)}">`;
 const post = (csrf, what, inner, cls = "") => `<form method="POST" action="/web/settings"${cls ? ` class="${cls}"` : ""}>${hidden("c", csrf)}${hidden("do", what)}${inner}</form>`;
 const saved = (on, words = "got it.") => (on ? hand(words, { role: "status" }) : "");
@@ -343,7 +351,27 @@ export function notifyBody({ csrf, reach = "text", on = false, done = "", sub = 
  * token); `invitesView` is invites.myInvites or null when invites are not open to them; `notify` is
  * this browser's own notifications setting.
  */
-export function renderSettings({ csrf, reach = "text", browsers = [], current = "", connected = [], invitesView = null, theme = null, notify = false, done = "", now = clock.now() }) {
+/**
+ * Shopping: each store they signed into for Crossmint checkouts, and the card Crossmint keeps. Remove
+ * either here. `shopping` is null when the flag keeps it from this person (the section is not drawn).
+ */
+export function shoppingSection({ csrf, shopping, done = "" }) {
+  const day = (ms) => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: config.tz });
+  const stores = shopping.stores.map((s) => `<li><div><span class="cn-n">${esc(s.name)}</span><span class="cn-s">signed in since ${esc(day(s.connectedAt))}</span></div>`
+    + post(csrf, "store-remove", `${hidden("s", s.store)}<button class="act2 inv-x" type="submit" data-busy="REMOVING…" aria-label="Remove ${esc(s.name)}">REMOVE</button>`) + `</li>`).join("");
+  const card = shopping.card
+    ? `<li><div><span class="cn-n">${esc((shopping.card.brand || "Card").replace(/^./, (c) => c.toUpperCase()))} ···· ${esc(shopping.card.last4 || "")}</span><span class="cn-s">kept by Crossmint</span></div>`
+      + post(csrf, "card-remove", `<button class="act2 inv-x" type="submit" data-busy="REMOVING…" aria-label="Remove the card">REMOVE</button>`) + `</li>`
+    : "";
+  return `<section class="st-sec" id="shopping" aria-labelledby="sh-h"><h2 id="sh-h">SHOPPING</h2>`
+    + (stores || card ? `<ul class="shp">${stores}${card}</ul>` : `<p class="st-quiet">No stores yet. When a store needs you signed in to check out, I'll text you a link.</p>`)
+    + (shopping.card ? "" : `<a class="act2" href="/web/connect/new-card">ADD A CARD →</a>`)
+    + `<p class="st-quiet">Your passwords and card number are kept by Crossmint, never by Reason. Removing your last store erases every saved sign-in there.</p>`
+    + saved(done === "store-removed", "removed. i won't use it again.") + saved(done === "card-removed", "card removed.")
+    + `</section>`;
+}
+
+export function renderSettings({ csrf, reach = "text", browsers = [], current = "", connected = [], invitesView = null, shopping = null, theme = null, notify = false, done = "", now = clock.now() }) {
   if (!REACH[reach]) reach = "text";
   const ph = (t) => `<a class="ph" href="/web/settings?edit=reach" aria-describedby="reach-how">${t}</a>`;
   const reachSec = `<section class="st-sec" id="reach" aria-labelledby="reach-h"><h2 id="reach-h">HOW REASON REACHES YOU</h2>`
@@ -412,11 +440,12 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
     + saved(done === "theme") + `</div>`
     + `<form method="POST" action="/web/signout" class="out-f">${hidden("c", csrf)}<button class="act2 out" type="submit" data-busy="SIGNING OUT…">SIGN OUT OF THIS BROWSER</button></form></section>`;
 
-  const shown = SECTIONS.filter(([id]) => id !== "invites" || invitesView);
+  const shoppingSec = shopping ? shoppingSection({ csrf, shopping, done }) : "";
+  const shown = SECTIONS.filter(([id]) => (id !== "invites" || invitesView) && (id !== "shopping" || shopping));
   const body = `<header class="st-head"><a class="act2" href="/web?thread">← BACK TO THE CHAT</a>${wordmark({ href: "/web?home" })}</header>`
     + `<main class="st"><div class="st-side"><h1 class="st-h1">Settings</h1><nav class="st-nav" aria-label="Settings sections">`
     + shown.map(([id, t], i) => `<a href="#${id}"${i === 0 ? ` aria-current="true"` : ""}>${t}</a>`).join("")
-    + `</nav></div><div class="st-main">${reachSec}${browsersSec}${notifySec}${connectedSec}${invitesSec}${themeSec}</div></main>`;
+    + `</nav></div><div class="st-main">${reachSec}${browsersSec}${notifySec}${connectedSec}${shoppingSec}${invitesSec}${themeSec}</div></main>`;
   return webPage({ title: "Reason — Settings", body, css: CSS, script: JS });
 }
 
@@ -496,6 +525,7 @@ export function settingsView(account, token) {
     current: token,
     connected: connections(conv),
     invitesView: myInvitesView(conv),
+    shopping: shop.connectAllowedFor(conv) ? { stores: shop.connectedStores(conv), card: shop.cardOf(conv) } : null,
     theme: db.webTheme(conv),
     notify: db.pageSessionNotify(token),
   };
@@ -600,6 +630,16 @@ export async function settingsRequest({ account, method, query = {}, headers = {
     const out = Number.isInteger(id) && id > 0 ? invites.cancelLink(conv, id, { replace: false }) : { ok: false };
     log({ web_settings: "invite_canceled", ok: !!out.ok });
     return back(out.ok ? "invite-canceled" : "", "invites");
+  }
+
+  if (what === "store-remove" || what === "card-remove") {
+    if (!shop.connectAllowedFor(conv)) return back("", "reach");
+    const key = String(form.get("s") ?? "");
+    // Only one of THIS person's own stores; a key they never connected changes nothing.
+    if (what === "store-remove" && !shop.isConnected(conv, key)) return back("", "shopping");
+    const out = what === "store-remove" ? await shop.removeStore(conv, key) : await shop.removeCard(conv);
+    log({ web_settings: what, ok: !!out.ok });
+    return back(out.ok ? (what === "store-remove" ? "store-removed" : "card-removed") : "", "shopping");
   }
 
   return back("", "reach");

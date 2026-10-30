@@ -71,6 +71,8 @@ export const GATED_ACTIONS = new Set([
   // everything the gate stops — and in `NEVER_STANDING` below, because no sentence can
   // pre-authorize it. The reasoning is on NEVER_STANDING.
   "purchase_confirm",
+  // A Crossmint checkout's payment (src/shoptools.js); never standing, see WHY_NEVER_STANDING.
+  "shop_pay",
   // Merging somebody else's (or their own) pull request. Irreversible: the commit is on the default
   // branch, CI runs, and undoing it means a revert PR. On the same footing as flight_checkin_commit:
   // in GATED_ACTIONS because the gate stops it, and in NEVER_STANDING because no sentence should
@@ -139,7 +141,7 @@ export const CATEGORIES = {
  * The thing somebody actually wants when they say that sentence is not fewer questions, it is less
  * waiting — and that is what the offer arriving by itself the moment check-in opens already does.
  */
-export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm", "uber_request"]);
+export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm", "uber_request", "shop_pay"]);
 
 /**
  * Why each one cannot be granted, in the words to say it in.
@@ -163,6 +165,7 @@ export const WHY_NEVER_STANDING = {
   // AgentCard picked, what it put in there instead of what was asked for, the service fees and
   // the real total only exist once the cart comes back, and "just buy it" would have to cover every
   // one of them. That is not a bound, it is the gate switched off.
+  shop_pay: "the yes for a store checkout covers the exact total Crossmint asks for at that store, and that total does not exist until the checkout reaches payment — so it is always asked, by text, with the number in it",
   purchase_confirm: "the yes for a purchase covers the cart AgentCard came back with — which shop it picked,"
     + " what it actually put in the basket, the fees and the real total — and none of that exists yet when a"
     + " permission is granted, so there would be nothing for the permission to be a bound on",
