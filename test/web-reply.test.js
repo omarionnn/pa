@@ -202,6 +202,12 @@ test("the thread draws a quote line over a reply, linking to its parent; the not
   assert.match(theirs.html, /re: find me a &lt;b&gt;plumber&lt;\/b&gt;/, "escaped");
   assert.ok(!/inline reply/.test(theirs.html), "the stored note is not drawn as their words");
   assert.match(theirs.html, /<div class="said">the second one<\/div>/);
+  // One mark of the reply, not two: where the quote line shows, the notes' "IN REPLY TO" tag (#267) is not drawn.
+  assert.ok(!/IN REPLY TO|wnote wrep/.test(theirs.html), "no tag under the quote line");
+  // Where no quote can be drawn (History's day view), the same row still says it was a reply, as a tag.
+  const fold = convo.rowOut({ ...rows(KOFI_C).find(r => r.id === theirs.id) }, { conversationId: KOFI_C, reply: false });
+  assert.match(fold.html, /IN REPLY TO/);
+  assert.ok(!/class="rq"/.test(fold.html));
   // The page draws the same line, with the composer's line and its script.
   const page = (await call(h, { b: kofi, query: { at: String(theirs.id) } })).body;
   assert.match(page, /class="rq"/);

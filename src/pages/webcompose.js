@@ -27,6 +27,9 @@ import { bubble, wordmark } from "./webkit.js";
 import { uploadIdOf, uploadPath, slipLabel, LIMITS, LIMITS_LINE, MAX_FILES } from "../webuploads.js";
 import { FIT_BYTES } from "../webshrink.js";
 import { hearingStatus } from "../voice.js";
+import { readLine, NOTES_CSS } from "./webnotes.js";
+import { sentFile } from "../sentfiles.js";
+import { meta as uploadMeta } from "../webuploads.js";
 
 const PLUS_SVG = `<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`;
 const MIC_SVG = `<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>`;
@@ -57,7 +60,11 @@ export function mediaOut(row, conversationId) {
     const kind = kindOf(x);
     const name = String(x?.filename ?? "").slice(0, 80) || "FILE";
     const up = uploadIdOf(x?.url);
-    const src = x?.url ? (up ? uploadPath(up, name) : `/web/media/m/${Number(row.id)}/${i}`) : "";
+    // A file Reason sent has no address on the row; it opens from where the send read it (src/sentfiles.js).
+    const sent = !x?.url && i === 0 && row.outbox_id && kind === "file" ? sentFile(conversationId, row.id) : null;
+    const src = x?.url ? (up ? uploadPath(up, name) : `/web/media/m/${Number(row.id)}/${i}`) : sent ? `/web/media/m/${Number(row.id)}/0` : "";
+    let size = sent?.size ?? null;
+    if (up && size == null) { try { size = Number(uploadMeta(up)?.bytes) || null; } catch { /* the size is a nicety */ } }
     let seconds = Number(x?.seconds) || null;
     let transcript = x?.transcript ? String(x.transcript) : null;
     if (kind === "voice" && x?.media_id && (!transcript || !seconds)) {
@@ -67,20 +74,41 @@ export function mediaOut(row, conversationId) {
         seconds ||= Number(it?.seconds) || null;
       } catch { /* the words are a nicety; the note still plays */ }
     }
-    return { kind, name, src, ...(x?.choice ? { choice: true } : {}), label: slipLabel({ name, kind: String(x?.kind ?? ""), pages: Number(x?.pages) || null }), seconds: seconds ? Math.round(seconds) : null, transcript };
+    return { kind, name, src, ...(x?.choice ? { choice: true } : {}), label: slipLabel({ name, kind: String(x?.kind ?? ""), pages: Number(x?.pages) || null }), size, pages: Number(x?.pages) || null, seconds: seconds ? Math.round(seconds) : null, transcript };
   });
 }
 
-// The framing lines Reason's pipeline writes into a message about what came with it ("[they sent a
-// file …]", "[they sent a voice note. this is what they said …]") are for the model, not the page.
-const FRAMING = /^\s*\[they (?:sent|shared) [^\n]*\]\s*$/gm;
-/** The words a person's own line shows: theirs, without the pipeline's notes about attachments. */
-export const ownWords = (text, media = []) => (media.length ? String(text ?? "").replace(FRAMING, "").replace(/\n{3,}/g, "\n\n").trim() : String(text ?? ""));
+// The notes Reason's pipeline writes into a message ("[they sent a file …]", "[they shared their
+// location: …]", "[they sent this as an inline reply …]") are for the model, not the page: the page
+// draws them as their own small parts (src/pages/webnotes.js) and shows the person's words alone.
+/** The words a person's own line shows: theirs, without the pipeline's notes. */
+export const ownWords = (text) => readLine(text).words;
 
 /** The play control: ▶, the waveform and the length. A real button; the page's script plays it. */
 export function playButton({ src, seconds }) {
   const len = seconds ? `, ${seconds} second${seconds === 1 ? "" : "s"}` : "";
   return `<button type="button" class="vplay" data-src="${esc(src)}" aria-label="Play voice note${len}">${PLAY_SVG}${WAVE_SVG}<span class="vt">${seconds ? esc(clockOf(seconds)) : ""}</span></button>`;
+}
+
+/** "rytCHiLR_Stella_Rosa.vcf" → "Stella_Rosa.vcf": the inbound store's 8-character prefix is not part of the name. */
+const shownName = (n) => String(n ?? "").replace(/^[A-Za-z0-9]{8}_(?=.)/, "") || "file";
+/** 12515 → "12 KB". */
+export const sizeOf = (b) => (!b ? "" : b < 1024 ? `${b} B` : b < 1024 * 1024 ? `${Math.round(b / 1024)} KB` : `${(b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0)} MB`);
+const DOC_SVG = (tag) => `<svg class="fc-i" aria-hidden="true" width="30" height="36" viewBox="0 0 30 36" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M3 2h16l8 8v24H3z"/><path d="M19 2v8h8"/><text x="15" y="27" text-anchor="middle" font-size="7" font-family="ui-monospace,Menlo,monospace" letter-spacing=".5" fill="currentColor" stroke="none">${tag}</text></svg>`;
+
+/**
+ * One file on a line: a file-type mark, its name as written, the type and size, and what a tap does.
+ * A PDF opens in the browser; a .docx or a sheet downloads under its own name (iPhone: Quick Look).
+ */
+export function fileChip(x) {
+  const name = shownName(x.name);
+  const ext = (/\.([a-z0-9]{1,5})$/i.exec(name)?.[1] ?? "").toUpperCase();
+  const opens = /^(PDF|TXT|PNG|JPE?G|GIF|WEBP)$/.test(ext);
+  const facts = [ext || "FILE", x.pages ? `${x.pages} ${x.pages === 1 ? "PAGE" : "PAGES"}` : "", sizeOf(x.size).toUpperCase()].filter(Boolean).join(" · ");
+  const inner = `${DOC_SVG(esc(ext.slice(0, 4)))}<span class="fc-t"><span class="fn">${esc(name)}</span><span class="fs">${esc(facts)}${x.src ? ` · ${opens ? "OPEN" : "DOWNLOAD"}` : ""}</span></span>`;
+  return x.src
+    ? `<a class="slip fslip fchip" href="${esc(x.src)}" target="_blank" rel="noopener"${opens ? "" : ` download="${esc(name)}"`} aria-label="${esc(`${opens ? "Open" : "Download"} ${name}${x.size ? `, ${sizeOf(x.size)}` : ""}`)}">${inner}</a>`
+    : `<span class="slip fslip fchip">${inner}</span>`;
 }
 
 /** The photos, slips and play control for one line (4B; sheet-uploads 3D). A file you sent is a slip that opens. */
@@ -89,9 +117,7 @@ export function mediaHtml(m) {
   const photos = m.media.filter(x => x.kind === "photo").map(x => x.src
     ? `<a class="photo${x.choice ? " choice" : ""}" href="${esc(x.src)}" target="_blank" rel="noopener"><img src="${esc(x.src)}" alt="${mine ? "Photo you sent" : "Photo from Reason"}" loading="lazy" decoding="async"></a>`
     : `<div class="photo" role="img" aria-label="${mine ? "Photo you sent" : "Photo from Reason"}"><span class="lbl">PHOTO</span></div>`).join("");
-  const files = m.media.filter(x => x.kind === "file").map(x => x.src
-    ? `<a class="slip fslip" href="${esc(x.src)}" target="_blank" rel="noopener"><span class="fn">${esc(x.label)}</span><span class="fs">TAP TO OPEN</span></a>`
-    : `<span class="slip fslip"><span class="fn">${esc(x.label)}</span></span>`).join("");
+  const files = m.media.filter(x => x.kind === "file").map(fileChip).join("");
   const voice = m.media.find(x => x.kind === "voice");
   const play = voice?.src ? playButton(voice) : "";
   return { photos, files, play, voice };
@@ -170,7 +196,7 @@ export function listeningHtml() {
 /** What the page's script needs to know before it decides to show the mic, and the limits it checks. */
 export const composeBoot = () => `window.REASON_WEB=window.REASON_WEB||{};window.REASON_WEB.hear=${serverHears() ? "true" : "false"};window.REASON_WEB.lim=${JSON.stringify({ each: LIMITS.image, fit: FIT_BYTES, files: MAX_FILES })};`;
 
-export const COMPOSE_CSS = `
+export const COMPOSE_CSS = NOTES_CSS + `
 .ic{width:44px;height:44px;flex:none;border:0;background:transparent;color:var(--ink);display:grid;place-items:center;cursor:pointer;border-radius:3px;padding:0}
 .ic[hidden]{display:none}
 .composer{position:sticky}
@@ -247,6 +273,13 @@ body.mic-off .convo>:not(.composer):not(h1),body.mic-off .home>:not(.composer){d
 a.slip.fslip{min-height:44px;justify-content:center;color:var(--ink);text-decoration:none}
 a.slip.fslip:hover{color:var(--hov)}
 .fslip .fn{font:400 11.5px/1.2 var(--mono);letter-spacing:.04em;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.slip.fchip{flex-direction:row;align-items:center;gap:12px;padding:10px 16px 10px 12px;max-width:min(100%,380px);white-space:normal}
+a.slip.fchip{min-height:56px}
+.fchip .fc-i{flex:none;color:var(--pen)}
+.fchip .fc-t{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fchip .fn{font:italic 400 18px/1.2 var(--serif);letter-spacing:0;overflow-wrap:anywhere;text-overflow:clip}
+.fchip .fs{font:400 9.5px/1.2 var(--mono);letter-spacing:.12em;color:var(--muted)}
+a.slip.fchip:hover .fn{color:var(--hov)}
 .fslip .fs{font:400 9.5px/1.2 var(--mono);letter-spacing:.1em;color:var(--muted)}
 .vplay{min-height:44px;border:0;background:transparent;display:flex;align-items:center;gap:10px;cursor:pointer;padding:0;color:var(--ink)}
 .vplay .vt{font:400 11px/1 var(--mono)}
