@@ -41,6 +41,7 @@ import { CallProvider, requireAnnouncement, requireCallRules, SPOKE_TO_SOMETHING
 import { requireBrief } from "./brief.js";
 import { agentIdFor, ttsModel } from "./profile.js";
 import { config } from "../config.js";
+import { terminationOf, platformErrorOf, platformCostOf } from "./metrics.js";
 
 /**
  * What ElevenLabs is told about this call, under their own `custom_llm_extra_body`, and what comes
@@ -346,6 +347,12 @@ export class ElevenLabsCallProvider extends CallProvider {
       turns: transcriptTurns(body),
       durationS,
       costCents: costCentsOf(body),
+      // For the call audit (src/calls/metrics.js): their words for why it ended, any error they
+      // attached, and what they say it cost — credits as given, every other cost-like field raw.
+      termination: terminationOf(body),
+      error: platformErrorOf(body),
+      costCredits: platformCostOf(body).credits,
+      costRaw: platformCostOf(body).raw,
       recording: recording.ref,
       recordingWhy: recording.why,
       externalId: conversationIdOf(body),
@@ -469,6 +476,8 @@ export class ElevenLabsCallProvider extends CallProvider {
           state: "failed",
           outcome: `the call never started: ${String(data?.reason ?? data?.error ?? "ElevenLabs did not say why")}`,
           summary: "", transcript: "", durationS: null, costCents: null,
+          termination: "call_initiation_failure",
+          error: { code: null, message: String(data?.reason ?? data?.error ?? "ElevenLabs did not say why") },
           recording: null,
           // Nobody's phone was ever answered, so there was nothing to record. Not an audio fault.
           recordingWhy: "",

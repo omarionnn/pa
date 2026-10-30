@@ -59,6 +59,7 @@ import { readBackInstruction, detail as readbackDetail, recordOf as recordOfDeta
 import * as verify from "./verify.js";
 import * as fromcall from "./fromcall.js";
 import { profileNote } from "./profile.js";
+import * as callMetrics from "./metrics.js";
 
 /** The route ElevenLabs is pointed at. One place, because the setup doc quotes it. */
 export const LLM_PATH = "/calls/elevenlabs/llm";
@@ -221,6 +222,19 @@ export const HOLDING_LINE = "Mm-hm, one moment.";
 
 /** A turn that ends having said nothing of its own (after anything already said, so leading space). */
 const NOTHING_SAID_AFTER = " Sorry — bear with me one moment.";
+// The turn's other canned lines, named so the turn meter (src/calls/metrics.js) can tell them from the
+// model's own words: "first real content" is the first thing said that was not one of these.
+const COME_BACK_LATER = "Let me come back to you on that one.";
+const COME_BACK_CHECK = "Sorry — let me check on that and come back to you.";
+const COME_BACK_LOOK = "Sorry — let me look into that and come back to you.";
+const BROKE_MID = "Sorry, something broke on my end there.";
+const BROKE_FIRST = "Sorry — something broke on my end. Say that again?";
+/** What the turn meter counts as not-yet-real content. Exported for the tests. */
+export const METER_KINDS = {
+  holdingLine: HOLDING_LINE,
+  fillers: [THINKING_FILLER, `One sec${THINKING_FILLER}`],
+  fallbacks: [NOTHING_SAID_AFTER, COME_BACK_LATER, COME_BACK_CHECK, COME_BACK_LOOK, BROKE_MID, BROKE_FIRST],
+};
 
 /**
  * The messages a turn sends ALWAYS end on the other side's words.
@@ -1482,6 +1496,8 @@ export async function* voiceTurn({
   toolBudgetMs = CALL_TOOL_BUDGET_MS,
   // How long the turn may say nothing at all before the holding line. Injectable for the same reason.
   firstWordDeadlineMs = FIRST_WORD_DEADLINE_MS,
+  // The turn meter (src/calls/metrics.js): which tools ran and what the model used. Watched only.
+  meter = null,
 }) {
   const streamId = id ?? `chatcmpl-${randomUUID()}`;
   const created = Math.floor(clock.now() / 1000);
@@ -1634,7 +1650,10 @@ export async function* voiceTurn({
         return;
       }
 
-      const gen = generate({ system: context.system, messages, tools: offeredTools(context), log, signal });
+      const gen = generate({
+        system: context.system, messages, tools: offeredTools(context), log, signal,
+        ...(meter ? { onUsage: (u) => callMetrics.addUsage(meter, u) } : {}),
+      });
       // On the screened round the model request is put in flight NOW, read ahead into a buffer, so
       // the screen below is read while the first token is already on its way (see `eagerly`).
       const events = round === 0 && screening ? eagerly(gen) : gen;
@@ -1697,7 +1716,10 @@ export async function* voiceTurn({
             }
             continue;
           }
-          if (ev?.type === "tool_use") toolUses.push(ev);
+          if (ev?.type === "tool_use") {
+            toolUses.push(ev);
+            if (meter && ev.name) meter.tools.add(String(ev.name));
+          }
         }
       } finally {
         if (!readingDone) Promise.resolve(reading.return?.()).catch(() => {});
@@ -1916,7 +1938,7 @@ export async function* voiceTurn({
             return;
           }
           yield* openingIfOwed();
-          yield chunk({ content: said ? " Let me come back to you on that one." : "Sorry — let me check on that and come back to you." });
+          yield chunk({ content: said ? ` ${COME_BACK_LATER}` : COME_BACK_CHECK });
           yield chunk({}, "stop");
           yield SSE_DONE;
           log({ voice_turn_out_of_rounds: call.id, kind: context.kind, on: "call_tools", ...timing() });
@@ -1987,7 +2009,7 @@ export async function* voiceTurn({
 
       if (round === MAX_VOICE_TOOL_ROUNDS) {
         // Out of rounds with nothing said. Better a sentence admitting it than a silent line.
-        yield chunk({ content: said ? " Let me come back to you on that one." : "Sorry — let me look into that and come back to you." });
+        yield chunk({ content: said ? ` ${COME_BACK_LATER}` : COME_BACK_LOOK });
         yield chunk({}, "stop");
         yield SSE_DONE;
         log({ voice_turn_out_of_rounds: call.id, kind: context.kind, ...timing() });
@@ -2085,7 +2107,7 @@ export async function* voiceTurn({
     const before = said;
     yield* openingIfOwed();
     const lead = said !== before ? " " : "";
-    yield chunk({ content: before ? " Sorry, something broke on my end there." : `${lead}Sorry — something broke on my end. Say that again?` });
+    yield chunk({ content: before ? ` ${BROKE_MID}` : `${lead}${BROKE_FIRST}` });
     yield chunk({}, "stop");
   }
   yield SSE_DONE;
@@ -2139,6 +2161,9 @@ export async function llmRequest({
   // How long a turn may say nothing before the holding line; see `FIRST_WORD_DEADLINE_MS`.
   firstWordDeadlineMs = FIRST_WORD_DEADLINE_MS,
 }) {
+  // The moment the platform's request arrived — the person has stopped talking — which is where the
+  // caller's wait starts. Every turn timing in call_turns is measured from here.
+  const t0 = Date.now();
   const auth = verifyLlmBearer({ headers, secret });
   if (!auth.ok) {
     log({ voice_llm_rejected: auth.why });
@@ -2202,14 +2227,34 @@ export async function llmRequest({
   const settle = () => { if (inFlight.get(key) === control) inFlight.delete(key); };
 
   const gen = generate ?? generatorFor();
+  // One call_turns row per request: what the caller waited through on this turn. Started now so a turn
+  // that never finishes is still on the record; finished when the stream ends, however it ends. A
+  // database fault here never costs the turn — it is only the record of it that goes missing.
+  const meter = callMetrics.newMeter();
+  let turnRow = null;
+  try { turnRow = db.startCallTurn({ callId: call.id, conversationId: call.conversation_id, kind, at: t0 }); }
+  catch (e) { log({ call_turn_row_failed: call.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
+  const turn = voiceTurn({
+    context, call, generate: gen, model: String(body.model ?? "reason"), log, extras,
+    signal: control.signal, toolBudgetMs, firstWordDeadlineMs, meter,
+    ...(screen ? { screen } : {}),
+  });
   return {
     status: 200,
     headers: SSEH,
-    stream: finishing(voiceTurn({
-      context, call, generate: gen, model: String(body.model ?? "reason"), log, extras,
-      signal: control.signal, toolBudgetMs, firstWordDeadlineMs,
-      ...(screen ? { screen } : {}),
-    }), settle),
+    stream: callMetrics.metered(finishing(turn, settle), {
+      t0, meter, kinds: METER_KINDS,
+      aborted: () => control.signal.aborted,
+      onEnd: (m) => {
+        if (turnRow == null) return;
+        try { db.finishCallTurn(turnRow, m); }
+        catch (e) { log({ call_turn_row_failed: call.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
+        log({
+          call_turn_heard: call.id, turn: turnRow, first_content_ms: m.firstContentMs, first_kind: m.firstContentKind,
+          first_real_ms: m.firstRealMs, total_ms: m.totalMs, closed_early: m.closedEarly,
+        });
+      },
+    }),
     // For the server: the socket closed, so whatever this turn is still doing is for nobody.
     abort: () => { control.abort(); settle(); },
   };
@@ -2334,7 +2379,7 @@ export function warmCallCache({ call, log = () => {}, now = clock.now(), client 
  * needs a key — so everything around it is injectable and the shape of what it yields is what the
  * tests pin.
  */
-async function* apiGenerator({ system, messages, tools, log = () => {}, signal = null }) {
+async function* apiGenerator({ system, messages, tools, log = () => {}, signal = null, onUsage = null }) {
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic();
   const stream = await client.messages.create({
@@ -2380,6 +2425,7 @@ async function* apiGenerator({ system, messages, tools, log = () => {}, signal =
     }
   }
   countCall(config.callModel || config.model, usage);
+  onUsage?.(usage);
   log({ voice_backend: "api" });
 }
 
@@ -2397,7 +2443,7 @@ function countCall(model, usage, error = null) {
  * what a real call should run on, and `callBackendName` is how that gets switched; the README says
  * so, and so does the setup checklist.
  */
-async function* cliGenerator({ system, messages, tools, log = () => {} }) {
+async function* cliGenerator({ system, messages, tools, log = () => {}, onUsage = null }) {
   const { runClaudeCli } = await import("../backends/cli.js");
   // The CLI takes a prompt and a system prompt, not a message list, so the call so far is rendered
   // into the prompt. The tools are described rather than offered: without the MCP server attached
@@ -2482,6 +2528,7 @@ async function* cliGenerator({ system, messages, tools, log = () => {} }) {
 
   const r = await runClaudeCli({ prompt: `${rendered}\n\nYou:`, system: `${system}${systemToolNote}`, feature: "call" });
   log({ voice_backend: "claude-cli", ok: r.ok });
+  if (r.envelope?.usage) onUsage?.(r.envelope.usage);
   if (!r.ok) throw new Error(r.error ?? "the CLI reported an error");
 
   const said = String(r.envelope?.result ?? "").trim();

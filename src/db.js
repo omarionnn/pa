@@ -1793,6 +1793,74 @@ addColumnIfMissing("calls", "timer_id", "INTEGER");
 // whichever settle path (webhook, call_status, the lost-calls sweep) found out how the call ended.
 addColumnIfMissing("calls", "missed_told_at", "INTEGER");
 
+// What a call audit needs and nothing recorded (2026-10-30 call quality audit): why each call ended,
+// what the platform says it cost, and how long the caller waited on every turn.
+//
+//   end_reason        one of END_REASONS in src/calls/metrics.js, or NULL when nothing said why
+//   end_detail        the platform's own words for it (termination reason, error code and message)
+//   cost_credits      ElevenLabs' `metadata.cost` — CREDITS, not money (see costCentsOf in elevenlabs.js)
+//   cost_raw          every cost-like field the payload's metadata carried, as JSON, unread, because
+//                     which of them the platform really sends has not been seen on a real payload
+addColumnIfMissing("calls", "end_reason", "TEXT");
+addColumnIfMissing("calls", "end_detail", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "cost_credits", "REAL");
+addColumnIfMissing("calls", "cost_raw", "TEXT NOT NULL DEFAULT ''");
+
+// One row per custom-LLM request on a call: the turn as the caller lived it. Times are from the moment
+// the endpoint received the request (the platform sends it when the person stops talking) to the
+// first content chunk streamed, to the first chunk that was the model's own words rather than the
+// holding line, a "one sec" or a canned fallback, and to the end of the stream. No words are kept:
+// tool NAMES only, so this table is safe to read in an audit.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS call_turns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    turn_index INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT '',
+    started_at INTEGER NOT NULL,
+    first_content_ms INTEGER,
+    first_content_kind TEXT,
+    first_real_ms INTEGER,
+    total_ms INTEGER,
+    holding_line INTEGER NOT NULL DEFAULT 0,
+    tools TEXT NOT NULL DEFAULT '[]',
+    closed_early INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS call_turns_call ON call_turns (call_id, turn_index);
+`);
+
+/** A turn has started on a call: its row, numbered in arrival order, before anything can stall. */
+export function startCallTurn({ callId, conversationId, kind = "", at = Date.now() }) {
+  const n = db.prepare("SELECT COALESCE(MAX(turn_index), 0) + 1 AS n FROM call_turns WHERE call_id = ?").get(callId).n;
+  const id = db.prepare("INSERT INTO call_turns (call_id, conversation_id, turn_index, kind, started_at) VALUES (?, ?, ?, ?, ?)")
+    .run(callId, conversationId, n, kind, at).lastInsertRowid;
+  return Number(id);
+}
+
+/** How the turn went, written once its stream has ended however it ended. */
+export function finishCallTurn(id, f = {}) {
+  const int = (v) => (Number.isFinite(v) ? Math.round(v) : null);
+  db.prepare(`UPDATE call_turns SET first_content_ms = ?, first_content_kind = ?, first_real_ms = ?, total_ms = ?,
+    holding_line = ?, tools = ?, closed_early = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
+    cache_write_tokens = ? WHERE id = ?`).run(
+    int(f.firstContentMs), f.firstContentKind ?? null, int(f.firstRealMs), int(f.totalMs),
+    f.holdingLine ? 1 : 0, JSON.stringify([...(f.tools ?? [])]), f.closedEarly ? 1 : 0,
+    int(f.usage?.input_tokens), int(f.usage?.output_tokens),
+    int(f.usage?.cache_read_input_tokens), int(f.usage?.cache_creation_input_tokens), id,
+  );
+}
+
+/** Every turn of one call, in order. */
+export function callTurns(callId) {
+  return db.prepare("SELECT * FROM call_turns WHERE call_id = ? ORDER BY turn_index ASC, id ASC").all(callId)
+    .map(r => ({ ...r, tools: JSON.parse(r.tools || "[]") }));
+}
+
 // The model's own "this is enough", stamped. A cap ending a run is code saying stop; this is the
 // model saying it, and it has to survive a restart the same way, or every wake re-opens a question
 // somebody already has the answer to. `enough_why` is its one line for why, which is what gets said
@@ -5096,6 +5164,8 @@ export function updateCall(conversationId, id, fields) {
     "verified_at", "verified_how", "verify_tries", "verify_sent_at", "verify_sent_after_msgs",
     "profile", "tts_model",
     "opening_waits", "machine_heard",
+    // Why it ended and what the platform says it cost (the 2026-10-30 call audit).
+    "end_reason", "end_detail", "cost_credits", "cost_raw",
   ];
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
