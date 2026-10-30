@@ -436,7 +436,7 @@ See [features/onboarding.md](features/onboarding.md).
 
 ### Baseline — first-chat onboarding (feat/first-chat-onboarding, 2026-10-30)
 
-`npm run test:offline` under `env -i` (rebased on origin/main a5e3c62, after both #270 reviews): 4,774 tests, 4,643 passing, 131 skipped, 0 failing, 0 cancelled (`test/onboarding.test.js` 38, `test/onboarding-migration.test.js` 2; +16 skipped: the opt-in `test/onboarding-live.test.js` — 16/16 on the subscription, sensitive texts + the harm screen included). Cage: `bin/onboarding-drive.sh` 11/11. See [features/onboarding.md](features/onboarding.md).
+`npm run test:offline` under `env -i` (rebased on origin/main 5bbd733, after both #270 reviews): 4,791 tests, 4,660 passing, 131 skipped, 0 failing, 0 cancelled (`test/onboarding.test.js` 38, `test/onboarding-migration.test.js` 2; +16 skipped: the opt-in `test/onboarding-live.test.js` — 16/16 on the subscription, sensitive texts + the harm screen included). Cage: `bin/onboarding-drive.sh` 11/11. See [features/onboarding.md](features/onboarding.md).
 
 ### Baseline — card + store sign-in paper redesign (wt/card-signin-redesign, #271, 2026-10-30)
 4,725 tests / 4,610 pass / 0 fail / 115 skipped (`npm run test:offline` under `env -i`, merged with origin/main a5e3c62). Cage (own port + `REASON_VERIFY_RUN`, owner, real JWT key, no Crossmint server key): 11/11 per [features/shop-connect.md](features/shop-connect.md) drive, plus an Amazon sign-in link → 200, one plain input (email), password sealed, no "Crossmint" in visible copy.
