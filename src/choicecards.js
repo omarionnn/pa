@@ -388,7 +388,8 @@ export async function lookAtPlacePhotos({ name, photos }, { run = null, model = 
     // A front proves nothing without its name on it: a directory's street views are the neighbours.
     // Its own name on it settles whose it is (a Joe Coffee board next to a "186 Fifth Ave" sign is Joe's).
     const own = x.own_name === true;
-    const other = (!!x.other_business && !own) || (shows === "outside" && !own);
+    // Only on a front: inside, our name on a menu board can be another cafe that sells the beans.
+    const other = (!!x.other_business && !(own && shows === "outside")) || (shows === "outside" && !own);
     out.set(x.n, { shows, room, other });
   }
   return out.size ? out : null;
@@ -424,8 +425,9 @@ export async function rankPlacePhotos(conversationId, o, { fetchImpl, fetchPhoto
     pool.push(...found.filter(x => !pool.some(y => y.sum === x.sum)));
     if (pool.some(x => x.shows === "inside")) break;
   }
-  // One order for all of it: any room or signed front outscores a cup, wherever it came from.
-  return Object.assign(pool.sort((a, b) => b.score - a.score || a.i - b.i), { rejected });
+  // One order for all of it: any room or signed front outscores a cup, wherever it came from — and
+  // a picture rejected by any look stays out, whichever list it came in on.
+  return Object.assign(pool.filter(x => !rejected.has(x.sum)).sort((a, b) => b.score - a.score || a.i - b.i), { rejected });
 }
 
 let searchOverride;
@@ -533,6 +535,13 @@ export function pickPlacePhoto(ranked, taken = new Set()) {
   if (!best) return { ok: false, why: "no picture of the place itself could be used" };
   taken.add(photoKey(best.u)); taken.add(best.sum);
   return { ok: true, uri: best.uri, url: best.u, score: best.score, shows: best.shows ?? null, cached: !!best.cached };
+}
+
+/** The most one place's photo may add to a turn (reads, searches, looks): past it, the ordinary path. */
+const PLACE_PHOTO_BUDGET_MS = Number(process.env.REASON_PLACE_PHOTO_BUDGET_MS ?? 45_000);
+function withDeadline(p, ms) {
+  let t;
+  return Promise.race([p, new Promise(res => { t = setTimeout(() => res([]), ms); })]).finally(() => clearTimeout(t));
 }
 
 /** How long a chosen place photo is reused before the place is looked at again. */
@@ -695,7 +704,7 @@ export async function runChoiceTool(name, input, ctx) {
   // Places: every place's pictures looked at together, then handed out in order so no two cards
   // in the set show the same photo (a directory can give two branches one picture).
   const ranks = input.kind === "places"
-    ? await Promise.all(options.map(o => cachedOrRanked(c, o, { ...ctx, ...(ctx.lookPlace ? { look: ctx.lookPlace } : {}) }).catch(() => [])))
+    ? await Promise.all(options.map(o => withDeadline(cachedOrRanked(c, o, { ...ctx, ...(ctx.lookPlace ? { look: ctx.lookPlace } : {}) }), PLACE_PHOTO_BUDGET_MS).catch(() => [])))
     : null;
   const taken = new Set();
   const photos = [];
