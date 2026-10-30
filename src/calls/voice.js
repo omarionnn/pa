@@ -2341,7 +2341,7 @@ export async function llmRequest({
   const key = `${call.conversation_id}#${call.id}`;
   const theirs = theirSideKey(body.messages);
   const earlier = inFlight.get(key);
-  if (earlier && !earlier.over() && earlier.theirs === theirs) {
+  if (earlier && !earlier.over() && earlier.theirs === theirs && t0 - earlier.t0 < ATTACH_MAX_AGE_MS) {
     const reader = earlier.attach({ alreadySaid: trailingSaid(body.messages) });
     log({
       voice_turn_attached: call.id, kind, messages: Array.isArray(body.messages) ? body.messages.length : 0,
@@ -2412,6 +2412,13 @@ const inFlight = new Map();
  * cancelled as it always was. While nobody reads it, it starts nothing with a side effect.
  */
 export const ATTACH_GRACE_MS = 3_000;
+
+/**
+ * The oldest a running turn can be and still be joined. The platform gives up on a turn at its 15 s
+ * cascade timeout, so a re-ask is never later than that; this is a backstop against joining a turn
+ * that is stuck, not a tuning knob.
+ */
+const ATTACH_MAX_AGE_MS = 30_000;
 
 /** Their side of a history: everything up to and including the last thing anybody but Reason said. */
 const SILENT_THEIRS = new Set([LINE_IS_QUIET, LINE_OPENED]);
@@ -2537,18 +2544,22 @@ function sharedTurn({ source, control, t0, theirs, streamId, model, graceMs = AT
       let finished = false;
       try {
         for (;;) {
+          // Let go of (its socket closed): nothing more is handed to it, so nothing is marked heard.
+          if (!me.open) return;
           if (cancelled() && !ended) break;
           if (i < chunks.length) {
             const c = chunks[i++];
             if (i <= replayEnd && c.content) {
               const said = squash(c.content);
-              // The holding line went to the reader before; it is never said twice.
-              if (HOLDING_SQUASHED.has(said)) continue;
+              // The holding line already went to a reader; it is never said twice. One that was
+              // written while nobody was reading was never heard, so it is still said.
+              if (HOLDING_SQUASHED.has(said) && c.delivered) continue;
               // Already in the platform's history as Reason's words: said, so not said again.
               if (carried && said && carried.startsWith(said)) { carried = carried.slice(said.length).trim(); continue; }
               carried = "";
             }
             if (c.finish) finished = true;
+            c.delivered = true;
             yield c.s;
             if (c.done) {
               // `[DONE]` is already on the wire. The few lines the turn runs after it (its log, its

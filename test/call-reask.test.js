@@ -222,6 +222,27 @@ test("the holding line is said once across a re-ask, and its deadline runs from 
   assert.equal(r2.raw.at(-1), SSE_DONE);
 });
 
+test("a holding line written while nobody was reading is still said to the request that joins", async () => {
+  const call = ownerCall();
+  const first = counted(250, "Here it is.");
+  const timing = { ...base, firstWordDeadlineMs: 60, lateHoldingMs: 5_000 };
+  const a = await llmRequest({ ...timing, rawBody: bodyFor(call), generate: first.generate });
+  const it = a.stream[Symbol.asyncIterator]();
+  await it.next();
+  // The server is waiting on the next chunk when the platform closes the socket.
+  const pending = it.next();
+  a.abort();
+  await sleep(120);
+  const b = await llmRequest({ ...timing, rawBody: bodyFor(call), generate: counted(10, "SECOND RUN").generate });
+  const r2 = await drain(b.stream);
+  const left = await pending;
+
+  assert.equal(first.runs.n, 1);
+  assert.equal(left.done, true, "the closed stream is handed nothing more");
+  assert.equal(r2.said.split(HOLDING_LINE).length - 1, 1, "the joining stream hears the holding line once");
+  assert.match(r2.said, /Here it is\./);
+});
+
 test("an empty turn while the call is on hold waits with skip_turn rather than ending empty", async () => {
   const call = ownerCall();
   db.updateCall(C, call.id, { hold_since: clock.now(), hold_waits: 1 });
