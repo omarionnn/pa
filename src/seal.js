@@ -46,13 +46,44 @@ const RELIEF_BODY = `<circle cx="151" cy="153" r="111" fill="#7a7a7a"/><circle c
 const ringText = (id, text, fill) => `<text font-family="Instrument Serif, Georgia, serif" font-size="13.5" letter-spacing="3.1" fill="${fill}"><textPath href="#${id}-ring">${esc(text)}</textPath></text>`;
 
 /**
+ * A milestone on an everyday seal (REASON_STAMPS_TIERS), drawn over the wax and under the postmark. `level`
+ * is the kind's tier (each kind has its own counts, stamps.js TIERS); `mark` the count stitched on the ribbon:
+ *   2     a rust ribbon across the foot (the first-errand patch's ribbon)
+ *   3     the ribbon turns gold + a gold hairline ring pressed into the wax
+ *   4     gold ribbon, a double gold ring and a gilded edge
+ * The seal itself is not redrawn: the same wax, ring and monogram at every tier.
+ */
+function tierArt(id, level, mark) {
+  if (!(level >= 2)) return "";
+  const gold = level >= 3;
+  const [hi, mid, lo, tail, text, stitch] = gold
+    ? ["#e2bc66", "#b98b34", "#8a6524", GOLD.deep, "#2e2108", GOLD.deep]
+    : ["#b85445", POSTMARK_RUST, "#7a2c21", "#5e2018", "#fbf4e4", "#efe4cf"];
+  const ring = (r, w) => `<circle cx="150" cy="148" r="${r}" fill="none" stroke="${GOLD.hair}" stroke-width="${w}"/><circle cx="150" cy="147.2" r="${r}" fill="none" stroke="#f0d79a" stroke-width="${w * 0.35}" opacity="0.7"/>`;
+  return `<g class="tier tier-${level}">`
+    + (level >= 4 ? `<g filter="url(#${id}-edge)" opacity="0.9"><circle cx="150" cy="148" r="105" fill="none" stroke="#c9a24a" stroke-width="3"/></g>${ring(99, 1.6)}` : "")
+    + (level >= 3 ? ring(94, 2.2) : "")
+    + `<linearGradient id="${id}-rib" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${hi}"/><stop offset="0.55" stop-color="${mid}"/><stop offset="1" stop-color="${lo}"/></linearGradient>`
+    + `<path id="${id}-ribline" d="M66 238 Q150 251 234 238" fill="none"/>`
+    // The tails, behind the band, folded under at each end; then a soft shadow on the wax, then the band.
+    + `<path d="M70 221 L34 221 L47 237 L34 253 L70 253z M230 221 L266 221 L253 237 L266 253 L230 253z" fill="${tail}"/>`
+    + `<path d="M64 247 L72 254 L72 245z M236 247 L228 254 L228 245z" fill="#1a120c" opacity="0.55"/>`
+    + `<path d="M62 215 Q150 229 238 215 v32 Q150 261 62 247z" fill="#140c08" opacity="0.32" transform="translate(1.5 3)"/>`
+    + `<path d="M62 213 Q150 227 238 213 v32 Q150 259 62 245z" fill="url(#${id}-rib)"/>`
+    + `<path d="M70 219 Q150 232.5 230 219 M70 240 Q150 253.5 230 240" fill="none" stroke="${stitch}" stroke-width="1.3" stroke-dasharray="3.5 3" opacity="0.85"/>`
+    + `<text font-family="Courier New, monospace" font-weight="700" font-size="21" letter-spacing="2" fill="${text}" text-anchor="middle" dy="0"><textPath href="#${id}-ribline" startOffset="50%">${level >= 4 ? `· ${esc(mark)} ·` : esc(mark)}</textPath></text>`
+    + `</g>`;
+}
+
+/**
  * One seal as inline SVG.
  * `wax`: oxblood | green | navy | black | blank. `ring`: the engraved text (uppercase, ends " ·").
  * `date`: the postmark's date ("OCT 26 2026"). `postmark`: draw it (never on blank). `size`: px, or
  * "100%" to fill its box. `paper`: the ground a blank is pressed into. `label`: the full aria-label
- * (role="img"); empty → aria-hidden, for a seal whose words are said next to it.
+ * (role="img"); empty → aria-hidden, for a seal whose words are said next to it. `tier`: 2 | 3 | 4 draws
+ * that milestone (tierArt) with `mark`, the count it was reached at, on the ribbon; anything else, the plain seal.
  */
-export function seal({ wax = "oxblood", ring = "", date = "", postmark = true, size = 160, paper = "#f6efe0", label = "" } = {}) {
+export function seal({ wax = "oxblood", ring = "", date = "", postmark = true, size = 160, paper = "#f6efe0", label = "", tier = 1, mark = "" } = {}) {
   const id = `ws${uid()}`;
   const blank = wax === "blank" || !WAX[wax];
   const w = WAX[wax] ?? WAX.oxblood;
@@ -86,6 +117,7 @@ export function seal({ wax = "oxblood", ring = "", date = "", postmark = true, s
       + `<g style="mix-blend-mode:screen;opacity:.55"><g filter="url(#${id}-spec)"><g filter="url(#${id}-edge)"><circle cx="151" cy="153" r="111" fill="#7a7a7a"/><circle cx="150" cy="148" r="108" fill="#8e8e8e"/></g>`
       + `<circle cx="150" cy="148" r="83" fill="#585858"/><use href="#${id}-mono" color="#b4b4b4"/></g></g>`
       + `<circle cx="150" cy="148" r="106" fill="url(#${id}-gloss)"/>`
+      + tierArt(id, tier, mark)
       + (postmark ? `<g filter="url(#${id}-ink)" opacity="0.8" fill="none" stroke="${ink}" transform="rotate(-12 226 84)">`
         + `<circle cx="226" cy="84" r="46" stroke-width="2.8"/><circle cx="226" cy="84" r="39" stroke-width="1"/>`
         + `<text x="226" y="77" text-anchor="middle" fill="${ink}" stroke="none" font-family="Courier New, monospace" font-weight="700" font-size="9.5" letter-spacing="2">HEYREASON</text>`

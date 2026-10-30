@@ -264,8 +264,7 @@ function same(a, b) {
 
 /** The view models listStamps gives, each carrying its own row (for publicFace/publicLine). */
 function bookOf(conversationId) {
-  const rows = db.db.prepare("SELECT * FROM stamps WHERE conversation_id = ? ORDER BY earned_at, id").all(conversationId);
-  return rows.map(r => { const s = stamps.summarize(r); return s ? { ...s, row: r } : null; }).filter(Boolean);
+  return stamps.listStamps(conversationId);
 }
 
 /**
