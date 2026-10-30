@@ -522,7 +522,8 @@ export async function declinePayment({ conversationId, paymentId }) {
 // ---------------------------------------------------------------- following a checkout
 const TERMINAL = new Set(["succeeded", "failed", "blocked", "cancelled", "expired"]);
 let sayFn = null;
-let linkBase = () => `${process.env.REASON_PUBLIC_URL || "https://heyreason.com"}/web/connect`;
+// Web lives on the website (REASON_SITE_URL, heyreason.com): Crossmint's client key allows that origin only.
+let linkBase = () => `${(process.env.REASON_SITE_URL || process.env.REASON_PUBLIC_URL || "https://heyreason.com").replace(/\/+$/, "")}/web/connect`;
 /** serve.js hands over how to text a person. Nothing is texted before this. */
 export function attach({ say, base } = {}) { sayFn = say ?? null; if (base) linkBase = () => base; }
 

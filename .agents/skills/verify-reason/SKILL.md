@@ -428,6 +428,10 @@ See [features/web-drafts.md](features/web-drafts.md).
 
 `npm run test:offline` under `env -i`: 4,605 tests, 4,490 passing, 115 skipped, 0 failing. `test/choicecards.test.js` 42 (look stubbed). Cage over the subscription (owner): places ask → 2 cards, Bluestone's counter (inside) and Devoción's signed storefront; a directory page whose top photos were the neighbours' street views → numbered list, no wrong photo. See [features/choice-cards.md](features/choice-cards.md).
 
+### Baseline — Shop Connect owner-only (wt/shop-connect, 2026-10-30)
+
+`npm run test:offline` under `env -i`: 4,639 tests, 4,522 passing, 115 skipped, 2 failing — both `test/flights.test.js` (known load flake; 56/56 alone). `test/shopconnect.test.js` 16. Cage with `REASON_SHOP_CONNECT=owner` and a real JWT key, no Crossmint server key: owner sees `shop_pay`, a stranger doesn't; owner card link 200 with boot jwt + `frame-src` Crossmint only; stranger's and made-up tokens → 410 "run out"; jwks.json one kid, no private parts. See [features/shop-connect.md](features/shop-connect.md).
+
 ### Baseline — choice cards owner-only + listing check (wt/choice-cards, 2026-10-30)
 
 `npm run test:offline` under `env -i`: 4,588 tests, 4,471 passing, 115 skipped, 2 failing — both `test/flights.test.js` (known load flake; 56/56 alone). New: `test/choicecards.test.js` (25). Cage over the subscription with `REASON_CHOICE_CARDS=owner`: non-owner saw no tool; owner got 2 cards in order; "2" → card 2. See [features/choice-cards.md](features/choice-cards.md).
