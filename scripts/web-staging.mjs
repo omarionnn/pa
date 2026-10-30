@@ -41,6 +41,8 @@ Object.assign(process.env, {
   REASON_ITEM_TITLES: "0",
   // Staging shows the wax-seal book (prod keeps it behind REASON_STAMPS_WAX until the owner says go).
   REASON_STAMPS_WAX: "on",
+  // …and the everyday seals (a call that got what it was for, research), REASON_STAMPS_EVERYDAY.
+  REASON_STAMPS_EVERYDAY: "on",
 });
 
 const imp = (p) => import(new URL(p, root));
@@ -272,6 +274,8 @@ const stampSample = (list) => list.map(([type, detail], i) => {
 });
 const STAMPS_MANY = stampSample([["first", {}], ["night_shift", { time: now }], ["three_in_one", { count: 3 }], ["early", { days: 9 }], ["human", { place: "a cable company" }], ["price_drop", { savedCents: 4000 }],
   ["night_shift", { time: now }], ["long_hold", { minutes: 41 }], ["early", { days: 12 }], ["human", { place: "the airline" }], ["price_drop", { savedCents: 1800 }], ["long_hold", { minutes: 52 }]]);
+// The everyday book: a first errand, four weeks of research and one call that got what it was for.
+const STAMPS_EVERYDAY = stampSample([["first", {}], ["looked_into", {}], ["looked_into", {}], ["looked_into", {}], ["looked_into", {}], ["rang", { place: "" }]]);
 const wx = await imp("src/pages/webseals.js");
 const stampsPage = (all, o = {}) => wx.renderSealBook({ all, first: "Ama", csrf: "staging", now, ...o });
 const SEAL_PUB = stampsMod.publicSeal(STAMPS_MANY.at(-1).row, "Ama");
@@ -380,6 +384,7 @@ const S = [
   ["settings-nothing-connected", "Settings", "Settings · nothing connected, no invites", "", settings({ connected: [], invitesView: null, browsers: browsers.slice(0, 1) }), {}],
 
   ["stamps", "Stamps", "Stamps · the book, last page", "Wax seals tilted on a paper sheet, NEW on the newest, two not-yet spots engraved, the aside: story, SHARE IT (the compliments card), the first-errand patch kept outside.", stampsPage(STAMPS_MANY), {}],
+  ["stamps-everyday", "Stamps", "Stamps · everyday seals", "Research (one a week) and a call that got what it was for land in the book: five seals plus the patch outside, two not-yet spots, the patch outside.", stampsPage(STAMPS_EVERYDAY), {}],
   ["stamps-page1", "Stamps", "Stamps · an earlier page", "A full page of eight: no not-yet spots.", stampsPage(STAMPS_MANY, { page: 1 }), {}],
   ["stamps-first", "Stamps", "Stamps · first seal", "One seal, two not-yet spots, the patch outside the book.", stampsPage(STAMPS_MANY.slice(0, 2)), {}],
   ["stamps-patch-only", "Stamps", "Stamps · only the first errand", "No seals yet; the first-errand patch kept outside the book.", stampsPage(STAMPS_MANY.slice(0, 1)), {}],

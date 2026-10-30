@@ -22,3 +22,10 @@ export function dailyAllowedFor(conversationId) {
 export function waxLook() {
   return ["1", "true", "on", "yes"].includes(String(process.env.REASON_STAMPS_WAX ?? "").trim().toLowerCase());
 }
+
+// REASON_STAMPS_EVERYDAY (off | on, 2026-10-30): everyday seals in the wax book — a call that got what it
+// was for, a question researched — on top of the rare ones, so ordinary errands land in the book too.
+// Wax book only. Off: nothing new is awarded and the hints are as they were.
+export function everydaySeals() {
+  return waxLook() && ["1", "true", "on", "yes"].includes(String(process.env.REASON_STAMPS_EVERYDAY ?? "").trim().toLowerCase());
+}

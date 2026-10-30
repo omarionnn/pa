@@ -37,6 +37,7 @@ const CSS = `${DAILY_HEAD_CSS}
 .sb-cols{display:flex;flex-wrap:wrap;gap:48px;align-items:flex-start}
 .sheet{--ink:#2a2520;--muted:#78705f;--pen:#9c3b2e;color:#2a2520;flex:1 1 620px;min-width:0;position:relative;background:${SHEET};border-radius:3px;box-shadow:0 1px 1px rgba(30,24,18,.18),0 10px 18px -6px rgba(30,24,18,.2),0 30px 50px -20px rgba(30,24,18,.25);padding:clamp(24px,4vw,40px);box-sizing:border-box}
 .sheet ul{position:relative;margin:0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:24px 16px}
+.sheet ul.none{grid-template-columns:repeat(auto-fit,minmax(170px,240px));justify-content:center;padding:24px 0}
 .sheet li{display:flex;flex-direction:column;align-items:center;gap:6px}
 .sp-n{font:italic 400 18px/1.25 var(--serif);text-align:center}
 .sp-f{display:flex;align-items:center;gap:2px}
@@ -45,6 +46,7 @@ const CSS = `${DAILY_HEAD_CSS}
 .sh-b{width:44px;height:44px;border:0;background:transparent;color:#2a2520;display:grid;place-items:center;cursor:pointer;border-radius:3px;text-decoration:none}
 .sh-b:focus-visible{outline-color:#2a2520}
 .sp-h{font-size:14px;line-height:1.4;color:#5e564a;text-align:center;max-width:160px;min-height:44px;display:flex;align-items:center;justify-content:center}
+@media (max-width:480px){.sheet{padding:20px 14px}.sheet ul,.sheet ul.none{grid-template-columns:repeat(2,minmax(0,1fr));gap:22px 8px}.sheet ul.none{padding:16px 0}.sheet li{min-width:0}.sheet li>div,.sheet li>.seal{width:100%;max-width:150px}.sheet li .seal{width:100%;height:auto}.sp-n{font-size:16px}.sp-f{margin-top:auto}.sp-h{font-size:13px;max-width:100%}}
 .side{flex:1 1 340px;min-width:0;display:flex;flex-direction:column;gap:24px}
 .side h2{margin:0;font:italic 400 40px/1.1 var(--serif)}
 .side .story{margin:0;font-size:17px;line-height:1.6}
@@ -97,7 +99,7 @@ export function sealBookView(all, { page = null, selectedId = null, tz = config.
   const on = book.slice((n - 1) * PER_PAGE, n * PER_PAGE).reverse();
   const earned = new Set(book.map(s => s.type));
   const room = n === pages ? PER_PAGE - on.length : 0;
-  const blank = stamps.SEAL_HINT_ORDER.filter(t => !earned.has(t)).slice(0, Math.min(MAX_HINTS, room))
+  const blank = stamps.sealHintOrder().filter(t => !earned.has(t)).slice(0, Math.min(MAX_HINTS, room))
     .map(type => ({ type, hint: stamps.SEALS[type].hint }));
   return {
     page: n, pages, count: book.length, on, blank, selected, room, outside,
@@ -170,7 +172,7 @@ export function renderSealBook({ all = [], page = null, selectedId = null, first
   const sel = v.selected;
   const pager = v.pages > 1
     ? `<nav class="pages" aria-label="Pages of the book">${Array.from({ length: v.pages }, (_, i) => `<a href="/web/stamps?page=${i + 1}"${i + 1 === v.page ? ` aria-current="page"` : ""}>${i + 1}</a>`).join("")}</nav>` : "";
-  const sheet = `<section class="sheet" aria-label="Seals on this page">${grainLayer("multiply", 0.55)}<ul>${v.on.map(s => spot(s, v)).join("")}${v.blank.map(blankSpot).join("")}</ul></section>`;
+  const sheet = `<section class="sheet" aria-label="Seals on this page">${grainLayer("multiply", 0.55)}<ul${v.on.length ? "" : ` class="none"`}>${v.on.map(s => spot(s, v)).join("")}${v.blank.map(blankSpot).join("")}</ul></section>`;
   const margin = v.room > 0 && v.on.length > 0 ? `<p class="hand">${esc(words(v.room))} spot${v.room === 1 ? "" : "s"} left on this page.</p>` : "";
   const aside = sel
     ? `<aside class="side" aria-labelledby="sel-h">${label(sel.id === v.newestId ? "THE NEWEST" : sel.date)}<h2 id="sel-h">${esc(sel.name)}.</h2>`

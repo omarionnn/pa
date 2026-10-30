@@ -4987,11 +4987,14 @@ export function updateCall(conversationId, id, fields) {
   for (const k of allowed) {
     if (fields[k] !== undefined) { sets.push(`${k} = ?`); args.push(fields[k]); }
   }
-  if (fields.state && !["placing", "ringing", "in_progress"].includes(fields.state)) {
+  const ended = !!fields.state && !["placing", "ringing", "in_progress"].includes(fields.state);
+  if (ended) {
     sets.push("ended_at = ?"); args.push(clock.now());
   }
   db.prepare(`UPDATE calls SET ${sets.join(", ")} WHERE id = ? AND conversation_id = ?`).run(...args, id, conversationId);
-  if (fields.outcome_kind) emitCompletion("call", { conversationId, id });
+  // Told when the outcome is written and again when the call ends (an outcome written mid-call is only
+  // final — its hold and menu presses all in — once the line is down).
+  if (fields.outcome_kind || ended) emitCompletion("call", { conversationId, id });
   return getCall(conversationId, id);
 }
 

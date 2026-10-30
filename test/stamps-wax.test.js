@@ -155,7 +155,7 @@ test("words: numbers spelled out, ordinals, dates in full, the postmark date", (
 // ---------------------------------------------------------------- the catalog in wax
 test("catalog: wax by kind of errand, ring text spelled and ending ' ·', stories end 'It was no trouble.', no exclamation marks", () => {
   const wax = Object.fromEntries(Object.entries(stamps.SEALS).map(([k, v]) => [k, v.wax]));
-  assert.deepEqual(wax, { long_hold: "oxblood", night_shift: "green", price_drop: "oxblood", human: "black", early: "green", abroad: "navy", whole_trip: "navy", three_in_one: "black", first: "green", anniversary: "green", suite_key: "black" });
+  assert.deepEqual(wax, { long_hold: "oxblood", night_shift: "green", price_drop: "oxblood", human: "black", early: "green", abroad: "navy", whole_trip: "navy", three_in_one: "black", rang: "black", looked_into: "green", first: "green", anniversary: "green", suite_key: "black" });
   const detail = { minutes: 52, savedCents: 4000, days: 12, nights: 4, count: 3, place: "Delta", time: T0 };
   for (const type of Object.keys(stamps.SEALS)) {
     const s = stamps.summarize({ id: 1, conversation_id: OWNER_C, type, earned_at: T0, detail_json: JSON.stringify(detail), rotation: 3, message_id: 0 });

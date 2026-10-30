@@ -108,7 +108,9 @@ const job = db.db.prepare("SELECT * FROM stamp_jobs WHERE conversation_id = ?").
 step(!!job && job.started_at === t0 && JSON.parse(job.steps_json).length === 4, "suite key: one job, started at the call's start, four steps");
 step(db.db.prepare("SELECT COUNT(*) AS n FROM stamps WHERE conversation_id = ? AND type = 'suite_key'").get(C).n === 1, "suite key awarded once");
 h = await (await fetch(`${base}/web/stamps`, { headers: { cookie: `reason_page=${token}` } })).text();
-step(/PAGE 1 · 1 SEAL SINCE/.test(h) && /role="img" aria-label="Oxblood seal: held on your behalf, fifty-two minutes"/.test(h) && /KEPT OUTSIDE THE BOOK/.test(h) && /Sewn on day one\./.test(h), "first seal + the patch kept outside");
+// With REASON_STAMPS_EVERYDAY=on the research above is also Looked into, thoroughly: one seal more.
+const EVERY = process.env.REASON_STAMPS_EVERYDAY === "on" ? 1 : 0;
+step(new RegExp(`PAGE 1 · ${1 + EVERY} SEALS? SINCE`).test(h) && (!EVERY || /Looked into, thoroughly/.test(h)) && /role="img" aria-label="Oxblood seal: held on your behalf, fifty-two minutes"/.test(h) && /KEPT OUTSIDE THE BOOK/.test(h) && /Sewn on day one\./.test(h), "first seal + the patch kept outside");
 step(/It was no trouble\./.test(h) && !/!/.test(h.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<!doctype html>|<!--[\s\S]*?-->/gi, "")), "the story ends 'It was no trouble.', no exclamation marks");
 await all4("seals-first", "/web/stamps");
 
@@ -116,7 +118,7 @@ await all4("seals-first", "/web/stamps");
 const kinds = [["night_shift", { time: Date.now() }], ["three_in_one", { count: 3 }], ["early", { days: 12 }], ["human", { place: "x" }], ["price_drop", { savedCents: 4000 }], ["long_hold", { minutes: 41 }]];
 for (let i = 0; i < 10; i++) { const [type, detail] = kinds[i % kinds.length]; stamps.award(C, { type, ref: `sample:${i}`, at: Date.now() - (80 - i * 7) * DAY, detail }); }
 h = await (await fetch(`${base}/web/stamps`, { headers: { cookie: `reason_page=${token}` } })).text();
-step(/PAGE 2 · 11 SEALS SINCE/.test(h) && /aria-current="page">2</.test(h), "many: page 2 of 2, 11 seals");
+step(new RegExp(`PAGE 2 · ${11 + EVERY} SEALS SINCE`).test(h) && /aria-current="page">2</.test(h), `many: page 2 of 2, ${11 + EVERY} seals`);
 await all4("seals-many", "/web/stamps");
 await all4("seals-page1", "/web/stamps?page=1");
 
