@@ -23,7 +23,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
-import { dailyMode, dailyAllowedFor, waxLook } from "./dailyflag.js";
+import { dailyMode, dailyAllowedFor, waxLook, everydaySeals } from "./dailyflag.js";
 import { WAX, words, fullDate, postmarkDate } from "./seal.js";
 import { holdSeconds } from "./calls/hold.js";
 import { isSuccess } from "./calls/outcome.js";
@@ -46,6 +46,10 @@ export const CATALOG = {
   // Wax book only (REASON_STAMPS_WAX): one-offs kept outside the book. Never drawn by the typed look.
   anniversary: { name: "A year of things handled", shape: "round", ink: "ink", eyebrow: "", main: "ONE YEAR", hint: "a year together", earnable: true, waxOnly: true },
   suite_key: { name: "The suite key", shape: "round", ink: "ink", eyebrow: "", main: "SUITE KEY", hint: "a call, research, a purchase and one more, inside two hours", earnable: true, waxOnly: true },
+  // Everyday seals (REASON_STAMPS_EVERYDAY, wax book only): ordinary errands, so the book isn't empty
+  // until something rare happens.
+  rang: { name: "Rang on your behalf", shape: "round", ink: "ink", eyebrow: "", main: "RANG", hint: "a call that got what it was for", earnable: true, waxOnly: true, everyday: true },
+  looked_into: { name: "Looked into, thoroughly", shape: "round", ink: "ink", eyebrow: "", main: "LOOKED INTO", hint: "a question, researched properly", earnable: true, waxOnly: true, everyday: true },
 };
 export const TYPES = Object.keys(CATALOG);
 /** The order blank spots offer their hints in: the most within reach first. */
@@ -189,12 +193,31 @@ export function candidatesForCall(call) {
   if (talked && held >= LONG_HOLD_S) out.push({ type: "long_hold", ref: `call:${call.id}`, at, taskId: call.task_id ?? null, detail: { minutes: Math.round(held / 60), place } });
   const presses = parse(call.menu_presses, []);
   if (talked && Array.isArray(presses) && presses.length > 0) out.push({ type: "human", ref: `call:${call.id}`, at, taskId: call.task_id ?? null, detail: { place, presses: presses.length } });
+  // Rang on your behalf: a call to someone else that got what it was for, unless a rarer seal already marks it.
+  if (everydaySeals() && isSuccess(call.outcome_kind) && !Number(call.is_owner) && !out.length) {
+    out.push({ type: "rang", ref: `call:${call.id}`, at, taskId: call.task_id ?? null, detail: { place } });
+  }
   if (isSuccess(call.outcome_kind)) {
     if (isFirst(c, "call", call.id)) out.push({ type: "first", ref: "first", at, taskId: call.task_id ?? null, detail: {} });
     const night = nightShift(c, at, { taskId: call.task_id ?? null });
     if (night) out.push(night);
   }
   return out;
+}
+
+/** The Monday a moment's week began, on their clock ("2026-10-26"). */
+function weekOf(ms, tz) {
+  const day = Date.parse(`${dayIn(ms, tz)}T00:00:00Z`);
+  const back = (new Date(day).getUTCDay() + 6) % 7;
+  return new Date(day - back * 86_400_000).toISOString().slice(0, 10);
+}
+/**
+ * The seal finished research earns: Looked into, thoroughly — one a week (Monday on their clock), however
+ * many ran, so a run of questions doesn't fill a page with the same green seal.
+ */
+export function candidatesForResearch(r) {
+  if (!everydaySeals() || !r || r.state !== "done" || !r.finished_at) return [];
+  return [{ type: "looked_into", ref: `research:week:${weekOf(r.finished_at, tzFor(r.conversation_id))}`, at: r.finished_at, taskId: r.task_id ?? null, detail: {} }];
 }
 
 /** The stamps one placed order (or issued ticket) earns. */
@@ -226,6 +249,7 @@ export function candidatesForPurchase(p) {
 /** Write one stamp unless it is already there. Returns the new row's id, or null when it existed. */
 export function award(conversationId, { type, ref, at, detail = {}, taskId = null }, { source = "live" } = {}) {
   if (!CATALOG[type] || !CATALOG[type].earnable || !conversationId || !ref) return null;
+  if (CATALOG[type].everyday && !everydaySeals()) return null;
   const r = db.db.prepare(`INSERT OR IGNORE INTO stamps (conversation_id, type, ref, earned_at, detail_json, task_id, rotation, source, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(conversationId, type, ref, Math.round(at ?? clock.now()), JSON.stringify(detail ?? {}), taskId, rotationFor(conversationId, type, ref), source, clock.now());
   return r.changes ? Number(r.lastInsertRowid) : null;
@@ -292,6 +316,9 @@ const onPurchase = ({ buyConversationId }) => {
     if (p) awardLive(p.conversation_id, candidatesForPurchase(p));
   } catch (e) { logger({ stamp_award_failed: (e?.message ?? String(e)).split("\n")[0] }); }
 };
+const onResearch = ({ conversationId, id }) => {
+  try { if (everydaySeals()) awardLive(conversationId, candidatesForResearch(db.getResearch(conversationId, id))); } catch (e) { logger({ stamp_award_failed: (e?.message ?? String(e)).split("\n")[0] }); }
+};
 /** After any finished errand (research included): the suite key and the anniversary, if this one completed them. */
 const onAny = (conversationId) => {
   try {
@@ -302,6 +329,7 @@ const onAny = (conversationId) => {
 db.completionBus.on("task", onTask);
 db.completionBus.on("call", onCall);
 db.completionBus.on("purchase", onPurchase);
+db.completionBus.on("research", onResearch);
 db.completionBus.on("task", ({ conversationId }) => onAny(conversationId));
 db.completionBus.on("call", ({ conversationId }) => onAny(conversationId));
 db.completionBus.on("research", ({ conversationId }) => onAny(conversationId));
@@ -336,6 +364,11 @@ export function backfill(conversationId, { dryRun = false } = {}) {
   for (const t of ALL("SELECT * FROM tasks WHERE conversation_id = ? AND state = 'done' AND finished_at IS NOT NULL ORDER BY finished_at, id", conversationId)) found.push(...candidatesForTask(t));
   for (const c of ALL("SELECT * FROM calls WHERE conversation_id = ? AND outcome_kind <> '' ORDER BY id", conversationId)) found.push(...candidatesForCall(c));
   for (const p of purchasesDone(conversationId)) found.push(...candidatesForPurchase(p));
+  if (everydaySeals()) {
+    try {
+      for (const r of ALL("SELECT * FROM research WHERE conversation_id = ? AND state = 'done' AND finished_at IS NOT NULL ORDER BY finished_at, id", conversationId)) found.push(...candidatesForResearch(r));
+    } catch { /* no research table on an old install */ }
+  }
   if (waxLook()) found.push(...suiteCandidates(conversationId, { all: true, dryRun }), ...anniversaryCandidates(conversationId));
   const seen = new Set(), counts = {};
   for (const c of found.sort((a, b) => a.at - b.at)) {
@@ -794,6 +827,17 @@ export const SEALS = {
     aria: d => `${W(Number.isFinite(d.count) ? d.count : 3)} errands from a single text`,
     who: d => `handled ${W(Number.isFinite(d.count) ? d.count : 3)} errands from a single text`,
   },
+  // Everyday (REASON_STAMPS_EVERYDAY).
+  rang: {
+    wax: "black", name: "Rang on your behalf", hint: "a call that got what it was for",
+    ring: () => "RANG ON YOUR BEHALF · A CALL SEEN THROUGH ·", aria: () => "a call seen through",
+    who: () => "made a call",
+  },
+  looked_into: {
+    wax: "green", name: "Looked into, thoroughly", hint: "a question, researched properly",
+    ring: () => "LOOKED INTO, THOROUGHLY · ON YOUR BEHALF ·", aria: () => "",
+    who: () => "looked into a question thoroughly",
+  },
   // Outside the book. `first` shared under the typed look keeps a page: it reads in the patch's green.
   first: { wax: "green", name: "The first errand", hint: "the first thing I finish for you", ring: () => "THE FIRST ERRAND · ON YOUR BEHALF ·", aria: () => "", who: () => "ran a first errand" },
   anniversary: { wax: "green", name: "A year of things handled", hint: "a year together", ring: () => "A YEAR OF THINGS HANDLED ·", aria: () => "", who: () => "handled a year of things" },
@@ -801,6 +845,10 @@ export const SEALS = {
 };
 /** The order not-yet spots offer their hints in: the most within reach first. */
 export const SEAL_HINT_ORDER = ["three_in_one", "night_shift", "whole_trip", "long_hold", "human", "early", "price_drop", "abroad"];
+/** The hint order the book uses now: with everyday seals on, those come first (they're the nearest). */
+export function sealHintOrder() {
+  return everydaySeals() ? ["rang", "looked_into", ...SEAL_HINT_ORDER] : SEAL_HINT_ORDER;
+}
 
 const sealAria = (type, d, pub = false) => {
   const k = SEALS[type];
@@ -828,6 +876,8 @@ function waxStory(type, d, at, tz) {
     case "price_drop": return `I kept an eye on the price, and it fell by ${W(Math.round((d.savedCents ?? 0) / 100))} dollars. I bought it at the lower one. It was no trouble.`;
     case "early": return `I had this booked ${Number.isFinite(d.days) ? `${W(d.days)} days` : "well"} ahead, before it could become a rush. It was no trouble.`;
     case "three_in_one": return `One text, ${W(d.count ?? 3)} errands. I saw each of them through. It was no trouble.`;
+    case "rang": return `${when} I made the call${place ? ` to ${place}` : ""} on your behalf, and it got what it was for. It was no trouble.`;
+    case "looked_into": return `${when} I looked into it properly for you and brought back what I found. It was no trouble.`;
     case "first": return "The first thing you asked of me, done. This is where the book begins. It was no trouble.";
     case "anniversary": return "A year of things handled. It was no trouble.";
     case "suite_key": return `A call, the research, a purchase online and one more besides, all inside ${W(d.minutes ?? 120)} minutes. It was no trouble.`;
@@ -845,6 +895,8 @@ function waxLine(type, d) {
     case "price_drop": return d.savedCents >= 100 ? `${sentenceCase(W(Math.round(d.savedCents / 100)))} dollars less than it was. It was no trouble.` : "A lower price than it was. It was no trouble.";
     case "early": return Number.isFinite(d.days) ? `${sentenceCase(W(d.days))} days ahead. It was no trouble.` : "Well ahead. It was no trouble.";
     case "three_in_one": return `${sentenceCase(W(d.count ?? 3))} errands from a single text. It was no trouble.`;
+    case "rang": return `A call${place ? ` to ${place}` : ""}, seen through. It was no trouble.`;
+    case "looked_into": return "A question, looked into properly. It was no trouble.";
     default: return "It was no trouble.";
   }
 }
