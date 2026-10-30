@@ -78,7 +78,8 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   before-start snapshot: no `claude -p` may be left behind.
 - **Access.** Who gets served at all: `REASON_AUTO_ADMIT`, `REASON_TEST_NUMBERS` (the `claude-cli`
   backend only), the master's approval queue. `REASON_AUTO_ADMIT=1` on this install, so a stranger
-  is admitted on the spot, gets an account row and an onboarding turn that asks their name — and
+  is admitted on the spot, gets an account row and an onboarding turn that asks their name (with
+  `REASON_ONBOARDING` covering them, the coded first-chat flow instead: [onboarding.md](onboarding.md)) — and
   `REASON_TEST_NUMBERS` is ignored entirely when auto-admit is on (`servesOnThisBackend` in
   `src/backends/guard.js` returns early on `config.autoAdmit`; the `testNumbers` comment in
   `src/config.js` says so too), despite the startup banner still announcing the number list.
@@ -111,7 +112,8 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
 - **A brand-new person on the new line.** Website button → `sms:+16562167455&body=Hi` → first text →
   auto-admit (`#askForAccess`) → their own account, keyed on their number, plus the contact card sent
   once (`offerContactCard`; `admit()` returns no `autoAdmitted`, so the "wait for a name" branch in
-  `deliver` never runs and the card goes out on the first text). The card (`/reason-<sha8>.vcf`, sha8 of the card itself; `/reason.vcf` = alias, `Cache-Control: no-cache`) reads the line
+  `deliver` never runs and the card goes out on the first text — except for somebody the
+  first-chat onboarding just started, who gets it after their name, from the flow: [onboarding.md](onboarding.md)). The card (`/reason-<sha8>.vcf`, sha8 of the card itself; `/reason.vcf` = alias, `Cache-Control: no-cache`) reads the line
   number at request time and shows +1 656… for texts and the 914 number as "call me". Proved
   2026-10-23 without texting anyone: `curl` the card, `GET /health` shows `sendblue … +16562167455`,
   `REASON_AUTO_ADMIT=1` in the live `.env`. Not proved: a real first text from a stranger (needs a real phone).

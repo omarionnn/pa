@@ -148,7 +148,15 @@ read_health "$h" || fail=1
 
 # 4. The one thing that decides HOW you may drive it.
 echo
-if echo "$h" | grep -q '"name":"sendblue","status":"live"'; then
+CAGE_RUN="${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}"
+if echo "$h" | grep -q '"name":"sendblue","status":"live"' && [ -f "$CAGE_RUN/fake-sendblue" ] \
+   && [ "$(cat "$CAGE_RUN/pid" 2>/dev/null)" = "$pid" ] && grep -Eq '^http://127\.0\.0\.1:[0-9]+$' "$CAGE_RUN/fake-sendblue" \
+   && echo "$h" | grep -q '+12025550101'; then
+  # caged.sh started THIS pid with REASON_VERIFY_FAKE_SENDBLUE: fake keys, the fake line +12025550101,
+  # every Sendblue request to bin/fake-sendblue.mjs on loopback.
+  echo "VERDICT  the cage, with Sendblue pointed at the loopback fake ($(cat "$CAGE_RUN/fake-sendblue")): it reads live,"
+  echo "         but every send lands on this Mac. Safe to drive."
+elif echo "$h" | grep -q '"name":"sendblue","status":"live"'; then
   echo "VERDICT  this local instance holds LIVE texting credentials — a POST to its webhook texts a"
   echo "         real phone, and if its number is the Hetzner number it is a DUPLICATE of the live"
   echo "         Reason. It is not what people are texting (that is Hetzner: bin/doctor.sh live)."
