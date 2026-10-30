@@ -43,7 +43,7 @@ import { ongoing, findItem, itemRecord, speakFirstPrompt, approvals as pendingAp
 import { ogMargin, ogVersion, ogTabMain, OG_TAB_LIVE_JS, homeRows, needsYes, countLine, OG_CSS, NINE_D_JS, NINE_D_CSS, OG_POLL_JS } from "./webongoing.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting, WEB_AWAY_MS } from "./websignin.js";
 import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch, bubble, OG_KEY } from "./webkit.js";
-import { mediaOut, mediaHtml, ownWords, composerHtml, listeningHtml, composeBoot, COMPOSE_CSS, COMPOSE_JS } from "./webcompose.js";
+import { mediaOut, mediaHtml, composerHtml, listeningHtml, composeBoot, COMPOSE_CSS, COMPOSE_JS } from "./webcompose.js";
 import { prepareSend } from "../webmedia.js";
 import * as settle from "../settle.js";
 import { doingFor, doingEvents } from "../doing.js";
@@ -51,6 +51,7 @@ import { draftEvents, draftNow } from "../webdraft.js";
 import { dailyAllowedFor } from "../dailyflag.js";
 import * as daily from "../daily.js";
 import { renderDaily } from "./webdaily.js";
+import { readLine, notesHtml, noteText } from "./webnotes.js";
 
 /** How many lines a page of history holds, first load and each "show earlier". */
 export const PAGE = 40;
@@ -214,14 +215,17 @@ function lineInner(m, conversationId) {
   const lbl = `<p class="lbl"><span>${who}${voice ? " · VOICE" : ""} · ${esc(m.source.toUpperCase())} · </span><time datetime="${new Date(m.at).toISOString()}">${esc(timeFmt().format(m.at))}</time></p>`;
   // 4B: photos in their paper frames, file slips, a voice note's words then ▶ (src/pages/webcompose.js).
   const { photos, files, play, voice: note } = mediaHtml(m);
-  const said = m.role === "user" ? (voice && note?.transcript ? note.transcript : ownWords(m.text, m.media)) : m.text;
+  const read = m.role === "user" ? readLine(m.text) : null;
+  const said = m.role === "user" ? (voice && note?.transcript ? note.transcript : read.words) : m.text;
+  // A shared location, an inline reply, a contact card: drawn as what they are, never the note itself.
+  const notes = read ? notesHtml(read.notes, m.media) : "";
   let words = "";
   if (said.trim()) {
     if (m.role === "user") words = voice ? `<p class="said hand">${esc(said)}</p>` : `<div class="said">${linkify(said)}</div>`;
     else words = `<div class="rsay">${reasonBody(said, conversationId)}</div>`;
   }
-  m.plain = said.trim() ? said : [...m.media.filter(x => x.kind === "file").map(x => x.name), ...m.media.filter(x => x.kind === "image").map(() => "a photo")].filter(Boolean).join(" · ");
-  return `${lbl}${photos}${files}${words}${play}`;
+  m.plain = said.trim() ? said : read?.notes.length && !m.media.length ? read.notes.map(noteText).join(" · ") : [...m.media.filter(x => x.kind === "file").map(x => x.name), ...m.media.filter(x => x.kind === "image").map(() => "a photo")].filter(Boolean).join(" · ");
+  return `${lbl}${notes}${photos}${files}${words}${play}`;
 }
 
 /**

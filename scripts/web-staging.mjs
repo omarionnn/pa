@@ -184,6 +184,12 @@ const memory = (state = {}, a = account) => wm.renderMemory({ account: a, csrf: 
   const talk = [["user", "Can you find a quiet hotel in Lisbon for March?"], ["assistant", "On it. I'll look near Príncipe Real and keep it under $220 a night."], ["user", "And the dentist, can you get me in this week?"], ["assistant", "Calling now. I'll tell them it's recorded."], ["assistant", "Thursday 3pm with Dr. Patel. Here's the call."], ["user", "perfect"]];
   for (let d = 0; d < 9; d++) talk.forEach(([r, x], i) => { if (d === 3 && i > 3) return; say(r, d === 0 && i < 3 ? "web" : "fake", x, at(d, 9 + i, 5 * i)); });
   for (let d = 35; d < 60; d += 2) talk.slice(0, 3).forEach(([r, x], i) => say(r, "fake", x, at(d, 12, i)));
+  // The pipeline's notes as iMessage stores them (src/pages/webnotes.js): a shared location (its body
+  // is U+FFFD), an inline reply, a contact card. The page draws each as what it is, never the bracket.
+  say("user", "fake", "\uFFFD\n[they shared their location: Lefcourt Clothing Center Building, 164, West 26th Street, Chelsea District, Manhattan Community Board 4, Manhattan, New York County, New York, 10001, United States (40.7458, -73.9940, accuracy ~19m) (sharing: endOfDay) — use this as their current position for anything location-related. Use nearby_places with these coordinates to find places near them]", now - 14 * 60_000);
+  say("assistant", "fake", "Got it, you're in Chelsea. Joe Coffee on 23rd is a four-minute walk and quiet this time of day.", now - 13 * 60_000);
+  say("user", "fake", "[they sent this as an inline reply in the thread under your message: \"Got it, you're in Chelsea. Joe Coffee on 23rd is a four-minute walk and quiet this…\" — so it is about that thread, whatever came after]\nperfect, and somewhere for lunch after?", now - 11 * 60_000);
+  say("user", "fake", "Book it for two with her\n[they shared a contact card (rytCHiLR_Esi_Owusu.vcf) — here is what it says:\nname: Esi Owusu\nphone (cell): +15555550142]", now - 9 * 60_000);
 }
 const DAYKEY = wh.dayKey(at(2, 12, 0));
 const history = (query = {}) => wh.renderHistory({ account, query, now });
@@ -201,6 +207,11 @@ const rows = [
   row("user", "web", "What did you find for Lisbon?", at(0, 10, 15)),
   row("assistant", "web", "Two that fit, both after 9:\n1. Tue Mar 10, 10:40 AM nonstop, back Sat — $612\n2. Wed Mar 11, 1:15 PM nonstop, back Sun — $574\nI put the hotel shortlist here too:\nhttps://files.heyreason.com/lisbon4", at(0, 10, 17)),
   row("user", "web", "Hold the Wednesday one.", at(0, 10, 19)),
+  // A shared location, an inline reply and a contact card as iMessage stores them (src/pages/webnotes.js).
+  row("user", "fake", "\uFFFD\n[they shared their location: Lefcourt Clothing Center Building, 164, West 26th Street, Chelsea District, Manhattan Community Board 4, Manhattan, New York County, New York, 10001, United States (40.7458, -73.9940, accuracy ~19m) (sharing: endOfDay) — use this as their current position for anything location-related. Use nearby_places with these coordinates to find places near them]", at(0, 10, 30)),
+  row("assistant", "fake", "Got it, you're in Chelsea. Joe Coffee on 23rd is a four-minute walk and quiet this time of day.", at(0, 10, 31)),
+  row("user", "fake", "[they sent this as an inline reply in the thread under your message: \"Got it, you're in Chelsea. Joe Coffee on 23rd is a four-minute walk and quiet this…\" — so it is about that thread, whatever came after]\nperfect, and somewhere for lunch after?", at(0, 10, 33)),
+  row("user", "fake", "Book it for two with her\n[they shared a contact card (rytCHiLR_Esi_Owusu.vcf) — here is what it says:\nname: Esi Owusu\nphone (cell): +15555550142]", at(0, 10, 35)),
 ];
 const lines = rows.map(r => wc.rowOut(r, { conversationId: CONV, service: "iMessage" }));
 // REASON_WEB_DRAFTS is on here: the sample reply grows a sentence at a time over a stand-in live
@@ -385,6 +396,7 @@ const S = [
   ["history", "Memory", "7A · Chat history", "Days of this month, earlier months grouped, FIND A MESSAGE.", history(), {}],
   ["history-day", "Memory", "7B · A day, read-only", "No composer, Go to chat →.", history({ day: DAYKEY }), {}],
   ["history-search", "Memory", "Chat history · search", "Matches underlined in pen.", history({ q: "dentist" }), {}],
+  ["history-search-place", "Memory", "Chat history · search a shared place", "A shared location is found by its place, never by the notes for the model.", history({ q: "chelsea" }), {}],
 
   ["saved", "Saved", "Saved · list (S-A / desk-saved)", "FIND SOMETHING, kinds with counts, PINNED, THIS WEEK / EARLIER; on a desktop the pinned item opens beside it.", saved(), {}],
   ["saved-page", "Saved", "Saved · a page opened", "The real page on paper, PIN · OPEN THE PAGE ↗, REMOVE FROM SAVED.", saved({ open: `page-${SV.lisbon}` }), {}],

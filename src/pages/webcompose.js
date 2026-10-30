@@ -27,6 +27,7 @@ import { bubble, wordmark } from "./webkit.js";
 import { uploadIdOf, uploadPath, slipLabel, LIMITS, LIMITS_LINE, MAX_FILES } from "../webuploads.js";
 import { FIT_BYTES } from "../webshrink.js";
 import { hearingStatus } from "../voice.js";
+import { readLine, NOTES_CSS } from "./webnotes.js";
 
 const PLUS_SVG = `<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`;
 const MIC_SVG = `<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>`;
@@ -71,11 +72,11 @@ export function mediaOut(row, conversationId) {
   });
 }
 
-// The framing lines Reason's pipeline writes into a message about what came with it ("[they sent a
-// file …]", "[they sent a voice note. this is what they said …]") are for the model, not the page.
-const FRAMING = /^\s*\[they (?:sent|shared) [^\n]*\]\s*$/gm;
-/** The words a person's own line shows: theirs, without the pipeline's notes about attachments. */
-export const ownWords = (text, media = []) => (media.length ? String(text ?? "").replace(FRAMING, "").replace(/\n{3,}/g, "\n\n").trim() : String(text ?? ""));
+// The notes Reason's pipeline writes into a message ("[they sent a file …]", "[they shared their
+// location: …]", "[they sent this as an inline reply …]") are for the model, not the page: the page
+// draws them as their own small parts (src/pages/webnotes.js) and shows the person's words alone.
+/** The words a person's own line shows: theirs, without the pipeline's notes. */
+export const ownWords = (text) => readLine(text).words;
 
 /** The play control: ▶, the waveform and the length. A real button; the page's script plays it. */
 export function playButton({ src, seconds }) {
@@ -169,7 +170,7 @@ export function listeningHtml() {
 /** What the page's script needs to know before it decides to show the mic, and the limits it checks. */
 export const composeBoot = () => `window.REASON_WEB=window.REASON_WEB||{};window.REASON_WEB.hear=${serverHears() ? "true" : "false"};window.REASON_WEB.lim=${JSON.stringify({ each: LIMITS.image, fit: FIT_BYTES, files: MAX_FILES })};`;
 
-export const COMPOSE_CSS = `
+export const COMPOSE_CSS = NOTES_CSS + `
 .ic{width:44px;height:44px;flex:none;border:0;background:transparent;color:var(--ink);display:grid;place-items:center;cursor:pointer;border-radius:3px;padding:0}
 .ic[hidden]{display:none}
 .composer{position:sticky}
