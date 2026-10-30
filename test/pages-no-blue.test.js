@@ -62,7 +62,6 @@ const NAVY_WAX = (file, line) => file === "src/seal.js" && /^\s*navy: \{ base: "
 
 // A store's own mark on the Connect sign-in page (Walmart, Best Buy): the store's colour says whose
 // sign-in this is; Reason's own buttons and links on that page stay brand red.
-const STORE_MARK = (file, line) => file === "src/pages/webconnect.js" && /^\s*(walmart|bestbuy): `<svg /.test(line);
 
 test("no blue colour anywhere in src/ or the served icons, except the demo's iMessage bubbles", () => {
   const files = execSync("git ls-files src assets", { cwd: root }).toString().trim().split("\n")
@@ -70,7 +69,7 @@ test("no blue colour anywhere in src/ or the served icons, except the demo's iMe
   const stray = [];
   for (const f of files) {
     readFileSync(new URL(f, root), "utf8").split("\n").forEach((line, i) => {
-      if (DEMO_BUBBLE(f, line) || NAVY_WAX(f, line) || STORE_MARK(f, line)) return;
+      if (DEMO_BUBBLE(f, line) || NAVY_WAX(f, line)) return;
       for (const c of blues(line)) stray.push(`${f}:${i + 1} ${c}`);
     });
   }

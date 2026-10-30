@@ -497,11 +497,15 @@ const isCodeField = (f) => isProtected(f) && (f.input?.autoComplete === "one-tim
 
 /**
  * What the page shows for a link, decided here from the record (never from the page):
- *   signin  — the store's sign-in questions, never answered on this link
- *   code    — a new question whose secret field is a one-time code
- *   retry   — the same secret field asked again after it was answered (the store said no)
- *   checking — answered, waiting for the store
+ *   signin    — the store's sign-in questions, never answered on this link (`again`: the store was
+ *               connected and signed them out, so this checkout ran signed in and was asked again)
+ *   code      — a new question whose secret field is a one-time code
+ *   wrongcode — a code asked for again after a code was answered (the store didn't take it)
+ *   retry     — the same secret field asked again after it was answered (the store said no)
+ *   checking  — answered, waiting for the store
  *   connected · expired · failed
+ * `answered` says something was already answered on this link (a password, before a code);
+ * `item` is what the checkout set out to buy, for the signed-out screen.
  */
 export function linkView(link) {
   if (!link) return { state: "expired" };
@@ -513,10 +517,15 @@ export function linkView(link) {
   if (!rq || link.answered_request_id === link.request_id) return { state: "checking", store: link.store, kind: link.kind };
   const answered = new Set(link.answered_keys ? link.answered_keys.split(",") : []);
   const secret = rq.fields.filter(isProtected);
+  const again = secret.some((f) => answered.has(f.key));
   let state = "signin";
-  if (secret.length && secret.every(isCodeField)) state = "code";
-  else if (answered.size && secret.some((f) => answered.has(f.key))) state = "retry";
-  return { state, store: link.store, kind: link.kind, request: rq };
+  if (secret.length && secret.every(isCodeField)) state = again ? "wrongcode" : "code";
+  else if (again) state = "retry";
+  const run = link.run_id ? runRow(link.run_id) : null;
+  return {
+    state, store: link.store, kind: link.kind, request: rq, answered: answered.size > 0,
+    ...(state === "signin" && run?.mode === "signed" ? { again: true, item: run.item || "" } : {}),
+  };
 }
 
 /**
@@ -550,7 +559,7 @@ export function checkAnswers(rq, answers) {
 export async function answerLink(token, { requestId, answers }) {
   const link = linkFor(token);
   const view = linkView(link);
-  if (!["signin", "code", "retry"].includes(view.state)) return { ok: false, error: "not_open", state: view.state };
+  if (!["signin", "code", "wrongcode", "retry"].includes(view.state)) return { ok: false, error: "not_open", state: view.state };
   if (requestId !== view.request.requestId) return { ok: false, error: "stale_request", state: view.state };
   const checked = checkAnswers(view.request, answers);
   if (!checked.ok) return checked;
@@ -591,6 +600,17 @@ export async function removeCard(conversationId) {
   if (!r.ok && r.status !== 404) return { ok: false, status: r.status };
   q("DELETE FROM shop_cards WHERE conversation_id = ?").run(conversationId);
   return { ok: true };
+}
+
+/**
+ * Where and when this person's card was last used: their latest paid payment (shop_payments, status
+ * 'paid', theirs only). { store, at } or null. The store is the merchant Crossmint named, else the
+ * checkout's store.
+ */
+export function lastPaid(conversationId) {
+  const r = q("SELECT run_id, merchant_name, answered_at FROM shop_payments WHERE conversation_id = ? AND status = 'paid' ORDER BY answered_at DESC, id DESC LIMIT 1").get(conversationId);
+  if (!r) return null;
+  return { store: r.merchant_name || storeName(runRow(r.run_id)?.store) || "", at: r.answered_at };
 }
 
 // ---------------------------------------------------------------- payment approval
@@ -723,7 +743,10 @@ export async function step(runId) {
       } else {
         const token = createLink({ conversationId: run.conversation_id, kind: "signin", store: run.store, runId, request: rq });
         const name = storeName(run.store) || "the store";
-        await say(`${name} needs you signed in before it lets anyone check out. Sign in once here and I'll use it for ${name} orders from now on. Your password goes to Crossmint, not to me.\n${linkBase()}/${token}`);
+        // Never names Crossmint (owner 10-30): people know Reason, and the password goes on to the store.
+        await say(run.mode === "signed"
+          ? `${name} signed me out. Sign in again here and I'll pick up where we left off. Your password goes straight to ${name}, not to me.\n${linkBase()}/${token}`
+          : `${name} needs you signed in before it lets anyone check out. Sign in once here and I'll use it for ${name} orders from now on. Your password goes straight to ${name}, not to me.\n${linkBase()}/${token}`);
       }
     }
   }
