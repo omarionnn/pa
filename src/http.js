@@ -37,7 +37,7 @@
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
 //   GET  /web/connect/{token}[/state], POST …/answer|card, GET /web/connect/island.js|jwks.json|new-card   store sign-in + card for Crossmint checkouts (src/pages/webconnect.js; REASON_SHOP_CONNECT)
-//   GET  /web/stamps, POST /web/api/stamps/{id}/share[/revoke], GET …/{id}/image.png, …/{id}/story.png   Stamps (src/pages/webstamps.js; REASON_WEB_DAILY)
+//   GET  /web/stamps, POST /web/api/stamps/{id}/share[/revoke], GET …/{id}/image.png, …/{id}/story.png   Stamps (src/pages/webstamps.js; REASON_WEB_DAILY or REASON_STAMPS_ALL)
 //   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)
 //   GET  /web/icons/{file}            Web's favicons and home-screen icon (src/pages/webnotify.js)
 //   GET  /web/saved[/<kind>/<id>], POST /web/saved/pin|remove|restore   Saved (src/pages/websaved.js; index src/saved.js)
@@ -104,14 +104,14 @@ import * as eventsmod from "./events.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
-// Stamps (REASON_WEB_DAILY): awarded as errands finish (src/stamps.js listens on db.completionBus once loaded).
+// Stamps (REASON_WEB_DAILY, or everyone at REASON_STAMPS_ALL): awarded as errands finish (src/stamps.js listens on db.completionBus once loaded).
 import * as stamps from "./stamps.js";
 import { config, stamp, clock } from "./config.js";
 
 const MAX_BODY = 1_000_000;
 
 export function createServer({ router, runtime, log = () => {} }) {
-  // A new stamp is mentioned in the thread through the runtime's own send, and only while REASON_WEB_DAILY is on.
+  // A new stamp is mentioned in the thread through the runtime's own send, and only while REASON_WEB_DAILY is on (never at REASON_STAMPS_ALL alone).
   stamps.installStamps({ tell: typeof runtime?._tell === "function" ? (c, text, meta) => runtime._tell(c, text, meta) : null, log });
   // Each request opens a scope with no person in it; the moment a signed-in cookie names one
   // (db.pageSessionOwner / pageSessionPeek), times on that page are drawn on their clock.

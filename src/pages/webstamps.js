@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { createHash, timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
 import * as stamps from "../stamps.js";
-import { dailyAllowedFor, waxLook } from "../dailyflag.js";
+import { stampsAllowedFor, waxLook } from "../dailyflag.js";
 import { renderSealBook, renderSealSharePage, sealCardHtml, sealStoryHtml, sealFontCss, SEAL_CARD_VERSION } from "./webseals.js";
 import { config } from "../config.js";
 import { webPage, wordmark, label, hand, action, TOKENS, BUBBLE_PATH } from "./webkit.js";
@@ -270,11 +270,11 @@ function bookOf(conversationId) {
 /**
  * Everything under /web/stamps and /web/api/stamps for a signed-in account. `path`: "" (the book) or
  * "<id>/share" | "<id>/share/revoke" | "<id>/image.png". `sec`: the Web pages' security headers.
- * Returns null when REASON_WEB_DAILY does not allow this conversation (the caller answers as before).
+ * Returns null when Stamps (REASON_WEB_DAILY / REASON_STAMPS_ALL) does not allow this conversation (the caller answers as before).
  */
 export async function stampsRequest({ account, path = "", method = "GET", query = {}, headers = {}, readBody = async () => "", sec = {}, log = () => {} }) {
   const conv = account?.conversation_id;
-  if (!conv || !dailyAllowedFor(conv)) return null;
+  if (!conv || !stampsAllowedFor(conv)) return null;
   const first = stamps.firstNameOf(account.name ?? db.getAccount(conv)?.name ?? "");
   const html = (status, body, extra = {}) => ({ status, headers: { "Content-Type": "text/html; charset=utf-8", ...sec, ...extra, "Content-Length": Buffer.byteLength(body) }, body });
 
@@ -400,7 +400,7 @@ export function shareNotFound() {
  */
 export async function shareRequest({ shareId, sub = null, method = "GET", log = () => {} }) {
   const v = stamps.shareView(shareId);
-  if (!v || v.revoked || !dailyAllowedFor(v.share.conversation_id)) return sub === "og.png" ? null : shareNotFound();
+  if (!v || v.revoked || !stampsAllowedFor(v.share.conversation_id)) return sub === "og.png" ? null : shareNotFound();
   if (method !== "GET" && method !== "HEAD") return { status: 405, headers: { ...PUBLIC_HEADERS, Allow: "GET, HEAD", "Content-Length": 0 }, body: "" };
   if (sub === "og.png") {
     const png = await (waxLook() ? sealPng(stamps.publicSeal(v.stamp), v.first) : stampCardPng(stamps.publicFace(v.stamp), stamps.publicLine(v.stamp, v.first))).catch(() => null);
