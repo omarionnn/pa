@@ -61,7 +61,7 @@ import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDir
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import * as shopConnect from "./shopconnect.js";
-import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter } from "./todo.js";
+import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import * as rhythms from "./rhythms.js";
@@ -11811,7 +11811,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // A call the approved plan of their to-do list already covers (src/todo.js) is not asked again:
       // that was the point of approving the plan. The same check call_place makes, on the target.
       if (asked === "call_place" && String(input.target ?? "").trim()) {
-        const listGrant = todoGrantCovering({ conversationId: c, action: asked, input: { to: input.target }, target: input.target });
+        const listGrant = todoAskCovered({ conversationId: c, target: input.target, stakes: input.stakes ?? "", amount: input.amount ?? null });
         if (listGrant.ok) {
           return {
             ok: true, not_needed: true, covered_by_todo_list: listGrant.permission.todo_list_id, business: listGrant.permission.business,

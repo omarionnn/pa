@@ -74,7 +74,8 @@ async function approved(list = LIST) {
   const rec = await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
     { conversationId: C, messages: [owner("here's my list"), owner("yes do it all")], judge: async () => ({ verdict: "yes" }) });
   assert.equal(rec.ok, true, JSON.stringify(rec));
-  const ok = await runTool("todo_approve", { list_id: plan.list_id, confirmation_id: asked.confirmation_id }, ctx());
+  const shown = { role: "assistant", content: plan.plan_text };
+  const ok = await runTool("todo_approve", { list_id: plan.list_id, confirmation_id: asked.confirmation_id }, ctx({ messages: [owner("here's my list"), shown, owner("yes do it all")] }));
   assert.equal(ok.ok, true, JSON.stringify(ok));
   return { plan, approval: ok };
 }
@@ -219,27 +220,91 @@ test("a business the plan did not name is asked about as usual", async () => {
   assert.equal(asked.not_needed, undefined);
 });
 
-test("a number found after the yes joins the grant only for a business the plan named, and only from a lookup", async () => {
+test("a number found after the yes joins the grant only when they typed it, and only for a business the plan named", async () => {
   const list = { source: "text", items: [{ text: "vet appointment", short: "vet", group: "mine", businesses: [{ name: "Paws Clinic" }] }] };
   const { plan } = await approved(list);
   const offers = await import("../src/offers.js");
   const VET = "+12125550177";
-  // Typed from memory: not in anything a tool returned this turn.
-  offers.beginTurn(C, "ok go", "user");
-  const typed = await runTool("todo_item_update", { list_id: plan.list_id, item: 1, business: { name: "Paws Clinic", phone: VET } }, ctx());
-  assert.match(typed.note, /did not come from a lookup/);
-  assert.equal(db.getTodoList(C, plan.list_id).grant[0].phone, "");
-  // From a lookup this turn.
-  offers.noteSource(C, { name: "Paws Clinic", phone: "(212) 555-0177" });
-  const looked = await runTool("todo_item_update", { list_id: plan.list_id, item: 1, business: { name: "Paws Clinic", phone: VET } }, ctx());
-  assert.match(looked.note, /now on the approved plan/);
   const calls = new FakeCallProvider();
+  // Laundering, as the review found it: a made-up number tried, refused (the refusal repeats it), then attached.
+  offers.beginTurn(C, "ok go", "user");
+  const tried = await runTool("call_place", { to: VET, goal: "earliest appointment" }, ctx({ calls }));
+  assert.equal(tried.blocked, "needs_confirmation");
+  offers.noteSource(C, { name: "Paws Clinic", phone: "(212) 555-0177" }); // and a lookup said it too
+  const laundered = await runTool("todo_item_update", { list_id: plan.list_id, item: 1, business: { name: "Paws Clinic", phone: VET } }, ctx());
+  assert.match(laundered.note, /did not give you that number themselves/);
+  assert.equal(db.getTodoList(C, plan.list_id).grant[0].phone, "");
+  assert.equal((await runTool("call_place", { to: VET, goal: "x" }, ctx({ calls }))).blocked, "needs_confirmation");
+  // They type it.
+  offers.beginTurn(C, "paws is 212-555-0177", "user");
+  const typed = await runTool("todo_item_update", { list_id: plan.list_id, item: 1, business: { name: "Paws Clinic", phone: VET } }, ctx());
+  assert.match(typed.note, /now on the approved plan/);
   assert.equal((await runTool("call_place", { to: VET, goal: "earliest appointment" }, ctx({ calls }))).ok, true);
-  // Another shop for the same item is not the plan's.
-  offers.noteSource(C, "Other Vet (212) 555-0188");
+  // Another shop for the same item is not the plan's, typed or not.
+  offers.beginTurn(C, "or other vet 212 555 0188", "user");
   const other = await runTool("todo_item_update", { list_id: plan.list_id, item: 1, business: { name: "Other Vet", phone: "+12125550188" } }, ctx());
   assert.match(other.note, /was not named in the plan/);
   assert.equal((await runTool("call_place", { to: "+12125550188", goal: "x" }, ctx({ calls }))).blocked, "needs_confirmation");
+});
+
+test("numbers are compared whole: the same ten digits in another country are not the plan's business", async () => {
+  await approved();
+  const calls = new FakeCallProvider();
+  const out = await runTool("call_place", { to: "+442125550100", goal: "x" }, ctx({ calls }));
+  assert.equal(out.blocked, "needs_confirmation");
+  assert.deepEqual(calls.placed, []);
+  assert.equal(todo.sameNumber("2125550100", "+1 (212) 555-0100"), true);
+});
+
+test("a money call refused under the list can still be asked about and approved the normal way", async () => {
+  await approved();
+  const calls = new FakeCallProvider();
+  const book = await runTool("call_place", { to: SALON, goal: "book a cut saturday", may_book: true, read_back: ["date", "time"] }, ctx({ calls }));
+  assert.equal(book.blocked, "needs_confirmation");
+  const asked = await runTool("confirm_request", { action: "call_place", target: SALON, summary: "book a cut at Fade Masters saturday, about $40" }, ctx());
+  assert.ok(asked.confirmation_id, JSON.stringify(asked));
+  assert.equal(asked.not_needed, undefined);
+  await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
+    { conversationId: C, messages: [owner("x"), owner("yes book it")], judge: async () => ({ verdict: "yes" }) });
+  const ok = await runTool("call_place", { to: SALON, goal: "book a cut saturday", may_book: true, read_back: ["date", "time"], confirmation_id: asked.confirmation_id }, ctx({ calls }));
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  // And an ask that says money is never short-circuited.
+  const m = await runTool("confirm_request", { action: "call_place", target: PLUMBER, stakes: "money", summary: "book the plumber, $150" }, ctx());
+  assert.ok(m.confirmation_id);
+});
+
+test("an 'ask' item's business is not covered until they answer; a dropped item stays dropped", async () => {
+  const list = { source: "text", items: [
+    { text: "dentist", short: "dentist", group: "ask", question: "tue or thu?", businesses: [{ name: "Smile Dental", phone: "+12125550122" }] },
+    { text: "plumber", short: "plumber", group: "mine", businesses: [{ name: "Joe's Plumbing", phone: PLUMBER }] },
+  ] };
+  const { plan } = await approved(list);
+  const calls = new FakeCallProvider();
+  const early = await runTool("call_place", { to: "+12125550122", goal: "book" }, ctx({ calls }));
+  assert.match(early.todo_list_does_not_cover, /waiting on their answer/);
+  await runTool("todo_item_update", { list_id: plan.list_id, item: 1, group: "mine" }, ctx());
+  assert.equal((await runTool("call_place", { to: "+12125550122", goal: "ask for thursday" }, ctx({ calls }))).ok, true);
+  await runTool("todo_item_update", { list_id: plan.list_id, item: 2, status: "dropped" }, ctx());
+  const back = await runTool("todo_item_update", { list_id: plan.list_id, item: 2, status: "todo" }, ctx());
+  assert.equal(back.ok, false);
+  assert.equal((await runTool("call_place", { to: PLUMBER, goal: "x" }, ctx({ calls }))).blocked, "needs_confirmation");
+});
+
+test("the yes cannot approve a plan they were never shown", async () => {
+  const plan = await runTool("todo_plan", LIST, ctx());
+  const asked = await runTool("confirm_request", { action: "todo_approve", target: plan.approval_target, summary: "the plan" }, ctx());
+  await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
+    { conversationId: C, messages: [owner("x"), owner("yes")], judge: async () => ({ verdict: "yes" }) });
+  const vague = { role: "assistant", content: "i've got a plan for your list, want me to go?" };
+  const out = await runTool("todo_approve", { list_id: plan.list_id, confirmation_id: asked.confirmation_id }, ctx({ messages: [owner("x"), vague, owner("yes")] }));
+  assert.equal(out.blocked, "plan_not_shown");
+  assert.match(out.error, /Joe's Plumbing/);
+  assert.equal(db.getTodoList(C, plan.list_id).state, "planning");
+  assert.equal(db.getConfirmation(C, asked.confirmation_id).consumed_at, null, "the yes is not spent");
+  // Reworded "how" is a different plan: a fresh fingerprint.
+  const fp = db.getTodoList(C, plan.list_id).plan_fp;
+  await runTool("todo_plan", { ...LIST, list_id: plan.list_id, items: LIST.items.map((i, n) => n === 0 ? { ...i, how: "book them for saturday" } : i) }, ctx());
+  assert.notEqual(db.getTodoList(C, plan.list_id).plan_fp, fp);
 });
 
 test("a list's grant reaches nobody else's conversation", async () => {
@@ -355,6 +420,29 @@ test("the runtime's own sweep sends the wrap-up, once", async () => {
   assert.equal(wraps.length, 1, JSON.stringify(out.map(e => e.text)));
   assert.equal(wraps[0].idempotencyKey, `todo-wrap:${plan.list_id}`);
   assert.equal((await rt.sweep()).todo_wraps.wrapped, 0, "the next sweep sends nothing");
+});
+
+test("a list wrapped up with a job still waiting closes by itself when that job finishes", async () => {
+  const { plan } = await approved({ source: "text", items: [
+    { text: "plumber", short: "plumber", group: "mine", businesses: [{ name: "Joe's Plumbing", phone: PLUMBER }] },
+    { text: "gym", short: "gym", group: "theirs" },
+  ] });
+  const t = await runTool("task_start", { title: "plumber", goal: "booked" }, ctx());
+  await runTool("todo_item_update", { list_id: plan.list_id, item: 1, task_id: t.task.id }, ctx());
+  await runTool("task_update", { task_id: t.task.id, state: "waiting_on_other",
+    sheet: { waiting: [{ on: "Joe's Plumbing", for: "a call back", next_check: new Date(clock.now() + 86_400_000).toISOString() }] } }, ctx());
+  clock.skip(todo.WRAP_QUIET_MS + 1000);
+  assert.equal(todo.wrapUps({ say: () => {} }).wrapped, 1);
+  assert.equal(db.getTodoList(C, plan.list_id).state, "approved", "the chase still needs the grant");
+  await runTool("task_finish", { task_id: t.task.id, state: "done", outcome: "booked thursday" }, ctx({ lookup: async () => [] }));
+  assert.equal(db.getTodoList(C, plan.list_id).state, "closed");
+});
+
+test("a list whose every item was dropped sends no wrap-up", async () => {
+  const { plan } = await approved({ source: "text", items: [{ text: "plumber", short: "plumber", group: "mine" }, { text: "gym", short: "gym", group: "theirs" }] });
+  await runTool("todo_item_update", { list_id: plan.list_id, item: 1, status: "dropped" }, ctx());
+  clock.skip(todo.WRAP_QUIET_MS + 1000);
+  assert.equal(todo.wrapUps({ say: () => assert.fail("said something") }).wrapped, 0);
 });
 
 // ---------- flag off ----------

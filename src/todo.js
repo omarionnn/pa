@@ -178,19 +178,28 @@ export const TODO_SCHEMAS = {
 
 // ---------- numbers and names ----------
 
-/** Two spellings of one phone number: the last ten digits, at least seven of them. */
+/** One phone number in one spelling: every digit, a bare ten-digit (North American) number given its 1. */
+export function e164(n) {
+  const d = String(n ?? "").replace(/\D/g, "");
+  if (d.length < 7) return "";
+  return `+${d.length === 10 ? `1${d}` : d}`;
+}
+/** Two spellings of one phone number, compared whole: +44 212… is never +1 212…. */
 export function sameNumber(a, b) {
-  const x = String(a ?? "").replace(/\D/g, "");
-  const y = String(b ?? "").replace(/\D/g, "");
-  return x.length >= 7 && y.length >= 7 && x.slice(-10) === y.slice(-10);
+  const x = e164(a);
+  return !!x && x === e164(b);
 }
 const nameKey = (s) => String(s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 
-/** Did a tool hand this number back this turn (or did they type it)? offers.js keeps the turn's sources. */
-function numberSeenThisTurn(conversationId, phone) {
-  for (const src of offers.turnState(conversationId).sources ?? []) {
-    for (const run of String(src).match(/\+?\d[\d\s().-]{5,}\d/g) ?? []) if (sameNumber(run, phone)) return true;
-  }
+/**
+ * Did THEY type this number, in the message this turn answers? The only way a number reaches an
+ * approved plan after the yes. Not a tool's result: a refusal, a nudge or a search echo can repeat a
+ * number the model made up (review, 2026-10-30), and a number nobody showed them is not one they approved.
+ */
+function numberTheyTyped(conversationId, phone) {
+  const turn = offers.turnState(conversationId);
+  if (turn.kind !== "user") return false;
+  for (const run of String(turn.own ?? "").match(/\+?\d[\d\s().-]{5,}\d/g) ?? []) if (sameNumber(run, phone)) return true;
   return false;
 }
 
@@ -205,7 +214,8 @@ function settleBusiness(conversationId, b) {
 
 /** What a yes to this plan is pinned to: every item, its group, its money flag and its businesses. */
 export function planFingerprint(items) {
-  const shape = items.map(i => [i.n, i.text, i.grp, i.money ? 1 : 0, (i.businesses ?? []).map(b => `${b.name}|${b.phone ?? ""}|${b.person ?? ""}`)]);
+  const shape = items.map(i => [i.n, i.text, i.short, i.grp, i.how ?? "", i.question ?? "", i.money ? 1 : 0, i.money_note ?? "",
+    (i.businesses ?? []).map(b => `${b.name}|${b.phone ?? ""}|${b.person ?? ""}`)]);
   return createHash("sha256").update(JSON.stringify(shape)).digest("hex").slice(0, 10);
 }
 
@@ -261,6 +271,31 @@ export function planText(list, items) {
     : "nothing here needs a call to a business. anything that costs money, i'll still ask first.");
   lines.push("good to go?");
   return lines.join("\n");
+}
+
+/**
+ * What the approved plan must have shown them, and did not: every business the grant would cover and
+ * every item flagged money. Read off Reason's own sent words (the thread this turn was handed, and the
+ * texts that really went out), compared as plain strings Reason itself composed — no reading of theirs.
+ */
+export function missingFromShown(conversationId, items, messages = []) {
+  const said = [];
+  for (const m of messages) {
+    if (m?.role !== "assistant") continue;
+    said.push(typeof m.content === "string" ? m.content : (m.content ?? []).map(b => b?.text ?? "").join("\n"));
+  }
+  for (const r of db.recentMessages(conversationId, { limit: 40 })) if (r.from === "reason") said.push(r.text);
+  const shown = said.join("\n").toLowerCase();
+  const need = [];
+  for (const i of items) {
+    if (i.grp === "theirs") continue;
+    for (const b of i.businesses.filter(x => !x.person)) need.push(b.name);
+  }
+  for (const i of items) if (i.money) need.push(`${i.short} (may cost money)`);
+  return [...new Set(need)].filter(w => {
+    const m = /^(.*) \(may cost money\)$/.exec(w);
+    return m ? !(shown.includes(m[1].toLowerCase()) && shown.includes("may cost money")) : !shown.includes(w.toLowerCase());
+  });
 }
 
 // ---------- the checklist ----------
@@ -363,11 +398,29 @@ export function onTaskChanged({ id } = {}) {
   for (const key of lists) {
     const [c, listId] = key.split("\u0000");
     rebuildChecklist(c, Number(listId));
+    const list = db.getTodoList(c, Number(listId));
+    if (list) closeIfFinished(c, list);
   }
 }
 db.taskBus.on("changed", (e) => { try { onTaskChanged(e); } catch { /* a redraw never costs the write */ } });
 
 // ---------- the grant ----------
+
+/** Numbers a money call was just refused for: the ask that follows is a real one, never "not needed". */
+const moneyAsks = new Map();
+const MONEY_ASK_MS = 60 * 60_000;
+
+/**
+ * confirm_request for a call: does the list's approval already cover it, so nothing need be asked?
+ * Never when the ask is about money (its stakes or amount say so, or a money call to this number was
+ * just refused) — that yes has to be collectable, or the model is stuck between two refusals.
+ */
+export function askCovered({ conversationId: c, target = "", stakes = "", amount = null, now = clock.now() }) {
+  if (amount != null || ["money", "both"].includes(String(stakes).trim().toLowerCase())) return { ok: false };
+  const at = moneyAsks.get(`${c}\u0000${e164(target)}`);
+  if (at && now - at < MONEY_ASK_MS) return { ok: false };
+  return grantCovering({ conversationId: c, action: "call_place", input: { to: target }, target, now });
+}
 
 /**
  * Does an approved list's plan cover this action without asking? Only ever a call, only to a number
@@ -398,11 +451,15 @@ export function grantCovering({ conversationId: c, action, input = {}, target = 
     return { ok: false, why: `${number} is how they reach ${person.who}, somebody they know. The to-do list's approval covers businesses only, so ask about this call.` };
   }
   const item = db.todoItems(hit.list.id).find(i => i.id === hit.g.item_id);
-  if (!item || item.status === "dropped") {
-    return { ok: false, why: `The item ${hit.g.name} was on is no longer on the list, so the approval does not cover calling them. Ask about it.` };
+  if (!item || item.status === "dropped" || item.grp === "theirs") {
+    return { ok: false, why: `The item ${hit.g.name} was on is no longer one you are handling, so the approval does not cover calling them. Ask about it.` };
+  }
+  if (item.grp === "ask") {
+    return { ok: false, why: `${item.short} is still waiting on their answer to "${item.question || "the question in the plan"}", so the approval does not cover calling ${hit.g.name} yet. Ask, or get that answer first.` };
   }
   const agrees = !!input.may_book || (input.max_price_cents ?? 0) > 0 || (input.approved_terms?.length ?? 0) > 0;
   if (agrees && (item.money || (input.max_price_cents ?? 0) > 0 || (input.approved_terms?.length ?? 0) > 0)) {
+    moneyAsks.set(`${c}\u0000${e164(number)}`, now);
     return { ok: false, why: `This call could agree to spend money (${item.short}${item.money_note ? `: ${item.money_note}` : ""}), and the to-do list's approval never covers money. Ask about it.` };
   }
   return {
@@ -421,7 +478,7 @@ const SETTLED = new Set(["done", "waiting", "failed", "stuck", "dropped"]);
 /** Is every item done, waiting on somebody else, or theirs — and has the list been still long enough? */
 export function readyToWrap(list, items, now = clock.now()) {
   if (list.state !== "approved" || list.wrapped_at) return false;
-  if (!items.some(i => i.grp !== "theirs")) return false;
+  if (!items.some(i => i.grp !== "theirs" && i.status !== "dropped")) return false;
   const settled = items.every(i => i.grp === "theirs" ? i.status !== "needs_you" : SETTLED.has(i.status));
   if (!settled) return false;
   const last = Math.max(list.approved_at ?? 0, ...items.map(i => i.updated_at ?? 0));
@@ -450,20 +507,27 @@ export function wrapUps({ say, inTheirNight = () => false, isPaused = () => fals
   const out = { wrapped: 0 };
   if (todoMode() === "off") return out;
   for (const list of db.todoListsAwaitingWrap()) {
-    const c = list.conversation_id;
-    if (!todoAllowedFor(c) || isPaused(c) || inTheirNight(c, now)) continue;
+    try { if (wrapOne(list, { say, inTheirNight, isPaused, now, log })) out.wrapped++; }
+    catch (e) { log({ todo_wrap_error: list.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
+  }
+  return out;
+}
+
+function wrapOne(list, { say, inTheirNight, isPaused, now, log }) {
+  const c = list.conversation_id;
+  {
+    if (!todoAllowedFor(c) || isPaused(c) || inTheirNight(c, now)) return false;
     const items = db.todoItems(list.id);
-    if (!readyToWrap(list, items, now)) continue;
+    if (!readyToWrap(list, items, now)) return false;
     const page = rebuildChecklist(c, list.id);
     const text = wrapLine(list, items, page ? ownerUrl(page) : linkOf(c, list));
-    if (!db.claimTodoWrap(list.id, text)) continue;
+    if (!db.claimTodoWrap(list.id, text)) return false;
     // Nothing left open on it: the list is finished, and its grant with it.
     if (!items.some(i => i.status === "waiting")) db.closeTodoList(c, list.id, "closed");
     say?.(c, text, { idempotencyKey: `todo-wrap:${list.id}` });
     log({ todo_wrapped: list.id, conversation: c });
-    out.wrapped++;
+    return true;
   }
-  return out;
 }
 
 /** A list whose last waiting item settled after the wrap-up: closed, so its grant ends. */
@@ -555,6 +619,14 @@ export async function runTodoTool(name, input, ctx) {
       if (list.state !== "planning") return { ok: false, error: `List #${list.id} is already ${list.state}.` };
       const yes = db.getConfirmation(c, input.confirmation_id);
       const items = db.todoItems(list.id);
+      const missing = missingFromShown(c, items, ctx.messages ?? []);
+      if (missing.length) {
+        return {
+          ok: false, blocked: "plan_not_shown",
+          error: `The plan they said yes to never showed them ${missing.join(", ")}, so that yes cannot approve it. Nothing was approved and the yes is not spent.`
+            + ` Send plan_text (todo_list_get has the list; todo_plan with list_id gives it back) word for word, and ask again.`,
+        };
+      }
       // The grant: every business the plan named that is not somebody they know, as the plan named it.
       const grant = items.flatMap(i => (i.grp === "theirs" ? [] : i.businesses)
         .filter(b => !b.person)
@@ -580,6 +652,9 @@ export async function runTodoTool(name, input, ctx) {
       if (list.state === "planning") return { ok: false, error: `List #${list.id} has not been approved yet. Nothing on it is started until they say yes to the plan.` };
       const item = db.todoItems(list.id).find(i => i.n === input.item);
       if (!item) return { ok: false, error: `List #${list.id} has no item ${input.item}.` };
+      if (item.status === "dropped" && ((input.status && input.status !== "dropped") || input.task_id !== undefined || input.group)) {
+        return { ok: false, error: `Item ${item.n} (${item.short}) was dropped. A dropped item stays dropped; if they want it after all, it is a new list.` };
+      }
       const fields = {};
       const notes = [];
       if (input.task_id !== undefined) {
@@ -607,13 +682,13 @@ export async function runTodoTool(name, input, ctx) {
         } else if (named.phone && !sameNumber(named.phone, b.phone)) {
           notes.push(`The plan they approved had ${named.name} at ${named.phone}; a different number is asked about as usual.`);
         } else if (!named.phone) {
-          // A number found after the yes reaches the grant only when it came back from a lookup this
-          // turn (or they typed it): a number typed from memory could be anybody's.
-          if (numberSeenThisTurn(c, b.phone)) {
+          // A number found after the yes reaches the grant only when they typed it themselves this
+          // turn. Anything else — a lookup included — is asked about as usual, with the number shown.
+          if (numberTheyTyped(c, b.phone)) {
             db.setTodoGrant(list.id, list.grant.map(g => g === named ? { ...g, phone: b.phone } : g));
             notes.push(`${named.name}'s number is now on the approved plan: calling it needs no new yes.`);
           } else {
-            notes.push(`That number did not come from a lookup this turn, so it is not added to what the plan covers: look it up, then set it again.`);
+            notes.push(`They did not give you that number themselves, so it is not added to what the plan covers: a call to it is asked about as usual, with the number in the ask.`);
           }
         }
       }

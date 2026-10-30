@@ -2698,10 +2698,13 @@ export class Runtime extends EventEmitter {
     // A to-do list whose every item is now done, waiting on somebody else, or theirs gets its one
     // wrap-up text (src/todo.js), after the task wakes so a step that just settled is counted. Inert
     // unless REASON_TODO reaches somebody.
-    const todo_wraps = todo.wrapUps({
-      say: (c, text, meta) => this.say(c, text, meta),
-      inTheirNight: (c, now) => notice.inTheirNight(c, now), isPaused, log: this.log,
-    });
+    let todo_wraps = { wrapped: 0 };
+    try {
+      todo_wraps = todo.wrapUps({
+        say: (c, text, meta) => this.say(c, text, meta),
+        inTheirNight: (c, now) => notice.inTheirNight(c, now), isPaused, log: this.log,
+      });
+    } catch (e) { this.log({ todo_wraps_error: (e?.message ?? String(e)).split("\n")[0] }); }
     const pages = await this.pageAnswers();
     const watches = await this.checkWatches();
     // Calls that still say they are going and are not. It says nothing to anybody — it only stops
