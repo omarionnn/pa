@@ -7986,10 +7986,16 @@ export function queueMissedScheduledCall(conversationId, row, log = () => {}) {
 
 /**
  * How long past its own hard cap a call may still claim to be going before Reason stops believing
- * it. The platform ends a call at `callMaxMinutes`; the grace on top covers a webhook that was slow
- * rather than absent.
+ * it. The cap is the PLATFORM's, not `callMaxMinutes`: since b10b6ab no per-call ceiling is sent
+ * (ElevenLabs refuses the override), so a call runs until the agent's own limit — an hour — and owner
+ * calls of 14–15 minutes have happened (calls 32, 35). Sweeping at callMaxMinutes + grace (25 min)
+ * would write a live 30-minute call down as lost and text a scheduled one "tried calling u". The
+ * larger of the two is used, so an install that really does allow longer calls is covered too. The
+ * grace on top covers a webhook that was slow rather than absent.
  */
-export const callLostAfterMs = () => (config.callMaxMinutes * 60 * 1000) + (15 * 60 * 1000);
+export const CALL_LOST_GRACE_MS = 15 * 60 * 1000;
+export const callLostAfterMs = () =>
+  Math.max(config.callMaxMinutes * 60, config.callPlatformCapSeconds || 0) * 1000 + CALL_LOST_GRACE_MS;
 
 // ---------------------------------------------------------------------------
 // One question, one run (2026-10-17: one question on a call became eleven runs)

@@ -1181,3 +1181,116 @@ test("the owner's call does not switch language on one misheard line; a stranger
   const stranger = thirdPartyContext({ call: thirdPartyCall(), callMessages: [{ role: "user", content: "¿Bueno?" }] });
   assert.ok(stranger.system.includes(LANGUAGE_RULE));
 });
+
+// ---------- nothing said is dead air, and dead air is a dropped call (call 13) ----------
+// Call 13 (2026-10-12): ~24 s with no content from the custom LLM, then "custom_llm_error: LLM Cascade
+// Error: TimeoutError" and the platform ended the call. Calls 13 and 22 also left no line in the journal.
+
+/** A model that says nothing for `ms`, then `events`, round by round. */
+const stalled = (ms, ...rounds) => {
+  let round = 0;
+  return async function* () {
+    const events = rounds[round++] ?? ["Okay."];
+    await new Promise(resolve => setTimeout(resolve, ms));
+    for (const e of events) {
+      if (typeof e === "string") yield { type: "text", text: e };
+      else yield { type: "tool_use", name: e.tool, id: e.id ?? "tu_1", input: e.input ?? {} };
+    }
+  };
+};
+
+/** Every content delta, with how long after the start it went out. */
+async function timed(stream) {
+  const t0 = Date.now();
+  const out = [];
+  for await (const s of stream) {
+    if (!s.startsWith("data: ") || s.includes("[DONE]")) continue;
+    const c = JSON.parse(s.slice(6)).choices[0].delta.content;
+    if (c) out.push({ content: c, ms: Date.now() - t0 });
+  }
+  return out;
+}
+
+test("a model that stalls past the deadline gets one holding line out first, logged, and never twice", async () => {
+  const call = ownerCall();
+  const seen = [];
+  voice.contextDeps.runTool = async () => ({ ok: true, found: "a thing" });
+  // Two rounds, each silent for well past the deadline: the line still goes out once for the turn.
+  const out = await llmRequest({
+    rawBody: bodyFor(call), headers: AUTH, log: (l) => seen.push(l), firstWordDeadlineMs: 100,
+    screen: async () => ({ verdict: "safe" }),
+    generate: stalled(1_500, [{ tool: "memory_search", input: { query: "x" } }], ["Here it is."]),
+  });
+  const said = await timed(out.stream);
+  assert.ok(said.length >= 2, "the holding line and then the real reply");
+  assert.ok(said[0].ms < 1_500, `content went out before the model's first word (${said[0].ms} ms)`);
+  assert.equal(said[0].content, voice.HOLDING_LINE);
+  const all = said.map(s => s.content).join("");
+  assert.equal(all.split(voice.HOLDING_LINE).length - 1, 1, "exactly once in the turn");
+  assert.match(all, /Here it is\.$/);
+  assert.match(all, /moment\. /, "the reply follows it as its own sentence");
+  const fired = seen.filter(l => l.voice_holding_line != null);
+  assert.equal(fired.length, 1);
+  assert.equal(fired[0].voice_holding_line, call.id);
+  assert.ok(voice.FIRST_WORD_DEADLINE_MS <= 5_000, "the platform hears something inside five seconds");
+  assert.doesNotMatch(voice.HOLDING_LINE, /sorry|still there|\?/i, "an acknowledgement, not an apology or a check");
+});
+
+test("a turn that answers inside the deadline never hears the holding line", async () => {
+  const call = ownerCall();
+  const seen = [];
+  const out = await llmRequest({
+    rawBody: bodyFor(call), headers: AUTH, log: (l) => seen.push(l), firstWordDeadlineMs: 500,
+    screen: async () => ({ verdict: "safe" }),
+    generate: stalled(10, ["Sure."]),
+  });
+  const r = await drain(out.stream);
+  assert.equal(r.said, "Sure.");
+  assert.ok(!seen.some(l => l.voice_holding_line != null));
+});
+
+test("a stranger who has not heard who is calling gets no holding line before the disclosure", async () => {
+  // A line that opened silent (`opening_waits`): nobody on it has heard who is calling yet.
+  const row = thirdPartyCall({ state: "in_progress" });
+  db.updateCall(C, row.id, { opening_waits: 1 });
+  const call = db.getCall(C, row.id);
+  const seen = [];
+  const out = await llmRequest({
+    rawBody: bodyFor(call, { messages: [{ role: "user", content: "Hello, Luigi's?" }] }),
+    headers: AUTH, log: (l) => seen.push(l), firstWordDeadlineMs: 50,
+    generate: stalled(300, ["Hi, I'd like a table for four."]),
+  });
+  const r = await drain(out.stream);
+  assert.ok(r.said.startsWith(ANN.trim().slice(0, 20)), "the disclosure is the first thing said");
+  assert.ok(!r.said.includes(voice.HOLDING_LINE));
+  assert.ok(!seen.some(l => l.voice_holding_line != null));
+});
+
+test("every request is logged on arrival with its call id, and a body that will not parse is logged too", async () => {
+  const call = ownerCall();
+  const seen = [];
+  const out = await llmRequest({ rawBody: bodyFor(call), headers: AUTH, log: (l) => seen.push(l), generate: scripted("Hi.") });
+  await drain(out.stream);
+  assert.ok(seen.some(l => l.voice_llm_request === call.id && l.kind === "owner"), "arrival is logged with the call id");
+
+  const bad = [];
+  const broken = `{"messages":[],"elevenlabs_extra_body":{"${EXTRA_BODY_KEYS.callId}":${call.id},`;
+  const r = await llmRequest({ rawBody: broken, headers: AUTH, log: (l) => bad.push(l) });
+  assert.equal(r.status, 400);
+  assert.ok(bad.some(l => l.voice_llm_bad_json === call.id), "the 400 carries the call id it was for");
+});
+
+test("a reply the server ends without a stream still leaves a line", async () => {
+  const { createServer } = await import("../src/http.js");
+  const seen = [];
+  const server = createServer({ router: null, runtime: null, log: (l) => seen.push(l) });
+  await new Promise(r => server.listen(0, "127.0.0.1", r));
+  try {
+    const res = await fetch(`http://127.0.0.1:${server.address().port}${LLM_PATH}`, {
+      method: "POST", headers: { ...AUTH, "content-type": "application/json" }, body: "{",
+    });
+    assert.equal(res.status, 400);
+    await res.text();
+  } finally { server.close(); }
+  assert.ok(seen.some(l => l.call_llm_not_streamed === 400), "the non-stream end is in the journal");
+});

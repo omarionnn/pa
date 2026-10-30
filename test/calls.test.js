@@ -418,3 +418,27 @@ test("the sweep settles lost calls without being asked, and reports what it did"
   assert.deepEqual(out, { found: 1, settled: 1, unknown: 0, still_going: 0 });
   assert.equal(db.getCall(C, call_id).state, "completed");
 });
+
+// ---------- the lost-call window is the platform's ceiling, not the 10-minute setting ----------
+// Since b10b6ab no per-call ceiling is sent to ElevenLabs (it refuses the override), so a call runs to
+// the agent's own limit — an hour. Owner calls of 14–15 minutes have happened (calls 32, 35). Sweeping
+// at callMaxMinutes + 15 (25 minutes) wrote a live half-hour call down as lost.
+
+test("a call thirty minutes in is still a call: the sweep waits for the platform's hour, plus grace", async () => {
+  // A provider that cannot be reached is the case that matters: the sweep then writes the row off.
+  const { call_id } = await runTool("call_place", { to: "owner", goal: "a long one" }, { conversationId: C, calls: new FakeCallProvider() });
+  db.updateCall(C, call_id, { state: "in_progress" });
+
+  clock.skip(30 * 60 * 1000);
+  const seen = [];
+  const out = await settleLostCalls({ calls: null, log: (l) => seen.push(l) });
+  assert.equal(out.found, 0, "a 30-minute-old call in progress is not swept");
+  assert.equal(db.getCall(C, call_id).state, "in_progress");
+  assert.ok(!seen.some(l => l.call_lost), "and nothing says it was lost");
+  assert.ok(callLostAfterMs() >= 3600 * 1000, "the window is at least the platform's 3600 s ceiling");
+
+  // Past the platform's hour and the grace, nobody can say how it ended: then it is written down.
+  clock.skip(callLostAfterMs());
+  assert.equal((await settleLostCalls({ calls: null })).unknown, 1);
+  assert.equal(db.getCall(C, call_id).state, "failed");
+});
