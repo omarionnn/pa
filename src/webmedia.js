@@ -23,6 +23,7 @@ import { checkUrl } from "./pictures.js";
 import { pdfText } from "./pdf.js";
 import { hear, hearingStatus, cannotHearLine } from "./voice.js";
 import { clock } from "./config.js";
+import { isLinkPreviewAttachment } from "./linkpreview.js";
 import { fitPhoto, FIT_BYTES } from "./webshrink.js";
 import { readCookie } from "./pages/access.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount } from "./pages/websignin.js";
@@ -90,6 +91,12 @@ export async function uploadRequest({ account, headers = {}, readBody, log = () 
   let name = "";
   try { name = decodeURIComponent(String(headers["x-reason-name"] ?? "")); } catch { name = ""; }
   const voice = String(headers["x-reason-voice"] ?? "") === "1";
+  // iMessage's link card, dragged in from Messages (src/linkpreview.js): not kept, not handed to
+  // Reason, and not an error either — the page just leaves it off the message.
+  if (!voice && isLinkPreviewAttachment({ filename: name, mime: headers["content-type"] })) {
+    log({ web_upload_dropped: "link_preview" });
+    return json(200, { ok: true, dropped: "link_preview" });
+  }
   const seconds = Math.min(600, Math.max(0, Math.round(Number(headers["x-reason-seconds"]) || 0)));
   // A photo bigger than the model looks at is made to fit here (src/webshrink.js), not refused.
   let body = bytes;
@@ -136,8 +143,9 @@ export async function uploadRequest({ account, headers = {}, readBody, log = () 
  * When nothing could hear it, the note goes in unheard, exactly as a texted one would.
  */
 export async function prepareSend({ conversationId, text = "", files = [], listen = hear, canHear = hearingStatus, log = () => {} }) {
-  const atts = uploads.attachmentsFor(conversationId, files);
-  if (!atts) return null;
+  const all = uploads.attachmentsFor(conversationId, files);
+  if (!all) return null;
+  const atts = all.filter(a => !isLinkPreviewAttachment({ filename: a.filename }));
   let words = String(text ?? "");
   for (const a of atts) {
     if (a.kind !== "voice") continue;

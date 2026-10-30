@@ -34,6 +34,7 @@ import { callApi, cachedSystem, apiSkipWhy, resetApiOut } from "./spend.js";
 import { config, clock, stamp } from "./config.js";
 import { screenViaCli } from "./backends/cli.js";
 import * as db from "./db.js";
+import { isLinkPreviewAttachment } from "./linkpreview.js";
 
 /** What the screen can say about a message. Anything else it says is `unscreened`. */
 export const VERDICTS = ["clear", "borderline", "harm", "crisis"];
@@ -274,7 +275,7 @@ export function ownWords(text) {
     const under = t.match(/^\[they sent this as an inline reply\b[^"\]\n]*"([^"\n]*)"[^\]\n]*\]$/i);
     if (/^\[they sent the following as \d+ separate texts in a row\b[^\]\n]*\]$/i.test(t)) put = "";
     else if (/^\[reason was down from [^\]\n]*\]$/i.test(t)) put = "";
-    else if (file) put = /\.pluginPayloadAttachment$/i.test(file[1]) ? "(a link preview card)" : "(an attached file named " + file[1] + ")";
+    else if (file) put = isLinkPreviewAttachment({ filename: file[1] }) ? "(a link preview card)" : "(an attached file named " + file[1] + ")";
     else if (under) put = "(sent as an inline reply under the earlier message \"" + under[1] + "\")";
     else if (/^\[they sent this as an inline reply\b[^\]\n]*\]$/i.test(t)) put = "(sent as an inline reply to an earlier message)";
     if (put === t) return line;

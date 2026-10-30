@@ -37,6 +37,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { statSync, readFileSync } from "node:fs";
 import { Channel } from "./channel.js";
 import { config, clock, normalizeNumber } from "../config.js";
+import { isLinkPreviewAttachment } from "../linkpreview.js";
 
 const REPLAY_WINDOW_S = 5 * 60;
 // Linq's documented pre-upload ceiling. The `url` form of a media part is capped at 10MB, but a
@@ -274,7 +275,13 @@ export class LinqChannel extends Channel {
     const d = event.data ?? {};
     const from = d.sender_handle?.handle ?? d.from ?? d.from_handle?.handle ?? "";
     const chatId = d.chat?.id ?? d.chat_id ?? null;
-    const text = partsToText(d.parts);
+    // iMessage's link card is not something anybody sent (src/linkpreview.js): left out of the
+    // words, and a message that was nothing but one is no message at all.
+    const kept = Array.isArray(d.parts) ? d.parts.filter(p => !isPreviewPart(p)) : d.parts;
+    if (Array.isArray(d.parts) && d.parts.length && !kept.length) {
+      return { status: 200, body: { ok: true, ignored: "link preview card only" }, inbound: [] };
+    }
+    const text = partsToText(kept);
     // The envelope's event_id is the dedupe key Linq's own docs point at; the message id is the
     // fallback for a payload version that somehow lacks it.
     const externalId = String(event.event_id ?? d.id ?? "");
@@ -297,6 +304,11 @@ function lowerKeys(h = {}) {
   const out = {};
   for (const [k, v] of Object.entries(h)) out[String(k).toLowerCase()] = Array.isArray(v) ? v[0] : v;
   return out;
+}
+
+/** A media part that is iMessage's link card, by its filename or its type. */
+function isPreviewPart(p) {
+  return p?.type === "media" && isLinkPreviewAttachment({ filename: p.filename, mime: p.mime_type, uti: p.uti, url: p.url });
 }
 
 /**

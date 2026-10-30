@@ -424,6 +424,10 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
+### Baseline — link-card attachments dropped (fix/link-preview-attachments, 2026-10-30)
+
+`npm run test:offline` under `env -i`: 4,532 tests, 4,417 passing, 115 skipped, 0 failing. New: `test/link-preview-attachment.test.js` (7). Cage over the subscription: 1 turn + 1 ignored part, see [features/inbound-message.md](features/inbound-message.md).
+
 ### Baseline — per-person time zone (wt/user-timezone, 2026-10-30)
 
 `npm run test:offline` under `env -i`: 4,525 tests, 4,410 passing, 115 skipped, 0 failing. New: `test/time-zone.test.js` (26). Cage over the subscription: 3 turns, see [features/time-zone.md](features/time-zone.md).
