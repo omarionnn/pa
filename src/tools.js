@@ -51,6 +51,7 @@ import * as callErrand from "./calls/errand.js";
 import { safeToRedial, stillOpen } from "./calls/redial.js";
 import * as callOutcome from "./calls/outcome.js";
 import { settleGoal, goalPending } from "./calls/goalmet.js";
+import { endFieldsFor } from "./calls/metrics.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
@@ -7903,6 +7904,7 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
     outcome: machine || recording ? (row.outcome || live.outcome || "") : silent ? callOutcome.OUTCOMES.line_silent.label : (live.outcome ?? ""),
     summary: callOutcome.callSummary({ row, providerSummary: live.summary, silent, ownerName: accounts.ownerOf(conversationId)?.name }),
     transcript: live.transcript ?? "", duration_s: live.durationS ?? null, cost_cents: live.costCents ?? null,
+    ...(LIVE_STATES.includes(live.state) ? {} : callEndFields(row, { ...live, state: machine ? "voicemail" : live.state })),
   });
   if (LIVE_STATES.includes(live.state)) return r;
   // Settled once as a silent line from a transcript that was still arriving, and this delivery has
@@ -7950,6 +7952,17 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
   // because none of those paths is guaranteed to hold a runtime (the lost-calls sweep does not).
   if (r.timer_id && r.is_owner) queueMissedScheduledCall(conversationId, r, ctx.log ?? (() => {}));
   return r;
+}
+
+/**
+ * Why a finished call ended and what the platform says it cost, as call-row fields (the 2026-10-30
+ * call audit). From the provider's words, our own row, and the call's turns — whose tool names say
+ * whether Reason itself hung up. A provider that reports none of it (Bland) leaves these empty.
+ */
+export function callEndFields(row, live) {
+  let turns = [];
+  try { turns = db.callTurns(row.id); } catch { /* no turns is no evidence */ }
+  return endFieldsFor(row, live, turns);
 }
 
 /**
@@ -8197,6 +8210,8 @@ export async function settleLostCalls({ now = clock.now(), calls = null, log = (
       state: "failed",
       outcome: `it is not known how this call ended; ${why}`,
       outcome_kind: row.outcome_kind || "failed",
+      // For the call audit: closed by this sweep, nobody having said how it ended.
+      end_reason: "lost", end_detail: why,
       // Not "missing": a missing recording is a broken promise and gets a trust-ledger row for one
       // (see `fileRecording`). This is a call nobody can prove happened, so there is no promise to
       // have broken and nothing to raise as a fault.
@@ -8246,6 +8261,15 @@ export function owedLateDetails(row, now = clock.now()) {
 export function fillLateDetails(conversationId, row, live) {
   if (!live || LIVE_STATES.includes(live.state)) return row;
   const fields = {};
+  // Why it ended and what the platform says it cost, for a row settled before either was recorded.
+  // A 'lost' written by the sweep was only ever "nobody said": the provider saying is better.
+  const end = callEndFields(row, live);
+  if (end.end_reason && (row.end_reason == null || row.end_reason === "lost")) {
+    fields.end_reason = end.end_reason;
+    fields.end_detail = end.end_detail;
+  }
+  if ((row.cost_credits === null || row.cost_credits === undefined) && end.cost_credits != null) fields.cost_credits = end.cost_credits;
+  if (!row.cost_raw && end.cost_raw) fields.cost_raw = end.cost_raw;
   if (!row.summary && live.summary) {
     fields.summary = callOutcome.callSummary({ row, providerSummary: live.summary, ownerName: accounts.ownerOf(conversationId)?.name });
   }

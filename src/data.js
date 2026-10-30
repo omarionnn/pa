@@ -38,6 +38,9 @@ const TABLES = [
   "conversations", "plans", "timers", "memories", "people", "person_facts",
   "action_ledger", "confirmations", "tasks", "nudges", "threads", "calls", "watches",
   "pages", "page_choices", "seen_urls", "connected_accounts", "accounts", "usage",
+  // How each of their calls went, turn by turn: timings and tool names, no words. Keyed by
+  // conversation like the call rows they belong to, so a delete takes them with the calls.
+  "call_turns",
   // The documents Reason wrote for them. The row carries the title and the blocks it was built
   // from, which is their own writing; the files themselves are carried separately, below, the same
   // way the recordings are.

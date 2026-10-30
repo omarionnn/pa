@@ -308,11 +308,11 @@ test("their cost is in credits, so the receipt says nothing rather than somethin
   // than no number.
   assert.equal(r.costCents, null);
 
-  // A real dollar figure, if one ever arrives, is read. A call that ran is never billed nothing, so
-  // a zero against a real length is "not priced yet" rather than free — Bland's lesson.
-  const priced = new ElevenLabsCallProvider({ fetchImpl: stubFetch({ json: conversation({ metadata: { call_duration_secs: 42, cost_usd: 0.052 } }) }) });
+  // The dollar figure is `cost_fiat` (confirmed on real calls 2026-10-30). A call that ran is never
+  // billed nothing, so a zero against a real length is "not priced yet" rather than free — Bland's lesson.
+  const priced = new ElevenLabsCallProvider({ fetchImpl: stubFetch({ json: conversation({ metadata: { call_duration_secs: 42, cost_fiat: 0.052 } }) }) });
   assert.equal((await priced.check("conv_abc")).costCents, 5);
-  const free = new ElevenLabsCallProvider({ fetchImpl: stubFetch({ json: conversation({ metadata: { call_duration_secs: 42, cost_usd: 0 } }) }) });
+  const free = new ElevenLabsCallProvider({ fetchImpl: stubFetch({ json: conversation({ metadata: { call_duration_secs: 42, cost_fiat: 0 } }) }) });
   assert.equal((await free.check("conv_abc")).costCents, null);
 });
 
