@@ -53,6 +53,12 @@ for one reroute, shows "No worries, here's a new way." and carries on; the gate 
 "You're early. It starts at 7."; END ESCORT; Switch to Route opens on the turn ahead; reduced motion stops
 the drift and the pulse.
 
+**The drive never makes a sound.** Chromium launches with `--mute-audio`, and an init script replaces
+`window.speechSynthesis` / `SpeechSynthesisUtterance` with a recorder (`window.__said`). The spoken lines
+are asserted from that record: the share tap's empty unlock, "Left in about thirty metres." → "Left here.",
+and on the real trip "Right in about thirty metres." → "Right here.". Keep both whenever the drive is
+changed; an earlier run spoke through the owner's Mac speakers.
+
 Section 7 of the drive is a real trip on a throwaway database with `REASON_DIRECTIONS=owner`: made by the
 `directions` tool (stand-in router and Overpass), opened through the code gate in the browser (no place on
 the gate; bare == ghost bytes; one code texted to the owner, `pcode:` key), signed in, the Ask line says
@@ -62,7 +68,8 @@ here's a new way.", nothing stored, no position logged, "It's on your right", "Y
 the start, and the same signed-in browser 40 min early → "You're early. It starts at <start>." + NEARBY.
 
 **Not proven by this drive:** a real iPhone/Android outdoors at walking pace; the compass; the battery and
-signal-lost moments live (logic-tested; previews shown); voice and vibration (feature-detected only).
+signal-lost moments live (logic-tested; previews shown); real voice output (only the words are recorded)
+and vibration (feature-detected only).
 
 ## How to apply
 
