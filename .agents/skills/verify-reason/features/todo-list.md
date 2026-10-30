@@ -13,20 +13,24 @@ no page is drawn, the sweep sends nothing.
 
 ## What is enforced in code
 - **The plan text is code's** (`planText`): the model's reading (`todo_plan` items, groups, `money`,
-  `businesses`) is stored, and the message is composed from the rows, so no business or money flag
-  can be left out of what they approve.
+  `businesses`) is stored, and the message is composed from the rows. `todo_approve` refuses
+  (`plan_not_shown`, yes not spent) unless Reason's sent words (ctx.messages assistant turns + sent
+  outbox rows) name every business the grant would cover and every money item (`missingFromShown`).
 - **The yes is a normal confirm-gate yes**: `todo_approve` is in `ALWAYS_NEEDS_CONFIRMATION`, its target
   is `to-do list #<id> [<plan fingerprint>]` read off the row (`approvalTarget`). A plan revised after
   the ask → `wrong_target`. `todo_approve` is in `NEVER_STANDING`.
 - **The grant** (`grantCovering`, consulted in `runToolInner` after standing permissions, and by
   `confirm_request` for `call_place`): covers `call_place` only, only to a number in the list's
   `grant_json` (copied at approval: businesses on non-"theirs" items, minus anyone the lookups say
-  they know), not once the item is dropped, not after `GRANT_TTL_MS` (14 days), not for a closed list.
+  they know), compared as whole E.164 (`e164`/`sameNumber`); not while the item is "ask" (unanswered),
+  "theirs" or dropped (dropped stays dropped), not after `GRANT_TTL_MS` (14 days), not for a closed list.
   Never: a number in `important_people`, `accounts`, or a `people`/`person_facts` row
   (`db.knownPersonByNumber`, re-checked at call time); a call with `max_price_cents`/`approved_terms`;
   `may_book` on an item flagged money. A miss adds `todo_list_does_not_cover` to the usual refusal.
-  A number found AFTER the yes joins the grant only for a business the plan named, and only if it is
-  in this turn's tool sources (`offers.turnState`) — never typed from memory.
+  A number found AFTER the yes joins the grant only for a business the plan named, and only if THEY
+  typed it in this turn's own message (`offers.turnState().own`); never from a tool result (a refusal
+  echoes the number it refused). `confirm_request` for a call is short-circuited (`askCovered`) only
+  when the ask is not about money and no money call to that number was refused in the last hour.
 - **The checklist** is an ordinary page row (same `/p/<id>?k=` link and code gate as every page),
   redrawn by `db.taskBus` (`updateTask`, `finishTask`, `logTask(kind 'call')`) for any task linked to an item.
 - **The wrap-up** (`wrapUps`, in `Runtime.sweep` as `todo_wraps`): approved, every non-"theirs" item
@@ -37,9 +41,10 @@ no page is drawn, the sweep sends nothing.
   (2026-10-30), where the approval turn started the work and linked nothing.
 
 ## Offline
-`node --test test/todo.test.js` (18): plan text, gate + fingerprint, grant yes/no (named business, known
+`node --test test/todo.test.js` (24): plan text, gate + fingerprint, grant yes/no (named business, known
 person by facts and by people list, money, unnamed business, number found later, other conversation),
-checklist redraw on task change and on a call outcome, wrap-up once (and its quiet window, their night,
+laundering a refused number, +44 vs +1, money ask after a money refusal, ask/dropped items, plan not
+shown, checklist redraw on task change and on a call outcome, list closing after the chase, wrap-up once (and its quiet window, their night,
 via `Runtime.sweep`), nudge, flag off, owner mode.
 
 ## Live (real model, claude-cli)

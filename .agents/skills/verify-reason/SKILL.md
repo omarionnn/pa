@@ -425,7 +425,7 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 See [features/web-drafts.md](features/web-drafts.md).
 
 ### Baseline — to-do list (wt/todo-list-v1, 2026-10-30)
-4,743 tests / 4,628 pass / 0 fail / 115 skipped (`npm run test:offline` under `env -i`, origin/main 77ec11d + this branch). New: `test/todo.test.js` (18). Live: cage plan step on claude-cli + `bin/todo-drive.mjs` — see [features/todo-list.md](features/todo-list.md).
+4,749 tests / 4,632 pass / 2 fail / 115 skipped (`npm run test:offline` under `env -i`, origin/main 77ec11d + this branch); the 2 are the known `test/flights.test.js` load flake (run beside a claude-cli drive; the file alone passes). An earlier run of the branch: 4,742 / 4,627 / 0. New: `test/todo.test.js` (24). Live: cage plan step on claude-cli + `bin/todo-drive.mjs` — see [features/todo-list.md](features/todo-list.md).
 
 **9 — The first-chat onboarding, end to end, on its own cage.** A brand-new number's five texts
 (`REASON_ONBOARDING=test` for that number only) through the real webhook, router and outbox onto
