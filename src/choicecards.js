@@ -42,7 +42,7 @@ import { TOKENS } from "./pages/webkit.js";
 import { RENDER_TIMEOUT_MS, shootWithChromium } from "./pages/card.js";
 import { fetchImage } from "./media.js";
 import { checkUrl } from "./pictures.js";
-import { webLookup } from "./weblookup.js";
+import { webLookup, plainFetch } from "./weblookup.js";
 
 export const CHOICE_TOOLS = new Set(["show_choices"]);
 
@@ -409,7 +409,7 @@ export async function rankPlacePhotos(conversationId, o, { fetchImpl, fetchPhoto
   let cands = [img, ...db.seenUrlsFrom(c, page)].filter(u => u && /^https:\/\//.test(u) && db.hasSeenUrl(c, u));
   // Few pictures known for the page: read it once for the rest (its own photos, not a search's).
   if (page && new Set(cands).size < 4) {
-    const read = lookup ?? ((u) => webLookup(u, { maxChars: 1500, timeoutMs: 12_000 }));
+    const read = lookup ?? ((u) => readPlacePage(u));
     const got = await read(page).catch(() => null);
     if (got?.ok && got.images?.length) {
       db.rememberSeenUrls(c, got.images, { kind: "page", from: page });
@@ -450,6 +450,19 @@ export async function rankPlacePhotos(conversationId, o, { fetchImpl, fetchPhoto
   // pictures are all its coffee still shows its own coffee, never somebody else's door.
   // `rejected`: what was seen to be another business or a logo — the fallback may not draw it either.
   return Object.assign(ranked.sort((a, b) => b.score - a.score || a.i - b.i).map(({ base64, ...x }) => x), { rejected });
+}
+
+/**
+ * A place's page with its pictures. The reader live uses first (Parallel Extract) returns the words
+ * and often no image addresses at all (moodap, 2026-10-30: 0 of 27), so a read without pictures is
+ * followed by the page's own HTML, the way a plain fetch lists them.
+ */
+export async function readPlacePage(u, { read = webLookup, plain = plainFetch } = {}) {
+  const r = await read(u, { maxChars: 1500, timeoutMs: 12_000 }).catch(() => null);
+  // Already the plain read (no provider), or not an https page: nothing more to ask.
+  if ((r?.ok && r.images?.length) || (r?.ok && !r.provider) || !/^https:\/\//i.test(String(u))) return r;
+  const p = await plain(u, { maxChars: 1500, timeoutMs: 12_000 }).catch(() => null);
+  return p?.ok && p.images?.length ? p : r;
 }
 
 /** The best picture of one place not already on a card in this set: { ok, uri, url, shows } or { ok: false }. */
