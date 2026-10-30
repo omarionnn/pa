@@ -61,6 +61,7 @@ const { dailySamples } = await imp("scripts/web-daily-sample.mjs");
 const { stampMarkup } = await imp("src/stamps.js");
 const ongoingRows = await imp("src/ongoing.js");
 const db = await imp("src/db.js");
+const { config } = await imp("src/config.js");
 
 // Reason's public line (on the marketing site too); the person and everyone in the thread are made up.
 const LINE = "+16562167455";
@@ -214,6 +215,20 @@ const rows = [
   row("user", "fake", "Book it for two with her\n[they shared a contact card (rytCHiLR_Esi_Owusu.vcf) — here is what it says:\nname: Esi Owusu\nphone (cell): +15555550142]", at(0, 10, 35)),
 ];
 const lines = rows.map(r => wc.rowOut(r, { conversationId: CONV, service: "iMessage" }));
+// A .docx Reason texted, recorded the way the send path records it (the file in documents, its path on
+// the outbox row, its name on the history row), so its chip opens through src/sentfiles.js.
+const DOCX_NAME = "reason-onboarding-build-prompt.docx";
+const DOCX_BYTES = Buffer.concat([Buffer.from("PK\x03\x04"), Buffer.alloc(12511, 0)]);
+{
+  const path = join(config.documentRoot, `stg-${DOCX_NAME}`);
+  mkdirSync(config.documentRoot, { recursive: true });
+  writeFileSync(path, DOCX_BYTES);
+  const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  const ob = db.enqueueOutbound({ idemKey: "stg-docx", conversationId: CONV, channel: "fake", address: YOU, body: "here's the onboarding prompt as a doc", media: { file: path, mimeType: DOCX_MIME, filename: DOCX_NAME } }).row;
+  db.writeMessage({ conversationId: CONV, role: "assistant", channel: "sendblue", externalId: null, outboxId: ob.id, text: "here's the onboarding prompt as a doc", media: [{ kind: "file", mimeType: DOCX_MIME, filename: DOCX_NAME }], at: at(0, 10, 40) });
+  const r = db.db.prepare("SELECT * FROM messages WHERE outbox_id = ?").get(ob.id);
+  lines.push(wc.rowOut({ ...r, media: JSON.parse(r.media) }, { conversationId: CONV, service: "iMessage" }));
+}
 // REASON_WEB_DRAFTS is on here: the sample reply grows a sentence at a time over a stand-in live
 // stream, each piece drawn by the real wc.draftHtml, then the saved line replaces it.
 const REPLY = "Got it, I'll hold the Wednesday one. I'll check the fare again tonight and tell you before I book anything. If it drops before then, you'll hear from me first. (Staging: a sample reply, nothing was sent.)";
@@ -225,6 +240,7 @@ const MEDIA = { "staging:photo": "media/photo.svg", "staging:voice": "media/voic
 // The thread's media addresses (/web/media/m/<row>/<i>) point at the sample files written below.
 const mediaMap = {};
 for (const r of rows) r.media.forEach((m, i) => { mediaMap[`/web/media/m/${r.id}/${i}`] = MEDIA[m.url]; });
+for (const l of lines) if (l.media.some(x => x.name === DOCX_NAME)) mediaMap[l.media[0].src] = `media/${DOCX_NAME}`;
 
 const pick = `<a class="pick" href="/web?thread" aria-label="Pick up from iMessage: continue the thread"><span class="pick-h"><span class="hand">pick up from iMessage</span><span class="dash" aria-hidden="true"></span><span class="lbl">LAST TEXT · 8:03 AM</span></span><span class="pick-q"><span class="y">also flights to lisbon in march, nothing before 9am</span><span class="r">On it. I'll keep the early ones out and hold the best two for you to look at.</span></span><span class="pick-go">Continue the thread <span aria-hidden="true">→</span></span><span class="pick-n">Same Reason, same thread. What you send here stays on Web.</span></a>`;
 const convo = (o = {}) => wc.renderConversation({ account, csrf: "staging", lines, more: true, sendId: "staging", items, approvals, back, now, ...o });
@@ -554,6 +570,7 @@ try {
   writeFileSync(join(outDir, "media", "photo.svg"), PHOTO_SVG);
   writeFileSync(join(outDir, "media", "voice.wav"), silentWav());
   writeFileSync(join(outDir, "media", "lease-2026.pdf"), PDF);
+  writeFileSync(join(outDir, "media", DOCX_NAME), DOCX_BYTES);
   // The seal's pictures, drawn by the server's own renderer (src/pages/card.js headless Chromium).
   {
     const { shootWithChromium } = await imp("src/pages/card.js");

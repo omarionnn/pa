@@ -25,6 +25,7 @@ import { pdfText } from "./pdf.js";
 import { hear, hearingStatus, cannotHearLine } from "./voice.js";
 import { clock } from "./config.js";
 import { isLinkPreviewAttachment } from "./linkpreview.js";
+import { sentFile, mimeOf } from "./sentfiles.js";
 import { fitPhoto, FIT_BYTES } from "./webshrink.js";
 import { readCookie } from "./pages/access.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount } from "./pages/websignin.js";
@@ -183,7 +184,9 @@ function bytesOut({ bytes, mime, name = "", headers = {}, method = "GET" }) {
   const base = {
     "Content-Type": mime, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=86400",
     "Referrer-Policy": "same-origin", "Cross-Origin-Resource-Policy": "same-origin", "Accept-Ranges": "bytes",
-    "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(name || "file")}`,
+    // A PDF, a picture or a recording opens in the browser; anything else (a .docx, a sheet) comes
+    // down as the file under its own name, which iPhone Safari hands to Quick Look.
+    "Content-Disposition": `${/^(application\/pdf|image\/|audio\/|video\/|text\/plain)/.test(mime) ? "inline" : "attachment"}; filename="${String(name || "file").replace(/[^\x20-\x7e]|["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(name || "file")}`,
     ...(mime === "application/pdf" ? {} : { "Content-Security-Policy": "default-src 'none'; sandbox" }),
   };
   const r = RANGE.exec(String(headers.range ?? ""));
@@ -240,7 +243,7 @@ async function fetchRemote(a, { fetchImpl = globalThis.fetch } = {}) {
     const bytes = Buffer.concat(chunks);
     if (!bytes.length || bytes.length > uploads.MAX_UPLOAD_BYTES) return null;
     const ext = extname(String(a.filename || a.url).split("?")[0]).toLowerCase();
-    const mime = a.kind === "pdf" ? "application/pdf" : (AUDIO_MIME[ext] ?? "application/octet-stream");
+    const mime = a.kind === "pdf" ? "application/pdf" : (AUDIO_MIME[ext] ?? mimeOf(a.filename || a.url, a.mimeType));
     return remember(a.url, { bytes, mime });
   } catch { return null; }
 }
@@ -251,6 +254,11 @@ export async function serveRowMedia({ account, rowId, index, headers = {}, metho
   let media = [];
   try { media = JSON.parse(row?.media || "[]"); } catch { media = []; }
   const a = media[Number(index)];
+  // A file Reason sent keeps no address on the row: it is served from where the send read it.
+  if (a && !a.url) {
+    const f = sentFile(account.conversation_id, rowId);
+    return f && Number(index) === 0 ? bytesOut({ bytes: readFileSync(f.path), mime: f.mime, name: a.filename || f.name, headers, method }) : notFound();
+  }
   if (!a?.url) return notFound();
   // A choice card Reason drew (src/choicecards.js): its own file on this machine, by name only.
   if (String(a.url).startsWith("card:")) {
