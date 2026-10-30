@@ -32,7 +32,7 @@ interior" (`interiorSearch`; results kept only if their title/page names the pla
 at the same way. The chosen photo is kept per place for 14 days (`place_photos`, key = page url or
 name|area; log `cached: true`). The Mac cage has no place-photo source (no PARALLEL_API_KEY, OSM times
 out): prove places on the server from a scratch copy (/tmp/rp + a DB `.backup`, run as `reason`).
-Live 2026-10-30: Joe Flatiron → its cups (walk-up window), Devoción → inside (search), Bluestone → inside.
+No room in the search either → a second pass "<name> <area> storefront" + "<name> <area>"; a front counts only with its own name readable (own name overrides "other business"). One score for all candidates, so any room or signed front beats a cup. Live 2026-10-30: Joe Flatiron → its signed walk-up window, Devoción → inside, Bluestone → inside.
 
 ## Owner-only
 `REASON_CHOICE_CARDS=owner`: `toolsFor` hides show_choices from every conversation whose account is

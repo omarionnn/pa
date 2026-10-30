@@ -452,7 +452,7 @@ test("places, looked at: the inside wins over a cup and a storefront; another bu
   const [cup, front, inside, irving] = ["a", "b", "c", "d"].map(x => `https://media.dir.example/${x}.webp`);
   db.rememberSeenUrls(C, [page], { kind: "page" });
   db.rememberSeenUrls(C, [cup, irving, front, inside], { kind: "page", from: page });
-  const dims = { [cup]: [1600, 1000], [front]: [1200, 900], [inside]: [1000, 1000], [irving]: [1600, 1000] };
+  const dims = { [cup]: [1600, 1000], [front]: [1200, 900], [inside]: [1000, 1000], [irving]: [1601, 1000] };   // distinct bytes: a rejected picture hides every copy of itself
   const said = { [cup]: "product_or_food", [front]: "outside", [inside]: "inside", [irving]: "outside" };
   let asked = null;
   const look = async ({ name, photos }) => { asked = { name, n: photos.length }; return new Map(photos.map((p, k) => [k + 1, { shows: said[p.u], other: p.u === irving }])); };
@@ -638,4 +638,49 @@ test("review: a look that failed is not followed by a search (no second wait)", 
   const r = await cc.rankPlacePhotos(C, { name: "LF", brand: "Flatiron", url: page }, { fetchPhoto: photosBy({ [pic]: [1600, 900] }), lookup: async () => null, look: async () => null, search: client });
   assert.equal(r.length, 1);
   assert.equal(calls, 0);
+});
+
+test("a signed front from the storefront search beats the place's own cups; own name readable overrides 'another business'", async () => {
+  const page = "https://dir.example/joe-flat";
+  const cups = "https://dir.example/cups.jpg";
+  const front = "https://img.example/joe-board.jpg", menuOnly = "https://img.example/joe-latte.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [cups], { kind: "page", from: page });
+  const queries = [];
+  const client = { imageSearch: async ({ queries: [q, plain] }) => { queries.push(q); if (plain) queries.push(plain); return { ok: true, results: q.endsWith("storefront")
+    ? [{ image_url: front, page_url: "https://brew.example/joe-coffee-company-flatiron", title: "Joe Coffee Flatiron" }]
+    : [{ image_url: menuOnly, page_url: "https://m.example/joe-coffee-flatiron", title: "Joe Coffee Flatiron" }] }; } };
+  const said = { [cups]: "product_or_food", [menuOnly]: "product_or_food", [front]: "outside" };
+  const look = async ({ photos }) => new Map(photos.map((p, k) => [k + 1, { shows: said[p.u], room: said[p.u] === "outside" ? 3 : 0, other: false }]));
+  const r = await cc.rankPlacePhotos(C, { name: "Joe Coffee", brand: "Flatiron", url: page }, { fetchPhoto: photosBy({ [cups]: [1600, 1000], [front]: [900, 1200], [menuOnly]: [1200, 900] }), lookup: async () => null, look, search: client });
+  assert.deepEqual(queries, ["Joe Coffee Flatiron interior", "Joe Coffee Flatiron storefront", "Joe Coffee Flatiron"]);
+  assert.equal(r[0].u, front);
+  const run = async () => ({ ok: true, envelope: { structured_output: { photos: [{ n: 1, shows: "outside", room: 3, other_business: true, own_name: true }, { n: 2, shows: "outside", room: 3, other_business: true, own_name: false }] } } });
+  const seen = await cc.lookAtPlacePhotos({ name: "Joe Coffee", photos: [{ mediaType: "image/jpeg", base64: "A" }, { mediaType: "image/jpeg", base64: "B" }] }, { run });
+  assert.deepEqual([seen.get(1).other, seen.get(2).other], [false, true]);
+});
+
+test("an inside shot from the interior search stops there: no storefront search", async () => {
+  const page = "https://dir.example/dv"; const room = "https://img.example/dv-room.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  const queries = [];
+  const client = { imageSearch: async ({ queries: [q] }) => { queries.push(q); return { ok: true, results: [{ image_url: room, page_url: "https://inf.example/devocion-flatiron", title: "Devoción Flatiron" }] }; } };
+  const look = async ({ photos }) => new Map(photos.map((p, k) => [k + 1, { shows: "inside", room: 3, other: false }]));
+  const r = await cc.rankPlacePhotos(C, { name: "Devoción", brand: "Flatiron", url: page }, { fetchPhoto: photosBy({ [room]: [1600, 1000] }), lookup: async () => null, look, search: client });
+  assert.equal(r[0].u, room);
+  assert.deepEqual(queries, ["Devoción Flatiron interior"]);
+});
+
+test("review: own name only clears a FRONT (a menu board inside another cafe is not this place); a photo rejected by one look never comes back on another list", async () => {
+  const run = async () => ({ ok: true, envelope: { structured_output: { photos: [{ n: 1, shows: "inside", room: 3, other_business: true, own_name: true }] } } });
+  const seen = await cc.lookAtPlacePhotos({ name: "Joe Coffee", photos: [{ mediaType: "image/jpeg", base64: "A" }] }, { run });
+  assert.equal(seen.get(1).other, true);
+  const page = "https://dir.example/rj"; const pic = "https://dir.example/rj.jpg", dup = "https://img.example/rj-copy.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [pic], { kind: "page", from: page });
+  const client = { imageSearch: async () => ({ ok: true, results: [{ image_url: dup, page_url: "https://b.example/rj-flatiron", title: "RJ Flatiron" }] }) };
+  let n = 0;
+  const look = async ({ photos }) => { n++; return new Map(photos.map((p, k) => [k + 1, n === 1 ? { shows: "outside", room: 3, other: true } : { shows: "inside", room: 3, other: false }])); };
+  const r = await cc.rankPlacePhotos(C, { name: "RJ", brand: "Flatiron", url: page }, { fetchPhoto: photosBy({ [pic]: [1600, 900], [dup]: [1600, 900] }), lookup: async () => null, look, search: client });
+  assert.deepEqual(r.map(x => x.u), []);
 });

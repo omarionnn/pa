@@ -367,7 +367,7 @@ const LOOK_SCHEMA = {
   required: ["photos"],
   additionalProperties: false,
 };
-const LOOK_SYSTEM = "You sort photos for a card that helps someone choose where to go. For each numbered photo, judge its SUBJECT — what the photographer pointed the camera at: inside (the room itself: seating, counter, bar, the space), outside (storefront, facade, entrance, street view), product_or_food (cups, drinks, dishes, beans, merchandise — even when held in hands or set on a table indoors), logo_or_menu, people_closeup, or other. A close-up of cups on a window ledge is product_or_food, not inside. Then rate room 0–3: how much of the place's room or front is actually visible. Set other_business true only when a sign, awning or text in the photo names a different business than the one given; set own_name true only when the given place's own name is readable in it. Answer for every photo.";
+const LOOK_SYSTEM = "You sort photos for a card that helps someone choose where to go. For each numbered photo, judge its SUBJECT — what the photographer pointed the camera at: inside (the room itself: seating, counter, bar, the space), outside (storefront, facade, entrance, street view), product_or_food (cups, drinks, dishes, beans, merchandise — even when held in hands or set on a table indoors), logo_or_menu, people_closeup, or other. A close-up of cups on a window ledge is product_or_food, not inside. Then rate room 0–3: how much of the place's room or front is actually visible. Set other_business true only when a sign, awning or text in the photo names a different business than the one given; set own_name true when the given place's own name is readable anywhere in it — a sign, an awning, a sidewalk board, a menu board, a window — even next to an address or other text. Answer for every photo.";
 const SHOWS_SCORE = { inside: 10, outside: 5, other: 0, people_closeup: -2, product_or_food: -8, logo_or_menu: -10 };
 
 export async function lookAtPlacePhotos({ name, photos }, { run = null, model = process.env.REASON_PLACE_LOOK_MODEL || "haiku", timeoutMs = Number(process.env.REASON_PLACE_LOOK_TIMEOUT_MS || 30_000) } = {}) {
@@ -386,7 +386,10 @@ export async function lookAtPlacePhotos({ name, photos }, { run = null, model = 
     // "inside" with hardly any room in view is a close-up that happens to be indoors.
     const shows = (x.shows === "inside" || x.shows === "outside") && room < 2 ? "other" : x.shows;
     // A front proves nothing without its name on it: a directory's street views are the neighbours.
-    const other = !!x.other_business || (shows === "outside" && x.own_name !== true);
+    // Its own name on it settles whose it is (a Joe Coffee board next to a "186 Fifth Ave" sign is Joe's).
+    const own = x.own_name === true;
+    // Only on a front: inside, our name on a menu board can be another cafe that sells the beans.
+    const other = (!!x.other_business && !(own && shows === "outside")) || (shows === "outside" && !own);
     out.set(x.n, { shows, room, other });
   }
   return out.size ? out : null;
@@ -409,11 +412,22 @@ export async function rankPlacePhotos(conversationId, o, { fetchImpl, fetchPhoto
   // The look failed (pictures but no labels): no search either — it would only add another wait.
   if (fromPage.length && !fromPage.some(x => x.shows)) return fromPage;
   // No inside shot among the place's own pictures: ask the picture search for "<name> <area> interior".
-  const extra = await interiorSearch(conversationId, o, search === undefined ? searchImpl() : search);
-  if (!extra.length) return fromPage;
-  const found = await rankFrom(conversationId, { ...o, image_url: "", url: "" }, { fetchImpl, fetchPhoto, lookup: async () => null, look, max: 4, given: extra });
-  const insides = found.filter(x => x.shows === "inside");
-  return Object.assign([...insides, ...fromPage], { rejected: new Set([...(fromPage.rejected ?? []), ...(found.rejected ?? [])]) });
+  const client = search === undefined ? searchImpl() : search;
+  const pool = [...fromPage];
+  const rejected = new Set(fromPage.rejected ?? []);
+  // The room first; only when the search has no room either, its signed front (a walk-up window
+  // has no room — its window and its board are what it looks like).
+  for (const kind of ["interior", "storefront"]) {
+    const extra = (await interiorSearch(conversationId, o, client, kind)).filter(u => !pool.some(x => x.u === u));
+    if (!extra.length) continue;
+    const found = await rankFrom(conversationId, { ...o, image_url: "", url: "" }, { fetchImpl, fetchPhoto, lookup: async () => null, look, max: 8, given: extra });
+    for (const r of found.rejected ?? []) rejected.add(r);
+    pool.push(...found.filter(x => !pool.some(y => y.sum === x.sum)));
+    if (pool.some(x => x.shows === "inside")) break;
+  }
+  // One order for all of it: any room or signed front outscores a cup, wherever it came from — and
+  // a picture rejected by any look stays out, whichever list it came in on.
+  return Object.assign(pool.filter(x => !rejected.has(x.sum)).sort((a, b) => b.score - a.score || a.i - b.i), { rejected });
 }
 
 let searchOverride;
@@ -428,12 +442,17 @@ const searchImpl = () => {
  * Picture-search results for the inside of THIS place: only ones whose title or page names the
  * place and, when the card names an area, the area too — a chain's other branch is not this one.
  */
-export async function interiorSearch(conversationId, o, client) {
+export async function interiorSearch(conversationId, o, client, kind = "interior") {
   const area = String(o.brand ?? "").trim();
   // Without an area a name is every branch in every city: no search.
   if (!client?.imageSearch || !area) return [];
-  const q = `${o.name} ${area} interior`.replace(/\s+/g, " ").trim();
-  const out = await client.imageSearch({ queries: [q], objective: `Photos of the inside of ${o.name}${area ? ` in ${area}` : ""}: the room, seating, counter.`, maxResults: 6 }).catch(() => null);
+  const q = `${o.name} ${area} ${kind}`.replace(/\s+/g, " ").trim();
+  const objective = kind === "interior"
+    ? `Photos of the inside of ${o.name} in ${area}: the room, seating, counter.`
+    : `Photos of the front of ${o.name} in ${area}: its storefront, window, sign.`;
+  // The front pass also asks for the place plainly: a listing's own photos are often its window.
+  const queries = kind === "interior" ? [q] : [q, `${o.name} ${area}`.replace(/\s+/g, " ").trim()];
+  const out = await client.imageSearch({ queries, objective, maxResults: 10 }).catch(() => null);
   if (!out?.ok) return [];
   const words = (t) => String(t ?? "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   const name = words(o.name).replace(/\s*[—–-].*$/, "").trim();
@@ -465,7 +484,7 @@ async function rankFrom(conversationId, o, { fetchImpl, fetchPhoto = fetchImage,
   // Only the place's OWN pictures: the one passed, the page's top few (og:image first — further down
   // a directory's page is every other cafe nearby, even a photo whose name says "interior").
   const own = cands.map((u, i) => ({ u, i, h: roomHint(u) }))
-    .filter((x, k) => k < TOP_OF_PAGE + (img ? 1 : 0))   // further down, a directory's page is the neighbours — their rooms, their fronts
+    .filter((x, k) => given || k < TOP_OF_PAGE + (img ? 1 : 0))   // further down, a directory's page is the neighbours — their rooms, their fronts
     .filter(x => x.h > -3)
     .sort((a, b) => b.h - a.h || a.i - b.i).slice(0, max);
   const fetched = (await Promise.all(own.map(async ({ u, i }) => {
@@ -516,6 +535,13 @@ export function pickPlacePhoto(ranked, taken = new Set()) {
   if (!best) return { ok: false, why: "no picture of the place itself could be used" };
   taken.add(photoKey(best.u)); taken.add(best.sum);
   return { ok: true, uri: best.uri, url: best.u, score: best.score, shows: best.shows ?? null, cached: !!best.cached };
+}
+
+/** The most one place's photo may add to a turn (reads, searches, looks): past it, the ordinary path. */
+const PLACE_PHOTO_BUDGET_MS = Number(process.env.REASON_PLACE_PHOTO_BUDGET_MS ?? 45_000);
+function withDeadline(p, ms) {
+  let t;
+  return Promise.race([p, new Promise(res => { t = setTimeout(() => res([]), ms); })]).finally(() => clearTimeout(t));
 }
 
 /** How long a chosen place photo is reused before the place is looked at again. */
@@ -678,7 +704,7 @@ export async function runChoiceTool(name, input, ctx) {
   // Places: every place's pictures looked at together, then handed out in order so no two cards
   // in the set show the same photo (a directory can give two branches one picture).
   const ranks = input.kind === "places"
-    ? await Promise.all(options.map(o => cachedOrRanked(c, o, { ...ctx, ...(ctx.lookPlace ? { look: ctx.lookPlace } : {}) }).catch(() => [])))
+    ? await Promise.all(options.map(o => withDeadline(cachedOrRanked(c, o, { ...ctx, ...(ctx.lookPlace ? { look: ctx.lookPlace } : {}) }), PLACE_PHOTO_BUDGET_MS).catch(() => [])))
     : null;
   const taken = new Set();
   const photos = [];
