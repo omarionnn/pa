@@ -36,6 +36,7 @@
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
+//   GET  /web/connect/{token}[/state], POST …/answer|card, GET /web/connect/island.js|jwks.json|new-card   store sign-in + card for Crossmint checkouts (src/pages/webconnect.js; REASON_SHOP_CONNECT)
 //   GET  /web/stamps, POST /web/api/stamps/{id}/share[/revoke], GET …/{id}/image.png, …/{id}/story.png   Stamps (src/pages/webstamps.js; REASON_WEB_DAILY)
 //   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)
 //   GET  /web/icons/{file}            Web's favicons and home-screen icon (src/pages/webnotify.js)
@@ -301,6 +302,24 @@ export function createServer({ router, runtime, log = () => {} }) {
         }
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);
+      }
+      // Connect (src/pages/webconnect.js): sign in to a store, add a card, for Crossmint checkouts. Behind
+      // REASON_SHOP_CONNECT; off, the same flat 404 as any path nobody was issued.
+      const connectRoute = /^\/web\/connect\/([A-Za-z0-9_-]{1,64}(?:\/(?:state|answer|card))?|island\.js|jwks\.json)$/.exec(url.pathname);
+      if (connectRoute && webOn() && (await import("./shopconnect.js")).connectMode() !== "off") {
+        let out = null;
+        try {
+          const { connectRequest } = await import("./pages/webconnect.js");
+          const { sessionAccount } = await import("./pages/websignin.js");
+          out = await connectRequest({ sub: connectRoute[1], method: req.method, account: sessionAccount(req.headers), readBody: () => readBody(req), log });
+        } catch (e) {
+          log({ http: "/web/connect", threw: (e?.message ?? String(e)).split("\n")[0] });
+          return send(500, { ok: false, error: "server error" });
+        }
+        if (out) {
+          res.writeHead(out.status, out.headers);
+          return res.end(req.method === "HEAD" ? "" : out.body);
+        }
       }
       // Ongoing's own pages (src/pages/webongoing.js): one row's detail, and the small state the Ongoing pages poll.
       const ongoingRoute = /^\/web\/ongoing(?:\/(state|hand|back)|\/(approval|task|timer|series)(?:\/(\d{1,12}))?)?$/.exec(url.pathname);

@@ -58,6 +58,7 @@ import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEv
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
+import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool } from "./shoptools.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import * as rhythms from "./rhythms.js";
@@ -123,7 +124,7 @@ export const IMAGE_GENERATE_DESC = "Draw a picture from a text description and s
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["flight_book", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
+const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -284,6 +285,8 @@ const OUTSIDE_WORLD = new Set(["flight_book", "account_connect", "account_revoke
 // fact about the ride and not about the description. Quoting is deliberately not on the list —
 // nothing can be charged by asking Uber what a trip would cost.
 export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "purchase_confirm", "github_pr_merge", "uber_request",
+  // A Crossmint checkout's payment (src/shoptools.js): the yes is pinned to Crossmint's own amount.
+  "shop_pay",
   // Every X write is a draft: the person sees exactly what goes out before it does. A bad tweet is
   // public and hard to undo, a DM reaches a real person, and deleting a tweet is irreversible.
   "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete"]);
@@ -349,7 +352,8 @@ export function toolsFor(conversationId) {
     && eventToolVisible(t.name, conversationId)
     && albumToolVisible(t.name, conversationId)
     && directionsToolVisible(t.name, conversationId)
-    && choiceToolVisible(t.name, conversationId))
+    && choiceToolVisible(t.name, conversationId)
+    && shopToolVisible(t.name, conversationId))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t));
 }
 
@@ -516,7 +520,7 @@ function amountForAction(name, input) {
  * before letting them cancel a car would be the gate crying wolf. Uber's cancellation fee is
  * handled where it belongs — said out loud before the cancel, from the product's own published fee.
  */
-const SPENDS_MONEY = new Set(["browser_submit", "purchase_confirm", "uber_request"]);
+const SPENDS_MONEY = new Set(["browser_submit", "purchase_confirm", "uber_request", "shop_pay"]);
 
 /**
  * The only tools a turn may use when the harm screen did not pass its message as clear
@@ -4299,6 +4303,7 @@ export const tools = [
   // Walking directions and Escort (src/directionstools.js, src/trips.js), behind REASON_DIRECTIONS.
   ...DIRECTIONS_TOOL_DEFS,
   ...CHOICE_TOOL_DEFS,
+  ...SHOP_TOOL_DEFS,
   {
     name: "capabilities",
     description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things. Its `whats_new` list is what 'what's new' and 'what can you do now' are answered from.",
@@ -6796,6 +6801,7 @@ const S = {
   ...ALBUM_SCHEMAS,
   ...DIRECTIONS_SCHEMAS,
   ...CHOICE_SCHEMAS,
+  ...SHOP_SCHEMAS,
   invites_list: z.object({}),
   invite_link_create: z.object({}),
   invite_link_cancel: z.object({ number: z.number().int().min(1), replace: z.boolean().optional() }),
@@ -8719,6 +8725,8 @@ function targetOf(name, input) {
     case "vault_enroll": return "agentcard:vault";
     case "purchase": return `buy:${input.conversation_id || "new"}`;
     case "purchase_confirm": return `buy:${input.conversation_id}:cart:${input.cart_hash}`;
+    case "store_checkout": return `shop:${input.store}`;
+    case "shop_pay": case "shop_decline": return `shop:payment:#${input.payment_id}`;
     case "purchase_track": return input.order_id ? `order:${input.order_id}` : `buy:${input.conversation_id}`;
     case "uber_connect": return "uber";
     case "uber_request": return `uber:ride:${input.quote_id ?? "?"}`;
@@ -8754,7 +8762,7 @@ function uberRideLine(ride) {
  * never from the summary the model wrote, which is what makes "they agreed to this one" a fact about
  * the action rather than a fact about the description.
  */
-function confirmTargetFor(name, input) {
+function confirmTargetFor(name, input, c = null) {
   switch (name) {
     case "message_send": case "voice_note_send": case "call_place":
       return normalizeNumber(input.to) || input.to;
@@ -8809,6 +8817,8 @@ function confirmTargetFor(name, input) {
      * that names the hash and nothing else: it cannot match a yes collected against a real cart, so
      * the gate refuses rather than authorizing a cart nobody can describe.
      */
+    // A Crossmint payment, pinned to the row: Crossmint's amount, the merchant, the run and request.
+    case "shop_pay": return shopPayTarget(input, c);
     case "purchase_confirm": {
       const row = db.getAgentcardPurchase(input.conversation_id);
       if (!row || row.cart_hash !== input.cart_hash) return `unknown cart ${input.cart_hash} in ${input.conversation_id}`;
@@ -9040,7 +9050,7 @@ async function runToolInner(name, rawInput, ctx) {
   // collect a fresh one without the person ever being told that something may have gone through.
   // What lifts the block is a yes given since — see trust.retryBlocked.
   if (SPENDS_MONEY.has(name)) {
-    const stuck = trust.retryBlocked({ conversationId: c, action: name, target: confirmTargetFor(name, input), confirmationId: input.confirmation_id ?? null });
+    const stuck = trust.retryBlocked({ conversationId: c, action: name, target: confirmTargetFor(name, input, c), confirmationId: input.confirmation_id ?? null });
     if (stuck) {
       if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: stuck, target: targetOf(name, input) });
       return stuck;
@@ -9068,7 +9078,7 @@ async function runToolInner(name, rawInput, ctx) {
     // against that person and not only against the tool's name. browser_submit carries what it is
     // about to commit for the same reason: a yes is for the details the owner was shown, so a
     // submit whose details have moved since the ask has to ask again rather than ride the old yes.
-    const target = confirmTargetFor(name, input);
+    const target = confirmTargetFor(name, input, c);
     let gate = trust.authorizeConfirmation({ conversationId: c, action: name, confirmationId: input.confirmation_id, target });
 
     // What they have already told Reason it may do without asking, consulted BEFORE the gate stops.
@@ -11326,6 +11336,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // ---------- choice cards (src/choicecards.js) ----------
     case "show_choices":
       return await runChoiceTool(name, input, { ...ctx, conversationId: c });
+
+    // ---------- Crossmint checkouts (src/shoptools.js) ----------
+    case "store_checkout": case "shop_pay": case "shop_decline": {
+      const out = await runShopTool(name, input, { ...ctx, conversationId: c });
+      // The card may have been offered to the store and nobody knows: never a retry on that yes.
+      if (name === "shop_pay" && out?.unknown_outcome) trust.noteUnknownOutcome({ conversationId: c, action: "shop_pay", target: confirmTargetFor("shop_pay", input, c), why: `Crossmint ${out.status ?? "no answer"} after the order intent` });
+      return out;
+    }
 
     // ---------- invites (src/invites.js) ----------
     case "invites_list": return { ...invites.myInvites(c), say: "A line or two, like a friend: how many left, any link out and not used yet and roughly when it went, and offer another if they have any left. No numbered rows, no link numbers." };
