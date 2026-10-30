@@ -704,9 +704,9 @@ const TERMINAL = new Set(["succeeded", "failed", "blocked", "cancelled", "expire
 let sayFn = null;
 // Web lives on the website (REASON_SITE_URL, heyreason.com): Crossmint's client key allows that origin only.
 let linkBase = () => `${(process.env.REASON_SITE_URL || process.env.REASON_PUBLIC_URL || "https://heyreason.com").replace(/\/+$/, "")}/web/connect`;
-/** serve.js hands over how to text a person. Nothing is texted before this. */
 /** A card link as the person taps it. */
 export const cardLinkUrl = (conversationId) => `${linkBase()}/${cardLink(conversationId)}`;
+/** serve.js hands over how to text a person. Nothing is texted before this. */
 export function attach({ say, base } = {}) { sayFn = say ?? null; if (base) linkBase = () => base; }
 
 /**

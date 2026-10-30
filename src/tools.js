@@ -9246,6 +9246,8 @@ async function runToolInner(name, rawInput, ctx) {
 export async function runReleasedAction(row, ctx = {}) {
   const c = row.conversation_id;
   const me = accounts.ownerOf(c);
+  // A hold released after Crossmint took over buying here is not sent to AgentCard (src/shoptools.js).
+  if (AGENTCARD_BUY_TOOLS.has(row.action) && !agentcardToolVisible(row.action, c)) return AGENTCARD_REFUSAL;
   const input = row.input;
   const out = await dispatch(row.action, input, {
     ...ctx, conversationId: c, releasedHold: row,

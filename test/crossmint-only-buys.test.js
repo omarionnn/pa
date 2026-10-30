@@ -23,7 +23,7 @@ process.env.AGENTCARD_CLIENT_ID = "ac_test";
 process.env.AGENTCARD_CLIENT_SECRET = "acs_test";
 process.env.REASON_SITE_URL = "https://heyreason.test";
 
-const { tools, toolsFor, runTool, capabilitiesNow } = await import("../src/tools.js");
+const { tools, toolsFor, runTool, runReleasedAction, capabilitiesNow } = await import("../src/tools.js");
 const { mcpToolsFor } = await import("../src/backends/mcp-core.js");
 const { AGENTCARD_BUY_TOOLS } = await import("../src/shoptools.js");
 const { startPurchasesNote } = await import("../src/purchasesnote.js");
@@ -60,6 +60,11 @@ test("an AgentCard tool named anyway is refused, and nothing reaches AgentCard",
     assert.match(out.error, /store_checkout/);
     assert.doesNotMatch(out.error, /AgentCard/);
   }
+});
+
+test("a held AgentCard confirm released later is refused too", async () => {
+  const out = await runReleasedAction({ conversation_id: OMARI, action: "purchase_confirm", input: { conversation_id: "conv_x", cart_hash: "abc" }, confirmation_id: 1 });
+  assert.equal(out.blocked, "not_available");
 });
 
 test("everybody else keeps today's tools and today's words exactly", () => {
