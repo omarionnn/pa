@@ -51,7 +51,7 @@ import * as callErrand from "./calls/errand.js";
 import { safeToRedial, stillOpen } from "./calls/redial.js";
 import * as callOutcome from "./calls/outcome.js";
 import { settleGoal, goalPending } from "./calls/goalmet.js";
-import { endReasonOf } from "./calls/metrics.js";
+import { endFieldsFor } from "./calls/metrics.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
@@ -7962,12 +7962,7 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
 export function callEndFields(row, live) {
   let turns = [];
   try { turns = db.callTurns(row.id); } catch { /* no turns is no evidence */ }
-  const end = endReasonOf({ live, row, turns });
-  return {
-    end_reason: end.reason, end_detail: end.detail,
-    cost_credits: Number.isFinite(live.costCredits) ? live.costCredits : null,
-    cost_raw: typeof live.costRaw === "string" ? live.costRaw : "",
-  };
+  return endFieldsFor(row, live, turns);
 }
 
 /**
@@ -8267,9 +8262,13 @@ export function fillLateDetails(conversationId, row, live) {
   if (!live || LIVE_STATES.includes(live.state)) return row;
   const fields = {};
   // Why it ended and what the platform says it cost, for a row settled before either was recorded.
+  // A 'lost' written by the sweep was only ever "nobody said": the provider saying is better.
   const end = callEndFields(row, live);
-  for (const k of ["end_reason", "cost_credits"]) if ((row[k] === null || row[k] === undefined) && end[k] != null) fields[k] = end[k];
-  if (fields.end_reason && !row.end_detail) fields.end_detail = end.end_detail;
+  if (end.end_reason && (row.end_reason == null || row.end_reason === "lost")) {
+    fields.end_reason = end.end_reason;
+    fields.end_detail = end.end_detail;
+  }
+  if ((row.cost_credits === null || row.cost_credits === undefined) && end.cost_credits != null) fields.cost_credits = end.cost_credits;
   if (!row.cost_raw && end.cost_raw) fields.cost_raw = end.cost_raw;
   if (!row.summary && live.summary) {
     fields.summary = callOutcome.callSummary({ row, providerSummary: live.summary, ownerName: accounts.ownerOf(conversationId)?.name });

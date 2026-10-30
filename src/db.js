@@ -1806,16 +1806,29 @@ addColumnIfMissing("calls", "end_detail", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "cost_credits", "REAL");
 addColumnIfMissing("calls", "cost_raw", "TEXT NOT NULL DEFAULT ''");
 
-// One row per custom-LLM request on a call: the turn as the caller lived it. Times are from the moment
-// the endpoint received the request (the platform sends it when the person stops talking) to the
-// first content chunk streamed, to the first chunk that was the model's own words rather than the
-// holding line, a "one sec" or a canned fallback, and to the end of the stream. No words are kept:
+// One row per turn of a call: what the caller waited through. Times are from the moment the endpoint
+// received the request (the platform sends it when the person stops talking) to the first content
+// chunk streamed, to the first chunk that was the model's own words rather than the holding line, a
+// "one sec", a canned fallback or the disclosure, and to the end of the stream. No words are kept:
 // tool NAMES only, so this table is safe to read in an audit.
+//
+// A turn is keyed by (call, how many messages the request carried). The platform re-asks the same turn
+// when it gives up on one (voice.js aborts the earlier request), and that retry is the same turn
+// again, not a new one — so it replaces the row instead of adding a second. Written once, after the
+// stream ends: nothing touches the database before the caller hears the first byte.
+//
+// A call_turns without msg_count is the first draft of this table (PR #273 before review), which only
+// ever existed in local test databases and was never deployed: dropped, so the key below can be made.
+if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'call_turns'").get()
+  && !db.prepare("PRAGMA table_info(call_turns)").all().some(c => c.name === "msg_count")) {
+  db.exec("DROP TABLE call_turns");
+}
 db.exec(`
   CREATE TABLE IF NOT EXISTS call_turns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     call_id INTEGER NOT NULL,
     conversation_id TEXT NOT NULL,
+    msg_count INTEGER NOT NULL,
     turn_index INTEGER NOT NULL,
     kind TEXT NOT NULL DEFAULT '',
     started_at INTEGER NOT NULL,
@@ -1826,32 +1839,47 @@ db.exec(`
     holding_line INTEGER NOT NULL DEFAULT 0,
     tools TEXT NOT NULL DEFAULT '[]',
     closed_early INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 1,
     input_tokens INTEGER,
     output_tokens INTEGER,
     cache_read_tokens INTEGER,
     cache_write_tokens INTEGER
   );
+  CREATE UNIQUE INDEX IF NOT EXISTS call_turns_key ON call_turns (call_id, msg_count);
   CREATE INDEX IF NOT EXISTS call_turns_call ON call_turns (call_id, turn_index);
 `);
 
-/** A turn has started on a call: its row, numbered in arrival order, before anything can stall. */
-export function startCallTurn({ callId, conversationId, kind = "", at = Date.now() }) {
-  const n = db.prepare("SELECT COALESCE(MAX(turn_index), 0) + 1 AS n FROM call_turns WHERE call_id = ?").get(callId).n;
-  const id = db.prepare("INSERT INTO call_turns (call_id, conversation_id, turn_index, kind, started_at) VALUES (?, ?, ?, ?, ?)")
-    .run(callId, conversationId, n, kind, at).lastInsertRowid;
-  return Number(id);
-}
-
-/** How the turn went, written once its stream has ended however it ended. */
-export function finishCallTurn(id, f = {}) {
+/**
+ * One turn, written after its stream ended. A retry of the same turn (same call, same message count)
+ * replaces the earlier attempt's numbers — unless it started before them, which is the earlier
+ * attempt finishing late — keeps its place in the order, and counts the attempt.
+ */
+export function recordCallTurn({ callId, conversationId, msgCount, kind = "", startedAt, ...f }) {
   const int = (v) => (Number.isFinite(v) ? Math.round(v) : null);
-  db.prepare(`UPDATE call_turns SET first_content_ms = ?, first_content_kind = ?, first_real_ms = ?, total_ms = ?,
-    holding_line = ?, tools = ?, closed_early = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?,
-    cache_write_tokens = ? WHERE id = ?`).run(
+  db.prepare(`INSERT INTO call_turns (call_id, conversation_id, msg_count, turn_index, kind, started_at,
+      first_content_ms, first_content_kind, first_real_ms, total_ms, holding_line, tools, closed_early,
+      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+    VALUES (?, ?, ?, (SELECT COALESCE(MAX(turn_index), 0) + 1 FROM call_turns WHERE call_id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (call_id, msg_count) DO UPDATE SET
+      attempts = attempts + 1,
+      kind = CASE WHEN excluded.started_at >= started_at THEN excluded.kind ELSE kind END,
+      first_content_ms = CASE WHEN excluded.started_at >= started_at THEN excluded.first_content_ms ELSE first_content_ms END,
+      first_content_kind = CASE WHEN excluded.started_at >= started_at THEN excluded.first_content_kind ELSE first_content_kind END,
+      first_real_ms = CASE WHEN excluded.started_at >= started_at THEN excluded.first_real_ms ELSE first_real_ms END,
+      total_ms = CASE WHEN excluded.started_at >= started_at THEN excluded.total_ms ELSE total_ms END,
+      holding_line = CASE WHEN excluded.started_at >= started_at THEN excluded.holding_line ELSE holding_line END,
+      tools = CASE WHEN excluded.started_at >= started_at THEN excluded.tools ELSE tools END,
+      closed_early = CASE WHEN excluded.started_at >= started_at THEN excluded.closed_early ELSE closed_early END,
+      input_tokens = CASE WHEN excluded.started_at >= started_at THEN excluded.input_tokens ELSE input_tokens END,
+      output_tokens = CASE WHEN excluded.started_at >= started_at THEN excluded.output_tokens ELSE output_tokens END,
+      cache_read_tokens = CASE WHEN excluded.started_at >= started_at THEN excluded.cache_read_tokens ELSE cache_read_tokens END,
+      cache_write_tokens = CASE WHEN excluded.started_at >= started_at THEN excluded.cache_write_tokens ELSE cache_write_tokens END,
+      started_at = MAX(started_at, excluded.started_at)`).run(
+    callId, conversationId, int(msgCount) ?? 0, callId, kind, int(startedAt) ?? Date.now(),
     int(f.firstContentMs), f.firstContentKind ?? null, int(f.firstRealMs), int(f.totalMs),
     f.holdingLine ? 1 : 0, JSON.stringify([...(f.tools ?? [])]), f.closedEarly ? 1 : 0,
     int(f.usage?.input_tokens), int(f.usage?.output_tokens),
-    int(f.usage?.cache_read_input_tokens), int(f.usage?.cache_creation_input_tokens), id,
+    int(f.usage?.cache_read_input_tokens), int(f.usage?.cache_creation_input_tokens),
   );
 }
 

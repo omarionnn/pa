@@ -229,7 +229,11 @@ const COME_BACK_CHECK = "Sorry — let me check on that and come back to you.";
 const COME_BACK_LOOK = "Sorry — let me look into that and come back to you.";
 const BROKE_MID = "Sorry, something broke on my end there.";
 const BROKE_FIRST = "Sorry — something broke on my end. Say that again?";
-/** What the turn meter counts as not-yet-real content. Exported for the tests. */
+/**
+ * What the turn meter counts as not-yet-real content. Exported for the tests. The fillers are matched
+ * exactly, trailing space and all: the code's "... " is filler, while a model piece of just "..." has
+ * been trimmed by the splitter and is the model's own dead air (kind "dots"), not filler.
+ */
 export const METER_KINDS = {
   holdingLine: HOLDING_LINE,
   fillers: [THINKING_FILLER, `One sec${THINKING_FILLER}`],
@@ -2227,13 +2231,12 @@ export async function llmRequest({
   const settle = () => { if (inFlight.get(key) === control) inFlight.delete(key); };
 
   const gen = generate ?? generatorFor();
-  // One call_turns row per request: what the caller waited through on this turn. Started now so a turn
-  // that never finishes is still on the record; finished when the stream ends, however it ends. A
-  // database fault here never costs the turn — it is only the record of it that goes missing.
+  // One call_turns row per turn: what the caller waited through. Timed in memory from t0 and written
+  // once the stream has ended, however it ended, so nothing touches the database before the first
+  // byte. A retry of the same turn (same message count) replaces the row. A database fault here never
+  // costs the turn — only the record of it goes missing.
   const meter = callMetrics.newMeter();
-  let turnRow = null;
-  try { turnRow = db.startCallTurn({ callId: call.id, conversationId: call.conversation_id, kind, at: t0 }); }
-  catch (e) { log({ call_turn_row_failed: call.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
+  const msgCount = Array.isArray(body.messages) ? body.messages.length : 0;
   const turn = voiceTurn({
     context, call, generate: gen, model: String(body.model ?? "reason"), log, extras,
     signal: control.signal, toolBudgetMs, firstWordDeadlineMs, meter,
@@ -2243,14 +2246,15 @@ export async function llmRequest({
     status: 200,
     headers: SSEH,
     stream: callMetrics.metered(finishing(turn, settle), {
-      t0, meter, kinds: METER_KINDS,
+      t0, meter,
+      // The disclosure is the code's words, read off the row, not the model's: never "real content".
+      kinds: { ...METER_KINDS, openings: [String(call.announcement ?? "")].filter(s => s.trim()) },
       aborted: () => control.signal.aborted,
       onEnd: (m) => {
-        if (turnRow == null) return;
-        try { db.finishCallTurn(turnRow, m); }
+        try { db.recordCallTurn({ callId: call.id, conversationId: call.conversation_id, msgCount, kind, startedAt: t0, ...m }); }
         catch (e) { log({ call_turn_row_failed: call.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
         log({
-          call_turn_heard: call.id, turn: turnRow, first_content_ms: m.firstContentMs, first_kind: m.firstContentKind,
+          call_turn_heard: call.id, messages: msgCount, first_content_ms: m.firstContentMs, first_kind: m.firstContentKind,
           first_real_ms: m.firstRealMs, total_ms: m.totalMs, closed_early: m.closedEarly,
         });
       },

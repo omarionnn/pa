@@ -9,18 +9,25 @@
  * The normalised reasons a call ended. One of these goes in `calls.end_reason`; the platform's own
  * words go in `calls.end_detail` beside it, so a mapping that turns out wrong can be redone.
  *
- *   caller_hung_up    the person on an inbound call hung up
- *   remote_hung_up    the person Reason rang hung up (outbound)
+ *   caller_hung_up    the caller hung up — only from a platform that says which side did; ElevenLabs
+ *                     does not ("Call ended by remote party" either way), so it is never set from it
+ *   remote_hung_up    the line was hung up from the far end ("Call ended by remote party")
  *   end_call          Reason hung up itself, through the end_call tool
  *   voicemail         it reached a voicemail or answering machine
- *   platform_error    the platform ended it on an error (custom_llm_error, a websocket error code…)
+ *   platform_error    `metadata.error` was present, or "custom_llm generation failed" (code and reason
+ *                     in end_detail)
  *   duration_cap      the platform's maximum call length ran out
- *   lost              nothing ever said how it ended; the lost-calls sweep closed it
+ *   lost              nothing ever said how it ended; the lost-calls sweep closed it (replaced if a
+ *                     post-call delivery arrives later)
  *   transfer          it was transferred to another number
+ *   no_answer         nobody picked up, or the line was busy (end_detail says which)
+ *   inactivity        the platform's silence/inactivity timeout ended it
  */
 export const END_REASONS = [
   "caller_hung_up", "remote_hung_up", "end_call", "voicemail",
   "platform_error", "duration_cap", "lost", "transfer",
+  // Not errors and not hang-ups: see endReasonOf.
+  "no_answer", "inactivity",
 ];
 
 /** The platform's termination words, from any of the places a payload has carried them. */
@@ -29,63 +36,66 @@ export function terminationOf(body) {
   return typeof t === "string" ? t.trim() : String(t ?? "").trim();
 }
 
+/** Their words when the custom LLM failed the call (calls 13 and 22, 2026-10-30). */
+const LLM_FAILED = /custom_llm generation failed/i;
+
 /**
- * An error the platform attached, as `{ code, message }`, or null.
+ * An error the platform attached, as `{ code, type, message }`, or null.
  *
- * Read from `metadata.error` (object or string) and from the termination words. Which of these the
- * platform really fills on a failed call has NOT been seen on a real payload; the audit only knows
- * the dashboard showed "custom_llm_error: LLM Cascade Error: TimeoutError" and a 1002.
+ * Only two things are an error: a present `metadata.error` — `{ code: 1002, error_type: "llm_error",
+ * reason: "custom_llm_error: ..." }` on calls 13 and 22, null on a normal call — or the termination
+ * words "custom_llm generation failed". A timeout for silence, no answer or a busy line is how a call
+ * ends, not a platform fault, and is mapped on its own in `endReasonOf`.
  */
 export function platformErrorOf(body, termination = terminationOf(body)) {
-  const e = body?.metadata?.error ?? body?.error ?? null;
-  let code = null;
-  let message = "";
+  const e = body?.metadata?.error ?? null;
   if (e && typeof e === "object") {
-    code = e.code ?? e.error_code ?? null;
-    message = String(e.reason ?? e.message ?? e.detail ?? "").trim();
-  } else if (typeof e === "string" && e.trim()) {
-    message = e.trim();
+    const code = e.code ?? null;
+    return {
+      code: code == null ? null : (Number.isFinite(Number(code)) ? Number(code) : String(code)),
+      type: String(e.error_type ?? "").trim(),
+      message: String(e.reason ?? e.message ?? "").trim(),
+    };
   }
-  const text = `${message} ${termination}`;
-  if (code == null) {
-    const m = /\b(1\d{3}|4\d{3})\b/.exec(text);
-    if (m) code = Number(m[1]);
-  }
-  const errorish = /error|exception|failed|failure|timeout|timed out|custom_llm/i.test(text);
-  // A websocket close code of 1000 is a normal close, not an error.
-  const badCode = code != null && Number(code) !== 1000;
-  if (!errorish && !badCode) return null;
-  return { code: code == null ? null : (Number.isFinite(Number(code)) ? Number(code) : String(code)), message: message || termination };
+  if (typeof e === "string" && e.trim()) return { code: null, type: "", message: e.trim() };
+  if (LLM_FAILED.test(termination)) return { code: null, type: "", message: "" };
+  return null;
 }
 
 /**
  * Why one call ended, normalised.
  *
  * `live` is what the provider read off the conversation (`readConversation`, plus `termination` and
- * `error`); `row` is our own call row, which knows things the platform does not — that a voicemail
- * was left, which direction the call went — and `turns` is its call_turns rows, whose tool names say
- * whether Reason itself asked to hang up. Returns `{ reason, detail }`; `reason` is null when nothing
- * says why, rather than a guess.
+ * `error`); `row` is our own call row, which knows a voicemail was left; `turns` is its call_turns
+ * rows, whose tool names say whether Reason itself asked to hang up. Returns `{ reason, detail }`;
+ * `reason` is null when nothing says why, rather than a guess — the raw words stay in `detail`.
+ *
+ * Beyond the eight in END_REASONS, two more endings are their own values rather than being filed as
+ * errors: `no_answer` (nobody picked up, or the line was busy — the detail says which) and
+ * `inactivity` (the platform's silence/inactivity timeout).
  */
 export function endReasonOf({ live = {}, row = {}, turns = [] } = {}) {
   const why = String(live.termination ?? "").trim();
   const err = live.error ?? null;
   const detail = [
     why,
-    err ? `error${err.code != null ? ` ${err.code}` : ""}${err.message && err.message !== why ? `: ${err.message}` : ""}` : "",
+    err && (err.code != null || err.type || err.message)
+      ? `error${err.code != null ? ` ${err.code}` : ""}${err.type ? ` ${err.type}` : ""}${err.message && err.message !== why ? `: ${err.message}` : ""}`
+      : "",
   ].filter(Boolean).join(" | ");
   const say = (reason) => ({ reason, detail });
 
   if (live.state === "voicemail" || Number(row.voicemail_left) === 1 || /voicemail|answering[\s_-]?machine/i.test(why)) return say("voicemail");
+  if (err || LLM_FAILED.test(why)) return say("platform_error");
   if (/transfer/i.test(why)) return say("transfer");
-  if (/end_call|agent ended|ended by (the )?agent/i.test(why)) return say("end_call");
-  if (/max(imum)?[\s_-]*(call[\s_-]*)?duration|duration[\s_-]*(limit|exceeded|cap)|time[\s_-]*limit/i.test(why)) return say("duration_cap");
-  if (err || live.state === "failed") {
-    if (err || why) return say("platform_error");
-  }
-  if (/remote party|hung[\s_-]?up|hang[\s_-]?up|hangup|disconnect|user ended|caller|client/i.test(why)) {
-    return say(row.direction === "in" ? "caller_hung_up" : "remote_hung_up");
-  }
+  if (/end_call/i.test(why)) return say("end_call");
+  if (/max(imum)?[\s_-]*(call[\s_-]*)?duration|duration[\s_-]*(limit|exceeded|cap)/i.test(why)) return say("duration_cap");
+  if (["no_answer", "busy"].includes(live.state) || /no[\s_-]?answer|not[\s_-]?answered|unanswered|busy/i.test(why)) return say("no_answer");
+  if (/inactiv|silence|silent|timeout|timed[\s_-]?out/i.test(why)) return say("inactivity");
+  // "Call ended by remote party" is their word for a hang-up on an outbound OR an inbound call (seen
+  // on 32 and 20): it does not say which side, so neither does this. `caller_hung_up` stays in
+  // END_REASONS for a platform that does say; ElevenLabs never produces it.
+  if (/remote party|hung[\s_-]?up|hang[\s_-]?up|hangup|disconnect/i.test(why)) return say("remote_hung_up");
   // Nothing in their words, but our own turns asked to hang up as the last thing they did.
   const last = turns.length ? turns[turns.length - 1] : null;
   const lastTools = Array.isArray(last?.tools) ? last.tools : [];
@@ -95,23 +105,40 @@ export function endReasonOf({ live = {}, row = {}, turns = [] } = {}) {
 }
 
 /**
+ * A finished call's end reason and platform cost as call-row fields. Shared by the settle path, the
+ * late-details path and a post-call delivery that arrives after the sweep wrote the call off.
+ */
+export function endFieldsFor(row, live, turns = []) {
+  const end = endReasonOf({ live, row, turns });
+  return {
+    end_reason: end.reason, end_detail: end.detail,
+    cost_credits: Number.isFinite(live.costCredits) ? live.costCredits : null,
+    cost_raw: typeof live.costRaw === "string" ? live.costRaw : "",
+  };
+}
+
+/**
  * What the platform reported the call cost, as it reported it.
  *
- * `metadata.cost` is the one field the code already knew (credits, per `costCentsOf`). Every other
- * key in `metadata` whose name looks cost- or usage-shaped (`charging`, `llm_usage`, …) is kept raw,
- * because none of them has been seen on a real payload and reading them would be guessing.
+ * Confirmed on real conversations 2026-10-30: `metadata.cost` is credits (= `charging.call_charge`),
+ * `metadata.cost_fiat` is USD (= `charging.platform_price`, which `costCentsOf` turns into cents), and
+ * `charging` carries the tier and the TTS/ASR usage. Only those few numbers are kept in `cost_raw` —
+ * the LLM price there is 0 because Reason is the custom LLM, and nothing else in the payload is cost.
  */
 export function platformCostOf(body) {
   const md = body?.metadata && typeof body.metadata === "object" ? body.metadata : {};
   const n = Number(md.cost);
   const credits = md.cost == null || md.cost === "" || !Number.isFinite(n) ? null : n;
-  const raw = {};
-  for (const [k, v] of Object.entries(md)) {
-    if (/cost|charg|usage|billing|credit|price/i.test(k) && v != null) raw[k] = v;
-  }
-  for (const k of ["cost", "charging", "llm_usage"]) {
-    if (body?.[k] != null && raw[k] === undefined) raw[`top.${k}`] = body[k];
-  }
+  const ch = md.charging && typeof md.charging === "object" ? md.charging : {};
+  const picked = {
+    cost: md.cost,
+    cost_fiat: md.cost_fiat,
+    tier: ch.tier,
+    tts_audio_output_seconds: ch.tts_usage?.total_audio_output_seconds,
+    tts_characters: ch.tts_usage?.total_characters,
+    asr_audio_input_seconds: ch.asr_usage?.total_audio_input_seconds,
+  };
+  const raw = Object.fromEntries(Object.entries(picked).filter(([, v]) => v !== undefined && v !== null));
   return { credits, raw: Object.keys(raw).length ? JSON.stringify(raw) : "" };
 }
 
@@ -122,12 +149,18 @@ export function platformCostOf(body) {
  * streams, so this does not drift from them: the holding line, a "one sec…" filler, a canned fallback
  * ("something broke", "let me come back to you") or — anything else — the model's own words.
  */
-export function contentKind(content, { holdingLine, fillers = [], fallbacks = [] } = {}) {
-  const s = String(content ?? "").trim();
+export function contentKind(content, { holdingLine, fillers = [], fallbacks = [], openings = [] } = {}) {
+  const exact = String(content ?? "");
+  const s = exact.trim();
   if (!s) return null;
   if (holdingLine && s === String(holdingLine).trim()) return "holding_line";
-  if (fillers.some(f => s === String(f).trim())) return "filler";
+  // Exact, not trimmed: the code's filler carries its trailing space; a model's own "..." does not.
+  if (fillers.some(f => exact === String(f) || exact === ` ${f}`)) return "filler";
   if (fallbacks.some(f => s === String(f).trim())) return "fallback";
+  // The disclosure on a third-party call, said by code before anything else.
+  if (openings.some(f => s === String(f).trim())) return "opening";
+  // Nothing but dots from the model: dead air on the line, not words.
+  if (/^[.\s…]+$/.test(s)) return "dots";
   return "real";
 }
 

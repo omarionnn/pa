@@ -476,8 +476,10 @@ export class ElevenLabsCallProvider extends CallProvider {
           state: "failed",
           outcome: `the call never started: ${String(data?.reason ?? data?.error ?? "ElevenLabs did not say why")}`,
           summary: "", transcript: "", durationS: null, costCents: null,
-          termination: "call_initiation_failure",
-          error: { code: null, message: String(data?.reason ?? data?.error ?? "ElevenLabs did not say why") },
+          // Not a platform error by itself (only `metadata.error` or a failed custom LLM is): a call that
+          // never started may simply have been busy or unanswered, which `endReasonOf` reads off the words.
+          termination: `call_initiation_failure: ${String(data?.reason ?? data?.error ?? "ElevenLabs did not say why")}`,
+          error: null,
           recording: null,
           // Nobody's phone was ever answered, so there was nothing to record. Not an audio fault.
           recordingWhy: "",
@@ -599,21 +601,23 @@ function durationOf(body) {
 /**
  * What the call cost, in whole cents — or null, which is not the same as nothing.
  *
- * Their `metadata.cost` is in credits, not dollars, and what a credit costs depends on the plan. So
- * the honest answer is almost always null: Reason does not know, and writing a credit count into a
- * cents column would put a number on the owner's receipt that means nothing. Only an explicit
- * dollar figure, if a payload ever carries one, is turned into cents.
+ * Their `metadata.cost` is in credits (it equals `charging.call_charge`), never money. The dollar
+ * figure is `metadata.cost_fiat` (equal to `charging.platform_price`), confirmed on real conversations
+ * 2026-10-30: call 32 = 1.193, 35 = 0.901, 13 = 0.0150. This used to read `metadata.cost_usd`, a
+ * field that does not exist, which is why the cost was NULL on every ElevenLabs row.
  *
  * Bland's lesson is still applied to that figure: a call that ran is never billed nothing, so a zero
  * against a real length reads as "not priced yet" rather than as free.
  */
 function costCentsOf(body) {
-  const raw = body?.metadata?.cost_usd ?? body?.cost_usd ?? null;
+  const raw = body?.metadata?.cost_fiat ?? null;
   if (raw === null || raw === undefined || raw === "") return null;
   const price = Number(raw);
   if (!Number.isFinite(price) || price < 0) return null;
   if (price === 0) return (durationOf(body) ?? 0) > 0 ? null : 0;
-  return Math.max(1, Math.round(price * 100));
+  // Rounded on the decimal string, not the float: 1.193 → 119, and 0.015 → 2 rather than whatever
+  // 0.015 * 100 happens to be in binary.
+  return Math.max(1, Math.round(Number((price * 100).toFixed(6))));
 }
 
 /** Their summary of the call, when the agent is configured to produce one. */

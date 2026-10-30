@@ -32,6 +32,7 @@ const { postCallRequest } = await import("../src/calls/postcall.js");
 const { settleCall, settleLostCalls, callLostAfterMs } = await import("../src/tools.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
+const { announcementFor } = await import("../src/calls/provider.js");
 
 const C = config.ownerConversation;
 
@@ -50,9 +51,9 @@ const ownerCall = (over = {}) => db.createCall(C, {
   goal: "Omari called Reason", facts: [], direction: "in", externalId: over.externalId ?? "conv_in", state: "in_progress",
 });
 
-const bodyFor = (call) => JSON.stringify({
+const bodyFor = (call, messages = [{ role: "user", content: "hey" }]) => JSON.stringify({
   model: "reason", stream: true,
-  messages: [{ role: "system", content: "dashboard prompt" }, { role: "user", content: "hey" }],
+  messages: [{ role: "system", content: "dashboard prompt" }, ...messages],
   elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: call.conversation_id },
 });
 const AUTH = { authorization: "Bearer llm-test-secret" };
@@ -76,8 +77,10 @@ const turnsOf = (callId) => db.db.prepare("SELECT * FROM call_turns WHERE call_i
 test("every turn on a call writes a row with its heard latencies, tool names and token use", async () => {
   const call = ownerCall();
   for (let i = 0; i < 2; i++) {
+    // Two real turns: the second carries the first one's exchange, so it has more messages.
+    const history = i === 0 ? undefined : [{ role: "user", content: "hey" }, { role: "assistant", content: "Sure." }, { role: "user", content: "and?" }];
     const out = await voice.llmRequest({
-      rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 5_000,
+      rawBody: bodyFor(call, history), headers: AUTH, firstWordDeadlineMs: 5_000,
       screen: async () => ({ verdict: "safe" }),
       generate: after_(60, "Sure, it's done.", { tool: "end_call", input: { reason: "done" } }),
     });
@@ -136,7 +139,7 @@ test("a turn the platform stops reading is marked closed early", async () => {
 // ---------- why each call ended, and what it cost ----------
 
 const provider = () => new ElevenLabsCallProvider();
-const sign = (raw, t = Math.floor(Date.now() / 1000)) =>
+const sign = (raw, t = Math.floor(clock.now() / 1000)) =>
   `t=${t},v0=${createHmac("sha256", "hook-test-secret").update(`${t}.${raw}`).digest("hex")}`;
 const deliver = async (data) => {
   const raw = JSON.stringify({ type: "post_call_transcription", data });
@@ -146,11 +149,18 @@ const deliver = async (data) => {
     fetchImpl: async () => ({ ok: false, status: 404, headers: { get: () => null }, arrayBuffer: async () => Buffer.alloc(0), json: async () => ({}) }),
   });
 };
+// The shape of a real ElevenLabs conversation (read-only GETs on calls 13, 20, 22, 32 and 35,
+// 2026-10-30): numbers and field names only, no transcript. cost_fiat is call 32's real 1.193; the
+// usage numbers inside `charging` are illustrative.
+const charging = (fiat, credits) => ({
+  tier: "creator", call_charge: credits, platform_price: fiat, llm_price: 0,
+  tts_usage: { total_audio_output_seconds: 312.4, total_characters: 4810 },
+  asr_usage: { total_audio_input_seconds: 540.2 },
+});
 const conversation = (over = {}) => ({
-  conversation_id: "conv_in", status: "done",
-  transcript: [{ role: "agent", message: "hey" }, { role: "user", message: "hi, bye" }],
+  conversation_id: "conv_in", status: "done", transcript: [],
   ...over,
-  metadata: { call_duration_secs: 9, ...(over.metadata ?? {}) },
+  metadata: { call_duration_secs: 9, termination_reason: "end_call tool was called.", error: null, ...(over.metadata ?? {}) },
 });
 
 test("the post-call termination reason becomes a normalised end_reason, raw words kept beside it", async () => {
@@ -160,32 +170,50 @@ test("the post-call termination reason becomes a normalised end_reason, raw word
   assert.equal(row.end_reason, "end_call");
   assert.equal(row.end_detail, "end_call tool was called.");
 
+  // Calls 20 and 32: the platform does not say which side hung up, so neither does the row — an
+  // inbound call is not turned into "the caller hung up".
   const hungUp = ownerCall({ externalId: "conv_in2" });
   await deliver(conversation({ conversation_id: "conv_in2", metadata: { termination_reason: "Call ended by remote party" } }));
-  assert.equal(db.getCall(C, hungUp.id).end_reason, "caller_hung_up", "an inbound call's other end is the caller");
+  assert.equal(db.getCall(C, hungUp.id).end_reason, "remote_hung_up");
 });
 
-test("a custom_llm_error / 1002 ending is a platform error with its code and message", async () => {
+test("a 1002 custom_llm_error ending (calls 13, 22) is a platform error with its code and reason", async () => {
   const call = ownerCall();
   await deliver(conversation({
     status: "failed",
-    metadata: { termination_reason: "custom_llm_error: LLM Cascade Error: TimeoutError (1002)" },
+    metadata: {
+      termination_reason: "custom_llm generation failed",
+      error: { code: 1002, error_type: "llm_error", reason: "custom_llm_error: LLM Cascade Error: TimeoutError" },
+      cost: 15, cost_fiat: 0.0150, charging: charging(0.0150, 15),
+    },
   }));
   const row = db.getCall(C, call.id);
+  assert.equal(row.state, "failed");
   assert.equal(row.end_reason, "platform_error");
-  assert.match(row.end_detail, /custom_llm_error/);
-  assert.match(row.end_detail, /error 1002/);
+  assert.match(row.end_detail, /custom_llm generation failed/);
+  assert.match(row.end_detail, /error 1002 llm_error: custom_llm_error: LLM Cascade Error/);
 });
 
-test("the platform's cost is stored from the payload: credits, and every cost-like field raw", async () => {
+test("the platform's cost is stored from the real payload shape: cents from cost_fiat, credits, minimal raw", async () => {
   const call = ownerCall();
-  await deliver(conversation({ metadata: { termination_reason: "end_call tool was called.", cost: 350, charging: { llm_price: 0.01 } } }));
+  await deliver(conversation({
+    metadata: { call_duration_secs: 902, termination_reason: "Call ended by remote party", cost: 5964, cost_fiat: 1.193, charging: charging(1.193, 5964) },
+  }));
   const row = db.getCall(C, call.id);
-  assert.equal(row.cost_credits, 350);
-  assert.equal(row.cost_cents, null, "credits are never written as money");
-  const raw = JSON.parse(row.cost_raw);
-  assert.equal(raw.cost, 350);
-  assert.deepEqual(raw.charging, { llm_price: 0.01 });
+  assert.equal(row.cost_cents, 119, "$1.193 is 119 cents");
+  assert.equal(row.cost_credits, 5964);
+  assert.deepEqual(JSON.parse(row.cost_raw), {
+    cost: 5964, cost_fiat: 1.193, tier: "creator",
+    tts_audio_output_seconds: 312.4, tts_characters: 4810, asr_audio_input_seconds: 540.2,
+  });
+
+  // Call 35's figure, and call 13's tiny one: rounded on the decimal, never to nothing.
+  const b = ownerCall({ externalId: "conv_b" });
+  await deliver(conversation({ conversation_id: "conv_b", metadata: { cost: 4500, cost_fiat: 0.901, charging: charging(0.901, 4500) } }));
+  assert.equal(db.getCall(C, b.id).cost_cents, 90);
+  const c = ownerCall({ externalId: "conv_c" });
+  await deliver(conversation({ conversation_id: "conv_c", status: "failed", metadata: { cost: 15, cost_fiat: 0.0150, charging: charging(0.0150, 15) } }));
+  assert.equal(db.getCall(C, c.id).cost_cents, 2);
 });
 
 test("a call the sweep closes, nobody having said how it ended, is lost", async () => {
@@ -209,13 +237,14 @@ test("the report prints per-call and total numbers from the database, and no wor
     generate: after_(300, "Here it is."),
   });
   await drain(out.stream);
-  await deliver(conversation({ metadata: { termination_reason: "end_call tool was called.", cost: 120 } }));
+  await deliver(conversation({ metadata: { termination_reason: "end_call tool was called.", cost: 600, cost_fiat: 0.12, charging: charging(0.12, 600) } }));
 
   const report = buildCallReport(db.db);
   const r = report.calls.find(c => c.id === call.id);
   assert.equal(r.duration_s, 9);
   assert.equal(r.end_reason, "end_call");
-  assert.equal(r.cost_credits, 120);
+  assert.equal(r.cost_credits, 600);
+  assert.equal(r.cost_cents, 12);
   assert.equal(r.holding_lines, 1);
   assert.ok(Number.isFinite(r.heard_p50_ms) && Number.isFinite(r.heard_p95_ms));
   assert.equal(report.totals.calls, 1);
@@ -223,5 +252,98 @@ test("the report prints per-call and total numbers from the database, and no wor
   assert.equal(report.totals.end_reasons.end_call, 1);
   const text = formatCallReport(report);
   assert.match(text, /end_call/);
-  assert.doesNotMatch(text, /Here it is|hi, bye|Omari called Reason/, "no message content");
+  assert.doesNotMatch(text, /Here it is|Omari called Reason/, "no message content");
+});
+
+// ---------- review fixes ----------
+
+test("a retried turn (same call, same messages) replaces its row instead of adding one", async () => {
+  const call = ownerCall();
+  const first = await voice.llmRequest({
+    rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 5_000,
+    screen: async () => ({ verdict: "safe" }),
+    generate: after_(400, "Too late."),
+  });
+  const it = first.stream[Symbol.asyncIterator]();
+  const reading = (async () => { for (let s = await it.next(); !s.done; s = await it.next()) { /* until it is replaced */ } })();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  // The platform gave up on it and asks the same turn again: the earlier one is aborted.
+  const retry = await voice.llmRequest({
+    rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 5_000,
+    screen: async () => ({ verdict: "safe" }),
+    generate: after_(30, "Here."),
+  });
+  await drain(retry.stream);
+  await reading;
+  const rows = turnsOf(call.id);
+  assert.equal(rows.length, 1, "one turn, not two");
+  assert.equal(rows[0].attempts, 2);
+  assert.equal(rows[0].closed_early, 0, "the retry's numbers, which finished");
+  assert.equal(rows[0].first_content_kind, "real");
+});
+
+test("nothing is written to the database before the first byte of a turn", async () => {
+  const call = ownerCall();
+  const out = await voice.llmRequest({
+    rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 5_000,
+    screen: async () => ({ verdict: "safe" }),
+    generate: after_(10, "Hi."),
+  });
+  assert.equal(turnsOf(call.id).length, 0, "no row until the stream has ended");
+  await drain(out.stream);
+  assert.equal(turnsOf(call.id).length, 1);
+});
+
+test("the disclosure on a third-party call is not counted as real content", async () => {
+  const ANN = announcementFor({ ownerName: "Omari" });
+  const row = db.createCall(C, {
+    provider: "elevenlabs", toNumber: "+12125559999", isOwner: false,
+    goal: "ask for a table for four at eight on Saturday", facts: ["the name is Omari"],
+    announcement: ANN, externalId: "conv_out", state: "in_progress",
+  });
+  db.updateCall(C, row.id, { opening_waits: 1 });
+  const call = db.getCall(C, row.id);
+  const out = await voice.llmRequest({
+    rawBody: bodyFor(call, [{ role: "user", content: "Hello, Luigi's?" }]), headers: AUTH, firstWordDeadlineMs: 5_000,
+    generate: after_(30, "Hi, I'd like a table for four."),
+  });
+  await drain(out.stream);
+  const [r] = turnsOf(call.id);
+  assert.equal(r.first_content_kind, "opening");
+  assert.ok(Number.isFinite(r.first_real_ms), "the model's words after it are the real content");
+});
+
+test("a model piece of just '...' is not the code's filler", async () => {
+  const { contentKind } = await import("../src/calls/metrics.js");
+  assert.equal(contentKind("...", voice.METER_KINDS), "dots");
+  assert.equal(contentKind(" ...", voice.METER_KINDS), "dots");
+  assert.equal(contentKind("... ", voice.METER_KINDS), "filler", "the code's own filler, trailing space and all");
+  assert.equal(contentKind("One sec... ", voice.METER_KINDS), "filler");
+});
+
+test("a late post-call delivery replaces the sweep's 'lost' with the real reason", async () => {
+  const call = ownerCall();
+  clock.skip(callLostAfterMs("in_progress") + 60_000);
+  await settleLostCalls({ calls: null });
+  assert.equal(db.getCall(C, call.id).end_reason, "lost");
+  await deliver(conversation({ metadata: { termination_reason: "Call ended by remote party", cost: 5964, cost_fiat: 1.193, charging: charging(1.193, 5964) } }));
+  const row = db.getCall(C, call.id);
+  assert.equal(row.end_reason, "remote_hung_up");
+  assert.equal(row.cost_cents, 119);
+  assert.equal(row.state, "failed", "nothing else is settled twice");
+});
+
+test("timeouts, no answer and busy are their own endings, not platform errors", async () => {
+  const cases = [
+    [{ termination_reason: "Conversation ended due to inactivity timeout" }, "done", "inactivity"],
+    [{ termination_reason: "no_answer" }, "done", "no_answer"],
+    [{ termination_reason: "busy" }, "done", "no_answer"],
+  ];
+  let n = 0;
+  for (const [metadata, status, want] of cases) {
+    const id = `conv_t${n++}`;
+    const call = ownerCall({ externalId: id });
+    await deliver(conversation({ conversation_id: id, status, metadata }));
+    assert.equal(db.getCall(C, call.id).end_reason, want, metadata.termination_reason);
+  }
 });
