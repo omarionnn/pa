@@ -43,6 +43,7 @@ beforeEach(() => {
   process.env.REASON_WEB_DAILY = "owner";
   process.env.REASON_STAMPS_WAX = "on";
   process.env.REASON_STAMPS_EVERYDAY = "on";
+  delete process.env.REASON_STAMPS_TIERS;
   told.length = 0;
   stamps.installStamps({ tell: (c, line) => told.push(line), delayMs: 0 });
   db.db.exec(`DELETE FROM accounts; DELETE FROM threads; DELETE FROM stamps; DELETE FROM stamp_jobs; DELETE FROM stamp_step_times;
@@ -56,7 +57,8 @@ beforeEach(() => {
 });
 
 const setNow = (t) => { clock.reset(); clock.skip(t - Date.now()); };
-const seals = (type) => db.db.prepare("SELECT * FROM stamps WHERE conversation_id = ? AND type = ? ORDER BY earned_at").all(OWNER_C, type);
+// The rows this (untiered) book draws: research is also stored per question, for REASON_STAMPS_TIERS.
+const seals = (type) => db.db.prepare("SELECT * FROM stamps WHERE conversation_id = ? AND type = ? AND ref NOT LIKE 'research:q:%' ORDER BY earned_at").all(OWNER_C, type);
 
 function endCall(kind, { at = T0, isOwner = 0, holdS = 0, presses = null } = {}) {
   setNow(at);

@@ -43,10 +43,11 @@ const CSS = `${DAILY_HEAD_CSS}
 .sp-f{display:flex;align-items:center;gap:2px}
 .sp-d{font:400 11px/1 var(--mono);letter-spacing:.1em;color:#78705f}
 .sp-d.new{color:#9c3b2e}
+.sp-c{font-size:13px;line-height:1.3;color:#78705f;text-align:center;margin-top:-2px}
 .sh-b{width:44px;height:44px;border:0;background:transparent;color:#2a2520;display:grid;place-items:center;cursor:pointer;border-radius:3px;text-decoration:none}
 .sh-b:focus-visible{outline-color:#2a2520}
 .sp-h{font-size:14px;line-height:1.4;color:#5e564a;text-align:center;max-width:160px;min-height:44px;display:flex;align-items:center;justify-content:center}
-@media (max-width:480px){.sheet{padding:20px 14px}.sheet ul,.sheet ul.none{grid-template-columns:repeat(2,minmax(0,1fr));gap:22px 8px}.sheet ul.none{padding:16px 0}.sheet li{min-width:0}.sheet li>div,.sheet li>.seal{width:100%;max-width:150px}.sheet li .seal{width:100%;height:auto}.sp-n{font-size:16px}.sp-f{margin-top:auto}.sp-h{font-size:13px;max-width:100%}}
+@media (max-width:480px){.sheet{padding:20px 14px}.sheet ul,.sheet ul.none{grid-template-columns:repeat(2,minmax(0,1fr));gap:22px 8px}.sheet ul.none{padding:16px 0}.sheet li{min-width:0}.sheet li>div,.sheet li>.seal{width:100%;max-width:150px}.sheet li .seal{width:100%;height:auto}.sp-n{font-size:16px}.sp-c{font-size:12px}.sp-f{margin-top:auto}.sp-h{font-size:13px;max-width:100%}}
 .side{flex:1 1 340px;min-width:0;display:flex;flex-direction:column;gap:24px}
 .side h2{margin:0;font:italic 400 40px/1.1 var(--serif)}
 .side .story{margin:0;font-size:17px;line-height:1.6}
@@ -114,9 +115,13 @@ const headLine = (v) => v.count
 
 function spot(s, v) {
   const isNew = s.id === v.newestId;
-  return `<li><div style="transform:rotate(${s.rotation ?? 0}deg)">${seal({ wax: s.wax, ring: s.ring, date: s.postmarkDate, size: 160, label: s.ariaLabel })}</div>`
+  // A tiered seal (REASON_STAMPS_TIERS): its count and next goal under the name; the date is when its
+  // tier was reached, the first one on hover.
+  const first = s.count > 1 && s.firstDate ? ` title="First earned ${esc(s.firstDate)}"` : "";
+  return `<li><div style="transform:rotate(${s.rotation ?? 0}deg)">${seal({ wax: s.wax, ring: s.ring, date: s.postmarkDate, size: 160, label: s.ariaLabel, tier: s.level, mark: s.tier })}</div>`
     + `<span class="sp-n">${esc(s.name)}</span>`
-    + `<span class="sp-f"><span class="sp-d${isNew ? " new" : ""}">${esc(s.date)}${isNew ? " · NEW" : ""}</span>`
+    + (s.countLine ? `<span class="sp-c">${esc(s.countLine)}</span>` : "")
+    + `<span class="sp-f"><span class="sp-d${isNew ? " new" : ""}"${first}>${esc(s.date)}${isNew ? " · NEW" : ""}</span>`
     + `<a class="sh-b" href="/web/stamps?page=${v.page}&amp;stamp=${s.id}#share" aria-label="Share ${esc(s.name)}"${v.selected?.id === s.id ? ` aria-current="true"` : ""}>${SHARE_ICON}</a></span></li>`;
 }
 const blankSpot = (b) => `<li>${seal({ wax: "blank", ring: `NOT YET · ${b.hint.toUpperCase()} ·`, paper: SHEET, size: 160, label: `Not yet earned: ${b.hint}` })}<span class="sp-h">${esc(b.hint)}</span></li>`;

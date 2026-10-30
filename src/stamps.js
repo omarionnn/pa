@@ -23,7 +23,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
-import { dailyMode, dailyAllowedFor, waxLook, everydaySeals } from "./dailyflag.js";
+import { dailyMode, dailyAllowedFor, waxLook, everydaySeals, sealTiers } from "./dailyflag.js";
 import { WAX, words, fullDate, postmarkDate } from "./seal.js";
 import { holdSeconds } from "./calls/hold.js";
 import { isSuccess } from "./calls/outcome.js";
@@ -212,13 +212,22 @@ function weekOf(ms, tz) {
   const back = (new Date(day).getUTCDay() + 6) % 7;
   return new Date(day - back * 86_400_000).toISOString().slice(0, 10);
 }
+/** A question as it counts: case, punctuation and spacing don't make it a different one. */
+const questionKey = (q) => createHash("sha256").update(String(q ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()).digest("hex").slice(0, 16);
 /**
- * The seal finished research earns: Looked into, thoroughly — one a week (Monday on their clock), however
- * many ran, so a run of questions doesn't fill a page with the same green seal.
+ * The seal finished research earns: Looked into, thoroughly. Two rows, so either book reads right:
+ *   research:week:<Monday>        one a week (the #251 book, REASON_STAMPS_TIERS off)
+ *   research:q:<day>:<question>   one per question per day on their clock (the tiered book counts these:
+ *                                 the same question asked again that day counts once)
+ * Each book hides the other's rows (hiddenRef).
  */
 export function candidatesForResearch(r) {
   if (!everydaySeals() || !r || r.state !== "done" || !r.finished_at) return [];
-  return [{ type: "looked_into", ref: `research:week:${weekOf(r.finished_at, tzFor(r.conversation_id))}`, at: r.finished_at, taskId: r.task_id ?? null, detail: {} }];
+  const tz = tzFor(r.conversation_id), at = r.finished_at, taskId = r.task_id ?? null;
+  return [
+    { type: "looked_into", ref: `research:week:${weekOf(at, tz)}`, at, taskId, detail: {} },
+    { type: "looked_into", ref: `research:q:${dayIn(at, tz)}:${questionKey(r.question)}`, at, taskId, detail: {} },
+  ];
 }
 
 /** The stamps one placed order (or issued ticket) earns. */
@@ -263,7 +272,9 @@ let logger = () => {};
 /** The line a new stamp is mentioned with in the thread: one line, no confetti. */
 export function tellLine(types) {
   if (waxLook()) {
-    const seals = types.map(t => SEALS[t]?.name).filter(Boolean);
+    // A kind once, however many rows it came with; a tier says its count ("…, ten times now").
+    const seals = [...new Set(types.map(t => typeof t === "string" ? SEALS[t]?.name
+      : SEALS[t.type] ? `${SEALS[t.type].name}, ${W(t.count)} times now` : null).filter(Boolean))];
     if (!seals.length) return "";
     const said = seals.length === 1 ? seals[0] : `${seals.slice(0, -1).join(", ")} and ${seals.at(-1)}`;
     return `That one went into your book: ${said}.`;
@@ -274,14 +285,28 @@ export function tellLine(types) {
   return `That one earned a stamp for your book: ${list}.`;
 }
 
+/**
+ * Is this new row news for the book? A row the book hides never is. With tiers on, a kind already in the
+ * book is news only when the count reaches a tier (an everyday seal) — never for a rare seal earned again.
+ * Returns the count it brings the kind to (truthy) or 0.
+ */
+function bookNews(row) {
+  if (hiddenRef(row)) return 0;
+  if (!sealTiers()) return 1;
+  const n = ONE("SELECT COUNT(*) AS n FROM stamps WHERE conversation_id = ? AND type = ? AND id <= ? AND ref NOT LIKE 'research:week:%'", row.conversation_id, row.type, row.id).n;
+  if (n === 1) return 1;
+  return CATALOG[row.type]?.everyday && tiersFor(row.type).includes(n) ? n : 0;
+}
+
 function tellNew(conversationId, ids) {
   // Outbound: only when the flag is fully on, only for a conversation it allows, only with a server teller.
   if (!ids.length || dailyMode() !== "on" || !dailyAllowedFor(conversationId) || typeof teller !== "function") return;
   // Never in the small hours on their clock: the book shows it either way, the text simply isn't sent.
   if (hourIn(clock.now(), tzFor(conversationId)) < QUIET_UNTIL) return;
-  const rows = ids.map(id => ONE("SELECT id, type, told_at FROM stamps WHERE id = ?", id)).filter(r => r && !r.told_at);
+  const rows = ids.map(id => ONE("SELECT id, conversation_id, type, ref, told_at FROM stamps WHERE id = ?", id)).filter(r => r && !r.told_at)
+    .map(r => ({ ...r, count: bookNews(r) })).filter(r => r.count);
   if (!rows.length) return;
-  const line = tellLine(rows.map(r => r.type));
+  const line = tellLine(rows.map(r => r.count > 1 ? { type: r.type, count: r.count } : r.type));
   if (!line) return;
   const send = () => {
     try {
@@ -379,6 +404,8 @@ export function backfill(conversationId, { dryRun = false } = {}) {
     const exists = ONE("SELECT 1 AS x FROM stamps WHERE conversation_id = ? AND type = ? AND ref = ?", conversationId, c.type, c.ref);
     if (exists) continue;
     if (!dryRun && !award(conversationId, c, { source: "backfill" })) continue;
+    // Counted as the book draws them: research's other row (weekly or per question) is written, not counted.
+    if (hiddenRef(c)) continue;
     counts[c.type] = (counts[c.type] ?? 0) + 1;
   }
   return counts;
@@ -467,10 +494,67 @@ export function summarize(row) {
   };
 }
 
-/** Every stamp in this conversation's book, oldest first. */
+// ---------------------------------------------------------------- one seal per kind (REASON_STAMPS_TIERS)
+/**
+ * The counts at which an everyday seal is upgraded in place, per kind, scaled to how often the kind really
+ * happens (live 10-30: the busiest book had 66 researches in 25 days, the only call that got what it was for
+ * was one), so nobody fills a kind in a fortnight. The plain seal is tier 1; these are tiers 2, 3 and 4.
+ *   looked_into  500 / 1000 / 2000   research is the commonest thing done: ~2–3 a day at most, 500 is months
+ *   rang          25 /  100 /  250   a call that got what it was for is rare: a handful a month at most
+ */
+export const TIERS = { looked_into: [500, 1000, 2000], rang: [25, 100, 250] };
+const tiersFor = (type) => TIERS[type] ?? [];
+/** The count of the tier a count has reached for a kind: 1 (the plain seal) or one of its TIERS. */
+export const tierOf = (n, type) => tiersFor(type).reduce((t, x) => (n >= x ? x : t), 1);
+/** Which tier that is: 1 (plain) to 4 (the last), what the drawing goes by (seal.js tierArt). */
+export const levelOf = (n, type) => 1 + tiersFor(type).filter(x => n >= x).length;
+/** The next tier's count after a count for a kind, or null past the last. */
+export const nextTier = (n, type) => tiersFor(type).find(x => x > n) ?? null;
+/** A row the current book doesn't draw: research is stored both weekly and per question (candidatesForResearch). */
+export function hiddenRef(row) {
+  if (row?.type !== "looked_into") return false;
+  const ref = String(row.ref ?? "");
+  return sealTiers() ? ref.startsWith("research:week:") : ref.startsWith("research:q:");
+}
+/** "Once · next at 25", "62 times · next at 500", "2400 times": the line under a tiered seal's name. */
+export function countLine(n, type) {
+  const next = nextTier(n, type);
+  return `${n === 1 ? "Once" : `${n} times`}${next ? ` · next at ${next}` : ""}`;
+}
+
+/**
+ * The book as it is drawn: summaries (oldest first, each with `.row`) → the hidden rows dropped and, with
+ * tiers on, one seal per kind. An everyday kind keeps its first row's identity (id, tilt, share) and gains
+ * `count`, `tier`, `next`, `firstDate`; its date, postmark and place in the order are the moment its tier
+ * was reached, so an upgrade lands as the newest. A rare kind earned again shows its first one only.
+ */
+export function foldBook(items) {
+  const shown = items.filter(s => s && !hiddenRef(s.row));
+  if (!sealTiers()) return shown;
+  const by = new Map();
+  for (const s of shown) by.set(s.type, [...(by.get(s.type) ?? []), s]);
+  const out = [];
+  for (const [type, list] of by) {
+    const first = list[0];
+    if (!CATALOG[type]?.everyday || !SEALS[type]) { out.push(first); continue; }
+    const n = list.length, tier = tierOf(n, type), reached = list[tier - 1], last = list.at(-1);
+    const tz = tzFor(first.row.conversation_id), d = parse(last.row.detail_json, {});
+    out.push({
+      ...first, count: n, tier, level: levelOf(n, type), next: nextTier(n, type), countLine: countLine(n, type),
+      firstAt: first.earnedAt, firstDate: first.date,
+      earnedAt: reached.earnedAt, date: reached.date, postmarkDate: reached.postmarkDate,
+      story: n > 1 ? tierStory(type, d, n, last.earnedAt, tz) : first.story, href: last.href,
+      ariaLabel: `${first.ariaLabel}, ${n === 1 ? "once" : `${W(n)} times`}`,
+    });
+  }
+  return out.sort((a, b) => a.earnedAt - b.earnedAt || a.id - b.id);
+}
+
+/** Every stamp in this conversation's book, oldest first (each with its `.row`). */
 export function listStamps(conversationId) {
   if (!conversationId) return [];
-  return ALL("SELECT * FROM stamps WHERE conversation_id = ? ORDER BY earned_at, id", conversationId).map(summarize).filter(Boolean);
+  return foldBook(ALL("SELECT * FROM stamps WHERE conversation_id = ? ORDER BY earned_at, id", conversationId)
+    .map(r => { const s = summarize(r); return s ? { ...s, row: r } : null; }));
 }
 
 /** One stamp, only from this conversation's own book. */
@@ -485,6 +569,14 @@ export function stampFor(conversationId, id) {
  */
 export function newestStamp(conversationId, { days = 7, now = clock.now() } = {}) {
   if (!conversationId) return null;
+  if (everydaySeals()) {
+    // The book as drawn: an everyday seal earned again is new only when it reached a tier.
+    // Without its row: the daily edition stores this, and the row carries the place and the ref.
+    const s = listStamps(conversationId).filter(s => !OUTSIDE.includes(s.type) && s.earnedAt >= now - days * 86_400_000).at(-1);
+    if (!s) return null;
+    const { row, ...summary } = s;
+    return summary;
+  }
   const outside = waxLook() ? OUTSIDE.map(t => `'${t}'`).join(",") : "'anniversary','suite_key'";
   const row = ONE(`SELECT * FROM stamps WHERE conversation_id = ? AND earned_at >= ? AND type NOT IN (${outside}) ORDER BY earned_at DESC, id DESC LIMIT 1`, conversationId, now - days * 86_400_000);
   return summarize(row);
@@ -884,6 +976,15 @@ function waxStory(type, d, at, tz) {
     case "suite_key": return `A call, the research, a purchase online and one more besides, all inside ${W(d.minutes ?? 120)} minutes. It was no trouble.`;
     default: return "It was no trouble.";
   }
+}
+
+/** The story of an everyday seal earned more than once: the latest, and how many now. */
+function tierStory(type, d, n, at, tz) {
+  const when = whenSaid(at, tz);
+  const place = d.place ? String(d.place) : "";
+  if (type === "rang") return `${when} I made another call${place ? ` to ${place}` : ""} on your behalf, and it got what it was for. That makes ${W(n)}. It was no trouble.`;
+  if (type === "looked_into") return `${when} I looked into another question for you. That makes ${W(n)}, each one done properly. It was no trouble.`;
+  return waxStory(type, d, at, tz);
 }
 
 /** Home's one line under the name ("Fifty-two minutes with [airline]. It was no trouble."). */
