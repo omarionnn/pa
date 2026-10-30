@@ -1562,6 +1562,10 @@ export async function* voiceTurn({
   t0 = null,
   // The turn meter (src/calls/metrics.js): which tools ran and what the model used. Watched only.
   meter = null,
+  // Resolves true once somebody is reading this turn, false once it is cancelled. `llmRequest` keeps a
+  // turn alive for a moment after its socket closes, so the platform's retry can pick it up; nothing
+  // with a side effect starts in that moment unless somebody has. Null (a direct caller): always read.
+  attended = null,
 }) {
   const streamId = id ?? `chatcmpl-${randomUUID()}`;
   const created = Math.floor(clock.now() / 1000);
@@ -1573,6 +1577,15 @@ export async function* voiceTurn({
     turn_ms: clock.now() - turnStart,
   });
   const superseded = () => signal?.aborted === true;
+  // A cancelled turn still ends the way every stream ends: a stop, then `[DONE]`. A stream left open
+  // on its role chunk is what the platform reads as a failed reply and asks for again.
+  const endSuperseded = function* (at, rounds) {
+    log({ voice_turn_superseded: call.id, kind: context.kind, reason: "aborted", at, ...(rounds == null ? {} : { rounds }), ...timing() });
+    yield chunk({}, "stop");
+    yield SSE_DONE;
+  };
+  // Before anything with a side effect: wait for a reader (see `attended` above), or stop.
+  const stillWanted = async () => (attended ? (await attended()) === true : true) && !superseded();
 
   // The first chunk of an OpenAI stream carries the role and nothing else.
   yield chunk({ role: "assistant" });
@@ -1640,6 +1653,8 @@ export async function* voiceTurn({
     && !callOutcome.MACHINE_KINDS.includes(String(call?.outcome_kind ?? ""));
   const onlyHolding = () => holdingSaid && said === holdingText;
   const untilFirstWord = async function* (pending) {
+    // A turn closed while it waits here leaves `pending` behind; its rejection is nobody's to crash on.
+    Promise.resolve(pending).catch(() => {});
     if (saidAnything() || !replyExpected()) return await pending;
     // The holding line once per call at the first deadline; after that, the late line for any turn
     // that is about to look dead to the platform. See `LATE_HOLDING_MS`.
@@ -1733,7 +1748,7 @@ export async function* voiceTurn({
       };
 
       if (superseded()) {
-        log({ voice_turn_superseded: call.id, kind: context.kind, at: "round", rounds: round, ...timing() });
+        yield* endSuperseded("round", round);
         return;
       }
 
@@ -1811,6 +1826,14 @@ export async function* voiceTurn({
       }
       yield* emit(splitter.flush());
 
+      // Everything below this point writes down what this round did — the disclosure as said, a
+      // voicemail as left, a wait, a key press, a hand-over — so none of it runs for a round nobody
+      // is reading. Its socket closed mid-round: it waits here for a re-ask to join, or is cancelled.
+      if (!(await stillWanted())) {
+        yield* endSuperseded("round_end", round);
+        return;
+      }
+
       if (holdBack && held.length) {
         // A recording or menu is on the line and the model is hanging up: nobody hears the goodbye,
         // and saying it would spend the disclosure on a machine and file it as a person.
@@ -1837,6 +1860,15 @@ export async function* voiceTurn({
           }
           yield* emit(held);
         }
+      }
+
+      // Nothing said and nothing asked for, while the call is on hold: that is a wait, so it leaves as
+      // one, through the same skip_turn path as a wait the model asked for. An empty stop here was
+      // read by the platform as a failed reply and asked again within a second (call 35, 2026-10-30:
+      // four "said 0" turns in a row after a skip_turn), and it took the call off hold on the way.
+      if (!toolUses.length && !said && hold.onHold(call) && !callOutcome.reachedMachine(call)) {
+        log({ voice_empty_turn_waits: call.id, kind: context.kind, rounds: round });
+        toolUses.push({ type: "tool_use", name: "skip_turn", id: `tu_${randomUUID().slice(0, 8)}`, input: { reason: "still waiting; nothing new to say" } });
       }
 
       // Reason spoke instead of waiting, so whatever it was holding for has happened. The whole hold
@@ -2029,6 +2061,10 @@ export async function* voiceTurn({
           log({ voice_turn_out_of_rounds: call.id, kind: context.kind, on: "call_tools", ...timing() });
           return;
         }
+        if (!(await stillWanted())) {
+          yield* endSuperseded(callUses[0].name, round);
+          return;
+        }
         // No filler before these. They answer from this process without a network call in them, so the
         // next sentence follows immediately and "one sec..." would be a pause that never happened.
         const fresh = db.getCall(call.conversation_id, call.id) ?? call;
@@ -2103,6 +2139,10 @@ export async function* voiceTurn({
 
       // The filler, so the pause while a tool runs is not dead air — but only under the same rule as
       // at tool start: a silent turn, old enough, and never twice on a call. See `oneSec`.
+      if (!(await stillWanted())) {
+        yield* endSuperseded(toolUses[0].name, round);
+        return;
+      }
       yield* oneSec();
 
       messages.push({
@@ -2122,6 +2162,11 @@ export async function* voiceTurn({
       }
       const results = [];
       for (const t of toolUses) {
+        // Checked before every tool, not once per round: the socket can close while the one before runs.
+        if (!(await stillWanted())) {
+          yield* endSuperseded(t.name, round);
+          return;
+        }
         let out;
         // The second check, in front of the ordinary gate rather than instead of it (2026-10-07
         // addendum, section 6). Caller ID said whose Reason to be; it did not say who is holding the
@@ -2157,7 +2202,7 @@ export async function* voiceTurn({
         catch { /* the record is a help, never a reason for the turn to fail */ }
         // The platform stopped listening while the tool ran. The result is not for anybody now.
         if (superseded()) {
-          log({ voice_turn_superseded: call.id, kind: context.kind, at: t.name, rounds: round, ...timing() });
+          yield* endSuperseded(t.name, round);
           return;
         }
         results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
@@ -2183,7 +2228,7 @@ export async function* voiceTurn({
     // The request behind this turn was cancelled because the platform moved on. That is not the
     // model falling over, and nobody is listening for an apology.
     if (superseded()) {
-      log({ voice_turn_superseded: call.id, kind: context.kind, at: "model", ...timing() });
+      yield* endSuperseded("model");
       return;
     }
     log({ voice_turn_threw: call.id, why: (e?.message ?? String(e)).split("\n")[0], ...timing() });
@@ -2246,6 +2291,8 @@ export async function llmRequest({
   // The later holding-line deadline and the filler's minimum turn age; see `voiceTurn`.
   lateHoldingMs = LATE_HOLDING_MS,
   fillerAfterMs = FILLER_AFTER_MS,
+  // How long a turn whose socket closed waits for the platform's retry to join it; see `ATTACH_GRACE_MS`.
+  attachGraceMs = ATTACH_GRACE_MS,
 }) {
   // The moment the platform's request arrived — the person has stopped talking — which is where the
   // caller's wait starts. Every turn timing in call_turns is measured from here.
@@ -2297,61 +2344,267 @@ export async function llmRequest({
     context = degradedContext({ call, callMessages: body.messages, why });
   }
 
-  // One turn in flight per call. The platform asks for a new turn whenever the person speaks or the
-  // line goes quiet, and it has already stopped listening to the one before — so that one is
-  // cancelled here rather than left running its tools and model rounds to a closed socket. On call
-  // 30 five turns for one call ran at once, each re-doing the same research, and every later word
-  // was three seconds late for it.
+  // One turn in flight per call. The platform asks for a turn whenever the person speaks or the line
+  // goes quiet — and it also asks AGAIN for the same turn when it judges a reply failed: four to six
+  // requests a second or so apart, the same history each time (2026-10-30 audit: 407 re-asks against
+  // 267 turns over ten calls, 1.6–6.7 s of silence each). So:
+  //   - the same history (nothing new from their side) joins the turn already running: what it has
+  //     said so far, then the rest live. One model run, and every tool in it runs once.
+  //   - anything new from their side cancels the running turn, whose stream still ends with a stop
+  //     and `[DONE]`, and starts this one. On call 30 five turns ran at once, each re-doing the same
+  //     research, and every later word was three seconds late for it.
   const key = `${call.conversation_id}#${call.id}`;
+  const theirs = theirSideKey(body.messages);
   const earlier = inFlight.get(key);
-  if (earlier) {
-    earlier.abort();
+  if (earlier && !earlier.over() && earlier.theirs === theirs && t0 - earlier.t0 < ATTACH_MAX_AGE_MS) {
+    const reader = earlier.attach({ alreadySaid: trailingSaid(body.messages) });
+    log({
+      voice_turn_attached: call.id, kind, messages: Array.isArray(body.messages) ? body.messages.length : 0,
+      buffered: reader.replaying, readers: earlier.readers(), since_first_ms: t0 - earlier.t0,
+    });
+    return { status: 200, headers: SSEH, stream: reader.stream, abort: reader.detach };
+  }
+  if (earlier && !earlier.over()) {
+    log({ voice_turn_superseded: call.id, kind, reason: "new_from_their_side", readers: earlier.readers(), ms: t0 - earlier.t0 });
     log({ voice_turn_replaced: call.id, kind });
+    earlier.cancel();
   }
   const control = new AbortController();
-  inFlight.set(key, control);
-  const settle = () => { if (inFlight.get(key) === control) inFlight.delete(key); };
 
   const gen = generate ?? generatorFor();
   // One call_turns row per turn: what the caller waited through. Timed in memory from t0 and written
   // once the stream has ended, however it ended, so nothing touches the database before the first
-  // byte. A retry of the same turn (same message count) replaces the row. A database fault here never
-  // costs the turn — only the record of it goes missing.
+  // byte. A request that joins this turn writes nothing of its own; a cancelled-and-restarted turn
+  // with the same message count replaces the row. A database fault never costs the turn.
   const meter = callMetrics.newMeter();
   const msgCount = Array.isArray(body.messages) ? body.messages.length : 0;
+  const model = String(body.model ?? "reason");
+  const streamId = `chatcmpl-${randomUUID()}`;
+  let shared = null;
   const turn = voiceTurn({
-    context, call, generate: gen, model: String(body.model ?? "reason"), log, extras,
+    context, call, generate: gen, model, id: streamId, log, extras,
     signal: control.signal, toolBudgetMs, firstWordDeadlineMs, lateHoldingMs, fillerAfterMs, t0, meter,
+    attended: () => shared.attended(),
     ...(screen ? { screen } : {}),
   });
+  const source = callMetrics.metered(turn, {
+    t0, meter,
+    // The disclosure is the code's words, read off the row, not the model's: never "real content".
+    kinds: { ...METER_KINDS, openings: [String(call.announcement ?? "")].filter(s => s.trim()) },
+    aborted: () => control.signal.aborted,
+    onEnd: (m) => {
+      try { db.recordCallTurn({ callId: call.id, conversationId: call.conversation_id, msgCount, kind, startedAt: t0, ...m }); }
+      catch (e) { log({ call_turn_row_failed: call.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
+      log({
+        call_turn_heard: call.id, messages: msgCount, first_content_ms: m.firstContentMs, first_kind: m.firstContentKind,
+        first_real_ms: m.firstRealMs, total_ms: m.totalMs, closed_early: m.closedEarly,
+      });
+    },
+  });
+  shared = sharedTurn({
+    source, control, t0, theirs, streamId, model, graceMs: attachGraceMs,
+    settle: () => { if (inFlight.get(key) === shared) inFlight.delete(key); },
+    onUnread: () => log({ voice_turn_superseded: call.id, kind, reason: "socket_closed", ms: Date.now() - t0 }),
+  });
+  inFlight.set(key, shared);
+  const reader = shared.attach();
   return {
     status: 200,
     headers: SSEH,
-    stream: callMetrics.metered(finishing(turn, settle), {
-      t0, meter,
-      // The disclosure is the code's words, read off the row, not the model's: never "real content".
-      kinds: { ...METER_KINDS, openings: [String(call.announcement ?? "")].filter(s => s.trim()) },
-      aborted: () => control.signal.aborted,
-      onEnd: (m) => {
-        try { db.recordCallTurn({ callId: call.id, conversationId: call.conversation_id, msgCount, kind, startedAt: t0, ...m }); }
-        catch (e) { log({ call_turn_row_failed: call.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
-        log({
-          call_turn_heard: call.id, messages: msgCount, first_content_ms: m.firstContentMs, first_kind: m.firstContentKind,
-          first_real_ms: m.firstRealMs, total_ms: m.totalMs, closed_early: m.closedEarly,
-        });
-      },
-    }),
-    // For the server: the socket closed, so whatever this turn is still doing is for nobody.
-    abort: () => { control.abort(); settle(); },
+    stream: reader.stream,
+    // For the server: this socket closed. The turn keeps going for `attachGraceMs` in case the
+    // platform's retry joins it, and is cancelled if nobody does.
+    abort: reader.detach,
   };
 }
 
 /** The turn in flight for each call, by `conversation#call`. See `llmRequest`. */
 const inFlight = new Map();
 
-/** The same stream, with `after` run once it ends — however it ends. */
-async function* finishing(stream, after) {
-  try { yield* stream; } finally { after(); }
+/**
+ * How long a turn nobody is reading is kept for a retry to join. The platform re-asks 1–1.5 s after a
+ * failed attempt (2026-10-30 audit), so three seconds covers one retry with room. Past it the turn is
+ * cancelled as it always was. While nobody reads it, it starts nothing with a side effect.
+ */
+export const ATTACH_GRACE_MS = 3_000;
+
+/**
+ * The oldest a running turn can be and still be joined. The platform gives up on a turn at its 15 s
+ * cascade timeout, so a re-ask is never later than that; this is a backstop against joining a turn
+ * that is stuck, not a tuning knob.
+ */
+const ATTACH_MAX_AGE_MS = 30_000;
+
+/** Their side of a history: everything up to and including the last thing anybody but Reason said. */
+const SILENT_THEIRS = new Set([LINE_IS_QUIET, LINE_OPENED]);
+function theirSideKey(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  let end = list.length;
+  // Trailing words of Reason's own, or the platform's system notes, or an empty / quiet-line user
+  // message, are not anything new from them.
+  while (end > 0) {
+    const m = list[end - 1];
+    const text = typeof m?.content === "string" ? m.content.trim() : null;
+    if (m?.role === "assistant" || m?.role === "system" || (m?.role === "user" && text !== null && (!text || SILENT_THEIRS.has(text)))) end--;
+    else break;
+  }
+  return JSON.stringify(list.slice(0, end).map(m => [m?.role ?? "", m?.content ?? ""]));
+}
+
+/** What the platform says Reason has already said since their last words: the trailing assistant text. */
+function trailingSaid(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const out = [];
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (m?.role === "system") continue;
+    if (m?.role !== "assistant") break;
+    if (typeof m.content === "string") out.unshift(m.content);
+  }
+  return out.join(" ");
+}
+
+const squash = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+const HOLDING_SQUASHED = new Set([HOLDING_LINE, LATE_LINE].map(squash));
+
+/** What one framed chunk carries, for replay decisions. */
+function chunkInfo(s) {
+  const str = String(s);
+  if (str === SSE_DONE) return { done: true, finish: false, content: "" };
+  try {
+    const c = JSON.parse(str.slice(6))?.choices?.[0] ?? {};
+    return { done: false, finish: c.finish_reason != null, content: typeof c.delta?.content === "string" ? c.delta.content : "" };
+  } catch { return { done: false, finish: false, content: "" }; }
+}
+
+/**
+ * One running turn that several requests can read.
+ *
+ * The turn is pulled only while somebody is waiting on it, so a turn nobody reads sits at its next
+ * chunk rather than running ahead. Each reader gets the chunks from the start (a joining reader:
+ * minus the holding line, which the first reader already had, and minus whatever the platform's own
+ * history shows was said), then the rest as they come. Every reader's stream ends with `[DONE]`,
+ * however the turn ends: a cancelled turn's readers get a stop and `[DONE]` at once.
+ */
+function sharedTurn({ source, control, t0, theirs, streamId, model, graceMs = ATTACH_GRACE_MS, settle = () => {}, onUnread = () => {} }) {
+  const created = Math.floor(clock.now() / 1000);
+  const chunks = [];
+  const readers = new Set();
+  let iterator = null;
+  let pulling = null;
+  let ended = false;
+  let waiters = [];
+  let attendWaiters = [];
+  let grace = null;
+  const wake = () => { const w = waiters; waiters = []; for (const f of w) f(); };
+  const cancelled = () => control.signal.aborted;
+  // A turn whose `[DONE]` is already out is finished, even before its generator has returned.
+  let doneOut = false;
+  const over = () => ended || doneOut || cancelled();
+  const finish = () => { if (ended) return; ended = true; settle(); wake(); };
+  // Closes the turn's own generator, so its finally blocks (the turn row, the model request) run.
+  const closeSource = () => { if (iterator) Promise.resolve().then(() => iterator.return?.()).catch(() => {}); };
+  const pull = () => {
+    if (pulling || ended) return;
+    if (cancelled()) { closeSource(); finish(); return; }
+    iterator ??= source[Symbol.asyncIterator]();
+    pulling = iterator.next().then(
+      (step) => {
+        if (step.done) return finish();
+        const c = { s: step.value, ...chunkInfo(step.value) };
+        if (c.done) doneOut = true;
+        chunks.push(c);
+      },
+      () => finish(),
+    ).finally(() => {
+      pulling = null;
+      if (cancelled() && !ended) { closeSource(); finish(); }
+      wake();
+      // After `[DONE]` nobody needs another chunk, but the turn still has its last lines to run (its
+      // log line, its call_turns row): read it to the end.
+      if (doneOut && !ended) pull();
+    });
+  };
+  const cancel = () => {
+    if (grace) { clearTimeout(grace); grace = null; }
+    if (!cancelled()) control.abort();
+    for (const f of attendWaiters.splice(0)) f(false);
+    if (!pulling) { closeSource(); finish(); }
+    wake();
+  };
+
+  function attach({ alreadySaid = "" } = {}) {
+    const me = { open: true };
+    readers.add(me);
+    if (grace) { clearTimeout(grace); grace = null; }
+    for (const f of attendWaiters.splice(0)) f(true);
+    // What this reader is handed from before it joined, and what it skips of that.
+    const replayEnd = chunks.length;
+    let carried = squash(alreadySaid);
+    const detach = () => {
+      if (!me.open) return;
+      me.open = false;
+      readers.delete(me);
+      if (readers.size || over()) return;
+      grace = setTimeout(() => {
+        grace = null;
+        if (readers.size || over()) return;
+        onUnread();
+        cancel();
+      }, Math.max(0, graceMs));
+      grace.unref?.();
+    };
+    async function* stream() {
+      let i = 0;
+      let finished = false;
+      try {
+        for (;;) {
+          // Let go of (its socket closed): nothing more is handed to it, so nothing is marked heard.
+          if (!me.open) return;
+          if (cancelled() && !ended) break;
+          if (i < chunks.length) {
+            const c = chunks[i++];
+            if (i <= replayEnd && c.content) {
+              const said = squash(c.content);
+              // The holding line already went to a reader; it is never said twice. One that was
+              // written while nobody was reading was never heard, so it is still said.
+              if (HOLDING_SQUASHED.has(said) && c.delivered) continue;
+              // Already in the platform's history as Reason's words: said, so not said again.
+              if (carried && said && carried.startsWith(said)) { carried = carried.slice(said.length).trim(); continue; }
+              carried = "";
+            }
+            if (c.finish) finished = true;
+            c.delivered = true;
+            yield c.s;
+            if (c.done) {
+              // `[DONE]` is already on the wire. The few lines the turn runs after it (its log, its
+              // row) finish before this stream does, as they did when the turn was the stream.
+              while (!ended && !cancelled()) await new Promise(resolve => { waiters.push(resolve); pull(); });
+              return;
+            }
+            continue;
+          }
+          if (ended) break;
+          await new Promise(resolve => { waiters.push(resolve); pull(); });
+        }
+        // Cancelled, or the turn ended without its own `[DONE]`: closed cleanly all the same.
+        if (i === 0) yield sseChunk({ id: streamId, model, created, delta: { role: "assistant" } });
+        if (!finished) yield sseChunk({ id: streamId, model, created, delta: {}, finish: "stop" });
+        yield SSE_DONE;
+      } finally {
+        detach();
+      }
+    }
+    return { stream: stream(), detach, replaying: replayEnd };
+  }
+
+  return {
+    t0, theirs, attach, cancel, over,
+    readers: () => readers.size,
+    // True as soon as somebody reads this turn; false if it is cancelled first.
+    attended: () => (readers.size ? Promise.resolve(true) : cancelled() ? Promise.resolve(false)
+      : new Promise(resolve => attendWaiters.push(resolve))),
+  };
 }
 
 const JSONH = { "Content-Type": "application/json", "Cache-Control": "no-store" };
