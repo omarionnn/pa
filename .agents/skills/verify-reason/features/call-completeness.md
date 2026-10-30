@@ -63,6 +63,22 @@ files but not mapped here.
   call = `max(callMaxMinutes*60, callPlatformCapSeconds)` s + 15 min (`REASON_CALL_PLATFORM_CAP_SECONDS`,
   default 3600, ElevenLabs' own ceiling); it was 25 min, which swept long live calls. `placing`/
   `ringing` (never answered) keeps `callMaxMinutes` + 15 min. Pinned in `test/calls.test.js`.
+- **Call metrics for the audit (#273).** `call_turns` (one row per turn, keyed UNIQUE on
+  `(call_id, msg_count)` so a re-asked turn upserts and counts `attempts`; written by
+  `db.recordCallTurn` only after the stream ends): `first_content_ms` / `first_content_kind`
+  (`holding_line | filler | fallback | opening | dots | real`), `first_real_ms`, `total_ms`,
+  `holding_line`, `tools` (names), `closed_early`, token use — timed from the top of `llmRequest`
+  (`callMetrics.metered` in `src/calls/metrics.js`). On `calls`: `end_reason` + `end_detail`
+  (`endReasonOf`: platform_error only for `metadata.error` or "custom_llm generation failed";
+  "Call ended by remote party" → `remote_hung_up` both directions; `no_answer`, `inactivity`; the
+  sweep writes `lost`, which a later post-call delivery or `fillLateDetails` replaces),
+  `cost_cents` from `metadata.cost_fiat` (USD), `cost_credits` (`metadata.cost`), minimal `cost_raw`.
+  `scripts/call-report.js` reads it all read-only (`DatabaseSync readOnly`), no words. Tests:
+  `test/call-metrics.test.js` (14). Cage drive 2026-10-30: `bin/call-turn.sh new` + two turns →
+  two `call_turns` rows (`fallback`, no key) and `call_turn_heard` in `serve.log`; an in-process
+  signed post-call delivery (real field shapes, call 32's 1.193) → `remote_hung_up`, `cost_cents`
+  119; a swept call → `lost`, then a late 1002 delivery → `platform_error` with code and reason
+  (`call_end_corrected`); `call-report.js` on the cage DB prints the totals.
 - **No thinking pass before the first word (PR #59).** `claude-sonnet-5-5` thinks before every reply
   by default — ~3.5s of silence on the line (call 38: 4–6s per turn). `apiRequestFor` sends
   `thinking: { type: config.callThinking }`, default `between_tools` (`REASON_CALL_THINKING`; empty
