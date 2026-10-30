@@ -154,6 +154,19 @@ async function newPage(browser, { theme = "light", reduced = false, geo = true, 
   if (geo) await context.setGeolocation({ latitude: route.points[0].lat, longitude: route.points[0].lng, accuracy: 6 });
   await context.addInitScript((t) => {
     try { localStorage.setItem("reason-theme", t); } catch { /* no storage */ }
+    // Never a sound from the drive: speech is a recorder, so the escort's lines are checked, not heard.
+    window.__said = [];
+    window.__cancels = 0;
+    class Utterance { constructor(text = "") { this.text = String(text); this.rate = 1; this.lang = ""; this.voice = null; } }
+    const recorder = {
+      speak: (u) => { window.__said.push(u && typeof u.text === "string" ? u.text : String(u)); },
+      cancel: () => { window.__cancels += 1; },
+      pause() {}, resume() {}, getVoices: () => [],
+      speaking: false, pending: false, paused: false,
+      addEventListener() {}, removeEventListener() {},
+    };
+    Object.defineProperty(window, "speechSynthesis", { value: recorder, configurable: true, writable: false });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", { value: Utterance, configurable: true, writable: true });
     window.__geo = { watch: 0, get: 0, clear: 0 };
     if (navigator.geolocation) {
       const g = navigator.geolocation;
@@ -208,7 +221,8 @@ print(f"{sum(px) / total:.2f} {over / total * 100:.2f}")
   return { mean: Number(mean), pct: Number(pct) };
 }
 
-const browser = await chromium.launch({ args: ["--use-gl=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
+// --mute-audio as well as the speech recorder: nothing this drive opens may reach the Mac's speakers.
+const browser = await chromium.launch({ args: ["--mute-audio", "--use-gl=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
 
 // DIRECTIONS_DRIVE_ONLY=real runs section 7 alone (a quick re-check of the real trip).
 const ONLY_REAL = process.env.DIRECTIONS_DRIVE_ONLY === "real";
@@ -320,6 +334,9 @@ if (!ONLY_REAL) {
   check("arrival: 'You made it.' with the ARRIVED stamp (not early)", /You made it/.test(finalCaption) && /ARRIVED/.test(finalCaption) && !/early/.test(finalCaption), finalCaption.slice(0, 80));
   check("arrival: the escort is over", (await page.textContent("#e-status-t")).trim() === "ESCORT ENDED");
   check("arrival: the footer says location has stopped, and it has", /stopped using your location/.test(await page.textContent("#e-foot")) && (await page.evaluate(() => window.__geo.clear)) >= 1);
+  const said = await page.evaluate(() => window.__said);
+  check("voice (recorded, never played): the share tap's empty unlock, then the turn spoken in order",
+    said[0] === "" && said.indexOf("Left in about thirty metres.") > 0 && said.indexOf("Left here.") > said.indexOf("Left in about thirty metres."), JSON.stringify(said));
   await page.waitForTimeout(400);
   await page.screenshot({ path: join(outDir, "walk-arrived.png") });
   await context.close();
@@ -476,6 +493,11 @@ if (!ONLY_REAL) {
   check("real walk: the last 50 m says which side, from the router", seen.some((t) => /It’s on your right/.test(t)), JSON.stringify(seen.map((t) => t.slice(0, 26))));
   check("real walk: after the start, 'You made it.' with the ARRIVED stamp", /You made it/.test(end) && /ARRIVED/.test(end), end.slice(0, 80));
   check("real walk: arrival stops location", (await page.textContent("#e-status-t")).trim() === "ESCORT ENDED" && (await page.evaluate(() => window.__geo.clear)) >= 1);
+  const realSaid = await page.evaluate(() => window.__said);
+  check("real walk voice (recorded, never played): \"Right in about thirty metres.\" then \"Right here.\"",
+    realSaid.indexOf("Right in about thirty metres.") >= 0 && realSaid.indexOf("Right here.") > realSaid.indexOf("Right in about thirty metres."), JSON.stringify(realSaid));
+  const audible = await page.evaluate(() => typeof window.speechSynthesis.speak === "function" && !("onvoiceschanged" in window.speechSynthesis) && Array.isArray(window.__said));
+  check("drive is silent: speechSynthesis on the page is the recorder", audible);
   await page.screenshot({ path: join(outDir, "real-walk-arrived.png") });
   const state = await context.storageState();
   await context.close();
