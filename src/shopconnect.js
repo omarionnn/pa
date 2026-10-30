@@ -34,9 +34,12 @@
 //   order intent is created for the row's amount. Nothing the model types can change it.
 import { createHash, createSign, createPrivateKey, createPublicKey, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { config, clock } from "./config.js";
+import { isPrivateHost } from "./pictures.js";
 
 // ---------------------------------------------------------------- the flag
 // REASON_SHOP_CONNECT (off | owner | on), off by default. `owner`: only the operator's conversation.
@@ -223,13 +226,27 @@ const ICON_MAX = 200_000;
 const ICON_RETRY_MS = 24 * 3600_000;
 // Never the real network under node --test unless a test hands in its own fake.
 const realFetch = (...a) => (process.env.NODE_TEST_CONTEXT ? Promise.reject(new Error("no network in tests")) : fetch(...a));
+const realLookup = (host) => (process.env.NODE_TEST_CONTEXT ? Promise.reject(new Error("no DNS in tests")) : lookup(host, { all: true, verbatim: true }));
 let iconFetch = realFetch;
-export function _setIconFetch(f) { iconFetch = f ?? realFetch; }
+let iconLookup = realLookup;
+/** Tests hand in a fake web and, with it, a fake DNS (`host → [{ address }]`). */
+export function _setIconFetch(f, l) { iconFetch = f ?? realFetch; iconLookup = l ?? realLookup; }
 const PRIVATE_HOST = /(^|\.)(localhost|local|internal|lan|home|arpa|ts\.net|test|invalid)$/;
+// The host comes from a checkout's URL, so this server is fetching a name somebody else chose. The name
+// alone proves nothing (pinkfrog.example can point at 127.0.0.1 or 169.254.169.254), so every hop is
+// resolved first and refused unless ALL its addresses are public (src/pictures.js isPrivateHost: loopback,
+// 10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10, ::1, fc00::/7, fe80::/10, v4-mapped).
+async function publicHost(hostname) {
+  const h = hostname.replace(/^\[|\]$/g, "");
+  if (isIP(h)) return !isPrivateHost(h);
+  const addrs = await iconLookup(h).catch(() => []);
+  return addrs.length > 0 && addrs.every((a) => isIP(a?.address) && !isPrivateHost(a.address));
+}
 async function fetchPublic(url, { accept, signal }) {
   for (let hop = 0; hop < 4; hop++) {
     let u; try { u = new URL(url); } catch { return null; }
-    if (u.protocol !== "https:" || !hostOf(u.hostname) || PRIVATE_HOST.test(u.hostname)) return null;
+    if (u.protocol !== "https:" || (u.port && u.port !== "443") || u.username || u.password) return null;
+    if (!hostOf(u.hostname) || PRIVATE_HOST.test(u.hostname) || !(await publicHost(u.hostname))) return null;
     const res = await iconFetch(u.href, { redirect: "manual", signal, headers: { Accept: accept, "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" } });
     if (res.status >= 300 && res.status < 400 && res.headers?.get?.("location")) { url = new URL(res.headers.get("location"), u).href; continue; }
     return res.ok ? res : null;
