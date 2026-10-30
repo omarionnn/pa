@@ -51,3 +51,22 @@ export function stampsAllowedFor(conversationId) {
   if (!conversationId) return false;
   return stampsOpen() || dailyAllowedFor(conversationId);
 }
+
+// REASON_WEB_REPLY (off | owner | on, 2026-10-30): reply to one message on Reason Web, the way holding a
+// bubble and tapping Reply does it in Messages (src/pages/webreply.js). The Reply button, the composer's
+// "replying to" line, the quote line over a reply in the thread (theirs from either place, and Reason's
+// own pinned answers), and the reply read by the turn as answering THAT message. `owner`: only the
+// operator's own conversation, for the owner's look first. Off: Web is as it was.
+export function webReplyMode() {
+  const v = String(process.env.REASON_WEB_REPLY ?? "").trim().toLowerCase();
+  if (v === "owner") return "owner";
+  return ["1", "true", "on", "yes"].includes(v) ? "on" : "off";
+}
+
+export function webReplyAllowedFor(conversationId) {
+  if (!conversationId) return false;
+  const mode = webReplyMode();
+  if (mode === "off") return false;
+  if (mode === "owner") return accounts.ownerOf(conversationId).isOperator;
+  return true;
+}

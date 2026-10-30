@@ -40,6 +40,7 @@ import { OutageError, downLine, leftWhileDownLine } from "../down.js";
 import * as onethought from "../onethought.js";
 import { withoutNoReply } from "../plain.js";
 import * as web from "../web.js";
+import { webReplyAllowedFor } from "../dailyflag.js";
 import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 
@@ -626,9 +627,13 @@ export class Router {
       }
       // Which text the reply answers, for a thread that can carry an inline reply: if the thread
       // has moved on by the time the reply is ready, it is pinned under this one (replies.js).
-      const canPin = !!this.get(last.channel)?.inlineReplies && (!last.service || /^imessage$/i.test(last.service));
+      const inline = !!this.get(last.channel)?.inlineReplies && (!last.service || /^imessage$/i.test(last.service));
+      // Reason Web draws a pinned reply as a quote line (REASON_WEB_REPLY, src/pages/webreply.js), so a
+      // Web turn's answer is pinned by the same rule (replies.answerTarget). Web has no reply_to tool, so
+      // the burst line, which asks for one, stays the inline channels'.
+      const canPin = inline || (last.channel === web.WEB && webReplyAllowedFor(conversationId));
       const said = texts.filter(Boolean);
-      const several = canPin ? replies.burstLine(said.length) : "";
+      const several = inline ? replies.burstLine(said.length) : "";
       fold.text = said.join("\n");
 
       // History, one row per message they sent — their own words as heard, with the channel each
