@@ -20,6 +20,9 @@ export const REROUTE_GAP_MS = 15000;     // never ask for a second reroute soone
 export const STEP_NEAR_M = 20;           // a maneuver is passed within this many metres
 export const SOON_M = 100;               // the bend starts to show this far out
 export const SAY_M = 30;                 // spoken about this far out
+export const AROUND_GIVE_UP_MS = 20000;  // told "turn around" and still going this way this long...
+export const AROUND_GIVE_UP_M = 40;      // ...or this far: stop insisting, a new way from where they are
+export const AROUND_QUIET_MS = 60000;    // after giving up, "turn around" is not said again this soon
 export const ARRIVE_M = 50;              // the gate shows inside this
 export const ARRIVED_M = 15;             // arrival is confirmed inside this, on 3 readings...
 export const ARRIVE_HOLD_MS = 3000;      // ...or on one, held this long
@@ -272,6 +275,10 @@ export function createEscort(trip, line) {
     dir: 'unknown',
     confirmedAt: 0,
     wrong: 0,
+    aroundAt: 0,
+    aroundPath: 0,
+    quietAroundUntil: 0,
+    fromHere: false,
     offCount: 0,
     rerouting: false,
     rerouteShowUntil: 0,
@@ -330,19 +337,36 @@ export function createEscort(trip, line) {
           if (diff <= 70) {
             m.wrong = 0;
             if (m.dir !== 'confirmed') { m.dir = 'confirmed'; m.confirmedAt = now; }
-          } else if (diff >= 120 && m.path >= 15) {
+          } else if (diff >= 120 && m.path >= 15 && m.dir !== 'giveup') {
             m.wrong++;
-            if (m.wrong >= 2) m.dir = 'around';
+            if (m.wrong >= 2 && m.dir !== 'around' && now >= m.quietAroundUntil) { m.dir = 'around'; m.aroundAt = now; m.aroundPath = m.path; }
           }
           m.anchor = s;
           m.anchorT = now;
         }
 
+        // Told to turn around and still walking on, for AROUND_GIVE_UP_MS or AROUND_GIVE_UP_M: they mean to go
+        // this way. Stop insisting and ask for a new way from here, facing the way they walk (forward).
+        // Walking far enough off the route the wrong way counts too: an ordinary reroute from there would only
+        // send them back again, and "turn around" would start over.
+        m.offCount = project(p, m.line).off - r.acc / 2 > OFF_M ? m.offCount + 1 : 0;
+        if (m.dir === 'around' && ((now - m.aroundAt >= AROUND_GIVE_UP_MS && m.path - m.aroundPath >= 10) || m.path - m.aroundPath >= AROUND_GIVE_UP_M || m.offCount >= OFF_COUNT)) {
+          m.dir = 'giveup';
+          m.wrong = 0;
+          m.quietAroundUntil = now + AROUND_QUIET_MS;
+          speak = 'Okay, new way from here.';
+        }
+        if (m.dir === 'giveup' && !m.rerouting && now - m.lastReroute > REROUTE_GAP_MS) {
+          m.rerouting = true;
+          m.lastReroute = now;
+          m.forward = true;
+          reroute = true;
+        }
+
         // Off the route: three good readings in a row, then one reroute request. Counted on each reading as it
         // came (the smoothed dot trails a real walk off the line by a few readings), and only when the reading is
         // past the band by half its own accuracy, so a noisy fix at the edge is not taken for a wrong turn.
-        m.offCount = project(p, m.line).off - r.acc / 2 > OFF_M ? m.offCount + 1 : 0;
-        if (m.offCount >= OFF_COUNT && !m.rerouting && now - m.lastReroute > REROUTE_GAP_MS) {
+        if (m.dir !== 'giveup' && m.offCount >= OFF_COUNT && !m.rerouting && now - m.lastReroute > REROUTE_GAP_MS) {
           m.rerouting = true;
           m.lastReroute = now;
           reroute = true;
@@ -375,6 +399,8 @@ export function createEscort(trip, line) {
     }
     const v = view(now);
     v.reroute = reroute;
+    v.forward = reroute && !!m.forward;
+    if (reroute) m.forward = false;
     v.buzz = buzz;
     v.speak = speak;
     return v;
@@ -418,6 +444,7 @@ export function createEscort(trip, line) {
     else if (m.dd < ARRIVE_M) state = 'arrive';
     else if (now < m.rerouteShowUntil) state = 'reroute';
     else if (now < m.hereUntil) state = 'here';
+    else if (m.dir === 'giveup') state = 'fromhere';
     else if (m.dir === 'around') state = 'around';
     else if (m.dir === 'unknown') state = 'unknown';
     else if (stationary) state = 'wait';
@@ -435,6 +462,7 @@ export function createEscort(trip, line) {
       m.reassureUntil = now + 5000;
       state = 'reassure';
     }
+    if (state === 'reroute' && m.fromHere) base.fromHere = true;
     if (state === 'wait') base.status = 'WAITING';
     if (state === 'finding') base.status = 'FINDING YOU';
     return { ...base, state };
@@ -446,6 +474,7 @@ export function createEscort(trip, line) {
     get step() { return m.step; },
     /** The person is in the middle of a walk: the reroute has come back with a new line. */
     replaceRoute(newTrip, newLine, pos, now) {
+      m.fromHere = m.dir === 'giveup';
       m.line = newLine;
       m.trip = newTrip;
       setSteps(newTrip.steps, newLine);
@@ -668,19 +697,21 @@ function boot() {
       '<span style="display:block;margin-top:6px;font-size:18px;line-height:1.45;color:var(--text-2)">Reason walks you there, turn by turn. Uses your location.</span></a>';
     const route = '<a class="choice rise" href="#route" style="border-bottom:1px dashed var(--border);animation-delay:1s"><span style="display:flex;justify-content:space-between;align-items:baseline;gap:12px"><span class="serif" style="display:block;font-size:34px;line-height:1.1">Show me the route →</span>' + (last === 'route' ? '<span class="label">LAST TIME</span>' : '') + '</span>' +
       '<span style="display:block;margin-top:6px;font-size:18px;line-height:1.45;color:var(--text-2)">Read the steps and map at your own pace.</span></a>';
-    screenWrap(
-      '<p class="label rise" style="position:absolute;top:22px;left:24px;margin:0">DIRECTIONS · MADE ' + h(T.made) + '</p>' +
-      '<section style="position:absolute;top:96px;left:24px;right:24px;text-align:center">' +
+    // A column that flows (and scrolls, if a long address needs it) between the top and Safari's bottom bar:
+    // on a phone the screen is the visible height (100dvh), not the 844 px frame the hand-off is drawn in.
+    screenWrap('<div class="flow">' +
+      '<p class="label rise" style="margin:0">DIRECTIONS · MADE ' + h(T.made) + '</p>' +
+      '<section class="flow-head">' +
         '<h1 class="serif rise" style="margin:0;font-size:52px;line-height:1.02;letter-spacing:-.02em;animation-delay:.1s">' + h(T.name) + '</h1>' +
         '<p class="label rise" style="margin:14px 0 0;color:var(--text);animation-delay:.2s">' + h(T.walk) + '</p>' +
         '<p class="rise" style="margin:4px 0 0;font-size:18px;color:var(--text-2);animation-delay:.2s">' + h(T.address) + '</p>' +
       '</section>' +
-      '<svg viewBox="0 0 390 200" width="390" height="200" aria-hidden="true" style="position:absolute;top:262px;left:50%;margin-left:-195px;overflow:visible">' +
-        '<path class="ink-line draw-once" d="M195,180 V12" pathLength="100"/><circle class="you" cx="195" cy="180" r="11"/></svg>' +
-      '<nav aria-label="Choose how to go" style="position:absolute;left:24px;right:24px;top:500px">' +
+      '<div class="flow-line"><svg viewBox="0 0 390 200" preserveAspectRatio="xMidYMax meet" aria-hidden="true">' +
+        '<path class="ink-line draw-once" d="M195,180 V12" pathLength="100"/><circle class="you" cx="195" cy="180" r="11"/></svg></div>' +
+      '<nav aria-label="Choose how to go">' +
         (last === 'route' ? route + escort : escort + route) +
       '</nav>' +
-      '<p class="label" style="position:absolute;left:24px;right:24px;bottom:22px;margin:0;text-align:center">ONLY YOU CAN SEE THIS PAGE</p>');
+      '<p class="label flow-foot">ONLY YOU CAN SEE THIS PAGE</p></div>');
     app.querySelectorAll('a[href="#ask"],a[href="#route"]').forEach((a) => a.addEventListener('click', () => lsSet('reason.dir.last', a.getAttribute('href') === '#ask' ? 'escort' : 'route')));
   }
 
@@ -824,6 +855,7 @@ function boot() {
     confirmed: { stem: 'scaleY(1)' },
     around:    { stem: 'scaleY(0.405)', hook: true },
     straight:  { stem: 'scaleY(1)' },
+    fromhere:  { stem: 'scaleY(1)', dim: true },
     reassure:  { stem: 'scaleY(1)' },
     soon:      { stem: 'scaleY(0.676)', bend: true, bendY: 0 },
     here:      { stem: 'scaleY(0.216)', bend: true, bendY: 170 },
@@ -837,7 +869,7 @@ function boot() {
     early:     { stem: 'scaleY(0)', loop: true, ended: true, status: 'ESCORT ENDED', off: true },
     ended:     { stem: 'scaleY(0)', ended: true, status: 'ESCORT ENDED', off: true },
   };
-  const CAP_IDS = ['finding', 'unknown', 'confirmed', 'around', 'straight', 'reassure', 'soon', 'here', 'reroute', 'wait', 'welcome', 'battery', 'lost', 'arrive', 'arrived', 'early', 'ended'];
+  const CAP_IDS = ['finding', 'unknown', 'confirmed', 'around', 'fromhere', 'straight', 'reassure', 'soon', 'here', 'reroute', 'wait', 'welcome', 'battery', 'lost', 'arrive', 'arrived', 'early', 'ended'];
 
   /** The caption for a view. word = printed (routine), hand = handwritten (a human moment). */
   function capOf(v) {
@@ -850,11 +882,13 @@ function boot() {
       case 'unknown': return { hand: 'Just start walking, I’ll tell you if it’s the right way.' };
       case 'confirmed': return { hand: 'Yes, this way ✓', sub: T.firstStreet || '' };
       case 'around': return { hand: 'Other way, turn around.', sub: 'THE WAY IS BEHIND YOU' };
+      // They kept going: no more "turn around", a new way from where they are.
+      case 'fromhere': return { hand: 'Okay, new way from here.', sub: 'FINDING A WAY FROM WHERE YOU ARE' };
       case 'straight': return { word: 'Keep going.', sub: mins + ' MIN · ' + step.street };
       case 'reassure': return { hand: 'Keep going, about ' + mins + ' minutes.', sub: step.street };
       case 'soon': return { word: turnWord(step) + ', soon.', sub: d + ' M · ' + step.fact };
       case 'here': return { word: turnWord(hereStep) + ' here.', sub: hereStep.into || '' };
-      case 'reroute': return { hand: 'No worries, here’s a new way.', sub: turnWord(step).toUpperCase() + ' ' + step.fact + (d !== null ? ' · ' + d + ' M' : '') };
+      case 'reroute': return { hand: v.fromHere ? 'Okay, new way from here.' : 'No worries, here’s a new way.', sub: turnWord(step).toUpperCase() + ' ' + step.fact + (d !== null ? ' · ' + d + ' M' : '') };
       case 'wait': return { hand: 'Take your time, I’ll wait.', sub: 'PAUSED' };
       case 'welcome': return { hand: 'Welcome back, here’s where you are.', sub: 'STRAIGHT ON' + (d !== null ? ' · ' + turnWord(step).toUpperCase() + ' IN ' + d + ' M' : '') };
       case 'battery': return { hand: 'Battery’s low. Switch to Route to save it?', action: 'Switch to Route →', href: '#route' };
@@ -888,8 +922,8 @@ function boot() {
     dropMaps();
     const caps = CAP_IDS.map((id) => '<div class="cap" data-cap="' + id + '"></div>').join('');
     screenWrap(
-      '<p class="esc-status" id="e-status" style="margin:0"><span class="dot"></span><span id="e-status-t">ESCORTING</span></p>' +
-      '<div class="stage"><svg viewBox="0 0 390 440" width="390" height="440" role="img" aria-label="Your path ahead">' +
+      '<div class="esc"><p class="esc-status" id="e-status"><span class="dot"></span><span id="e-status-t">ESCORTING</span></p>' +
+      '<div class="stage"><svg viewBox="0 0 390 440" preserveAspectRatio="xMidYMax meet" role="img" aria-label="Your path ahead">' +
         '<defs><linearGradient id="esc-fade-g" gradientUnits="userSpaceOnUse" x1="0" y1="30" x2="0" y2="230"><stop offset="0" stop-color="#000"/><stop offset="1" stop-color="#fff"/></linearGradient>' +
         '<mask id="esc-fade" maskUnits="userSpaceOnUse" x="0" y="0" width="390" height="440"><rect x="0" y="0" width="390" height="440" fill="url(#esc-fade-g)"/></mask></defs>' +
         '<circle class="ink-drop" id="e-drop" cx="195" cy="400" r="44"/>' +
@@ -904,12 +938,13 @@ function boot() {
         '<circle class="you" id="e-you" cx="195" cy="400" r="11" style="transition:opacity .4s"/>' +
       '</svg></div>' +
       '<div class="caps" aria-live="polite">' + caps + '</div>' +
-      '<p class="esc-foot quiet" id="e-foot" style="display:none">Escort is over. I’ve stopped using your location.</p>' +
-      '<button type="button" class="textbtn more-btn" id="e-more" aria-expanded="false">MORE ↑</button>' +
+      '<div class="esc-bottom"><p class="esc-foot quiet" id="e-foot" style="display:none">Escort is over. I’ve stopped using your location.</p>' +
+      '<button type="button" class="textbtn more-btn" id="e-more" aria-expanded="false">MORE ↑</button></div></div>' +
       '<button type="button" class="scrim" id="e-scrim" aria-label="Close"></button>' +
       '<section class="sheet" id="e-sheet" aria-label="More"><span class="grip"></span>' +
         '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:10px 0 12px"><span class="serif" id="e-left" style="font-size:28px;line-height:1.1"></span><span class="label" id="e-facts"></span></div>' +
-        '<div class="mapbox" style="margin:0;height:250px" role="img" aria-label="Map, the way you are facing"><div id="e-map" style="width:100%;height:100%"></div></div>' +
+        '<div class="mapbox" style="margin:0;height:250px;position:relative" aria-label="Map, the way you are facing. Pinch to zoom, drag to look around."><div id="e-map" style="width:100%;height:100%"></div>' +
+          '<button type="button" class="textbtn recentre" id="e-recentre" hidden>RECENTRE</button></div>' +
         '<div style="padding-top:8px"><a class="action" href="#route">Switch to Route →</a></div>' +
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;' + dashes + '">' +
           (SUPPORT.speech ? '<button type="button" class="textbtn" id="e-voice" aria-pressed="' + voiceOn + '" style="padding-left:0">' + ICON.speaker + '<span>' + (voiceOn ? 'VOICE ON' : 'VOICE OFF') + '</span></button>' : '<span></span>') +
@@ -1004,16 +1039,26 @@ function boot() {
     if (u) {
       moreMap.markers.you.setLngLat(lngLat(u));
       setLines(moreMap, routeTo(u), oldRoute || []);
-      moreMap.map.easeTo({ center: lngLat(u), bearing: typeof v.heading === 'number' ? v.heading : 0, duration: REDUCED() ? 0 : 600, offset: [0, 40] });
+      // Follows the walk until a finger moves the map; then it stays where they put it until RECENTRE.
+      if (moreMap.follow) moreMap.map.easeTo({ center: lngLat(u), bearing: typeof v.heading === 'number' ? v.heading : 0, duration: REDUCED() ? 0 : 600, offset: [0, 40] });
     }
   }
   function mountMoreMap() {
     const box = $('e-map');
     if (!box || moreMap) return;
     moreMap = 'loading';
-    makeMap(box, { interactive: false }).then((m) => {
+    // Pinch to zoom, one finger to pan, double-tap to zoom in: the map takes the touches (MapLibre sets
+    // touch-action: none on its canvas), so the sheet and the page never scroll under the finger.
+    makeMap(box, { interactive: true }).then((m) => {
       if (!document.body.contains(box)) { m.map.remove(); moreMap = null; return; }
       moreMap = m;
+      m.follow = true;
+      try { m.map.touchZoomRotate.disableRotation(); } catch (e) { /* older MapLibre */ }
+      const recentre = $('e-recentre');
+      const stopFollow = (e) => { if (e && e.originalEvent && m.follow) { m.follow = false; if (recentre) recentre.hidden = false; } };
+      m.map.on('dragstart', stopFollow);
+      m.map.on('zoomstart', stopFollow);
+      if (recentre) recentre.onclick = () => { m.follow = true; recentre.hidden = true; if (lastView) paintMore(lastView); };
       m.markers.start.remove();
       // You: the dot and the cone of the way you face. Heading-up, so the cone always points up the screen.
       m.markers.you = m.add(markEl('m-you', '<path class="m-cone" d="M0,0 L-18,-44 A48 48 0 0 1 18,-44 Z"/><circle class="m-dot" r="8"/>', 100, 100), [DEST.lng, DEST.lat]);
@@ -1067,7 +1112,7 @@ function boot() {
   const DEMO_STATE = {
     soon: { dNext: 80, geoD: 100, stepNo: 1 }, here: { dNext: 0, stepNo: 1, hereStep: 1 }, arrive: { dd: 40, remainingM: 40, minsLeft: 1 }, arrived: { ended: true, status: 'ESCORT ENDED', remainingM: 0, minsLeft: 0 },
     early: { ended: true, status: 'ESCORT ENDED', remainingM: 0, minsLeft: 0 }, wait: { status: 'WAITING' }, finding: { status: 'FINDING YOU', user: null },
-    reroute: { dNext: 35, reroute: true }, battery: {}, lost: {}, welcome: {},
+    reroute: { dNext: 35, reroute: true }, fromhere: {}, battery: {}, lost: {}, welcome: {},
   };
   // The prototype's facts lines for the sample trip's previews. Its sample walk is not one consistent trip
   // ("Left, soon" after the pharmacy, then "Left here" into the lane), so the previews show its words as drawn.
@@ -1160,7 +1205,8 @@ function boot() {
     lastFix = { lat: r.lat, lng: r.lng };
     const now = Date.now();
     const v = ENG.feed(r, now);
-    if (v.reroute) reroute();
+    // After "turn around" went unheeded, the new way starts the way they are walking (heading).
+    if (v.reroute) reroute(v.forward && typeof v.heading === 'number' ? v.heading : null);
     if (location.hash === '#escort') paintEscort(v);
     lastView = v;
     if (location.hash === '#escort') paintMore(v);
@@ -1193,13 +1239,13 @@ function boot() {
     // Timeouts and no-signal errors just leave the state at "finding you" (the tick shows it).
   }
 
-  async function reroute() {
+  async function reroute(heading) {
     try {
       const at = ENG.view(Date.now()).user ? lastFix : null;
       if (!at) { ENG.rerouteFailed(); return; }
       const res = await fetch('/d/' + encodeURIComponent(T.id) + '/reroute', {
         method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'same-origin',
-        body: JSON.stringify({ lat: at.lat, lng: at.lng }),
+        body: JSON.stringify(heading === null || heading === undefined ? { lat: at.lat, lng: at.lng } : { lat: at.lat, lng: at.lng, heading: Math.round(heading) }),
       });
       if (!res.ok) throw new Error('reroute ' + res.status);
       const j = await res.json();

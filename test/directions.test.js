@@ -406,3 +406,85 @@ test("the page builder escapes the trip's own text", () => {
   assert.equal((html.match(/<\/script>/g) || []).length, 2, "only the page's own script tags close");
 });
 
+
+// ---------- told to turn around, and walking on anyway (Omari's walk, 10-30) ----------
+test("escort: 'turn around' is not insisted on: walking on 40 m (or 20 s) gives a calm new way from here, facing their way", () => {
+  const e = engine();
+  let v, said = [], asked = null;
+  for (let n = 0; n >= -120; n--) {
+    v = e.feed(read(pos(n, 0)), T0 + -n * 1000);
+    if (v.speak) said.push(v.speak);
+    if (v.reroute && !asked) asked = { at: n, forward: v.forward, heading: v.heading, state: v.state };
+  }
+  assert.ok(asked, "a new way was asked for");
+  assert.equal(asked.forward, true, "facing the way they walk");
+  assert.ok(Math.abs(client.angleDiff(asked.heading, 180)) < 20, `heading south, got ${asked.heading}`);
+  assert.equal(asked.state, "fromhere");
+  assert.equal(said.filter((x) => /new way from here/.test(x)).length, 1, "said once: " + JSON.stringify(said));
+  assert.ok(!said.some((x) => /turn around/i.test(x)), "never 'turn around' out loud, never over and over");
+  // Nothing comes back yet: the caption is the calm line, not "turn around".
+  assert.equal(v.state, "fromhere");
+  // The new way comes back from where they are: "Okay, new way from here.", and no "turn around" for a minute.
+  const here = pos(-120, 0);
+  const newLine = client.lineOf([here, pos(-120, 60), pos(-180, 60)]);
+  e.replaceRoute({ ...trip(), steps: [{ ...here, instr: "Head south", turn: "straight", street: "X", fact: "" }, { ...pos(-180, 60), instr: "There", turn: "straight", street: "P", fact: "" }] }, newLine, here, T0 + 121000);
+  const w = e.view(T0 + 121500);
+  assert.equal(w.state, "reroute");
+  assert.equal(w.fromHere, true);
+});
+
+test("escort: turning back after 'turn around' is just walking on, with no new way asked", () => {
+  const e = engine();
+  let v, asked = 0;
+  for (let n = 0; n >= -30; n--) { v = e.feed(read(pos(n, 0)), T0 + -n * 1000); if (v.reroute) asked++; }
+  assert.equal(v.state, "around");
+  for (let n = -29; n <= 10; n++) { v = e.feed(read(pos(n, 0)), T0 + 31000 + (n + 29) * 1000); if (v.reroute) asked++; }
+  assert.notEqual(v.state, "around");
+  assert.notEqual(v.state, "fromhere");
+  assert.equal(asked, 0);
+});
+
+test("reroute with a heading: OSRM is asked for a way leaving that way (bearings) and one that may turn back; forward wins unless much longer", async () => {
+  const urls = [];
+  const route = (metres) => ({ ok: true, json: async () => ({ routes: [{ distance: metres, duration: metres / 1.3, geometry: { coordinates: [[-0.186, 5.557], [-0.1865, 5.5571]] }, legs: [{ steps: [
+    { name: "", distance: metres, maneuver: { type: "depart", location: [-0.186, 5.557] } },
+    { name: "", distance: 0, maneuver: { type: "arrive", location: [-0.1865, 5.5571] } },
+  ] }] }] }) });
+  const net = (fwd, back) => async (url) => { urls.push(url); return /bearings=/.test(url) ? route(fwd) : route(back); };
+  let out = await reroute(sampleTrip(), { lat: 5.557, lng: -0.186 }, { routingUrl: "https://routes.example.test", fetchImpl: net(500, 420), heading: 183 });
+  assert.equal(out.status, 200);
+  assert.ok(urls.some((u) => /&bearings=183,60;&radiuses=40;$/.test(u)), urls.join(" "));
+  const logs = [];
+  out = await reroute(sampleTrip(), { lat: 5.557, lng: -0.186 }, { routingUrl: "https://routes.example.test", fetchImpl: net(500, 420), heading: 183, log: (l) => logs.push(l) });
+  assert.deepEqual(logs.find((l) => l.directions === "reroute_forward"), { directions: "reroute_forward", kept_forward: true }, "a forward way 80 m longer is the way");
+  logs.length = 0;
+  await reroute(sampleTrip(), { lat: 5.557, lng: -0.186 }, { routingUrl: "https://routes.example.test", fetchImpl: net(2000, 420), heading: 183, log: (l) => logs.push(l) });
+  assert.equal(logs.find((l) => l.directions === "reroute_forward").kept_forward, false, "a dead end ahead: turning back is the reasonable way");
+  urls.length = 0;
+  await reroute(sampleTrip(), { lat: 5.557, lng: -0.186 }, { routingUrl: "https://routes.example.test", fetchImpl: net(500, 420) });
+  assert.equal(urls.length, 1);
+  assert.doesNotMatch(urls[0], /bearings/, "an ordinary reroute asks once, with no heading");
+});
+
+test("the page posts the heading only with a forward reroute; the server takes it from the sample's reroute body", async () => {
+  const urls = [];
+  const fetchImpl = async (url) => { urls.push(url); return { ok: false, status: 502 }; };
+  const config = { directionsOn: true, directionsSample: true, directionsRouting: "https://routes.example.test" };
+  await directionsRequest({ method: "POST", pathname: "/d/sample/reroute", req: Readable.from([Buffer.from('{"lat":5.557,"lng":-0.186,"heading":-90}')]), config, fetchImpl });
+  assert.ok(urls.some((u) => /bearings=270,60/.test(u)), urls.join(" "));
+  const src = readFileSync(new URL("../src/pages/directionsclient.js", import.meta.url), "utf8");
+  assert.match(src, /reroute\(v\.forward && typeof v\.heading === 'number' \? v\.heading : null\)/);
+});
+
+test("layout on a phone: Escort is a column (status, stage, caption, MORE each in its own row); the choose screen flows and scrolls above Safari's bar", () => {
+  const css = readFileSync(new URL("../src/pages/directions.css", import.meta.url), "utf8");
+  for (const sel of [".caps", ".more-btn", ".esc-foot", ".stage", ".esc-status"]) {
+    const rule = css.match(new RegExp(`\\n${sel.replace(".", "\\.")} \\{([^}]*)\\}`));
+    assert.ok(rule, sel);
+    assert.doesNotMatch(rule[1], /position:\s*absolute/, `${sel} is in the flow, not pinned on top of another row`);
+  }
+  assert.match(css, /\.esc \{[^}]*flex-direction: column[^}]*safe-area-inset-bottom/);
+  assert.match(css, /\.flow \{[^}]*overflow-y: auto[^}]*safe-area-inset-bottom/);
+  assert.match(css, /@keyframes pulse \{ 0% \{ transform: translate\(-50%, -50%\)/, "the ring scales about the dot's centre");
+  assert.match(css, /\.sheet \{[^}]*safe-area-inset-bottom/);
+});
