@@ -270,7 +270,7 @@ const textLine = (o, i) => `${i + 1}. ${[o.name, o.price, o.detail].filter(Boole
 // from another. So for a product, the price and any size on the card must be what the store listing
 // the PHOTO came from says — read again here — or they are left off the card. Never a mismatch.
 
-const SIZE_RE = /(?<![\d.])(\d+(?:\.\d+)?)\s*[-_]?\s*(fl\.?\s*oz\.?|fluid\s+ounces?|ounces?|oz\.?|millilit(?:er|re)s?|ml|lit(?:er|re)s?|l|kilograms?|kg|grams?|g|pounds?|lbs?|count|ct|pack|pk)(?![a-z])/gi;
+const SIZE_RE = /(?<![\d.])(\d+(?:\.\d+)?)\s*[-_]?\s*(fl\.?[-\s]*oz\.?|fluid[-\s]+ounces?|ounces?|oz\.?|millilit(?:er|re)s?|ml|lit(?:er|re)s?|l|kilograms?|kg|grams?|g|pounds?|lbs?|count|ct|pack|pk)(?![a-z])/gi;
 const unitOf = (u) => {
   u = u.toLowerCase().replace(/[.\s]/g, "");
   if (/oz|ounce/.test(u)) return "oz";
@@ -287,12 +287,17 @@ export function sizesIn(text) {
   return [...String(text ?? "").matchAll(SIZE_RE)].map(m => ({ n: Number(m[1]), unit: unitOf(m[2]), raw: m[0] }));
 }
 const sameSize = (a, b) => a.unit === b.unit && Math.abs(a.n - b.n) < 0.01;
-/** The dollar amounts in a piece of text, as numbers. */
+const NUM = String.raw`(\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)`;
+/** The prices a listing shows: amounts with a currency mark ($15.99, £12, USD 15, 15.99 €), as numbers. */
 export function pricesIn(text) {
-  return [...String(text ?? "").matchAll(/\$\s?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/g)].map(m => Number(m[1].replace(/,/g, "")));
+  const re = new RegExp(String.raw`(?:[$£€]|\b(?:USD|EUR|GBP|CAD)\s?)\s?${NUM}|${NUM}\s?(?:[$£€]|\b(?:USD|EUR|GBP|CAD)\b)`, "gi");
+  return [...String(text ?? "").matchAll(re)].map(m => Number((m[1] ?? m[2]).replace(/,/g, "")));
 }
-const amountOf = (price) => { const p = pricesIn(price); return p.length ? p[0] : null; };
+/** A card's price as a number: any amount in it, currency mark or not. "$$" is a price level, not an amount. */
+const amountOf = (price) => { const m = new RegExp(NUM).exec(String(price ?? "")); return m ? Number(m[1].replace(/,/g, "")) : null; };
 const tidy = (s) => String(s).replace(/\(\s*\)/g, "").replace(/\s*·\s*(·\s*)+/g, " · ").replace(/\s{2,}/g, " ").replace(/^[\s·,|–—-]+|[\s·,|–—-]+$/g, "").trim();
+/** Every field a size could be written in. */
+const SIZED = ["name", "detail", "price", "brand", "why"];
 const STOP = new Set(["the", "and", "for", "with", "from", "facial", "new", "size"]);
 const words = (s) => String(s ?? "").toLowerCase().match(/[a-z0-9]{3,}/g)?.filter(w => !STOP.has(w)) ?? [];
 
@@ -307,7 +312,7 @@ export function checkAgainstListing(o, listing, { photoUrl = "", photoFromListin
   const dropped = [];
   const fail = (why) => {
     if (amountOf(out.price) != null) { dropped.push(`price ${out.price} (${why})`); out.price = ""; }
-    for (const k of ["name", "detail"]) {
+    for (const k of SIZED) {
       for (const s of sizesIn(out[k])) { dropped.push(`size ${s.raw.trim()} (${why})`); out[k] = tidy(out[k].replace(s.raw, " ")); }
     }
     return { option: out, dropped };
@@ -319,14 +324,14 @@ export function checkAgainstListing(o, listing, { photoUrl = "", photoFromListin
   if (want.length && want.filter(w => head.includes(w)).length / want.length < 0.5) return fail("the listing is a different product");
   // Price: one of the amounts the listing itself shows.
   const amt = amountOf(out.price);
-  if (amt != null && !pricesIn(`${listing.title ?? ""}\n${listing.text ?? ""}`).some(p => Math.abs(p - amt) < 0.005)) {
+  if (amt != null && !pricesIn(head).some(p => Math.abs(p - amt) < 0.005)) {
     dropped.push(`price ${out.price} (not on the listing)`); out.price = "";
   }
   // Size: the size in the listing's own title — a page lists every size it comes in, the title is
   // the one this listing is — and never one the photo's own file name contradicts.
   const titled = sizesIn(listing.title);
   const pictured = sizesIn((() => { try { return photoUrl ? decodeURIComponent(new URL(photoUrl).pathname) : ""; } catch { return ""; } })());
-  for (const k of ["name", "detail"]) {
+  for (const k of SIZED) {
     for (const s of sizesIn(out[k])) {
       const why = !titled.some(t => sameSize(t, s)) ? (titled.length ? `the listing says ${titled[0].raw.trim()}` : "the listing title gives no size")
         : pictured.length && !pictured.some(p => sameSize(p, s)) ? `the photo is the ${pictured[0].raw.replace(/[-_]/g, " ").trim()}` : null;

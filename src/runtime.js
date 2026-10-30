@@ -440,8 +440,10 @@ export class Runtime extends EventEmitter {
       // nothing leaves a claim behind, and this turn's reply is not the one it was made about.
       db.dropWhatsNewClaim(conversationId);
       // And cards a turn drew and never sent (it said nothing): they were about that turn's line.
-      const stale = choices.takeQueued(conversationId);
-      if (stale) db.setChoiceState(stale.setId, "dropped");
+      try {
+        const stale = choices.takeQueued(conversationId);
+        if (stale) db.setChoiceState(stale.setId, "dropped");
+      } catch { /* never costs the turn */ }
       // `answering` is the router's note of which text this turn is for. It decides the pin below,
       // and it reaches the tools so a task started this turn can keep the handle it was asked under.
       // `pinTo` is a caller's note of where a late reply belongs when the turn does not say — a

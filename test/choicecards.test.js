@@ -307,3 +307,13 @@ test("listing check is for products only: a place's rating and walk are never he
   db.setChoiceShown(r.set_id, { handles: [] });
   assert.equal(db.openChoiceFor(C, clock.now()).options[0].detail, "4.6 ★ · 3 min walk");
 });
+
+test("listing check (review): a price with no $ is still checked, other currencies count, and a size in the price or why is held up too", () => {
+  const listing = { title: "Hydrating Facial Cleanser 12 fl oz", text: "Our price: 15.99 USD · was £19" };
+  const a = cc.checkAgainstListing({ name: "Hydrating Facial Cleanser", price: "15.99 (16-fl-oz)", why: "16 oz value" }, listing);
+  assert.deepEqual([a.option.price, a.option.why], ["15.99", "value"]);
+  const b = cc.checkAgainstListing({ name: "Hydrating Facial Cleanser", price: "USD 14" }, listing);
+  assert.equal(b.option.price, "");
+  assert.equal(cc.checkAgainstListing({ name: "Hydrating Facial Cleanser", price: "17.49" }, null).option.price, "");
+  assert.deepEqual(cc.pricesIn("$1,299.00 or £12 or 15.99 € or USD 7"), [1299, 12, 15.99, 7]);
+});
