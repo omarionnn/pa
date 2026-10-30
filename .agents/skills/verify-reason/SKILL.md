@@ -426,7 +426,7 @@ See [features/web-drafts.md](features/web-drafts.md).
 
 ### Baseline — research room + one follow-up (fix/research-room-and-continue, 2026-10-30)
 
-`npm run test:offline` under `env -i`: 4,533 tests, 4,416 passing, 115 skipped, 2 failing — both in `test/flights.test.js` (known flake; 56/56 alone). New: `test/research-room.test.js` (8). In-process drive over the subscription: `bin/research-room-drive.mjs`, 10 steps all ok, see [features/research-room.md](features/research-room.md).
+`npm run test:offline` under `env -i`: 4,551 tests, 4,434 passing, 115 skipped, 2 failing — both in `test/flights.test.js` (known flake; 56/56 alone). New: `test/research-room.test.js` (11). In-process drive over the subscription: `bin/research-room-drive.mjs`, 10 steps all ok, see [features/research-room.md](features/research-room.md).
 
 ### Baseline — link-card attachments dropped (fix/link-preview-attachments, 2026-10-30)
 

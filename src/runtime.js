@@ -1565,6 +1565,12 @@ export class Runtime extends EventEmitter {
       }
       out.woke++;
       const before = db.taskSignature(t.id);
+      // A research follow-up (tools.js researchFollowUp) is one-shot, and that is code's to hold,
+      // not the model's: whatever its wake does — carries the run on, says NO_REPLY, only updates
+      // the task — it is closed after this wake and so is its run, so it can neither re-wake every
+      // 15 minutes for two days nor keep the run open and block every new question in the thread.
+      const followUp = db.researchForFollowUp(t.id);
+      const sentMark = db.outboxMark();
       db.markTaskWoken(t.id);
       // Where a line about this job lands: under the text that asked for it, once the thread has
       // moved on. Read at the moment of speaking, for the same reason the turn's own pin is.
@@ -1623,6 +1629,18 @@ export class Runtime extends EventEmitter {
         db.logTask(t.id, "error", why);
         const n = db.bumpTaskAttempt(t.id, { wakeAt: clock.now() + (t.attempts + 1) * config.taskRetryBackoffMin * MIN });
         this.log({ task: t.id, crashed: why, attempt: n.attempts, of: n.max_attempts });
+        // A follow-up gets ONE retry, and only when the crash sent nothing — a second try that
+        // could repeat a text already out is worse than the follow-up not coming. Then it closes
+        // quietly: no "keeps breaking" line about a background extra nobody asked to manage.
+        if (followUp) {
+          if (n.attempts >= 2 || db.sentSince(t.conversation_id, sentMark) > 0) {
+            this.closeFollowUp(t.id, followUp, `its wake crashed: ${why}`);
+            out.failed++;
+          } else {
+            out.retried++;
+          }
+          continue;
+        }
         if (n.attempts >= n.max_attempts) {
           db.finishTask(t.conversation_id, t.id, { state: "failed", outcome: `kept failing: ${why}` });
           out.failed++;
@@ -1646,6 +1664,8 @@ export class Runtime extends EventEmitter {
       if (reply && changed) out.reported++;
       else if (reply) out.held++;
 
+      if (followUp) { this.closeFollowUp(t.id, followUp, "its one wake ran without carrying the run on"); continue; }
+
       // Still open and nobody said when to come back: schedule it rather than lose it.
       const now = db.getTaskAnywhere(t.id);
       if (now?.open && now.next_wake_at === null) {
@@ -1653,6 +1673,15 @@ export class Runtime extends EventEmitter {
       }
     }
     return out;
+  }
+
+  /** Close a research follow-up's task and run after its one wake, whatever that wake did. */
+  closeFollowUp(taskId, run, why) {
+    const task = db.getTaskAnywhere(taskId);
+    if (task?.open) db.finishTask(task.conversation_id, taskId, { state: "cancelled", outcome: why });
+    const fresh = db.getResearch(run.conversation_id, run.id);
+    if (fresh?.state === "open") db.finishResearch(run.conversation_id, run.id, { cutShort: fresh.cut_short || "follow_up_done" });
+    this.log({ task: taskId, research_follow_up_closed: run.id, why: task?.open ? why : "delivered" });
   }
 
   /**

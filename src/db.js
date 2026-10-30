@@ -5896,6 +5896,11 @@ export function claimResearchContinuation(conversationId, id, { taskId, day }) {
   return r.changes === 1;
 }
 
+/** The run whose one background follow-up this task is, or null — what makes the task one-shot (runtime.js). */
+export function researchForFollowUp(taskId) {
+  return rowToResearch(db.prepare("SELECT * FROM research WHERE continue_task_id = ? ORDER BY id DESC LIMIT 1").get(taskId));
+}
+
 /** How many background follow-ups this person has been given on this install day. */
 export function researchContinuationsOn(conversationId, day) {
   return db.prepare("SELECT COUNT(*) n FROM research WHERE conversation_id = ? AND continue_day = ?").get(conversationId, day)?.n ?? 0;

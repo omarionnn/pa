@@ -8068,7 +8068,15 @@ function researchFollowUp(c, out, ctx) {
 function researchFollowUpDelivered(c, runBefore, out) {
   const taskId = runBefore?.continue_task_id;
   if (!taskId || !db.getTask(c, taskId)?.open) return {};
-  if (out?.ok && db.getResearch(c, runBefore.id)?.state === "open") db.finishResearch(c, runBefore.id, { cutShort: out.cut_short || "" });
+  if (db.getResearch(c, runBefore.id)?.state === "open") db.finishResearch(c, runBefore.id, { cutShort: out?.ok ? (out.cut_short || "") : "follow_up_failed" });
+  if (!out?.ok) {
+    db.finishTask(c, taskId, { state: "failed", outcome: `could not carry research #${runBefore.id} on: ${out?.error ?? "no reason given"}` });
+    return {
+      follow_up: { delivering: true, task_id: taskId, closed: true, finished_the_rest: false },
+      follow_up_note: "This is the one follow-up you said you would send, and the rest of the look could not be finished, so its task is closed."
+        + " Send ONE short honest line: you could not get to the rest, your earlier answer is what you have, and you can try again if they want. Nothing else will wake for this.",
+    };
+  }
   db.finishTask(c, taskId, { state: "done", outcome: `carried research #${runBefore.id} on: ${out?.pages_read ?? 0} page(s) read in all` });
   return {
     follow_up: { delivering: true, task_id: taskId, closed: true },
@@ -17351,11 +17359,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
               note: "It is done. Answer from the sources it already has, or start a new run for a different question.",
             };
           }
-          const more = await stepWithRetries(c, input.research_id, deps, ctx, ["search timed out, picking it back up", "still on it, one more try"]);
-          // A run that already had its follow-up given is being finished now: close it out once.
-          // One that has not may be given one here, by the same rules as a new run.
+          // A run that already had its follow-up given is being finished now: close it out once —
+          // and a step that fails or throws on that carry-on still closes it with a note, so the
+          // promised text becomes one honest line rather than silence.
+          let more;
+          try {
+            more = await stepWithRetries(c, input.research_id, deps, ctx, ["search timed out, picking it back up", "still on it, one more try"]);
+          } catch (e) {
+            if (!existing.continue_task_id) throw e;
+            more = { ok: false, research_id: existing.id, error: `the rest of the look broke: ${(e?.message ?? String(e)).split("\n")[0]}` };
+          }
+          // One that has not had a follow-up may be given one here, by the same rules as a new run.
           const followUp = existing.continue_task_id ? researchFollowUpDelivered(c, existing, more) : researchFollowUp(c, more, ctx);
-          if (more.ok) Object.assign(more, followUp);
+          Object.assign(more, followUp);
           if (more.ok && deep?.pending) {
             more.deep_note = `Parallel's deep run is still going (${deep.status}). Say what you have so far if it is worth saying, then task_update with wake_in_minutes 10 so the report is picked up when it lands.`;
           }

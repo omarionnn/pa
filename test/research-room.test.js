@@ -224,3 +224,85 @@ test("per-day cap: a third follow-up is refused for a non-owner, and the next da
   }
   assert.deepEqual(own, [true, true, true, true, true, false]);
 });
+
+// ---------------------------------------------------------------------------
+// the follow-up is one-shot in code, whatever its wake does
+// ---------------------------------------------------------------------------
+
+const cutRun = async (tag) => {
+  const p = fakeProvider({ answers: { "*": hits(tag, 2) } });
+  const first = await call(OWNER, { question: `${tag}?`, kind: "fact", queries: [`${tag}1`, `${tag}2`, `${tag}3`] }, deps(p, { maxSearches: 1 }));
+  assert.equal(first.follow_up?.scheduled, true);
+  return { p, first, taskId: first.follow_up.task_id };
+};
+
+test("a wake that never carries the run on: the task closes, nothing wakes again, the run stops blocking", async () => {
+  const { first, taskId } = await cutRun("idle");
+  let turns = 0;
+  const sent = [];
+  const rt = new Runtime({
+    runTurn: async () => {
+      turns++;
+      await runTool("task_update", { task_id: taskId, progress: "looked at it", wake_in_minutes: 15 }, { conversationId: OWNER });
+      return "NO_REPLY";
+    },
+  });
+  rt.on("outbound", (m) => sent.push(m));
+
+  clock.skip((config.researchContinueWakeMin + 1) * 60_000);
+  assert.equal((await rt.runTasks()).woke, 1);
+  assert.equal(db.getTask(OWNER, taskId).open, false, "closed after its one wake");
+  assert.equal(db.getResearch(OWNER, first.research_id).state, "done", "and so is the run");
+
+  for (let i = 0; i < 8; i++) { clock.skip(20 * 60_000); await rt.runTasks(); }
+  assert.equal(turns, 1, "it never wakes a second time");
+  assert.equal(sent.filter(m => /keeps breaking|gotten nowhere/.test(m.text)).length, 0, "no gave-up text");
+
+  const next = await call(OWNER, { question: "a new question", kind: "fact", queries: ["n1"] },
+    deps(fakeProvider({ answers: { "*": hits("n", 1) } })));
+  assert.notEqual(next.blocked, "research_open", "the closed run no longer blocks new research");
+});
+
+test("the follow-up's step errors: the wake still gets a note to send one honest line", async () => {
+  const { first, taskId } = await cutRun("boom");
+  const p = fakeProvider({ answers: { "*": hits("boomlate", 2) } }); // new pages, so a read is attempted
+  const sent = [];
+  let wake = null;
+  const rt = new Runtime({
+    runTurn: async () => {
+      wake = await runTool("research", { research_id: first.research_id }, {
+        conversationId: OWNER, searchProvider: p, lookup, robots: async () => { throw new Error("robots exploded"); },
+        researchCaps: { maxSearches: 1 },
+      });
+      return "couldn't get to the rest of that one — what i sent earlier is what i've got. want me to try again?";
+    },
+  });
+  rt.on("outbound", (m) => sent.push(m));
+
+  clock.skip((config.researchContinueWakeMin + 1) * 60_000);
+  await rt.runTasks();
+  assert.equal(wake.ok, false);
+  assert.equal(wake.follow_up?.finished_the_rest, false);
+  assert.match(wake.follow_up_note, /honest line/i);
+  assert.equal(db.getTask(OWNER, taskId).state, "failed");
+  assert.equal(db.getResearch(OWNER, first.research_id).state, "done");
+  assert.equal(sent.length, 1, "the one honest line goes out");
+  clock.skip(60 * 60_000);
+  await rt.runTasks();
+  assert.equal(sent.length, 1);
+});
+
+test("a wake turn that crashes gets one retry, then closes quietly", async () => {
+  const { first, taskId } = await cutRun("crash");
+  let turns = 0;
+  const sent = [];
+  const rt = new Runtime({ runTurn: async () => { turns++; throw new Error("model fell over"); } });
+  rt.on("outbound", (m) => sent.push(m));
+
+  clock.skip((config.researchContinueWakeMin + 1) * 60_000);
+  for (let i = 0; i < 10; i++) { await rt.runTasks(); clock.skip(30 * 60_000); }
+  assert.equal(turns, 2, "one try and one retry");
+  assert.equal(db.getTask(OWNER, taskId).open, false);
+  assert.equal(db.getResearch(OWNER, first.research_id).state, "done");
+  assert.deepEqual(sent.map(m => m.text), [], "no 'keeps breaking' text for a background extra");
+});

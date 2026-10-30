@@ -20,6 +20,12 @@ pages off query 1, the loop broke on `pages`, and Stripe / Skyfire / Payman were
   first) gets a fresh slice (+5 searches, +8 pages, `REASON_RESEARCH_CONTINUE_*`), closes the run and
   the task, and is told to send ONE text with only what is new (nothing new → one short line that the
   rest did not change the pick). `enough: true` cancels the task.
+- One-shot in code (`runtime.js` `runTasks` → `closeFollowUp`, `db.researchForFollowUp`): after its
+  wake the follow-up task is closed (cancelled if the turn never carried the run on) and so is the
+  run, whatever the turn did — no 15-minute re-wakes, no "gave up" text, no run left open blocking
+  new questions with `research_open`. A wake that crashes gets one retry only if nothing was sent,
+  then closes quietly. A carry-on whose step fails or throws still closes the task (`failed`) and
+  gets a note to send one honest line (could not get to the rest).
 - Daily cap: `research.continue_day` on the install day (`trust.spendDay`); 2 per person, owner 5
   (`REASON_RESEARCH_CONTINUE_PER_DAY[_OWNER]`). Past it `follow_up: { scheduled: false, why:
   "daily_limit" }` and the note says answer from what it got and offer to look further.
@@ -27,7 +33,7 @@ pages off query 1, the loop broke on `pages`, and Stripe / Skyfire / Payman were
 Source: `src/research.js`, `src/tools.js` (`case "research"`, `researchFollowUp*`,
 `researchTaskLive`), `src/db.js` (`big`, `continue_task_id`, `continue_day`,
 `claimResearchContinuation`, `researchContinuationsOn`), `src/config.js`.
-Tests: `test/research-room.test.js` (8), `test/research.test.js`.
+Tests: `test/research-room.test.js` (11), `test/research.test.js`.
 
 ## Drive (in process, subscription — 3 model turns, fake search, nothing texted)
 
