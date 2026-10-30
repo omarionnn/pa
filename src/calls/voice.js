@@ -1671,7 +1671,7 @@ export async function* voiceTurn({
       // `voicemail_detection` lands here too: the machine is already known, and calling it again is
       // the model asking to hang up.
       if (callOutcome.reachedMachine(call) && !toolUses.some(t => t.name === "end_call")) {
-        const left = hold.noteVoicemail(call, { message: roundText, log });
+        const left = hold.noteVoicemail(call, { message: withoutSilenceMarker(roundText).text, log });
         yield* endCallChunks(chunk, left.left ? "left the voicemail" : "a machine answered; nothing to leave");
         log({ voice_turn: call.id, kind: context.kind, voicemail_left: left.left, rounds: round, ...timing() });
         return;
@@ -1688,6 +1688,19 @@ export async function* voiceTurn({
       // the call, switching language, waiting, pressing keys and hanging up on a machine are all
       // things only ElevenLabs can do.
       let system = toolUses.find(t => SYSTEM_TOOL_NAMES.includes(t.name));
+      // end_call's `message` and transfer_to_number's `client_message` are spoken by the platform,
+      // so they never passed the sentence filter in `emit`: one carrying "NO_REPLY" would have been
+      // read down the line as "no reply". Same floor as the spoken words: marker out, and an
+      // argument that was only the marker is dropped — the line goes quietly, or `handOver` uses
+      // its own words.
+      for (const key of ["message", "client_message"]) {
+        if (!system || typeof system.input?.[key] !== "string") continue;
+        const marker = withoutSilenceMarker(system.input[key]);
+        if (!marker.had) continue;
+        log({ voice_no_reply_dropped: call.id, kept: marker.text.length, tool: system.name });
+        const { [key]: _dropped, ...rest } = system.input;
+        system = { ...system, input: marker.text ? { ...rest, [key]: marker.text } : rest };
+      }
 
       // Waiting. The platform stays silent; the budget is ours, because their silence timer measures
       // silence and hold music is audio. Out of budget, the call rings off politely rather than sitting
@@ -1742,7 +1755,8 @@ export async function* voiceTurn({
       // The hang-up after a machine answered. Whatever is in `message` is what the mailbox gets, and
       // it is the only thing that makes this a voicemail left rather than a machine reached.
       if (system?.name === "end_call" && callOutcome.reachedMachine(call)) {
-        const words = [roundText, system.input?.message].map(s => String(s ?? "").trim()).filter(Boolean).join(" ");
+        // The record of what the mailbox got: what was actually spoken, so never the marker.
+        const words = [withoutSilenceMarker(roundText).text, system.input?.message].map(s => String(s ?? "").trim()).filter(Boolean).join(" ");
         hold.noteVoicemail(call, { message: words, log });
       }
 
