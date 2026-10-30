@@ -16,8 +16,9 @@
 //      interrupt gracefully. Two or three sentences, then stop and let them talk.
 //
 // And one thing that is not about speech at all: on a call there is no going back and editing. A
-// text can be followed by "sorry, I had that wrong". A call has to say it in the moment, which is
-// why admitting a miss out loud is in here rather than left to the general persona.
+// text can be followed by a correction. A call has to make it in the moment, which is why admitting
+// a miss out loud — plainly, as a correction rather than an apology — is in here rather than left to
+// the general persona.
 import { config } from "../config.js";
 
 /**
@@ -34,7 +35,9 @@ export const VOICE_RULES = [
   `No emoji, no markdown, no asterisks, no bullet points, no headings. Plain spoken sentences only.`,
   `Never say a web address, a link, an email address or a code out loud. If there is one, say you will text it and it gets texted.`,
   `Say numbers and times the way a person says them: "twenty to eight", not "7:40". "Two fifty" for $2.50.`,
-  `If you get something wrong, say so out loud in the moment — "sorry, I had that wrong, it's actually Thursday" — rather than talking past it.`,
+  // Call baseline (2026-10-30): 10 of the model's own lines on owner calls were apologies, most of them
+  // this rule's quoted example said back. Owning a mistake is the point; the apology is filler.
+  `If you get something wrong, correct it out loud in the moment, plainly, with the right answer, rather than talking past it. No apology, just the correction.`,
   `If you do not know something, say you will check and come back. Never fill a gap with a guess because silence feels bad.`,
   `Reply in the language the person on the line is speaking. If they switch language, switch with them and stay there.`,
   // 2026-10-07 addendum, section 5. The platform stops the audio the moment somebody talks over it
@@ -82,7 +85,7 @@ export function ownerLanguageRule(code = "en") {
   return [
     `This call is in ${name}. Reply in ${name}, even when a line of theirs comes through in another language:`,
     `the phone audio goes through speech-to-text, and it often turns a short ${name} line into another language.`,
-    `If a line like that makes no sense where it sits, say you didn't catch that and ask them to say it again.`,
+    `If a line like that makes no sense where it sits, plainly ask them to repeat it, without apologising.`,
     `Switch only if they ask you to speak another language, or keep speaking it for two turns in a row; then`,
     `call language_detection once with that language's two-letter code and reply in it.`,
   ].join(" ");
