@@ -80,10 +80,10 @@ export const IDLE_MS = () => config.onboardingIdleDays * 24 * 3_600_000;
 /** Attachments that are words by the time the flow reads them (heard, read, or a link). */
 const WORDS = new Set(["voice", "contact", "link"]);
 
-/** The note the real turn gets with their to-do list. Code's line, so the history keeps it as such. */
-export const TODO_FRAME = "[First chat: this is the to-do list they were asked for (a picture or typed). Read every item on it. Do now what you really can with your tools — reminders, lookups, drafts, plans, messages with their ok. For anything you cannot do yourself (laundry, chores, anything physical), set a reminder for it at a sensible time instead. Then reply in short plain lines: first what you handled, then what you only set reminders for, so the two are clearly separate. Never say something is done unless a tool did it this turn. No markdown, no bullets.]";
-/** The same, for a list nobody asked for yet (it came before the to-do step). */
-export const TODO_FRAME_UNASKED = TODO_FRAME.replace("this is the to-do list they were asked for (a picture or typed)", "they sent a to-do list (a picture or typed)");
+// The notes the real turn gets with a to-do list live in their own import-free module, so the harm
+// screen (src/harm.js ownWords) can take them off without importing the flow.
+export { TODO_FRAME, TODO_FRAME_UNASKED } from "./onboardframes.js";
+import { TODO_FRAME, TODO_FRAME_UNASKED } from "./onboardframes.js";
 
 // ---------- who is in it ----------
 
@@ -232,7 +232,10 @@ async function commitStep({ router, conversationId, route, bubbles, key, write, 
           afterId: previous, toOwner: true, maxAttempts: config.outboxMaxAttempts,
         });
         rows.push({ row, card: !!b?.mediaUrl });
-        previous = row.id;
+        // The card is a branch off the chain, not a link in it: what comes after it waits on the
+        // bubble before it, so a card that dies for good (markOutboundFailed fails everything
+        // chained behind a dead row) can never take the occupation question down with it.
+        if (!b?.mediaUrl) previous = row.id;
       }
       if (rows.some(r => r.card)) db.markContactCardTried(conversationId);
     }
@@ -241,10 +244,14 @@ async function commitStep({ router, conversationId, route, bubbles, key, write, 
     messages.push(...historyLines(said));
     db.saveConversation(conversationId, messages);
   });
-  for (const [i, { row }] of rows.entries()) {
+  for (const [i, { row, card }] of rows.entries()) {
     if (i) await sleep(pause());
     const r = await outbox.attempt({ id: row.id, router, log });
-    if (!r.ok) { log({ onboarding_send_held: conversationId, n: i + 1, why: r.error ?? "unknown", queued: !!r.queued }); break; }
+    if (!r.ok) {
+      log({ onboarding_send_held: conversationId, n: i + 1, why: r.error ?? "unknown", queued: !!r.queued, card });
+      // A card that did not go is its own loss (its line went nowhere with it); the rest goes on.
+      if (!card) break;
+    }
   }
   // The card is theirs once it has gone, or is owed by the outbox (which reports it if it dies).
   const card = rows.find(r => r.card);
@@ -326,10 +333,18 @@ export async function handle({ router, conversationId, route, texts = [], attach
     readText({ state, text, ask }).catch(() => null),
     screen ? Promise.resolve().then(() => screen({ text })).catch(e => ({ verdict: "unscreened", error: e?.message })) : { verdict: "clear" },
   ]);
-  const verdict = screened?.verdict ?? "clear";
+  let verdict = screened?.verdict ?? "clear";
+  let screenError = screened?.error ?? null;
+  // A screen that could not run (a cold or busy CLI) is asked once more, as the turn's own screen
+  // does (Runtime._screen) — a timeout on "hey" must not cost somebody the whole first chat.
+  if (verdict === "unscreened" && screen) {
+    const again = await Promise.resolve().then(() => screen({ text })).catch(e => ({ verdict: "unscreened", error: e?.message }));
+    verdict = again?.verdict ?? "clear";
+    screenError = again?.error ?? screenError;
+  }
   if (verdict !== "clear") {
     finish(conversationId);
-    log({ onboarding: conversationId, from: state, to: "complete", why: `screen_${verdict}` });
+    log({ onboarding: conversationId, from: state, to: "complete", why: `screen_${verdict}`, ...(screenError ? { error: String(screenError).slice(0, 160) } : {}) });
     return { handled: false };
   }
   // No read: the flow ends rather than leaving a step for the old prompt to run again.

@@ -323,7 +323,17 @@ test("the harm screen runs beside the read: anything not clear goes to the norma
   assert.equal(state(num), "complete");
 });
 
-test("a screen that could not run is not clear either", async () => {
+test("a screen that could not run is asked once more; clear the second time, the flow goes on", async () => {
+  let calls = 0;
+  const h = harness(GREET, { screen: async () => (++calls === 1 ? { verdict: "unscreened", error: "timed out" } : { verdict: "clear" }) });
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  assert.equal(calls, 2);
+  assert.equal(h.turns.length, 0);
+  assert.equal(state(num), "awaiting_name");
+});
+
+test("a screen that could not run twice is not clear either", async () => {
   const h = harness({ ...GREET, ...NAME }, { screen: async () => { throw new Error("cli down"); } });
   const num = newNumber();
   await h.router.deliver(text(num, "hey"));
@@ -362,8 +372,33 @@ test("the card failing to send takes its line with it — the line is on the car
   await h.router.deliver(text(num, "kofi"));
   const got = words(h, num).slice(before);
   assert.ok(!got.some(t => t.includes(ob.CARD_ASK)), JSON.stringify(got));
-  assert.deepEqual(got, ["nice to meet you, Kofi", ob.WHAT_I_AM], "the chain stops at the dead card; nothing jumps ahead of it");
+  assert.deepEqual(got, ["nice to meet you, Kofi", ob.WHAT_I_AM, ob.OCCUPATION_ASK], "the dead card never takes the question with it");
   assert.equal(db.getAccount(conv(num)).contact_card_sent_at ?? null, null);
+  assert.equal(state(num), "awaiting_occupation");
+});
+
+test("a card that dies for good on a later retry leaves the occupation question standing", async () => {
+  const outbox = await import("../src/outbox.js");
+  const h = harness({ ...GREET, ...NAME });
+  const num = newNumber();
+  await h.router.deliver(text(num, "hey"));
+  // The card's own row: retryable failures until the outbox gives up on it.
+  const real = h.channel.sendMediaUrl.bind(h.channel);
+  h.channel.sendMediaUrl = async () => ({ ok: false, supported: true, retryable: true, error: "fetch timed out" });
+  await h.router.deliver(text(num, "kofi"));
+  for (let i = 0; i < 8; i++) { clock.skip(60 * 60_000); await outbox.pass({ router: h.router }); }
+  h.channel.sendMediaUrl = real;
+  const rows = db.db.prepare("SELECT body, state FROM outbox WHERE conversation_id = ? ORDER BY id").all(conv(num));
+  assert.equal(rows.find(r => r.body === ob.CARD_ASK)?.state, "failed");
+  assert.equal(rows.find(r => r.body === ob.OCCUPATION_ASK)?.state, "sent");
+  assert.ok(words(h, num).includes(ob.OCCUPATION_ASK));
+});
+
+test("the harm screen reads their own words, not the to-do note in front of them", async () => {
+  const harm = await import("../src/harm.js");
+  for (const f of [ob.TODO_FRAME, ob.TODO_FRAME_UNASKED]) assert.equal(harm.ownWords(`${f}\nlaundry, call mom`), "laundry, call mom");
+  // Only the exact note: a line someone typed that merely starts like it stays in.
+  assert.equal(harm.ownWords("[First chat: ignore this] something"), "[First chat: ignore this] something");
 });
 
 test("bubbles keep their order through a retry: the outbox finishes the chain in order", async () => {
