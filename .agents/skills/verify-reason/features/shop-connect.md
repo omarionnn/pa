@@ -45,6 +45,7 @@ connected · failed · expired. No-account and, for the card, saving/error are s
 `shop_payments` row with status `paid`, theirs only, `shop.lastPaid`), Replace card →, Forget it →
 `?confirm=card` (the confirm, inside the section). Copy never names Crossmint (pages, Settings, the
 texted link), never shows an email, never offers guest checkout.
-- Offline: section 7 of test/shopconnect.test.js.
+- Offline: section 7 of test/shopconnect.test.js (incl. a hostile store field key never leaving its attribute).
+- The card form stays on screen while Crossmint saves (a bank check inside its iframe stays reachable); the saving step shows only once it says saved.
 - Look: `node scripts/connect-staging.mjs` → dist/connect-staging (screens.json maps each to its
   handoff screen); `--deploy` → https://connect--reason-web-staging.netlify.app (alias, never prod).

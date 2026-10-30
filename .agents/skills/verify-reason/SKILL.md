@@ -424,6 +424,9 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
+### Baseline — card + store sign-in paper redesign (wt/card-signin-redesign, #271, 2026-10-30)
+4,725 tests / 4,610 pass / 0 fail / 115 skipped (`npm run test:offline` under `env -i`, merged with origin/main a5e3c62). Cage (own port + `REASON_VERIFY_RUN`, owner, real JWT key, no Crossmint server key): 11/11 per [features/shop-connect.md](features/shop-connect.md) drive, plus an Amazon sign-in link → 200, one plain input (email), password sealed, no "Crossmint" in visible copy.
+
 ### Baseline — NO_REPLY never reaches a person (wt/noreply-midtext, #272, 2026-10-30)
 4,704 tests / 4,589 pass / 0 fail / 115 skipped (`npm test` under `env -i`, branch merged with origin/main 963e3eb). New: `test/no-reply-midtext.test.js` (11), `test/no-reply-sanitizer.test.js` (9). Caged drive over the fake Sendblue: see [features/no-reply-marker.md](features/no-reply-marker.md).
 
