@@ -98,10 +98,19 @@ export function storeKey(input) {
   for (const [k, v] of Object.entries(STORES)) {
     if (s === k || s === v.name.toLowerCase() || slug(s) === k || (host && host === new URL(v.url).hostname.replace(/^www\./, ""))) return k;
   }
-  return host ? siteKey(host) || null : null;
+  if (!host) return null;
+  const key = siteKey(host);
+  // A lookalike (target.co, amazon-deals.net's "amazon") never borrows a known store's name: it is its own store.
+  const real = STORES[key] && new URL(STORES[key].url).hostname.replace(/^www\./, "");
+  if (real && host !== real && !host.endsWith(`.${real}`)) return slug(host) || null;
+  return key || null;
 }
 /** The key for a checkout: the store's name if it is known, else the site the checkout starts on, else the name. */
-export const checkoutStoreKey = (store, startUrl) => storeKey(store) ?? storeKey(startUrl) ?? (slug(store) || null);
+export function checkoutStoreKey(store, startUrl) {
+  const bySite = storeKey(startUrl), byName = storeKey(store);
+  // The site the checkout runs on is the truth: "Target" on target.co is target.co.
+  return bySite ?? byName ?? (slug(store) || null);
+}
 const titleCase = (k) => String(k ?? "").replace(/^./, (c) => c.toUpperCase());
 export const storeName = (key) => (key ? STORES[key]?.name ?? (siteRow(key)?.name || titleCase(key)) : "");
 /** "required" when this store is known (or was found) to have no guest checkout. */
@@ -227,11 +236,20 @@ async function fetchPublic(url, { accept, signal }) {
   }
   return null;
 }
+/** The body, read no further than `max` bytes. */
+async function capped(res, max) {
+  if (!res.body?.getReader) return Buffer.from(await res.arrayBuffer()).subarray(0, max);
+  const reader = res.body.getReader(); const parts = []; let n = 0;
+  while (n < max) { const { done, value } = await reader.read(); if (done) break; parts.push(value); n += value.length; }
+  reader.cancel().catch(() => {});
+  return Buffer.concat(parts).subarray(0, max);
+}
 async function iconAt(url, signal) {
   const res = await fetchPublic(url, { accept: "image/*", signal }).catch(() => null);
   const type = String(res?.headers?.get?.("content-type") ?? "").split(";")[0].trim().toLowerCase();
   if (!res || !/^image\/(png|x-icon|vnd\.microsoft\.icon|svg\+xml|jpeg|webp|gif)$/.test(type)) return "";
-  const buf = Buffer.from(await res.arrayBuffer());
+  if (Number(res.headers?.get?.("content-length") ?? 0) > ICON_MAX) return "";
+  const buf = await capped(res, ICON_MAX + 1);
   return buf.length >= 64 && buf.length <= ICON_MAX ? `data:${type};base64,${buf.toString("base64")}` : "";
 }
 /** The cached icon for a store, or "" (draw a monogram). */
@@ -253,7 +271,7 @@ export async function ensureIcon(key, { ms = 4000 } = {}) {
       const found = [];
       const page = await fetchPublic(base, { accept: "text/html", signal: ctl.signal }).catch(() => null);
       if (page) {
-        const html = (await page.text()).slice(0, 300_000);
+        const html = (await capped(page, 300_000)).toString("utf8");
         for (const m of html.matchAll(/<link\b[^>]*>/gi)) {
           const tag = m[0], rel = /\brel\s*=\s*["']?([^"'>]+)/i.exec(tag)?.[1]?.toLowerCase() ?? "", href = /\bhref\s*=\s*["']?([^"'\s>]+)/i.exec(tag)?.[1];
           if (!href || !/\bicon\b|apple-touch-icon/.test(rel)) continue;
@@ -718,7 +736,7 @@ function needsAccount(result) {
   const code = String(result?.code ?? "").toLowerCase();
   const text = `${result?.summary ?? ""} ${result?.message ?? ""} ${result?.reason ?? ""}`.toLowerCase();
   const wall = /sign[\s-]?in|log[\s-]?in|create (an |your )?account|requires? (an )?account|membership/.test(text);
-  if (/sign_?in|login|auth|account/.test(code)) return true;
+  if (/(^|[._])(sign_?in|login|account_required|requires_account|auth_required)([._]|$)/.test(code)) return true;
   return code === "merchant.no_safe_path" && (wall || !text.trim());
 }
 function finishSignin(run, link) {

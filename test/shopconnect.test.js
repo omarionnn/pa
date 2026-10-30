@@ -349,7 +349,7 @@ const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.alloc(
 const iconSite = (seen) => async (url) => {
   seen.push(url);
   const u = new URL(url);
-  const res = (status, type, body, location) => ({ status, ok: status < 300, url, headers: { get: (h) => (h === "content-type" ? type : h === "location" ? location : null) }, text: async () => String(body), arrayBuffer: async () => body });
+  const res = (status, type, body, location) => ({ status, ok: status < 300, url, headers: { get: (h) => (h === "content-type" ? type : h === "location" ? location : null) }, text: async () => String(body), arrayBuffer: async () => (typeof body === "string" ? Buffer.from(body) : body) });
   if (u.hostname === "www.amazon.com" && u.pathname === "/") return res(200, "text/html", `<html><head><link rel="apple-touch-icon" href="/touch.png"></head></html>`);
   if (u.hostname === "www.amazon.com" && u.pathname === "/touch.png") return res(200, "image/png", PNG);
   if (u.hostname === "amazon.com") return res(301, "", "", "https://www.amazon.com/");
@@ -363,6 +363,9 @@ test("any store: its key and name come from its site; an unknown one draws a cle
   assert.equal(shop.storeKey("Home Depot"), "homedepot");
   assert.equal(shop.checkoutStoreKey("Trader Joe's", "https://www.traderjoes.com/home"), "traderjoes");
   assert.equal(shop.storeName("amazon"), "Amazon");
+  assert.equal(shop.storeKey("https://www.target.co/x"), "targetco", "a lookalike is its own store");
+  assert.equal(shop.checkoutStoreKey("Target", "https://target-deals.shop/p"), "targetdeals");
+  assert.equal(shop.checkoutStoreKey("Target", "https://www.target.com/p/1"), "target");
   shop.noteStore({ store: "pinkfrogshop", name: "pinkfrogshop.com", url: "https://www.pinkfrogshop.com/x" });
   assert.equal(shop.storeName("pinkfrogshop"), "Pinkfrogshop");
   shop.noteStore({ store: "traderjoes", name: "Trader Joe's", url: "https://www.traderjoes.com/" });
@@ -431,4 +434,8 @@ test("a guest run that failed for another reason is not retried", async () => {
   runs[out.runId].status = "blocked";
   runs[out.runId].result = { code: "merchant.no_safe_path", summary: "The item is out of stock at every nearby store." };
   assert.ok(!(await shop.step(out.runId)).retried);
+  const card = await shop.startCheckout({ conversationId: OMARI, store: "bestbuy", startUrl: "https://www.bestbuy.com/", what: "Buy a cable.", maxUsd: 15 });
+  runs[card.runId].status = "failed";
+  runs[card.runId].result = { code: "card.auth_declined" };
+  assert.ok(!(await shop.step(card.runId)).retried, "a declined card is not a sign-in wall");
 });
