@@ -31,6 +31,8 @@ const { llmRequest, SSE_DONE, HOLDING_LINE, LATE_LINE } = voice;
 const { EXTRA_BODY_KEYS } = await import("../src/calls/elevenlabs.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
+const hold = await import("../src/calls/hold.js");
+const { announcementFor } = await import("../src/calls/provider.js");
 
 const C = config.ownerConversation;
 const realRunTool = voice.contextDeps.runTool;
@@ -241,6 +243,36 @@ test("a holding line written while nobody was reading is still said to the reque
   assert.equal(left.done, true, "the closed stream is handed nothing more");
   assert.equal(r2.said.split(HOLDING_LINE).length - 1, 1, "the joining stream hears the holding line once");
   assert.match(r2.said, /Here it is\./);
+});
+
+test("a round that ends while nobody reads it writes nothing down: the disclosure is still owed after a barge-in", async () => {
+  const row = db.createCall(C, {
+    provider: "elevenlabs", toNumber: "+12125559999", isOwner: false,
+    goal: "ask for a table for four at eight on Saturday", facts: ["the name is Omari"],
+    announcement: announcementFor({ ownerName: "Omari" }), externalId: `conv_reask_${++n}`, state: "in_progress",
+  });
+  db.updateCall(C, row.id, { opening_waits: 1 });
+  assert.equal(hold.openingOwed(db.getCall(C, row.id)), true, "set up: nobody has heard who is calling");
+  // The words are held back until the round ends (the disclosure goes first), so nothing is yielded
+  // while the model writes.
+  const generate = async function* () { yield { type: "text", text: "Hi there, " }; await sleep(80); yield { type: "text", text: "a table for four?" }; };
+  const a = await llmRequest({ ...base, rawBody: bodyFor(row, [{ role: "user", content: "Hello, Carbone." }]), generate });
+  const it = a.stream[Symbol.asyncIterator]();
+  await it.next();
+  const pending = it.next();
+  a.abort();
+  await sleep(200);
+  // They spoke over it: new words, so the unread turn is cancelled.
+  const b = await llmRequest({
+    ...base, generate: async function* () { yield { type: "text", text: "Sorry, go ahead." }; },
+    rawBody: bodyFor(row, [{ role: "user", content: "Hello, Carbone." }, { role: "user", content: "Hello? Anyone there?" }]),
+  });
+  const r2 = await drain(b.stream);
+  await pending;
+
+  assert.ok(r2.said.startsWith("Hey, hi — this is an AI assistant calling for Omari."), `the new turn still says who is calling first: ${r2.said}`);
+  assert.equal(hold.openingOwed(db.getCall(C, row.id)), false, "and only now is it marked said");
+  assert.match(r2.said, /go ahead/);
 });
 
 test("an empty turn while the call is on hold waits with skip_turn rather than ending empty", async () => {

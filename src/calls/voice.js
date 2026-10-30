@@ -1653,6 +1653,8 @@ export async function* voiceTurn({
     && !callOutcome.MACHINE_KINDS.includes(String(call?.outcome_kind ?? ""));
   const onlyHolding = () => holdingSaid && said === holdingText;
   const untilFirstWord = async function* (pending) {
+    // A turn closed while it waits here leaves `pending` behind; its rejection is nobody's to crash on.
+    Promise.resolve(pending).catch(() => {});
     if (saidAnything() || !replyExpected()) return await pending;
     // The holding line once per call at the first deadline; after that, the late line for any turn
     // that is about to look dead to the platform. See `LATE_HOLDING_MS`.
@@ -1823,6 +1825,14 @@ export async function* voiceTurn({
         if (!readingDone) Promise.resolve(reading.return?.()).catch(() => {});
       }
       yield* emit(splitter.flush());
+
+      // Everything below this point writes down what this round did — the disclosure as said, a
+      // voicemail as left, a wait, a key press, a hand-over — so none of it runs for a round nobody
+      // is reading. Its socket closed mid-round: it waits here for a re-ask to join, or is cancelled.
+      if (!(await stillWanted())) {
+        yield* endSuperseded("round_end", round);
+        return;
+      }
 
       if (holdBack && held.length) {
         // A recording or menu is on the line and the model is hanging up: nobody hears the goodbye,
@@ -2152,6 +2162,11 @@ export async function* voiceTurn({
       }
       const results = [];
       for (const t of toolUses) {
+        // Checked before every tool, not once per round: the socket can close while the one before runs.
+        if (!(await stillWanted())) {
+          yield* endSuperseded(t.name, round);
+          return;
+        }
         let out;
         // The second check, in front of the ordinary gate rather than instead of it (2026-10-07
         // addendum, section 6). Caller ID said whose Reason to be; it did not say who is holding the
