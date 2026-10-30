@@ -42,11 +42,12 @@ import { TOKENS } from "./pages/webkit.js";
 import { RENDER_TIMEOUT_MS, shootWithChromium } from "./pages/card.js";
 import { fetchImage } from "./media.js";
 import { checkUrl } from "./pictures.js";
+import { webLookup } from "./weblookup.js";
 
 export const CHOICE_TOOLS = new Set(["show_choices"]);
 
 /** Bump when the drawing changes, so every kept card is drawn again. */
-export const CHOICE_CARD_VERSION = 1;
+export const CHOICE_CARD_VERSION = 2;
 /** How long a set of cards is still the thing their next message may be answering. */
 export const CHOICE_TTL_MS = 12 * 3_600_000;
 /** 360×450 points, drawn at 3× — crisp on any iPhone, about the shape of a portrait photo. */
@@ -79,6 +80,7 @@ export const CHOICE_TOOL_DEFS = [
       + " Never for a yes/no, a single answer, a list of facts, or when you already know which one they mean — then just answer."
       + " Every option needs image_url or url (its product page or the place's own page) from a tool result in this conversation — never typed from memory; with only the page, its own preview picture is used."
       + " After it returns ok, your reply is ONE short line that goes above the cards: how many and what, and that it is their pick. Do not list the options again in words; the cards say them."
+      + " For a product, give url (the store listing) for each one: the price and size on a card are checked against the listing its photo came from and left off when it does not say the same."
       + " If it returns fallback: \"text\", write the options as a short numbered list instead (the numbers are kept either way).",
     input_schema: {
       type: "object",
@@ -139,9 +141,9 @@ export function choiceCardHtml({ n, kind = "shopping", name, brand = "", price =
   const t = TOKENS[theme === "night" ? "night" : "paper"];
   const f = fonts();
   const product = kind !== "places";
-  // A name that will take two lines gives the photo back the room, so the price never meets the footer.
-  const long = String(name).length > 24;
   const meta = [price, detail].filter(Boolean).map(esc).join('<span class="dot">·</span>');
+  // One column: the photo takes whatever height the words and the foot leave, so a one-line name
+  // with no price is a bigger photo, never an empty band under the text.
   return `<!doctype html><html data-theme="${theme === "night" ? "dark" : "light"}"><head><meta charset="utf-8"><style>
 @font-face{font-family:"Card Serif";font-style:italic;font-weight:400;src:url(${f.serif}) format("woff2")}
 @font-face{font-family:"Card Sans";font-weight:100 900;src:url(${f.sans}) format("woff2")}
@@ -150,25 +152,24 @@ ${WORDMARK_CSS}
 *{margin:0;box-sizing:border-box}
 html{zoom:${CARD_SCALE}}
 html,body{width:${CARD_PT_W}px;height:${CARD_PT_H}px}
-body{background:${t.lifted};color:${t.ink};position:relative;overflow:hidden;-webkit-font-smoothing:antialiased;font-family:"Card Sans",Inter,system-ui,sans-serif}
-.ph{position:absolute;left:14px;right:14px;top:14px;height:${long ? 266 : 294}px;border-radius:14px;overflow:hidden;background:${product ? "#ffffff" : t.photo};box-shadow:0 0 0 1px ${t.hair}}
-.ph img{width:100%;height:100%;object-fit:${product ? "contain" : "cover"};${product ? "padding:12px;" : ""}display:block}
-.num{position:absolute;left:14px;top:14px;width:58px;height:58px;border-top-left-radius:14px;border-bottom-right-radius:16px;background:${t.pen};color:${theme === "night" ? t.deep : "#fff"};font:italic 400 44px/58px "Card Serif",Georgia,serif;text-align:center;letter-spacing:-.02em}
-.tx{position:absolute;left:22px;right:22px;top:${long ? 294 : 322}px}
+body{background:${t.lifted};color:${t.ink};display:flex;flex-direction:column;padding:14px 14px 0;overflow:hidden;-webkit-font-smoothing:antialiased;font-family:"Card Sans",Inter,system-ui,sans-serif}
+.ph{position:relative;flex:1 1 auto;min-height:200px;border-radius:14px;overflow:hidden;background:${product ? "#ffffff" : t.photo};box-shadow:0 0 0 1px ${t.hair}}
+.ph img{position:absolute;inset:0;width:100%;height:100%;object-fit:${product ? "contain" : "cover"};${product ? "padding:12px;" : ""}display:block}
+.num{position:absolute;left:0;top:0;width:58px;height:58px;border-bottom-right-radius:16px;background:${t.pen};color:${theme === "night" ? t.deep : "#fff"};font:italic 400 44px/58px "Card Serif",Georgia,serif;text-align:center;letter-spacing:-.02em}
+.tx{flex:none;padding:14px 8px 0}
 .eb{font:600 10.5px/1 "Card Sans",sans-serif;letter-spacing:.14em;text-transform:uppercase;color:${t.muted};margin-bottom:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-h1{font:italic 400 ${long ? 26 : 29}px/1.06 "Card Serif",Georgia,serif;letter-spacing:-.015em;color:${t.ink};display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.meta{margin-top:9px;font:500 15px/1.25 "Card Sans",sans-serif;color:${t.ink};white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+h1{font:italic 400 ${String(name).length > 24 ? 26 : 29}px/1.06 "Card Serif",Georgia,serif;letter-spacing:-.015em;color:${t.ink};display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.meta{margin-top:8px;font:500 15px/1.25 "Card Sans",sans-serif;color:${t.ink};white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .meta .dot{color:${t.muted};padding:0 6px}
-.why{position:absolute;left:20px;bottom:13px;font:400 21px/1 "Card Hand",Caveat,cursive;color:${t.pen};transform:rotate(-2deg);transform-origin:left}
-.wm{position:absolute;right:20px;bottom:15px}
+.ft{flex:none;height:40px;display:flex;align-items:center;justify-content:space-between;padding:0 6px 0 6px}
+.why{font:400 21px/1 "Card Hand",Caveat,cursive;color:${t.pen};transform:rotate(-2deg);transform-origin:left;white-space:nowrap}
+.wm{margin-left:auto}
 .wm .wordmark{font-size:15px;color:${t.muted}}
 .wm .wm-bubble path{stroke:${t.pen}}
 </style></head><body>
-<div class="ph"><img src="${photo}" alt=""></div>
-<div class="num">${Number(n)}</div>
+<div class="ph"><img src="${photo}" alt=""><div class="num">${Number(n)}</div></div>
 <div class="tx">${brand ? `<p class="eb">${esc(brand)}</p>` : ""}<h1>${esc(name)}</h1>${meta ? `<p class="meta">${meta}</p>` : ""}</div>
-${why ? `<p class="why">${esc(why)}</p>` : ""}
-<div class="wm">${wordmark()}</div>
+<div class="ft">${why ? `<p class="why">${esc(why)}</p>` : ""}<div class="wm">${wordmark()}</div></div>
 </body></html>`;
 }
 
@@ -262,14 +263,111 @@ export function takeQueued(conversationId) {
 
 const textLine = (o, i) => `${i + 1}. ${[o.name, o.price, o.detail].filter(Boolean).join(" — ")}${o.why ? ` (${o.why})` : ""}`;
 
+// ---------- the listing check ----------
+//
+// A card's price and size are only as good as where they came from. The first CeraVe samples put
+// "16 oz" over a photo of the 12 oz bottle: the model had the size from one result and the picture
+// from another. So for a product, the price and any size on the card must be what the store listing
+// the PHOTO came from says — read again here — or they are left off the card. Never a mismatch.
+
+const SIZE_RE = /(?<![\d.])(\d+(?:\.\d+)?)\s*[-_]?\s*(fl\.?\s*oz\.?|fluid\s+ounces?|ounces?|oz\.?|millilit(?:er|re)s?|ml|lit(?:er|re)s?|l|kilograms?|kg|grams?|g|pounds?|lbs?|count|ct|pack|pk)(?![a-z])/gi;
+const unitOf = (u) => {
+  u = u.toLowerCase().replace(/[.\s]/g, "");
+  if (/oz|ounce/.test(u)) return "oz";
+  if (/^ml|millil/.test(u)) return "ml";
+  if (/^l$|^lit/.test(u)) return "l";
+  if (/^kg|kilo/.test(u)) return "kg";
+  if (/^g$|^gram/.test(u)) return "g";
+  if (/^lb|pound/.test(u)) return "lb";
+  if (/^ct|count/.test(u)) return "ct";
+  return "pack";
+};
+/** Every size written in a piece of text — "16 fl oz", "473 mL", "12oz" in a file name. */
+export function sizesIn(text) {
+  return [...String(text ?? "").matchAll(SIZE_RE)].map(m => ({ n: Number(m[1]), unit: unitOf(m[2]), raw: m[0] }));
+}
+const sameSize = (a, b) => a.unit === b.unit && Math.abs(a.n - b.n) < 0.01;
+/** The dollar amounts in a piece of text, as numbers. */
+export function pricesIn(text) {
+  return [...String(text ?? "").matchAll(/\$\s?(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/g)].map(m => Number(m[1].replace(/,/g, "")));
+}
+const amountOf = (price) => { const p = pricesIn(price); return p.length ? p[0] : null; };
+const tidy = (s) => String(s).replace(/\(\s*\)/g, "").replace(/\s*·\s*(·\s*)+/g, " · ").replace(/\s{2,}/g, " ").replace(/^[\s·,|–—-]+|[\s·,|–—-]+$/g, "").trim();
+const STOP = new Set(["the", "and", "for", "with", "from", "facial", "new", "size"]);
+const words = (s) => String(s ?? "").toLowerCase().match(/[a-z0-9]{3,}/g)?.filter(w => !STOP.has(w)) ?? [];
+
+/**
+ * Hold one option up against the listing its photo came from. Pure: `listing` is { title, text,
+ * images } as webLookup read it (or null), `photoUrl` the picture the card will show (or "" when
+ * the listing's own picture will be used). Returns { option, dropped } — the option with anything
+ * the listing does not back taken off, and a short line per thing taken off.
+ */
+export function checkAgainstListing(o, listing, { photoUrl = "", photoFromListing = true } = {}) {
+  const out = { ...o };
+  const dropped = [];
+  const fail = (why) => {
+    if (amountOf(out.price) != null) { dropped.push(`price ${out.price} (${why})`); out.price = ""; }
+    for (const k of ["name", "detail"]) {
+      for (const s of sizesIn(out[k])) { dropped.push(`size ${s.raw.trim()} (${why})`); out[k] = tidy(out[k].replace(s.raw, " ")); }
+    }
+    return { option: out, dropped };
+  };
+  if (!listing) return fail("no store listing to check it against");
+  if (!photoFromListing) return fail("the photo is not from its listing");
+  const head = `${listing.title ?? ""}\n${String(listing.text ?? "").slice(0, 1500)}`.toLowerCase();
+  const want = [...new Set(words(o.name))];
+  if (want.length && want.filter(w => head.includes(w)).length / want.length < 0.5) return fail("the listing is a different product");
+  // Price: one of the amounts the listing itself shows.
+  const amt = amountOf(out.price);
+  if (amt != null && !pricesIn(`${listing.title ?? ""}\n${listing.text ?? ""}`).some(p => Math.abs(p - amt) < 0.005)) {
+    dropped.push(`price ${out.price} (not on the listing)`); out.price = "";
+  }
+  // Size: the size in the listing's own title — a page lists every size it comes in, the title is
+  // the one this listing is — and never one the photo's own file name contradicts.
+  const titled = sizesIn(listing.title);
+  const pictured = sizesIn((() => { try { return photoUrl ? decodeURIComponent(new URL(photoUrl).pathname) : ""; } catch { return ""; } })());
+  for (const k of ["name", "detail"]) {
+    for (const s of sizesIn(out[k])) {
+      const why = !titled.some(t => sameSize(t, s)) ? (titled.length ? `the listing says ${titled[0].raw.trim()}` : "the listing title gives no size")
+        : pictured.length && !pictured.some(p => sameSize(p, s)) ? `the photo is the ${pictured[0].raw.replace(/[-_]/g, " ").trim()}` : null;
+      if (why) { dropped.push(`size ${s.raw.trim()} (${why})`); out[k] = tidy(out[k].replace(s.raw, " ")); }
+    }
+  }
+  return { option: out, dropped };
+}
+
+const LISTING_ASK = "this product's exact name, size or variant, and price on this listing";
+
+/** Find the listing an option's photo came from, read it, and check the option against it. */
+async function checkListing(c, o, { lookup = (u) => webLookup(u, { maxChars: 4000, timeoutMs: 12_000, objective: LISTING_ASK }) } = {}) {
+  const img = String(o.image_url ?? "").trim();
+  const from = img ? db.seenUrlInfo(c, img)?.from ?? "" : "";
+  const page = [from, o.url].find(u => u && db.hasSeenUrl(c, u)) ?? "";
+  if (!page) return checkAgainstListing(o, null);
+  const listing = await lookup(page).catch(() => null);
+  if (!listing?.ok || !(listing.title || listing.text)) return checkAgainstListing(o, null);
+  // With no picture of its own the card shows this page's own picture, which is this listing.
+  const photoFromListing = !img || from === page || (listing.images ?? []).includes(img);
+  const checked = checkAgainstListing(o, listing, { photoUrl: img, photoFromListing });
+  return { ...checked, option: { ...checked.option, url: checked.option.url || page } };
+}
+
 export async function runChoiceTool(name, input, ctx) {
   const c = ctx.conversationId;
   if (name !== "show_choices" || !choiceCardsOn(c)) return { ok: false, error: "Choice cards are not available here. Write the options as a short numbered list." };
   if (ctx.historyId && ctx.historyId !== c) return { ok: false, error: "This is a Web-only chat. Write the options as a short numbered list." };
-  const options = (input.options ?? []).slice(0, 4);
-  if (options.length < 2) return { ok: false, error: "Cards are for 2 to 4 real options. With one, just answer." };
+  const asked = (input.options ?? []).slice(0, 4);
+  if (asked.length < 2) return { ok: false, error: "Cards are for 2 to 4 real options. With one, just answer." };
   const theme = themeFor(c);
   const log = ctx.log ?? (() => {});
+
+  // Products: price and size only as the listing the photo came from says them (checkListing).
+  const checks = input.kind === "places" ? asked.map(o => ({ option: o, dropped: [] }))
+    : await Promise.all(asked.map(o => checkListing(c, o, ctx.lookup ? { lookup: ctx.lookup } : {}).catch(() => checkAgainstListing(o, null))));
+  const options = checks.map(x => x.option);
+  const offCards = checks.flatMap((x, i) => x.dropped.map(d => `option ${i + 1}: ${d}`));
+  if (offCards.length) log({ choice_cards_unbacked: c, dropped: offCards });
+  const offNote = offCards.length ? ` Left off because the store listing does not back it — do not say these in your line either: ${offCards.join("; ")}.` : "";
 
   // Every photo or none: a set where card 2 is a picture and card 3 is a sentence reads as broken.
   const photos = await Promise.all(options.map(o => photoFor(c, o.image_url, { ...ctx, pageUrl: o.url ?? null }).catch(e => ({ ok: false, why: e?.message ?? String(e) }))));
@@ -295,14 +393,14 @@ export async function runChoiceTool(name, input, ctx) {
     log({ choice_cards_text: c, set: set.id, why });
     return {
       ok: true, fallback: "text", set_id: set.id,
-      note: `No cards this time (${why}). Write them as a short numbered list in your reply, one line each, in this order — the numbers are kept, so a number back picks that one:\n${options.map(textLine).join("\n")}`,
+      note: `No cards this time (${why}). Write them as a short numbered list in your reply, one line each, in this order — the numbers are kept, so a number back picks that one:\n${options.map(textLine).join("\n")}${offNote}`,
     };
   }
   queued.set(c, { setId: set.id, cards });
   log({ choice_cards_drawn: c, set: set.id, n: cards.length, theme });
   return {
     ok: true, set_id: set.id, cards: cards.length,
-    note: `${cards.length} cards are drawn and go out right after your reply, one bubble each, numbered 1–${cards.length}. Your reply is just the one short line above them — what these are and that it is their pick. Do not list them again and do not mention cards or pictures.`,
+    note: `${cards.length} cards are drawn and go out right after your reply, one bubble each, numbered 1–${cards.length}. Your reply is just the one short line above them — what these are and that it is their pick. Do not list them again and do not mention cards or pictures.${offNote}`,
   };
 }
 

@@ -21,6 +21,14 @@ const { clock } = await import("../src/config.js");
 
 const C = "dm:owner";
 const PHOTOS = ["https://shop.example/a.jpg", "https://shop.example/b.jpg", "https://shop.example/c.jpg"];
+// The store listing each photo came from, as webLookup would read it.
+const PAGES = ["https://shop.example/p/a", "https://shop.example/p/b", "https://shop.example/p/c"];
+const LISTINGS = {
+  [PAGES[0]]: { ok: true, title: "CeraVe Hydrating Facial Cleanser, 16 fl oz", text: "Hydrating Facial Cleanser. $15.99. Ships free.", images: [PHOTOS[0]] },
+  [PAGES[1]]: { ok: true, title: "CeraVe Foaming Facial Cleanser 16 oz", text: "Price $17.49", images: [PHOTOS[1]] },
+  [PAGES[2]]: { ok: true, title: "CeraVe Hydrating Cream-to-Foam Cleanser", text: "Now $16.99", images: [PHOTOS[2]] },
+};
+const lookup = async (u) => LISTINGS[u] ?? { ok: false };
 const okPhoto = async () => ({ ok: true, mediaType: "image/jpeg", base64: Buffer.from("jpegbytes").toString("base64"), bytes: 9 });
 const shoot = async (html) => Buffer.from(`JPEG:${html.length}`);
 const input = () => ({
@@ -31,7 +39,7 @@ const input = () => ({
     { name: "Hydrating Cream-to-Foam Cleanser", brand: "CeraVe", price: "$16.99", image_url: PHOTOS[2] },
   ],
 });
-const ctx = (extra = {}) => ({ conversationId: C, fetchPhoto: okPhoto, shoot, ...extra });
+const ctx = (extra = {}) => ({ conversationId: C, fetchPhoto: okPhoto, shoot, lookup, ...extra });
 
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
@@ -39,7 +47,8 @@ beforeEach(() => {
   process.env.REASON_CHOICE_CARDS = "on";
   db.db.exec("DELETE FROM choice_sets; DELETE FROM seen_urls; DELETE FROM accounts;");
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
-  db.rememberSeenUrls(C, PHOTOS, { kind: "search" });
+  db.rememberSeenUrls(C, PAGES, { kind: "page" });
+  PHOTOS.forEach((u, i) => db.rememberSeenUrls(C, [u], { kind: "search", from: PAGES[i] }));
   cc.takeQueued(C);
 });
 
@@ -226,4 +235,75 @@ test("no picture address, only the page: the page's own preview picture, if a to
   const r = await cc.runChoiceTool("show_choices", one, ctx({ fetchPhoto, fetchImpl }));
   assert.equal(r.cards, 3);
   assert.ok(seen.includes("https://www.cerave.com/-/media/front.jpg?a=1&b=2"));
+});
+
+// ---------- the listing check (owner, 2026-10-30: "16 oz" was drawn over the 12 oz bottle) ----------
+
+test("listing check: the CeraVe sample — 16 oz over a photo of the 12 oz bottle is left off, never shown", () => {
+  const photo = "https://www.cerave.com/-/media/cleansers/cerave_daily_hydrating-cleanser_12oz_front-700x700-v2.jpg";
+  const listing = { title: "Hydrating Facial Cleanser 12 fl oz | CeraVe", text: "$15.99", images: [photo] };
+  const { option, dropped } = cc.checkAgainstListing({ name: "Hydrating Facial Cleanser", price: "$15.99", detail: "16 oz · normal to dry" }, listing, { photoUrl: photo });
+  assert.equal(option.detail, "normal to dry");
+  assert.equal(option.price, "$15.99");
+  assert.match(dropped.join(";"), /size 16 oz \(the listing says 12 fl oz\)/);
+});
+
+test("listing check: a size the title agrees with but the photo's file name contradicts is left off too", () => {
+  const photo = "https://shop.example/img/cleanser_12oz_front.jpg";
+  const { option, dropped } = cc.checkAgainstListing({ name: "Hydrating Facial Cleanser", detail: "16 oz" }, { title: "Hydrating Facial Cleanser 16 oz", text: "" }, { photoUrl: photo });
+  assert.equal(option.detail, "");
+  assert.match(dropped[0], /the photo is the 12oz/);
+});
+
+test("listing check: matching price and size stay; a price the listing never shows goes", () => {
+  const listing = { title: "CeraVe Foaming Facial Cleanser, 16 Fl Oz (473 mL)", text: "List $19.99 · Now $17.49" };
+  const ok = cc.checkAgainstListing({ name: "Foaming Facial Cleanser", price: "$17.49", detail: "16 oz" }, listing, { photoUrl: "https://shop.example/x.jpg" });
+  assert.deepEqual([ok.option.price, ok.option.detail, ok.dropped.length], ["$17.49", "16 oz", 0]);
+  const bad = cc.checkAgainstListing({ name: "Foaming Facial Cleanser", price: "$14.99", detail: "473 ml" }, listing);
+  assert.deepEqual([bad.option.price, bad.option.detail], ["", "473 ml"]);
+  assert.match(bad.dropped[0], /price \$14\.99 \(not on the listing\)/);
+});
+
+test("listing check: no listing, a photo from elsewhere, or a different product — price and size both left off", () => {
+  const o = { name: "Hydrating Facial Cleanser 16 oz", price: "$15.99", detail: "16 oz · gentle" };
+  for (const [listing, opts, why] of [
+    [null, {}, /no store listing/],
+    [{ title: "Hydrating Facial Cleanser 16 oz", text: "$15.99" }, { photoFromListing: false }, /photo is not from its listing/],
+    [{ title: "Neutrogena Hydro Boost Water Gel 16 oz", text: "$15.99" }, {}, /different product/],
+  ]) {
+    const r = cc.checkAgainstListing(o, listing, opts);
+    assert.deepEqual([r.option.name, r.option.price, r.option.detail], ["Hydrating Facial Cleanser", "", "gentle"]);
+    assert.match(r.dropped.join(";"), why);
+  }
+  // A price level like "$$" is not an amount and is never checked.
+  assert.equal(cc.checkAgainstListing({ name: "Joe", price: "$$" }, null).option.price, "$$");
+});
+
+test("listing check runs on the real path: the listing the PHOTO came from is read, and the card never shows what it does not back", async () => {
+  LISTINGS[PAGES[1]] = { ok: true, title: "CeraVe Foaming Facial Cleanser 12 oz", text: "$13.99", images: [PHOTOS[1]] };
+  const read = [];
+  const htmls = [];
+  rmSync(join(process.env.REASON_DATA_DIR, "choice-cards"), { recursive: true, force: true });
+  try {
+    const r = await cc.runChoiceTool("show_choices", input(), ctx({ lookup: async (u) => { read.push(u); return lookup(u); }, shoot: async (h) => { htmls.push(h); return Buffer.from("JPEG"); } }));
+    assert.equal(r.ok, true);
+    assert.deepEqual(read.sort(), [...PAGES].sort());
+    assert.match(r.note, /option 2: price \$17\.49 \(not on the listing\); option 2: size 16 oz \(the listing says 12 oz\)/);
+    assert.ok(!/\$17\.49|16 oz/.test(htmls[1]) && /\$15\.99/.test(htmls[0]) && /16 oz/.test(htmls[0]));
+    db.setChoiceShown(r.set_id, { handles: [] });
+    const set = db.openChoiceFor(C, clock.now());
+    assert.deepEqual([set.options[1].price, set.options[1].detail], ["", ""]);
+  } finally {
+    LISTINGS[PAGES[1]] = { ok: true, title: "CeraVe Foaming Facial Cleanser 16 oz", text: "Price $17.49", images: [PHOTOS[1]] };
+  }
+});
+
+test("listing check is for products only: a place's rating and walk are never held up against a page", async () => {
+  let looked = 0;
+  const places = { kind: "places", options: input().options.map(o => ({ ...o, price: "$$", detail: "4.6 ★ · 3 min walk" })) };
+  const r = await cc.runChoiceTool("show_choices", places, ctx({ lookup: async () => { looked++; return null; } }));
+  assert.equal(r.ok, true);
+  assert.equal(looked, 0);
+  db.setChoiceShown(r.set_id, { handles: [] });
+  assert.equal(db.openChoiceFor(C, clock.now()).options[0].detail, "4.6 ★ · 3 min walk");
 });
