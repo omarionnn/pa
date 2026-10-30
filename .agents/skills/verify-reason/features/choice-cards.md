@@ -7,6 +7,21 @@
   og:image from the page, tapback parsing (a real Sendblue tapback text), inline reply on card N, expiry.
 - `node --test --test-name-pattern="choice cards sit" test/web-design.test.js` — Web joins consecutive cards into one row.
 
+## Listing check (products only)
+Price and every size on a product card must be what the store listing the PHOTO came from says
+(`seen_urls.from_url` of image_url, else the option's url; re-read with webLookup, Extract first). Price:
+an amount near the top of that listing. Size: in the listing's TITLE (a page lists all its sizes), and
+not contradicted by the photo's file name ("_12oz_"). Anything not backed is left off and named in the
+tool's note (log `choice_cards_unbacked`). No listing / photo from elsewhere / different product → no
+price, no size. Places are never checked. Offline: the "listing check" tests in test/choicecards.test.js.
+
+## Owner-only
+`REASON_CHOICE_CARDS=owner`: `toolsFor` hides show_choices from every conversation whose account is
+not `is_operator`. Cage 2026-10-30: a tester number (no REASON_MASTER_NUMBER) asked for cleansers to
+pick from → 0 show_choices calls (send_picture instead); with `REASON_MASTER_NUMBER` set to that number
+the same ask → show_choices, `choice_cards_sent 2 of 2`, then "2" → option 2. The cage needs
+`REASON_MASTER_NUMBER` exported (no .env in a worktree) for the owner path.
+
 ## Caged drive (subscription turns: a handful, never a suite)
 1. `node bin/fake-sendblue.mjs` won't do as-is: card sends upload first, and the fake must answer
    `/api/upload-file` with `{ media_url }`. Use a copy that does (2026-10-30 run: /tmp/cc-scripts/fake-sb.mjs),

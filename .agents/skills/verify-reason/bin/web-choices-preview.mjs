@@ -45,7 +45,7 @@ const server = createServer({ router, runtime: null });
 await new Promise(r => server.listen(0, "127.0.0.1", r));
 const base = `http://127.0.0.1:${server.address().port}`;
 db.startPageSession(`wsign:${C}`, "tok-choices-preview", { conversationId: C });
-const b = await chromium.launch();
+const b = await chromium.launch({ args: ["--mute-audio"] }); // drives are silent: nothing may play sound
 for (const w of [390, 1280]) for (const t of ["paper", "night"]) {
   const ctx = await b.newContext({ viewport: { width: w, height: w < 600 ? 844 : 900 }, colorScheme: t === "night" ? "dark" : "light", timezoneId: "America/New_York" });
   await ctx.addCookies([{ name: "reason_page", value: "tok-choices-preview", url: base }]);

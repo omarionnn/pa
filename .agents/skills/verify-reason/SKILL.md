@@ -424,6 +424,10 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
+### Baseline — choice cards owner-only + listing check (wt/choice-cards, 2026-10-30)
+
+`npm run test:offline` under `env -i`: 4,588 tests, 4,471 passing, 115 skipped, 2 failing — both `test/flights.test.js` (known load flake; 56/56 alone). New: `test/choicecards.test.js` (25). Cage over the subscription with `REASON_CHOICE_CARDS=owner`: non-owner saw no tool; owner got 2 cards in order; "2" → card 2. See [features/choice-cards.md](features/choice-cards.md).
+
 ### Baseline — research room + one follow-up (fix/research-room-and-continue, 2026-10-30)
 
 `npm run test:offline` under `env -i`: 4,551 tests, 4,434 passing, 115 skipped, 2 failing — both in `test/flights.test.js` (known flake; 56/56 alone). New: `test/research-room.test.js` (11). In-process drive over the subscription: `bin/research-room-drive.mjs`, 10 steps all ok, see [features/research-room.md](features/research-room.md).
