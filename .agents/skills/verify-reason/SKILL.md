@@ -424,6 +424,10 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
+### Baseline — research room + one follow-up (fix/research-room-and-continue, 2026-10-30)
+
+`npm run test:offline` under `env -i`: 4,551 tests, 4,434 passing, 115 skipped, 2 failing — both in `test/flights.test.js` (known flake; 56/56 alone). New: `test/research-room.test.js` (11). In-process drive over the subscription: `bin/research-room-drive.mjs`, 10 steps all ok, see [features/research-room.md](features/research-room.md).
+
 ### Baseline — asks run out (fix/stale-asks-expire, 2026-10-30)
 
 `npm run test:offline` under `env -i` (on #252): 4,551 tests, 4,436 passing, 115 skipped, 0 failing. New: `test/stale-asks.test.js` (9, all 9 fail on origin/main); `test/access.test.js` +2 (an access ask lives `REASON_ACCESS_WINDOW_MIN`, and an expired one decides the request expired). Deploy sweep: `node --env-file-if-exists=.env scripts/expire-stale-asks.js --dry-run`, then without. See [features/confirm-gate.md](features/confirm-gate.md).
@@ -716,6 +720,8 @@ Reason Web wax-seal book (`REASON_STAMPS_WAX` on top of `REASON_WEB_DAILY`; seal
 Reason Web shell (wordmark text + nowrap, logo → `/web?home`, link cards for `/web`, `/privacy`, `/terms`): [features/web-shell.md](features/web-shell.md).
 Walking directions, Route + Escort, and real trips (`REASON_DIRECTIONS` off/`owner`/on; the `directions` tool, trips at `/d/<id>` behind the code gate; `/d/sample` with `REASON_DIRECTIONS_SAMPLE`; MapLibre, no tiles/key; suncalc night switch): [features/directions.md](features/directions.md); `test/directions.test.js`, `test/trips.test.js`; `bin/directions-drive.mjs` (muted: `--mute-audio` + a speech recorder, never a sound) drives the walk, diffs the hand-off's 48 screens, and walks a real trip through the gate: the door line from OpenStreetMap, arrive-by vs event wording, the trip deleted on arrival and END ESCORT, walking on after "turn around" (154/154 at the iPhone branch); `bin/directions-iphone.mjs` checks the page at iPhone size under Safari's bar (21/21).
 Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start the cage with `REASON_PAGES_V2=1`): [features/pages-v2.md](features/pages-v2.md); `scripts/pages-v2-preview.mjs` + `scripts/pages-v2-compare.mjs`. Print (§4h-8, `src/pages/print.js`): same file, "Print"; `pages-v2-preview.mjs <dir> --print`.
+
+Research room (fair page share per planned query, big-question caps, one background follow-up per run, per-person daily cap): [features/research-room.md](features/research-room.md); `test/research-room.test.js`, `bin/research-room-drive.mjs`.
 
 Per-person time zone (`REASON_TZ_ASK`; guess + ask once before the first clock-time action, held action finished by the answer, travel asked once, `config.tz` = their clock inside their turn/page): [features/time-zone.md](features/time-zone.md); `test/time-zone.test.js`.
 

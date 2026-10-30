@@ -1811,6 +1811,15 @@ addColumnIfMissing("research", "niche", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("research", "niche_searches", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("research_sources", "niche", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("research_queries", "niche", "TEXT NOT NULL DEFAULT ''");
+
+// Room and the one follow-up (src/research.js capsFor, tools.js research). `big` is decided once
+// when the run starts, from what the model said about the question, so a wake gets the same room.
+// `continue_task_id` is the single background follow-up this run was given — set at most once, which
+// is what stops a follow-up from scheduling another; `continue_day` is the install day it was given
+// on, which is what the per-person daily cap counts.
+addColumnIfMissing("research", "big", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("research", "continue_task_id", "INTEGER");
+addColumnIfMissing("research", "continue_day", "TEXT");
 db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ''").run(config.ownerConversation);
 
 /**
@@ -5953,15 +5962,36 @@ function rowToResearch(r) {
     searches: r.searches, cut_short: r.cut_short || "",
     niche: r.niche || "", niche_searches: r.niche_searches ?? 0,
     enough_at: r.enough_at ?? null, enough_why: r.enough_why || "",
+    big: !!r.big, continue_task_id: r.continue_task_id ?? null, continue_day: r.continue_day ?? null,
     created_at: r.created_at, updated_at: r.updated_at, finished_at: r.finished_at ?? null,
   };
 }
 
-export function createResearch(conversationId, { question, queries = [], taskId = null, niche = "" }) {
+export function createResearch(conversationId, { question, queries = [], taskId = null, niche = "", big = false }) {
   const now = clock.now();
-  const r = db.prepare(`INSERT INTO research (conversation_id, question, task_id, queries, niche, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`).run(conversationId, question, taskId, JSON.stringify(queries), String(niche ?? ""), now, now);
+  const r = db.prepare(`INSERT INTO research (conversation_id, question, task_id, queries, niche, big, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(conversationId, question, taskId, JSON.stringify(queries), String(niche ?? ""), big ? 1 : 0, now, now);
   return getResearch(conversationId, Number(r.lastInsertRowid));
+}
+
+/**
+ * Give this run its one background follow-up. Written only if it has none yet — the WHERE is the
+ * "never chained" guarantee, so two racing turns cannot both give it one. True when this call won.
+ */
+export function claimResearchContinuation(conversationId, id, { taskId, day }) {
+  const r = db.prepare(`UPDATE research SET continue_task_id = ?, continue_day = ?, updated_at = ?
+    WHERE id = ? AND conversation_id = ? AND continue_task_id IS NULL`).run(taskId, day, clock.now(), id, conversationId);
+  return r.changes === 1;
+}
+
+/** The run whose one background follow-up this task is, or null — what makes the task one-shot (runtime.js). */
+export function researchForFollowUp(taskId) {
+  return rowToResearch(db.prepare("SELECT * FROM research WHERE continue_task_id = ? ORDER BY id DESC LIMIT 1").get(taskId));
+}
+
+/** How many background follow-ups this person has been given on this install day. */
+export function researchContinuationsOn(conversationId, day) {
+  return db.prepare("SELECT COUNT(*) n FROM research WHERE conversation_id = ? AND continue_day = ?").get(conversationId, day)?.n ?? 0;
 }
 
 export function getResearch(conversationId, id) {

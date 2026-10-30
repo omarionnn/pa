@@ -39,7 +39,7 @@ import * as driveorg from "./driveorg.js";
 import * as drivePdf from "./pdf.js";
 import { webLookup } from "./weblookup.js";
 import { webSearch, searchCapability, searchStatus } from "./search.js";
-import { startRun as researchStart, step as researchStep, view as researchView, nicheOf, answerFirst as researchAnswerFirst, startDeep as researchStartDeep, pollDeep as researchPollDeep } from "./research.js";
+import { startRun as researchStart, isBig as researchIsBig, step as researchStep, view as researchView, nicheOf, answerFirst as researchAnswerFirst, startDeep as researchStartDeep, pollDeep as researchPollDeep } from "./research.js";
 import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
 import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } from "./parallel.js";
 import { videoUnderstand, videoCapability } from "./video.js";
@@ -6411,7 +6411,7 @@ export const tools = [
   },
   {
     name: "research",
-    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait; when a deep-research agent is connected the same question is ALSO handed to it as one long run that reads far past the page cap, and the task wake brings back its `report` with the pages it cited (marked as read by it, not by you — say 'the research says', never 'I read'). A `fact` question with a quick-answer agent connected comes back first with `answer`: a cited answer that agent wrote, with its citations in `snippets_only` — say it as what the research says, quote only what is in a source's `said`, and web_lookup a citation yourself if one claim matters enough to check. Pass `research_id` to carry on a run you already started — and pass `enough: true` with it, plus a line in `enough_why`, the moment you have what you need. That stops that run for good, so a later wake cannot quietly start digging the same question again: carrying it on is refused and you get the source log back instead. A different question later is a different run and searches normally. While a run is still open in this conversation, a new question first comes back `blocked: research_open` with the open runs listed and nothing spent: carry the matching one on with its research_id, or pass new_subject: true if yours is genuinely different."
+    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial; when planned queries were left unrun the result may also carry `follow_up` — then Reason digs the rest in the background and wakes you once to send it, and its note says what to tell them now. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait; when a deep-research agent is connected the same question is ALSO handed to it as one long run that reads far past the page cap, and the task wake brings back its `report` with the pages it cited (marked as read by it, not by you — say 'the research says', never 'I read'). A `fact` question with a quick-answer agent connected comes back first with `answer`: a cited answer that agent wrote, with its citations in `snippets_only` — say it as what the research says, quote only what is in a source's `said`, and web_lookup a citation yourself if one claim matters enough to check. Pass `research_id` to carry on a run you already started — and pass `enough: true` with it, plus a line in `enough_why`, the moment you have what you need. That stops that run for good, so a later wake cannot quietly start digging the same question again: carrying it on is refused and you get the source log back instead. A different question later is a different run and searches normally. While a run is still open in this conversation, a new question first comes back `blocked: research_open` with the open runs listed and nothing spent: carry the matching one on with its research_id, or pass new_subject: true if yours is genuinely different."
       + " Pass `niche` when the thing they want is the sort that hides in a specialist place, and Reason will ALSO go to those places on a separate little budget of its own: hiring repos and the monthly 'who is hiring' thread for an engineering role, a state licensing board for a plumber, a building's own leasing page and the city subreddit for an apartment, price history and deal forums for a price, a teardown site for a thing they are buying. What comes back under `niche` is split in two and the split is the whole point — `verified` was READ at its own address and may be used, `leads` are snippets nobody opened and may only be offered as something to look at. For each niche find you use, say in one line where it came from and why that place had it when the usual results did not. If the niche places came back empty, say nothing about them at all and just answer: a line about where you looked is filler, not an answer.",
     input_schema: {
       type: "object",
@@ -6425,6 +6425,7 @@ export const tools = [
           description: "The kind of ask this is, when it is one with specialist sources worth the detour. Reason then searches those places directly, on its own small allowance, as well as your queries — so this never costs you a planned query. 'tech_jobs' engineering/design/startup roles; 'jobs' anything outside tech; 'housing' apartments and rentals; 'trades' a plumber, electrician, contractor, handyman; 'deals' a price or a sale; 'gear' buying a thing; 'software' a tool or a service; 'local' a local business or place; 'travel' flights, hotels, points. Leave it off when none of them fits — a wrong one spends searches in the wrong place. It is kept on the run, so a deep run carries on visiting those places when it wakes.",
         },
         kind: { type: "string", enum: ["choice", "fact"], description: "What kind of question this is, as you read it. 'choice': they are comparing things or deciding — X or Y, which should i get, is it worth it, what's the best one. 'fact': one thing they want to know. A choice is answered on a page; the result tells you how." },
+        options: { type: "array", items: { type: "string" }, description: "The things being weighed against each other, when they are named — the products, services or places. Three or more gives the run more room, so every option gets looked at." },
         deep: { type: "boolean", description: "Make it a durable task: it survives a restart, works through the queries when it wakes, and only comes back when there is something to say." },
         enough: { type: "boolean", description: "You have what you need on this run. Pass it with the research_id and nothing more will be searched on that run, ever — the decision is written down so it survives a restart and a trimmed context. Use it the moment the sources answer the question: a fifth page that says what the first four said is their time, not thoroughness. It stops that run and only that run; a genuinely different question later is a new run and searches normally. It is not a way to hide a thin answer — if you stop early, say what you did and did not find out." },
         enough_why: { type: "string", description: "One short line on why that was enough, for when you pass enough: true — 'three tested reviews agree on the price', 'the maker's own page settles it'. It is written down with the decision and said back to you if you ever try to carry this run on, so write it for a later you who has forgotten." },
@@ -7528,6 +7529,7 @@ const S = {
     enough: z.boolean().optional(),
     enough_why: z.string().max(300).optional(),
     kind: z.enum(["choice", "fact"]).optional(),
+    options: z.array(z.string().min(1).max(200)).max(12).optional(),
     // Which kinds exist comes from the registry rather than being typed out twice, so adding a
     // niche in src/niche.js is one edit.
     niche: z.enum(nicheKinds()).optional(),
@@ -8001,9 +8003,87 @@ async function stepWithRetries(c, id, deps, ctx, [first, again]) {
   return out;
 }
 
-/** True while a research run's deep task is still going to wake for it. */
+/** True while a research run's deep task, or its one follow-up, is still going to wake for it. */
 function researchTaskLive(run) {
-  return !!run.task_id && !!db.getTaskAnywhere(run.task_id)?.open;
+  return (!!run.task_id && !!db.getTaskAnywhere(run.task_id)?.open)
+    || (!!run.continue_task_id && !!db.getTaskAnywhere(run.continue_task_id)?.open);
+}
+
+/**
+ * A cap ended a run with planned queries still unrun: answer now, and dig the rest in the background.
+ *
+ * Making them wait for the rest is the wrong trade on a text thread, and quietly dropping it is the
+ * run-#78 failure. So the turn answers from what it has and says more is coming, and a task — the
+ * same machinery a deep run uses, so it survives a restart and wakes once — carries the SAME run on
+ * a couple of minutes later with a fresh slice of room, and that wake sends one follow-up.
+ *
+ * Bounded three ways, all in code: a run gets at most one (the row's continue_task_id, claimed with
+ * a WHERE so it can never be set twice — which is also why a follow-up's own carry-on cannot start
+ * another); a deep run never gets one (its task already wakes for it); and a person gets
+ * researchContinuePerDay of them a day on the install's day (owner: researchContinuePerDayOwner),
+ * because each one is another turn or two on the subscription. Past the cap: today's behaviour.
+ */
+function researchFollowUp(c, out, ctx) {
+  if (!out?.ok || !out.more || !out.queries_left?.length) return {};
+  const run = db.getResearch(c, out.research_id);
+  if (!run || run.state !== "open" || run.task_id || run.continue_task_id) return {};
+  const day = trust.spendDay();
+  const cap = accounts.ownerOf(c).isOperator ? config.researchContinuePerDayOwner : config.researchContinuePerDay;
+  const used = db.researchContinuationsOn(c, day);
+  if (used >= cap) {
+    return {
+      follow_up: { scheduled: false, why: "daily_limit", used_today: used, limit: cap },
+      follow_up_note: "Nothing more will run on this by itself today: the background follow-ups for today are used up."
+        + " Answer from what is here, tell them plainly it is based on what you got so far and what you did not get to,"
+        + " and offer to keep looking if they want more. Do not promise a later text.",
+    };
+  }
+  const task = db.createTask(c, {
+    title: `research, the rest: ${run.question}`.slice(0, 120),
+    goal: `Finish research #${run.id} ("${run.question}") in ONE follow-up: carry the run on with research and research_id ${run.id} — it has fresh room for the queries the first look did not reach.`
+      + ` Then send one text with only what is new since the answer already sent (read it above first, never resend it).`
+      + ` If the rest changed nothing, send one short line saying the rest of the look did not change the pick — they were told more was coming, so silence would read as forgotten.`,
+    wakeAt: clock.now() + config.researchContinueWakeMin * 60_000,
+    maxAttempts: config.taskMaxAttempts,
+    originHandle: ctx.answering?.handle ?? null,
+  });
+  if (!task?.id) return {};
+  if (!db.claimResearchContinuation(c, run.id, { taskId: task.id, day })) {
+    db.finishTask(c, task.id, { state: "cancelled", outcome: "this run already had its follow-up" });
+    return {};
+  }
+  return {
+    follow_up: { scheduled: true, task_id: task.id, wakes_at: stamp(task.next_wake_at), queries_left: run.queries.length },
+    follow_up_note: `The cap stopped this with ${run.queries.length} planned quer(ies) unrun, so Reason will carry this same run on by itself in about ${config.researchContinueWakeMin} minute(s) (task #${task.id}) and you will be woken to send the rest.`
+      + " Now: answer from what is here, and say in plain words, in your own voice, that you are still digging into the rest and will text it when it is in."
+      + " Do not carry this run on yourself in this turn, and do not promise more than that one follow-up.",
+  };
+}
+
+/**
+ * The carry-on that delivers a run's follow-up: whichever turn reaches it — the task's wake, or
+ * them asking first — closes the task, so there is exactly one follow-up and never a stream. The run
+ * is closed too: whatever is still unrun after the fresh slice is said, not dug for again.
+ */
+function researchFollowUpDelivered(c, runBefore, out) {
+  const taskId = runBefore?.continue_task_id;
+  if (!taskId || !db.getTask(c, taskId)?.open) return {};
+  if (db.getResearch(c, runBefore.id)?.state === "open") db.finishResearch(c, runBefore.id, { cutShort: out?.ok ? (out.cut_short || "") : "follow_up_failed" });
+  if (!out?.ok) {
+    db.finishTask(c, taskId, { state: "failed", outcome: `could not carry research #${runBefore.id} on: ${out?.error ?? "no reason given"}` });
+    return {
+      follow_up: { delivering: true, task_id: taskId, closed: true, finished_the_rest: false },
+      follow_up_note: "This is the one follow-up you said you would send, and the rest of the look could not be finished, so its task is closed."
+        + " Send ONE short honest line: you could not get to the rest, your earlier answer is what you have, and you can try again if they want. Nothing else will wake for this.",
+    };
+  }
+  db.finishTask(c, taskId, { state: "done", outcome: `carried research #${runBefore.id} on: ${out?.pages_read ?? 0} page(s) read in all` });
+  return {
+    follow_up: { delivering: true, task_id: taskId, closed: true },
+    follow_up_note: "This is the one follow-up you said you would send, and its task is now closed — nothing else will wake for this run."
+      + " Send ONE text with only what is new since your earlier answer on this (read it above first). If the new sources do not change the pick, say that in one short line."
+      + (out?.queries_left?.length ? " A few angles still did not fit; say in a few words what you did not get to, and offer to look further if they want." : ""),
+  };
 }
 
 /**
@@ -17244,6 +17324,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           // forgets it was satisfied, and searches the same question for the fourth time.
           if (input.enough) {
             const stopped = db.markResearchEnough(c, input.research_id, { why: input.enough_why ?? "" });
+            // Enough means enough for the follow-up too: nothing is owed, so nothing wakes to send it.
+            if (stopped?.continue_task_id && db.getTask(c, stopped.continue_task_id)?.open) {
+              db.finishTask(c, stopped.continue_task_id, { state: "cancelled", outcome: `research #${stopped.id} was called enough` });
+            }
             return outsideResearch({
               ok: true, ...researchView(stopped), ...nicheOf(stopped, nicheDeps), enough: true, stopped_at: stamp(stopped.enough_at),
               ...answerShape(input.kind, me.name),
@@ -17275,7 +17359,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
               note: "It is done. Answer from the sources it already has, or start a new run for a different question.",
             };
           }
-          const more = await stepWithRetries(c, input.research_id, deps, ctx, ["search timed out, picking it back up", "still on it, one more try"]);
+          // A run that already had its follow-up given is being finished now: close it out once —
+          // and a step that fails or throws on that carry-on still closes it with a note, so the
+          // promised text becomes one honest line rather than silence.
+          let more;
+          try {
+            more = await stepWithRetries(c, input.research_id, deps, ctx, ["search timed out, picking it back up", "still on it, one more try"]);
+          } catch (e) {
+            if (!existing.continue_task_id) throw e;
+            more = { ok: false, research_id: existing.id, error: `the rest of the look broke: ${(e?.message ?? String(e)).split("\n")[0]}` };
+          }
+          // One that has not had a follow-up may be given one here, by the same rules as a new run.
+          const followUp = existing.continue_task_id ? researchFollowUpDelivered(c, existing, more) : researchFollowUp(c, more, ctx);
+          Object.assign(more, followUp);
           if (more.ok && deep?.pending) {
             more.deep_note = `Parallel's deep run is still going (${deep.status}). Say what you have so far if it is worth saying, then task_update with wake_in_minutes 10 so the report is picked up when it lands.`;
           }
@@ -17335,7 +17431,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // rather than being re-decided per call: a deep run that wakes tomorrow still knows the
       // licensing board is the place to go, with no part of this file reading the question's words.
       const niche = input.niche && nicheFor(input.niche, ctx.niches ? { niches: ctx.niches } : {}) ? input.niche : "";
-      const run = researchStart(c, { question: input.question, queries, taskId: task?.id ?? null, niche });
+      const run = researchStart(c, {
+        question: input.question, queries, taskId: task?.id ?? null, niche,
+        big: researchIsBig({ kind: input.kind, queries, options: input.options ?? [] }),
+      });
       // Marked as being worked from the moment the row exists, so a request that arrives while the
       // quick answer or the deep start is still awaited joins this rather than stepping it too.
       return trackResearch(run.id, (async () => {
@@ -17367,6 +17466,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (!out.ok) return out;
         return outsideResearch({
           ...out,
+          ...(task ? {} : researchFollowUp(c, out, ctx)),
           ...answerShape(input.kind, me.name),
           ...(task ? {
             task_id: task.id,

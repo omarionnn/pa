@@ -806,6 +806,34 @@ export const config = {
   researchMaxSearches: Number(process.env.REASON_RESEARCH_MAX_SEARCHES || 5),
   researchMaxPages: Number(process.env.REASON_RESEARCH_MAX_PAGES || 8),
   researchMaxSeconds: Number(process.env.REASON_RESEARCH_MAX_SECONDS || 90),
+  // A big question gets more room. "Big" is read off what the model already said about it, never
+  // off the words: kind "choice" (comparing or deciding), three or more planned queries, or three or
+  // more named options. Run #78 (2026-10-30, "which service can vault each user's card with a
+  // passkey") planned four queries naming six vendors and the small caps could not see past the
+  // first one. The cost of the bigger room, so it is a choice and not a default: each page is up to
+  // researchSourceChars (≈2.5k chars) in the model's context, so +6 pages ≈ +15k chars ≈ +~4k tokens,
+  // and with the extra searches' snippets a full big run lands at roughly +~9k tokens on a ~120k
+  // input reply (<10%). The searches themselves are the Parallel provider's, not Anthropic's. The
+  // extra 60s is only spent when there is still work to do. Small questions keep the caps above.
+  researchBigMaxSearches: Number(process.env.REASON_RESEARCH_BIG_MAX_SEARCHES || 8),
+  researchBigMaxPages: Number(process.env.REASON_RESEARCH_BIG_MAX_PAGES || 14),
+  researchBigMaxSeconds: Number(process.env.REASON_RESEARCH_BIG_MAX_SECONDS || 150),
+  // When a cap still ends a run with planned queries left, the person gets the answer from what was
+  // found now and ONE follow-up text later: a task wakes this many minutes on, carries the same run
+  // on with a fresh slice of this many searches and pages on top of what it already spent, texts
+  // only what is new, and closes. Never chained: the follow-up's own carry-on cannot start another.
+  researchContinueWakeMin: Number(process.env.REASON_RESEARCH_CONTINUE_WAKE_MIN || 2),
+  researchContinueSearches: Number(process.env.REASON_RESEARCH_CONTINUE_SEARCHES || 5),
+  researchContinuePages: Number(process.env.REASON_RESEARCH_CONTINUE_PAGES || 8),
+  // How many of those background follow-ups one person gets a day (the install's day, the same one
+  // the spend cap counts on — trust.js spendDay). Sized off the subscription, which is what pays for
+  // it: one reply ≈120k input tokens, a p50 active person ≈6 turns a day (≈0.8M), p90 ≈1.6M, and a
+  // Pro plan carries ~6–11 people with the WEEKLY cap the one that binds. A follow-up is ~1–2 extra
+  // turns, so 2 a day is at most a ~4-turn (~0.5M) bump on a heavy research day, and only on days
+  // someone asks big questions. The owner gets 5 because the owner tests it and pays for it. Past the
+  // cap the answer is what it always was: based on what it got, with an offer to look further.
+  researchContinuePerDay: Number(process.env.REASON_RESEARCH_CONTINUE_PER_DAY || 2),
+  researchContinuePerDayOwner: Number(process.env.REASON_RESEARCH_CONTINUE_PER_DAY_OWNER || 5),
   researchMaxRetries: Number(process.env.REASON_RESEARCH_MAX_RETRIES || 2),
   // How much of each source is kept in the log. Enough to quote from honestly, small enough that
   // eight of them fit in a turn.

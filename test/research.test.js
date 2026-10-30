@@ -883,10 +883,17 @@ test("a run left open with nobody coming back is closed by the sweep, and its lo
   const { settleAbandonedResearch } = await import("../src/tools.js");
   const p = provider({ "*": results([["/maker", "Official"]]) });
   const { lookup } = countingLookup();
-  // Cut by a cap with queries left, on no task: nothing will ever wake for this one.
-  const cut = await call("research", { question: "pixel?", queries: ["one", "two", "three"] }, {
-    searchProvider: p, robots: openRobots, lookup, researchCaps: { maxSearches: 1 },
-  });
+  // Cut by a cap with queries left, on no task: nothing will ever wake for this one. (The day's
+  // background follow-ups are set to none, or the cut would be given one — test/research-room.test.js.)
+  const perDay = config.researchContinuePerDayOwner;
+  config.researchContinuePerDayOwner = 0;
+  let cut;
+  try {
+    cut = await call("research", { question: "pixel?", queries: ["one", "two", "three"] }, {
+      searchProvider: p, robots: openRobots, lookup, researchCaps: { maxSearches: 1 },
+    });
+  } finally { config.researchContinuePerDayOwner = perDay; }
+  assert.equal(cut.follow_up?.scheduled, false);
   assert.equal(db.getResearch(C, cut.research_id).state, "open");
   // A deep run has a task that will wake for it, and is left alone.
   const deep = await call("research", { question: "a big one", queries: ["a", "b"], deep: true, new_subject: true },
