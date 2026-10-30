@@ -5937,6 +5937,12 @@ export function rememberSeenUrls(conversationId, urls, { kind = "", from = "" } 
   return n;
 }
 
+/** The image addresses a tool saw on one page (seen_urls.from_url), oldest first. */
+export function seenUrlsFrom(conversationId, fromUrl, limit = 60) {
+  if (!fromUrl) return [];
+  return db.prepare("SELECT url FROM seen_urls WHERE conversation_id = ? AND from_url = ? ORDER BY at, rowid LIMIT ?").all(conversationId, fromUrl, limit).map(r => r.url);
+}
+
 /** How a url was seen, or null if it never was. */
 export function seenUrlInfo(conversationId, url) {
   const r = db.prepare("SELECT url, kind, from_url FROM seen_urls WHERE conversation_id = ? AND url = ?").get(conversationId, url);
