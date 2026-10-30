@@ -40,7 +40,7 @@ import { withoutSelfNote, readSilence } from "../plain.js";
 import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "../offers.js";
 import { saveThread } from "../thread.js";
 import { runClaudeCli } from "./cli.js";
-import { adoptWebChatAsks } from "../trust.js";
+import { adoptWebChatAsks, expiredAsksNote } from "../trust.js";
 import { whileTurn } from "../background.js";
 import { startMcpHttp } from "./mcp-http.js";
 import { randomUUID } from "node:crypto";
@@ -286,6 +286,10 @@ async function runTurnOnCli({
     const pending = pendingConfirmations(conversationId)
       .filter(x => !x.granted_at && (x.thread_key ?? null) === (historyId !== conversationId ? historyId : null))
       .map(x => `  - confirmation #${x.id} (${x.action}), asked ${stamp(x.asked_at)}: ${x.summary}`);
+    // Asks that ran out (closed as a no, src/db.js expireStaleAsks), shown once on a turn THEY start,
+    // so a line about it can ride along on a reply. Expiry itself never sends anything.
+    const expired = kind === "event" ? "" : expiredAsksNote(conversationId);
+    if (expired) log({ expired_asks_told: conversationId });
 
     // Replies in this thread that never arrived, told about exactly once. Same read as the API path
     // in src/agent.js, for the same reason: without it Reason answers the next message as though its
@@ -334,6 +338,7 @@ async function runTurnOnCli({
       ? `${parts.anchor ? "The conversation so far, continued (the earlier part is at the end of your instructions)" : "The conversation so far"}:\n${history}\n\n`
       : parts.anchor ? "The conversation so far is at the end of your instructions.\n\n" : "")
       + (pending.length ? `Questions you already asked and are still waiting on:\n${pending.join("\n")}\nIf the new message answers one of these, confirm_record THAT id. Do not ask again.\n\n` : "")
+      + (expired ? `${expired}\n\n` : "")
       + (notice ? `${notice}\n\n` : "")
       + `The new message:\n${line}\n\n`
       + (turnNote ? `[${turnNote}]\n\n` : "")

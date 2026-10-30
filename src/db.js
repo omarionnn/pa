@@ -1577,6 +1577,10 @@ addColumnIfMissing("tasks", "label", "TEXT");
 addColumnIfMissing("tasks", "result_json", "TEXT");
 // The dollar figure a confirmation asked about (confirm_request's `amount`), so a receipt can show it.
 addColumnIfMissing("confirmations", "amount_cents", "INTEGER");
+// An ask that ran out (2026-10-30, see expireStaleAsks): closed as a no, never a yes. `expiry_told_at`
+// is when the model was shown it once, so it can let them know in a line if it still matters.
+addColumnIfMissing("confirmations", "expired_at", "INTEGER");
+addColumnIfMissing("confirmations", "expiry_told_at", "INTEGER");
 addColumnIfMissing("timers", "label", "TEXT");
 addColumnIfMissing("series", "label", "TEXT");
 // The short drafts Web's "Talk about it in the chat →" puts in the composer (src/itemtitle.js), one per
@@ -2956,11 +2960,93 @@ export function shiftThreadMarks(historyId, { ownerTexts = 0, userLines = 0 } = 
  */
 export function unexecutedGatesFor(conversationId, task) {
   if (!task) return [];
+  // An ask that ran out is a no, exactly like a refused one: it does not hold the task open.
+  expireStaleAsks({ conversationId });
   return db.prepare(`SELECT * FROM confirmations
     WHERE conversation_id = ? AND asked_at >= ?
       AND (task_id IS NULL OR task_id = ?)
-      AND refused_at IS NULL AND consumed_at IS NULL
+      AND refused_at IS NULL AND consumed_at IS NULL AND expired_at IS NULL
     ORDER BY asked_at`).all(conversationId, task.created_at, task.id);
+}
+
+// ---------- asks that run out ----------
+// Calls and texts to somebody else: about "now". See config.askTtlReachH.
+const REACH_ASKS = new Set(["call_place", "message_send", "voice_note_send", "x_dm"]);
+// Spending, or committing to something priced. See config.askTtlMoneyH.
+const MONEY_ASKS = new Set(["purchase", "purchase_confirm", "uber_request", "flight_book", "browser_submit", "subscription_cancel_commit"]);
+
+/** How long this ask stays answerable, in ms, by what it is for. */
+export function askTtlMs(row) {
+  const action = String(row?.action ?? "").replace(/^mcp__[a-z0-9_-]+__/i, "");
+  // Letting somebody in: the ask lives exactly as long as their access request does
+  // (config.accessWindowMin, src/access.js readMasterReply), so the two can never disagree and a yes
+  // inside the request's window is never refused as a stale ask.
+  if (action === "access_grant") return config.accessWindowMin * 60_000;
+  const h = REACH_ASKS.has(action) ? config.askTtlReachH
+    : MONEY_ASKS.has(action) || row?.amount_cents != null ? config.askTtlMoneyH
+    : config.askTtlDefaultH;
+  return h * 3_600_000;
+}
+
+/**
+ * Why this ask is dead, or null while it can still be answered or used. Two ways to be dead:
+ * an ask nobody answered in its window ("unanswered"), and a yes that was given but never used
+ * within config.confirmWindowMin ("yes_unused") — that one can never authorize anything again, so
+ * it is closed the same way rather than left looking open forever.
+ */
+export function askOverdue(row, now = clock.now()) {
+  if (!row || row.consumed_at || row.refused_at) return null;
+  if (row.expired_at) return row.granted_at ? "yes_unused" : "unanswered";
+  if (row.granted_at) return now - row.granted_at > config.confirmWindowMin * 60_000 ? "yes_unused" : null;
+  return now - row.asked_at > askTtlMs(row) ? "unanswered" : null;
+}
+
+/** Close one ask as run out. Never grants. True if this call closed it. */
+export function expireConfirmation(id, now = clock.now()) {
+  return db.prepare("UPDATE confirmations SET expired_at = ? WHERE id = ? AND expired_at IS NULL AND consumed_at IS NULL AND refused_at IS NULL")
+    .run(now, id).changes > 0;
+}
+
+/**
+ * Close every overdue ask (one conversation's, or all of them), as a no. Cheap enough to run before
+ * every read of the open asks, which is how it works without a timer; scripts/expire-stale-asks.js
+ * runs it across the whole database on deploy.
+ *
+ * `quietOlderThanMs`: an ask older than this is too old to mention to anybody, so it is closed with
+ * expiry_told_at set at once. `dryRun` reports what would close and writes nothing.
+ * Returns the rows it closed (or would close), each with `why` and `age_ms`. Sends nothing, ever.
+ */
+export function expireStaleAsks({ conversationId = null, now = clock.now(), dryRun = false, quietOlderThanMs = null } = {}) {
+  const rows = db.prepare(`SELECT * FROM confirmations WHERE expired_at IS NULL AND consumed_at IS NULL AND refused_at IS NULL
+    ${conversationId ? "AND conversation_id = ?" : ""} ORDER BY asked_at`).all(...(conversationId ? [conversationId] : []));
+  const out = [];
+  for (const r of rows) {
+    const why = askOverdue(r, now);
+    if (!why) continue;
+    const quiet = quietOlderThanMs != null && now - r.asked_at > quietOlderThanMs;
+    if (!dryRun) {
+      if (!expireConfirmation(r.id, now)) continue;
+      if (quiet) db.prepare("UPDATE confirmations SET expiry_told_at = ? WHERE id = ? AND expiry_told_at IS NULL").run(now, r.id);
+    }
+    out.push({ ...r, why, age_ms: now - r.asked_at, quiet });
+  }
+  return out;
+}
+
+/**
+ * Asks that ran out and the model has not been shown yet. Any thread's: there is one thread now
+ * (Web-only chats retired 10-27), and an ask that ran out in an old Web chat is still theirs to hear
+ * about. Read-only; markExpiryTold claims them.
+ */
+export function expiredUntold(conversationId) {
+  expireStaleAsks({ conversationId });
+  return db.prepare(`SELECT * FROM confirmations WHERE conversation_id = ? AND expired_at IS NOT NULL AND expiry_told_at IS NULL
+    ORDER BY asked_at DESC LIMIT 5`).all(conversationId);
+}
+/** Stamp these as shown. Returns the ids this call claimed, so two turns never both show one. */
+export function markExpiryTold(ids, now = clock.now()) {
+  const st = db.prepare("UPDATE confirmations SET expiry_told_at = ? WHERE id = ? AND expiry_told_at IS NULL");
+  return ids.filter(id => st.run(now, id).changes > 0);
 }
 export function getConfirmation(conversationId, id) {
   return db.prepare("SELECT * FROM confirmations WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
@@ -2975,8 +3061,10 @@ export function consumeConfirmation(id) {
   db.prepare("UPDATE confirmations SET consumed_at = ? WHERE id = ?").run(clock.now(), id);
 }
 export function pendingConfirmations(conversationId) {
+  // Asks that ran out are closed first, so nothing reading this list sees one as still open.
+  expireStaleAsks({ conversationId });
   return db.prepare(`SELECT * FROM confirmations WHERE conversation_id = ?
-    AND refused_at IS NULL AND consumed_at IS NULL ORDER BY asked_at DESC LIMIT 10`).all(conversationId);
+    AND refused_at IS NULL AND consumed_at IS NULL AND expired_at IS NULL ORDER BY asked_at DESC LIMIT 10`).all(conversationId);
 }
 
 /**
@@ -2987,7 +3075,7 @@ export function pendingConfirmations(conversationId) {
 export function adoptWebChatAsks(conversationId, ownerTexts) {
   return db.prepare(`UPDATE confirmations SET thread_key = NULL,
       asked_after_msgs = CASE WHEN granted_at IS NULL THEN ? ELSE asked_after_msgs END
-    WHERE conversation_id = ? AND thread_key LIKE '%#web:%' AND refused_at IS NULL AND consumed_at IS NULL`)
+    WHERE conversation_id = ? AND thread_key LIKE '%#web:%' AND refused_at IS NULL AND consumed_at IS NULL AND expired_at IS NULL`)
     .run(Math.max(0, Number(ownerTexts) || 0), conversationId).changes;
 }
 

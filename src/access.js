@@ -302,6 +302,13 @@ export async function readMasterReply({ messages, masterConversationId, judge })
       toMaster: `no worries, i've told them no. i won't bring them up again for ${config.declineCoolOffDays} days.`,
     };
   }
+  // The ask itself ran out (src/db.js askOverdue). Same as the stale request above, never a yes: the
+  // request is closed as expired so it cannot sit in front of the master undecidable for good, and
+  // the number may ask again.
+  if (verdict.state === "expired") {
+    db.decideRequest(request.id, "expired");
+    return { decided: false, reason: "expired", requestId: request.id };
+  }
   // unclear or changed: nothing is granted and nothing is refused. The request stays in front of
   // the master, and their turn runs normally — so Reason can ask again in its own words rather
   // than code nagging them.

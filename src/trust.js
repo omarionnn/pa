@@ -109,6 +109,32 @@ export function normalizeTarget(t) {
 }
 
 /**
+ * Asks that ran out since the model last looked, for the turn the person starts: shown once, then
+ * stamped (expiry_told_at), so it can let them know in a line if it still matters and otherwise say
+ * nothing. Never a reason to send anything on its own: this is only ever read on a turn they started.
+ * "" when there is nothing to show.
+ */
+export function expiredAsksNote(conversationId) {
+  let rows;
+  try { rows = db.expiredUntold(conversationId); } catch { return ""; }
+  const claimed = new Set(db.markExpiryTold(rows.map(r => r.id)));
+  const lines = rows.filter(r => claimed.has(r.id)).map(r => r.granted_at
+    ? `  - they said yes but it was never done, and that yes has run out (${r.action}, asked ${stamp(r.asked_at)}): ${r.summary}`
+    : `  - ran out without an answer (${r.action}, asked ${stamp(r.asked_at)}): ${r.summary}`);
+  if (!lines.length) return "";
+  return `Asks of yours that ran out and are now closed as a no:\n${lines.join("\n")}\n`
+    + `Only if one still matters, mention it in at most one short line (for example, that you let that order go since you did not hear back); otherwise say nothing about it. Never do any of these: they are closed, and doing one needs fresh details and a fresh confirm_request.`;
+}
+
+/** What the model is told when it reaches for an ask that ran out. Describes what to do, never words to say. */
+function expiredError(c, why) {
+  const what = why === "yes_unused"
+    ? `The yes on confirmation #${c.id} (${c.action}) was given ${Math.round((clock.now() - c.granted_at) / 60_000)} minutes ago and never used, and a yes only counts for ${config.confirmWindowMin}`
+    : `Confirmation #${c.id} (${c.action}) was asked ${stamp(c.asked_at)} and ran out before it was answered`;
+  return `${what}, so it is closed as a no. Do not act on this yes. If they still want it, re-check the current details first (fresh price, availability or time, with the normal tool), then call confirm_request fresh with what is true now, and ask them once.`;
+}
+
+/**
  * Step 2 of the gate. The guard, not the model, decides. Code checks the facts: the reply must be
  * a real NEW owner message that arrived after the ask, and the confirmation must still be open.
  * The judge then reads what that reply means against the summary that was recorded.
@@ -130,6 +156,13 @@ export async function recordConfirmation({ conversationId, messages, confirmatio
   }
   if (c.consumed_at) return { ok: false, state: "spent", error: `Confirmation #${confirmationId} was already used for ${c.action}. Ask again.` };
   if (c.refused_at) return { ok: false, state: "refused", error: `Confirmation #${confirmationId} was refused. Do not retry unless they bring it up.` };
+  // An ask that ran out is a no, whatever they say now. A late yes is not a yes to what is on record:
+  // the price, the stock, the moment the call was for have all had time to move.
+  const overdue = db.askOverdue(c);
+  if (overdue) {
+    db.expireConfirmation(c.id);
+    return { ok: false, state: "expired", confirmation_id: c.id, action: c.action, error: expiredError(c, overdue) };
+  }
   if (c.granted_at) return { ok: true, state: "granted", confirmation_id: c.id, action: c.action, quote: c.granted_quote };
 
   const texts = ownerTexts(messages);
@@ -192,6 +225,12 @@ export function authorizeConfirmation({ conversationId, action, confirmationId, 
   if (toolName(c.action) !== want) return { ok: false, blocked: "wrong_action", error: `Confirmation #${confirmationId} was for ${c.action}, not ${want}. A yes covers one action only.` };
   if (c.consumed_at) return { ok: false, blocked: "already_spent", error: `Confirmation #${confirmationId} was already used. Ask again before doing this twice.` };
   if (c.refused_at) return { ok: false, blocked: "refused", error: `Confirmation #${confirmationId} was refused.` };
+  // Defence in depth: recordConfirmation already refuses to grant an ask that ran out, and this
+  // refuses to act on one whatever the row says.
+  if (!c.granted_at && db.askOverdue(c)) {
+    db.expireConfirmation(c.id);
+    return { ok: false, blocked: "expired", error: expiredError(c, "unanswered") };
+  }
   if (!c.granted_at) return { ok: false, blocked: "not_granted", error: `Confirmation #${confirmationId} has no yes on it yet. Wait for their reply and call confirm_record.` };
   // For anything aimed at a person — a text, a call — the yes covers that person and nobody
   // else. The owner agreed to a number they were shown; dialling a different one on the same
@@ -214,7 +253,8 @@ export function authorizeConfirmation({ conversationId, action, confirmationId, 
     }
   }
   const ageMin = (clock.now() - c.granted_at) / 60_000;
-  if (ageMin > config.confirmWindowMin) {
+  if (c.expired_at || ageMin > config.confirmWindowMin) {
+    db.expireConfirmation(c.id);
     return { ok: false, blocked: "stale", error: `That yes was ${Math.round(ageMin)} minutes ago and only counts for ${config.confirmWindowMin}. Ask again before doing it.` };
   }
   return { ok: true, confirmation: { id: c.id, quote: c.granted_quote, granted: stamp(c.granted_at), summary: c.summary } };

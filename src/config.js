@@ -32,6 +32,18 @@ export const config = {
   fallbacks: process.env.REASON_FALLBACKS !== "off",
   // How long an explicit yes counts for, in minutes. After this a guarded tool asks again.
   confirmWindowMin: Number(process.env.REASON_CONFIRM_WINDOW_MIN || 10),
+  // How long an ask for a yes stays answerable, in hours, by what it is for (src/db.js askTtlMs).
+  // Past this the ask is closed as a no, never as a yes, and a late "yes" grants nothing: the model
+  // re-checks the details and asks again. Before 2026-10-30 an ask never ran out, so a "yeah" this
+  // week could land on a call ask from two weeks ago.
+  //   reach (calls, texts, voice notes, DMs to someone else): 12h. Those are about "now" (business
+  //     hours, a moment that passes); yesterday's call ask should not still be live this morning.
+  //   money (purchases, rides, bookings, submits, anything with an amount): 24h. Prices and stock
+  //     move daily, but people need a day to think about spending.
+  //   everything else: 24h.
+  askTtlReachH: Number(process.env.REASON_ASK_TTL_REACH_H || 12),
+  askTtlMoneyH: Number(process.env.REASON_ASK_TTL_MONEY_H || 24),
+  askTtlDefaultH: Number(process.env.REASON_ASK_TTL_DEFAULT_H || 24),
   // The gate's reader: a separate narrow call that decides what the owner's reply meant.
   // Defaults to the same model as the conversation, because misreading a yes is the costly mistake.
   judgeModel: process.env.REASON_JUDGE_MODEL || process.env.REASON_MODEL || "claude-opus-5",
