@@ -59,7 +59,8 @@ import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEv
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
-import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool } from "./shoptools.js";
+import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
+import * as shopConnect from "./shopconnect.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import * as rhythms from "./rhythms.js";
@@ -346,7 +347,9 @@ export function toolsFor(conversationId) {
   const remoteOk = remoteOpen(conversationId).ok;
   const isMaster = accounts.ownerOf(conversationId).isOperator;
   const invitesOk = invitesOpenFor(conversationId);
-  const bookingOk = flightbook.bookingEnabled(conversationId);
+  // Crossmint on: it is the only way to buy here, so AgentCard's buying tools and flight_book go (src/shoptools.js).
+  const crossmint = shopConnect.connectAllowedFor(conversationId);
+  const bookingOk = flightbook.bookingEnabled(conversationId) && !crossmint;
   return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
     && (invitesOk || !INVITE_TOOLS.has(t.name))
     && (isMaster || !INVITE_MASTER_TOOLS.has(t.name))
@@ -355,8 +358,10 @@ export function toolsFor(conversationId) {
     && albumToolVisible(t.name, conversationId)
     && directionsToolVisible(t.name, conversationId)
     && choiceToolVisible(t.name, conversationId)
-    && shopToolVisible(t.name, conversationId))
-    .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t));
+    && shopToolVisible(t.name, conversationId)
+    && agentcardToolVisible(t.name, conversationId))
+    .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
+    .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
 }
 
 // How a flight search finishes. Off (the default): search only, and the Google Flights link is the one
@@ -2592,7 +2597,15 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   // not stored a card, must say so rather than offering to go shopping.
   const buying = out.find(c => c.name === "buy_things");
   const vault = db.getAgentcardUser(conversationId);
-  if (!agentcard.isConfigured()) {
+  const mint = shopConnect.connectAllowedFor(conversationId) ? shopConnect.cardOf(conversationId) : undefined;
+  if (mint !== undefined) {
+    // Crossmint is the only way to buy here (src/shoptools.js).
+    const label = mint ? `${mint.brand ? mint.brand.replace(/^./, s => s.toUpperCase()) : "card"} ••••${mint.last4 || "????"}` : "";
+    buying.status = mint ? "live" : "not connected";
+    buying.what = mint
+      ? `buy things at almost any store's website with the card ${who} saved (${label}): store_checkout does the checkout and nothing is paid until ${who} says yes to the exact total they are texted. Their spending limits apply on top. Reason never sees the card number`
+      : `Reason can buy at almost any store's website, but ${who} has not saved a card yet, so nothing can be paid for today. shop_card gives the link to add one. Offer that rather than offering a purchase`;
+  } else if (!agentcard.isConfigured()) {
     buying.status = "not connected";
     buying.what = `buying things is not set up on this install: this machine has no ${agentcard.status().missing.join(" or ")}.`
       + ` Reason can still find things and compare prices; ${who} does the checkout. Do not offer to buy anything`;
@@ -9071,6 +9084,8 @@ async function runToolInner(name, rawInput, ctx) {
   if (INVITE_TOOLS.has(name) && !invitesOpenFor(c)) {
     return { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
   }
+  // Crossmint on: AgentCard's buying tools are not shown, and one named anyway does nothing.
+  if (AGENTCARD_BUY_TOOLS.has(name) && !agentcardToolVisible(name, c)) return AGENTCARD_REFUSAL;
   if (FLIGHT_BOOKING_TOOLS.has(name) && !flightbook.bookingEnabled(c)) {
     return { ok: false, blocked: "not_available", error: "Reason doesn't book flights here. Hand over the Google Flights link from the search so they can book it themselves, and do not mention booking." };
   }
@@ -11388,7 +11403,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return await runChoiceTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- Crossmint checkouts (src/shoptools.js) ----------
-    case "store_checkout": case "shop_pay": case "shop_decline": {
+    case "store_checkout": case "shop_pay": case "shop_decline": case "shop_card": {
       const out = await runShopTool(name, input, { ...ctx, conversationId: c });
       // The card may have been offered to the store and nobody knows: never a retry on that yes.
       if (name === "shop_pay" && out?.unknown_outcome) trust.noteUnknownOutcome({ conversationId: c, action: "shop_pay", target: confirmTargetFor("shop_pay", input, c), why: `Crossmint ${out.status ?? "no answer"} after the order intent` });

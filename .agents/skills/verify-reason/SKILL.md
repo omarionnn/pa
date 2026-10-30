@@ -434,6 +434,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — Crossmint only for buys (wt/crossmint-only-buys, 2026-10-30)
+
+`npm run test:offline`: 4,798 tests, 4,667 passing, 131 skipped, 0 failing. New: `test/crossmint-only-buys.test.js` (7). Cage over the subscription (owner, card seeded): the CeraVe ask → store_checkout, no AgentCard tool. See [features/shop-connect.md](features/shop-connect.md) "Crossmint only".
+
 ### Baseline — first-chat onboarding (feat/first-chat-onboarding, 2026-10-30)
 
 `npm run test:offline` under `env -i` (rebased on origin/main 5bbd733, after both #270 reviews): 4,791 tests, 4,660 passing, 131 skipped, 0 failing, 0 cancelled (`test/onboarding.test.js` 38, `test/onboarding-migration.test.js` 2; +16 skipped: the opt-in `test/onboarding-live.test.js` — 16/16 on the subscription, sensitive texts + the harm screen included). Cage: `bin/onboarding-drive.sh` 11/11. See [features/onboarding.md](features/onboarding.md).

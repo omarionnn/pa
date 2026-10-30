@@ -5,6 +5,8 @@
 // schemas and the ledger are the same code the API backend runs. A backend that reimplemented
 // any of that would prove nothing about Reason.
 import { tools, toolsFor, runTool, playbookExtra } from "../tools.js";
+import { crossmintWords } from "../shoptools.js";
+import { connectAllowedFor } from "../shopconnect.js";
 import { loadConversation } from "../db.js";
 import { sealTravelers } from "../privacy.js";
 
@@ -62,7 +64,9 @@ export function splitImage(out) {
  * is the half that means nobody else's model is ever told the tool is there to ask about.
  */
 export function mcpToolsFor(conversationId) {
-  return toolsFor(conversationId).map(asMcp);
+  // The playbook rules ride on here, after toolsFor, so a Crossmint conversation's wording has to be applied again (src/shoptools.js).
+  const crossmint = connectAllowedFor(conversationId);
+  return toolsFor(conversationId).map(asMcp).map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
 }
 
 /**
