@@ -2,14 +2,15 @@
 // The walking directions page as a static staging copy, for walking it on a phone before it ships.
 //
 //   node scripts/directions-staging.mjs            → writes dist/directions-staging/
-//   node scripts/directions-staging.mjs --deploy   → also deploys it as the "directions" alias of the
-//                                                    reason-web-staging Netlify site (never --prod, never
-//                                                    the main staging copy, never the marketing site)
+//   node scripts/directions-staging.mjs --deploy   → also deploys it as a draft deploy ("directions") of the
+//                                                    reason-web-staging Netlify site: its own URL, never
+//                                                    the published staging copy, never the marketing site
 //
 // Every file is what Reason's own server answers (directionsRequest, flags on, the made-up sample trip), so
 // the copy is the page byte for byte. Static means no reroute: the page asks, gets nothing, keeps its saved
 // route, exactly as it does when the server is unreachable. An index lists every hand-off state.
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -66,5 +67,18 @@ writeFileSync(join(outDir, "_headers"), `/*\n  X-Robots-Tag: noindex, nofollow\n
 console.log(`wrote ${outDir}`);
 
 if (process.argv.includes("--deploy")) {
-  execFileSync("npx", ["-y", "netlify-cli@latest", "deploy", "--no-build", "--dir", outDir, "--site", SITE, "--alias", ALIAS, "--message", `directions staging ${new Date().toISOString()}`], { stdio: "inherit", cwd: repo });
+  // A draft deploy on the staging site: its own URL, the published staging copy untouched. The Netlify CLI's
+  // saved login is used (~/Library/Preferences/netlify/config.json); the token is never printed.
+  const conf = JSON.parse(readFileSync(join(homedir(), "Library/Preferences/netlify/config.json"), "utf8"));
+  const token = Object.values(conf.users || {}).map((u) => u.auth && u.auth.token).find(Boolean);
+  if (!token) throw new Error("no Netlify login on this Mac");
+  const zip = join(repo, "dist", "directions-staging.zip");
+  rmSync(zip, { force: true });
+  execFileSync("zip", ["-qr", zip, "."], { cwd: outDir });
+  const res = await fetch(`https://api.netlify.com/api/v1/sites/${SITE}/deploys?draft=true&branch=${ALIAS}&title=${encodeURIComponent("directions staging")}`, {
+    method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/zip" }, body: readFileSync(zip),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(`netlify ${res.status}: ${body.message || ""}`);
+  console.log(JSON.stringify({ id: body.id, state: body.state, url: body.deploy_ssl_url, branch: body.branch, alias: body.links && body.links.alias }));
 }

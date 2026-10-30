@@ -25,7 +25,8 @@ export const ARRIVED_M = 15;             // arrival is confirmed inside this, on
 export const ARRIVE_HOLD_MS = 3000;      // ...or on one, held this long
 export const SHARP_M = 20;               // a reading this accurate counts for arrival on its own
 export const WAIT_MS = 45000;            // no movement this long = waiting
-export const LOST_FIX_MS = 15000;        // no good reading this long = finding you
+export const LOST_FIX_MS = 60000;        // no good reading this long = finding you (a still phone may send nothing new)
+export const ADVANCE_OFF_M = 30;         // a turn is only reached from on the route, never from the street one block over
 export const LEG_M = 8;                  // direction is judged on legs of this length
 export const WALK_MPS = 1.3;             // for "minutes left"
 export const LONG_WALK_M = 2000;         // beyond this the page opens on "too far to walk"
@@ -144,8 +145,8 @@ export function isNightAt(lat, lng, date, getTimes) {
 // ---------- the map's look (MapLibre, a style built from the tokens; no tiles, no key) ----------
 /** Each theme's map colours. The CSS variables of the same names in directions.css must agree (a test holds them). */
 export const MAP_THEMES = Object.freeze({
-  paper: Object.freeze({ land: '#ede5d8', road: '#faf6ee', casing: '#d4c9b5', label: '#78705f', water: '#d4d1c9', park: '#ddd5c7', route: '#9c3b2e', text: '#2a2520', paper: '#faf6ee' }),
-  night: Object.freeze({ land: '#151210', road: '#27211b', casing: '#3e362c', label: '#a89d88', water: '#202022', park: '#1f1c18', route: '#d46a5c', text: '#efe6d6', paper: '#27211b' }),
+  paper: Object.freeze({ land: '#ede5d8', road: '#faf6ee', casing: '#d4c9b5', label: '#78705f', water: '#e1d9cc', park: '#ddd5c7', route: '#9c3b2e', text: '#2a2520', paper: '#faf6ee' }),
+  night: Object.freeze({ land: '#151210', road: '#27211b', casing: '#3e362c', label: '#a89d88', water: '#1c1916', park: '#1f1c18', route: '#d46a5c', text: '#efe6d6', paper: '#27211b' }),
 });
 
 /** One map pixel of the design is this many metres: widths in the design's map are kept in metres, so they scale with zoom. */
@@ -264,6 +265,7 @@ export function createEscort(trip, line) {
     insideSince: 0,
     arrived: false,
     ended: false,
+    batteryShown: false,
     spoken: {},
     pr: null,
     dd: Infinity,
@@ -316,9 +318,9 @@ export function createEscort(trip, line) {
         }
 
         // Off the route: three good readings in a row, then one reroute request. Counted on each reading as it
-        // came (the smoothed dot trails a real walk off the line by a few readings), and only when the reading's
-        // whole accuracy circle is past the band, so a noisy fix at the edge is not taken for a wrong turn.
-        m.offCount = project(p, m.line).off - r.acc > OFF_M ? m.offCount + 1 : 0;
+        // came (the smoothed dot trails a real walk off the line by a few readings), and only when the reading is
+        // past the band by half its own accuracy, so a noisy fix at the edge is not taken for a wrong turn.
+        m.offCount = project(p, m.line).off - r.acc / 2 > OFF_M ? m.offCount + 1 : 0;
         if (m.offCount >= OFF_COUNT && !m.rerouting && now - m.lastReroute > REROUTE_GAP_MS) {
           m.rerouting = true;
           m.lastReroute = now;
@@ -327,7 +329,7 @@ export function createEscort(trip, line) {
 
         // Turns: pass a maneuver within STEP_NEAR_M and the next one becomes current.
         const cur = m.steps[m.step];
-        if (cur) {
+        if (cur && m.pr.off <= ADVANCE_OFF_M) {
           const dNext = cur.along - m.pr.along;
           if (m.step < lastStep() && dNext <= STEP_NEAR_M) {
             m.hereStep = m.step;
@@ -383,23 +385,25 @@ export function createEscort(trip, line) {
       const early = typeof trip.startsAt === 'number' && now < trip.startsAt - 10 * 60000;
       return { ...base, state: early ? 'early' : 'arrived', status: 'ESCORT ENDED', ended: true, remainingM: 0, minsLeft: 0 };
     }
-    if (m.ended) return { ...base, state: 'arrived', status: 'ESCORT ENDED', ended: true };
+    if (m.ended) return { ...base, state: 'ended', status: 'ESCORT ENDED', ended: true };
 
     const dNext = cur && m.pr && m.step < lastStep() ? cur.along - pr.along : null;
     base.dNext = dNext;
     const stationary = hasFix && now - m.anchorT > WAIT_MS;
     let state;
+    // One loud thing, by what matters most on the street: a turn is never hidden behind a note about the
+    // phone (battery, signal, coming back). The new-way note shows only once a new way has come back.
     if (!hasFix) state = 'finding';
     else if (m.dd < ARRIVE_M) state = 'arrive';
-    else if (m.rerouting || now < m.rerouteShowUntil) state = 'reroute';
+    else if (now < m.rerouteShowUntil) state = 'reroute';
+    else if (now < m.hereUntil) state = 'here';
+    else if (m.dir === 'around') state = 'around';
+    else if (m.dir === 'unknown') state = 'unknown';
+    else if (stationary) state = 'wait';
+    else if (dNext !== null && dNext <= SOON_M && turnOf(cur) !== 'straight') state = 'soon';
     else if (now < m.batteryUntil) state = 'battery';
     else if (m.offline) state = 'lost';
     else if (now < m.welcomeUntil) state = 'welcome';
-    else if (stationary) state = 'wait';
-    else if (now < m.hereUntil) state = 'here';
-    else if (dNext !== null && dNext <= SOON_M && turnOf(cur) !== 'straight') state = 'soon';
-    else if (m.dir === 'around') state = 'around';
-    else if (m.dir === 'unknown') state = 'unknown';
     else if (now - m.confirmedAt < 4000) state = 'confirmed';
     else if (now < m.reassureUntil) state = 'reassure';
     else state = 'straight';
@@ -425,8 +429,10 @@ export function createEscort(trip, line) {
       m.trip = newTrip;
       setSteps(newTrip.steps, newLine);
       const pr = project(pos, newLine);
-      m.step = Math.max(0, m.steps.findIndex((s) => s.along > pr.along - 5));
-      if (m.step < 0) m.step = lastStep();
+      const next = m.steps.findIndex((s) => s.along > pr.along - 5);
+      m.step = next < 0 ? lastStep() : next;
+      m.spoken = {};
+      m.hereUntil = 0;
       m.rerouting = false;
       m.rerouteShowUntil = now + 6000;
       m.offCount = 0;
@@ -436,7 +442,10 @@ export function createEscort(trip, line) {
     },
     rerouteFailed() { m.rerouting = false; },
     setOffline(v) { m.offline = !!v; },
-    notifyBattery(now) { m.batteryUntil = now + 8000; },
+    /** Low battery: said once an escort, for a few seconds. */
+    notifyBattery(now) { if (!m.batteryShown) { m.batteryShown = true; m.batteryUntil = now + 8000; } },
+    /** END ESCORT: over, with no arrival claimed. */
+    end() { m.ended = true; },
     welcomeBack(now) { m.welcomeUntil = now + 6000; },
     /** Switching back from Route: the direction is unknown again, the step is kept. */
     resumeFromRoute() { m.dir = 'unknown'; m.anchor = null; m.start = null; m.buf = []; m.path = 0; m.pos = null; m.lastRead = null; m.lastRaw = null; m.lastGood = 0; },
@@ -553,11 +562,16 @@ function boot() {
       interactive: !!opts.interactive, dragRotate: false, pitchWithRotate: false, touchPitch: false,
       attributionControl: false, fadeDuration: 0, renderWorldCopies: false,
     });
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('map did not load')), 8000);
-      map.once('load', () => { clearTimeout(timer); resolve(); });
-      map.once('error', (e) => { clearTimeout(timer); reject(e && e.error ? e.error : new Error('map error')); });
-    });
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('map did not load')), 8000);
+        map.once('load', () => { clearTimeout(timer); resolve(); });
+        map.once('error', (e) => { if (!map.loaded()) { clearTimeout(timer); reject(e && e.error ? e.error : new Error('map error')); } });
+      });
+    } catch (e) {
+      try { map.remove(); } catch (x) { /* already gone */ } // give the WebGL context back (iOS caps how many live)
+      throw e;
+    }
     const add = (node, at, anchor, offset) => new lib.Marker({ element: node, anchor: anchor || 'center', offset: offset || [0, 0] }).setLngLat(at).addTo(map);
     const scaleIt = () => el.style.setProperty('--mk', designScale(map.getZoom()).toFixed(3));
     map.on('zoom', scaleIt);
@@ -800,8 +814,9 @@ function boot() {
     arrive:    { stem: 'scaleY(0.459)', arrive: true },
     arrived:   { stem: 'scaleY(0)', loop: true, ended: true, status: 'ESCORT ENDED', off: true },
     early:     { stem: 'scaleY(0)', loop: true, ended: true, status: 'ESCORT ENDED', off: true },
+    ended:     { stem: 'scaleY(0)', ended: true, status: 'ESCORT ENDED', off: true },
   };
-  const CAP_IDS = ['finding', 'unknown', 'confirmed', 'around', 'straight', 'reassure', 'soon', 'here', 'reroute', 'wait', 'welcome', 'battery', 'lost', 'arrive', 'arrived', 'early'];
+  const CAP_IDS = ['finding', 'unknown', 'confirmed', 'around', 'straight', 'reassure', 'soon', 'here', 'reroute', 'wait', 'welcome', 'battery', 'lost', 'arrive', 'arrived', 'early', 'ended'];
 
   /** The caption for a view. word = printed (routine), hand = handwritten (a human moment). */
   function capOf(v) {
@@ -823,9 +838,10 @@ function boot() {
       case 'welcome': return { hand: 'Welcome back, here’s where you are.', sub: 'STRAIGHT ON' + (d !== null ? ' · ' + turnWord(step).toUpperCase() + ' IN ' + d + ' M' : '') };
       case 'battery': return { hand: 'Battery’s low. Switch to Route to save it?', action: 'Switch to Route →', href: '#route' };
       case 'lost': return { hand: 'Lost signal for a bit, but I still know the way.', sub: 'NO SIGNAL · ROUTE SAVED ON THIS PAGE' };
-      case 'arrive': return { hand: 'It’s on your right. Look for the gate.', sub: (T.entrance || '') + ' · ' + Math.round(v.dd) + ' M' };
+      case 'arrive': return { hand: 'It’s on your ' + (T.side === 'left' ? 'left' : 'right') + '. Look for the gate.', sub: (T.entrance || '') + ' · ' + Math.round(v.dd) + ' M' };
       case 'arrived': return { hand: 'You made it.', fs: '3.8rem', stamp: 'ARRIVED ' + clockNow(), action: T.links && T.links.event ? (T.links.event.label || 'See the event →') : null, href: T.links && T.links.event ? T.links.event.url : null };
       case 'early': return { hand: 'You’re early. It starts at ' + (T.startsLabel || 'the start') + '.', fs: '2.9rem', sub: 'NEARBY · ' + (T.nearby || ''), action: T.links && T.links.event ? (T.links.event.label || 'See the event →') : null, href: T.links && T.links.event ? T.links.event.url : null };
+      case 'ended': return {};
       default: return { word: 'Keep going.' };
     }
   }
@@ -859,8 +875,9 @@ function boot() {
         '<g mask="url(#esc-fade)"><g class="stem" id="e-stem"><path class="ink-line" d="M195,400 V30" vector-effect="non-scaling-stroke"/><path class="drift" d="M195,400 V30" vector-effect="non-scaling-stroke"/></g></g>' +
         '<g class="bend-g" id="e-bend-g"><path class="ink-line draw" id="e-bend" d="M195,150 Q195,90 135,90 H55" pathLength="100"/></g>' +
         '<path class="ink-line draw" id="e-hook" d="M195,250 C195,192 115,192 115,250 V318" pathLength="100"/>' +
-        '<path class="ink-line draw" id="e-arrive" d="M195,230 Q195,200 225,200 H258" pathLength="100"/>' +
-        '<path class="gate" id="e-gate" d="M270,216 V190 Q283,178 296,190 V216 M270,198 H296"/>' +
+        // The gate on the side the place is on: drawn for the right, mirrored about the dot for the left.
+        '<g' + (T.side === 'left' ? ' transform="translate(390,0) scale(-1,1)"' : '') + '><path class="ink-line draw" id="e-arrive" d="M195,230 Q195,200 225,200 H258" pathLength="100"/>' +
+        '<path class="gate" id="e-gate" d="M270,216 V190 Q283,178 296,190 V216 M270,198 H296"/></g>' +
         '<path class="ink-line draw" id="e-loop" d="M195,350 A50 50 0 1 1 194.9,350" pathLength="100"/>' +
         '<circle class="you" id="e-you" cx="195" cy="400" r="11" style="transition:opacity .4s"/>' +
       '</svg></div>' +
@@ -897,7 +914,8 @@ function boot() {
     q('e-end').onclick = () => {
       stopLive();
       if (demo) { clearTimeout(demo.timer); demo = null; }
-      lastView = { ...(lastView || {}), state: 'arrived', status: 'ESCORT ENDED', ended: true, remainingM: 0, minsLeft: 0 };
+      ENG.end();
+      lastView = { ...(lastView || {}), state: 'ended', status: 'ESCORT ENDED', ended: true };
       paintEscort(lastView);
       setMore(false);
     };
@@ -1056,6 +1074,7 @@ function boot() {
   // ----- Escort, live: tracking, the tick, the wake lock, orientation, reroutes -----
   function startLive(fromTap) {
     if (!SUPPORT.geo) { go('#route'); return; }
+    if (live) { if (location.hash !== '#escort') go('#escort'); return; } // a second tap: one watch only
     // The position watch starts first, synchronously, so it stays inside the tap that asked for it.
     const watchId = navigator.geolocation.watchPosition(onFix, onGeoError, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
     live = { watchId, wake: null, orient: null, tick: null };
@@ -1078,13 +1097,18 @@ function boot() {
     if (location.hash !== '#escort') go('#escort'); else route();
   }
 
+  // The compass, listened to once per page. iOS gives webkitCompassHeading; Android gives a true north only on
+  // deviceorientationabsolute (plain deviceorientation's alpha starts anywhere), so that is the only alpha used.
+  let compassOn = false;
   function listenCompass() {
-    const on = (e) => {
-      const c = typeof e.webkitCompassHeading === 'number' ? e.webkitCompassHeading : (typeof e.alpha === 'number' ? (360 - e.alpha) % 360 : null);
-      if (c !== null && live) live.compass = c;
-    };
-    window.addEventListener('deviceorientationabsolute', on);
-    window.addEventListener('deviceorientation', on);
+    if (compassOn) return;
+    compassOn = true;
+    window.addEventListener('deviceorientationabsolute', (e) => {
+      if (live && typeof e.alpha === 'number') live.compass = (360 - e.alpha) % 360;
+    });
+    window.addEventListener('deviceorientation', (e) => {
+      if (live && typeof e.webkitCompassHeading === 'number') live.compass = e.webkitCompassHeading;
+    });
   }
 
   function stopLive() {

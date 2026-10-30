@@ -6,7 +6,6 @@
   --text: #2a2520;
   --text-2: #78705f;
   --stamp: #9c3b2e;
-  --seal: #1a3a5c;
   --border: #d4c9b5;
   --shadow: 2px 3px 0 rgba(0,0,0,0.05);
   --shadow-stage: 3px 4px 0 rgba(0,0,0,0.06);
@@ -15,7 +14,7 @@
   --map-road: #faf6ee;
   --map-casing: #d4c9b5;
   --map-label: #78705f;
-  --map-water: color-mix(in srgb, #1a3a5c 12%, #ede5d8);
+  --map-water: color-mix(in srgb, #78705f 10%, #ede5d8); /* the hand-off mixes its seal blue here; Reason serves no blue */
   --map-park: color-mix(in srgb, #78705f 14%, #ede5d8);
   --map-done: #d4c9b5;
   --route: #9c3b2e;
@@ -35,7 +34,6 @@
   --text: #efe6d6;
   --text-2: #a89d88;
   --stamp: #d46a5c;
-  --seal: #8fb0d6;
   --border: #3e362c;
   --shadow: 2px 3px 0 rgba(0,0,0,0.35);
   --shadow-stage: 2px 3px 0 rgba(0,0,0,0.35);
@@ -44,7 +42,7 @@
   --map-road: #27211b;
   --map-casing: #3e362c;
   --map-label: #a89d88;
-  --map-water: color-mix(in srgb, #8fb0d6 9%, #151210);
+  --map-water: color-mix(in srgb, #a89d88 5%, #151210);
   --map-park: color-mix(in srgb, #a89d88 7%, #151210);
   --map-done: #3e362c;
   --route: #d46a5c;

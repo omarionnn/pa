@@ -167,26 +167,51 @@ test("escort: three readings off the route ask for one reroute; noise is ignored
   assert.equal(after, before);
 });
 
-test("escort: a reroute that comes back replaces the line and clears the wait", () => {
+test("escort: the new-way note shows only once a new way has come back, and a failed ask says nothing", () => {
   const e = engine();
   for (let n = 0; n <= 20; n++) e.feed(read(pos(n, 0)), T0 + n * 1000);
-  for (let k = 0; k < 8; k++) e.feed(read(pos(25 + k, 60)), T0 + (21 + k) * 1000);
-  assert.equal(e.view(T0 + 29000).state, "reroute", "the page says: no worries, here's a new way");
-  const newLine = lineOf([pos(25, 60), pos(111, 60), C]);
-  e.replaceRoute({ ...trip(), destination: C }, newLine, pos(33, 60), T0 + 29000);
-  assert.equal(e.view(T0 + 30000).state, "reroute", "the new bend shows for a few seconds");
+  let asked = false;
+  for (let k = 0; k < 8; k++) asked = e.feed(read(pos(25 + k, 60)), T0 + (21 + k) * 1000).reroute || asked;
+  assert.ok(asked);
+  assert.notEqual(e.view(T0 + 29000).state, "reroute", "no 'here's a new way' while there is none yet");
+  e.rerouteFailed();
+  assert.notEqual(e.view(T0 + 29500).state, "reroute", "a failed ask: the old line stays, nothing claimed");
+  const newLine = lineOf([pos(33, 60), pos(111, 60), C]);
+  e.replaceRoute({ ...trip(), destination: C }, newLine, pos(33, 60), T0 + 30000);
+  assert.equal(e.view(T0 + 31000).state, "reroute", "the new way: no worries, here's a new way");
+  assert.notEqual(e.view(T0 + 37000).state, "reroute", "for a few seconds only");
 });
 
-test("escort: signal lost keeps the line, and finding you needs no good reading for 15 s", () => {
+test("escort: signal lost keeps the line; a turn is never hidden behind a note about the phone", () => {
   const e = engine();
   assert.equal(e.view(T0).state, "finding", "no fix yet: no line, no dot");
   e.feed(read(A), T0);
   e.feed({ lat: 0, lng: 0, acc: 80 }, T0 + 1000);
-  assert.equal(e.view(T0 + 16000).state, "finding", "no good reading for 15 s");
-  e.setOffline(true);
-  e.feed(read(pos(1)), T0 + 17000);
-  assert.equal(e.view(T0 + 17000).state, "lost", "lost signal, the route is still known");
-  e.setOffline(false);
+  assert.notEqual(e.view(T0 + 16000).state, "finding", "a still phone that sends nothing for 15 s is not lost");
+  assert.equal(e.view(T0 + 61000).state, "finding", "nothing good for a minute: finding you");
+  // A longer first leg: 300 m north, then the left.
+  const far = pos(300), end = pos(300, -89);
+  const f = createEscort({ destination: end, steps: [{ turn: "left", lat: far.lat, lng: far.lng, fact: "AT THE LIGHTS", street: "OXFORD ST" }, { turn: "right", lat: end.lat, lng: end.lng, fact: "THE GATE", street: "OXFORD ST" }] }, lineOf([A, far, end]));
+  for (let n = 0; n <= 30; n++) f.feed(read(pos(n, 0)), T0 + n * 1000);
+  f.setOffline(true);
+  f.feed(read(pos(31)), T0 + 40000);
+  assert.equal(f.view(T0 + 40000).state, "lost", "lost signal, the route is still known");
+  f.notifyBattery(T0 + 40000);
+  for (let n = 32; n <= 240; n += 2) f.feed(read(pos(n, 0)), T0 + 40000 + n * 500);
+  assert.equal(f.view(T0 + 160000).state, "soon", "60 m from the left: the turn, not the signal or battery note");
+  f.setOffline(false);
+});
+
+test("escort: a street one block over never sets off the turn, and END ESCORT claims no arrival", () => {
+  const e = engine();
+  for (let n = 0; n <= 60; n += 2) e.feed(read(pos(n, 35), 15), T0 + n * 1000);
+  const v = e.feed(read(pos(112, 35), 15), T0 + 62000);
+  assert.notEqual(v.state, "here");
+  assert.equal(v.speak, null, "no 'Left here.' at the wrong corner");
+  e.end();
+  const w = e.view(T0 + 63000);
+  assert.equal(w.state, "ended");
+  assert.equal(w.status, "ESCORT ENDED");
 });
 
 test("escort: a wrong way is noticed after two legs", () => {
