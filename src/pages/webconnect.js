@@ -28,6 +28,9 @@ const MARKS = {
 };
 export function storeMark(store) {
   if (MARKS[store]) return `<span class="cx-mark">${MARKS[store]}</span>`;
+  // The store's own icon, as fetched from its site and kept (src/shopconnect.js ensureIcon): a data: URL, never a remote one.
+  const icon = shop.storeIcon(store);
+  if (/^data:image\/[a-z+.-]+;base64,[A-Za-z0-9+/=]+$/.test(icon)) return `<span class="cx-mark cx-mark-i"><img src="${icon}" alt="" width="44" height="44"></span>`;
   const n = shop.storeName(store) || "?";
   return `<span class="cx-mark cx-mark-x" aria-hidden="true">${esc(n.slice(0, 1).toUpperCase())}</span>`;
 }
@@ -42,6 +45,7 @@ const CSS = `
 .cx-who{display:flex;align-items:center;gap:12px}
 .cx-mark{width:44px;height:44px;flex:none;display:grid;place-items:center}
 .cx-mark svg{width:44px;height:44px;display:block}
+.cx-mark-i img{width:44px;height:44px;border-radius:10px;object-fit:contain;display:block}
 .cx-mark-x{border:1px solid var(--hair);border-radius:50%;font:italic 400 24px/1 var(--serif);color:var(--ink)}
 .cx-lead{display:flex;flex-direction:column;gap:12px}
 .cx-sub{margin:0;font-size:17px;line-height:1.5;color:var(--muted);max-width:30em}
@@ -293,6 +297,7 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
   const link = shop.linkFor(token);
   if (!link || !shop.connectAllowedFor(link.conversation_id)) return send(renderEnded({ view: { state: "expired" } }));
   const view = shop.linkView(link);
+  if (view.store && !verb && !MARKS[view.store]) await shop.ensureIcon(view.store, { ms: 2500 });
   if (verb === "state") return json(200, { state: view.state });
   if (verb === "answer" || verb === "card") {
     if (method !== "POST") return json(405, { ok: false });

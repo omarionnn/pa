@@ -95,7 +95,7 @@ let failMessages = false;
 const q = (sql) => db.db.prepare(sql);
 before(() => { shop._setFetch(fakeFetch); shop.attach({ say: (c, t) => said.push({ c, t }), base: "https://heyreason.test/web/connect" }); });
 after(() => rmSync(dir, { recursive: true, force: true }));
-beforeEach(() => { reset(); said.length = 0; for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments"]) db.db.exec(`DELETE FROM ${t}`); });
+beforeEach(() => { reset(); said.length = 0; for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments", "shop_sites", "shop_run_asks"]) db.db.exec(`DELETE FROM ${t}`); });
 
 /** Runs a sign-in checkout at Target to its first question and returns the texted link's token. */
 async function signinLink(conv = OMARI) {
@@ -342,4 +342,93 @@ test("owner-only: nobody else sees the tools or the pages", async () => {
   process.env.REASON_SHOP_CONNECT = "owner";
   const page = await connectRequest({ sub: token, method: "GET" });
   assert.match(page.body, /This link has run out/, "Ama's link opens nothing while the flag is owner-only");
+});
+
+// ---------------------------------------------------------------- 6. any store
+const PNG = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.alloc(120, 7)]);
+const iconSite = (seen) => async (url) => {
+  seen.push(url);
+  const u = new URL(url);
+  const res = (status, type, body, location) => ({ status, ok: status < 300, url, headers: { get: (h) => (h === "content-type" ? type : h === "location" ? location : null) }, text: async () => String(body), arrayBuffer: async () => body });
+  if (u.hostname === "www.amazon.com" && u.pathname === "/") return res(200, "text/html", `<html><head><link rel="apple-touch-icon" href="/touch.png"></head></html>`);
+  if (u.hostname === "www.amazon.com" && u.pathname === "/touch.png") return res(200, "image/png", PNG);
+  if (u.hostname === "amazon.com") return res(301, "", "", "https://www.amazon.com/");
+  return res(404, "text/html", "nope");
+};
+
+test("any store: its key and name come from its site; an unknown one draws a clean monogram, never a broken image", async () => {
+  assert.equal(shop.storeKey("https://www.amazon.com/dp/B0"), "amazon");
+  assert.equal(shop.storeKey("shop.costco.com"), "costco");
+  assert.equal(shop.storeKey("argos.co.uk"), "argos");
+  assert.equal(shop.storeKey("Home Depot"), "homedepot");
+  assert.equal(shop.checkoutStoreKey("Trader Joe's", "https://www.traderjoes.com/home"), "traderjoes");
+  assert.equal(shop.storeName("amazon"), "Amazon");
+  shop.noteStore({ store: "pinkfrogshop", name: "pinkfrogshop.com", url: "https://www.pinkfrogshop.com/x" });
+  assert.equal(shop.storeName("pinkfrogshop"), "Pinkfrogshop");
+  shop.noteStore({ store: "traderjoes", name: "Trader Joe's", url: "https://www.traderjoes.com/" });
+  assert.equal(shop.storeName("traderjoes"), "Trader Joe's");
+  const seen = [];
+  shop._setIconFetch(iconSite(seen));
+  try {
+    assert.equal(await shop.ensureIcon("pinkfrogshop"), "");
+    assert.ok(seen.every((u) => u.startsWith("https://pinkfrogshop.com/")), seen.join(" "));
+    const { storeMark } = await import("../src/pages/webconnect.js");
+    assert.match(storeMark("pinkfrogshop"), /cx-mark-x[^>]*>P</);
+    assert.doesNotMatch(storeMark("pinkfrogshop"), /<img/);
+    // a private address is never fetched
+    shop.noteStore({ store: "evil", url: "https://evil.ts.net/" });
+    seen.length = 0;
+    await shop.ensureIcon("evil");
+    assert.equal(seen.length, 0);
+  } finally { shop._setIconFetch(null); }
+});
+
+test("Amazon's page: 'Sign in to Amazon' with Amazon's own icon, fetched once and kept", async () => {
+  const seen = [];
+  shop._setIconFetch(iconSite(seen));
+  try {
+    const out = await shop.startCheckout({ conversationId: OMARI, store: "amazon", startUrl: "https://www.amazon.com/s?k=cable", what: "Buy one USB-C cable.", item: "a USB-C cable", maxUsd: 15 });
+    assert.equal(out.plan, "sign_in", "Amazon has no guest checkout");
+    runs[out.runId].status = "awaiting_input";
+    runs[out.runId].requiredAction = SIGNIN("req_amz_1");
+    await shop.step(out.runId);
+    assert.match(said.at(-1).t, /^Amazon needs you signed in/);
+    const token = said.at(-1).t.split("/").pop();
+    const page = await connectRequest({ sub: token, method: "GET" });
+    assert.equal(page.status, 200);
+    assert.match(page.body, /Amazon/);
+    assert.match(page.body, /<img src="data:image\/png;base64,/);
+    assert.doesNotMatch(page.body, /src="https?:/, "the browser never calls the store");
+    const n = seen.length;
+    await connectRequest({ sub: token, method: "GET" });
+    assert.equal(seen.length, n, "kept, not fetched again");
+  } finally { shop._setIconFetch(null); }
+});
+
+test("an unknown store walled off for a guest: remembered, and the same checkout starts again signed in", async () => {
+  shop.noteStore({ store: "pinkfrogshop", name: "Pink Frog", url: "https://www.pinkfrogshop.com/" });
+  const out = await shop.startCheckout({ conversationId: OMARI, store: "pinkfrogshop", startUrl: "https://www.pinkfrogshop.com/p/1", what: "Buy the frog mug.", item: "a frog mug", maxUsd: 20 });
+  assert.equal(out.plan, "guest");
+  runs[out.runId].status = "blocked";
+  runs[out.runId].result = { code: "merchant.no_safe_path", summary: "Checkout requires you to sign in or create an account." };
+  const done = await shop.step(out.runId);
+  assert.ok(done.retried, "a signed-in checkout started");
+  assert.equal(shop.storeSignIn("pinkfrogshop"), "required");
+  const again = calls.filter((c) => c.path === "/api/unstable/agent-checkouts" && c.method === "POST").at(-1).body;
+  assert.equal(again.request.startUrl, "https://www.pinkfrogshop.com/p/1");
+  assert.match(again.request.task, /Sign in to my Pink Frog account first/);
+  assert.ok(again.browser?.profileId, "their own profile");
+  // the next checkout at that store goes straight to signing in
+  assert.equal(shop.checkoutPlan(OMARI, "pinkfrogshop"), "sign_in");
+  // once per checkout: the signed-in one failing doesn't start a third
+  runs[done.retried].status = "blocked";
+  runs[done.retried].result = { code: "merchant.no_safe_path", summary: "sign in failed" };
+  assert.ok(!(await shop.step(done.retried)).retried);
+});
+
+test("a guest run that failed for another reason is not retried", async () => {
+  const out = await shop.startCheckout({ conversationId: OMARI, store: "bestbuy", startUrl: "https://www.bestbuy.com/", what: "Buy a cable.", maxUsd: 15 });
+  runs[out.runId].status = "blocked";
+  runs[out.runId].result = { code: "merchant.no_safe_path", summary: "The item is out of stock at every nearby store." };
+  assert.ok(!(await shop.step(out.runId)).retried);
 });
