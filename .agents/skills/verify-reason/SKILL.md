@@ -424,6 +424,9 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
+### Baseline — to-do list (wt/todo-list-v1, 2026-10-30)
+4,743 tests / 4,628 pass / 0 fail / 115 skipped (`npm run test:offline` under `env -i`, origin/main 77ec11d + this branch). New: `test/todo.test.js` (18). Live: cage plan step on claude-cli + `bin/todo-drive.mjs` — see [features/todo-list.md](features/todo-list.md).
+
 **9 — The first-chat onboarding, end to end, on its own cage.** A brand-new number's five texts
 (`REASON_ONBOARDING=test` for that number only) through the real webhook, router and outbox onto
 `bin/fake-sendblue.mjs`; the reads and the one to-do turn on the subscription. Own run dir + port:
@@ -769,6 +772,8 @@ Per-person time zone (`REASON_TZ_ASK`; guess + ask once before the first clock-t
 
 Reason Web reply to one message (`REASON_WEB_REPLY` off/`owner`/on; button, composer line, quote lines, read as an inline reply): [features/web-reply.md](features/web-reply.md); `test/web-reply.test.js`, `bin/web-reply-drive.mjs` (HTTP + Chromium + touch).
 Reason Web notes + file chips (no flag; a shared location / inline reply / contact card drawn as a tag, never the model's note — no coordinates, no tool instructions, no U+FFFD "?"; a file Reason texted is a chip linking `/web/media/m/<row>/<i>`, served from `outbox.media.file` only for the signed-in conversation and only inside the documents/images roots; inline only pdf/raster image/audio/video/text, else attachment): [features/web-notes.md](features/web-notes.md); `test/web-notes.test.js`, `test/web-file-chip.test.js`; `bin/web-notes-drive.mjs` (real HTTP, caged, no sound): 12 steps incl. another person 404, signed out 404, symlink out of the root 404.
+
+To-do list (`REASON_TODO` off/`owner`/on; the plan, the one yes, the list's call grant, the checklist page, the wrap-up): [features/todo-list.md](features/todo-list.md); `test/todo.test.js`, `bin/todo-drive.mjs` (whole road on claude-cli with the fake call provider on).
 
 ## Facts worth not rediscovering
 

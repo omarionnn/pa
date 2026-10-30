@@ -63,6 +63,25 @@ export function webReplyMode() {
   return ["1", "true", "on", "yes"].includes(v) ? "on" : "off";
 }
 
+// REASON_TODO (off | owner | on, 2026-10-30): the to-do list (src/todo.js). A photo or a typed list
+// becomes one plan in three groups, one approval of the whole plan, a live checklist page and one
+// wrap-up text; the approval lets Reason call the businesses the plan named without asking again.
+// `owner`: only the operator's own conversation. Off: nobody's model is told the tools exist, the
+// grant never covers anything, and no checklist or wrap-up is ever made.
+export function todoMode() {
+  const v = String(process.env.REASON_TODO ?? "").trim().toLowerCase();
+  if (v === "owner") return "owner";
+  return ["1", "true", "on", "yes"].includes(v) ? "on" : "off";
+}
+
+export function todoAllowedFor(conversationId) {
+  if (!conversationId) return false;
+  const mode = todoMode();
+  if (mode === "off") return false;
+  if (mode === "owner") return accounts.ownerOf(conversationId).isOperator;
+  return true;
+}
+
 export function webReplyAllowedFor(conversationId) {
   if (!conversationId) return false;
   const mode = webReplyMode();

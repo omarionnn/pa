@@ -3777,6 +3777,10 @@ export function listTasks(conversationId, { includeClosed = false } = {}) {
 export function logTask(taskId, kind, note) {
   const r = db.prepare("INSERT INTO task_log (task_id, kind, note, at) VALUES (?, ?, ?, ?)")
     .run(taskId, kind, String(note).slice(0, 600), clock.now());
+  // A call's outcome lands here (src/calls/postcall.js noteOnTask) without going through updateTask,
+  // so this is where a job's watchers hear about it. updateTask/finishTask tell them once more at
+  // the end of their own write; a listener reads the row as it is, so twice costs nothing.
+  if (kind === "call") taskChanged(null, taskId);
   return Number(r.lastInsertRowid);
 }
 
@@ -3891,6 +3895,7 @@ export function updateTask(conversationId, id, { progress = null, wakeAt, state,
   // not for a task that is simply long.
   if (progress) { sets.push("attempts = 0"); }
   db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...args, id);
+  taskChanged(conversationId, id);
   return { ok: true, task: getTask(conversationId, id), ...(pulledIn ? { pulled_in: pulledIn } : {}) };
 }
 
@@ -3902,6 +3907,7 @@ export function finishTask(conversationId, id, { state, outcome, result = null }
   db.prepare("UPDATE tasks SET state = ?, outcome = ?, next_wake_at = NULL, finished_at = ?, updated_at = ?, result_json = ? WHERE id = ?")
     .run(state, String(outcome).slice(0, 600), clock.now(), clock.now(), result ? JSON.stringify(result) : null, id);
   if (state === "done") emitCompletion("task", { conversationId, id });
+  taskChanged(conversationId, id);
   return { ok: true, task: getTask(conversationId, id) };
 }
 
@@ -10571,6 +10577,18 @@ function emitCompletion(kind, info) {
 }
 
 /**
+ * A job changed — its state, its sheet, its log, or a call's outcome written onto it — as `changed`
+ * events `{ conversationId, id }` (2026-10-30, src/todo.js: the checklist page of a to-do list is
+ * redrawn from its jobs). conversationId may be null when only the task id is in hand. Told after the
+ * write; a listener's failure never costs the write.
+ */
+export const taskBus = new EventEmitter();
+taskBus.setMaxListeners(0);
+function taskChanged(conversationId, id) {
+  try { taskBus.emit("changed", { conversationId, id }); } catch { /* a listener never costs a write */ }
+}
+
+/**
  * One page of older history: the `limit` rows just before row `before` (by time, then id), oldest
  * first. Scoped by conversation like every read here; a `before` from another conversation finds
  * nothing to stand on and returns nothing.
@@ -12667,4 +12685,181 @@ export function countChoiceRead(id) {
 }
 export function closeChoiceSets(conversationId, at = clock.now()) {
   return db.prepare("UPDATE choice_sets SET closed_at = ? WHERE conversation_id = ? AND closed_at IS NULL").run(at, conversationId).changes;
+}
+
+// ---------- to-do lists (src/todo.js, REASON_TODO) ----------
+// A list somebody sent (a photo or typed), the plan Reason made of it, and the one approval of the
+// whole plan. Its own two tables rather than a `plans` row: a plan there is one social arrangement
+// (who, when, where, locked once nobody has questions), and a list is many unrelated jobs, each with
+// its own group, its own job row and its own state. Folding both into `plans.data` would have put a
+// second meaning on every plan_* tool and on the nudges that read plans.
+//
+//   todo_lists  one per list. `grant` is the businesses the approved plan named, copied at the moment
+//               of approval: the only thing the list's grant may ever cover (todo.js grantCovering).
+//               `wrapped_at` is claimed before the wrap-up text goes, so it goes once.
+//   todo_items  one per line on the list, in the order written. `task_id` is the job working it, when
+//               there is one; `status` is read off that job whenever it changes.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS todo_lists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'text',
+    state TEXT NOT NULL DEFAULT 'planning',
+    page_id TEXT,
+    plan_fp TEXT NOT NULL DEFAULT '',
+    approval_confirmation_id INTEGER,
+    approved_quote TEXT,
+    approved_at INTEGER,
+    grant_json TEXT NOT NULL DEFAULT '[]',
+    wrapped_at INTEGER,
+    wrap_text TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    closed_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS todo_lists_conv ON todo_lists(conversation_id, id);
+  CREATE TABLE IF NOT EXISTS todo_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    list_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    n INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    short TEXT NOT NULL DEFAULT '',
+    grp TEXT NOT NULL,
+    how TEXT NOT NULL DEFAULT '',
+    question TEXT NOT NULL DEFAULT '',
+    money INTEGER NOT NULL DEFAULT 0,
+    money_note TEXT NOT NULL DEFAULT '',
+    businesses TEXT NOT NULL DEFAULT '[]',
+    task_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'todo',
+    note TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS todo_items_list ON todo_items(list_id, n);
+  CREATE INDEX IF NOT EXISTS todo_items_task ON todo_items(task_id);
+`);
+
+const todoListOut = (r) => r ? { ...r, grant: JSON.parse(r.grant_json || "[]") } : null;
+const todoItemOut = (r) => r ? { ...r, money: !!r.money, businesses: JSON.parse(r.businesses || "[]") } : null;
+
+/** A new list, or a planning list's items replaced (a revised plan). Items in the order given. */
+export function saveTodoList(conversationId, { listId = null, title = "", source = "text", items = [], planFp = "" }) {
+  const now = clock.now();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    let id = listId;
+    if (id) {
+      db.prepare("UPDATE todo_lists SET title = ?, source = ?, plan_fp = ?, updated_at = ? WHERE id = ? AND conversation_id = ?")
+        .run(title, source, planFp, now, id, conversationId);
+      db.prepare("DELETE FROM todo_items WHERE list_id = ?").run(id);
+    } else {
+      id = Number(db.prepare("INSERT INTO todo_lists (conversation_id, title, source, plan_fp, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(conversationId, title, source, planFp, now, now).lastInsertRowid);
+    }
+    const put = db.prepare(`INSERT INTO todo_items (list_id, conversation_id, n, text, short, grp, how, question, money, money_note, businesses, status, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    items.forEach((it, i) => put.run(id, conversationId, i + 1, it.text, it.short ?? "", it.grp, it.how ?? "", it.question ?? "",
+      it.money ? 1 : 0, it.money_note ?? "", JSON.stringify(it.businesses ?? []), it.status ?? "todo", now));
+    db.exec("COMMIT");
+    return getTodoList(conversationId, id);
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* nothing open */ }
+    throw e;
+  }
+}
+export function getTodoList(conversationId, id) {
+  return todoListOut(db.prepare("SELECT * FROM todo_lists WHERE id = ? AND conversation_id = ?").get(Number(id), conversationId));
+}
+export function getTodoListAnywhere(id) {
+  return todoListOut(db.prepare("SELECT * FROM todo_lists WHERE id = ?").get(Number(id)));
+}
+/** Lists whose approval is still working: approved, not closed. Newest first. */
+export function approvedTodoLists(conversationId) {
+  return db.prepare("SELECT * FROM todo_lists WHERE conversation_id = ? AND state = 'approved' ORDER BY id DESC").all(conversationId).map(todoListOut);
+}
+export function listTodoLists(conversationId, { includeClosed = false } = {}) {
+  const sql = includeClosed
+    ? "SELECT * FROM todo_lists WHERE conversation_id = ? ORDER BY id DESC LIMIT 20"
+    : "SELECT * FROM todo_lists WHERE conversation_id = ? AND state IN ('planning', 'approved') ORDER BY id DESC LIMIT 20";
+  return db.prepare(sql).all(conversationId).map(todoListOut);
+}
+export function todoItems(listId) {
+  return db.prepare("SELECT * FROM todo_items WHERE list_id = ? ORDER BY n").all(Number(listId)).map(todoItemOut);
+}
+export function todoItemsForTask(taskId) {
+  return db.prepare("SELECT * FROM todo_items WHERE task_id = ?").all(Number(taskId)).map(todoItemOut);
+}
+export function setTodoListPage(id, pageId) {
+  db.prepare("UPDATE todo_lists SET page_id = ?, updated_at = ? WHERE id = ?").run(pageId, clock.now(), id);
+}
+/** Planning → approved, once. The grant is copied here and never widened by a later edit of the items. */
+export function approveTodoList(conversationId, id, { confirmationId, quote, grant }) {
+  const now = clock.now();
+  return db.prepare(`UPDATE todo_lists SET state = 'approved', approval_confirmation_id = ?, approved_quote = ?, approved_at = ?,
+    grant_json = ?, updated_at = ? WHERE id = ? AND conversation_id = ? AND state = 'planning'`)
+    .run(confirmationId ?? null, quote ?? "", now, JSON.stringify(grant ?? []), now, id, conversationId).changes === 1;
+}
+export function setTodoGrant(id, grant) {
+  db.prepare("UPDATE todo_lists SET grant_json = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(grant ?? []), clock.now(), id);
+}
+export function closeTodoList(conversationId, id, state = "closed") {
+  return db.prepare("UPDATE todo_lists SET state = ?, closed_at = ?, updated_at = ? WHERE id = ? AND conversation_id = ? AND state IN ('planning', 'approved')")
+    .run(state, clock.now(), clock.now(), id, conversationId).changes === 1;
+}
+export function updateTodoItem(id, fields) {
+  const cols = ["short", "grp", "how", "question", "task_id", "status", "note", "businesses", "money", "money_note"];
+  const sets = [];
+  const args = [];
+  for (const k of cols) {
+    if (fields[k] === undefined) continue;
+    sets.push(`${k} = ?`);
+    args.push(k === "businesses" ? JSON.stringify(fields[k]) : k === "money" ? (fields[k] ? 1 : 0) : fields[k]);
+  }
+  if (!sets.length) return;
+  sets.push("updated_at = ?"); args.push(clock.now());
+  db.prepare(`UPDATE todo_items SET ${sets.join(", ")} WHERE id = ?`).run(...args, id);
+}
+/** Claim the one wrap-up. True for exactly one caller, ever, per list. */
+export function claimTodoWrap(id, text) {
+  return db.prepare("UPDATE todo_lists SET wrapped_at = ?, wrap_text = ? WHERE id = ? AND wrapped_at IS NULL AND state = 'approved'")
+    .run(clock.now(), String(text ?? ""), id).changes === 1;
+}
+/** Approved lists not wrapped up yet, across every conversation: the sweep's candidates. */
+export function todoListsAwaitingWrap() {
+  return db.prepare("SELECT * FROM todo_lists WHERE state = 'approved' AND wrapped_at IS NULL ORDER BY id").all().map(todoListOut);
+}
+/** Is this number written down as a way of reaching somebody they know? Digits only, by exact match. */
+export function knownPersonByNumber(conversationId, number) {
+  const ten = String(number ?? "").replace(/\D/g, "").slice(-10);
+  if (ten.length < 7) return null;
+  const same = (s) => { const d = String(s ?? "").replace(/\D/g, ""); return d.length >= 7 && d.slice(-10) === ten; };
+  for (const p of listImportantPeople(conversationId)) {
+    if ((p.contacts ?? []).some(same)) return { who: p.who, from: "important_people" };
+  }
+  // Somebody with a Reason of their own on this install is a person, whatever the plan called them.
+  for (const a of db.prepare("SELECT address, name FROM accounts WHERE address IS NOT NULL AND address != ''").all()) {
+    if (same(a.address)) return { who: a.name || a.address, from: "accounts" };
+  }
+  // A person in memory filed under the number itself, or with the number among their facts. Each
+  // phone-shaped run in a fact is compared whole, so a longer number never matches by containing it.
+  for (const p of db.prepare("SELECT id, name FROM people WHERE conversation_id = ?").all(conversationId)) {
+    if (same(p.name)) return { who: p.name, from: "people" };
+    for (const f of db.prepare("SELECT fact FROM person_facts WHERE person_id = ?").all(p.id)) {
+      for (const run of String(f.fact).match(/\+?\d[\d\s().-]{5,}\d/g) ?? []) {
+        if (same(run)) return { who: p.name, from: "people" };
+      }
+    }
+  }
+  return null;
+}
+/** Is this name somebody in their memory or on their people list? Exact name key, no reading. */
+export function knownPersonByName(conversationId, name) {
+  const key = personKey(name);
+  if (!key) return null;
+  const p = db.prepare("SELECT name FROM people WHERE conversation_id = ? AND key = ?").get(conversationId, key);
+  if (p) return { who: p.name, from: "people" };
+  const imp = db.prepare("SELECT who FROM important_people WHERE conversation_id = ? AND who_key = ?").get(conversationId, String(name ?? "").trim().toLowerCase().replace(/\s+/g, " "));
+  return imp ? { who: imp.who, from: "important_people" } : null;
 }

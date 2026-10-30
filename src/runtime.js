@@ -28,6 +28,7 @@ import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
 import { sendTapback } from "./tapbacks.js";
 import * as choices from "./choicecards.js";
+import * as todo from "./todo.js";
 import { whereTo } from "./deliver.js";
 import { sweepRetention } from "./privacy.js";
 import * as remote from "./remote.js";
@@ -2694,6 +2695,13 @@ export class Runtime extends EventEmitter {
     // series that already has one armed is skipped — so calling it twice costs one query each.
     standing.push(...this.series());
     const tasks = await this.runTasks();
+    // A to-do list whose every item is now done, waiting on somebody else, or theirs gets its one
+    // wrap-up text (src/todo.js), after the task wakes so a step that just settled is counted. Inert
+    // unless REASON_TODO reaches somebody.
+    const todo_wraps = todo.wrapUps({
+      say: (c, text, meta) => this.say(c, text, meta),
+      inTheirNight: (c, now) => notice.inTheirNight(c, now), isPaused, log: this.log,
+    });
     const pages = await this.pageAnswers();
     const watches = await this.checkWatches();
     // Calls that still say they are going and are not. It says nothing to anybody — it only stops
@@ -2745,7 +2753,7 @@ export class Runtime extends EventEmitter {
     const shapes = await this.rhythms();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, retention };
+    return { undone, outbox, held, standing, timers, tasks, todo_wraps, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, retention };
   }
 
   start(everyMs = 15_000) {
