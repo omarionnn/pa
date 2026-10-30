@@ -158,3 +158,11 @@ test("the book: everyday seals read in wax with a story, their hints come first,
   assert.doesNotMatch(page, /<ul class="none">/);
   assert.doesNotMatch(page, /a call that got what it was for/, "an earned kind is no longer a hint");
 });
+
+test("phone widths: the book is two seals a row, scaled to the cell, and the not-yet spots are two-up too; wider stays auto-fill", () => {
+  const page = wx.renderSealBook({ all: [], first: "Omari" });
+  const phone = page.match(/@media \(max-width:480px\)\{(.*?)\}\n/)?.[1] ?? "";
+  assert.match(phone, /\.sheet ul,\.sheet ul\.none\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(phone, /\.sheet li \.seal\{width:100%;height:auto\}/);
+  assert.match(page, /\.sheet ul\{[^}]*repeat\(auto-fill,minmax\(170px,1fr\)\)/, "desktop grid unchanged");
+});

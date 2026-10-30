@@ -46,6 +46,7 @@ const CSS = `${DAILY_HEAD_CSS}
 .sh-b{width:44px;height:44px;border:0;background:transparent;color:#2a2520;display:grid;place-items:center;cursor:pointer;border-radius:3px;text-decoration:none}
 .sh-b:focus-visible{outline-color:#2a2520}
 .sp-h{font-size:14px;line-height:1.4;color:#5e564a;text-align:center;max-width:160px;min-height:44px;display:flex;align-items:center;justify-content:center}
+@media (max-width:480px){.sheet{padding:20px 14px}.sheet ul,.sheet ul.none{grid-template-columns:repeat(2,minmax(0,1fr));gap:22px 8px}.sheet ul.none{padding:16px 0}.sheet li{min-width:0}.sheet li>div,.sheet li>.seal{width:100%;max-width:150px}.sheet li .seal{width:100%;height:auto}.sp-n{font-size:16px}.sp-f{margin-top:auto}.sp-h{font-size:13px;max-width:100%}}
 .side{flex:1 1 340px;min-width:0;display:flex;flex-direction:column;gap:24px}
 .side h2{margin:0;font:italic 400 40px/1.1 var(--serif)}
 .side .story{margin:0;font-size:17px;line-height:1.6}
