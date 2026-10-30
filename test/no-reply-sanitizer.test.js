@@ -15,11 +15,44 @@ test("the marker comes off wherever it sits, and the space it leaves is tidied",
   assert.equal(clean("first\n\nNO_REPLY\n\nsecond"), "first\n\nsecond");
 });
 
-test("the variants the code already reads as the marker: markdown round it, punctuation after it", () => {
+test("the variants the code already reads as the marker: bold round it, punctuation after it", () => {
   assert.equal(clean("done **NO_REPLY** really"), "done really");
-  assert.equal(clean("done `NO_REPLY` really"), "done really");
-  assert.equal(clean("done _NO_REPLY_ really"), "done really");
   assert.equal(clean("done\nNO_REPLY.\nreally"), "done\nreally");
+});
+
+// Review of #272, item 1: the token as part of a link, an address, an identifier, or code is not the marker.
+test("a link, an address, an identifier or code with the token in it is left exactly as written", () => {
+  for (const s of [
+    "unsubscribe at https://bank.com/settings/NO_REPLY/off",
+    "the page is https://x.com/?mode=NO_REPLY&x=1",
+    "set flag=NO_REPLY then restart",
+    "from NO_REPLY@BANK.COM this morning",
+    "it came from no_reply@bank.com",
+    "the env var is REASON_NO_REPLY now",
+    "see config.NO_REPLY for it",
+    "the key is a-NO_REPLY",
+    "the host NO_REPLY.example.com is down",
+    "run `echo NO_REPLY` to see it",
+    "```\nif (reply === \"NO_REPLY\") return;\n```",
+  ]) {
+    const r = withoutNoReply(s);
+    assert.equal(r.text, s, s);
+    assert.equal(r.stripped, false, s);
+  }
+  // Code is protected, the loose marker next to it is not.
+  assert.equal(clean("run `echo NO_REPLY` NO_REPLY now"), "run `echo NO_REPLY` now");
+});
+
+test("a list item that was only the marker goes, number and all", () => {
+  assert.equal(clean("1. eggs\n2. NO_REPLY\n3. milk"), "1. eggs\n3. milk");
+  assert.equal(clean("- eggs\n- NO_REPLY\n- milk"), "- eggs\n- milk");
+});
+
+// Review of #272, item 2: only the place the marker was is tidied.
+test("the rest of the message keeps its spacing, indentation and blank lines", () => {
+  assert.equal(clean("  indented line\n\n\n\nfar below\nok NO_REPLY then"), "  indented line\n\n\n\nfar below\nok then");
+  assert.equal(clean("  step one  \nNO_REPLY\n    code-ish indent"), "  step one  \n    code-ish indent");
+  assert.equal(clean("    NO_REPLY keep my indent"), "    keep my indent");
 });
 
 test("only markers left: empty, so nothing is sent", () => {
