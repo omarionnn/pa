@@ -136,7 +136,8 @@ export function quoteFor(conversationId, row) {
 export function canReplyTo(conversationId, row) {
   if (row.chat_id) return false;
   if (row.role === "user") return !!row.external_id;
-  return !!row.outbox_id;
+  // Reason's line only once it really went out with a handle (handleOfRow), so Reply never offers a pin that cannot be.
+  return !!row.outbox_id && !!one("SELECT 1 AS x FROM outbox WHERE id = ? AND conversation_id = ? AND state = 'sent' AND message_id IS NOT NULL", row.outbox_id, conversationId);
 }
 
 /** The reply arrow: one stroke, the ink of whatever it sits in. */
@@ -196,10 +197,11 @@ function words(li){var w=li.querySelector(':scope>.said,:scope>.rsay');var t=w?w
 function pick(li){if(!li||!li.dataset.id)return;cur={id:li.dataset.id,who:li.classList.contains('you')?'YOU':'REASON',text:words(li)};who.textContent='REPLYING TO '+(cur.who==='YOU'?'YOU':'REASON');txt.textContent=cur.text;chip.hidden=false;say.textContent='Replying to '+(cur.who==='YOU'?'your':"Reason's")+' message: '+cur.text+'. Escape cancels.';list.querySelectorAll('.rp-on').forEach(function(o){o.classList.remove('rp-on')});box.focus()}
 function clear(focus){cur=null;chip.hidden=true;txt.textContent='';say.textContent='';if(focus)box.focus()}
 R.rp=function(){var c=cur;if(c)clear();return c};
-R.rqLine=function(q){var a=document.createElement('a');a.className='rq';a.href='/web?thread&at='+q.id+'#m-'+q.id;a.dataset.to=q.id;var w=document.createElement('span');w.className='rq-w';w.textContent=q.who;var t=document.createElement('span');t.className='rq-t';t.textContent=q.text;a.appendChild(w);a.appendChild(t);return a};
+R.rqLine=function(q){var a=document.createElement('a');a.className='rq';a.href='/web?thread&at='+q.id+'#m-'+q.id;a.dataset.to=q.id;var w=document.createElement('span');w.className='rq-w';var ic=chip.querySelector('.rp-i');if(ic)w.appendChild(ic.cloneNode(true));w.appendChild(document.createTextNode(q.who));var t=document.createElement('span');t.className='rq-t';t.textContent=q.text;a.appendChild(w);a.appendChild(t);return a};
 function go(id){var t=list.querySelector('.msg[data-id="'+id+'"]')||list.querySelector('[data-ids~="'+id+'"]');if(!t)return false;t.scrollIntoView({block:'center',behavior:calm?'auto':'smooth'});t.classList.remove('lit');void t.offsetWidth;t.classList.add('lit');setTimeout(function(){t.classList.remove('lit')},2000);return true}
 x.addEventListener('click',function(){clear(true)});
-document.addEventListener('keydown',function(e){if(e.key==='Escape'&&cur&&!e.defaultPrevented){e.preventDefault();clear(true)}});
+// Esc is the open sheet's or the recording's first (src/pages/webcompose.js); the reply line is cancelled only when neither is up.
+document.addEventListener('keydown',function(e){if(e.key!=='Escape'||!cur||e.defaultPrevented)return;if(document.querySelector('.addsheet:not([hidden])')||document.querySelector('.composer.dictating')||document.body.classList.contains('listening'))return;e.preventDefault();clear(true)});
 list.addEventListener('click',function(e){var t=e.target;if(!t.closest)return;var b=t.closest('.rp');if(b&&list.contains(b)){e.preventDefault();pick(b.closest('.msg'));return}
 var q=t.closest('.rq');if(q&&list.contains(q)){if(go(q.dataset.to))e.preventDefault();return}
 if(!touch||t.closest('a,button,audio,input,textarea'))return;var li=t.closest('.msg');if(!li||!li.querySelector(':scope>.lbl .rp'))return;var on=li.classList.contains('rp-on');list.querySelectorAll('.rp-on').forEach(function(o){o.classList.remove('rp-on')});if(!on)li.classList.add('rp-on')});

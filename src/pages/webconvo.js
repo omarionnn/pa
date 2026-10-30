@@ -286,7 +286,8 @@ function groupChoices(html) {
     const parts = [...run.matchAll(CARD_LINE)];
     if (parts.length < 2) return run;
     const ids = parts.map(p => p[1]);
-    return `<li class="msg re choices" id="m-${ids.at(-1)}" data-id="${ids.at(-1)}" data-ids="${ids.join(" ")}"${parts[0][2]}>${parts[0][3]}<div class="crow">${parts.map(p => p[4]).join("")}</div></li>`;
+    // One Reply for a whole row of cards would name only one of them, so a joined row has none (REASON_WEB_REPLY).
+    return `<li class="msg re choices" id="m-${ids.at(-1)}" data-id="${ids.at(-1)}" data-ids="${ids.join(" ")}"${parts[0][2]}>${parts[0][3].replace(REPLY_BUTTON, "")}<div class="crow">${parts.map(p => p[4]).join("")}</div></li>`;
   });
 }
 
@@ -719,7 +720,7 @@ form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.tr
 var loaded=!R.defer,lastPoll=0,calm2=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
 function line(m){var li=document.createElement('li');li.className='msg arrive '+(m.role==='user'?'you':'re');li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;if(m.day)li.dataset.day=m.day;if(m.where)li.dataset.where=m.where;li.innerHTML=m.html;times(li);return li}
 function has(id){return list.querySelector('.msg[data-id="'+id+'"]')||list.querySelector('.done[data-ids~="'+id+'"]')||list.querySelector('.choices[data-ids~="'+id+'"]')}
-function joinCard(li){var a=li.querySelector(':scope>.photo.choice');if(!a||li.querySelector('.rsay,.said'))return false;var p=li.previousElementSibling;if(!p||!p.classList.contains('re')||!p.querySelector('.photo.choice')||p.querySelector('.rsay,.said'))return false;var row=p.querySelector('.crow');if(!row){row=document.createElement('div');row.className='crow';p.querySelectorAll(':scope>.photo.choice').forEach(function(x){row.appendChild(x)});p.appendChild(row);p.classList.add('choices');p.dataset.ids=p.dataset.id}row.appendChild(a);p.dataset.ids+=' '+li.dataset.id;p.dataset.id=li.dataset.id;li.remove();return true}
+function joinCard(li){var a=li.querySelector(':scope>.photo.choice');if(!a||li.querySelector('.rsay,.said'))return false;var p=li.previousElementSibling;if(!p||!p.classList.contains('re')||!p.querySelector('.photo.choice')||p.querySelector('.rsay,.said'))return false;var row=p.querySelector('.crow');if(!row){row=document.createElement('div');row.className='crow';p.querySelectorAll(':scope>.photo.choice').forEach(function(x){row.appendChild(x)});p.appendChild(row);p.classList.add('choices');p.dataset.ids=p.dataset.id}row.appendChild(a);var rb=p.querySelector(':scope>.lbl .rp');if(rb)rb.remove();p.dataset.ids+=' '+li.dataset.id;p.dataset.id=li.dataset.id;li.remove();return true}
 function dayCheck(li,m){if(!m.day)return;var p=li.previousElementSibling;while(p&&!p.dataset.day)p=p.previousElementSibling;if(p&&p.dataset.day===m.day)return;var d=document.createElement('li');d.className='day';d.setAttribute('role','separator');d.dataset.day=m.day;if(m.where)d.dataset.where=m.where;var l=document.createElement('p');l.className='lbl';l.textContent=m.dayLabel||'';d.appendChild(l);li.parentNode.insertBefore(d,li)}
 function add(m){if(has(m.id))return;unempty();var stick=near(),li=line(m);if(m.role==='assistant'&&dli){li.classList.remove('arrive');dli.remove();dli=null}
 if(m.cid){var p=list.querySelector('.msg[data-pending="'+m.cid+'"]');if(p){p.replaceWith(li);dayCheck(li,m);forget(m.cid);li.classList.add('just');var s=document.createElement('p');s.className='st';s.textContent='SENT \\u00b7 '+fmt(m.at);li.appendChild(s);setTimeout(function(){s.classList.add('fade');setTimeout(function(){s.remove();li.classList.remove('just')},1100)},1200);if(stick)bottom();where();return}}
