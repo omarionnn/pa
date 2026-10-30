@@ -51,6 +51,7 @@ import { sweepListNotes } from "./events.js";
 import { sweep as sweepAlbums } from "./albums.js";
 import * as dailyEdition from "./daily.js";
 import * as webdraft from "./webdraft.js";
+import * as onboarding from "./onboarding.js";
 
 const MIN = 60_000;
 // Sweep turns a held thing may be put to the model in before it is let go. See `notice` below.
@@ -1231,6 +1232,11 @@ export class Runtime extends EventEmitter {
     // the call itself opens with why. Only if it cannot be placed is anything written.
     if (t.call_goal) return await this._placeTimerCall(t);
     const key = timerKey(t.id);
+    // The first-chat onboarding's one nudge (src/onboarding.js): code's line, no model turn, and
+    // nothing at all if they have moved on since it was set.
+    if (t.label === db.ONBOARDING_NUDGE_LABEL) {
+      return await onboarding.fireNudge({ timer: t, router: this.turnExtras?.channels ?? null, key, log: this.log });
+    }
     let sent = null;
     const turn = async (args) => {
       await this._turn({

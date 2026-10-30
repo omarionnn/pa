@@ -325,6 +325,15 @@ export const config = {
   // When true, anyone who texts the number gets their own Reason instantly — no master approval.
   // For when every number that has the line was given it by the owner personally.
   autoAdmit: process.env.REASON_AUTO_ADMIT === "1",
+  // The first-chat onboarding (src/onboarding.js): off | test | on, off by default. Only a person whose
+  // account a text of theirs just made ever starts it; everybody else is exempt. "test": only the
+  // numbers in REASON_ONBOARDING_NUMBERS (comma list). The owner's own number never gets it.
+  onboarding: (v => ["1", "true", "on", "yes"].includes(v) ? "on" : v === "test" ? "test" : "off")(String(process.env.REASON_ONBOARDING ?? "").trim().toLowerCase()),
+  onboardingNumbers: (process.env.REASON_ONBOARDING_NUMBERS || "").split(",").map(s => s.trim()).filter(Boolean),
+  // The pause between two of its bubbles (plus up to 600 ms of jitter, so it reads like typing).
+  onboardingGapMs: Number(process.env.REASON_ONBOARDING_GAP_MS ?? 1100),
+  // The one nudge for somebody who went quiet mid-flow, this long after the last step (never at night).
+  onboardingNudgeMin: Number(process.env.REASON_ONBOARDING_NUDGE_MIN ?? 240),
   // Per person, per day. 0 means uncapped. These exist so one person cannot run up the bill.
   maxTurnsPerDay: Number(process.env.REASON_MAX_TURNS_PER_DAY ?? 120),
   maxProactivePerDay: Number(process.env.REASON_MAX_PROACTIVE_PER_DAY ?? 8),
