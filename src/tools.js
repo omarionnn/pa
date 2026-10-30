@@ -107,6 +107,7 @@ import { TITLE_HINT, normTitle, queueTitle } from "./itemtitle.js";
 import { resultFor } from "./ongoing.js";
 import * as zone from "./zone.js";
 import * as zonescope from "./zonescope.js";
+import { readSilence } from "./plain.js";
 const confirmedZoneOf = (c) => { try { return zone.confirmedZone(c); } catch { return ""; } };
 
 /**
@@ -8918,6 +8919,14 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
       ok: false, not_sent: true, NEW_FROM_THEM: onethought.noteFor(ctx.foldToken),
       error: "Not sent: they texted more before this went out. Fold it in and send one message that uses it.",
     };
+  }
+  // The silence marker is a reply convention, never words for somebody. A send that is only the
+  // marker is not sent; one with the marker on its own last line goes without it (src/plain.js
+  // readSilence — the same rule the turn's own reply gets).
+  if (SPEAKS.has(String(name)) && typeof rawInput?.text === "string" && rawInput.text.trim()) {
+    const quiet = readSilence(rawInput.text);
+    if (quiet.silent) return { ok: false, not_sent: true, error: "Not sent: NO_REPLY is how a reply says nothing, not something to send. If there is nothing to say, send nothing." };
+    if (quiet.stripped) rawInput = { ...rawInput, text: quiet.text };
   }
   const out = await runToolInner(name, rawInput, ctx);
   // A shared location on another clock from the zone they confirmed: asked about once, never applied.
