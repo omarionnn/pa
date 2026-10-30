@@ -45,6 +45,8 @@ Object.assign(process.env, {
   REASON_STAMPS_EVERYDAY: "on",
   // …and one seal per kind, milestone tiers (REASON_STAMPS_TIERS); the older screens draw their rows unfolded.
   REASON_STAMPS_TIERS: "on",
+  // Reply to one message on Web (REASON_WEB_REPLY, src/pages/webreply.js; prod: owner-only until the owner says go).
+  REASON_WEB_REPLY: "on",
 });
 
 const imp = (p) => import(new URL(p, root));
@@ -216,6 +218,39 @@ const mediaMap = {};
 for (const r of rows) r.media.forEach((m, i) => { mediaMap[`/web/media/m/${r.id}/${i}`] = MEDIA[m.url]; });
 
 const pick = `<a class="pick" href="/web?thread" aria-label="Pick up from iMessage: continue the thread"><span class="pick-h"><span class="hand">pick up from iMessage</span><span class="dash" aria-hidden="true"></span><span class="lbl">LAST TEXT · 8:03 AM</span></span><span class="pick-q"><span class="y">also flights to lisbon in march, nothing before 9am</span><span class="r">On it. I'll keep the early ones out and hold the best two for you to look at.</span></span><span class="pick-go">Continue the thread <span aria-hidden="true">→</span></span><span class="pick-n">Same Reason, same thread. What you send here stays on Web.</span></a>`;
+// Reply to one message (REASON_WEB_REPLY): a thread of its own, written into the throwaway store the way
+// prod keeps it — their messages with the inbound row's parent and thread, Reason's with the outbox's
+// handle and pin — and read back through rowOut, so each quote line is the real lookup (src/pages/webreply.js).
+const REPLY_C = "dm:staging-reply";
+db.upsertAccount({ conversationId: REPLY_C, channel: "fake", address: "+15550100144", name: "Ama Owusu", isOperator: false });
+const replyAccount = db.getAccount(REPLY_C);
+const replyIds = {};
+{
+  const put = db.db.prepare("INSERT INTO messages (conversation_id, role, channel, external_id, outbox_id, text, media, at) VALUES (?, ?, ?, ?, ?, ?, '[]', ?)");
+  let k = 0;
+  const theirs = (key, channel, text, when, { replyTo = null, root = null } = {}) => {
+    const ext = channel === "web" ? `${REPLY_C}:stg-${++k}` : `stg-sb-${++k}`;
+    db.claimInbound({ channel, externalId: ext, conversationId: REPLY_C, text, replyTo: replyTo ? replyIds[replyTo].handle : null, threadRoot: root ? replyIds[root].handle : null });
+    replyIds[key] = { handle: ext, id: Number(put.run(REPLY_C, "user", channel, ext, null, text, when).lastInsertRowid) };
+  };
+  const reasons = (key, channel, text, when, { under = null } = {}) => {
+    const { row } = db.enqueueOutbound({ idemKey: `stg-reply-${++k}`, conversationId: REPLY_C, channel, address: "+15550100144", body: text, replyTo: under ? replyIds[under].handle : null, toOwner: true });
+    const handle = channel === "web" ? `web-stg-${k}` : `stg-sb-${k}`;
+    db.db.prepare("UPDATE outbox SET state = 'sent', message_id = ?, sent_at = ? WHERE id = ?").run(handle, when, row.id);
+    replyIds[key] = { handle, id: Number(put.run(REPLY_C, "assistant", channel, null, row.id, text, when).lastInsertRowid) };
+  };
+  reasons("early", "fake", "On it. I'll keep the early ones out and hold the best two for you to look at.", at(1, 8, 3));
+  theirs("redeye", "fake", "and no red-eyes", at(1, 8, 9), { replyTo: "early", root: "early" });
+  reasons("noted", "fake", "Noted, nothing overnight.", at(1, 8, 10), { under: "redeye" });
+  theirs("lisbon", "web", "What did you find for Lisbon?", at(0, 10, 15));
+  reasons("two", "web", "Two that fit, both after 9:\n1. Tue Mar 10, 10:40 AM nonstop, back Sat — $612\n2. Wed Mar 11, 1:15 PM nonstop, back Sun — $574", at(0, 10, 17));
+  theirs("dentist", "web", "Also, can you find a dentist near work?", at(0, 10, 18));
+  reasons("patel", "web", "Dr. Patel on 23rd St has Thursday at 9 or 3. Want one of those?", at(0, 10, 19));
+  theirs("wed", "web", "Hold the Wednesday one.", at(0, 10, 21), { replyTo: "two", root: "two" });
+  reasons("held", "web", "Held: Wed Mar 11, 1:15 PM. The fare is good until noon tomorrow.", at(0, 10, 22), { under: "wed" });
+}
+const replyLines = db.messagesBefore(REPLY_C, { limit: 40 }).map(r => wc.rowOut(r, { conversationId: REPLY_C, service: "iMessage" }));
+const replyConvo = () => wc.renderConversation({ account: replyAccount, csrf: "staging", lines: replyLines, more: false, sendId: "staging", items, approvals: [], back, now });
 const convo = (o = {}) => wc.renderConversation({ account, csrf: "staging", lines, more: true, sendId: "staging", items, approvals, back, now, ...o });
 const home = () => wc.renderHome({ account, csrf: "staging", sendId: "staging", items, approvals, back, pick });
 
@@ -258,6 +293,9 @@ const STATE = {
   offline: after(`var A=REASON_WEB.api;A.post({id:A.uid(),text:'Can you also check trains from Lisbon to Porto?'})`),
   nineD: after(`window.reasonMidTask(true)`),
   // §4h: "take it back" under a message just sent (the pen line draining), and tapped: "taken back. nothing sent."
+  // REASON_WEB_REPLY: a line's Reply button as a tap shows it where there is no hover, and the composer once it is pressed.
+  replyShown: after(`var li=document.querySelector('.msg.re[data-id="${replyIds.patel.id}"]');li.classList.add('rp-on')`),
+  replying: after(`document.querySelector('.msg.re[data-id="${replyIds.patel.id}"] .rp').click()`),
   takeBack: after(`window.STG_SEND='hang';var A=REASON_WEB.api;A.post({id:A.uid(),text:'Book the 7:30 at Peaches.'})`),
   takenBack: after(`window.STG_SEND='hang';var A=REASON_WEB.api;A.post({id:A.uid(),text:'Book the 7:30 at Peaches.'});setTimeout(function(){var b=document.querySelector('.tb-b');if(b)b.click()},300)`),
   // §4h: the working line counting real files as they are read (src/doing.js counter).
@@ -342,6 +380,9 @@ const S = [
   ["sending", "Sending", "Sending…", "A message on its way (5A).", convo(), { state: STATE.sending }],
   ["take-it-back", "Sending", "Take it back", "§4h: for 5 s after a send, until Reason starts on it; the pen line drains right to left.", convo(), { state: STATE.takeBack }],
   ["taken-back", "Sending", "Taken back", "§4h: tapped in time: \"taken back. nothing sent.\" for 2 s.", convo(), { state: STATE.takenBack }],
+  ["conversation-replies", "Home and thread", "Replies", "Reply to one message (REASON_WEB_REPLY): a quote line over each reply (yours from Web, yours inside an iMessage thread, Reason's pinned answers); tap one to go to the message. Hover a line for REPLY.", replyConvo(), {}],
+  ["conversation-reply-shown", "Home and thread", "Reply · button shown", "Where there is no hover: a tap on a message shows its REPLY; a long press replies at once.", replyConvo(), { state: STATE.replyShown }],
+  ["conversation-replying", "Home and thread", "Replying to a message", "REPLY pressed: the composer says which message the send answers; × or Esc cancels.", replyConvo(), { state: STATE.replying }],
   ["while-you-were-out", "Home and thread", "While you were out", "§4h: back after 3+ hours with something changed: one line under TODAY, once per return.", convo({ away: "while you were out: 2 done, 1 needs you." }), {}],
   ["working-counts", "Sending", "Working line counts", "§4h: real counts only (several files read one by one); the status label follows at most every 3 s.", convo(), { state: STATE.counts }],
   ["didnt-go", "Sending", "Didn't go", "Tap to try again; it won't send twice (5A).", convo(), { state: STATE.failed }],

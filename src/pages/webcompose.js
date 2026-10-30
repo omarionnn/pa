@@ -123,9 +123,10 @@ function micOffHtml() {
  */
 // `slot` is the conversation's own control inside the line, before the mic (the thread's TODAY ↓,
 // src/pages/webconvo.js TODAY_SLOT): the one hook the thread has into this composer.
-export function composerHtml({ csrf, sendId, maxText, slot = "", chat = "" }) {
+export function composerHtml({ csrf, sendId, maxText, slot = "", chat = "", lead = "" }) {
   const picks = Object.entries(PICKS);
-  return `<div class="composer">`
+  // `lead`: a line above the form (the thread's "replying to", src/pages/webreply.js).
+  return `<div class="composer">${lead}`
     + micOffHtml()
     + `<div class="cdrop" aria-hidden="true"><div>${DROP_SVG}<span class="hand">let go. i’ll read it.</span><span class="lbl">ON DESKTOP, DROP ANYWHERE</span></div></div>`
     + `<p class="lbl fromvoice" hidden>FROM YOUR VOICE · EDIT ANYTHING</p>`
