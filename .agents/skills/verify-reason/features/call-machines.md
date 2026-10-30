@@ -27,7 +27,7 @@ writes `opening_waits`; `settleCall` keeps a machine row's own outcome — `reco
 `src/calls/postcall.js` (`thirdPartyEvent` machine line; no memory extraction from a machine),
 `src/db.js` (`calls.opening_waits`, `calls.machine_heard`).
 
-Tests: `test/call-machines.test.js` (14), `test/elevenlabs.test.js` (first message is "" on a
+Tests: `test/call-machines.test.js` (18 at `cc9538d`; 14 at first), `test/elevenlabs.test.js` (first message is "" on a
 third-party call), `test/call-voice.test.js` (tool list).
 
 Drive (real model, claude-cli, no phone): `bin/call-machines-drive.mjs` — five cases from the real

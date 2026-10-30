@@ -72,7 +72,7 @@ real hashes, real declines, and the gate, caps, ledger and webhook handler all r
 cd ~/Desktop/pa
 node --test test/agentcard.test.js        # 55/55 at 00f3300 (52 at 587f67a, 35 at ef7040a)
 node --test test/purchasesnote.test.js test/agentcard-token-seal.test.js test/oauth-token-seal.test.js \
-  test/shopping-sandbox-fixes.test.js     # 22 + 5 + 5 + 5 at 587f67a; agentcard + purchasesnote 82 at b04eb74; purchasesnote 30 at f3669e8 (#108)
+  test/shopping-sandbox-fixes.test.js     # 22 + 5 + 5 + 5 at 587f67a; agentcard + purchasesnote 82 at b04eb74; purchasesnote 30 at f3669e8 (#108), 28 at cc9538d (after #223)
 ```
 
 **Placement failure after approval (2026-10-26), pinned offline, then on the cage:**
@@ -249,7 +249,7 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   nothing in Reason judges a turn's topic per message, and topic is never read with regexes on
   their words, so it uses structural signals only. Either a purchase row of theirs was created or
   changed in the last 48h, or a buying tool (`purchase`, `purchase_confirm`, `purchase_track`,
-  `offer_check`, `shop_handoff`, `vault_enroll`) is in their ledger, or an offer was read for them,
+  `offer_check`, `shop_handoff`, `vault_enroll`, `flight_book`) is in their ledger, or an offer was read for them,
   in the last 6h. Otherwise there is no block, and none when there are no rows. **`purchases_recent`**
   is the same list as a read-only tool. It reads only their rows and makes no AgentCard call, and
   it is in SAFE_WHILE_SCREENED. Its description tells the model to check it before saying whether

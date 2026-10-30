@@ -1727,6 +1727,21 @@ addColumnIfMissing("line_change_cards", "card_ok", "INTEGER");
 addColumnIfMissing("line_change_cards", "card_why", "TEXT");
 db.prepare("INSERT OR IGNORE INTO line_change_cards (conversation_id, sent_at, card_why) VALUES (?, ?, ?)")
   .run(config.ownerConversation, Date.parse("2026-10-23T15:50:00Z"), "moved over by hand before this existed");
+// The first-chat onboarding (src/onboarding.js): where this person is in it. NULL is exempt (never in
+// it), and the first time the column lands every account already there is marked 'complete', so
+// nobody who existed before this is ever walked through it — an ALTER, not a CREATE TABLE column, so
+// it reaches the live database (the accounts.state lesson, 2026-10-25). `_steers` counts how often
+// the pending step was steered back to (once at most), `_name_asked_at` is when their name was
+// asked (the prompt then stops asking it), `_nudged_at` is the one nudge, ever.
+{
+  const had = db.prepare("PRAGMA table_info(accounts)").all().some(c => c.name === "onboarding");
+  addColumnIfMissing("accounts", "onboarding", "TEXT");
+  if (!had) db.prepare("UPDATE accounts SET onboarding = 'complete' WHERE onboarding IS NULL").run();
+}
+addColumnIfMissing("accounts", "onboarding_at", "INTEGER");
+addColumnIfMissing("accounts", "onboarding_steers", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("accounts", "onboarding_name_asked_at", "INTEGER");
+addColumnIfMissing("accounts", "onboarding_nudged_at", "INTEGER");
 addColumnIfMissing("accounts", "patterns", "TEXT");
 addColumnIfMissing("accounts", "patterns_said", "TEXT");
 addColumnIfMissing("accounts", "patterns_asked_at", "INTEGER");
@@ -2045,7 +2060,8 @@ export function setItemBlurb(kind, conversationId, id, blurb) {
   return done;
 }
 export function listTimers(conversationId) {
-  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL ORDER BY fire_at").all(conversationId);
+  // Not the onboarding's nudge (src/onboarding.js): that one is code's, not a reminder of theirs.
+  return db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND fired_at IS NULL AND cancelled_at IS NULL AND COALESCE(label, '') != 'onboarding:nudge' ORDER BY fire_at").all(conversationId);
 }
 export function cancelTimer(conversationId, id) {
   const t = getTimer(conversationId, id);
@@ -3224,6 +3240,46 @@ export function revokeAccount(conversationId, name, { account } = {}) {
 }
 export function accountHistory(conversationId) {
   return db.prepare("SELECT * FROM connected_accounts WHERE conversation_id = ? ORDER BY connected_at DESC").all(conversationId);
+}
+
+/**
+ * Run `fn` (synchronous) as one transaction: everything it writes lands, or nothing does. For a
+ * caller whose writes span several helpers — the onboarding's step (its queued bubbles + its state).
+ */
+export function atomically(fn) {
+  db.exec("BEGIN IMMEDIATE");
+  try { const out = fn(); db.exec("COMMIT"); return out; }
+  catch (e) { try { db.exec("ROLLBACK"); } catch { /* already rolled back */ } throw e; }
+}
+
+// ---------- the first-chat onboarding (src/onboarding.js) ----------
+/** The label its one nudge timer carries; such a timer is code's, never listed as theirs. */
+export const ONBOARDING_NUDGE_LABEL = "onboarding:nudge";
+/**
+ * Move one person's onboarding along. `state` null leaves it; a new state resets the steer count.
+ * Only ever on a row that is already in it or (for `not_started`) has never been: an exempt or
+ * finished person cannot be put back into it by any caller.
+ */
+export function setOnboarding(conversationId, { state = null, steers = null, nameAsked = false, nudged = false } = {}) {
+  const now = clock.now();
+  const row = getAccount(conversationId);
+  if (!row) return null;
+  if (state === "not_started" && row.onboarding != null) return row;
+  if (state !== "not_started" && (row.onboarding == null || row.onboarding === "complete")) return row;
+  db.prepare(`UPDATE accounts SET
+      onboarding = COALESCE(?, onboarding),
+      onboarding_at = ?,
+      onboarding_steers = CASE WHEN ? IS NOT NULL THEN ? WHEN ? IS NOT NULL AND ? != COALESCE(onboarding, '') THEN 0 ELSE onboarding_steers END,
+      onboarding_name_asked_at = CASE WHEN ? THEN COALESCE(onboarding_name_asked_at, ?) ELSE onboarding_name_asked_at END,
+      onboarding_nudged_at = CASE WHEN ? THEN COALESCE(onboarding_nudged_at, ?) ELSE onboarding_nudged_at END
+    WHERE conversation_id = ?`)
+    .run(state, now, steers, steers, state, state, nameAsked ? 1 : 0, now, nudged ? 1 : 0, now, conversationId);
+  return getAccount(conversationId);
+}
+/** Its pending nudge, if any, put down (they spoke, or the flow ended). */
+export function cancelOnboardingNudges(conversationId) {
+  return db.prepare("UPDATE timers SET cancelled_at = ? WHERE conversation_id = ? AND label = ? AND fired_at IS NULL AND cancelled_at IS NULL")
+    .run(clock.now(), conversationId, ONBOARDING_NUDGE_LABEL).changes;
 }
 
 // ---------- accounts: one Reason per person ----------

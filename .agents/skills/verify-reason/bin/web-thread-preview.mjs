@@ -14,7 +14,7 @@ import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 
 const outDir = process.argv[2] || join(homedir(), "Desktop", "reason-web-design-previews", "v2");
-const refDir = process.argv[3] || join(homedir(), "Desktop", "reason-web-handoff-v2-2026-10-26", "reason-web-handoff", "reference");
+const refDir = process.argv[3] || join(homedir(), "Desktop", "Project files", "Reason", "handoffs", "reason-web-handoff-v2-2026-10-26", "reason-web-handoff", "reference");
 mkdirSync(outDir, { recursive: true });
 const dir = mkdtempSync(join(tmpdir(), "reason-thread-preview-"));
 Object.assign(process.env, { REASON_DB_PATH: join(dir, "r.db"), REASON_DATA_DIR: dir, REASON_OWNER_NAME: "Omari", REASON_TZ: "America/New_York", REASON_CONVERSATION: "dm:owner", REASON_OWNER_NUMBER: "+12025551234", REASON_MASTER_NUMBER: "+12025551234", REASON_WEB: "on", REASON_WEB_STREAM: "off" });

@@ -110,6 +110,8 @@ start)
     node --env-file-if-exists=.env src/serve.js --log < /dev/null > "$RUN/serve.log" 2>&1 &
   echo $! > "$RUN/pid"
   echo "$PORT" > "$RUN/port"
+  # Where this cage's Sendblue really goes, so doctor can tell the loopback fake from real keys.
+  if [ -n "${REASON_VERIFY_FAKE_SENDBLUE:-}" ]; then echo "$REASON_VERIFY_FAKE_SENDBLUE" > "$RUN/fake-sendblue"; else rm -f "$RUN/fake-sendblue"; fi
   echo "$SECRET" > "$RUN/secret"
   owner_number > "$RUN/owner"
 

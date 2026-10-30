@@ -424,6 +424,20 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
+**9 — The first-chat onboarding, end to end, on its own cage.** A brand-new number's five texts
+(`REASON_ONBOARDING=test` for that number only) through the real webhook, router and outbox onto
+`bin/fake-sendblue.mjs`; the reads and the one to-do turn on the subscription. Own run dir + port:
+
+```bash
+REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-drive.sh evidence/<UTC>-onboarding   # "all ok"
+```
+
+See [features/onboarding.md](features/onboarding.md).
+
+### Baseline — first-chat onboarding (feat/first-chat-onboarding, 2026-10-30)
+
+`npm run test:offline` under `env -i` (rebased on origin/main 5bbd733, after both #270 reviews): 4,791 tests, 4,660 passing, 131 skipped, 0 failing, 0 cancelled (`test/onboarding.test.js` 38, `test/onboarding-migration.test.js` 2; +16 skipped: the opt-in `test/onboarding-live.test.js` — 16/16 on the subscription, sensitive texts + the harm screen included). Cage: `bin/onboarding-drive.sh` 11/11. See [features/onboarding.md](features/onboarding.md).
+
 ### Baseline — card + store sign-in paper redesign (wt/card-signin-redesign, #271, 2026-10-30)
 4,725 tests / 4,610 pass / 0 fail / 115 skipped (`npm run test:offline` under `env -i`, merged with origin/main a5e3c62). Cage (own port + `REASON_VERIFY_RUN`, owner, real JWT key, no Crossmint server key): 11/11 per [features/shop-connect.md](features/shop-connect.md) drive, plus an Amazon sign-in link → 200, one plain input (email), password sealed, no "Crossmint" in visible copy.
 
@@ -714,8 +728,9 @@ All executable, all run from `.agents/skills/verify-reason/`.
 | `bin/inbound.sh text "…" \| file <p> \| -` | POST one webhook to the caged instance. Refuses 8787. |
 | `bin/call-turn.sh new \| "…" \| show` | One spoken call turn against the cage's custom-LLM endpoint; `show` prints the call's lookups record. |
 | `bin/peek.sh thread\|inbound\|outbox\|pages\|confirms\|ledger\|schema <t>\|sql "…"` | Read the caged database. `schema` first when a column name is in doubt. |
-| `bin/fake-sendblue.mjs <port> <capture.jsonl> [ok\|fail]` | A loopback stand-in for api.sendblue.com: logs every request, answers sends 200 or 400. For `REASON_VERIFY_FAKE_SENDBLUE` and `REASON_WATCHDOG_SEND_URL`. |
+| `bin/fake-sendblue.mjs <port> <capture.jsonl> [ok\|fail]` | A loopback stand-in for api.sendblue.com: logs every request, answers sends 200 or 400. For `REASON_VERIFY_FAKE_SENDBLUE` and `REASON_WATCHDOG_SEND_URL`. Background it under setsid like `caged.sh` (a bare `&` dies with the agent's command). |
 | `bin/evidence.sh new <slug>` / `run <dir> <name> -- cmd…` | Make an evidence folder; run a command into it. |
+| `bin/onboarding-drive.sh [outdir] [before]` | The first-chat onboarding end to end: its own fake Sendblue + cage (claude-cli, one test number), five texts, `transcript.txt` with both sides and the gaps; `before` = flag off. Tears both down. |
 | `bin/tagline.mjs [--out <dir>] \| --live <url>` | Tagline "Your personal concierge" on the home page + an invite page (body and og:description), old "lives in your texts" gone. In-process uses its own temp DB and a fake channel; `--live` is one read-only GET /. |
 
 ## Feature map
@@ -744,6 +759,8 @@ Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start 
 
 Research room (fair page share per planned query, big-question caps, one background follow-up per run, per-person daily cap): [features/research-room.md](features/research-room.md); `test/research-room.test.js`, `bin/research-room-drive.mjs`.
 
+First-chat onboarding (`REASON_ONBOARDING`; opener, name → card, work → ideas + closing line, the to-do list → the real turn; detours, one nudge, existing accounts exempt): [features/onboarding.md](features/onboarding.md); `test/onboarding.test.js`, `bin/onboarding-drive.sh`.
+
 Per-person time zone (`REASON_TZ_ASK`; guess + ask once before the first clock-time action, held action finished by the answer, travel asked once, `config.tz` = their clock inside their turn/page): [features/time-zone.md](features/time-zone.md); `test/time-zone.test.js`.
 
 Reason Web reply to one message (`REASON_WEB_REPLY` off/`owner`/on; button, composer line, quote lines, read as an inline reply): [features/web-reply.md](features/web-reply.md); `test/web-reply.test.js`, `bin/web-reply-drive.mjs` (HTTP + Chromium + touch).
@@ -751,6 +768,12 @@ Reason Web notes + file chips (no flag; a shared location / inline reply / conta
 
 ## Facts worth not rediscovering
 
+- **A no-key cage is not model-free.** Background memory extraction always runs `claude -p` on haiku
+  (`src/extract.js` `extractMessages`), so a memorable webhook text on any cage spends one subscription
+  run and writes real `person_facts` rows (seen 2026-10-30: `extraction|cli`, 2 facts). Drive a handful
+  of texts, not a burst.
+- **The design handoffs moved** to `~/Desktop/Project files/Reason/handoffs/` (2026-10-30). Pass the
+  folder explicitly to `bin/web-thread-preview.mjs` and `bin/web-preview.mjs` if their defaults miss.
 - **The live instance is Hetzner, not a port on this Mac.** Since 2026-10-12 nothing on this
   machine is live; a process on 8787 here is a dev checkout somebody started, and if its `/health`
   says `sendblue: live` it is a *duplicate* on the live number — stop it, do not drive it.
@@ -778,7 +801,7 @@ Reason Web notes + file chips (no flag; a shared location / inline reply / conta
   `claude-cli` backend and has never sent that line, so it is an API-path gap; re-ask before calling
   a feature broken.
 - `REASON_BURST_QUIET_MS` is the window an arriving message waits in to see whether more of the
-  same thought is coming (default 4000ms, capped at `REASON_BURST_MAX_MS` 10000ms). `caged.sh` sets it to **0**, so a webhook runs its turn
+  same thought is coming (default 2500ms since 2026-10-28, was 4000ms; Web `REASON_BURST_QUIET_WEB_MS` 500ms; capped at `REASON_BURST_MAX_MS` 10000ms). `caged.sh` sets it to **0**, so a webhook runs its turn
   the moment it lands. Set it back deliberately if bursts are what you are testing
   (`test/burst.test.js`).
 - Isolation is all env: `REASON_DB_PATH`, `REASON_PROFILE_ROOT`, `REASON_SHOT_ROOT`,

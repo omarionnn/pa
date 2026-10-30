@@ -112,6 +112,9 @@ export function ownerOf(conversationId) {
       address: row.address,
       channel: row.channel,
       isOperator: !!row.is_operator,
+      // The first-chat onboarding already asked their name (src/onboarding.js), so the prompt does
+      // not ask it again: somebody who would rather not say is not pushed a second time.
+      nameAsked: !!row.onboarding_name_asked_at,
       known: true,
     };
   }

@@ -43,6 +43,7 @@ import * as web from "../web.js";
 import { webReplyAllowedFor } from "../dailyflag.js";
 import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
+import * as onboarding from "../onboarding.js";
 
 /** What somebody whose event code did not work is told, by why. */
 const EVENT_CLAIM_LINES = {
@@ -83,8 +84,11 @@ export class Router {
    * instant timer a test passes makes a held message run the moment it arrives, which is also what
    * `REASON_BURST_QUIET_MS=0` does in production.
    */
-  constructor({ runtime, log = () => {}, judge = null, timers = { set: setTimeout, clear: clearTimeout }, hear = hearInto, readContacts = readContactsInto } = {}) {
+  constructor({ runtime, log = () => {}, judge = null, timers = { set: setTimeout, clear: clearTimeout }, hear = hearInto, readContacts = readContactsInto, onboard = {} } = {}) {
     this.runtime = runtime;
+    /** The first-chat onboarding's seams (src/onboarding.js handle): `ask` reads their text, `sleep`
+     *  is the beat between bubbles. Injected so tests need no model and spend no seconds. */
+    this.onboard = onboard;
     /** Turns a held message's voice notes into the words in them. Injected so tests need no model. */
     this.hear = hear;
     /** Turns a held message's contact cards into the info in them. Injected so tests need no model. */
@@ -183,6 +187,10 @@ export class Router {
     // reaches the queue and never reaches the model — its words are written down as a quote for
     // the master to read, and that is all.
     const admitted = accounts.admit({ channel: admitAs, address });
+    // Did THIS text just make their account, by itself — auto-admit, or a pre-approved number's
+    // first text? Those are the only people the first-chat onboarding is for (src/onboarding.js):
+    // an invite or event join already sent its own welcome, and the master's yes sent "you're in".
+    let arrivedNow = inbound.channel !== web.WEB && admitted.allow && admitted.created && !admitted.isOperator;
     if (!admitted.allow) {
       if (admitted.reason === "blocked") {
         this.log({ inbound: inbound.externalId, blocked: address });
@@ -211,7 +219,10 @@ export class Router {
       const accessResult = claim?.joined ? { autoAdmitted: true } : await this.#askForAccess(inbound, address);
       if (accessResult?.autoAdmitted) {
         // They were admitted on the spot — fall through to run a normal turn with their message.
-        // The model's onboarding prompt asks their name, what they do, and shows use cases.
+        // With REASON_ONBOARDING covering them, the first-chat onboarding answers it instead
+        // (src/onboarding.js); otherwise the model's onboarding prompt asks their name, what they
+        // do, and shows use cases.
+        if (!claim?.joined) arrivedNow = inbound.channel !== web.WEB;
       } else {
         return accessResult;
       }
@@ -233,7 +244,11 @@ export class Router {
     // and off the turn's path — a card is a nicety, and nothing about it may delay an answer.
     // Delayed until they have a name when auto-admitted — a card with just a number is impersonal.
     // Not to somebody about to be sent the new number's card below: that card is this one too.
-    if (!readmitted.autoAdmitted && !isReturning(conversationId)) void this.#offerCard(conversationId);
+    // Somebody starting the first-chat onboarding gets the card from it, after their name, with its
+    // own line — never this one first as well.
+    const onboardingNow = arrivedNow && !isOperator && onboarding.begin(conversationId);
+    if (onboardingNow) this.log({ inbound: inbound.externalId, onboarding_started: conversationId });
+    if (!readmitted.autoAdmitted && !isReturning(conversationId) && !onboarding.active(conversationId)) void this.#offerCard(conversationId);
 
     // The master's reply might be the answer to somebody's access request. Read before their turn,
     // by the same judge the confirm gate uses, with every fact around it owned by code: a real new
@@ -683,6 +698,24 @@ export class Router {
         }
       }
 
+      // Somebody mid-way through the first-chat onboarding (src/onboarding.js): its own bubbles answer
+      // this step, before any request row is opened. Something real — a task, a picture, their to-do
+      // list — ends it and falls through to the normal turn below, which does the thing first.
+      let onboardFrame = "";
+      if (last.channel !== web.WEB && !fold.webChat && onboarding.active(conversationId)) {
+        const thread = db.loadConversation(conversationId);
+        const who = accounts.ownerOf(conversationId).name;
+        const ob = await onboarding.handle({
+          router: this, conversationId, texts: said,
+          // The harm screen beside the read, as #readMidTurn does: anything not clear leaves the flow.
+          screen: ({ text }) => this.runtime.screen?.({ text, messages: thread, who: who === "the person I work for" ? "them" : who }) ?? { verdict: "clear" },
+          route: { channel: last.channel, to: last.address, chatId: last.chat_id ?? null },
+          attachments: held.flatMap(h => h.attachments ?? []), log: this.log, ...this.onboard,
+        });
+        if (ob.handled) return { ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator, messages: held.length, replied: true, onboarding: ob.step };
+        onboardFrame = ob.frame ?? "";
+      }
+
       // A request record for each message, so the model can track what was asked and answer each
       // under its own text. Created here, before the turn, so the model sees them from the start.
       requests = held.map((h, i) => ({
@@ -706,7 +739,7 @@ export class Router {
       const gap = downSince ? leftWhileDownLine({ since: downSince, count: said.length }) : "";
 
       // Event log: record what the user said (after voice-note transcription) and enqueue extraction.
-      const userText = [gap, several, ...said].filter(Boolean).join("\n");
+      const userText = [gap, onboardFrame, several, ...said].filter(Boolean).join("\n");
       let evId = null;
       try {
         evId = db.writeEvent({
@@ -1274,7 +1307,7 @@ export class Router {
    * those turn into once the bookkeeping is done. It is also the honest path for the console and
    * for the handful of code-written lines that belong to no conversation.
    */
-  async sendNow({ channel, to, text, chatId = null, idempotencyKey, file = null, mimeType = null, filename = null, sendStyle = null, replyTo = null }) {
+  async sendNow({ channel, to, text, chatId = null, idempotencyKey, file = null, mimeType = null, filename = null, mediaUrl = null, sendStyle = null, replyTo = null }) {
     const ch = this.get(channel);
     if (!ch) return { ok: false, retryable: false, error: `No channel called '${channel}'. Registered: ${[...this.channels.keys()].join(", ") || "none"}.` };
     // The last step before an adapter, so the silence marker is checked here too, for the console,
@@ -1286,6 +1319,12 @@ export class Router {
       text = quiet.text;
     }
     try {
+      // A file the provider fetches by address (the contact card on an onboarding outbox row,
+      // src/onboarding.js): the words and the card are one message, so neither goes without the other.
+      if (mediaUrl) {
+        if (typeof ch.sendMediaUrl !== "function") return { ok: false, retryable: false, supported: false, error: `${channel} cannot send a file by address` };
+        return await ch.sendMediaUrl({ to, text, mediaUrl, chatId, idempotencyKey });
+      }
       return file
         ? await ch.sendMedia({ to, text, file, mimeType, filename, chatId, idempotencyKey })
         // A handle only ever reaches a channel that pins. To any other it would be a field the

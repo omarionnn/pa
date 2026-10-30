@@ -130,11 +130,11 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
 
 ```bash
 cd ~/Desktop/pa
-node --test test/web-design.test.js  # 33: the design states, cards/lists/media, /web/live CORS over real HTTP
-node --test test/web-convo.test.js   # 18: isolation (page/history/stream), forged ids, Web-only reply, same id = one turn (2 tabs), tab close, boundary once, decision 9 (x2), refusals, rate limit, safe rendering, stream (resume/typing/sign-out), paging, the page's form
+node --test test/web-design.test.js  # 34: the design states, cards/lists/media, /web/live CORS over real HTTP
+node --test test/web-convo.test.js   # 19: isolation (page/history/stream), forged ids, Web-only reply, same id = one turn (2 tabs), tab close, boundary once, decision 9 (x2), refusals, rate limit, safe rendering, stream (resume/typing/sign-out), paging, the page's form
 node --test test/web-w0.test.js test/web-signin.test.js test/domains.test.js   # W0/W1 still hold (W0's two text→web→text expectations now carry WEB_HINT)
 # over REAL HTTP on loopback, cage env, throwaway DB, real Router/Runtime/outbox/WebChannel + FakeChannel, scripted model:
-eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/web.db node .agents/skills/verify-reason/bin/web-convo-drive.mjs   # 17 steps
+eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/web.db node .agents/skills/verify-reason/bin/web-convo-drive.mjs   # 18 steps
 node .agents/skills/verify-reason/bin/web-preview.mjs   # every screen, 390/1280 × Paper/Night, + compare-*.png vs the handoff (see web-signin.md)
 ```
 
@@ -156,7 +156,8 @@ node .agents/skills/verify-reason/bin/web-preview.mjs   # every screen, 390/1280
   `contact_card_sent_at` sends anything, Web included (W0 behaviour; every live account has the card).
   Tests set it so the phone stays quiet.
 - **Typing is per address**, not per conversation: twin accounts on one number (decision 4) share it.
-- Deferred to W3+: Ongoing detail views (2A–2E), attachments + dictation (owner 10-26: no
+- Deferred to W3+ at W2 (since shipped: Ongoing details — web-ongoing.md, attachments + mic — web-compose.md,
+  the nudge, notification preferences — web-notify.md): Ongoing detail views (2A–2E), attachments + dictation (owner 10-26: no
   + and no mic until they work; the input runs edge to edge), the "needs a yes →" nudge, notification
   preferences, browsers list + per-row revoke, token hashing/rotation, a CSP nonce instead of
   `'unsafe-inline'`, attachments from Web (the composer is text only).

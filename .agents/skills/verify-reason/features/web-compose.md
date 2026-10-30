@@ -3,10 +3,10 @@
 HANDOFF §3 (Composer, Voice mode, Voice note, Photo you sent, File slip) and references
 `composer-*` (01 at rest · 02 with files · 03 dictating · 04 dropping), `listening-*` (board D),
 `sheet-messages-*` 4B, `sheet-states-*` 5A/5B, `sheet-global-*` 9C/9E. Behind `REASON_WEB` like the
-rest of Web (`owner` on live).
+rest of Web (`on` on live since 2026-10-27, see web-conversation.md).
 
 Source: `src/webuploads.js` (keeping a file: bytes decide the kind — photo the model reads or HEIC,
-PDF, or a mic recording; caps 7 MB / 20 MB / 20 MB; `data/web-uploads/<id>.{ext,json}`, 30 days; the
+PDF, doc, or a mic recording; caps 20 MB each (`LIMITS`), a photo over 7 MB fitted (v2, below); `data/web-uploads/<id>.{ext,json}`, 30 days; the
 upload link `https://<pages host>/web/media/u/<id>/<name>` and `localUpload(url)`, which src/media.js
 `fetchImage`/`fetchPdf` and src/voice.js `hear` use to read it from disk), `src/webmedia.js`
 (`POST /web/upload` same-origin + `X-Reason-Csrf`; `GET /web/media/u/<id>` and `/web/media/m/<row>/<n>`

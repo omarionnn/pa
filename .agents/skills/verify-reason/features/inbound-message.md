@@ -41,8 +41,8 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   (`.mov`, `.mp4`, `.m4v`, `.avi`, `.webm`, `.mkv`, `.3gp`) is uploaded to Gemini and watched; a
   vCard is downloaded and parsed; a file nobody can open is *described* rather than arriving as an
   empty message. See `attachmentOf`, `cannotReadContactLine`, and [location-share.md](location-share.md).
-- **The burst window.** A message waits `REASON_BURST_QUIET_MS` (default **4000ms**, capped by
-  `REASON_BURST_MAX_MS` 10000ms; `src/config.js`) to see whether more of the same thought is coming,
+- **The burst window.** A message waits `REASON_BURST_QUIET_MS` (default **2500ms** since 2026-10-28,
+  was 4000ms; Web `REASON_BURST_QUIET_WEB_MS` 500ms; capped by `REASON_BURST_MAX_MS` 10000ms; `src/config.js`) to see whether more of the same thought is coming,
   then the whole burst takes one turn.
 - **A text mid-turn is one thought, one answer (#105).** A text that lands while a request is being
   worked on is read by one small side call (`src/onethought.js` `askJson`, CLI only since #227 on
@@ -78,7 +78,8 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   before-start snapshot: no `claude -p` may be left behind.
 - **Access.** Who gets served at all: `REASON_AUTO_ADMIT`, `REASON_TEST_NUMBERS` (the `claude-cli`
   backend only), the master's approval queue. `REASON_AUTO_ADMIT=1` on this install, so a stranger
-  is admitted on the spot, gets an account row and an onboarding turn that asks their name — and
+  is admitted on the spot, gets an account row and an onboarding turn that asks their name (with
+  `REASON_ONBOARDING` covering them, the coded first-chat flow instead: [onboarding.md](onboarding.md)) — and
   `REASON_TEST_NUMBERS` is ignored entirely when auto-admit is on (`servesOnThisBackend` in
   `src/backends/guard.js` returns early on `config.autoAdmit`; the `testNumbers` comment in
   `src/config.js` says so too), despite the startup banner still announcing the number list.
@@ -111,7 +112,8 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
 - **A brand-new person on the new line.** Website button → `sms:+16562167455&body=Hi` → first text →
   auto-admit (`#askForAccess`) → their own account, keyed on their number, plus the contact card sent
   once (`offerContactCard`; `admit()` returns no `autoAdmitted`, so the "wait for a name" branch in
-  `deliver` never runs and the card goes out on the first text). The card (`/reason-<sha8>.vcf`, sha8 of the card itself; `/reason.vcf` = alias, `Cache-Control: no-cache`) reads the line
+  `deliver` never runs and the card goes out on the first text — except for somebody the
+  first-chat onboarding just started, who gets it after their name, from the flow: [onboarding.md](onboarding.md)). The card (`/reason-<sha8>.vcf`, sha8 of the card itself; `/reason.vcf` = alias, `Cache-Control: no-cache`) reads the line
   number at request time and shows +1 656… for texts and the 914 number as "call me". Proved
   2026-10-23 without texting anyone: `curl` the card, `GET /health` shows `sendblue … +16562167455`,
   `REASON_AUTO_ADMIT=1` in the live `.env`. Not proved: a real first text from a stranger (needs a real phone).
@@ -206,7 +208,7 @@ proved offline, without a server, and that is where to assert on them:
 ```bash
 cd ~/Desktop/pa
 node --test test/channels.test.js test/sendblue.test.js test/burst.test.js test/parts.test.js test/harm.test.js
-# 39 + 59 + 20 + 14 + 47 = 179 at f3669e8 (harm was 39, total 171, at 226ff17)
+# 40 + 59 + 20 + 14 + 51 = 184 at cc9538d (179 at f3669e8)
 ```
 
 The catch-up on the cage is a **silence**: Sendblue is not connected there, so `catchUp()` returns
@@ -244,8 +246,10 @@ answering, and slash/case normalisation.
   dozen lines down which does `if (!r.ok) this.log({ could_not_ask_master })`.
   Driven 2026-10-11: the `auto_admitted` log line appears, the account row appears, the onboarding
   reply appears, and the heads-up leaves nothing whatsoever behind. **The prerequisite is a live
-  texting channel**, which the cage exists to deny. Prove it offline against an injected `fetch`
-  instead — and note there is currently no test for it at all: `grep -rl 'tellMaster\|handleUnknown'
+  texting channel** — which the fake Sendblue (Launch B, `REASON_VERIFY_FAKE_SENDBLUE`) now gives:
+  driven 2026-10-30 at `cc9538d`, the stranger curl above put an owner `outbox` row in state `sent`
+  and the fake captured "heads up — +12025550123 just texted me for the first time…". There is
+  still no test for it at all: `grep -rl 'tellMaster\|handleUnknown'
   test/` is empty, so the whole access flow is unpinned.
 - **Two installs with one set of Sendblue keys means somebody else answers your texts.** On
   2026-10-12 at 23:52 ET the idle Fly copy (`reason.fly.dev`, deployed by

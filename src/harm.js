@@ -35,6 +35,7 @@ import { config, clock, stamp } from "./config.js";
 import { screenViaCli } from "./backends/cli.js";
 import * as db from "./db.js";
 import { isLinkPreviewAttachment } from "./linkpreview.js";
+import { TODO_FRAME, TODO_FRAME_UNASKED } from "./onboardframes.js";
 
 /** What the screen can say about a message. Anything else it says is `unscreened`. */
 export const VERDICTS = ["clear", "borderline", "harm", "crisis"];
@@ -274,6 +275,8 @@ export function ownWords(text) {
     const file = t.match(/^\[they sent a file, which you cannot open: ([^\]\n]*)\]$/i);
     const under = t.match(/^\[they sent this as an inline reply\b[^"\]\n]*"([^"\n]*)"[^\]\n]*\]$/i);
     if (/^\[they sent the following as \d+ separate texts in a row\b[^\]\n]*\]$/i.test(t)) put = "";
+    // The first-chat onboarding's to-do note (src/onboardframes.js), word for word only.
+    else if (t === TODO_FRAME || t === TODO_FRAME_UNASKED) put = "";
     else if (/^\[reason was down from [^\]\n]*\]$/i.test(t)) put = "";
     else if (file) put = isLinkPreviewAttachment({ filename: file[1] }) ? "(a link preview card)" : "(an attached file named " + file[1] + ")";
     else if (under) put = "(sent as an inline reply under the earlier message \"" + under[1] + "\")";

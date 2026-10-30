@@ -1,6 +1,6 @@
 # Reason Web §4h small details — the plumbing three (while you were out, take it back, working line counts)
 
-Handoff v4 (`~/Desktop/reason-web-handoff-v4-2026-10-27/reason-web-handoff/`) HANDOFF.md §4h items 1, 4, 6 +
+Handoff v4 (`~/Desktop/Project files/Reason/handoffs/reason-web-handoff-v4-2026-10-27/reason-web-handoff/`) HANDOFF.md §4h items 1, 4, 6 +
 `reference/sheet-small-details.html` (Paper + Night rows). Pinned in `test/web-4h-plumbing.test.js`.
 
 Source: `src/db.js` (`page_sessions.web_seen_at / web_away_from / web_away_to`, `inbound_messages.cancelled_at`;

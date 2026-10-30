@@ -1,6 +1,6 @@
 # Reason Web — the wax-seal book (Stamps v2)
 
-The Stamps look from handoff 2026-10-27 "S3 · Old money, made real" (`~/Desktop/reason-stamps-handoff-2026-10-27`,
+The Stamps look from handoff 2026-10-27 "S3 · Old money, made real" (`~/Desktop/Project files/Reason/handoffs/reason-stamps-handoff-2026-10-27`,
 `reference/stamps.html`, `stamp-kit.html`, `home.html`, `components/*.svg`). Behind `REASON_STAMPS_WAX`
 (off | on, `src/dailyflag.js waxLook`) on top of `REASON_WEB_DAILY`: off draws the typed book exactly as
 before ([web-stamps.md](web-stamps.md)). Same `stamps` rows; stored types unchanged, so every stamp already
@@ -42,8 +42,8 @@ public page), `src/pages/webstamps.js` (routes switch on `waxLook()`), `src/page
 
 `REASON_DB_PATH=$(mktemp -d)/seals.db node .agents/skills/verify-reason/bin/web-seals-drive.mjs [outDir]` —
 real HTTP, real completions (task/call/research/purchase) → patch, Held, suite key job; book states Paper +
-Night at 390/1280; share → public page, real og.png 1200×630, story.png 1080×1920; revoke → the same 404 page as `/s/doesnotexist` (Paper/Night 390/1280 shots `seal-404-*`), og.png plain 404. 13 steps. Dates: every postmark/patch/card/story/share date is `tzFor(conversation)` (accounts.notice_tz → notice_sweeps.time_zone → REASON_TZ); the anniversary ticket's months too (was UTC until 10-27). Omari's First errand reads OCT 5 2026: task 1 finished 2026-10-06 03:06:21 UTC = Oct 5 11:06 PM ET — correct.
-Tests: `test/stamps-wax.test.js` (18). Staging: `npm run web:staging` sets `REASON_STAMPS_WAX=on`
+Night at 390/1280; share → public page, real og.png 1200×630, story.png 1080×1920; revoke → the same 404 page as `/s/doesnotexist` (Paper/Night 390/1280 shots `seal-404-*`), og.png plain 404. 14 steps with the last "someone else" step (all off: 14 ok, "all ok"). Dates: every postmark/patch/card/story/share date is `tzFor(conversation)` (accounts.notice_tz → notice_sweeps.time_zone → REASON_TZ); the anniversary ticket's months too (was UTC until 10-27). Omari's First errand reads OCT 5 2026: task 1 finished 2026-10-06 03:06:21 UTC = Oct 5 11:06 PM ET — correct.
+Tests: `test/stamps-wax.test.js` (20). Staging: `npm run web:staging` sets `REASON_STAMPS_WAX=on`
 (rows stamps*, stamp-card*, stamp-story, stamp-share-public).
 
 ## Live check (read-only)

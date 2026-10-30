@@ -92,6 +92,11 @@ Four payloads, one per branch — all 40.7484, -73.9857, the Empire State Buildi
 | `payloads/location-bare.json` | `{latitude, longitude}` only — both optional fields drop |
 | `payloads/location-and-app-card.json` | both keys present — the branch order |
 
+On a no-key cage (the default) no turn runs, so `bin/peek.sh thread` stays empty: read the
+`describe` line from `bin/peek.sh sql "SELECT inbound_handle, text FROM requests ORDER BY id"` and
+the kept pin from `threads.last_location` instead (2026-10-30, `cc9538d`: all four branches as below;
+Nominatim answered only the first of four posts 5 s apart, so the rest got the bare line).
+
 **End state that proves it.** In `bin/peek.sh thread`, the `user` message for the location payload
 carries the parsed coordinates and the `assistant` reply places them. The run on 2026-10-10 against
 the geocoding tree gave exactly this:

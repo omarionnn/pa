@@ -7,7 +7,7 @@ Signed in, with `REASON_WEB_DAILY` allowing the session's conversation (`off | o
 Off = today's Home exactly (composer and all).
 
 Source: `src/daily.js` (window, facts, question, greeting, `writeEdition`, `sweepDaily`, tables
-`daily_editions` / `daily_looks` / `daily_questions`), `src/pages/webdaily.js` (`renderDaily`, `dailyHead`),
+`daily_editions` / `daily_looks` / `daily_questions`), `src/pages/webdaily.js` (`renderDaily`), `src/pages/webdailyhead.js` (`dailyHeader`),
 `src/pages/webdailyroutes.js` (POST `/web/daily/answer|later`), `src/pages/webconvo.js`
 (`conversationPage` → renderDaily; no new-chat entry anywhere: one shared thread, owner 10-27 07:08),
 `src/pages/websignin.js` (`/web?newchat` → 303 `/web?thread`), `src/runtime.js` (`daily()` in the sweep),
@@ -45,7 +45,7 @@ Source: `src/daily.js` (window, facts, question, greeting, `writeEdition`, `swee
 ## Drive
 
 ```bash
-node --test test/web-daily.test.js     # 15 pinned (flag, states, overnight kinds, two approvals, question, sweep, DST, new chat)
+node --test test/web-daily.test.js     # 16 pinned (flag, states, overnight kinds, two approvals, question, sweep, DST, new chat)
 node scripts/web-staging.mjs --out=/tmp/x/web-staging   # daily-full, -first, -quiet, -missed
 ```
 

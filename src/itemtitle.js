@@ -142,7 +142,7 @@ export function queueBlurb(kind, conversationId, id, text, { name, ask } = {}) {
 export function rowsWithoutBlurb() {
   return [
     ...db.db.prepare("SELECT id, conversation_id AS c, COALESCE(NULLIF(call_goal, ''), what) AS text FROM series WHERE state = 'active' AND (blurb IS NULL OR blurb = '')").all().map(r => ({ ...r, kind: "series" })),
-    ...db.db.prepare("SELECT id, conversation_id AS c, COALESCE(NULLIF(call_goal, ''), note) AS text FROM timers WHERE fired_at IS NULL AND cancelled_at IS NULL AND series_id IS NULL AND (blurb IS NULL OR blurb = '')").all().map(r => ({ ...r, kind: "timer" })),
+    ...db.db.prepare("SELECT id, conversation_id AS c, COALESCE(NULLIF(call_goal, ''), note) AS text FROM timers WHERE fired_at IS NULL AND cancelled_at IS NULL AND series_id IS NULL AND COALESCE(label, '') != 'onboarding:nudge' AND (blurb IS NULL OR blurb = '')").all().map(r => ({ ...r, kind: "timer" })),
   ];
 }
 
