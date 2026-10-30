@@ -1,0 +1,198 @@
+{
+ "note": "Overpass answer to walk.js arrivalQuery for the Flatiron Building (40.74106,-73.98965), 2026-10-30, trimmed to the tags used. Data (c) OpenStreetMap contributors, ODbL.",
+ "elements": [
+  {
+   "type": "way",
+   "id": 264768896,
+   "nodes": [
+    2704161655,
+    2704161660,
+    10177726804,
+    2704161661,
+    12796214185,
+    10177726831,
+    2704161711,
+    2704161713,
+    2704161715,
+    2704161719,
+    2704161720,
+    2704161723,
+    2704161726,
+    7139825363,
+    10177726832,
+    10177726792,
+    2704161785,
+    2704161788,
+    2704161791,
+    2704161793,
+    2704161795,
+    2704161792,
+    2704161790,
+    2704161787,
+    2704161786,
+    2704161784,
+    2704161783,
+    2704161433,
+    2704161673,
+    2704161667,
+    2704161662,
+    2704161659,
+    2704161658,
+    2704161655
+   ],
+   "tags": {
+    "building": "office",
+    "name": "Flatiron Building"
+   }
+  },
+  {
+   "type": "node",
+   "id": 2704161433,
+   "lat": 40.7410206,
+   "lon": -73.9895356,
+   "tags": {
+    "addr:street": "Broadway",
+    "entrance": "yes"
+   }
+  },
+  {
+   "type": "node",
+   "id": 7139825363,
+   "lat": 40.7410978,
+   "lon": -73.9897246,
+   "tags": {
+    "addr:street": "5th Avenue",
+    "entrance": "main"
+   }
+  },
+  {
+   "type": "node",
+   "id": 763652153,
+   "lat": 40.7411174,
+   "lon": -73.9901665,
+   "tags": {
+    "addr:street": "5th Avenue",
+    "amenity": "fast_food",
+    "name": "S&P Sandwich Shop"
+   }
+  },
+  {
+   "type": "node",
+   "id": 2517056822,
+   "lat": 40.7410722,
+   "lon": -73.9896534,
+   "tags": {
+    "name": "Flatiron District",
+    "tourism": "attraction"
+   }
+  },
+  {
+   "type": "node",
+   "id": 4418348217,
+   "lat": 40.7411784,
+   "lon": -73.9902002,
+   "tags": {
+    "addr:street": "5th Avenue",
+    "name": "Flatiron Tailor",
+    "shop": "tailor"
+   }
+  },
+  {
+   "type": "node",
+   "id": 6955034550,
+   "lat": 40.7413976,
+   "lon": -73.9899646,
+   "tags": {
+    "addr:street": "5th Avenue",
+    "amenity": "pharmacy",
+    "name": "Duane Reade express"
+   }
+  },
+  {
+   "type": "node",
+   "id": 6955034553,
+   "lat": 40.7410651,
+   "lon": -73.9902046,
+   "tags": {
+    "addr:street": "5th Avenue",
+    "name": "Rituals",
+    "shop": "cosmetics"
+   }
+  },
+  {
+   "type": "node",
+   "id": 9140832100,
+   "lat": 40.7406253,
+   "lon": -73.9897694,
+   "tags": {
+    "addr:street": "Broadway",
+    "name": "Harry Potter",
+    "shop": "general"
+   }
+  },
+  {
+   "type": "node",
+   "id": 10177726834,
+   "lat": 40.7412079,
+   "lon": -73.9895713,
+   "tags": {
+    "addr:street": "5th Avenue",
+    "name": "T-Mobile",
+    "shop": "mobile_phone"
+   }
+  },
+  {
+   "type": "node",
+   "id": 11126118106,
+   "lat": 40.7410975,
+   "lon": -73.9889943,
+   "tags": {
+    "addr:street": "Broadway",
+    "amenity": "bank",
+    "name": "TD Bank"
+   }
+  },
+  {
+   "type": "node",
+   "id": 11443384151,
+   "lat": 40.741219,
+   "lon": -73.9900912,
+   "tags": {
+    "addr:street": "5th Avenue",
+    "name": "Ten Ichi Mart & Deli",
+    "shop": "convenience"
+   }
+  },
+  {
+   "type": "node",
+   "id": 12918215841,
+   "lat": 40.7408135,
+   "lon": -73.9890786,
+   "tags": {
+    "name": "QB house",
+    "shop": "hairdresser"
+   }
+  },
+  {
+   "type": "node",
+   "id": 12918215842,
+   "lat": 40.7407294,
+   "lon": -73.9890957,
+   "tags": {
+    "amenity": "cafe",
+    "name": "Gumpton Coffee"
+   }
+  },
+  {
+   "type": "node",
+   "id": 13931862186,
+   "lat": 40.7414886,
+   "lon": -73.9898892,
+   "tags": {
+    "addr:street": "5th Avenue",
+    "amenity": "bank",
+    "name": "Bank of America"
+   }
+  }
+ ]
+}

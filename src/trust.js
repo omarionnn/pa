@@ -1233,10 +1233,11 @@ function ledgerInput(action, input) {
   if (action === "drive_create") {
     return { ...input, text: `(${String(input?.text ?? "").length} characters — the document itself is in their Drive)` };
   }
-  // A walk's start is where they were standing: the trip keeps it for a day, the ledger never does.
+  // A walk's start is where they were standing (or said they were): the trip keeps it only until the walk
+  // ends, the ledger never does: not the coordinates and not the words.
   if (action === "directions") {
-    const { from_latitude, from_longitude, to_latitude, to_longitude, ...rest } = input ?? {};
-    return { ...rest, ...(from_latitude != null ? { from: rest.from ?? "(their location)" } : {}) };
+    const { from_latitude, from_longitude, to_latitude, to_longitude, from, ...rest } = input ?? {};
+    return { ...rest, ...(from_latitude != null || from ? { from: "(where they started)" } : {}) };
   }
   return input;
 }

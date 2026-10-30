@@ -38,6 +38,7 @@ const C = config.ownerConversation;
 const GUEST = "dm:+12025550111";
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
+  trips.clearArrivalCache?.();
   db.db.exec("DELETE FROM trips; DELETE FROM page_sessions; DELETE FROM page_codes; DELETE FROM page_attempts; DELETE FROM saved_places;");
 });
 
@@ -75,11 +76,27 @@ function overpassData() {
     ],
   };
 }
-function fakeNet({ overpass = true } = {}) {
+// The end's own building (its outline's node ids), its doors, and what is round it, as Overpass answers
+// walk.js arrivalQuery: a main door on East 21st Street, a fire exit, a private door, a pharmacy beside.
+function arrivalData() {
+  return {
+    elements: [
+      { type: "way", id: 900, nodes: [1, 2, 3, 4, 1], tags: { building: "yes" } },
+      { type: "node", id: 2, lat: 40.74028, lon: -73.98688, tags: { entrance: "main", "addr:street": "East 21st Street" } },
+      { type: "node", id: 3, lat: 40.74015, lon: -73.98672, tags: { entrance: "exit" } },
+      { type: "node", id: 4, lat: 40.74022, lon: -73.98670, tags: { entrance: "yes", access: "private" } },
+      { type: "node", id: 50, lat: 40.74036, lon: -73.98695, tags: { shop: "chemist", name: "Gramercy Pharmacy" } },
+      { type: "node", id: 51, lat: 40.74020, lon: -73.98680, tags: { amenity: "cafe", name: "Joe Coffee" } },
+      { type: "node", id: 52, lat: 40.74026, lon: -73.98690, tags: { amenity: "bench", name: "Memorial bench" } },
+    ],
+  };
+}
+function fakeNet({ overpass = true, door = true } = {}) {
   const calls = [];
   const fetchImpl = async (url, opts = {}) => {
     calls.push({ url: String(url), body: opts.body ? String(opts.body) : "" });
     if (String(url).startsWith("https://routes.example.test")) return { ok: true, json: async () => osrm() };
+    if (/overpass/.test(String(url)) && /is_in/.test(String(opts.body))) return overpass ? { ok: true, json: async () => (door ? arrivalData() : { elements: [] }) } : { ok: false, status: 504, json: async () => ({}) };
     if (/overpass/.test(String(url))) return overpass ? { ok: true, json: async () => overpassData() } : { ok: false, status: 504, json: async () => ({}) };
     if (/project-osrm/.test(String(url))) return { ok: true, json: async () => ({ code: "Ok", routes: [{ duration: 600, distance: 3000 }] }) };
     throw new Error(`unexpected fetch ${url}`);
@@ -139,13 +156,15 @@ test("a real trip: made from the live location to a looked-up place, stored, lin
   const row = tripOf(out.link);
   assert.equal(row.conversation_id, C);
   assert.equal(row.trip.name, "Joe Coffee");
-  assert.equal(row.trip.startsLabel, "7");
+  assert.equal(row.trip.startsLabel, undefined, "a time they gave is no event: nothing 'starts at 7'");
+  assert.equal(row.trip.arriveByLabel, "7");
   assert.equal(row.trip.startsAt, Date.parse("2026-10-30T23:00:00Z"), "their wall clock, in their zone");
   assert.equal(row.trip.side, "left");
   assert.equal(row.trip.nearby, "DAILY PROVISIONS, 1 MIN");
   assert.ok(row.trip.map.minor.length && row.trip.map.labels.length === 1, "the map was filled");
   assert.ok(row.streets.length >= 3, "the streets are kept on the row for reroutes");
-  assert.ok(row.expires_at >= row.trip.startsAt + trips.TRIP_KEEP_MS, "kept a day past the walk, then gone");
+  assert.equal(row.expires_at, row.trip.startsAt + trips.TRIP_KEEP_MS, "kept an hour past the arrive-by at most, then gone");
+  assert.equal(trips.TRIP_KEEP_MS, 60 * 60 * 1000);
   const routed = net.calls.find((c) => c.url.startsWith("https://routes.example.test"));
   assert.match(routed.url, /\/route\/v1\/foot\/-73\.9911,40\.7359;-73\.9868,40\.7402\?/);
 });
@@ -336,4 +355,153 @@ test("expired trips go on the sweep, read or not", async () => {
   db.db.prepare("UPDATE trips SET expires_at = ? WHERE id = ?").run(clock.now() - 1, row.id);
   assert.equal(db.deleteExpiredTrips(clock.now()), 1);
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM trips").get().n, 0);
+});
+
+// ---------- the door: entrance and landmark facts for the last 50 m (walk.js arrivalFacts) ----------
+const { arriveCaption, earlyCaption } = await import("../src/pages/directionsclient.js");
+const { sealTravelers } = await import("../src/privacy.js");
+const { exportData } = await import("../src/data.js");
+
+test("the door: the main entrance on the place's own building, its street, and the named place beside it; exits, private doors and benches never", () => {
+  const f = trips.arrivalFacts(arrivalData(), { dest: CAFE, placeName: "Joe Coffee" });
+  assert.equal(f.entrance, "MAIN ENTRANCE ON EAST 21ST STREET, NEXT TO GRAMERCY PHARMACY");
+  assert.equal(f.look, "Look for the main entrance.");
+  assert.equal(f.landmark, "Gramercy Pharmacy", "the place itself is not its own landmark, nor is a bench");
+  const onlyExit = { elements: arrivalData().elements.filter((e) => e.id !== 2 && e.id !== 50) };
+  assert.deepEqual(trips.arrivalFacts(onlyExit, { dest: CAFE, placeName: "Joe Coffee" }), { entrance: "", look: "", landmark: "" }, "nothing to say: the page says only the side");
+  const markOnly = { elements: arrivalData().elements.filter((e) => e.id !== 2) };
+  const m = trips.arrivalFacts(markOnly, { dest: CAFE, placeName: "Joe Coffee" });
+  assert.equal(m.entrance, "NEXT TO GRAMERCY PHARMACY");
+  assert.equal(m.look, "It’s next to Gramercy Pharmacy.");
+  const ref = trips.arrivalFacts({ elements: [{ type: "node", id: 9, lat: CAFE.lat, lon: CAFE.lng, tags: { entrance: "yes", ref: "b" } }] }, { dest: CAFE });
+  assert.equal(ref.entrance, "ENTRANCE B");
+  assert.equal(ref.look, "Look for the entrance marked b.");
+  assert.deepEqual(trips.arrivalFacts(null, { dest: CAFE }), { entrance: "", look: "", landmark: "" });
+});
+
+test("the door's question names only the end, never where the walk starts", () => {
+  const q = trips.arrivalQuery(CAFE);
+  assert.match(q, /is_in\(40\.740200,-73\.986800\)/);
+  assert.match(q, /node\(w\.b\)\["entrance"\]/);
+  assert.doesNotMatch(q, /40\.7359|-73\.9911/);
+});
+
+test("a real trip gets its door after the map: stored on the trip, on the page, and said in the last 50 m", async () => {
+  const net = fakeNet();
+  const out = await tool({ to: "Joe Coffee", place_name: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng }, C, net);
+  const id = tripOf(out.link).id;
+  const got = await trips.fillArrival(id, { fetchImpl: net.fetchImpl });
+  assert.equal(got.ok, true);
+  const t = db.getTrip(id).trip;
+  assert.equal(t.entrance, "MAIN ENTRANCE ON EAST 21ST STREET, NEXT TO GRAMERCY PHARMACY");
+  assert.equal(t.look, "Look for the main entrance.");
+  const page = pageJson((await get(`/d/${id}`, { cookie: signIn() })).body);
+  assert.equal(page.entrance, t.entrance);
+  const cap = arriveCaption(page, 40);
+  assert.equal(cap.hand, "It’s on your left. Look for the main entrance.");
+  assert.equal(cap.sub, "MAIN ENTRANCE ON EAST 21ST STREET, NEXT TO GRAMERCY PHARMACY · 40 M");
+  const doorAsks = net.calls.filter((c) => /is_in/.test(c.body));
+  assert.ok(doorAsks.length >= 1 && doorAsks.every((c) => !/40\.7359|-73\.9911/.test(decodeURIComponent(c.body))), "only the end is sent");
+  // Cached per place: the same end again asks Overpass nothing new.
+  const before = net.calls.filter((c) => /is_in/.test(c.body)).length;
+  await trips.fillArrival(id, { fetchImpl: net.fetchImpl });
+  assert.equal(net.calls.filter((c) => /is_in/.test(c.body)).length, before);
+});
+
+test("the door fails soft: Overpass down leaves 'on your right' as it was, and asks again only after a pause", async () => {
+  const down = fakeNet({ overpass: false });
+  const out = await tool({ to: "Joe Coffee", place_name: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng }, C, down);
+  const id = tripOf(out.link).id;
+  assert.equal((await trips.fillArrival(id, { fetchImpl: down.fetchImpl, servers: ["https://overpass.example.test/api"] })).ok, false);
+  const t = db.getTrip(id).trip;
+  assert.equal(t.entrance, "");
+  assert.equal(t.arrivalChecked, undefined, "a later open asks again");
+  assert.deepEqual(arriveCaption(pageJson((await get(`/d/${id}`, { cookie: signIn() })).body), 30), { hand: "It’s on your left.", sub: "30 M" });
+  // A failed place is not asked again inside ARRIVAL_RETRY_MS (rate limits), and is after it.
+  const { arrivalFor, ARRIVAL_RETRY_MS } = await import("../src/walk.js");
+  const n0 = down.calls.length;
+  await arrivalFor(CAFE, { fetchImpl: down.fetchImpl, servers: ["https://overpass.example.test/api"], now: clock.now() + 1000 });
+  assert.equal(down.calls.length, n0, "inside the pause: no new ask");
+  await arrivalFor(CAFE, { fetchImpl: down.fetchImpl, servers: ["https://overpass.example.test/api"], now: clock.now() + ARRIVAL_RETRY_MS + 1 });
+  assert.equal(down.calls.length, n0 + 1, "after it: one ask");
+});
+
+// ---------- "It starts at 7" is an event's; a time they gave is "arrive by" ----------
+test("early: an event says 'It starts at 9'; a plain arrive-by never says anything starts", async () => {
+  const ev = { startsLabel: "9", startsAt: 1, links: { event: { url: "https://events.example.test/e" } }, nearby: "DAILY PROVISIONS, 1 MIN" };
+  assert.deepEqual(earlyCaption(ev), { hand: "You’re early. It starts at 9.", sub: "NEARBY · DAILY PROVISIONS, 1 MIN" });
+  const by = { arriveByLabel: "7", startsAt: 1, nearby: "" };
+  assert.deepEqual(earlyCaption(by), { hand: "You’re early.", sub: "ARRIVE BY 7" });
+  assert.doesNotMatch(JSON.stringify(earlyCaption(by)), /starts/i);
+  // A trip stored before this change (startsLabel from an arrive-by, no event link) reads as arrive-by too.
+  assert.deepEqual(earlyCaption({ startsLabel: "7", startsAt: 1 }), { hand: "You’re early.", sub: "ARRIVE BY 7" });
+  // And made through the tool: arrive_by gives arriveByLabel, an event gives startsLabel.
+  const at = new Date(clock.now() + 3 * 3600000).toLocaleString("sv-SE", { timeZone: "America/New_York" }).slice(0, 16).replace(" ", "T");
+  const out = await tool({ to: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng, arrive_by: at });
+  const t = tripOf(out.link).trip;
+  assert.equal(t.startsLabel, undefined);
+  assert.ok(t.arriveByLabel);
+  assert.equal(earlyCaption(t).hand, "You’re early.");
+});
+
+// ---------- the start goes when the walk ends ----------
+const end = (id, cookie, why = "arrived") => directionsRequest({ method: "POST", pathname: `/d/${id}/end`, req: Readable.from([Buffer.from(JSON.stringify({ why }))]), config, headers: cookie ? { cookie: `reason_page=${cookie}` } : {}, fetchImpl: fakeNet().fetchImpl });
+
+test("the walk ends on the page (arrived or END ESCORT): the trip, and where it started, are deleted at once", async () => {
+  for (const why of ["arrived", "ended", "early"]) {
+    const id = tripOf((await tool({ to: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng })).link).id;
+    const logs = [];
+    const res = await directionsRequest({ method: "POST", pathname: `/d/${id}/end`, req: Readable.from([Buffer.from(JSON.stringify({ why }))]), config, headers: { cookie: `reason_page=${signIn()}` }, log: (x) => logs.push(x) });
+    assert.equal(res.status, 204);
+    assert.equal(db.db.prepare("SELECT COUNT(*) n FROM trips WHERE id = ?").get(id).n, 0, `${why}: the row is gone`);
+    assert.doesNotMatch(JSON.stringify(logs), /40\.73|-73\.99/);
+  }
+});
+
+test("only the owner's browser can end a walk; anybody else, and an unknown id, get the same empty answer", async () => {
+  const id = tripOf((await tool({ to: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng })).link).id;
+  const a = await end(id, null);
+  const b = await end("NoSuchTrip12", null);
+  const c = await end(id, signIn(GUEST));
+  assert.equal(a.status, 204);
+  assert.deepEqual([a.status, a.body], [b.status, b.body]);
+  assert.equal(c.status, 204);
+  assert.ok(db.getTrip(id), "still there: nobody who may end it asked");
+});
+
+test("a walk never finished on the page goes an hour after it was due: arrive-by + 1 h, else now + the walk + 1 h", async () => {
+  const now = clock.now();
+  const plain = tripOf((await tool({ to: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng })).link);
+  assert.ok(Math.abs(plain.expires_at - (now + 512 * 1000 + 3600000)) < 60000, `${plain.expires_at - now} ms`);
+  assert.equal(trips.tripExpiry({ now, startsAt: now + 7200000, walkSeconds: 512 }), now + 7200000 + 3600000);
+  assert.equal(trips.tripExpiry({ now, startsAt: now - 1000, walkSeconds: 512 }), now + 3600000, "a time already past: an hour from now");
+  db.db.prepare("UPDATE trips SET expires_at = ? WHERE id = ?").run(now - 1, plain.id);
+  assert.equal(db.getTrip(plain.id), null);
+});
+
+test("the start is never in the decision log, the ledger or an export: not the coordinates, not the words, not the key", async () => {
+  const input = { to: "Joe Coffee", from: "the corner of 5th and 14th", from_latitude: START.lat, from_longitude: START.lng };
+  const sealed = sealTravelers("directions", input);
+  assert.doesNotMatch(JSON.stringify(sealed), /40\.7359|-73\.9911|5th and 14th/);
+  assert.equal(sealed.to, "Joe Coffee");
+  assert.doesNotMatch(JSON.stringify(sealTravelers("directions", { ok: true, link: "https://x.test/d/abc?k=SECRET" })), /SECRET/);
+  await tool({ to: "Joe Coffee", from: "the corner of 5th and 14th", from_latitude: START.lat, from_longitude: START.lng });
+  const led = db.db.prepare("SELECT * FROM action_ledger WHERE action = 'directions' ORDER BY id DESC LIMIT 1").get();
+  assert.doesNotMatch(JSON.stringify(led), /5th and 14th|40\.7359|-73\.9911/, "the words they said they were at are not kept either");
+  const out = exportData({ conversation: C, audio: false, files: false });
+  const rows = out.tables.trips;
+  assert.ok(rows.length >= 1);
+  const all = JSON.stringify(rows);
+  assert.doesNotMatch(all, /40\.7359|-73\.9911|-73\.9905/, "no route, steps or map that trace back to the start");
+  assert.match(all, /Joe Coffee/, "where it went is theirs and stays");
+  assert.ok(rows.every((r) => !/^[A-Za-z0-9]{12}$/.test(r.owner_key)), "the link's key is not exported");
+});
+
+test("the door on real OpenStreetMap data: the Flatiron Building's main entrance on 5th Avenue, a shop beside it, never 'Flatiron District'", async () => {
+  const { readFileSync } = await import("node:fs");
+  const data = JSON.parse(readFileSync(new URL("./fixtures/overpass-flatiron-door.json", import.meta.url), "utf8"));
+  const f = trips.arrivalFacts(data, { dest: { lat: 40.74106, lng: -73.98965 }, placeName: "Flatiron Building" });
+  assert.equal(f.entrance, "MAIN ENTRANCE ON 5TH AVENUE, NEXT TO T-MOBILE");
+  assert.equal(f.look, "Look for the main entrance.");
+  assert.doesNotMatch(f.entrance, /DISTRICT/, "an area tagged as a point is not a neighbour");
 });

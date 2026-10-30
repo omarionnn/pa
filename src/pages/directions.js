@@ -115,6 +115,7 @@ export function sampleTrip(now = new Date()) {
     streetLabel: "OXFORD ST",
     firstStreet: "UP CANTONMENTS RD",
     entrance: "GREEN GATE, NEXT TO THE TAILOR’S",
+    look: "Look for the gate.",
     nearby: "CAFÉ ACROSS THE ROAD, 1 MIN · BENCH IN THE PARK, 3 MIN",
     startsLabel: "7",
     startsAt,
@@ -253,12 +254,14 @@ export async function directionsRequest({ method, pathname: rawPath, req, config
     return out ? { status: out.status, headers: out.headers, body: out.body } : null;
   }
 
-  const m = /^\/d\/([A-Za-z0-9_-]{1,40})(\/reroute)?$/.exec(pathname);
+  const m = /^\/d\/([A-Za-z0-9_-]{1,40})(\/reroute|\/end)?$/.exec(pathname);
   if (!m) return null;
-  if (m[1] !== "sample") return tripRequest({ id: m[1], reroutePath: !!m[2], method, req, config, fetchImpl, key, headers, runtime, log });
+  if (m[1] !== "sample") return tripRequest({ id: m[1], reroutePath: m[2] === "/reroute", endPath: m[2] === "/end", method, req, config, fetchImpl, key, headers, runtime, log });
   const trip = config.directionsSample ? sampleTrip() : null;
   if (!trip) return null;
 
+  // The sample is never stored, so its end has nothing to delete.
+  if (m[2] === "/end") return method === "POST" ? { status: 204, headers: JSON_HEADERS, body: "" } : null;
   if (m[2]) {
     if (method !== "POST") return null;
     let body;
@@ -276,7 +279,7 @@ export async function directionsRequest({ method, pathname: rawPath, req, config
 }
 
 /** A real trip's routes: the page, its code gate, and the reroute, for the trip's owner only. */
-async function tripRequest({ id, reroutePath, method, req, config, fetchImpl, key, headers, runtime, log }) {
+async function tripRequest({ id, reroutePath, endPath, method, req, config, fetchImpl, key, headers, runtime, log }) {
   const R = await real();
   const isGet = method === "GET" || method === "HEAD";
   const found = R.db.getTrip(id);
@@ -284,6 +287,18 @@ async function tripRequest({ id, reroutePath, method, req, config, fetchImpl, ke
   const row = found && R.tripsOnFor(found.conversation_id) ? found : null;
   const cookie = R.readCookie(headers?.cookie);
   const access = tripAccess(R, id, row, cookie, key);
+
+  // The walk is over on the page (arrived, or END ESCORT): the row, and where the walk started, go now.
+  // Anybody else's id, or one already gone, answers the same 204, so the answer tells nobody anything.
+  if (endPath) {
+    if (method !== "POST") return null;
+    if (row && access.allow) {
+      let why = "ended";
+      try { why = String(JSON.parse((await readSmallBody(req, 256)) || "{}")?.why ?? "ended"); } catch { /* a bare end is an end */ }
+      R.endTrip(row.id, why, { log });
+    }
+    return { status: 204, headers: JSON_HEADERS, body: "" };
+  }
 
   if (reroutePath) {
     if (method !== "POST") return null;

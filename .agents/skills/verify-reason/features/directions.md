@@ -17,7 +17,12 @@ wants to get somewhere on foot and calls the tool with the start (a place they n
 share / recent pin — never guessed: no start, no trip) and the end (an address or place, looked up on
 Nominatim near the start first; a saved place by name; or a Reason event, whose released address, start and
 link come from the event). The walk comes from the foot router; crossings and kerbs under 35 m fold away.
-The row (`trips`: trip JSON + server-only `streets` + OSRM's raw steps) lasts a day past the start. The map's
+The row (`trips`: trip JSON + server-only `streets` + OSRM's raw steps) holds where the walk started, so it
+is deleted the moment the walk ends on the page (arrival or END ESCORT → `POST /d/<id>/end`, owner's browser
+only, every other caller the same empty 204), and otherwise an hour after the arrive-by / event start (no
+time: an hour after the walk would end if they left now; `tripExpiry`). The ledger, the decision log
+(`sealTravelers` → `sealWalk`) and `data:export` (`scrubTrip`: name, address, times, entrance; no route, steps,
+map, streets or key) never carry the start, coordinates or words. The map's
 shapes, the street label, the nearby line and the names of nameless sidewalk steps come from Overpass in the
 background (the tool waits up to 8 s); if Overpass is down, steps are named by Nominatim reverse lookups and
 opening the page retries the map at most every 10 min. Link: `files.heyreason.com/d/<id>?k=<key>` (the files
@@ -26,7 +31,14 @@ anyone else, a link preview included, gets the private pages' code gate (Text me
 303 back to the page, cookie at `/`), which never shows the place or an address, and the bare link and an
 unknown id are the same bytes. A reroute needs the signed-in browser; the position is answered and dropped
 (the row is untouched, the log has no coordinates). Arrival after `startsAt` is "You made it.", more than
-10 min before is "You're early. It starts at <startsLabel>."; the last 50 m names the side from the router.
+10 min before is "You're early. It starts at <startsLabel>." only for an event (`startsLabel` + its link);
+a time they gave is `arriveByLabel` → "You're early." over ARRIVE BY 7 (`earlyCaption`). The last 50 m names
+the side from the router, then the door: after the map, one small Overpass ask about the end alone
+(`walk.js arrivalQuery`: the building the end is in, `entrance=*` nodes on its outline or within 30 m, named
+shops/amenities within 60 m), cached per place a day (a failure retried after 10 min, one ask in flight per
+place) → `entrance` "MAIN ENTRANCE ON PARK AVENUE SOUTH, NEXT TO GRAMERCY PHARMACY" + `look` "Look for the
+main entrance." (`arriveCaption`). Exits, private doors and benches are never used; nothing found or
+Overpass down → "It's on your right" as before, and opening the page asks again.
 
 Source: `src/pages/directions.js` (the page, the sample trip with its embedded map shapes, the reroute,
 `/d/vendor/*` = MapLibre and suncalc served from node_modules, never a CDN), `src/pages/directionsclient.js`
@@ -64,8 +76,12 @@ Section 7 of the drive is a real trip on a throwaway database with `REASON_DIREC
 the gate; bare == ghost bytes; one code texted to the owner, `pcode:` key), signed in, the Ask line says
 NEVER KEPT, a fake-GPS walk along the real route (Just start walking → Yes, this way ✓ → Right, soon → Right
 here, the turn naming EAST 17TH STREET), a wrong turn → one reroute through `/d/<id>/reroute` → "No worries,
-here's a new way.", nothing stored, no position logged, "It's on your right", "You made it." + ARRIVED after
-the start, and the same signed-in browser 40 min early → "You're early. It starts at <start>." + NEARBY.
+here's a new way.", nothing stored, no position logged, "It's on your right. Look for the main entrance."
+over MAIN ENTRANCE ON PARK AVENUE SOUTH, NEXT TO GRAMERCY PHARMACY (the stand-in Overpass answers the door
+question too, with a fire exit that must not be used), "You made it." + ARRIVED after the start and the row
+deleted on the server at once; a second trip in the same signed-in browser 40 min before its arrive-by →
+"You're early." + ARRIVE BY <time> + NEARBY, never "starts"; a third ended part-way with END ESCORT → deleted.
+The event wording ("It starts at 7") is section 3b, on the sample.
 
 **Not proven by this drive:** a real iPhone/Android outdoors at walking pace; the compass; the battery and
 signal-lost moments live (logic-tested; previews shown); real voice output (only the words are recorded)
