@@ -5937,6 +5937,16 @@ export function rememberSeenUrls(conversationId, urls, { kind = "", from = "" } 
   return n;
 }
 
+// The photo chosen for a place card, per place (src/choicecards.js placePhoto): the next set that
+// shows the same place reuses it instead of reading and looking again.
+db.exec("CREATE TABLE IF NOT EXISTS place_photos (key TEXT PRIMARY KEY, url TEXT NOT NULL, shows TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL)");
+export function placePhotoFor(key, since) {
+  return db.prepare("SELECT url, shows, at FROM place_photos WHERE key = ? AND at >= ?").get(key, since) ?? null;
+}
+export function rememberPlacePhoto(key, { url, shows = "", at = clock.now() }) {
+  db.prepare("INSERT INTO place_photos (key, url, shows, at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET url = excluded.url, shows = excluded.shows, at = excluded.at").run(key, url, shows ?? "", at);
+}
+
 /** The image addresses a tool saw on one page (seen_urls.from_url), oldest first. */
 export function seenUrlsFrom(conversationId, fromUrl, limit = 60) {
   if (!fromUrl) return [];
