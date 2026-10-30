@@ -45,6 +45,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
   cc._setPlaceLook(async () => null);   // never a real model in the suite; the look tests set their own
+  cc._setPlaceSearch(null);             // and never the paid picture search, whatever .env holds
   process.env.REASON_CHOICE_CARDS = "on";
   db.db.exec("DELETE FROM choice_sets; DELETE FROM seen_urls; DELETE FROM accounts; DELETE FROM place_photos;");
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
@@ -600,7 +601,7 @@ test("the chosen place photo is kept per place: the next set reuses it with no p
   const places = { kind: "places", options: [{ name: "Blue", url: page }, { name: "Q", image_url: PHOTOS[1] }] };
   const logs = [];
   await cc.runChoiceTool("show_choices", places, ctx({ fetchPhoto, lookup: async () => null, lookPlace, log: (x) => logs.push(x) }));
-  assert.equal(db.placePhotoFor(cc.placeKey({ url: page }), 0).url, room);
+  assert.equal(db.placePhotoFor(cc.placeKey(C, { url: page }), 0).url, room);
   looked.length = 0;
   cc.takeQueued(C);
   await cc.runChoiceTool("show_choices", places, ctx({ fetchPhoto, lookup: async () => { throw new Error("no read"); }, lookPlace, log: (x) => logs.push(x) }));
@@ -608,5 +609,33 @@ test("the chosen place photo is kept per place: the next set reuses it with no p
   assert.ok(logs.some(x => x.choice_place_photo && x.n === 1 && x.cached === true));
   // Older than the keep: looked at again.
   clock.skip(cc.PLACE_PHOTO_TTL_MS + 1);
-  assert.equal(db.placePhotoFor(cc.placeKey({ url: page }), clock.now() - cc.PLACE_PHOTO_TTL_MS), null);
+  assert.equal(db.placePhotoFor(cc.placeKey(C, { url: page }), clock.now() - cc.PLACE_PHOTO_TTL_MS), null);
+});
+
+test("review: no area → no search; a name must match as a word; cache keys are per person and never a bare homepage or an area-less name; an unlooked photo is not kept", async () => {
+  let calls = 0;
+  const client = { imageSearch: async () => { calls++; return { ok: true, results: [{ image_url: "https://i.example/j.jpg", page_url: "https://y.example/joes-pizza-flatiron", title: "Joe's Pizza Flatiron" }, { image_url: "https://i.example/k.jpg", page_url: "https://y.example/x", title: "Joey Flatiron cafe" }] }; } };
+  assert.deepEqual(await cc.interiorSearch(C, { name: "Joe" }, client), []);
+  assert.equal(calls, 0);
+  assert.deepEqual(await cc.interiorSearch(C, { name: "Joey", brand: "Flatiron" }, client), ["https://i.example/k.jpg"]);
+  assert.notEqual(cc.placeKey(C, { url: "https://dir.example/joe" }), cc.placeKey("dm:someone", { url: "https://dir.example/joe" }));
+  assert.equal(cc.placeKey(C, { url: "https://bluebottlecoffee.com/", name: "Blue Bottle" }), null);
+  assert.equal(cc.placeKey(C, { name: "Blue Bottle" }), null);
+  assert.ok(cc.placeKey(C, { url: "https://bluebottlecoffee.com/", name: "Blue Bottle", brand: "Flatiron" }));
+  const page = "https://dir.example/unlooked", pic = "https://dir.example/u.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [pic], { kind: "page", from: page });
+  await cc.runChoiceTool("show_choices", { kind: "places", options: [{ name: "U", url: page }, { name: "Q", image_url: PHOTOS[1] }] }, ctx({ fetchPhoto: photosBy({ [pic]: [1600, 900], [PHOTOS[1]]: [900, 900] }), lookup: async () => null }));
+  assert.equal(db.placePhotoFor(cc.placeKey(C, { url: page }), 0), null);
+});
+
+test("review: a look that failed is not followed by a search (no second wait)", async () => {
+  let calls = 0;
+  const client = { imageSearch: async () => { calls++; return { ok: true, results: [] }; } };
+  const page = "https://dir.example/lf", pic = "https://dir.example/lf.jpg";
+  db.rememberSeenUrls(C, [page], { kind: "page" });
+  db.rememberSeenUrls(C, [pic], { kind: "page", from: page });
+  const r = await cc.rankPlacePhotos(C, { name: "LF", brand: "Flatiron", url: page }, { fetchPhoto: photosBy({ [pic]: [1600, 900] }), lookup: async () => null, look: async () => null, search: client });
+  assert.equal(r.length, 1);
+  assert.equal(calls, 0);
 });

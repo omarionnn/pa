@@ -406,6 +406,8 @@ const VISION_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/web
 export async function rankPlacePhotos(conversationId, o, { fetchImpl, fetchPhoto = fetchImage, lookup = null, look = lookImpl, max = 6, search = undefined } = {}) {
   const fromPage = await rankFrom(conversationId, o, { fetchImpl, fetchPhoto, lookup, look, max });
   if (fromPage.some(x => x.shows === "inside")) return fromPage;
+  // The look failed (pictures but no labels): no search either — it would only add another wait.
+  if (fromPage.length && !fromPage.some(x => x.shows)) return fromPage;
   // No inside shot among the place's own pictures: ask the picture search for "<name> <area> interior".
   const extra = await interiorSearch(conversationId, o, search === undefined ? searchImpl() : search);
   if (!extra.length) return fromPage;
@@ -414,15 +416,22 @@ export async function rankPlacePhotos(conversationId, o, { fetchImpl, fetchPhoto
   return Object.assign([...insides, ...fromPage], { rejected: new Set([...(fromPage.rejected ?? []), ...(found.rejected ?? [])]) });
 }
 
-const searchImpl = () => { try { const p = parallelClient(); return p.status().connected ? p : null; } catch { return null; } };
+let searchOverride;
+/** Tests: no picture search unless a test hands one in (never the network, whatever .env holds). */
+export function _setPlaceSearch(fn) { searchOverride = fn; }
+const searchImpl = () => {
+  if (searchOverride !== undefined) return searchOverride;
+  try { const p = parallelClient(); return p.status().connected ? p : null; } catch { return null; }
+};
 
 /**
  * Picture-search results for the inside of THIS place: only ones whose title or page names the
  * place and, when the card names an area, the area too — a chain's other branch is not this one.
  */
 export async function interiorSearch(conversationId, o, client) {
-  if (!client?.imageSearch) return [];
   const area = String(o.brand ?? "").trim();
+  // Without an area a name is every branch in every city: no search.
+  if (!client?.imageSearch || !area) return [];
   const q = `${o.name} ${area} interior`.replace(/\s+/g, " ").trim();
   const out = await client.imageSearch({ queries: [q], objective: `Photos of the inside of ${o.name}${area ? ` in ${area}` : ""}: the room, seating, counter.`, maxResults: 6 }).catch(() => null);
   if (!out?.ok) return [];
@@ -430,7 +439,8 @@ export async function interiorSearch(conversationId, o, client) {
   const name = words(o.name).replace(/\s*[—–-].*$/, "").trim();
   const keep = out.results.filter(r => {
     const where = words(`${r.title ?? ""} ${r.page_url ?? ""}`).replace(/[-_/]+/g, " ");
-    return name && where.includes(name) && (!area || where.includes(words(area)));
+    const has = (w) => new RegExp(`(^|[^a-z0-9])${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9]|$)`).test(where);
+    return name && has(name) && has(words(area));
   }).map(r => r.image_url).filter(u => /^https:\/\//.test(u));
   // Same rule as everywhere: a picture goes out only if a tool in this conversation returned it.
   for (const r of out.results) db.rememberSeenUrls(conversationId, [r.image_url], { kind: "search", from: r.page_url || "" });
@@ -511,11 +521,19 @@ export function pickPlacePhoto(ranked, taken = new Set()) {
 /** How long a chosen place photo is reused before the place is looked at again. */
 export const PLACE_PHOTO_TTL_MS = 14 * 24 * 3_600_000;
 /** One key per place: its page when there is one, else its name and area. */
-export const placeKey = (o) => createHash("sha256").update(String(o.url || `${o.name}|${o.brand ?? ""}`).trim().toLowerCase()).digest("hex").slice(0, 24);
+export function placeKey(conversationId, o) {
+  let page = "";
+  try { const u = new URL(String(o.url ?? "")); if (u.pathname.replace(/\/+$/, "")) page = u.href; } catch { /* no page */ }
+  const area = String(o.brand ?? "").trim();
+  // A bare homepage is every branch; a name with no area is every city: neither is one place.
+  const id = page || (area ? `${o.name}|${area}` : "");
+  return id ? createHash("sha256").update(`${conversationId}\n${id.toLowerCase()}`).digest("hex").slice(0, 24) : null;
+}
 
 /** The photo this place was shown with before, fetched again — or the full rank when there is none or it is gone. */
 export async function cachedOrRanked(conversationId, o, opts = {}) {
-  const hit = (() => { try { return db.placePhotoFor(placeKey(o), clock.now() - PLACE_PHOTO_TTL_MS); } catch { return null; } })();
+  const key = placeKey(conversationId, o);
+  const hit = key ? (() => { try { return db.placePhotoFor(key, clock.now() - PLACE_PHOTO_TTL_MS); } catch { return null; } })() : null;
   if (hit) {
     const fetchPhoto = opts.fetchPhoto ?? fetchImage;
     const got = await fetchPhoto({ url: hit.url.replace(/&amp;/g, "&"), filename: /\.(jpe?g|png|webp|gif)(\?|$)/i.test(hit.url) ? "" : "photo.jpg", ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}), headers: { "user-agent": "Reason/1.0 (choice cards)" } }).catch(() => null);
@@ -668,7 +686,9 @@ export async function runChoiceTool(name, input, ctx) {
     const room = ranks ? pickPlacePhoto(ranks[i], taken) : null;
     if (room?.ok) {
       log({ choice_place_photo: c, n: i + 1, shows: room.shows ?? "unlooked", cached: !!room.cached });
-      if (!room.cached) try { db.rememberPlacePhoto(placeKey(o), { url: room.url, shows: room.shows ?? "" }); } catch { /* best effort */ }
+      // Only a photo that was looked at is kept: an unlooked pick is never reused for two weeks.
+      const key = placeKey(c, o);
+      if (!room.cached && room.shows && key) try { db.rememberPlacePhoto(key, { url: room.url, shows: room.shows }); } catch { /* best effort */ }
     }
     let got = room?.ok ? room : await photoFor(c, o.image_url, { ...ctx, pageUrl: o.url ?? null }).catch(e => ({ ok: false, why: e?.message ?? String(e) }));
     // The ordinary path keeps the one-photo-per-set rule too (a chain's og:image on two branches).
