@@ -15,11 +15,11 @@ export const shopToolVisible = (name, conversationId) => !SHOP_TOOLS.has(name) |
 export const SHOP_TOOL_DEFS = [
   {
     name: "store_checkout",
-    description: "Buy something at a real store's website through Crossmint's checkout agent. NOTHING IS CHARGED BY THIS TOOL: the checkout stops at payment and I text them Crossmint's exact total to approve. It checks out as a guest wherever the store allows; at a store that needs an account (Target, Walmart, or `sign_in: true` after a guest run was blocked for lack of one) it uses their own signed-in browser profile, and if they have not signed in there yet they get ONE text with a link to sign in on a Reason page (their password goes to Crossmint, never to you). Do not ask them for passwords or codes yourself, ever. Do not send the link yourself; it is sent for you.",
+    description: "Buy something at a real store's website through Crossmint's checkout agent. NOTHING IS CHARGED BY THIS TOOL: the checkout stops at payment and I text them Crossmint's exact total to approve. It checks out as a guest wherever the store allows; Any store's site works. At a store that needs an account (known ones like Target, Amazon or Costco, or one where a guest run was already walled off; a walled-off guest run is restarted signed in for you) it uses their own signed-in browser profile, and if they have not signed in there yet they get ONE text with a link to sign in on a Reason page (their password goes to Crossmint, never to you). Do not ask them for passwords or codes yourself, ever. Do not send the link yourself; it is sent for you.",
     input_schema: {
       type: "object",
       properties: {
-        store: { type: "string", description: "The store's name or site, e.g. Target or bestbuy.com." },
+        store: { type: "string", description: "The store's name or site, any store: e.g. Amazon, sephora.com, Trader Joe's." },
         start_url: { type: "string", description: "Where the checkout starts: the product page, or a search on the store's site." },
         what: { type: "string", description: "What to buy, plainly: the item, size, quantity, pickup or delivery. One or two sentences." },
         item: { type: "string", description: "The item in a few words, as the payment ask will name it: 'a 4-ft USB-C cable'." },
@@ -64,7 +64,10 @@ export function shopPayTarget(input, conversationId = null) {
 export async function runShopTool(name, input, { conversationId: c, confirmationId = null } = {}) {
   if (!shop.connectAllowedFor(c)) return { ok: false, error: "Not available." };
   if (name === "store_checkout") {
-    const store = shop.storeKey(input.store) ?? String(input.store).toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const store = shop.checkoutStoreKey(input.store, input.start_url);
+    if (!store) return { ok: false, error: "Which store? Give its site." };
+    shop.noteStore({ store, name: input.store, url: input.start_url });
+    shop.ensureIcon(store); // for the sign-in page, if it comes to that; never waited on
     const out = await shop.startCheckout({ conversationId: c, store, startUrl: input.start_url, what: input.what, item: input.item, maxUsd: input.max_usd, signIn: !!input.sign_in });
     if (!out.ok) return out;
     shop.follow(out.runId);

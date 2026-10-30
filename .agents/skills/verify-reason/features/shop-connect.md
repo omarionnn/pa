@@ -25,3 +25,12 @@ number or a store password. Never submit anything: Omari adds his own card.
 `CROSSMINT_SERVER_KEY`, `CROSSMINT_CLIENT_KEY` (prod, from ~/.openclaw/secrets/crossmint-prod.env),
 `CROSSMINT_JWT_KEY_FILE` (/etc/reason/crossmint-jwt.pem, reason:reason 600), `CROSSMINT_JWT_KID`, flag.
 The JWKS Crossmint trusts (issuer https://heyreason.com) must hold that kid.
+
+## Any store (2026-10-30)
+Key = the store's site (`storeKey`: amazon.com → amazon, shop.costco.com → costco, argos.co.uk → argos);
+`STORES` are hints (name, site, `signIn: "required"`). Unknown store → guest; a guest run that ends
+`merchant.no_safe_path` at a sign-in wall marks `shop_sites.sign_in = required` and restarts the same
+checkout signed in, once (`shop_run_asks.retried`). Page mark: drawn SVG (Target/Walmart/Best Buy) →
+the store's icon fetched server-side (https only, no private hosts, ≤200KB, image/* only) and kept as a
+data: URL → a serif monogram. Offline: section 6 of test/shopconnect.test.js. Real-network spot check
+(Amazon, Sephora, Costco, Trader Joe's, Etsy) all returned an icon in ≤1.4s.

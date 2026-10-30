@@ -54,25 +54,68 @@ export function connectAllowedFor(conversationId) {
 }
 
 // ---------------------------------------------------------------- stores
-/** What Reason knows about a store. `signIn`: "required" (no guest checkout) or "guest". */
+/**
+ * Any store works. A store's key is its site's name (amazon.com → "amazon", shop.costco.com → "costco").
+ * STORES are hints only: a nice display name, the site, and whether a guest checkout is known not to
+ * exist ("required"). A store not listed checks out as a guest first; if it turns out to need an
+ * account, that is remembered for the store (shop_sites.sign_in) and the person gets the sign-in link.
+ */
 export const STORES = {
   target: { name: "Target", url: "https://www.target.com/", signIn: "required" },
   walmart: { name: "Walmart", url: "https://www.walmart.com/", signIn: "required" },
   bestbuy: { name: "Best Buy", url: "https://www.bestbuy.com/", signIn: "guest" },
+  amazon: { name: "Amazon", url: "https://www.amazon.com/", signIn: "required" },
+  costco: { name: "Costco", url: "https://www.costco.com/", signIn: "required" },
+  cvs: { name: "CVS", url: "https://www.cvs.com/" },
+  walgreens: { name: "Walgreens", url: "https://www.walgreens.com/" },
+  homedepot: { name: "Home Depot", url: "https://www.homedepot.com/" },
+  sephora: { name: "Sephora", url: "https://www.sephora.com/" },
+  ulta: { name: "Ulta", url: "https://www.ulta.com/" },
+  nike: { name: "Nike", url: "https://www.nike.com/" },
+  apple: { name: "Apple", url: "https://www.apple.com/" },
 };
-/** "Target", "target.com", "https://www.bestbuy.com/site/…" → its key; anything else → null (unknown: guest first). */
+const hostOf = (s) => {
+  const t = String(s ?? "").trim().toLowerCase();
+  let host = t;
+  try { if (/^https?:\/\//.test(t)) host = new URL(t).hostname; } catch { return ""; }
+  host = host.replace(/^www\d?\./, "").replace(/\.$/, "");
+  return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host) && /[a-z]/.test(host.split(".").pop()) ? host : "";
+};
+/** amazon.com → amazon, shop.costco.com → costco, argos.co.uk → argos, boots.com.au → boots. */
+export function siteKey(host) {
+  const parts = String(host ?? "").split(".").filter(Boolean);
+  if (parts.length < 2) return "";
+  const two = parts.slice(-2).join(".");
+  const label = parts.length >= 3 && /^(co|com|org|net|ac|gov|ne|or)\.[a-z]{2}$/.test(two) ? parts.at(-3) : parts.at(-2);
+  return label.replace(/[^a-z0-9]/g, "");
+}
+const slug = (s) => String(s ?? "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]/g, "").slice(0, 40);
+/** "Target", "target.com", "https://www.amazon.com/dp/…", "sephora.com" → its key; a bare unknown name → null. */
 export function storeKey(input) {
   const s = String(input ?? "").trim().toLowerCase();
   if (!s) return null;
-  let host = s;
-  try { if (/^https?:\/\//.test(s)) host = new URL(s).hostname; } catch { /* not a url */ }
-  host = host.replace(/^www\./, "");
+  const host = hostOf(s);
   for (const [k, v] of Object.entries(STORES)) {
-    if (host === k || host === new URL(v.url).hostname.replace(/^www\./, "") || s === v.name.toLowerCase()) return k;
+    if (s === k || s === v.name.toLowerCase() || slug(s) === k || (host && host === new URL(v.url).hostname.replace(/^www\./, ""))) return k;
   }
-  return null;
+  if (!host) return null;
+  const key = siteKey(host);
+  // A lookalike (target.co, amazon-deals.net's "amazon") never borrows a known store's name: it is its own store.
+  const real = STORES[key] && new URL(STORES[key].url).hostname.replace(/^www\./, "");
+  if (real && host !== real && !host.endsWith(`.${real}`)) return slug(host) || null;
+  return key || null;
 }
-export const storeName = (key) => STORES[key]?.name ?? String(key ?? "");
+/** The key for a checkout: the store's name if it is known, else the site the checkout starts on, else the name. */
+export function checkoutStoreKey(store, startUrl) {
+  const bySite = storeKey(startUrl), byName = storeKey(store);
+  // The site the checkout runs on is the truth: "Target" on target.co is target.co.
+  return bySite ?? byName ?? (slug(store) || null);
+}
+const titleCase = (k) => String(k ?? "").replace(/^./, (c) => c.toUpperCase());
+export const storeName = (key) => (key ? STORES[key]?.name ?? (siteRow(key)?.name || titleCase(key)) : "");
+/** "required" when this store is known (or was found) to have no guest checkout. */
+export const storeSignIn = (key) => STORES[key]?.signIn ?? (siteRow(key)?.sign_in || "");
+export const storeHost = (key) => (STORES[key] ? new URL(STORES[key].url).hostname : siteRow(key)?.host || "");
 
 // ---------------------------------------------------------------- tables
 db.db.exec(`
@@ -118,6 +161,21 @@ db.db.exec(`
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS shop_sites (
+    store TEXT PRIMARY KEY,
+    host TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    sign_in TEXT NOT NULL DEFAULT '',
+    icon TEXT NOT NULL DEFAULT '',
+    icon_checked_at INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS shop_run_asks (
+    run_id TEXT PRIMARY KEY,
+    start_url TEXT NOT NULL,
+    what TEXT NOT NULL,
+    max_usd REAL NOT NULL,
+    retried INTEGER NOT NULL DEFAULT 0
+  );
   CREATE TABLE IF NOT EXISTS shop_cards (
     conversation_id TEXT PRIMARY KEY,
     payment_method_id TEXT NOT NULL,
@@ -147,6 +205,88 @@ db.db.exec(`
   );
 `);
 const q = (sql) => db.db.prepare(sql);
+function siteRow(key) { return q("SELECT * FROM shop_sites WHERE store = ?").get(key) ?? null; }
+/** What Reason learned about a store it was asked to shop at: its site and the name it was called by. */
+export function noteStore({ store, name = "", url = "" }) {
+  if (!store) return;
+  const host = STORES[store] ? "" : hostOf(url);
+  const nice = STORES[store] || hostOf(name) ? "" : String(name ?? "").trim().slice(0, 60);
+  q(`INSERT INTO shop_sites (store, host, name) VALUES (?, ?, ?)
+     ON CONFLICT (store) DO UPDATE SET host = CASE WHEN excluded.host != '' THEN excluded.host ELSE host END,
+       name = CASE WHEN name = '' THEN excluded.name ELSE name END`).run(store, host, nice);
+}
+
+// ---------------------------------------------------------------- store icons
+// The store's own icon, fetched from its site once and kept as a data: URL, so the page never shows
+// a broken image and never makes the person's browser call the store. Nothing usable → "" (a monogram).
+const ICON_MAX = 200_000;
+const ICON_RETRY_MS = 24 * 3600_000;
+// Never the real network under node --test unless a test hands in its own fake.
+const realFetch = (...a) => (process.env.NODE_TEST_CONTEXT ? Promise.reject(new Error("no network in tests")) : fetch(...a));
+let iconFetch = realFetch;
+export function _setIconFetch(f) { iconFetch = f ?? realFetch; }
+const PRIVATE_HOST = /(^|\.)(localhost|local|internal|lan|home|arpa|ts\.net|test|invalid)$/;
+async function fetchPublic(url, { accept, signal }) {
+  for (let hop = 0; hop < 4; hop++) {
+    let u; try { u = new URL(url); } catch { return null; }
+    if (u.protocol !== "https:" || !hostOf(u.hostname) || PRIVATE_HOST.test(u.hostname)) return null;
+    const res = await iconFetch(u.href, { redirect: "manual", signal, headers: { Accept: accept, "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" } });
+    if (res.status >= 300 && res.status < 400 && res.headers?.get?.("location")) { url = new URL(res.headers.get("location"), u).href; continue; }
+    return res.ok ? res : null;
+  }
+  return null;
+}
+/** The body, read no further than `max` bytes. */
+async function capped(res, max) {
+  if (!res.body?.getReader) return Buffer.from(await res.arrayBuffer()).subarray(0, max);
+  const reader = res.body.getReader(); const parts = []; let n = 0;
+  while (n < max) { const { done, value } = await reader.read(); if (done) break; parts.push(value); n += value.length; }
+  reader.cancel().catch(() => {});
+  return Buffer.concat(parts).subarray(0, max);
+}
+async function iconAt(url, signal) {
+  const res = await fetchPublic(url, { accept: "image/*", signal }).catch(() => null);
+  const type = String(res?.headers?.get?.("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (!res || !/^image\/(png|x-icon|vnd\.microsoft\.icon|svg\+xml|jpeg|webp|gif)$/.test(type)) return "";
+  if (Number(res.headers?.get?.("content-length") ?? 0) > ICON_MAX) return "";
+  const buf = await capped(res, ICON_MAX + 1);
+  return buf.length >= 64 && buf.length <= ICON_MAX ? `data:${type};base64,${buf.toString("base64")}` : "";
+}
+/** The cached icon for a store, or "" (draw a monogram). */
+export const storeIcon = (key) => (key ? siteRow(key)?.icon || "" : "");
+/**
+ * Looks for the store's icon (its page's apple-touch-icon / icon links, then the usual paths) at most
+ * once a day, within `ms`. Never throws.
+ */
+export async function ensureIcon(key, { ms = 4000 } = {}) {
+  try {
+    const host = storeHost(key);
+    if (!host) return "";
+    const row = siteRow(key);
+    if (row?.icon || (row && clock.now() - row.icon_checked_at < ICON_RETRY_MS)) return row?.icon || "";
+    q("INSERT INTO shop_sites (store, host, icon_checked_at) VALUES (?, ?, ?) ON CONFLICT (store) DO UPDATE SET icon_checked_at = excluded.icon_checked_at").run(key, STORES[key] ? "" : host, clock.now());
+    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), ms); timer.unref?.();
+    try {
+      const base = `https://${host}/`;
+      const found = [];
+      const page = await fetchPublic(base, { accept: "text/html", signal: ctl.signal }).catch(() => null);
+      if (page) {
+        const html = (await capped(page, 300_000)).toString("utf8");
+        for (const m of html.matchAll(/<link\b[^>]*>/gi)) {
+          const tag = m[0], rel = /\brel\s*=\s*["']?([^"'>]+)/i.exec(tag)?.[1]?.toLowerCase() ?? "", href = /\bhref\s*=\s*["']?([^"'\s>]+)/i.exec(tag)?.[1];
+          if (!href || !/\bicon\b|apple-touch-icon/.test(rel)) continue;
+          try { found.push({ url: new URL(href.replace(/&amp;/g, "&"), page.url || base).href, rank: /apple-touch/.test(rel) ? 0 : /\.svg/i.test(href) ? 1 : 2 }); } catch { /* bad href */ }
+        }
+      }
+      const tries = [...found.sort((a, b) => a.rank - b.rank).map((f) => f.url), `${base}apple-touch-icon.png`, `${base}favicon.ico`];
+      for (const url of [...new Set(tries)].slice(0, 6)) {
+        const icon = await iconAt(url, ctl.signal);
+        if (icon) { q("UPDATE shop_sites SET icon = ? WHERE store = ?").run(icon, key); return icon; }
+      }
+    } finally { clearTimeout(timer); }
+  } catch { /* a monogram, then */ }
+  return "";
+}
 
 // ---------------------------------------------------------------- identity at Crossmint
 /** The person's Crossmint user: a hash of their conversation. Never their number, never their name. */
@@ -273,7 +413,7 @@ async function eraseProfile(conversationId) {
  */
 export function checkoutPlan(conversationId, store, { signIn = false } = {}) {
   if (store && isConnected(conversationId, store)) return "signed";
-  if (signIn || STORES[store]?.signIn === "required") return "sign_in";
+  if (signIn || storeSignIn(store) === "required") return "sign_in";
   return "guest";
 }
 
@@ -300,6 +440,7 @@ export async function startCheckout({ conversationId, store, startUrl, what, ite
   const now = clock.now();
   q("INSERT INTO shop_runs (run_id, conversation_id, store, item, mode, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'running', ?, ?)")
     .run(runId, conversationId, store ?? "", String(item || "").trim().slice(0, 120), plan, now, now);
+  q("INSERT OR REPLACE INTO shop_run_asks (run_id, start_url, what, max_usd) VALUES (?, ?, ?, ?)").run(runId, String(startUrl ?? ""), String(what ?? ""), Number(maxUsd));
   if (plan === "signed") q("UPDATE shop_stores SET last_used_at = ? WHERE conversation_id = ? AND store = ?").run(now, conversationId, store);
   return { ok: true, runId, plan };
 }
@@ -573,9 +714,30 @@ export async function step(runId) {
     if (status === "succeeded" && (link || run.mode === "sign_in")) finishSignin(run, link);
     else if (link) q("UPDATE shop_links SET state = 'failed' WHERE id = ?").run(link.id);
     q("UPDATE shop_payments SET status = 'expired' WHERE run_id = ? AND status = 'asked'").run(runId);
+    // A guest checkout the store walled off behind an account: remembered for this store, and the same
+    // checkout starts again signed in, which sends them the sign-in link. Once per checkout.
+    const ask = q("SELECT * FROM shop_run_asks WHERE run_id = ?").get(runId);
+    if (run.mode === "guest" && status !== "succeeded" && status !== "cancelled" && ask && !ask.retried && needsAccount(cur.result)) {
+      q("UPDATE shop_run_asks SET retried = 1 WHERE run_id = ?").run(runId);
+      if (run.store && !STORES[run.store]?.signIn) {
+        q("INSERT INTO shop_sites (store, sign_in) VALUES (?, 'required') ON CONFLICT (store) DO UPDATE SET sign_in = 'required'").run(run.store);
+      }
+      const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: true });
+      if (again.ok) follow(again.runId);
+      else await say(`${storeName(run.store) || "The store"} wants an account to check out, and I couldn't start the signed-in checkout. Nothing was charged.`);
+      return { done: true, status, said, retried: again.ok ? again.runId : null };
+    }
     return { done: true, status, said };
   }
   return { done: false, status, said };
+}
+/** Crossmint's result for a checkout the store wouldn't let a guest finish (Target, Walmart: merchant.no_safe_path at "Sign in or create account"). */
+function needsAccount(result) {
+  const code = String(result?.code ?? "").toLowerCase();
+  const text = `${result?.summary ?? ""} ${result?.message ?? ""} ${result?.reason ?? ""}`.toLowerCase();
+  const wall = /sign[\s-]?in|log[\s-]?in|create (an |your )?account|requires? (an )?account|membership/.test(text);
+  if (/(^|[._])(sign_?in|login|account_required|requires_account|auth_required)([._]|$)/.test(code)) return true;
+  return code === "merchant.no_safe_path" && (wall || !text.trim());
 }
 function finishSignin(run, link) {
   if (run.store) markConnected(run.conversation_id, run.store);
