@@ -452,5 +452,9 @@ test("check-create-confirm-correct reaches the model with calendar_create, on bo
   }
   const cliSrc = readFileSync(new URL("../src/backends/claude-cli.js", import.meta.url), "utf8");
   assert.match(cliSrc, /import \{ systemFor \} from "\.\.\/agent\.js"/, "the CLI backend must take the prompt from src/agent.js");
-  assert.match(cliSrc, /system: systemFor\(me\)/, "and must really send it");
+  // The prompt is built from systemFor(me) plus the thread's anchor (systemWithAnchor), and that is
+  // what the CLI really sends: `common.system` is the anchored prompt.
+  assert.match(cliSrc, /const systemBase = systemFor\(me\)/, "the base prompt comes from systemFor");
+  assert.match(cliSrc, /const system = systemWithAnchor\(systemBase, parts\.anchor\)/, "and the anchored prompt is what goes out");
+  assert.match(cliSrc, /const common = \{ system, mcpUrl/, "and must really send it");
 });
