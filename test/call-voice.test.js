@@ -829,11 +829,17 @@ test("a new turn for the same call cancels the one still running, which then say
   const r2 = await drain(second.stream);
   release();
   const r1 = await firstDrain;
+  // The cancelled turn's own last line is written once its tool comes back.
+  for (let i = 0; i < 50 && !seen.some(l => l.voice_turn_superseded === call.id && l.at); i++) await new Promise(resolve => setTimeout(resolve, 10));
 
   assert.match(r2.said, /Still here/);
   assert.deepEqual(r2.finish, ["stop"]);
   assert.ok(seen.some(l => l.voice_turn_replaced === call.id));
+  assert.ok(seen.some(l => l.voice_turn_superseded === call.id && l.reason === "new_from_their_side"));
   assert.ok(seen.some(l => l.voice_turn_superseded === call.id && l.at === "memory_page"));
+  // And the cancelled stream still ended the way every stream ends.
+  assert.deepEqual(r1.finish, ["stop"]);
+  assert.equal(r1.raw.at(-1), SSE_DONE);
   assert.ok(!/Here is what I found/.test(r1.said), "the cancelled turn did not speak into a closed stream");
   assert.ok(!/something broke/.test(r1.said), "and being cancelled is not the model falling over");
   // The server gets a handle for the socket closing, which cancels the same way.

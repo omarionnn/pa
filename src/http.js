@@ -526,8 +526,9 @@ export function createServer({ router, runtime, log = () => {} }) {
           return res.end(out.body);
         }
         // The platform closing the socket — it gave up waiting, the person spoke over this turn, or
-        // the call ended — cancels the turn behind it, so its tools and model rounds stop too rather
-        // than running on for a stream nobody is reading.
+        // the call ended — lets go of the turn behind it. A retry of the same turn joins it within a
+        // few seconds; otherwise it is cancelled, so its tools and model rounds stop too rather than
+        // running on for a stream nobody is reading (`ATTACH_GRACE_MS` in calls/voice.js).
         res.on("close", () => out.abort?.());
         // The platform gives the custom LLM a fixed number of seconds to start talking and closes
         // the socket when it runs out — and a `break` below ends the turn's generator at its

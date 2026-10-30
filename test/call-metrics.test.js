@@ -122,15 +122,17 @@ test("a turn that needed the holding line is marked, with real words timed separ
 test("a turn the platform stops reading is marked closed early", async () => {
   const call = ownerCall();
   const out = await voice.llmRequest({
-    rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 5_000,
+    rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 5_000, attachGraceMs: 0,
     screen: async () => ({ verdict: "safe" }),
     generate: after_(20, "One. ", "Two. ", "Three."),
   });
-  // What http.js does when the socket goes: stop reading and close the turn.
+  // What http.js does when the socket goes: stop reading and let go of the turn. Nobody re-asks
+  // inside the grace window (none, here), so the turn is cancelled and its row written.
   const it = out.stream[Symbol.asyncIterator]();
   await it.next();
   out.abort();
   await it.return();
+  for (let i = 0; i < 50 && !turnsOf(call.id).length; i++) await new Promise(resolve => setTimeout(resolve, 10));
   const [r] = turnsOf(call.id);
   assert.equal(r.closed_early, 1);
   assert.ok(Number.isFinite(r.total_ms));
@@ -257,24 +259,27 @@ test("the report prints per-call and total numbers from the database, and no wor
 
 // ---------- review fixes ----------
 
-test("a retried turn (same call, same messages) replaces its row instead of adding one", async () => {
+test("a turn restarted for new words at the same message count replaces its row instead of adding one", async () => {
   const call = ownerCall();
   const first = await voice.llmRequest({
-    rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 5_000,
+    rawBody: bodyFor(call, [{ role: "user", content: "hey" }]), headers: AUTH, firstWordDeadlineMs: 5_000,
     screen: async () => ({ verdict: "safe" }),
     generate: after_(400, "Too late."),
   });
   const it = first.stream[Symbol.asyncIterator]();
   const reading = (async () => { for (let s = await it.next(); !s.done; s = await it.next()) { /* until it is replaced */ } })();
   await new Promise(resolve => setTimeout(resolve, 20));
-  // The platform gave up on it and asks the same turn again: the earlier one is aborted.
+  // The platform's transcript of what they said grew ("hey" became "hey there"): new words from
+  // their side, so the earlier turn is cancelled and this one runs, at the same message count.
   const retry = await voice.llmRequest({
-    rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 5_000,
+    rawBody: bodyFor(call, [{ role: "user", content: "hey there" }]), headers: AUTH, firstWordDeadlineMs: 5_000,
     screen: async () => ({ verdict: "safe" }),
     generate: after_(30, "Here."),
   });
   await drain(retry.stream);
   await reading;
+  // The cancelled turn writes its row once its model request comes back.
+  for (let i = 0; i < 100 && turnsOf(call.id)[0]?.attempts !== 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
   const rows = turnsOf(call.id);
   assert.equal(rows.length, 1, "one turn, not two");
   assert.equal(rows[0].attempts, 2);
