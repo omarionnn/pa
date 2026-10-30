@@ -17,10 +17,33 @@ import { fromPx, haversine } from "./directionsclient.js";
 const CSS = readFileSync(new URL("./directions.css", import.meta.url), "utf8");
 const SCRIPT = readFileSync(new URL("./directionsclient.js", import.meta.url), "utf8");
 
+// The two libraries the page loads from this server (never a CDN): MapLibre draws the map from the trip's own
+// shapes (no tiles, no key), suncalc gives sunset at the person's position. Read on first ask, then kept.
+const VENDOR = {
+  "maplibre-gl.mjs": ["maplibre-gl/dist/maplibre-gl.mjs", "text/javascript; charset=utf-8"],
+  "maplibre-gl-worker.mjs": ["maplibre-gl/dist/maplibre-gl-worker.mjs", "text/javascript; charset=utf-8"],
+  "maplibre-gl.css": ["maplibre-gl/dist/maplibre-gl.css", "text/css; charset=utf-8"],
+  "suncalc.js": ["suncalc/index.js", "text/javascript; charset=utf-8"],
+};
+const vendorCache = new Map();
+function vendorFile(name) {
+  const entry = Object.hasOwn(VENDOR, name) ? VENDOR[name] : null;
+  if (!entry) return null;
+  if (!vendorCache.has(name)) {
+    try {
+      vendorCache.set(name, readFileSync(new URL(`../../node_modules/${entry[0]}`, import.meta.url)));
+    } catch {
+      return null;
+    }
+  }
+  const body = vendorCache.get(name);
+  return { status: 200, headers: { "Content-Type": entry[1], "Content-Length": body.length, "Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff" }, body };
+}
+
 const HTML_HEADERS = {
   "Content-Type": "text/html; charset=utf-8",
   "Cache-Control": "no-store",
-  "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
   "X-Robots-Tag": "noindex, nofollow",
@@ -38,11 +61,38 @@ const SAMPLE_STEPS = [
   { n: "05", instr: "The Garden Room, on your right", turn: "right", street: "THE GARDEN ROOM", fact: "THE GREEN GATE", mark: "Green gate, next to the tailor’s shop.", d: "60 m", px: { x: 170, y: 72 } },
 ];
 
+// The streets around the sample walk, drawn under the route (the prototype's map, in its own pixels).
+const SAMPLE_MINOR_PX = [
+  [[-300, 180], [700, 180]], [[-300, 100], [700, 100]], [[60, -300], [60, 700]], [[230, 180], [230, 700]],
+  [[150, -300], [150, 700]], [[30, 135], [270, 135]], [[400, -300], [400, 700]], ring(150, 135, 14),
+];
+const SAMPLE_MAJOR_PX = [[[320, -300], [320, 700]], [[-300, 260], [700, 260]]];
+const SAMPLE_PARKS_PX = [rect(252, 28, 132, 82), rect(166, 192, 52, 54), ring(150, 135, 8)];
+const SAMPLE_WATER_PX = [[[-300, 330], ...bezier([-300, 330], [-40, 318], [50, 350], [112, 420]), [112, 700], [-300, 700], [-300, 330]]];
+
+function ring(cx, cy, r, n = 24) {
+  return Array.from({ length: n + 1 }, (_, i) => [cx + r * Math.cos((i / n) * 2 * Math.PI), cy + r * Math.sin((i / n) * 2 * Math.PI)]);
+}
+function rect(x, y, w, h) {
+  return [[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y]];
+}
+function bezier(a, b, c, d, n = 12) {
+  return Array.from({ length: n }, (_, k) => {
+    const t = (k + 1) / n, u = 1 - t;
+    return [0, 1].map((i) => u * u * u * a[i] + 3 * u * u * t * b[i] + 3 * u * t * t * c[i] + t * t * t * d[i]);
+  });
+}
+
 /** The sample trip, shaped as the page reads it. Every field is what Reason would fill in for a real trip. */
-export function sampleTrip() {
+export function sampleTrip(now = new Date()) {
   const destination = SAMPLE_DEST;
   const route = SAMPLE_ROUTE_PX.map((p) => roundLatLng(fromPx(p, destination)));
   const steps = SAMPLE_STEPS.map(({ px, ...s }) => ({ ...s, ...roundLatLng(fromPx(px, destination)) }));
+  // GeoJSON order ([lng, lat]) for the map's shapes: MapLibre draws them as given.
+  const ll = (line) => line.map(([x, y]) => { const p = roundLatLng(fromPx({ x, y }, destination)); return [p.lng, p.lat]; });
+  const at = (x, y) => roundLatLng(fromPx({ x, y }, destination));
+  // The sample event starts at 7 PM in Accra (UTC, no daylight saving) on the day the page is opened.
+  const startsAt = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 19, 0, 0);
   return {
     id: "sample",
     demo: true,
@@ -57,10 +107,21 @@ export function sampleTrip() {
     entrance: "GREEN GATE, NEXT TO THE TAILOR’S",
     nearby: "CAFÉ ACROSS THE ROAD, 1 MIN · BENCH IN THE PARK, 3 MIN",
     startsLabel: "7",
+    startsAt,
     links: { event: { label: "See the event →", url: "https://events.heyreason.com/" } },
     destination: roundLatLng(destination),
     route,
     steps,
+    // The map, embedded: no tiles and no map key. Streets, parks and water near the walk, plus the few
+    // labels the design keeps (the street and the place). Reason fills these from map data when it makes a trip.
+    map: {
+      major: SAMPLE_MAJOR_PX.map(ll),
+      minor: SAMPLE_MINOR_PX.map(ll),
+      parks: SAMPLE_PARKS_PX.map(ll),
+      water: SAMPLE_WATER_PX.map(ll),
+      pois: [at(179, 243)],
+      labels: [{ text: "OXFORD ST", ...at(250, 252) }],
+    },
   };
 }
 
@@ -83,6 +144,7 @@ export function directionsPage(trip) {
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#f2ebe0">
 <title>Directions to ${esc(trip.name)} · Reason</title>
+<link rel="stylesheet" href="/d/vendor/maplibre-gl.css">
 <style>
 ${CSS}
 </style>
@@ -100,7 +162,7 @@ ${CSS}
 const MANEUVER_WORD = { left: "Turn left", right: "Turn right", "slight left": "Bear left", "slight right": "Bear right", "sharp left": "Turn sharply left", "sharp right": "Turn sharply right", straight: "Keep straight", uturn: "Turn around" };
 
 /** Turns one OSRM step into the page's step. A step with no street is described by what it does, never a blank. */
-function stepFromOsrm(s, i) {
+function stepFromOsrm(s, i, placeName) {
   const m = s.maneuver || {};
   const name = (s.name || "").trim();
   const isRound = /roundabout/.test(m.type || "");
@@ -108,7 +170,7 @@ function stepFromOsrm(s, i) {
   const turn = isRound ? "roundabout" : /left/.test(m.modifier || "") ? "left" : /right/.test(m.modifier || "") ? "right" : "straight";
   const isStart = m.type === "depart";
   const verb = isArrive ? "You’ve arrived" : isStart ? "Start walking" : isRound ? "Roundabout: take the exit" : MANEUVER_WORD[m.modifier] || "Keep going";
-  const instr = isArrive ? "The Garden Room, on your right" : name ? `${verb} on ${name}` : isStart ? "Start walking" : `${verb}, along the way ahead`;
+  const instr = isArrive ? placeName : name ? `${verb} on ${name}` : isStart ? "Start walking" : `${verb}, along the way ahead`;
   const dist = Math.round(s.distance || 0);
   const [lng, lat] = m.location || [0, 0];
   return {
@@ -139,7 +201,7 @@ export async function reroute(trip, from, { routingUrl, fetchImpl = fetch, log =
     const r = data && data.routes && data.routes[0];
     if (!r || !r.geometry || r.geometry.coordinates.length < 2) throw new Error("no route");
     const route = r.geometry.coordinates.map(([lng, lat]) => ({ lat, lng }));
-    const steps = (r.legs || []).flatMap((leg) => leg.steps || []).filter((s) => s.maneuver).map(stepFromOsrm);
+    const steps = (r.legs || []).flatMap((leg) => leg.steps || []).filter((s) => s.maneuver).map((s, i) => stepFromOsrm(s, i, trip.name));
     if (!steps.length) throw new Error("no steps");
     log({ directions: "reroute", ok: true, steps: steps.length, metres: Math.round(haversine(from, trip.destination)) });
     return { status: 200, body: { route, steps, destination: trip.destination } };
@@ -171,6 +233,8 @@ export async function directionsRequest({ method, pathname, req, config, fetchIm
   if (isGet && pathname === "/d/app.js") {
     return { status: 200, headers: { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" }, body: SCRIPT };
   }
+  const vendor = /^\/d\/vendor\/([a-z.-]+)$/.exec(pathname);
+  if (isGet && vendor) return vendorFile(vendor[1]);
   const font = /^\/d\/fonts\/([a-z]+)\.woff2$/.exec(pathname);
   if (isGet && font) {
     const out = webFont(font[1]);

@@ -187,6 +187,13 @@
 .m-focus { fill: none; stroke: var(--route); stroke-width: 1.6; stroke-dasharray: 3 3; }
 .m-dot { fill: var(--dot); stroke: var(--dot-ring); stroke-width: 3.5; }
 .m-cone { fill: var(--dot); opacity: 0.16; }
+/* MapLibre's markers (src/pages/directionsclient.js makeMap): the prototype's map marks, scaled with the zoom
+   (--mk is screen pixels per design pixel) so they sit on the streets as the SVG stand-in drew them. */
+.mapbox .maplibregl-canvas { outline: none; }
+.m-mark { pointer-events: none; line-height: 0; }
+.m-sc svg { transform: scale(var(--mk, 1)); transform-origin: center; }
+.m-ring svg { transition: opacity .4s; }
+.m-lbl-h { font-family: var(--mono); font-size: 9px; letter-spacing: 0.12em; line-height: 1; color: var(--map-label); white-space: nowrap; transition: color 3s ease; }
 .m-halo { fill: var(--route); opacity: 0.1; transform-box: fill-box; transform-origin: center; animation: halo 2.4s ease-in-out infinite; }
 .m-halo2 { fill: none; stroke: var(--route); stroke-width: 1.2; stroke-dasharray: 3 5; opacity: 0.5; }
 @keyframes halo { 0%, 100% { transform: scale(0.85); opacity: 0.06; } 50% { transform: scale(1.05); opacity: 0.14; } }

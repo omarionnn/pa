@@ -21,7 +21,9 @@ export const STEP_NEAR_M = 20;           // a maneuver is passed within this man
 export const SOON_M = 100;               // the bend starts to show this far out
 export const SAY_M = 30;                 // spoken about this far out
 export const ARRIVE_M = 50;              // the gate shows inside this
-export const ARRIVED_M = 15;             // arrival is confirmed inside this, on 3 readings
+export const ARRIVED_M = 15;             // arrival is confirmed inside this, on 3 readings...
+export const ARRIVE_HOLD_MS = 3000;      // ...or on one, held this long
+export const SHARP_M = 20;               // a reading this accurate counts for arrival on its own
 export const WAIT_MS = 45000;            // no movement this long = waiting
 export const LOST_FIX_MS = 15000;        // no good reading this long = finding you
 export const LEG_M = 8;                  // direction is judged on legs of this length
@@ -126,38 +128,80 @@ export function lineForDistance(d) {
   return { state: t >= 1 ? 'here' : 'soon', stem: 'scaleY(' + ((400 - corner) / 370).toFixed(3) + ')', bendY: Math.round(corner - 150) };
 }
 
-// ---------- sunrise and sunset (NOAA's general solar position, as suncalc does it) ----------
-const DAY_MS = 86400000;
-const J1970 = 2440588;
-const J2000 = 2451545;
-const J0 = 0.0009;
-
-/** Sunrise, sunset and solar noon for the day of `date` at lat/lng. Polar days give NaN times. */
-export function sunTimes(lat, lng, date) {
-  const e = RAD * 23.4397;
-  const d = date.valueOf() / DAY_MS - 0.5 + J1970 - J2000;
-  const lw = -lng * RAD;
-  const phi = lat * RAD;
-  const n = Math.round(d - J0 - lw / (2 * Math.PI));
-  const ds = J0 + lw / (2 * Math.PI) + n;
-  const M = RAD * (357.5291 + 0.98560028 * ds);
-  const C = RAD * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M));
-  const L = M + C + RAD * 102.9372 + Math.PI;
-  const dec = Math.asin(Math.sin(L) * Math.sin(e));
-  const transit = (x) => J2000 + x + 0.0053 * Math.sin(M) - 0.0069 * Math.sin(2 * L);
-  const Jnoon = transit(ds);
-  const h0 = RAD * -0.833;
-  const w = Math.acos((Math.sin(h0) - Math.sin(phi) * Math.sin(dec)) / (Math.cos(phi) * Math.cos(dec)));
-  const Jset = transit(J0 + (w + lw) / (2 * Math.PI) + n);
-  const Jrise = Jnoon - (Jset - Jnoon);
-  const fromJ = (j) => new Date((j + 0.5 - J1970) * DAY_MS);
-  return { sunrise: fromJ(Jrise), sunset: fromJ(Jset), solarNoon: fromJ(Jnoon) };
+// ---------- sunrise and sunset (suncalc, served by Reason as /d/vendor/suncalc.js) ----------
+/**
+ * True before sunrise and after sunset at the place. Escort goes Night then, unless the person chose.
+ * getTimes is suncalc's getTimes(date, lat, lng); with no getTimes, or a polar day it cannot answer, null.
+ */
+export function isNightAt(lat, lng, date, getTimes) {
+  if (typeof getTimes !== 'function') return null;
+  const t = getTimes(date, lat, lng);
+  const ok = t && t.sunrise instanceof Date && t.sunset instanceof Date && !isNaN(t.sunrise) && !isNaN(t.sunset);
+  if (!ok) return null;
+  return date < t.sunrise || date > t.sunset;
 }
 
-/** True before sunrise and after sunset at the place. Escort goes Night then, unless the person chose. */
-export function isNightAt(lat, lng, date) {
-  const t = sunTimes(lat, lng, date);
-  return date < t.sunrise || date > t.sunset;
+// ---------- the map's look (MapLibre, a style built from the tokens; no tiles, no key) ----------
+/** Each theme's map colours. The CSS variables of the same names in directions.css must agree (a test holds them). */
+export const MAP_THEMES = Object.freeze({
+  paper: Object.freeze({ land: '#ede5d8', road: '#faf6ee', casing: '#d4c9b5', label: '#78705f', water: '#d4d1c9', park: '#ddd5c7', route: '#9c3b2e', text: '#2a2520', paper: '#faf6ee' }),
+  night: Object.freeze({ land: '#151210', road: '#27211b', casing: '#3e362c', label: '#a89d88', water: '#202022', park: '#1f1c18', route: '#d46a5c', text: '#efe6d6', paper: '#27211b' }),
+});
+
+/** One map pixel of the design is this many metres: widths in the design's map are kept in metres, so they scale with zoom. */
+const DESIGN_M = PX_M;
+/** A line width for `metres` on the ground at latitude `lat`, as a MapLibre zoom expression. */
+export function metresWide(metres, lat) {
+  const mpp = (z) => (40075016.686 * Math.cos(lat * RAD)) / (512 * Math.pow(2, z));
+  return ['interpolate', ['exponential', 2], ['zoom'], 10, metres / mpp(10), 22, metres / mpp(22)];
+}
+
+/** Which colour each layer's paint takes, by theme key. The style and the theme switch both read this. */
+export const MAP_PAINT = Object.freeze([
+  ['land', 'background-color', 'land'],
+  ['water', 'fill-color', 'water'],
+  ['parks', 'fill-color', 'park'],
+  ['minor-case', 'line-color', 'casing'],
+  ['major-case', 'line-color', 'casing'],
+  ['minor', 'line-color', 'road'],
+  ['major', 'line-color', 'road'],
+  ['old', 'line-color', 'label'],
+  ['done', 'line-color', 'label'],
+  ['route', 'line-color', 'route'],
+]);
+
+/**
+ * The style for a theme. `shapes` is the trip's map ({ major, minor, parks, water } in [lng, lat]) and the
+ * route line; the sources hold them from the start, so the map needs nothing from the network.
+ */
+export function mapStyle(theme, lat, shapes) {
+  const t = MAP_THEMES[theme] || MAP_THEMES.paper;
+  const lines = (arr) => ({ type: 'geojson', data: { type: 'FeatureCollection', features: (arr || []).map((c) => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: c } })) } });
+  const polys = (arr) => ({ type: 'geojson', data: { type: 'FeatureCollection', features: (arr || []).map((c) => ({ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [c] } })) } });
+  const round = { 'line-cap': 'round', 'line-join': 'round' };
+  const w = (designPx) => metresWide(designPx * DESIGN_M, lat);
+  const layers = [
+    { id: 'land', type: 'background', paint: {} },
+    { id: 'water', type: 'fill', source: 'water', paint: {} },
+    { id: 'parks', type: 'fill', source: 'parks', paint: {} },
+    { id: 'minor-case', type: 'line', source: 'minor', layout: round, paint: { 'line-width': w(9) } },
+    { id: 'major-case', type: 'line', source: 'major', layout: round, paint: { 'line-width': w(15) } },
+    { id: 'minor', type: 'line', source: 'minor', layout: round, paint: { 'line-width': w(6.5) } },
+    { id: 'major', type: 'line', source: 'major', layout: round, paint: { 'line-width': w(12) } },
+    { id: 'old', type: 'line', source: 'old', layout: round, paint: { 'line-width': w(3), 'line-dasharray': [0.7, 2.3], 'line-opacity': 0.7 } },
+    { id: 'route', type: 'line', source: 'route', layout: round, paint: { 'line-width': w(3.6) } },
+    { id: 'done', type: 'line', source: 'done', layout: round, paint: { 'line-width': w(2.6), 'line-opacity': 0.45 } },
+  ];
+  for (const [id, prop, key] of MAP_PAINT) layers.find((l) => l.id === id).paint[prop] = t[key];
+  return {
+    version: 8,
+    name: 'reason-directions-' + theme,
+    sources: {
+      water: polys(shapes.water), parks: polys(shapes.parks), minor: lines(shapes.minor), major: lines(shapes.major),
+      route: lines([shapes.route]), done: lines([]), old: lines([]),
+    },
+    layers,
+  };
 }
 
 // ---------- turns and words ----------
@@ -195,6 +239,7 @@ export function createEscort(trip, line) {
     buf: [],
     pos: null,
     lastRead: null,
+    lastRaw: null,
     lastGood: 0,
     start: null,
     path: 0,
@@ -216,6 +261,7 @@ export function createEscort(trip, line) {
     reassureUntil: 0,
     reassuredAt: -Infinity,
     arrivedCount: 0,
+    insideSince: 0,
     arrived: false,
     ended: false,
     spoken: {},
@@ -235,7 +281,8 @@ export function createEscort(trip, line) {
     let reroute = false, buzz = false, speak = null;
     if (r && typeof r.acc === 'number' && r.acc <= ACC_MAX && isFinite(r.lat) && isFinite(r.lng)) {
       const p = { lat: r.lat, lng: r.lng };
-      const jump = m.lastRead && now - m.lastRead.t < 4000 && haversine(m.lastRead.p, p) > JUMP_M;
+      // A jump is judged reading to reading: the smoothed dot trails a walk, so it is never the yardstick.
+      const jump = m.lastRaw && now - m.lastRaw.t < 4000 && haversine(m.lastRaw.p, p) > JUMP_M;
       if (!jump) {
         m.buf.push(p);
         if (m.buf.length > 3) m.buf.shift();
@@ -247,6 +294,7 @@ export function createEscort(trip, line) {
         if (!m.start) { m.start = s; m.anchor = s; m.anchorT = now; }
         if (m.lastRead) m.path += haversine(m.lastRead.p, s);
         m.lastRead = { p: s, t: now };
+        m.lastRaw = { p, t: now };
         m.lastGood = now;
         m.pos = s;
         m.pr = project(s, m.line);
@@ -267,8 +315,10 @@ export function createEscort(trip, line) {
           m.anchorT = now;
         }
 
-        // Off the route: three good readings in a row, then one reroute request.
-        m.offCount = m.pr.off > OFF_M ? m.offCount + 1 : 0;
+        // Off the route: three good readings in a row, then one reroute request. Counted on each reading as it
+        // came (the smoothed dot trails a real walk off the line by a few readings), and only when the reading's
+        // whole accuracy circle is past the band, so a noisy fix at the edge is not taken for a wrong turn.
+        m.offCount = project(p, m.line).off - r.acc > OFF_M ? m.offCount + 1 : 0;
         if (m.offCount >= OFF_COUNT && !m.rerouting && now - m.lastReroute > REROUTE_GAP_MS) {
           m.rerouting = true;
           m.lastReroute = now;
@@ -290,8 +340,13 @@ export function createEscort(trip, line) {
           }
         }
 
-        // Arrival: three readings inside ARRIVED_M.
-        m.arrivedCount = m.dd <= ARRIVED_M ? m.arrivedCount + 1 : 0;
+        // Arrival: three readings inside ARRIVED_M, or one that stays there ARRIVE_HOLD_MS (a phone standing still
+        // at the gate often sends nothing new: the view below finishes it on the clock).
+        // Inside the gate: the smoothed dot, or this reading itself when it is sharp (the dot lags a walk that
+        // has just stopped, and a phone standing still may send nothing more to pull it in).
+        const inside = m.dd <= ARRIVED_M || (r.acc <= SHARP_M && haversine(p, m.dest) <= ARRIVED_M);
+        m.arrivedCount = inside ? m.arrivedCount + 1 : 0;
+        m.insideSince = inside ? (m.insideSince || now) : 0;
         if (m.arrivedCount >= 3) m.arrived = true;
       }
     }
@@ -314,7 +369,7 @@ export function createEscort(trip, line) {
       remainingM: pr ? Math.max(0, m.line.total - pr.along) : null,
       minsLeft: null,
       dd: m.dd,
-      userPx: m.pos ? toPx(m.pos, m.dest) : null,
+      user: m.pos,
       heading: m.heading ?? m.compass,
       status: 'ESCORTING',
       reroute: false,
@@ -322,6 +377,7 @@ export function createEscort(trip, line) {
       speak: null,
     };
     if (base.remainingM !== null) base.minsLeft = Math.max(1, Math.ceil(base.remainingM / WALK_MPS / 60));
+    if (!m.arrived && m.insideSince && hasFix && now - m.insideSince >= ARRIVE_HOLD_MS) m.arrived = true;
 
     if (m.arrived) {
       const early = typeof trip.startsAt === 'number' && now < trip.startsAt - 10 * 60000;
@@ -383,7 +439,7 @@ export function createEscort(trip, line) {
     notifyBattery(now) { m.batteryUntil = now + 8000; },
     welcomeBack(now) { m.welcomeUntil = now + 6000; },
     /** Switching back from Route: the direction is unknown again, the step is kept. */
-    resumeFromRoute() { m.dir = 'unknown'; m.anchor = null; m.start = null; m.buf = []; m.path = 0; m.pos = null; m.lastRead = null; m.lastGood = 0; },
+    resumeFromRoute() { m.dir = 'unknown'; m.anchor = null; m.start = null; m.buf = []; m.path = 0; m.pos = null; m.lastRead = null; m.lastRaw = null; m.lastGood = 0; },
   };
 }
 
@@ -397,17 +453,10 @@ function boot() {
   const app = $('app');
   const T = JSON.parse($('trip').textContent);
   const DEST = T.destination;
-  let LINE = null, ROUTE_PX = [], STEP_PX = [], START_PX = null, ROUTE_BOX = null;
-  /** The route on screen: the line, and its map pixels. Called again after every reroute. */
+  let LINE = null;
+  /** The route on screen. Called again after every reroute. */
   function setRoute(line) {
     LINE = line;
-    ROUTE_PX = routePx(line, DEST);
-    STEP_PX = T.steps.map((s) => toPx(s, DEST));
-    START_PX = ROUTE_PX[0];
-    const pts = ROUTE_PX.concat([DEST_PX]);
-    const x0 = Math.min(...pts.map((p) => p.x)), x1 = Math.max(...pts.map((p) => p.x));
-    const y0 = Math.min(...pts.map((p) => p.y)), y1 = Math.max(...pts.map((p) => p.y));
-    ROUTE_BOX = { w: x1 - x0, h: y1 - y0, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 };
   }
   setRoute(lineOf(T.route));
   const ENG = createEscort(T, LINE);
@@ -431,24 +480,26 @@ function boot() {
   const h = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* private mode: keep it for this page */ } };
-  const cam = (cx, cy, s, rot, px, py) =>
-    'translate(' + cx + 'px,' + cy + 'px) rotate(' + rot + 'deg) scale(' + s + ') translate(' + (-px) + 'px,' + (-py) + 'px)';
   const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
-  const pxPath = (pts) => pts.map((p, i) => (i ? 'L' : 'M') + p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' ');
 
   // ----- theme: Route follows the person or the system; Escort goes Night after sunset -----
   function userPick() {
     const q = new URLSearchParams(location.search).get('theme');
     if (q === 'night' || q === 'paper') return q;
-    const s = lsGet('reason.dir.theme');
-    return s === 'night' || s === 'paper' ? s : null;
+    // The one theme choice every Reason page on this host shares ('light' or 'dark'; none = follow along).
+    const s = lsGet('reason-theme');
+    return s === 'dark' ? 'night' : s === 'light' ? 'paper' : null;
   }
+  // suncalc, for sunset where the person is. Until it loads (or if it cannot), Escort follows the phone's setting.
+  let SUN = null;
+  import('/d/vendor/suncalc.js').then((m) => { SUN = m.getTimes; if (location.hash.startsWith('#escort')) applyTheme('escort'); }, () => {});
   function wantedTheme(kind) {
     const pick = userPick();
     if (pick) return pick;
     if (kind === 'escort') {
       const at = lastFix || DEST;
-      return isNightAt(at.lat, at.lng, new Date()) ? 'night' : 'paper';
+      const night = isNightAt(at.lat, at.lng, new Date(), SUN);
+      if (night !== null) return night ? 'night' : 'paper';
     }
     return window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'night' : 'paper';
   }
@@ -456,71 +507,121 @@ function boot() {
     const t = wantedTheme(kind);
     document.documentElement.className = t;
     app.className = 'screen ' + t;
+    for (const m of [routeMap, moreMap]) if (m && m.map) paintMap(m, t);
     return t;
   }
 
-  // ----- the map: the SVG stand-in, camera glides between views -----
-  const MAP_BASE =
-    '<rect class="m-land" x="-300" y="-300" width="1000" height="1000"/>' +
-    '<path class="m-water" d="M-300,330 C-40,318 50,350 112,420 L112,700 L-300,700 Z"/>' +
-    '<rect class="m-park" x="252" y="28" width="132" height="82" rx="6"/>' +
-    '<rect class="m-park" x="166" y="192" width="52" height="54" rx="5"/>' +
-    '<path class="m-case min" d="M-300,180 H700 M-300,100 H700 M60,-300 V700 M230,180 V700 M150,-300 V700 M30,135 H270 M400,-300 V700"/>' +
-    '<path class="m-case maj" d="M320,-300 V700 M-300,260 H700"/>' +
-    '<circle class="m-case min" cx="150" cy="135" r="14"/>' +
-    '<path class="m-road min" d="M-300,180 H700 M-300,100 H700 M60,-300 V700 M230,180 V700 M150,-300 V700 M30,135 H270 M400,-300 V700"/>' +
-    '<path class="m-road maj" d="M320,-300 V700 M-300,260 H700"/>' +
-    '<circle class="m-road min" cx="150" cy="135" r="14"/>' +
-    '<circle class="m-park" cx="150" cy="135" r="8"/>' +
-    '<rect class="m-poi" x="172" y="236" width="14" height="14" rx="2"/>' +
-    '<path class="m-poi-mark" d="M179,239.5 V246.5 M175.5,243 H182.5"/>';
-
-  /** The camera and the drawn parts for a map view: 'overview', 'sN' (a step), 'lane' (you, heading up). */
-  function mapView(view, hgt, ctx) {
-    const cy = Math.round(hgt * 0.6);
-    const fitS = Math.min(360 / (ROUTE_BOX.w + 40), (hgt - 40) / (ROUTE_BOX.h + 37)).toFixed(3);
-    const v = { t: '', routeD: pxPath(ROUTE_PX), doneD: 'M0,0', oldD: 'M0,0', dot: false, labels: false, focus: false, fx: 0, fy: 0, cy };
-    if (view === 'overview') {
-      v.t = cam(195, Math.round(hgt / 2), fitS, 0, ROUTE_BOX.cx, ROUTE_BOX.cy);
-      v.labels = true;
-    } else if (/^s\d+$/.test(view) && STEP_PX[+view.slice(1) - 1]) {
-      const n = +view.slice(1) - 1;
-      const a = STEP_PX[n];
-      v.t = cam(195, Math.round(hgt / 2), n === STEP_PX.length - 1 ? 3 : 2.4, 0, a.x, a.y);
-      v.labels = true; v.focus = true; v.fx = a.x; v.fy = a.y;
-    } else if (view === 'lane') {
-      const u = (ctx && ctx.userPx) || START_PX;
-      const rot = ctx && typeof ctx.heading === 'number' ? -ctx.heading : 0;
-      v.t = cam(195, cy, 2.2, rot, u.x, u.y);
-      const done = ctx && ctx.donePx ? ctx.donePx : [START_PX, u];
-      v.doneD = pxPath(done);
-      v.dot = true;
+  // ----- the map: MapLibre, drawn only from the trip (no tiles, no key), loaded when a map is first shown -----
+  let MAPLIB = null;
+  function loadMapLib() {
+    if (!MAPLIB) MAPLIB = import('/d/vendor/maplibre-gl.mjs');
+    return MAPLIB;
+  }
+  const lngLat = (p) => [p.lng, p.lat];
+  const routeCoords = () => LINE.points.map(lngLat);
+  function routeBounds() {
+    const pts = LINE.points.concat([DEST]);
+    return [[Math.min(...pts.map((p) => p.lng)), Math.min(...pts.map((p) => p.lat))], [Math.max(...pts.map((p) => p.lng)), Math.max(...pts.map((p) => p.lat))]];
+  }
+  /** Design pixels per screen pixel at a zoom: the markers grow and shrink with the map, as the prototype's do. */
+  function designScale(zoom) {
+    const mpp = (40075016.686 * Math.cos(DEST.lat * Math.PI / 180)) / (512 * Math.pow(2, zoom));
+    return PX_M / mpp;
+  }
+  function markEl(cls, svg, w, hgt) {
+    const el = document.createElement('div');
+    el.className = 'm-mark ' + cls;
+    el.innerHTML = '<svg viewBox="' + (-w / 2) + ' ' + (-hgt / 2) + ' ' + w + ' ' + hgt + '" width="' + w + '" height="' + hgt + '" aria-hidden="true" style="overflow:visible">' + svg + '</svg>';
+    return el;
+  }
+  function labelEl(text) {
+    const el = document.createElement('div');
+    el.className = 'm-mark m-lbl-h';
+    el.textContent = text;
+    return el;
+  }
+  /**
+   * A map in `el`. Resolves to a handle, or rejects when the phone cannot draw it (no WebGL): the caller then
+   * shows a quiet line instead; the steps never depend on the map.
+   */
+  async function makeMap(el, opts) {
+    const lib = await loadMapLib();
+    const theme = document.documentElement.className === 'night' ? 'night' : 'paper';
+    const shapes = { ...(T.map || {}), route: routeCoords() };
+    const map = new lib.Map({
+      container: el, style: mapStyle(theme, DEST.lat, shapes), bounds: routeBounds(), fitBoundsOptions: { padding: opts.pad || 40 },
+      interactive: !!opts.interactive, dragRotate: false, pitchWithRotate: false, touchPitch: false,
+      attributionControl: false, fadeDuration: 0, renderWorldCopies: false,
+    });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('map did not load')), 8000);
+      map.once('load', () => { clearTimeout(timer); resolve(); });
+      map.once('error', (e) => { clearTimeout(timer); reject(e && e.error ? e.error : new Error('map error')); });
+    });
+    const add = (node, at, anchor, offset) => new lib.Marker({ element: node, anchor: anchor || 'center', offset: offset || [0, 0] }).setLngLat(at).addTo(map);
+    const scaleIt = () => el.style.setProperty('--mk', designScale(map.getZoom()).toFixed(3));
+    map.on('zoom', scaleIt);
+    scaleIt();
+    for (const p of (T.map && T.map.pois) || []) add(markEl('m-sc', '<rect class="m-poi" x="-7" y="-7" width="14" height="14" rx="2"/><path class="m-poi-mark" d="M0,-3.5 V3.5 M-3.5,0 H3.5"/>', 14, 14), lngLat(p));
+    const handle = { map, lib, el, add, markers: {}, theme };
+    if (opts.labels) {
+      for (const l of (T.map && T.map.labels) || []) add(labelEl(l.text), lngLat(l), 'bottom-left');
+      add(labelEl(T.name.toUpperCase()), lngLat(DEST), 'bottom-left', [14, -4]);
     }
-    return v;
+    handle.markers.start = add(markEl('m-sc', '<circle class="m-start" r="5"/>', 14, 14), routeCoords()[0]);
+    add(markEl('m-sc', '<circle class="m-dest" r="6"/><circle class="m-dest-in" r="2"/>', 18, 18), lngLat(DEST));
+    return handle;
   }
-  function mapSVG(view, hgt, ctx) {
-    const v = mapView(view, hgt, ctx);
-    const L = T.name.toUpperCase();
-    return '<svg class="map" viewBox="0 0 390 ' + hgt + '" width="100%" height="' + hgt + '" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Map of the route" style="display:block">' +
-      '<g class="m-world" style="transform:' + v.t + '">' + MAP_BASE +
-      (v.labels ? '<text class="m-lbl" x="' + (ROUTE_PX[1].x - 70) + '" y="' + (ROUTE_PX[1].y - 8) + '">' + h(T.streetLabel || '') + '</text><text class="m-lbl" x="' + (DEST_PX.x + 12) + '" y="' + (DEST_PX.y - 6) + '">' + h(L) + '</text>' : '') +
-      '<path class="m-old" d="' + v.oldD + '"/>' +
-      '<path class="m-route m-draw" pathLength="1" style="stroke-width:3.6" d="' + v.routeD + '"/>' +
-      '<path class="m-done" style="stroke-width:2.6" d="' + v.doneD + '"/>' +
-      '<circle class="m-start" cx="' + START_PX.x + '" cy="' + START_PX.y + '" r="5"/>' +
-      '<circle class="m-focus" r="15" cx="' + v.fx + '" cy="' + v.fy + '" style="opacity:' + (v.focus ? 1 : 0) + ';transition:opacity .4s"/>' +
-      '<circle class="m-dest" cx="' + DEST_PX.x + '" cy="' + DEST_PX.y + '" r="6"/><circle class="m-dest-in" cx="' + DEST_PX.x + '" cy="' + DEST_PX.y + '" r="2"/>' +
-      '</g>' +
-      (v.dot ? '<path class="m-cone" d="M195,' + v.cy + ' L177,' + (v.cy - 44) + ' A48 48 0 0 1 213,' + (v.cy - 44) + ' Z"/><circle class="m-dot" cx="195" cy="' + v.cy + '" r="8"/>' : '') +
-      '</svg>';
+  /** Recolours a map for the theme, in step with the page's 3 s fade (MapLibre has no CSS: it is set here). */
+  function paintMap(handle, theme) {
+    if (!handle || handle.theme === theme) return;
+    handle.theme = theme;
+    const t = MAP_THEMES[theme] || MAP_THEMES.paper;
+    try { for (const [id, prop, key] of MAP_PAINT) handle.map.setPaintProperty(id, prop, t[key]); } catch (e) { /* the map went away */ }
   }
-  function moveMap(root, view, hgt) {
-    const v = mapView(view, hgt);
-    const w = root.querySelector('.m-world');
-    if (w) w.style.transform = v.t;
-    const f = root.querySelector('.m-focus');
-    if (f) { f.setAttribute('cx', v.fx); f.setAttribute('cy', v.fy); f.style.opacity = v.focus ? 1 : 0; }
+  /** The route draws itself in ink on load, about 1.8 s, after a short beat. Reduced motion: drawn at rest. */
+  function drawRouteIn(handle) {
+    const all = routeCoords();
+    const src = handle.map.getSource('route');
+    if (!src || REDUCED()) return;
+    const total = LINE.total || 1;
+    const cut = (f) => {
+      const want = f * total;
+      const out = [all[0]];
+      for (let i = 1; i < all.length; i++) {
+        if (LINE.cum[i] <= want) { out.push(all[i]); continue; }
+        const seg = LINE.cum[i] - LINE.cum[i - 1] || 1;
+        const t = (want - LINE.cum[i - 1]) / seg;
+        out.push([all[i - 1][0] + (all[i][0] - all[i - 1][0]) * t, all[i - 1][1] + (all[i][1] - all[i - 1][1]) * t]);
+        break;
+      }
+      return out.length > 1 ? out : [all[0], all[0]];
+    };
+    const t0 = performance.now() + 300;
+    const ease = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+    const frame = (now) => {
+      if (!handle.map.getSource('route')) return;
+      const f = Math.min(1, Math.max(0, (now - t0) / 1800));
+      src.setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: cut(ease(f)) } }] });
+      if (f < 1) requestAnimationFrame(frame);
+    };
+    src.setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [all[0], all[0]] } }] });
+    requestAnimationFrame(frame);
   }
+  const REDUCED = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+  /** The route, the walked part and an old route (after a reroute) set on a map. */
+  function setLines(handle, done, old) {
+    const lines = (arr) => ({ type: 'FeatureCollection', features: arr.filter((c) => c && c.length > 1).map((c) => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: c } })) });
+    try {
+      handle.map.getSource('route').setData(lines([routeCoords()]));
+      handle.map.getSource('done').setData(lines([done]));
+      if (old !== undefined) handle.map.getSource('old').setData(lines([old]));
+    } catch (e) { /* the map went away */ }
+  }
+
+  let routeMap = null;    // the Route screen's map, while it is on screen
+  let moreMap = null;     // the MORE sheet's map, while the sheet has been opened
+  let oldRoute = null;    // the way before a reroute, drawn as dashes until the walk moves on
 
   // ----- screens -----
   const screenWrap = (inner) => { app.innerHTML = inner; };
@@ -559,8 +660,8 @@ function boot() {
       '<div style="position:absolute;left:24px;right:24px;bottom:40px;display:flex;flex-direction:column;align-items:flex-start;gap:4px">' +
         '<button type="button" class="action rise" id="a-share" style="font-size:34px;animation-delay:.8s">Share my location →</button>' +
         '<a class="textbtn rise" href="#route" id="a-not" style="padding-left:0;color:var(--text-2);animation-delay:.9s">NOT NOW · SHOW THE ROUTE</a>' +
-        '<p class="label" style="margin:10px 0 0;font-size:.62rem">Location is used on this phone. It goes to Reason only to find a new way.</p>' +
-      '</div>');
+      '</div>' +
+      '<p class="label" style="position:absolute;left:24px;right:24px;bottom:10px;margin:0;font-size:.56rem;opacity:.8">LOCATION IS USED ON THIS PHONE. IT GOES TO REASON ONLY TO FIND A NEW WAY.</p>');
     // Both permissions are asked in this one tap (iOS needs the orientation request inside a gesture).
     $('a-share').addEventListener('click', () => startLive(true));
     $('a-not').addEventListener('click', () => { lsSet('reason.dir.last', 'route'); });
@@ -598,7 +699,7 @@ function boot() {
       (opts.note ? '<div style="padding:20px 24px 0"><p class="hand ink">No problem, here’s the Route version.</p></div>' : '') +
       '<section style="padding:20px 24px 0"><h1 class="serif" style="margin:0;font-size:40px;line-height:1.04;letter-spacing:-.02em">' + h(T.name) + '</h1>' +
         '<p class="label" style="margin:8px 0 0;color:var(--text)">' + h(T.walk) + '</p></section>' +
-      '<div class="mapbox" style="margin-top:18px">' + mapSVG(st.sel ? 's' + st.sel : 'overview', mapH) + '</div>' +
+      '<div class="mapbox" style="margin-top:18px;height:' + mapH + 'px" role="img" aria-label="Map of the route"><div id="r-map" style="width:100%;height:100%"></div></div>' +
       '<div id="r-cta" style="position:absolute;left:24px;right:24px;bottom:16px">' +
         '<div style="display:flex;justify-content:space-between;align-items:center"><button type="button" class="action" id="r-open" style="font-size:30px">See the steps ↑</button><span class="label">' + T.steps.length + ' STEPS</span></div>' +
         '<p class="label" style="margin:2px 0 0">ONLY YOU CAN SEE THIS PAGE</p></div>' +
@@ -616,8 +717,7 @@ function boot() {
         '<ol style="list-style:none;margin:0;padding:0">' + stepsHtml + '</ol>' +
         '<div style="' + dashes + ';padding-top:8px;display:flex;justify-content:space-between;align-items:center"><span style="font-size:15px">' + h(T.address) + '</span>' +
           '<button type="button" class="textbtn" id="r-copy" aria-label="Copy the address" style="padding-right:0">' + ICON.copy + 'COPY</button></div>' +
-        '<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center"><a class="textbtn" href="' + h(mapsApple) + '" style="padding-left:0">APPLE MAPS ↗</a><a class="textbtn" href="' + h(mapsGoogle) + '">GOOGLE MAPS ↗</a>' +
-          '<button type="button" class="textbtn" id="r-theme" style="margin-left:auto;padding-right:0">' + (document.documentElement.className === 'night' ? 'PAPER' : 'NIGHT') + '</button></div>' +
+        '<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center"><a class="textbtn" href="' + h(mapsApple) + '" style="padding-left:0">APPLE MAPS ↗</a><a class="textbtn" href="' + h(mapsGoogle) + '">GOOGLE MAPS ↗</a></div>' +
       '</section>');
 
     const q = (id) => $(id);
@@ -632,14 +732,41 @@ function boot() {
         q('r-prev').style.visibility = st.sel > 1 ? '' : 'hidden';
         q('r-next').style.visibility = st.sel < T.steps.length ? '' : 'hidden';
       }
-      moveMap(app, st.sel ? 's' + st.sel : 'overview', mapH);
+      focusMap(st.sel);
     }
+    /** The camera glides (0.9 s) to a step and rings it, or back to the whole route. */
+    function focusMap(sel) {
+      if (!routeMap) return;
+      const dur = REDUCED() ? 0 : 900;
+      const ring = routeMap.markers.focus;
+      if (!sel) {
+        routeMap.map.fitBounds(routeBounds(), { padding: 40, duration: dur });
+        ring.getElement().firstChild.style.opacity = 0;
+        return;
+      }
+      const s = T.steps[sel - 1];
+      const last = sel === T.steps.length;
+      const z = routeMap.fitZoom + Math.log2((last ? 3 : 2.4) / designScale(routeMap.fitZoom));
+      routeMap.map.easeTo({ center: [s.lng, s.lat], zoom: z, duration: dur });
+      ring.setLngLat([s.lng, s.lat]);
+      ring.getElement().firstChild.style.opacity = 1;
+    }
+    const box = q('r-map');
+    makeMap(box, { interactive: true, labels: true }).then((m) => {
+      if (!document.body.contains(box)) { m.map.remove(); return; }
+      routeMap = m;
+      m.fitZoom = m.map.getZoom();
+      m.markers.focus = m.add(markEl('m-sc m-ring', '<circle class="m-focus" r="15"/>', 34, 34), [DEST.lng, DEST.lat]);
+      m.markers.focus.getElement().firstChild.style.opacity = 0;
+      if (st.sel) focusMap(st.sel); else drawRouteIn(m);
+    }).catch(() => {
+      box.innerHTML = '<p class="label" style="padding:16px;margin:0">The map did not load here. The steps have the whole way.</p>';
+    });
     q('r-open').onclick = q('r-all').onclick = () => { st.open = true; update(); };
     q('r-close').onclick = q('r-scrim').onclick = () => { st.open = false; update(); };
     q('r-prev').onclick = () => { st.sel = Math.max(1, st.sel - 1); update(); };
     q('r-next').onclick = () => { st.sel = Math.min(T.steps.length, st.sel + 1); update(); };
     q('r-copy').onclick = () => { try { navigator.clipboard.writeText(T.address); } catch (e) { /* no clipboard: nothing to do */ } };
-    q('r-theme').onclick = () => { lsSet('reason.dir.theme', document.documentElement.className === 'night' ? 'paper' : 'night'); applyTheme('route'); q('r-theme').textContent = document.documentElement.className === 'night' ? 'PAPER' : 'NIGHT'; };
     Array.prototype.forEach.call(app.querySelectorAll('[data-step]'), (b) => {
       b.onclick = () => { st.sel = +b.getAttribute('data-step'); st.open = false; update(); };
     });
@@ -691,9 +818,9 @@ function boot() {
       case 'reassure': return { hand: 'Keep going, about ' + mins + ' minutes.', sub: step.street };
       case 'soon': return { word: turnWord(step) + ', soon.', sub: d + ' M · ' + step.fact };
       case 'here': return { word: turnWord(hereStep) + ' here.', sub: hereStep.into || '' };
-      case 'reroute': return { hand: 'No worries, here’s a new way.', sub: 'NEW WAY · ' + (d !== null ? d + ' M · ' : '') + step.fact };
+      case 'reroute': return { hand: 'No worries, here’s a new way.', sub: turnWord(step).toUpperCase() + ' ' + step.fact + (d !== null ? ' · ' + d + ' M' : '') };
       case 'wait': return { hand: 'Take your time, I’ll wait.', sub: 'PAUSED' };
-      case 'welcome': return { hand: 'Welcome back, here’s where you are.', sub: (d !== null ? d + ' M · ' : '') + step.fact };
+      case 'welcome': return { hand: 'Welcome back, here’s where you are.', sub: 'STRAIGHT ON' + (d !== null ? ' · ' + turnWord(step).toUpperCase() + ' IN ' + d + ' M' : '') };
       case 'battery': return { hand: 'Battery’s low. Switch to Route to save it?', action: 'Switch to Route →', href: '#route' };
       case 'lost': return { hand: 'Lost signal for a bit, but I still know the way.', sub: 'NO SIGNAL · ROUTE SAVED ON THIS PAGE' };
       case 'arrive': return { hand: 'It’s on your right. Look for the gate.', sub: (T.entrance || '') + ' · ' + Math.round(v.dd) + ' M' };
@@ -705,6 +832,12 @@ function boot() {
   function clockNow() {
     return new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).replace(/\s/g, ' ');
   }
+  /** The caption, with the sample trip's own facts line where the preview gives one (the prototype's wording). */
+  function capFor(v) {
+    const c = capOf(v);
+    if (typeof v.demoSub === 'string') c.sub = v.demoSub;
+    return c;
+  }
   function capHTML(c) {
     return (c.word ? '<p class="cap-word">' + h(c.word) + '</p>' : '') +
       (c.hand ? '<p class="cap-hand" style="white-space:pre-line;font-size:' + (c.fs || '2.35rem') + '">' + h(c.hand) + '</p>' : '') +
@@ -714,6 +847,7 @@ function boot() {
   }
 
   function renderEscortShell(more) {
+    dropMaps();
     const caps = CAP_IDS.map((id) => '<div class="cap" data-cap="' + id + '"></div>').join('');
     screenWrap(
       '<p class="esc-status" id="e-status" style="margin:0"><span class="dot"></span><span id="e-status-t">ESCORTING</span></p>' +
@@ -736,7 +870,7 @@ function boot() {
       '<button type="button" class="scrim" id="e-scrim" aria-label="Close"></button>' +
       '<section class="sheet" id="e-sheet" aria-label="More"><span class="grip"></span>' +
         '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:10px 0 12px"><span class="serif" id="e-left" style="font-size:28px;line-height:1.1"></span><span class="label" id="e-facts"></span></div>' +
-        '<div class="mapbox" style="margin:0" id="e-map"></div>' +
+        '<div class="mapbox" style="margin:0;height:250px" role="img" aria-label="Map, the way you are facing"><div id="e-map" style="width:100%;height:100%"></div></div>' +
         '<div style="padding-top:8px"><a class="action" href="#route">Switch to Route →</a></div>' +
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;' + dashes + '">' +
           (SUPPORT.speech ? '<button type="button" class="textbtn" id="e-voice" aria-pressed="' + voiceOn + '" style="padding-left:0">' + ICON.speaker + '<span>' + (voiceOn ? 'VOICE ON' : 'VOICE OFF') + '</span></button>' : '<span></span>') +
@@ -798,7 +932,7 @@ function boot() {
     $('e-ghost').classList.toggle('on', !!s.ghost);
     $('e-drop').classList.toggle('on', !!s.drop);
     $('e-you').style.opacity = s.noYou ? 0 : 1;
-    const c = capOf(v);
+    const c = capFor(v);
     CAP_IDS.forEach((id) => {
       const el = app.querySelector('[data-cap="' + id + '"]');
       if (!el) return;
@@ -814,26 +948,54 @@ function boot() {
     if (v.buzz && SUPPORT.buzz) { try { navigator.vibrate(180); } catch (e) { /* silently skip */ } }
   }
 
-  /** The MORE sheet: time left, the map heading-up, the switch. */
+  /** The MORE sheet: time left, the map heading-up, the switch. The map is made once, when the sheet first opens. */
   function paintMore(v) {
     if (!$('e-left')) return;
     const mins = v.minsLeft ?? '';
     const rem = v.remainingM === null || v.remainingM === undefined ? null : Math.round(v.remainingM);
     $('e-left').textContent = mins === '' ? '' : (v.ended ? 'Arrived' : mins + ' min left');
     $('e-facts').textContent = rem === null ? '' : rem + ' M · ARRIVE ' + arriveClock(v.minsLeft);
-    const hgt = 250;
-    const donePx = v.userPx ? routeTo(v.userPx) : null;
-    $('e-map').innerHTML = mapSVG('lane', hgt, { userPx: v.userPx, heading: v.heading, donePx });
+    if (!$('e-sheet').classList.contains('on')) return;
+    if (!moreMap) { mountMoreMap(); return; }
+    if (moreMap === 'loading' || moreMap === 'failed') return;
+    const u = v.user;
+    moreMap.markers.you.getElement().style.display = u ? '' : 'none';
+    if (u) {
+      moreMap.markers.you.setLngLat(lngLat(u));
+      setLines(moreMap, routeTo(u), oldRoute || []);
+      moreMap.map.easeTo({ center: lngLat(u), bearing: typeof v.heading === 'number' ? v.heading : 0, duration: REDUCED() ? 0 : 600, offset: [0, 40] });
+    }
+  }
+  function mountMoreMap() {
+    const box = $('e-map');
+    if (!box || moreMap) return;
+    moreMap = 'loading';
+    makeMap(box, { interactive: false }).then((m) => {
+      if (!document.body.contains(box)) { m.map.remove(); moreMap = null; return; }
+      moreMap = m;
+      m.markers.start.remove();
+      // You: the dot and the cone of the way you face. Heading-up, so the cone always points up the screen.
+      m.markers.you = m.add(markEl('m-you', '<path class="m-cone" d="M0,0 L-18,-44 A48 48 0 0 1 18,-44 Z"/><circle class="m-dot" r="8"/>', 100, 100), [DEST.lng, DEST.lat]);
+      m.map.jumpTo({ zoom: m.map.getZoom() + Math.log2(2.2 / designScale(m.map.getZoom())) });
+      if (lastView) paintMore(lastView);
+    }).catch(() => {
+      moreMap = 'failed';
+      box.innerHTML = '';
+    });
+  }
+  function dropMaps() {
+    for (const m of [routeMap, moreMap]) if (m && m.map) { try { m.map.remove(); } catch (e) { /* gone */ } }
+    routeMap = null;
+    moreMap = null;
   }
   function arriveClock(mins) {
     const t = new Date(Date.now() + (mins || 0) * 60000);
     return t.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }).replace(/\s/g, ' ');
   }
-  /** The route up to a point near it, as map pixels (the walked part is drawn grey). */
-  function routeTo(userPx) {
-    let best = 0, bd = Infinity;
-    ROUTE_PX.forEach((p, i) => { const d = Math.hypot(p.x - userPx.x, p.y - userPx.y); if (d < bd) { bd = d; best = i; } });
-    return ROUTE_PX.slice(0, best + 1).concat([userPx]);
+  /** The route walked so far, up to where you are (drawn quiet over the route). */
+  function routeTo(u) {
+    const pr = project(u, LINE);
+    return LINE.points.slice(0, pr.seg + 1).map(lngLat).concat([lngLat(pr.at)]);
   }
 
   function say(text) {
@@ -850,8 +1012,8 @@ function boot() {
     const wasMore = !!(opts && opts.more);
     renderEscortShell(wasMore);
     if (demo) { clearTimeout(demo.timer); demo = null; }
-    if (opts && opts.fixed) {
-      paintEscort({ ...DEMO_BASE, state: opts.fixed, ...(DEMO_STATE[opts.fixed] || {}) });
+    if (opts && opts.fixed && T.demo) {
+      paintEscort({ ...DEMO_BASE, state: opts.fixed, ...(DEMO_STATE[opts.fixed] || {}), demoSub: DEMO_SUB[opts.fixed] });
       paintMore(lastView);
       return;
     }
@@ -860,11 +1022,18 @@ function boot() {
   }
 
   // The sample trip's loop (#escort with no location): the states in order, same timings as the prototype.
-  const DEMO_BASE = { stepNo: 2, hereStep: 1, dNext: null, remainingM: 610, minsLeft: 8, dd: 600, userPx: { x: 150, y: 222 }, heading: 0, status: 'ESCORTING' };
+  const DEMO_BASE = { stepNo: 2, hereStep: 1, dNext: null, remainingM: 610, minsLeft: 8, dd: 600, user: fromPx({ x: 150, y: 222 }, DEST), heading: 0, status: 'ESCORTING' };
   const DEMO_STATE = {
     soon: { dNext: 80, geoD: 100, stepNo: 1 }, here: { dNext: 0, stepNo: 1, hereStep: 1 }, arrive: { dd: 40, remainingM: 40, minsLeft: 1 }, arrived: { ended: true, status: 'ESCORT ENDED', remainingM: 0, minsLeft: 0 },
-    early: { ended: true, status: 'ESCORT ENDED', remainingM: 0, minsLeft: 0 }, wait: { status: 'WAITING' }, finding: { status: 'FINDING YOU', userPx: null },
+    early: { ended: true, status: 'ESCORT ENDED', remainingM: 0, minsLeft: 0 }, wait: { status: 'WAITING' }, finding: { status: 'FINDING YOU', user: null },
     reroute: { dNext: 35, reroute: true }, battery: {}, lost: {}, welcome: {},
+  };
+  // The prototype's facts lines for the sample trip's previews. Its sample walk is not one consistent trip
+  // ("Left, soon" after the pharmacy, then "Left here" into the lane), so the previews show its words as drawn.
+  const DEMO_SUB = {
+    confirmed: 'UP CANTONMENTS RD', straight: '4 MIN · OXFORD ST', reassure: 'OXFORD ST', soon: '80 M · AFTER THE PHARMACY',
+    here: 'INTO THE LANE', reroute: 'LEFT AT THE END OF THIS STREET · 35 M', welcome: 'STRAIGHT ON · ROUNDABOUT IN 90 M',
+    arrive: 'GREEN GATE, NEXT TO THE TAILOR’S · 40 M',
   };
   const DEMO_LOOP = [
     ['finding', 2600], ['unknown', 3200], ['confirmed', 2600], ['straight', 3200], ['reassure', 3400],
@@ -874,7 +1043,7 @@ function boot() {
     demo = { idx: 0, more: false, timer: null };
     const step = () => {
       const [name, ms] = DEMO_LOOP[demo.idx];
-      paintEscort({ ...DEMO_BASE, state: name, ...(DEMO_STATE[name] || {}), status: name === 'finding' ? 'FINDING YOU' : undefined });
+      paintEscort({ ...DEMO_BASE, state: name, ...(DEMO_STATE[name] || {}), demoSub: DEMO_SUB[name], status: name === 'finding' ? 'FINDING YOU' : undefined });
       paintMore(lastView);
       demo.timer = setTimeout(() => {
         if (!demo.more) demo.idx = (demo.idx + 1) % DEMO_LOOP.length;
@@ -890,6 +1059,8 @@ function boot() {
     // The position watch starts first, synchronously, so it stays inside the tap that asked for it.
     const watchId = navigator.geolocation.watchPosition(onFix, onGeoError, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
     live = { watchId, wake: null, orient: null, tick: null };
+    // iOS speaks only after speech has started inside a tap: an empty utterance now unlocks the turns later.
+    if (fromTap && SUPPORT.speech) { try { speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch (e) { /* no speech here */ } }
     if (fromTap && SUPPORT.orient && typeof DeviceOrientationEvent.requestPermission === 'function') {
       live.orient = DeviceOrientationEvent.requestPermission().then((r) => { if (r === 'granted') listenCompass(); }).catch(() => {});
     } else if (SUPPORT.orient) {
@@ -897,7 +1068,13 @@ function boot() {
     }
     lsSet('reason.dir.live', '1');
     keepAwake();
-    if (!live.tick) live.tick = setInterval(() => { if (live) paintEscort(ENG.view(Date.now())); }, 1000);
+    if (!live.tick) live.tick = setInterval(() => {
+      if (!live) return;
+      const v = ENG.view(Date.now());
+      paintEscort(v);
+      // Arrival can land on the clock (standing at the gate, no new reading): location stops then too.
+      if (v.ended) stopLive();
+    }, 1000);
     if (location.hash !== '#escort') go('#escort'); else route();
   }
 
@@ -955,7 +1132,7 @@ function boot() {
 
   async function reroute() {
     try {
-      const at = ENG.view(Date.now()).userPx ? lastFix : null;
+      const at = ENG.view(Date.now()).user ? lastFix : null;
       if (!at) { ENG.rerouteFailed(); return; }
       const res = await fetch('/d/' + encodeURIComponent(T.id) + '/reroute', {
         method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'same-origin',
@@ -1000,17 +1177,21 @@ function boot() {
   function route() {
     const parts = (location.hash || '').slice(1).split('/');
     const name = parts[0] || '';
+    const wasLive = !!live;
     if (name !== 'escort' && live) pauseLiveForRoute();
     if (demo && name !== 'escort') { clearTimeout(demo.timer); demo = null; }
     escortEl = null;
+    dropMaps();
     if (name === 'escort') applyTheme('escort'); else applyTheme('route');
+    // Switching to Route mid-walk keeps the place: the Route opens on the turn the escort was heading for.
+    if (name === 'route' && !parts[1] && wasLive) { location.replace('#route/step' + Math.min(T.steps.length, ENG.step + 1)); return; }
     if (name === 'ask') renderAsk();
     else if (name === 'toofar') renderTooFar();
     else if (name === 'route') renderRoute({ open: parts[1] === 'steps', sel: /^step\d+$/.test(parts[1] || '') ? +parts[1].slice(4) : 0, note: parts[1] === 'denied' });
     else if (name === 'escort') {
       const more = parts[2] === 'more' || parts[1] === 'more';
       const state = parts[1] && parts[1] !== 'more' ? parts[1] : '';
-      if (state) renderEscort({ fixed: state, more });
+      if (state && T.demo) renderEscort({ fixed: state, more });
       else if (live) renderEscort({ more });
       else if (T.demo) renderEscort({ loop: true, more });
       else resumeOrAsk(more);
@@ -1031,6 +1212,6 @@ function boot() {
   }
 
   window.addEventListener('hashchange', route);
-  window.ReasonDirections = { lineForDistance, createEscort, project, toPx, fromPx };
+  window.ReasonDirections = { lineForDistance, createEscort, project };
   route();
 }

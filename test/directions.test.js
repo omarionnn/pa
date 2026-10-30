@@ -4,10 +4,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
+import { readFileSync } from "node:fs";
+import { getTimes } from "suncalc";
 import * as client from "../src/pages/directionsclient.js";
 import { directionsRequest, directionsPage, reroute, sampleTrip } from "../src/pages/directions.js";
 
-const { haversine, bearing, project, lineOf, lineForDistance, sunTimes, isNightAt, createEscort, toPx, fromPx } = client;
+const { haversine, bearing, project, lineOf, lineForDistance, isNightAt, createEscort, toPx, fromPx, MAP_THEMES, MAP_PAINT, mapStyle, metresWide } = client;
 
 // A walk north 111 m, a left turn, then 89 m west to the door. Metres are offsets from A.
 const M_DEG = 111195;
@@ -58,15 +60,43 @@ test("the line: straight beyond 100 m, the bend slides down to the dot", () => {
   assert.equal(here.stem, "scaleY(0.216)", "the prototype's here stem");
 });
 
-test("sunset: Accra in late October, from the coordinates (suncalc's method)", () => {
-  const day = new Date("2026-10-29T12:00:00Z");
-  const t = sunTimes(5.6, -0.2, day);
+test("sunset: Accra in late October, from the coordinates (suncalc, the library the page loads)", () => {
+  const t = getTimes(new Date("2026-10-29T12:00:00Z"), 5.6, -0.2);
   const sunsetUtc = t.sunset.getUTCHours() + t.sunset.getUTCMinutes() / 60;
   assert.ok(sunsetUtc > 17.4 && sunsetUtc < 18.4, `sunset ${sunsetUtc} UTC`);
-  const sunriseUtc = t.sunrise.getUTCHours() + t.sunrise.getUTCMinutes() / 60;
-  assert.ok(sunriseUtc > 5.6 && sunriseUtc < 6.4, `sunrise ${sunriseUtc} UTC`);
-  assert.equal(isNightAt(5.6, -0.2, new Date("2026-10-29T12:00:00Z")), false, "noon is day");
-  assert.equal(isNightAt(5.6, -0.2, new Date("2026-10-29T22:00:00Z")), true, "ten at night is night");
+  assert.equal(isNightAt(5.6, -0.2, new Date("2026-10-29T12:00:00Z"), getTimes), false, "noon is day");
+  assert.equal(isNightAt(5.6, -0.2, new Date("2026-10-29T22:00:00Z"), getTimes), true, "ten at night is night");
+  assert.equal(isNightAt(5.6, -0.2, new Date("2026-10-29T05:00:00Z"), getTimes), true, "before sunrise is night");
+  assert.equal(isNightAt(5.6, -0.2, new Date(), undefined), null, "no suncalc: no opinion, the phone's setting decides");
+  assert.equal(isNightAt(89.9, 0, new Date("2026-06-21T12:00:00Z"), getTimes), null, "a polar day has no sunset: no opinion");
+});
+
+test("the map: one colour per token, the same as the stylesheet's, in both themes", () => {
+  const css = readFileSync(new URL("../src/pages/directions.css", import.meta.url), "utf8");
+  const block = (sel) => css.slice(css.indexOf(sel), css.indexOf("}", css.indexOf(sel)));
+  const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const mix = (expr) => { // color-mix(in srgb, #a N%, #b)
+    const m = /color-mix\(in srgb, (#[0-9a-f]{6}) (\d+)%, (#[0-9a-f]{6})\)/.exec(expr);
+    const a = hex(m[1]), b = hex(m[3]), k = Number(m[2]) / 100;
+    return a.map((v, i) => Math.round(v * k + b[i] * (1 - k)));
+  };
+  const VARS = { land: "--map-land", road: "--map-road", casing: "--map-casing", label: "--map-label", water: "--map-water", park: "--map-park", route: "--route" };
+  for (const [theme, sel] of [["paper", ":root, .paper {"], ["night", ".night {"]]) {
+    const b = block(sel);
+    for (const [key, v] of Object.entries(VARS)) {
+      const val = new RegExp(`${v}: ([^;]+);`).exec(b)[1].trim();
+      const want = val.startsWith("#") ? hex(val) : mix(val);
+      const got = hex(MAP_THEMES[theme][key]);
+      assert.ok(got.every((c, i) => Math.abs(c - want[i]) <= 1), `${theme} ${key}: map ${MAP_THEMES[theme][key]} vs css ${val}`);
+    }
+  }
+  const style = mapStyle("night", 5.56, { route: [[0, 0], [0, 0.001]] });
+  for (const [id, prop, key] of MAP_PAINT) assert.equal(style.layers.find((l) => l.id === id).paint[prop], MAP_THEMES.night[key], id);
+  assert.deepEqual(Object.keys(style).sort(), ["layers", "name", "sources", "version"], "no tiles, no glyphs, no sprite: nothing fetched");
+  assert.ok(Object.values(style.sources).every((s) => s.type === "geojson"));
+  // Streets keep their width on the ground: twice the zoom-level, twice the pixels.
+  const w = metresWide(10, 0);
+  assert.ok(Math.abs(w[6] / w[4] - 2 ** 12) < 1e-6);
 });
 
 test("escort: direction is unknown, then confirmed after the walk starts", () => {
@@ -188,6 +218,49 @@ test("escort: arriving confirms on three readings inside 15 m and ends the escor
   assert.equal(v.status, "ESCORT ENDED");
 });
 
+test("escort: a phone standing at the gate that sends no new reading still arrives, after 3 s", () => {
+  const e = engine();
+  for (let n = 0; n <= 111; n += 1) e.feed(read(pos(n, 0)), T0 + n * 1000);
+  for (let k = 0; k <= 70; k += 1) e.feed(read(pos(111, -k)), T0 + (112 + k) * 1000);
+  const t = T0 + 194000;
+  e.feed(read(pos(111, -88)), t);
+  assert.notEqual(e.view(t + 1500).state, "arrived", "not on one reading at once");
+  assert.equal(e.view(t + 3200).state, "arrived");
+  // Inside the gate on one reading, then walked back out: no arrival.
+  const f = engine();
+  for (let n = 0; n <= 111; n += 1) f.feed(read(pos(n, 0)), T0 + n * 1000);
+  for (let k = 0; k <= 70; k += 1) f.feed(read(pos(111, -k)), T0 + (112 + k) * 1000);
+  f.feed(read(pos(111, -88)), t);
+  f.feed(read(pos(111, -60)), t + 1000);
+  assert.notEqual(f.view(t + 4000).state, "arrived");
+});
+
+test("escort: a brisk walk is not taken for a GPS jump (readings are judged against each other, not the trailing dot)", () => {
+  const e = engine();
+  let v;
+  for (let n = 0; n <= 100; n += 25) v = e.feed(read(pos(n, 0)), T0 + n * 40);
+  assert.ok(v.user && haversine(v.user, pos(75)) < 20, "every 25 m reading was taken");
+  // A real jump (a tall-building reflection, 150 m in a second) is still held off.
+  const before = e.view(T0 + 4100).user;
+  e.feed(read(pos(100, 150)), T0 + 4100);
+  assert.ok(haversine(e.view(T0 + 4200).user, before) < 1, "the jump is ignored");
+});
+
+test("escort: walking up to the gate and stopping arrives, though the smoothed dot is still behind", () => {
+  const e = engine();
+  for (let n = 0; n <= 111; n += 1) e.feed(read(pos(n, 0)), T0 + n * 1000);
+  for (let k = 0; k <= 60; k += 10) e.feed(read(pos(111, -k)), T0 + (112 + k) * 1000);
+  const t = T0 + 180000;
+  e.feed(read(pos(111, -88)), t);           // the last reading, sharp, at the gate; the dot averages 20 m behind
+  assert.equal(e.view(t + 3200).state, "arrived");
+  // A blurry reading at the gate is not enough on its own.
+  const f = engine();
+  for (let n = 0; n <= 111; n += 1) f.feed(read(pos(n, 0)), T0 + n * 1000);
+  for (let k = 0; k <= 60; k += 10) f.feed(read(pos(111, -k)), T0 + (112 + k) * 1000);
+  f.feed(read(pos(111, -88), 30), t);
+  assert.notEqual(f.view(t + 3200).state, "arrived");
+});
+
 test("escort: an early arrival says so", () => {
   const t = trip();
   t.startsAt = T0 + 3600 * 1000;
@@ -205,12 +278,31 @@ test("the page: the sample route on a server with Reason's flag on", async () =>
   assert.match(out.body, /<main id="app" class="screen paper">/);
   assert.match(out.body, /<script id="trip" type="application\/json">/);
   assert.match(out.body, /src="\/d\/app\.js"/);
+  assert.match(out.headers["Content-Security-Policy"], /worker-src 'self' blob:/, "MapLibre's worker, from this server");
+  assert.doesNotMatch(out.headers["Content-Security-Policy"], /https?:/, "nothing from anywhere else");
   assert.match(out.body, /The Garden Room/);
   assert.doesNotMatch(out.body, /AIza|api[_-]?key|access_token|pk\.eyJ|routing\.example/i, "no key in the page");
   const trip = JSON.parse(out.body.match(/<script id="trip" type="application\/json">([\s\S]*?)<\/script>/)[1]);
   assert.equal(trip.steps.length, 5);
   assert.ok(trip.route.length >= 4 && typeof trip.route[0].lat === "number");
   assert.ok(trip.steps.every((s) => typeof s.lat === "number" && typeof s.lng === "number"));
+  assert.ok(trip.map.major.length >= 2 && trip.map.minor.length >= 5 && trip.map.parks.length >= 1, "the streets are in the page");
+  assert.ok(Number.isFinite(trip.startsAt), "the sample event has a start, for early or on time");
+});
+
+test("the libraries: MapLibre and suncalc come from this server, and nothing else under /d/vendor/", async () => {
+  const config = { directionsOn: true, directionsSample: true };
+  for (const [p, type] of [["/d/vendor/maplibre-gl.mjs", /javascript/], ["/d/vendor/maplibre-gl-worker.mjs", /javascript/], ["/d/vendor/maplibre-gl.css", /css/], ["/d/vendor/suncalc.js", /javascript/]]) {
+    const out = await directionsRequest({ method: "GET", pathname: p, config });
+    assert.equal(out.status, 200, p);
+    assert.match(out.headers["Content-Type"], type, p);
+    assert.ok(out.body.length > 1000, p);
+  }
+  for (const p of ["/d/vendor/../package.json", "/d/vendor/zod", "/d/vendor/constructor"]) {
+    assert.equal(await directionsRequest({ method: "GET", pathname: p, config }), null, p);
+  }
+  const off = await directionsRequest({ method: "GET", pathname: "/d/vendor/suncalc.js", config: { directionsOn: false } });
+  assert.equal(off, null, "off with the flag");
 });
 
 test("the script: served, and nothing asks for location on load", async () => {
