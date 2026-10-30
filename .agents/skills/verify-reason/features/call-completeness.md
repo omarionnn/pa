@@ -48,6 +48,21 @@ files but not mapped here.
 - **Latency logging.** `voice_turn` log lines carry `first_word_ms` (speech to first content) and
   `turn_ms` (total); `first_word_ms` is `null` when no content was streamed. `http.js` also logs
   `call_llm_first_content_ms` per request.
+- **Holding line on a slow turn (#269).** `FIRST_WORD_DEADLINE_MS` (4 s, injectable as
+  `firstWordDeadlineMs`) in `src/calls/voice.js`: if nothing has been said by then, `voiceTurn`
+  streams `HOLDING_LINE` once as an ordinary content delta and logs `voice_holding_line`; never
+  before the disclosure on a silent-opening third-party line, never to a machine. `voice_turn_nothing_said`
+  with `after: "holding_line"` when that was all. Cage: not drivable (no model key, the turn fails
+  in ~25 ms before any deadline) — proof is `test/call-voice.test.js` (stalled model, 100 ms deadline).
+- **Silent endpoint paths log (#269).** `voice_llm_request {call, kind, messages}` on every arrival,
+  `voice_llm_bad_json {call id from raw body, bytes}` on a malformed body, and `http.js`
+  `call_llm_not_streamed {status, ms}` when the route ends without a stream. Cage drive
+  2026-10-30: `bin/call-turn.sh` → `voice_llm_request`; a hand-posted broken body with the cage
+  bearer → 400 + `voice_llm_bad_json` + `call_llm_not_streamed`.
+- **Lost-call sweep window (#269).** `callLostAfterMs(state)` in `src/tools.js`: an `in_progress`
+  call = `max(callMaxMinutes*60, callPlatformCapSeconds)` s + 15 min (`REASON_CALL_PLATFORM_CAP_SECONDS`,
+  default 3600, ElevenLabs' own ceiling); it was 25 min, which swept long live calls. `placing`/
+  `ringing` (never answered) keeps `callMaxMinutes` + 15 min. Pinned in `test/calls.test.js`.
 - **No thinking pass before the first word (PR #59).** `claude-sonnet-5-5` thinks before every reply
   by default — ~3.5s of silence on the line (call 38: 4–6s per turn). `apiRequestFor` sends
   `thinking: { type: config.callThinking }`, default `between_tools` (`REASON_CALL_THINKING`; empty
