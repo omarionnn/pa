@@ -55,14 +55,14 @@ const token = `drive-${Date.now()}`;
 db.startPageSession(`wsign:${C}`, token, { conversationId: C });
 const csrf = db.pageSessionCsrf(token);
 
-const server = createServer({ router: { statuses: () => [] }, runtime: null });
+const server = createServer({ router: { statuses: () => [] }, runtime: null, log: (o) => { if (o?.threw) console.log("threw:", o.http, o.threw); } });
 await new Promise(r => server.listen(0, "127.0.0.1", r));
 const base = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch({ headless: true });
 
-async function shot(name, path, { width, scheme, full = true, cookie = true }) {
+async function shot(name, path, { width, scheme, full = true, cookie = true, tok = token }) {
   const ctx = await browser.newContext({ viewport: { width, height: 900 }, colorScheme: scheme, deviceScaleFactor: 2 });
-  if (cookie) await ctx.addCookies([{ name: "reason_page", value: token, url: base }]);
+  if (cookie) await ctx.addCookies([{ name: "reason_page", value: tok, url: base }]);
   const page = await ctx.newPage();
   const r = await page.goto(`${base}${path}`, { waitUntil: "networkidle" });
   await page.evaluate(() => document.fonts.ready);
@@ -161,6 +161,23 @@ const never = await fetch(`${base}/s/doesnotexist`).then(async x => ({ status: x
 step(r.status === 404 && never.status === 404 && r.h === never.h && /This seal isn’t here/.test(r.h) && /Get your own Reason/.test(r.h), "Stop sharing → the same 404 page as an id that never existed");
 step((await fetch(`${base}/s/${sid}/og.png`)).status === 404 && (await fetch(`${base}/s/doesnotexist/og.png`)).status === 404, "their og.png: a plain 404");
 for (const width of [390, 1280]) for (const scheme of ["light", "dark"]) await shot("seal-404", "/s/doesnotexist", { width, scheme, cookie: false });
+
+// REASON_STAMPS_ALL (2026-10-30): someone who isn't the operator. On: their book opens and Home links to it;
+// off: neither, exactly as REASON_WEB_DAILY=owner left it. Never told either way (no teller is installed here).
+{
+  const ALL = ["1", "true", "on", "yes"].includes(String(process.env.REASON_STAMPS_ALL ?? "").toLowerCase());
+  const O = "dm:fake:+12025550000";
+  db.upsertAccount({ conversationId: O, channel: "fake", address: "+12025550000", name: "Ama", isOperator: false });
+  db.upsertThread({ conversationId: O, channel: "fake", address: "+12025550000", isOwner: false, service: "iMessage" });
+  db.markWebNoticeSeen(O);
+  const otok = `drive-other-${Date.now()}`;
+  db.startPageSession(`wsign:${O}`, otok, { conversationId: O });
+  const book = await fetch(`${base}/web/stamps`, { headers: { cookie: `reason_page=${otok}` }, redirect: "manual" });
+  const home = await fetch(`${base}/web?home`, { headers: { cookie: `reason_page=${otok}` }, redirect: "manual" }).then(x => x.text());
+  step(ALL ? book.status === 200 && /NO SEALS YET/.test(await book.text()) && home.includes('href="/web/stamps"')
+    : book.status !== 200 && !home.includes('href="/web/stamps"'), `someone else (REASON_STAMPS_ALL ${ALL ? "on" : "off"}): book ${book.status}, STAMPS link ${home.includes('href="/web/stamps"') ? "shown" : "hidden"}`);
+  if (ALL) for (const scheme of ["light", "dark"]) { await shot("other-book", "/web/stamps", { width: 390, scheme, tok: otok }); }
+}
 
 await browser.close();
 await new Promise(r => server.close(r));
