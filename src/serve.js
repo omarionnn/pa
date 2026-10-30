@@ -25,6 +25,7 @@ import { subscriptionBackendBlock } from "./backends/guard.js";
 import { retentionSays } from "./privacy.js";
 import { startOps, watchFetch } from "./ops.js";
 import { config, stamp } from "./config.js";
+import { preconfirmOperator } from "./zone.js";
 
 // Before any adapter is built: the channels take `globalThis.fetch` in their constructors, so the
 // status page's count of outbound calls has to be in place first or it would miss every text.
@@ -83,6 +84,8 @@ runtime.on("outbound", async ({ conversationId, text, channel, to, chatId, fromO
 });
 runtime.on("error", (e) => console.error("runtime error:", e?.message ?? e));
 
+// The operator's own zone is known (owner, 2026-10-30): never asked, never guessed.
+{ const n = preconfirmOperator(); if (n) console.log(`time zone: operator account confirmed on ${config.installTz}`); }
 runtime.start(config.sweepEveryMs);
 // The status page's checks, every five minutes, texting the owner when something changes state.
 startOps({ runtime, router, log });

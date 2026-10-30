@@ -29,6 +29,8 @@ import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource 
 import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
 
 import { recordApi } from "./spend.js";
+import * as zonescope from "./zonescope.js";
+import "./zone.js";
 
 const client = new Anthropic();
 
@@ -346,7 +348,15 @@ function requestsNote(reqs) {
  * Run one turn. `text` is an inbound user message, or an event (timer fired) when kind === "event".
  * Returns reply text, or null when Reason chooses silence.
  */
-export async function runTurn({ conversationId, text, kind = "user", attachments = [], events, log = () => {}, channels = null, calls = null, keep = null,
+/**
+ * One turn, on THEIR clock: inside it `config.tz` (and so every stamp, parsed time and day boundary)
+ * is the zone they confirmed, or the install's until they have (src/zone.js, src/zonescope.js).
+ */
+export function runTurn(args) {
+  return zonescope.runFor(args?.conversationId, () => runTurnOnTheirClock(args));
+}
+
+async function runTurnOnTheirClock({ conversationId, text, kind = "user", attachments = [], events, log = () => {}, channels = null, calls = null, keep = null,
   // Injectable the same way the CLI backend's are, so one test can hand both backends the same
   // picture without a host to fetch it from, and the same note-taker without a second model.
   images = imagesFor, capture = captureViaApi,

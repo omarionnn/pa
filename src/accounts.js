@@ -137,7 +137,7 @@ export function isOperatorConversation(conversationId) {
 
 /** The day a cap is counted against, in the operator's timezone rather than UTC. */
 export function today(nowMs = clock.now()) {
-  return new Date(nowMs).toLocaleDateString("en-CA", { timeZone: config.tz });
+  return new Date(nowMs).toLocaleDateString("en-CA", { timeZone: config.installTz });
 }
 
 /**

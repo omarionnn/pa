@@ -358,7 +358,7 @@ async function runTurnOnCli({
     let tookPart = false;
     const onToolStart = () => { tookPart = true; };
     const onTool = (e) => { tookPart = true; log(e); };
-    const mcp = await startMcp({ conversationId, channels, calls, onTool, onToolStart, toolCtx });
+    const mcp = await startMcp({ conversationId, channels, calls, onTool, onToolStart, toolCtx: { kind, ...toolCtx } });
     // Every fresh turn runs under a session id of Reason's choosing, so the rewrite can name it.
     const sessionId = randomUUID();
     const stored = continueSession ? sessions.get(historyId) : null;

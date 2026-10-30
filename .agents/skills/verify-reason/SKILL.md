@@ -424,6 +424,10 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
+### Baseline — per-person time zone (wt/user-timezone, 2026-10-30)
+
+`npm run test:offline` under `env -i`: 4,525 tests, 4,410 passing, 115 skipped, 0 failing. New: `test/time-zone.test.js` (26). Cage over the subscription: 3 turns, see [features/time-zone.md](features/time-zone.md).
+
 ### Baseline — 4,298 pass, 2 flaky after "owner" means this thread (fix/owner-means-this-thread, 2026-10-28)
 
 `npm test` with no .env: 4,414 tests, 4,298 passing, 2 failing, 114 skipped, both in `test/flights.test.js` (`ref` reads `.elements` of undefined under full-suite load). That file alone is 56/56 both with and without this change, so they are a load flake, not a regression. New: `test/owner-means-this-thread.test.js` (11, 8 of them fail on the old code). Real-model lane `REASON_BACKEND=claude-cli node --import ./test/paid-key-guard.js --test test/flow-owner-thread.test.js`: the model sent `to:"owner"` from a tester's thread and it reached the tester. See [features/confirm-gate.md](features/confirm-gate.md).
@@ -704,6 +708,8 @@ Reason Web wax-seal book (`REASON_STAMPS_WAX` on top of `REASON_WEB_DAILY`; seal
 Reason Web shell (wordmark text + nowrap, logo → `/web?home`, link cards for `/web`, `/privacy`, `/terms`): [features/web-shell.md](features/web-shell.md).
 Walking directions, Route + Escort, and real trips (`REASON_DIRECTIONS` off/`owner`/on; the `directions` tool, trips at `/d/<id>` behind the code gate; `/d/sample` with `REASON_DIRECTIONS_SAMPLE`; MapLibre, no tiles/key; suncalc night switch): [features/directions.md](features/directions.md); `test/directions.test.js`, `test/trips.test.js`; `bin/directions-drive.mjs` (muted: `--mute-audio` + a speech recorder, never a sound) drives the walk, diffs the hand-off's 48 screens, and walks a real trip through the gate: the door line from OpenStreetMap, arrive-by vs event wording, the trip deleted on arrival and END ESCORT, walking on after "turn around" (154/154 at the iPhone branch); `bin/directions-iphone.mjs` checks the page at iPhone size under Safari's bar (21/21).
 Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start the cage with `REASON_PAGES_V2=1`): [features/pages-v2.md](features/pages-v2.md); `scripts/pages-v2-preview.mjs` + `scripts/pages-v2-compare.mjs`. Print (§4h-8, `src/pages/print.js`): same file, "Print"; `pages-v2-preview.mjs <dir> --print`.
+
+Per-person time zone (`REASON_TZ_ASK`; guess + ask once before the first clock-time action, held action finished by the answer, travel asked once, `config.tz` = their clock inside their turn/page): [features/time-zone.md](features/time-zone.md); `test/time-zone.test.js`.
 
 ## Facts worth not rediscovering
 

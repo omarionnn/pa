@@ -6,6 +6,7 @@ import { mkdirSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { dirname } from "node:path";
 import { config, clock } from "./config.js";
+import * as zonescope from "./zonescope.js";
 import { parseSheet, applyPatch, addSteer, emptySheet } from "./sheet.js";
 
 mkdirSync(dirname(config.dbPath), { recursive: true });
@@ -1685,6 +1686,17 @@ addColumnIfMissing("accounts", "notice_digest_hour", "INTEGER");
 // question has gone out once and must never go out again. Until they answer, the install default
 // (08:00-22:00, the calendar's zone) is what runs, which is the point of asking rather than waiting.
 addColumnIfMissing("accounts", "notice_tz", "TEXT");
+// Per-person zone (src/zone.js). `notice_tz` above stays THE confirmed zone — it is what they told
+// Reason, and the notice sweep already trusts it first. These are what goes around it: when it was
+// confirmed, the browser's own zone from Reason Web, the zone of the last location they shared, the
+// one zone a travel question has already gone out about (asked once, never again for that zone), and
+// the clock-time action held while the question is out, so their answer finishes it.
+addColumnIfMissing("accounts", "tz_confirmed_at", "INTEGER");
+addColumnIfMissing("accounts", "web_tz", "TEXT");
+addColumnIfMissing("accounts", "place_tz", "TEXT");
+addColumnIfMissing("accounts", "place_tz_at", "INTEGER");
+addColumnIfMissing("accounts", "tz_travel_asked", "TEXT");
+addColumnIfMissing("accounts", "tz_pending", "TEXT");
 addColumnIfMissing("accounts", "notice_window_start", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_end", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_asked_at", "INTEGER");
@@ -5627,6 +5639,7 @@ export function pageSessionOwner(token, maxAgeMs, { idleMs = Infinity } = {}) {
     return null;
   }
   db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now(), token);
+  zonescope.enter(row.conversation_id);
   return row.conversation_id;
 }
 
@@ -5737,6 +5750,7 @@ export function pageSessionPeek(token, maxAgeMs, { idleMs = Infinity } = {}) {
   if (!row?.conversation_id) return null;
   const now = clock.now();
   if (now - row.created_at > maxAgeMs || now - row.last_seen_at > idleMs) return null;
+  zonescope.enter(row.conversation_id);
   return row.conversation_id;
 }
 
@@ -12254,4 +12268,40 @@ export function askAlbumConsent(conversationId, at) {
 export function agreeAlbumConsent(conversationId, at) {
   db.prepare("INSERT INTO album_consents (conversation_id, asked_at, agreed_at) VALUES (?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET agreed_at = excluded.agreed_at").run(conversationId, at, at);
   return albumConsent(conversationId);
+}
+
+// ---------- per-person zone (src/zone.js) ----------
+
+/** Everything known about where this person's clock is, in one read. */
+export function zoneRow(conversationId) {
+  const row = db.prepare(`SELECT channel, address, is_operator, notice_tz, tz_confirmed_at, web_tz, place_tz, place_tz_at,
+      tz_travel_asked, tz_pending FROM accounts WHERE conversation_id = ?`).get(conversationId);
+  if (!row) return null;
+  let pending = null;
+  try { pending = row.tz_pending ? JSON.parse(row.tz_pending) : null; } catch { pending = null; }
+  return {
+    channel: row.channel, address: row.address, isOperator: !!row.is_operator,
+    confirmed: row.notice_tz || "", confirmedAt: row.tz_confirmed_at ?? null,
+    web: row.web_tz || "", place: row.place_tz || "", placeAt: row.place_tz_at ?? null,
+    travelAsked: row.tz_travel_asked || "", pending,
+  };
+}
+
+/** Write any of the zone fields. `pending` is an object or null; the rest are strings / numbers. */
+export function setZoneFields(conversationId, { confirmed, confirmedAt, web, place, placeAt, travelAsked, pending } = {}) {
+  const set = (col, v) => db.prepare(`UPDATE accounts SET ${col} = ? WHERE conversation_id = ?`).run(v, conversationId);
+  if (confirmed !== undefined) set("notice_tz", confirmed);
+  if (confirmedAt !== undefined) set("tz_confirmed_at", confirmedAt);
+  if (web !== undefined) set("web_tz", web);
+  if (place !== undefined) set("place_tz", place);
+  if (placeAt !== undefined) set("place_tz_at", placeAt);
+  if (travelAsked !== undefined) set("tz_travel_asked", travelAsked);
+  if (pending !== undefined) set("tz_pending", pending === null ? null : JSON.stringify(pending));
+  return zoneRow(conversationId);
+}
+
+/** The operator's own account(s) start confirmed on the install's zone. Returns how many were set. */
+export function preconfirmOperatorZone(tz, at = clock.now()) {
+  return db.prepare(`UPDATE accounts SET notice_tz = ?, tz_confirmed_at = ?
+    WHERE is_operator = 1 AND (notice_tz IS NULL OR notice_tz = '')`).run(tz, at).changes;
 }

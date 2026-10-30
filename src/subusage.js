@@ -161,7 +161,7 @@ let lastRunAt = 0;
 /** Hear one finished CLI run: count it, and keep the reading it printed if it printed one. */
 export function noteCliRun({ ok = true, stdout = "", at = clock.now(), day } = {}) {
   lastRunAt = at;
-  try { db.recordProviderCall({ provider: "claude-subscription", day: day ?? new Date(at).toLocaleDateString("en-CA", { timeZone: config.tz }), ok, at }); } catch { /* a count is never worth a turn */ }
+  try { db.recordProviderCall({ provider: "claude-subscription", day: day ?? new Date(at).toLocaleDateString("en-CA", { timeZone: config.installTz }), ok, at }); } catch { /* a count is never worth a turn */ }
   try { record(SOURCES.reason, fromStreamOutput(stdout), at); } catch { /* same */ }
 }
 

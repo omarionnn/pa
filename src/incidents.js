@@ -66,7 +66,7 @@ const one = (s, max = 240) => {
 
 /** "3:40pm", or "Sat 3:40pm" when it was not today. */
 export function clockWords(ms, now = clock.now()) {
-  const tz = config.tz;
+  const tz = config.installTz;
   const day = (x) => new Date(x).toLocaleDateString("en-US", { timeZone: tz });
   const t = new Date(ms).toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" }).replace(" ", "").toLowerCase();
   return day(ms) === day(now) ? t : `${new Date(ms).toLocaleDateString("en-US", { timeZone: tz, weekday: "short" })} ${t}`;
