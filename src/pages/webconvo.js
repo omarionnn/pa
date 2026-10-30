@@ -264,6 +264,22 @@ function lineHtml(m) {
   return `<li class="msg ${m.role === "user" ? "you" : "re"}" id="m-${m.id}" data-id="${m.id}" data-at="${m.at}" data-web="${m.web ? 1 : 0}"${m.cid ? ` data-cid="${esc(m.cid)}"` : ""}${placeAttrs(m)}>${m.html}</li>`;
 }
 
+// Choice cards (src/choicecards.js) arrive as one message each; on Web they sit side by side in one
+// line, the way they read as a set on a phone. Consecutive card-only lines are joined here, and a
+// card that arrives live joins the line before it (the page's add()).
+const LBL = String.raw`<p class="lbl">(?:(?!<\/p>)[\s\S])*<\/p>`;
+const CARDS = String.raw`(?:<a class="photo choice"[^>]*>(?:(?!<\/a>)[\s\S])*<\/a>)+`;
+const CARD_LINE = new RegExp(String.raw`<li class="msg re" id="m-(\d+)" data-id="\d+"([^>]*)>(${LBL})(${CARDS})<\/li>`, "g");
+const CARD_RUN = new RegExp(String.raw`(?:<li class="msg re" id="m-\d+" data-id="\d+"[^>]*>${LBL}${CARDS}<\/li>){2,}`, "g");
+function groupChoices(html) {
+  return html.replace(CARD_RUN, (run) => {
+    const parts = [...run.matchAll(CARD_LINE)];
+    if (parts.length < 2) return run;
+    const ids = parts.map(p => p[1]);
+    return `<li class="msg re choices" id="m-${ids.at(-1)}" data-id="${ids.at(-1)}" data-ids="${ids.join(" ")}"${parts[0][2]}>${parts[0][3]}<div class="crow">${parts.map(p => p[4]).join("")}</div></li>`;
+  });
+}
+
 const dayName = (at, now) => {
   const d = dayKey(at);
   return d === dayKey(now) ? "TODAY" : d === dayKey(now - 864e5) ? "YESTERDAY" : dayFmt().format(at).toUpperCase();
@@ -317,7 +333,7 @@ export function listHtml(lines, { now = clock.now(), folds = null, conversationI
     if (m.role === "user") web = m.web;
     out += lineHtml(m);
   }
-  return out;
+  return groupChoices(out);
 }
 
 /** One page of history drawn: its lines with finished tasks settled (src/settle.js), as the thread shows it. */
@@ -423,6 +439,10 @@ html:not(.js) .l1,html:not(.js) .thread[aria-busy]{display:none}
 .said.hand{font:400 26px/1.15 var(--hand);color:var(--pen)}
 .said a,.rsay a{color:inherit;text-decoration-color:var(--pen);text-underline-offset:3px}
 .re{align-self:stretch}
+.photo.choice{width:min(46vw,200px);height:auto;aspect-ratio:4/5;border:0;transform:none;border-radius:10px;box-shadow:var(--shp)}
+.re .photo.choice{transform:none}
+.crow{display:flex;gap:12px;overflow-x:auto;padding:2px 2px 8px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}
+.crow .photo.choice{flex:none;scroll-snap-align:start}
 .rsay{display:flex;flex-direction:column;gap:12px;max-width:34em}
 .rsay p{margin:0;font-size:16px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
 .rl{margin:2px 0;padding:0;list-style:none}
@@ -688,14 +708,15 @@ if(!list){R.api={uid:uid,post:function(p){p.at=p.at||Date.now();keep(pend().filt
 form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.trim(),fs=R.takeFiles?R.takeFiles():[];if(!t&&!fs.length)return;var p={id:uid(),text:t};if(fs.length)p.files=fs;R.api.post(p)});return}
 var loaded=!R.defer,lastPoll=0,calm2=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
 function line(m){var li=document.createElement('li');li.className='msg arrive '+(m.role==='user'?'you':'re');li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;if(m.day)li.dataset.day=m.day;if(m.where)li.dataset.where=m.where;li.innerHTML=m.html;times(li);return li}
-function has(id){return list.querySelector('.msg[data-id="'+id+'"]')||list.querySelector('.done[data-ids~="'+id+'"]')}
+function has(id){return list.querySelector('.msg[data-id="'+id+'"]')||list.querySelector('.done[data-ids~="'+id+'"]')||list.querySelector('.choices[data-ids~="'+id+'"]')}
+function joinCard(li){var a=li.querySelector(':scope>.photo.choice');if(!a||li.querySelector('.rsay,.said'))return false;var p=li.previousElementSibling;if(!p||!p.classList.contains('re')||!p.querySelector('.photo.choice')||p.querySelector('.rsay,.said'))return false;var row=p.querySelector('.crow');if(!row){row=document.createElement('div');row.className='crow';p.querySelectorAll(':scope>.photo.choice').forEach(function(x){row.appendChild(x)});p.appendChild(row);p.classList.add('choices');p.dataset.ids=p.dataset.id}row.appendChild(a);p.dataset.ids+=' '+li.dataset.id;p.dataset.id=li.dataset.id;li.remove();return true}
 function dayCheck(li,m){if(!m.day)return;var p=li.previousElementSibling;while(p&&!p.dataset.day)p=p.previousElementSibling;if(p&&p.dataset.day===m.day)return;var d=document.createElement('li');d.className='day';d.setAttribute('role','separator');d.dataset.day=m.day;if(m.where)d.dataset.where=m.where;var l=document.createElement('p');l.className='lbl';l.textContent=m.dayLabel||'';d.appendChild(l);li.parentNode.insertBefore(d,li)}
 function add(m){if(has(m.id))return;unempty();var stick=near(),li=line(m);if(m.role==='assistant'&&dli){li.classList.remove('arrive');dli.remove();dli=null}
 if(m.cid){var p=list.querySelector('.msg[data-pending="'+m.cid+'"]');if(p){p.replaceWith(li);dayCheck(li,m);forget(m.cid);li.classList.add('just');var s=document.createElement('p');s.className='st';s.textContent='SENT \\u00b7 '+fmt(m.at);li.appendChild(s);setTimeout(function(){s.classList.add('fade');setTimeout(function(){s.remove();li.classList.remove('just')},1100)},1200);if(stick)bottom();where();return}}
 var after=null;list.querySelectorAll('.msg[data-id]').forEach(function(o){var a=Number(o.dataset.at),i=Number(o.dataset.id);if(a<m.at||(a===m.at&&i<m.id))after=o});
 var fp=list.querySelector('.msg[data-pending]');
 if(after&&after.nextSibling&&!(fp&&after.nextSibling===fp))list.insertBefore(li,after.nextSibling);else if(fp&&(!after||after.nextSibling===fp))list.insertBefore(li,fp);else if(after)list.appendChild(li);else list.insertBefore(li,list.firstChild);
-dayCheck(li,m);
+if(!joinCard(li))dayCheck(li,m);
 if(m.id>R.last)R.last=m.id;if(m.role==='assistant'){waiting=Math.max(0,waiting-1);if(!waiting)working(false)}if(stick)bottom();where()}
 function unempty(){var e=document.querySelector('.convo>.empty');if(e)e.remove()}
 function pendingLine(p){unempty();var li=document.createElement('li');li.className='msg you arrive';li.dataset.pending=p.id;if(p.files&&p.files.length&&R.drawFiles)R.drawFiles(li,p);else{var s=document.createElement('div');s.className='said';s.textContent=p.text;li.appendChild(s)}list.appendChild(li);bottom();return li}

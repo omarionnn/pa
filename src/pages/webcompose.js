@@ -67,7 +67,7 @@ export function mediaOut(row, conversationId) {
         seconds ||= Number(it?.seconds) || null;
       } catch { /* the words are a nicety; the note still plays */ }
     }
-    return { kind, name, src, label: slipLabel({ name, kind: String(x?.kind ?? ""), pages: Number(x?.pages) || null }), seconds: seconds ? Math.round(seconds) : null, transcript };
+    return { kind, name, src, ...(x?.choice ? { choice: true } : {}), label: slipLabel({ name, kind: String(x?.kind ?? ""), pages: Number(x?.pages) || null }), seconds: seconds ? Math.round(seconds) : null, transcript };
   });
 }
 
@@ -87,7 +87,7 @@ export function playButton({ src, seconds }) {
 export function mediaHtml(m) {
   const mine = m.role === "user";
   const photos = m.media.filter(x => x.kind === "photo").map(x => x.src
-    ? `<a class="photo" href="${esc(x.src)}" target="_blank" rel="noopener"><img src="${esc(x.src)}" alt="${mine ? "Photo you sent" : "Photo from Reason"}" loading="lazy" decoding="async"></a>`
+    ? `<a class="photo${x.choice ? " choice" : ""}" href="${esc(x.src)}" target="_blank" rel="noopener"><img src="${esc(x.src)}" alt="${mine ? "Photo you sent" : "Photo from Reason"}" loading="lazy" decoding="async"></a>`
     : `<div class="photo" role="img" aria-label="${mine ? "Photo you sent" : "Photo from Reason"}"><span class="lbl">PHOTO</span></div>`).join("");
   const files = m.media.filter(x => x.kind === "file").map(x => x.src
     ? `<a class="slip fslip" href="${esc(x.src)}" target="_blank" rel="noopener"><span class="fn">${esc(x.label)}</span><span class="fs">TAP TO OPEN</span></a>`

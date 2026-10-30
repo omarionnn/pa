@@ -27,6 +27,9 @@ export const ALWAYS_LOAD = new Set([
   "web_search", "web_lookup", "gmail_search", "task_update", "timer_set", "spotify_now_playing",
   "remember", "browser_read", "recall", "call_place", "confirm_record", "browser_open",
   "message_send", "task_start",
+  // Choice cards (src/choicecards.js), only while their switch is on: a deferred tool is a name the
+  // model never thinks to search for, so a shopping turn wrote a list instead (cage, 2026-10-30).
+  ...(["", "0", "off", "false", "no"].includes(String(process.env.REASON_CHOICE_CARDS ?? "").trim().toLowerCase()) ? [] : ["show_choices"]),
 ]);
 
 // A tool's own description, plus any feature rule it shares with the rest of its group (see

@@ -13,6 +13,7 @@ import { Channel } from "./channel.js";
 import * as db from "../db.js";
 import { webOn, WEB } from "../web.js";
 import { clock } from "../config.js";
+import { isCardFile } from "../choicecards.js";
 
 export class WebChannel extends Channel {
   name = WEB;
@@ -38,6 +39,24 @@ export class WebChannel extends Channel {
   async send({ to, text, idempotencyKey = null }) {
     if (!webOn()) return { ok: false, retryable: false, error: "web is switched off (REASON_WEB)" };
     const delivered = { channel: this.name, to, text, idempotencyKey, message_id: `web-${randomUUID()}`, at: clock.now() };
+    this.recent.push(delivered);
+    if (this.recent.length > 200) this.recent.splice(0, this.recent.length - 200);
+    this.events.emit("message", delivered);
+    return { ok: true, delivered };
+  }
+
+  /** A document is not something Web is sent; choice cards are the one picture it draws (sendMedia). */
+  get carriesFiles() { return false; }
+
+  /**
+   * A choice card (src/choicecards.js), and nothing else: the history row the outbox writes for it
+   * names the card, and the thread draws it. Any other file is refused, so no document "arrives" on
+   * Web as a name with nothing behind it.
+   */
+  async sendMedia({ to, text = "", file, idempotencyKey = null }) {
+    if (!webOn()) return { ok: false, retryable: false, error: "web is switched off (REASON_WEB)" };
+    if (!isCardFile(file)) return { ok: false, supported: false, retryable: false, error: "Reason Web is only sent choice cards as pictures" };
+    const delivered = { channel: this.name, to, text, idempotencyKey, message_id: `web-${randomUUID()}`, at: clock.now(), card: true };
     this.recent.push(delivered);
     if (this.recent.length > 200) this.recent.splice(0, this.recent.length - 200);
     this.events.emit("message", delivered);

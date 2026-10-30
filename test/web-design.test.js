@@ -551,3 +551,15 @@ test("Web's pen matches the brand pen on every other page", async () => {
   assert.equal(brand.BRAND_PEN, "#9c3b2e");
   assert.equal(brand.BRAND_PEN_DARK, "#d46a5c");
 });
+
+test("choice cards sit side by side in one line; a line with words is never folded in", () => {
+  const card = (id) => wc.rowOut(row({ id, media: [{ kind: "image", mimeType: "image/jpeg", filename: `reason-${id}.jpg`, url: "card:0123456789abcdef0123.jpg", choice: true }] }), { conversationId: KOFI_C });
+  const said = wc.rowOut(row({ id: 1, text: "Three CeraVe cleansers. Which one?" }), { conversationId: KOFI_C });
+  const html = wc.listHtml([said, card(2), card(3), card(4)], { conversationId: KOFI_C });
+  assert.equal((html.match(/class="msg re choices"/g) ?? []).length, 1);
+  assert.match(html, /data-ids="2 3 4"/);
+  assert.equal((html.match(/<div class="crow">/g) ?? []).length, 1);
+  assert.equal((html.match(/class="photo choice"/g) ?? []).length, 3);
+  assert.match(html, /Three CeraVe cleansers/);
+  assert.match(html, /src="\/web\/media\/m\/3\/0"/);
+});
