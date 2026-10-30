@@ -50,3 +50,5 @@ Tests: `test/stamps-wax.test.js` (18). Staging: `npm run web:staging` sets `REAS
 
 `grep REASON_STAMPS_WAX /opt/reason/.env` — absent/off on prod until the owner's go; the typed book is what
 prod serves. `sqlite3 data/reason.db "SELECT COUNT(*) FROM stamp_jobs"` exists after deploy.
+
+**Phone widths, two-up (#251, 2026-10-30).** At ≤480px the book is two seals a row (`@media (max-width:480px)` in `src/pages/webseals.js` CSS): seals scale to the cell, the date + share row sits at the foot of each cell so dates line up across a row, the empty page's not-yet spots are two-up too; desktop keeps `auto-fill, minmax(170px,1fr)`. `bin/web-seals-drive.mjs` reads `REASON_STAMPS_EVERYDAY`: with it on, the drive's research earns Looked into, thoroughly, so the counts are one higher (2 / 12). Both runs all ok; checked 360/390/430 light + night: 2 a row, nothing clipped, no overlap, no sideways scroll.
