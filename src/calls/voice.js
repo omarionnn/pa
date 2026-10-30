@@ -191,6 +191,19 @@ const SILENT_TOOLS = new Set(["end_call", "skip_turn", "transfer_to_number", "vo
 
 /** The filler that buys thinking time before a tool, rather than dead air. Their own suggestion. */
 export const THINKING_FILLER = "... ";
+/** The one tool-start filler a call may say: "One sec..." — see `FILLER_AFTER_MS`. */
+export const ONE_SEC = `One sec${THINKING_FILLER}`;
+
+/**
+ * How old a turn must be, with nothing said in it, before a tool start may say "One sec...".
+ *
+ * Call baseline (2026-10-30, 39 owner calls): 25 of the 26 "One sec..." were this code, said on every
+ * tool start, and they arrived 4–15 s into the turn — after the model had already thought for seconds,
+ * so they were filler, not a fast acknowledgement. 40 of 192 owner-call lines were filler. Now it goes
+ * out only when nothing has been said this turn, the turn is at least this old, and it has not been
+ * said on this call before. Otherwise a tool start says nothing extra.
+ */
+export const FILLER_AFTER_MS = 2_500;
 
 /**
  * How long one of Reason's own tools may run on a call before the turn stops waiting for it.
@@ -212,7 +225,34 @@ export const CALL_TOOL_BUDGET_MS = 8_000;
  * platform decides the LLM is gone. Past this, one brief acknowledgement goes out (never twice in a
  * turn) and the real reply follows it in the same stream.
  */
-export const FIRST_WORD_DEADLINE_MS = 4_000;
+export const FIRST_WORD_DEADLINE_MS = 6_000;
+
+/**
+ * After the holding line has been said once on a call, the deadline for any later one.
+ *
+ * At 4 s it would have fired on 24% of turns (36 of 148 had first_word > 4 s), making it the new top
+ * filler. So it is said at most once per call at `FIRST_WORD_DEADLINE_MS`; after that, only a turn
+ * that reaches this long with nothing said gets it again — still well inside the platform's ~24 s
+ * custom-LLM timeout (call 13), which is the thing it exists to stop.
+ */
+export const LATE_HOLDING_MS = 15_000;
+
+/**
+ * Which once-per-call lines a call has already said, by `conversation#call`. In memory: a restart
+ * forgets it, and the worst that costs is one more "One sec..." or holding line on that call.
+ */
+const onceSaid = new Map();
+const ONCE_SAID_KEEP = 500;
+function onceSaidFor(call) {
+  const key = `${call?.conversation_id}#${call?.id}`;
+  let got = onceSaid.get(key);
+  if (!got) {
+    got = { filler: false, holding: false };
+    onceSaid.set(key, got);
+    if (onceSaid.size > ONCE_SAID_KEEP) onceSaid.delete(onceSaid.keys().next().value);
+  }
+  return got;
+}
 
 /**
  * What is said at that deadline. An acknowledgement, not an apology and not a check that they are
@@ -236,7 +276,7 @@ const BROKE_FIRST = "Sorry — something broke on my end. Say that again?";
  */
 export const METER_KINDS = {
   holdingLine: HOLDING_LINE,
-  fillers: [THINKING_FILLER, `One sec${THINKING_FILLER}`],
+  fillers: [THINKING_FILLER, ONE_SEC],
   fallbacks: [NOTHING_SAID_AFTER, COME_BACK_LATER, COME_BACK_CHECK, COME_BACK_LOOK, BROKE_MID, BROKE_FIRST],
 };
 
@@ -251,8 +291,9 @@ export const METER_KINDS = {
  * is handed the turn explicitly, in a user line it can act on, rather than a request it cannot take.
  */
 export const LINE_IS_QUIET = `[The line is quiet — they have not said anything new since your last words, and the turn is yours.`
-  + ` Pick up from where you left off in one short sentence, or check they are still there. Do not repeat what you already said.`
-  + ` If you were finished and there is nothing to add, call skip_turn and wait — never write NO_REPLY.]`;
+  + ` If there is a task you were in the middle of, carry on with it in one short sentence. Do not repeat what you already said,`
+  + ` and never ask whether they are there or can hear you.`
+  + ` Otherwise stay quiet: call skip_turn and wait — never write NO_REPLY.]`;
 
 export function endOnTheirSide(messages = []) {
   const out = [...messages];
@@ -1500,6 +1541,10 @@ export async function* voiceTurn({
   toolBudgetMs = CALL_TOOL_BUDGET_MS,
   // How long the turn may say nothing at all before the holding line. Injectable for the same reason.
   firstWordDeadlineMs = FIRST_WORD_DEADLINE_MS,
+  // The holding line's deadline once this call has already had one; see `LATE_HOLDING_MS`.
+  lateHoldingMs = LATE_HOLDING_MS,
+  // How old a silent turn must be before a tool start says "One sec..."; see `FILLER_AFTER_MS`.
+  fillerAfterMs = FILLER_AFTER_MS,
   // The turn meter (src/calls/metrics.js): which tools ran and what the model used. Watched only.
   meter = null,
 }) {
@@ -1526,6 +1571,20 @@ export async function* voiceTurn({
   // The holding line, said at most once per turn — see `FIRST_WORD_DEADLINE_MS`.
   let holdingSaid = false;
   const turnStartReal = Date.now();
+  // What this call has already had once: the tool-start filler, the holding line at the first deadline.
+  const once = onceSaidFor(call);
+  // The one "something was already said" the filler and the holding line share, so a turn never
+  // gets both: the holding line sets `said`, the filler sets `filled`.
+  const saidAnything = () => Boolean(said || filled || holdingSaid);
+  // "One sec...", or nothing: only into a turn that has said nothing, is old enough for the pause to
+  // be real, and on a call that has not had it yet. See `FILLER_AFTER_MS`.
+  const oneSec = function* () {
+    if (saidAnything() || once.filler || Date.now() - turnStartReal < fillerAfterMs) return;
+    filled = true;
+    once.filler = true;
+    log({ voice_tool_filler: call.id, kind: context.kind, ms: Date.now() - turnStartReal });
+    yield chunk({ content: ONE_SEC });
+  };
   // Nobody on their side has been told who is calling, or only a machine has spoken. Either way the
   // words this turn writes are NOT streamed as they come: until the round's tools are known there is
   // no telling a reply to a person from a note about a recording, and call 45 said "This is a recorded
@@ -1564,20 +1623,24 @@ export async function* voiceTurn({
     && !callOutcome.MACHINE_KINDS.includes(String(call?.outcome_kind ?? ""));
   const onlyHolding = () => holdingSaid && said === HOLDING_LINE;
   const untilFirstWord = async function* (pending) {
-    if (holdingSaid || said || filled || !replyExpected()) return await pending;
+    if (saidAnything() || !replyExpected()) return await pending;
+    // Once per call at the first deadline; after that only a turn that is about to look dead to the
+    // platform gets it again. See `LATE_HOLDING_MS`.
+    const deadlineMs = once.holding ? Math.max(firstWordDeadlineMs, lateHoldingMs) : firstWordDeadlineMs;
     let timer;
     const late = new Promise(resolve => {
-      timer = setTimeout(() => resolve(LATE), Math.max(0, firstWordDeadlineMs - (Date.now() - turnStartReal)));
+      timer = setTimeout(() => resolve(LATE), Math.max(0, deadlineMs - (Date.now() - turnStartReal)));
       timer.unref?.();
     });
     let first;
     try { first = await Promise.race([pending, late]); } finally { clearTimeout(timer); }
     if (first !== LATE) return first;
-    if (said || filled || !replyExpected()) return await pending;
+    if (saidAnything() || !replyExpected()) return await pending;
     holdingSaid = true;
+    once.holding = true;
     said = HOLDING_LINE;
     if (!firstContentAt) firstContentAt = clock.now();
-    log({ voice_holding_line: call.id, kind: context.kind, ms: Date.now() - turnStartReal, deadline_ms: firstWordDeadlineMs });
+    log({ voice_holding_line: call.id, kind: context.kind, ms: Date.now() - turnStartReal, deadline_ms: deadlineMs });
     yield chunk({ content: HOLDING_LINE });
     return await pending;
   };
@@ -1711,13 +1774,11 @@ export async function* voiceTurn({
           if (ev?.type === "tool_start" && !filled && !holdBack && !SILENT_TOOLS.has(ev.name)) {
             // The filler goes out as the tool call begins, while the model is still writing its
             // input — a whole text message, for message_send. Waiting for the block to close put it
-            // 8–11 seconds into the turn (call 35, 2026-10-21).
+            // 8–11 seconds into the turn (call 35, 2026-10-21). Only into silence, though: words
+            // already said (the model's own, or the holding line) bought this pause, and nothing extra
+            // is added after them. See `oneSec`.
             yield* emit(splitter.flush());
-            filled = true;
-            // Not straight after the holding line, which already bought this pause.
-            if (!(onlyHolding() && !roundText.trim())) {
-              yield chunk({ content: said || roundText.trim() ? THINKING_FILLER : `One sec${THINKING_FILLER}` });
-            }
+            yield* oneSec();
             continue;
           }
           if (ev?.type === "tool_use") {
@@ -2020,14 +2081,9 @@ export async function* voiceTurn({
         return;
       }
 
-      // The filler, once, so the pause while a tool runs is not dead air. Their own suggestion: a
-      // chunk ending in "... " buys the time without the person thinking the line dropped.
-      if (!filled) {
-        filled = true;
-        // Not straight after the holding line: that already bought the pause, and "moment...." is
-        // the same breath said twice.
-        if (!onlyHolding()) yield chunk({ content: said ? THINKING_FILLER : `One sec${THINKING_FILLER}` });
-      }
+      // The filler, so the pause while a tool runs is not dead air — but only under the same rule as
+      // at tool start: a silent turn, old enough, and never twice on a call. See `oneSec`.
+      yield* oneSec();
 
       messages.push({
         role: "assistant",
@@ -2164,6 +2220,9 @@ export async function llmRequest({
   toolBudgetMs = CALL_TOOL_BUDGET_MS,
   // How long a turn may say nothing before the holding line; see `FIRST_WORD_DEADLINE_MS`.
   firstWordDeadlineMs = FIRST_WORD_DEADLINE_MS,
+  // The later holding-line deadline and the filler's minimum turn age; see `voiceTurn`.
+  lateHoldingMs = LATE_HOLDING_MS,
+  fillerAfterMs = FILLER_AFTER_MS,
 }) {
   // The moment the platform's request arrived — the person has stopped talking — which is where the
   // caller's wait starts. Every turn timing in call_turns is measured from here.
@@ -2239,7 +2298,7 @@ export async function llmRequest({
   const msgCount = Array.isArray(body.messages) ? body.messages.length : 0;
   const turn = voiceTurn({
     context, call, generate: gen, model: String(body.model ?? "reason"), log, extras,
-    signal: control.signal, toolBudgetMs, firstWordDeadlineMs, meter,
+    signal: control.signal, toolBudgetMs, firstWordDeadlineMs, lateHoldingMs, fillerAfterMs, meter,
     ...(screen ? { screen } : {}),
   });
   return {
