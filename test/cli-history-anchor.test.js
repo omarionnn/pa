@@ -141,3 +141,23 @@ test("through a turn: identical system prompt on consecutive turns, the full win
   assert.equal(three.system, two.system, "same system bytes even though the anchor was forgotten in between");
   assert.ok(!/The conversation so far/.test(three.prompt));
 });
+
+test("a line rewritten inside the anchor (a redaction, a scrubbed password) sets it again: the model never reads the old text", () => {
+  const msgs = thread(30);
+  const t1 = historyParts("h", msgs, { now: 1_000 });
+  assert.match(t1.anchor, /answer 20/);
+  const redacted = msgs.map(m => m.content === "answer 20" ? { ...m, content: "[deleted at their request]" } : m);
+  const t2 = historyParts("h", [...redacted, ...exchange(30)], { now: 2_000 });
+  assert.doesNotMatch(t2.anchor, /answer 20\b/, "the old text is gone from the system prompt");
+  assert.match(t2.anchor, /\[deleted at their request\]/);
+  assert.deepEqual(t2.anchor.split("\n"), renderHistory([...redacted, ...exchange(30)]));
+});
+
+test("a line put in before a short anchor sets it again, so nothing of the newest 40 is missed", () => {
+  const msgs = [{ role: "user", content: "[10:00] Omari: hi" }];
+  const t1 = historyParts("h", msgs, { now: 1_000 });
+  assert.equal(t1.anchor, "[10:00] Omari: hi");
+  const inserted = [{ role: "assistant", content: "earlier note" }, ...msgs];
+  const t2 = historyParts("h", inserted, { now: 2_000 });
+  assert.deepEqual([...t2.anchor.split("\n"), ...t2.recent], renderHistory(inserted), "every line shown, in order");
+});

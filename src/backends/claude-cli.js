@@ -92,7 +92,7 @@ export const renderHistory = (messages) => messages.slice(-MAX_HISTORY).map(rend
  * byte-identical from turn to turn, and only what came after it goes in the user message. The
  * anchor is the whole window when it is set (the model sees exactly what it did before); it is
  * set again when more than ANCHOR_RECENT_MAX messages have followed it, when it is older than
- * ANCHOR_MAX_MS (the cache is cold by then anyway), or when its end can no longer be found in the
+ * ANCHOR_MAX_MS (the cache is cold by then anyway), or when its lines no longer read the same in the
  * thread. Between anchors the model sees the same 40 messages plus up to 20 newer ones — never
  * fewer than today, never anything the thread does not hold (src/thread.js keeps 60).
  *
@@ -111,15 +111,25 @@ export function historyParts(historyId, messages, { system = "", now = Date.now(
   const lines = renderHistory(messages);
   const a = anchors.get(historyId);
   if (a && now - a.at < ANCHOR_MAX_MS) {
-    // The anchor's end, found by its last two lines (a user line carries a timestamp, so the pair
-    // is as good as unique; one assistant line — "Reason: on it." — is not). Last match wins.
-    let idx = -1;
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (lines[i] === a.tail[1] && (a.tail[0] == null || lines[i - 1] === a.tail[0])) { idx = i; break; }
+    // Kept only while every one of its lines still reads the same, in order, in the thread: a line
+    // rewritten after it was set (db.redactFromReplies when someone asks to forget a thing,
+    // db.scrubConversationText for an event password) or one put in among its lines
+    // (db.insertBeforeLastAssistant) sets it again, so the model never reads text the thread no
+    // longer holds. And only while nothing of the newest MAX_HISTORY sits before it, so nothing the
+    // model saw before is missing. Read against the whole thread, not just its newest 40. Last
+    // match wins.
+    const all = messages.map(renderLine).filter(Boolean);
+    const n = a.lines.length;
+    let start = -1;
+    for (let s = all.length - n; s >= 0; s--) {
+      let same = true;
+      for (let j = 0; j < n && same; j++) same = all[s + j] === a.lines[j];
+      if (same) { start = s; break; }
     }
-    if (idx >= 0 && lines.length - 1 - idx <= ANCHOR_RECENT_MAX) {
-      log({ history_anchor: "kept", recent: lines.length - 1 - idx, conversation: historyId });
-      return { anchor: a.text, recent: lines.slice(idx + 1) };
+    const after = start >= 0 ? all.length - start - n : -1;
+    if (start >= 0 && start <= Math.max(0, all.length - MAX_HISTORY) && after <= ANCHOR_RECENT_MAX) {
+      log({ history_anchor: "kept", recent: after, conversation: historyId });
+      return { anchor: a.text, recent: all.slice(start + n) };
     }
   }
   if (!lines.length) { anchors.delete(historyId); return { anchor: "", recent: [] }; }
@@ -129,7 +139,7 @@ export function historyParts(historyId, messages, { system = "", now = Date.now(
     log({ history_anchor: "too_long", lines: lines.length, conversation: historyId });
     return { anchor: "", recent: lines };
   }
-  anchors.set(historyId, { text, tail: [lines.at(-2) ?? null, lines.at(-1)], at: now });
+  anchors.set(historyId, { text, lines, at: now });
   log({ history_anchor: a ? "reset" : "new", lines: lines.length, conversation: historyId });
   return { anchor: text, recent: [] };
 }
