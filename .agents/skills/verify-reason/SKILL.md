@@ -428,6 +428,10 @@ See [features/web-drafts.md](features/web-drafts.md).
 
 `npm run test:offline` under `env -i`: 4,551 tests, 4,434 passing, 115 skipped, 2 failing — both in `test/flights.test.js` (known flake; 56/56 alone). New: `test/research-room.test.js` (11). In-process drive over the subscription: `bin/research-room-drive.mjs`, 10 steps all ok, see [features/research-room.md](features/research-room.md).
 
+### Baseline — asks run out (fix/stale-asks-expire, 2026-10-30)
+
+`npm run test:offline` under `env -i` (on #252): 4,551 tests, 4,436 passing, 115 skipped, 0 failing. New: `test/stale-asks.test.js` (9, all 9 fail on origin/main); `test/access.test.js` +2 (an access ask lives `REASON_ACCESS_WINDOW_MIN`, and an expired one decides the request expired). Deploy sweep: `node --env-file-if-exists=.env scripts/expire-stale-asks.js --dry-run`, then without. See [features/confirm-gate.md](features/confirm-gate.md).
+
 ### Baseline — link-card attachments dropped (fix/link-preview-attachments, 2026-10-30)
 
 `npm run test:offline` under `env -i`: 4,532 tests, 4,417 passing, 115 skipped, 0 failing. New: `test/link-preview-attachment.test.js` (7). Cage over the subscription: 1 turn + 1 ignored part, see [features/inbound-message.md](features/inbound-message.md).
