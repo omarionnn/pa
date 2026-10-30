@@ -737,6 +737,8 @@ Research room (fair page share per planned query, big-question caps, one backgro
 
 Per-person time zone (`REASON_TZ_ASK`; guess + ask once before the first clock-time action, held action finished by the answer, travel asked once, `config.tz` = their clock inside their turn/page): [features/time-zone.md](features/time-zone.md); `test/time-zone.test.js`.
 
+Reason Web notes + file chips (no flag; a shared location / inline reply / contact card drawn as a tag, never the model's note — no coordinates, no tool instructions, no U+FFFD "?"; a file Reason texted is a chip linking `/web/media/m/<row>/<i>`, served from `outbox.media.file` only for the signed-in conversation and only inside the documents/images roots; inline only pdf/raster image/audio/video/text, else attachment): [features/web-notes.md](features/web-notes.md); `test/web-notes.test.js`, `test/web-file-chip.test.js`; `bin/web-notes-drive.mjs` (real HTTP, caged, no sound): 12 steps incl. another person 404, signed out 404, symlink out of the root 404.
+
 ## Facts worth not rediscovering
 
 - **The live instance is Hetzner, not a port on this Mac.** Since 2026-10-12 nothing on this

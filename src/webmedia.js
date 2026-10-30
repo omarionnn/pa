@@ -186,7 +186,7 @@ function bytesOut({ bytes, mime, name = "", headers = {}, method = "GET" }) {
     "Referrer-Policy": "same-origin", "Cross-Origin-Resource-Policy": "same-origin", "Accept-Ranges": "bytes",
     // A PDF, a picture or a recording opens in the browser; anything else (a .docx, a sheet) comes
     // down as the file under its own name, which iPhone Safari hands to Quick Look.
-    "Content-Disposition": `${/^(application\/pdf|image\/|audio\/|video\/|text\/plain)/.test(mime) ? "inline" : "attachment"}; filename="${String(name || "file").replace(/[^\x20-\x7e]|["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(name || "file")}`,
+    "Content-Disposition": `${/^(application\/pdf|image\/(png|jpeg|gif|webp|heic)$|audio\/|video\/|text\/plain)/.test(mime) ? "inline" : "attachment"}; filename="${String(name || "file").replace(/[^\x20-\x7e]|["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(name || "file")}`,
     ...(mime === "application/pdf" ? {} : { "Content-Security-Policy": "default-src 'none'; sandbox" }),
   };
   const r = RANGE.exec(String(headers.range ?? ""));
