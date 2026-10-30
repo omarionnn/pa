@@ -38,7 +38,9 @@ import { readYesNo } from "../calls/verify.js";
 import { clock, config, normalizeNumber, stamp } from "../config.js";
 import { OutageError, downLine, leftWhileDownLine } from "../down.js";
 import * as onethought from "../onethought.js";
+import { withoutNoReply } from "../plain.js";
 import * as web from "../web.js";
+import { webReplyAllowedFor } from "../dailyflag.js";
 import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 
@@ -625,9 +627,13 @@ export class Router {
       }
       // Which text the reply answers, for a thread that can carry an inline reply: if the thread
       // has moved on by the time the reply is ready, it is pinned under this one (replies.js).
-      const canPin = !!this.get(last.channel)?.inlineReplies && (!last.service || /^imessage$/i.test(last.service));
+      const inline = !!this.get(last.channel)?.inlineReplies && (!last.service || /^imessage$/i.test(last.service));
+      // Reason Web draws a pinned reply as a quote line (REASON_WEB_REPLY, src/pages/webreply.js), so a
+      // Web turn's answer is pinned by the same rule (replies.answerTarget). Web has no reply_to tool, so
+      // the burst line, which asks for one, stays the inline channels'.
+      const canPin = inline || (last.channel === web.WEB && webReplyAllowedFor(conversationId));
       const said = texts.filter(Boolean);
-      const several = canPin ? replies.burstLine(said.length) : "";
+      const several = inline ? replies.burstLine(said.length) : "";
       fold.text = said.join("\n");
 
       // History, one row per message they sent — their own words as heard, with the channel each
@@ -1251,6 +1257,9 @@ export class Router {
   async sendMediaUrl({ channel, to, text = "", mediaUrl, chatId = null }) {
     const pre = this.#ready(channel, { media: true });
     if (pre) return pre;
+    // A caption is words to a person: the silence marker comes off, and a caption that was only
+    // the marker goes as no caption — the file still goes (src/plain.js withoutNoReply).
+    text = withoutNoReply(text, { path: "media_url", log: this.log }).text;
     try {
       return await this.get(channel).sendMediaUrl({ to, text, mediaUrl, chatId });
     } catch (e) {
@@ -1268,6 +1277,14 @@ export class Router {
   async sendNow({ channel, to, text, chatId = null, idempotencyKey, file = null, mimeType = null, filename = null, sendStyle = null, replyTo = null }) {
     const ch = this.get(channel);
     if (!ch) return { ok: false, retryable: false, error: `No channel called '${channel}'. Registered: ${[...this.channels.keys()].join(", ") || "none"}.` };
+    // The last step before an adapter, so the silence marker is checked here too, for the console,
+    // for lines with no conversation, and for a row written before the outbox took it off
+    // (src/plain.js withoutNoReply). Only the marker and no file: nothing goes.
+    const quiet = withoutNoReply(text, { path: "send_now", log: this.log });
+    if (quiet.stripped) {
+      if (quiet.empty && !file) return { ok: false, not_sent: true, silent: true, retryable: false, error: "Not sent: once NO_REPLY was taken off there was nothing left to send." };
+      text = quiet.text;
+    }
     try {
       return file
         ? await ch.sendMedia({ to, text, file, mimeType, filename, chatId, idempotencyKey })

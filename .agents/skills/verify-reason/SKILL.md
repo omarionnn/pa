@@ -424,6 +424,12 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
+### Baseline — NO_REPLY never reaches a person (wt/noreply-midtext, #272, 2026-10-30)
+4,704 tests / 4,589 pass / 0 fail / 115 skipped (`npm test` under `env -i`, branch merged with origin/main 963e3eb). New: `test/no-reply-midtext.test.js` (11), `test/no-reply-sanitizer.test.js` (9). Caged drive over the fake Sendblue: see [features/no-reply-marker.md](features/no-reply-marker.md).
+
+### Baseline — reply to one message on Web (wt/web-reply-to, 2026-10-30)
+4,662 tests / 4,547 pass / 0 fail / 115 skipped (`npm test`, worktree of origin/main eb76521 + this branch). `bin/web-reply-drive.mjs`: 27 ok.
+
 ### Baseline — place cards show the room (wt/choice-interiors, 2026-10-30)
 
 `npm run test:offline` under `env -i`: 4,605 tests, 4,490 passing, 115 skipped, 0 failing. `test/choicecards.test.js` 42 (look stubbed). Cage over the subscription (owner): places ask → 2 cards, Bluestone's counter (inside) and Devoción's signed storefront; a directory page whose top photos were the neighbours' street views → numbered list, no wrong photo. See [features/choice-cards.md](features/choice-cards.md).
@@ -736,6 +742,9 @@ Pages Reason makes v2 (`REASON_PAGES_V2`; LIVE since 2026-10-27, #196 — start 
 Research room (fair page share per planned query, big-question caps, one background follow-up per run, per-person daily cap): [features/research-room.md](features/research-room.md); `test/research-room.test.js`, `bin/research-room-drive.mjs`.
 
 Per-person time zone (`REASON_TZ_ASK`; guess + ask once before the first clock-time action, held action finished by the answer, travel asked once, `config.tz` = their clock inside their turn/page): [features/time-zone.md](features/time-zone.md); `test/time-zone.test.js`.
+
+Reason Web reply to one message (`REASON_WEB_REPLY` off/`owner`/on; button, composer line, quote lines, read as an inline reply): [features/web-reply.md](features/web-reply.md); `test/web-reply.test.js`, `bin/web-reply-drive.mjs` (HTTP + Chromium + touch).
+Reason Web notes + file chips (no flag; a shared location / inline reply / contact card drawn as a tag, never the model's note — no coordinates, no tool instructions, no U+FFFD "?"; a file Reason texted is a chip linking `/web/media/m/<row>/<i>`, served from `outbox.media.file` only for the signed-in conversation and only inside the documents/images roots; inline only pdf/raster image/audio/video/text, else attachment): [features/web-notes.md](features/web-notes.md); `test/web-notes.test.js`, `test/web-file-chip.test.js`; `bin/web-notes-drive.mjs` (real HTTP, caged, no sound): 12 steps incl. another person 404, signed out 404, symlink out of the root 404.
 
 ## Facts worth not rediscovering
 

@@ -214,7 +214,7 @@ test("a PDF sent on Web is read by the PDF reader from disk; the thread shows it
   assert.equal(read.ok, true);
   assert.ok(Buffer.compare(got, PDF) === 0, "the reader got the very bytes uploaded");
   const line = convo.rowOut(db.messagesFor(KOFI_C)[0], { conversationId: KOFI_C });
-  assert.match(line.html, /<a class="slip fslip" href="\/web\/media\/u\/[^"]+\/lease\.pdf" target="_blank" rel="noopener"><span class="fn">LEASE\.PDF · 4 PP<\/span><span class="fs">TAP TO OPEN<\/span><\/a>/, "3D: the file slip, TAP TO OPEN");
+  assert.match(line.html, /<a class="slip fslip fchip" href="\/web\/media\/u\/[^"]+\/lease\.pdf" target="_blank" rel="noopener" aria-label="Open lease\.pdf, \d+ B">.*<span class="fn">lease\.pdf<\/span><span class="fs">PDF · 4 PAGES · \d+ B · OPEN<\/span><\/span><\/a>/, "3D: the file slip, TAP TO OPEN");
 });
 
 test("somebody else's file never rides on a send; nor a made-up id; and an empty send with no files is refused", async () => {

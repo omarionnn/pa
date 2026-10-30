@@ -954,7 +954,7 @@ export async function retryDelivery({ runtime, deliveryId }) {
   const rows = db.outboxRowsForKey(d.idem_key);
   // A part the outbox is still asking the provider about may have arrived: that is the outbox's to
   // settle, and a retry now could be a second copy of it.
-  if (rows.some(r => r.state !== "sent" && r.state !== "failed")) return { ok: false, reason: "not_settled" };
+  if (rows.some(r => r.state !== "sent" && r.state !== "failed" && r.state !== "skipped")) return { ok: false, reason: "not_settled" };
   const unsent = rows.filter(r => r.state === "failed");
   const body = rows.length > 1 && unsent.length < rows.length ? unsent.map(r => r.body).join("\n\n") : message.body;
   const moved = db.bumpDeliveryAttempt(d.id, d.attempt);

@@ -519,7 +519,12 @@ export function createServer({ router, runtime, log = () => {} }) {
         const t0 = Date.now();
         const out = await llmRequest({ rawBody, headers: req.headers, log, extras: runtime?.turnExtras ?? {} });
         res.writeHead(out.status, out.headers);
-        if (!out.stream) return res.end(out.body);
+        if (!out.stream) {
+          // A refusal (401, bad JSON) answered without a stream used to end here without a line, so a
+          // call that died on it (calls 13 and 22) left nothing in the journal to say why.
+          log({ call_llm_not_streamed: out.status, ms: Date.now() - t0 });
+          return res.end(out.body);
+        }
         // The platform closing the socket — it gave up waiting, the person spoke over this turn, or
         // the call ended — cancels the turn behind it, so its tools and model rounds stop too rather
         // than running on for a stream nobody is reading.

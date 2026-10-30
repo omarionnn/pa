@@ -569,6 +569,11 @@ export const config = {
   // (src/calls/bland.js), and it is only live with a BLAND_API_KEY on this machine.
   callProvider: process.env.REASON_CALL_PROVIDER || "fake",
   callMaxMinutes: Number(process.env.REASON_CALL_MAX_MINUTES || 10),
+  // The longest a call can really run on the platform, in seconds: the ElevenLabs agent's own
+  // configured ceiling (3600 on the live agent). Reason cannot lower it per call — the override is
+  // refused ("Override for field max_duration_seconds is not allowed by config", see b10b6ab) — so
+  // `callMaxMinutes` is not a promise about when a call ends, and the lost-call sweep waits on this.
+  callPlatformCapSeconds: Number(process.env.REASON_CALL_PLATFORM_CAP_SECONDS || 3600),
   // Bland. One key, sent as `authorization: Bearer <key>` on every request
   // (docs.bland.ai/api-v1/post/calls, read 2026-10-05).
   blandKey: process.env.BLAND_API_KEY || "",

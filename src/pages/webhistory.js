@@ -20,6 +20,7 @@ import { esc } from "./render.js";
 import { webPage, typed, hand, action } from "./webkit.js";
 import { rowOut, sourceLabel } from "./webconvo.js";
 import { COMPOSE_CSS } from "./webcompose.js";
+import { displayText } from "./webnotes.js";
 
 export const MAX_QUERY = 100;
 /** How many search results one page shows (newest first). */
@@ -94,7 +95,7 @@ export function dayLines(conv, key) {
   const rows = db.db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND chat_id IS NULL AND deleted_at IS NULL AND at >= ? AND at < ?
     ORDER BY at ASC, id ASC`).all(conv, noon - 40 * 36e5, noon + 40 * 36e5).filter(r => dayKey(r.at) === key);
   const service = serviceOf(conv);
-  return rows.map(r => rowOut({ ...r, media: (() => { try { return JSON.parse(r.media || "[]"); } catch { return []; } })() }, { conversationId: conv, service }));
+  return rows.map(r => rowOut({ ...r, media: (() => { try { return JSON.parse(r.media || "[]"); } catch { return []; } })() }, { conversationId: conv, service, reply: false }));
 }
 
 const cleanQuery = (q) => String(q ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_QUERY);
@@ -107,7 +108,10 @@ export function searchMessages(conv, q, { limit = MAX_HITS } = {}) {
   // SQLite's lower() folds A–Z only, so the words are matched here, the way the page marks them
   // ("café" finds "CAFÉ"); one person's history is small enough to read through.
   const all = db.db.prepare(`SELECT id, role, channel, text, at FROM messages WHERE conversation_id = ? AND chat_id IS NULL AND deleted_at IS NULL
-    ORDER BY at DESC, id DESC`).all(conv).filter(r => { const t = String(r.text ?? "").toLowerCase(); return words.every(w => t.includes(w)); });
+    ORDER BY at DESC, id DESC`).all(conv)
+    // A person's line is searched and shown as the page shows it: never the pipeline's notes for the model.
+    .map(r => (r.role === "user" ? { ...r, text: displayText(r.text) } : r))
+    .filter(r => { const t = String(r.text ?? "").toLowerCase(); return words.every(w => t.includes(w)); });
   return { total: all.length, hits: all.slice(0, limit) };
 }
 

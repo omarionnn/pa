@@ -59,6 +59,7 @@ import { readBackInstruction, detail as readbackDetail, recordOf as recordOfDeta
 import * as verify from "./verify.js";
 import * as fromcall from "./fromcall.js";
 import { profileNote } from "./profile.js";
+import * as callMetrics from "./metrics.js";
 
 /** The route ElevenLabs is pointed at. One place, because the setup doc quotes it. */
 export const LLM_PATH = "/calls/elevenlabs/llm";
@@ -201,6 +202,43 @@ export const THINKING_FILLER = "... ";
  * running where it is, the model is told to hand the work to a task and say so, and talking resumes.
  */
 export const CALL_TOOL_BUDGET_MS = 8_000;
+
+/**
+ * How long a turn may go with nothing said before it says something short to hold the line.
+ *
+ * Call 13 (2026-10-12): the platform waited ~24 seconds for the custom LLM's first words, got none,
+ * and ended the call with "custom_llm_error: LLM Cascade Error: TimeoutError". A slow model start, a
+ * cold CLI, a harm screen that has not answered — any of them is dead air, and dead air is how the
+ * platform decides the LLM is gone. Past this, one brief acknowledgement goes out (never twice in a
+ * turn) and the real reply follows it in the same stream.
+ */
+export const FIRST_WORD_DEADLINE_MS = 4_000;
+
+/**
+ * What is said at that deadline. An acknowledgement, not an apology and not a check that they are
+ * still there: they have just spoken, and the honest thing to say is that it was heard.
+ */
+export const HOLDING_LINE = "Mm-hm, one moment.";
+
+/** A turn that ends having said nothing of its own (after anything already said, so leading space). */
+const NOTHING_SAID_AFTER = " Sorry — bear with me one moment.";
+// The turn's other canned lines, named so the turn meter (src/calls/metrics.js) can tell them from the
+// model's own words: "first real content" is the first thing said that was not one of these.
+const COME_BACK_LATER = "Let me come back to you on that one.";
+const COME_BACK_CHECK = "Sorry — let me check on that and come back to you.";
+const COME_BACK_LOOK = "Sorry — let me look into that and come back to you.";
+const BROKE_MID = "Sorry, something broke on my end there.";
+const BROKE_FIRST = "Sorry — something broke on my end. Say that again?";
+/**
+ * What the turn meter counts as not-yet-real content. Exported for the tests. The fillers are matched
+ * exactly, trailing space and all: the code's "... " is filler, while a model piece of just "..." has
+ * been trimmed by the splitter and is the model's own dead air (kind "dots"), not filler.
+ */
+export const METER_KINDS = {
+  holdingLine: HOLDING_LINE,
+  fillers: [THINKING_FILLER, `One sec${THINKING_FILLER}`],
+  fallbacks: [NOTHING_SAID_AFTER, COME_BACK_LATER, COME_BACK_CHECK, COME_BACK_LOOK, BROKE_MID, BROKE_FIRST],
+};
 
 /**
  * The messages a turn sends ALWAYS end on the other side's words.
@@ -1460,6 +1498,10 @@ export async function* voiceTurn({
   signal = null,
   // How long one of Reason's tools may hold the line. Injectable so a test does not wait eight seconds.
   toolBudgetMs = CALL_TOOL_BUDGET_MS,
+  // How long the turn may say nothing at all before the holding line. Injectable for the same reason.
+  firstWordDeadlineMs = FIRST_WORD_DEADLINE_MS,
+  // The turn meter (src/calls/metrics.js): which tools ran and what the model used. Watched only.
+  meter = null,
 }) {
   const streamId = id ?? `chatcmpl-${randomUUID()}`;
   const created = Math.floor(clock.now() / 1000);
@@ -1481,6 +1523,9 @@ export async function* voiceTurn({
   if (!messages.length) messages.push({ role: "user", content: LINE_OPENED });
   let said = "";
   let filled = false;
+  // The holding line, said at most once per turn — see `FIRST_WORD_DEADLINE_MS`.
+  let holdingSaid = false;
+  const turnStartReal = Date.now();
   // Nobody on their side has been told who is calling, or only a machine has spoken. Either way the
   // words this turn writes are NOT streamed as they come: until the round's tools are known there is
   // no telling a reply to a person from a note about a recording, and call 45 said "This is a recorded
@@ -1500,6 +1545,42 @@ export async function* voiceTurn({
   // Scratch for things that may happen at most ONCE in a turn however many rounds it takes. See the
   // `new_person_on_the_line` branch in `runCallTool`.
   const turnState = {};
+
+  // Waits on `pending` — the model's next event, or the harm screen — and, if the turn has said
+  // nothing by the deadline, says the holding line once while it keeps waiting. Not while words are
+  // held back: a stranger who has not heard who is calling, or a machine on the line, hears nothing
+  // before the disclosure. The line is an ordinary content delta in the same assistant message, so
+  // the stream keeps its shape: the platform's next request carries it as Reason's own words, and a
+  // history ending on it is handed back as the person's turn by `endOnTheirSide`, never a prefill.
+  //
+  // Armed only when a spoken reply is what this turn is for. Never on hold (the model is meant to
+  // skip_turn, and a line into hold music is wasted on nobody), never with a menu, recording or
+  // mailbox on the line (MACHINE_KINDS: anything said there is a key press or the voicemail itself),
+  // never to somebody still owed the disclosure. Read again at the deadline, because a round can
+  // change any of these mid-turn (a voicemail_detection, a skip_turn). So it is never said once a
+  // machine is known, which keeps it out of any round whose words are recorded as the voicemail.
+  const LATE = Symbol("late");
+  const replyExpected = () => !holdBack && !superseded() && !hold.onHold(call) && !hold.openingOwed(call)
+    && !callOutcome.MACHINE_KINDS.includes(String(call?.outcome_kind ?? ""));
+  const onlyHolding = () => holdingSaid && said === HOLDING_LINE;
+  const untilFirstWord = async function* (pending) {
+    if (holdingSaid || said || filled || !replyExpected()) return await pending;
+    let timer;
+    const late = new Promise(resolve => {
+      timer = setTimeout(() => resolve(LATE), Math.max(0, firstWordDeadlineMs - (Date.now() - turnStartReal)));
+      timer.unref?.();
+    });
+    let first;
+    try { first = await Promise.race([pending, late]); } finally { clearTimeout(timer); }
+    if (first !== LATE) return first;
+    if (said || filled || !replyExpected()) return await pending;
+    holdingSaid = true;
+    said = HOLDING_LINE;
+    if (!firstContentAt) firstContentAt = clock.now();
+    log({ voice_holding_line: call.id, kind: context.kind, ms: Date.now() - turnStartReal, deadline_ms: firstWordDeadlineMs });
+    yield chunk({ content: HOLDING_LINE });
+    return await pending;
+  };
 
   // The screen on what they just said, started NOW and read before anything is spoken. Racing it
   // against the reply rather than waiting for it first is what keeps first-word latency the longer
@@ -1573,7 +1654,10 @@ export async function* voiceTurn({
         return;
       }
 
-      const gen = generate({ system: context.system, messages, tools: offeredTools(context), log, signal });
+      const gen = generate({
+        system: context.system, messages, tools: offeredTools(context), log, signal,
+        ...(meter ? { onUsage: (u) => callMetrics.addUsage(meter, u) } : {}),
+      });
       // On the screened round the model request is put in flight NOW, read ahead into a buffer, so
       // the screen below is read while the first token is already on its way (see `eagerly`).
       const events = round === 0 && screening ? eagerly(gen) : gen;
@@ -1583,12 +1667,12 @@ export async function* voiceTurn({
       // unspoken: it was generated in parallel, which is what bought the latency, and it is not what
       // goes out.
       if (round === 0 && screening) {
-        const read = await screening;
+        const read = yield* untilFirstWord(screening);
         const verdict = harm.VERDICTS.includes(read?.verdict) ? read.verdict : "unscreened";
         if (read?.skipped) log({ harm_screen_skipped: read.skipped, call: call.id });
         if (verdict === "harm" || verdict === "crisis") {
           const done = refuseOnCall({ call, text: spokenByThem, verdict, category: read?.category, note: read?.note, log });
-          yield chunk({ content: done.line });
+          yield chunk({ content: said ? ` ${done.line}` : done.line });
           if (done.endCall) {
             // The reply that was being written in parallel is thrown away unread, and the request
             // behind it is closed rather than left running for a call that is ending.
@@ -1609,22 +1693,40 @@ export async function* voiceTurn({
         }
       }
 
-      for await (const ev of events) {
-        if (ev?.type === "text") {
-          roundText += ev.text ?? "";
-          yield* emit(splitter.push(ev.text ?? ""));
-          continue;
+      // Read by hand rather than `for await`, so each wait on the model can be raced against the
+      // first-word deadline. The `finally` does what `for await` did on the way out: closes the
+      // model's stream when the turn ends early (superseded, or the platform hung up mid-yield).
+      const reading = events[Symbol.asyncIterator]();
+      let readingDone = false;
+      try {
+        for (;;) {
+          const step = yield* untilFirstWord(reading.next());
+          if (step.done) { readingDone = true; break; }
+          const ev = step.value;
+          if (ev?.type === "text") {
+            roundText += ev.text ?? "";
+            yield* emit(splitter.push(ev.text ?? ""));
+            continue;
+          }
+          if (ev?.type === "tool_start" && !filled && !holdBack && !SILENT_TOOLS.has(ev.name)) {
+            // The filler goes out as the tool call begins, while the model is still writing its
+            // input — a whole text message, for message_send. Waiting for the block to close put it
+            // 8–11 seconds into the turn (call 35, 2026-10-21).
+            yield* emit(splitter.flush());
+            filled = true;
+            // Not straight after the holding line, which already bought this pause.
+            if (!(onlyHolding() && !roundText.trim())) {
+              yield chunk({ content: said || roundText.trim() ? THINKING_FILLER : `One sec${THINKING_FILLER}` });
+            }
+            continue;
+          }
+          if (ev?.type === "tool_use") {
+            toolUses.push(ev);
+            if (meter && ev.name) meter.tools.add(String(ev.name));
+          }
         }
-        if (ev?.type === "tool_start" && !filled && !holdBack && !SILENT_TOOLS.has(ev.name)) {
-          // The filler goes out as the tool call begins, while the model is still writing its
-          // input — a whole text message, for message_send. Waiting for the block to close put it
-          // 8–11 seconds into the turn (call 35, 2026-10-21).
-          yield* emit(splitter.flush());
-          filled = true;
-          yield chunk({ content: said || roundText.trim() ? THINKING_FILLER : `One sec${THINKING_FILLER}` });
-          continue;
-        }
-        if (ev?.type === "tool_use") toolUses.push(ev);
+      } finally {
+        if (!readingDone) Promise.resolve(reading.return?.()).catch(() => {});
       }
       yield* emit(splitter.flush());
 
@@ -1678,6 +1780,14 @@ export async function* voiceTurn({
       }
 
       if (!toolUses.length) {
+        // The holding line went out and the model then said nothing (only NO_REPLY, or a note to
+        // itself): "one moment" with nothing after it is a promise left hanging, so the turn's
+        // nothing-said sentence closes it, as it does when the rounds run out.
+        if (onlyHolding()) {
+          log({ voice_turn_nothing_said: call.id, kind: context.kind, after: "holding_line", ...timing() });
+          said += NOTHING_SAID_AFTER;
+          yield chunk({ content: NOTHING_SAID_AFTER });
+        }
         yield chunk({}, "stop");
         yield SSE_DONE;
         log({ voice_turn: call.id, kind: context.kind, said: said.length, rounds: round, ...timing() });
@@ -1832,7 +1942,7 @@ export async function* voiceTurn({
             return;
           }
           yield* openingIfOwed();
-          yield chunk({ content: said ? " Let me come back to you on that one." : "Sorry — let me check on that and come back to you." });
+          yield chunk({ content: said ? ` ${COME_BACK_LATER}` : COME_BACK_CHECK });
           yield chunk({}, "stop");
           yield SSE_DONE;
           log({ voice_turn_out_of_rounds: call.id, kind: context.kind, on: "call_tools", ...timing() });
@@ -1903,7 +2013,7 @@ export async function* voiceTurn({
 
       if (round === MAX_VOICE_TOOL_ROUNDS) {
         // Out of rounds with nothing said. Better a sentence admitting it than a silent line.
-        yield chunk({ content: said ? " Let me come back to you on that one." : "Sorry — let me look into that and come back to you." });
+        yield chunk({ content: said ? ` ${COME_BACK_LATER}` : COME_BACK_LOOK });
         yield chunk({}, "stop");
         yield SSE_DONE;
         log({ voice_turn_out_of_rounds: call.id, kind: context.kind, ...timing() });
@@ -1914,7 +2024,9 @@ export async function* voiceTurn({
       // chunk ending in "... " buys the time without the person thinking the line dropped.
       if (!filled) {
         filled = true;
-        yield chunk({ content: said ? THINKING_FILLER : `One sec${THINKING_FILLER}` });
+        // Not straight after the holding line: that already bought the pause, and "moment...." is
+        // the same breath said twice.
+        if (!onlyHolding()) yield chunk({ content: said ? THINKING_FILLER : `One sec${THINKING_FILLER}` });
       }
 
       messages.push({
@@ -1982,10 +2094,10 @@ export async function* voiceTurn({
     // out-of-rounds guard because a refusal is not a round spent on a tool. Falling off the end then
     // produced an empty stream: no words, no finish reason, just `[DONE]`. Dead air is the worst answer
     // a phone call can give, and an unframed one is worse than that.
-    if (!said) {
+    if (!said || onlyHolding()) {
       log({ voice_turn_nothing_said: call.id, kind: context.kind, ...timing() });
       yield* openingIfOwed();
-      yield chunk({ content: said ? " Sorry — bear with me one moment." : "Sorry — bear with me one moment." });
+      yield chunk({ content: said ? NOTHING_SAID_AFTER : NOTHING_SAID_AFTER.trim() });
     }
     yield chunk({}, "stop");
   } catch (e) {
@@ -1999,7 +2111,7 @@ export async function* voiceTurn({
     const before = said;
     yield* openingIfOwed();
     const lead = said !== before ? " " : "";
-    yield chunk({ content: before ? " Sorry, something broke on my end there." : `${lead}Sorry — something broke on my end. Say that again?` });
+    yield chunk({ content: before ? ` ${BROKE_MID}` : `${lead}${BROKE_FIRST}` });
     yield chunk({}, "stop");
   }
   yield SSE_DONE;
@@ -2050,7 +2162,12 @@ export async function llmRequest({
   extras = {},
   // How long one of Reason's tools may hold the line; see `CALL_TOOL_BUDGET_MS`.
   toolBudgetMs = CALL_TOOL_BUDGET_MS,
+  // How long a turn may say nothing before the holding line; see `FIRST_WORD_DEADLINE_MS`.
+  firstWordDeadlineMs = FIRST_WORD_DEADLINE_MS,
 }) {
+  // The moment the platform's request arrived — the person has stopped talking — which is where the
+  // caller's wait starts. Every turn timing in call_turns is measured from here.
+  const t0 = Date.now();
   const auth = verifyLlmBearer({ headers, secret });
   if (!auth.ok) {
     log({ voice_llm_rejected: auth.why });
@@ -2060,6 +2177,10 @@ export async function llmRequest({
   let body;
   try { body = JSON.parse(rawBody); } catch { body = null; }
   if (!body || typeof body !== "object") {
+    // Calls 13 and 22 left no line at all in the journal. A body that will not parse is read for the
+    // call id by hand, so the 400 can be tied to a call even though the platform hears nothing.
+    const idIn = /"reason_call_id"\s*:\s*"?(\d+)/.exec(String(rawBody ?? ""));
+    log({ voice_llm_bad_json: idIn ? Number(idIn[1]) : null, bytes: Buffer.byteLength(String(rawBody ?? "")) });
     return { status: 400, headers: JSONH, body: JSON.stringify({ error: { message: "bad json", type: "invalid_request_error" } }) };
   }
 
@@ -2071,6 +2192,9 @@ export async function llmRequest({
   }
 
   const { call, kind } = found;
+  // Every turn the platform asks for is logged as it arrives, before anything that can stall —
+  // context, the screen, the model — so a request that came in and then went quiet is visible.
+  log({ voice_llm_request: call.id, kind, messages: Array.isArray(body.messages) ? body.messages.length : 0 });
 
   // Building the context is the one step here that reaches out to everything else Reason is: the
   // database, the agent's own system prompt, the tool registry, memory, open work. Any of those
@@ -2107,14 +2231,34 @@ export async function llmRequest({
   const settle = () => { if (inFlight.get(key) === control) inFlight.delete(key); };
 
   const gen = generate ?? generatorFor();
+  // One call_turns row per turn: what the caller waited through. Timed in memory from t0 and written
+  // once the stream has ended, however it ended, so nothing touches the database before the first
+  // byte. A retry of the same turn (same message count) replaces the row. A database fault here never
+  // costs the turn — only the record of it goes missing.
+  const meter = callMetrics.newMeter();
+  const msgCount = Array.isArray(body.messages) ? body.messages.length : 0;
+  const turn = voiceTurn({
+    context, call, generate: gen, model: String(body.model ?? "reason"), log, extras,
+    signal: control.signal, toolBudgetMs, firstWordDeadlineMs, meter,
+    ...(screen ? { screen } : {}),
+  });
   return {
     status: 200,
     headers: SSEH,
-    stream: finishing(voiceTurn({
-      context, call, generate: gen, model: String(body.model ?? "reason"), log, extras,
-      signal: control.signal, toolBudgetMs,
-      ...(screen ? { screen } : {}),
-    }), settle),
+    stream: callMetrics.metered(finishing(turn, settle), {
+      t0, meter,
+      // The disclosure is the code's words, read off the row, not the model's: never "real content".
+      kinds: { ...METER_KINDS, openings: [String(call.announcement ?? "")].filter(s => s.trim()) },
+      aborted: () => control.signal.aborted,
+      onEnd: (m) => {
+        try { db.recordCallTurn({ callId: call.id, conversationId: call.conversation_id, msgCount, kind, startedAt: t0, ...m }); }
+        catch (e) { log({ call_turn_row_failed: call.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
+        log({
+          call_turn_heard: call.id, messages: msgCount, first_content_ms: m.firstContentMs, first_kind: m.firstContentKind,
+          first_real_ms: m.firstRealMs, total_ms: m.totalMs, closed_early: m.closedEarly,
+        });
+      },
+    }),
     // For the server: the socket closed, so whatever this turn is still doing is for nobody.
     abort: () => { control.abort(); settle(); },
   };
@@ -2239,7 +2383,7 @@ export function warmCallCache({ call, log = () => {}, now = clock.now(), client 
  * needs a key — so everything around it is injectable and the shape of what it yields is what the
  * tests pin.
  */
-async function* apiGenerator({ system, messages, tools, log = () => {}, signal = null }) {
+async function* apiGenerator({ system, messages, tools, log = () => {}, signal = null, onUsage = null }) {
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic();
   const stream = await client.messages.create({
@@ -2285,6 +2429,7 @@ async function* apiGenerator({ system, messages, tools, log = () => {}, signal =
     }
   }
   countCall(config.callModel || config.model, usage);
+  onUsage?.(usage);
   log({ voice_backend: "api" });
 }
 
@@ -2302,7 +2447,7 @@ function countCall(model, usage, error = null) {
  * what a real call should run on, and `callBackendName` is how that gets switched; the README says
  * so, and so does the setup checklist.
  */
-async function* cliGenerator({ system, messages, tools, log = () => {} }) {
+async function* cliGenerator({ system, messages, tools, log = () => {}, onUsage = null }) {
   const { runClaudeCli } = await import("../backends/cli.js");
   // The CLI takes a prompt and a system prompt, not a message list, so the call so far is rendered
   // into the prompt. The tools are described rather than offered: without the MCP server attached
@@ -2387,6 +2532,7 @@ async function* cliGenerator({ system, messages, tools, log = () => {} }) {
 
   const r = await runClaudeCli({ prompt: `${rendered}\n\nYou:`, system: `${system}${systemToolNote}`, feature: "call" });
   log({ voice_backend: "claude-cli", ok: r.ok });
+  if (r.envelope?.usage) onUsage?.(r.envelope.usage);
   if (!r.ok) throw new Error(r.error ?? "the CLI reported an error");
 
   const said = String(r.envelope?.result ?? "").trim();

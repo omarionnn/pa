@@ -34,6 +34,7 @@ import { LIVE_STATES, SPOKE_TO_SOMETHING } from "./provider.js";
 import { mimeFor } from "./recordings.js";
 import * as fromcall from "./fromcall.js";
 import * as callOutcome from "./outcome.js";
+import { endFieldsFor } from "./metrics.js";
 
 /** The route ElevenLabs is pointed at for post-call deliveries. Quoted in the setup checklist. */
 export const POST_CALL_PATH = "/calls/elevenlabs/post-call";
@@ -89,6 +90,10 @@ export async function postCallRequest({
   // Already settled. Providers retry, and settling twice would count the same minutes twice and
   // write the same transcript into the thread again.
   if (!LIVE_STATES.includes(row.state) && row.recording_state !== "pending") {
+    // Except for the record of how it ended: the lost-calls sweep writes 'lost' when nobody has said,
+    // and a delivery that arrives after it is somebody saying. Only the end reason and the platform's
+    // cost are filled — nothing is settled twice.
+    if (row.end_reason === "lost") lateEnd({ row, live, log });
     return { status: 200, body: { ok: true, call_id: row.id, state: row.state, already: true } };
   }
 
@@ -140,6 +145,21 @@ export async function postCallRequest({
       ...(request.ok ? { call_request: request.state } : {}),
     },
   };
+}
+
+/** A late delivery's end reason and cost onto a row the sweep wrote off as lost. */
+function lateEnd({ row, live, log = () => {} }) {
+  let turns = [];
+  try { turns = db.callTurns(row.id); } catch { /* no turns is no evidence */ }
+  const end = endFieldsFor(row, live, turns);
+  if (!end.end_reason) return;
+  db.updateCall(row.conversation_id, row.id, {
+    end_reason: end.end_reason, end_detail: end.end_detail,
+    ...(row.cost_credits == null && end.cost_credits != null ? { cost_credits: end.cost_credits } : {}),
+    ...(!row.cost_raw && end.cost_raw ? { cost_raw: end.cost_raw } : {}),
+    ...(row.cost_cents == null && Number.isFinite(live.costCents) ? { cost_cents: live.costCents } : {}),
+  });
+  log({ call_end_corrected: row.id, from: "lost", to: end.end_reason });
 }
 
 /**
