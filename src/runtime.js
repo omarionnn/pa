@@ -642,60 +642,11 @@ export class Runtime extends EventEmitter {
       const marked = db.takePendingStyle(conversationId);
       const sendStyle = marked && effectAllowed({ lastAt: db.lastEffectAt(conversationId), now: clock.now() }).ok ? marked : null;
       if (marked && !sendStyle) this.log({ effect_dropped: marked, conversation: conversationId, why: "this conversation already had one in the last hour" });
-      if (reply && (!shouldSend || shouldSend(reply))) {
-        const out = await this._emit({
-          conversationId, text: reply,
-          meta: { ...meta, ...(replyTo ? { replyTo } : {}), ...(sendStyle ? { sendStyle } : {}) },
-        });
-        // For a caller that has to know what became of the send and not only what was written —
-        // a timer is finished with once its message is handed over, not once the model has spoken.
-        onSend?.(out);
-        // Only a reply that went out is something to learn from (see the event-log write above).
-        if (aEvId && out?.ok !== false) {
-          try { db.enqueueExtraction(conversationId, aEvId); } catch { /* best-effort */ }
-        }
-        // Anything new the model said it mentioned is written down HERE, after the send, and only
-        // if the send worked. A queued message counts, because that is what `ok` means to
-        // src/deliver.js — it is either going to arrive or be reported as lost, and the cost of
-        // treating it as sent is silence rather than telling somebody the same thing twice.
-        const told = out?.ok === false
-          ? db.dropWhatsNewClaim(conversationId)
-          : db.markWhatsNewTold(conversationId);
-        if (told) this.log({ whats_new: told, conversation: conversationId, heard: out?.ok !== false });
-        // A catch the turn claimed through `notice_send` becomes told HERE, for the same reason and
-        // with one more on top: this is where it starts costing them their one text a day. A send
-        // that failed spends nothing and leaves the thing held, so it will be raised again.
-        this._settleNotice(conversationId, kind, out?.ok !== false);
-        // The tapback the react tool held back because they had asked something. Words won, so now
-        // it rides alongside them — and only now, and only if the words really went out.
-        await this._fireHeldReaction(conversationId, out?.ok !== false);
-        // Choice cards the turn drew (show_choices): after the line above them, one bubble each, in order.
-        await this._sendChoiceCards(conversationId, out?.ok !== false, meta);
-        // What this reply asserted and asked, written down once it has really gone (src/said.js),
-        // so a later message that changes a value has to say so and a settled question stays closed.
-        // Off the reply's path: nothing waits for it.
-        if (kind === "user" && out?.ok !== false) {
-          void said.record({
-            conversationId, requestId: inboundRequests?.at(-1)?.id ?? null,
-            userText: [text, ...(fold?.added ?? []).map(a => a.text)].join("\n"), reply, log: this.log,
-          });
-        }
-        // A question sent back to a message that asked nothing is written down (src/brief.js), so
-        // "how often does it ask instead of act" is a count in the ledger and not a feeling. Only
-        // for something a person said, and only once the question really went out.
-        if (kind === "user" && out?.ok !== false) {
-          const asked = brief.askedBack({ text, reply });
-          if (asked) {
-            db.recordAction({
-              conversationId, action: "asked_back", target: String(text ?? "").slice(0, 160),
-              attempted: { they_said: String(text ?? "").slice(0, 400) }, outcome: "asked",
-              result: { question: asked.question }, receipt: `asked back: ${asked.question}`,
-            });
-            this.log({ asked_back: asked.question, conversation: conversationId });
-          }
-        }
-      } else {
-        if (reply) this.log({ held_back: meta, said: reply.slice(0, 120) });
+      // The turn said nothing: held back by shouldSend, or (below) a reply that was only the silence
+      // marker once deliver read it (src/deliver.js, `silent`). Either way it decided to be quiet;
+      // nothing failed.
+      const heldBack = async ({ why = "held_back" } = {}) => {
+        if (reply) this.log({ [why]: meta, said: reply.slice(0, 120) });
         // "leave it" answered with a tapback or nothing still closes the question it answered —
         // above all as declined, so the catch is never raised again. Only reads when one is open.
         if (kind === "user") {
@@ -711,6 +662,67 @@ export class Runtime extends EventEmitter {
         // hold is for. Dropped rather than sent: silence is bad, and silence with a ❤️ on the
         // question is worse. Taken rather than left, so it cannot fire on a later turn.
         await this._fireHeldReaction(conversationId, false);
+      };
+      if (reply && (!shouldSend || shouldSend(reply))) {
+        const out = await this._emit({
+          conversationId, text: reply,
+          meta: { ...meta, ...(replyTo ? { replyTo } : {}), ...(sendStyle ? { sendStyle } : {}) },
+        });
+        // For a caller that has to know what became of the send and not only what was written —
+        // a timer is finished with once its message is handed over, not once the model has spoken.
+        onSend?.(out);
+        if (out?.silent) {
+          // Only the silence marker once read: the turn chose quiet, so it ends the way a held-back
+          // turn does — not as a send that failed.
+          await heldBack({ why: "silent_reply" });
+        } else {
+          // Only a reply that went out is something to learn from (see the event-log write above).
+          if (aEvId && out?.ok !== false) {
+            try { db.enqueueExtraction(conversationId, aEvId); } catch { /* best-effort */ }
+          }
+          // Anything new the model said it mentioned is written down HERE, after the send, and only
+          // if the send worked. A queued message counts, because that is what `ok` means to
+          // src/deliver.js — it is either going to arrive or be reported as lost, and the cost of
+          // treating it as sent is silence rather than telling somebody the same thing twice.
+          const told = out?.ok === false
+            ? db.dropWhatsNewClaim(conversationId)
+            : db.markWhatsNewTold(conversationId);
+          if (told) this.log({ whats_new: told, conversation: conversationId, heard: out?.ok !== false });
+          // A catch the turn claimed through `notice_send` becomes told HERE, for the same reason and
+          // with one more on top: this is where it starts costing them their one text a day. A send
+          // that failed spends nothing and leaves the thing held, so it will be raised again.
+          this._settleNotice(conversationId, kind, out?.ok !== false);
+          // The tapback the react tool held back because they had asked something. Words won, so now
+          // it rides alongside them — and only now, and only if the words really went out.
+          await this._fireHeldReaction(conversationId, out?.ok !== false);
+          // Choice cards the turn drew (show_choices): after the line above them, one bubble each, in order.
+          await this._sendChoiceCards(conversationId, out?.ok !== false, meta);
+          // What this reply asserted and asked, written down once it has really gone (src/said.js),
+          // so a later message that changes a value has to say so and a settled question stays closed.
+          // Off the reply's path: nothing waits for it.
+          if (kind === "user" && out?.ok !== false) {
+            void said.record({
+              conversationId, requestId: inboundRequests?.at(-1)?.id ?? null,
+              userText: [text, ...(fold?.added ?? []).map(a => a.text)].join("\n"), reply, log: this.log,
+            });
+          }
+          // A question sent back to a message that asked nothing is written down (src/brief.js), so
+          // "how often does it ask instead of act" is a count in the ledger and not a feeling. Only
+          // for something a person said, and only once the question really went out.
+          if (kind === "user" && out?.ok !== false) {
+            const asked = brief.askedBack({ text, reply });
+            if (asked) {
+              db.recordAction({
+                conversationId, action: "asked_back", target: String(text ?? "").slice(0, 160),
+                attempted: { they_said: String(text ?? "").slice(0, 400) }, outcome: "asked",
+                result: { question: asked.question }, receipt: `asked back: ${asked.question}`,
+              });
+              this.log({ asked_back: asked.question, conversation: conversationId });
+            }
+          }
+        }
+      } else {
+        await heldBack();
       }
       // The reply has gone (or there is none): the tab's growing copy is taken back, after the real one.
       draft?.end();

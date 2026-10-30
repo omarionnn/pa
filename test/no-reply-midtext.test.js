@@ -34,6 +34,8 @@ const { ConsoleChannel } = await import("../src/channels/console.js");
 const { WebChannel } = await import("../src/channels/web.js");
 const { makeDeliver } = await import("../src/deliver.js");
 const { runTool } = await import("../src/tools.js");
+const outbox = await import("../src/outbox.js");
+const said = await import("../src/said.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
 
@@ -48,7 +50,8 @@ const MID_SENTENCE = "on it NO_REPLY, checking the times now";
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM timers; DELETE FROM outbox; DELETE FROM accounts; DELETE FROM threads; DELETE FROM conversations;");
+  db.db.exec("DELETE FROM timers; DELETE FROM outbox; DELETE FROM accounts; DELETE FROM threads; DELETE FROM conversations; DELETE FROM open_questions;");
+  said.setRecorder(null);
   db.upsertAccount({ conversationId: CONV, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   db.upsertThread({ conversationId: CONV, channel: "fake", address: OWNER, isOwner: true, service: "iMessage" });
 });
@@ -161,4 +164,36 @@ test("every strip is a log line naming the path, never the message", async () =>
   assert.ok(lines.length >= 1);
   assert.equal(lines[0].no_reply_stripped, "reply");
   for (const l of lines) assert.ok(!JSON.stringify(l).includes("checking the times"), "no message content in the log");
+});
+
+// Review of #272, item 3: a reply that was only markers is the turn choosing quiet, like a held-back
+// turn — a "leave it" answered that way still closes the question as declined, so it is not raised again.
+test("a reply that was only markers ends the turn the way a held-back one does, not as a failed send", async () => {
+  config.saidLedger = true;
+  const CATCH = "the card ending 4242 keeps failing on that bill — want me to send the link to switch it?";
+  db.addOpenQuestion(CONV, { question: CATCH });
+  said.setRecorder(({ userText, reply, open }) => ({
+    claims: [], supersedes: [], questions: [], declined: [],
+    closes: /leave it/.test(userText) && reply === "" ? open.map(q => ({ id: q.id, why: "declined" })) : [],
+  }));
+  const { runtime, fake, logs } = harness({ turn: async () => "NO_REPLY NO_REPLY" });
+  await runtime.inbound(CONV, "leave it, i have reasons");
+  const t0 = Date.now();
+  while (!db.declinedQuestions(CONV).length && Date.now() - t0 < 3_000) await new Promise(r => setTimeout(r, 5));
+  assert.equal(fake.sent.length, 0, "nothing went out");
+  assert.equal(db.declinedQuestions(CONV).length, 1, "the no was written down, so it is never re-offered");
+  assert.ok(logs.some(l => l.silent_reply), "logged as a quiet reply, not a failure");
+});
+
+// Review of #272, item 4: a row already in the outbox that is only markers is skipped, never failed.
+test("a queued row that is only markers is skipped, not failed, nobody is told, and what follows it still goes", async () => {
+  const { router, fake } = harness();
+  const head = db.enqueueOutbound({ idemKey: "old:1#1", conversationId: CONV, channel: "fake", address: OWNER, body: "NO_REPLY NO_REPLY", toOwner: true }).row;
+  const tail = db.enqueueOutbound({ idemKey: "old:1#2", conversationId: CONV, channel: "fake", address: OWNER, body: "the real words", afterId: head.id, toOwner: true }).row;
+  await outbox.pass({ router });
+  await outbox.pass({ router });
+  assert.equal(db.getOutbound(head.id).state, "skipped");
+  assert.equal(db.getOutbound(tail.id).state, "sent", "the part behind it is not stranded");
+  assert.deepEqual(fake.sent.map(m => m.text), ["the real words"]);
+  assert.equal(db.undeliveredFor(CONV).length, 0, "no failure notice is owed to anybody");
 });

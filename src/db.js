@@ -4443,6 +4443,18 @@ export function markOutboundSent(id, { messageId = null } = {}) {
   return row;
 }
 
+/**
+ * It was never going to be words for anybody: once the silence marker came off there was nothing
+ * left (src/plain.js withoutNoReply). Not `failed` — nothing went wrong, so nobody is told — and
+ * not `sent`, so it is never history. Anything queued behind it still goes (dueOutbound).
+ */
+export function markOutboundSkipped(id) {
+  const now = clock.now();
+  db.prepare(`UPDATE outbox SET state = 'skipped', next_attempt_at = NULL, last_error = 'only NO_REPLY: nothing to send',
+    updated_at = ? WHERE id = ?`).run(now, id);
+  return getOutbound(id);
+}
+
 /** It did not go, and it might later. */
 export function markOutboundRetry(id, { error, errorKey = null, errorCode = null, nextAt }) {
   const now = clock.now();
@@ -4491,7 +4503,7 @@ export function dueOutbound(now = clock.now(), { limit = 50 } = {}) {
   return db.prepare(`SELECT * FROM outbox AS o
     WHERE o.state IN ('queued','unknown') AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= ?)
       AND (o.after_id IS NULL
-           OR EXISTS (SELECT 1 FROM outbox AS p WHERE p.id = o.after_id AND p.state = 'sent'))
+           OR EXISTS (SELECT 1 FROM outbox AS p WHERE p.id = o.after_id AND p.state IN ('sent','skipped')))
     ORDER BY o.id ASC LIMIT ?`).all(now, limit).map(rowToOut);
 }
 

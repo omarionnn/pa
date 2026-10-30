@@ -151,12 +151,12 @@ export async function sendSequence({ channel, router, conversationId, to, parts,
     results.push(r);
     // Not sent. Everything behind it is already queued behind it, so the sweep finishes the chain
     // in order; trying the next one now is the one thing that would get them out of order.
-    if (!r.ok) break;
+    if (!r.ok && !r.silent) break;
   }
 
   const first = results[0];
   const sentEach = rows.map((r, i) => ({ outbox_id: r.id, sent: !!results[i]?.ok, of: texts.length }));
-  const dead = results.find(r => !r.ok && !r.queued);
+  const dead = results.find(r => !r.ok && !r.queued && !r.silent);
   // One dead part kills the answer, and `queued` is not set alongside it: the chain cannot finish,
   // and saying "still trying" about something nothing is trying is the lie this is here to avoid.
   if (dead) return { ...first, ok: false, queued: false, error: dead.error, retryable: false, parts: sentEach };
@@ -192,6 +192,14 @@ export async function attempt({ id, router, log = () => {} }) {
     // An adapter that throws is a bug, not an answer. Treated as retryable, because the message
     // itself was probably fine and the alternative is losing it to somebody else's mistake.
     r = { ok: false, error: `the ${claimed.channel} adapter threw: ${(e?.message ?? String(e)).split("\n")[0]}`, retryable: true };
+  }
+
+  // Only the silence marker once read (src/channels/router.js sendNow): nothing to send, on purpose.
+  // Skipped, not failed, so nobody is told a message "never arrived" that was never a message.
+  if (!r.ok && r.silent) {
+    db.markOutboundSkipped(id);
+    log({ outbox: id, skipped: "only NO_REPLY" });
+    return { ok: false, silent: true, outbox_id: id };
   }
 
   if (r.ok) {
