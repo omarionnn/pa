@@ -1211,6 +1211,8 @@ export function receiptFor(action, input, out) {
       if (out?.cancelled) return `Read ${which}: AgentCard lists the order as CANCELLED (${out.reason || "no reason given"}). Nothing is coming.`;
       return `Tracked ${which}: ${out.order_number ? `the shop calls it ${out.order_number}` : "no order number from the shop yet"}, ${out.delivery_window || "no delivery window given"}.`;
     }
+    case "directions":
+      return ok ? `Made walking directions to ${out.name}${out.walk ? ` (${out.walk})` : ""}, a private link only they can open.` : `Could not make walking directions${tail}`;
     case "harm_pause":
       return `Paused this person's Reason after ${input.strikes} refused messages in ${input.window_hours}h (${(input.kinds ?? []).join(", ") || "unspecified"}). Nothing deleted; the master was told the count and the kind only.`;
     default:
@@ -1231,7 +1233,18 @@ function ledgerInput(action, input) {
   if (action === "drive_create") {
     return { ...input, text: `(${String(input?.text ?? "").length} characters — the document itself is in their Drive)` };
   }
+  // A walk's start is where they were standing: the trip keeps it for a day, the ledger never does.
+  if (action === "directions") {
+    const { from_latitude, from_longitude, to_latitude, to_longitude, ...rest } = input ?? {};
+    return { ...rest, ...(from_latitude != null ? { from: rest.from ?? "(their location)" } : {}) };
+  }
   return input;
+}
+
+/** The result as the ledger keeps it: a walk's link without the owner's key, which opens it. */
+function ledgerResult(action, out) {
+  if (action === "directions" && out && typeof out.link === "string") return { ...out, link: out.link.replace(/\?k=[^&#\s]*/, "") };
+  return out;
 }
 
 /**
@@ -1255,7 +1268,7 @@ export function ledgerWrite({ conversationId, action, input, out: given, target 
   const receipt = receiptFor(action, input, out)
     + (permission && outcome === "ok" ? ` No yes was asked for — under: "${permission.said}".` : "");
   return db.recordAction({
-    conversationId, action, target, attempted: ledgerInput(action, input), outcome, result: out,
+    conversationId, action, target, attempted: ledgerInput(action, input), outcome, result: ledgerResult(action, out),
     receipt,
     confirmationId: confirmationId ?? out?.confirmation?.id ?? null,
     permissionId: permission?.permission_id ?? null,

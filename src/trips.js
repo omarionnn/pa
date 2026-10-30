@@ -25,6 +25,8 @@ export { walkRoute, stepsFromOsrm, shapesFrom, streetNear, distanceWords, minute
 export const TRIP_KEEP_MS = 24 * 60 * 60 * 1000;
 /** Further than this in a straight line is not a walk at all: the tool says so and offers a ride. */
 export const MAX_WALK_M = 40000;
+/** The furthest ahead a trip can be made for. */
+export const MAX_AHEAD_MS = 7 * 24 * 60 * 60 * 1000;
 /** How long the tool waits for the map before answering anyway (it carries on filling behind). */
 export const MAP_WAIT_MS = 8000;
 
@@ -90,6 +92,8 @@ export function refillIfBare(row, opts = {}) {
   const m = row?.trip?.map;
   if (!m || m.major.length || m.minor.length || row.trip.walkM > MAP_MAX_M) return false;
   if (clock.now() - (lastFill.get(row.id) ?? 0) < REFILL_GAP_MS) return false;
+  // Only the last few minutes matter; anything older is forgotten, so the map never grows.
+  for (const [k, at] of lastFill) if (clock.now() - at >= REFILL_GAP_MS) lastFill.delete(k);
   lastFill.set(row.id, clock.now());
   fillTripMap(row.id, opts).catch(() => {});
   return true;
@@ -205,6 +209,11 @@ export async function makeTrip(c, input, { fetchImpl = fetch, geocode = null, lo
     if (at == null) return { ok: false, error: "arrive_by must be their wall-clock time as YYYY-MM-DDTHH:MM." };
     startsAt = at;
   }
+  // A walk is for the next few days: the row (and the start in it) is never kept for months.
+  if (startsAt != null && startsAt > now + MAX_AHEAD_MS) {
+    return { ok: false, error: "That is more than a week away. Walking directions are made nearer the day; offer to make them then." };
+  }
+  if (startsAt != null && startsAt < now - 60 * 60000) startsAt = null;
   if (!name) name = to.saved ? to.saved.charAt(0).toUpperCase() + to.saved.slice(1) : String(toText ?? "").split(",")[0].trim() || "There";
 
   const walk = await walkRoute(from, to, { fetchImpl, placeName: name });

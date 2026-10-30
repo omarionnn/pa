@@ -196,11 +196,12 @@ function sameKey(a, b) {
  * (Web, a page, an event) opens it. Anybody else, the owner's link on a new browser included, gets the
  * code gate, and only a request carrying the owner's key may ask for a code to be texted.
  */
-function tripAccess(R, row, cookie, key) {
+function tripAccess(R, id, row, cookie, key) {
   const via_key = sameKey(key, row?.owner_key);
   const owner = cookie ? R.db.pageSessionOwner(cookie, R.SESSION_TTL_MS) : null;
   if (row && owner && owner === row.conversation_id) return { allow: true, via_key };
-  const failed = row ? R.db.failedPageAttempts(row.id, R.ATTEMPT_WINDOW_MS) : 0;
+  // Counted on the id, real or not, so a guessed id locks and answers exactly as a real one does.
+  const failed = R.db.failedPageAttempts(id, R.ATTEMPT_WINDOW_MS);
   if (failed >= R.MAX_FAILED_ATTEMPTS) return { allow: false, reason: "rate_limited", via_key };
   return { allow: false, reason: "code_needed", via_key };
 }
@@ -282,7 +283,7 @@ async function tripRequest({ id, reroutePath, method, req, config, fetchImpl, ke
   // "owner": only the owner's trips open; anybody else's id answers exactly as one that never existed.
   const row = found && R.tripsOnFor(found.conversation_id) ? found : null;
   const cookie = R.readCookie(headers?.cookie);
-  const access = tripAccess(R, row, cookie, key);
+  const access = tripAccess(R, id, row, cookie, key);
 
   if (reroutePath) {
     if (method !== "POST") return null;
@@ -301,7 +302,9 @@ async function tripRequest({ id, reroutePath, method, req, config, fetchImpl, ke
     let raw = "";
     try { raw = await readSmallBody(req, 2048); } catch { return tripGate(R, access, row, { status: 400, config }); }
     const form = new URLSearchParams(raw);
-    const pagelike = row ? { id: row.id, conversation_id: row.conversation_id, title: tripTitle(row) } : null;
+    // An id that is no trip is tried as a page with nobody behind it, as pageRequest does: the same
+    // attempt counted, the same answer, the same lock.
+    const pagelike = row ? { id: row.id, conversation_id: row.conversation_id, title: tripTitle(row) } : { id, conversation_id: null, title: "" };
     if (form.has("send")) {
       // "Text me the code": only the owner's own link, on a real trip, ever makes their phone buzz.
       if (!access.via_key || !row || access.reason === "rate_limited") return tripGate(R, access, row, { config });
@@ -316,7 +319,6 @@ async function tripRequest({ id, reroutePath, method, req, config, fetchImpl, ke
       log({ trip_code_sent: row.id });
       return tripGate(R, access, row, { sent: true, config });
     }
-    if (!row) return tripGate(R, access, row, { config, error: "That code is not right." });
     const tried = R.trySubmittedCode({ page: pagelike, code: form.get("code") ?? "" });
     if (!tried.ok) {
       const why = tried.reason === "rate_limited"
@@ -324,6 +326,7 @@ async function tripRequest({ id, reroutePath, method, req, config, fetchImpl, ke
         : `That code is not right.${tried.tries_left ? ` ${tried.tries_left} ${tried.tries_left === 1 ? "try" : "tries"} left.` : ""}`;
       return tripGate(R, access, row, { status: tried.reason === "rate_limited" ? 429 : 401, config, error: why });
     }
+    if (!row) return tripGate(R, access, row, { config, error: "That code is not right." });
     log({ trip_opened: row.id });
     // Back to the page itself, now signed in, without the key in the address bar.
     return { status: 303, headers: { Location: row.id, "Cache-Control": "no-store", "Set-Cookie": R.cookieHeader(tried.token, { path: "/", headers }) }, body: "" };

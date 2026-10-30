@@ -301,3 +301,39 @@ test("the map is filled after the trip when Overpass is slow or down: the link w
   assert.equal(t.map.minor.length, 0);
   assert.equal(t.steps.length, 5);
 });
+
+test("a guessed id is told nothing: a wrong code reads the same on a real trip and an unknown one, and both lock alike", async () => {
+  const row = tripOf((await tool({ to: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng })).link);
+  const post = (id) => directionsRequest({ method: "POST", pathname: `/d/${id}`, req: Readable.from([Buffer.from("code=123456")]), config, headers: {} });
+  for (let n = 0; n < 6; n++) {
+    const [a, b] = [await post(row.id), await post("NoSuchTrip12")];
+    assert.equal(a.status, b.status, `attempt ${n + 1}`);
+    assert.equal(a.body, b.body, `attempt ${n + 1}: the same words`);
+  }
+  const [ga, gb] = [await get(`/d/${row.id}`), await get("/d/NoSuchTrip12")];
+  assert.equal(ga.status, 429);
+  assert.equal(ga.body, gb.body, "locked alike");
+});
+
+test("the ledger keeps that a walk was made, never where they stood or the key that opens it", async () => {
+  await tool({ to: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng });
+  const row = db.db.prepare("SELECT * FROM action_ledger WHERE action = 'directions' ORDER BY id DESC LIMIT 1").get();
+  assert.ok(row, "a ledger row");
+  const all = JSON.stringify(row);
+  assert.doesNotMatch(all, /40\.7359|-73\.9911/, "no start coordinates");
+  assert.doesNotMatch(all, /\?k=/, "no key");
+  assert.match(row.receipt, /walking directions to Joe Coffee/);
+});
+
+test("a walk is for the next week: further ahead is refused, so a start is never kept for months", async () => {
+  const out = await tool({ to: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng, arrive_by: "2027-03-01T19:00" });
+  assert.equal(out.ok, false);
+  assert.match(out.error, /more than a week/);
+});
+
+test("expired trips go on the sweep, read or not", async () => {
+  const row = tripOf((await tool({ to: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng })).link);
+  db.db.prepare("UPDATE trips SET expires_at = ? WHERE id = ?").run(clock.now() - 1, row.id);
+  assert.equal(db.deleteExpiredTrips(clock.now()), 1);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM trips").get().n, 0);
+});
