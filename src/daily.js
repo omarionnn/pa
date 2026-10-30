@@ -36,6 +36,7 @@ import * as background from "./background.js";
 import { dailyAllowedFor } from "./dailyflag.js";
 import { WEB, webAllowedFor } from "./web.js";
 import { hasOpsKeyLink } from "./opsredact.js";
+import { displayText } from "./pages/webnotes.js";
 
 /** The local hour an edition is written from (overnight, before anyone's morning). */
 export const EDITION_HOUR = 4;
@@ -301,14 +302,14 @@ export function linesOutFor(conversationId, now = clock.now(), tz = tzOf(convers
 export function pickupFor(conversationId) {
   // The conversation only: an operator notice (the status check, an alert) is not where they left off.
   const rows = db.messagesBefore(conversationId, { limit: 24 })
-    .filter(r => String(r.text ?? "").trim() && r.source !== "ops" && !hasOpsKeyLink(r.text)).slice(-2);
+    .filter(r => String(r.role === "user" ? displayText(r.text) : r.text ?? "").trim() && r.source !== "ops" && !hasOpsKeyLink(r.text)).slice(-2);
   if (!rows.length) return null;
   const last = rows[rows.length - 1];
   const service = db.db.prepare("SELECT service FROM threads WHERE conversation_id = ?").get(conversationId)?.service ?? null;
   return {
     lastAt: last.at, surface: last.channel === WEB ? "web" : "imessage",
     where: last.channel === WEB ? "Web" : String(service ?? "").toUpperCase() === "SMS" ? "SMS" : "iMessage",
-    lines: rows.map(r => ({ role: r.role === "user" ? "user" : "reason", text: cut(oneLine(r.text), 220) })),
+    lines: rows.map(r => ({ role: r.role === "user" ? "user" : "reason", text: cut(oneLine(r.role === "user" ? displayText(r.text) : r.text), 220) })),
   };
 }
 
