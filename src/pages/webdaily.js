@@ -90,7 +90,7 @@ function stampHtml(stamp, markup) {
  * a screen reader there.
  */
 function sealTile(stamp) {
-  return `<a class="dd-nb" href="/web/stamps"><span class="dd-nbs" aria-hidden="true" style="transform:rotate(${Number(stamp.rotation) || 0}deg)">${seal({ wax: stamp.wax, ring: stamp.ring, postmark: false, size: 104 })}</span>`
+  return `<a class="dd-nb" href="/web/stamps"><span class="dd-nbs" aria-hidden="true" style="transform:rotate(${Number(stamp.rotation) || 0}deg)">${seal({ wax: stamp.wax, ring: stamp.ring, postmark: false, size: 104, tier: stamp.tier })}</span>`
     + `<span class="dd-nbt"><span class="dd-lbl sm">NEW IN YOUR BOOK</span><span class="dd-nbn">${esc(stamp.name)}.</span><span class="dd-nbw">${esc(stamp.line)}</span></span></a>`;
 }
 
