@@ -139,7 +139,7 @@ export const sealed = (text = "SEALED") => `<span class="pf-seal">${LOCK}<span>$
 export function field({ id, label: text, attrs = "", error = "", hint = "", mono = false }) {
   const desc = error ? `${id}-e` : hint ? `${id}-h` : "";
   return `<div class="pf-fld${error ? " err" : ""}"><label class="pf-l" for="${esc(id)}">${esc(text)}</label>`
-    + `<input class="pf-in${mono ? " mono" : ""}" id="${esc(id)}"${attrs}${error ? ` aria-invalid="true"` : ""}${desc ? ` aria-describedby="${desc}"` : ""}>`
+    + `<input class="pf-in${mono ? " mono" : ""}" id="${esc(id)}"${attrs}${error ? ` aria-invalid="true"` : ""}${desc ? ` aria-describedby="${esc(desc)}"` : ""}>`
     + (error ? note(error, { id: `${id}-e` }) : hint ? note(hint, { id: `${id}-h` }) : "") + `</div>`;
 }
 /**
@@ -181,7 +181,7 @@ export function steps(list, { id = "", live = false } = {}) {
  */
 export function codeInput({ name, legend, digits = 6, error = "", hint = "", id = "code" }) {
   const desc = error ? `${id}-e` : hint ? `${id}-h` : "";
-  const cells = Array.from({ length: digits }, (_, i) => `<input class="pf-in" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="${digits}" aria-label="Digit ${i + 1} of ${digits}"${i === 0 ? ` autocomplete="one-time-code"` : ` autocomplete="off"`}${error ? ` aria-invalid="true"` : ""}${desc ? ` aria-describedby="${desc}"` : ""}>`).join("");
+  const cells = Array.from({ length: digits }, (_, i) => `<input class="pf-in" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="${digits}" aria-label="Digit ${i + 1} of ${digits}"${i === 0 ? ` autocomplete="one-time-code"` : ` autocomplete="off"`}${error ? ` aria-invalid="true"` : ""}${desc ? ` aria-describedby="${esc(desc)}"` : ""}>`).join("");
   return `<fieldset class="pf-cells-f${error ? " err" : ""}" data-code="${digits}"><legend class="pf-l">${esc(legend)}</legend>`
     + `<div class="pf-cells">${cells}</div><input type="hidden" name="${esc(name)}" value="">`
     + (error ? note(error, { id: `${id}-e` }) : hint ? note(hint, { id: `${id}-h` }) : "") + `</fieldset>`;

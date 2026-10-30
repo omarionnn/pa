@@ -284,11 +284,11 @@ function post(path,body){return fetch(base+path,{method:'POST',credentials:'same
 function stepTo(n){var li=document.querySelectorAll('#cx-steps li');for(var i=0;i<li.length;i++){var s=i<n?'done':i===n?'now':'todo';li[i].className=s;li[i].querySelector('.m').textContent=s==='done'?'\\u2713':'\\u25cb';var sr=li[i].querySelector('.sr');if(sr)sr.textContent=' ('+(s==='done'?'done':s==='now'?'now':'not yet')+')'}}
 function cardFailed(sure){busy(false);var t=document.getElementById('cx-err-t');if(t)t.textContent=t.getAttribute(sure?'data-failed':'data-other');pfShow('error')}
 if(form)form.addEventListener('submit',function(e){e.preventDefault();if(err)err.hidden=true;busy(true);
-if(card){pfShow('saving');stepTo(1);card.submit().then(function(r){
+if(card){card.submit().then(function(r){
 if(r.status==='invalid'){busy(false);pfShow('add');return oops('something in there needs a look. it\\u2019s marked in red.')}
 if(r.status==='superseded'){busy(false);return pfShow('add')}
 if(r.status!=='saved')return cardFailed(r.status==='failed');
-stepTo(2);return post('/card',r.card).then(function(o){if(o.ok){stepTo(3);location.reload()}else cardFailed(false)})}).catch(function(){cardFailed(false)});return}
+pfShow('saving');stepTo(2);return post('/card',r.card).then(function(o){if(o.ok){stepTo(3);location.reload()}else cardFailed(false)})}).catch(function(){cardFailed(false)});return}
 var answers={},keys=Object.keys(fields);
 form.querySelectorAll('input[name]').forEach(function(i){if(i.value!=='')answers[i.name]=i.value});
 Promise.all(keys.map(function(k){return fields[k].collect()})).then(function(rs){for(var i=0;i<rs.length;i++){if(rs[i].status!=='collected'){fields[keys[i]].setInvalid(true);busy(false);return oops('that one needs another look.')}answers[keys[i]]=rs[i].input}

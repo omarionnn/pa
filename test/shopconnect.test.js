@@ -596,3 +596,16 @@ test("a code field of our own is six cells that submit as one answer; a sealed o
   assert.match(sealedPage, /data-protected="code"/);
   assert.doesNotMatch(sealedPage, /Digit 1 of 6|name="code"/, "a sealed code is never an input of ours");
 });
+
+test("a store's field key never escapes an attribute: ids and aria-describedby are escaped", async () => {
+  const { renderView } = await import("../src/pages/webconnect.js");
+  const bad = 'a"><img src=x onerror=alert(1)>';
+  const fields = [
+    { key: bad, label: "Code", required: true, handling: "standard", input: { kind: "text", autoComplete: "one-time-code", inputMode: "numeric" } },
+    { key: bad + "2", label: "Name", required: true, handling: "standard", input: { kind: "text" } },
+  ];
+  for (const state of ["code", "wrongcode", "signin"]) {
+    const html = renderView({ state, store: "target", kind: "signin", request: { requestId: "r", question: "", fields } }).html;
+    assert.doesNotMatch(html, /<img src=x/, `${state}: the key stays inside its attribute`);
+  }
+});
