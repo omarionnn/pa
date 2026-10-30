@@ -13,7 +13,7 @@
 // console is only for a conversation that has no thread at all, which is the terminal itself.
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
-import { outgoingParts } from "./plain.js";
+import { outgoingParts, withoutNoReply } from "./plain.js";
 import { WEB, webAllowedFor } from "./web.js";
 
 // A page link goes out BARE, on purpose. On 2026-10-06 the link's own bubble briefly carried the
@@ -114,6 +114,14 @@ export const WEB_HINT = "Our full conversation, the Web part included, is on Rea
 
 export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (line) => console.error(line) }) {
   return async function deliver({ conversationId, text, media, channel, to: toIn, chatId: chatIn, fromOwner, isOperator, replyTo = null, sendStyle = null, idempotencyKey = null, fromTask = null, toMaster = false }) {
+    // The silence marker never reaches a person, wherever in the reply it sits (src/plain.js
+    // withoutNoReply). Nothing left once it is off: nothing is sent, and `silent` tells the caller
+    // that was the decision rather than a failure to deliver.
+    const quiet = withoutNoReply(text, { path: "reply", log });
+    if (quiet.stripped) {
+      text = quiet.text;
+      if (quiet.empty && !media) return { ok: false, silent: true, mediaOk: true, error: "nothing left to send once NO_REPLY was taken off" };
+    }
     const route = whereTo({ conversationId, channel, to: toIn, chatId: chatIn });
     let { channel: name, to, chatId } = route;
     // A message their reach setting keeps on Web: written to Web (their history, their open tabs)

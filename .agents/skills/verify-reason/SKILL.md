@@ -424,6 +424,9 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
+### Baseline — NO_REPLY never reaches a person (wt/noreply-midtext, #272, 2026-10-30)
+4,704 tests / 4,589 pass / 0 fail / 115 skipped (`npm test` under `env -i`, branch merged with origin/main 963e3eb). New: `test/no-reply-midtext.test.js` (11), `test/no-reply-sanitizer.test.js` (9). Caged drive over the fake Sendblue: see [features/no-reply-marker.md](features/no-reply-marker.md).
+
 ### Baseline — reply to one message on Web (wt/web-reply-to, 2026-10-30)
 4,662 tests / 4,547 pass / 0 fail / 115 skipped (`npm test`, worktree of origin/main eb76521 + this branch). `bin/web-reply-drive.mjs`: 27 ok.
 

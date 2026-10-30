@@ -214,7 +214,8 @@ export function withoutSelfNote(text) {
  *     and the why is a note to itself, not a text;
  *   - a real reply with the marker on its own last line is the real reply, marker off.
  *
- * The marker inside a sentence ("i'd have said NO_REPLY to that") is left alone — that is prose.
+ * A marker anywhere else — a middle line, inside a sentence — is not this function's call: it is
+ * taken off at the last step before anything is sent (withoutNoReply, below).
  */
 const SILENCE_LINE = /^\W*NO_REPLY\W*$/;
 export function readSilence(text) {
@@ -228,6 +229,95 @@ export function readSilence(text) {
     lines.pop();
   }
   return { text: stripped ? lines.join("\n").trim() : s, silent: false, stripped };
+}
+
+/**
+ * The silence marker taken off a message at the last step before it goes to a person — the one
+ * place that decides it, called by every outbound path (src/deliver.js, src/outbox.js,
+ * src/channels/router.js sendNow and sendMediaUrl).
+ *
+ * readSilence above reads a whole reply: marker first means quiet, marker last is dropped. It used
+ * to leave a marker on a middle line or inside a sentence alone as "prose" (#43, 2026-10-18). No
+ * case was ever behind that: nothing Reason does has a reason to text the word NO_REPLY to anybody,
+ * and when the model writes it mid-reply it is the marker leaking, not a sentence about it. So here
+ * it comes off wherever it stands as a word of its own, in capitals, bold or not ("**NO_REPLY**").
+ *
+ * What is NOT the marker, and stays exactly as written: anything the token is part of — a link, an
+ * address, an identifier (it follows `= / ? & @ . _ -`, a letter or a digit, or is followed by `@`,
+ * a letter, a digit, `_`, or `.`/`-`/`/` and more of a word) — and anything in a code span or a
+ * fenced code block, which is text to copy, not words from Reason. "no reply" in ordinary words stays.
+ *
+ * Tidied only where the marker was: the spaces round it, and a line it leaves with nothing on it
+ * (or only a list marker like "2." or "-") goes, with the blank line it would leave doubled. No
+ * other line is trimmed, re-indented or re-spaced. `empty` is true when nothing worth sending is
+ * left — the caller then sends nothing. `path` names the caller in the `no_reply_stripped` log
+ * line, which never carries the message.
+ */
+const NO_REPLY_WORD = /([ \t]*)(\**)NO_REPLY(\**)([ \t]*)/g;
+const MEANINGFUL = /[\p{L}\p{N}\p{Extended_Pictographic}]/u;
+const PART_OF_SOMETHING_BEFORE = /[=/?&@._\-\p{L}\p{N}]/u;
+const LIST_MARKER_ONLY = /^[ \t]*(?:[-*+•]|\d+[.)])[ \t]*\r?$/;
+const blank = (l) => !l.replace(/\r$/, "").trim();
+function codeRanges(s) {
+  const ranges = [];
+  const fence = /```[\s\S]*?(?:```|$(?![\s\S]))/g;
+  for (let m; (m = fence.exec(s));) ranges.push([m.index, m.index + m[0].length]);
+  const inFence = (i) => ranges.some(([a, b]) => i >= a && i < b);
+  const inline = /`[^`\n]*`/g;
+  for (let m; (m = inline.exec(s));) if (!inFence(m.index)) ranges.push([m.index, m.index + m[0].length]);
+  return ranges;
+}
+export function withoutNoReply(text, { path = null, log = null } = {}) {
+  const s = String(text ?? "");
+  if (!s.includes("NO_REPLY")) return { text: s, stripped: false, empty: false };
+  const code = s.includes("`") ? codeRanges(s) : [];
+  const inCode = (i) => code.some(([a, b]) => i >= a && i < b);
+  let stripped = false;
+  const out = [];
+  let offset = 0;
+  let removedJustNow = false; // the line before this one was taken out
+  for (const line of s.split("\n")) {
+    const lineStart = offset;
+    offset += line.length + 1;
+    const next = line.replace(NO_REPLY_WORD, (m, lead, open, close, trail, at) => {
+      const token = at + lead.length + open.length;
+      if (inCode(lineStart + token)) return m;
+      // The character just before the marker (or before its bold) and just after it.
+      const before = lead ? " " : line[at - 1];
+      const afterAt = token + "NO_REPLY".length + close.length;
+      const after = trail ? " " : line[afterAt];
+      if (before !== undefined && PART_OF_SOMETHING_BEFORE.test(before)) return m;
+      if (after !== undefined && !trail) {
+        if (/[\w@]/.test(after)) return m;
+        if (/[.\-/]/.test(after) && /\w/.test(line[afterAt + 1] ?? "")) return m;
+      }
+      stripped = true;
+      const end = at + m.length;
+      const rest = line[end];
+      // At the start of the line the indentation stays; at the end, or before punctuation, the
+      // marker and its spaces just go; between two words it leaves one space.
+      if (at === 0) return lead;
+      return rest === undefined || rest === "\r" || /[.,!?;:)\]]/.test(rest) ? "" : " ";
+    });
+    if (next === line) {
+      // A blank line straight after a removed line, with a blank (or nothing) before it, would be a
+      // doubled gap that the removal made — that one goes.
+      if (removedJustNow && blank(line) && (!out.length || blank(out.at(-1)))) { removedJustNow = false; continue; }
+      removedJustNow = false;
+      out.push(line);
+      continue;
+    }
+    if (!MEANINGFUL.test(next.replace(/^[ \t]*\d+[.)][ \t]*$/, "")) || LIST_MARKER_ONLY.test(next)) { removedJustNow = true; continue; }
+    removedJustNow = false;
+    out.push(next);
+  }
+  if (!stripped) return { text: s, stripped: false, empty: false };
+  // A removed line at the very end can leave the blank line that was before it as a trailing gap.
+  if (removedJustNow) while (out.length && blank(out.at(-1))) out.pop();
+  const rest = out.join("\n");
+  const empty = !MEANINGFUL.test(rest);
+  try { log?.({ no_reply_stripped: path ?? "unknown", ...(empty ? { dropped: true } : {}) }); } catch { /* a log line never costs a send */ }
+  return { text: empty ? "" : rest, stripped: true, empty };
 }
 
 /**
