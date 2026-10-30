@@ -442,3 +442,15 @@ test("a call thirty minutes in is still a call: the sweep waits for the platform
   assert.equal((await settleLostCalls({ calls: null })).unknown, 1);
   assert.equal(db.getCall(C, call_id).state, "failed");
 });
+
+test("a call nobody answered keeps the short window: swept after 25 minutes, not an hour", async () => {
+  // A missed scheduled call owes its text promptly, and a stuck `placing` row counts against an
+  // errand's parallel limit. Only a call somebody is talking on gets the platform's hour.
+  const { call_id } = await runTool("call_place", { to: "owner", goal: "never picked up" }, { conversationId: C, calls: new FakeCallProvider() });
+  assert.equal(db.getCall(C, call_id).state, "placing");
+  clock.skip(30 * 60 * 1000);
+  const out = await settleLostCalls({ calls: null });
+  assert.equal(out.found, 1, "a 30-minute-old call still placing is swept");
+  assert.equal(db.getCall(C, call_id).state, "failed");
+  assert.ok(callLostAfterMs("placing") <= 25 * 60 * 1000);
+});

@@ -1194,6 +1194,7 @@ const stalled = (ms, ...rounds) => {
     await new Promise(resolve => setTimeout(resolve, ms));
     for (const e of events) {
       if (typeof e === "string") yield { type: "text", text: e };
+      else if (e.start) yield { type: "tool_start", name: e.start };
       else yield { type: "tool_use", name: e.tool, id: e.id ?? "tu_1", input: e.input ?? {} };
     }
   };
@@ -1293,4 +1294,54 @@ test("a reply the server ends without a stream still leaves a line", async () =>
     await res.text();
   } finally { server.close(); }
   assert.ok(seen.some(l => l.call_llm_not_streamed === 400), "the non-stream end is in the journal");
+});
+
+test("the holding line and then nothing from the model: the turn still closes with a sentence", async () => {
+  // "One moment" left hanging, with only NO_REPLY behind it, is a promise nobody keeps.
+  const call = ownerCall();
+  const seen = [];
+  const out = await llmRequest({
+    rawBody: bodyFor(call), headers: AUTH, log: (l) => seen.push(l), firstWordDeadlineMs: 50,
+    screen: async () => ({ verdict: "safe" }),
+    generate: stalled(300, ["NO_REPLY"]),
+  });
+  const r = await drain(out.stream);
+  assert.ok(r.said.startsWith(voice.HOLDING_LINE), r.said);
+  assert.ok(r.said.length > voice.HOLDING_LINE.length, `more than the holding line was said: ${JSON.stringify(r.said)}`);
+  assert.doesNotMatch(r.said, /no.?reply/i);
+  assert.ok(seen.some(l => l.voice_turn_nothing_said === call.id));
+  assert.deepEqual(r.finish, ["stop"]);
+});
+
+test("no thinking filler straight after the holding line when a tool starts", async () => {
+  const call = ownerCall();
+  voice.contextDeps.runTool = async () => ({ ok: true, found: "a thing" });
+  const out = await llmRequest({
+    rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 50,
+    screen: async () => ({ verdict: "safe" }),
+    generate: stalled(300, [{ start: "memory_search" }, { tool: "memory_search", input: { query: "x" } }], ["Found it."]),
+  });
+  const r = await drain(out.stream);
+  assert.equal(r.said, `${voice.HOLDING_LINE} Found it.`);
+});
+
+test("no holding line on hold, or with a mailbox on the line: only where a spoken reply is expected", async () => {
+  // On hold: the model is meant to skip_turn, and a line into hold music is for nobody.
+  const held = thirdPartyCall({ state: "in_progress" });
+  db.updateCall(C, held.id, { hold_since: clock.now() - 30_000, hold_waits: 1 });
+  // A mailbox already reached (a transfer that rang through to voicemail): anything said IS the message.
+  const mailbox = thirdPartyCall({ state: "in_progress", externalId: "conv_out2" });
+  db.updateCall(C, mailbox.id, { outcome_kind: "voicemail_no_message" });
+  for (const row of [held, mailbox]) {
+    const call = db.getCall(C, row.id);
+    const seen = [];
+    const out = await llmRequest({
+      rawBody: bodyFor(call, { messages: [{ role: "user", content: "(music)" }] }),
+      headers: AUTH, log: (l) => seen.push(l), firstWordDeadlineMs: 50,
+      generate: stalled(300, [{ tool: "skip_turn", input: { reason: "hold" } }]),
+    });
+    const r = await drain(out.stream);
+    assert.ok(!r.said.includes(voice.HOLDING_LINE), `call ${call.id}: ${r.said}`);
+    assert.ok(!seen.some(l => l.voice_holding_line != null), `call ${call.id} logged a holding line`);
+  }
 });

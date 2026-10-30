@@ -219,6 +219,9 @@ export const FIRST_WORD_DEADLINE_MS = 4_000;
  */
 export const HOLDING_LINE = "Mm-hm, one moment.";
 
+/** A turn that ends having said nothing of its own (after anything already said, so leading space). */
+const NOTHING_SAID_AFTER = " Sorry — bear with me one moment.";
+
 /**
  * The messages a turn sends ALWAYS end on the other side's words.
  *
@@ -1529,9 +1532,19 @@ export async function* voiceTurn({
   // before the disclosure. The line is an ordinary content delta in the same assistant message, so
   // the stream keeps its shape: the platform's next request carries it as Reason's own words, and a
   // history ending on it is handed back as the person's turn by `endOnTheirSide`, never a prefill.
+  //
+  // Armed only when a spoken reply is what this turn is for. Never on hold (the model is meant to
+  // skip_turn, and a line into hold music is wasted on nobody), never with a menu, recording or
+  // mailbox on the line (MACHINE_KINDS: anything said there is a key press or the voicemail itself),
+  // never to somebody still owed the disclosure. Read again at the deadline, because a round can
+  // change any of these mid-turn (a voicemail_detection, a skip_turn). So it is never said once a
+  // machine is known, which keeps it out of any round whose words are recorded as the voicemail.
   const LATE = Symbol("late");
+  const replyExpected = () => !holdBack && !superseded() && !hold.onHold(call) && !hold.openingOwed(call)
+    && !callOutcome.MACHINE_KINDS.includes(String(call?.outcome_kind ?? ""));
+  const onlyHolding = () => holdingSaid && said === HOLDING_LINE;
   const untilFirstWord = async function* (pending) {
-    if (holdingSaid || said || filled || holdBack || superseded()) return await pending;
+    if (holdingSaid || said || filled || !replyExpected()) return await pending;
     let timer;
     const late = new Promise(resolve => {
       timer = setTimeout(() => resolve(LATE), Math.max(0, firstWordDeadlineMs - (Date.now() - turnStartReal)));
@@ -1540,7 +1553,7 @@ export async function* voiceTurn({
     let first;
     try { first = await Promise.race([pending, late]); } finally { clearTimeout(timer); }
     if (first !== LATE) return first;
-    if (said || filled || holdBack || superseded()) return await pending;
+    if (said || filled || !replyExpected()) return await pending;
     holdingSaid = true;
     said = HOLDING_LINE;
     if (!firstContentAt) firstContentAt = clock.now();
@@ -1678,7 +1691,10 @@ export async function* voiceTurn({
             // 8–11 seconds into the turn (call 35, 2026-10-21).
             yield* emit(splitter.flush());
             filled = true;
-            yield chunk({ content: said || roundText.trim() ? THINKING_FILLER : `One sec${THINKING_FILLER}` });
+            // Not straight after the holding line, which already bought this pause.
+            if (!(onlyHolding() && !roundText.trim())) {
+              yield chunk({ content: said || roundText.trim() ? THINKING_FILLER : `One sec${THINKING_FILLER}` });
+            }
             continue;
           }
           if (ev?.type === "tool_use") toolUses.push(ev);
@@ -1738,6 +1754,14 @@ export async function* voiceTurn({
       }
 
       if (!toolUses.length) {
+        // The holding line went out and the model then said nothing (only NO_REPLY, or a note to
+        // itself): "one moment" with nothing after it is a promise left hanging, so the turn's
+        // nothing-said sentence closes it, as it does when the rounds run out.
+        if (onlyHolding()) {
+          log({ voice_turn_nothing_said: call.id, kind: context.kind, after: "holding_line", ...timing() });
+          said += NOTHING_SAID_AFTER;
+          yield chunk({ content: NOTHING_SAID_AFTER });
+        }
         yield chunk({}, "stop");
         yield SSE_DONE;
         log({ voice_turn: call.id, kind: context.kind, said: said.length, rounds: round, ...timing() });
@@ -1976,7 +2000,7 @@ export async function* voiceTurn({
         filled = true;
         // Not straight after the holding line: that already bought the pause, and "moment...." is
         // the same breath said twice.
-        if (!(holdingSaid && said === HOLDING_LINE)) yield chunk({ content: said ? THINKING_FILLER : `One sec${THINKING_FILLER}` });
+        if (!onlyHolding()) yield chunk({ content: said ? THINKING_FILLER : `One sec${THINKING_FILLER}` });
       }
 
       messages.push({
@@ -2044,10 +2068,10 @@ export async function* voiceTurn({
     // out-of-rounds guard because a refusal is not a round spent on a tool. Falling off the end then
     // produced an empty stream: no words, no finish reason, just `[DONE]`. Dead air is the worst answer
     // a phone call can give, and an unframed one is worse than that.
-    if (!said || (holdingSaid && said === HOLDING_LINE)) {
+    if (!said || onlyHolding()) {
       log({ voice_turn_nothing_said: call.id, kind: context.kind, ...timing() });
       yield* openingIfOwed();
-      yield chunk({ content: said ? " Sorry — bear with me one moment." : "Sorry — bear with me one moment." });
+      yield chunk({ content: said ? NOTHING_SAID_AFTER : NOTHING_SAID_AFTER.trim() });
     }
     yield chunk({}, "stop");
   } catch (e) {
