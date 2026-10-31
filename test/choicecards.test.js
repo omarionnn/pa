@@ -113,8 +113,17 @@ test("a card that fails stops the rest, so the numbers never arrive out of order
   assert.equal(db.openChoiceFor(C).state, "partial");
 });
 
-test("one photo missing: no cards at all, a numbered text list instead, numbers kept", async () => {
+test("one photo missing: that option is left out, the other two are cards (owner's CeraVe, 2026-10-31)", async () => {
   const fetchPhoto = async ({ url }) => (url === PHOTOS[1] ? { ok: false, why: "404" } : okPhoto());
+  const r = await cc.runChoiceTool("show_choices", input(), ctx({ fetchPhoto }));
+  assert.equal(r.cards, 2);
+  assert.match(r.note, /Not in the set \(no picture of it could be shown\): Foaming Facial Cleanser/);
+  await cc.sendQueued(C, { router: fakeRouter(), withWords: true, route: { channel: "sendblue", to: "+1" } });
+  assert.deepEqual(db.openChoiceFor(C).options.map(o => [o.n, o.name]), [[1, "Hydrating Facial Cleanser"], [2, "Hydrating Cream-to-Foam Cleanser"]]);
+});
+
+test("fewer than two photos: a numbered text list instead, numbers kept", async () => {
+  const fetchPhoto = async ({ url }) => (url === PHOTOS[0] ? okPhoto() : { ok: false, why: "404" });
   const r = await cc.runChoiceTool("show_choices", input(), ctx({ fetchPhoto }));
   assert.equal(r.fallback, "text");
   assert.match(r.note, /1\. Hydrating Facial Cleanser — \$15\.99 — 16 oz \(cheapest\)\n2\. Foaming/);
@@ -126,8 +135,12 @@ test("an image address no tool returned is refused (never a picture typed from m
   const bad = input();
   bad.options[2].image_url = "https://made.up/guess.jpg";
   const r = await cc.runChoiceTool("show_choices", bad, ctx());
-  assert.equal(r.fallback, "text");
-  assert.match(r.note, /did not come from a tool/);
+  assert.equal(r.cards, 2);
+  assert.match(r.note, /Not in the set.*Hydrating Cream-to-Foam Cleanser/);
+  bad.options[1].image_url = "https://made.up/guess2.jpg";
+  const t = await cc.runChoiceTool("show_choices", bad, ctx());
+  assert.equal(t.fallback, "text");
+  assert.match(t.note, /did not come from a tool/);
 });
 
 test("the card: big number, name, price, the why, the wordmark; Night when they chose Night", () => {

@@ -44,6 +44,7 @@ import { fetchImage } from "./media.js";
 import { checkUrl } from "./pictures.js";
 import { webLookup, plainFetch } from "./weblookup.js";
 import { parallelClient } from "./parallel.js";
+import { connectAllowedFor } from "./shopconnect.js";
 
 export const CHOICE_TOOLS = new Set(["show_choices"]);
 
@@ -632,24 +633,27 @@ const words = (s) => String(s ?? "").toLowerCase().match(/[a-z0-9]{3,}/g)?.filte
  * the listing's own picture will be used). Returns { option, dropped } — the option with anything
  * the listing does not back taken off, and a short line per thing taken off.
  */
-export function checkAgainstListing(o, listing, { photoUrl = "", photoFromListing = true } = {}) {
+export function checkAgainstListing(o, listing, { photoUrl = "", photoFromListing = true, offerCents = [] } = {}) {
   const out = { ...o };
   const dropped = [];
-  const fail = (why) => {
-    if (amountOf(out.price) != null) { dropped.push(`price ${out.price} (${why})`); out.price = ""; }
+  // The price offer_check read off this exact page for them: backed, whatever else the page says.
+  const offered = (amt) => amt != null && offerCents.some(c => Math.abs(c / 100 - amt) < 0.005);
+  const fail = (why, offerOk = false) => {
+    if (amountOf(out.price) != null && !(offerOk && offered(amountOf(out.price)))) { dropped.push(`price ${out.price} (${why})`); out.price = ""; }
     for (const k of SIZED) {
       for (const s of sizesIn(out[k])) { dropped.push(`size ${s.raw.trim()} (${why})`); out[k] = tidy(out[k].replace(s.raw, " ")); }
     }
     return { option: out, dropped };
   };
-  if (!listing) return fail("no store listing to check it against");
+  // No listing read back: only offer_check's own read of the page the card shows can back a price.
+  if (!listing) return fail("no store listing to check it against", photoFromListing);
   if (!photoFromListing) return fail("the photo is not from its listing");
   const head = `${listing.title ?? ""}\n${String(listing.text ?? "").slice(0, 1500)}`.toLowerCase();
   const want = [...new Set(words(o.name))];
   if (want.length && want.filter(w => head.includes(w)).length / want.length < 0.5) return fail("the listing is a different product");
   // Price: one of the amounts the listing itself shows.
   const amt = amountOf(out.price);
-  if (amt != null && !pricesIn(head).some(p => Math.abs(p - amt) < 0.005)) {
+  if (amt != null && !offered(amt) && !pricesIn(head).some(p => Math.abs(p - amt) < 0.005)) {
     dropped.push(`price ${out.price} (not on the listing)`); out.price = "";
   }
   // Size: the size in the listing's own title — a page lists every size it comes in, the title is
@@ -674,11 +678,16 @@ async function checkListing(c, o, { lookup = (u) => webLookup(u, { maxChars: 400
   const from = img ? db.seenUrlInfo(c, img)?.from ?? "" : "";
   const page = [from, o.url].find(u => u && db.hasSeenUrl(c, u)) ?? "";
   if (!page) return checkAgainstListing(o, null);
+  // Prices offer_check read off this very page in the last day (the owner's Ulta sizes, 2026-10-31).
+  const offerCents = (() => { try { return db.offerPricesFor(c, page, clock.now() - 24 * 3600_000); } catch { return []; } })();
   const listing = await lookup(page).catch(() => null);
-  if (!listing?.ok || !(listing.title || listing.text)) return checkAgainstListing(o, null);
   // With no picture of its own the card shows this page's own picture, which is this listing.
+  if (!listing?.ok || !(listing.title || listing.text)) {
+    const off = checkAgainstListing(o, null, { offerCents, photoFromListing: !img || from === page });
+    return { ...off, option: { ...off.option, url: off.option.url || page } };
+  }
   const photoFromListing = !img || from === page || (listing.images ?? []).includes(img);
-  const checked = checkAgainstListing(o, listing, { photoUrl: img, photoFromListing });
+  const checked = checkAgainstListing(o, listing, { photoUrl: img, photoFromListing, offerCents });
   return { ...checked, option: { ...checked.option, url: checked.option.url || page } };
 }
 
@@ -694,12 +703,11 @@ export async function runChoiceTool(name, input, ctx) {
   // Products: price and size only as the listing the photo came from says them (checkListing).
   const checks = input.kind === "places" ? asked.map(o => ({ option: o, dropped: [] }))
     : await Promise.all(asked.map(o => checkListing(c, o, ctx.lookup ? { lookup: ctx.lookup } : {}).catch(() => checkAgainstListing(o, null))));
-  const options = checks.map(x => x.option);
-  const offCards = checks.flatMap((x, i) => x.dropped.map(d => `option ${i + 1}: ${d}`));
-  if (offCards.length) log({ choice_cards_unbacked: c, dropped: offCards });
-  const offNote = offCards.length ? ` Left off because the store listing does not back it — do not say these in your line either: ${offCards.join("; ")}.` : "";
+  let options = checks.map(x => x.option);
 
-  // Every photo or none: a set where card 2 is a picture and card 3 is a sentence reads as broken.
+  // Every card a photo: a set where card 2 is a picture and card 3 is a sentence reads as broken.
+  // An option with no usable picture is left out of the set; only fewer than 2 left means a list
+  // (the owner's CeraVe sizes on 2026-10-31 all went to text over two missing pictures).
   // A place shows its room — the inside, the seating, the counter — not a cup or a logo (placePhoto).
   // Places: every place's pictures looked at together, then handed out in order so no two cards
   // in the set show the same photo (a directory can give two branches one picture).
@@ -727,12 +735,25 @@ export async function runChoiceTool(name, input, ctx) {
     photos.push(got);
   }
   let cards = null;
-  let why = photos.find(p => !p.ok)?.why ?? null;
+  let why = null;
+  let leftOut = [];
+  let kept = options.map((_, i) => i);
+  if (photos.filter(p => p.ok).length >= 2) {
+    kept = kept.filter(i => photos[i].ok);
+    leftOut = asked.filter((_, i) => !photos[i].ok);   // as the model named it, so it knows which
+  } else why = photos.find(p => !p.ok)?.why ?? null;
+  if (leftOut.length) log({ choice_cards_left_out: c, n: leftOut.length, why: photos.filter(p => !p.ok).map(p => p.why) });
+  const offCards = kept.flatMap((i, k) => checks[i].dropped.map(d => `option ${k + 1}: ${d}`));
+  if (offCards.length) log({ choice_cards_unbacked: c, dropped: offCards });
+  const offNote = offCards.length ? ` Left off because the store listing does not back it — do not say these in your line either: ${offCards.join("; ")}.` : "";
+  const outNote = leftOut.length ? ` Not in the set (no picture of it could be shown): ${leftOut.map(o => o.name).join("; ")} — do not number it; mention it in a few words only if it matters.` : "";
+  options = kept.map(i => options[i]);
+  const shots = kept.map(i => photos[i]);
   if (!why) {
     try {
       cards = [];
       for (const [i, o] of options.entries()) {
-        cards.push(await drawCard({ n: i + 1, kind: input.kind, theme, ...o, photo: photos[i].uri }, { shoot: ctx.shoot ?? shootWithChromium }));
+        cards.push(await drawCard({ n: i + 1, kind: input.kind, theme, ...o, photo: shots[i].uri }, { shoot: ctx.shoot ?? shootWithChromium }));
       }
     } catch (e) {
       cards = null;
@@ -755,7 +776,7 @@ export async function runChoiceTool(name, input, ctx) {
   log({ choice_cards_drawn: c, set: set.id, n: cards.length, theme });
   return {
     ok: true, set_id: set.id, cards: cards.length,
-    note: `${cards.length} cards are drawn and go out right after your reply, one bubble each, numbered 1–${cards.length}. Your reply is just the one short line above them — what these are and that it is their pick. Do not list them again and do not mention cards or pictures.${offNote}`,
+    note: `${cards.length} cards are drawn and go out right after your reply, one bubble each, numbered 1–${cards.length}. Your reply is just the one short line above them — what these are and that it is their pick. Do not list them again and do not mention cards or pictures.${offNote}${outNote}`,
   };
 }
 
@@ -836,6 +857,11 @@ export function inboundChoiceLine(conversationId, { text = "", replyTo = null, n
     line += hit ? ` This is a tapback on the line naming option ${hit.n} — that is their pick.` : ` This is a tapback on one of your own texts, not a pick.`;
   } else {
     line += " If this message picks one — by number, by how it looks, by name — go ahead with that one. If it is about something else, leave the options be.";
+  }
+  // A product pick where buying goes through Crossmint: straight into its checkout, never AgentCard.
+  if (set.kind !== "places" && connectAllowedFor(conversationId)) {
+    const pages = set.options.filter(o => o.url).map(o => `${o.n} = ${o.url}`).join("; ");
+    line += ` If they asked to buy it, their pick is the go-ahead to start the checkout: store_checkout for that one${pages ? ` (start_url, its page: ${pages})` : ""} — nothing is charged until they approve Crossmint's total.`;
   }
   return `${line}]`;
 }
