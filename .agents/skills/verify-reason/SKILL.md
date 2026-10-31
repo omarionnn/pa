@@ -434,6 +434,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — a saved card is registered for order intents (wt/card-registration, 2026-10-31)
+
+`npm run test:offline` under `env -i` (fresh `npm ci` in the worktree): 4,926 tests, 4,794 passing, 131 skipped, 1 failing (web-ongoing "the desktop margin", date-dependent, fails on main too). New: `test/card-registration.test.js` (9). Fixtures in passkey-pay, checkout-job, checkout-anticipate and shopconnect tests seed their card `registered = 1`, as does the passkey drive. Muted passkey drive: all ok. See [features/passkey-pay.md](features/passkey-pay.md) "The card's order-intent registration".
+
 ### Baseline — Face ID approval survives a payment that fails to start (wt/faceid-approve, #288, 2026-10-31)
 
 `npm run test:offline` under `env -i`: 4,905 tests, 4,773 passing, 131 skipped, 1 failing (web-ongoing, date-dependent, fails on main too). `test/passkey-pay.test.js` +6: a refused order intent reopens the link under a fresh challenge (first assertion replay → `not_verified`, next tap pays, then `link_used`); the page's `failed` screen + 410 copy; counter 0 twice + www. origin; unknown outcome keeps the link used; `shop_status` hands a fresh `approve_url` only when the last link was used up/ran out; `askedFor` plain words. Drive `bin/passkey-drive.mjs` 23 ok / 0 fail; new scenario (j) drives the real page through Crossmint refusing → "Face ID worked. The payment didn't start." → Try again → paid, run stage `paid`, "Paid $26.65" texted; shots `passkey-payment-did-not-start.png`, `passkey-paid-after-retry.png`. Live cause (pay_approval_log 16:23 UTC): `approved` → `pay_failed order_intent_failed` → `rejected link_used`.
