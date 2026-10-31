@@ -54,12 +54,13 @@ export function playableSibling(path, root) {
 }
 
 const inflight = new Map(); // hash → Promise<path|null>, so two plays at once convert once
-const failed = new Map();   // hash → when it last failed: not tried again for FAIL_MS (Safari asks in many ranges)
+const failed = new Map();   // hash → when it last failed: not tried again for FAIL_MS (Safari asks in many ranges); pruned past FAIL_MS
 const FAIL_MS = 30 * 60_000;
 /** Converted copies older than this are swept when a new one is made: they are made again if asked for. */
 const KEEP_MS = 30 * 24 * 3600_000;
-/** At most this many conversions at once; the rest wait their turn. */
+/** At most this many conversions at once; the rest wait their turn, up to MAX_WAITING (then: not now). */
 const MAX_RUNNING = 2;
+const MAX_WAITING = 8;
 let running = 0;
 const waiting = [];
 const slot = () => new Promise(r => { if (running < MAX_RUNNING) { running++; r(); } else waiting.push(r); });
@@ -68,13 +69,26 @@ const free = () => { const next = waiting.shift(); if (next) next(); else runnin
 const hashOf = (bytes) => createHash("sha256").update(bytes).digest("hex").slice(0, 40);
 const outFor = (hash, root = config.webAudioRoot) => join(resolve(root), `${hash}.m4a`);
 
-function sweep(dir, now = Date.now()) {
+function sweep(dir, now = Date.now(), keepMs = KEEP_MS) {
+  let gone = 0;
   try {
     for (const f of readdirSync(dir)) {
       const p = join(dir, f);
-      try { if (now - statSync(p).mtimeMs > KEEP_MS) rmSync(p, { force: true }); } catch { /* gone already */ }
+      try { if (now - statSync(p).mtimeMs > keepMs) { rmSync(p, { force: true }); gone++; } } catch { /* gone already */ }
     }
   } catch { /* nothing to sweep */ }
+  return gone;
+}
+
+/**
+ * The retention sweep (src/privacy.js) clears converted copies on its own clock, so a voice note whose
+ * message aged out does not live on as .m4a until some later play happens to sweep. Kept no longer than
+ * message content is kept, and never past KEEP_MS. The number removed.
+ */
+export function sweepPlayable({ now = Date.now(), keepDays = config.keepContentDays, root = config.webAudioRoot } = {}) {
+  const days = Number(keepDays);
+  const keepMs = Number.isFinite(days) && days > 0 ? Math.min(KEEP_MS, days * 24 * 3600_000) : KEEP_MS;
+  return sweep(resolve(root), now, keepMs);
 }
 
 /** `bytes` as .m4a, from the cache or made now; the cached file's path, or null when it cannot be made. */
@@ -87,7 +101,10 @@ export async function toM4a(bytes, { converter = findConverter(), run = runConve
   const out = outFor(hash, root);
   if (existsSync(out) && statSync(out).size > 0) return out;
   if (Date.now() - (failed.get(hash) ?? -Infinity) < FAIL_MS) return null;
+  if (failed.size > 256) for (const [h, t] of failed) if (Date.now() - t >= FAIL_MS) failed.delete(h);
   if (inflight.has(hash)) return inflight.get(hash);
+  // Each waiter holds its whole file in memory: a pile of plays at once is turned away, not queued.
+  if (running >= MAX_RUNNING && waiting.length >= MAX_WAITING) return null;
   const job = (async () => {
     await slot();
     const tag = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;

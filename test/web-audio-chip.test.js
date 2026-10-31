@@ -81,6 +81,7 @@ test("a voice note Reason spoke is a chip with a player, served to its own conve
   assert.equal(got.status, 200);
   assert.match(got.headers["Content-Type"], /^audio\//);
   assert.equal(got.headers["Accept-Ranges"], "bytes");
+  assert.equal(got.headers["Cache-Control"], "private, no-store", "a deleted recording must not keep playing from the browser's cache");
   const part = await getMedia(b, `/web/media/m/${row.id}/0`, { range: "bytes=0-9" });
   assert.equal(part.status, 206);
   assert.equal(part.body.length, 10);
@@ -219,4 +220,47 @@ test("conversion: the input format is pinned, file-only; bytes that are not audi
   assert.ok(made && existsSync(made));
   wa.forgetPlayable(keep);
   assert.ok(!existsSync(made));
+});
+
+test("converted copies are cleared by the retention sweep on its own clock, never kept past message content", async () => {
+  const { utimesSync } = await import("node:fs");
+  const wa = await import("../src/webaudio.js");
+  const root = mkdtempSync(join(tmpdir(), "reason-web-audio-sweep-"));
+  try {
+    const old = join(root, "a".repeat(40) + ".m4a"), fresh = join(root, "b".repeat(40) + ".m4a");
+    writeFileSync(old, "m4a"); writeFileSync(fresh, "m4a");
+    const tenDaysAgo = (Date.now() - 10 * 24 * 3600_000) / 1000;
+    utimesSync(old, tenDaysAgo, tenDaysAgo);
+    assert.equal(wa.sweepPlayable({ root, keepDays: 30 }), 0, "within 30 days stays");
+    assert.equal(wa.sweepPlayable({ root, keepDays: 7 }), 1, "content kept 7 days: a 10-day-old copy goes");
+    assert.deepEqual(readdirSync(root), ["b".repeat(40) + ".m4a"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+  const { sweepRetention } = await import("../src/privacy.js");
+  mkdirSync(config.webAudioRoot, { recursive: true });
+  const stale = join(config.webAudioRoot, "c".repeat(40) + ".m4a");
+  writeFileSync(stale, "m4a");
+  const longAgo = (Date.now() - 400 * 24 * 3600_000) / 1000;
+  (await import("node:fs")).utimesSync(stale, longAgo, longAgo);
+  const out = sweepRetention({});
+  assert.equal(existsSync(stale), false, "the retention sweep removes it");
+  assert.equal(out.deleted.web_audio_copies, 1);
+});
+
+test("a pile of conversions at once is turned away past the wait limit, not queued without end", async () => {
+  const wa = await import("../src/webaudio.js");
+  const root = mkdtempSync(join(tmpdir(), "reason-web-audio-queue-"));
+  const converter = { kind: "ffmpeg", bin: "/bin/false" };
+  const release = [];
+  let started = 0;
+  const run = (a) => { started++; return new Promise(r => release.push(() => { writeFileSync(a.at(-1), "m4a"); r({ ok: true }); })); };
+  try {
+    const jobs = [];
+    for (let i = 0; i < 10; i++) jobs.push(wa.toM4a(Buffer.concat([CAF, Buffer.from([i])]), { converter, run, root }));
+    const turnedAway = await wa.toM4a(Buffer.concat([CAF, Buffer.from([99])]), { converter, run, root });
+    assert.equal(turnedAway, null, "the 11th (2 running + 8 waiting) is not queued");
+    for (let k = 0; k < 10; k++) { while (!release.length) await new Promise(r => setImmediate(r)); release.shift()(); }
+    const done = await Promise.all(jobs);
+    assert.equal(done.filter(Boolean).length, 10, "every queued one is made");
+    assert.equal(started, 10);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

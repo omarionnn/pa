@@ -185,7 +185,7 @@ function bytesOut({ bytes, mime, name = "", headers = {}, method = "GET" }) {
   // A recording converted for the browser (src/webaudio.js) is named for what it now is.
   if (mime === "audio/mp4" && name && !/\.(m4a|mp4)$/i.test(name)) name = String(name).replace(/\.[a-z0-9]{1,5}$/i, "") + ".m4a";
   const base = {
-    "Content-Type": mime, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=86400",
+    "Content-Type": mime, "X-Content-Type-Options": "nosniff", "Cache-Control": /^audio\//.test(mime) ? "private, no-store" : "private, max-age=86400",
     "Referrer-Policy": "same-origin", "Cross-Origin-Resource-Policy": "same-origin", "Accept-Ranges": "bytes",
     // A PDF, a picture or a recording opens in the browser; anything else (a .docx, a sheet) comes
     // down as the file under its own name, which iPhone Safari hands to Quick Look.
