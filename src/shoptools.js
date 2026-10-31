@@ -15,6 +15,7 @@
 // reworded (crossmintWords). Everybody else keeps today's tools exactly.
 import { z } from "zod";
 import * as shop from "./shopconnect.js";
+import * as passkey from "./passkey.js";
 
 export const SHOP_TOOLS = new Set(["store_checkout", "shop_pay", "shop_decline", "shop_card"]);
 export const shopToolVisible = (name, conversationId) => !SHOP_TOOLS.has(name) || shop.connectAllowedFor(conversationId);
@@ -63,7 +64,7 @@ export const SHOP_TOOL_DEFS = [
   },
   {
     name: "shop_pay",
-    description: "PAY the store's checkout. This spends real money. Only after they said yes to the exact ask they were texted (store, item, Crossmint's total). Call it first with just payment_id: it refuses with `use_target`; pass that verbatim as confirm_request's target, then their real answer, then confirm_record, then this again with the confirmation_id. The amount paid is Crossmint's, read from the record; never type an amount.",
+    description: "PAY the store's checkout. This spends real money. Only after they said yes to the exact ask they were texted (store, item, Crossmint's total). Call it first with just payment_id: it refuses with `use_target`; pass that verbatim as confirm_request's target, then their real answer, then confirm_record, then this again with the confirmation_id. The amount paid is Crossmint's, read from the record; never type an amount. If they approve with Face ID it never pays: it gives a fresh approval link to send.",
     input_schema: {
       type: "object",
       properties: {
@@ -113,6 +114,12 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
     return { ok: true, run_id: out.runId, plan: out.plan, say: `Started ${how}. Nothing is charged: when it reaches payment they get a text with Crossmint's exact total to approve. Tell them in one line you're on it; don't promise a time.` };
   }
   if (name === "shop_pay") {
+    // Face ID set up (src/passkey.js): no yes typed here pays. They get a fresh link; the page pays.
+    if (passkey.requiredFor(c)) {
+      const row = shop.paymentRow(input.payment_id);
+      if (!row || row.conversation_id !== c || row.status !== "asked") return { ok: false, error: "not_open" };
+      return { ok: false, approve_with_face_id: true, url: shop.approvalUrl(row), say: "Their purchases are approved with Face ID, so a yes in the chat doesn't pay. Send this url ON ITS OWN LINE as the last thing, untouched; it works once, for 5 minutes. Don't say it's paid." };
+    }
     const out = await shop.payApproved({ conversationId: c, paymentId: input.payment_id, confirmationId });
     return out.ok ? { ...out, say: `Paid ${out.amount} at ${out.merchant}. The store still has to place it; say it's going through, not that it's done.` } : out;
   }

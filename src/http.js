@@ -36,6 +36,7 @@
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
+//   GET  /web/approve/{token}, POST …/verify|decline, GET /web/connect/passkey, POST …/verify   purchase approval by passkey (src/pages/webapprove.js; REASON_PASSKEY_PAY)
 //   GET  /web/connect/{token}[/state], POST …/answer|card, GET /web/connect/island.js|jwks.json|new-card   store sign-in + card for Crossmint checkouts (src/pages/webconnect.js; REASON_SHOP_CONNECT)
 //   GET  /web/stamps, POST /web/api/stamps/{id}/share[/revoke], GET …/{id}/image.png, …/{id}/story.png   Stamps (src/pages/webstamps.js; REASON_WEB_DAILY or REASON_STAMPS_ALL)
 //   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)
@@ -297,7 +298,8 @@ export function createServer({ router, runtime, log = () => {} }) {
           const { webMediaRoute, readRaw } = await import("./webmedia.js");
           out = await webMediaRoute({ path: url.pathname, method: req.method, headers: req.headers, readBody: (max) => readRaw(req, max), log });
         } catch (e) {
-          log({ http: url.pathname, threw: (e?.message ?? String(e)).split("\n")[0] });
+          // An approval link's token is a bearer secret: never in the journal.
+      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
           return send(500, { ok: false, error: "server error" });
         }
         res.writeHead(out.status, out.headers);
@@ -305,8 +307,31 @@ export function createServer({ router, runtime, log = () => {} }) {
       }
       // Connect (src/pages/webconnect.js): sign in to a store, add a card, for Crossmint checkouts. Behind
       // REASON_SHOP_CONNECT; off, the same flat 404 as any path nobody was issued.
+      // Purchase approval by passkey (src/pages/webapprove.js, src/passkey.js): the Face ID link for one
+      // payment, and setting Face ID up. Behind REASON_PASSKEY_PAY and REASON_SHOP_CONNECT; off, a flat 404.
+      const approveRoute = /^\/web\/approve\/([A-Za-z0-9_-]{20,64}(?:\/(?:verify|decline))?)$/.exec(url.pathname);
+      const setupRoute = /^\/web\/connect\/passkey(?:\/(verify))?$/.exec(url.pathname);
+      if ((approveRoute || setupRoute) && webOn() && (await import("./shopconnect.js")).connectMode() !== "off" && (await import("./passkey.js")).passkeyMode() !== "off") {
+        let out = null;
+        try {
+          const pages = await import("./pages/webapprove.js");
+          if (approveRoute) out = await pages.approveRequest({ sub: approveRoute[1], method: req.method, headers: req.headers, readBody: () => readBody(req), log });
+          else {
+            const { sessionAccount } = await import("./pages/websignin.js");
+            out = await pages.passkeySetupRequest({ verb: setupRoute[1] ?? "", method: req.method, headers: req.headers, account: sessionAccount(req.headers), readBody: () => readBody(req), log });
+          }
+        } catch (e) {
+          log({ http: "/web/approve", threw: (e?.message ?? String(e)).split("\n")[0] });
+          return send(500, { ok: false, error: "server error" });
+        }
+        if (out) {
+          res.writeHead(out.status, out.headers);
+          return res.end(req.method === "HEAD" ? "" : out.body);
+        }
+      }
       const connectRoute = /^\/web\/connect\/([A-Za-z0-9_-]{1,64}(?:\/(?:state|answer|card))?|island\.js|jwks\.json)$/.exec(url.pathname);
-      if (connectRoute && webOn() && (await import("./shopconnect.js")).connectMode() !== "off") {
+      // /web/connect/passkey is never a store-link token: a setup page that answered nothing falls to the plain 404.
+      if (connectRoute && !setupRoute && webOn() && (await import("./shopconnect.js")).connectMode() !== "off") {
         let out = null;
         try {
           const { connectRequest } = await import("./pages/webconnect.js");
@@ -342,7 +367,8 @@ export function createServer({ router, runtime, log = () => {} }) {
         } catch (e) {
           // A page asks for the calm one (9B: "Something went wrong. Nothing was lost."); the page's own
           // script asking for JSON gets JSON, which it already knows how to treat as a missed beat.
-          log({ http: url.pathname, threw: (e?.message ?? String(e)).split("\n")[0] });
+          // An approval link's token is a bearer secret: never in the journal.
+      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
           if (String(req.headers.accept ?? "").includes("application/json")) return send(500, { error: "server error" });
           const body = (await import("./pages/webconvo.js")).renderError();
           res.writeHead(500, { "Content-Type": "text/html; charset=utf-8", ...WEB_SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) });
@@ -761,7 +787,8 @@ export function createServer({ router, runtime, log = () => {} }) {
 
       return send(404, { error: "not found" });
     } catch (e) {
-      log({ http: url.pathname, threw: (e?.message ?? String(e)).split("\n")[0] });
+      // An approval link's token is a bearer secret: never in the journal.
+      log({ http: url.pathname.replace(/^(\/web\/approve\/)[^/]+/, "$1…"), threw: (e?.message ?? String(e)).split("\n")[0] });
       return send(500, { error: "server error" });
     }
   }

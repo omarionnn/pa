@@ -31,6 +31,7 @@ import * as db from "../db.js";
 import * as invites from "../invites.js";
 import * as agentcard from "../agentcard.js";
 import * as shop from "../shopconnect.js";
+import * as passkey from "../passkey.js";
 import { invitesOpenFor } from "../tools.js";
 import { config, clock } from "../config.js";
 import { readCookie, clearCookieHeader, SESSION_TTL_MS } from "./access.js";
@@ -389,7 +390,7 @@ export function shoppingSection({ csrf, shopping, done = "", confirmCard = false
   } else if (c) {
     const used = shopping.lastUsed;
     cardBlock = `<div class="shp-b"><p class="shp-h">Your card. <em>One on file.</em></p>`
-      + `<p class="shp-p">The card I pay with at checkout, only after you text yes to the total.</p>`
+      + `<p class="shp-p">The card I pay with at checkout, only after you ${shopping.passkeys?.length ? "approve the total with Face ID" : "text yes to the total"}.</p>`
       + `<div class="pf-rows"><div class="pf-row"><div>${lbl("CARD")}<p class="shp-v">${esc(cardText)}</p></div>${lbl("IN USE")}</div>`
       + (used ? `<div class="pf-row"><div>${lbl("LAST USED")}<p class="shp-u">${esc([used.store, day(used.at)].filter(Boolean).join(" · "))}</p></div></div>` : "")
       + `</div>${actions(go("Replace card", { href: "/web/connect/new-card" }), forget("Forget it", { href: "/web/settings?confirm=card#shopping" }))}`
@@ -397,7 +398,19 @@ export function shoppingSection({ csrf, shopping, done = "", confirmCard = false
   } else {
     cardBlock = `<div class="shp-b"><p class="shp-h">Your card. <em>None yet.</em></p>${actions(go("Add a card", { href: "/web/connect/new-card" }))}</div>`;
   }
-  return `<section class="st-sec" id="shopping" aria-labelledby="sh-h"><h2 id="sh-h">SHOPPING</h2>${storeBlock}${cardBlock}`
+  // Face ID for purchases (src/passkey.js), where REASON_PASSKEY_PAY allows: set up, or how many and since when.
+  const pks = shopping.passkeys;
+  let faceBlock = "";
+  if (pks) {
+    const waiting = pks.filter((p) => p.usableAt > Date.now());
+    faceBlock = pks.length
+      ? `<div class="shp-b"><p class="shp-h">Face ID for purchases. <em>On.</em></p>`
+        + `<p class="shp-p">Every payment needs Face ID on your device, from the link I text. A yes in the chat doesn't pay.</p>`
+        + `<div class="pf-rows"><div class="pf-row"><div>${lbl("SET UP")}<p class="shp-u">${esc(day(pks[0].createdAt))}${pks.length > 1 ? ` · ${pks.length} devices` : ""}</p></div>${lbl(waiting.length ? "NEW ONE WAITS A DAY" : "IN USE")}</div></div>`
+        + `${actions(go("Add this device", { href: "/web/connect/passkey" }))}<p class="shp-p">Lost your phone? Add the new one here. It can pay a day later, and I'll text you it was added.</p></div>`
+      : `<div class="shp-b"><p class="shp-h">Face ID for purchases. <em>Not set up.</em></p><p class="shp-p">Approve each payment with Face ID instead of a texted yes.</p>${actions(go("Set up Face ID", { href: "/web/connect/passkey" }))}</div>`;
+  }
+  return `<section class="st-sec" id="shopping" aria-labelledby="sh-h"><h2 id="sh-h">SHOPPING</h2>${storeBlock}${cardBlock}${faceBlock}`
     + `<p class="st-quiet">Store passwords are sealed and go straight to the store. Your card is kept securely; I only see its brand and last four. Signing out of your last store erases every saved sign-in.</p>`
     + saved(done === "store-removed", "signed out. i won't use it again.") + saved(done === "card-removed", "card forgotten.")
     + `</section>`;
@@ -557,7 +570,7 @@ export function settingsView(account, token) {
     current: token,
     connected: connections(conv),
     invitesView: myInvitesView(conv),
-    shopping: shop.connectAllowedFor(conv) ? { stores: shop.connectedStores(conv), card: shop.cardOf(conv), lastUsed: shop.lastPaid(conv) } : null,
+    shopping: shop.connectAllowedFor(conv) ? { stores: shop.connectedStores(conv), card: shop.cardOf(conv), lastUsed: shop.lastPaid(conv), passkeys: passkey.passkeyAllowedFor(conv) ? passkey.passkeysOf(conv) : null } : null,
     theme: db.webTheme(conv),
     notify: db.pageSessionNotify(token),
   };

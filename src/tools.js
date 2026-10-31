@@ -59,6 +59,7 @@ import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEv
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
+import { requiredFor as requiresPasskey } from "./passkey.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import * as shopConnect from "./shopconnect.js";
 import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
@@ -9089,6 +9090,9 @@ async function runToolInner(name, rawInput, ctx) {
   // table this touches is already keyed by `c` — which is what keeps one person's Reason out of
   // another's rather than any check added later.
   const me = accounts.ownerOf(c);
+  // A payment for someone who approves with Face ID (src/passkey.js): no yes in the chat is asked for
+  // or counted. shop_pay only hands back the approval link, so it skips the yes gate entirely.
+  if (name === "shop_pay" && requiresPasskey(c)) return await runShopTool(name, input, { ...ctx, conversationId: c });
   // Their zone, before the first thing with a clock time in it (src/zone.js): held, asked once, and
   // finished by their answer. A time "in 10 minutes" from now is never held.
   const zoneHeld = zone.gate(c, name, input, { kind: ctx.kind });

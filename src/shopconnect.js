@@ -40,6 +40,7 @@ import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { config, clock } from "./config.js";
 import { isPrivateHost } from "./pictures.js";
+import * as passkey from "./passkey.js";
 
 // ---------------------------------------------------------------- the flag
 // REASON_SHOP_CONNECT (off | owner | on), off by default. `owner`: only the operator's conversation.
@@ -648,6 +649,13 @@ export function recordPayment({ conversationId, runId, request, item = "" }) {
 export async function payApproved({ conversationId, paymentId, confirmationId }) {
   const row = paymentRow(paymentId);
   if (!row || row.conversation_id !== conversationId) return { ok: false, error: "no_such_payment" };
+  // With a passkey, a texted yes never pays (src/passkey.js): only payByPasskey does.
+  if (passkey.requiredFor(conversationId)) return { ok: false, error: "approve_with_passkey" };
+  return payRow(row, { confirmationId });
+}
+/** Pays a row both approval paths agreed on: Crossmint's exact amount, the row's store, the person's card. */
+async function payRow(row, { confirmationId = null } = {}) {
+  const conversationId = row.conversation_id;
   if (row.status !== "asked") return { ok: false, error: `payment_${row.status}` };
   // Only Crossmint's exact total is ever paid: a "maximum" is a ceiling nobody agreed to as a price.
   if (row.amount_kind !== "exact") return { ok: false, error: "not_exact_amount" };
@@ -689,6 +697,46 @@ export async function payApproved({ conversationId, paymentId, confirmationId })
   q("UPDATE shop_payments SET status = 'paid', confirmation_id = ?, order_intent_id = ?, answered_at = ? WHERE id = ?").run(confirmationId ?? null, orderIntentId, clock.now(), row.id);
   return { ok: true, amount: amountText(row), merchant: row.merchant_name };
 }
+// ---------------------------------------------------------------- approval by passkey
+/** The Face ID link for an asked payment (five minutes, one use; src/passkey.js). */
+export const approvalUrl = (row) => `${siteBase()}/web/approve/${passkey.createApproval(row)}`;
+/** The ask once they have a passkey: the same words, and the link instead of "reply yes". */
+export const passkeyAsk = (row) => `${paymentAsk(row)} Approve it with Face ID here:\n${approvalUrl(row)}`;
+/** What the approval page shows: the row's own amount, store and item, and the link's state. */
+export function approvalView(token) {
+  const a = passkey.approvalFor(token);
+  if (!a || !connectAllowedFor(a.conversation_id) || !passkey.passkeyAllowedFor(a.conversation_id)) return null;
+  const row = paymentRow(a.payment_id);
+  if (!row) return null;
+  const state = a.state === "open" && row.status !== "asked" ? "closed" : a.state;
+  return { a, row, state, amount: amountText(row), store: row.merchant_name || storeName(runRow(row.run_id)?.store) || "the store", item: row.item, expiresAt: a.expires_at };
+}
+/**
+ * The page's assertion: verified against the row as it is now (passkey.verifyApproval), the link
+ * claimed, and only then the order intent for the row's exact amount. Nothing the page sends but the
+ * assertion is used.
+ */
+export async function payByPasskey(token, response) {
+  const v = approvalView(token);
+  if (!v) return { ok: false, error: "not_found" };
+  const ok = await passkey.verifyApproval(v.a, v.row, response);
+  if (!ok.ok) return ok;
+  const out = await payRow(v.row);
+  passkey.logEvent(v.row.conversation_id, v.row, out.ok ? "paid" : out.unknown_outcome ? "unknown_outcome" : "pay_failed", out.ok ? "" : out.error);
+  if (out.ok) await notify(v.row.conversation_id, `Approved with Face ID. Paid ${out.amount} at ${out.merchant}; the store still has to place it, and I'll tell you when it's through.`);
+  return out;
+}
+/** Decline from the page: no passkey needed to say no. */
+export async function declineByLink(token) {
+  const v = approvalView(token);
+  if (!v || v.state !== "open") return { ok: false, error: "not_open" };
+  passkey.closeApproval(v.a, "declined");
+  const out = await declinePayment({ conversationId: v.row.conversation_id, paymentId: v.row.id });
+  passkey.logEvent(v.row.conversation_id, v.row, "declined");
+  if (out.ok) await notify(v.row.conversation_id, `Declined. Nothing was charged at ${v.store}.`);
+  return out;
+}
+
 /** A no (or a change of mind): Crossmint is told to decline, nothing is charged. */
 export async function declinePayment({ conversationId, paymentId }) {
   const row = paymentRow(paymentId);
@@ -703,11 +751,13 @@ export async function declinePayment({ conversationId, paymentId }) {
 const TERMINAL = new Set(["succeeded", "failed", "blocked", "cancelled", "expired"]);
 let sayFn = null;
 // Web lives on the website (REASON_SITE_URL, heyreason.com): Crossmint's client key allows that origin only.
-let linkBase = () => `${(process.env.REASON_SITE_URL || process.env.REASON_PUBLIC_URL || "https://heyreason.com").replace(/\/+$/, "")}/web/connect`;
+const siteBase = () => (process.env.REASON_SITE_URL || process.env.REASON_PUBLIC_URL || "https://heyreason.com").replace(/\/+$/, "");
+let linkBase = () => `${siteBase()}/web/connect`;
 /** A card link as the person taps it. */
 export const cardLinkUrl = (conversationId) => `${linkBase()}/${cardLink(conversationId)}`;
 /** serve.js hands over how to text a person. Nothing is texted before this. */
-export function attach({ say, base } = {}) { sayFn = say ?? null; if (base) linkBase = () => base; }
+export function attach({ say, base } = {}) { sayFn = say ?? null; passkey.attach({ say }); if (base) linkBase = () => base; }
+const notify = async (c, text) => { try { if (sayFn) await sayFn(c, text); } catch { /* paid or declined either way */ } };
 
 /**
  * One look at a run: what changed, and what to text. Returns the text(s) sent, for the caller's log.
@@ -738,7 +788,7 @@ export async function step(runId) {
         // A ceiling, not a total: nothing to say yes to. Declined, so nothing is charged.
         await declinePayment({ conversationId: run.conversation_id, paymentId: row.id });
         await say(`${row.merchant_name || storeName(run.store) || "The store"} only gave me a ceiling (${amountText(row)}), not the real total, so I stopped before paying. Nothing was charged.`);
-      } else if (row && it.method === "card") await say(paymentAsk(row));
+      } else if (row && it.method === "card") await say(passkey.requiredFor(run.conversation_id) ? passkeyAsk(row) : paymentAsk(row));
     } else if (it.kind === "form" && (it.fields ?? []).some(isProtected)) {
       if (link) {
         q("UPDATE shop_links SET request_id = ?, request_json = ? WHERE id = ?").run(requestId, JSON.stringify(publicRequest(rq)), link.id);
