@@ -55,13 +55,21 @@ test("unset flag: the provider is handed back untouched and nobody gets GPT-Live
   assert.equal(gl.gptliveFor(C), false);
 });
 
-test("the flag is the operator's own calls only", () => {
+test("the flag: gptlive is every account's own calls, owner is the operator's only", () => {
   on();
   assert.equal(gl.gptliveFor(C), true);
-  assert.equal(gl.gptliveFor(OTHER), false, "another person's calls stay on ElevenLabs");
+  assert.equal(gl.gptliveFor(OTHER), true, "another person's own calls are GPT-Live too");
+  assert.equal(gl.gptliveFor("nobody-has-this"), false, "no account, no GPT-Live");
   assert.equal(gl.gptliveFor(""), false);
+  config.callVoice = "on";
+  assert.equal(gl.gptliveFor(OTHER), true);
   config.callVoice = "owner";
-  assert.equal(gl.gptliveFor(C), false, "only the value gptlive switches it on");
+  assert.equal(gl.gptliveFor(C), true, "owner: the operator");
+  assert.equal(gl.gptliveFor(OTHER), false, "owner: another person's calls stay on ElevenLabs");
+  assert.equal(gl.gptliveOn(), true);
+  config.callVoice = "elevenlabs";
+  assert.equal(gl.gptliveFor(C), false, "any other value is off");
+  assert.equal(gl.gptliveOn(), false);
 });
 
 test("place: an operator owner call dials through Twilio with the stream as TwiML; everything else is the inner provider", async () => {
@@ -88,9 +96,15 @@ test("place: an operator owner call dials through Twilio with the stream as TwiM
   assert.equal(warmLive.of("session.start").length, 0, "no warm-up while it rings: the session opens on the stream, as on call 53");
 
   await p.place({ to: "+13105559999", kind: "third_party", conversationId: C, callId: row.id });
-  await p.place({ to: "+13105550000", kind: "owner", conversationId: OTHER, callId: row.id });
-  assert.equal(innerCalls.length, 2, "a business call and another person's own call both stay on ElevenLabs");
-  assert.equal(posted.length, 1);
+  assert.equal(innerCalls.length, 1, "a business call stays on ElevenLabs");
+  const otherRow = ownerCall({ conversationId: OTHER });
+  const theirs = await p.place({ to: "+13105550000", kind: "owner", conversationId: OTHER, callId: otherRow.id });
+  assert.equal(theirs.provider, "gptlive", "another person's own call is GPT-Live, on their own row");
+  assert.match(new URLSearchParams(posted[1].body).get("Twiml"), new RegExp(otherRow.webhook_token));
+  config.callVoice = "owner";
+  await p.place({ to: "+13105550000", kind: "owner", conversationId: OTHER, callId: otherRow.id });
+  assert.equal(innerCalls.length, 2, "on owner, another person's own call stays on ElevenLabs");
+  assert.equal(posted.length, 2);
 
   assert.equal((await p.check("conv_x")).id, "conv_x", "an ElevenLabs id is checked by ElevenLabs");
   assert.equal(p.status().name, "elevenlabs", "everything else is the wrapped provider's");
@@ -806,8 +820,8 @@ test("status: a signed no-answer settles the call; an unsigned one is refused", 
   assert.equal(after.recording_state, "not_applicable");
 });
 
-test("inbound: the operator's own number gets the stream; anyone else is redirected to ElevenLabs unchanged", () => {
-  on({ gptliveInboundFallbackUrl: "https://api.us.elevenlabs.io/twilio/inbound_call" });
+test("inbound on owner: the operator's own number gets the stream; anyone else is redirected to ElevenLabs unchanged", () => {
+  on({ callVoice: "owner", gptliveInboundFallbackUrl: "https://api.us.elevenlabs.io/twilio/inbound_call" });
   const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
   const ring = (from) => {
     const params = { CallSid: `CA_${from}`, From: from, To: "+16562167455" };
