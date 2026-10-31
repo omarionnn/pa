@@ -673,6 +673,13 @@ export function checkAgainstListing(o, listing, { photoUrl = "", photoFromListin
   return { option: out, dropped };
 }
 
+/** The listing is not this product (the same test checkAgainstListing fails on). */
+const isOtherProduct = (o, listing) => {
+  const head = `${listing.title ?? ""}\n${String(listing.text ?? "").slice(0, 1500)}`.toLowerCase();
+  const want = [...new Set(words(o.name))];
+  return want.length > 0 && want.filter(w => head.includes(w)).length / want.length < 0.5;
+};
+
 const LISTING_ASK = "this product's exact name, size or variant, and price on this listing";
 
 /** Find the listing an option's photo came from, read it, and check the option against it. */
@@ -692,7 +699,8 @@ async function checkListing(c, o, { lookup = (u) => webLookup(u, { maxChars: 400
   const photoFromListing = !img || from === page || (listing.images ?? []).includes(img);
   const checked = checkAgainstListing(o, listing, { photoUrl: img, photoFromListing, offerCents });
   const images = (listing.images ?? []).filter(u => /^https:\/\/\S+$/.test(String(u))).slice(0, 4);
-  return { ...checked, option: { ...checked.option, url: checked.option.url || page }, page, images };
+  const otherProduct = checked.dropped.some(d => /the listing is a different product/.test(d)) || isOtherProduct(o, listing);
+  return { ...checked, option: { ...checked.option, url: checked.option.url || page }, page, images, otherProduct };
 }
 
 /**
@@ -704,41 +712,45 @@ async function checkListing(c, o, { lookup = (u) => webLookup(u, { maxChars: 400
  */
 async function productPhoto(c, o, check, { fetchPhoto = fetchImage, fetchImpl, search = undefined } = {}) {
   const tryOne = async (u) => photoFor(c, u, { fetchPhoto, ...(fetchImpl ? { fetchImpl } : {}) }).catch(() => ({ ok: false }));
-  for (const u of check?.images ?? []) {
+  const name = [o.brand && !/^(ulta|target|walmart|amazon|cvs|walgreens|meijer|costco|sephora)$/i.test(o.brand) ? o.brand : "", o.name].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  const samePage = (u) => { try { const a = new URL(u), b = new URL(check?.page || o.url || ""); return a.origin + a.pathname === b.origin + b.pathname; } catch { return false; } };
+  // Candidates: the listing's own pictures (only when the listing IS this product — a page's
+  // pictures also hold its logo, banners and other products), then a picture search's hits.
+  const cands = [];
+  if (!check?.otherProduct) for (const u of (check?.images ?? []).slice(0, 3)) {
     db.rememberSeenUrls(c, [u], { kind: "page", from: check.page });
-    const got = await tryOne(u);
-    if (got.ok) return { got, fromListing: true };
+    cands.push({ u, fromListing: true });
   }
   const client = search === undefined ? searchImpl() : search;
-  if (!client?.imageSearch) return null;
-  const name = [o.brand && !/^(ulta|target|walmart|amazon|cvs|walgreens|meijer|costco|sephora)$/i.test(o.brand) ? o.brand : "", o.name].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
-  const out = await client.imageSearch({ queries: [`${name} product photo`], objective: `A clear product photo of ${name}.`, maxResults: 8 }).catch(() => null);
-  if (!out?.ok) return null;
+  const out = client?.imageSearch ? await client.imageSearch({ queries: [`${name} product photo`], objective: `A clear product photo of ${name}.`, maxResults: 8 }).catch(() => null) : null;
   const want = [...new Set(words(o.name))];
-  const samePage = (u) => { try { const a = new URL(u), b = new URL(check?.page || o.url || ""); return a.origin + a.pathname === b.origin + b.pathname; } catch { return false; } };
-  const hits = out.results.filter(r => /^https:\/\//.test(r.image_url ?? "")).filter(r => {
+  const hits = (out?.ok ? out.results : []).filter(r => /^https:\/\//.test(r.image_url ?? "")).filter(r => {
     const where = `${r.title ?? ""} ${String(r.page_url ?? "").replace(/[-_/]+/g, " ")}`.toLowerCase();
     return want.length && want.filter(w => where.includes(w)).length / want.length >= 0.75;
   }).sort((a, b) => Number(samePage(b.page_url)) - Number(samePage(a.page_url)));
-  // A search hit's words can name the product while its picture is the plain one beside it (a
-  // "Cream-to-Foam" title over the Hydrating bottle, server check 2026-10-31): each candidate is
-  // looked at, and only a photo whose label IS this product is used. No look, no searched photo.
-  const got = [];
   for (const r of hits.slice(0, 4)) {
     db.rememberSeenUrls(c, [r.image_url], { kind: "search", from: r.page_url || "" });
-    const g = await tryOne(r.image_url);
-    if (g.ok) got.push({ g, r });
+    cands.push({ u: r.image_url, fromListing: samePage(r.page_url) && !check?.otherProduct });
+  }
+  // Words can name the product while the picture is the one beside it (a "Cream-to-Foam" title over
+  // the Hydrating bottle, server check 2026-10-31): every candidate is looked at, and only a photo
+  // whose label IS this product is used. No look, no photo from here.
+  const got = [];
+  for (const x of cands) {
+    const g = await tryOne(x.u);
+    const m = g.ok ? /^data:(image\/(?:jpeg|png|webp|gif))(?:;[^,;]*)*;base64,(.+)$/s.exec(g.uri) : null;
+    if (m) got.push({ ...x, g, photo: { mediaType: m[1], base64: m[2] } });
   }
   if (!got.length) return null;
-  const photos = got.map(({ g }) => { const m = /^data:([^;]+);base64,(.*)$/s.exec(g.uri); return { mediaType: m?.[1] ?? "image/jpeg", base64: m?.[2] ?? "" }; });
-  const yes = await productLookImpl({ name, photos }).catch(() => null);
-  const pick = got.find((_, k) => yes?.has(k + 1));
-  return pick ? { got: pick.g, fromListing: samePage(pick.r.page_url) } : null;
+  const yes = await productLookImpl({ name, photos: got.map(x => x.photo) }).catch(() => null);
+  const k = got.findIndex((_, i) => yes?.has(i + 1));
+  if (k < 0) return null;
+  return { got: got[k].g, fromListing: got[k].fromListing, labelSize: yes.get?.(k + 1)?.size ?? "" };
 }
 
-const PRODUCT_LOOK_SYSTEM = "You check product photos for a shopping card. For each numbered photo, say whether the product in it is exactly the named product: the same brand and the same product line and variant as written on its label (a different variant of the same brand — Hydrating vs Hydrating Cream-to-Foam vs Foaming — is NOT it). Size does not matter. A photo of several products, a person, a box only, or an unreadable label is not it.";
-const PRODUCT_LOOK_SCHEMA = { type: "object", properties: { photos: { type: "array", items: { type: "object", properties: { n: { type: "integer" }, is_it: { type: "boolean" } }, required: ["n", "is_it"] } } }, required: ["photos"] };
-/** Which of these photos show exactly this product (by its label): a Set of photo numbers, or null when the look failed. */
+const PRODUCT_LOOK_SYSTEM = "You check product photos for a shopping card. For each numbered photo, say whether the product in it is exactly the named product: the same brand and the same product line and variant as written on its label (a different variant of the same brand — Hydrating vs Hydrating Cream-to-Foam vs Foaming — is NOT it). Size does not decide it, but give the size printed on the label (e.g. 12 fl oz) when you can read it, else an empty string. A photo of several products, a person, a box only, or an unreadable label is not it.";
+const PRODUCT_LOOK_SCHEMA = { type: "object", properties: { photos: { type: "array", items: { type: "object", properties: { n: { type: "integer" }, is_it: { type: "boolean" }, size: { type: "string" } }, required: ["n", "is_it"] } } }, required: ["photos"] };
+/** Which of these photos show exactly this product (by its label): a Map of photo number → { size on its label }, or null when the look failed. */
 export async function lookAtProductPhotos({ name, photos }, { run = null, model = process.env.REASON_PLACE_LOOK_MODEL || "haiku", timeoutMs = Number(process.env.REASON_PLACE_LOOK_TIMEOUT_MS || 30_000) } = {}) {
   const cli = run ?? (await import("./backends/cli.js"));
   if (!run && cli.sideCallsOut?.()) return null;
@@ -748,7 +760,7 @@ export async function lookAtProductPhotos({ name, photos }, { run = null, model 
   if (!r?.ok) return null;
   let v = r.envelope?.structured_output;
   if (!v || typeof v !== "object") { try { v = JSON.parse(String(r.envelope?.result ?? "")); } catch { return null; } }
-  return new Set((Array.isArray(v?.photos) ? v.photos : []).filter(x => Number.isInteger(x?.n) && x.is_it === true).map(x => x.n));
+  return new Map((Array.isArray(v?.photos) ? v.photos : []).filter(x => Number.isInteger(x?.n) && x.is_it === true).map(x => [x.n, { size: String(x.size ?? "").slice(0, 40) }]));
 }
 let productLookImpl = lookAtProductPhotos;
 /** Tests: the product look, injected (never a real model in the suite). */
@@ -795,7 +807,18 @@ export async function runChoiceTool(name, input, ctx) {
         log({ choice_product_photo: c, n: i + 1, from_listing: found.fromListing });
         got = found.got;
         // A photo off its listing: nothing the listing says goes on the card (the 16-oz-over-12-oz rule).
-        if (!found.fromListing) { checks[i] = { ...checkAgainstListing(asked[i], null, { photoFromListing: false }), page: checks[i]?.page }; options[i] = checks[i].option; }
+        if (!found.fromListing) {
+          checks[i] = { ...checkAgainstListing(asked[i], null, { photoFromListing: false }), page: checks[i]?.page };
+          options[i] = { ...checks[i].option, url: asked[i].url || checks[i].page || "" };
+        } else if (found.labelSize) {
+          // The bottle in the photo says its size: a size on the card that disagrees comes off.
+          const label = sizesIn(found.labelSize);
+          const o2 = { ...options[i] };
+          for (const k of SIZED) for (const z of sizesIn(o2[k])) {
+            if (label.length && !label.some(l => sameSize(l, z))) { checks[i].dropped.push(`size ${z.raw.trim()} (the photo is the ${label[0].raw.trim()})`); o2[k] = tidy(o2[k].replace(z.raw, " ")); }
+          }
+          options[i] = o2;
+        }
       }
     }
     // The ordinary path keeps the one-photo-per-set rule too (a chain's og:image on two branches).

@@ -365,7 +365,7 @@ const BEST = /\b(best (?:deal|price|value|offer)|cheapest|lowest(?:-| )price[ds]
 // "I'll find the cheapest total" is a promise, not a claim: no correction under it (cage, 2026-10-31).
 const ABOUT_TO = /\b(?:find(?:ing)?|look(?:ing)? for|search(?:ing)? for|hunt(?:ing)? for|check(?:ing)?|compar(?:e|ing)|get you|track(?:ing)? down|looking)\b[^.!?\n—–;:,]{0,16}$/i;
 // "That's not a proven best deal" already says the thing the correction would.
-const SAYS_NOT = /\b(?:not|isn't|isnt|never|can't say|cannot say)(?:\s+(?:a|an|the|really|necessarily|proven|checked|verified|confirmed|guaranteed))*\s*$/i;
+const SAYS_NOT = /\b(?:not|no|isn't|isnt|never|can't say|cannot say)(?:\s+(?:a|an|the|really|necessarily|proven|checked|verified|confirmed|guaranteed))*\s*$/i;
 /** Does the text say something IS the best / cheapest (not that it will go looking for it)? */
 export function claimsBest(text) {
   const re = new RegExp(BEST.source, "gi");
