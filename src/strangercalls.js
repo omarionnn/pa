@@ -34,6 +34,9 @@ db.db.exec(`CREATE TABLE IF NOT EXISTS stranger_calls (
 );
 CREATE INDEX IF NOT EXISTS stranger_calls_phone ON stranger_calls (phone, used_at);
 CREATE INDEX IF NOT EXISTS stranger_calls_external ON stranger_calls (external_id);`);
+// When the reconnect was first put in front of a reply (2026-10-31): used_at only follows once a reply
+// to them has really gone out after this, so a failed or retried reply does not lose it.
+try { db.db.exec("ALTER TABLE stranger_calls ADD COLUMN offered_at INTEGER"); } catch { /* already there */ }
 
 const q = (sql) => db.db.prepare(sql);
 const MAX_LINES = 30;
@@ -125,24 +128,43 @@ export function whenSaid(at, now = clock.now(), tz = config.installTz) {
 }
 
 /**
- * Claim this account's call, once: mark it used, attach it to them, and write it into their memory as
- * their own history. Returns what to say, or null when there is nothing (or it was already said).
+ * Has a reply to them really gone out since `since`? An outbox row marked sent (the channels with an
+ * outbox), or a delivered assistant message in their history (Web, and everything once sent).
+ */
+export function deliveredSince(conversationId, since) {
+  const sent = q("SELECT 1 FROM outbox WHERE conversation_id = ? AND state = 'sent' AND sent_at >= ? LIMIT 1").get(conversationId, since);
+  if (sent) return true;
+  try {
+    return !!q("SELECT 1 FROM messages WHERE conversation_id = ? AND role = 'assistant' AND deleted_at IS NULL AND at >= ? LIMIT 1").get(conversationId, since);
+  } catch { return false; }
+}
+
+/**
+ * This account's call, if there is one still to mention. Offered on every turn until a reply has really
+ * been delivered after the first offer; then marked used, and never again. So a reply that fails or is
+ * retried keeps it, and a delivered one ends it. Attaches the call to them and writes it into THEIR
+ * memory (once — the same words are the same fact). Null when there is nothing (or it was said).
  */
 export function claim(conversationId, { now = clock.now() } = {}) {
   const row = pendingFor(conversationId);
   if (!row) return null;
-  const won = q("UPDATE stranger_calls SET used_at = ?, matched_conversation_id = ? WHERE id = ? AND used_at IS NULL").run(now, conversationId, row.id);
-  if (!won.changes) return null;
+  if (row.offered_at && row.matched_conversation_id === conversationId && deliveredSince(conversationId, row.offered_at)) {
+    q("UPDATE stranger_calls SET used_at = ? WHERE id = ? AND used_at IS NULL").run(now, row.id);
+    return null;
+  }
+  q("UPDATE stranger_calls SET offered_at = COALESCE(offered_at, ?), matched_conversation_id = ? WHERE id = ? AND used_at IS NULL").run(now, conversationId, row.id);
   const when = whenSaid(row.started_at, now);
   const about = row.content_dropped_at ? "" : String(row.summary ?? "");
-  const date = new Date(row.started_at).toISOString().slice(0, 10);
-  try {
-    db.remember(conversationId, "me", `Called Reason's number on ${date} before signing up${about ? ` (${about.replace(/^They /, "they ").replace(/\.$/, "")})` : ""}`, { source: "user_stated" });
-  } catch { /* the greeting still stands without the memory row */ }
+  if (!row.offered_at) {
+    const date = new Date(row.started_at).toISOString().slice(0, 10);
+    try {
+      db.remember(conversationId, "me", `Called Reason's number on ${date} before signing up${about ? ` (${about.replace(/^They /, "they ").replace(/\.$/, "")})` : ""}`, { source: "user_stated" });
+    } catch { /* the greeting still stands without the memory row */ }
+  }
   return { when, about, at: row.started_at, id: row.id };
 }
 
-/** The turn note for their first turn after the call (texts, Web — any turn they start). Once. */
+/** The turn note for their first turn after the call (texts, Web — any turn they start). Until a reply is delivered. */
 export function reconnectNote(conversationId, { now = clock.now() } = {}) {
   const got = claim(conversationId, { now });
   if (!got) return "";
