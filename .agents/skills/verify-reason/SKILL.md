@@ -424,9 +424,6 @@ node bin/web-drafts-drive.mjs http://localhost:8799 "$TOKEN" "$OUT" "how do i ge
 
 See [features/web-drafts.md](features/web-drafts.md).
 
-### Baseline — to-do list (wt/todo-list-v1, 2026-10-30)
-4,749 tests / 4,632 pass / 2 fail / 115 skipped (`npm run test:offline` under `env -i`, origin/main 77ec11d + this branch); the 2 are the known `test/flights.test.js` load flake (run beside a claude-cli drive; the file alone passes). An earlier run of the branch: 4,742 / 4,627 / 0. New: `test/todo.test.js` (24). Live: cage plan step on claude-cli + `bin/todo-drive.mjs` — see [features/todo-list.md](features/todo-list.md).
-
 **9 — The first-chat onboarding, end to end, on its own cage.** A brand-new number's five texts
 (`REASON_ONBOARDING=test` for that number only) through the real webhook, router and outbox onto
 `bin/fake-sendblue.mjs`; the reads and the one to-do turn on the subscription. Own run dir + port:
@@ -436,6 +433,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 ```
 
 See [features/onboarding.md](features/onboarding.md).
+
+### Baseline — to-do list (wt/todo-list-v1, 2026-10-30)
+
+4,833 tests / 4,702 pass / 0 fail / 131 skipped (`npm run test:offline` under `env -i`, rebased on origin/main f8f2f48). New: `test/todo.test.js` (24, clock pinned to midday: the wrap-up keeps out of their night). Live: cage plan step on claude-cli + `bin/todo-drive.mjs` all ok — see [features/todo-list.md](features/todo-list.md).
 
 ### Baseline — Crossmint only for buys (wt/crossmint-only-buys, 2026-10-30)
 

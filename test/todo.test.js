@@ -41,9 +41,12 @@ const MOM = "+14155559876";
 const UNNAMED = "+12125550199";
 
 after(() => rmSync(dir, { recursive: true, force: true }));
+// A fixed, daytime clock: the wrap-up keeps out of their night, so nothing here may turn on when the suite runs.
+const NOON = Date.parse("2026-10-30T12:00:00-04:00");
 beforeEach(() => {
   process.env.REASON_TODO = "owner";
   clock.reset();
+  clock.skip(NOON - Date.now());
   db.db.exec(`DELETE FROM todo_lists; DELETE FROM todo_items; DELETE FROM confirmations; DELETE FROM calls; DELETE FROM usage;
     DELETE FROM action_ledger; DELETE FROM tasks; DELETE FROM task_log; DELETE FROM pages; DELETE FROM important_people;
     DELETE FROM people; DELETE FROM person_facts; DELETE FROM accounts;`);
