@@ -75,10 +75,12 @@ const reply = (status, body) => ({ status, ok: status < 300, text: async () => (
 shop._setFetch(async (url, init = {}) => {
   const p = new URL(url).pathname;
   calls.push({ method: init.method ?? "GET", path: p, body: init.body ? JSON.parse(init.body) : undefined });
-  if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}` });
+  if (p === "/api/unstable/order-intents") { const no = refuseIntents.shift(); return no ? reply(no.status, no.body) : reply(201, { orderIntentId: `oi_${calls.length}` }); }
   if (/^\/api\/unstable\/agent-checkouts\/[^/]+\/messages$/.test(p)) return reply(202, { ok: true });
   return reply(404, {});
 });
+/** Refusals queued for the next order-intent calls ({ status, body }); empty means 201 (scenario j). */
+let refuseIntents = [];
 const said = [];
 shop.attach({ say: (c, t) => said.push({ c, t }) });
 const orderIntents = () => calls.filter(c => c.path === "/api/unstable/order-intents");
@@ -197,6 +199,47 @@ try {
   const reopened = await http(null, `/web/approve/${tokC}`);
   step("(c) link reuse: the same assertion again → 400 refused, page says Already approved, still one order intent",
     replay.status === 400 && /link_used/.test(replay.text) && /Already approved/.test(reopened.text) && orderIntents().length === 1, `${replay.status} ${replay.text} oi=${orderIntents().length}`);
+
+  // (j) the payment does not start (2026-10-31 at CVS): Crossmint refuses the order intent after Face ID
+  // passed. The link must survive, the page must say so plainly, and the next tap must pay.
+  calls = [];
+  const rowJ = asked("26.65");
+  q("UPDATE shop_runs SET stage = 'needs_approval', stage_at = ?, created_at = ?, updated_at = ? WHERE run_id = 'run_drive'").run(clock.now(), clock.now(), clock.now());
+  const tokJ = await linkFor(rowJ);
+  const bootJ1 = bootOf((await http(null, `/web/approve/${tokJ}`)).text);
+  refuseIntents.push({ status: 400, body: { error: { code: "payment_method_declined", message: "declined" } } });
+  await pg.goto(`${BASE}/web/approve/${tokJ}`, { waitUntil: "load" });
+  await pg.click("#pk-go");
+  const failedShown = await waitStep("failed");
+  const h1J = await pg.evaluate(() => document.querySelector('.pf-step[data-step="failed"] h1')?.textContent ?? "");
+  const logJ = passkey.approvalLog(OWNER);
+  step("(j) Face ID passed, Crossmint refused the order intent → page says Face ID worked, the payment didn't start, nothing charged; row still asked; link reopened",
+    failedShown && /Face ID worked\. The payment didn't start\./.test(h1J) && status(rowJ) === "asked" && orderIntents().length === 1 && answers().length === 0
+      && logJ.some(l => l.event === "pay_failed" && /order_intent_failed 400 payment_method_declined/.test(l.detail)) && logJ.some(l => l.event === "link_reopened"),
+    `page=${await shown()} h1=${JSON.stringify(h1J)} ${status(rowJ)} oi=${orderIntents().length} log=${logJ.slice(-3).map(l => `${l.event}:${l.detail}`).join(" ")}`);
+  await shot("payment-did-not-start");
+  const stJ = shop.statusView(OWNER).runs.find(r => r.run_id === "run_drive");
+  step("(j) shop_status while the reopened link is open: names it, no new link made", /still works for \d+ more minutes/.test(stJ?.approval ?? "") && !stJ?.approve_url, JSON.stringify(stJ?.approval));
+  // Try again: the page reloads and carries a fresh challenge; the first assertion is dead.
+  const firstPost = posted.at(-1);
+  await pg.click("#pk-retry");
+  await pg.waitForLoadState("load");
+  const bootJ2 = bootOf(await pg.content());
+  const replayJ = await http(null, firstPost.url, { method: "POST", body: firstPost.body });
+  step("(j) Try again → the same link opens again (not Already approved) under a fresh challenge; the first assertion replayed → refused, nothing paid",
+    !!bootJ2?.options && bootJ2.options.challenge !== bootJ1.options.challenge && replayJ.status === 400 && /not_verified/.test(replayJ.text) && orderIntents().length === 1 && status(rowJ) === "asked",
+    `challenge changed=${bootJ2?.options?.challenge !== bootJ1?.options?.challenge} replay=${replayJ.status} ${replayJ.text}`);
+  await pg.click("#pk-go");
+  const paidJ = await waitStep("paid");
+  const runJ = q("SELECT stage, paid_at FROM shop_runs WHERE run_id = 'run_drive'").get();
+  step("(j) second tap → paid: one more order intent for 26.65, request answered, row paid, the run advanced to stage paid, texted Paid $26.65",
+    paidJ && orderIntents().length === 2 && orderIntents()[1].body.amount.value === "26.65" && answers().length === 1 && status(rowJ) === "paid" && runJ?.stage === "paid" && !!runJ?.paid_at
+      && /Approved with Face ID\. Paid \$26\.65 at Best Buy/.test(said.at(-1)?.t ?? ""),
+    `page=${await shown()} oi=${orderIntents().length} ${status(rowJ)} run=${runJ?.stage} said=${JSON.stringify(said.at(-1)?.t ?? "")}`);
+  await shot("paid-after-retry");
+  const usedJ = await http(null, `/web/approve/${tokJ}`);
+  step("(j) …and now the link is used up: Already approved", /Already approved/.test(usedJ.text), `${usedJ.status}`);
+  q("UPDATE shop_runs SET stage = '' WHERE run_id = 'run_drive'").run();
 
   // (d) decline from the page
   calls = [];

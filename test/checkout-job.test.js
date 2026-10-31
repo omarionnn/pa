@@ -153,7 +153,7 @@ test("pinned 11:17: 'never actually started' about a run that ran and died is co
   // The second run really did start, so that half of the line stands.
   await start();
   const g = offers.guardReply(OMARI, ELEVEN17);
-  assert.match(g.text, /^Correction, from my record: the Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz did start 19 min ago; now: failed 8 min ago \(Ulta was waiting for an answer to "What are Omari’s shipping and contact details for the Ulta order\?" and it expired after 10 minutes\); nothing charged\./);
+  assert.match(g.text, /^Correction, from my record: the Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz did start 19 min ago; now: failed 8 min ago \(Ulta was waiting for your name, shipping address, phone number and email and it expired after 10 minutes\); nothing charged\./);
   assert.doesNotMatch(g.text, /never actually started|Nothing was running/);
   assert.match(g.text, /I've started it for real now\. It's a guest checkout on Ulta for the 16 oz\./);
   assert.ok(g.flags.some((f) => f.rule === "never_started_with_run"));
@@ -235,7 +235,7 @@ test("pinned: a run that expires waiting on an answer is texted once — what wa
   assert.equal(row(out.runId).stage, "failed");
   assert.equal(row(out.runId).status, "failed");
   assert.equal(row(out.runId).result, "input_expired");
-  assert.equal(said.at(-1).t, "The Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz stopped: Ulta was waiting for an answer to \"What are Omari’s shipping and contact details for the Ulta order?\" and didn't get it in time, so it expired. Nothing was charged. Want me to start it again?");
+  assert.equal(said.at(-1).t, "The Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz stopped: Ulta was waiting for your name, shipping address, phone number and email and didn't get it in time, so it expired. Nothing was charged. Want me to start it again?");
   const n = said.length;
   await shop.step(out.runId);
   await shop.step(out.runId);
@@ -365,7 +365,7 @@ test("shop_status and the turn note read the row: a failed run reads as failed, 
   const st = await runTool("shop_status", {}, { conversationId: OMARI });
   assert.equal(st.runs.length, 1);
   assert.equal(st.runs[0].stage, "failed");
-  assert.match(st.runs[0].where, /^failed 1 min ago \(Ulta was waiting for an answer to/);
+  assert.match(st.runs[0].where, /^failed 1 min ago \(Ulta was waiting for your name, shipping address, phone number and email and it expired/);
   assert.match(st.note, /Answer from it, never from the chat/);
   note = shop.checkoutNote(OMARI);
   assert.match(note, /failed 1 min ago/);

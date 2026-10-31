@@ -75,12 +75,14 @@ class Authenticator {
 
 // ---------------------------------------------------------------- a fake Crossmint
 let calls;
+/** Refusals queued for the next order-intent calls (a test pushes { status, body }); empty means 201. */
+let refuseIntents = [];
 const reply = (status, body) => ({ status, ok: status < 300, text: async () => (body === undefined ? "" : JSON.stringify(body)) });
 async function fakeFetch(url, init = {}) {
   const p = new URL(url).pathname;
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ method: init.method ?? "GET", path: p, body });
-  if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}` });
+  if (p === "/api/unstable/order-intents") { const no = refuseIntents.shift(); return no ? reply(no.status, no.body) : reply(201, { orderIntentId: `oi_${calls.length}` }); }
   if (/^\/api\/unstable\/agent-checkouts\/[^/]+\/messages$/.test(p)) return reply(202, { ok: true });
   return reply(404, {});
 }
@@ -115,7 +117,7 @@ async function linkFor(row) {
 before(() => { shop._setFetch(fakeFetch); shop.attach({ say: (c, t) => said.push({ c, t }) }); });
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
-  calls = []; said.length = 0; clock.reset();
+  calls = []; refuseIntents = []; said.length = 0; clock.reset();
   for (const t of ["shop_runs", "shop_cards", "shop_payments", "pay_passkeys", "pay_passkey_regs", "pay_approvals", "pay_approval_log"]) db.db.exec(`DELETE FROM ${t}`);
   q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_secret_123', 'visa', '4242', 0)").run(OMARI);
 });
@@ -265,6 +267,149 @@ test("decline from the page: Crossmint told no, nothing paid; the log has events
   assert.ok(log.some((l) => l.event === "declined" && l.amount === "9.79 USD" && l.merchant === "Best Buy"));
   assert.ok(log.some((l) => l.event === "rejected"));
   assert.doesNotMatch(JSON.stringify(log), /pm_secret|4242|visa/i);
+});
+
+// ---------------------------------------------------------------- 6. the payment fails to start (2026-10-31 at CVS)
+test("a refused order intent does not use up the link: Face ID worked, the page says the payment didn't start, the next tap pays", async () => {
+  const a = await setUp();
+  const row = asked("26.65");
+  const token = await linkFor(row);
+  const o1 = optionsOf((await page(token)).body);
+  // Crossmint refuses the order intent: nothing could have been charged.
+  refuseIntents.push({ status: 400, body: { error: { code: "payment_method_declined", message: "declined" } } });
+  const first = await page(token, "verify", a.get(o1.challenge));
+  assert.equal(first.status, 400);
+  const out = JSON.parse(first.body);
+  assert.equal(out.error, "order_intent_failed");
+  assert.equal(out.retry, true, "the page is told the same link can be tapped again");
+  assert.equal(shop.paymentRow(row.id).status, "asked");
+  assert.equal(orderIntents().length, 1);
+  assert.equal(answers().length, 0, "Crossmint was never told to pay");
+  // Why it failed is on record (status + Crossmint's code), never a card detail.
+  const log = passkey.approvalLog(OMARI);
+  assert.ok(log.some((l) => l.event === "pay_failed" && /order_intent_failed 400 payment_method_declined/.test(l.detail)), JSON.stringify(log));
+  assert.ok(log.some((l) => l.event === "link_reopened"));
+  assert.doesNotMatch(JSON.stringify(log), /pm_secret|4242|visa/i);
+  // The same link opens again — not "Already approved" — under a fresh challenge.
+  const again = await page(token);
+  assert.equal(again.status, 200, again.body);
+  assert.match(again.body, /Pay \$26\.65 at Best Buy\?/);
+  assert.doesNotMatch(again.body, /Already approved/);
+  const o2 = optionsOf(again.body);
+  assert.notEqual(o2.challenge, o1.challenge, "the first assertion cannot be replayed");
+  assert.match((await page(token, "verify", a.get(o1.challenge))).body, /not_verified/);
+  assert.equal(shop.paymentRow(row.id).status, "asked");
+  // Second tap: paid, exactly one more order intent.
+  const second = await page(token, "verify", a.get(o2.challenge));
+  assert.equal(second.status, 200, second.body);
+  assert.equal(orderIntents().length, 2);
+  assert.equal(answers().length, 1);
+  assert.equal(shop.paymentRow(row.id).status, "paid");
+  assert.match(said.at(-1).t, /Approved with Face ID\. Paid \$26\.65 at Best Buy/);
+  // And now it really is used up.
+  assert.match((await page(token, "verify", a.get(o2.challenge))).body, /link_used/);
+  assert.match((await page(token)).body, /Already approved/);
+});
+
+test("the page has a clear result for every outcome: payment didn't start, run out, Face ID refused; never 'didn't go through' when it did", async () => {
+  await setUp();
+  const row = asked("26.65");
+  const token = await linkFor(row);
+  const html = (await page(token)).body;
+  // A screen for the payment not starting, with a retry — not the Face ID failure line.
+  assert.match(html, /data-step="failed"/);
+  assert.match(html, /Face ID worked\. The payment didn(?:&#39;|')t start\./);
+  assert.match(html, /id="pk-retry"/);
+  // Only a reopened link (retry) shows the failed screen; a link that stayed used reloads to Already approved.
+  assert.match(html, /if\(out\.retry\)return show\('failed'\)/);
+  assert.doesNotMatch(html, /e==='order_intent_failed'/);
+  assert.match(html, /Couldn't reach Reason\. Nothing was charged/);
+  // Run out: the page says so and says to ask for a fresh one.
+  clock.skip(passkey.APPROVAL_TTL_MS + 1000);
+  const gone = await page(token);
+  assert.equal(gone.status, 410);
+  assert.match(gone.body, /This link has run out\./);
+  assert.match(gone.body, /tell me and I(?:&#39;|')ll send a fresh one/);
+});
+
+test("a counter that stays at 0 (iPhone passkeys) is accepted, twice; www. and the apex origin both verify", async () => {
+  const a = await setUp();
+  for (const value of ["5.00", "6.00"]) {
+    const row = asked(value);
+    const token = await linkFor(row);
+    const o = optionsOf((await page(token)).body);
+    const res = await page(token, "verify", a.get(o.challenge, { counter: 0 }));
+    assert.equal(res.status, 200, res.body);
+    assert.equal(shop.paymentRow(row.id).status, "paid");
+  }
+  assert.equal(q("SELECT counter FROM pay_passkeys WHERE id = ?").get(a.id).counter, 0);
+  const row = asked("7.00");
+  const token = await linkFor(row);
+  const o = optionsOf((await page(token)).body);
+  assert.deepEqual(passkey.ORIGINS(), ["https://heyreason.com", "https://www.heyreason.com"]);
+  const www = await page(token, "verify", a.get(o.challenge, { origin: "https://www.heyreason.com" }));
+  assert.equal(www.status, 200, www.body);
+  assert.equal(orderIntents().length, 3);
+});
+
+test("once the card may have reached the store (unknown outcome) the link stays used: never paid twice", async () => {
+  const a = await setUp();
+  const row = asked("9.79");
+  const token = await linkFor(row);
+  const o = optionsOf((await page(token)).body);
+  shop._setFetch(async (url, init) => { const p = new URL(url).pathname; if (p.endsWith("/messages")) throw new Error("timeout"); return fakeFetch(url, init); });
+  try {
+    const res = await page(token, "verify", a.get(o.challenge));
+    assert.equal(res.status, 400);
+    assert.match(res.body, /unknown_outcome/);
+    assert.equal(shop.paymentRow(row.id).status, "unknown");
+    assert.match((await page(token)).body, /Already approved/);
+    assert.equal(passkey.approvalLog(OMARI).filter((l) => l.event === "link_reopened").length, 0);
+  } finally { shop._setFetch(fakeFetch); }
+});
+
+test("shop_status after the link was used up without paying: a fresh link to resend, an open link named, a passed window said", async () => {
+  const a = await setUp();
+  const row = asked("26.65");
+  q("UPDATE shop_runs SET stage = 'needs_approval', stage_at = ?, created_at = ?, updated_at = ? WHERE run_id = 'run_1'").run(clock.now(), clock.now(), clock.now());
+  const token = await linkFor(row);
+  // The link is still open: named, not remade.
+  let view = shop.statusView(OMARI);
+  assert.match(view.runs[0].approval, /still works for \d+ more minutes/);
+  assert.equal(view.runs[0].approve_url, undefined);
+  // Used up by a tap whose payment did not start... then run out before another tap.
+  clock.skip(passkey.APPROVAL_TTL_MS + 1000);
+  view = shop.statusView(OMARI);
+  assert.match(view.runs[0].approval, /used up without paying or ran out/);
+  assert.match(view.runs[0].approve_url, /\/web\/approve\/[A-Za-z0-9_-]{20,}$/);
+  const fresh = tokenOf(view.runs[0].approve_url);
+  assert.notEqual(fresh, token);
+  assert.equal((await page(fresh)).status, 200);
+  const o = optionsOf((await page(fresh)).body);
+  assert.equal((await page(fresh, "verify", a.get(o.challenge))).status, 200);
+  assert.equal(shop.paymentRow(row.id).status, "paid");
+  // Crossmint's own window passed: nothing to resend, start again.
+  const row2 = asked("1.00");
+  q("UPDATE shop_runs SET stage = 'needs_approval' WHERE run_id = 'run_1'").run();
+  q("UPDATE shop_payments SET expires_at = ? WHERE id = ?").run(new Date(clock.now() - 1000).toISOString(), row2.id);
+  view = shop.statusView(OMARI);
+  assert.match(view.runs[0].approval, /payment window has passed/);
+  assert.equal(view.runs[0].approve_url, undefined);
+});
+
+test("an expired checkout is described in plain words from the form's fields, never by quoting the store's prompt", () => {
+  const prompt = "I'm at Ulta's guest checkout with the 16 oz cleanser in the cart. I need the shipping details.";
+  const rq = { kind: "form", question: prompt, fields: [{ key: "email", label: "Email address" }, { key: "phone", label: "Phone" }, { key: "address1", label: "Street address" }, { key: "zip", label: "ZIP code" }] };
+  q("INSERT OR IGNORE INTO shop_runs (run_id, conversation_id, store, mode, item, status, created_at, updated_at) VALUES ('run_u', ?, 'ulta', 'guest', 'a 16 oz CeraVe cleanser', 'awaiting_input', 0, 0)").run(OMARI);
+  q("UPDATE shop_runs SET stage = 'failed', stage_at = ?, result = 'input_expired', question = ?, request_json = ? WHERE run_id = 'run_u'").run(clock.now(), prompt, JSON.stringify(rq));
+  const run = q("SELECT * FROM shop_runs WHERE run_id = 'run_u'").get();
+  assert.equal(shop.askedFor(run), "your email, phone number and shipping address");
+  const line = shop.stageLine(run);
+  assert.match(line, /was waiting for your email, phone number and shipping address and it expired/);
+  assert.doesNotMatch(line, /guest checkout|I'm at/);
+  // Waiting on the payment: approval, in those words.
+  q("UPDATE shop_runs SET stage = 'needs_approval' WHERE run_id = 'run_u'").run();
+  assert.equal(shop.askedFor(q("SELECT * FROM shop_runs WHERE run_id = 'run_u'").get()), "your approval of the payment");
 });
 
 test("without a passkey, or with the flag off, nothing changes: the texted yes path stands", async () => {

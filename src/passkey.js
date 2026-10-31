@@ -31,6 +31,7 @@
 // Logged (pay_approval_log): what happened to which payment, and its amount and store. Never a card
 // detail (none ever comes here), never a credential's key.
 import { createHash, randomBytes } from "node:crypto";
+import { isIP } from "node:net";
 import {
   generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse,
 } from "@simplewebauthn/server";
@@ -54,6 +55,13 @@ export function passkeyAllowedFor(conversationId) {
 /** Where the passkey lives. Web is on the website (heyreason.com), never on the API host. */
 export const ORIGIN = () => new URL(process.env.REASON_PASSKEY_ORIGIN || process.env.REASON_SITE_URL || "https://heyreason.com").origin;
 export const RP_ID = () => new URL(ORIGIN()).hostname;
+/** The origins an assertion may name: the site, and its www. form (the same RP ID; the browser signs whichever host served the page). */
+export function ORIGINS() {
+  const o = new URL(ORIGIN());
+  const alt = o.hostname.startsWith("www.") ? o.hostname.slice(4) : `www.${o.hostname}`;
+  const bare = o.hostname.replace(/^\[|\]$/g, "");
+  return o.hostname === "localhost" || isIP(bare) ? [o.origin] : [o.origin, `${o.protocol}//${alt}${o.port ? `:${o.port}` : ""}`];
+}
 export const APPROVAL_TTL_MS = 5 * 60_000;
 export const COOL_MS = 24 * 3600_000;
 const REG_TTL_MS = 5 * 60_000;
@@ -207,6 +215,11 @@ export function approvalFor(token) {
   }
   return a;
 }
+/** The link still open for a payment, if one is (and still in its five minutes); else null. */
+export function openApprovalFor(paymentId) {
+  const a = q("SELECT * FROM pay_approvals WHERE payment_id = ? AND state = 'open' ORDER BY created_at DESC").get(paymentId) ?? null;
+  return a && a.expires_at >= clock.now() ? a : null;
+}
 export const closeApproval = (a, state) => q("UPDATE pay_approvals SET state = ? WHERE id = ? AND state = 'open'").run(state, a.id).changes === 1;
 
 /** What the page asks the browser for: this link's bound challenge, this person's usable passkeys, UV required. */
@@ -236,7 +249,7 @@ export async function verifyApproval(a, row, response) {
   let out;
   try {
     out = await verifyAuthenticationResponse({
-      response, expectedChallenge: a.challenge, expectedOrigin: ORIGIN(), expectedRPID: RP_ID(), requireUserVerification: true,
+      response, expectedChallenge: a.challenge, expectedOrigin: ORIGINS(), expectedRPID: RP_ID(), requireUserVerification: true,
       credential: { id: cred.id, publicKey: new Uint8Array(cred.public_key), counter: cred.counter, transports: cred.transports ? cred.transports.split(",") : undefined },
     });
   } catch (e) { return fail(/counter/i.test(e?.message ?? "") ? "counter" : /verif/i.test(e?.message ?? "") ? "no_user_verification" : "not_verified"); }
@@ -246,4 +259,22 @@ export async function verifyApproval(a, row, response) {
   q("UPDATE pay_passkeys SET counter = ?, last_used_at = ? WHERE id = ?").run(out.authenticationInfo.newCounter ?? cred.counter, clock.now(), cred.id);
   logEvent(a.conversation_id, row, "approved");
   return { ok: true };
+}
+
+/**
+ * The payment did not start (no order intent, so nothing could have been charged — 2026-10-31 at CVS:
+ * Face ID passed, Crossmint refused the order intent, and the link stayed "used", so the second tap
+ * found nothing to approve). The link is opened again for a fresh tap, under a NEW nonce: the
+ * assertion just made signs the old challenge and cannot pay later. The deadline does not move.
+ * Never called once the card may have reached the store (unknown_outcome): that link stays used.
+ */
+export function reopenApproval(a, row, why = "") {
+  const nonce = randomBytes(16).toString("base64url");
+  const r = q("UPDATE pay_approvals SET state = 'open', used_at = NULL, credential_id = '', nonce = ?, challenge = ? WHERE id = ? AND state = 'used'")
+    .run(nonce, bindingChallenge(row, nonce), a.id);
+  if (r.changes !== 1) return false;
+  // One open link per payment, as createApproval keeps it: any other made meanwhile closes.
+  q("UPDATE pay_approvals SET state = 'replaced' WHERE payment_id = ? AND state = 'open' AND id != ?").run(row.id, a.id);
+  logEvent(a.conversation_id, row, "link_reopened", why);
+  return true;
 }
