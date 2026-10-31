@@ -55,10 +55,20 @@ db.saveConversation(C, []);
 db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025550100", name: "Omari", isOperator: true });
 // A little of what Reason knows about him, as the real profile block reads, so the voice has it to hand.
 db.saveProfile(C, "**Omari**\n- Commutes to work on the 2 and 5 trains\n- Has a daily protein target of 170g", []);
-const row = db.createCall(C, {
-  provider: "gptlive", toNumber: "+12025550100", isOwner: true, goal: "a test call from the verify drive",
-  facts: [], announcement: "Hey Omari, it's Reason.", state: "placing",
-});
+// --as owner (default): the operator's own call. --as user: ANOTHER user's own call (Ama, not the
+// operator) — her Reason must know her and nothing of Omari's. --as third: a call Reason makes for Omari
+// to a business — "I'm Reason, calling for Omari", none of his profile, opens silent (no warm session).
+const as = process.argv.indexOf("--as") > 0 ? process.argv[process.argv.indexOf("--as") + 1] : "owner";
+const AMA = "sendblue:+13105550000";
+db.saveConversation(AMA, []);
+db.upsertAccount({ conversationId: AMA, channel: "sendblue", address: "+13105550000", name: "Ama", isOperator: false });
+db.saveProfile(AMA, "**Ama**\n- Is allergic to peanuts", []);
+const row = as === "user"
+  ? db.createCall(AMA, { provider: "gptlive", toNumber: "+13105550000", isOwner: true, goal: "a test call from the verify drive", facts: [], announcement: "Hey Ama, it's Reason.", state: "placing" })
+  : as === "third"
+    ? db.createCall(C, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "ask whether they have a table for two at 7 tonight", facts: [], announcement: "", state: "placing" })
+    : db.createCall(C, { provider: "gptlive", toNumber: "+12025550100", isOwner: true, goal: "a test call from the verify drive", facts: [], announcement: "Hey Omari, it's Reason.", state: "placing" });
+const CONV = row.conversation_id;
 
 const lines = [];
 const log = (o) => lines.push(o);
@@ -79,7 +89,7 @@ const expect = flag("--expect") > 0 ? process.argv[flag("--expect") + 1] : "dele
 const cold = flag("--cold") > 0;
 const ringMs = flag("--ring") > 0 ? Number(process.argv[flag("--ring") + 1]) : 5000;
 if (!cold) {
-  gl.prewarm(db.getCall(C, row.id), { log });
+  gl.prewarm(db.getCall(CONV, row.id), { log });
   await new Promise(r => setTimeout(r, ringMs));
 }
 const heardAt = [];
@@ -112,10 +122,10 @@ await new Promise((r) => {
 });
 twilio.send(JSON.stringify({ event: "stop" }));
 const until = Date.now() + 20_000;
-while (Date.now() < until && db.getCall(C, row.id)?.state === "in_progress") await new Promise(r => setTimeout(r, 250));
+while (Date.now() < until && db.getCall(CONV, row.id)?.state === "in_progress") await new Promise(r => setTimeout(r, 250));
 server.close();
 
-const settled = db.getCall(C, row.id);
+const settled = db.getCall(CONV, row.id);
 // When their question ended, and when the first speech after it reached them.
 const askedEndMs = 3000 + (audio.length / 8);
 const answerAt = speechAt.find(ms => ms > askedEndMs + 200);
@@ -137,9 +147,13 @@ const out = {
 };
 const afterQuestion = (call?.turns ?? []).slice((call?.turns ?? []).findIndex(t => t.who === "them") + 1).filter(t => t.who === "reason").map(t => t.text).join(" ");
 out.answer = afterQuestion.trim();
-const ok = expect === "identity"
-  ? /\bOmari\b/.test(afterQuestion) && !/don['’]t know|not sure who/i.test(afterQuestion) && out.guard_trips === 0 && (cold || (out.first_voice_ms ?? Infinity) < 600)
+const leak = /peanut|2 and 5|protein|170/i;
+const ok = expect === "identity" && as === "third"
+  ? /\bReason\b/.test(afterQuestion) && /\bOmari\b/.test(afterQuestion) && !leak.test(out.voice_said.join(" ")) && out.guard_trips === 0
+  : expect === "identity"
+  ? new RegExp(`\\b${as === "user" ? "Ama" : "Omari"}\\b`).test(afterQuestion) && !/don['’]t know|not sure who/i.test(afterQuestion)
+    && (as !== "user" || !/\bOmari\b|2 and 5|protein/i.test(out.voice_said.join(" "))) && out.guard_trips === 0 && (cold || (out.first_voice_ms ?? Infinity) < 600)
   : out.delegations > 0 && out.results.some(r => r.chars > 0) && turns.some(t => Number.isFinite(t.first_real_ms));
-console.log(JSON.stringify({ expect, ...out }, null, 1));
+console.log(JSON.stringify({ as, expect, ...out }, null, 1));
 console.log(ok ? "ok" : "FAIL");
 process.exit(ok ? 0 : 1);
