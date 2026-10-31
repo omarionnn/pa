@@ -644,6 +644,10 @@ export const config = {
   // too (phase 3, 2026-10-31): =gptlive (or on) for everyone's errands, =owner for the operator's only.
   // Unset, those calls are ElevenLabs exactly as before.
   thirdPartyVoice: String(process.env.REASON_THIRD_PARTY_VOICE ?? "").trim().toLowerCase(),
+  // How a GPT-Live third-party call talks once a person answers (2026-10-31, call 59): "on" (default)
+  // = the voice talks with them itself, like an own call, and hands decisions to Reason; "off" = the
+  // older puppet line, where every reply waits on a Reason turn (4–8 s a reply on call 59).
+  lineTalk: String(process.env.REASON_LINE_TALK ?? "on").trim().toLowerCase() !== "off",
   gptliveModel: process.env.REASON_GPTLIVE_MODEL || "gpt-live-1",
   // The closest built-in to the ElevenLabs pick (a young adult British woman): Marin, with the accent
   // asked for in the live prompt. There is no British built-in voice.

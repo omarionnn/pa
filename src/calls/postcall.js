@@ -409,6 +409,11 @@ export function thirdPartyEvent({ row, live }) {
     + ` outcome: ${outcome}.${what ? ` summary: ${what}${/[.!?]$/.test(what) ? "" : "."}` : ""}${machine}`
     + `${row.duration_s ? ` it ran ${Math.round(row.duration_s)} seconds.` : ""}`
     + `\nwhat was actually said:\n${row.transcript || live?.transcript || "(no transcript came back)"}`
+    // How it went on Reason's side, from the call's own clock (gptlive \`howItWent\`). Call 59's recap
+    // blamed "a bad line" for what was Reason's 8 s first reply and replies cutting each other off.
+    + `${live?.howItWent ? `\nhow it went on Reason's side, measured on the call: ${live.howItWent}.` : ""}`
+    + `\nNever guess a cause the transcript and those facts don't show — not a bad line, not that they couldn't hear.`
+    + ` If it went badly because of Reason (slow to answer, talking over them, repeating itself), say that plainly as Reason's fault.`
     + `\n${audio}`
     + `\nTell them what came of it in your own words, short, and only what the transcript really says.`
     + ` If it did not get the answer it was for, say so rather than rounding it up.`

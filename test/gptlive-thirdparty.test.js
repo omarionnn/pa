@@ -2,7 +2,8 @@
 // other people, and places ringing back about them, on GPT-Live behind REASON_THIRD_PARTY_VOICE.
 // Silent opening, the disclosure word for word, key presses through Twilio, answering-machine
 // detection and voicemail, hold and its budget, Reason's own third-party turn for every word, and a
-// stranger's recording kept. No network: the voice session, the Twilio stream, the Twilio API and
+// stranger's recording kept. This file is the puppet line (REASON_LINE_TALK=off); talk mode is
+// test/gptlive-linetalk.test.js. No network: the voice session, the Twilio stream, the Twilio API and
 // Reason's turn are stand-ins; every assertion reads what was sent or the database.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
@@ -42,7 +43,7 @@ beforeEach(() => {
   db.saveConversation(C, []);
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: OTHER, channel: "sendblue", address: "+13105550000", name: "Ama", isOperator: false });
-  Object.assign(config, { callIdentity: false, makerName: "Saafi Interactions Lab", callVoice: "gptlive", thirdPartyVoice: "owner", ...TWILIO, gptliveInboundFallbackUrl: "https://api.us.elevenlabs.io/twilio/inbound_call" });
+  Object.assign(config, { lineTalk: false, callIdentity: false, makerName: "Saafi Interactions Lab", callVoice: "gptlive", thirdPartyVoice: "owner", ...TWILIO, gptliveInboundFallbackUrl: "https://api.us.elevenlabs.io/twilio/inbound_call" });
 });
 
 const lineRow = (over = {}) => {
