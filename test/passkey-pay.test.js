@@ -320,8 +320,9 @@ test("the page has a clear result for every outcome: payment didn't start, run o
   assert.match(html, /data-step="failed"/);
   assert.match(html, /Face ID worked\. The payment didn(?:&#39;|')t start\./);
   assert.match(html, /id="pk-retry"/);
-  assert.match(html, /order_intent_failed'\|\|e==='no_card'/);
-  assert.match(html, /out\.retry/);
+  // Only a reopened link (retry) shows the failed screen; a link that stayed used reloads to Already approved.
+  assert.match(html, /if\(out\.retry\)return show\('failed'\)/);
+  assert.doesNotMatch(html, /e==='order_intent_failed'/);
   assert.match(html, /Couldn't reach Reason\. Nothing was charged/);
   // Run out: the page says so and says to ask for a fresh one.
   clock.skip(passkey.APPROVAL_TTL_MS + 1000);

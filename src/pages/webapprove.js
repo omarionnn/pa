@@ -168,7 +168,7 @@ if(go)go.onclick=function(){
   navigator.credentials.get({publicKey:{challenge:b2u(o.challenge),rpId:o.rpId,timeout:o.timeout,userVerification:'required',allowCredentials:(o.allowCredentials||[]).map(function(c){return{type:'public-key',id:b2u(c.id),transports:c.transports}})}})
   .then(function(c){var r=c.response;show('paying');return post('/verify',{id:c.id,rawId:u2b(c.rawId),type:c.type,response:{clientDataJSON:u2b(r.clientDataJSON),authenticatorData:u2b(r.authenticatorData),signature:u2b(r.signature),userHandle:r.userHandle?u2b(r.userHandle):undefined},clientExtensionResults:{},authenticatorAttachment:c.authenticatorAttachment||undefined})})
   .then(function(out){if(!out)return;if(out.ok)return show('paid');if(out.unknown_outcome)return show('unsure');var e=out.error||'';
-    if(out.retry||e==='order_intent_failed'||e==='no_card'||e==='payment_in_progress')return show('failed');
+    if(out.retry)return show('failed');
     if(/^link_|^payment_|^not_found$|^not_open$/.test(e))return location.reload();
     show('ask');busy(go,false);oops(WHY[e]||(/^http_/.test(e)?"Reason had a problem. Nothing was charged. Try again.":FAIL))},
     function(err){show('ask');busy(go,false);oops(err&&err.name==='TypeError'?OFFLINE:FAIL)})};

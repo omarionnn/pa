@@ -31,6 +31,7 @@
 // Logged (pay_approval_log): what happened to which payment, and its amount and store. Never a card
 // detail (none ever comes here), never a credential's key.
 import { createHash, randomBytes } from "node:crypto";
+import { isIP } from "node:net";
 import {
   generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse,
 } from "@simplewebauthn/server";
@@ -58,7 +59,8 @@ export const RP_ID = () => new URL(ORIGIN()).hostname;
 export function ORIGINS() {
   const o = new URL(ORIGIN());
   const alt = o.hostname.startsWith("www.") ? o.hostname.slice(4) : `www.${o.hostname}`;
-  return o.hostname === "localhost" || /^[\d.]+$/.test(o.hostname) ? [o.origin] : [o.origin, `${o.protocol}//${alt}${o.port ? `:${o.port}` : ""}`];
+  const bare = o.hostname.replace(/^\[|\]$/g, "");
+  return o.hostname === "localhost" || isIP(bare) ? [o.origin] : [o.origin, `${o.protocol}//${alt}${o.port ? `:${o.port}` : ""}`];
 }
 export const APPROVAL_TTL_MS = 5 * 60_000;
 export const COOL_MS = 24 * 3600_000;
@@ -270,6 +272,9 @@ export function reopenApproval(a, row, why = "") {
   const nonce = randomBytes(16).toString("base64url");
   const r = q("UPDATE pay_approvals SET state = 'open', used_at = NULL, credential_id = '', nonce = ?, challenge = ? WHERE id = ? AND state = 'used'")
     .run(nonce, bindingChallenge(row, nonce), a.id);
-  if (r.changes === 1) logEvent(a.conversation_id, row, "link_reopened", why);
-  return r.changes === 1;
+  if (r.changes !== 1) return false;
+  // One open link per payment, as createApproval keeps it: any other made meanwhile closes.
+  q("UPDATE pay_approvals SET state = 'replaced' WHERE payment_id = ? AND state = 'open' AND id != ?").run(row.id, a.id);
+  logEvent(a.conversation_id, row, "link_reopened", why);
+  return true;
 }

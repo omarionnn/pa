@@ -764,9 +764,11 @@ export async function payByPasskey(token, response) {
   // Nothing started (no order intent, so no charge is possible): the link opens again for another tap,
   // under a fresh challenge, and the page says Face ID worked but the payment did not start. Once the
   // card may have reached the store (unknown_outcome) the link stays used: never paid twice.
-  else if (!out.unknown_outcome && passkey.reopenApproval(v.a, v.row, out.error)) return { ...out, retry: true };
+  else if (RETRYABLE.has(out.error) && passkey.reopenApproval(v.a, v.row, out.error)) return { ...out, retry: true };
   return out;
 }
+/** Failures before any order intent where another tap can only help. Never "in progress" (a pay is in flight) or a closed row. */
+const RETRYABLE = new Set(["order_intent_failed", "no_card"]);
 /** Decline from the page: no passkey needed to say no. */
 export async function declineByLink(token) {
   const v = approvalView(token);
@@ -943,6 +945,7 @@ function fieldWords(f) {
   if (/quantity|\bqty\b/.test(s)) return "quantity";
   if (/delivery|ship(ping)?.?(method|option|speed)|pickup/.test(s)) return "delivery option";
   if (/promo|coupon|discount/.test(s)) return "promo code";
+  if (/gift.?card/.test(s)) return "gift card";
   if (/gift/.test(s)) return "gift option";
   if (/password|otp|one.?time|verification code|\bcode\b/.test(s)) return "sign-in";
   const label = String(f?.label ?? "").replace(/\s+/g, " ").trim();
@@ -955,11 +958,10 @@ const andList = (xs) => xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join("
  * 2026-10-31 the end text quoted Ulta's whole prompt ("I'm at Ulta's guest checkout with…") back at the owner.
  */
 export function askedFor(run) {
-  const pay = payOf(run);
-  if (run.stage === "needs_approval" || (pay && ["asked", "expired"].includes(pay.status) && run.stage !== "needs_input")) return "your approval of the payment";
   let rq = null;
   try { rq = run.request_json ? JSON.parse(run.request_json) : null; } catch { rq = null; }
-  if (rq?.kind === "payment") return "your approval of the payment";
+  // The last request recorded is what the store was waiting on: the payment, or a form.
+  if (run.stage === "needs_approval" || rq?.kind === "payment") return "your approval of the payment";
   const names = [];
   for (const f of rq?.fields ?? []) { const n = fieldWords(f); if (n && !names.includes(n)) names.push(n); }
   if (!names.length) return rq?.kind === "choice" ? "a choice" : "an answer";
@@ -1304,7 +1306,7 @@ function approvalHint(run) {
   if (Number.isFinite(deadline) && deadline < clock.now()) return { approval: `${storeOf(run)}'s payment window has passed, so this can't be approved anymore; the run will end on its own. Offer to start it again.` };
   if (!passkey.requiredFor(run.conversation_id)) return { approval: "they approve by replying yes to the payment text; if they haven't, ask again in one line." };
   const open = passkey.openApprovalFor(pay.id);
-  if (open) return { approval: `their Face ID link from the payment text still works for ${minutes(open.expires_at - clock.now())} more minutes; nothing is paid until they approve there.` };
+  if (open) return { approval: `their Face ID link from the payment text still works for ${minutes(open.expires_at - clock.now())} more minutes; nothing is paid until they approve there. If they say they have no link, call shop_pay with payment_id ${pay.id} for a fresh one.` };
   return { approve_url: approvalUrl(pay), approval: "their earlier Face ID link was used up without paying or ran out. Send this fresh url ON ITS OWN LINE as the last thing, untouched; it works once, for 5 minutes. Don't say it's paid." };
 }
 /** shop_status: the record the model answers from. */
