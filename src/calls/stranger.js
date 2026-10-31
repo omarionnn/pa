@@ -105,40 +105,22 @@ export function takeTurn(now = clock.now()) {
 export function resetTurns() { day = ""; used = 0; }
 
 /**
- * One turn of a stranger's call, as the platform's SSE answer. `generate` is the call backend's
- * generator (`generatorFor()` in voice.js); it is offered no tools.
+ * One reply to a stranger, whichever voice carries it: `{ text, ends, why }`. `raw` is the call so far as
+ * the voice has it ({role, content} messages); only the spoken words are read. `extra` carries the
+ * stranger_calls row id + token, when the number is kept. `generate` is offered no tools.
  */
-export async function* strangerTurn({ body, generate, sseChunk, SSE_DONE, log = () => {}, now = clock.now() }) {
-  const id = `chatcmpl-${randomUUID()}`;
-  const created = Math.floor(now / 1000);
-  const model = body?.model ?? "reason";
-  const chunk = (delta, finish = null) => sseChunk({ id, model, created, delta, finish });
-  const endCall = (why) => chunk({
-    tool_calls: [{ index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function", function: { name: "end_call", arguments: JSON.stringify({ reason: why }) } }],
-  });
-  yield chunk({ role: "assistant" });
-
-  const messages = spokenOnly(body?.messages);
+export async function strangerReply({ messages: raw, generate, extra = {}, log = () => {}, now = clock.now() }) {
+  const messages = spokenOnly(raw);
   // What they have said so far, kept against their number (src/strangercalls.js) — nobody else's words.
-  const extra = (body?.elevenlabs_extra_body ?? body?.extra_body ?? body?.custom_llm_extra_body ?? {}) || {};
-  if (extra.reason_stranger_call) {
-    try { strangerCalls.noteTurn({ id: extra.reason_stranger_call, token: extra.reason_stranger_token, messages: body?.messages, now }); } catch { /* the call goes on */ }
+  if (extra?.reason_stranger_call) {
+    try { strangerCalls.noteTurn({ id: extra.reason_stranger_call, token: extra.reason_stranger_token, messages: raw, now }); } catch { /* the call goes on */ }
   }
   const theirTurns = messages.filter(m => m.role === "user").length;
-  if (!messages.length || messages.at(-1).role !== "user") {
-    yield chunk({}, "stop");
-    yield SSE_DONE;
-    return;
-  }
+  if (!messages.length || messages.at(-1).role !== "user") return { text: "", ends: false };
   if (theirTurns > MAX_TURNS || !takeTurn(now)) {
     log({ stranger_call_capped: theirTurns > MAX_TURNS ? "turns" : "day" });
-    yield chunk({ content: "I'll let you go. Have a look at hey reason dot com whenever you like. Bye!" });
-    yield endCall("capped");
-    yield chunk({}, "tool_calls");
-    yield SSE_DONE;
-    return;
+    return { text: "I'll let you go. Have a look at hey reason dot com whenever you like. Bye!", ends: true, why: "capped" };
   }
-
   let said = "";
   try {
     for await (const ev of generate({ system: strangerPrompt(), messages, tools: [], log })) {
@@ -151,9 +133,27 @@ export async function* strangerTurn({ body, generate, sseChunk, SSE_DONE, log = 
   const ends = /\bEND\s*[.!]?\s*$/.test(said.trim());
   const text = forSpeech(said.replace(/\bEND\s*[.!]?\s*$/, ""));
   log({ stranger_turn: theirTurns, chars: text.length, ends });
+  return { text, ends, why: "stranger call done" };
+}
+
+/**
+ * One turn of a stranger's call, as the platform's SSE answer. `generate` is the call backend's
+ * generator (`generatorFor()` in voice.js); it is offered no tools.
+ */
+export async function* strangerTurn({ body, generate, sseChunk, SSE_DONE, log = () => {}, now = clock.now() }) {
+  const id = `chatcmpl-${randomUUID()}`;
+  const created = Math.floor(now / 1000);
+  const model = body?.model ?? "reason";
+  const chunk = (delta, finish = null) => sseChunk({ id, model, created, delta, finish });
+  const endCall = (why) => chunk({
+    tool_calls: [{ index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function", function: { name: "end_call", arguments: JSON.stringify({ reason: why }) } }],
+  });
+  yield chunk({ role: "assistant" });
+  const extra = (body?.elevenlabs_extra_body ?? body?.extra_body ?? body?.custom_llm_extra_body ?? {}) || {};
+  const { text, ends, why } = await strangerReply({ messages: body?.messages, generate, extra, log, now });
   if (text) yield chunk({ content: text });
   if (ends) {
-    yield endCall("stranger call done");
+    yield endCall(why);
     yield chunk({}, "tool_calls");
   } else {
     yield chunk({}, "stop");

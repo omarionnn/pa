@@ -165,21 +165,9 @@ export function inboundRequest({
   // The day's limits, counted in the database and therefore surviving a restart. Checked before any
   // turn is possible, because the whole reason a call has its own caps is that it bills by the minute
   // for as long as somebody keeps talking.
-  const placed = accounts.withinCap(seen.conversationId, "call");
-  const minutes = accounts.withinCap(seen.conversationId, "call_minutes");
-  if (!placed.ok || !minutes.ok) {
-    const which = !placed.ok
-      ? `that's ${placed.used} calls today, which is the limit on this setup`
-      : `you've used ${minutes.used} minutes of calls today, which is the limit on this setup`;
-    log({ call_inbound_capped: seen.conversationId, calls: placed.used, minutes: minutes.used });
-    return {
-      status: 200,
-      conversationId,
-      body: endItHere({
-        line: `hey — ${which}, so i can't take this one. text me instead and i'll pick it up there.`,
-        reason: !placed.ok ? "daily_call_cap" : "daily_call_minutes_cap",
-      }),
-    };
+  const capped = overCallCap(seen.conversationId, { log });
+  if (capped) {
+    return { status: 200, conversationId, body: endItHere(capped) };
   }
 
   // On the record before a word is said. The goal is what it is — nobody handed this call one — and
@@ -238,6 +226,24 @@ export function inboundRequest({
         reason_kind: "owner",
       },
     },
+  };
+}
+
+/**
+ * Over today's call limits? `{ line, reason }` to say and hang up on, or null. Both voices use it, so
+ * a cap that applies to calls Reason places applies to calls dialled in too.
+ */
+export function overCallCap(conversationId, { log = () => {} } = {}) {
+  const placed = accounts.withinCap(conversationId, "call");
+  const minutes = accounts.withinCap(conversationId, "call_minutes");
+  if (placed.ok && minutes.ok) return null;
+  const which = !placed.ok
+    ? `that's ${placed.used} calls today, which is the limit on this setup`
+    : `you've used ${minutes.used} minutes of calls today, which is the limit on this setup`;
+  log({ call_inbound_capped: conversationId, calls: placed.used, minutes: minutes.used });
+  return {
+    line: `hey — ${which}, so i can't take this one. text me instead and i'll pick it up there.`,
+    reason: !placed.ok ? "daily_call_cap" : "daily_call_minutes_cap",
   };
 }
 
@@ -397,7 +403,15 @@ function stranger({ address, router = null, log = () => {}, reason = "no_account
     log({ call_inbound_withheld: true });
     return { status: 200, body: pitch({ reason: "withheld" }) };
   }
+  const why = strangerIntake({ address, router, log, reason });
+  return { status: 200, body: pitch({ reason: why, address, externalId, log }) };
+}
 
+/**
+ * The master is asked about an unknown number that rang, exactly as about a first text. Returns why
+ * they are a stranger. Shared by both voices (ElevenLabs here, GPT-Live in src/calls/gptlive.js).
+ */
+export function strangerIntake({ address, router = null, log = () => {}, reason = "no_account_yet" }) {
   // The request goes in on the TEXTING channel, not on the call provider's name. If the master says
   // yes, that is the channel their new Reason is set up on and the channel they are told yes over —
   // approving somebody onto "elevenlabs" would set up an account Reason cannot send a text to.
@@ -406,7 +420,7 @@ function stranger({ address, router = null, log = () => {}, reason = "no_account
     // Nowhere to ask the master and nowhere to answer this person if the answer were yes. They still
     // get the one line; nothing is written down as a request nobody can act on.
     log({ call_inbound_unknown_no_channel: address });
-    return { status: 200, body: pitch({ reason: "no_channel", address, externalId, log }) };
+    return "no_channel";
   }
 
   const seen = access.handleUnknown({
@@ -431,8 +445,7 @@ function stranger({ address, router = null, log = () => {}, reason = "no_account
   } else {
     log({ call_inbound_unknown: address, why: seen.reason });
   }
-
-  return { status: 200, body: pitch({ reason: seen.reason ?? reason, address, externalId, log }) };
+  return seen.reason ?? reason;
 }
 
 /**
