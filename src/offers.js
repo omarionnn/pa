@@ -40,7 +40,8 @@ const NOT_A_START = /\b(?:want me to|should i|shall i|can i|could i|do you want|
 const START_FOLLOWUP = /\b(?:when it (?:gets|reaches|hits)|once it (?:gets|reaches|hits)|i'?ll (?:text|send|message) you|you'?ll get a text|nothing (?:gets|is|will be|'s) charged|until you (?:approve|say)|i'?ll let you know|i'?ll keep you posted)\b/i;
 // A denial about STARTING only: "didn't go through" is a true line about a run that ran and failed.
 const NEVER_STARTED = /\b(?:never (?:actually |really )?(?:started|ran|began|got going|kicked off)|didn'?t (?:actually |really )?(?:start|run|kick off)|did not (?:actually |really )?(?:start|run)|wasn'?t (?:actually |really )?(?:started|running)|nothing (?:was|is|'s) running|no checkout (?:was|is) running|hadn'?t (?:actually )?started)\b/i;
-const HONEST_NOT_STARTED = "I haven't actually started a checkout: nothing is running and nothing has been charged. Want me to start it now?";
+const SELF_BUY_HEDGE = /\b(?:if you(?:'d| would) rather(?: just)? (?:buy|order|finish|place|check out|checkout) (?:it|this|the order|that)(?: yourself| on your own)?|if you(?:'d| would) rather(?: just)? (?:get|grab|do) (?:it|this|that) yourself|(?:buy|order|finish|place|check out) (?:it|this|the order) (?:yourself|on your own)|here'?s the (?:page|link) (?:if|in case) you(?:'d| would)? (?:rather|want to|prefer to) (?:buy|order|finish|place|do|get) (?:it|this|that|the order))\b/i;
+const HONEST_NOT_STARTED ="I haven't actually started a checkout: nothing is running and nothing has been charged. Want me to start it now?";
 const isStartClaim = (s, near) => !NOT_A_START.test(s) && !/\?\s*$/.test(s) && (I_STARTED.test(s) || CHECKOUT_IS.test(s) || (START_IT.test(s) && CHECKOUT_WORD.test(near)));
 /** Lines, and each line's sentences: `[[sentence, …], …]`, joined back with the same newlines. */
 function sentencesOf(text) { return String(text).split(/(\n+)/).map((part) => (/^\n+$/.test(part) ? part : part.split(/(?<=[.!?])\s+/))); }
@@ -75,6 +76,22 @@ export function checkoutClaims(conversationId, text) {
       const line = `Correction, from my record: the ${store} checkout${ran.item ? ` for ${ran.item}` : ""} did start ${Math.max(1, Math.round((clock.now() - ran.created_at) / 60_000))} min ago; now: ${shop.stageLine(ran)}.`;
       text = [line, joinBack(kept)].filter(Boolean).join("\n");
       flag = { rule: "never_started_with_run", run_id: ran.run_id };
+    }
+    // A checkout Reason started is Reason's to finish (owner, 2026-10-31 12:17): "Here's the page if
+    // you'd rather just buy it yourself" — and the bare store link under it — goes, while a run of theirs is open or just ran.
+    if (behind || half.length) {
+      const parts2 = sentencesOf(text);
+      const all2 = parts2.filter((p) => typeof p !== "string").flat();
+      const hedges = all2.filter((s) => SELF_BUY_HEDGE.test(s));
+      if (hedges.length) {
+        const drop = new Set(hedges);
+        all2.forEach((s, i) => { if (i > 0 && drop.has(all2[i - 1]) && /^\s*https?:\/\/\S+\s*$/.test(s)) drop.add(s); });
+        // A line emptied by the drop goes with its newline, so no blank line is left where it was.
+        const kept = parts2.map((p) => (typeof p === "string" ? p : p.filter((s) => !drop.has(s)))).filter((p) => typeof p === "string" || p.length);
+        const squeezed = kept.filter((p, i) => !(typeof p === "string" && typeof kept[i - 1] === "string"));
+        text = joinBack(squeezed);
+        flag = flag ?? { rule: "self_buy_hedge", dropped: drop.size };
+      }
     }
     return { text, flag };
   } catch {
