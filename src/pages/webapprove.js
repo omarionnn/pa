@@ -22,10 +22,15 @@ const CSS = `${PAPER_CSS}
 .pk-item{margin:10px 0 0;font-size:17px;line-height:1.45;color:var(--ink)}
 .pk-note{margin-top:22px}
 .pk-go .pf-go{font-size:28px}
+.pk-no{min-height:52px;padding:8px 22px;border:1.5px solid var(--ink);border-radius:999px;font-size:24px;color:var(--ink)}
+.pk-no:hover{border-color:var(--hov)}
+.pk-go+.pf-l{margin-top:22px}
 .pk-face{display:inline-block;width:22px;height:22px;margin-right:10px;vertical-align:-3px}
 `;
 const BACK = "/web?thread";
 const FACE = `<svg class="pk-face" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M9 9v1.5M15 9v1.5M12 9v4h-1M9 16.5c1.8 1.4 4.2 1.4 6 0"/></svg>`;
+// Saying no is as plain as saying yes: a full-size, full-ink button, not small grey caps.
+const NO = (text) => `<button class="act pk-no" type="button" id="pk-no" data-busy="1">${esc(text)}</button>`;
 const minutes = (ms) => Math.max(1, Math.round(ms / 60_000));
 
 function page(title, body, { staging = false, status = 200, boot = null } = {}) {
@@ -47,7 +52,7 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
     const cooling = blocked === "cooling_off";
     const main = headline(cooling ? "Your new Face ID isn't ready yet." : "Face ID isn't set up here.", "Nothing was charged.", "pk-h")
       + lede(cooling ? "A Face ID added after the first one waits a day before it can pay, so nobody can add one and pay with it before you hear. Use the phone you set it up on, or decline." : "Set up Face ID in Settings, then ask me for a fresh link.")
-      + theTotal(v) + `<div class="pk-note">${actions(two("DECLINE IT", { attrs: ` id="pk-no"` }), go("Settings", { href: "/web/settings#shopping" }))}</div>`;
+      + theTotal(v) + `<div class="pk-note">${actions(NO("Decline it"), go("Settings", { href: "/web/settings#shopping" }))}</div>`;
     return page("Reason — approve", shell(frame({ main, margin: WHAT_IT_COVERS(v) })), { staging, boot });
   }
   const ask = frame({
@@ -55,7 +60,7 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
     main: headline(`Pay ${v.amount} at ${v.store}?`, "Approve it with Face ID.", "pk-h")
       + lede("This is the exact total, with tax and shipping, from the store's checkout.")
       + theTotal(v)
-      + `<div class="pk-note pk-go">${actions(`<button class="act pf-go" type="button" id="pk-go" data-busy="1">${FACE}Approve with Face ID <span aria-hidden="true">→</span></button>`, two("DECLINE", { attrs: ` id="pk-no"` }))}</div>`
+      + `<div class="pk-note pk-go">${actions(`<button class="act pf-go" type="button" id="pk-go" data-busy="1">${FACE}Approve with Face ID <span aria-hidden="true">→</span></button>`, NO("Decline"))}</div>`
       + label(`RUNS OUT IN ${minutes(left)} MIN · NOTHING CHARGED YET`)
       + `<p class="pf-note" id="pk-err" role="alert" hidden></p>`,
     margin: WHAT_IT_COVERS(v),
