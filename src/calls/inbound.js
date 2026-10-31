@@ -30,7 +30,7 @@ import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import * as access from "../access.js";
 import { config, clock, normalizeNumber } from "../config.js";
-import { strangerLine } from "./voice-prompt.js";
+import * as strangerCall from "./stranger.js";
 import { warmCallCache } from "./voice.js";
 import { announcementFor } from "./provider.js";
 
@@ -88,12 +88,12 @@ export function inboundRequest({
   if (!who.allow) {
     if (who.reason === "blocked") {
       log({ call_inbound_blocked: address });
-      return { status: 200, body: endItHere({ line: strangerLine(), reason: "blocked" }), conversationId };
+      return { status: 200, body: endItHere({ line: strangerCall.neutralLine(), reason: "blocked" }), conversationId };
     }
     if (who.reason === "paused" || who.reason === "removed") {
       // Told once, in their own words, and then left alone — the same rule as a text.
-      const line = accounts.shouldTellAgain(address) ? accounts.stoppedLine(who.reason) : strangerLine();
-      return { status: 200, body: endItHere({ line, reason: who.reason }), conversationId };
+      // A short neutral line naming nobody (2026-10-31). The texted stoppedLine names the operator.
+      return { status: 200, body: endItHere({ line: strangerCall.neutralLine(), reason: who.reason }), conversationId };
     }
     return { ...stranger({ address, router, log, reason: who.reason }), conversationId };
   }
@@ -392,10 +392,9 @@ export function recordingNoteFor({ conversationId, row, log = () => {} }) {
  * two seconds would be two seconds of ringing, and the outbox pass picks it up well inside the call.
  */
 function stranger({ address, router = null, log = () => {}, reason = "no_account_yet" }) {
-  const line = strangerLine();
   if (!address) {
     log({ call_inbound_withheld: true });
-    return { status: 200, body: endItHere({ line, reason: "withheld" }) };
+    return { status: 200, body: pitch({ reason: "withheld" }) };
   }
 
   // The request goes in on the TEXTING channel, not on the call provider's name. If the master says
@@ -406,7 +405,7 @@ function stranger({ address, router = null, log = () => {}, reason = "no_account
     // Nowhere to ask the master and nowhere to answer this person if the answer were yes. They still
     // get the one line; nothing is written down as a request nobody can act on.
     log({ call_inbound_unknown_no_channel: address });
-    return { status: 200, body: endItHere({ line, reason: "no_channel" }) };
+    return { status: 200, body: pitch({ reason: "no_channel" }) };
   }
 
   const seen = access.handleUnknown({
@@ -432,7 +431,30 @@ function stranger({ address, router = null, log = () => {}, reason = "no_account
     log({ call_inbound_unknown: address, why: seen.reason });
   }
 
-  return { status: 200, body: endItHere({ line, reason: seen.reason ?? reason }) };
+  return { status: 200, body: pitch({ reason: seen.reason ?? reason }) };
+}
+
+/**
+ * An unknown caller: Reason introduces itself and talks about trying it (src/calls/stranger.js). The
+ * turns come to Reason's own endpoint marked `stranger`, where they get the pitch prompt, no tools and
+ * nobody's data; `end_call` is the only tool the platform may run. Nothing here names anybody.
+ */
+function pitch({ reason }) {
+  return {
+    type: "conversation_initiation_client_data",
+    dynamic_variables: { reason_kind: strangerCall.KIND, reason_why: reason },
+    conversation_config_override: {
+      agent: {
+        first_message: strangerCall.introLine(),
+        prompt: {
+          prompt: "You are Reason, introducing yourself to somebody who rang. You know nothing about anybody.",
+          tools: [{ type: "system", name: "end_call" }],
+        },
+      },
+      ...(config.elevenVoiceId ? { tts: { voice_id: config.elevenVoiceId } } : {}),
+    },
+    custom_llm_extra_body: { reason_kind: strangerCall.KIND },
+  };
 }
 
 /** A channel that can really send a text right now, preferring the master's own. */
