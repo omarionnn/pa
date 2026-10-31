@@ -99,7 +99,7 @@ test("an unknown number reaches the master once, quoting them exactly", async ()
   // One line to them.
   const toKofi = sentTo(h.channel, KOFI);
   assert.equal(toKofi.length, 1);
-  assert.match(toKofi[0].text, /asked them whether to set you up/i);
+  assert.match(toKofi[0].text, /i.ve asked for you to be set up/i);
 
   // And the question to the master, with the message quoted exactly.
   const toMaster = sentTo(h.channel, MASTER);
@@ -195,7 +195,7 @@ test("no declines them politely, and the cool-off holds", async () => {
   assert.equal(out.granted, false);
   assert.equal(db.getAccessRequest(out.requestId).state, "declined");
   assert.equal(db.getAccount(`dm:fake:${KOFI}`), null, "no account was made");
-  assert.match(out.toThem, /isn't setting anyone up/i);
+  assert.match(out.toThem, /not setting anyone up/i);
 
   // Within the cool-off, they are left alone and the master is NOT asked again.
   const masterBefore = sentTo(h.channel, MASTER).length;
