@@ -5278,6 +5278,8 @@ export function updateCall(conversationId, id, fields) {
     "verified_at", "verified_how", "verify_tries", "verify_sent_at", "verify_sent_after_msgs",
     "profile", "tts_model",
     "opening_waits", "machine_heard",
+    // A GPT-Live third-party call names Reason in its disclosure (src/calls/gptlive.js lineAnnouncement).
+    "announcement",
     // Why it ended and what the platform says it cost (the 2026-10-30 call audit).
     "end_reason", "end_detail", "cost_credits", "cost_raw",
     // The after-call steps (call 57, 2026-10-31): begun, finished, and how often a boot picked them up.

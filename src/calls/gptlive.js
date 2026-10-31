@@ -30,10 +30,13 @@ import * as accounts from "../accounts.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generatorFor } from "./voice.js";
 import { recordingFileFor } from "./recordings.js";
-import { writeCallIntoThread, noteOnTask, tellTheOwner } from "./postcall.js";
+import { writeCallIntoThread, noteOnTask, tellTheOwner, noteThirdPartyTurns } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
 import { thirdPartyIdentity, callIdentityFor, NO_NAME } from "./voice-prompt.js";
+import * as hold from "./hold.js";
+import * as callOutcome from "./outcome.js";
 import { makerLine } from "../maker.js";
+import { announcementFor } from "./provider.js";
 import { openingLineFor, recordingNoteFor, whoseCallIsThis, strangerIntake, overCallCap } from "./inbound.js";
 import * as strangerCall from "./stranger.js";
 import * as strangerCalls from "../strangercalls.js";
@@ -42,6 +45,7 @@ export const PROVIDER = "gptlive";
 export const STREAM_PATH = "/calls/gptlive/stream/";
 export const STATUS_PATH = "/calls/gptlive/status/";
 export const INBOUND_PATH = "/calls/gptlive/inbound";
+export const AMD_PATH = "/calls/gptlive/amd/";
 const LIVE_URL = "wss://api.openai.com/v1/live/sessions";
 /** $0.05 a minute for the voice layer (developers.openai.com/api/docs/models/gpt-live-1, 2026-10-31). */
 export const CENTS_PER_MINUTE = 5;
@@ -57,8 +61,25 @@ export function gptliveMode(v = config.callVoice) {
   return ["gptlive", "on", "everyone", "1", "true", "yes"].includes(s) ? "everyone" : "";
 }
 
+/** REASON_THIRD_PARTY_VOICE read, the same way: calls to businesses and other people (phase 3). */
+export const thirdPartyMode = (v = config.thirdPartyVoice) => gptliveMode(v);
+
 /** Is any GPT-Live route listened for at all? */
-export const gptliveOn = () => gptliveMode() !== "";
+export const gptliveOn = () => gptliveMode() !== "" || thirdPartyMode() !== "";
+
+/**
+ * Is GPT-Live the voice for the calls this account's Reason makes to OTHER people — a business, a
+ * receptionist, a place ringing back (Omari, 2026-10-31: phase 3)? Everyone's on "gptlive"; the
+ * operator's only on "owner", so his errands prove it first.
+ */
+export function thirdPartyVoiceFor(conversationId) {
+  const mode = thirdPartyMode();
+  if (!mode || !conversationId) return false;
+  try {
+    const me = accounts.ownerOf(conversationId);
+    return mode === "everyone" ? me?.known === true : me?.isOperator === true;
+  } catch { return false; }
+}
 
 /**
  * Is GPT-Live the voice for this account's own calls? Everyone with an account on "everyone"; only the
@@ -167,13 +188,50 @@ export function strangerInstructions() {
   ].join("\n");
 }
 
+/**
+ * The voice's instructions on a call Reason makes to somebody else — a business, a receptionist, a phone
+ * menu (phase 3, 2026-10-31). Here the voice never decides anything, not even when to speak: Reason's
+ * call turn hears every word on the line (the third-party context: brief, rules, hold, menus, machines,
+ * the commit gate) and hands over the exact words to say, and code drops any audio it did not ask for
+ * (`GptLiveCall#gateOpen`). So the line opens silent, a menu or hold music hears nothing, and the
+ * recorded-call disclosure is said word for word.
+ */
+export function lineInstructions({ name = "them", named = name !== "them", identity = false } = {}) {
+  const them = named ? name : "the person you work for";
+  return [
+    `You are the voice of Reason, an AI assistant, on a phone call Reason is making for ${them} to a business or another person.`,
+    ...(identity ? [thirdPartyIdentity({ ownerName: them })] : []),
+    makerLine(),
+    "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.",
+    "You are only the voice, and on this call you never speak on your own. Reason listens to the line and decides everything: whether anybody is there, when to press a key, when to wait on hold, and every word that is said.",
+    "Hand everything the other side says to Reason, and wait in silence: no acknowledgement, no greeting and no answer of your own.",
+    "When Reason's result arrives, it is the exact words for the line: say it word for word and in full, then stop and listen. If there is no result, say nothing.",
+    "Only Reason's words are played down the line; nothing you say on your own is ever heard by them. So say every result in full as a fresh reply, even if you think you already said some of it.",
+    "Never greet first, never fill a silence, never talk to a recording, a phone menu, hold music or a voicemail greeting, and never say that you are waiting.",
+    "Never say anything is done, booked, sent, ordered, paid, scheduled, cancelled or confirmed unless those are the words you were given.",
+    "Never read out links, codes, IDs or anything in square brackets, and never say the words NO_REPLY.",
+    "Stop speaking when they talk over you, and listen.",
+  ].join("\n");
+}
+
+/**
+ * The disclosure a GPT-Live third-party call opens with: the ElevenLabs path's own line
+ * (`announcementFor` in ./provider.js), naming Reason and the person by first name — "this is Reason,
+ * an AI assistant calling for Omari. Just so you know, this call is recorded."
+ */
+export function lineAnnouncement(ann) {
+  return String(ann ?? "").replace(/this is an AI assistant calling for ([^.]+)\./,
+    (_, who) => `this is Reason, an AI assistant calling for ${who.trim().split(/\s+/)[0]}.`);
+}
+
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, identity = false, greeting = "", instructions = "" } = {}) {
+export function sessionConfig({ name, named, owner = false, identity = false, greeting = "", instructions = "", line = false } = {}) {
   const session = {
     model: config.gptliveModel,
     instructions: instructions || liveInstructions({ name, named, owner, identity }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
-    delegation: { type: "client" },
+    // A line call: room to cancel the voice's automatic "one moment" before it is generated.
+    delegation: line ? { type: "client", acknowledgement_delay_ms: 800 } : { type: "client" },
   };
   if (greeting) {
     session.input = [{ type: "message", role: "developer", content: [{ type: "input_text", text: greetingInstruction(greeting) }] }];
@@ -257,7 +315,14 @@ export async function readTurn(stream) {
     try { args = JSON.parse(end.args || "{}"); } catch { /* no args is a plain hang-up */ }
     endCall = { message: withoutSilenceMarker(String(args.message ?? "")).text.trim() };
   }
-  return { text, tools: names, endCall, skip: !text && names.includes("skip_turn") };
+  // Every platform tool with its arguments, for a call whose voice carries them out itself: a key press
+  // (`dtmf_tones`) or a hand-over on a third-party line (see `GptLiveCall#act`).
+  const calls = [...tools.values()].filter(t => t.name).map(t => {
+    let args = {};
+    try { args = JSON.parse(t.args || "{}"); } catch { /* no args */ }
+    return { name: t.name, args: args && typeof args === "object" ? args : {} };
+  });
+  return { text, tools: names, calls, endCall, skip: !text && names.includes("skip_turn") };
 }
 
 // ---------- reading the end of a call ----------
@@ -570,13 +635,59 @@ export function dropWarm(callId, why) {
  * `openLive` and `brain` are injected so the suite can run a call with no network: `brain(messages)`
  * resolves `{ text, tools, endCall, skip }` (see `readTurn`).
  */
+// A line call's timings. Words heard are handed to Reason once their side has paused for
+// LINE_QUIET_MS (a line that never pauses, LINE_MAX_WAIT_MS after it started). The gate lets the
+// voice's audio out until its speech has been quiet LINE_GATE_QUIET_MS.
+export const LINE_QUIET_MS = 1000;
+export const LINE_MAX_WAIT_MS = 8000;
+export const LINE_GATE_QUIET_MS = 1500;
+export const LINE_GATE_MAX_MS = 30_000;
+/** How long the gate waits for the words' ack before it lets the voice through anyway. */
+export const LINE_ACK_WAIT_MS = 2500;
+/** The voice counts as mid-speech (of its own) when it spoke within this long. */
+export const LINE_BUSY_MS = 600;
+/** How often hold is checked against its budget, and how long a line with nobody on it is kept. */
+export const LINE_HOLD_TICK_MS = 15_000;
+export const LINE_SILENT_MS = 45_000;
+/** Twilio's async AMD gives up after 30 s by default; a voicemail waits for its beep up to 20 s. */
+export const LINE_AMD_WAIT_MS = 30_000;
+export const LINE_VOICEMAIL_WAIT_MS = 20_000;
+/** A key press re-opens the stream; a stream not back in this long is a lost call. */
+export const LINE_REJOIN_MS = 20_000;
+const AMD_NOTE = "Twilio's answering-machine check says a machine took this call and its greeting has just ended."
+  + " If it was a voicemail greeting, call machine_on_the_line with what \"voicemail_greeting\" and do what it says."
+  + " If it was a phone menu, a recording or hold, carry on exactly as you would.";
+const LINE_STOP_OWN = "Stop speaking now and say nothing of your own. Nothing you said on your own reached the other side; Reason's exact words for them come next — say all of them.";
+const AMD_BEEP_NOTE = "The voicemail greeting has ended at the beep: leave the message now, or hang up, as you were told.";
+
+/** The TwiML for a key press: the digits (after a short pause), then the stream again, to the same call. */
+export function pressTwiml(digits, row, base = config.publicUrl) {
+  const wss = String(base).replace(/^http/, "ws").replace(/\/+$/, "");
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Play digits="${xml(`w${digits}`)}"/><Connect><Stream url="${xml(`${wss}${STREAM_PATH}${row.webhook_token}`)}"/></Connect></Response>`;
+}
+
+/** What a place ringing back hears first: the disclosure, word for word, then what it is about. */
+export function ringBackLine(row) {
+  const about = String(row.goal ?? "").replace(/^They are ringing back about:\s*/, "").trim();
+  const ann = String(row.announcement ?? "").trim();
+  return about ? `${ann} You're calling back about ${about} — thanks for ringing back.` : ann;
+}
+
 export class GptLiveCall {
-  constructor({ call, twilio, openLive = openLiveSocket, warm = null, brain = null, judge = null, log = () => {}, now = () => Date.now(), finish = async () => {}, timers = globalThis, persona = null }) {
+  constructor({ call, twilio, openLive = openLiveSocket, warm = null, brain = null, judge = null, log = () => {}, now = () => Date.now(), finish = async () => {}, timers = globalThis, persona = null, twilioApi = null }) {
     this.call = call;
     // A call with no account and no call row (a stranger on the line): its own instructions and
-    // greeting, nothing written to any conversation, no audio kept (`strangerStream`).
+    // greeting, nothing written to any conversation, its audio kept on its stranger row (`strangerStream`).
     this.persona = persona;
-    this.twilio = twilio;
+    // A call Reason makes to somebody else, or a place ringing back about one (phase 3): the LINE
+    // drives every turn and the voice only says the words it is handed (`lineTurn`, `gateOpen`).
+    this.line = !persona && Number(call.is_owner) !== 1;
+    this.twilioApi = twilioApi ?? ((path, form) => twilioPost(path, form));
+    this.lineN = 0;
+    this.lastLineTurnAt = 0;
+    this.gate = null;
+    this.gateClosedAt = 0;
+    this.dropped = 0;
     this.openLive = openLive;
     this.warm = warm;
     this.brain = brain ?? ((messages) => reasonTurn({ call, messages, log }));
@@ -593,12 +704,18 @@ export class GptLiveCall {
     this.finishCall = finish;
     this.timers = timers;
     this.who = persona ? { name: "them", named: false, owner: false, identity: false, instructions: persona.instructions } : whoFor(call);
+    if (this.line) this.who = { ...this.who, instructions: lineInstructions(this.who) };
     this.name = this.who.name;
+    // A third-party call Reason placed opens SILENT (#232): nothing until their side has spoken, and the
+    // disclosure then comes from Reason's own turn. A place ringing back hears it at once (it rang us).
     this.greeting = persona ? persona.greeting
-      : call.direction === "in"
-        ? openingLineFor({ person: accounts.ownerOf(call.conversation_id), conversationId: call.conversation_id })
-        : String(call.announcement ?? "");
-    this.turns = this.greeting ? [{ who: "reason", text: this.greeting, at: now(), seeded: true }] : [];
+      : this.line
+        ? call.direction === "in" ? ringBackLine(call) : ""
+        : call.direction === "in"
+          ? openingLineFor({ person: accounts.ownerOf(call.conversation_id), conversationId: call.conversation_id })
+          : String(call.announcement ?? "");
+    // On a line call the greeting is not seeded: what was said comes from what was really played.
+    this.turns = this.greeting && !this.line ? [{ who: "reason", text: this.greeting, at: now(), seeded: true }] : [];
     this.tape = new CallTape();
     this.pending = new Map();
     this.delegations = 0;
@@ -621,8 +738,23 @@ export class GptLiveCall {
     this.started = false;
     this.streamSid = null;
     this.startedAt = now();
-    twilio.onMessage((text) => this.fromTwilio(text));
-    twilio.onClose(() => { this.end("caller hung up").catch(() => {}); });
+    this.attach(twilio);
+  }
+
+  /**
+   * Listen to one Twilio stream. A key press re-opens the stream (Twilio plays the digits, then
+   * connects a NEW stream, `press`), so the old socket going away mid-press is not the call ending,
+   * and anything the old one still says once the new one is up is ignored.
+   */
+  attach(socket) {
+    this.twilio = socket;
+    socket.onMessage((text) => { if (this.twilio === socket) this.fromTwilio(text); });
+    socket.onClose(() => { if (this.twilio === socket && !this.rejoining) this.end("caller hung up").catch(() => {}); });
+  }
+
+  /** The call row as the database has it now (Reason's turns write hold, machine and press state onto it). */
+  freshRow() {
+    try { return db.getCall(this.call.conversation_id, this.call.id) ?? this.call; } catch { return this.call; }
   }
 
   // --- Twilio side ---
@@ -632,7 +764,15 @@ export class GptLiveCall {
     try { m = JSON.parse(text); } catch { return; }
     if (m.event === "start") {
       this.streamSid = m.start?.streamSid ?? m.streamSid ?? null;
-      this.callSid = m.start?.callSid ?? "";
+      this.callSid = m.start?.callSid ?? this.callSid ?? "";
+      if (this.live) {
+        // The stream back after a key press: the same voice session carries on.
+        this.playheadAt = this.now();
+        if (this.rejoining) this.log({ gptlive_keypad_rejoined: this.call.id, ms: this.now() - this.rejoining.at });
+        this.rejoining = null;
+        if (this.rejoinTimer) this.timers.clearTimeout(this.rejoinTimer);
+        return;
+      }
       this.streamStartAt = this.now();
       this.log({ gptlive_stream_start: this.call.id, sid: this.callSid });
       this.connect();
@@ -647,7 +787,7 @@ export class GptLiveCall {
       }
       if (this.started) this.live.send({ type: "session.input_audio.append", audio: m.media.payload });
     } else if (m.event === "stop") {
-      this.end("caller hung up").catch(() => {});
+      if (!this.rejoining) this.end("caller hung up").catch(() => {});
     }
   }
 
@@ -676,7 +816,7 @@ export class GptLiveCall {
     if (w && !w.closed && !w.call) return this.adopt(w);
     this.live = this.openLive();
     this.live.on("open", () => {
-      this.live.send({ type: "session.start", event_id: `start_${this.call.id}`, session: sessionConfig({ ...this.who, greeting: this.greeting }) });
+      this.live.send({ type: "session.start", event_id: `start_${this.call.id}`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line }) });
     });
     this.live.on("event", (e) => this.fromLive(e));
     this.live.on("close", (code) => this.liveClosed(code));
@@ -708,6 +848,7 @@ export class GptLiveCall {
     this.sessionId = sessionId ?? "";
     this.log({ gptlive_session: this.call.id, session: this.sessionId, warm: !!this.adopted });
     if (!this.persona) try { db.updateCall(this.call.conversation_id, this.call.id, { tts_model: `${config.gptliveModel}/${config.gptliveVoice}` }); } catch { /* a label never breaks a call */ }
+    if (this.line) return this.lineStarted();
     if (greet && this.greeting) this.live.send({ type: "session.commentary.append", event_id: `greet_${this.call.id}`, delegation_id: null, content: greetingInstruction(this.greeting) });
   }
 
@@ -726,6 +867,9 @@ export class GptLiveCall {
         return void this.delegate(e.delegation?.id).catch((err) => this.log({ gptlive_delegation_failed: this.call.id, why: (err?.message ?? String(err)).split("\n")[0] }));
       case "session.instructions.appended":
         if (this.mute && e.client_event_id === this.mute.eventId) this.mute.acked = true;
+        return;
+      case "session.commentary.appended":
+        if (this.gate && e.client_event_id === this.gate.eventId) this.gate.acked = true;
         return;
       case "session.usage.updated":
         if (Number.isFinite(e.usage?.seconds)) this.seconds = e.usage.seconds;
@@ -756,6 +900,12 @@ export class GptLiveCall {
         return;
       }
     }
+    // A line call: only the words Reason handed over reach the line; the voice's own are dropped.
+    if (this.line) {
+      const open = this.gateOpen(t, b64);
+      if (hasSpeech(b64)) this.rawSpeechAt = t;
+      if (!open) { this.dropped++; return; }
+    }
     const buf = Buffer.from(b64, "base64");
     if (this.firstVoiceMs == null && this.streamStartAt != null && hasSpeech(b64)) {
       // How long the person who picked up waited for Reason's first word (call 53: 3.1 s).
@@ -780,6 +930,8 @@ export class GptLiveCall {
 
   textOut(delta) {
     const t = this.now();
+    // Words of audio that never reached the line were never said (a line call's gate was shut).
+    if (this.line && (this.gate ? !this.gate.acked : t - this.gateClosedAt > 1500)) return;
     if (t - this.lastOutTextAt > 1500) this.utter = "";
     this.lastOutTextAt = t;
     this.utter += delta;
@@ -824,6 +976,7 @@ export class GptLiveCall {
     if (last && last.who === "them" && t - last.at < 4000) { last.text += delta; last.at = t; }
     else this.turns.push({ who: "them", text: delta.trimStart(), at: t, from: t });
     // Words while a goodbye hang-up waits: hold it, and read the end again with them in it.
+    if (this.line && delta.trim()) this.lineHeard();
     if (this.ending && this.endWhy === "goodbye" && !this.done && delta.trim()) {
       this.endHeld = true;
       void this.readGoodbye();
@@ -852,6 +1005,14 @@ export class GptLiveCall {
 
   async delegate(id) {
     if (!id) return;
+    if (this.line) {
+      // On a line call Reason's turn is started by the line itself (`lineTurn`), not by this hand-off;
+      // the hand-off is kept open, its automatic acknowledgement cancelled (an empty quiet update, per
+      // the docs), and the next words Reason has for the line are its result.
+      this.live.send({ type: "session.thinking.append", event_id: `quiet_${id}`, delegation_id: id, content: "" });
+      this.openDelegation = id;
+      return;
+    }
     this.delegations++;
     const turn = { id, startedAt: this.now(), msgCount: 0, firstAudioMs: null, firstRealMs: null, resultAt: null };
     this.pending.set(id, turn);
@@ -958,7 +1119,7 @@ export class GptLiveCall {
       const t = this.now();
       const quiet = why === "goodbye"
         ? t - this.lastVoiceAt > 1000 && t >= this.voiceEndsAt + 500
-        : t - this.lastOutAt > 1500 && this.queuedMs() === 0;
+        : t - this.lastOutAt > 1500 && this.queuedMs() === 0 && !(this.gate && !this.gate.heard) && !this.pendingSay;
       const held = why === "goodbye" && (this.endHeld || t - this.lastCallerAt < 1000);
       const minMs = why === "goodbye" ? 0 : 2500;
       if (!held && ((quiet && t - started >= minMs) || t - started > 15000)) return void this.end(why).catch(() => {});
@@ -987,6 +1148,307 @@ export class GptLiveCall {
     return cut ? { words: late.slice(0, 200) } : null;
   }
 
+  // --- a line call: a business, a menu, hold, a mailbox (phase 3) ---
+
+  /** The session is up on a line call: a ring-back hears the disclosure; a call Reason placed waits. */
+  lineStarted() {
+    if (this.greeting) {
+      this.speakLine(this.greeting);
+      this.turns.push({ who: "reason", text: this.greeting, at: this.now(), from: this.now(), seeded: true });
+    }
+    this.holdTimer = this.timers.setTimeout(() => this.holdTick(), LINE_HOLD_TICK_MS);
+    if (this.amdLater) { const v = this.amdLater; this.amdLater = null; this.amd(v); }
+  }
+
+  /**
+   * Is this frame of the voice's audio allowed onto the line? Only while words Reason handed over are
+   * being said: from `speakLine` until their speech has been quiet a moment (or a ceiling, so a lost
+   * instruction never leaves the line open to whatever the voice says next).
+   */
+  gateOpen(t, b64) {
+    const g = this.gate;
+    if (!g) return false;
+    // Not before the words have reached the model (its ack): until then the audio is whatever the voice
+    // was already saying on its own (2026-10-31 drive: its own "…make a reservation" ran into the line).
+    if (!g.acked) {
+      if (t - g.since < LINE_ACK_WAIT_MS) return false;
+      g.acked = true;
+    }
+    // Quiet long enough since its last word (read before this frame counts) and it has said its piece.
+    const over = (g.heard && t - g.lastSpeech > LINE_GATE_QUIET_MS) || t - g.since > LINE_GATE_MAX_MS;
+    if (over) { this.gate = null; this.gateClosedAt = t; return false; }
+    if (hasSpeech(b64)) { g.heard = true; g.lastSpeech = t; }
+    return true;
+  }
+
+  /**
+   * Have the voice say these words down the line: as the result of its open hand-off when it made one
+   * (the path every own call's answers take), else as a speakable update; its instructions say a
+   * result is the exact words. A bare instruction was not spoken at all (2026-10-31 drive).
+   */
+  speakLine(text) {
+    const t = this.now();
+    // Mid-way through something of its own (never played): stopped first, and told nobody heard it,
+    // then handed the words once it is quiet. Handed them while it talked, it ran them into its own
+    // sentence and left out the disclosure it thought it had said (2026-10-31 drive).
+    if (t - (this.rawSpeechAt ?? -Infinity) < LINE_BUSY_MS) {
+      this.speakN = (this.speakN ?? 0) + 1;
+      this.live.send({ type: "session.instructions.append", event_id: `stop_${this.call.id}_${this.speakN}`, delegation_id: null, content: LINE_STOP_OWN });
+      this.pendingSay = { text, at: t };
+      const tick = () => {
+        if (this.done || !this.pendingSay) return;
+        const now = this.now();
+        const quiet = now - (this.rawSpeechAt ?? -Infinity) >= LINE_BUSY_MS;
+        if (quiet || now - this.pendingSay.at > LINE_ACK_WAIT_MS) {
+          const say = this.pendingSay.text;
+          this.pendingSay = null;
+          return this.sayNow(say, { quiet });
+        }
+        this.timers.setTimeout(tick, 100);
+      };
+      this.timers.setTimeout(tick, 100);
+      this.log({ gptlive_line_stopped_own: this.call.id });
+      return;
+    }
+    this.sayNow(text, { quiet: true });
+  }
+
+  sayNow(text, { quiet }) {
+    const t = this.now();
+    this.speakN = (this.speakN ?? 0) + 1;
+    const eventId = `say_${this.call.id}_${this.speakN}`;
+    const delegationId = this.openDelegation ?? null;
+    this.openDelegation = null;
+    // The voice quiet: its next speech is these words, let through from the first frame. Still talking:
+    // held until the words are in (their ack), so its own tail stays off the line.
+    this.gate = { since: t, heard: false, lastSpeech: t, acked: quiet, eventId };
+    this.live.send({ type: "session.commentary.append", event_id: eventId, delegation_id: delegationId, content: String(text) });
+    this.log({ gptlive_line_said: this.call.id, chars: String(text).length, on_delegation: !!delegationId });
+  }
+
+  /**
+   * Their side said something. Reason's call turn runs once they pause (or, on a line that never
+   * pauses, a few seconds in): every utterance on a line call goes to Reason, which is how a menu gets
+   * a key press, hold music a wait, and a person the disclosure — the voice is never the one to judge.
+   */
+  lineHeard() {
+    const t = this.now();
+    this.lineHeardFrom ??= t;
+    if (this.lineTimer) this.timers.clearTimeout(this.lineTimer);
+    const wait = Math.max(0, Math.min(LINE_QUIET_MS, this.lineHeardFrom + LINE_MAX_WAIT_MS - t));
+    this.lineTimer = this.timers.setTimeout(() => {
+      this.lineTimer = null;
+      this.lineHeardFrom = null;
+      void this.lineTurn("heard").catch((e) => this.log({ gptlive_line_turn_failed: this.call.id, why: (e?.message ?? String(e)).split("\n")[0] }));
+    }, wait);
+  }
+
+  /**
+   * One Reason call turn for the line, the same turn ElevenLabs' custom-LLM requests run (third-party
+   * context, brief, commit gate, hold, menus, machines — all written onto the row by that turn), and
+   * then what it asked for carried out here: words said, a key pressed, a wait, a hang-up.
+   *
+   * One at a time. Words heard while a turn runs do not start another: the answer that comes back is
+   * said (it answers them too, as a re-ask joins a running turn, #275); if nothing was said — a wait, a
+   * key — the line is read again with the new words in it.
+   */
+  async lineTurn(why, { note = "" } = {}) {
+    if (this.done || (this.ending && why !== "amd")) return;
+    if (this.pending.size) { this.lineAgain = true; return; }
+    const id = `line_${this.call.id}_${++this.lineN}`;
+    this.delegations++;
+    const turn = { id, startedAt: this.now(), msgCount: 0, firstAudioMs: null, firstRealMs: null, resultAt: null };
+    this.pending.set(id, turn);
+    this.latest = id;
+    this.lastResultClaimed = false;
+    this.lastLineTurnAt = turn.startedAt;
+    const messages = this.messages();
+    if (note) {
+      if (messages.at(-1)?.role === "user") messages.at(-1).content += ` ${note}`;
+      else messages.push({ role: "user", content: note });
+    }
+    turn.msgCount = messages.length;
+    this.log({ gptlive_line_turn: this.call.id, n: this.lineN, why, messages: messages.length });
+    let reply;
+    try {
+      reply = await this.brain(messages);
+    } catch (e) {
+      reply = { text: "", tools: [], calls: [], endCall: null, skip: true, error: (e?.message ?? String(e)).split("\n")[0] };
+    }
+    this.pending.delete(id);
+    if (this.done) return;
+    turn.resultAt = this.now();
+    turn.totalMs = turn.resultAt - turn.startedAt;
+    const spoke = await this.act(reply, turn);
+    const again = this.lineAgain;
+    this.lineAgain = false;
+    const amdNote = this.amdNote;
+    this.amdNote = null;
+    if (this.ending || this.done || this.heldVoicemail) return;
+    if (amdNote && !spoke) void this.lineTurn("amd", { note: `[${amdNote}]` });
+    else if (again && !spoke) void this.lineTurn("heard while busy");
+  }
+
+  /** Carry out one call turn's answer on the line. True when words were (or will be) said. */
+  async act(reply, turn) {
+    const calls = reply.calls ?? [];
+    const transfer = calls.find(c => c.name === "transfer_to_number");
+    const spoken = [reply.text, reply.endCall?.message, transfer?.args?.client_message].filter(Boolean).join(" ").trim();
+    this.log({ gptlive_result: this.call.id, ms: turn.totalMs, chars: spoken.length, tools: reply.tools ?? [], ends: !!reply.endCall, line: true, ...(reply.error ? { error: reply.error } : {}) });
+    const press = calls.find(c => c.name === "play_keypad_touch_tone");
+    // A key pressed answers the menu as it was heard: what it says next starts the next turn, not
+    // the same menu read again (2026-10-31 drive: a follow-up turn pressed 1 a second time).
+    const pressed = press ? await this.press(String(press.args?.dtmf_tones ?? "")) : false;
+    if (!spoken) {
+      this.heard(turn);
+      if (reply.endCall) this.hangUpAfterSpeech();
+      return pressed;
+    }
+    // A voicemail, before the machine has finished its greeting: kept until the beep (Twilio's
+    // answering-machine verdict), so the message goes onto the tape instead of over the greeting.
+    if (reply.endCall && callOutcome.reachedMachine(this.freshRow()) && this.amdPending()) {
+      this.heldVoicemail = { spoken, turn };
+      this.vmTimer = this.timers.setTimeout(() => this.releaseVoicemail("no beep heard"), LINE_VOICEMAIL_WAIT_MS);
+      this.log({ gptlive_voicemail_waits_for_beep: this.call.id });
+      return true;
+    }
+    this.sayResult(spoken, turn);
+    if (transfer) this.handOff(transfer.args ?? {});
+    else if (reply.endCall) this.hangUpAfterSpeech();
+    return true;
+  }
+
+  sayResult(spoken, turn) {
+    this.lastResultClaimed = claimsDone(spoken);
+    this.lastResultAt = this.now();
+    this.speakLine(spoken.slice(0, 1800));
+    (this.answered ??= []).push(turn);
+  }
+
+  releaseVoicemail(why) {
+    const held = this.heldVoicemail;
+    if (!held || this.done) return;
+    this.heldVoicemail = null;
+    if (this.vmTimer) this.timers.clearTimeout(this.vmTimer);
+    this.log({ gptlive_voicemail_left: this.call.id, why });
+    this.sayResult(held.spoken, held.turn);
+    this.hangUpAfterSpeech();
+  }
+
+  /** Still waiting on Twilio's answering-machine verdict for a call Reason placed? */
+  amdPending() {
+    return this.call.direction !== "in" && !this.amdVerdict && this.now() - (this.streamStartAt ?? this.startedAt) < LINE_AMD_WAIT_MS;
+  }
+
+  /**
+   * Twilio's answering-machine verdict (async AMD, `DetectMessageEnd`): a machine's greeting has ended
+   * at the beep. A voicemail already written is said now; otherwise the machine is written down the
+   * way Reason's own `voicemail_detection` does (`hold.noteMachine`: no message yet) and Reason's turn
+   * decides — one short message, or none when a message would do nothing for the errand — under the
+   * rules it already has. A person (or "unknown") changes nothing; a fax is hung up on.
+   */
+  amd(answeredBy) {
+    const v = String(answeredBy ?? "");
+    this.amdVerdict = v || "unknown";
+    if (!this.started) { this.amdLater = v; return; }
+    if (this.done) return;
+    this.log({ gptlive_amd: this.call.id, answered_by: this.amdVerdict });
+    if (v === "fax") {
+      hold.noteMachineLine(this.freshRow(), { what: "mailbox_not_taking_messages", deadEnd: true, heard: "a fax machine answered", log: this.log });
+      return void this.end("a fax machine answered").catch(() => {});
+    }
+    if (!v.startsWith("machine_end")) return;
+    if (this.heldVoicemail) return this.releaseVoicemail("beep");
+    if (this.ending) return;
+    // A phone menu or a recording also reads as "a machine" to Twilio, so the verdict is a fact for
+    // Reason's own turn, not a decision: its rules tell a mailbox from a menu (machine_on_the_line),
+    // and a mailbox gets the message (or none) as on ElevenLabs. Already a voicemail: just the cue.
+    const note = callOutcome.reachedMachine(this.freshRow()) ? AMD_BEEP_NOTE : AMD_NOTE;
+    if (this.pending.size) { this.amdNote = note; return; }
+    void this.lineTurn("amd", { note: `[${note}]` });
+  }
+
+  /**
+   * Press keys on the far end's phone menu. Twilio cannot send tones down a media stream, so the call is
+   * told to play the digits and then connect a fresh stream to this same call (`acceptStream` hands it
+   * back here); the voice session carries on across it, and is told what was pressed.
+   */
+  async press(tones) {
+    const digits = String(tones ?? "").toLowerCase().replace(/[^0-9*#w]/g, "").slice(0, 32);
+    if (!digits || !this.callSid || this.done) return false;
+    this.rejoining = { at: this.now(), digits };
+    let out;
+    try {
+      out = await this.twilioApi(`/Calls/${encodeURIComponent(this.callSid)}.json`, { Twiml: pressTwiml(digits, this.call) });
+    } catch (e) {
+      out = { ok: false, status: 0, json: { message: (e?.message ?? String(e)).split("\n")[0] } };
+    }
+    if (!out?.ok) {
+      this.rejoining = null;
+      this.log({ gptlive_keypad_failed: this.call.id, status: out?.status ?? 0 });
+      return false;
+    }
+    this.log({ gptlive_keypad: this.call.id, digits: hold.tonesForLog(digits) });
+    this.live.send({ type: "session.thinking.append", event_id: `keys_${this.call.id}_${this.lineN}`, delegation_id: null, content: `Reason pressed ${digits.replace(/w/g, "")} on the keypad. Say nothing about it; listen to what the line says next.` });
+    if (this.rejoinTimer) this.timers.clearTimeout(this.rejoinTimer);
+    this.rejoinTimer = this.timers.setTimeout(() => {
+      if (!this.rejoining) return;
+      this.rejoining = null;
+      this.log({ gptlive_keypad_lost: this.call.id });
+      this.end("the line did not come back after a key press").catch(() => {});
+    }, LINE_REJOIN_MS);
+    return true;
+  }
+
+  /** A new Twilio stream for this call, after a key press. */
+  rejoin(socket) {
+    this.attach(socket);
+    this.log({ gptlive_keypad_stream: this.call.id });
+  }
+
+  /**
+   * Hand the call to the person it is for (`transfer_to_number`, already checked by Reason's turn —
+   * `handOver` in ./voice.js): once the words are said, Twilio dials them and Reason leaves the line.
+   */
+  handOff(args) {
+    const to = normalizeNumber(String(args?.transfer_number ?? args?.phone_number ?? args?.number ?? ""));
+    if (!to || !/^\+\d{8,15}$/.test(to)) { this.log({ gptlive_transfer_refused: this.call.id }); return; }
+    const started = this.now();
+    const tick = () => {
+      if (this.done) return;
+      const t = this.now();
+      if ((t - this.lastOutAt > 1500 && this.queuedMs() === 0 && !(this.gate && !this.gate.heard) && !this.pendingSay) || t - started > 15000) {
+        this.endWhy = "transfer_to_number";
+        void this.twilioApi(`/Calls/${encodeURIComponent(this.callSid)}.json`, { Twiml: `<?xml version="1.0" encoding="UTF-8"?><Response><Dial>${xml(to)}</Dial></Response>` })
+          .then((out) => this.log({ gptlive_transfer: this.call.id, ok: !!out?.ok }))
+          .catch(() => this.log({ gptlive_transfer: this.call.id, ok: false }));
+        return;
+      }
+      this.timers.setTimeout(tick, 250);
+    };
+    this.timers.setTimeout(tick, 250);
+  }
+
+  /**
+   * On hold, nothing is said and nothing is asked: Reason's `skip_turn` started the clock (hold_since)
+   * and its budget is the call's (hold_budget_s). Hold music may never produce a word, so code checks
+   * the clock; once the budget is gone, Reason's turn is asked once more, and its own wait rule
+   * (`hold.noteWaiting`) says the polite line and rings off — outcome `hold_gave_up`, as on ElevenLabs.
+   * A person coming back is just words on the line, and the next turn takes the call off hold.
+   */
+  holdTick() {
+    this.holdTimer = null;
+    if (this.done) return;
+    const t = this.now();
+    const row = this.freshRow();
+    const quietLine = !this.turns.some(x => x.who === "them") && t - (this.streamStartAt ?? this.startedAt) > LINE_SILENT_MS;
+    if (quietLine && !this.pending.size && !this.ending) return void this.end("nobody said anything on the line").catch(() => {});
+    if (hold.onHold(row) && hold.holdLeft(row) <= 0 && !this.pending.size && !this.lineTimer && !this.ending) {
+      void this.lineTurn("hold budget", { note: "[Still on hold; nobody has come back.]" });
+    }
+    this.holdTimer = this.timers.setTimeout(() => this.holdTick(), LINE_HOLD_TICK_MS);
+  }
+
   // --- the end ---
 
   async end(why) {
@@ -996,6 +1458,7 @@ export class GptLiveCall {
     this.endWhy = this.endWhy || why;
     if (this.capTimer) this.timers.clearTimeout(this.capTimer);
     if (this.byeTimer) this.timers.clearTimeout(this.byeTimer);
+    for (const k of ["lineTimer", "holdTimer", "rejoinTimer", "vmTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
     for (const turn of [...this.pending.values(), ...(this.answered ?? [])]) this.heard(turn);
     // Their usage arrives on session.closed; wait for it briefly, then let go either way.
     if (this.live && this.started) {
@@ -1014,9 +1477,11 @@ export class GptLiveCall {
     let recording = null;
     let recordingWhy = "";
     try {
-      if (this.persona) recordingWhy = "a caller with no account: their words are kept, not the audio";
+      // A caller with no account is told the call is recorded, so it is (2026-10-31): onto their
+      // stranger row, under the same retention as their words (src/strangercalls.js).
+      if (this.persona && !this.persona.recordingPath) recordingWhy = "a caller with no account and no row to keep it on";
       else if (this.tape.seconds() >= 1) {
-        const path = recordingFileFor(this.call.id, "wav");
+        const path = this.persona ? this.persona.recordingPath : recordingFileFor(this.call.id, "wav");
         writeFileSync(path, this.tape.wav(), { mode: 0o600 });
         recording = { path, format: "wav", seconds: Math.round(this.tape.seconds()) };
       } else recordingWhy = "the line carried less than a second of audio";
@@ -1034,7 +1499,7 @@ export class GptLiveCall {
       costRaw: JSON.stringify({ voice_seconds: seconds, cents_per_minute: CENTS_PER_MINUTE, session: this.sessionId ?? "", guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted }),
       recording, recordingWhy,
     };
-    this.log({ gptlive_call_ended: this.call.id, why: this.endWhy, seconds, delegations: this.delegations, guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted, closed: this.closedReason ?? "" });
+    this.log({ gptlive_call_ended: this.call.id, why: this.endWhy, seconds, delegations: this.delegations, guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted, closed: this.closedReason ?? "", ...(this.line ? { line: true, dropped_frames: this.dropped, amd: this.amdVerdict ?? "" } : {}) });
     try { await this.finishCall(live); } catch (e) { this.log({ gptlive_settle_failed: this.call.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
   }
 }
@@ -1061,6 +1526,7 @@ export async function settleGptLive({ row, live, settle, runtime = null, log = (
   // The same marks as the ElevenLabs path: begun with the thread, finished once the owner was told.
   db.updateCall(settled.conversation_id, settled.id, { settle_started_at: clock.now() });
   const wrote = writeCallIntoThread({ row: settled, live, log });
+  noteThirdPartyTurns({ row: settled, live });
   const noted = noteOnTask({ row: settled, live, log });
   fromcall.onCallEnded(settled, { log });
   const told = await tellTheOwner({ row: settled, live, runtime, log });
@@ -1132,11 +1598,19 @@ export function withGptLive(inner, { fetchImpl = null } = {}) {
   if (!gptliveOn() || !inner) return inner;
   const live = new Map();
   const place = async (args) => {
-    if (args?.kind !== "owner" || !gptliveFor(args?.conversationId)) return inner.place(args);
+    const own = args?.kind === "owner" && gptliveFor(args?.conversationId);
+    // Phase 3: a call to a business or another person, behind REASON_THIRD_PARTY_VOICE.
+    const thirdParty = args?.kind === "third_party" && thirdPartyVoiceFor(args?.conversationId);
+    if (!own && !thirdParty) return inner.place(args);
     const missing = missingForGptlive();
     if (missing.length) return inner.place(args);
     const row = db.getCall(args.conversationId, args.callId);
     if (!row?.webhook_token) return inner.place(args);
+    if (thirdParty) {
+      // The disclosure it will open with, naming Reason (the turn says it verbatim off the row).
+      const ann = lineAnnouncement(row.announcement || args.announcement);
+      if (ann && ann !== row.announcement) db.updateCall(row.conversation_id, row.id, { announcement: ann });
+    }
     // No warm-up while it rings (2026-10-31): calls 54–55 with it were "confused and incoherent".
     // The session opens when Twilio's stream starts, as on call 53. `prewarm` stays for a proven rework.
     const out = await twilioPost("/Calls.json", {
@@ -1144,11 +1618,22 @@ export function withGptLive(inner, { fetchImpl = null } = {}) {
       StatusCallback: `${config.publicUrl}${STATUS_PATH}${row.webhook_token}`,
       StatusCallbackEvent: ["initiated", "ringing", "answered", "completed"], StatusCallbackMethod: "POST",
       Timeout: 30,
+      // Twilio's answering-machine detection, in the background: the call connects at once (a person
+      // is never kept waiting) and the verdict arrives on its own webhook once a machine's greeting
+      // has ended at the beep (`amdRequest`).
+      ...(thirdParty ? {
+        MachineDetection: "DetectMessageEnd", AsyncAmd: "true",
+        AsyncAmdStatusCallback: `${config.publicUrl}${AMD_PATH}${row.webhook_token}`, AsyncAmdStatusCallbackMethod: "POST",
+      } : {}),
     }, fetchImpl ? { fetchImpl } : {});
     if (!out.ok || !out.json?.sid) dropWarm(row.id, "Twilio refused the call");
     if (!out.ok || !out.json?.sid) return { ok: false, error: `Twilio refused the call (${out.status}${out.json?.message ? `: ${out.json.message}` : ""})` };
     live.set(out.json.sid, "placing");
-    return { ok: true, externalId: `${EXT}${out.json.sid}`, state: "placing", provider: PROVIDER, ttsModel: `${config.gptliveModel}/${config.gptliveVoice}` };
+    return {
+      ok: true, externalId: `${EXT}${out.json.sid}`, state: "placing", provider: PROVIDER, ttsModel: `${config.gptliveModel}/${config.gptliveVoice}`,
+      // The line opens silent and the disclosure is owed to the first person heard (#232).
+      ...(thirdParty ? { openingWaits: true } : {}),
+    };
   };
   const check = async (externalId) => {
     if (!String(externalId ?? "").startsWith(EXT)) return inner.check(externalId);
@@ -1252,6 +1737,14 @@ function routeInbound({ params, router, log, away }) {
   const twiml = (body) => ({ status: 200, body, type: "text/xml" });
   if (!gptliveOn() || missingForGptlive().length) return twiml(away);
   const callSid = String(params.CallSid ?? "");
+  // A place ringing back about an errand (phase 3, REASON_THIRD_PARTY_VOICE): the third-party line
+  // on GPT-Live, for the errand it is returning. Otherwise ElevenLabs, as before.
+  const from = normalizeNumber(params.From) || "";
+  const back = from && /^\+\d{8,15}$/.test(from) ? whoseCallIsThis(from) : null;
+  if (back?.allow && back.callingBack) {
+    return twiml(thirdPartyVoiceFor(back.conversationId) ? streamTwiml(ringBackRow({ who: back, address: from, callSid, log })) : away);
+  }
+  if (!gptliveMode()) return twiml(away);
   // The operator-only trial (REASON_CALL_VOICE=owner): the operator's own calls, everyone else unchanged.
   if (gptliveMode() !== "everyone") {
     const address = normalizeNumber(params.From) || "";
@@ -1261,8 +1754,12 @@ function routeInbound({ params, router, log, away }) {
   const address = normalizeNumber(params.From) || "";
   // A withheld or unusable caller id: a stranger with nothing to keep.
   if (!address || !/^\+\d{8,15}$/.test(address)) {
+    // Kept on a row of its own (matched to nobody, ever), so the recording it is told about is kept
+    // and goes under the same retention as anybody's.
+    let kept = null;
+    try { kept = strangerCalls.open({ phone: "", withheld: true, externalId: `${EXT}${callSid}` }); } catch { /* kept nothing */ }
     log({ gptlive_inbound_stranger: "withheld" });
-    return twiml(streamTwimlFor(strangerStream({ callSid })));
+    return twiml(streamTwimlFor(strangerStream({ callSid, kept })));
   }
   const who = whoseCallIsThis(address);
   if (!who.allow && ["blocked", "paused", "removed"].includes(who.reason)) {
@@ -1293,6 +1790,26 @@ function routeInbound({ params, router, log, away }) {
   return twiml(streamTwiml(row));
 }
 
+/**
+ * The call row for a place ringing back: the same as ElevenLabs' (`inboundRequest` in ./inbound.js) —
+ * NOT an owner call; the errand's goal, facts, brief, errand and hold budget; the disclosure said first.
+ */
+function ringBackRow({ who, address, callSid, log }) {
+  const about = who.aboutCall;
+  const person = accounts.ownerOf(who.conversationId);
+  const row = db.createCall(who.conversationId, {
+    provider: PROVIDER, toNumber: address, isOwner: false,
+    goal: `They are ringing back about: ${about.goal}`,
+    facts: Array.isArray(about.facts) ? about.facts : [],
+    direction: "in", externalId: `${EXT}${callSid || randomUUID()}`, state: "in_progress",
+    announcement: lineAnnouncement(announcementFor({ ownerName: person.name })),
+  });
+  db.updateCall(who.conversationId, row.id, { brief: about.brief || "{}", errand_id: about.errand_id ?? null, hold_budget_s: about.hold_budget_s ?? null });
+  accounts.countUse(who.conversationId, "call");
+  log({ gptlive_inbound_callback: who.conversationId, call: row.id, about: about.id, errand: about.errand_id ?? null });
+  return db.getCall(who.conversationId, row.id) ?? row;
+}
+
 /** The stream TwiML for a token (a call row's own, or a stranger stream's). */
 function streamTwimlFor(token, base = config.publicUrl) {
   return streamTwiml({ webhook_token: token }, base);
@@ -1305,7 +1822,7 @@ const streams = new Map();
  * Twilio's media stream for one call, upgraded. The token in the path is the call row's own; anything
  * else is closed at once.
  */
-export function acceptStream({ token, socket, settle, runtime, log = () => {}, openLive = openLiveSocket, generate = null }) {
+export function acceptStream({ token, socket, settle, runtime, log = () => {}, openLive = openLiveSocket, generate = null, twilioApi = null }) {
   const stranger = rowless.get(token);
   if (stranger) {
     rowless.delete(token);
@@ -1317,6 +1834,9 @@ export function acceptStream({ token, socket, settle, runtime, log = () => {}, o
     return acceptStrangerStream({ stranger, socket, log, openLive, generate });
   }
   const row = db.callByWebhookToken(token);
+  // The stream back after a key press (`press`): the same call, the same voice session.
+  const going = row ? streams.get(row.id) : null;
+  if (going?.rejoining && !going.done) { going.rejoin(socket); return going; }
   if (!row || row.provider !== PROVIDER || !["placing", "ringing", "in_progress"].includes(row.state) || streams.has(row.id)) {
     log({ gptlive_stream_refused: row?.id ?? null });
     socket.close(1008);
@@ -1324,14 +1844,36 @@ export function acceptStream({ token, socket, settle, runtime, log = () => {}, o
   }
   db.updateCall(row.conversation_id, row.id, { state: "in_progress" });
   const call = new GptLiveCall({
-    call: db.getCall(row.conversation_id, row.id) ?? row, twilio: socket, openLive, log, warm: takeWarm(row.id),
+    call: db.getCall(row.conversation_id, row.id) ?? row, twilio: socket, openLive, log, warm: takeWarm(row.id), twilioApi,
     brain: (messages) => reasonTurn({ call: row, messages, log, extras: runtime?.turnExtras ?? {} }),
     finish: async (live) => {
       try { await settleGptLive({ row, live, settle, runtime, log }); } finally { streams.delete(row.id); }
     },
   });
   streams.set(row.id, call);
+  const early = amdEarly.get(row.id);
+  if (early) { amdEarly.delete(row.id); call.amd(early); }
   return call;
+}
+
+/** AMD verdicts that came in before the call's stream was up, by call id. */
+const amdEarly = new Map();
+
+/** Twilio's async answering-machine verdict for one third-party GPT-Live call (`GptLiveCall#amd`). */
+export async function amdRequest({ token, rawBody, headers, log = () => {} }) {
+  const row = db.callByWebhookToken(token);
+  if (!row || row.provider !== PROVIDER) return { status: 404, body: "" };
+  const params = formOf(rawBody);
+  if (!verifyTwilio({ url: `${config.publicUrl}${AMD_PATH}${token}`, params, headers })) return { status: 403, body: "" };
+  const answeredBy = String(params.AnsweredBy ?? "unknown");
+  log({ gptlive_amd_webhook: row.id, answered_by: answeredBy, ms: Number(params.MachineDetectionDuration) || null });
+  const call = streams.get(row.id);
+  if (call) call.amd(answeredBy);
+  else if (["placing", "ringing", "in_progress"].includes(row.state)) {
+    amdEarly.set(row.id, answeredBy);
+    setTimeout(() => amdEarly.delete(row.id), 120_000).unref?.();
+  }
+  return { status: 204, body: "" };
 }
 
 /**
@@ -1345,7 +1887,8 @@ function acceptStrangerStream({ stranger, socket, log, openLive, generate }) {
   const gen = generate ?? generatorFor();
   return new GptLiveCall({
     call: { id, conversation_id: "", direction: "in", is_owner: 0 }, twilio: socket, openLive, log,
-    persona: { instructions: strangerInstructions(), greeting: strangerCall.introLine() },
+    // The intro says the call is recorded, so the audio is kept, on their stranger row.
+    persona: { instructions: strangerInstructions(), greeting: strangerCall.introLine(), recordingPath: stranger.kept ? strangerCalls.recordingPathFor(stranger.kept.id) : "" },
     brain: async (messages) => {
       const r = await strangerCall.strangerReply({ messages, generate: gen, extra, log });
       return { text: r.text, tools: [], endCall: r.ends ? { message: "" } : null, skip: !r.text && !r.ends };

@@ -637,6 +637,10 @@ export const config = {
   // The line is Twilio Media Streams, so it needs the number's Twilio keys, which live in ElevenLabs
   // and must be copied here by the owner; without them an owner call quietly stays on ElevenLabs.
   callVoice: String(process.env.REASON_CALL_VOICE ?? "").trim().toLowerCase(),
+  // Calls Reason makes to businesses and other people, and places ringing back about them, on GPT-Live
+  // too (phase 3, 2026-10-31): =gptlive (or on) for everyone's errands, =owner for the operator's only.
+  // Unset, those calls are ElevenLabs exactly as before.
+  thirdPartyVoice: String(process.env.REASON_THIRD_PARTY_VOICE ?? "").trim().toLowerCase(),
   gptliveModel: process.env.REASON_GPTLIVE_MODEL || "gpt-live-1",
   // The closest built-in to the ElevenLabs pick (a young adult British woman): Marin, with the accent
   // asked for in the live prompt. There is no British built-in voice.

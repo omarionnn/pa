@@ -360,6 +360,20 @@ export function newParty(call, { who = "", same = false, now = clock.now(), owne
     };
   }
 
+  // The FIRST person on a call that opened silent (#232), reached after a menu, a recording or hold, is
+  // not a second party: nobody has heard the disclosure, so code still says it word for word in front
+  // of the reply (`openingOwed`) rather than leaving it to the model. 2026-10-31 drive: menu → press 1 →
+  // hold → "Hi, this is Sam", the model called this, and its reply to Sam skipped the disclosure.
+  if (openingOwed(call)) {
+    noteSpeaking(call, { now, log });
+    log({ call_first_person: call.id, who: String(who).slice(0, 60) });
+    return {
+      newPerson: true, announce: false, party: currentParty(call),
+      note: `This is the first person you have reached on this call. Who you are and that the call is recorded`
+        + ` is said for you, word for word, just before your words: do not say it yourself. Then, in ONE`
+        + ` sentence, say what you are calling about.`,
+    };
+  }
   const party = currentParty(call) + 1;
   const told = partiesTold(call);
   noteSpeaking(call, { now, log });
