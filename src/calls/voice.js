@@ -228,21 +228,37 @@ export const CALL_TOOL_BUDGET_MS = 8_000;
 export const FIRST_WORD_DEADLINE_MS = 6_000;
 
 /**
- * The late deadline: any turn that reaches this long with nothing said gets `LATE_LINE`, every time.
+ * The late deadline: any later turn that reaches this long with nothing said gets the next of `LATE_LINES`.
  *
  * At 4 s the holding line would have fired on 24% of turns (36 of 148 had first_word > 4 s), making
  * it the new top filler, so it is said at most once per call, at `FIRST_WORD_DEADLINE_MS`. This is
  * the floor under every other turn. The agent's `cascade_timeout_seconds` is 15 s (live agent config,
  * 2026-10-30), counted from the request arriving; 9.5 s from that same moment leaves room for TTS and
  * the network before the platform gives up on the LLM and kills the call (call 13).
+ *
+ * 7.5 s, not 9.5 s. Replaying the 15 timed owner calls (123 turns at their recorded latencies,
+ * bin/call-filler-drive.mjs) through the #274 code: 11 turns sat silent past 8 s, 8 of them then
+ * heard "Still working on it." — the same words again on the same call 5 times (calls 35 and 38).
+ * At 7.5 s: 1 turn past 8 s (one on hold, where nothing is said by design), p95 silence 9.5 s → 7.5 s,
+ * at the price of 3 more late lines on the turns that were silent 7.5–9.5 s.
  */
-export const LATE_HOLDING_MS = 9_500;
+export const LATE_HOLDING_MS = 7_500;
 
 /**
  * What is said at the late deadline. Short, and not the holding line again: a call that already
  * heard "one moment" should not hear it a second time. Not an apology and not a presence check.
+ * A turn takes the next one in order, so a call never hears the same one twice running and none
+ * again until all of them have been said (the replay's busiest call needed five).
  */
-export const LATE_LINE = "Still working on it.";
+export const LATE_LINES = Object.freeze([
+  "Still working on it.",
+  "Bear with me a second.",
+  "Still on it.",
+  "Nearly there.",
+  "Just a moment more.",
+  "Getting there.",
+]);
+export const LATE_LINE = LATE_LINES[0];
 
 /**
  * Which once-per-call lines a call has already said, by `conversation#call`. In memory: a restart
@@ -253,11 +269,11 @@ const ONCE_SAID_KEEP = 500;
 export function onceSaidFor(call) {
   // No call to key it on: this request's own record, kept nowhere, rather than one shared
   // "undefined#undefined" entry every such request would read.
-  if (call?.id == null || call?.conversation_id == null) return { filler: false, holding: false };
+  if (call?.id == null || call?.conversation_id == null) return { filler: false, holding: false, late: 0 };
   const key = `${call.conversation_id}#${call.id}`;
   let got = onceSaid.get(key);
   if (!got) {
-    got = { filler: false, holding: false };
+    got = { filler: false, holding: false, late: 0 };
     onceSaid.set(key, got);
     if (onceSaid.size > ONCE_SAID_KEEP) onceSaid.delete(onceSaid.keys().next().value);
   }
@@ -270,15 +286,20 @@ export function onceSaidFor(call) {
  */
 export const HOLDING_LINE = "Mm-hm, one moment.";
 
-/** A turn that ends having said nothing of its own (after anything already said, so leading space). */
-const NOTHING_SAID_AFTER = " Sorry — bear with me one moment.";
+/**
+ * A turn that ends having said nothing of its own (after anything already said, so leading space).
+ *
+ * None of the code's own lines open with "Sorry" any more: in the stored owner calls 4 of the 14
+ * apologies were the code's (BROKE_FIRST), and an apology adds nothing a caller can use.
+ */
+const NOTHING_SAID_AFTER = " Bear with me.";
 // The turn's other canned lines, named so the turn meter (src/calls/metrics.js) can tell them from the
 // model's own words: "first real content" is the first thing said that was not one of these.
 const COME_BACK_LATER = "Let me come back to you on that one.";
-const COME_BACK_CHECK = "Sorry — let me check on that and come back to you.";
-const COME_BACK_LOOK = "Sorry — let me look into that and come back to you.";
-const BROKE_MID = "Sorry, something broke on my end there.";
-const BROKE_FIRST = "Sorry — something broke on my end. Say that again?";
+const COME_BACK_CHECK = "Let me check on that and come back to you.";
+const COME_BACK_LOOK = "Let me look into that and come back to you.";
+const BROKE_MID = "Something broke on my end there.";
+const BROKE_FIRST = "Something broke on my end. Say that again?";
 /**
  * What the turn meter counts as not-yet-real content. Exported for the tests. The fillers are matched
  * exactly, trailing space and all: the code's "... " is filler, while a model piece of just "..." has
@@ -286,7 +307,7 @@ const BROKE_FIRST = "Sorry — something broke on my end. Say that again?";
  */
 export const METER_KINDS = {
   holdingLine: HOLDING_LINE,
-  holdingLines: [HOLDING_LINE, LATE_LINE],
+  holdingLines: [HOLDING_LINE, ...LATE_LINES],
   fillers: [THINKING_FILLER, ONE_SEC],
   fallbacks: [NOTHING_SAID_AFTER, COME_BACK_LATER, COME_BACK_CHECK, COME_BACK_LOOK, BROKE_MID, BROKE_FIRST],
 };
@@ -1656,11 +1677,10 @@ export async function* voiceTurn({
     // A turn closed while it waits here leaves `pending` behind; its rejection is nobody's to crash on.
     Promise.resolve(pending).catch(() => {});
     if (saidAnything() || !replyExpected()) return await pending;
-    // The holding line once per call at the first deadline; after that, the late line for any turn
-    // that is about to look dead to the platform. See `LATE_HOLDING_MS`.
+    // The holding line once per call at the first deadline; after that, the next late line for any
+    // turn still silent at the late deadline. See `LATE_HOLDING_MS`, `LATE_LINES`.
     const late = once.holding;
     const deadlineMs = late ? Math.max(firstWordDeadlineMs, lateHoldingMs) : firstWordDeadlineMs;
-    const line = late ? LATE_LINE : HOLDING_LINE;
     let timer;
     const deadline = new Promise(resolve => {
       timer = setTimeout(() => resolve(LATE), Math.max(0, deadlineMs - (Date.now() - turnStartReal)));
@@ -1670,6 +1690,8 @@ export async function* voiceTurn({
     try { first = await Promise.race([pending, deadline]); } finally { clearTimeout(timer); }
     if (first !== LATE) return first;
     if (saidAnything() || !replyExpected()) return await pending;
+    const line = late ? LATE_LINES[once.late % LATE_LINES.length] : HOLDING_LINE;
+    if (late) once.late++;
     holdingSaid = true;
     once.holding = true;
     holdingText = line;
@@ -2465,7 +2487,7 @@ function trailingSaid(messages) {
 }
 
 const squash = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
-const HOLDING_SQUASHED = new Set([HOLDING_LINE, LATE_LINE].map(squash));
+const HOLDING_SQUASHED = new Set([HOLDING_LINE, ...LATE_LINES].map(squash));
 
 /** What one framed chunk carries, for replay decisions. */
 function chunkInfo(s) {
@@ -2616,7 +2638,7 @@ async function* refusalStream({ why, model = "reason" }) {
   const created = Math.floor(clock.now() / 1000);
   const chunk = (delta, finish = null) => sseChunk({ id, model, created, delta, finish });
   yield chunk({ role: "assistant" });
-  yield chunk({ content: "Sorry — I can't pick this one up. Something's wrong on my end, not yours." });
+  yield chunk({ content: "I can't pick this one up. Something's wrong on my end, not yours." });
   yield chunk({
     tool_calls: [{
       index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function",

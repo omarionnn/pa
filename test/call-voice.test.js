@@ -1417,14 +1417,20 @@ test("filler: \"One sec...\" at most once per call", async () => {
   assert.match((await drain(out.stream)).said, /^One sec/);
 });
 
-test("holding line: 6 s once per call, then the late line on every turn that reaches ~9.5 s silent", async () => {
+test("holding line: 6 s once per call, then a late line at 7.5 s, never the same one twice running", async () => {
   assert.equal(voice.FIRST_WORD_DEADLINE_MS, 6_000);
-  assert.equal(voice.LATE_HOLDING_MS, 9_500);
+  // Replay of 15 timed owner calls on #274: 9 turns silent to 9.5 s, then "Still working on it." —
+  // six of them back to back. 7.5 s takes the silence off them; see LATE_HOLDING_MS.
+  assert.equal(voice.LATE_HOLDING_MS, 7_500);
   // The agent's cascade_timeout_seconds is 15 s from the request arriving; the late line has to be
   // out with room for TTS and the network before then.
   assert.ok(voice.LATE_HOLDING_MS <= 15_000 - 5_000, "the late line leaves ≥5 s before the 15 s cascade timeout");
-  assert.notEqual(voice.LATE_LINE, voice.HOLDING_LINE, "not the holding line said again");
-  assert.doesNotMatch(voice.LATE_LINE, /sorry|still there|hear me|\?/i, "no apology, no presence check");
+  assert.ok(voice.LATE_LINES.length >= 5, "enough late lines for the replay's busiest call");
+  assert.equal(new Set(voice.LATE_LINES).size, voice.LATE_LINES.length, "every late line is different");
+  for (const line of voice.LATE_LINES) {
+    assert.notEqual(line, voice.HOLDING_LINE, "not the holding line said again");
+    assert.doesNotMatch(line, /sorry|still there|hear me|\?/i, "no apology, no presence check");
+  }
   const call = ownerCall();
   const turn = async (stallMs) => {
     const seen = [];
@@ -1441,11 +1447,20 @@ test("holding line: 6 s once per call, then the late line on every turn that rea
   const second = await turn(250);
   assert.equal(second.said, "Here.", "a second slow turn, short of the late deadline, gets nothing");
   assert.ok(!second.seen.some(l => l.voice_holding_line != null));
-  const third = await turn(900);
-  assert.equal(third.said, `${voice.LATE_LINE} Here.`, "a turn past the late deadline gets the late line");
-  assert.equal(third.seen.find(l => l.voice_holding_line != null)?.deadline_ms, 600);
-  const fourth = await turn(900);
-  assert.equal(fourth.said, `${voice.LATE_LINE} Here.`, "and so does every one after it");
+  const late = [];
+  for (let i = 0; i < voice.LATE_LINES.length + 1; i++) {
+    const t = await turn(900);
+    if (i === 0) assert.equal(t.seen.find(l => l.voice_holding_line != null)?.deadline_ms, 600);
+    late.push(t.said.replace(/ Here\.$/, ""));
+  }
+  assert.deepEqual(late.slice(0, -1), [...voice.LATE_LINES], "each late turn takes the next late line");
+  assert.equal(late.at(-1), voice.LATE_LINES[0], "and only once all of them are said does one come round again");
+});
+
+test("the code's own lines never apologise", () => {
+  // Stored owner calls: 4 of 14 apologies were the code's "Sorry — something broke on my end".
+  const lines = [voice.METER_KINDS.holdingLine, ...voice.METER_KINDS.holdingLines, ...voice.METER_KINDS.fillers, ...voice.METER_KINDS.fallbacks];
+  for (const line of lines) assert.doesNotMatch(line, /sorry|apologi/i, line);
 });
 
 test("holding line: deadlines run from when the request arrived (t0), not from when the turn began", async () => {
@@ -1499,10 +1514,10 @@ test("holding line: a slow tool after a fast tool start is not silence (deadline
 
 test("once-per-call record: no call means a record for this request alone, never a shared one", () => {
   const a = voice.onceSaidFor(undefined);
-  a.filler = true; a.holding = true;
+  a.filler = true; a.holding = true; a.late = 3;
   const b = voice.onceSaidFor(undefined);
-  assert.deepEqual(b, { filler: false, holding: false });
-  assert.deepEqual(voice.onceSaidFor({ conversation_id: "dm:x" }), { filler: false, holding: false });
+  assert.deepEqual(b, { filler: false, holding: false, late: 0 });
+  assert.deepEqual(voice.onceSaidFor({ conversation_id: "dm:x" }), { filler: false, holding: false, late: 0 });
 });
 
 test("holding line and filler share one turn: never both", async () => {
@@ -1544,6 +1559,14 @@ test("prompt: a mistake or a mishearing is owned plainly, with no apology and no
   assert.match(mistake, /no apology/i);
   assert.match(lang, /repeat/i);
   assert.match(lang, /without apologi/i);
+  // Not only for mistakes: the stored owner calls' other model apologies were for a missed line,
+  // talking over them, a slow search.
+  const never = rules.split("\n").find(l => /do not apologise/i.test(l));
+  assert.ok(never, "a rule against apologising on the call at all");
+  assert.match(never, /delay/);
+  assert.match(never, /talking over/);
+  assert.match(never, /missing what they said/);
+  assert.doesNotMatch(never, /["“”]/, "no quoted phrase to say back");
 });
 
 test("quiet line: stay quiet or carry on the task, never ask whether they are there", () => {
