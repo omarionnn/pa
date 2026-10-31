@@ -447,9 +447,13 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
-### Baseline — Daily spending limit per person (wt/spend-cap, 2026-10-31)
+### Baseline — Daily spending limit per person (wt/spend-cap, #317, 2026-10-31)
 
 `npm run test:offline` under `env -i` (after the review fix, 399c435): 5,048 tests, 4,915 passing, 131 skipped, 2 failing — web-ongoing "the desktop margin" (date-dependent) and onboarding "going quiet: one nudge later" (time-of-day; both fail on main 05a40c4 too, checked). A first run also tripped order-flow "pinned 13:56" and two web-signin tests under load; all three pass alone. New: `test/spend-cap-1031.test.js` (12; fail on 05a40c4: no `src/spendcap.js`). Fresh review found one blocker — a raise's Face ID was prompt-only — closed in code (`confirmChange` → `needs_face_id`, 12th test). Schema tried on a copy of live `reason.db` first: `pay_approvals.kind` added by ALTER (existing rows → `pay`), `daily_caps` + `cap_changes` created, `integrity_check` ok. Wording pins moved in `test/shopping-everyone-1031.test.js` and `test/sites.test.js` (the over-cap line now names Settings → Shopping, never the env var). See [features/spend-cap.md](features/spend-cap.md).
+
+### Baseline — calls to businesses on GPT-Live, phase 3 (wt/gptlive-thirdparty, #316, 2026-10-31)
+
+`node --test test/*.test.js` (ANTHROPIC_API_KEY empty): 5,064 tests, 4,931 passing, 131 skipped, 2 failing — web-ongoing "the desktop margin" and onboarding "going quiet … never at night", both failing on untouched main too (date / time of day); order-flow-1031 "pinned 13:56" flakes on main as well (2/12). New: `test/gptlive-thirdparty.test.js` (29). Drives `bin/gptlive-line-drive.mjs --scene human|ivr|voicemail|hold` all `ok` on the merged code (real GPT-Live + claude-cli). Live flag `REASON_THIRD_PARTY_VOICE=owner`. See [features/gptlive-calls.md](features/gptlive-calls.md) "Phase 3".
 
 ### Baseline — Shopping for everyone (wt/shopping-everyone, #315, 2026-10-31)
 
