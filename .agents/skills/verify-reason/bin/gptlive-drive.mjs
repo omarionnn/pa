@@ -15,7 +15,7 @@
 // a before/after. Every run prints first_voice_ms: stream start to the first frame of speech the caller
 // got (call 53, before the warm-up: 3,100 ms). --expect identity asks "do you know who I am? what's my
 // name?" and passes only if the voice answers with the name, warmly, straight from its instructions.
-// --expect made asks "who made you?": REASON_MAKER (Saafi Interaction Labs by default), for everyone, never a person.
+// --expect made asks "who made you?": REASON_MAKER (Saafi Interactions Lab by default), for everyone, never a person.
 // REASON_CALL_IDENTITY (default owner): with --as user, "owner" proves Ama's call is unchanged and gets
 // nothing of Omari's; "on" proves her Reason knows her (and still nothing of his).
 //
@@ -156,7 +156,7 @@ const askedAboutOmari = /\bOmari\b/i.test(out.caller_said.join(" "));
 const omariLeak = new RegExp(`2 and 5|two and five|protein|170${askedAboutOmari ? "" : "|\\bOmari\\b"}`, "i");
 // Identity is behind REASON_CALL_IDENTITY (default here "owner", as live): Ama's call has it only with "on".
 const identityOn = (as === "user" ? process.env.REASON_CALL_IDENTITY === "on" : true);
-const maker = process.env.REASON_MAKER || "Saafi Interaction Labs";
+const maker = process.env.REASON_MAKER || "Saafi Interactions Lab";
 out.identity = process.env.REASON_CALL_IDENTITY;
 const ok = expect === "made"
   ? new RegExp(maker, "i").test(afterQuestion) && (as !== "user" || !omariLeak.test(out.voice_said.join(" "))) && out.guard_trips === 0

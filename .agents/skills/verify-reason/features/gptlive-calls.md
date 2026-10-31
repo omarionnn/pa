@@ -108,9 +108,9 @@ Never: drive the live service's routes, or place a real call to test it (that ri
 - Known, not fixed (pre-existing): `strangerLine` (inbound.js, voice-prompt.js) tells blocked/paused/
   removed/unknown callers "an AI assistant for <operator>", naming the operator to other people.
 
-## Maker = Saafi Interaction Labs (#297, 2026-10-31)
+## Maker = Saafi Interactions Lab (#297, 2026-10-31)
 
-`config.makerName` defaults to "Saafi Interaction Labs" (REASON_MAKER only overrides); `src/maker.js`
+`config.makerName` defaults to "Saafi Interactions Lab" (REASON_MAKER only overrides); `src/maker.js`
 is the one answer for texts (`systemFor`), onboarding and both voices, for every user, not gated. The
 "he built you, smart guy" deflection is gone: probed further, Reason says it's still the company and
 invents nothing. Test: no string literal under src/ or assets/ says Omarion/Nyarko, and the built

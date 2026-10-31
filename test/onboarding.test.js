@@ -227,7 +227,7 @@ test("ideas the model did not give: the true-for-anybody ones, and still the clo
 test("a question at every step: its one-line answer, then a steer back to exactly that step", async () => {
   const Q = (reply) => ({ kind: "question", reply });
   const h = harness({ ...GREET, ...NAME, ...JOB,
-    "who made you": Q("Saafi Interaction Labs made me"),
+    "who made you": Q("Saafi Interactions Lab made me"),
     "are you a bot": Q("an AI, yeah, but a useful one"),
     "do you sleep": Q("never, which is kind of the point"),
   });
@@ -235,7 +235,7 @@ test("a question at every step: its one-line answer, then a steer back to exactl
   await h.router.deliver(text(num, "hey"));
   let before = to(h, num).length;
   await h.router.deliver(text(num, "who made you"));
-  assert.deepEqual(words(h, num).slice(before), ["Saafi Interaction Labs made me", ob.STEERS.awaiting_name]);
+  assert.deepEqual(words(h, num).slice(before), ["Saafi Interactions Lab made me", ob.STEERS.awaiting_name]);
   assert.equal(state(num), "awaiting_name");
 
   await h.router.deliver(text(num, "kofi"));
