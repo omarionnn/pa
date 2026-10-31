@@ -112,24 +112,7 @@ export async function postCallRequest({
   db.updateCall(settled.conversation_id, settled.id, { settle_started_at: clock.now() });
 
   const wrote = writeCallIntoThread({ row: settled, live, log });
-  // Third-party calls: transcript doesn't go into conversations.messages but should feed memory.
-  // Not when only a machine answered: a recording's opening hours are not something a person said.
-  if (!settled.is_owner && SPOKE_TO_SOMETHING.includes(settled.state) && !callOutcome.answeredByMachine(settled)) {
-    const turns = Array.isArray(live?.turns) && live.turns.length
-      ? live.turns
-      : turnsFromTranscriptString(live?.transcript ?? settled.transcript ?? "");
-    for (const t of turns) {
-      try {
-        const evId = db.writeEvent({
-          conversationId: settled.conversation_id, channel: "call",
-          messageId: String(settled.id),
-          role: t.who === "them" ? "call_user" : "call_assistant",
-          content: t.text,
-        });
-        if (worthExtracting(t.text)) db.enqueueExtraction(settled.conversation_id, evId);
-      } catch { /* best-effort */ }
-    }
-  }
+  noteThirdPartyTurns({ row: settled, live });
   const noted = noteOnTask({ row: settled, live, log });
   // A call he asked for BY VOICE, mid-call, closes its request here (2026-10-07 addendum, section 8:
   // "one result back into the same conversation"). From the settled row, so what the request ends up
@@ -220,6 +203,32 @@ function lateEnd({ row, live, log = () => {} }) {
  *     conversation that did not happen.
  *   - **A call that never connected.** Same reason, with nothing even said.
  */
+/**
+ * Third-party calls: the transcript doesn't go into conversations.messages but should feed memory.
+ * Not when only a machine answered: a recording's opening hours are not something a person said.
+ * Both voices (ElevenLabs' delivery here, GPT-Live's `settleGptLive`).
+ */
+export function noteThirdPartyTurns({ row, live }) {
+  if (row.is_owner || !SPOKE_TO_SOMETHING.includes(row.state) || callOutcome.answeredByMachine(row)) return 0;
+  const turns = Array.isArray(live?.turns) && live.turns.length
+    ? live.turns
+    : turnsFromTranscriptString(live?.transcript ?? row.transcript ?? "");
+  let n = 0;
+  for (const t of turns) {
+    try {
+      const evId = db.writeEvent({
+        conversationId: row.conversation_id, channel: "call",
+        messageId: String(row.id),
+        role: t.who === "them" ? "call_user" : "call_assistant",
+        content: t.text,
+      });
+      n++;
+      if (worthExtracting(t.text)) db.enqueueExtraction(row.conversation_id, evId);
+    } catch { /* best-effort */ }
+  }
+  return n;
+}
+
 export function writeCallIntoThread({ row, live, log = () => {} }) {
   if (!row.is_owner) return { turns: 0, why: "a third-party call is not part of this conversation" };
   if (row.state === "voicemail") return { turns: 0, why: "it went to voicemail, so there was no conversation" };

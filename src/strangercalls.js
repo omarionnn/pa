@@ -15,8 +15,11 @@
 // Retention follows Reason's keep policy (src/privacy.js): their words and the summary go after
 // REASON_KEEP_CONTENT_DAYS, the row (number, time, length) after REASON_KEEP_RECORDS_DAYS.
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, unlinkSync } from "node:fs";
+import { resolve } from "node:path";
 import * as db from "./db.js";
 import { config, clock, normalizeNumber } from "./config.js";
+import { recordingsDir } from "./calls/recordings.js";
 
 db.db.exec(`CREATE TABLE IF NOT EXISTS stranger_calls (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,15 +40,21 @@ CREATE INDEX IF NOT EXISTS stranger_calls_external ON stranger_calls (external_i
 // When the reconnect was first put in front of a reply (2026-10-31): used_at only follows once a reply
 // to them has really gone out after this, so a failed or retried reply does not lose it.
 try { db.db.exec("ALTER TABLE stranger_calls ADD COLUMN offered_at INTEGER"); } catch { /* already there */ }
+// The call's audio (2026-10-31): the intro tells them the call is recorded, so it is. Dropped with
+// their words (`prune`), and with the row.
+try { db.db.exec("ALTER TABLE stranger_calls ADD COLUMN recording_path TEXT"); } catch { /* already there */ }
 
 const q = (sql) => db.db.prepare(sql);
 const MAX_LINES = 30;
 const MAX_LINE = 300;
 
-/** A new call from an unknown number. Null for a withheld one: there is nothing to match it to later. */
-export function open({ phone, externalId = "", now = clock.now() }) {
-  const e164 = normalizeNumber(phone);
-  if (!e164 || !/^\+\d{8,15}$/.test(e164)) return null;
+/**
+ * A new call from an unknown number. A withheld one is kept only with `withheld` (a GPT-Live call,
+ * whose audio needs a row): phone '', so it never matches anybody later.
+ */
+export function open({ phone, externalId = "", withheld = false, now = clock.now() }) {
+  const e164 = withheld ? "" : normalizeNumber(phone);
+  if (!withheld && (!e164 || !/^\+\d{8,15}$/.test(e164))) return null;
   const token = randomBytes(12).toString("hex");
   const r = q("INSERT INTO stranger_calls (phone, external_id, token, started_at, last_at) VALUES (?, ?, ?, ?, ?)")
     .run(e164, String(externalId ?? ""), token, now, now);
@@ -85,6 +94,15 @@ export function noteTurn({ id, token, messages, now = clock.now() }) {
   return true;
 }
 
+/** Where one stranger call's audio is written. */
+export function recordingPathFor(id) {
+  return resolve(recordingsDir(), `stranger-${Number(id)}.wav`);
+}
+
+function dropAudio(path) {
+  try { if (path && existsSync(path)) unlinkSync(path); } catch { /* retried by the next sweep */ }
+}
+
 /** The platform's post-call delivery for a call with no call row: the real length and transcript. */
 export function settleFromPostCall({ externalId, live, now = clock.now() }) {
   if (!externalId) return false;
@@ -93,6 +111,7 @@ export function settleFromPostCall({ externalId, live, now = clock.now() }) {
   const turns = Array.isArray(live?.turns) ? live.turns : [];
   const lines = turns.filter(t => t?.who === "them" || t?.role === "user").map(t => String(t.text ?? t.message ?? "").trim().slice(0, MAX_LINE)).filter(Boolean).slice(-MAX_LINES);
   const duration = Number.isFinite(live?.durationS) ? Math.round(live.durationS) : row.duration_s;
+  if (live?.recording?.path) q("UPDATE stranger_calls SET recording_path = ? WHERE id = ?").run(String(live.recording.path), row.id);
   if (row.content_dropped_at || !lines.length) {
     q("UPDATE stranger_calls SET duration_s = ? WHERE id = ?").run(duration, row.id);
   } else {
@@ -183,7 +202,15 @@ export function reconnectLine(conversationId, { now = clock.now() } = {}) {
 /** Retention (called from src/privacy.js sweepRetention): words after `content`, rows after `records`. */
 export function prune({ content = 0, records = 0, now = clock.now() } = {}) {
   let dropped = 0, deleted = 0;
-  if (content) dropped = q("UPDATE stranger_calls SET said = '[]', summary = '', content_dropped_at = ? WHERE content_dropped_at IS NULL AND started_at < ?").run(now, content).changes;
-  if (records) deleted = q("DELETE FROM stranger_calls WHERE started_at < ?").run(records).changes;
+  const audio = (sql, at) => { for (const r of q(sql).all(at)) dropAudio(r.recording_path); };
+  if (content) {
+    audio("SELECT recording_path FROM stranger_calls WHERE recording_path IS NOT NULL AND started_at < ?", content);
+    q("UPDATE stranger_calls SET recording_path = NULL WHERE recording_path IS NOT NULL AND started_at < ?").run(content);
+    dropped = q("UPDATE stranger_calls SET said = '[]', summary = '', content_dropped_at = ? WHERE content_dropped_at IS NULL AND started_at < ?").run(now, content).changes;
+  }
+  if (records) {
+    audio("SELECT recording_path FROM stranger_calls WHERE recording_path IS NOT NULL AND started_at < ?", records);
+    deleted = q("DELETE FROM stranger_calls WHERE started_at < ?").run(records).changes;
+  }
   return { dropped, deleted };
 }

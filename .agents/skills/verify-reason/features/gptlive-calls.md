@@ -155,8 +155,9 @@ URL** = ElevenLabs' `https://api.us.elevenlabs.io/twilio/inbound_call` (also in 
 - unknown / withheld → the #303 pitch on GPT-Live: `strangerInstructions()` (voice only, names nobody,
   maker line) + every answer from `stranger.strangerReply` (no tools, public facts only, turn caps);
   master asked (`inbound.strangerIntake`), words kept (`strangercalls.open` external_id `gptlive:<CallSid>`,
-  settled at end); no call row, no audio file;
-- a place ringing back about an errand, an account not on GPT-Live (=owner mode), missing keys →
+  settled at end); no call row; the audio is kept on the stranger row (phase 3, below);
+- a place ringing back about an errand → GPT-Live when `REASON_THIRD_PARTY_VOICE` covers the account
+  (phase 3), else ElevenLabs; an account not on GPT-Live (=owner mode), missing keys →
   `<Redirect>` to ElevenLabs, unchanged.
 The honesty guard skips the opening line while it is the greeting's own words (`fromLine`): the
 stranger intro's "getting things done" tripped it in the first drive.
@@ -166,3 +167,70 @@ s.ulaw 50 --quiet 13 --then b.ulaw --then-at 36` · `--who blocked` (as the reas
 same env -i wrapper as above). 2026-10-31 all ok: user first voice 2.4 s, peanut allergy from her memory,
 hung up on bye, 33 s / 3¢, event to her conversation; stranger first voice 1.8 s, full intro, "no price
 listed… hey reason dot com", master asked, words kept, no row; blocked: the neutral line only.
+
+## Phase 3: calls to businesses and other people on GPT-Live (2026-10-31)
+
+Flag `REASON_THIRD_PARTY_VOICE` = `gptlive`/`on` (everyone's errands) · `owner` (the operator's only) ·
+unset (ElevenLabs, as before). Also opens the GPT-Live routes on its own (`gptliveOn`). Own calls are
+untouched (`line` is false on `is_owner` rows; covered by a test with the flag on).
+
+"A line call" (`GptLiveCall.line`, non-owner rows): the LINE drives every turn, the voice only speaks.
+- Placing (`withGptLive.place`, kind third_party): Twilio `Calls.json` with the stream TwiML and async
+  AMD (`MachineDetection=DetectMessageEnd`, `AsyncAmd=true`, callback `/calls/gptlive/amd/<token>`);
+  returns `openingWaits` so the row gets `opening_waits=1`; the row's disclosure becomes
+  `lineAnnouncement` ("Hey, hi — this is Reason, an AI assistant calling for <first name>. Just so you
+  know, this call is recorded. If you'd rather not, just let me know.").
+- Silent opening: no greeting. Their words (input transcript) → after 1 s of pause (8 s max on a line
+  that never pauses) one `lineTurn` = `reasonTurn` with `reason_kind=third_party`, i.e. the SAME
+  voice.js turn ElevenLabs runs (third-party context, brief, commit gate, readback, hold, machines,
+  `openingOwed` disclosure prepended by code). One at a time; words heard meanwhile are covered by the
+  answer if it spoke, read again if it did not; a key press counts as an answer.
+- The gate (`gateOpen`): the voice's own audio is DROPPED unless it is saying words Reason handed over
+  (`speakLine` → `session.commentary.append`, on the voice's open delegation when it made one; empty
+  `thinking.append` cancels its auto-ack; `acknowledgement_delay_ms: 800`). If the voice was mid-speech
+  of its own when the words went in, audio waits for `session.commentary.appended`. Gate shuts 1.5 s
+  after the speech goes quiet (30 s cap). Dropped speech is not in the transcript or the tape.
+- Keypad: `play_keypad_touch_tone` from the turn → `press` → Twilio call update
+  `<Play digits="w<d>"/><Connect><Stream …same token/></Connect>`; the old stream's stop is ignored
+  (`rejoining`), `acceptStream` hands the new socket to the running call (same voice session); voice told
+  "Reason pressed N" (thinking); 20 s without the stream back → call ended.
+- AMD (`amdRequest`, Twilio-signed): `human`/`unknown` nothing; `fax` → dead end + hang up;
+  `machine_end_*` → a bracketed note for Reason's turn (it decides menu vs mailbox with its own
+  `machine_on_the_line` rules; IVRs also read as "machine" to Twilio). A voicemail written before the
+  verdict (`reachedMachine` + end_call message) is held until the beep (20 s max). Verdicts before the
+  stream is up are kept (`amdEarly`).
+- Hold: `skip_turn` from the turn = silence (its `noteWaiting` starts `hold_since`); `holdTick` every
+  15 s asks Reason's turn once more only when `holdLeft` is 0 → its own give-up line + end_call
+  (`hold_gave_up`). A person back = words → next turn (`noteSpeaking` ends the hold). A line where
+  nobody says anything for 45 s is ended.
+- `transfer_to_number`: its `client_message` said, then Twilio `<Dial>` (Reason leaves the call).
+- Settle: `settleGptLive` + `noteThirdPartyTurns` (call events into memory, as ElevenLabs' delivery).
+- Ring-back: `routeInbound` → `ringBackRow` (not owner; errand goal/facts/brief/errand/hold budget),
+  greeting `ringBackLine` = disclosure + "You're calling back about …" spoken at once.
+
+Stranger recordings (item 6, the consistent option): the intro says "this call is recorded", so the
+GPT-Live stranger stream now KEEPS the audio at `recordings/stranger-<row id>.wav`,
+`stranger_calls.recording_path`; dropped with their words (`prune`, keepContentDays) and with the row.
+Withheld callers get a row with phone '' (matches nobody).
+
+Drive (no phone; real GPT-Live + Reason's real third-party turn on claude-cli; fake Twilio stream and
+REST; AMD posted to the call): `bin/gptlive-line-drive.mjs <clips dir> --scene ivr|hold|voicemail|human`,
+same env -i wrapper as above. Clips (Mac):
+`say -v Samantha -o x.aiff "…" && ffmpeg -i x.aiff -ar 8000 -ac 1 -f mulaw x.ulaw` for ivr-menu ("For
+reservations, press 1…"), ivr-connecting ("Reservations. Please hold…"), human-after-hold, receptionist,
+voicemail-greeting, hold-recording; music and the beep are synthesised in the drive.
+
+Review fixes (#316): a voicemail held for the beep is the call's last word (no more turns) and, if the
+line goes before a word of it plays, the row is put back to `voicemail_no_message`; a turn that speaks
+and presses says its words first; no overlapping turns while a press goes to Twilio, and late menu words
+during the re-attach are not a turn; an AMD verdict during a turn that spoke is read after the words;
+every background turn caught (`runLine`); stranger audio is in `recordingFiles` (data export/delete);
+the hold.js first-person floor applies to `provider='gptlive'` rows only (ElevenLabs unchanged — the
+same gap exists there: after a menu + hold the model may skip the disclosure to the first person).
+Drive results 2026-10-31 (final code): human — silent until "…this is Sam", then "Hey, hi — this is
+Reason, an AI assistant calling for Omari. Just so you know, this call is recorded…" + the question;
+ivr — pressed 1 once, stream back, held ~24 s silent, the same disclosure to Sam; voicemail — nothing
+over the greeting, message after the beep, `voicemail_left=1`, state voicemail; hold (20 s budget) —
+silent through music, give-up line, `hold_gave_up`. Latency: their last word → Reason's first ~7–9 s on
+claude-cli (1 s pause + the turn + ~0.6 s voice start); the live backend (api) is faster. Hold give-up
+overshoots the budget by up to one 15 s tick plus a turn.

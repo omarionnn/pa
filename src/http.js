@@ -623,6 +623,14 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(out.status);
         return res.end(out.body);
       }
+      // Twilio's answering-machine verdict for a third-party GPT-Live call (phase 3).
+      if (gptlive.gptliveOn() && req.method === "POST" && url.pathname.startsWith(gptlive.AMD_PATH)) {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = await gptlive.amdRequest({ token: url.pathname.slice(gptlive.AMD_PATH.length), rawBody, headers: req.headers, log });
+        res.writeHead(out.status);
+        return res.end(out.body);
+      }
       if (gptlive.gptliveOn() && req.method === "POST" && url.pathname === gptlive.INBOUND_PATH) {
         const rawBody = await readBody(req);
         if (rawBody === null) return send(413, { error: "body too large" });
