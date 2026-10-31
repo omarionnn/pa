@@ -517,6 +517,7 @@ test("after-call note: a cut-off asks what they were saying; an offered 'later' 
   const plain = ownerEvent({ row });
   assert.match(plain, /said yes to something you offered to do later .* set it up now with your tools/);
   assert.doesNotMatch(plain, /cut off/);
+  assert.doesNotMatch(ownerEvent({ row: { ...row, provider: "elevenlabs" } }), /offered to do later/, "ElevenLabs calls unchanged");
   const cut = ownerEvent({ row, live: { cutOff: { words: 'Oh "actually" what' } } });
   assert.match(cut, /Something IS owed: they started saying something just as the call ended \(all that came through: "Oh 'actually' what"\)/);
   assert.match(cut, /sounded like they were saying something as you hung up, and ask what it was/);
