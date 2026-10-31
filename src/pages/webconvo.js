@@ -54,6 +54,7 @@ import * as daily from "../daily.js";
 import { renderDaily, sealTile, SEAL_TILE_CSS } from "./webdaily.js";
 import { webReplyAllowedFor, quoteFor, canReplyTo, quoteHtml, REPLY_BUTTON, REPLY_CHIP, REPLY_CSS, REPLY_JS, replyFor } from "./webreply.js";
 import { readLine, notesHtml, noteText } from "./webnotes.js";
+import { fromToken } from "./webprefill.js";
 
 /** How many lines a page of history holds, first load and each "show earlier". */
 export const PAGE = 40;
@@ -721,7 +722,7 @@ setInterval(function(){if(until&&Date.now()>until)working(false);if(dli&&Date.no
 function draft(h){if(!list)return;if(!h){if(dli){dli.remove();dli=null;if(onit)onit.hidden=!until}return}unempty();var stick=near();if(!dli){dli=document.createElement('li');dli.className='msg re arrive';dli.dataset.draft=1;list.appendChild(dli)}dli.innerHTML=h;times(dli);dat=Date.now();if(onit)onit.hidden=true;if(stick)bottom()}
 // From the arrival, a message moves you into the thread once Reason has it.
 if(!list){R.api={uid:uid,post:function(p){p.at=p.at||Date.now();keep(pend().filter(function(x){return x.id!==p.id}).concat([p]));location.href='/web?thread'},pendingLine:function(){return document.createElement('li')},state:function(li,st){if(st==='failed'&&R.say)R.say("that didn't go. try it again?")}};
-form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.trim(),fs=R.takeFiles?R.takeFiles():[];if(!t&&!fs.length)return;var p={id:uid(),text:t};if(fs.length)p.files=fs;R.api.post(p)});return}
+form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.trim(),fs=R.takeFiles?R.takeFiles():[];if(!t&&!fs.length)return;var p={id:uid(),text:t};if(fs.length)p.files=fs;if(box.dataset.df){p.df=box.dataset.df;delete box.dataset.df}R.api.post(p)});return}
 var loaded=!R.defer,lastPoll=0,calm2=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
 function line(m){var li=document.createElement('li');li.className='msg arrive '+(m.role==='user'?'you':'re');li.dataset.id=m.id;li.dataset.at=m.at;li.dataset.web=m.web?1:0;if(m.cid)li.dataset.cid=m.cid;if(m.day)li.dataset.day=m.day;if(m.where)li.dataset.where=m.where;li.innerHTML=m.html;times(li);return li}
 function has(id){return list.querySelector('.msg[data-id="'+id+'"]')||list.querySelector('.done[data-ids~="'+id+'"]')||list.querySelector('.choices[data-ids~="'+id+'"]')}
@@ -743,7 +744,7 @@ if((st==='sending'&&!li.querySelector('.tb'))||st==='waiting'){var s=document.cr
 else if(st==='failed'){var b=document.createElement('button');b.type='button';b.className='retry';b.textContent="didn't go. tap to try again.";b.onclick=function(){if(li.retry)return li.retry();send(stored(li),li)};var n=document.createElement('p');n.className='st';n.textContent="IT WON'T SEND TWICE";li.appendChild(b);li.appendChild(n)}}
 function expired(){if(!window.reasonMidTask||!window.reasonMidTask(waiting>0||!!until))location.href='/web?out=1'}
 function send(p,li,tries){tries=tries||0;if(offline()){state(li,'waiting');return}state(li,'sending');
-fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c,files:(p.files||[]).map(function(f){return f.id}).filter(Boolean).join(','),voice:p.voice?String(p.voice):'',re:p.re?String(p.re):''})})
+fetch('/web/send',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json','X-Reason-Csrf':R.c},body:new URLSearchParams({id:p.id,text:p.text,c:R.c,files:(p.files||[]).map(function(f){return f.id}).filter(Boolean).join(','),voice:p.voice?String(p.voice):'',re:p.re?String(p.re):'',df:p.df||''})})
 .then(function(r){return r.json().catch(function(){return{ok:false}}).then(function(j){j.status=r.status;return j})})
 .then(function(j){if(li.taken)return;if(j.status===401){expired();return}if(j.ok){if(j.duplicate&&li.isConnected&&li.dataset.pending){li.remove();forget(p.id)}if(li.isConnected&&!j.duplicate){state(li,'sent');li.querySelectorAll('.st').forEach(function(x){x.remove()});waiting++;li.counted=1;working(true)}poll()}else if(j.status>=500&&tries<2){setTimeout(function(){send(p,li,tries+1)},1500*(tries+1))}else state(li,'failed')})
 .catch(function(){if(li.taken)return;if(offline()){state(li,'waiting');return}if(tries<3)setTimeout(function(){send(p,li,tries+1)},1500*(tries+1));else state(li,'failed')})}
@@ -772,7 +773,7 @@ fetch('/web/about',{method:'POST',credentials:'same-origin',headers:{'Content-Ty
 // arrival) is shown at once and sent again under the SAME id once the thread is here, which the
 // server's claim turns into nothing if it already arrived.
 var carried=pend().map(function(p){return{p:p,li:pendingLine(p)}});
-form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.replace(/\\s+$/,''),fs=R.takeFiles?R.takeFiles():[];if(!t.trim()&&!fs.length)return;var p={id:uid(),text:t.trim()?t:''};if(fs.length)p.files=fs;var rq=R.rp&&R.rp();if(rq){p.re=rq.id;p.rq=rq}box.value='';box.dispatchEvent(new Event('input'));post(p)});
+form.addEventListener('submit',function(e){e.preventDefault();var t=box.value.replace(/\\s+$/,''),fs=R.takeFiles?R.takeFiles():[];if(!t.trim()&&!fs.length)return;var p={id:uid(),text:t.trim()?t:''};if(fs.length)p.files=fs;if(box.dataset.df){p.df=box.dataset.df;delete box.dataset.df}var rq=R.rp&&R.rp();if(rq){p.re=rq.id;p.rq=rq}box.value='';box.dispatchEvent(new Event('input'));post(p)});
 window.addEventListener('offline',function(){noteLine("you're offline. i'll send it when you're back.")});
 window.addEventListener('online',function(){noteLine('');list.querySelectorAll('.msg[data-state=waiting]').forEach(function(li){if(li.retry)return li.retry();send(stored(li),li)});poll()});
 if(offline())noteLine("you're offline. i'll send it when you're back.");
@@ -1089,7 +1090,8 @@ export function conversationPage({ account, headers, sendId, method = "GET", que
   // ?about=<kind>:<id>&k=<click> (an Ongoing detail's "… in the chat →"): the thread, whose script asks
   // Reason to speak first about that row (POST /web/about, aboutRequest below).
   const about = aboutOf(query);
-  if (query.thread != null || recentWeb || about) {
+  // ?draft= (src/pages/webprefill.js) opens the thread too: its composer takes the words.
+  if (query.thread != null || query.draft != null || recentWeb || about) {
     // §4h: the return this browser has not been shown, spent now (a GET only): once per return.
     const away = method === "GET" ? awayFor(conv, db.takeWebAway(readCookie(headers.cookie), conv, { within: WEB_AWAY_MS, now }), { items, approvals, back }) : null;
     return renderConversation({ account, csrf, lines, more, sendId, items, approvals, back, now, deferred: true, work: workOf(conv), about, away });
@@ -1264,6 +1266,9 @@ export async function sendRequest({ account, headers = {}, readBody, router, log
   void delivering.finally(() => inFlight.delete(key));
   const quick = await Promise.race([delivering, new Promise(r => setTimeout(() => r(null), ackWaitMs).unref?.())]);
   log({ web_send: quick ? (quick.duplicate ? "duplicate" : quick.refused ?? (quick.ok === false ? "failed" : "done")) : "accepted" });
+  // A message that began as a /web?draft= prefill (src/pages/webprefill.js): who sends it, never the words.
+  const df = fromToken(form.get("df"));
+  if (df && !(quick && (quick.duplicate || quick.refused || quick.ok === false))) log({ draft_sent: df });
   if (quick && quick.refused) return fail(403, quick.refused);
   if (quick && quick.ok === false && quick.error === "failed") return fail(500, "failed");
   if (!wantsJson) return { status: 303, headers: { ...SECURITY_HEADERS, Location: back, "Content-Length": 0 }, body: "" };

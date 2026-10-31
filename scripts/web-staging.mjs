@@ -343,6 +343,12 @@ const after = (js) => `<script>window.addEventListener('load',function(){setTime
 const photoFile = `function stgPhoto(cb){var c=document.createElement('canvas');c.width=640;c.height=480;var x=c.getContext('2d'),g=x.createLinearGradient(0,0,640,480);g.addColorStop(0,'#d9b38c');g.addColorStop(1,'#8c5a3c');x.fillStyle=g;x.fillRect(0,0,640,480);x.fillStyle='rgba(255,255,255,.55)';x.beginPath();x.arc(420,190,90,0,7);x.fill();c.toBlob(function(b){cb(new File([b],'IMG_4410.PNG',{type:'image/png'}))},'image/png')}`;
 const pdf = `new File(['%PDF-1.4 sample'],'menu-for-friday.pdf',{type:'application/pdf'})`;
 const drop = (files) => `var d=new DataTransfer();${files}document.dispatchEvent(new DragEvent('dragenter',{dataTransfer:d,bubbles:true}));document.dispatchEvent(new DragEvent('drop',{dataTransfer:d,bubbles:true,cancelable:true}))`;
+// /web?draft=…&from=… (src/pages/webprefill.js): the page opened as from the /updates tear-off pad. The address
+// is given the two words before the page's own script reads them (it then takes them back off); `have`
+// stands in for words already in the composer (a MutationObserver puts them in before that script runs).
+const DRAFT_DEMO = (text, from, have = "") => `<script>(function(){if(!/[?&]draft=/.test(location.search))history.replaceState(null,'',location.pathname+'?draft='+encodeURIComponent(${JSON.stringify(text)})+'&from=${from}');`
+  + (have ? `var mo=new MutationObserver(function(){var b=document.getElementById('c-input');if(b){b.value=${JSON.stringify(have)};mo.disconnect()}});mo.observe(document.documentElement,{childList:true,subtree:true});` : "")
+  + `})()</script>`;
 const STATE = {
   slips: after(`${photoFile};stgPhoto(function(p){${drop(`d.items.add(p);d.items.add(${pdf});`)};document.getElementById('c-input').value='which of these would Esi like more?'})`),
   drop: after(`var d=new DataTransfer();d.items.add(${pdf});document.dispatchEvent(new DragEvent('dragenter',{dataTransfer:d,bubbles:true}))`),
@@ -454,6 +460,8 @@ const S = [
   ["compose-drop", "Composer", "Drop anywhere", "\"let go. i'll read it.\" (04).", convo(), { state: STATE.drop }],
   ["compose-unsupported", "Composer", "File error · can't read it", "Not a photo or PDF.", convo(), { state: STATE.unsupported }],
   ["compose-too-big", "Composer", "File error · too big", "", convo(), { state: STATE.tooBig }],
+  ["compose-draft", "Composer", "From a link · ?draft=", "heyreason.com/web?draft=…&from=updates-events (the /updates tear-off pad): the words are typed into the composer, focused; nothing is sent. The address loses draft/from.", convo(), { head: DRAFT_DEMO("Make an event for my birthday dinner on Nov 14 and invite Ama and Kofi", "updates-events") }],
+  ["compose-draft-append", "Composer", "From a link · words already there", "The composer already held words: the draft goes under them on a new line, never over them.", convo(), { head: DRAFT_DEMO("Call the dentist and move my cleaning to next week, any morning works", "updates-calls", "also remind me to pick up the cake") }],
   ["compose-dictating", "Composer", "Dictating on the line", "Tap the mic (03).", convo(), { state: STATE.dictating }],
   ["compose-listening", "Composer", "Listening", "Hold the mic: full screen, words as they're heard (D).", convo(), { state: STATE.listening }],
   ["home-slips", "Composer", "Home · slips on the line", "The same composer on the arrival.", home(), { state: STATE.slips }],
