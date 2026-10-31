@@ -145,34 +145,38 @@ export async function probeSignedIn(page, siteName, { entry: given = null } = {}
   // this to read the page. Everything else passes a name and this looks it up.
   const entry = given ?? entryFor(siteName);
   if (!entry) return { ok: false, error: `No site called '${siteName}'. Known: ${signinNames().join(", ")}.` };
+  // Twice, because the page is shared and a page load can be cut off. There is one Chromium per
+  // conversation, so this probe can start while the tab is still carrying a navigation that failed
+  // a moment ago — Chromium reports THAT as an error against THIS one ("interrupted by another
+  // navigation") — and on a loaded machine the account page can simply fail to come back. Either
+  // way the answer is `unknown`: the page could not be read, which says nothing about the account.
+  // So an unknown is asked once more before it is reported, and when it is still unknown it is
+  // reported AS unknown — every caller tells the person Reason could not check, never that they are
+  // signed out (#279). A site that genuinely answers signed in or signed out is read on the first go.
+  let read = null;
   let status = null;
-  let error = null;
-  let text = "";
   let landed = entry.signed_in.url;
-  // Twice, because the page is shared. There is one Chromium per conversation, so this probe can
-  // start while the tab is still carrying a navigation that failed a moment ago — and Chromium
-  // reports THAT as an error against THIS one ("interrupted by another navigation"). Read
-  // literally, the answer comes back `unknown`, and every caller reads unknown as "they are not
-  // signed in" and asks somebody to sign in to a site they were already signed in to. So on that
-  // one error the tab is parked and the question asked again; a site that genuinely will not load
-  // fails the same way the second time and is reported honestly.
   for (let attempt = 0; attempt < 2; attempt++) {
     status = null;
-    error = null;
+    let error = null;
+    let text = "";
+    landed = entry.signed_in.url;
     try {
       const res = await page.goto(entry.signed_in.url, { waitUntil: "domcontentloaded" });
       status = res?.status() ?? null;
       await page.waitForTimeout(1500);
       text = await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
       landed = page.url();
-      break;
     } catch (e) {
       error = (e?.message ?? String(e)).split("\n")[0];
-      if (attempt === 1 || !/interrupted by another navigation/i.test(error)) break;
-      await settleBrowser(page);
     }
+    read = readSignedInState(entry, { url: landed, text, status, error });
+    if (read.state !== "unknown") break;
+    // A load that threw can leave the tab on an error page with a navigation still in flight, so
+    // it is parked before the second try. `settle` waits for its own blank page to land, so the
+    // park cannot be what interrupts the retry.
+    if (attempt === 0 && error) await settleBrowser(page);
   }
-  const read = readSignedInState(entry, { url: landed, text, status, error });
   return { ok: true, site: entry.site, checked_url: entry.signed_in.url, landed, status, ...read };
 }
 

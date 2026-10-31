@@ -200,13 +200,33 @@ export async function pageImages(page, max = 20) {
  * a blank page it can leave cleanly. Deliberately swallows its own failure: this is tidying up
  * after an error that has already been reported, and a second error on top of it says nothing new.
  */
-export async function settle(page) {
+export async function settle(page, { timeout = 5_000 } = {}) {
   try {
-    await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5_000 });
+    await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout });
     return true;
   } catch {
+    // The goto gave up; the navigation it asked for may not have. On a loaded machine the blank
+    // page can commit AFTER this goto's own timeout — and if this returned now, that late commit
+    // landed in the middle of whatever the caller opened next, which then came back "interrupted
+    // by another navigation to about:blank" (#279: a signed-in person told they were signed out).
+    // So whatever is still pending is cancelled before the tab is handed back. This is CDP's
+    // Page.stopLoading, not `window.stop()`: a navigation the browser started (every `goto`) is
+    // not the page's to cancel, and a tab already sitting on about:blank cannot tell its old blank
+    // page from the one still on the way, so waiting for the URL would prove nothing.
+    await stopLoading(page);
     return false;
   }
+}
+
+/** Cancel every navigation still pending on the tab. Never throws, never hangs past `ms`. */
+async function stopLoading(page, ms = 3_000) {
+  const stop = (async () => {
+    const cdp = await page.context().newCDPSession(page);
+    try { await cdp.send("Page.stopLoading"); } finally { await cdp.detach().catch(() => {}); }
+  })().catch(() => {});
+  let timer;
+  await Promise.race([stop, new Promise(r => { timer = setTimeout(r, ms); timer.unref?.(); })]);
+  clearTimeout(timer);
 }
 
 /** The accessible name of one ref, used by the commit guard before a click goes through. */
