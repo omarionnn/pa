@@ -135,6 +135,29 @@ test("readTurn: the code's fillers and NO_REPLY are dropped; end_call keeps its 
   assert.equal(c.text, "");
 });
 
+test("μ-law: decode and encode agree, so a long call's recording keeps its sound", () => {
+  for (const u of [0x00, 0x0f, 0x7f, 0x80, 0xaa, 0xfe, 0xff]) {
+    const back = gl.pcmToUlaw(gl.ulawToPcm(u));
+    assert.ok(Math.abs(gl.ulawToPcm(back) - gl.ulawToPcm(u)) <= 8, `0x${u.toString(16)}`);
+  }
+  assert.equal(gl.ulawToPcm(0xff), 0, "μ-law silence is zero");
+});
+
+test("the guard: a confirmed 'booked' does not cover a later, unrelated claim once they have asked something new", async () => {
+  let n = 0;
+  const { timers, live } = await startCall({ brain: async () => (++n === 1 ? { text: "It's booked for 7.", tools: [] } : new Promise(() => {})) });
+  live.emit({ type: "session.started", session: { id: "live_1" } });
+  live.emit({ type: "session.delegation.created", delegation: { id: "item_a" } });
+  await timers.advance(2000);
+  live.emit({ type: "session.output_transcript.delta", delta: " You're all set, it's booked." });
+  assert.equal(live.of("session.instructions.append").length, 0);
+  await timers.advance(2000);
+  live.emit({ type: "session.delegation.created", delegation: { id: "item_b" } });
+  await timers.advance(2000);
+  live.emit({ type: "session.output_transcript.delta", delta: " Done, I've texted her." });
+  assert.equal(live.of("session.instructions.append").length, 1);
+});
+
 // ---------- the WebSocket server half ----------
 
 test("wsserver: masked client frames are read, server frames are written unmasked", () => {

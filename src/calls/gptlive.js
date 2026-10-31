@@ -201,22 +201,47 @@ export class CallTape {
     this.reasonEnd = Math.min(this.reasonEnd, at);
   }
   seconds() { return Math.max(this.callerBytes, this.reasonEnd) / 8000; }
-  /** A mono 16-bit 8 kHz WAV of the mix. */
+  /**
+   * The mix as a mono 8 kHz WAV: 16-bit PCM, or G.711 μ-law (half the size) once PCM would pass the
+   * 25 MB a recording may be (~26 minutes). Mixed straight into the output, one pass per side.
+   */
   wav() {
     const n = Math.max(this.callerBytes, this.reasonEnd);
-    const mix = new Int32Array(n);
+    const pcm = new Int16Array(n);
     let i = 0;
-    for (const b of this.caller) for (const u of b) mix[i++] += ulawToPcm(u);
-    for (const s of this.segs) for (let k = 0; k < s.buf.length; k++) mix[s.at + k] += ulawToPcm(s.buf[k]);
-    const data = Buffer.alloc(n * 2);
-    for (let k = 0; k < n; k++) data.writeInt16LE(Math.max(-32768, Math.min(32767, mix[k])), k * 2);
+    for (const b of this.caller) for (const u of b) pcm[i++] = ulawToPcm(u);
+    for (const s of this.segs) {
+      for (let k = 0; k < s.buf.length; k++) {
+        const v = pcm[s.at + k] + ulawToPcm(s.buf[k]);
+        pcm[s.at + k] = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+      }
+    }
+    const ulaw = n * 2 + 44 > WAV_PCM_LIMIT;
+    const body = ulaw ? Buffer.from(Uint8Array.from(pcm, pcmToUlaw)) : Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
     const h = Buffer.alloc(44);
-    h.write("RIFF", 0); h.writeUInt32LE(36 + data.length, 4); h.write("WAVE", 8);
-    h.write("fmt ", 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
-    h.writeUInt32LE(8000, 24); h.writeUInt32LE(16000, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34);
-    h.write("data", 36); h.writeUInt32LE(data.length, 40);
-    return Buffer.concat([h, data]);
+    h.write("RIFF", 0); h.writeUInt32LE(36 + body.length, 4); h.write("WAVE", 8);
+    h.write("fmt ", 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(ulaw ? 7 : 1, 20); h.writeUInt16LE(1, 22);
+    h.writeUInt32LE(8000, 24); h.writeUInt32LE(ulaw ? 8000 : 16000, 28); h.writeUInt16LE(ulaw ? 1 : 2, 32); h.writeUInt16LE(ulaw ? 8 : 16, 34);
+    h.write("data", 36); h.writeUInt32LE(body.length, 40);
+    return Buffer.concat([h, body]);
   }
+}
+
+/** Under the 25 MB storeRecording takes, with room. */
+const WAV_PCM_LIMIT = 24 * 1024 * 1024;
+
+/** A 16-bit sample as one G.711 μ-law byte. */
+export function pcmToUlaw(sample) {
+  const BIAS = 0x84;
+  let s = sample;
+  const sign = s < 0 ? 0x80 : 0;
+  if (s < 0) s = -s;
+  if (s > 32635) s = 32635;
+  s += BIAS;
+  let exp = 7;
+  for (let mask = 0x4000; (s & mask) === 0 && exp > 0; mask >>= 1) exp--;
+  const mant = (s >> (exp + 3)) & 0x0f;
+  return ~(sign | (exp << 4) | mant) & 0xff;
 }
 
 // ---------- the OpenAI side ----------
@@ -269,6 +294,7 @@ export class GptLiveCall {
     this.delegations = 0;
     this.latest = null;
     this.lastResultClaimed = false;
+    this.lastResultAt = 0;
     this.lastCallerAt = 0;
     this.lastOutAt = 0;
     this.lastOutTextAt = 0;
@@ -325,6 +351,9 @@ export class GptLiveCall {
   // --- GPT-Live side ---
 
   connect() {
+    // The same ceiling an ElevenLabs call has (the agent's own, `callPlatformCapSeconds`), so a call
+    // never outlives the lost-call sweep's window and is written off while it is still going.
+    this.capTimer = this.timers.setTimeout(() => { this.endWhy = "duration_cap"; this.end("duration_cap").catch(() => {}); }, config.callPlatformCapSeconds * 1000);
     this.live = this.openLive();
     this.live.on("open", () => {
       this.live.send({ type: "session.start", event_id: `start_${this.call.id}`, session: sessionConfig({ name: this.name, greeting: this.greeting }) });
@@ -411,7 +440,10 @@ export class GptLiveCall {
     // Words of the claim already being held back are not a second claim; anything a second on is.
     if (this.mute && t - this.mute.since < 1000) return;
     const said = withoutSilenceMarker(this.utter);
-    const unconfirmed = claimsDone(this.utter) && (this.pending.size > 0 || !this.lastResultClaimed);
+    // A claim is only ever the echo of Reason's own: nothing pending, and Reason's latest answer said
+    // so within the last minute. A request since then starts the clock again (see `delegate`).
+    const confirmed = this.pending.size === 0 && this.lastResultClaimed && t - this.lastResultAt < 60_000;
+    const unconfirmed = claimsDone(this.utter) && !confirmed;
     if (said.had || unconfirmed) this.guard(said.had ? "said the silence marker" : "claimed done before Reason confirmed it");
   }
 
@@ -461,6 +493,7 @@ export class GptLiveCall {
     const turn = { id, startedAt: this.now(), msgCount: 0, firstAudioMs: null, firstRealMs: null, resultAt: null };
     this.pending.set(id, turn);
     this.latest = id;
+    this.lastResultClaimed = false;
     const messages = this.messages();
     turn.msgCount = messages.length;
     this.log({ gptlive_delegation: this.call.id, n: this.delegations, messages: messages.length });
@@ -489,6 +522,7 @@ export class GptLiveCall {
     const spoken = [reply.text, reply.endCall?.message].filter(Boolean).join(" ").trim();
     if (spoken) {
       this.lastResultClaimed = claimsDone(spoken);
+      this.lastResultAt = turn.resultAt;
       this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: spoken.slice(0, 1800) });
       (this.answered ??= []).push(turn);
     } else {
@@ -534,6 +568,7 @@ export class GptLiveCall {
     if (this.done) return;
     this.done = true;
     this.endWhy = this.endWhy || why;
+    if (this.capTimer) this.timers.clearTimeout(this.capTimer);
     for (const turn of [...this.pending.values(), ...(this.answered ?? [])]) this.heard(turn);
     // Their usage arrives on session.closed; wait for it briefly, then let go either way.
     if (this.live && this.started) {
@@ -564,7 +599,7 @@ export class GptLiveCall {
       transcript: turns.map(t => `${t.who === "them" ? "Them" : "Reason"}: ${t.text}`).join("\n"),
       turns, durationS: seconds,
       costCents: Math.round((seconds / 60) * CENTS_PER_MINUTE),
-      termination: this.endWhy === "end_call" ? "end_call" : this.endWhy === "caller hung up" ? "hung up" : this.endWhy,
+      termination: this.endWhy === "caller hung up" ? "hung up" : this.endWhy,
       costRaw: JSON.stringify({ voice_seconds: seconds, cents_per_minute: CENTS_PER_MINUTE, session: this.sessionId ?? "", guard_trips: this.guardTrips }),
       recording, recordingWhy,
     };

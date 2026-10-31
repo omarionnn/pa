@@ -125,15 +125,21 @@ export function createServer({ router, runtime, log = () => {} }) {
   if (config.callVoice === "gptlive") {
     server.on("upgrade", (req, socket) => {
       socket.on("error", () => { /* a dropped stream is the call ending, never the process */ });
-      const path = new URL(req.url, "http://localhost").pathname;
-      if (!path.startsWith(gptlive.STREAM_PATH)) return void socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
-      const ws = acceptUpgrade(req, socket);
-      if (!ws) return;
+      // Nothing thrown here may escape: an upgrade listener's throw is an uncaught exception, and
+      // anybody on the internet can send an upgrade with a URL that will not parse.
       try {
-        gptlive.acceptStream({ token: path.slice(gptlive.STREAM_PATH.length), socket: ws, settle: settleCall, runtime, log });
-      } catch (e) {
-        log({ gptlive_stream_failed: (e?.message ?? String(e)).split("\n")[0] });
-        ws.close(1011);
+        const path = new URL(req.url, "http://localhost").pathname;
+        if (!path.startsWith(gptlive.STREAM_PATH)) return void socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+        const ws = acceptUpgrade(req, socket);
+        if (!ws) return;
+        try {
+          gptlive.acceptStream({ token: path.slice(gptlive.STREAM_PATH.length), socket: ws, settle: settleCall, runtime, log });
+        } catch (e) {
+          log({ gptlive_stream_failed: (e?.message ?? String(e)).split("\n")[0] });
+          ws.close(1011);
+        }
+      } catch {
+        socket.destroy();
       }
     });
   }

@@ -5,8 +5,10 @@
 import { createHash } from "node:crypto";
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-/** One frame bigger than this is a client misbehaving, not a media stream (Twilio frames are ~250 bytes). */
+/** One frame — or one message across continuation frames — bigger than this is a client misbehaving, not a media stream (Twilio frames are ~250 bytes). */
 const MAX_FRAME = 1024 * 1024;
+/** A media stream sends a frame every 20 ms; a socket silent this long is gone. */
+const IDLE_MS = 60_000;
 
 /** The Sec-WebSocket-Accept value for a client key. */
 export function acceptKey(key) {
@@ -107,7 +109,10 @@ export function wrapSocket(socket) {
     open = false;
     for (const fn of onClose) { try { fn(code); } catch { /* a listener never breaks the close */ } }
   };
+  let partBytes = 0;
+  socket.setTimeout?.(IDLE_MS, () => socket.destroy());
   socket.on("data", (chunk) => {
+    if (!open) return;
     let frames;
     try { frames = reader.push(chunk); } catch {
       try { socket.end(encodeFrame(Buffer.from([0x03, 0xf1]), 0x8)); } catch { /* gone */ }
@@ -120,9 +125,14 @@ export function wrapSocket(socket) {
       }
       if (f.opcode === 0x9) { try { socket.write(encodeFrame(f.payload, 0xA)); } catch { /* gone */ } continue; }
       if (f.opcode === 0xA) continue;
-      if (f.opcode === 0x1 || f.opcode === 0x2) parts = [f.payload];
-      else if (f.opcode === 0x0) parts.push(f.payload);
+      if (f.opcode === 0x1 || f.opcode === 0x2) { parts = [f.payload]; partBytes = f.payload.length; }
+      else if (f.opcode === 0x0) { parts.push(f.payload); partBytes += f.payload.length; }
       else continue;
+      if (partBytes > MAX_FRAME) {
+        try { socket.end(encodeFrame(Buffer.from([0x03, 0xf1]), 0x8)); } catch { /* gone */ }
+        socket.destroy();
+        return finish(1009);
+      }
       if (!f.fin) continue;
       const text = Buffer.concat(parts).toString("utf8");
       parts = [];
@@ -141,6 +151,8 @@ export function wrapSocket(socket) {
       if (!open) return;
       const b = Buffer.alloc(2); b.writeUInt16BE(code, 0);
       try { socket.end(encodeFrame(b, 0x8)); } catch { /* gone */ }
+      // A close frame half-closes; a client that keeps sending is cut off rather than read.
+      setTimeout(() => socket.destroy(), 2000).unref?.();
       finish(code);
     },
     onMessage: (fn) => onMessage.push(fn),
