@@ -52,6 +52,9 @@ const S = [
   ...[[0, "just sent"], [12, "12 s: the store is checking"], [45, "45 s: still checking"], [100, "100 s: longer than usual (the owner's wait)"], [200, "200 s: still here, will text"]].map(([sec, t]) =>
     [`walmart-checking-${sec}`, `Signing in to Walmart, ${t}`, checking("walmart", sec), "StoreApprove"]),
   ["target-connected", "Connected", html(cx.renderView(v("connected", "target"), { staging: true })), "StoreConnected"],
+  // The same screens for somebody with a passkey: every "approve" names Face ID (src/passkey.js requiredFor).
+  ["target-connected-faceid", "Connected, with Face ID set up", html(cx.renderView(v("connected", "target"), { staging: true, passkey: true })), "StoreConnected"],
+  ["target-signin-faceid", "Sign in to Target, with Face ID set up", html(cx.renderView(v("signin", "target", rq(fields)), { staging: true, passkey: true })), "StoreSignIn"],
   ["walmart-failed-timeout", "Sign-in didn't go through: the store gave up waiting", html(cx.renderView(v("failed", "walmart", null, "signin", { reason: "timeout" }), { staging: true })), "StoreCantConnect"],
   ["walmart-failed-stopped", "Sign-in didn't go through: the store stopped it", html(cx.renderView(v("failed", "walmart", null, "signin", { reason: "stopped" }), { staging: true })), "StoreCantConnect"],
   ["walmart-failed-lost", "Sign-in didn't go through: lost track of it", html(cx.renderView(v("failed", "walmart", null, "signin", { reason: "lost" }), { staging: true })), "StoreCantConnect"],
@@ -61,6 +64,7 @@ const S = [
   ["card-saving", "Saving your card", html(cx.renderView(v("card", "", null, "card"), { staging: true })), "CardSaving", "saving"],
   ["card-error", "Card didn't save", html(cx.renderView(v("card", "", null, "card"), { staging: true })), "CardError", "error"],
   ["card-saved", "Card saved", html(cx.renderView(v("connected", "", null, "card"), { staging: true, card: { brand: "visa", last4: "4242" } })), "CardSaved"],
+  ["card-faceid", "Add a card, with Face ID set up", html(cx.renderView(v("card", "", null, "card"), { staging: true, passkey: true })), "CardAdd"],
   ["card-expired", "Card link expired", html(cx.renderView(v("expired", "", null, "card"), { staging: true })), ""],
   ["settings-shopping", "Settings → Shopping (stores + card)", st.renderSettings({ csrf: "x", reach: "text", browsers: [], connected: [], shopping }), "CardManage"],
   ["settings-card-remove", "Settings → Shopping, forget the card?", st.renderSettings({ csrf: "x", reach: "text", browsers: [], connected: [], shopping, confirmCard: true }), "CardRemove"],
@@ -72,8 +76,8 @@ const TEXTS = [
   ["Reason", "Target needs you signed in before it lets anyone check out. Sign in once here and I'll use it for Target orders from now on. Your password goes straight to Target, not to me.\nheyreason.com/web/connect/…"],
   ["", "→ the page: sign in (1) · waiting (2) · a code if Target sends one (3) · connected ✓ (5)"],
   ["Reason", "OK to pay $9.79 at Best Buy for a 4-ft USB-C cable?"],
-  ["You", "(any clear yes)"],
-  ["", "→ Reason pays exactly $9.79. No yes, no payment."],
+  ["You", "(approve the exact total: with Face ID once it's set up, by reply until then)"],
+  ["", "→ Reason pays exactly $9.79. No approval, no payment."],
 ];
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const index = kit.webPage({

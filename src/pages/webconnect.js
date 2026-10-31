@@ -107,16 +107,23 @@ export const savingLines = () => [
 const storeSays = (rq, store) => rq?.question
   ? `<p class="cx-says">${esc(nameOf(store))} says: <b>${esc(rq.question)}</b></p>` : "";
 
+/**
+ * How a payment gets its yes. Since #285 a texted yes never pays for anyone with a passkey (src/passkey.js
+ * requiredFor): their yes gets a Face ID link, and the link pays. So the page never says "text yes":
+ * with a passkey it names Face ID, without one it says only "approve", which is what the chat asks for.
+ */
+const approveLine = (passkey) => passkey ? "approve the exact total with Face ID" : "approve the exact total";
+
 // ---------------------------------------------------------------- the store's sign-in
 /** What signing in lets Reason do, and what it never sees: beside the sign-in. */
-function signinMargin(store) {
+function signinMargin(store, passkey) {
   const n = esc(nameOf(store));
-  return label("SIGNED IN, I CAN") + para("Fill a cart and check out.") + para("Only after you text yes to the exact total.")
+  return label("SIGNED IN, I CAN") + para("Fill a cart and check out.") + para(`Only after you ${approveLine(passkey)}.`)
     + label("I NEVER SEE", { pen: true, sp: true }) + para(`Your password, or the codes ${n} sends. They're sealed and go straight to ${n}.`)
     + label("AND", { sp: true }) + para("I don't touch your password or account settings.") + para(`Sign me out of ${n} any time in ${SETTINGS}.`);
 }
 
-export function renderSignin({ view, staging = false }) {
+export function renderSignin({ view, staging = false, passkey = false }) {
   const { store, request: rq, state } = view;
   const n = nameOf(store);
   const fields = rq?.fields ?? [];
@@ -148,7 +155,7 @@ export function renderSignin({ view, staging = false }) {
     head = headline(`Sign in to ${n}.`, "Just this once.", "cx-h") + lede(`Use the same login you use on ${n}. Then I can check out there with your card.`) + storeSays(rq, store);
     acts = actions(go("Sign in", { attrs: ` data-busy="1"` }), two(`NO ${NAME(store)} ACCOUNT?`, { attrs: ` data-show="noaccount"` }));
     after = note(`${n} might send you a code next. that's normal.`);
-    margin = signinMargin(store);
+    margin = signinMargin(store, passkey);
   }
   const form = `<form class="pf-form" id="cx-form" data-request="${esc(rq?.requestId ?? "")}" novalidate>${drawn}${acts}${after}`
     + `<p class="pf-note" id="cx-err" role="alert" hidden></p>${live({ id: "cx-wait", lines: sendingLines(n), hidden: true })}</form>`;
@@ -156,7 +163,7 @@ export function renderSignin({ view, staging = false }) {
   // The store signed them out of a store they'd connected: say so first, the form one tap away.
   if (view.again) screens.push(signedOut(view));
   screens.push(frame({ main: head + form, margin, step: "signin", off: !!view.again }));
-  if (state === "signin") screens.push(noAccount(store));
+  if (state === "signin") screens.push(noAccount(store, passkey));
   return page(`Reason — sign in to ${n}`, `${header()}<main class="pf" id="cx-main">${screens.join("")}</main>`, { staging });
 }
 
@@ -171,33 +178,33 @@ function signedOut(view) {
 }
 
 /** StoreNoAccount: make one on the store's own site, or go back. No guest option: guest was already tried. */
-function noAccount(store) {
+function noAccount(store, passkey = false) {
   const n = nameOf(store);
   const site = siteOf(store);
   const row = `<div class="pf-rows"><div class="pf-row"><div class="cx-make"><b>Make one on ${esc(n)}</b>${para("A couple of minutes. Come back here and sign in.", { muted: true })}</div>`
     + (site ? `<div class="cx-make-go">${out(site, `Open ${n}`, { primary: true })}</div>` : "") + `</div></div>`;
   const main = headline(`No ${n} account?`, "Make one first.", "cx-h1") + lede("You can always sign in later.") + row
     + `<div class="cx-note">${actions(two("I DO HAVE ONE", { attrs: ` data-show="signin"` }))}</div>`;
-  return frame({ main, margin: note("nothing's bought until you say yes."), step: "noaccount", off: true });
+  return frame({ main, margin: note(`nothing's bought until you ${approveLine(passkey)}.`), step: "noaccount", off: true });
 }
 
-export function renderChecking({ view, staging = false }) {
+export function renderChecking({ view, staging = false, passkey = false }) {
   const n = nameOf(view.store);
   const main = headline(`Signing in to ${n}.`, "Hang tight.", "cx-h") + lede(`Keep this page open. If ${n} sends you a code, it'll ask for it right here. However it goes, I'll text you too.`)
     + steps([[`Sent straight to ${n}, sealed`, "done"], [`${n} is checking it`, "now"], ["Signed in", "todo"]])
     + live({ id: "cx-live", lines: checkingLines(n) });
-  const margin = label("WHILE YOU WAIT") + para("Nothing is bought until you text yes to the exact total.")
+  const margin = label("WHILE YOU WAIT") + para(`Nothing is bought until you ${approveLine(passkey)}.`)
     + label("IF IT TAKES A WHILE", { sp: true }) + para(`Stores sometimes take a minute or two. If ${esc(n)} stops it, this page says so, and so do I in the chat.`);
   return page("Reason — signing in", `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
 }
 
-export function renderConnected({ view, staging = false }) {
+export function renderConnected({ view, staging = false, passkey = false }) {
   const n = nameOf(view.store);
   const main = headline(`You're signed in to ${n}.`, "Back to the chat.", "cx-h")
     + lede(`Next time you want something from ${n}, just text me. I'll send the exact total before buying.`)
     + paper({ stamp: "CONNECTED", label: NAME(view.store), big: "Signed in.", mono: false })
     + `<div class="cx-note">${actions(go("Back to Reason", { href: BACK }), two("SEE IT IN SETTINGS", { href: "/web/settings#shopping" }))}</div>`;
-  const margin = label("SIGNED IN, I CAN") + para("Check out there, after you text yes to the exact total.")
+  const margin = label("SIGNED IN, I CAN") + para(`Check out there, after you ${approveLine(passkey)}.`)
     + label("AND", { sp: true }) + para(`Sign out of ${esc(n)} any time in ${SETTINGS}.`);
   return page(`Reason — ${n} connected`, `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
 }
@@ -239,11 +246,12 @@ const cardStandIn = () => `<div aria-label="Card form (staging stand-in)" class=
   + field({ id: "s-c", label: "CARD NUMBER", mono: true, attrs: ` value="4242 4242 4242 4242" readonly tabindex="-1"` })
   + `<div class="pf-g2">${field({ id: "s-e", label: "EXPIRES", mono: true, attrs: ` value="12 / 29" readonly tabindex="-1"` })}${field({ id: "s-s", label: "SECURITY CODE", mono: true, attrs: ` value="•••" readonly tabindex="-1"` })}</div></div>`;
 
-export function renderCard({ staging = false, card = null, faceId = false }) {
+export function renderCard({ staging = false, card = null, faceId = false, passkey = false }) {
   if (card) {
     // faceId: purchase approval by passkey is on for them and not set up yet (src/passkey.js).
+    // passkey: it is set up, so their payments already go through Face ID.
     const main = headline("Card saved.", faceId ? "Now approve with Face ID." : "Back to the chat.", "cx-h")
-      + lede(faceId ? "Set up Face ID and every payment needs it, from a link I text you with the exact total. A yes alone won't pay." : "Next time you want something, I'll text you the exact total first. Nothing is bought until you say yes.")
+      + lede(faceId ? "Set up Face ID and every payment needs it, from a link I text you with the exact total. A yes alone won't pay." : `Next time you want something, I'll text you the exact total first. Nothing is bought until you ${approveLine(passkey)}.`)
       + paper({ stamp: "SAVED", label: "ON FILE", big: `${brandOf(card)} •••• ${card.last4 || "····"}` })
       + `<div class="cx-note">${faceId ? actions(go("Set up Face ID", { href: "/web/connect/passkey" }), two("BACK TO REASON", { href: BACK }))
         : actions(go("Back to Reason", { href: BACK }), two("SEE IT IN SETTINGS", { href: "/web/settings#shopping" }))}</div>`;
@@ -257,8 +265,8 @@ export function renderCard({ staging = false, card = null, faceId = false }) {
     + `<p class="pf-note" id="cx-err" role="alert" hidden></p>${live({ id: "cx-wait", lines: savingLines(), hidden: true })}</form>`;
   const add = frame({
     step: "add",
-    main: headline("Add a card.", "I only pay when you say yes.", "cx-h") + lede("It's sealed and kept securely. I only ever see the brand and the last four digits.") + form,
-    margin: label("SAVING IT") + para("Spends nothing.") + para("Lets me pay at a store's checkout, only after you text yes to the exact total.")
+    main: headline("Add a card.", passkey ? "I only pay with your Face ID." : "I only pay when you approve.", "cx-h") + lede("It's sealed and kept securely. I only ever see the brand and the last four digits.") + form,
+    margin: label("SAVING IT") + para("Spends nothing.") + para(`Lets me pay at a store's checkout, only after you ${approveLine(passkey)}.`)
       + CARD_NEVER() + label("AND", { sp: true }) + para(`Remove it any time in ${SETTINGS}.`),
   });
   const saving = frame({
@@ -398,7 +406,8 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
       ...(interactive ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
     } : null;
   const faceId = !!card && passkey.passkeyAllowedFor(link.conversation_id) && !passkey.hasPasskey(link.conversation_id);
-  const drawn = renderView(view, { card, faceId });
+  // Has a passkey, so every payment is approved with Face ID: the copy says so instead of "approve".
+  const drawn = renderView(view, { card, faceId, passkey: passkey.requiredFor(link.conversation_id) });
   return send(boot ? { ...drawn, html: withBoot(drawn.html, boot) } : drawn);
 }
 /** The screen is drawn once; a live page's boot data and script ride in their own tag at the end. */
