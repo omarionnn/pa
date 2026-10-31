@@ -19,8 +19,8 @@ that logs `ride_link_rebuilt`), `src/rides.js` (the NYC boxes and the verified c
 (`uber_rides`, `oauth_tokens`, `oauth_states`).
 Find lines: `grep -n 'case "uber_' src/tools.js`.
 Tests: the link in `test/sites.test.js` (46 in the file; the Uber link from ~line 425, "the uber deep link"), `test/rides.test.js`
-(5: the NYC geofence and the two verified numbers), `test/ridelinks.test.js` (4: coordinates and the
-outbox rebuild), `test/uber.test.js` (14) against `test/fixture-uber.js`; the sign-in plumbing in
+(5: the NYC geofence and the two verified numbers), `test/ridelinks.test.js` (5: coordinates, the
+outbox rebuild, and a log with no link text), `test/uber.test.js` (14) against `test/fixture-uber.js`; the sign-in plumbing in
 `test/signin.test.js` (21), `test/signin-window.test.js` (11), `test/signin-remote.test.js` (44).
 `test/flow-resend-link.test.js` (#79, needs a model) pins that a link they tap to act on is sent
 again, never pointed at. (There is no `uber_status` tool: status is `uber.uberStatus()` and the
@@ -40,7 +40,14 @@ again, never pointed at. (There is no `uber_status` tool: status is `uber.uberSt
   `also_offer.car_services` (Dial 7, Carmel). Reason only calls one (`call_place`) on their yes.
 - **Every ride link is rebuilt on the way out (#80).** `src/outbox.js` hands any m.uber.com link to
   `src/ridelinks.js`, which rebuilds it with today's builder, so a link copied from earlier in the
-  thread never goes out stale.
+  thread never goes out stale. The `ride_link_rebuilt` log line carries lengths and flags only
+  (`from_len`, `to_len`, `had_coords`, `had_client_id`) and `ride_link_rebuild_failed` only the
+  error's name/code: no link text, address or coordinates reach the journal (until 2026-10-31 it
+  logged the link's first 60 characters). Pinned by `test/ridelinks.test.js` ("a rebuild logs
+  lengths and flags only"); driven 2026-10-31 in-process under `caged.sh env` through the real
+  `Router` + `FakeChannel` with a captured log: rebuilt to `/go/looking`, one
+  `ride_link_rebuilt` line, no `uber.com`/address/lat-lng in any logged value (the old code leaked
+  `uber.com…`).
 - **Connect over OAuth on the user's phone — only when they ask for it.** `uber_connect` mints a
   state row and an authorize URL; the callback exchanges the code. Two outcomes are distinguished in
   the log: `ride_access` (can_book) and `identity_only` (Uber granted sign-in but not ride scopes).

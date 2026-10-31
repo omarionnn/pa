@@ -434,6 +434,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — ride link log carries no link text (fix/ride-link-log, 2026-10-31)
+
+`npm run test:offline` under `env -i`: 4,846 tests, 4,715 passing, 131 skipped, **0 failing**. `ride_link_rebuilt` logs lengths/flags only and `ride_link_rebuild_failed` the error name/code; the new `test/ridelinks.test.js` case fails on b2e9c25 and passes here.
+
 ### Baseline — sign-in "couldn't check" + settle race (fix/flight-signin-unknown, #279, 2026-10-30)
 
 `npm run test:offline` under `env -i`: 4,843 tests, 4,712 passing, 131 skipped, **0 failing**. The flights load flake ("no code but signed in", "the press needs a yes") is fixed, not skipped: `browser.settle()` cancels its own pending blank navigation (CDP `Page.stopLoading`) when its goto times out, so a late about:blank can no longer interrupt the next `goto`. `test/flights.test.js` 58/58 in 5/5 runs alongside a full suite (and 5/5 full suites 0 failing). An unknown sign-in probe is retried once, never revokes a live sign-in, and reaches the person as `blocked: "could_not_check_signin"` ("couldn't check right now", never "signed out", no sign-in ask). 8 new tests in `test/signin.test.js` + `test/flights.test.js` fail on f8f2f48/df1b653 and pass here. In-process drive on a fresh cage-env DB with real Chromium: fine → signed in; cut off once → signed in; cut off twice → could_not_check_signin, sign-in kept, flight untouched; signed out → not_signed_in as before.

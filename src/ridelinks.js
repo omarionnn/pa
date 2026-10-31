@@ -88,10 +88,19 @@ export async function freshRideLinks(text, { conversationId = null, geocode = nu
       const fresh = uberRideLink({ ...placed, client_id: config.uberClientId || null });
       if (fresh.ok && fresh.url !== url) {
         out = out.split(url).join(fresh.url);
-        log({ ride_link_rebuilt: conversationId, from: url.slice(0, 60) });
+        // Lengths and flags only: a ride link carries both ends' addresses and coordinates, and
+        // none of that belongs in the server log.
+        log({
+          ride_link_rebuilt: conversationId,
+          from_len: url.length,
+          to_len: fresh.url.length,
+          had_coords: ends.pickup_latitude != null || ends.latitude != null,
+          had_client_id: /[?&]client_id=/.test(url),
+        });
       }
     } catch (e) {
-      log({ ride_link_rebuild_failed: (e?.message ?? String(e)).split("\n")[0] });
+      // The error's name and code only: its message may quote the link or an address.
+      log({ ride_link_rebuild_failed: conversationId, error: e?.name ?? typeof e, code: e?.code ?? null });
     }
   }
   return out;
