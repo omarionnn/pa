@@ -242,3 +242,9 @@ test("an accounts table without the state column still counts people as active",
   assert.equal(a.recipients.length, 1);
   assert.equal(a.excluded.optedOut, 0);
 });
+
+test("an owner-only announcement goes only through --to-owner", () => {
+  assert.equal(A.parseArgs(["--to-owner", "--id=calls-unlimited-1031"]).toOwner, true);
+  assert.throws(() => A.parseArgs(["--id=calls-unlimited-1031"]), /owner alone/);
+  assert.throws(() => A.parseArgs(["--send", "--id=calls-unlimited-1031", "--confirm=calls-unlimited-1031"]), /owner alone/);
+});

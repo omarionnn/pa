@@ -17,6 +17,9 @@ import { createHmac } from "node:crypto";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-bland-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+// The daily call caps are proven here on the owner's own thread, so the operator's exemption from
+// them is off (REASON_CALL_CAPS_EXEMPT; its default is proven in test/accounts.test.js).
+process.env.REASON_CALL_CAPS_EXEMPT = "none";
 // Calling hours off in here, so these tests do not depend on what time it is when the suite runs
 // (REASON_CALL_QUIET_HOURS defaults to 21:00-08:00, and a suite run at midnight would see every
 // call refused for the hour rather than for the reason being tested). The window itself is proven
@@ -803,6 +806,20 @@ test("a person gets so many call MINUTES a day, counted from calls that really r
   assert.equal(out.ok, false);
   assert.equal(out.status, "daily_call_minutes_cap");
   assert.match(out.error, /REASON_MAX_CALL_MINUTES_PER_DAY/);
+});
+
+test("the operator's own calls are not stopped by the daily caps (only with REASON_CALL_CAPS_EXEMPT=operator)", async () => {
+  const calls = new BlandCallProvider({ key: "k", fetchImpl: stubFetch({ json: { status: "success", call_id: "c" } }) });
+  const day = new Date().toLocaleDateString("en-CA", { timeZone: config.tz });
+  db.bumpUsage(C, day, "calls", config.maxCallsPerDay + 2);
+  db.bumpUsage(C, day, "call_seconds", (config.maxCallMinutesPerDay + 15) * 60);
+  config.callCapsExempt = "operator";
+  try {
+    const out = await runTool("call_place", { to: OWNER, goal: "remind them about dinner" }, { conversationId: C, calls });
+    assert.notEqual(out.status, "daily_call_cap");
+    assert.notEqual(out.status, "daily_call_minutes_cap");
+    assert.equal(out.ok, true, JSON.stringify(out));
+  } finally { config.callCapsExempt = "none"; }
 });
 
 test("a finished call's real length is what goes against the day, once", async () => {

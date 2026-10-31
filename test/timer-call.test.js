@@ -22,6 +22,9 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-timer-call-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+// The daily call caps are proven here on the owner's own thread, so the operator's exemption from
+// them is off (REASON_CALL_CAPS_EXEMPT; its default is proven in test/accounts.test.js).
+process.env.REASON_CALL_CAPS_EXEMPT = "none";
 process.env.REASON_RECORDING_ROOT = join(dir, "recordings");
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";

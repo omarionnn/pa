@@ -173,6 +173,11 @@ export function withinCap(conversationId, kind = "turn") {
   const cap = CAPS[kind] ?? CAPS.turn;
   const limit = cap.limit();
   if (!limit) return { ok: true, limit: 0, used: 0 }; // 0 means uncapped
+  // The operator pays the bill, so the DAILY call caps are not his (REASON_CALL_CAPS_EXEMPT,
+  // "operator" by default; "none" caps him like everyone else). Each call's own length ceiling
+  // (callPlatformCapSeconds) and the API spend caps still apply to him; they live elsewhere.
+  if ((kind === "call" || kind === "call_minutes") && config.callCapsExempt === "operator"
+      && isOperatorConversation(conversationId)) return { ok: true, limit: 0, used: 0, exempt: true };
   const used = Math.floor((db.usageToday(conversationId, today())[cap.column] ?? 0) / cap.per);
   return used >= limit
     ? { ok: false, limit, used, kind }
