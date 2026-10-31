@@ -59,7 +59,9 @@ Source: `src/calls/gptlive.js`, `src/calls/wsserver.js`, `src/http.js` (upgrade 
 (`call_turns.voice`, `markCallTurnHeard`, `provider` updatable), `src/calls/report.js` (`voices`),
 `src/config.js` (`callVoice`, `gptlive*`, `twilio*`).
 
-Tests: `node --test test/gptlive.test.js` (26).
+Tests: `node --test test/gptlive.test.js` (27).
+
+Who made Reason (#295): `agent.js builtByLine(me)` — "built by Omarion Nyarko" only to the operator; every other user hears "made by the Reason team", no name (text and both call voices, via `systemFor`; GPT-Live via `whoFor().operator`). Drives: `gptlive-drive made.ulaw 16 --expect made --as user|owner`; `call-identity-drive.mjs` cases `user-made` / `owner-made`. Not changed: the first-chat onboarding classifier (src/onboarding.js, dark) still names him.
 
 Drive (real GPT-Live session + Reason's real turn on claude-cli, fake Twilio stream through the real
 upgrade route, throwaway db, no phone; ~2¢ of OpenAI voice) — on Hetzner from a copy of the code, as
