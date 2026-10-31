@@ -209,16 +209,24 @@ export async function settle(page, { timeout = 5_000 } = {}) {
     // page can commit AFTER this goto's own timeout — and if this returned now, that late commit
     // landed in the middle of whatever the caller opened next, which then came back "interrupted
     // by another navigation to about:blank" (#279: a signed-in person told they were signed out).
-    // So the tab is not handed back until the blank page has really landed or been stopped.
-  }
-  try {
-    await page.waitForURL((u) => String(u) === "about:blank", { waitUntil: "commit", timeout });
-    return true;
-  } catch {
-    // Never landed. Stop whatever is still pending rather than leave it armed for the next goto.
-    await page.evaluate(() => window.stop()).catch(() => {});
+    // So whatever is still pending is cancelled before the tab is handed back. This is CDP's
+    // Page.stopLoading, not `window.stop()`: a navigation the browser started (every `goto`) is
+    // not the page's to cancel, and a tab already sitting on about:blank cannot tell its old blank
+    // page from the one still on the way, so waiting for the URL would prove nothing.
+    await stopLoading(page);
     return false;
   }
+}
+
+/** Cancel every navigation still pending on the tab. Never throws, never hangs past `ms`. */
+async function stopLoading(page, ms = 3_000) {
+  const stop = (async () => {
+    const cdp = await page.context().newCDPSession(page);
+    try { await cdp.send("Page.stopLoading"); } finally { await cdp.detach().catch(() => {}); }
+  })().catch(() => {});
+  let timer;
+  await Promise.race([stop, new Promise(r => { timer = setTimeout(r, ms); timer.unref?.(); })]);
+  clearTimeout(timer);
 }
 
 /** The accessible name of one ref, used by the commit guard before a click goes through. */

@@ -449,6 +449,7 @@ test("signin_status recheck on an unreadable page says it could not check, and o
     assert.ok(db.liveAccount(OMARI, "amazon"), "the sign-in stays");
   } finally {
     entry.signed_in.url = real;
+    db.db.exec("DELETE FROM connected_accounts");
     await browser.closeAllBrowsers();
   }
 });
@@ -457,35 +458,47 @@ test("signin_status recheck on an unreadable page says it could not check, and o
  * #279's race, made deterministic. Under load, `settle`'s blank-page goto gives up (its own 5 s
  * timeout) while the navigation it asked for is still pending; when that blank page commits a
  * moment later, it interrupts whatever the caller opened next. `settle` must not hand the tab back
- * until its own navigation has landed.
+ * with its own navigation still armed — whether the tab was on an error page or already blank.
  */
-test("settle does not return while its own blank navigation is still pending", async () => {
-  let url = "chrome-error://chromewebdata/";
-  let pending = null;
-  const landed = [];
+function racingPage(startUrl) {
+  let url = startUrl;
+  let pending = null; // { timer, done }
   const page = {
     url: () => url,
     async goto(u) {
       if (u === "about:blank") {
-        pending = new Promise(r => setTimeout(() => { url = "about:blank"; pending = null; landed.splice(0).forEach(f => f()); r(); }, 60));
+        let done;
+        const p = new Promise(r => { done = r; });
+        const timer = setTimeout(() => { url = "about:blank"; pending = null; done(); }, 60);
+        pending = { timer, done, p };
         throw new Error("page.goto: Timeout 5000ms exceeded.");
       }
       if (pending) {
-        await pending;
+        await pending.p;
         throw new Error(`page.goto: Navigation to "${u}" is interrupted by another navigation to "about:blank"`);
       }
       url = u;
       return { status: () => 200 };
     },
-    async waitForURL(match, { timeout }) {
-      if (match(new URL(url))) return;
-      await new Promise((res, rej) => { landed.push(res); setTimeout(() => rej(new Error("waitForURL timeout")), timeout); });
-      if (!match(new URL(url))) throw new Error("not there");
-    },
+    // What CDP's Page.stopLoading does: the pending navigation never commits.
+    context: () => ({
+      newCDPSession: async () => ({
+        send: async (m) => { if (m === "Page.stopLoading" && pending) { clearTimeout(pending.timer); const d = pending.done; pending = null; d(); } },
+        detach: async () => {},
+      }),
+    }),
+    async waitForURL() {},
     async evaluate() {},
   };
-  await browser.settle(page, { timeout: 2_000 });
-  const res = await page.goto("http://fixture.test/account");
-  assert.equal(res.status(), 200);
-  assert.equal(page.url(), "http://fixture.test/account");
-});
+  return page;
+}
+
+for (const start of ["chrome-error://chromewebdata/", "about:blank"]) {
+  test(`settle does not hand the tab back with its own blank navigation still pending (from ${start})`, async () => {
+    const page = racingPage(start);
+    await browser.settle(page, { timeout: 2_000 });
+    const res = await page.goto("http://fixture.test/account");
+    assert.equal(res.status(), 200);
+    assert.equal(page.url(), "http://fixture.test/account");
+  });
+}

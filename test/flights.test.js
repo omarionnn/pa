@@ -532,18 +532,22 @@ test("signed in, but the account page will not load twice: 'couldn't check', nev
   db.recordSiteSignin(C, "fixture_air", { state: "signed_in", evidence: "My trips loaded" });
   const before = db.getFlight(C, row.id).status;
   site.set({ accountFails: 2 });
-  const out = await call("flight_checkin_start", { flight_id: row.id });
-  assert.equal(out.ok, false);
-  assert.equal(out.blocked, "could_not_check_signin", JSON.stringify({ blocked: out.blocked, site_says: out.site_says }));
-  assert.equal(site.state.accountFails, 0, "asked twice before giving up");
-  assert.match(out.error, /could not check whether they are signed in/);
-  assert.match(out.error, /Do not say they are signed out, do not ask them to sign in/);
-  assert.equal(out.how_they_sign_in, undefined, "no sign-in link is offered");
-  assert.ok(db.liveAccount(C, "fixture_air"), "their sign-in is not taken away by a page that did not load");
-  assert.equal(db.getFlight(C, row.id).status, before, "the flight is not marked as needing them");
-  assert.doesNotMatch(db.getFlight(C, row.id).notes ?? "", /not signed in/);
-  assert.equal(site.checkins.length, 0);
-  db.db.exec("DELETE FROM connected_accounts");
+  try {
+    const out = await call("flight_checkin_start", { flight_id: row.id });
+    assert.equal(out.ok, false);
+    assert.equal(out.blocked, "could_not_check_signin", JSON.stringify({ blocked: out.blocked, site_says: out.site_says }));
+    assert.equal(site.state.accountFails, 0, "asked twice before giving up");
+    assert.match(out.error, /could not check whether they are signed in/);
+    assert.match(out.error, /Do not say they are signed out, do not ask them to sign in/);
+    assert.equal(out.how_they_sign_in, undefined, "no sign-in link is offered");
+    assert.ok(db.liveAccount(C, "fixture_air"), "their sign-in is not taken away by a page that did not load");
+    assert.equal(db.getFlight(C, row.id).status, before, "the flight is not marked as needing them");
+    assert.doesNotMatch(db.getFlight(C, row.id).notes ?? "", /not signed in/);
+    assert.equal(site.checkins.length, 0);
+    assert.match(out.the_cheaper_way, /confirmation code/, "the code is still offered as the way with no sign-in");
+  } finally {
+    db.db.exec("DELETE FROM connected_accounts");
+  }
 });
 
 // ---------- the gate ----------

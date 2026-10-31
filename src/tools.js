@@ -7654,6 +7654,34 @@ function subscriptionView(r) {
 }
 
 /**
+ * The sign-in probe could not read the site's account page (#279): it did not load, or came back
+ * with nothing readable, twice. That says nothing about their account, so nothing is recorded
+ * against it, nobody is told they are signed out, and nobody is asked to sign in again — they are
+ * told Reason could not check right now. Shared by every rail that gates on a sign-in.
+ */
+function couldNotCheckSignin({ site, label, why, extra = {}, what, instead = "" }) {
+  // A site written down as turning Reason's browser away every time is not a glitch that clears on
+  // a retry, so "try again in a bit" would be a promise nobody can keep. Either way it is still not
+  // "signed out", and they are still not asked to sign in.
+  const reach = trust.SITE_REACHABLE[site];
+  const walled = reach && !reach.loads;
+  return {
+    ok: false,
+    blocked: "could_not_check_signin",
+    ...extra,
+    site_says: why,
+    ...(walled ? { site_note: `${label} ${reach.why}` } : {}),
+    error: `Reason could not check whether they are signed in to ${label} just now: ${label}'s account page did not load or could not be read, twice (${why}).`
+      + (walled
+        ? ` ${label} turns Reason's browser away (${reach.why}), so trying again is unlikely to help.`
+        : ` That is a glitch on Reason's side, not their account.`)
+      + ` Nothing was done and nothing about their sign-in was changed.`
+      + ` Say in one plain line that you couldn't check ${label} right now${walled ? "" : ` and offer to try the ${what} again in a bit`}.${instead ? ` ${instead}` : ""}`
+      + ` Do not say they are signed out, do not ask them to sign in, and never ask for a password.`,
+  };
+}
+
+/**
  * One flight, as the model sees it.
  *
  * Three things here are not just a copy of the row. `check_in` is the live state against the clock,
@@ -7662,23 +7690,6 @@ function subscriptionView(r) {
  * `cancelling` line does on a subscription. And `guessed` is carried through with its own warning,
  * because a guess stated as a fact is the mistake the field exists to stop.
  */
-/**
- * The sign-in probe could not read the site's account page (#279): it did not load, or came back
- * with nothing readable, twice. That says nothing about their account, so nothing is recorded
- * against it, nobody is told they are signed out, and nobody is asked to sign in again — they are
- * told Reason could not check right now. Shared by every rail that gates on a sign-in.
- */
-function couldNotCheckSignin({ label, why, extra = {}, what }) {
-  return {
-    ok: false,
-    blocked: "could_not_check_signin",
-    ...extra,
-    site_says: why,
-    error: `Reason could not check whether they are signed in to ${label} just now: ${label}'s account page did not load or could not be read, twice (${why}). That is a glitch on Reason's side, not their account. Nothing was done and nothing about their sign-in was changed.`
-      + ` Say in one plain line that you couldn't check ${label} right now and offer to try the ${what} again in a bit. Do not say they are signed out, do not ask them to sign in, and never ask for a password.`,
-  };
-}
-
 function flightView(r, { now = clock.now() } = {}) {
   if (!r) return null;
   const w = flights.checkInWindow(r, now);
@@ -16568,7 +16579,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const page = await browser.pageFor(c);
       const siteEntry = entry ? routes.signinEntry(entry.service) : null;
       const signedIn = siteEntry ? await signin.checkAndRecord(page, c, entry.service, { entry: siteEntry }) : { ok: false };
-      if (signedIn.ok && signedIn.state === "unknown") return couldNotCheckSignin({ label, why: signedIn.why, extra: { merchant: row.merchant, service: entry.service }, what: "cancellation" });
+      if (signedIn.ok && signedIn.state === "unknown") return couldNotCheckSignin({ site: entry.service, label, why: signedIn.why, extra: { merchant: row.merchant, service: entry.service }, what: "cancellation" });
       if (signedIn.ok && signedIn.state !== "signed_in") {
         const route = signin.signinRoute(c);
         return {
@@ -16940,7 +16951,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         signedIn = await signin.checkAndRecord(page, c, entry.airline, { entry: signinSpec });
       }
       if (!byCode && signedIn.ok && signedIn.state === "unknown") {
-        return couldNotCheckSignin({ label, why: signedIn.why, extra: { flight: flightView(db.getFlight(c, row.id)), airline: entry.airline }, what: "check-in" });
+        return couldNotCheckSignin({
+          site: entry.airline, label, why: signedIn.why, what: "check-in",
+          extra: {
+            flight: flightView(db.getFlight(c, row.id)), airline: entry.airline,
+            the_cheaper_way: `Most airlines, ${label} included, open a booking on a confirmation code and a last name with no account at all.`
+              + ` If they can tell you the code, flight_save it onto this flight and start again — that needs no sign-in at all.`,
+          },
+          instead: "Offer the confirmation code as the way that needs no sign-in at all.",
+        });
       }
       if (!byCode && signedIn.ok && signedIn.state !== "signed_in") {
         const route = signin.signinRoute(c);
