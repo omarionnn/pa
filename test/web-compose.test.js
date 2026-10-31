@@ -258,7 +258,7 @@ test("a voice note with the browser's own words: the words are the message, hear
   assert.equal(db.mediaItem(KOFI_C, a.media_id).coverage, "transcribed", "the record says it was heard");
   const line = convo.rowOut(db.messagesFor(KOFI_C)[0], { conversationId: KOFI_C });
   assert.match(line.html, /<p class="lbl"><span>YOU · VOICE · WEB · <\/span>/);
-  assert.match(line.html, /<p class="said hand">also see if they take dogs, we might bring Juno<\/p><button type="button" class="vplay" data-src="\/web\/media\/u\/[A-Za-z0-9_-]{22}\/voice-note\.webm" aria-label="Play voice note, 7 seconds"><svg[^]*<span class="vt">0:07<\/span><\/button>$/);
+  assert.match(line.html, /<p class="said hand">also see if they take dogs, we might bring Juno<\/p><div class="slip achip" data-src="\/web\/media\/u\/[A-Za-z0-9_-]{22}\/voice-note\.webm"><button type="button" class="vplay ap" data-src="\/web\/media\/u\/[A-Za-z0-9_-]{22}\/voice-note\.webm" aria-pressed="false" aria-label="Play voice note, 7 seconds"><svg[^]*<span class="vt">0:07<\/span><\/span> · VOICE NOTE<\/span><\/span><\/div>$/);
 });
 
 test("a voice note with no words (Firefox): heard on the server by Reason's own listening, never the Anthropic API; heard once", async () => {
@@ -308,7 +308,7 @@ test("a photo and a voice note texted in from iMessage draw in the thread, serve
   db.coverMedia(media0.id, { coverage: "transcribed", transcript: "running late", seconds: 3 });
   db.db.prepare("UPDATE messages SET media = ? WHERE id = ?").run(JSON.stringify([{ url: "https://cdn.example/a.caf", filename: "Audio.caf", kind: "voice", media_id: media0.id }]), vrow.id);
   const v = convo.rowOut(db.messagesFor(KOFI_C).find(r => r.id === vrow.id), { conversationId: KOFI_C });
-  assert.match(v.html, /YOU · VOICE · IMESSAGE · [^]*<p class="said hand">running late<\/p><button type="button" class="vplay"[^>]*aria-label="Play voice note, 3 seconds">/);
+  assert.match(v.html, /YOU · VOICE · IMESSAGE · [^]*<p class="said hand">running late<\/p><div class="slip achip"[^>]*><button type="button" class="vplay ap"[^>]*aria-label="Play voice note, 3 seconds">/);
   assert.ok(!v.html.includes("they sent"), "the model's framing never shows");
 });
 

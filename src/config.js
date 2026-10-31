@@ -713,6 +713,9 @@ export const config = {
   // cannot record cannot be used to place one, and a call that comes back without audio is an
   // error the owner is told about. This is only where the audio Reason owns is kept.
   recordingRoot: process.env.REASON_RECORDING_ROOT || `${DATA_DIR}/recordings`,
+  // Reason Web's playable copies of voice notes and call recordings a browser cannot play as they
+  // are (a .caf): AAC in .m4a, made once and kept by the bytes' own hash (src/webaudio.js).
+  webAudioRoot: process.env.REASON_WEB_AUDIO_ROOT || `${DATA_DIR}/web-audio`,
   // Real documents Reason wrote: a .docx, a .pptx, a .pdf. Under the data dir with everything else,
   // because a document is a file somebody was sent and "the export carries it" and "a delete
   // removes it" both have to mean the same file on disk — the same bargain the recordings are in.

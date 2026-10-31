@@ -231,6 +231,30 @@ const DOCX_BYTES = Buffer.concat([Buffer.from("PK\x03\x04"), Buffer.alloc(12511,
   const r = db.db.prepare("SELECT * FROM messages WHERE outbox_id = ?").get(ob.id);
   lines.push(wc.rowOut({ ...r, media: JSON.parse(r.media) }, { conversationId: CONV, service: "iMessage" }));
 }
+// A voice note Reason spoke and a call's recording, filed the way the send path files them (the .caf in
+// data/audio-tmp / data/recordings, its path on the outbox row, a recording's call id with it), so each
+// draws as the audio chip through src/sentfiles.js. On staging they play the sample files written below.
+const AUDIO_SRC = {};
+{
+  mkdirSync(config.audioTmpRoot, { recursive: true });
+  mkdirSync(config.recordingRoot, { recursive: true });
+  const say = join(config.audioTmpRoot, "voice-stg.caf");
+  writeFileSync(say, Buffer.from("caff"));
+  const ob1 = db.enqueueOutbound({ idemKey: "stg-voice", conversationId: CONV, channel: "fake", address: YOU, body: "Here's the plan for Saturday, out loud.", media: { file: say, mimeType: "audio/x-caf", filename: "voice-stg.caf" } }).row;
+  db.writeMessage({ conversationId: CONV, role: "assistant", channel: "sendblue", outboxId: ob1.id, text: "Here's the plan for Saturday, out loud.", media: [{ kind: "file", mimeType: "audio/x-caf", filename: "voice-stg.caf" }], at: at(0, 10, 42) });
+  const call = db.createCall(CONV, { provider: "fake", toNumber: "+15550100177", isOwner: false, goal: "book a table for two at Lilia, Saturday 8pm" });
+  const rec = join(config.recordingRoot, `call-${call.id}.caf`);
+  writeFileSync(rec, Buffer.from("caff"));
+  db.db.prepare("UPDATE calls SET recording_state = 'stored', recording_file = ? WHERE id = ?").run(rec, call.id);
+  const ob2 = db.enqueueOutbound({ idemKey: "stg-call", conversationId: CONV, channel: "fake", address: YOU, body: "Called Lilia: you're booked for two, Saturday at 8. Here's the call.", media: { call_id: call.id, file: rec, mimeType: "audio/x-caf", filename: `call-${call.id}-15550100177.caf`, seconds: 154 } }).row;
+  db.writeMessage({ conversationId: CONV, role: "assistant", channel: "sendblue", outboxId: ob2.id, text: "Called Lilia: you're booked for two, Saturday at 8. Here's the call.", media: [{ kind: "file", mimeType: "audio/x-caf", filename: `call-${call.id}-15550100177.caf` }], at: at(0, 10, 44) });
+  for (const [ob, file] of [[ob1, "media/voice-reason.wav"], [ob2, "media/call.wav"]]) {
+    const r = db.db.prepare("SELECT * FROM messages WHERE outbox_id = ?").get(ob.id);
+    const l = wc.rowOut({ ...r, media: JSON.parse(r.media) }, { conversationId: CONV, service: "iMessage" });
+    lines.push(l);
+    AUDIO_SRC[l.media[0].src] = file;
+  }
+}
 // REASON_WEB_DRAFTS is on here: the sample reply grows a sentence at a time over a stand-in live
 // stream, each piece drawn by the real wc.draftHtml, then the saved line replaces it.
 const REPLY = "Got it, I'll hold the Wednesday one. I'll check the fare again tonight and tell you before I book anything. If it drops before then, you'll hear from me first. (Staging: a sample reply, nothing was sent.)";
@@ -243,6 +267,7 @@ const MEDIA = { "staging:photo": "media/photo.svg", "staging:voice": "media/voic
 const mediaMap = {};
 for (const r of rows) r.media.forEach((m, i) => { mediaMap[`/web/media/m/${r.id}/${i}`] = MEDIA[m.url]; });
 for (const l of lines) if (l.media.some(x => x.name === DOCX_NAME)) mediaMap[l.media[0].src] = `media/${DOCX_NAME}`;
+Object.assign(mediaMap, AUDIO_SRC);
 
 const pick = `<a class="pick" href="/web?thread" aria-label="Pick up from iMessage: continue the thread"><span class="pick-h"><span class="hand">pick up from iMessage</span><span class="dash" aria-hidden="true"></span><span class="lbl">LAST TEXT · 8:03 AM</span></span><span class="pick-q"><span class="y">also flights to lisbon in march, nothing before 9am</span><span class="r">On it. I'll keep the early ones out and hold the best two for you to look at.</span></span><span class="pick-go">Continue the thread <span aria-hidden="true">→</span></span><span class="pick-n">Same Reason, same thread. What you send here stays on Web.</span></a>`;
 // Reply to one message (REASON_WEB_REPLY): a thread of its own, written into the throwaway store the way
@@ -599,6 +624,15 @@ function silentWav(seconds = 1, rate = 8000) {
   b.writeUInt32LE(rate, 24); b.writeUInt32LE(rate, 28); b.writeUInt16LE(1, 32); b.writeUInt16LE(8, 34); b.write("data", 36); b.writeUInt32LE(n, 40); b.fill(128, 44);
   return b;
 }
+/** A soft rising-and-falling hum, `seconds` long: something audible for the audio chip to play. */
+function toneWav(seconds, rate = 8000) {
+  const n = seconds * rate, b = silentWav(seconds, rate);
+  for (let i = 0; i < n; i++) {
+    const t = i / rate, env = 0.5 + 0.5 * Math.sin(2 * Math.PI * t / 1.7);
+    b[44 + i] = 128 + Math.round(18 * env * Math.sin(2 * Math.PI * (180 + 40 * Math.sin(t)) * t));
+  }
+  return b;
+}
 const PDF = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj 3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj 4 0 obj<</Length 58>>stream\nBT /F1 24 Tf 72 700 Td (Sample lease - staging, not real) Tj ET\nendstream endobj 5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";
 
 // ---------------------------------------------------------------- write
@@ -610,6 +644,8 @@ try {
   for (const f of ["favicon.svg", "apple-touch-icon.png"]) copyFileSync(new URL(`assets/${f}`, root), join(outDir, f));
   writeFileSync(join(outDir, "media", "photo.svg"), PHOTO_SVG);
   writeFileSync(join(outDir, "media", "voice.wav"), silentWav());
+  writeFileSync(join(outDir, "media", "voice-reason.wav"), toneWav(9));
+  writeFileSync(join(outDir, "media", "call.wav"), toneWav(154));
   writeFileSync(join(outDir, "media", "lease-2026.pdf"), PDF);
   writeFileSync(join(outDir, "media", DOCX_NAME), DOCX_BYTES);
   // The seal's pictures, drawn by the server's own renderer (src/pages/card.js headless Chromium).

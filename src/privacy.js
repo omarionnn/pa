@@ -30,6 +30,7 @@
 //
 // Nothing here is a substitute for that delete, which is immediate, total, and theirs to run.
 import { rmSync } from "node:fs";
+import { forgetPlayable } from "./webaudio.js";
 import { db } from "./db.js";
 import { config, clock } from "./config.js";
 import { fromOutside } from "./outside.js";
@@ -206,7 +207,7 @@ function deleteOldRecordings(before, now, log) {
      AND COALESCE(ended_at, created_at) < ?`).all(before);
   let gone = 0;
   for (const r of rows) {
-    try { rmSync(r.recording_file, { force: true }); } catch (e) {
+    try { forgetPlayable(r.recording_file); rmSync(r.recording_file, { force: true }); } catch (e) {
       log({ retention_recording_failed: r.id, why: (e?.message ?? String(e)).split("\n")[0] });
       continue;
     }

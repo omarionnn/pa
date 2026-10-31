@@ -313,7 +313,7 @@ test("an event link with a known date is the date-block card (organiser's own); 
 test("photos, voice notes and files already in history: a tilted frame, a Caveat transcript, a typed slip — never a fetched address", () => {
   const m = wc.rowOut(row({ role: "user", channel: "fake", text: "also see if they take dogs", media: [{ mimeType: "audio/x-caf", filename: "Audio.caf", url: "https://secret.example/a" }] }), { conversationId: KOFI_C });
   assert.match(m.html, /YOU · VOICE · IMESSAGE · /);
-  assert.match(m.html, /<p class="said hand">also see if they take dogs<\/p><button type="button" class="vplay" data-src="\/web\/media\/m\/\d+\/0" aria-label="Play voice note">/);
+  assert.match(m.html, /<p class="said hand">also see if they take dogs<\/p><div class="slip achip" data-src="\/web\/media\/m\/\d+\/0"><button type="button" class="vplay ap" data-src="\/web\/media\/m\/\d+\/0" aria-pressed="false" aria-label="Play voice note">/);
   const p = wc.rowOut(row({ role: "user", channel: "fake", text: "", media: [{ mimeType: "image/jpeg", filename: "IMG.JPG" }, { mimeType: "application/pdf", filename: "lease.pdf" }] }), { conversationId: KOFI_C });
   assert.match(p.html, /<div class="photo" role="img" aria-label="Photo you sent"><span class="lbl">PHOTO<\/span><\/div><span class="slip fslip fchip"><svg class="fc-i"[^]*?<span class="fn">lease\.pdf<\/span><span class="fs">PDF<\/span><\/span><\/span>/, "an item with no address to serve is still drawn");
   const q = wc.rowOut(row({ role: "user", channel: "fake", text: "", media: [{ kind: "image", filename: "IMG.HEIC", url: "https://secret.example/p" }] }), { conversationId: KOFI_C });

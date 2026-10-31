@@ -269,7 +269,7 @@ test("4A → 4B → KEEP TALKING → 4B → Edit it first → 4C → sent as a v
     await row.locator(".said.hand", { hasText: "if the Hudson one is open, hold it. and ask about dogs." }).waitFor({ timeout: 8000 });
     assert.match(await row.locator(".lbl").first().textContent(), /^YOU · VOICE · WEB · /);
     assert.match(await row.locator(".vplay").getAttribute("aria-label"), /^Play voice note, \d+ seconds?$/);
-    assert.match(await row.locator(".vplay .vt").textContent(), /^0:\d\d$/);
+    assert.match(await row.locator(".achip .vt").textContent(), /^0:\d\d$/);
     assert.ok(await page.locator(".fromvoice").isHidden(), "the label goes with the send");
     const last = userRows().at(-1);
     assert.equal(last.text, "if the Hudson one is open, hold it. and ask about dogs.");

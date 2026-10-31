@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, copyFileSync, statSync, writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import { config } from "../config.js";
+import { forgetPlayable } from "../webaudio.js";
 
 // Containers Reason will file. Deliberately short: these are the audio types the channels can
 // actually send (Linq's own documented list is M4A, AAC, MP3, WAV, AIFF, CAF, AMR), and refusing
@@ -210,6 +211,7 @@ export function deleteRecordingFile(file) {
   if (!file) return { ok: true, existed: false };
   try {
     if (!existsSync(file)) return { ok: true, existed: false };
+    forgetPlayable(file); // Reason Web's .m4a of it (src/webaudio.js) goes with it
     unlinkSync(file);
     return { ok: true, existed: true };
   } catch (e) {
