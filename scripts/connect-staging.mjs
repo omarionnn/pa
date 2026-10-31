@@ -34,6 +34,8 @@ const code = [{ key: "code", label: "Code", required: true, handling: "protected
 const rq = (f, question = "") => ({ requestId: "req_sample", question, fields: f });
 const v = (state, store, request = null, kind = "signin", extra = {}) => ({ state, store, kind, request, ...extra });
 const html = (o) => o.html;
+/** The checking page booted as a live one that has already waited `sec` seconds (no poll: `watch` off). */
+const checking = (store, sec) => cx.withBoot(html(cx.renderView(v("checking", store, null, "signin", { waited: sec * 1000, stage: "in_progress" }), { staging: true })), { token: "staging", state: "checking", watch: false, waited: sec * 1000 });
 const stdCode = [{ key: "code", label: "Code", required: true, handling: "standard", input: { kind: "text", autoComplete: "one-time-code", inputMode: "numeric" } }];
 const shopping = { stores: [{ store: "target", name: "Target", connectedAt: Date.parse("2026-10-30T17:00:00Z") }, { store: "bestbuy", name: "Best Buy", connectedAt: Date.parse("2026-10-28T17:00:00Z") }], card: { brand: "visa", last4: "4242" }, lastUsed: { store: "Target", at: Date.parse("2026-10-28T20:00:00Z") } };
 
@@ -46,16 +48,20 @@ const S = [
   ["target-code", "Target sent a code (sealed field)", html(cx.renderView(v("code", "target", rq(code), "signin", { answered: true }), { staging: true })), "StoreCode"],
   ["target-code-cells", "A code we own (six cells)", html(cx.renderView(v("code", "target", rq(stdCode), "signin", { answered: true }), { staging: true })), "StoreCode"],
   ["target-wrongcode", "That code didn't match", html(cx.renderView(v("wrongcode", "target", rq(code), "signin", { answered: true }), { staging: true })), "StoreWrongCode"],
-  ["target-checking", "Signing in (checking)", html(cx.renderView(v("checking", "target"), { staging: true })), "StoreApprove"],
+  // Waiting on the store, alive: the page as it reads after that many seconds (the clock keeps going here).
+  ...[[0, "just sent"], [12, "12 s: the store is checking"], [45, "45 s: still checking"], [100, "100 s: longer than usual (the owner's wait)"], [200, "200 s: still here, will text"]].map(([sec, t]) =>
+    [`walmart-checking-${sec}`, `Signing in to Walmart, ${t}`, checking("walmart", sec), "StoreApprove"]),
   ["target-connected", "Connected", html(cx.renderView(v("connected", "target"), { staging: true })), "StoreConnected"],
-  ["target-failed", "Sign-in didn't go through", html(cx.renderView(v("failed", "target"), { staging: true })), "StoreCantConnect"],
-  ["target-expired", "Link ran out", html(cx.renderView(v("expired", "target"), { staging: true })), ""],
+  ["walmart-failed-timeout", "Sign-in didn't go through: the store gave up waiting", html(cx.renderView(v("failed", "walmart", null, "signin", { reason: "timeout" }), { staging: true })), "StoreCantConnect"],
+  ["walmart-failed-stopped", "Sign-in didn't go through: the store stopped it", html(cx.renderView(v("failed", "walmart", null, "signin", { reason: "stopped" }), { staging: true })), "StoreCantConnect"],
+  ["walmart-failed-lost", "Sign-in didn't go through: lost track of it", html(cx.renderView(v("failed", "walmart", null, "signin", { reason: "lost" }), { staging: true })), "StoreCantConnect"],
+  ["target-expired", "Link expired", html(cx.renderView(v("expired", "target"), { staging: true })), ""],
   ["walmart-signin", "Same page, Walmart", html(cx.renderView(v("signin", "walmart", rq(fields)), { staging: true })), "StoreSignIn"],
   ["card", "Add a card", html(cx.renderView(v("card", "", null, "card"), { staging: true })), "CardAdd"],
   ["card-saving", "Saving your card", html(cx.renderView(v("card", "", null, "card"), { staging: true })), "CardSaving", "saving"],
   ["card-error", "Card didn't save", html(cx.renderView(v("card", "", null, "card"), { staging: true })), "CardError", "error"],
   ["card-saved", "Card saved", html(cx.renderView(v("connected", "", null, "card"), { staging: true, card: { brand: "visa", last4: "4242" } })), "CardSaved"],
-  ["card-expired", "Card link ran out", html(cx.renderView(v("expired", "", null, "card"), { staging: true })), ""],
+  ["card-expired", "Card link expired", html(cx.renderView(v("expired", "", null, "card"), { staging: true })), ""],
   ["settings-shopping", "Settings → Shopping (stores + card)", st.renderSettings({ csrf: "x", reach: "text", browsers: [], connected: [], shopping }), "CardManage"],
   ["settings-card-remove", "Settings → Shopping, forget the card?", st.renderSettings({ csrf: "x", reach: "text", browsers: [], connected: [], shopping, confirmCard: true }), "CardRemove"],
   ["settings-shopping-empty", "Settings → Shopping, nothing yet", st.renderSettings({ csrf: "x", reach: "text", browsers: [], connected: [], shopping: { stores: [], card: null } }), ""],

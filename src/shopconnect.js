@@ -230,6 +230,13 @@ function addCardColumn(column, decl) {
 addCardColumn("registered", "INTEGER");
 addCardColumn("reg_error", "TEXT NOT NULL DEFAULT ''");
 addCardColumn("asked_email", "INTEGER NOT NULL DEFAULT 0");
+// When the page answered a sign-in link (2026-10-31: the page needs to know how long the store has been
+// checking, from the record, so a reopened page says the right thing at once).
+function addLinkColumn(column, decl) {
+  const have = db.db.prepare("SELECT name FROM pragma_table_info('shop_links')").all().map((r) => r.name);
+  if (!have.includes(column)) db.db.exec(`ALTER TABLE shop_links ADD COLUMN ${column} ${decl}`);
+}
+addLinkColumn("answered_at", "INTEGER");
 addRunColumn("stage", "TEXT NOT NULL DEFAULT ''");
 addRunColumn("stage_at", "INTEGER");
 addRunColumn("revision", "INTEGER NOT NULL DEFAULT 0");
@@ -550,22 +557,44 @@ const isCodeField = (f) => isProtected(f) && (f.input?.autoComplete === "one-tim
 export function linkView(link) {
   if (!link) return { state: "expired" };
   if (link.state === "connected") return { state: "connected", store: link.store, kind: link.kind };
-  if (link.state === "failed") return { state: "failed", store: link.store, kind: link.kind };
+  const run = link.run_id ? runRow(link.run_id) : null;
+  if (link.state === "failed") return { state: "failed", store: link.store, kind: link.kind, reason: failReason(run) };
+  // The checkout itself is over while the link still says open (the run died between two polls, or the
+  // process was down when it did — 2026-10-31): the page says so, never "checking" for good.
+  if (run && TERMINAL.has(run.status) && link.kind === "signin" && link.state === "open") {
+    return run.status === "succeeded" ? { state: "connected", store: link.store, kind: link.kind } : { state: "failed", store: link.store, kind: link.kind, reason: failReason(run) };
+  }
   if (link.state !== "open" || clock.now() > link.expires_at) return { state: "expired", store: link.store, kind: link.kind };
   if (link.kind === "card") return { state: "card", kind: "card" };
   const rq = link.request_json ? JSON.parse(link.request_json) : null;
-  if (!rq || link.answered_request_id === link.request_id) return { state: "checking", store: link.store, kind: link.kind };
+  if (!rq || link.answered_request_id === link.request_id) {
+    // Waiting on the store: since when (the answer, else the link), and how far the checkout has got.
+    const since = link.answered_at ?? link.created_at;
+    return { state: "checking", store: link.store, kind: link.kind, since, waited: Math.max(0, clock.now() - since), stage: run?.stage || "", answered: !!link.answered_at };
+  }
   const answered = new Set(link.answered_keys ? link.answered_keys.split(",") : []);
   const secret = rq.fields.filter(isProtected);
   const again = secret.some((f) => answered.has(f.key));
   let state = "signin";
   if (secret.length && secret.every(isCodeField)) state = again ? "wrongcode" : "code";
   else if (again) state = "retry";
-  const run = link.run_id ? runRow(link.run_id) : null;
   return {
     state, store: link.store, kind: link.kind, request: rq, answered: answered.size > 0,
     ...(state === "signin" && run?.mode === "signed" ? { again: true, item: run.item || "" } : {}),
   };
+}
+
+/**
+ * Why a sign-in link's checkout ended without the store letting them in, for the page's end screen:
+ * "timeout" (the store or Crossmint was waiting and gave up), "lost" (Crossmint stopped answering),
+ * "stopped" (the store or Crossmint ended it), "" when the run isn't known.
+ */
+export function failReason(run) {
+  if (!run) return "";
+  const r = String(run.result ?? "").toLowerCase();
+  if (/input_expired|expired|timed? ?out/.test(r)) return "timeout";
+  if (/^lost\b/.test(r)) return "lost";
+  return "stopped";
 }
 
 /**
@@ -606,9 +635,9 @@ export async function answerLink(token, { requestId, answers }) {
   const part = { type: "input_response", requestId, action: "submit", response: { kind: "form", answers: checked.answers } };
   const r = await server(link.conversation_id, `${CHECKOUTS}/${encodeURIComponent(link.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } });
   if (!r.ok) return { ok: false, error: "crossmint_refused", status: r.status };
-  q("UPDATE shop_links SET answered_keys = ?, answered_request_id = ? WHERE id = ?").run(Object.keys(checked.answers).join(","), requestId, link.id);
+  q("UPDATE shop_links SET answered_keys = ?, answered_request_id = ?, answered_at = ? WHERE id = ?").run(Object.keys(checked.answers).join(","), requestId, clock.now(), link.id);
   q("UPDATE shop_runs SET stage = 'in_progress', stage_at = ?, progress_at = ?, updated_at = ? WHERE run_id = ? AND stage = 'needs_input'").run(clock.now(), clock.now(), clock.now(), link.run_id);
-  return { ok: true, state: "checking" };
+  return { ok: true, state: "checking", waited: 0 };
 }
 
 // ---------------------------------------------------------------- the card

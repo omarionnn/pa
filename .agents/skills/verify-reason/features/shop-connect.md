@@ -68,3 +68,25 @@ checkout", never to be confirmed or tracked again. Everybody else: tools and des
 - Retiring an AgentCard row (no AgentCard void API): `db.markAgentcardPurchase(buyConv, { status: "declined",
   declineCode: "retired_moved_to_crossmint" })`; an `approved` webhook then does nothing (it acts only on
   awaiting_approval) and purchase_confirm is refused for the owner anyway. Row 8 (CeraVe, $17.79) done 10-30.
+
+## Never a dead page (2026-10-31, owner: Walmart sign-in sat still ~100 s after Sign in)
+What happened live (shop_links 255636d8, run ce771938, UTC): password answered 18:05:40; the process was
+restarted by a deploy 18:06:37–18:06:55; Walmart's code question reached the page 18:07:23; a second
+code 18:08:24; connected, stage `paid` 18:11:22. The page only redrew on a state change, so ~100 s of
+nothing. Now every wait is a `live()` block (src/pages/paperkit.js): a sweeping pen line, a status line
+by elapsed seconds (`checkingLines`: sent → checking 8 s → still checking 30 s → longer than usual 75 s →
+still here, will text 180 s), a clock; `prefers-reduced-motion` drops the sweep and keeps the words.
+`shop_links.answered_at` is the record's clock: `linkView` → `{state:"checking", waited, stage}`, the
+page boots with `waited`, `GET …/state` returns `{state, waited, stage}` and the page resyncs on each
+poll; `pfWake` polls at once on visibilitychange/pageshow/focus/online (Safari backgrounding). The run
+ending while the link still says open (`TERMINAL` status) reads as `failed` with `failReason` (timeout /
+lost / stopped) → "That sign-in didn't go through. Nothing was charged." + next step; an old or
+made-up link → 410 "This link has expired. Ask me for a new one." The sign-in and card forms show a
+"Sending to …, sealed." line while the tap is in flight; the card's saving step and the Face ID
+approve page's paying step (`payingLines`, src/pages/webapprove.js) carry the same block.
+- Offline: `node --test test/signin-progress.test.js` (9).
+- Drive (cage, muted, no Crossmint key, real Chromium): `bin/shop-connect-live-drive.mjs` under
+  `caged.sh env` — 18 checks: boot/`/state` waited, the words at 95 s, clock ticks, sweep moves, pageshow
+  polls at once, a new question and the run dying each redraw the open page, 410s. Shots in
+  `~/Desktop/signin-progress-1031/` (cage-checking-95s, cage-code, cage-failed).
+- Look: `node scripts/connect-staging.mjs --deploy` → walmart-checking-{0,12,45,100,200}, walmart-failed-{timeout,stopped,lost}.

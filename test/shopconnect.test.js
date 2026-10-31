@@ -341,7 +341,7 @@ test("owner-only: nobody else sees the tools or the pages", async () => {
   const { token } = await signinLink(AMA);
   process.env.REASON_SHOP_CONNECT = "owner";
   const page = await connectRequest({ sub: token, method: "GET" });
-  assert.match(page.body, /This link has run out/, "Ama's link opens nothing while the flag is owner-only");
+  assert.match(page.body, /This link has expired/, "Ama's link opens nothing while the flag is owner-only");
 });
 
 // ---------------------------------------------------------------- 6. any store

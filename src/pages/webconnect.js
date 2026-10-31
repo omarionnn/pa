@@ -20,7 +20,7 @@
 import { readFileSync } from "node:fs";
 import { esc } from "./render.js";
 import { webPage } from "./webkit.js";
-import { PAPER_CSS, header, frame, headline, lede, label, para, note, sealed, field, slot, go, two, actions, paper, steps, codeInput, CODE_JS, STEP_JS } from "./paperkit.js";
+import { PAPER_CSS, header, frame, headline, lede, label, para, note, sealed, field, slot, go, two, actions, paper, steps, codeInput, live, CODE_JS, STEP_JS, LIVE_JS } from "./paperkit.js";
 import { SECURITY_HEADERS } from "./websignin.js";
 import * as shop from "../shopconnect.js";
 import * as passkey from "../passkey.js";
@@ -81,6 +81,28 @@ function storeField(f, { store, staging = false, error = "" }) {
   return field({ id, label: text, attrs: ` name="${esc(f.key)}" type="${type}"${auto ? ` autocomplete="${esc(auto)}"` : ""}${mode}${f.required ? " required" : ""} spellcheck="false" autocapitalize="off"` });
 }
 
+// Never a dead page (owner 2026-10-31, 14:10 ET: after Sign in at Walmart the page sat still for ~100 s
+// while Reason texted that Walmart was checking). Every wait shows a live() block: a sweeping line, a
+// status line that changes the longer it takes, and a clock. The words are by elapsed time, in seconds.
+/** After the answer went in: what the store is doing with it, as the wait grows. */
+export const checkingLines = (n) => [
+  [0, `Sent to ${n}, sealed.`],
+  [8, `${n} is checking it.`],
+  [30, "Still checking. This can take a minute."],
+  [75, "Taking longer than usual. Still on it."],
+  [180, `${n} hasn't answered yet. I'm still here, and I'll text you either way.`],
+];
+/** While the answer is on its way (the tap, until the page redraws). */
+export const sendingLines = (n) => [[0, `Sending to ${n}, sealed.`], [6, "Still sending. One moment."], [20, "Taking longer than usual. Still on it."]];
+/** While Crossmint saves a card. */
+export const savingLines = () => [
+  [0, "Saving it securely."],
+  [8, "Checking the card with your bank."],
+  [30, "Still saving. This can take a minute."],
+  [75, "Taking longer than usual. Still on it."],
+  [180, "No answer yet. It's never saved twice. If this page closes, ask me for a fresh link."],
+];
+
 /** The store's own question, when it says more than "sign in". Shown as theirs. */
 const storeSays = (rq, store) => rq?.question
   ? `<p class="cx-says">${esc(nameOf(store))} says: <b>${esc(rq.question)}</b></p>` : "";
@@ -129,7 +151,7 @@ export function renderSignin({ view, staging = false }) {
     margin = signinMargin(store);
   }
   const form = `<form class="pf-form" id="cx-form" data-request="${esc(rq?.requestId ?? "")}" novalidate>${drawn}${acts}${after}`
-    + `<p class="pf-note" id="cx-err" role="alert" hidden></p></form>`;
+    + `<p class="pf-note" id="cx-err" role="alert" hidden></p>${live({ id: "cx-wait", lines: sendingLines(n), hidden: true })}</form>`;
   const screens = [];
   // The store signed them out of a store they'd connected: say so first, the form one tap away.
   if (view.again) screens.push(signedOut(view));
@@ -161,10 +183,11 @@ function noAccount(store) {
 
 export function renderChecking({ view, staging = false }) {
   const n = nameOf(view.store);
-  const main = headline(`Signing in to ${n}.`, "A few seconds.", "cx-h") + lede(`Keep this page open. If ${n} sends you a code, it'll ask for it right here.`)
+  const main = headline(`Signing in to ${n}.`, "Hang tight.", "cx-h") + lede(`Keep this page open. If ${n} sends you a code, it'll ask for it right here. However it goes, I'll text you too.`)
     + steps([[`Sent straight to ${n}, sealed`, "done"], [`${n} is checking it`, "now"], ["Signed in", "todo"]])
-    + `<div class="cx-note">${note("on it.", { role: "status" })}</div>`;
-  const margin = label("WHILE YOU WAIT") + para("Nothing is bought until you text yes to the exact total.");
+    + live({ id: "cx-live", lines: checkingLines(n) });
+  const margin = label("WHILE YOU WAIT") + para("Nothing is bought until you text yes to the exact total.")
+    + label("IF IT TAKES A WHILE", { sp: true }) + para(`Stores sometimes take a minute or two. If ${esc(n)} stops it, this page says so, and so do I in the chat.`);
   return page("Reason — signing in", `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
 }
 
@@ -185,18 +208,25 @@ export function renderEnded({ view, staging = false }) {
   const failed = view.state === "failed";
   const n = shop.storeName(view.store) || "";
   let main, margin;
+  const s = n || "The store";
   if (failed) {
-    main = headline("That sign-in didn't go through.", "Nothing was lost.", "cx-h")
-      + lede(`${n || "The store"} stopped it before it finished. It's usually on their side, and it usually passes. I'll tell you in the chat what happened.`);
-    margin = label("NOTHING BOUGHT") + para(`Nothing was charged. Next time ${esc(n || "the store")} needs you, I'll send a fresh link.`) + note("give it a few minutes.", { sp: true });
-  } else {
-    main = headline("This link has run out.", card ? "Nothing was saved." : "Nothing was signed in.", "cx-h")
-      + lede(card ? "Links to add a card only last half an hour. Ask me for a fresh one whenever you're ready, or add it in Settings."
-        : view.store ? `Links to sign in only last half an hour. Next time ${n} needs you, I'll send a fresh one.` : "Links like this only last half an hour.");
-    margin = label("WHY") + para("A link runs out so an old one can't be used by anyone else.");
+    // Which end it was (src/shopconnect.js failReason), and the next step, the same as the chat says.
+    const why = view.reason === "timeout" ? `${s} was waiting too long and gave up on this sign-in. It happens when a code or a password takes a while to arrive.`
+      : view.reason === "lost" ? `I lost track of this sign-in: the checkout service stopped answering about it.`
+        : `${s} stopped it before it finished. It's usually on their side, and it usually passes.`;
+    main = headline("That sign-in didn't go through.", "Nothing was charged.", "cx-h")
+      + lede(`${why} This link is done. Text me and I'll send a fresh one, or say so and I'll leave it.`)
+      + `<div class="cx-note">${actions(go("Back to Reason", { href: BACK }), siteOf(view.store) ? out(siteOf(view.store), `CHECK YOUR ${NAME(view.store)} ACCOUNT`) : "")}</div>`;
+    margin = label("NOTHING BOUGHT") + para("Nothing was charged, and nothing of yours was kept here.")
+      + label("NEXT", { sp: true }) + para(`Ask me in the chat for a new link. If ${esc(s)} keeps stopping it, check your account there first.`);
+    return page("Reason — link", `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
   }
+  main = headline("This link has expired.", "Ask me for a new one.", "cx-h")
+    + lede(card ? "Links to add a card last half an hour. Nothing was saved. Text me and I'll send a fresh one, or add it in Settings."
+      : view.store ? `Links to sign in last half an hour. Nothing was signed in. Text me and I'll send a fresh ${n} link.` : "Links like this last half an hour. Text me and I'll send a fresh one.");
+  margin = label("WHY") + para("A link runs out so an old one can't be used by anyone else.");
   main += `<div class="cx-note">${actions(go("Back to Reason", { href: BACK }))}</div>`;
-  return page("Reason — link", `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging, status: failed ? 200 : 410 });
+  return page("Reason — link", `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging, status: 410 });
 }
 
 // ---------------------------------------------------------------- the card
@@ -223,7 +253,7 @@ export function renderCard({ staging = false, card = null, faceId = false }) {
   const form = `<form class="pf-form" id="cx-card" novalidate><div class="pf-sealed"><div class="pf-sl pf-l pen">${sealed("SEALED · KEPT SECURELY, NOT BY ME")}</div>`
     + `<div class="pf-card-slot" data-card="1">${staging ? cardStandIn() : ""}</div></div>`
     + actions(go("Save card", { attrs: ` data-busy="1"` }), two("NEVER MIND", { href: BACK })) + label("NOTHING CHARGED YET")
-    + `<p class="pf-note" id="cx-err" role="alert" hidden></p></form>`;
+    + `<p class="pf-note" id="cx-err" role="alert" hidden></p>${live({ id: "cx-wait", lines: savingLines(), hidden: true })}</form>`;
   const add = frame({
     step: "add",
     main: headline("Add a card.", "I only pay when you say yes.", "cx-h") + lede("It's sealed and kept securely. I only ever see the brand and the last four digits.") + form,
@@ -234,7 +264,7 @@ export function renderCard({ staging = false, card = null, faceId = false }) {
     step: "saving", off: true,
     main: headline("Saving your card.", "A few seconds.") + lede("It's going in sealed. Keep this page open until it's done.")
       + steps([["Card typed in, sealed", "done"], ["Saving it securely", "now"], ["Ready to use", "todo"]], { id: "cx-steps", live: true })
-      + `<div class="cx-note">${note("on it.")}</div>`,
+      + live({ id: "cx-save-live", lines: savingLines() }),
     margin: label("SO FAR") + para("Spends nothing.") + para("When it's done, all I'll see is the brand and the last four digits."),
   });
   // "Nothing was saved" only when the save itself failed; a lost answer may have saved it (trying again
@@ -278,7 +308,9 @@ return{variables:{fontFamily:MONO,fontSizeUnit:'5px',borderRadius:'0px',colors:{
 rules:{Label:{font:{family:MONO,size:'11px',weight:'400'},colors:{text:m}},
 Input:{borderRadius:'0px',font:{family:MONO,size:'22px',weight:'400'},colors:{text:i,background:g,border:g,boxShadow:'inset 0 -1.5px 0 '+i,placeholder:m},hover:{colors:{text:i,background:g,border:g,boxShadow:'inset 0 -1.5px 0 '+p}},focus:{colors:{background:g,border:g,boxShadow:'inset 0 -2px 0 '+p}}}}}}
 function oops(t){if(!err)return;err.textContent=t;err.hidden=false}
-function busy(on){var b=form&&form.querySelector('button.act');if(!b)return;b.setAttribute('aria-busy',on?'true':'false');b.disabled=on}
+var wt=document.getElementById('cx-wait'),wl=null;
+function busy(on){var b=form&&form.querySelector('button.act');if(b){b.setAttribute('aria-busy',on?'true':'false');b.disabled=on}
+if(wt&&window.pfLive){if(on&&!wl)wl=pfLive(wt,{});else if(!on&&wl){wl.hide();wl=null}}}
 var fields={},card=null;
 function mount(){if(!window.ReasonCrossmint||!form)return;
 form.querySelectorAll('[data-protected]').forEach(function(el){var f=(B.fields||[]).filter(function(x){return x.key===el.getAttribute('data-protected')})[0];if(f)fields[f.key]=ReasonCrossmint.protectedField(el,{apiKey:B.apiKey,jwt:B.jwt,field:f,appearance:look(f)})});
@@ -291,16 +323,18 @@ if(card){card.submit().then(function(r){
 if(r.status==='invalid'){busy(false);pfShow('add');return oops('something in there needs a look. it\\u2019s marked in red.')}
 if(r.status==='superseded'){busy(false);return pfShow('add')}
 if(r.status!=='saved')return cardFailed(r.status==='failed');
-pfShow('saving');stepTo(2);return post('/card',r.card).then(function(o){if(o.ok){stepTo(3);location.reload()}else cardFailed(false)})}).catch(function(){cardFailed(false)});return}
+pfShow('saving');stepTo(2);var sl=document.getElementById('cx-save-live');if(sl&&window.pfLive)pfLive(sl,{waited:wl?wl.waited():0});return post('/card',r.card).then(function(o){if(o.ok){stepTo(3);location.reload()}else cardFailed(false)})}).catch(function(){cardFailed(false)});return}
 var answers={},keys=Object.keys(fields);
 form.querySelectorAll('input[name]').forEach(function(i){if(i.value!=='')answers[i.name]=i.value});
 Promise.all(keys.map(function(k){return fields[k].collect()})).then(function(rs){for(var i=0;i<rs.length;i++){if(rs[i].status!=='collected'){fields[keys[i]].setInvalid(true);busy(false);return oops('that one needs another look.')}answers[keys[i]]=rs[i].input}
 return post('/answer',{requestId:form.getAttribute('data-request'),answers:answers}).then(function(o){if(o.ok||o.state)location.reload();else{busy(false);oops('that didn\\u2019t go through. try once more?')}})}).catch(function(){busy(false);oops('that didn\\u2019t go through. try once more?')})});
-if(B.watch){var was=B.state;setInterval(function(){fetch(base+'/state',{credentials:'same-origin',headers:{Accept:'application/json'}}).then(function(r){return r.json()}).then(function(o){if(o&&o.state&&o.state!==was)location.reload()}).catch(function(){})},2500)}
+var lv=document.getElementById('cx-live'),liv=lv&&window.pfLive?pfLive(lv,{waited:B.waited||0}):null;
+function poll(){fetch(base+'/state',{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json'}}).then(function(r){return r.json()}).then(function(o){if(!o||!o.state)return;if(o.state!==B.state)return location.reload();if(liv&&typeof o.waited==='number')liv.sync(o.waited)}).catch(function(){})}
+if(B.watch){setInterval(poll,2500);if(window.pfWake)pfWake(poll)}
 if(form&&B.apiKey){var s=document.createElement('script');s.src='/web/connect/island.js';s.onload=mount;document.head.appendChild(s)}})();`;
 
 function page(title, body, { staging = false, status = 200 } = {}) {
-  const html = webPage({ title, body: body + (staging ? `<p class="stg">STAGING · SAMPLE</p>` : ""), css: CSS, script: `${STEP_JS}${CODE_JS}` });
+  const html = webPage({ title, body: body + (staging ? `<p class="stg">STAGING · SAMPLE</p>` : ""), css: CSS, script: `${STEP_JS}${CODE_JS}${LIVE_JS}` });
   return { status, html };
 }
 
@@ -342,7 +376,9 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
   const link = shop.linkFor(token);
   if (!link || !shop.connectAllowedFor(link.conversation_id)) return send(renderEnded({ view: { state: "expired" } }));
   const view = shop.linkView(link);
-  if (verb === "state") return json(200, { state: view.state });
+  // The open page's poll: the state, and while the store is checking, how long for (so a page frozen in
+  // the background says the right thing the moment it is back) and how far the checkout has got.
+  if (verb === "state") return json(200, { state: view.state, ...(view.state === "checking" ? { waited: view.waited, stage: view.stage } : {}) });
   if (verb === "answer" || verb === "card") {
     if (method !== "POST") return json(405, { ok: false });
     let body = {};
@@ -357,7 +393,7 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
   const live = ["signin", "code", "wrongcode", "retry", "card"].includes(view.state);
   const boot = live || view.state === "checking"
     ? {
-      token, state: view.state, watch: view.state !== "card",
+      token, state: view.state, watch: view.state !== "card", ...(view.state === "checking" ? { waited: view.waited } : {}),
       ...(live ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
     } : null;
   const faceId = !!card && passkey.passkeyAllowedFor(link.conversation_id) && !passkey.hasPasskey(link.conversation_id);
