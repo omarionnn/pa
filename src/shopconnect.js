@@ -898,7 +898,8 @@ function autoAnsweredText(run, row, it, filling) {
   const where = shipping.shortAddress(row);
   const hasAddress = (it.fields ?? []).some((f) => ["address1", "full_name", "city", "zip"].includes(shipping.roleOf(f)) && filling.filled.includes(f.key));
   const what = hasAddress && where ? `Shipping to ${where}` : `Answered ${storeOf(run)}'s ${shipping.filledWords(it, filling.filled) || "form"} from your record`;
-  return `${what}, ${Number(row?.used ?? 0) > 0 ? "the usual" : "as you gave it to me before"}. Say if that's wrong.`;
+  const how = filling.own === false ? "as you asked" : Number(row?.used ?? 0) > 0 ? "the usual" : "as you gave it to me before";
+  return `${what}, ${how}. Say if that's wrong.`;
 }
 /** The checked answer, posted to Crossmint. Never logs or keeps the values. */
 async function postAnswer(run, rq, answers) {
@@ -1054,14 +1055,14 @@ export async function step(runId) {
         const posted = await postAnswer(run, pub, filling.answers);
         if (posted.ok) {
           tellOnce(runId, `auto:${requestId}`);
-          const row = shipping.profileRow(run.conversation_id);
-          await say(autoAnsweredText(run, row, pub, filling));
-          shipping.markUsed(run.conversation_id);
+          await say(autoAnsweredText(run, filling.row, pub, filling));
+          if (filling.own !== false) shipping.markUsed(run.conversation_id);
           return { done: false, status, said, answered: requestId, ...(await stalled(runRow(runId), say)) };
         }
-        // Refused: the model gets the question, with the store's reason, and decides.
+        // Refused: the model gets the whole question (the record is not merged in again for this request) and decides.
+        tellOnce(runId, `refused:${requestId}`);
         woke = requestId;
-        if (await wake(run.conversation_id, `${inputEvent(run, rq, it, { filled: [], missing: filling.missing })} (Answering it from their record was refused by the store: ${posted.detail || posted.error}.)`, `shop:${runId}:${requestId}`)) tellOnce(runId, `woke:${requestId}`);
+        if (await wake(run.conversation_id, `${inputEvent(run, rq, it, null)} (The store refused the answer from their record, HTTP ${posted.status ?? "error"}: give every required key yourself this time, from what you know or by asking them.)`, `shop:${runId}:${requestId}`)) tellOnce(runId, `woke:${requestId}`);
       } else {
         woke = requestId;
         if (await wake(run.conversation_id, inputEvent(run, rq, it, filling), `shop:${runId}:${requestId}`)) tellOnce(runId, `woke:${requestId}`);
@@ -1090,7 +1091,7 @@ export async function step(runId) {
     // A guest checkout the store walled off behind an account: remembered for this store, and the same
     // checkout starts again signed in, which sends them the sign-in link. Once per checkout.
     const ask = q("SELECT * FROM shop_run_asks WHERE run_id = ?").get(runId);
-    if (!paid && run.mode === "guest" && status !== "succeeded" && status !== "cancelled" && ask && !ask.retried && needsAccount(result)) {
+    if (!paid && run.mode === "guest" && status !== "succeeded" && status !== "cancelled" && ask && !ask.retried && !told.has("superseded") && needsAccount(result)) {
       q("UPDATE shop_run_asks SET retried = 1 WHERE run_id = ?").run(runId);
       if (run.store && !STORES[run.store]?.signIn) {
         q("INSERT INTO shop_sites (store, sign_in) VALUES (?, 'required') ON CONFLICT (store) DO UPDATE SET sign_in = 'required'").run(run.store);
@@ -1142,8 +1143,11 @@ export async function answerRun(runId, { conversationId, answers }) {
   try { rq = run.request_json ? JSON.parse(run.request_json) : null; } catch { rq = null; }
   // A form the record answered already, and they say part of it was wrong: the record is corrected and the
   // checkout starts over with it (the one running has the old address typed in; its payment is declined).
-  if (rq && rq.kind === "form" && run.stage === "in_progress" && toldOf(run).has(`auto:${run.last_request_id}`) && !run.paid_at) {
-    return correctAndRestart(run, rq, answers);
+  // Open until the payment goes out, whatever the run has asked since.
+  const autoTold = [...toldOf(run)].find((t) => t.startsWith("auto:"));
+  const newFormOpen = !!(rq && rq.kind === "form" && run.stage === "needs_input" && autoTold && rq.requestId !== autoTold.slice(5));
+  if (autoTold && !run.paid_at && !["approved", "paid", "placed"].includes(run.stage) && !newFormOpen) {
+    return correctAndRestart(run, rq && rq.kind === "form" ? rq : null, answers);
   }
   if (!rq || !run.last_request_id || run.stage !== "needs_input") return { ok: false, error: "nothing_asked", stage: run.stage };
   // Only a plain form is the model's to answer: a payment is approved through shop_pay or Face ID, never here.
@@ -1152,7 +1156,8 @@ export async function answerRun(runId, { conversationId, answers }) {
   // What the model gives wins; what it leaves out comes from the record (2026-10-31); a choice in words
   // becomes the option's value (Ulta's state dropdown refused "NY" twice on 12:17).
   const given = shapeAnswers(rq, answers ?? {});
-  const fromRecord = autoFill(run, rq).answers;
+  // The record's answer to this very request was refused: not merged in again; the model gives it all.
+  const fromRecord = toldOf(run).has(`refused:${rq.requestId}`) ? {} : autoFill(run, rq).answers;
   const merged = { ...fromRecord, ...given };
   const checked = checkAnswers(rq, merged);
   if (!checked.ok) return { ok: false, error: checked.error, fields: (rq.fields ?? []).map((f) => ({ key: f.key, label: f.label, required: !!f.required, ...(f.key in fromRecord ? { on_record: true } : {}) })) };
@@ -1163,18 +1168,33 @@ export async function answerRun(runId, { conversationId, answers }) {
   return { ok: true, run_id: runId, answered: Object.keys(checked.answers), from_them: fromThem, from_record: fromUs,
     say: `Answered; the checkout is moving again${fromUs.length ? `, the rest (${fromUs.join(", ")}) from their record` : ""}. Nothing is charged until they approve the exact total they'll be texted. Say so in one line if they're waiting, otherwise nothing.` };
 }
-/** The record against a run's open form (keys only in the row; the record's values never leave this process except to Crossmint). */
+/**
+ * The record against a run's open form: the person's own, unless the run's instruction ships somewhere else
+ * (a gift), which wins. Keys only leave here; the values go to Crossmint and nowhere else.
+ */
 function autoFill(run, rq) {
-  try { return shipping.fill(rq, shipping.profileFor(run.conversation_id)); } catch { return { answers: {}, filled: [], missing: (rq?.fields ?? []).filter((f) => f.required).map((f) => ({ key: f.key, label: f.label || f.key, ours: false })), covered: false }; }
+  try {
+    const ask = q("SELECT what FROM shop_run_asks WHERE run_id = ?").get(run.run_id);
+    const { row, own } = shipping.recordForRun(shipping.profileFor(run.conversation_id), ask?.what ?? "");
+    return { ...shipping.fill(rq, row), row, own };
+  } catch { return { answers: {}, filled: [], missing: (rq?.fields ?? []).filter((f) => f.required).map((f) => ({ key: f.key, label: f.label || f.key, ours: false })), covered: false, row: null, own: true }; }
 }
 /** Their correction to a form the record answered: the record learns it, the run is superseded, the same checkout starts again. */
 async function correctAndRestart(run, rq, answers) {
-  const given = Object.fromEntries(Object.entries(answers ?? {}).filter(([k]) => (rq.fields ?? []).some((f) => f.key === k)));
-  if (!Object.keys(given).length) return { ok: false, error: "unknown_field", fields: (rq.fields ?? []).map((f) => ({ key: f.key, label: f.label })) };
-  const row = shipping.learnFromAnswers(run.conversation_id, rq, shapeAnswers(rq, given), { source: "correction" });
+  // The keys are the shipping record's own when the form is not the open request any more (the payment ask came since).
+  const form = rq ?? { fields: shipping.FIELDS.map((k) => ({ key: k, label: k, input: { kind: "text" } })) };
+  const given = Object.fromEntries(Object.entries(answers ?? {}).filter(([k]) => (form.fields ?? []).some((f) => f.key === k)));
+  if (!Object.keys(given).length) return { ok: false, error: "unknown_field", fields: (form.fields ?? []).map((f) => ({ key: f.key, label: f.label })) };
+  const before = shipping.profileRow(run.conversation_id);
+  const row = shipping.learnFromAnswers(run.conversation_id, form, shapeAnswers(form, given), { source: "correction" });
+  const changed = shipping.FIELDS.filter((f) => String(before?.[f] ?? "") !== String(row?.[f] ?? ""));
+  if (!changed.length) return { ok: false, error: "nothing_changed", say: "That is what the record already says (or it did not read as an address part), so nothing changed and the checkout runs on. Ask them what to change, plainly." };
   const ask = q("SELECT * FROM shop_run_asks WHERE run_id = ?").get(run.run_id);
-  tellOnce(run.run_id, "superseded"); tellOnce(run.run_id, "end");
   if (!ask) return { ok: false, error: "cannot_restart", say: `The record is corrected, but this checkout cannot be started over from here. Say so, and that nothing was charged.` };
+  tellOnce(run.run_id, "superseded"); tellOnce(run.run_id, "end");
+  // A payment this run is asking for goes with the old address: declined, nothing charged.
+  const open = q("SELECT id FROM shop_payments WHERE run_id = ? AND status = 'asked'").get(run.run_id);
+  if (open) { try { await declinePayment({ conversationId: run.conversation_id, paymentId: open.id }); } catch { /* it expires on its own */ } }
   const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: run.mode === "sign_in" });
   if (!again.ok) return { ok: false, error: "restart_failed", status: again.status, say: "The record is corrected, but the store would not start the checkout again. Nothing was charged." };
   q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`corrected address; started again as ${again.runId}`, run.run_id);

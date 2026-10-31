@@ -123,7 +123,9 @@ export function parseAddress(text) {
   let tail = s.slice(start + st[0].length);
   // The address ends at the ZIP (or the apartment after it); the rest of the sentence is not ours.
   const zipAt = ZIP.exec(tail);
-  if (!zipAt) return null;
+  // The ZIP belongs to the address only close behind the street (", Apt 1, Bronx, NY 10469"): a number
+  // six words on ("order 25416 units") is not it.
+  if (!zipAt || zipAt.index > 60 || tail.slice(0, zipAt.index).trim().split(/\s+/).filter(Boolean).length > 7) return null;
   let end = start + st[0].length + zipAt.index + zipAt[0].length;
   let region = tail.slice(0, zipAt.index);
   const afterZip = tail.slice(zipAt.index + zipAt[0].length);
@@ -138,6 +140,8 @@ export function parseAddress(text) {
   }
   // What is left before the ZIP: ", Bronx, NY" / " Bronx" / ", Bronx, New York".
   const words = region.replace(/[,]+/g, " , ").replace(/\s+/g, " ").trim().split(" ").filter((w) => w !== ",");
+  // Between the street and the ZIP only place words stand (a city, a state): "order 25416 units" is not an address.
+  if (words.some((w) => !/^[A-Z][A-Za-z.'-]*$/.test(w))) return null;
   let state = "";
   const last = words[words.length - 1] ?? "";
   const lastTwo = words.slice(-2).join(" ");
@@ -146,11 +150,16 @@ export function parseAddress(text) {
   const city = words.filter((w) => /^[A-Za-z][A-Za-z.'-]*$/.test(w)).slice(-3).join(" ").trim();
   if (city) out.city = normalize("city", city);
   out.state = state || stateOfZip(out.zip);
-  // A name right before the address: "Omari Nyarko, 3247 …" or "Nyarko, 3247 …" (which word it is, learn() decides).
+  // A name right before the address, only where it is clearly one: after "to"/"for" ("shipped to Omari
+  // Nyarko, 3247 …"), or a lone word opening the text ("Nyarko, 3247 …", his typed reply). Not two product
+  // words that happen to be capitalized ("Facial Cleanser, 3247 …").
   const before = s.slice(0, start).replace(/[\s,]+$/, "");
-  const nm = /(?:^|[\s,:])(?:to\s+|for\s+)?([A-Z][a-z'-]+)(?:\s+([A-Z][a-z'-]+))?$/.exec(before);
-  if (nm && !/^(?:Ave|St|Apt|Ship|Shipped|Deliver|Delivered|To|For|The|Address|Home)$/i.test(nm[1])) {
+  const LEAD = /^\b(?:to|for)\s+(?:(?:my|his|her|their|our)\s+(?:[a-z]+\s+)?)?/;
+  const nm = /\b(?:to|for)\s+(?:(?:my|his|her|their|our)\s+(?:[a-z]+\s+)?)?([A-Z][a-z'-]+)(?:\s+([A-Z][a-z'-]+))?$/.exec(before) ?? /^\s*([A-Z][a-z'-]+)$/.exec(before);
+  if (nm && !/^(?:Ave|St|Apt|Ship|Shipped|Deliver|Delivered|To|For|The|Address|Home|My|Their|His|Her|Mom|Dad|Mum)$/i.test(nm[1]) && !(nm[2] && /^(?:Ave|St|Apt|Address|Home)$/i.test(nm[2]))) {
     if (nm[2]) { out.first_name = nm[1]; out.last_name = nm[2]; } else out.name_word = nm[1];
+    const lead = (LEAD.exec(nm[0]) ?? /^\s*/.exec(nm[0]))[0].length;
+    out.name_span = [before.length - nm[0].length + lead, before.length];
   }
   out.span = [start, end];
   return out;
@@ -214,7 +223,12 @@ export function gather(conversationId) {
     for (const a of asks) { const p = parseAddress(a.what); if (p) take(p); take({ phone: phoneIn(a.what) }); const em = emailsIn(a.what); if (em.length === 1) take({ email: em[0] }); }
   } catch { /* no runs yet */ }
   try {
-    const facts = q("SELECT f.fact FROM person_facts f JOIN people p ON p.id = f.person_id WHERE p.conversation_id = ? ORDER BY f.created_at DESC LIMIT 400").all(conversationId).map((r) => r.fact);
+    // Their own facts only: the self subjects, and the person named as the account is (a contact's
+    // "ship to …" is the contact's address, not theirs).
+    let own = "";
+    try { own = String(accounts.ownerOf(conversationId)?.name ?? "").trim().toLowerCase(); } catch { own = ""; }
+    const keys = ["user", "the user", "me", "myself", "i", "the person", "this person", "owner", "the owner", ...(own && !/^the person\b/.test(own) ? [own, own.split(/\s+/)[0]] : [])];
+    const facts = q(`SELECT f.fact FROM person_facts f JOIN people p ON p.id = f.person_id WHERE p.conversation_id = ? AND lower(p.key) IN (${keys.map(() => "?").join(", ")}) ORDER BY f.created_at DESC LIMIT 400`).all(conversationId, ...keys).map((r) => r.fact);
     const about = /\b(ship(?:ped|ping)?\s+to|deliver(?:y|ed)?\s+(?:to|address|phone|number)|home address|my address|their address|shipping address|billing address|mailing address)\b/i;
     for (const f of facts) if (about.test(f)) { const p = parseAddress(f); if (p) take(p); }
     for (const f of facts) if (/\b(delivery|shipping|contact|their|my|his|her)\s+(phone|number|cell|mobile)\b/i.test(f)) take({ phone: phoneIn(f) });
@@ -287,8 +301,11 @@ export function matchOption(options, value) {
     hit = opts.find((o) => /^(us|usa|united states( of america)?)$/.test(labelOf(o)) || /^(us|usa)$/.test(norm(valueOf(o))));
     if (hit) return valueOf(hit);
   }
-  hit = opts.filter((o) => labelOf(o).includes(v)).sort((a, b) => labelOf(a).length - labelOf(b).length)[0];
-  return hit ? valueOf(hit) : null;
+  // Last: the one option whose label starts a word with it ("Large" for "large"); a tie or a mid-word hit
+  // ("L" inside "Small") is no match, and the words given are sent as they are.
+  const esc = v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const starts = opts.filter((o) => new RegExp(`(^|\\W)${esc}`).test(labelOf(o)));
+  return starts.length === 1 ? valueOf(starts[0]) : null;
 }
 /** The record's value for a store's field, shaped for that field (a choice gets the option's value); "" when unknown. */
 export function valueFor(f, row) {
@@ -369,18 +386,45 @@ export function filledWords(interaction, filled) {
   }
   return words.length > 1 ? `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}` : words[0] ?? "";
 }
-/** `what` for a checkout with the record's address written in, replacing the one it had or adding one where it says to ship. */
+/**
+ * The address a checkout instruction names itself, when it names one that is not the record's (a gift:
+ * "shipped to Ama Nyarko, 12 Other St, Newark, NJ 07102"). Null when it names none, or the record's own.
+ */
+export function addressInInstruction(what, row) {
+  const p = parseAddress(what);
+  if (!p) return null;
+  // The same ZIP is their own address, as the record now has it (a corrected street number is the usual
+  // reason the two differ); another ZIP is somebody else's.
+  if (row?.zip && p.zip === row.zip) return null;
+  return p;
+}
+/**
+ * `what` for a checkout with the record's address written in: the record's own address, when the text
+ * has it (the same ZIP and street), is written whole (apt and all, as corrected); an address it does not
+ * have is added where it says to ship. An address that is somebody else's (a gift) is left exactly as written.
+ */
 export function withAddress(what, row) {
   const text = String(what ?? "").trim();
   if (!complete(row)) return text;
   const full = fullAddress(row);
   const p = parseAddress(text);
   if (p) {
+    if (addressInInstruction(text, row)) return text;
     const [a, b] = p.span;
-    // Take the name before the address with it, so "Omari Nyarko, 3247 …" is replaced whole.
-    const before = text.slice(0, a).replace(/(?:^|[\s,:])(?:to\s+|for\s+)?([A-Z][a-z'-]+)(?:\s+([A-Z][a-z'-]+))?[,\s]*$/, (m, w1) => (/^(?:Ave|St|Apt|Ship|Shipped|Deliver|Delivered|To|For|The|Address|Home)$/i.test(w1) ? m : m.slice(0, m.indexOf(w1)).replace(/(to|for)\s*$/i, "$1 ")));
-    return `${before}${full}${text.slice(b)}`.replace(/\s+/g, " ").replace(/\s+([,.])/g, "$1").trim();
+    const start = p.name_span && (p.first_name || p.name_word) ? p.name_span[0] : a;
+    return `${text.slice(0, start)}${full}${text.slice(b)}`.replace(/\s+/g, " ").replace(/\s+([,.])/g, "$1").trim();
   }
   if (/\b(ship|deliver|address on file|home address|to home|my address|their address)\b/i.test(text)) return `${text.replace(/\.?$/, ".")} Ship to ${full}.`;
   return text;
+}
+/**
+ * The record a run's form is answered from: the person's own, unless the run's instruction ships
+ * somewhere else — then that address (and the name it gives, if any) over the record's contact details.
+ */
+export function recordForRun(row, what) {
+  const other = addressInInstruction(what, row);
+  if (!other) return { row, own: true };
+  const merged = { ...(row ?? {}), address1: other.address1, address2: other.address2 ?? "", city: other.city ?? "", state: other.state ?? "", zip: other.zip };
+  if (other.first_name) { merged.first_name = other.first_name; merged.last_name = other.last_name ?? ""; }
+  return { row: merged, own: false };
 }

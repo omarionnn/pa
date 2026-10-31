@@ -69,7 +69,7 @@ async function fakeFetch(url, init = {}) {
 // Ulta's live form at 12:15:58 ET, 2026-10-31 (run 6f457e81…): keys, kinds and the state dropdown as Crossmint sent them.
 const STATE_OPTIONS = [{ value: "option-1", label: "Select state", disabled: false, selected: true, placeholder: true },
   { value: "option-2", label: "AA - Military/Washington" }, { value: "option-3", label: "AE - Military/New York" }, { value: "option-4", label: "AK - Alaska" },
-  { value: "option-5", label: "AL - Alabama" }, { value: "option-33", label: "NY - New York" }, { value: "option-50", label: "WA - Washington" }];
+  { value: "option-5", label: "AL - Alabama" }, { value: "option-32", label: "NJ - New Jersey" }, { value: "option-33", label: "NY - New York" }, { value: "option-50", label: "WA - Washington" }];
 const LIVE_ULTA_FORM = (requestId, { phoneRequired = false } = {}) => ({
   requestId, request: {
     question: "I'm at Ulta's guest checkout with one CeraVe Foaming Facial Cleanser (16 oz, $18.99; estimated total $25.94). I don't have an address on file, so please give me the shipping details:",
@@ -111,7 +111,7 @@ const posted = (runId) => calls.filter((c) => c.path === `/api/unstable/agent-ch
 // ---------------------------------------------------------------- 1. the record
 test("an address is read out of a checkout instruction, a typed reply and a fact; one without a ZIP is not trusted", () => {
   const a = shipping.parseAddress("One CeraVe Oil Control Foaming Facial Cleanser, 16 oz, shipped to Omari Nyarko, 3247 Bruner Ave, Apt 1, Bronx, NY 10469. Guest checkout, standard shipping.");
-  assert.deepEqual({ ...a, span: undefined }, { address1: "3247 Bruner Ave", address2: "Apt 1", city: "Bronx", state: "NY", zip: "10469", first_name: "Omari", last_name: "Nyarko", span: undefined });
+  assert.deepEqual({ ...a, span: undefined, name_span: undefined }, { address1: "3247 Bruner Ave", address2: "Apt 1", city: "Bronx", state: "NY", zip: "10469", first_name: "Omari", last_name: "Nyarko", span: undefined, name_span: undefined });
   // What he typed at 12:17: no state, apartment after the ZIP, one name word.
   const b = shipping.parseAddress("Nyarko, 3247 Bruner Ave, Bronx 10469 apt1");
   assert.equal(b.state, "NY"); assert.equal(b.address2, "Apt 1"); assert.equal(b.city, "Bronx"); assert.equal(b.name_word, "Nyarko");
@@ -314,6 +314,66 @@ test("pinned 12:17: 'Here's the page if you'd rather just buy it yourself' and t
   // Not a hedge: a plain link to what was bought, or a question about something else.
   const fine = "Ulta placed the order. Here's the product page for reference:\nhttps://www.ulta.com/p/x";
   assert.equal(offers.guardReply(OMARI, fine).text, fine);
+});
+
+// ---------------------------------------------------------------- 6. after the review: a gift, false names, far ZIPs, ties, hedges, no-change
+test("review: an instruction that ships somewhere else (a gift) is left as written and its form is answered with THAT address, 'as you asked'", async () => {
+  shipping.learn(OMARI, FULL, { source: "answer" });
+  const gift = "One CeraVe Foaming Facial Cleanser, 16 oz, shipped to my mom Ama Nyarko, 12 Other St, Newark, NJ 07102. Guest checkout.";
+  assert.equal(shipping.withAddress(gift, FULL), gift);
+  const out = await start(gift);
+  assert.equal(runs[out.runId].task.includes("3247"), false);
+  runs[out.runId].requiredAction = LIVE_ULTA_FORM("req_gift"); runs[out.runId].revision = 2;
+  await shop.step(out.runId);
+  const a = posted(out.runId)[0].response.answers;
+  assert.equal(a.address1, "12 Other St"); assert.equal(a.city, "Newark"); assert.equal(a.zip, "07102");
+  assert.equal(a.first_name, "Ama"); assert.equal(a.last_name, "Nyarko");
+  assert.equal(a.email, FULL.email, "the buyer's contact details stay theirs");
+  assert.equal(said[0].t, "Shipping to 12 Other St, Newark, as you asked. Say if that's wrong.");
+  assert.equal(shipping.profileRow(OMARI).address1, "3247 Bruner Ave", "the record is not the gift address");
+  // The record's own address in an instruction is rewritten whole (apt included); product words are not a name.
+  assert.equal(shipping.withAddress("Cleanser, shipped to Omari Nyarko, 3247 Bruner Ave, Bronx, NY 10469. Guest.", FULL), "Cleanser, shipped to Omari Nyarko, 3247 Bruner Ave, Apt 1, Bronx, NY 10469. Guest.");
+  const p = shipping.parseAddress("One CeraVe Foaming Facial Cleanser, 3247 Bruner Ave, Bronx, NY 10469");
+  assert.equal(p.first_name, undefined); assert.equal(p.name_word, undefined);
+  assert.equal(shipping.parseAddress("3247 Bruner Ave, Bronx, order 25416 units for the store"), null, "a number six words on is not the ZIP");
+  // A tie or a mid-word hit is no option; the words go as given.
+  const sizes = [{ value: "s", label: "Small" }, { value: "m", label: "Medium" }, { value: "l", label: "Large" }];
+  assert.equal(shipping.matchOption(sizes, "L"), "l"); assert.equal(shipping.matchOption(sizes, "large"), "l");
+  assert.equal(shipping.matchOption(sizes, "a"), null);
+  assert.equal(shipping.matchOption([{ value: "s", label: "Small" }, { value: "x", label: "Smart" }], "Sm"), null);
+});
+
+test("review: a contact's 'ship to' fact never seeds the record; a correction that changes nothing restarts nothing; a correction after the payment ask declines it and restarts", async () => {
+  const now = clock.now();
+  q("INSERT INTO people (conversation_id, name, key, created_at, updated_at) VALUES (?, 'Kofi', 'kofi', ?, ?)").run(OMARI, now, now);
+  const kofi = q("SELECT id FROM people WHERE key = 'kofi'").get().id;
+  q("INSERT INTO person_facts (person_id, fact, created_at) VALUES (?, 'Ship to 9 Contact Rd, Newark, NJ 07102', ?)").run(kofi, now);
+  const p = shipping.profileFor(OMARI);
+  assert.equal(p?.address1 ?? "", "");
+  shipping.learn(OMARI, FULL, { source: "answer" });
+  const out = await start();
+  runs[out.runId].requiredAction = LIVE_ULTA_FORM("req_1"); runs[out.runId].revision = 2;
+  await shop.step(out.runId);
+  const same = await runTool("shop_answer", { run_id: out.runId, answers: { address1: "3247 Bruner Ave" } }, { conversationId: OMARI });
+  assert.equal(same.ok, false); assert.equal(same.error, "nothing_changed");
+  assert.equal(Object.keys(runs).length, 1, "no second run");
+  assert.equal(row(out.runId).status, "running");
+  // The payment ask comes; "that's wrong" still fixes it: the ask is declined, the checkout starts over.
+  runs[out.runId].requiredAction = PAY("req_pay"); runs[out.runId].revision = 3;
+  await shop.step(out.runId);
+  assert.equal(row(out.runId).stage, "needs_approval");
+  const fix = await runTool("shop_answer", { run_id: out.runId, answers: { address2: "Apt 2" } }, { conversationId: OMARI });
+  assert.equal(fix.ok, true, JSON.stringify(fix));
+  assert.ok(calls.some((c) => c.path === `/api/unstable/agent-checkouts/${out.runId}/messages` && c.body.parts[0].action === "decline"));
+  assert.equal(shipping.profileRow(OMARI).address2, "Apt 2");
+  assert.match(runs[fix.run_id].task, /Apt 2/);
+});
+
+test("review: ordinary sentences with 'here's the link' or 'if you'd rather get it' are not a hedge", async () => {
+  await start();
+  for (const s of ["Here's the link if you want to track the package: https://www.ulta.com/track/1", "If you'd rather get it in blue, say so and I'll switch the order.", "Here's the page for the 8 oz if you'd rather have that size instead."]) {
+    assert.equal(offers.guardReply(OMARI, s).text, s, s);
+  }
 });
 
 test("the turn note names the card on file and says never to ask whether they have one, and that a started checkout is Reason's to finish", async () => {
