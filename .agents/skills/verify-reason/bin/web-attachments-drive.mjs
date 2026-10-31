@@ -164,7 +164,8 @@ try {
       const pg = await ctx.newPage();
       const errs = []; pg.on("pageerror", e => errs.push(String(e))); pg.on("console", m => { if (m.type() === "error" && !/favicon|Failed to load resource|Button failed to load, iconName/.test(m.text())) errs.push(m.text()); });
       await pg.goto(`${BASE}/web?thread`, { waitUntil: "load" });
-      const sh = (f) => shots ? pg.screenshot({ path: join(shots, `${before ? "before" : "after"}-${name}-${theme}-${f}.png`) }) : null;
+      const settle = () => pg.waitForFunction(() => { const v = document.querySelector(".vw"); return !v || v.hidden || [".vw-body", ".vw-top", ".vw-foot"].every(c => getComputedStyle(v.querySelector(c)).opacity === "1"); }, null, { timeout: 3000 }).catch(() => {});
+      const sh = async (f) => { if (!shots) return; await settle(); return pg.screenshot({ path: join(shots, `${before ? "before" : "after"}-${name}-${theme}-${f}.png`) }); };
       const first = pg.locator(`#m-${twoRow} .photo`).first();
       await first.scrollIntoViewIfNeeded();
       await pg.waitForTimeout(500);
@@ -191,16 +192,20 @@ try {
       // ---- a photo opens in the viewer, the tab stays put ----
       const url0 = pg.url();
       await first.click();
+      // Opaque paper from the first frame: nothing of the thread shows through, even mid-animation.
+      const early = await pg.evaluate(() => { const vw = document.querySelector(".vw"), bg = getComputedStyle(vw).backgroundColor; const pts = [[0.5, 0.03], [0.1, 0.5], [0.5, 0.97], [0.9, 0.9]];
+        return { bg, opaque: /^rgb\(/.test(bg) || /, 1\)$/.test(bg), o: getComputedStyle(vw).opacity, top: pts.every(([x, y]) => vw.contains(document.elementFromPoint(innerWidth * x, innerHeight * y))) }; });
+      step(`${name}/${theme}: the viewer is opaque paper from its first frame (no thread showing through)`, early.opaque && early.o === "1" && early.top, JSON.stringify(early));
       await pg.waitForSelector(".vw.on:not([hidden])", { timeout: 4000 }).catch(() => {});
       await pg.waitForFunction(() => { const i = document.querySelector(".vw .vw-img"); return i && i.complete && i.naturalWidth > 0 && !document.querySelector(".vw.wait"); }, null, { timeout: 6000 }).catch(() => {});
       const v = await pg.evaluate(() => { const vw = document.querySelector(".vw"); const i = vw?.querySelector(".vw-img"); const r = i?.getBoundingClientRect();
-        return { open: !!vw && !vw.hidden, img: i?.naturalWidth || 0, n: vw?.querySelector(".vw-n")?.textContent, what: vw?.querySelector(".vw-what")?.textContent, focus: document.activeElement?.className, dl: vw?.querySelector(".vw-dl")?.getAttribute("href"), inView: r ? r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight : false, cx: r ? Math.abs((r.left + r.right) / 2 - innerWidth / 2) : 99, mainInert: !!document.querySelector("main,.convo")?.closest("[inert]"), role: vw?.getAttribute("role"), modal: vw?.getAttribute("aria-modal") }; });
-      await pg.waitForFunction(() => getComputedStyle(document.querySelector(".vw")).opacity === "1", null, { timeout: 3000 }).catch(() => {});
-      const op = await pg.evaluate(() => { const vw = document.querySelector(".vw"), r = vw.getBoundingClientRect(); return { o: getComputedStyle(vw).opacity, z: getComputedStyle(vw).zIndex, r: [r.width, r.height], top: document.elementFromPoint(innerWidth / 2, 30)?.className }; });
+        return { open: !!vw && !vw.hidden, img: i?.naturalWidth || 0, n: vw?.querySelector(".vw-n")?.textContent, what: vw?.querySelector(".vw-what")?.textContent, focus: document.activeElement?.className, dl: vw?.querySelector(".vw-dl")?.getAttribute("href"), inView: r ? r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight : false, cx: r ? Math.abs((r.left + r.right) / 2 - innerWidth / 2) : 99, mainInert: !!document.querySelector("main,.convo")?.closest("[inert]"), ring: document.querySelector(".vw-x").matches(":focus-visible"), role: vw?.getAttribute("role"), modal: vw?.getAttribute("aria-modal") }; });
+      await pg.waitForFunction(() => [".vw-body", ".vw-top", ".vw-foot"].every(c => getComputedStyle(document.querySelector(c)).opacity === "1"), null, { timeout: 3000 }).catch(() => {});
+      const op = await pg.evaluate(() => { const vw = document.querySelector(".vw"), r = vw.getBoundingClientRect(); return { o: [".vw-body", ".vw-top", ".vw-foot"].every(c => getComputedStyle(document.querySelector(c)).opacity === "1") ? "1" : "0", z: getComputedStyle(vw).zIndex, r: [r.width, r.height], top: document.elementFromPoint(innerWidth / 2, 30)?.className }; });
       step(`${name}/${theme}: the viewer is fully drawn on top of the page`, op.o === "1" && /vw/.test(String(op.top)), JSON.stringify(op));
       step(`${name}/${theme}: tapping a photo opens the viewer, the tab stays on the thread`, v.open && pg.url() === url0 && ctx.pages().length === 1, pg.url().replace(BASE, ""));
       step(`${name}/${theme}: the photo is drawn, whole, centred`, v.img > 0 && v.inView && v.cx < 4, `nw ${v.img}, inView ${v.inView}, off-centre ${v.cx?.toFixed(1)}`);
-      step(`${name}/${theme}: dialog, modal, the thread behind it inert, focus on Close`, v.role === "dialog" && v.modal === "true" && v.mainInert && v.focus === "vw-x");
+      step(`${name}/${theme}: dialog, modal, the thread behind it inert; a tap puts focus on the dialog, no ring on Close`, v.role === "dialog" && v.modal === "true" && v.mainInert && /^vw\b/.test(v.focus ?? "") && !v.ring, JSON.stringify({ focus: v.focus, ring: v.ring }));
       step(`${name}/${theme}: eyebrow says photo · who · when; counter; download is the original`, /^PHOTO · YOU · /.test(v.what ?? "") && /^1 OF \d+$/.test(v.n ?? "") && v.dl === `/web/media/m/${twoRow}/0`, `${v.what} | ${v.n} | ${v.dl}`);
       const tgt = await pg.$$eval(".vw button:not([hidden]), .vw a:not([hidden])", es => es.filter(e => e.offsetParent).map(e => { const r = e.getBoundingClientRect(); return [e.className, Math.round(r.width), Math.round(r.height)]; }));
       step(`${name}/${theme}: every control is at least 44×44`, tgt.every(([, w, h]) => w >= 44 && h >= 44), JSON.stringify(tgt));
@@ -222,6 +227,11 @@ try {
         await pg.waitForTimeout(300);
         const c = await pg.evaluate(() => ({ hidden: document.querySelector(".vw").hidden, focus: document.activeElement?.className, inert: !!document.querySelector("[inert]:not(.addsheet)"), viewing: document.body.classList.contains("viewing") }));
         step(`${name}/${theme}: Esc closes; focus is back on the photo; nothing left inert`, c.hidden && /photo/.test(c.focus) && !c.inert && !c.viewing, JSON.stringify(c));
+        // Opened from the keyboard, focus is on Close (and it shows).
+        await first.focus(); await pg.keyboard.press("Enter"); await pg.waitForTimeout(300);
+        const kf = await pg.evaluate(() => ({ f: document.activeElement?.className, ring: document.querySelector(".vw-x").matches(":focus-visible") }));
+        step(`${name}/${theme}: opened with Enter, focus is on Close with its ring`, kf.f === "vw-x" && kf.ring, JSON.stringify(kf));
+        await pg.keyboard.press("Escape"); await pg.waitForTimeout(250);
         // Tab stays inside.
         await first.click(); await pg.waitForTimeout(250);
         const seen = new Set(); for (let i = 0; i < 9; i++) { await pg.keyboard.press("Tab"); seen.add(await pg.evaluate(() => !!document.activeElement?.closest(".vw"))); }
@@ -304,9 +314,9 @@ try {
       const pg = await ctx.newPage();
       await pg.goto(`${BASE}/web?thread`, { waitUntil: "load" });
       await pg.locator(`#m-${twoRow} .photo`).first().click();
-      const t = await pg.evaluate(() => getComputedStyle(document.querySelector(".vw")).transitionDuration);
+      const t = await pg.evaluate(() => getComputedStyle(document.querySelector(".vw-body")).transitionDuration + "|" + getComputedStyle(document.querySelector(".vw-body")).opacity);
       await pg.locator(".vw-x").click();
-      step(`${name}: reduced motion — no transition, closes at once`, /^0s/.test(t) && await pg.evaluate(() => document.querySelector(".vw").hidden), t);
+      step(`${name}: reduced motion — no transition, closes at once`, /^0s\|1$/.test(t) && await pg.evaluate(() => document.querySelector(".vw").hidden), t);
       await ctx.close();
     }
     await browser.close();
