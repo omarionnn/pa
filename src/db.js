@@ -1898,6 +1898,22 @@ export function recordCallTurn({ callId, conversationId, msgCount, kind = "", st
   );
 }
 
+// Which voice the caller heard a turn in, and what they heard: on a GPT-Live call (src/calls/gptlive.js)
+// the turn's own row times Reason's stream, which nobody hears directly, so the voice writes over the
+// heard fields with its own audio timings. Empty on an ElevenLabs turn, which is the provider on the call row.
+addColumnIfMissing("call_turns", "voice", "TEXT NOT NULL DEFAULT ''");
+
+/**
+ * What the caller actually heard on one turn of a GPT-Live call: the first audio after they stopped
+ * (often the voice's own acknowledgement) and the first audio after Reason's answer reached the voice.
+ * Only the row Reason's turn already wrote; nothing is inserted.
+ */
+export function markCallTurnHeard(callId, msgCount, { voice = "", firstContentMs = null, firstRealMs = null, firstContentKind = null } = {}) {
+  const int = (v) => (Number.isFinite(v) ? Math.round(v) : null);
+  return db.prepare(`UPDATE call_turns SET voice = ?, first_content_ms = ?, first_real_ms = ?, first_content_kind = ?
+    WHERE call_id = ? AND msg_count = ?`).run(String(voice), int(firstContentMs), int(firstRealMs), firstContentKind, callId, int(msgCount) ?? 0).changes;
+}
+
 /** Every turn of one call, in order. */
 export function callTurns(callId) {
   return db.prepare("SELECT * FROM call_turns WHERE call_id = ? ORDER BY turn_index ASC, id ASC").all(callId)
@@ -5241,6 +5257,8 @@ export function updateCallRequest(conversationId, id, fields) {
 export function updateCall(conversationId, id, fields) {
   const allowed = [
     "external_id", "state", "outcome", "summary", "transcript", "duration_s", "cost_cents",
+    // Which voice really carried an owner call: GPT-Live's place() reports itself (src/calls/gptlive.js).
+    "provider",
     "recording_state", "recording_file", "recording_format", "recording_seconds",
     "recording_bytes", "recording_sha256", "recording_why",
     "language", "language_announced",

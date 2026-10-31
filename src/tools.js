@@ -11095,6 +11095,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       try { incidents.resolve({ prefix: "call:place:", how: "calls are being placed again" }); } catch { /* never blocks a call */ }
       db.updateCall(c, row.id, {
         external_id: placed.externalId, state: placed.state ?? "placing",
+        // The voice that really carries it, when that is not the provider the row was made under: an
+        // operator call on the GPT-Live trial (src/calls/gptlive.js). Absent on every other call.
+        ...(placed.provider ? { provider: placed.provider } : {}),
         // Which turn profile and which speech model this call actually ran under (2026-10-07
         // addendum, sections 2 and 4). Written now, from what the provider reports rather than from
         // what this process would prefer, so a number measured on Friday says what it was measured

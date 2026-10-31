@@ -78,6 +78,8 @@ import { LIVE_STATES } from "./calls/provider.js";
 import { inboundRequest, INBOUND_PATH } from "./calls/inbound.js";
 import { llmRequest, LLM_PATH } from "./calls/voice.js";
 import { postCallRequest, POST_CALL_PATH } from "./calls/postcall.js";
+import * as gptlive from "./calls/gptlive.js";
+import { acceptUpgrade } from "./calls/wsserver.js";
 import * as spotify from "./spotify.js";
 import * as google from "./google.js";
 import * as github from "./github.js";
@@ -116,7 +118,32 @@ export function createServer({ router, runtime, log = () => {} }) {
   stamps.installStamps({ tell: typeof runtime?._tell === "function" ? (c, text, meta) => runtime._tell(c, text, meta) : null, log });
   // Each request opens a scope with no person in it; the moment a signed-in cookie names one
   // (db.pageSessionOwner / pageSessionPeek), times on that page are drawn on their clock.
-  return nodeCreateServer((req, res) => zonescope.runOpen(() => handleRequest(req, res)));
+  const server = nodeCreateServer((req, res) => zonescope.runOpen(() => handleRequest(req, res)));
+  // The one WebSocket Reason accepts: Twilio's media stream for a call on the GPT-Live trial
+  // (src/calls/gptlive.js). Only listened for with REASON_CALL_VOICE=gptlive; otherwise an upgrade is
+  // refused by Node exactly as it always was.
+  if (config.callVoice === "gptlive") {
+    server.on("upgrade", (req, socket) => {
+      socket.on("error", () => { /* a dropped stream is the call ending, never the process */ });
+      // Nothing thrown here may escape: an upgrade listener's throw is an uncaught exception, and
+      // anybody on the internet can send an upgrade with a URL that will not parse.
+      try {
+        const path = new URL(req.url, "http://localhost").pathname;
+        if (!path.startsWith(gptlive.STREAM_PATH)) return void socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+        const ws = acceptUpgrade(req, socket);
+        if (!ws) return;
+        try {
+          gptlive.acceptStream({ token: path.slice(gptlive.STREAM_PATH.length), socket: ws, settle: settleCall, runtime, log });
+        } catch (e) {
+          log({ gptlive_stream_failed: (e?.message ?? String(e)).split("\n")[0] });
+          ws.close(1011);
+        }
+      } catch {
+        socket.destroy();
+      }
+    });
+  }
+  return server;
   async function handleRequest(req, res) {
     const url = new URL(req.url, `http://${req.headers.host ?? "localhost"}`);
     // The status page's key goes out on the status page only: never on Web, a page, or anything else (src/opsredact.js).
@@ -582,6 +609,26 @@ export function createServer({ router, runtime, log = () => {} }) {
           log({ call_llm_stream_broke: (e?.message ?? String(e)).split("\n")[0], ms: Date.now() - t0 });
         }
         return res.end();
+      }
+
+      // The GPT-Live trial's two Twilio webhooks (src/calls/gptlive.js): a call's status, and the
+      // number's voice webhook if it is ever pointed here. Both Twilio-signed; both absent without the flag.
+      if (config.callVoice === "gptlive" && req.method === "POST" && url.pathname.startsWith(gptlive.STATUS_PATH)) {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = await gptlive.statusRequest({
+          token: url.pathname.slice(gptlive.STATUS_PATH.length), rawBody, headers: req.headers,
+          settle: settleCall, runtime, log,
+        });
+        res.writeHead(out.status);
+        return res.end(out.body);
+      }
+      if (config.callVoice === "gptlive" && req.method === "POST" && url.pathname === gptlive.INBOUND_PATH) {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = gptlive.inboundTwiml({ rawBody, headers: req.headers, log });
+        res.writeHead(out.status, out.type ? { "Content-Type": out.type } : {});
+        return res.end(out.body);
       }
 
       if (req.method === "POST" && url.pathname === POST_CALL_PATH) {

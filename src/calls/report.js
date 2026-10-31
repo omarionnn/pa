@@ -62,8 +62,29 @@ export function buildCallReport(sqlite, { since = 0 } = {}) {
   const priced = rows.filter(r => Number.isFinite(r.cost_cents));
   const credited = rows.filter(r => Number.isFinite(r.cost_credits));
 
+  // The same numbers per voice (calls.provider: "elevenlabs", "gptlive"), so the GPT-Live trial
+  // (src/calls/gptlive.js) can be read against ElevenLabs on the same measures.
+  const voices = {};
+  for (const p of [...new Set(rows.map(r => r.provider))]) {
+    const ids = new Set(rows.filter(r => r.provider === p).map(r => r.id));
+    const mine = allTurns.filter(t => ids.has(t.call_id));
+    const pr = rows.filter(r => r.provider === p && Number.isFinite(r.cost_cents));
+    const durs = rows.filter(r => r.provider === p).map(r => r.duration_s).filter(Number.isFinite);
+    voices[p] = {
+      calls: ids.size,
+      turns: mine.length,
+      duration_p50_s: percentile(durs, 50),
+      heard_p50_ms: percentile(mine.map(t => t.first_content_ms).filter(Number.isFinite), 50),
+      heard_p95_ms: percentile(mine.map(t => t.first_content_ms).filter(Number.isFinite), 95),
+      real_p50_ms: percentile(mine.map(t => t.first_real_ms).filter(Number.isFinite), 50),
+      real_p95_ms: percentile(mine.map(t => t.first_real_ms).filter(Number.isFinite), 95),
+      cost_cents_total: pr.length ? pr.reduce((n, r) => n + r.cost_cents, 0) : null,
+    };
+  }
+
   return {
     calls: rows,
+    voices,
     totals: {
       calls: rows.length,
       duration_p50_s: percentile(durations, 50),
@@ -89,10 +110,10 @@ export function buildCallReport(sqlite, { since = 0 } = {}) {
 /** The report as plain text: one line per call, then the totals. */
 export function formatCallReport(report) {
   const v = (x) => (x === null || x === undefined ? "-" : String(x));
-  const head = ["call", "dir", "state", "dur_s", "end_reason", "cost_c", "credits", "turns", "heard_p50", "heard_p95", "real_p50", "real_p95", "holding", "closed"];
+  const head = ["call", "voice", "dir", "state", "dur_s", "end_reason", "cost_c", "credits", "turns", "heard_p50", "heard_p95", "real_p50", "real_p95", "holding", "closed"];
   const lines = [head.join("\t")];
   for (const r of report.calls) {
-    lines.push([r.id, r.direction, r.state, r.duration_s, r.end_reason, r.cost_cents, r.cost_credits, r.turns,
+    lines.push([r.id, r.provider, r.direction, r.state, r.duration_s, r.end_reason, r.cost_cents, r.cost_credits, r.turns,
       r.heard_p50_ms, r.heard_p95_ms, r.real_p50_ms, r.real_p95_ms, r.holding_lines, r.closed_early].map(v).join("\t"));
   }
   const t = report.totals;
@@ -102,5 +123,8 @@ export function formatCallReport(report) {
   lines.push(`cost ${v(t.cost_cents_total)}¢ (known for ${t.cost_cents_known_for}) · credits ${v(t.cost_credits_total)} (known for ${t.cost_credits_known_for})`);
   lines.push(`turns ${t.turns} · heard p50 ${v(t.heard_p50_ms)}ms p95 ${v(t.heard_p95_ms)}ms · real words p50 ${v(t.real_p50_ms)}ms p95 ${v(t.real_p95_ms)}ms`);
   lines.push(`holding lines ${t.holding_lines} · closed early ${t.closed_early} · LLM tokens in ${t.llm_input_tokens} out ${t.llm_output_tokens}`);
+  for (const [p, x] of Object.entries(report.voices ?? {})) {
+    lines.push(`voice ${p}: calls ${x.calls} · turns ${x.turns} · duration p50 ${v(x.duration_p50_s)}s · heard p50 ${v(x.heard_p50_ms)}ms p95 ${v(x.heard_p95_ms)}ms · real words p50 ${v(x.real_p50_ms)}ms p95 ${v(x.real_p95_ms)}ms · cost ${v(x.cost_cents_total)}¢`);
+  }
   return lines.join("\n");
 }
