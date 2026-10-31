@@ -253,9 +253,12 @@ export function thirdPartyFrame({ identity = false, ownerName, goal, facts = [],
  * Same policy as a text from a stranger, and for the same reason: a model turn for an unapproved
  * caller is the operator's money spent by whoever dialled the number. So this is a fixed string, no
  * model is asked anything, and the master hears about it exactly as they do for a text.
+ *
+ * It names nobody (2026-10-31, Omari: nothing about him reaches another person). It used to say "an AI
+ * assistant for <operator>" to every blocked, paused, removed or unknown caller on the shared line.
  */
-export function strangerLine({ ownerName = config.ownerName } = {}) {
-  return `Hi — you've reached an AI assistant for ${ownerName}. I'm not set up to take calls from this number,`
+export function strangerLine() {
+  return `Hi — you've reached Reason. I'm not set up to take calls from this number,`
     + ` so I'll pass on that you rang. Thanks.`;
 }
 
