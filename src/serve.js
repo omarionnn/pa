@@ -60,7 +60,7 @@ const router = new Router({ log });
 // with a BLAND_API_KEY; the default `fake` dials nothing and is registered switched OFF, because a
 // provider that reported itself live would make `capabilities` tell people Reason can ring a
 // restaurant, which it cannot. Tests switch it on themselves.
-// With REASON_CALL_VOICE=gptlive the operator's own calls go out on GPT-Live instead
+// With REASON_CALL_VOICE=gptlive every account's own calls go out on GPT-Live instead (=owner: the operator's)
 // (src/calls/gptlive.js); unset, this is the chosen provider itself, untouched.
 const calls = withGptLive(chooseCallProvider());
 

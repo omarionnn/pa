@@ -127,3 +127,17 @@ Call 56 (291 s, 9 delegations): "Checking" before nearly every reply, "how are y
 - Cut-off: their words after Reason's goodbye are read (`kind:"cutoff"`; "bye"/"you too" = no); with no words, ≥300 ms of their speech in the last 1.5 s of a hang-up Reason made counts. `live.cutOff` → `ownerEvent` adds one "sounded like you were saying something as we hung up, what was it?" line (owner thread, normal after-call path, once). Log `gptlive_cut_off`.
 - `ownerEvent` (GPT-Live calls only): a yes to something offered for later that isn't set up → set it up now or say it couldn't.
 Drives (2026-10-31, all ok, `--cold`): `where.ulaw 35 --expect where` (went to Reason, get_location, no identity line); `bye.ulaw 30 --expect goodbye` (hung up 5.4 s after "okay, bye", read=true); `room.ulaw 30 --expect room-bye` ("bye Mum…" → not hung up).
+
+## Everyone's own calls (2026-10-31, Omari: "make this available for everyone that has Reason")
+
+`REASON_CALL_VOICE`: `gptlive` (or `on`) = every account's OWN calls (calls Reason places to its own
+person, `kind: owner`, any account with a row); `owner` = the operator's own calls only (the trial);
+anything else = off. Third-party / business calls stay on ElevenLabs. `REASON_CALL_IDENTITY=on` gives
+every user's GPT-Live and ElevenLabs call the identity line ("you're Reason, they're <their name>").
+
+Full-call drive for ANOTHER user (Ama), with Omari's thread seeded with a locker code:
+`gptlive-drive.mjs q.ulaw 45 --then b.ulaw --then-at 24 --expect full --as user --cold` with
+`REASON_CALL_IDENTITY=on` — passes only if the turn ran on her conversation, the call hung up on the
+mutual goodbye, the transcript is in her thread, every after-call event went to her conversation for
+this call, cost_cents > 0, recording stored, and nothing of Omari's was said, sent or written (his
+thread byte-identical). 2026-10-31: ok — peanut allergy from her memory, hung up on "bye", 30 s, 3¢.

@@ -119,10 +119,10 @@ export function createServer({ router, runtime, log = () => {} }) {
   // Each request opens a scope with no person in it; the moment a signed-in cookie names one
   // (db.pageSessionOwner / pageSessionPeek), times on that page are drawn on their clock.
   const server = nodeCreateServer((req, res) => zonescope.runOpen(() => handleRequest(req, res)));
-  // The one WebSocket Reason accepts: Twilio's media stream for a call on the GPT-Live trial
-  // (src/calls/gptlive.js). Only listened for with REASON_CALL_VOICE=gptlive; otherwise an upgrade is
+  // The one WebSocket Reason accepts: Twilio's media stream for a GPT-Live call (src/calls/gptlive.js).
+  // Only listened for with REASON_CALL_VOICE set (gptlive / on / owner); otherwise an upgrade is
   // refused by Node exactly as it always was.
-  if (config.callVoice === "gptlive") {
+  if (gptlive.gptliveOn()) {
     server.on("upgrade", (req, socket) => {
       socket.on("error", () => { /* a dropped stream is the call ending, never the process */ });
       // Nothing thrown here may escape: an upgrade listener's throw is an uncaught exception, and
@@ -613,7 +613,7 @@ export function createServer({ router, runtime, log = () => {} }) {
 
       // The GPT-Live trial's two Twilio webhooks (src/calls/gptlive.js): a call's status, and the
       // number's voice webhook if it is ever pointed here. Both Twilio-signed; both absent without the flag.
-      if (config.callVoice === "gptlive" && req.method === "POST" && url.pathname.startsWith(gptlive.STATUS_PATH)) {
+      if (gptlive.gptliveOn() && req.method === "POST" && url.pathname.startsWith(gptlive.STATUS_PATH)) {
         const rawBody = await readBody(req);
         if (rawBody === null) return send(413, { error: "body too large" });
         const out = await gptlive.statusRequest({
@@ -623,7 +623,7 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(out.status);
         return res.end(out.body);
       }
-      if (config.callVoice === "gptlive" && req.method === "POST" && url.pathname === gptlive.INBOUND_PATH) {
+      if (gptlive.gptliveOn() && req.method === "POST" && url.pathname === gptlive.INBOUND_PATH) {
         const rawBody = await readBody(req);
         if (rawBody === null) return send(413, { error: "body too large" });
         const out = gptlive.inboundTwiml({ rawBody, headers: req.headers, log });

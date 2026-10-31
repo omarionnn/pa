@@ -7,9 +7,10 @@
 // tools, memory, harm screen, confirm gate and NO_REPLY / spoken-args filtering. No OpenAI model does
 // Reason's thinking.
 //
-// Who gets it: REASON_CALL_VOICE=gptlive, and then only calls on the OPERATOR's own conversation
-// (`gptliveFor`). Anyone else, and every call with the flag unset, is ElevenLabs exactly as before —
-// this file is never reached for them.
+// Who gets it (`gptliveFor`): REASON_CALL_VOICE=gptlive (or on) — every account's OWN calls, the ones
+// Reason places to its own person (Omari, 2026-10-31: "make this available for everyone that has
+// Reason"); REASON_CALL_VOICE=owner — the operator's own calls only, the trial. Third-party and
+// business calls, and every call with the flag unset, are ElevenLabs exactly as before.
 //
 // The phone line: Twilio Media Streams. Twilio carries the call and streams 8 kHz μ-law both ways over
 // a WebSocket to /calls/gptlive/stream/{token}; this file relays it to a GPT-Live WebSocket session,
@@ -47,10 +48,27 @@ const EXT = "gptlive:";
 
 // ---------- who gets it ----------
 
-/** Is GPT-Live the voice for calls on this conversation? Only with the flag on, and only the operator. */
+/** REASON_CALL_VOICE read: "everyone" (gptlive / on), "owner" (the operator only) or "" (off). */
+export function gptliveMode(v = config.callVoice) {
+  const s = String(v ?? "").trim().toLowerCase();
+  if (s === "owner") return "owner";
+  return ["gptlive", "on", "everyone", "1", "true", "yes"].includes(s) ? "everyone" : "";
+}
+
+/** Is any GPT-Live route listened for at all? */
+export const gptliveOn = () => gptliveMode() !== "";
+
+/**
+ * Is GPT-Live the voice for this account's own calls? Everyone with an account on "everyone"; only the
+ * operator on "owner". Keyed on the call's own conversation, so it is that person's Reason either way.
+ */
 export function gptliveFor(conversationId) {
-  if (config.callVoice !== "gptlive" || !conversationId) return false;
-  try { return accounts.ownerOf(conversationId)?.isOperator === true; } catch { return false; }
+  const mode = gptliveMode();
+  if (!mode || !conversationId) return false;
+  try {
+    const me = accounts.ownerOf(conversationId);
+    return mode === "everyone" ? me?.known === true : me?.isOperator === true;
+  } catch { return false; }
 }
 
 /** What this machine is missing to place a GPT-Live call. Empty when it can. */
@@ -1063,15 +1081,15 @@ export function stateFromTwilio(s) {
 // ---------- the provider, wrapped ----------
 
 /**
- * The call provider the runtime is handed, with GPT-Live in front of it for the operator's own calls.
+ * The call provider the runtime is handed, with GPT-Live in front of it for own calls (`gptliveFor`).
  *
  * Everything else — `status()`, webhooks, every third-party call, every call with the flag off — is
- * the wrapped provider (ElevenLabs) untouched. `place` routes an owner call on the operator's
- * conversation here; `check` routes ids this file issued. With the flag unset this returns the inner
+ * the wrapped provider (ElevenLabs) untouched. `place` routes an owner call on a conversation
+ * `gptliveFor` says yes to here; `check` routes ids this file issued. With the flag unset this returns the inner
  * provider itself, so not even the wrapper is in the path.
  */
 export function withGptLive(inner, { fetchImpl = null } = {}) {
-  if (config.callVoice !== "gptlive" || !inner) return inner;
+  if (!gptliveOn() || !inner) return inner;
   const live = new Map();
   const place = async (args) => {
     if (args?.kind !== "owner" || !gptliveFor(args?.conversationId)) return inner.place(args);

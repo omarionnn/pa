@@ -632,8 +632,8 @@ export const config = {
   elevenWebhookSecret: process.env.ELEVENLABS_WEBHOOK_SECRET || "",
   // One pinned voice, picked by the owner by listening. Never varies per call.
   elevenVoiceId: process.env.ELEVENLABS_VOICE_ID || "",
-  // GPT-Live as the voice instead (src/calls/gptlive.js), a side-by-side trial: REASON_CALL_VOICE=gptlive
-  // switches it on for the OPERATOR's own calls only. Unset, every call is ElevenLabs exactly as before.
+  // GPT-Live as the voice instead (src/calls/gptlive.js): REASON_CALL_VOICE=gptlive (or on) for every
+  // account's own calls, =owner for the operator's only. Unset, every call is ElevenLabs exactly as before.
   // The line is Twilio Media Streams, so it needs the number's Twilio keys, which live in ElevenLabs
   // and must be copied here by the owner; without them an owner call quietly stays on ElevenLabs.
   callVoice: String(process.env.REASON_CALL_VOICE ?? "").trim().toLowerCase(),
