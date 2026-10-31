@@ -27,11 +27,11 @@ import { writeFileSync } from "node:fs";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { config, clock, normalizeNumber } from "../config.js";
-import { llmRequest, withoutSilenceMarker, ownerProfileNote, METER_KINDS, THINKING_FILLER } from "./voice.js";
+import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER } from "./voice.js";
 import { recordingFileFor } from "./recordings.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
-import { ownCallIdentity, thirdPartyIdentity, callIdentityFor, NO_NAME } from "./voice-prompt.js";
+import { thirdPartyIdentity, callIdentityFor, NO_NAME } from "./voice-prompt.js";
 import { makerLine } from "../maker.js";
 import { openingLineFor, recordingNoteFor, whoseCallIsThis } from "./inbound.js";
 
@@ -65,107 +65,56 @@ export function missingForGptlive() {
 
 // ---------- what the voice is told ----------
 
-/** The most of what Reason knows about the owner that goes into the voice's instructions. */
-const ABOUT_MAX = 3000;
-
 /**
- * Who is on the line, for the voice's instructions, derived per call from the account whose
- * conversation it is — any user, not one. On a call with their OWN user (`is_owner`), the voice gets
- * that person's name and what Reason knows about them (the same profile block their Reason turn is
- * shown, `ownerProfileNote`). On a call Reason makes for them to anyone else, it gets their name only,
- * to say whose errand it is. The city is the operator's install setting, so only the operator gets one.
- * GPT-Live itself is still operator-only (`gptliveFor`); this is ready for when that widens.
+ * Who is on the line, for the voice's instructions, from the account whose conversation this call is.
  */
 export function whoFor(call) {
   let me = null;
   try { me = accounts.ownerOf(call.conversation_id); } catch { /* unknown conversation */ }
   const raw = me?.name || "";
   const named = !!raw && raw !== NO_NAME;
-  const name = named ? raw : "them";
-  const owner = !!call.is_owner;
-  const rang = call.direction === "in" ? "they" : "you";
-  // Behind REASON_CALL_IDENTITY (owner-only rollout): off, the voice gets the one line it always had and
-  // no profile is even read.
-  const identity = callIdentityFor(call.conversation_id);
-  if (!owner || !identity) return { name, named, owner, identity, city: "", about: "", rang };
-  let about = "";
-  try { about = ownerProfileNote(call.conversation_id); } catch { /* no profile is no profile */ }
-  if (about.length > ABOUT_MAX) about = `${about.slice(0, ABOUT_MAX).replace(/\n[^\n]*$/, "")}\n…`;
-  // Isolation: only ever THIS call's conversation's own profile — the call row decides whose, nothing else.
-  return { name, named, owner: true, identity, city: me?.isOperator ? config.ownerCity || "" : "", about, rang };
+  // Only this call's own account, by the call row's conversation — never anyone else's. No profile:
+  // the voice gets the name and nothing more (the backend has the rest, per turn, for this person).
+  return { name: named ? raw : "them", named, owner: !!call.is_owner, identity: callIdentityFor(call.conversation_id) };
 }
 
 /**
- * The live prompt. Short on purpose (their guidance: keep task rules in the backend). Three parts:
- * who it is and who it is talking to (answered straight from here, never a round-trip to the backend),
- * how it sounds, and the rules — the delegation rule (everything beyond small talk goes to Reason) and
- * the honesty rule, which code also enforces (`claimsDone` and the guard in `GptLiveCall`).
- *
- * Omari's first GPT-Live call (call 53, 2026-10-31): "a big upgrade, really felt like a conversation",
- * but "didn't sound very warm", and "do you know who I am" went to the backend and came back 3.8 s
- * later after "let me just check that quickly".
+ * The live prompt: call 53's (#290), the one Omari called "a big upgrade, really felt like a
+ * conversation", word for word, plus only the minimal identity lines — it is Reason, who they are, who
+ * made it — behind REASON_CALL_IDENTITY. #293's longer prompt (tone section, profile block, who-rang-
+ * whom) went out with calls 54–55, which he called confused and worse; it is not here (2026-10-31).
  */
-export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, city = "", about = "", rang = "you", accent = accentFor(config.gptliveVoice) } = {}) {
+export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false } = {}) {
   const them = named ? name : "them";
-  // Who made Reason: one answer everywhere (src/maker.js, REASON_MAKER).
-  const madeBy = makerLine();
+  const theirs = named ? `${name}'s` : "their";
   const who = !identity
-    ? [`You are the voice of Reason, ${them}'s personal assistant, on a phone call with ${them}.`, madeBy]
+    ? []
     : owner
-    ? [
-      // The same identity line every user's own call carries on ElevenLabs (voice-prompt.js).
-      ownCallIdentity({ name: named ? name : NO_NAME }),
-      `You live in ${named ? `${name}'s` : "their"} texts and handle things for them, and you're always glad to talk to them.${city ? ` They are in ${city}.` : ""}`,
-      rang === "they" ? `${named ? name : "They"} rang you.` : `You rang ${them} (Reason placed this call); they did not ring you.`,
-      "These identity questions are answered by you, never sent to the backend.",
-      madeBy,
-      ...(about ? [
-        `What you already know about ${them}, from your conversations together. Use it naturally when it fits; never recite it, and never read out an address or a number unless they ask for it:`,
-        about,
-        `All of that is for ${them} only. If somebody else comes on the line, or the person says they are not ${them}, share none of it and hand what they ask to the backend.`,
-      ] : []),
-    ]
-    : [
-      `You are Reason, an AI assistant, on a phone call on ${them}'s behalf with somebody else — not with ${them}.`,
-      thirdPartyIdentity({ ownerName: them }),
-      madeBy,
-    ];
+      ? [named
+        ? `If they ask who you are or who they are, answer straight away yourself: you're Reason, their assistant, and they're ${name}, the person you work for.`
+        : "If they ask who you are or who they are, answer straight away yourself: you're Reason, their assistant; you don't have their name saved yet."]
+      : [thirdPartyIdentity({ ownerName: them })];
   return [
+    `You are the voice of Reason, ${theirs} personal assistant, on a phone call with ${them}.`,
     ...who,
-    "",
-    "How you sound:",
-    `Warm, relaxed and friendly, like a close friend who's happy they called. Smile while you talk.${accent ? ` ${accent}` : ""}`,
-    "Casual, everyday words and contractions: I'm, you're, it's, gonna, let's. Short sentences at an easy pace, with the little reactions people really make: oh nice, ha, fair enough, ah gotcha, mm.",
-    "A bit of light humour when the moment is light; drop it straight away when they're stressed or the news is bad.",
-    "Never corporate, scripted or robotic: no \"certainly\", \"absolutely\", \"I'd be happy to help\", \"is there anything else I can help you with\", no lists read out, no repeating their question back to them.",
-    "",
-    "What you do:",
-    `You are the voice. The backend, Reason's brain, does the thinking and every action: it has ${name === "them" ? "their" : `${name}'s`} messages, calendar, memory, tasks and tools.`,
-    "Delegate to the backend for every question, request, instruction or opinion — anything beyond a greeting, small talk, who you are and who they are, a brief listening sound, or asking them to repeat something.",
-    "Never answer a question about the world, their plans or their stuff from your own knowledge, and never invent a fact, time, name, number or price.",
-    "While the backend works, a very short, natural acknowledgement is fine. Do not fill the silence with guesses.",
+    makerLine(),
+    "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.",
+    `You are only the voice. Reason, the backend, does all of the thinking and every action: it has ${theirs} messages, calendar, memory, tasks and tools.`,
+    "Delegate to the backend for every question, request, instruction or opinion — anything beyond a greeting, a brief listening sound, or asking them to repeat something.",
+    "Never answer from your own knowledge, and never invent a fact, time, name, number or price.",
+    "While the backend works, a very short acknowledgement is fine. Do not fill the silence with guesses.",
     "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
-    "When a backend result arrives, say it in your own warm, natural words and keep it brief, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
+    "When a backend result arrives, say it naturally and briefly, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
     "Never read out links, codes, IDs or anything in square brackets, and never say the words NO_REPLY.",
     "Stop speaking when they talk over you, and listen.",
   ].join("\n");
 }
 
-/**
- * The accent line for a voice. The voices with a regional accent of their own (vesper British, willow
- * Irish, and so on) are left alone; the neutral ones are asked for a light British one. Live since
- * 2026-10-31: REASON_GPTLIVE_VOICE=willow, a natural recording, picked for warmth over marin-asked-to-
- * sound-British, which Omari found not warm on call 53 (warmth wins over accent, his call).
- */
-export function accentFor(voice) {
-  return ["marin", "cedar"].includes(String(voice ?? "")) ? "A light, natural British (London) accent." : "";
-}
-
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, identity = false, city = "", about = "", rang = "you", greeting = "" } = {}) {
+export function sessionConfig({ name, named, owner = false, identity = false, greeting = "" } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: liveInstructions({ name, named, owner, identity, city, about, rang }),
+    instructions: liveInstructions({ name, named, owner, identity }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     delegation: { type: "client" },
   };
@@ -960,7 +909,7 @@ export function stateFromTwilio(s) {
  * conversation here; `check` routes ids this file issued. With the flag unset this returns the inner
  * provider itself, so not even the wrapper is in the path.
  */
-export function withGptLive(inner, { fetchImpl = null, openLive: warmOpen = openLiveSocket, log: warmLog = () => {} } = {}) {
+export function withGptLive(inner, { fetchImpl = null } = {}) {
   if (config.callVoice !== "gptlive" || !inner) return inner;
   const live = new Map();
   const place = async (args) => {
@@ -969,8 +918,8 @@ export function withGptLive(inner, { fetchImpl = null, openLive: warmOpen = open
     if (missing.length) return inner.place(args);
     const row = db.getCall(args.conversationId, args.callId);
     if (!row?.webhook_token) return inner.place(args);
-    // The voice starts while Twilio dials, so its greeting is ready the moment the phone is picked up.
-    prewarm(row, { openLive: warmOpen, log: warmLog });
+    // No warm-up while it rings (2026-10-31): calls 54–55 with it were "confused and incoherent".
+    // The session opens when Twilio's stream starts, as on call 53. `prewarm` stays for a proven rework.
     const out = await twilioPost("/Calls.json", {
       To: args.to, From: config.twilioFrom, Twiml: streamTwiml(row),
       StatusCallback: `${config.publicUrl}${STATUS_PATH}${row.webhook_token}`,
