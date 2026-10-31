@@ -405,6 +405,8 @@ const TRAVELER_KEYS = new Set(["given_name", "family_name", "born_on", "gender",
 export function sealTravelers(tool, value, depth = 0) {
   if (value === null || typeof value !== "object" || depth > 6) return value;
   if (tool === "directions" && depth === 0 && !Array.isArray(value)) return sealWalk(value);
+  // A checkout's answers (shop_answer: their address, phone, email) never reach a log or ledger row.
+  if (tool === "shop_answer" && depth === 0 && !Array.isArray(value)) return { ...value, ...(value.answers !== undefined ? { answers: "[sealed]" } : {}) };
   const travelers = TRAVELER_TOOLS.has(tool);
   if (!travelers && !SECRET_TOOLS.has(tool)) return value;
   if (Array.isArray(value)) return value.map(v => sealTravelers(tool, v, depth + 1));

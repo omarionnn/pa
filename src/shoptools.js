@@ -17,7 +17,7 @@ import { z } from "zod";
 import * as shop from "./shopconnect.js";
 import * as passkey from "./passkey.js";
 
-export const SHOP_TOOLS = new Set(["store_checkout", "shop_pay", "shop_decline", "shop_card"]);
+export const SHOP_TOOLS = new Set(["store_checkout", "shop_pay", "shop_decline", "shop_card", "shop_status", "shop_answer"]);
 export const shopToolVisible = (name, conversationId) => !SHOP_TOOLS.has(name) || shop.connectAllowedFor(conversationId);
 
 /** AgentCard's buying, card and flight-booking tools: never shown, never run where Crossmint is on. */
@@ -84,6 +84,23 @@ export const SHOP_TOOL_DEFS = [
     description: "They said no to an open payment (or changed their mind): Crossmint is told to decline, nothing is charged.",
     input_schema: { type: "object", properties: { payment_id: { type: "integer" } }, required: ["payment_id"] },
   },
+  {
+    name: "shop_status",
+    description: "Where their checkouts and orders stand, from the record: stage (started, in progress, waiting on an answer, waiting on their approval, paid, placed, failed, cancelled), what it is waiting on, what was paid. CALL IT before answering anything like 'updates?', 'any news on the order', 'did it go through', 'is it running' — never answer those from memory or from earlier lines in the chat, which can be wrong. A checkout you cannot see here did not start.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "shop_answer",
+    description: "Answer a question a running checkout is waiting on (a [checkout] event told you the run_id, the question and its fields: shipping and contact details, a size, a choice). Fill every required field from what you know about them; if something needed is unknown, do not guess: ask them for it instead. Never put a card number, password or code here: payment is approved separately and sign-in goes through their link. Nothing is charged by this.",
+    input_schema: {
+      type: "object",
+      properties: {
+        run_id: { type: "string", description: "The run from the [checkout] event or shop_status." },
+        answers: { type: "object", description: "field key → value, keys exactly as listed in the event.", additionalProperties: true },
+      },
+      required: ["run_id", "answers"],
+    },
+  },
 ];
 
 export const SHOP_SCHEMAS = {
@@ -91,6 +108,8 @@ export const SHOP_SCHEMAS = {
   shop_pay: z.object({ payment_id: z.number().int().positive(), confirmation_id: z.number().int().optional() }),
   shop_decline: z.object({ payment_id: z.number().int().positive() }),
   shop_card: z.object({ send_link: z.boolean().optional() }),
+  shop_status: z.object({}),
+  shop_answer: z.object({ run_id: z.string().min(1).max(120), answers: z.record(z.union([z.string().max(500), z.number(), z.boolean()])) }),
 };
 
 /** The gate's target for shop_pay: built from the payment row, never from the model's input. */
@@ -124,6 +143,8 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
     return out.ok ? { ...out, say: `Paid ${out.amount} at ${out.merchant}. The store still has to place it; say it's going through, not that it's done.` } : out;
   }
   if (name === "shop_decline") return await shop.declinePayment({ conversationId: c, paymentId: input.payment_id });
+  if (name === "shop_status") return shop.statusView(c);
+  if (name === "shop_answer") return await shop.answerRun(input.run_id, { conversationId: c, answers: input.answers });
   if (name === "shop_card") {
     const card = shop.cardOf(c);
     const label = card ? `${card.brand ? card.brand.replace(/^./, (x) => x.toUpperCase()) : "Card"} ••••${card.last4 || "????"}` : "";

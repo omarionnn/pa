@@ -24,6 +24,7 @@ import { goalNote } from "./goals.js";
 import { pauseNote } from "./pause.js";
 import { memoryNotes } from "./memorynote.js";
 import { startPurchasesNote, purchaseRecordSource } from "./purchasesnote.js";
+import { checkoutNote as shopCheckoutNote } from "./shopconnect.js";
 import { withoutSelfNote, readSilence } from "./plain.js";
 import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "./offers.js";
 import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
@@ -491,11 +492,16 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   const purchases = await purchasesPending;
   // The block is Reason's own record, written by code: a figure in it is sourced for the reply check.
   if (purchases) noteOfferSource(conversationId, purchases);
+  // Their Crossmint checkouts, from the rows (src/shopconnect.js checkoutNote): where each one stands
+  // now, so "updates?" is answered from the record and a run that failed in silence is never called
+  // "never started" (2026-10-31, the Ulta CeraVe run). On their turns only, like the purchases block.
+  const checkouts = kind === "event" ? "" : shopCheckoutNote(conversationId);
+  if (checkouts) noteOfferSource(conversationId, checkouts);
   // What it has already told them that still stands, and its open and settled questions
   // (src/said.js), so an update corrects out loud and a settled question is never asked again.
   // On a turn that is not theirs, only what they turned down: a sweep must not raise it either.
   const saidNote = kind === "user" ? saidLedger.standingNote(conversationId) : saidLedger.declinedNote(conversationId);
-  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, purchases, openWork, kept, ridesNow, standing, goalsNote, reqsNote, saidNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
+  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, purchases, checkouts, openWork, kept, ridesNow, standing, goalsNote, reqsNote, saidNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;
