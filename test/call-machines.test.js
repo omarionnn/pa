@@ -326,3 +326,17 @@ test("hold after a person answered is waited out, and a farewell message is not 
   const r2 = await turn(db.getCall(C, rec.id), scripted({ tool: "end_call", input: { reason: "recording", message: "Thanks, goodbye!" } }), theyAnswer("Goodbye."));
   assert.equal(JSON.parse(r2.toolCalls[0].function.arguments).message, undefined);
 });
+
+test("keys pressed into a menu: a menu choice is logged, an account number is not", async () => {
+  const hold = await import("../src/calls/hold.js");
+  const lines = [];
+  const log = (o) => lines.push(JSON.stringify(o));
+  assert.equal(hold.notePress(strandCall({ menu_presses: "[]" }), { tones: "1", log }).ok, true);
+  assert.equal(hold.notePress(strandCall({ menu_presses: "[]" }), { tones: "4485 9921 0037#", log }).ok, true);
+  assert.equal(hold.notePress(strandCall({ menu_presses: JSON.stringify(["4485992100370", "4485992100370"]) }), { tones: "4485992100370", log }).stuck, true);
+  assert.match(lines[0], /"tones":"1"/);
+  for (const l of lines) assert.doesNotMatch(l, /4485|9921|0037/, l);
+  assert.match(lines[1], /"tones":"13 chars"/);
+  assert.equal(hold.tonesForLog("1w1"), "1w1");
+  assert.equal(hold.tonesForLog("say my account number"), "21 chars");
+});

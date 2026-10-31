@@ -1947,7 +1947,7 @@ export async function* voiceTurn({
         if (!press.ok) {
           // Logged, because a press that is refused is invisible otherwise: the call simply never
           // presses anything and stalls on a menu, which is exactly how it was found.
-          log({ call_menu_refused: call.id, asked: String(asked.dtmf_tones ?? "").slice(0, 40), stuck: press.stuck === true });
+          log({ call_menu_refused: call.id, asked: hold.tonesForLog(asked.dtmf_tones), stuck: press.stuck === true });
           // NOT forwarded. Fed back as a tool result so the next round speaks instead of pressing, which
           // is what gets a human on most menus anyway.
           system = null;
