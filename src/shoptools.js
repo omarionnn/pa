@@ -16,9 +16,10 @@
 import { z } from "zod";
 import * as shop from "./shopconnect.js";
 import * as passkey from "./passkey.js";
+import * as spendcap from "./spendcap.js";
 import * as shipping from "./shipping.js";
 
-export const SHOP_TOOLS = new Set(["store_checkout", "shop_pay", "shop_decline", "shop_card", "shop_status", "shop_answer"]);
+export const SHOP_TOOLS = new Set(["store_checkout", "shop_pay", "shop_decline", "shop_card", "shop_status", "shop_answer", "spend_limit_set", "spend_limit_confirm"]);
 export const shopToolVisible = (name, conversationId) => !SHOP_TOOLS.has(name) || shop.connectAllowedFor(conversationId);
 
 /** AgentCard's buying, card and flight-booking tools: never shown, never run where Crossmint is on. */
@@ -102,6 +103,30 @@ export const SHOP_TOOL_DEFS = [
       required: ["run_id", "answers"],
     },
   },
+  {
+    name: "spend_limit_set",
+    description: "Change their DAILY spending limit — the most Reason may spend for them in a day, across every store — when they name a new number ('raise my shopping limit to 250', 'set my daily cap to 50', 'make it $80 a day'). Lowering it, or anything at or under the default, takes effect at once. Raising it above the default is a money control and is confirmed first: the result tells you whether to send a Face ID link (send the url on its own line as the last thing, untouched) or to ask them a plain yes/no question (then spend_limit_confirm with their answer). Nobody can set more than the ceiling the result names. Never suggest a number; never quote words for them to type. For 'what's my limit' or 'how much have I spent', use shop_status.",
+    input_schema: {
+      type: "object",
+      properties: {
+        daily: { type: "number", description: "Dollars a day, the number they said." },
+        text: { type: "string", description: "Their own words, verbatim, the sentence this came from." },
+      },
+      required: ["daily"],
+    },
+  },
+  {
+    name: "spend_limit_confirm",
+    description: "Their answer to the yes/no question about raising the daily limit (spend_limit_set said needs: yes). 'yes' applies the raise that was asked; 'no' leaves the limit as it was. Only when they actually answered; a question that has run out is refused and you say so. Never call it for a Face ID raise: the link does that.",
+    input_schema: {
+      type: "object",
+      properties: {
+        change_id: { type: "integer", description: "From spend_limit_set." },
+        answer: { type: "string", enum: ["yes", "no"], description: "What they meant." },
+      },
+      required: ["change_id", "answer"],
+    },
+  },
 ];
 
 export const SHOP_SCHEMAS = {
@@ -111,6 +136,8 @@ export const SHOP_SCHEMAS = {
   shop_card: z.object({ send_link: z.boolean().optional(), receipt_email: z.string().max(200).optional() }),
   shop_status: z.object({}),
   shop_answer: z.object({ run_id: z.string().min(1).max(120), answers: z.record(z.union([z.string().max(500), z.number(), z.boolean()])) }),
+  spend_limit_set: z.object({ daily: z.number().positive().max(1_000_000), text: z.string().max(300).optional() }),
+  spend_limit_confirm: z.object({ change_id: z.number().int().positive(), answer: z.enum(["yes", "no"]) }),
 };
 
 /** The gate's target for shop_pay: built from the payment row, never from the model's input. */
@@ -155,6 +182,27 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
   }
   if (name === "shop_decline") return await shop.declinePayment({ conversationId: c, paymentId: input.payment_id });
   if (name === "shop_status") return shop.statusView(c);
+  if (name === "spend_limit_set") {
+    const cents = spendcap.toCents(input.daily);
+    const out = spendcap.requestChange(c, cents, { said: String(input.text ?? "").slice(0, 300), via: "text" });
+    const was = spendcap.view(c);
+    if (out.ok) return { ...out, say: `Say it back in one line: their daily limit is now ${out.to} a day${out.from !== out.to ? ` (it was ${out.from})` : ""}. Today they have spent ${was.spent}, so ${was.left} is left.` };
+    if (out.error === "over_ceiling") return { ...out, say: `The most anyone can set here is ${out.ceiling} a day, so nothing changed; their limit is still ${out.cap}. Say that in one line and offer ${out.ceiling} if they want it. Never say who could go higher or how.` };
+    if (out.error === "bad_amount") return { ...out, say: "That didn't read as an amount. Ask once, plainly, what the daily limit should be in dollars." };
+    if (out.needs === "face_id") return { ...out, say: `Raising it from ${out.from} to ${out.to} a day needs their Face ID. Say so in one line and send this url ON ITS OWN LINE as the last thing, untouched; it works once, for 5 minutes. Don't say it's done.` };
+    return { ...out, say: `Raising it from ${out.from} to ${out.to} a day needs a yes from them. Ask once, in one line, whether to raise it to ${out.to} a day; when they answer, spend_limit_confirm with change_id ${out.change_id}. Don't say it's done.` };
+  }
+  if (name === "spend_limit_confirm") {
+    if (input.answer === "no") {
+      const out = spendcap.declineChange(c, input.change_id);
+      return out.ok ? { ...out, say: `Left as it was: their daily limit stays ${out.cap}. One line.` } : { ...out, say: "That question isn't open anymore. Say the limit is unchanged; if they still want a change, they name the number again." };
+    }
+    const out = spendcap.confirmChange(c, input.change_id, { via: "text" });
+    if (out.ok) return { ...out, say: `Say it back in one line: their daily limit is now ${out.to} a day (it was ${out.from}).` };
+    if (out.error === "needs_face_id") return { ...out, say: `A yes isn't enough here: raising it to ${out.to} needs their Face ID. Say so in one line and send this url ON ITS OWN LINE as the last line, exactly: ${out.url}` };
+    if (out.error === "change_expired") return { ...out, say: `That question ran out, so nothing changed; their limit is still ${out.cap}. Say so in one line; if they still want it, they name the number again and you call spend_limit_set.` };
+    return { ...out, say: `Nothing changed; their limit is ${out.cap ?? spendcap.view(c).cap}. Say so in one line.` };
+  }
   if (name === "shop_answer") return await shop.answerRun(input.run_id, { conversationId: c, answers: input.answers });
   if (name === "shop_card") {
     if (input.receipt_email) {

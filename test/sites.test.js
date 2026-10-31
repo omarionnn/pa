@@ -333,11 +333,13 @@ test("a commit over the day's limit is refused before it happens, with the real 
 
   assert.equal(out.ok, false);
   assert.equal(out.blocked, "over_daily_cap");
-  assert.match(out.error, /\$58\.40 and the day's limit is \$60\.00/);
+  assert.match(out.error, /\$58\.40 and their daily limit is \$60\.00 \(the default here\)/);
   assert.match(out.error, /\$58\.40 is already committed/);
   assert.match(out.error, /\$1\.60 left/);
   assert.match(out.error, /Nothing was committed/);
-  assert.match(out.error, /REASON_MAX_SPEND_PER_DAY/);
+  // 2026-10-31: the person hears their limit and how to change it, never an env var.
+  assert.match(out.say, /^Your daily limit is \$60 and this would take you to \$116\.80\. You can raise it in Settings → Shopping, or tell me a new limit\.$/);
+  assert.doesNotMatch(out.error, /REASON_MAX_SPEND_PER_DAY/);
   assert.equal(fx.orders.length, 1, "only the first one happened");
 });
 
@@ -791,8 +793,9 @@ test("caps_show reads off the table, and says plainly when they have set none", 
   db.db.exec("DELETE FROM spend_caps");
   const none = await call("caps_show", {});
   assert.equal(none.has_limits, false);
-  assert.match(none.note, /has not set any spending limits yet/);
-  assert.doesNotMatch(none.note, /\$/, "it must not name a number nobody set");
+  assert.match(none.note, /has not set per-purchase or monthly limits/);
+  assert.doesNotMatch(none.note, /\$\d/, "it must not name a number nobody set");
+  assert.ok(none.today?.cap, "the daily limit, which is real, rides along");
 
   await call("caps_set", { per_purchase: 200, monthly: 1500, text: "raise my limit to $200" });
   trust.noteSpend({ conversationId: C, cents: 5840, what: "a chair", site: "amazon" });

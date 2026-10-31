@@ -49,12 +49,63 @@ const shell = (main) => `${header()}<main class="pf" id="pk-main">${main}</main>
 const theTotal = (v) => paper({ stamp: v.stampText || "", label: v.store.toUpperCase(), big: v.amount, extra: v.item ? `<p class="pk-item">${esc(v.item)}</p>` : "" });
 
 // ---------------------------------------------------------------- the approval
-const WHAT_IT_COVERS = (v) => label("FACE ID APPROVES") + para(`This one payment: <b>${esc(v.amount)}</b> at ${esc(v.store)}. Not another amount, not another store.`)
+const WHAT_IT_COVERS = (v) => label("FACE ID APPROVES") + para(v.kind === "cap"
+  ? `This one change: your daily limit to <b>${esc(v.to)}</b>. Not a payment, not another number.`
+  : `This one payment: <b>${esc(v.amount)}</b> at ${esc(v.store)}. Not another amount, not another store.`)
   + label("THE LINK", { sp: true }) + para("Works once, and runs out in five minutes.")
   + label("I NEVER SEE", { pen: true, sp: true }) + para("Your face or fingerprint. It stays on your phone.");
 
+/**
+ * A raise of the daily spending limit (src/spendcap.js, kind 'cap'): the same page shape as a payment,
+ * with the new number where the total goes and the old one under it. Nothing is paid here; the step
+ * names stay the ones the script moves between (paying → paid, declined, failed).
+ */
+function renderApproveCap({ v, staging = false, boot = null, blocked = "" }) {
+  const left = Math.max(0, v.expiresAt - Date.now());
+  const theNumber = paper({ label: "DAILY LIMIT", big: v.to, extra: `<p class="pk-item">From ${esc(v.from)} a day</p>` });
+  if (blocked) {
+    const cooling = blocked === "cooling_off";
+    const main = headline(cooling ? "Your new Face ID isn't ready yet." : "Face ID isn't set up here.", "Your limit hasn't changed.", "pk-h")
+      + lede(cooling ? "A Face ID added after the first one waits a day before it can approve anything, so nobody can add one and raise your limit before you hear." : "Set up Face ID in Settings, then ask me again.")
+      + theNumber + `<div class="pk-note">${actions(NO("Leave it"), go("Settings", { href: "/web/settings#shopping" }))}</div>`;
+    return page("Reason — approve", shell(frame({ main, margin: WHAT_IT_COVERS(v) })), { staging, boot });
+  }
+  const ask = frame({
+    step: "ask",
+    main: headline(`Raise your daily limit to ${v.to}?`, "Approve it with Face ID.", "pk-h")
+      + lede(`The most I'll spend for you in a day, across every store. It's ${v.from} now.`)
+      + theNumber
+      + `<div class="pk-note pk-go">${actions(`<button class="act pf-go" type="button" id="pk-go" data-busy="1">${FACE}Approve with Face ID <span aria-hidden="true">→</span></button>`, NO("Leave it"))}</div>`
+      + label(`RUNS OUT IN ${minutes(left)} MIN · NOTHING CHANGED YET`)
+      + `<p class="pf-note" id="pk-err" role="alert" hidden></p>`,
+    margin: WHAT_IT_COVERS(v),
+  });
+  const paying = frame({ step: "paying", off: true, main: headline("Approved.", "Saving it now.") + lede("One moment."), margin: label("CHANGING") + para(`Your daily limit, to ${esc(v.to)}.`) });
+  const paid = frame({
+    step: "paid", off: true,
+    main: headline(`Done. ${v.to} a day.`, "Your new daily limit.") + lede(`It was ${v.from}. You can change it again any time in Settings, or by telling me.`)
+      + paper({ stamp: "APPROVED", label: "DAILY LIMIT", big: v.to })
+      + `<div class="pk-note">${actions(go("Back to Settings", { href: "/web/settings#shopping" }))}</div>`,
+    margin: label("APPROVED WITH") + para("Face ID, on this device.") + label("THIS LINK", { sp: true }) + para("Is used up."),
+  });
+  const declined = frame({
+    step: "declined", off: true,
+    main: headline("Left as it was.", `${v.from} a day.`) + lede("Nothing changed. Tell me if you want a different number.")
+      + `<div class="pk-note">${actions(go("Back to Settings", { href: "/web/settings#shopping" }))}</div>`,
+    margin: label("THIS LINK") + para("Is closed."),
+  });
+  const failed = frame({
+    step: "failed", off: true,
+    main: headline("Face ID worked. The change didn't save.", "Your limit hasn't changed.") + lede("That's on my side, not yours. Try again here, or text me the number.")
+      + theNumber + `<div class="pk-note">${actions(`<button class="act pf-go" type="button" id="pk-retry" data-busy="1">Try again <span aria-hidden="true">→</span></button>`, go("Back to Settings", { href: "/web/settings#shopping" }))}</div>`,
+    margin: label("THIS LINK") + para("Still works, once, until it runs out."),
+  });
+  return page("Reason — approve", shell(ask + paying + paid + declined + failed), { staging, boot });
+}
+
 /** The open payment and every screen its script moves to. `blocked` is cooling_off / no_passkey. */
 export function renderApprove({ v, staging = false, boot = null, blocked = "" }) {
+  if (v.kind === "cap") return renderApproveCap({ v, staging, boot, blocked });
   const left = Math.max(0, v.expiresAt - Date.now());
   if (blocked) {
     const cooling = blocked === "cooling_off";
@@ -113,12 +164,15 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
 
 /** A link that can't pay anymore: used, declined, run out, replaced by a newer one, or the payment closed. */
 export function renderApproveEnded({ v = null, state = "expired", staging = false }) {
-  const was = { used: ["Already approved.", "This link can't pay again."], declined: ["Declined.", "Nothing was charged."] }[state]
-    ?? ["This link has run out.", "Nothing was charged."];
+  const cap = v?.kind === "cap";
+  const none = cap ? "Your limit hasn't changed." : "Nothing was charged.";
+  const was = { used: ["Already approved.", cap ? "This link is used up." : "This link can't pay again."], declined: [cap ? "Left as it was." : "Declined.", none] }[state]
+    ?? ["This link has run out.", none];
   const main = headline(was[0], was[1], "pk-h")
-    + lede(state === "used" ? "Each approval link pays once. Check the chat for how it went."
-      : state === "declined" ? "Text me if you want something else." : "Approval links last five minutes and work once. If you still want it, tell me and I'll send a fresh one.")
-    + (v ? theTotal(v) : "") + `<div class="pk-note">${actions(go("Back to Reason", { href: BACK }))}</div>`;
+    + lede(state === "used" ? (cap ? "Each link works once. Settings shows your limit as it is now." : "Each approval link pays once. Check the chat for how it went.")
+      : state === "declined" ? (cap ? "Tell me if you want a different number." : "Text me if you want something else.")
+      : `Approval links last five minutes and work once. If you still want it, ${cap ? "set the number again in Settings or tell me" : "tell me and I'll send a fresh one"}.`)
+    + (v ? (cap ? paper({ label: "DAILY LIMIT", big: v.to, extra: `<p class="pk-item">From ${esc(v.from)} a day</p>` }) : theTotal(v)) : "") + `<div class="pk-note">${actions(go(cap ? "Back to Settings" : "Back to Reason", { href: cap ? "/web/settings#shopping" : BACK }))}</div>`;
   const margin = label("WHY") + para("A link that runs out can't be used by anyone who sees it later.");
   return page("Reason — approve", shell(frame({ main, margin })), { staging, status: state === "used" || state === "declined" ? 200 : 410 });
 }
@@ -166,7 +220,7 @@ var liv=null;function show(n){if(window.pfShow)window.pfShow(n);var lv=el('pk-li
 function post(p,body){return fetch(B.base+p,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify(body||{})}).then(function(r){return r.json().catch(function(){return{ok:false,error:'http_'+r.status}})})}
 function wait(ms){return new Promise(function(r){setTimeout(r,ms)})}
 var FAIL="Face ID didn't go through. Nothing was charged. Try again.";
-var WHY={counter:"This passkey's record doesn't match. Nothing was charged. Ask me for a fresh link, or use the phone you set Face ID up on.",unknown_passkey:"That passkey isn't the one set up for your purchases. Nothing was charged.",cooling_off:"This Face ID was added less than a day ago and can't pay yet. Nothing was charged.",no_user_verification:"Face ID didn't check you. Nothing was charged. Try again.",details_changed:"The payment changed since this link was sent. Nothing was charged. Ask me for a fresh link.",no_such_payment:"This payment isn't open anymore. Nothing was charged.",over_daily_cap:"This is past the day's spending limit here. Nothing was charged. Tomorrow, ask me to start the order again.",bad_amount:"The payment's amount could not be read. Nothing was charged. Ask me for a fresh link."};
+var WHY={counter:"This passkey's record doesn't match. Nothing was charged. Ask me for a fresh link, or use the phone you set Face ID up on.",unknown_passkey:"That passkey isn't the one set up for your purchases. Nothing was charged.",cooling_off:"This Face ID was added less than a day ago and can't pay yet. Nothing was charged.",no_user_verification:"Face ID didn't check you. Nothing was charged. Try again.",details_changed:"The payment changed since this link was sent. Nothing was charged. Ask me for a fresh link.",no_such_payment:"This payment isn't open anymore. Nothing was charged.",over_daily_cap:"This is past your daily spending limit. Nothing was charged. You can raise it in Settings → Shopping, or text me a new limit.",change_expired:"This question ran out. Your limit hasn't changed. Set the number again in Settings or tell me.",change_applied:"Already done. Your limit is set.",change_declined:"You left it as it was. Nothing changed.",no_such_change:"This change isn't open anymore. Nothing changed.",bad_amount:"The payment's amount could not be read. Nothing was charged. Ask me for a fresh link."};
 var OFFLINE="Couldn't reach Reason. Nothing was charged. Check your connection and try again.";
 var go=el('pk-go'),no=el('pk-no'),add=el('pk-add'),retry=el('pk-retry');
 if(retry)retry.onclick=function(){busy(retry,true);location.reload()};

@@ -14,6 +14,7 @@ import { googleStatus } from "./google.js";
 import { githubStatus } from "./github.js";
 import { uberStatus, stateOf as uberStateOf } from "./uber.js";
 import { status as agentcardStatus } from "./agentcard.js";
+import * as spendcap from "./spendcap.js";
 
 // ---------- what an explicit yes looks like ----------
 // Not a word list. Which words appear in a reply says nothing about what it authorizes:
@@ -681,21 +682,25 @@ export function spendDay(nowMs = clock.now()) {
  * tool must hand back as it is.
  */
 export function checkSpendCap(conversationId, cents, { day = spendDay() } = {}) {
-  const capCents = Math.round((config.maxSpendPerDay || 0) * 100);
+  // The person's own daily limit when they set one, else the install's default (src/spendcap.js).
+  const theirs = spendcap.capFor(conversationId);
+  const capCents = theirs.cents;
   const used = db.spentToday(conversationId, day);
   if (!capCents) return { ok: true, capped: false, spent_today: used.cents, cap: 0 };
-  if (!cents) return { ok: true, capped: true, spent_today: used.cents, cap: capCents, amount: 0 };
+  if (!cents) return { ok: true, capped: true, spent_today: used.cents, cap: capCents, amount: 0, own: theirs.own };
   if (used.cents + cents > capCents) {
+    const say = spendcap.overCapLine(conversationId, { spent: used.cents, amount: cents });
     return {
       ok: false, blocked: "over_daily_cap",
-      cap: capCents, spent_today: used.cents, amount: cents, left: Math.max(0, capCents - used.cents),
-      error: `That is ${money(cents)} and the day's limit is ${money(capCents)}, of which ${money(used.cents)} is already committed`
-        + ` across ${used.count} thing(s) — so there is ${money(Math.max(0, capCents - used.cents))} left and this does not fit.`
-        + ` Nothing was committed. Say exactly that: the limit, what is already spent, and that it needs to wait for tomorrow`
-        + ` or for ${config.ownerName} to raise REASON_MAX_SPEND_PER_DAY. Do not retry.`,
+      cap: capCents, spent_today: used.cents, amount: cents, left: Math.max(0, capCents - used.cents), own: theirs.own,
+      say,
+      error: `That is ${money(cents)} and their daily limit is ${money(capCents)}${theirs.own ? " (they set it themselves)" : " (the default here)"}, of which ${money(used.cents)} is already committed`
+        + ` across ${used.count} thing(s) — so there is ${money(Math.max(0, capCents - used.cents))} left and this does not fit. Nothing was committed.`
+        + ` Say it in their terms, once: "${say}" — the limit, where this would take them, and that they can change it in Settings → Shopping or by telling you a new limit.`
+        + ` Never quote words for them to type. If they name a new limit, spend_limit_set is how it changes (a raise above the default is confirmed first). Do not retry the payment until the limit allows it.`,
     };
   }
-  return { ok: true, capped: true, spent_today: used.cents, cap: capCents, amount: cents, left: capCents - used.cents - cents };
+  return { ok: true, capped: true, spent_today: used.cents, cap: capCents, amount: cents, left: capCents - used.cents - cents, own: theirs.own };
 }
 
 /** Written the moment a commit really goes through, so the cap counts what happened. */
@@ -707,10 +712,14 @@ export function noteSpend({ conversationId, cents, what = "", site = "", confirm
 export function spendToday(conversationId) {
   const day = spendDay();
   const { cents, count } = db.spentToday(conversationId, day);
-  const capCents = Math.round((config.maxSpendPerDay || 0) * 100);
+  const theirs = spendcap.capFor(conversationId);
+  const capCents = theirs.cents;
   return {
     day, spent: money(cents), spent_cents: cents, commits: count,
     cap: capCents ? money(capCents) : "no cap set",
+    cap_set_by: theirs.own ? "them" : "the default here",
+    default_cap: theirs.default_cents ? money(theirs.default_cents) : "none",
+    most_they_can_set: money(spendcap.SELF_MAX_CENTS),
     left: capCents ? money(Math.max(0, capCents - cents)) : null,
     lines: db.listSpend(conversationId, day).map(r => ({ at: stamp(r.at), amount: money(r.cents), what: r.what, site: r.site })),
     counted_from: "the amounts named in what was approved, biggest per commit. A commit whose approved details named no amount is not in this total.",
