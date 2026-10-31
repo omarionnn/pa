@@ -50,6 +50,8 @@ export const CATALOG = {
   // until something rare happens.
   rang: { name: "Rang on your behalf", shape: "round", ink: "ink", eyebrow: "", main: "RANG", hint: "a call that got what it was for", earnable: true, waxOnly: true, everyday: true },
   looked_into: { name: "Looked into, thoroughly", shape: "round", ink: "ink", eyebrow: "", main: "LOOKED INTO", hint: "a question, researched properly", earnable: true, waxOnly: true, everyday: true },
+  // An order placed through a store checkout (src/shopconnect.js, 2026-10-31: the first real one, Walmart).
+  orders: { name: "First order", shape: "round", ink: "rust", eyebrow: "THE", main: "FIRST ORDER", hint: "an order placed and paid on your behalf", earnable: true, waxOnly: true, everyday: true },
 };
 export const TYPES = Object.keys(CATALOG);
 /** The order blank spots offer their hints in: the most within reach first. */
@@ -230,6 +232,17 @@ export function candidatesForResearch(r) {
   ];
 }
 
+/**
+ * The seal an order placed through a store checkout earns (shop_runs: succeeded, placed): one row per
+ * order, so the tiered book counts them — the plain seal at the first, upgraded at TIERS.orders.
+ */
+export function candidatesForOrder(run) {
+  if (!everydaySeals() || !run || run.status !== "succeeded" || run.stage !== "placed") return [];
+  const at = run.stage_at ?? run.updated_at ?? clock.now();
+  const store = String(run.store ?? "");
+  return [{ type: "orders", ref: `order:${run.run_id}`, at, detail: { place: store ? (store[0].toUpperCase() + store.slice(1)) : "" } }];
+}
+
 /** The stamps one placed order (or issued ticket) earns. */
 export function candidatesForPurchase(p) {
   if (!p) return [];
@@ -345,6 +358,10 @@ const onPurchase = ({ buyConversationId }) => {
 const onResearch = ({ conversationId, id }) => {
   try { if (everydaySeals()) awardLive(conversationId, candidatesForResearch(db.getResearch(conversationId, id))); } catch (e) { logger({ stamp_award_failed: (e?.message ?? String(e)).split("\n")[0] }); }
 };
+const orderRow = (runId) => db.db.prepare("SELECT run_id, conversation_id, store, item, status, stage, stage_at, updated_at, created_at FROM shop_runs WHERE run_id = ?").get(runId);
+const onOrder = ({ conversationId, runId }) => {
+  try { if (everydaySeals()) awardLive(conversationId, candidatesForOrder(orderRow(runId))); } catch (e) { logger({ stamp_award_failed: (e?.message ?? String(e)).split("\n")[0] }); }
+};
 /** After any finished errand (research included): the suite key and the anniversary, if this one completed them. */
 const onAny = (conversationId) => {
   try {
@@ -356,8 +373,10 @@ db.completionBus.on("task", onTask);
 db.completionBus.on("call", onCall);
 db.completionBus.on("purchase", onPurchase);
 db.completionBus.on("research", onResearch);
+db.completionBus.on("order", onOrder);
 db.completionBus.on("task", ({ conversationId }) => onAny(conversationId));
 db.completionBus.on("call", ({ conversationId }) => onAny(conversationId));
+db.completionBus.on("order", ({ conversationId }) => onAny(conversationId));
 db.completionBus.on("research", ({ conversationId }) => onAny(conversationId));
 db.completionBus.on("purchase", ({ buyConversationId }) => {
   try {
@@ -394,6 +413,9 @@ export function backfill(conversationId, { dryRun = false } = {}) {
     try {
       for (const r of ALL("SELECT * FROM research WHERE conversation_id = ? AND state = 'done' AND finished_at IS NOT NULL ORDER BY finished_at, id", conversationId)) found.push(...candidatesForResearch(r));
     } catch { /* no research table on an old install */ }
+    try {
+      for (const r of ALL("SELECT run_id, conversation_id, store, item, status, stage, stage_at, updated_at, created_at FROM shop_runs WHERE conversation_id = ? AND status = 'succeeded' AND stage = 'placed' ORDER BY stage_at, created_at", conversationId)) found.push(...candidatesForOrder(r));
+    } catch { /* no checkouts on this install */ }
   }
   if (waxLook()) found.push(...suiteCandidates(conversationId, { all: true, dryRun }), ...anniversaryCandidates(conversationId));
   const seen = new Set(), counts = {};
@@ -502,7 +524,7 @@ export function summarize(row) {
  *   looked_into  500 / 1000 / 2000   research is the commonest thing done: ~2–3 a day at most, 500 is months
  *   rang          25 /  100 /  250   a call that got what it was for is rare: a handful a month at most
  */
-export const TIERS = { looked_into: [500, 1000, 2000], rang: [25, 100, 250] };
+export const TIERS = { looked_into: [500, 1000, 2000], rang: [25, 100, 250], orders: [10, 50, 100] };
 const tiersFor = (type) => TIERS[type] ?? [];
 /** The count of the tier a count has reached for a kind: 1 (the plain seal) or one of its TIERS. */
 export const tierOf = (n, type) => tiersFor(type).reduce((t, x) => (n >= x ? x : t), 1);
@@ -931,6 +953,11 @@ export const SEALS = {
     ring: () => "LOOKED INTO, THOROUGHLY · ON YOUR BEHALF ·", aria: () => "",
     who: () => "looked into a question thoroughly",
   },
+  orders: {
+    wax: "oxblood", name: "First order", hint: "an order placed and paid on your behalf",
+    ring: () => "FIRST ORDER · PLACED ON YOUR BEHALF ·", aria: () => "an order placed",
+    who: () => "placed an order",
+  },
   // Outside the book. `first` shared under the typed look keeps a page: it reads in the patch's green.
   first: { wax: "green", name: "The first errand", hint: "the first thing I finish for you", ring: () => "THE FIRST ERRAND · ON YOUR BEHALF ·", aria: () => "", who: () => "ran a first errand" },
   anniversary: { wax: "green", name: "A year of things handled", hint: "a year together", ring: () => "A YEAR OF THINGS HANDLED ·", aria: () => "", who: () => "handled a year of things" },
@@ -940,7 +967,7 @@ export const SEALS = {
 export const SEAL_HINT_ORDER = ["three_in_one", "night_shift", "whole_trip", "long_hold", "human", "early", "price_drop", "abroad"];
 /** The hint order the book uses now: with everyday seals on, those come first (they're the nearest). */
 export function sealHintOrder() {
-  return everydaySeals() ? ["rang", "looked_into", ...SEAL_HINT_ORDER] : SEAL_HINT_ORDER;
+  return everydaySeals() ? ["rang", "looked_into", "orders", ...SEAL_HINT_ORDER] : SEAL_HINT_ORDER;
 }
 
 const sealAria = (type, d, pub = false) => {
@@ -971,6 +998,7 @@ function waxStory(type, d, at, tz) {
     case "three_in_one": return `One text, ${W(d.count ?? 3)} errands. I saw each of them through. It was no trouble.`;
     case "rang": return `${when} I made the call${place ? ` to ${place}` : ""} on your behalf, and it got what it was for. It was no trouble.`;
     case "looked_into": return `${when} I looked into it properly for you and brought back what I found. It was no trouble.`;
+    case "orders": return `${when} I placed your first order${place ? ` at ${place}` : ""} and paid it on your behalf, and the store confirmed it. It was no trouble.`;
     case "first": return "The first thing you asked of me, done. This is where the book begins. It was no trouble.";
     case "anniversary": return "A year of things handled. It was no trouble.";
     case "suite_key": return `A call, the research, a purchase online and one more besides, all inside ${W(d.minutes ?? 120)} minutes. It was no trouble.`;
@@ -984,6 +1012,7 @@ function tierStory(type, d, n, at, tz) {
   const place = d.place ? String(d.place) : "";
   if (type === "rang") return `${when} I made another call${place ? ` to ${place}` : ""} on your behalf, and it got what it was for. That makes ${W(n)}. It was no trouble.`;
   if (type === "looked_into") return `${when} I looked into another question for you. That makes ${W(n)}, each one done properly. It was no trouble.`;
+  if (type === "orders") return `${when} I placed another order${place ? ` at ${place}` : ""} on your behalf, paid and confirmed. That makes ${W(n)}. It was no trouble.`;
   return waxStory(type, d, at, tz);
 }
 
@@ -999,6 +1028,7 @@ function waxLine(type, d) {
     case "three_in_one": return `${sentenceCase(W(d.count ?? 3))} errands from a single text. It was no trouble.`;
     case "rang": return `A call${place ? ` to ${place}` : ""}, seen through. It was no trouble.`;
     case "looked_into": return "A question, looked into properly. It was no trouble.";
+    case "orders": return `An order${place ? ` at ${place}` : ""}, placed and paid. It was no trouble.`;
     default: return "It was no trouble.";
   }
 }

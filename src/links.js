@@ -65,36 +65,21 @@ function tidy(s) {
 }
 
 /**
- * How the words before a link join the words after it.
- *
- * A link on a line of its own separates two blocks of prose, and they stay two blocks. A link in
- * the middle of a sentence ("grab it at https://x.com before friday") is one sentence with a hole
- * in it, and closing that hole with a blank line would break the sentence in half.
- */
-function seam(before, after) {
-  if (!before.trim() || !after.trim()) return " ";
-  return /\n[ \t]*$/.test(before) && /^[ \t]*\n/.test(after) ? "\n\n" : " ";
-}
-
-/** Words that end on a colon are introducing what follows them. A fact about the characters. */
-const POINTS_AHEAD = /[:\uFF1A]$/;
-
-/**
  * One message Reason wrote → the messages it actually goes out as, in order.
  *
  * No link means one element, the text exactly as it was: the overwhelmingly common reply is
  * untouched by this, and that is deliberate.
  *
- * With links, the order is link, its words, link, its words. The words that belong to a link are
- * the ones written between it and the link before it — prose introduces the link that follows it
- * ("here's the table", "option b") — plus, for the last link only, everything written after it.
- * Each pair stays in its own pair, so a summary can never end up under the wrong link.
+ * With links, the order is its words, the link, its words, the link: the words that belong to a link
+ * are the ones written between it and the link before it — prose introduces the link that follows it
+ * ("here's the table", "option b") — and they go out FIRST, then the bare link. Anything written
+ * after the last link follows it as its own message. Each pair stays in its own pair, so a summary
+ * can never end up next to the wrong link.
  *
- * One exception, and it is about punctuation rather than meaning: words that END ON A COLON are
- * pointing at what comes next ("Privacy policy:", "here's the page:"). Lifting the link above them
- * leaves a bubble that ends on a colon with nothing under it, which is what a real thread showed on
- * 2026-10-06. That pair goes out the other way round — the words, then the link — and anything
- * written after the last link follows it as its own message.
+ * Until 2026-10-31 the link went first and its words after, unless the words ended on a colon. On
+ * the owner's phone that day the Walmart sign-in link landed at 13:59:43 and the sentence saying
+ * what it was at 13:59:44 — a bare URL with no explanation yet, which is the wrong way round for a
+ * person reading top to bottom. The explanation goes first, then the link, always.
  */
 export function linkParts(text) {
   const s = String(text ?? "");
@@ -117,18 +102,18 @@ export function linkParts(text) {
     const before = s.slice(cursor, f.start);
     const after = i === found.length - 1 ? s.slice(f.end) : "";
     const lead = tidy(before);
-    if (POINTS_AHEAD.test(lead)) {
-      out.push(lead, f.url);
-      const rest = tidy(after);
-      if (rest) out.push(rest);
-    } else {
-      out.push(f.url);
-      const summary = tidy(`${before}${seam(before, after)}${after}`);
-      if (summary) out.push(summary);
-    }
+    if (lead) out.push(lead);
+    out.push(f.url);
+    const rest = tidy(after);
+    if (rest) out.push(rest);
     cursor = f.end;
   });
   return out;
+}
+/** Which of a message's parts the screen effect belongs on: the last one with words in it, never a bare URL. */
+export function effectPartIndex(parts) {
+  for (let i = parts.length - 1; i >= 0; i--) if (!/^\s*https?:\/\/\S+\s*$/i.test(String(parts[i] ?? ""))) return i;
+  return parts.length - 1;
 }
 
 /** Is this a message that leaves as more than one? Read by the tests and by the delivery layer. */

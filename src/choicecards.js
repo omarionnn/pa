@@ -584,6 +584,31 @@ export async function placePhoto(conversationId, o, { taken = new Set(), ...opts
 // set that is never sent (the turn said nothing) is dropped by sendQueued, never carried forward.
 const queued = new Map();
 
+/**
+ * The line over a set of cards, checked in code (src/offers.js guardReply): "i couldn't confirm the prices
+ * live" is dropped, and when a card went out without a price the reply says, once, that the exact total
+ * comes before anything is bought. Only while a set of theirs is fresh (CHOICE_FRESH_MS).
+ */
+export const CHOICE_FRESH_MS = 3 * 60_000;
+const PRICES_UNCONFIRMED = /\b(?:i |we )?(?:couldn'?t|could not|can'?t|cannot|wasn'?t able to|weren'?t able to|unable to|didn'?t|did not|haven'?t|have not) (?:[a-z]+ ){0,2}?(?:confirm|verify|check|pull|get|see|validate|lock in|lock down) (?:the |their |these |those |all the |any |live |real |exact |current )*(?:prices?|pricing|costs?|totals?)\b[^.!?\n]*[.!?]?/i;
+const SAYS_TOTAL_FIRST = /\b(?:total|price|cost)\b[^.!?\n]*\bbefore\b[^.!?\n]*\b(?:bought|buy|buying|charged|charge|paid|pay|ordered|order)\b|\bbefore anything (?:gets |is |'s )?(?:bought|charged|ordered|paid)\b/i;
+export const TOTAL_FIRST_LINE = "The exact total comes to you before anything is bought.";
+export function choiceWording(conversationId, text) {
+  try {
+    const t = String(text ?? "");
+    if (!t.trim()) return { text, flag: null };
+    const set = db.db.prepare("SELECT options, created_at, state FROM choice_sets WHERE conversation_id = ? ORDER BY id DESC LIMIT 1").get(conversationId);
+    if (!set || clock.now() - set.created_at > CHOICE_FRESH_MS) return { text, flag: null };
+    const unpriced = JSON.parse(set.options || "[]").some(o => !String(o?.price ?? "").trim());
+    let dropped = 0;
+    const lines = t.split("\n").map(line => line.split(/(?<=[.!?])\s+/).filter(s => { const hit = PRICES_UNCONFIRMED.test(s); if (hit) dropped++; return !hit; }).join(" "));
+    let out = lines.join("\n").replace(/\n{3,}/g, "\n\n").replace(/[ \t]+\n/g, "\n").trim();
+    let added = false;
+    if (unpriced && !SAYS_TOTAL_FIRST.test(out)) { out = `${out}${out ? " " : ""}${TOTAL_FIRST_LINE}`; added = true; }
+    if (!dropped && !added) return { text, flag: null };
+    return { text: out, flag: { rule: "choice_prices_wording", dropped, added } };
+  } catch { return { text, flag: null }; }
+}
 export function takeQueued(conversationId) {
   const q = queued.get(conversationId) ?? null;
   queued.delete(conversationId);
@@ -859,7 +884,11 @@ export async function runChoiceTool(name, input, ctx) {
   }
   const offCards = kept.flatMap((i, k) => checks[i].dropped.map(d => `option ${k + 1}: ${d}`));
   if (offCards.length) log({ choice_cards_unbacked: c, dropped: offCards });
-  const offNote = offCards.length ? ` Left off because the store listing does not back it — do not say these in your line either: ${offCards.join("; ")}.` : "";
+  // A price left off a card is not something to apologise for (owner 2026-10-31: "i couldn't confirm the
+  // prices live" under the cards): the line says the exact total comes before anything is bought, once.
+  const offNote = offCards.length
+    ? ` Left off because the store listing does not back it — do not say these in your line either: ${offCards.join("; ")}. Never say prices couldn't be confirmed, checked or verified; say instead, once, that the exact total comes to them before anything is bought.`
+    : "";
   const outNote = leftOut.length ? ` Not in the set (no picture of it could be shown): ${leftOut.map(o => o.name).join("; ")} — do not number it; mention it in a few words only if it matters.` : "";
   const set = db.openChoiceSet({
     conversationId: c, kind: input.kind,

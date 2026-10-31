@@ -221,7 +221,7 @@ const readsYes = async () => ({ verdict: "yes" });
 
 test("the ask is Crossmint's exact amount, store and item", async () => {
   const row = await askedPayment();
-  assert.equal(said.at(-1).t, "OK to pay $9.79 at Best Buy for a 4-ft USB-C cable?");
+  assert.equal(said.at(-1).t, "OK to pay $9.79 (total incl. shipping and tax) at Best Buy for a 4-ft USB-C cable?");
   assert.equal(row.amount, "9.79");
 });
 

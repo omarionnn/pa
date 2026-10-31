@@ -57,7 +57,7 @@ async function fakeFetch(url, init = {}) {
     runs[runId] = { status: "running", requiredAction: null, revision: 1, task: body.request.task };
     return reply(201, { runId });
   }
-  const m = /^\/api\/unstable\/agent-checkouts\/([^/]+)(\/messages)?$/.exec(p);
+  const m = /^\/api\/unstable\/agent-checkouts\/([^/]+)(\/messages|\/cancel)?$/.exec(p);
   if (m && m[2]) {
     if (refuseAnswer && body?.parts?.[0]?.action === "submit") return reply(400, { error: true, message: refuseAnswer });
     return reply(202, { ok: true });
@@ -282,12 +282,15 @@ test("'that's wrong' after the auto-answer: the record is corrected, the checkou
   // The new run's instruction carries the corrected address; the old one's is not what Crossmint was told again.
   assert.match(runs[fix.run_id].task, /Omari Nyarko, 3249 Bruner Ave, Apt 1, Bronx, NY 10469/);
   assert.doesNotMatch(runs[fix.run_id].task, /3247/);
-  // The old run asks for payment: declined, no text, over.
+  // The old run is over the moment the new one starts (2026-10-31): cancelled at Crossmint, no text, and
+  // a payment it asks for later is never recorded or answered.
+  assert.equal(row(out.runId).status, "cancelled");
+  assert.ok(calls.some((c) => c.path === `/api/unstable/agent-checkouts/${out.runId}/cancel` && c.method === "POST"), "cancelled at Crossmint");
   runs[out.runId].requiredAction = PAY("req_pay_old"); runs[out.runId].revision = 3;
   const s = await shop.step(out.runId);
   assert.equal(s.done, true);
   assert.equal(row(out.runId).status, "cancelled");
-  assert.ok(calls.some((c) => c.path === `/api/unstable/agent-checkouts/${out.runId}/messages` && c.body.parts[0].action === "decline"));
+  assert.equal(q("SELECT COUNT(*) AS n FROM shop_payments WHERE run_id = ?").get(out.runId).n, 0, "no payment row for a run that is over");
   assert.equal(said.length, 1, "nothing said about the superseded run");
   // Its end, when Crossmint reports it, is not texted either.
   runs[out.runId] = { status: "cancelled", requiredAction: null, revision: 4 };

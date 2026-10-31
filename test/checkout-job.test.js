@@ -55,7 +55,8 @@ async function fakeFetch(url, init = {}) {
     runs[runId] = { status: "running", requiredAction: null, revision: 1 };
     return reply(201, { runId });
   }
-  const m = /^\/api\/unstable\/agent-checkouts\/([^/]+)(\/messages)?$/.exec(p);
+  const m = /^\/api\/unstable\/agent-checkouts\/([^/]+)(\/messages|\/cancel)?$/.exec(p);
+  if (m && m[2] === "/cancel") return runs[m[1]] ? reply(202, { ok: true }) : reply(409, { message: "over" });
   if (m && m[2]) return reply(202, { ok: true });
   if (m) return runs[m[1]] ? reply(200, { runId: m[1], ...runs[m[1]] }) : reply(404, { error: true, message: `Checkout '${m[1]}' not found` });
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}`, status: "active" });
@@ -104,7 +105,7 @@ beforeEach(() => {
   calls = []; runs = {}; nextRun = 1; said.length = 0; woke.length = 0; clock.reset(); shop._setMail(null);
   for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments", "shop_sites", "shop_run_asks", "shop_shipping"]) db.db.exec(`DELETE FROM ${t}`);
 });
-const start = (conv = OMARI) => shop.startCheckout({ conversationId: conv, store: "ulta", startUrl: ULTA, what: "One CeraVe Foaming Facial Cleanser, 16 oz, shipped to home.", item: "CeraVe Foaming Facial Cleanser 16 oz", maxUsd: 35 });
+const start = (conv = OMARI, { item = "CeraVe Foaming Facial Cleanser 16 oz" } = {}) => shop.startCheckout({ conversationId: conv, store: "ulta", startUrl: ULTA, what: "One CeraVe Foaming Facial Cleanser, 16 oz, shipped to home.", item, maxUsd: 35 });
 const row = (runId) => q("SELECT * FROM shop_runs WHERE run_id = ?").get(runId);
 
 // ---------------------------------------------------------------- 1. the claim
@@ -153,7 +154,7 @@ test("pinned 11:17: 'never actually started' about a run that ran and died is co
   // The second run really did start, so that half of the line stands.
   await start();
   const g = offers.guardReply(OMARI, ELEVEN17);
-  assert.match(g.text, /^Correction, from my record: the Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz did start 19 min ago; now: failed 8 min ago \(Ulta was waiting for your name, shipping address, phone number and email and it expired after 10 minutes\); nothing charged\./);
+  assert.match(g.text, /^Actually, checking my record: the Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz did start 19 min ago; now: failed 8 min ago \(Ulta was waiting for your name, shipping address, phone number and email and it expired after 10 minutes\); nothing charged\./);
   assert.doesNotMatch(g.text, /never actually started|Nothing was running/);
   assert.match(g.text, /I've started it for real now\. It's a guest checkout on Ulta for the 16 oz\./);
   assert.ok(g.flags.some((f) => f.rule === "never_started_with_run"));
@@ -246,7 +247,8 @@ test("other ends are texted too: blocked, cancelled, and an end after a payment 
   const a = await start();
   runs[a.runId] = { status: "blocked", result: { code: "merchant.out_of_stock", summary: "The 16 oz is out of stock online." }, revision: 4 };
   await shop.step(a.runId);
-  assert.equal(said.at(-1).t, "The Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz didn't go through (The 16 oz is out of stock online.). Nothing was charged. Want me to try again, or try another store?");
+  // Blocked with no other store on record: the one question (2026-10-31; with a store on record it moves on, test/order-flow-1031.test.js).
+  assert.equal(said.at(-1).t, "Ulta stopped the checkout (The 16 oz is out of stock online.). Nothing charged, and I have no other store lined up for CeraVe Foaming Facial Cleanser 16 oz. Want me to find one?");
   const b = await start();
   runs[b.runId] = { status: "cancelled", revision: 2 };
   await shop.step(b.runId);
@@ -336,17 +338,20 @@ test("a stall — nothing moved for ten minutes — is texted once, and progress
   clock.skip(6 * 60_000);
   runs[out.runId].revision = 2;
   await shop.step(out.runId);
-  assert.equal(said.length, 0, "it moved");
+  // It moved, so no stall; but six minutes in one stage is the first wait update (2026-10-31, test/order-flow-1031.test.js).
+  assert.equal(said.length, 1, "it moved: only the wait update");
+  assert.equal(said.at(-1).t, "Still working on the Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz, not stuck. Nothing's charged.");
   clock.skip(11 * 60_000);
   await shop.step(out.runId);
-  assert.equal(said.length, 0, "eleven minutes is not a stall: Crossmint's own input expiry is ten, and that is reported as expired");
+  assert.equal(said.length, 2, "eleven minutes is not a stall: Crossmint's own input expiry is ten, and that is reported as expired; the second wait update went");
+  assert.equal(said.at(-1).t, "Still on the Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz: waiting on Ulta to move the checkout along. Not stuck, and nothing's charged.");
   clock.skip(2 * 60_000);
   const s = await shop.step(out.runId);
   assert.equal(s.stalled, true);
   assert.equal(said.at(-1).t, "Still at Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz: nothing has moved for 13 minutes. Nothing has been charged. If it dies I'll say so.");
   clock.skip(5 * 60_000);
   await shop.step(out.runId);
-  assert.equal(said.length, 1, "once");
+  assert.equal(said.length, 3, "once");
 });
 
 // ---------------------------------------------------------------- 4. the record
@@ -388,7 +393,8 @@ test("the payment ask is itemized when Crossmint itemizes it; plain when it does
   const b = await start();
   runs[b.runId].requiredAction = PAY("req_pay_2");
   await shop.step(b.runId);
-  assert.equal(said.at(-1).t, "OK to pay $28.24 at Ulta for CeraVe Foaming Facial Cleanser 16 oz?");
+  // No breakdown anywhere: the one number is said to be the whole of it (owner 2026-10-31).
+  assert.equal(said.at(-1).t, "OK to pay $28.24 (total incl. shipping and tax) at Ulta for CeraVe Foaming Facial Cleanser 16 oz?");
 });
 
 test("after the payment: placed is texted, the mail is watched for the confirmation, the model is woken when it lands, and the watch is bounded", async () => {
@@ -455,12 +461,13 @@ test("after the payment: placed is texted, the mail is watched for the confirmat
 });
 
 test("a restart resumes every open run and every open mail watch", async () => {
+  // Four different things to buy: a new run for the SAME thing ends the open one (2026-10-31).
   const open = await start();
-  const paid = await start();
+  const paid = await start(OMARI, { item: "Vitamin C serum" });
   q("UPDATE shop_runs SET status = 'succeeded', stage = 'placed', paid_at = ?, mail_until = ? WHERE run_id = ?").run(clock.now(), clock.now() + 3600_000, paid.runId);
-  const over = await start();
+  const over = await start(OMARI, { item: "Hand cream" });
   q("UPDATE shop_runs SET status = 'failed', stage = 'failed' WHERE run_id = ?").run(over.runId);
-  const done = await start();
+  const done = await start(OMARI, { item: "Lip balm" });
   q("UPDATE shop_runs SET status = 'succeeded', stage = 'placed', mail_until = ?, told = 'end,mail' WHERE run_id = ?").run(clock.now() + 3600_000, done.runId);
   const resumed = shop.resumeFollowing();
   assert.deepEqual(resumed.runs, [open.runId]);
