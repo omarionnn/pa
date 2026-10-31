@@ -1064,7 +1064,7 @@ export function recentRun(conversationId, { withinMs = 15 * 60_000 } = {}) {
 const payOf = (run) => q("SELECT * FROM shop_payments WHERE run_id = ? ORDER BY id DESC").get(run.run_id) ?? null;
 /** Where a run stands, in one line, from the row. */
 export function stageLine(run) {
-  const ago = (t) => `${minutes(clock.now() - (t ?? run.created_at))} min ago`;
+  const ago = (t) => { const m = minutes(clock.now() - (t ?? run.created_at)); return m < 120 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`; };
   const store = storeOf(run);
   const pay = payOf(run);
   const result = run.result ? ` (${short(run.result, 120)})` : "";
