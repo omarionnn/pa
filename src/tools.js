@@ -3638,7 +3638,7 @@ export const tools = [
     input_schema: {
       type: "object",
       properties: {
-        about: { type: "string", description: "Who or what this is about, as they say it, e.g. 'Kofi', 'Omari', 'sushi spots'. Spelling and case do not create a second subject." },
+        about: { type: "string", description: "Who or what this is about, as they say it, e.g. 'Kofi', 'Ama', 'sushi spots'. Spelling and case do not create a second subject." },
         fact: { type: "string", description: "One thing, in a short line, in their terms. 'allergic to shellfish', not 'user mentioned a shellfish allergy'." },
         source: {
           type: "string",
@@ -4066,7 +4066,7 @@ export const tools = [
         requirements: {
           type: "object",
           description: "Everything they are going to ask for, so the call never has to come back to the owner mid-conversation:"
-            + " {\"name\": \"Omari\", \"people\": \"4\", \"phone\": \"+1...\"}. After eight minutes on hold, the moment somebody"
+            + " {\"name\": \"Ama\", \"people\": \"4\", \"phone\": \"+1...\"}. After eight minutes on hold, the moment somebody"
             + " finally answers is the worst possible time to discover nobody knows what name to put it under.",
         },
         max_hold_minutes: { type: "integer", description: "How long this call may wait on hold. Default from config. A busy place at lunchtime may need more." },
