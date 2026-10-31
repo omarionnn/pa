@@ -28,13 +28,15 @@ import { writeFileSync } from "node:fs";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { config, clock, normalizeNumber } from "../config.js";
-import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER } from "./voice.js";
+import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generatorFor } from "./voice.js";
 import { recordingFileFor } from "./recordings.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
 import { thirdPartyIdentity, callIdentityFor, NO_NAME } from "./voice-prompt.js";
 import { makerLine } from "../maker.js";
-import { openingLineFor, recordingNoteFor, whoseCallIsThis } from "./inbound.js";
+import { openingLineFor, recordingNoteFor, whoseCallIsThis, strangerIntake, overCallCap } from "./inbound.js";
+import * as strangerCall from "./stranger.js";
+import * as strangerCalls from "../strangercalls.js";
 
 export const PROVIDER = "gptlive";
 export const STREAM_PATH = "/calls/gptlive/stream/";
@@ -144,11 +146,32 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
   ].join("\n");
 }
 
+/**
+ * The voice's instructions for somebody who rang and has no account (src/calls/stranger.js): the same
+ * voice and the same split — every answer is Reason's pitch turn (`strangerReply`: no tools, nobody's
+ * data, heyreason.com's public facts only) — and nothing about anybody.
+ */
+export function strangerInstructions() {
+  return [
+    "You are the voice of Reason, a personal AI assistant, on a phone call with somebody who rang Reason's number. They are not a Reason user, and you know nothing about them or about anybody else.",
+    makerLine(),
+    "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.",
+    "You are only the voice. Reason, the backend, decides every answer about what Reason is, what it does, what it costs and how to start.",
+    "Delegate to the backend for every question, request or remark — anything beyond a greeting, a brief listening sound, or asking them to repeat something.",
+    "Never answer from your own knowledge, and never invent a fact, feature, date, price or promise. Never say anything is free, cheap, paid, a trial or a subscription unless the backend's result says exactly that.",
+    "While the backend works, a very short acknowledgement is fine. Do not fill the silence with guesses.",
+    ...CALL56_LINES,
+    "When a backend result arrives, say it naturally and briefly, keeping every fact exactly as given. Do not add offers or questions the result did not include.",
+    "Never mention any person, user, owner or account, and you cannot do anything for them on this call. Say the website as \"hey reason dot com\". Never read out other links, codes, phone numbers or anything in square brackets, and never say the words NO_REPLY.",
+    "Stop speaking when they talk over you, and listen.",
+  ].join("\n");
+}
+
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, identity = false, greeting = "" } = {}) {
+export function sessionConfig({ name, named, owner = false, identity = false, greeting = "", instructions = "" } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: liveInstructions({ name, named, owner, identity }),
+    instructions: instructions || liveInstructions({ name, named, owner, identity }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     delegation: { type: "client" },
   };
@@ -178,6 +201,14 @@ const CLAIM = new RegExp([
 /** Does this say something has been done? Exported for the tests. */
 export function claimsDone(text) {
   return CLAIM.test(String(text ?? ""));
+}
+
+/** Are these spoken words (nearly all) the given line's own? */
+export function fromLine(said, line) {
+  const words = (t) => String(t ?? "").toLowerCase().replace(/[’']/g, "").split(/[^a-z0-9]+/).filter(Boolean);
+  const own = new Set(words(line));
+  const w = words(said);
+  return own.size > 0 && w.length > 0 && w.filter(x => own.has(x)).length / w.length >= 0.8;
 }
 
 /** The words the voice is given when it claimed something nobody confirmed. Code's words, never the caller's. */
@@ -540,8 +571,11 @@ export function dropWarm(callId, why) {
  * resolves `{ text, tools, endCall, skip }` (see `readTurn`).
  */
 export class GptLiveCall {
-  constructor({ call, twilio, openLive = openLiveSocket, warm = null, brain = null, judge = null, log = () => {}, now = () => Date.now(), finish = async () => {}, timers = globalThis }) {
+  constructor({ call, twilio, openLive = openLiveSocket, warm = null, brain = null, judge = null, log = () => {}, now = () => Date.now(), finish = async () => {}, timers = globalThis, persona = null }) {
     this.call = call;
+    // A call with no account and no call row (a stranger on the line): its own instructions and
+    // greeting, nothing written to any conversation, no audio kept (`strangerStream`).
+    this.persona = persona;
     this.twilio = twilio;
     this.openLive = openLive;
     this.warm = warm;
@@ -558,11 +592,12 @@ export class GptLiveCall {
     this.now = now;
     this.finishCall = finish;
     this.timers = timers;
-    this.who = whoFor(call);
+    this.who = persona ? { name: "them", named: false, owner: false, identity: false, instructions: persona.instructions } : whoFor(call);
     this.name = this.who.name;
-    this.greeting = call.direction === "in"
-      ? openingLineFor({ person: accounts.ownerOf(call.conversation_id), conversationId: call.conversation_id })
-      : String(call.announcement ?? "");
+    this.greeting = persona ? persona.greeting
+      : call.direction === "in"
+        ? openingLineFor({ person: accounts.ownerOf(call.conversation_id), conversationId: call.conversation_id })
+        : String(call.announcement ?? "");
     this.turns = this.greeting ? [{ who: "reason", text: this.greeting, at: now(), seeded: true }] : [];
     this.tape = new CallTape();
     this.pending = new Map();
@@ -672,7 +707,7 @@ export class GptLiveCall {
     this.started = true;
     this.sessionId = sessionId ?? "";
     this.log({ gptlive_session: this.call.id, session: this.sessionId, warm: !!this.adopted });
-    try { db.updateCall(this.call.conversation_id, this.call.id, { tts_model: `${config.gptliveModel}/${config.gptliveVoice}` }); } catch { /* a label never breaks a call */ }
+    if (!this.persona) try { db.updateCall(this.call.conversation_id, this.call.id, { tts_model: `${config.gptliveModel}/${config.gptliveVoice}` }); } catch { /* a label never breaks a call */ }
     if (greet && this.greeting) this.live.send({ type: "session.commentary.append", event_id: `greet_${this.call.id}`, delegation_id: null, content: greetingInstruction(this.greeting) });
   }
 
@@ -763,7 +798,10 @@ export class GptLiveCall {
     // A claim is only ever the echo of Reason's own: nothing pending, and Reason's latest answer said
     // so within the last minute. A request since then starts the clock again (see `delegate`).
     const confirmed = this.pending.size === 0 && this.lastResultClaimed && t - this.lastResultAt < 60_000;
-    const unconfirmed = claimsDone(this.utter) && !confirmed;
+    // The opening line, before they have said a word or anything was asked, is code's words — a
+    // stranger's intro says "getting things done" (2026-10-31 drive: the guard cut the intro mid-line).
+    const opening = this.delegations === 0 && !this.turns.some(x => x.who === "them") && fromLine(this.utter, this.greeting);
+    const unconfirmed = !opening && claimsDone(this.utter) && !confirmed;
     if (said.had || unconfirmed) this.guard(said.had ? "said the silence marker" : "claimed done before Reason confirmed it");
   }
 
@@ -861,6 +899,7 @@ export class GptLiveCall {
   /** What the caller heard for one turn, onto the call_turns row Reason's own turn wrote. */
   heard(turn) {
     this.answered = (this.answered ?? []).filter(t => t !== turn);
+    if (this.persona) return;
     try {
       db.markCallTurnHeard(this.call.id, turn.msgCount, {
         voice: PROVIDER, firstContentMs: turn.firstAudioMs, firstRealMs: turn.firstRealMs,
@@ -969,13 +1008,14 @@ export class GptLiveCall {
     this.live?.close();
     if (this.twilio.open?.()) this.twilio.close();
     // After the line is down, so reading their last words never keeps anyone on the phone.
-    const cutOff = await this.cutOff();
+    const cutOff = this.persona ? null : await this.cutOff();
     const seconds = this.seconds || Math.round((this.now() - this.startedAt) / 1000);
     const turns = this.turns.map(t => ({ who: t.who, text: t.text.replace(/\s+/g, " ").trim() })).filter(t => t.text);
     let recording = null;
     let recordingWhy = "";
     try {
-      if (this.tape.seconds() >= 1) {
+      if (this.persona) recordingWhy = "a caller with no account: their words are kept, not the audio";
+      else if (this.tape.seconds() >= 1) {
         const path = recordingFileFor(this.call.id, "wav");
         writeFileSync(path, this.tape.wav(), { mode: 0o600 });
         recording = { path, format: "wav", seconds: Math.round(this.tape.seconds()) };
@@ -1161,31 +1201,101 @@ export async function statusRequest({ token, rawBody, headers, settle, runtime, 
   return { status: 204, body: "" };
 }
 
+/** A line Twilio says itself, then hangs up: no model, no session, nothing that can answer back. */
+export function sayAndHangUp(line) {
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="${xml(config.gptliveSayVoice)}">${xml(line)}</Say><Hangup/></Response>`;
+}
+
+/** Streams for callers with no account (strangers), by token. Short-lived: Twilio connects within seconds. */
+const rowless = new Map();
+const ROWLESS_TTL_MS = 60_000;
+
+/** A stream for a stranger: no call row, no conversation; the pitch persona and its no-tools brain. */
+export function strangerStream({ address = "", callSid = "", kept = null, now = Date.now() } = {}) {
+  for (const [k, v] of rowless) if (now - v.at > ROWLESS_TTL_MS) rowless.delete(k);
+  const token = randomUUID().replace(/-/g, "");
+  rowless.set(token, { at: now, address, callSid, kept, externalId: `${EXT}${callSid || token}` });
+  return token;
+}
+
 /**
- * The number's voice webhook, if it is ever pointed here: the operator, calling from their own number,
- * gets GPT-Live; everyone else is redirected to ElevenLabs' own Twilio address, unchanged. With the flag
- * off, or no fallback address configured, everyone is redirected (or, with no fallback, refused).
+ * The number's voice webhook (Twilio → /calls/gptlive/inbound), REASON_CALL_VOICE on (Omari 2026-10-31).
+ *
+ *   - somebody with an account whose own calls are GPT-Live (`gptliveFor`): their own Reason, their
+ *     identity, a call row on THEIR conversation — over today's call cap, one line and goodbye;
+ *   - blocked / paused / removed: the neutral line (`stranger.neutralLine`), said by Twilio, and the
+ *     call ends — nothing kept, nothing of anybody's;
+ *   - an unknown or withheld number: the stranger pitch (src/calls/stranger.js) on GPT-Live, the master
+ *     asked as for a first text, the call kept against the number (src/strangercalls.js);
+ *   - everything GPT-Live does not serve (a place ringing back about an errand, an account on
+ *     ElevenLabs, missing keys): redirected to ElevenLabs' own Twilio URL, unchanged.
+ *
+ * No greeting is made before the call is connected: the TwiML only opens the stream, and the session
+ * is started when Twilio's stream starts (calls 54–55: a greeting made while ringing went unheard).
  */
-export function inboundTwiml({ rawBody, headers, log = () => {} }) {
+export function inboundTwiml({ rawBody, headers, router = null, log = () => {} }) {
   const params = formOf(rawBody);
   if (!verifyTwilio({ url: `${config.publicUrl}${INBOUND_PATH}`, params, headers })) return { status: 403, body: "" };
   const away = config.gptliveInboundFallbackUrl
     ? `<?xml version="1.0" encoding="UTF-8"?><Response><Redirect method="POST">${xml(config.gptliveInboundFallbackUrl)}</Redirect></Response>`
     : `<?xml version="1.0" encoding="UTF-8"?><Response><Reject/></Response>`;
-  const address = normalizeNumber(params.From) || "";
-  const who = address ? whoseCallIsThis(address) : { allow: false };
-  if (!who.allow || who.callingBack || !gptliveFor(who.conversationId) || missingForGptlive().length) {
+  // Nothing thrown here may drop a ringing call: anything that fails goes to ElevenLabs, as before.
+  try {
+    return routeInbound({ params, router, log, away });
+  } catch (e) {
+    log({ gptlive_inbound_failed: (e?.message ?? String(e)).split("\n")[0] });
     return { status: 200, body: away, type: "text/xml" };
   }
+}
+
+function routeInbound({ params, router, log, away }) {
+  const twiml = (body) => ({ status: 200, body, type: "text/xml" });
+  if (!gptliveOn() || missingForGptlive().length) return twiml(away);
+  const callSid = String(params.CallSid ?? "");
+  // The operator-only trial (REASON_CALL_VOICE=owner): the operator's own calls, everyone else unchanged.
+  if (gptliveMode() !== "everyone") {
+    const address = normalizeNumber(params.From) || "";
+    const who = address ? whoseCallIsThis(address) : { allow: false };
+    if (!who.allow || who.callingBack || !gptliveFor(who.conversationId)) return twiml(away);
+  }
+  const address = normalizeNumber(params.From) || "";
+  // A withheld or unusable caller id: a stranger with nothing to keep.
+  if (!address || !/^\+\d{8,15}$/.test(address)) {
+    log({ gptlive_inbound_stranger: "withheld" });
+    return twiml(streamTwimlFor(strangerStream({ callSid })));
+  }
+  const who = whoseCallIsThis(address);
+  if (!who.allow && ["blocked", "paused", "removed"].includes(who.reason)) {
+    log({ gptlive_inbound_refused: who.reason });
+    return twiml(sayAndHangUp(strangerCall.neutralLine()));
+  }
+  if (!who.allow) {
+    const why = strangerIntake({ address, router, log, reason: who.reason });
+    let kept = null;
+    try { kept = strangerCalls.open({ phone: address, externalId: `${EXT}${callSid}` }); } catch (e) {
+      log({ stranger_call_not_kept: (e?.message ?? String(e)).split("\n")[0] });
+    }
+    log({ gptlive_inbound_stranger: why, kept: kept?.id ?? null });
+    return twiml(streamTwimlFor(strangerStream({ address, callSid, kept })));
+  }
+  // A place ringing back about an errand, or an account whose calls are not GPT-Live: ElevenLabs.
+  if (who.callingBack || !gptliveFor(who.conversationId)) return twiml(away);
+  const capped = overCallCap(who.conversationId, { log });
+  if (capped) return twiml(sayAndHangUp(capped.line));
   const row = db.createCall(who.conversationId, {
     provider: PROVIDER, toNumber: address, isOwner: true,
     goal: `${accounts.ownerOf(who.conversationId).name} called Reason`, facts: [],
-    direction: "in", externalId: `${EXT}${params.CallSid ?? randomUUID()}`, state: "in_progress", announcement: "",
+    direction: "in", externalId: `${EXT}${callSid || randomUUID()}`, state: "in_progress", announcement: "",
   });
   accounts.countUse(who.conversationId, "call");
   recordingNoteFor({ conversationId: who.conversationId, row, log });
   log({ gptlive_inbound: who.conversationId, call: row.id });
-  return { status: 200, body: streamTwiml(row), type: "text/xml" };
+  return twiml(streamTwiml(row));
+}
+
+/** The stream TwiML for a token (a call row's own, or a stranger stream's). */
+function streamTwimlFor(token, base = config.publicUrl) {
+  return streamTwiml({ webhook_token: token }, base);
 }
 
 /** Calls whose stream is up, by call id. */
@@ -1195,7 +1305,17 @@ const streams = new Map();
  * Twilio's media stream for one call, upgraded. The token in the path is the call row's own; anything
  * else is closed at once.
  */
-export function acceptStream({ token, socket, settle, runtime, log = () => {}, openLive = openLiveSocket }) {
+export function acceptStream({ token, socket, settle, runtime, log = () => {}, openLive = openLiveSocket, generate = null }) {
+  const stranger = rowless.get(token);
+  if (stranger) {
+    rowless.delete(token);
+    if (Date.now() - stranger.at > ROWLESS_TTL_MS) {
+      log({ gptlive_stream_refused: "stranger token expired" });
+      socket.close(1008);
+      return null;
+    }
+    return acceptStrangerStream({ stranger, socket, log, openLive, generate });
+  }
   const row = db.callByWebhookToken(token);
   if (!row || row.provider !== PROVIDER || !["placing", "ringing", "in_progress"].includes(row.state) || streams.has(row.id)) {
     log({ gptlive_stream_refused: row?.id ?? null });
@@ -1212,4 +1332,29 @@ export function acceptStream({ token, socket, settle, runtime, log = () => {}, o
   });
   streams.set(row.id, call);
   return call;
+}
+
+/**
+ * A stranger's stream: the pitch persona, every answer from `strangerReply` (no tools, nobody's data),
+ * and at the end only their own words and the length kept against their number. No call row, no
+ * conversation, no audio file.
+ */
+function acceptStrangerStream({ stranger, socket, log, openLive, generate }) {
+  const id = `stranger:${stranger.kept?.id ?? stranger.callSid ?? "withheld"}`;
+  const extra = stranger.kept ? { reason_stranger_call: stranger.kept.id, reason_stranger_token: stranger.kept.token } : {};
+  const gen = generate ?? generatorFor();
+  return new GptLiveCall({
+    call: { id, conversation_id: "", direction: "in", is_owner: 0 }, twilio: socket, openLive, log,
+    persona: { instructions: strangerInstructions(), greeting: strangerCall.introLine() },
+    brain: async (messages) => {
+      const r = await strangerCall.strangerReply({ messages, generate: gen, extra, log });
+      return { text: r.text, tools: [], endCall: r.ends ? { message: "" } : null, skip: !r.text && !r.ends };
+    },
+    finish: async (live) => {
+      try { strangerCalls.settleFromPostCall({ externalId: stranger.externalId, live }); } catch (e) {
+        log({ stranger_call_not_settled: (e?.message ?? String(e)).split("\n")[0] });
+      }
+      log({ gptlive_stranger_ended: id, seconds: live.durationS, cost_cents: live.costCents });
+    },
+  });
 }
