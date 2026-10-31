@@ -37,7 +37,7 @@ beforeEach(() => {
   db.saveConversation(C, []);
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: OTHER, channel: "sendblue", address: "+13105550000", name: "Ama", isOperator: false });
-  Object.assign(config, { callIdentity: false, makerName: "Saafi Interaction Labs", callVoice: "", twilioSid: "", twilioToken: "", twilioFrom: "", openaiKey: "", gptliveInboundFallbackUrl: "" });
+  Object.assign(config, { callIdentity: false, makerName: "Saafi Interactions Lab", callVoice: "", twilioSid: "", twilioToken: "", twilioFrom: "", openaiKey: "", gptliveInboundFallbackUrl: "" });
 });
 
 const on = (extra = {}) => Object.assign(config, { callVoice: "gptlive", ...TWILIO, ...extra });
@@ -480,7 +480,7 @@ test("identity =owner: the operator's call knows it is Reason, that this is Omar
   assert.match(s, /2 and 5 trains/);
   assert.match(s, /You rang Omari \(Reason placed this call\)/);
   assert.match(s, /They are in New York/);
-  assert.match(s, /made by Saafi Interaction Labs/, "the maker, by default");
+  assert.match(s, /made by Saafi Interactions Lab/, "the maker, by default");
   assert.doesNotMatch(s, /peanuts|\bAma\b/, "nothing of another user's");
   assert.match(s, /NO_REPLY/);
 });
@@ -492,7 +492,7 @@ test("identity =owner: another user's call is unchanged — no identity block, a
   assert.equal(who.identity, false);
   const s = gl.liveInstructions(who);
   assert.match(s, /You are the voice of Reason, Ama's personal assistant/);
-  assert.match(s, /made by Saafi Interaction Labs/, "who made Reason is answered everywhere, flag or not");
+  assert.match(s, /made by Saafi Interactions Lab/, "who made Reason is answered everywhere, flag or not");
   assert.doesNotMatch(s, /\bOmari\b|2 and 5 trains|New York|peanuts/);
   assert.equal(vp.callIdentityFor(OTHER), false);
   assert.equal(vp.callIdentityFor(C), true);
@@ -553,18 +553,36 @@ test("ElevenLabs path, =owner: the operator's call carries the identity lines; u
   assert.match(vp.ownerCallFrame({ name: "Ama" }), /^Ama is on the phone with you right now\. .* so do not introduce yourself, do not ask who is calling/);
 });
 
-test("who made Reason: Saafi Interaction Labs by default, one value everywhere, and nothing invented", async () => {
+test("who made Reason: Saafi Interactions Lab by default, one value everywhere, and nothing invented", async () => {
   const { systemFor } = await import("../src/agent.js");
   const maker = await import("../src/maker.js");
-  config.makerName = "Saafi Interaction Labs";
+  config.makerName = "Saafi Interactions Lab";
   for (const me of [{ name: "Omari", isOperator: true }, { name: "Ama", isOperator: false }, { name: "the person I work for" }]) {
     const s = systemFor(me);
-    assert.match(s, /You were made by Saafi Interaction Labs\./);
+    assert.match(s, /You were made by Saafi Interactions Lab\./);
     assert.doesNotMatch(s, /Omarion|Nyarko|smart guy/);
   }
-  assert.match(maker.makerLine(), /Saafi Interaction Labs/);
+  assert.match(maker.makerLine(), /Saafi Interactions Lab/);
   config.makerName = "Acme Labs";
-  try { assert.match(systemFor({ name: "Ama" }), /You were made by Acme Labs\./, "REASON_MAKER overrides"); } finally { config.makerName = "Saafi Interaction Labs"; }
+  try { assert.match(systemFor({ name: "Ama" }), /You were made by Acme Labs\./, "REASON_MAKER overrides"); } finally { config.makerName = "Saafi Interactions Lab"; }
+});
+
+test("the maker is exactly 'Saafi Interactions Lab' (Interactions plural, Lab singular) by default, and every prompt says it so", async () => {
+  const { config: fresh } = await import("../src/config.js");
+  const maker = await import("../src/maker.js");
+  const { systemFor } = await import("../src/agent.js");
+  const saved = fresh.makerName;
+  try {
+    // The default as config.js builds it with no REASON_MAKER set.
+    const src = (await import("node:fs")).readFileSync(new URL("../src/config.js", import.meta.url), "utf8");
+    assert.match(src, /makerName: String\(process\.env\.REASON_MAKER \?\? ""\)\.trim\(\) \|\| "Saafi Interactions Lab",/);
+    fresh.makerName = "Saafi Interactions Lab";
+    assert.equal(maker.makerName(), "Saafi Interactions Lab");
+    for (const s of [systemFor({ name: "Ama" }), maker.makerLine(), maker.makerRule()]) {
+      assert.ok(s.includes("Saafi Interactions Lab"), s.slice(0, 80));
+      assert.doesNotMatch(s, /Saafi Interaction Labs|Saafi Interactions Labs|Saafi Interaction Lab\b/);
+    }
+  } finally { fresh.makerName = saved; }
 });
 
 test("no model-facing prompt anywhere says Omarion Nyarko (texts, both call voices, onboarding, GPT-Live)", async () => {

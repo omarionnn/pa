@@ -1,5 +1,5 @@
 // Who made Reason — one answer, everywhere, for every user: texts (agent.js systemFor), both call voices,
-// onboarding. Saafi Interaction Labs (Omari, 2026-10-31); REASON_MAKER only overrides it. Reason names
+// onboarding. Saafi Interactions Lab (Omari, 2026-10-31); REASON_MAKER only overrides it. Reason names
 // the company and nothing more — no people, no story, nothing invented.
 import { config } from "./config.js";
 
