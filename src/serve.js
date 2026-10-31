@@ -99,6 +99,7 @@ startOps({ runtime, router, log });
       // A plain question from the store, or the confirmation email: an event turn, keyed so a restart
       // cannot raise the same one twice.
       wake: (c, text, { key } = {}) => runtime.event(c, text, { idempotencyKey: key }),
+      log,
     });
     const resumed = shop.resumeFollowing();
     if (resumed.runs.length || resumed.mail.length) log({ checkouts_resumed: resumed.runs.length, mail_watches_resumed: resumed.mail.length });

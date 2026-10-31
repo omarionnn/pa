@@ -77,7 +77,7 @@ export const SHOP_TOOL_DEFS = [
   {
     name: "shop_card",
     description: "The card saved for buying, and a link to add or change it. Call it when they ask to add, save, change or set up a card or payment method, or ask what card they have or whether one is on file; answer from what it says, never from memory. With send_link (or when no card is saved) it gives a link to a Reason page where they type the card into Crossmint's own secure form; you never see the number. Send the url ON ITS OWN LINE as the last thing in the message, untouched. The link works for 30 minutes.",
-    input_schema: { type: "object", properties: { send_link: { type: "boolean", description: "True when they want to add or change the card." } } },
+    input_schema: { type: "object", properties: { send_link: { type: "boolean", description: "True when they want to add or change the card." }, receipt_email: { type: "string", description: "The email they said receipts should go to, when Reason asked for it (the card cannot pay until Crossmint has one). Only an address they gave." } } },
   },
   {
     name: "shop_decline",
@@ -107,7 +107,7 @@ export const SHOP_SCHEMAS = {
   store_checkout: z.object({ store: z.string().min(1).max(80), start_url: z.string().url().max(1000), what: z.string().min(1).max(400), item: z.string().min(1).max(120), max_usd: z.number().positive().max(2000), sign_in: z.boolean().optional() }),
   shop_pay: z.object({ payment_id: z.number().int().positive(), confirmation_id: z.number().int().optional() }),
   shop_decline: z.object({ payment_id: z.number().int().positive() }),
-  shop_card: z.object({ send_link: z.boolean().optional() }),
+  shop_card: z.object({ send_link: z.boolean().optional(), receipt_email: z.string().max(200).optional() }),
   shop_status: z.object({}),
   shop_answer: z.object({ run_id: z.string().min(1).max(120), answers: z.record(z.union([z.string().max(500), z.number(), z.boolean()])) }),
 };
@@ -140,15 +140,27 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
       return { ok: false, approve_with_face_id: true, url: shop.approvalUrl(row), say: "Their purchases are approved with Face ID, so a yes in the chat doesn't pay. Send this url ON ITS OWN LINE as the last thing, untouched; it works once, for 5 minutes. Don't say it's paid." };
     }
     const out = await shop.payApproved({ conversationId: c, paymentId: input.payment_id, confirmationId });
-    return out.ok ? { ...out, say: `Paid ${out.amount} at ${out.merchant}. The store still has to place it; say it's going through, not that it's done.` } : out;
+    if (out.ok) return { ...out, say: `Paid ${out.amount} at ${out.merchant}. The store still has to place it; say it's going through, not that it's done.` };
+    // Nothing started: the card has no registration at Crossmint and the email is what it lacks.
+    if (out.needs_email) return { ...out, say: "Nothing was charged and the payment is still open. Their card can't pay until Crossmint has the email receipts go to: ask them which email, in one plain line, then call shop_card with receipt_email and shop_pay again. Never say the word Crossmint." };
+    return out;
   }
   if (name === "shop_decline") return await shop.declinePayment({ conversationId: c, paymentId: input.payment_id });
   if (name === "shop_status") return shop.statusView(c);
   if (name === "shop_answer") return await shop.answerRun(input.run_id, { conversationId: c, answers: input.answers });
   if (name === "shop_card") {
+    if (input.receipt_email) {
+      const reg = await shop.setReceiptEmail(c, input.receipt_email);
+      if (reg.error === "bad_email") return { ok: false, error: "That isn't an email address. Ask again, plainly." };
+      if (reg.no_card) return { ok: true, say: "Email kept for receipts. No card is saved yet; offer the link if they want to add one." };
+      return reg.ok
+        ? { ok: true, registered: true, say: "Their card can pay now. If a payment was waiting, call shop_pay again (or send the Face ID link again); otherwise one short line that it's set." }
+        : { ok: false, error: `The card still can't pay (${reg.code || reg.error}). Tell them it didn't take and that you'll look into it; don't ask for the email again.` };
+    }
     const card = shop.cardOf(c);
     const label = card ? `${card.brand ? card.brand.replace(/^./, (x) => x.toUpperCase()) : "Card"} ••••${card.last4 || "????"}` : "";
-    if (card && !input.send_link) return { ok: true, card: label, say: `Their card for buying is ${label}. Offer a link only if they want to change it.` };
+    const needsEmail = card?.registered === 0 && /EMAIL/i.test(card.regError);
+    if (card && !input.send_link) return { ok: true, card: label, ...(needsEmail ? { needs_email: true } : {}), say: needsEmail ? `Their card for buying is ${label}, but it can't pay until they say which email receipts go to: ask in one plain line, then call shop_card with receipt_email.` : `Their card for buying is ${label}. Offer a link only if they want to change it.` };
     return { ok: true, card: label || null, url: shop.cardLinkUrl(c), say: `${card ? `Their card now is ${label}. ` : "No card is saved yet. "}Send the url on its own line as the last thing; it works for 30 minutes and the card goes into Crossmint's form, never to you.` };
   }
   return { ok: false, error: "unknown" };

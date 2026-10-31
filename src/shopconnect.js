@@ -218,6 +218,18 @@ function addRunColumn(column, decl) {
   const have = db.db.prepare("SELECT name FROM pragma_table_info('shop_runs')").all().map((r) => r.name);
   if (!have.includes(column)) db.db.exec(`ALTER TABLE shop_runs ADD COLUMN ${column} ${decl}`);
 }
+// A saved card's order-intent registration (2026-10-31, 16:23 UTC): the owner's Face ID approval
+// failed with order_intent_failed because his card had never been registered — the PUT at save time
+// was "best effort" with an empty catch, and Crossmint had refused it (400 CONSUMER_EMAIL_REQUIRED:
+// the body needs the person's email). `registered` is NULL until known, 1 when Crossmint has the
+// registration, 0 when it refused (`reg_error` says why, a code, never a value).
+function addCardColumn(column, decl) {
+  const have = db.db.prepare("SELECT name FROM pragma_table_info('shop_cards')").all().map((r) => r.name);
+  if (!have.includes(column)) db.db.exec(`ALTER TABLE shop_cards ADD COLUMN ${column} ${decl}`);
+}
+addCardColumn("registered", "INTEGER");
+addCardColumn("reg_error", "TEXT NOT NULL DEFAULT ''");
+addCardColumn("asked_email", "INTEGER NOT NULL DEFAULT 0");
 addRunColumn("stage", "TEXT NOT NULL DEFAULT ''");
 addRunColumn("stage_at", "INTEGER");
 addRunColumn("revision", "INTEGER NOT NULL DEFAULT 0");
@@ -601,26 +613,93 @@ export async function answerLink(token, { requestId, answers }) {
 
 // ---------------------------------------------------------------- the card
 export function cardOf(conversationId) {
-  const r = q("SELECT payment_method_id, brand, last4, saved_at FROM shop_cards WHERE conversation_id = ?").get(conversationId);
-  return r ? { paymentMethodId: r.payment_method_id, brand: r.brand, last4: r.last4, savedAt: r.saved_at } : null;
+  const r = q("SELECT payment_method_id, brand, last4, saved_at, registered, reg_error FROM shop_cards WHERE conversation_id = ?").get(conversationId);
+  return r ? { paymentMethodId: r.payment_method_id, brand: r.brand, last4: r.last4, savedAt: r.saved_at, registered: r.registered ?? null, regError: r.reg_error || "" } : null;
+}
+// ---------------------------------------------------------------- the card's registration
+const REG_PATH = (id) => `/api/2026-09-16/payment-methods/${encodeURIComponent(id)}/order-intent-registration`;
+const EMAIL_REQUIRED = "CONSUMER_EMAIL_REQUIRED";
+/** True for Crossmint's "no registration for this card" refusal of an order intent, in any of its spellings. */
+const noRegistration = (code) => /REGISTRATION_NOT_FOUND|ORDER_INTENT_REGISTRATION/i.test(String(code ?? ""));
+/** The email receipts go to: their shipping record (src/shipping.js gathers it from their facts, account and Gmail). Never logged. */
+function emailFor(conversationId) {
+  try { return String(shipping.profileFor(conversationId)?.email ?? "").trim(); } catch { return ""; }
+}
+/**
+ * Registers the saved card for order intents, with the person's email — Crossmint refuses the
+ * registration without one, and an unregistered card cannot pay (order_intent_failed). The row keeps
+ * the outcome: registered 1, or 0 with the code. { ok } | { ok: false, error: "email_required" | "crossmint_refused", status, code }.
+ * When the email is the missing piece the person is told once, in plain words, what to send.
+ */
+export async function registerCard(conversationId, { tell = true } = {}) {
+  const card = cardOf(conversationId);
+  if (!card) return { ok: false, error: "no_card" };
+  const mark = (registered, code = "") => q("UPDATE shop_cards SET registered = ?, reg_error = ? WHERE conversation_id = ?").run(registered, code, conversationId);
+  const askEmail = async () => {
+    if (!tell || q("UPDATE shop_cards SET asked_email = 1 WHERE conversation_id = ? AND asked_email = 0").run(conversationId).changes !== 1) return;
+    await notify(conversationId, "Card saved. One more thing before it can pay: which email should receipts go to?");
+  };
+  const email = emailFor(conversationId);
+  if (!email) {
+    mark(0, EMAIL_REQUIRED);
+    logFn({ card_registration: "skipped", code: EMAIL_REQUIRED });
+    await askEmail();
+    return { ok: false, error: "email_required", code: EMAIL_REQUIRED };
+  }
+  let r;
+  try { r = await asUser(conversationId, REG_PATH(card.paymentMethodId), { method: "PUT", body: { countryCode: "US", languageCode: "en-US", email } }); }
+  catch (e) { logFn({ card_registration: "error", detail: short(e?.message ?? e, 60) }); return { ok: false, error: "crossmint_unreachable", detail: short(e?.message ?? e, 60) }; }
+  if (r.ok) { mark(1, ""); q("UPDATE shop_cards SET asked_email = 0 WHERE conversation_id = ?").run(conversationId); logFn({ card_registration: "ok", status: r.status }); return { ok: true }; }
+  const code = crossmintError(r.json);
+  mark(0, code);
+  logFn({ card_registration: "refused", status: r.status, code });
+  if (code === EMAIL_REQUIRED) await askEmail();
+  return { ok: false, error: code === EMAIL_REQUIRED ? "email_required" : "crossmint_refused", status: r.status, code };
+}
+/** They said which email receipts go to: kept on their record, and the card registered with it. */
+export async function setReceiptEmail(conversationId, email) {
+  if (!shipping.normalize("email", email)) return { ok: false, error: "bad_email" };
+  shipping.learn(conversationId, { email }, { source: "said" });
+  return cardOf(conversationId) ? registerCard(conversationId, { tell: false }) : { ok: true, no_card: true };
+}
+/**
+ * After a restart: every saved card whose registration is unknown (saved before 2026-10-31, or never
+ * checked) is read back from Crossmint once, and the row says what it found. Nothing is registered
+ * here — that happens when the card is saved, or before it pays.
+ */
+export async function sweepCards() {
+  const rows = q("SELECT conversation_id, payment_method_id FROM shop_cards WHERE registered IS NULL").all();
+  const out = { checked: rows.length, registered: 0, missing: 0, unknown: 0 };
+  for (const row of rows) {
+    let r = null;
+    try { r = await asUser(row.conversation_id, REG_PATH(row.payment_method_id)); } catch { /* unknown stays unknown */ }
+    if (r?.ok) { q("UPDATE shop_cards SET registered = 1, reg_error = '' WHERE conversation_id = ?").run(row.conversation_id); out.registered++; }
+    else if (r?.status === 404) { q("UPDATE shop_cards SET registered = 0, reg_error = ? WHERE conversation_id = ?").run(crossmintError(r.json) || "NOT_FOUND", row.conversation_id); out.missing++; }
+    else out.unknown++;
+  }
+  if (rows.length) logFn({ card_registrations_swept: out });
+  return out;
 }
 /** Settings / "Add a card": a link to Crossmint's card form. Owner-only while the flag says so. */
 export function cardLink(conversationId) {
   return createLink({ conversationId, kind: "card" });
 }
-/** The page saved a card at Crossmint; keep its id and display fields, and register it (best effort). */
+/**
+ * The page saved a card at Crossmint; keep its id and display fields, and register it for order
+ * intents with the person's email. The card row stays either way; `registered` says whether it can
+ * pay yet, and the person hears once when their email is what it lacks.
+ */
 export async function saveCard(token, { paymentMethodId, brand = "", last4 = "" }) {
   const link = linkFor(token);
   if (linkView(link).state !== "card") return { ok: false, error: "not_open" };
   if (!/^[A-Za-z0-9_-]{1,200}$/.test(String(paymentMethodId ?? ""))) return { ok: false, error: "bad_id" };
   const l4 = /^\d{4}$/.test(String(last4)) ? String(last4) : "";
-  q(`INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT (conversation_id) DO UPDATE SET payment_method_id = excluded.payment_method_id, brand = excluded.brand, last4 = excluded.last4, saved_at = excluded.saved_at`)
+  q(`INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered, reg_error, asked_email) VALUES (?, ?, ?, ?, ?, NULL, '', 0)
+     ON CONFLICT (conversation_id) DO UPDATE SET payment_method_id = excluded.payment_method_id, brand = excluded.brand, last4 = excluded.last4, saved_at = excluded.saved_at, registered = NULL, reg_error = '', asked_email = 0`)
     .run(link.conversation_id, paymentMethodId, String(brand).slice(0, 20), l4, clock.now());
   q("UPDATE shop_links SET state = 'connected' WHERE id = ?").run(link.id);
-  // Registration provisions card-network rails; without one, Agent Checkouts uses the encrypted card.
-  try { await asUser(link.conversation_id, `/api/2026-09-16/payment-methods/${encodeURIComponent(paymentMethodId)}/order-intent-registration`, { method: "PUT", body: { countryCode: "US", languageCode: "en-US" } }); } catch { /* best effort */ }
-  return { ok: true };
+  const reg = await registerCard(link.conversation_id);
+  return { ok: true, registered: !!reg.ok, ...(reg.ok ? {} : { needs_email: reg.error === "email_required" }) };
 }
 export async function removeCard(conversationId) {
   const card = cardOf(conversationId);
@@ -700,24 +779,42 @@ async function payRow(row, { confirmationId = null } = {}) {
   if (q("UPDATE shop_payments SET status = 'paying' WHERE id = ? AND status = 'asked'").run(row.id).changes !== 1) return { ok: false, error: "payment_in_progress" };
   setStage(row.run_id, "approved");
   const reopen = () => { q("UPDATE shop_payments SET status = 'asked' WHERE id = ? AND status = 'paying'").run(row.id); setStage(row.run_id, "needs_approval"); };
+  // Nothing was started yet, so the payment stays open for the same yes. Why it failed travels with
+  // it and is logged (status + Crossmint's code): on 2026-10-31 at CVS only "order_intent_failed" was
+  // logged, and the cause — the card had no order-intent registration — could not be read back.
+  const failed = (status, detail, extra = {}) => {
+    reopen();
+    logFn({ order_intent_failed: true, payment_id: row.id, ...(status ? { status } : {}), ...(detail ? { code: detail } : {}), ...extra });
+    return { ok: false, error: "order_intent_failed", ...(status ? { status } : {}), detail, ...extra };
+  };
+  // A card Crossmint has no registration for cannot pay: registered first (with their email), and if
+  // that is what is missing the person is told what to send instead of a failure nobody can read.
+  if (card.registered !== 1) {
+    const reg = await registerCard(conversationId, { tell: false });
+    if (!reg.ok && reg.error === "email_required") return failed(reg.status, reg.code, { needs_email: true });
+    if (!reg.ok && reg.error === "crossmint_refused") return failed(reg.status, reg.code);
+  }
+  const intent = async () => asUser(conversationId, "/api/unstable/order-intents", {
+    method: "POST",
+    body: {
+      paymentMethodId: card.paymentMethodId,
+      amount: { value: row.amount, currency: row.currency },
+      merchant: { name: row.merchant_name, url: row.merchant_url, countryCode: row.merchant_country },
+      description: (row.item || `${row.merchant_name} order`).slice(0, 120),
+      expiresAt: new Date(clock.now() + 15 * 60_000).toISOString(),
+    },
+  });
   let oi;
-  try {
-    oi = await asUser(conversationId, "/api/unstable/order-intents", {
-      method: "POST",
-      body: {
-        paymentMethodId: card.paymentMethodId,
-        amount: { value: row.amount, currency: row.currency },
-        merchant: { name: row.merchant_name, url: row.merchant_url, countryCode: row.merchant_country },
-        description: (row.item || `${row.merchant_name} order`).slice(0, 120),
-        expiresAt: new Date(clock.now() + 15 * 60_000).toISOString(),
-      },
-    });
-  } catch (e) { reopen(); return { ok: false, error: "order_intent_failed", detail: short(e?.message ?? e, 60) }; }
+  try { oi = await intent(); } catch (e) { return failed(null, short(e?.message ?? e, 60)); }
+  // Crossmint says the registration is not there (the row thought it was, or the sweep never ran):
+  // register now and try the intent once more. Only then is it a failure.
+  if (!oi.ok && noRegistration(crossmintError(oi.json))) {
+    const reg = await registerCard(conversationId, { tell: false });
+    if (!reg.ok && reg.error === "email_required") return failed(oi.status, crossmintError(oi.json), { needs_email: true });
+    if (reg.ok) { try { oi = await intent(); } catch (e) { return failed(null, short(e?.message ?? e, 60)); } }
+  }
   const orderIntentId = oi.json?.orderIntentId;
-  // No order intent yet means nothing can be charged: the payment stays open for the same yes. Why
-  // Crossmint said no travels with it (status + its error code): on 2026-10-31 at CVS only
-  // "order_intent_failed" was logged, and the cause could not be read back.
-  if (!oi.ok || !orderIntentId) { reopen(); return { ok: false, error: "order_intent_failed", status: oi.status, detail: crossmintError(oi.json) }; }
+  if (!oi.ok || !orderIntentId) return failed(oi.status, crossmintError(oi.json));
   const part = { type: "input_response", requestId: row.request_id, action: "submit", response: { kind: "payment", orderIntentId } };
   // From here the card may have been offered to the store: any failure is an unknown outcome, never a retry.
   const unknown = (status = null) => {
@@ -761,6 +858,8 @@ export async function payByPasskey(token, response) {
   const out = await payRow(v.row);
   passkey.logEvent(v.row.conversation_id, v.row, out.ok ? "paid" : out.unknown_outcome ? "unknown_outcome" : "pay_failed", out.ok ? "" : [out.error, out.status, out.detail].filter(Boolean).join(" "));
   if (out.ok) await notify(v.row.conversation_id, `Approved with Face ID. Paid ${out.amount} at ${out.merchant}; the store still has to place it, and I'll tell you when it's through.`);
+  // No model turn runs here, so the one thing they can fix is said in plain words (once per card).
+  else if (out.needs_email && q("UPDATE shop_cards SET asked_email = 2 WHERE conversation_id = ? AND asked_email < 2").run(v.row.conversation_id).changes === 1) await notify(v.row.conversation_id, "Face ID worked, but the card can't pay yet: which email should receipts go to? Send it here and then tap the link again.");
   // Nothing started (no order intent, so no charge is possible): the link opens again for another tap,
   // under a fresh challenge, and the page says Face ID worked but the payment did not start. Once the
   // card may have reached the store (unknown_outcome) the link stays used: never paid twice.
@@ -829,7 +928,9 @@ export const cardLinkUrl = (conversationId) => `${linkBase()}/${cardLink(convers
  * serve.js hands over how to text a person (`say`) and how to wake the model with an event turn
  * (`wake(conversationId, text, { key })`). Nothing is texted or woken before this.
  */
-export function attach({ say, wake, base } = {}) { sayFn = say ?? null; wakeFn = wake ?? null; passkey.attach({ say }); if (base) linkBase = () => base; }
+export function attach({ say, wake, base, log } = {}) { sayFn = say ?? null; wakeFn = wake ?? null; logFn = log ?? (() => {}); passkey.attach({ say }); if (base) linkBase = () => base; }
+/** serve.js's structured log line; silent until attached. Codes and statuses only, never a value. */
+let logFn = () => {};
 const notify = async (c, text) => { try { if (sayFn) await sayFn(c, text); } catch { /* paid or declined either way */ } };
 /** An event turn for the model. True once it was raised; false when it could not be (tried again next look). */
 const wake = async (c, text, key) => { try { if (wakeFn) await wakeFn(c, text, { key }); return true; } catch { return false; } };
@@ -1419,5 +1520,7 @@ export function resumeFollowing() {
   for (const id of runs) follow(id);
   const mail = q("SELECT run_id, told FROM shop_runs WHERE mail_until IS NOT NULL AND mail_until > ?").all(clock.now()).filter((r) => !toldOf(r).has("mail")).map((r) => r.run_id);
   for (const id of mail) watchMail(id);
+  // Cards saved before the registration was recorded: read back once, never waited on.
+  setTimeout(() => { sweepCards().catch(() => {}); }, 0).unref?.();
   return { runs, mail };
 }

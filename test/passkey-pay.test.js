@@ -119,7 +119,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   calls = []; refuseIntents = []; said.length = 0; clock.reset();
   for (const t of ["shop_runs", "shop_cards", "shop_payments", "pay_passkeys", "pay_passkey_regs", "pay_approvals", "pay_approval_log"]) db.db.exec(`DELETE FROM ${t}`);
-  q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_secret_123', 'visa', '4242', 0)").run(OMARI);
+  q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_secret_123', 'visa', '4242', 0, 1)").run(OMARI);
 });
 
 // ---------------------------------------------------------------- 1. setting it up

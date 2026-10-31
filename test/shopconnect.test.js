@@ -226,7 +226,7 @@ test("the ask is Crossmint's exact amount, store and item", async () => {
 });
 
 test("no payment without a yes; the yes is pinned to the exact amount; the amount paid is Crossmint's", async () => {
-  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_1', 'visa', '4242', ?)").run(OMARI, clock.now());
+  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
   const row = await askedPayment();
   const messages = [owner("buy me that cable")];
   const call = (name, input) => runTool(name, input, { conversationId: OMARI, messages, judge: readsYes });
@@ -281,7 +281,7 @@ test("a no never pays: a refusal declines at Crossmint", async () => {
 });
 
 test("a maximum is never asked or paid: declined at Crossmint, said as a ceiling", async () => {
-  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_1', 'visa', '4242', ?)").run(OMARI, clock.now());
+  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
   const row = await askedPayment("15.00", "maximum");
   assert.doesNotMatch(said.at(-1).t, /OK to pay/);
   assert.match(said.at(-1).t, /ceiling \(\$15\.00\).*Nothing was charged/);
@@ -292,7 +292,7 @@ test("a maximum is never asked or paid: declined at Crossmint, said as a ceiling
 });
 
 test("pays once even when asked twice at the same time; an unknown answer is never retried", async () => {
-  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_1', 'visa', '4242', ?)").run(OMARI, clock.now());
+  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
   const row = await askedPayment();
   const both = await Promise.all([shop.payApproved({ conversationId: OMARI, paymentId: row.id }), shop.payApproved({ conversationId: OMARI, paymentId: row.id })]);
   assert.deepEqual(both.map((o) => o.ok).sort(), [false, true]);
@@ -309,7 +309,7 @@ test("pays once even when asked twice at the same time; an unknown answer is nev
 });
 
 test("an unreadable expiry counts as passed; someone else's payment reads as unknown", async () => {
-  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_1', 'visa', '4242', ?)").run(OMARI, clock.now());
+  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
   const row = await askedPayment();
   q("UPDATE shop_payments SET expires_at = 'soon' WHERE id = ?").run(row.id);
   assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: row.id })).error, "payment_expired");
@@ -563,7 +563,7 @@ test("SEALED sits only over sealed fields, never over the email we draw ourselve
 
 test("Settings: the card's last use comes from this person's own paid payments; forgetting it asks first", async () => {
   const { settingsView, renderSettings } = await import("../src/pages/websettings.js");
-  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_1', 'visa', '4242', ?)").run(OMARI, clock.now());
+  db.db.prepare("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
   const ins = db.db.prepare("INSERT INTO shop_payments (conversation_id, run_id, request_id, amount, currency, amount_kind, merchant_name, status, created_at, answered_at) VALUES (?, 'run_x', ?, '9.79', 'USD', 'exact', ?, ?, ?, ?)");
   const oct28 = Date.parse("2026-10-28T18:00:00Z"), oct29 = Date.parse("2026-10-29T18:00:00Z");
   assert.equal(shop.lastPaid(OMARI), null);
