@@ -61,8 +61,11 @@ export function checkoutClaims(conversationId, text) {
     // just started in the same breath): the oldest ended run of the last half hour, else the oldest open one.
     const half = shop.runsOf(conversationId, { sinceMs: 30 * 60_000 }).reverse();
     const ran = half.find((r) => r.status !== "running") ?? half[0] ?? null;
-    if (ran && all.some((s) => NEVER_STARTED.test(s))) {
-      const kept = sentencesOf(text).map((p) => (typeof p === "string" ? p : p.filter((s) => !NEVER_STARTED.test(s))));
+    // Only a denial ABOUT the checkout: "the timer never started" is somebody else's business.
+    const denies = (s, i) => NEVER_STARTED.test(s) && (CHECKOUT_WORD.test(s) || /\bcharged\b/i.test(s) || (/\bit (?:never|didn'?t|did not|wasn'?t)\b/i.test(s) && CHECKOUT_WORD.test(`${all[i - 1] ?? ""} ${all[i + 1] ?? ""}`)));
+    if (ran && all.some(denies)) {
+      const drop = new Set(all.filter(denies));
+      const kept = sentencesOf(text).map((p) => (typeof p === "string" ? p : p.filter((s) => !drop.has(s))));
       const store = shop.storeName(ran.store) || "The store";
       const line = `Correction, from my record: the ${store} checkout${ran.item ? ` for ${ran.item}` : ""} did start ${Math.max(1, Math.round((clock.now() - ran.created_at) / 60_000))} min ago; now: ${shop.stageLine(ran)}.`;
       text = [line, joinBack(kept)].filter(Boolean).join("\n");

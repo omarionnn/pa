@@ -157,6 +157,10 @@ test("pinned 11:17: 'never actually started' about a run that ran and died is co
   assert.doesNotMatch(g.text, /never actually started|Nothing was running/);
   assert.match(g.text, /I've started it for real now\. It's a guest checkout on Ulta for the 16 oz\./);
   assert.ok(g.flags.some((f) => f.rule === "never_started_with_run"));
+  // A denial about something else is not corrected, run or no run.
+  for (const s of ["The timer never started, sorry.", "The call didn't start; your line was busy.", "Nothing is running on the calendar today."]) {
+    assert.equal(offers.guardReply(OMARI, s).text, s, s);
+  }
 });
 
 // ---------------------------------------------------------------- 2. a plain question
