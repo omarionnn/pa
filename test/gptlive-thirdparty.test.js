@@ -615,3 +615,96 @@ test("the first person after a menu and hold still gets the disclosure from code
   assert.equal(second.announce, true);
   assert.equal(second.party, 2);
 });
+
+// ---------- the independent review's findings (2026-10-31) ----------
+
+test("review 1+2: a voicemail held for the beep is the call's last word — no more turns — and one never said is not 'left'", async () => {
+  const row = lineRow();
+  let n = 0;
+  const s = startLine({
+    row,
+    brain: async () => {
+      n++;
+      const fresh = db.getCall(C, row.id);
+      hold.noteMachine(fresh, {});
+      hold.noteVoicemail(fresh, { message: "Hi, it's Reason for Omari." });
+      return { text: "", tools: ["end_call"], calls: [], endCall: { message: "Hi, it's Reason for Omari." } };
+    },
+  });
+  await theySay(s, "You've reached Luigi's.");
+  assert.equal(n, 1);
+  assert.ok(s.call.heldVoicemail, "held: no beep yet");
+  await theySay(s, "Please leave a message after the tone.");
+  assert.equal(n, 1, "the rest of the greeting is not another turn");
+  // The mailbox hangs up before the beep: nothing was said, so nothing was left.
+  s.twilio.say({ event: "stop" });
+  await s.timers.advance(3500);
+  const after = db.getCall(C, row.id);
+  assert.equal(after.outcome_kind, "voicemail_no_message");
+  assert.equal(Number(after.voicemail_left), 0);
+});
+
+test("review 4: a turn that speaks AND presses says its words first, then presses", async () => {
+  const s = startLine({ brain: async () => ({ text: "Sorry, one moment.", tools: ["play_keypad_touch_tone"], calls: [{ name: "play_keypad_touch_tone", args: { dtmf_tones: "2" } }], endCall: null }) });
+  await theySay(s, "Press 2 to speak to someone.");
+  assert.equal(s.posted.length, 0, "not pressed while the words are still to be said");
+  assert.equal(s.live.of("session.commentary.append").at(-1).content, "Sorry, one moment.");
+  await voiceSays(s, "Sorry, one moment.");
+  await s.timers.advance(gl.LINE_GATE_QUIET_MS + 500);
+  assert.equal(s.posted.length, 1);
+  assert.match(s.posted[0].form.Twiml, /<Play digits="w2"\/>/);
+});
+
+test("review 5: no second turn while the first is still carrying out its key press", async () => {
+  let release;
+  let n = 0;
+  const api = (path, form) => new Promise(r => { release = () => r({ ok: true, status: 200, json: {} }); });
+  const s = startLine({ api, brain: async () => { n++; return { text: "", tools: ["play_keypad_touch_tone"], calls: [{ name: "play_keypad_touch_tone", args: { dtmf_tones: "1" } }], endCall: null }; } });
+  await theySay(s, "For reservations press 1.");
+  assert.equal(n, 1);
+  await theySay(s, "For hours press 2.");
+  assert.equal(n, 1, "the press is still going to Twilio: no overlapping turn");
+  release();
+  await s.timers.advance(50);
+  await theySay(s, "press 2.");
+  assert.equal(n, 1, "late words from the menu just answered are not a turn while the stream comes back");
+});
+
+test("review 6: a machine verdict during a turn that spoke is read once those words are said", async () => {
+  let release;
+  const notes = [];
+  const s = startLine({ brain: (messages) => { notes.push(messages.at(-1).content); return notes.length === 1 ? new Promise(r => { release = r; }) : Promise.resolve({ text: "", tools: [], calls: [], endCall: null }); } });
+  await theySay(s, "Hi there!");
+  s.call.amd("machine_end_beep");
+  release({ text: "Hi — this is Reason.", tools: [], calls: [], endCall: null });
+  await s.timers.advance(10);
+  assert.equal(notes.length, 1, "not over the words being said");
+  await voiceSays(s, "Hi — this is Reason.");
+  await s.timers.advance(gl.LINE_GATE_QUIET_MS + 500);
+  assert.equal(notes.length, 2);
+  assert.match(notes[1], /answering-machine check/);
+});
+
+test("review 8: the first-person disclosure floor is GPT-Live's only; an ElevenLabs call is as before", () => {
+  const row = db.createCall(C, { provider: "elevenlabs", toNumber: "+13105559990", isOwner: false, goal: "x", facts: [], announcement: ANN, state: "in_progress" });
+  db.updateCall(C, row.id, { opening_waits: 1 });
+  const r = hold.newParty(db.getCall(C, row.id), { who: "Sam" });
+  assert.equal(r.party, 2);
+  assert.equal(r.announce, true);
+});
+
+test("review 3: a stranger's recording is in the data export and goes with a data delete", async () => {
+  const { deleteData, exportData } = await import("../src/data.js");
+  const { writeFileSync, mkdirSync } = await import("node:fs");
+  const kept = strangerCalls.open({ phone: "+14155550166", externalId: "gptlive:CA_x" });
+  const path = strangerCalls.recordingPathFor(kept.id);
+  mkdirSync(join(dir, "recordings"), { recursive: true });
+  writeFileSync(path, Buffer.alloc(100));
+  db.db.prepare("UPDATE stranger_calls SET recording_path = ?, matched_conversation_id = ? WHERE id = ?").run(path, OTHER, kept.id);
+  const ex = exportData({ conversation: OTHER, audio: false, files: false });
+  assert.ok(ex.recordings.some(r => r.stranger_call_id === kept.id && r.file === path));
+  assert.equal(exportData({ conversation: C, audio: false, files: false }).recordings.some(r => r.stranger_call_id), false, "nobody else's");
+  const out = await deleteData({ conversation: OTHER });
+  assert.equal(existsSync(path), false);
+  assert.equal(out.rows.stranger_calls, 1);
+});

@@ -1239,7 +1239,7 @@ export class GptLiveCall {
     this.lineTimer = this.timers.setTimeout(() => {
       this.lineTimer = null;
       this.lineHeardFrom = null;
-      void this.lineTurn("heard").catch((e) => this.log({ gptlive_line_turn_failed: this.call.id, why: (e?.message ?? String(e)).split("\n")[0] }));
+      this.runLine("heard");
     }, wait);
   }
 
@@ -1252,9 +1252,18 @@ export class GptLiveCall {
    * said (it answers them too, as a re-ask joins a running turn, #275); if nothing was said — a wait, a
    * key — the line is read again with the new words in it.
    */
+  /** `lineTurn`, from a timer or a webhook: never a rejection anybody has to catch. */
+  runLine(why, opts) {
+    this.lineTurn(why, opts).catch((e) => this.log({ gptlive_line_turn_failed: this.call.id, why: (e?.message ?? String(e)).split("\n")[0] }));
+  }
+
   async lineTurn(why, { note = "" } = {}) {
     if (this.done || (this.ending && why !== "amd")) return;
-    if (this.pending.size) { this.lineAgain = true; return; }
+    // A voicemail waiting for its beep is the call's last word; the rest of the greeting is not a turn.
+    if (this.heldVoicemail) return;
+    // Words still arriving from the menu just answered with a key: the line after the press is a turn.
+    if (this.rejoining && why === "heard") return;
+    if (this.pending.size || this.lineBusy) { this.lineAgain = true; return; }
     const id = `line_${this.call.id}_${++this.lineN}`;
     this.delegations++;
     const turn = { id, startedAt: this.now(), msgCount: 0, firstAudioMs: null, firstRealMs: null, resultAt: null };
@@ -1279,14 +1288,18 @@ export class GptLiveCall {
     if (this.done) return;
     turn.resultAt = this.now();
     turn.totalMs = turn.resultAt - turn.startedAt;
-    const spoke = await this.act(reply, turn);
+    // Busy until its answer is carried out (a key press waits on Twilio): no second turn meanwhile.
+    this.lineBusy = true;
+    let spoke = false;
+    try { spoke = await this.act(reply, turn); } finally { this.lineBusy = false; }
     const again = this.lineAgain;
     this.lineAgain = false;
     const amdNote = this.amdNote;
     this.amdNote = null;
     if (this.ending || this.done || this.heldVoicemail) return;
-    if (amdNote && !spoke) void this.lineTurn("amd", { note: `[${amdNote}]` });
-    else if (again && !spoke) void this.lineTurn("heard while busy");
+    // A machine verdict that came while this turn ran is never dropped: read once its words are said.
+    if (amdNote) this.afterSpeech(() => this.runLine("amd", { note: `[${amdNote}]` }));
+    else if (again && !spoke) this.runLine("heard while busy");
   }
 
   /** Carry out one call turn's answer on the line. True when words were (or will be) said. */
@@ -1296,23 +1309,32 @@ export class GptLiveCall {
     const spoken = [reply.text, reply.endCall?.message, transfer?.args?.client_message].filter(Boolean).join(" ").trim();
     this.log({ gptlive_result: this.call.id, ms: turn.totalMs, chars: spoken.length, tools: reply.tools ?? [], ends: !!reply.endCall, line: true, ...(reply.error ? { error: reply.error } : {}) });
     const press = calls.find(c => c.name === "play_keypad_touch_tone");
+    const tones = String(press?.args?.dtmf_tones ?? "");
     // A key pressed answers the menu as it was heard: what it says next starts the next turn, not
     // the same menu read again (2026-10-31 drive: a follow-up turn pressed 1 a second time).
-    const pressed = press ? await this.press(String(press.args?.dtmf_tones ?? "")) : false;
     if (!spoken) {
+      const pressed = press ? await this.press(tones) : false;
       this.heard(turn);
       if (reply.endCall) this.hangUpAfterSpeech();
       return pressed;
+    }
+    // Words AND a key: the words first — a press re-opens the stream, and audio sent meanwhile is lost.
+    if (press) {
+      this.sayResult(spoken, turn);
+      this.afterSpeech(() => void this.press(tones));
+      return true;
     }
     // A voicemail, before the machine has finished its greeting: kept until the beep (Twilio's
     // answering-machine verdict), so the message goes onto the tape instead of over the greeting.
     if (reply.endCall && callOutcome.reachedMachine(this.freshRow()) && this.amdPending()) {
       this.heldVoicemail = { spoken, turn };
+      if (this.vmTimer) this.timers.clearTimeout(this.vmTimer);
       this.vmTimer = this.timers.setTimeout(() => this.releaseVoicemail("no beep heard"), LINE_VOICEMAIL_WAIT_MS);
       this.log({ gptlive_voicemail_waits_for_beep: this.call.id });
       return true;
     }
     this.sayResult(spoken, turn);
+    if (reply.endCall && callOutcome.reachedMachine(this.freshRow())) this.voicemailGate = this.gate;
     if (transfer) this.handOff(transfer.args ?? {});
     else if (reply.endCall) this.hangUpAfterSpeech();
     return true;
@@ -1332,7 +1354,22 @@ export class GptLiveCall {
     if (this.vmTimer) this.timers.clearTimeout(this.vmTimer);
     this.log({ gptlive_voicemail_left: this.call.id, why });
     this.sayResult(held.spoken, held.turn);
+    this.voicemailGate = this.gate;
     this.hangUpAfterSpeech();
+  }
+
+  /** Once the words being said (or about to be) have been said: then `fn` (20 s at most). */
+  afterSpeech(fn) {
+    const started = this.now();
+    const tick = () => {
+      if (this.done) return;
+      const t = this.now();
+      const g = this.gate;
+      const said = !this.pendingSay && (!g || (g.heard && t - g.lastSpeech > LINE_GATE_QUIET_MS));
+      if (said || t - started > 20_000) return void fn();
+      this.timers.setTimeout(tick, 200);
+    };
+    tick();
   }
 
   /** Still waiting on Twilio's answering-machine verdict for a call Reason placed? */
@@ -1365,7 +1402,7 @@ export class GptLiveCall {
     // and a mailbox gets the message (or none) as on ElevenLabs. Already a voicemail: just the cue.
     const note = callOutcome.reachedMachine(this.freshRow()) ? AMD_BEEP_NOTE : AMD_NOTE;
     if (this.pending.size) { this.amdNote = note; return; }
-    void this.lineTurn("amd", { note: `[${note}]` });
+    this.runLine("amd", { note: `[${note}]` });
   }
 
   /**
@@ -1444,7 +1481,7 @@ export class GptLiveCall {
     const quietLine = !this.turns.some(x => x.who === "them") && t - (this.streamStartAt ?? this.startedAt) > LINE_SILENT_MS;
     if (quietLine && !this.pending.size && !this.ending) return void this.end("nobody said anything on the line").catch(() => {});
     if (hold.onHold(row) && hold.holdLeft(row) <= 0 && !this.pending.size && !this.lineTimer && !this.ending) {
-      void this.lineTurn("hold budget", { note: "[Still on hold; nobody has come back.]" });
+      this.runLine("hold budget", { note: "[Still on hold; nobody has come back.]" });
     }
     this.holdTimer = this.timers.setTimeout(() => this.holdTick(), LINE_HOLD_TICK_MS);
   }
@@ -1459,6 +1496,12 @@ export class GptLiveCall {
     if (this.capTimer) this.timers.clearTimeout(this.capTimer);
     if (this.byeTimer) this.timers.clearTimeout(this.byeTimer);
     for (const k of ["lineTimer", "holdTimer", "rejoinTimer", "vmTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
+    // Reason's turn wrote the voicemail down as left when it wrote the words; if the line went before
+    // a word of it played (held for the beep, or never started), nothing was left (hold.noteVoicemail).
+    if (this.line && (this.heldVoicemail || (this.voicemailGate && !this.voicemailGate.heard))) {
+      try { hold.noteVoicemail(this.freshRow(), { message: "", log: this.log }); } catch { /* the row stands */ }
+      this.log({ gptlive_voicemail_not_said: this.call.id });
+    }
     for (const turn of [...this.pending.values(), ...(this.answered ?? [])]) this.heard(turn);
     // Their usage arrives on session.closed; wait for it briefly, then let go either way.
     if (this.live && this.started) {

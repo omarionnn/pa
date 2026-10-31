@@ -364,7 +364,8 @@ export function newParty(call, { who = "", same = false, now = clock.now(), owne
   // not a second party: nobody has heard the disclosure, so code still says it word for word in front
   // of the reply (`openingOwed`) rather than leaving it to the model. 2026-10-31 drive: menu → press 1 →
   // hold → "Hi, this is Sam", the model called this, and its reply to Sam skipped the disclosure.
-  if (openingOwed(call)) {
+  // GPT-Live calls only (REASON_THIRD_PARTY_VOICE): ElevenLabs calls stay exactly as they were.
+  if (call?.provider === "gptlive" && openingOwed(call)) {
     noteSpeaking(call, { now, log });
     log({ call_first_person: call.id, who: String(who).slice(0, 60) });
     return {

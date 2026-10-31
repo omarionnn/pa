@@ -5362,11 +5362,21 @@ export function recordingFiles(conversationId = null) {
   const sql = conversationId
     ? "SELECT id, conversation_id, recording_file, recording_format, recording_bytes, recording_sha256 FROM calls WHERE recording_file IS NOT NULL AND conversation_id = ? ORDER BY id ASC"
     : "SELECT id, conversation_id, recording_file, recording_format, recording_bytes, recording_sha256 FROM calls WHERE recording_file IS NOT NULL ORDER BY id ASC";
-  return (conversationId ? db.prepare(sql).all(conversationId) : db.prepare(sql).all())
+  const calls = (conversationId ? db.prepare(sql).all(conversationId) : db.prepare(sql).all())
     .map(r => ({
       call_id: r.id, conversation_id: r.conversation_id, file: r.recording_file,
       format: r.recording_format, bytes: r.recording_bytes, sha256: r.recording_sha256,
     }));
+  // A GPT-Live call from somebody with no account keeps its audio on its stranger_calls row
+  // (src/strangercalls.js): theirs once matched to an account, everybody's in a whole-install wipe.
+  let strangers = [];
+  try {
+    strangers = (conversationId
+      ? db.prepare("SELECT id, matched_conversation_id, recording_path FROM stranger_calls WHERE recording_path IS NOT NULL AND matched_conversation_id = ? ORDER BY id ASC").all(conversationId)
+      : db.prepare("SELECT id, matched_conversation_id, recording_path FROM stranger_calls WHERE recording_path IS NOT NULL ORDER BY id ASC").all())
+      .map(r => ({ call_id: null, stranger_call_id: r.id, conversation_id: r.matched_conversation_id ?? null, file: r.recording_path, format: "wav", bytes: null, sha256: null }));
+  } catch { /* no stranger_calls table in this process */ }
+  return [...calls, ...strangers];
 }
 
 // ---------- watches ----------
