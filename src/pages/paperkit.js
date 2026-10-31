@@ -213,7 +213,7 @@ export const LIVE_JS = `(function(){window.pfLive=function(el,o){o=o||{};var t0=
 var tx=el.querySelector('.pf-live-t'),ck=el.querySelector('.pf-live-e');
 function line(ms){var t=lines[0]?lines[0][1]:'';for(var i=0;i<lines.length;i++)if(lines[i][0]*1000<=ms)t=lines[i][1];return t}
 function tick(){var ms=Math.max(0,Date.now()-t0),l=line(ms);if(tx&&tx.textContent!==l)tx.textContent=l;if(ck){var s=Math.floor(ms/1000);ck.textContent=Math.floor(s/60)+':'+('0'+s%60).slice(-2)}}
-el.hidden=false;tick();var iv=setInterval(tick,1000);
+el.hidden=false;el.classList.remove('done');tick();var iv=setInterval(tick,1000);
 return{sync:function(w){if(typeof w==='number'&&w>=0){t0=Date.now()-w;tick()}},waited:function(){return Math.max(0,Date.now()-t0)},stop:function(){clearInterval(iv);el.classList.add('done')},hide:function(){clearInterval(iv);el.hidden=true}}};
 window.pfWake=function(fn){var last=0;function go(){var n=Date.now();if(n-last<400)return;last=n;fn()}
 document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')go()});window.addEventListener('pageshow',go);window.addEventListener('focus',go);window.addEventListener('online',go)}})();`;

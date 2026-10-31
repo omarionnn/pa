@@ -587,11 +587,13 @@ export function linkView(link) {
 /**
  * Why a sign-in link's checkout ended without the store letting them in, for the page's end screen:
  * "timeout" (the store or Crossmint was waiting and gave up), "lost" (Crossmint stopped answering),
- * "stopped" (the store or Crossmint ended it), "" when the run isn't known.
+ * "stopped" (the store or Crossmint ended it), "replaced" (Reason started the checkout over, so the
+ * link is out of date: never the store's doing), "" when the run isn't known.
  */
 export function failReason(run) {
   if (!run) return "";
   const r = String(run.result ?? "").toLowerCase();
+  if (run.status === "cancelled" || /superseded|started again/.test(r)) return "replaced";
   if (/input_expired|expired|timed? ?out/.test(r)) return "timeout";
   if (/^lost\b/.test(r)) return "lost";
   return "stopped";

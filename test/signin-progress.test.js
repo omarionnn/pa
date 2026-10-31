@@ -183,6 +183,7 @@ test("the run dies while the link still says open: the page says it didn't go th
   const st = JSON.parse((await cx.connectRequest({ sub: `${token}/state`, method: "GET" })).body);
   assert.equal(st.state, "failed", "the open page's poll sees the end and redraws");
   const page = await cx.connectRequest({ sub: token, method: "GET" });
+  assert.equal(page.status, 200, "the end of a real sign-in is a page, not a 410");
   const seen = visible(page.body);
   assert.match(seen, /That sign-in didn't go through\./);
   assert.match(seen, /Nothing was charged\./);
@@ -198,6 +199,13 @@ test("the run dies while the link still says open: the page says it didn't go th
   q("UPDATE shop_runs SET result = 'merchant.blocked' WHERE run_id = ?").run(runId);
   assert.equal(shop.linkView(shop.linkFor(token)).reason, "stopped");
   assert.match(visible((await cx.connectRequest({ sub: token, method: "GET" })).body), /Walmart stopped it before it finished/);
+  // Started over by Reason (a corrected address): the old link was replaced, and the store isn't blamed.
+  q("UPDATE shop_runs SET status = 'cancelled', result = 'superseded' WHERE run_id = ?").run(runId);
+  assert.equal(shop.linkView(shop.linkFor(token)).reason, "replaced");
+  const replaced = visible((await cx.connectRequest({ sub: token, method: "GET" })).body);
+  assert.match(replaced, /This link was replaced\./);
+  assert.match(replaced, /The newest link I texted you is the one to use\./);
+  assert.doesNotMatch(replaced, /Walmart stopped it/);
   // Succeeded with the link still open reads as connected, never as a failure.
   q("UPDATE shop_runs SET status = 'succeeded', result = '' WHERE run_id = ?").run(runId);
   assert.equal(shop.linkView(shop.linkFor(token)).state, "connected");

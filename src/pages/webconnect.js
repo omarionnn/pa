@@ -213,9 +213,10 @@ export function renderEnded({ view, staging = false }) {
     // Which end it was (src/shopconnect.js failReason), and the next step, the same as the chat says.
     const why = view.reason === "timeout" ? `${s} was waiting too long and gave up on this sign-in. It happens when a code or a password takes a while to arrive.`
       : view.reason === "lost" ? `I lost track of this sign-in: the checkout service stopped answering about it.`
-        : `${s} stopped it before it finished. It's usually on their side, and it usually passes.`;
-    main = headline("That sign-in didn't go through.", "Nothing was charged.", "cx-h")
-      + lede(`${why} This link is done. Text me and I'll send a fresh one, or say so and I'll leave it.`)
+        : view.reason === "replaced" ? `I started this checkout over, so this link is out of date. The newest link I texted you is the one to use.`
+          : `${s} stopped it before it finished. It's usually on their side, and it usually passes.`;
+    main = headline(view.reason === "replaced" ? "This link was replaced." : "That sign-in didn't go through.", "Nothing was charged.", "cx-h")
+      + lede(`${why} This link is done.${view.reason === "replaced" ? "" : " Text me and I'll send a fresh one, or say so and I'll leave it."}`)
       + `<div class="cx-note">${actions(go("Back to Reason", { href: BACK }), siteOf(view.store) ? out(siteOf(view.store), `CHECK YOUR ${NAME(view.store)} ACCOUNT`) : "")}</div>`;
     margin = label("NOTHING BOUGHT") + para("Nothing was charged, and nothing of yours was kept here.")
       + label("NEXT", { sp: true }) + para(`Ask me in the chat for a new link. If ${esc(s)} keeps stopping it, check your account there first.`);
@@ -308,7 +309,7 @@ return{variables:{fontFamily:MONO,fontSizeUnit:'5px',borderRadius:'0px',colors:{
 rules:{Label:{font:{family:MONO,size:'11px',weight:'400'},colors:{text:m}},
 Input:{borderRadius:'0px',font:{family:MONO,size:'22px',weight:'400'},colors:{text:i,background:g,border:g,boxShadow:'inset 0 -1.5px 0 '+i,placeholder:m},hover:{colors:{text:i,background:g,border:g,boxShadow:'inset 0 -1.5px 0 '+p}},focus:{colors:{background:g,border:g,boxShadow:'inset 0 -2px 0 '+p}}}}}}
 function oops(t){if(!err)return;err.textContent=t;err.hidden=false}
-var wt=document.getElementById('cx-wait'),wl=null;
+var wt=document.getElementById('cx-wait'),wl=null,sv=null;
 function busy(on){var b=form&&form.querySelector('button.act');if(b){b.setAttribute('aria-busy',on?'true':'false');b.disabled=on}
 if(wt&&window.pfLive){if(on&&!wl)wl=pfLive(wt,{});else if(!on&&wl){wl.hide();wl=null}}}
 var fields={},card=null;
@@ -323,7 +324,7 @@ if(card){card.submit().then(function(r){
 if(r.status==='invalid'){busy(false);pfShow('add');return oops('something in there needs a look. it\\u2019s marked in red.')}
 if(r.status==='superseded'){busy(false);return pfShow('add')}
 if(r.status!=='saved')return cardFailed(r.status==='failed');
-pfShow('saving');stepTo(2);var sl=document.getElementById('cx-save-live');if(sl&&window.pfLive)pfLive(sl,{waited:wl?wl.waited():0});return post('/card',r.card).then(function(o){if(o.ok){stepTo(3);location.reload()}else cardFailed(false)})}).catch(function(){cardFailed(false)});return}
+pfShow('saving');stepTo(2);var sl=document.getElementById('cx-save-live');if(sl&&window.pfLive){if(sv)sv.stop();sv=pfLive(sl,{waited:wl?wl.waited():0})}return post('/card',r.card).then(function(o){if(o.ok){stepTo(3);location.reload()}else cardFailed(false)})}).catch(function(){cardFailed(false)});return}
 var answers={},keys=Object.keys(fields);
 form.querySelectorAll('input[name]').forEach(function(i){if(i.value!=='')answers[i.name]=i.value});
 Promise.all(keys.map(function(k){return fields[k].collect()})).then(function(rs){for(var i=0;i<rs.length;i++){if(rs[i].status!=='collected'){fields[keys[i]].setInvalid(true);busy(false);return oops('that one needs another look.')}answers[keys[i]]=rs[i].input}
@@ -390,11 +391,11 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
   }
   if (verb) return null;
   const card = view.kind === "card" && view.state === "connected" ? shop.cardOf(link.conversation_id) : null;
-  const live = ["signin", "code", "wrongcode", "retry", "card"].includes(view.state);
-  const boot = live || view.state === "checking"
+  const interactive = ["signin", "code", "wrongcode", "retry", "card"].includes(view.state);
+  const boot = interactive || view.state === "checking"
     ? {
       token, state: view.state, watch: view.state !== "card", ...(view.state === "checking" ? { waited: view.waited } : {}),
-      ...(live ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
+      ...(interactive ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
     } : null;
   const faceId = !!card && passkey.passkeyAllowedFor(link.conversation_id) && !passkey.hasPasskey(link.conversation_id);
   const drawn = renderView(view, { card, faceId });
