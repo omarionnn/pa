@@ -90,7 +90,16 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
       + `<div class="pk-note">${actions(go("Back to Reason", { href: BACK }))}</div>`,
     margin: label("NOT RETRIED") + para("A payment that might have gone through is never paid again by itself."),
   });
-  return page("Reason — approve", shell(ask + paying + paid + declined + unsure), { staging, boot });
+  // Face ID passed and nothing was charged, but the payment did not start on Reason's side (Crossmint
+  // refused the order intent — 2026-10-31 at CVS). The link is open again (src/passkey.js reopenApproval);
+  // Try again reloads for the fresh challenge. Never "Face ID didn't go through": it did.
+  const failed = frame({
+    step: "failed", off: true,
+    main: headline("Face ID worked. The payment didn't start.", "Nothing was charged.") + lede(`Setting up the ${v.amount} payment to ${v.store} failed on my side, not yours. Try again here, or text me and I'll sort it out.`)
+      + theTotal(v) + `<div class="pk-note">${actions(`<button class="act pf-go" type="button" id="pk-retry" data-busy="1">Try again <span aria-hidden="true">→</span></button>`, go("Back to Reason", { href: BACK }))}</div>`,
+    margin: label("THIS LINK") + para("Still works, once, until it runs out.") + label("NOT CHARGED", { sp: true }) + para("The store never got a payment to take."),
+  });
+  return page("Reason — approve", shell(ask + paying + paid + declined + unsure + failed), { staging, boot });
 }
 
 /** A link that can't pay anymore: used, declined, run out, replaced by a newer one, or the payment closed. */
@@ -145,18 +154,24 @@ function el(id){return document.getElementById(id)}
 function oops(t){var e=el('pk-err');if(e){e.textContent=t;e.hidden=false}}
 function busy(b,on){if(!b)return;b.setAttribute('aria-busy',on?'true':'false');b.disabled=on}
 function show(n){if(window.pfShow)window.pfShow(n)}
-function post(p,body){return fetch(B.base+p,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify(body||{})}).then(function(r){return r.json().catch(function(){return{ok:false}})})}
+function post(p,body){return fetch(B.base+p,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify(body||{})}).then(function(r){return r.json().catch(function(){return{ok:false,error:'http_'+r.status}})})}
 function wait(ms){return new Promise(function(r){setTimeout(r,ms)})}
 var FAIL="Face ID didn't go through. Nothing was charged. Try again.";
-var go=el('pk-go'),no=el('pk-no'),add=el('pk-add');
+var WHY={counter:"This passkey's record doesn't match. Nothing was charged. Ask me for a fresh link, or use the phone you set Face ID up on.",unknown_passkey:"That passkey isn't the one set up for your purchases. Nothing was charged.",cooling_off:"This Face ID was added less than a day ago and can't pay yet. Nothing was charged.",no_user_verification:"Face ID didn't check you. Nothing was charged. Try again.",details_changed:"The payment changed since this link was sent. Nothing was charged. Ask me for a fresh link.",no_such_payment:"This payment isn't open anymore. Nothing was charged."};
+var OFFLINE="Couldn't reach Reason. Nothing was charged. Check your connection and try again.";
+var go=el('pk-go'),no=el('pk-no'),add=el('pk-add'),retry=el('pk-retry');
+if(retry)retry.onclick=function(){busy(retry,true);location.reload()};
 if(go)go.onclick=function(){
   if(B.staging){busy(go,true);show('paying');wait(1400).then(function(){show('paid')});return}
   if(!window.PublicKeyCredential||!navigator.credentials){oops('This browser can\\'t use Face ID. Open the link in Safari or Chrome.');return}
   var o=B.options;busy(go,true);el('pk-err').hidden=true;
   navigator.credentials.get({publicKey:{challenge:b2u(o.challenge),rpId:o.rpId,timeout:o.timeout,userVerification:'required',allowCredentials:(o.allowCredentials||[]).map(function(c){return{type:'public-key',id:b2u(c.id),transports:c.transports}})}})
   .then(function(c){var r=c.response;show('paying');return post('/verify',{id:c.id,rawId:u2b(c.rawId),type:c.type,response:{clientDataJSON:u2b(r.clientDataJSON),authenticatorData:u2b(r.authenticatorData),signature:u2b(r.signature),userHandle:r.userHandle?u2b(r.userHandle):undefined},clientExtensionResults:{},authenticatorAttachment:c.authenticatorAttachment||undefined})})
-  .then(function(out){if(!out)return;if(out.ok)return show('paid');if(out.unknown_outcome)return show('unsure');if(/^link_|^payment_/.test(out.error||''))return location.reload();show('ask');busy(go,false);oops(FAIL)},
-    function(){show('ask');busy(go,false);oops(FAIL)})};
+  .then(function(out){if(!out)return;if(out.ok)return show('paid');if(out.unknown_outcome)return show('unsure');var e=out.error||'';
+    if(out.retry||e==='order_intent_failed'||e==='no_card'||e==='payment_in_progress')return show('failed');
+    if(/^link_|^payment_|^not_found$|^not_open$/.test(e))return location.reload();
+    show('ask');busy(go,false);oops(WHY[e]||(/^http_/.test(e)?"Reason had a problem. Nothing was charged. Try again.":FAIL))},
+    function(err){show('ask');busy(go,false);oops(err&&err.name==='TypeError'?OFFLINE:FAIL)})};
 if(no)no.onclick=function(){busy(no,true);if(B.staging){show('declined');return}post('/decline').then(function(out){if(out.ok)show('declined');else location.reload()})};
 if(add)add.onclick=function(){
   if(B.staging){busy(add,true);wait(900).then(function(){show('done')});return}
@@ -210,8 +225,8 @@ export async function approveRequest({ sub = "", method = "GET", headers = {}, r
   if (!body) return json(400, { ok: false, error: "bad_json" });
   const out = await shop.payByPasskey(token, body);
   // Which link and how it went: never the assertion, never a card detail.
-  log({ pay_approve: "verify", ok: !!out.ok, ...(out.error ? { error: out.error } : {}) });
-  return json(out.ok ? 200 : 400, { ok: !!out.ok, ...(out.error ? { error: out.error } : {}), ...(out.unknown_outcome ? { unknown_outcome: true } : {}) });
+  log({ pay_approve: "verify", ok: !!out.ok, ...(out.error ? { error: out.error } : {}), ...(out.status ? { status: out.status } : {}), ...(out.detail ? { detail: out.detail } : {}), ...(out.retry ? { retry: true } : {}) });
+  return json(out.ok ? 200 : 400, { ok: !!out.ok, ...(out.error ? { error: out.error } : {}), ...(out.unknown_outcome ? { unknown_outcome: true } : {}), ...(out.retry ? { retry: true } : {}) });
 }
 
 /** /web/connect/passkey[/verify]: signed in to Web, and only where the flag allows. */

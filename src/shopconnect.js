@@ -681,6 +681,8 @@ export async function payApproved({ conversationId, paymentId, confirmationId })
   if (passkey.requiredFor(conversationId)) return { ok: false, error: "approve_with_passkey" };
   return payRow(row, { confirmationId });
 }
+/** Crossmint's reason, short, from whatever shape it answers in. Never a card detail (none is in its errors). */
+const crossmintError = (j) => short(j?.error?.code ?? j?.code ?? j?.error?.message ?? j?.message ?? (typeof j?.error === "string" ? j.error : "") ?? "", 60);
 /** Pays a row both approval paths agreed on: Crossmint's exact amount, the row's store, the person's card. */
 async function payRow(row, { confirmationId = null } = {}) {
   const conversationId = row.conversation_id;
@@ -710,10 +712,12 @@ async function payRow(row, { confirmationId = null } = {}) {
         expiresAt: new Date(clock.now() + 15 * 60_000).toISOString(),
       },
     });
-  } catch { reopen(); return { ok: false, error: "order_intent_failed" }; }
+  } catch (e) { reopen(); return { ok: false, error: "order_intent_failed", detail: short(e?.message ?? e, 60) }; }
   const orderIntentId = oi.json?.orderIntentId;
-  // No order intent yet means nothing can be charged: the payment stays open for the same yes.
-  if (!oi.ok || !orderIntentId) { reopen(); return { ok: false, error: "order_intent_failed", status: oi.status }; }
+  // No order intent yet means nothing can be charged: the payment stays open for the same yes. Why
+  // Crossmint said no travels with it (status + its error code): on 2026-10-31 at CVS only
+  // "order_intent_failed" was logged, and the cause could not be read back.
+  if (!oi.ok || !orderIntentId) { reopen(); return { ok: false, error: "order_intent_failed", status: oi.status, detail: crossmintError(oi.json) }; }
   const part = { type: "input_response", requestId: row.request_id, action: "submit", response: { kind: "payment", orderIntentId } };
   // From here the card may have been offered to the store: any failure is an unknown outcome, never a retry.
   const unknown = (status = null) => {
@@ -755,8 +759,12 @@ export async function payByPasskey(token, response) {
   const ok = await passkey.verifyApproval(v.a, v.row, response);
   if (!ok.ok) return ok;
   const out = await payRow(v.row);
-  passkey.logEvent(v.row.conversation_id, v.row, out.ok ? "paid" : out.unknown_outcome ? "unknown_outcome" : "pay_failed", out.ok ? "" : out.error);
+  passkey.logEvent(v.row.conversation_id, v.row, out.ok ? "paid" : out.unknown_outcome ? "unknown_outcome" : "pay_failed", out.ok ? "" : [out.error, out.status, out.detail].filter(Boolean).join(" "));
   if (out.ok) await notify(v.row.conversation_id, `Approved with Face ID. Paid ${out.amount} at ${out.merchant}; the store still has to place it, and I'll tell you when it's through.`);
+  // Nothing started (no order intent, so no charge is possible): the link opens again for another tap,
+  // under a fresh challenge, and the page says Face ID worked but the payment did not start. Once the
+  // card may have reached the store (unknown_outcome) the link stays used: never paid twice.
+  else if (!out.unknown_outcome && passkey.reopenApproval(v.a, v.row, out.error)) return { ...out, retry: true };
   return out;
 }
 /** Decline from the page: no passkey needed to say no. */
@@ -923,6 +931,40 @@ function shapeAnswers(rq, answers) {
   return out;
 }
 
+/** One field of a store's form, in the person's words; "" for one with no plain name. */
+function fieldWords(f) {
+  const s = `${f?.key ?? ""} ${f?.label ?? ""}`.toLowerCase();
+  if (/e-?mail/.test(s)) return "email";
+  if (/phone|mobile|\btel\b/.test(s)) return "phone number";
+  if (/addr|street|zip|postal|\bcity\b|\bstate\b|province|country|apartment|\bapt\b/.test(s)) return "shipping address";
+  if (/first.?name|last.?name|full.?name|\bname\b/.test(s)) return "name";
+  if (/\bsize\b/.test(s)) return "size";
+  if (/colou?r/.test(s)) return "color";
+  if (/quantity|\bqty\b/.test(s)) return "quantity";
+  if (/delivery|ship(ping)?.?(method|option|speed)|pickup/.test(s)) return "delivery option";
+  if (/promo|coupon|discount/.test(s)) return "promo code";
+  if (/gift/.test(s)) return "gift option";
+  if (/password|otp|one.?time|verification code|\bcode\b/.test(s)) return "sign-in";
+  const label = String(f?.label ?? "").replace(/\s+/g, " ").trim();
+  return label && label.length <= 24 && !/["'?:]/.test(label) ? label.toLowerCase() : "";
+}
+const andList = (xs) => xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
+/**
+ * What the store was waiting on, in the person's words — "your shipping address and phone number",
+ * "your approval of the payment" — read from the request's fields, never the store's prompt. On
+ * 2026-10-31 the end text quoted Ulta's whole prompt ("I'm at Ulta's guest checkout with…") back at the owner.
+ */
+export function askedFor(run) {
+  const pay = payOf(run);
+  if (run.stage === "needs_approval" || (pay && ["asked", "expired"].includes(pay.status) && run.stage !== "needs_input")) return "your approval of the payment";
+  let rq = null;
+  try { rq = run.request_json ? JSON.parse(run.request_json) : null; } catch { rq = null; }
+  if (rq?.kind === "payment") return "your approval of the payment";
+  const names = [];
+  for (const f of rq?.fields ?? []) { const n = fieldWords(f); if (n && !names.includes(n)) names.push(n); }
+  if (!names.length) return rq?.kind === "choice" ? "a choice" : "an answer";
+  return `your ${andList(names.slice(0, 4))}`;
+}
 /** What ended a run, in their words. `paid` is a payment of theirs that went out before the end. */
 function endText(run, status, result, paid) {
   const store = storeOf(run);
@@ -933,8 +975,7 @@ function endText(run, status, result, paid) {
   }
   const expired = code === "input_expired" || /expired while waiting/i.test(summary);
   if (expired) {
-    const what = run.stage === "needs_approval" ? "your approval of the payment" : run.question ? `an answer to "${short(run.question, 120)}"` : "an answer";
-    return `The ${store} checkout${itemOf(run)} stopped: ${store} was waiting for ${what} and didn't get it in time, so it expired. Nothing was charged. Want me to start it again?`;
+    return `The ${store} checkout${itemOf(run)} stopped: ${store} was waiting for ${askedFor(run)} and didn't get it in time, so it expired. Nothing was charged. Want me to start it again?`;
   }
   if (status === "cancelled") return `The ${store} checkout${itemOf(run)} was cancelled. Nothing was charged.`;
   return `The ${store} checkout${itemOf(run)} didn't go through${summary ? ` (${summary})` : code ? ` (${code})` : ""}. Nothing was charged. Want me to try again, or try another store?`;
@@ -1245,11 +1286,26 @@ export function stageLine(run) {
     case "cancelled": return `cancelled ${ago(run.stage_at)}; nothing charged`;
     case "failed": {
       const expired = /input_expired|expired while waiting/i.test(run.result);
-      const why = expired ? ` (${store} was waiting for ${run.question ? `an answer to "${short(run.question, 100)}"` : "an answer"} and it expired after 10 minutes)` : result;
+      const why = expired ? ` (${store} was waiting for ${askedFor(run)} and it expired after 10 minutes)` : result;
       return `failed ${ago(run.stage_at)}${why}; ${pay && ["paid", "unknown"].includes(pay.status) ? `a payment of ${amountText(pay)} had gone out, outcome unknown` : "nothing charged"}`;
     }
     default: return `${run.status} ${ago(run.updated_at)}${result}`;
   }
+}
+/**
+ * For a run waiting on approval: whether the person can still approve, and how. With Face ID, a link
+ * that was used up without paying or ran out (2026-10-31: "did that go through?" after two taps) gets
+ * a fresh one here, so Reason resends it instead of saying "not yet". An open link is named, not remade.
+ */
+function approvalHint(run) {
+  const pay = payOf(run);
+  if (!pay || pay.status !== "asked") return {};
+  const deadline = pay.expires_at ? Date.parse(pay.expires_at) : NaN;
+  if (Number.isFinite(deadline) && deadline < clock.now()) return { approval: `${storeOf(run)}'s payment window has passed, so this can't be approved anymore; the run will end on its own. Offer to start it again.` };
+  if (!passkey.requiredFor(run.conversation_id)) return { approval: "they approve by replying yes to the payment text; if they haven't, ask again in one line." };
+  const open = passkey.openApprovalFor(pay.id);
+  if (open) return { approval: `their Face ID link from the payment text still works for ${minutes(open.expires_at - clock.now())} more minutes; nothing is paid until they approve there.` };
+  return { approve_url: approvalUrl(pay), approval: "their earlier Face ID link was used up without paying or ran out. Send this fresh url ON ITS OWN LINE as the last thing, untouched; it works once, for 5 minutes. Don't say it's paid." };
 }
 /** shop_status: the record the model answers from. */
 export function statusView(conversationId) {
@@ -1258,6 +1314,7 @@ export function statusView(conversationId) {
     started_minutes_ago: minutes(clock.now() - run.created_at), where: stageLine(run),
     ...(run.question ? { last_question: short(run.question, 200) } : {}),
     ...(run.order_ref ? { order_ref: run.order_ref } : {}),
+    ...(run.stage === "needs_approval" ? approvalHint(run) : {}),
   }));
   return { ok: true, runs, note: runs.length ? "This is the record. Answer from it, never from the chat; say the stage in plain words." : "No checkout has run for them in the last two days. Say so; do not say one is running." };
 }
