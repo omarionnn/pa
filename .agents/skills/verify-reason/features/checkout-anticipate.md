@@ -30,6 +30,16 @@ What code does now:
   the typed values; a correction after an auto-answer (`auto:<request>` on `told`, stage in_progress, unpaid)
   fixes the record, marks the run `superseded` (its payment request is declined without a word, its end is not
   texted) and starts the same checkout again with the corrected instruction.
+- **somebody else's address** — an instruction that ships to another ZIP ("shipped to my mom Ama Nyarko, 12
+  Other St, Newark, NJ 07102") is left exactly as written, its form is answered with THAT address (the buyer's
+  phone and email stay theirs), and the line says "as you asked"; the record is not changed by it. The same
+  ZIP is the person's own address as the record now has it (a corrected street number). Names are read only
+  after "to"/"for" (through "my mom") or as a lone opening word; the ZIP must sit right behind place words.
+- **after the review (2026-10-31)** — a correction that changes nothing on the record (`nothing_changed`)
+  restarts nothing; a correction after the payment ask declines that ask and restarts; a record answer the
+  store refused (`refused:<request>` on `told`) is not merged in again, and the wake carries only the HTTP
+  status, never the store's message; a superseded run never retries signed in; `matchOption` takes one
+  word-start hit or nothing; only the person's own facts (self subjects + the account's name) seed the record.
 - **the words** — `offers.guardReply` drops "Here's the page if you'd rather just buy it yourself" and the
   bare link under it while a run of theirs is open or just ran (rule `self_buy_hedge`); `checkoutNote` says a
   started checkout is Reason's to finish and names the card on file ("Mastercard ••••1929 … never ask whether
