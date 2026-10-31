@@ -246,6 +246,78 @@ test("an old link says it expired and to ask for a new one, with a 410, for a st
   assert.match(visible(none.body), /This link has expired\./);
 });
 
+// ---------------------------------------------------------------- 3b. how a payment gets its yes (#285: a texted yes never pays once there is a passkey)
+test("the connect pages never say 'text yes': without a passkey they say approve the exact total, with one they name Face ID", async () => {
+  process.env.REASON_PASSKEY_PAY = "on";
+  const pk = await import("../src/passkey.js");
+  const seed = () => q("INSERT INTO pay_passkeys (id, conversation_id, public_key, counter, created_at, usable_at) VALUES ('pk_test', ?, X'00', 0, ?, ?)").run(OMARI, Date.now(), Date.now());
+  const noYes = (seen, where) => {
+    assert.doesNotMatch(seen, /text yes|texting yes|say yes|texted yes/i, `${where} still asks for a texted yes`);
+  };
+  try {
+    q("DELETE FROM pay_passkeys").run();
+    assert.equal(pk.requiredFor(OMARI), false);
+    // Without a passkey: approve, never "text yes", and no Face ID promised that is not there.
+    const { runId, token } = await walmartLink();
+    let seen = visible((await cx.connectRequest({ sub: token, method: "GET" })).body);
+    noYes(seen, "sign-in");
+    assert.match(seen, /Only after you approve the exact total\./);
+    assert.match(seen, /nothing's bought until you approve the exact total\./);
+    assert.doesNotMatch(seen, /Face ID/);
+    await answer(token);
+    seen = visible((await cx.connectRequest({ sub: token, method: "GET" })).body);
+    noYes(seen, "checking");
+    assert.match(seen, /Nothing is bought until you approve the exact total\./);
+    runs[runId] = { status: "succeeded", requiredAction: null };
+    await shop.step(runId);
+    seen = visible((await cx.connectRequest({ sub: token, method: "GET" })).body);
+    noYes(seen, "connected");
+    assert.match(seen, /Check out there, after you approve the exact total\./);
+    let cardSeen = visible((await cx.connectRequest({ sub: shop.cardLink(OMARI), method: "GET" })).body);
+    noYes(cardSeen, "card");
+    assert.match(cardSeen, /I only pay when you approve\./);
+    assert.match(cardSeen, /only after you approve the exact total\./);
+
+    // With a passkey: the same lines name Face ID.
+    seed();
+    assert.equal(pk.requiredFor(OMARI), true);
+    const two = await walmartLink();
+    seen = visible((await cx.connectRequest({ sub: two.token, method: "GET" })).body);
+    noYes(seen, "sign-in (passkey)");
+    assert.match(seen, /Only after you approve the exact total with Face ID\./);
+    assert.match(seen, /nothing's bought until you approve the exact total with Face ID\./);
+    await answer(two.token);
+    seen = visible((await cx.connectRequest({ sub: two.token, method: "GET" })).body);
+    assert.match(seen, /Nothing is bought until you approve the exact total with Face ID\./);
+    runs[two.runId] = { status: "succeeded", requiredAction: null };
+    await shop.step(two.runId);
+    seen = visible((await cx.connectRequest({ sub: two.token, method: "GET" })).body);
+    noYes(seen, "connected (passkey)");
+    assert.match(seen, /Check out there, after you approve the exact total with Face ID\./);
+    cardSeen = visible((await cx.connectRequest({ sub: shop.cardLink(OMARI), method: "GET" })).body);
+    noYes(cardSeen, "card (passkey)");
+    assert.match(cardSeen, /I only pay with your Face ID\./);
+    assert.match(cardSeen, /only after you approve the exact total with Face ID\./);
+    // Card saved, passkey already there: not told to set one up, and told Face ID approves.
+    const saved = visible(cx.renderView({ state: "connected", kind: "card" }, { card: { brand: "visa", last4: "4242" }, passkey: true }).html);
+    noYes(saved, "card saved (passkey)");
+    assert.match(saved, /Nothing is bought until you approve the exact total with Face ID\./);
+    assert.doesNotMatch(saved, /Set up Face ID/);
+    // Settings → Shopping says the same, both ways.
+    const st = await import("../src/pages/websettings.js");
+    const shoppingOf = (passkeys) => ({ stores: [], card: { brand: "visa", last4: "4242" }, lastUsed: null, passkeys });
+    const base = { csrf: "x", reach: "text", browsers: [], connected: [] };
+    const plain = visible(st.renderSettings({ ...base, shopping: shoppingOf([]) }).html ?? st.renderSettings({ ...base, shopping: shoppingOf([]) }));
+    noYes(plain, "settings");
+    assert.match(plain, /only after you approve the exact total\./);
+    const withKey = visible(st.renderSettings({ ...base, shopping: shoppingOf([{ createdAt: Date.now(), usableAt: Date.now(), synced: true }]) }).html ?? st.renderSettings({ ...base, shopping: shoppingOf([{ createdAt: Date.now(), usableAt: Date.now(), synced: true }]) }));
+    assert.match(withKey, /only after you approve the exact total with Face ID\./);
+  } finally {
+    q("DELETE FROM pay_passkeys").run();
+    delete process.env.REASON_PASSKEY_PAY;
+  }
+});
+
 // ---------------------------------------------------------------- 4. the other waits
 test("the Face ID approve page's paying step is alive, and its script starts the clock on show('paying')", () => {
   const v = { state: "open", store: "Walmart", amount: "$18.47", item: "CeraVe Hydrating Facial Cleanser", expiresAt: Date.now() + 5 * 60_000, a: {} };
