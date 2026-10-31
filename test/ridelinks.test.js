@@ -59,6 +59,34 @@ test("a message with no ride link is untouched, and a link already current is le
   assert.equal(await freshRideLinks(now), now);
 });
 
+test("a rebuild logs lengths and flags only: no link, no address, no coordinates", async () => {
+  const lines = [];
+  const log = (o) => lines.push(o);
+  const out = await freshRideLinks(STALE, { conversationId: "dm:owner", log });
+  const rebuilt = lines.find(l => "ride_link_rebuilt" in l);
+  assert.ok(rebuilt, "the rebuild is logged");
+  assert.equal(rebuilt.from_len, STALE.length);
+  assert.equal(rebuilt.to_len, out.length);
+  assert.equal(rebuilt.had_coords, false);
+  assert.equal(rebuilt.had_client_id, false);
+  // A geocoder that throws with the address in its message: the failure line must not echo it.
+  const BAD = STALE.replace("Bruner", "Secret");
+  const leaky = async (q) => { throw new Error(`geocode failed for ${q} in ${BAD}`); };
+  // withCoords swallows geocode errors, so make the build itself throw with the input in the message.
+  const savedId = config.uberClientId;
+  Object.defineProperty(config, "uberClientId", { configurable: true, get() { throw new TypeError(`bad link ${BAD} 3247 Secret Ave`); } });
+  try { await freshRideLinks(BAD, { conversationId: "dm:owner", geocode: leaky, log }); }
+  finally { Object.defineProperty(config, "uberClientId", { configurable: true, writable: true, enumerable: true, value: savedId }); }
+  assert.ok(lines.some(l => "ride_link_rebuild_failed" in l), "the failure is logged");
+  const text = JSON.stringify(lines);
+  const forbidden = [
+    "m.uber.com", "addressLine1",
+    "430 W 17th", "17th St", "Bruner", "Secret", "Bronx", "New York",
+    "40.74", "-74.00", "40.87", "-73.84", "40.7433148", "-74.0053556", "40.8759189", "-73.8401355",
+  ];
+  for (const bad of forbidden) assert.ok(!text.includes(bad), `the log must not carry "${bad}": ${text}`);
+});
+
 test("through the real send path: a stale link handed to the outbox goes out as today's", async () => {
   const OWNER = "+12025551234";
   db.upsertAccount({ conversationId: "dm:owner", channel: "fake", address: OWNER, name: "Omari", isOperator: true });
