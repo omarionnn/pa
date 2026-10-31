@@ -68,6 +68,23 @@ the intent; NOT_FOUND → register + retry once, twice → failure with the code
 stays open, `shop_card receipt_email` registers and the same yes pays; boot sweep; no email in logs).
 The passkey drive seeds its card `registered = 1`.
 
+**The email rule (wt/card-email-rule, 2026-10-31, the owner's standing rule for any checkout
+snag):** Reason says what is happening, what it can do and what it already has, and asks only for
+the decision — never a bare question, never silence. `shipping.knownEmails` lists every email on
+record (shipping record, connected Gmail accounts, own facts, earlier checkout instructions);
+`receiptEmail` in `src/shopconnect.js` applies it: the record's email is used as is; exactly one
+known anywhere is kept on the record and used, and the outcome line names it ("Card ••••1929 is set
+up to pay. Receipts go to …"); none → "… is saved, but it can't pay until I have an email for its
+receipts. Which one should I use?"; two or more → "… I need an email for its receipts, and I have A
+and B on record. Which one?" (`emailAsk`; the Face ID wording adds "Tell me here, then tap the link
+again"). Setup is complete at save time: "Card ••••1929 is set up to pay" is said only when the
+registration succeeded; another refusal says it couldn't be set up just now and will be retried at
+pay time. `shop_pay`/`shop_card` hand the model `emails` and the same instruction; a paid result
+carries `receipts_email` when Reason picked it at pay time. Tests: `test/card-email-rule.test.js`
+(7: one → announce and proceed; record email → no announcement; two → both named, ask which, the
+answer registers; none → ask with why, once; Face ID wordings + pay-time pick; shop_pay with two;
+save-time refusal text).
+
 Live check after deploy: `journalctl -u reason` shows `card_registrations_swept` with
 `registered: 1` for the owner's card (saved 2026-10-30, registered by hand 2026-10-31), and
 `sqlite3 data/reason.db "SELECT last4, registered, reg_error FROM shop_cards"` reads `1929|1|`.

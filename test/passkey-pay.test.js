@@ -443,7 +443,7 @@ test("the card has no registration and no email is known: Face ID works, the pay
   assert.equal(out.retry, true, "the link can be tapped again once the email is in");
   assert.equal(orderIntents().length, 0, "no order intent without a registration");
   assert.equal(shop.paymentRow(row.id).status, "asked");
-  assert.deepEqual(said.map((s) => s.t), ["Face ID worked, but the card can't pay yet: which email should receipts go to? Send it here and then tap the link again."]);
+  assert.deepEqual(said.map((s) => s.t), ["Face ID worked, but card ••••4242 can't pay yet until I have an email for its receipts. Which one should I use? Tell me here, then tap the link again."]);
   assert.ok(passkey.approvalLog(OMARI).some((l) => l.event === "pay_failed" && /CONSUMER_EMAIL_REQUIRED/.test(l.detail)));
   // A second tap before the email: the same text is not sent again.
   const o2 = optionsOf((await page(token)).body);
