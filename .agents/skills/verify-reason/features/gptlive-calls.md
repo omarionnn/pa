@@ -1,7 +1,7 @@
 # GPT-Live calls — OpenAI's voice in front of Reason, owner-only trial
 
-`REASON_CALL_VOICE=gptlive` puts OpenAI GPT-Live (`gpt-live-1`, voice `marin`, asked for a light
-British accent) on the **operator's own** calls, in place of ElevenLabs, so the two can be compared.
+`REASON_CALL_VOICE=gptlive` puts OpenAI GPT-Live (`gpt-live-1`; voice `REASON_GPTLIVE_VOICE`, live =
+`willow` since 2026-10-31, default `marin` which is asked for a light British accent) on the **operator's own** calls, in place of ElevenLabs, so the two can be compared.
 Unset: every call is ElevenLabs byte for byte — `withGptLive` hands back the provider itself and the
 upgrade listener and the two Twilio routes are not registered. Another person's calls and every
 business call stay on ElevenLabs whatever the flag says.
@@ -16,6 +16,23 @@ Honesty guard: a spoken "done / booked / sent / you're all set" (`claimsDone`) w
 pending, or when Reason's latest answer did not itself say so, drops Twilio's unplayed audio
 (`clear`), mutes the voice and sends `GUARD_CORRECTION` by `session.instructions.append`. The same for
 a spoken NO_REPLY. Barge-in: caller speech with no new voice audio for 350 ms clears Twilio's buffer.
+
+Speaking first (2026-10-31, after call 53's 3.1 s of dead air): `place` starts a `WarmSession`
+(`prewarm`) before it asks Twilio to dial. The session starts with the greeting asked for, is fed
+100 ms silence frames (its clock only runs on input audio — no input, no greeting), keeps the
+greeting's audio, and is paused (no more input) once the voice has been quiet 700 ms after speaking;
+no greeting after 4 s → asked once more; 9 s → feeding stops; 60 s unanswered → closed (also on a
+no-answer/busy/failed status). When the stream starts, `GptLiveCall.adopt` plays the kept greeting at
+once on the same session and carries on live. Only calls with an opening line get one; a call that
+opens silent never reaches GPT-Live. Log: `gptlive_warm` (ready), `gptlive_warm_used`,
+`gptlive_first_voice` (stream start → first speech frame), `gptlive_warm_dropped`.
+
+Who it is: on the operator's own owner call (`whoFor`) the instructions say it IS Reason, that the
+person is the owner by name and the person it works for, who rang whom, and carry the same profile
+block an owner call's Reason turn reads (`ownerProfileNote`, capped 3,000 chars) with a rule to share it
+with nobody else. "Who are you / do you know who I am / what's my name" are answered from that, never
+delegated. Any other call (not owner, or not the operator) gets none of it. Tone section: warm,
+relaxed, contractions, small reactions, light humour, no corporate phrasing.
 
 The line: Twilio Media Streams (μ-law 8 kHz straight through to `audio/pcmu`), WebSocket at
 `/calls/gptlive/stream/{call webhook token}`. Outbound: `place` asks Twilio to dial with that stream as
@@ -38,7 +55,7 @@ Source: `src/calls/gptlive.js`, `src/calls/wsserver.js`, `src/http.js` (upgrade 
 (`call_turns.voice`, `markCallTurnHeard`, `provider` updatable), `src/calls/report.js` (`voices`),
 `src/config.js` (`callVoice`, `gptlive*`, `twilio*`).
 
-Tests: `node --test test/gptlive.test.js` (15).
+Tests: `node --test test/gptlive.test.js` (23).
 
 Drive (real GPT-Live session + Reason's real turn on claude-cli, fake Twilio stream through the real
 upgrade route, throwaway db, no phone; ~2¢ of OpenAI voice) — on Hetzner from a copy of the code, as
@@ -47,12 +64,17 @@ the `reason` user, keys read from `/opt/reason/.env`:
 ```bash
 sudo -u reason env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/reason USER=reason LOGNAME=reason \
   OPENAI_API_KEY=… CLAUDE_CODE_OAUTH_TOKEN=… REASON_DB_PATH=$(sudo -u reason mktemp -d)/gl.db \
-  node .agents/skills/verify-reason/bin/gptlive-drive.mjs q.ulaw 30
+  node .agents/skills/verify-reason/bin/gptlive-drive.mjs q.ulaw 30 [--expect identity] [--cold] [--ring 5000]
 ```
 
 `q.ulaw`: `say -o q.aiff "Hi, can you check what is on my calendar tomorrow morning?" && ffmpeg -i q.aiff -ar 8000 -ac 1 -f mulaw q.ulaw`.
 Expect `ok`: one delegation, a result with chars, the turn tagged `gptlive` with `first_real_ms`, row
 `completed` / `gptlive` / `recording: stored`. First run 2026-10-31: ack heard at 38 ms, Reason's
 answer (calendar_events) 10.8 s, spoken right after; 28 s, 2¢; guard trips 0.
+
+Speak-first + identity (2026-10-31, `who.ulaw` = say "Hey. Do you know who I am? What's my name?"):
+`--cold` first_voice_ms 2,021; warm (5 s ring) 10 ms, answer "You're Omari, the person I work for",
+0 delegations, 1.35 s after the question. Willow, `q.ulaw` "who are you + calendar": first voice 10 ms,
+"Oh that's me. I'm Reason. Lemme just check your morning.", 1 delegation (calendar_events), guard 0.
 
 Never: drive the live service's routes, or place a real call to test it (that rings the owner).

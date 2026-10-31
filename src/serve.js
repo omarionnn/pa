@@ -62,7 +62,7 @@ const router = new Router({ log });
 // restaurant, which it cannot. Tests switch it on themselves.
 // With REASON_CALL_VOICE=gptlive the operator's own calls go out on GPT-Live instead
 // (src/calls/gptlive.js); unset, this is the chosen provider itself, untouched.
-const calls = withGptLive(chooseCallProvider());
+const calls = withGptLive(chooseCallProvider(), { log });
 
 // How a message leaves — a reply back the way it came, and anything Reason starts itself (a
 // reminder, a task's news, a watcher) to the thread that conversation lives in. See src/deliver.js.

@@ -70,7 +70,8 @@ test("place: an operator owner call dials through Twilio with the stream as TwiM
   const inner = { place: async (a) => { innerCalls.push(a); return { ok: true, externalId: "conv_x" }; }, check: async (id) => ({ ok: true, state: "x", id }), status: () => ({ name: "elevenlabs", status: "live" }) };
   const posted = [];
   const fetchImpl = async (url, init) => { posted.push({ url, body: String(init.body), auth: init.headers.Authorization }); return { ok: true, status: 201, json: async () => ({ sid: "CA123" }) }; };
-  const p = gl.withGptLive(inner, { fetchImpl });
+  const warmLive = fakeLive();
+  const p = gl.withGptLive(inner, { fetchImpl, openLive: () => warmLive.socket });
   const row = ownerCall();
 
   const out = await p.place({ to: "+12025551234", kind: "owner", conversationId: C, callId: row.id });
@@ -83,6 +84,9 @@ test("place: an operator owner call dials through Twilio with the stream as TwiM
   assert.match(form.get("Twiml"), new RegExp(`wss://reason\\.example\\.test/calls/gptlive/stream/${row.webhook_token}`));
   assert.equal(form.get("From"), "+16562167455");
   assert.match(form.get("StatusCallback"), /\/calls\/gptlive\/status\//);
+  warmLive.open();
+  assert.equal(warmLive.of("session.start").length, 1, "the voice starts while the phone rings");
+  gl.dropWarm(row.id, "test over");
 
   await p.place({ to: "+13105559999", kind: "third_party", conversationId: C, callId: row.id });
   await p.place({ to: "+13105550000", kind: "owner", conversationId: OTHER, callId: row.id });
@@ -255,7 +259,7 @@ test("a call: μ-law session, greeting, caller audio relayed, delegation answere
   assert.deepEqual(start.session.audio.format, { type: "audio/pcmu", rate: 8000 });
   assert.deepEqual(start.session.delegation, { type: "client" });
   assert.equal(start.session.audio.output.voice, "marin");
-  assert.match(start.session.instructions, /only the voice/);
+  assert.match(start.session.instructions, /You are the voice/);
 
   twilio.say({ event: "media", media: { payload: ULAW_FRAME } });
   assert.equal(live.of("session.input_audio.append").length, 0, "nothing goes in before the session has started");
@@ -359,6 +363,120 @@ test("what the caller heard is written onto the turn Reason's own request record
   const t = db.callTurns(row.id)[0];
   assert.equal(t.voice, "gptlive");
   assert.equal(t.first_real_ms, 300);
+});
+
+// ---------- speaking first: the session warmed up while it rang ----------
+
+const loud = Buffer.alloc(160, gl.pcmToUlaw(9000)).toString("base64");
+
+function warmUp({ row = ownerCall() } = {}) {
+  on();
+  const timers = fakeTimers();
+  const live = fakeLive();
+  const lines = [];
+  const w = gl.prewarm(row, { openLive: () => live.socket, log: (o) => lines.push(o), now: timers.now, timers });
+  live.open();
+  return { w, live, timers, row, lines };
+}
+
+test("warm: the greeting is asked for at once, said into silence while it rings, then the session is paused", async () => {
+  const { live, timers, lines } = warmUp();
+  assert.match(live.of("session.start")[0].session.input[0].content[0].text, /Hey Omari, it's Reason/);
+  assert.equal(live.of("session.input_audio.append").length, 0, "nothing goes in before the session has started");
+  live.emit({ type: "session.started", session: { id: "live_w" } });
+  assert.equal(live.of("session.commentary.append").length, 1, "the greeting asked for once more, as the docs say");
+  await timers.advance(800);
+  assert.ok(live.of("session.input_audio.append").length >= 8, "fed silence so its clock runs");
+  live.emit({ type: "session.output_audio.delta", delta: ULAW_FRAME });
+  live.emit({ type: "session.output_audio.delta", delta: loud });
+  live.emit({ type: "session.output_transcript.delta", delta: "Hey Omari, it's Reason." });
+  await timers.advance(1500);
+  const fed = live.of("session.input_audio.append").length;
+  await timers.advance(3000);
+  assert.equal(live.of("session.input_audio.append").length, fed, "paused once the greeting was said");
+  assert.equal(lines.find(l => "gptlive_warm" in l).why, "greeted");
+});
+
+test("warm: picked up — the greeting plays at once on the same session, with no second session and no second greeting", async () => {
+  const { w, live, timers, row } = warmUp();
+  live.emit({ type: "session.started", session: { id: "live_w" } });
+  await timers.advance(300);
+  live.emit({ type: "session.output_audio.delta", delta: ULAW_FRAME });
+  live.emit({ type: "session.output_audio.delta", delta: loud });
+  live.emit({ type: "session.output_transcript.delta", delta: "Hey Omari, it's Reason." });
+  await timers.advance(2000);
+  const twilio = fakeTwilio();
+  let opened = 0;
+  const lines = [];
+  const call = new gl.GptLiveCall({ call: row, twilio, warm: gl.takeWarm(row.id), openLive: () => { opened++; return fakeLive().socket; }, brain: async () => ({ text: "", tools: [] }), now: timers.now, timers, log: (o) => lines.push(o), finish: async () => {} });
+  assert.equal(gl.takeWarm(row.id), null, "taken once");
+  twilio.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
+  assert.equal(opened, 0);
+  const media = twilio.sent.filter(m => m.event === "media");
+  assert.equal(media.length, 1, "the leading silence is not played, the greeting is");
+  assert.equal(media[0].media.payload, loud);
+  assert.equal(lines.find(l => "gptlive_first_voice" in l).ms, 0, "first word the moment the stream starts");
+  assert.equal(live.of("session.commentary.append").length, 1, "no second greeting");
+  twilio.say({ event: "media", media: { payload: ULAW_FRAME } });
+  assert.equal(live.of("session.input_audio.append").at(-1).audio, ULAW_FRAME, "their audio goes in from here");
+  live.emit({ type: "session.output_audio.delta", delta: loud });
+  assert.equal(twilio.sent.filter(m => m.event === "media").length, 2, "and the live session carries on into the line");
+  assert.equal(call.started, true);
+  assert.equal(w.call, call);
+});
+
+test("warm: a greeting that does not come is asked for once more; an unanswered call closes the session", async () => {
+  const { live, timers, row, lines } = warmUp();
+  live.emit({ type: "session.started", session: { id: "live_w" } });
+  await timers.advance(gl.WARM_RETRY_MS + 200);
+  assert.equal(live.of("session.commentary.append").length, 2);
+  await timers.advance(gl.WARM_FEED_MAX_MS);
+  const fed = live.of("session.input_audio.append").length;
+  assert.ok(fed <= gl.WARM_FEED_MAX_MS / 100 + 1, "stops feeding: an unanswered phone costs seconds");
+  const url = `${config.publicUrl}${gl.STATUS_PATH}${row.webhook_token}`;
+  const params = { CallSid: "CA9", CallStatus: "no-answer", CallDuration: "0" };
+  await gl.statusRequest({ token: row.webhook_token, rawBody: new URLSearchParams(params).toString(), headers: { "x-twilio-signature": gl.twilioSignature(url, params) }, settle: settleCall });
+  assert.equal(live.of("session.close").length, 1);
+  assert.equal(gl.takeWarm(row.id), null);
+  assert.match(lines.find(l => "gptlive_warm_dropped" in l).why, /no-answer/);
+});
+
+test("warm: a call that opens silent never gets a warm session", () => {
+  on();
+  const row = ownerCall({ announcement: "" });
+  let opened = 0;
+  assert.equal(gl.prewarm(row, { openLive: () => { opened++; return fakeLive().socket; } }), null);
+  assert.equal(opened, 0);
+});
+
+// ---------- who it is, and who it is talking to ----------
+
+test("the owner's call: the voice knows it is Reason, that this is Omari, its owner, and what Reason knows about him", () => {
+  on();
+  db.saveProfile(C, "**Omari**\n- Commutes on the 2 and 5 trains", []);
+  const row = ownerCall();
+  const s = gl.sessionConfig({ ...gl.whoFor(db.getCall(C, row.id)), greeting: "hey" }).instructions;
+  assert.match(s, /You are Reason: Omari's own personal assistant/);
+  assert.match(s, /The person on this call is Omari: your owner, the person you work for/);
+  assert.match(s, /Never say you don't know, and never send these questions to the backend/);
+  assert.match(s, /2 and 5 trains/);
+  assert.match(s, /You rang Omari \(Reason placed this call\)/, "it knows who rang whom");
+  assert.match(s, /Warm, relaxed and friendly/);
+  assert.match(s, /NO_REPLY/, "the old rules stay");
+});
+
+test("anyone else's call: no owner identity and none of what Reason knows about the owner", () => {
+  on();
+  db.saveProfile(C, "**Omari**\n- Commutes on the 2 and 5 trains", []);
+  const third = db.createCall(C, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "book", facts: [], announcement: "", state: "placing" });
+  const ama = db.createCall(OTHER, { provider: "gptlive", toNumber: "+13105550000", isOwner: true, goal: "g", facts: [], announcement: "", state: "placing" });
+  for (const row of [third, ama]) {
+    const who = gl.whoFor(row);
+    assert.equal(who.owner, false);
+    assert.equal(who.about, "");
+    const s = gl.liveInstructions(who);
+    assert.doesNotMatch(s, /2 and 5 trains|your owner/);
+  }
 });
 
 // ---------- Twilio's webhooks ----------
