@@ -181,23 +181,26 @@ function noAccount(store) {
   return frame({ main, margin: note("nothing's bought until you say yes."), step: "noaccount", off: true });
 }
 
-export function renderChecking({ view, staging = false }) {
+/** How a payment is approved, in the page's words: with a passkey set up a texted yes no longer pays (src/passkey.js requiredFor). */
+const approvalLine = (passkeyPays) => (passkeyPays ? "Nothing is bought until you approve the exact total with Face ID." : "Nothing is bought until you text yes to the exact total.");
+
+export function renderChecking({ view, staging = false, passkeyPays = false }) {
   const n = nameOf(view.store);
   const main = headline(`Signing in to ${n}.`, "Hang tight.", "cx-h") + lede(`Keep this page open. If ${n} sends you a code, it'll ask for it right here. However it goes, I'll text you too.`)
     + steps([[`Sent straight to ${n}, sealed`, "done"], [`${n} is checking it`, "now"], ["Signed in", "todo"]])
     + live({ id: "cx-live", lines: checkingLines(n) });
-  const margin = label("WHILE YOU WAIT") + para("Nothing is bought until you text yes to the exact total.")
+  const margin = label("WHILE YOU WAIT") + para(approvalLine(passkeyPays))
     + label("IF IT TAKES A WHILE", { sp: true }) + para(`Stores sometimes take a minute or two. If ${esc(n)} stops it, this page says so, and so do I in the chat.`);
   return page("Reason — signing in", `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
 }
 
-export function renderConnected({ view, staging = false }) {
+export function renderConnected({ view, staging = false, passkeyPays = false }) {
   const n = nameOf(view.store);
   const main = headline(`You're signed in to ${n}.`, "Back to the chat.", "cx-h")
     + lede(`Next time you want something from ${n}, just text me. I'll send the exact total before buying.`)
     + paper({ stamp: "CONNECTED", label: NAME(view.store), big: "Signed in.", mono: false })
     + `<div class="cx-note">${actions(go("Back to Reason", { href: BACK }), two("SEE IT IN SETTINGS", { href: "/web/settings#shopping" }))}</div>`;
-  const margin = label("SIGNED IN, I CAN") + para("Check out there, after you text yes to the exact total.")
+  const margin = label("SIGNED IN, I CAN") + para(passkeyPays ? "Check out there, after you approve the exact total with Face ID." : "Check out there, after you text yes to the exact total.")
     + label("AND", { sp: true }) + para(`Sign out of ${esc(n)} any time in ${SETTINGS}.`);
   return page(`Reason — ${n} connected`, `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
 }
@@ -398,7 +401,8 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
       ...(interactive ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
     } : null;
   const faceId = !!card && passkey.passkeyAllowedFor(link.conversation_id) && !passkey.hasPasskey(link.conversation_id);
-  const drawn = renderView(view, { card, faceId });
+  // passkeyPays: they have one, so the page's "nothing is bought until" line names Face ID, not a texted yes.
+  const drawn = renderView(view, { card, faceId, passkeyPays: passkey.requiredFor(link.conversation_id) });
   return send(boot ? { ...drawn, html: withBoot(drawn.html, boot) } : drawn);
 }
 /** The screen is drawn once; a live page's boot data and script ride in their own tag at the end. */

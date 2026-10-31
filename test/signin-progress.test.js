@@ -159,6 +159,39 @@ test("the checking page is alive: sweep, status line, clock, reduced-motion fall
   assert.match(js, /cache:'no-store'/);
 });
 
+// The margin's "nothing is bought until" line names the real approval path (#285: with a passkey set up,
+// a texted yes no longer pays; the yes gets the Face ID link). Without one, the texted yes still holds.
+test("WHILE YOU WAIT names Face ID once they have a passkey, a texted yes otherwise; so does the signed-in page", async () => {
+  const TEXT_YES = /Nothing is bought until you text yes to the exact total\./;
+  const FACE_ID = /Nothing is bought until you approve the exact total with Face ID\./;
+  const { token } = await walmartLink();
+  await answer(token);
+  const seen = visible((await cx.connectRequest({ sub: token, method: "GET" })).body);
+  assert.match(seen, /WHILE YOU WAIT/);
+  assert.match(seen, TEXT_YES, "no passkey: a texted yes pays");
+  assert.doesNotMatch(seen, /Face ID/);
+
+  const was = process.env.REASON_PASSKEY_PAY;
+  process.env.REASON_PASSKEY_PAY = "on";
+  q("INSERT INTO pay_passkeys (id, conversation_id, public_key, counter, transports, device_type, backed_up, created_at, usable_at) VALUES ('pk_test', ?, X'00', 0, '', '', 0, ?, ?)").run(OMARI, clock.now(), clock.now());
+  try {
+    const withKey = visible((await cx.connectRequest({ sub: token, method: "GET" })).body);
+    assert.match(withKey, /WHILE YOU WAIT/);
+    assert.match(withKey, FACE_ID, "a passkey: Face ID approves, not a texted yes");
+    assert.doesNotMatch(withKey, TEXT_YES);
+    assert.match(withKey, /IF IT TAKES A WHILE/, "the rest of the margin stays");
+    // The signed-in page's "I can check out there, after…" line follows the same rule.
+    const view = { kind: "store", state: "connected", store: "walmart" };
+    assert.match(visible(cx.renderConnected({ view, passkeyPays: true }).html), /after you approve the exact total with Face ID\./);
+    assert.match(visible(cx.renderConnected({ view }).html), /after you text yes to the exact total\./);
+    process.env.REASON_PASSKEY_PAY = "";
+    assert.match(visible((await cx.connectRequest({ sub: token, method: "GET" })).body), TEXT_YES, "the flag off: a passkey on file changes nothing");
+  } finally {
+    if (was === undefined) delete process.env.REASON_PASSKEY_PAY; else process.env.REASON_PASSKEY_PAY = was;
+    q("DELETE FROM pay_passkeys").run();
+  }
+});
+
 test("the sign-in form itself shows a live 'sending' line while the tap is in flight; so does the card form", async () => {
   const { token } = await walmartLink();
   const page = (await cx.connectRequest({ sub: token, method: "GET" })).body;
