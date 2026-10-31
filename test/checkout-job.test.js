@@ -102,7 +102,7 @@ before(() => {
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   calls = []; runs = {}; nextRun = 1; said.length = 0; woke.length = 0; clock.reset(); shop._setMail(null);
-  for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments", "shop_sites", "shop_run_asks"]) db.db.exec(`DELETE FROM ${t}`);
+  for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments", "shop_sites", "shop_run_asks", "shop_shipping"]) db.db.exec(`DELETE FROM ${t}`);
 });
 const start = (conv = OMARI) => shop.startCheckout({ conversationId: conv, store: "ulta", startUrl: ULTA, what: "One CeraVe Foaming Facial Cleanser, 16 oz, shipped to home.", item: "CeraVe Foaming Facial Cleanser 16 oz", maxUsd: 35 });
 const row = (runId) => q("SELECT * FROM shop_runs WHERE run_id = ?").get(runId);
@@ -175,7 +175,11 @@ test("pinned: Ulta's shipping form wakes the model once, with the fields; shop_a
   assert.equal(woke.length, 1);
   assert.equal(woke[0].c, OMARI);
   assert.equal(woke[0].key, `shop:${out.runId}:req_ship_1`);
-  assert.match(woke[0].t, /^\[checkout\] Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz \(run run_1\) is waiting on an answer\. It expires in 10 minutes\./);
+  // Since 2026-10-31 (anticipate) the deadline is a clock time, never a countdown; what is still needed is named.
+  assert.match(woke[0].t, /^\[checkout\] Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz \(run run_1\) is waiting on an answer\. Ulta asks:/);
+  assert.match(woke[0].t, /Ulta holds the cart until \d{1,2}:\d{2} [AP]M; say that as the time, never as a countdown/);
+  assert.doesNotMatch(woke[0].t, /expires in/);
+  assert.match(woke[0].t, /Still needed, and the ONLY thing to ask for: last_name \(Last name\), address_line_1/);
   assert.match(woke[0].t, /address_line_1: Street address; address_line_2 \(optional\): Apartment/);
   assert.match(woke[0].t, /shop_answer/);
   assert.equal(said.length, 0, "nothing texted to them for a question code hands to the model");

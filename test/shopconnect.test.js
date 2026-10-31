@@ -95,7 +95,7 @@ let failMessages = false;
 const q = (sql) => db.db.prepare(sql);
 before(() => { shop._setFetch(fakeFetch); shop.attach({ say: (c, t) => said.push({ c, t }), base: "https://heyreason.test/web/connect" }); });
 after(() => rmSync(dir, { recursive: true, force: true }));
-beforeEach(() => { reset(); said.length = 0; for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments", "shop_sites", "shop_run_asks"]) db.db.exec(`DELETE FROM ${t}`); });
+beforeEach(() => { reset(); said.length = 0; for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments", "shop_sites", "shop_run_asks", "shop_shipping"]) db.db.exec(`DELETE FROM ${t}`); });
 
 /** Runs a sign-in checkout at Target to its first question and returns the texted link's token. */
 async function signinLink(conv = OMARI) {

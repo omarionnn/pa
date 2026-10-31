@@ -41,6 +41,8 @@ import * as accounts from "./accounts.js";
 import { config, clock } from "./config.js";
 import { isPrivateHost } from "./pictures.js";
 import * as passkey from "./passkey.js";
+import * as shipping from "./shipping.js";
+import { zoneFor } from "./zone.js";
 
 // ---------------------------------------------------------------- the flag
 // REASON_SHOP_CONNECT (off | owner | on), off by default. `owner`: only the operator's conversation.
@@ -469,8 +471,12 @@ export function taskFor(plan, store, what) {
 /** `item` is what the ask names ("a 4-ft USB-C cable"); `what` is the full instruction for the agent. */
 export async function startCheckout({ conversationId, store, startUrl, what, item = "", maxUsd, signIn = false }) {
   const plan = checkoutPlan(conversationId, store, { signIn });
+  // The address on record goes into the instruction where it says to ship (2026-10-31): a checkout that
+  // already has it rarely asks the form at all, and one that does is answered from the same record.
+  let instruction = String(what ?? "").trim();
+  try { instruction = shipping.withAddress(instruction, shipping.profileFor(conversationId)); } catch { /* as written */ }
   const body = {
-    request: { startUrl, task: taskFor(plan, store, String(what ?? "").trim()) },
+    request: { startUrl, task: taskFor(plan, store, instruction) },
     constraints: { maxCost: { amount: Number(maxUsd).toFixed(2), currency: "USD" } },
   };
   if (plan !== "guest") body.browser = { profileId: await ensureProfile(conversationId) };
@@ -480,7 +486,7 @@ export async function startCheckout({ conversationId, store, startUrl, what, ite
   const now = clock.now();
   q("INSERT INTO shop_runs (run_id, conversation_id, store, item, mode, status, created_at, updated_at, stage, stage_at, progress_at) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, 'started', ?, ?)")
     .run(runId, conversationId, store ?? "", String(item || "").trim().slice(0, 120), plan, now, now, now, now);
-  q("INSERT OR REPLACE INTO shop_run_asks (run_id, start_url, what, max_usd) VALUES (?, ?, ?, ?)").run(runId, String(startUrl ?? ""), String(what ?? ""), Number(maxUsd));
+  q("INSERT OR REPLACE INTO shop_run_asks (run_id, start_url, what, max_usd) VALUES (?, ?, ?, ?)").run(runId, String(startUrl ?? ""), instruction, Number(maxUsd));
   if (plan === "signed") q("UPDATE shop_stores SET last_used_at = ? WHERE conversation_id = ? AND store = ?").run(now, conversationId, store);
   return { ok: true, runId, plan };
 }
@@ -860,17 +866,60 @@ export function paymentText(run, row, it) {
   return `${where}'s total${row.item ? ` for ${row.item}` : ""}: ${parts}; ${amountText(row)} all in.\n${ask}`;
 }
 
-/** The event that wakes the model for a plain question: what is asked, the fields, and what to do. */
-function inputEvent(run, rq, it) {
+/** "12:25 PM" in their zone: when the store stops holding the cart, said as a clock time, never as a countdown. */
+function clockTime(ms, conversationId) {
+  let tz = config.tz;
+  try { tz = zoneFor(conversationId) || tz; } catch { /* install zone */ }
+  try { return new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" }).format(ms); } catch { return new Date(ms).toISOString().slice(11, 16); }
+}
+/**
+ * The event that wakes the model for a plain question the record could not answer whole (2026-10-31):
+ * what is filled already, what is still needed (only that is asked), and when the store needs it by —
+ * a clock time, never "in the next 10 minutes or it times out", which is what went out at 12:16.
+ */
+function inputEvent(run, rq, it, filling = null) {
   const store = storeOf(run);
   const expiresAt = Date.parse(rq.request?.expiresAt ?? "");
-  const left = Number.isFinite(expiresAt) ? ` It expires in ${minutes(expiresAt - clock.now())} minutes.` : "";
+  const until = Number.isFinite(expiresAt) ? ` ${store} holds the cart until ${clockTime(expiresAt, run.conversation_id)}; say that as the time, never as a countdown or "or it times out".` : "";
   const fields = (it.fields ?? []).map((f) => `${f.key}${f.required ? "" : " (optional)"}: ${f.label ?? f.key}`).join("; ");
   const options = Array.isArray(it.options) ? ` Options: ${it.options.map((o) => (typeof o === "string" ? o : o?.label ?? o?.value ?? "")).filter(Boolean).join(", ")}.` : "";
-  return `[checkout] ${store}'s checkout${itemOf(run)} (run ${run.run_id}) is waiting on an answer.${left} ${store} asks: "${short(rq.request?.question ?? "", 300)}".`
-    + `${fields ? ` Fields (key: label): ${fields}.` : ""}${options}`
+  const filled = filling?.filled?.length ? ` Filled from their record already (do not ask for these): ${shipping.filledWords(it, filling.filled)}.` : "";
+  const need = filling?.missing?.length
+    ? ` Still needed, and the ONLY thing to ask for: ${filling.missing.map((m) => `${m.key} (${m.label})`).join(", ")}. shop_answer needs only those keys; the rest is filled in for you.`
+    : "";
+  return `[checkout] ${store}'s checkout${itemOf(run)} (run ${run.run_id}) is waiting on an answer. ${store} asks: "${short(rq.request?.question ?? "", 300)}".`
+    + `${fields ? ` Fields (key: label): ${fields}.` : ""}${options}${filled}${need}`
     + " Answer it with shop_answer from what you know about them (their name, home address, phone, email; never a card number)."
-    + " If something it needs is not known, ask them for exactly that in one line and nothing else. Nothing is charged by this.";
+    + (filling?.missing?.length ? " If you do not know what is still needed, ask them for exactly that in one line, say the rest is on file, and nothing else." : " If something it needs is not known, ask them for exactly that in one line and nothing else.")
+    + `${until} Nothing is charged by this.`;
+}
+/** The one line after a form was answered from the record: where it ships, and that a word fixes it. */
+function autoAnsweredText(run, row, it, filling) {
+  const where = shipping.shortAddress(row);
+  const hasAddress = (it.fields ?? []).some((f) => ["address1", "full_name", "city", "zip"].includes(shipping.roleOf(f)) && filling.filled.includes(f.key));
+  const what = hasAddress && where ? `Shipping to ${where}` : `Answered ${storeOf(run)}'s ${shipping.filledWords(it, filling.filled) || "form"} from your record`;
+  return `${what}, ${Number(row?.used ?? 0) > 0 ? "the usual" : "as you gave it to me before"}. Say if that's wrong.`;
+}
+/** The checked answer, posted to Crossmint. Never logs or keeps the values. */
+async function postAnswer(run, rq, answers) {
+  const part = { type: "input_response", requestId: rq.requestId, action: "submit", response: { kind: rq.kind || "form", answers } };
+  let r;
+  try { r = await server(run.conversation_id, `${CHECKOUTS}/${encodeURIComponent(run.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } }); } catch { return { ok: false, error: "crossmint_unreachable" }; }
+  if (!r.ok) return { ok: false, error: "crossmint_refused", status: r.status, detail: short(r.json?.message ?? r.json?.error ?? r.json?.detail ?? "", 200) };
+  const now = clock.now();
+  q("UPDATE shop_runs SET stage = 'in_progress', stage_at = ?, progress_at = ?, updated_at = ? WHERE run_id = ?").run(now, now, now, run.run_id);
+  return { ok: true };
+}
+/** A choice answered in words ("NY") becomes the option's value; anything else is left as given. */
+function shapeAnswers(rq, answers) {
+  const out = {};
+  const fields = new Map((rq.fields ?? []).map((f) => [f.key, f]));
+  for (const [k, v] of Object.entries(answers ?? {})) {
+    const f = fields.get(k);
+    if (f && f.input?.kind === "choice" && typeof v === "string") { const m = shipping.matchOption(f.input.options, v); out[k] = m === null ? v : m; }
+    else out[k] = v;
+  }
+  return out;
 }
 
 /** What ended a run, in their words. `paid` is a payment of theirs that went out before the end. */
@@ -907,7 +956,7 @@ function placedText(run, result) {
 }
 /** A stall — nothing moved for STALL_MS — said once per run. */
 async function stalled(run, say) {
-  if (!run || TERMINAL.has(run.status)) return {};
+  if (!run || TERMINAL.has(run.status) || toldOf(run).has("superseded")) return {};
   const since = run.progress_at ?? run.created_at;
   if (clock.now() - since < STALL_MS) return {};
   if (!tellOnce(run.run_id, "stalled")) return { stalled: true };
@@ -960,7 +1009,12 @@ export async function step(runId) {
       // Past the sign-in: the store let them in.
       if (link || run.mode === "sign_in") finishSignin(run, link);
       const row = recordPayment({ conversationId: run.conversation_id, runId, request: rq, item: run.item });
-      if (row && row.amount_kind !== "exact") {
+      if (row && told.has("superseded")) {
+        // Started over with a corrected address: this one's payment is declined, quietly. Nothing charged.
+        await declinePayment({ conversationId: run.conversation_id, paymentId: row.id });
+        q("UPDATE shop_runs SET status = 'cancelled', stage = 'cancelled', stage_at = ?, updated_at = ?, result = 'superseded' WHERE run_id = ?").run(now, now, runId);
+        return { done: true, status: "cancelled", said };
+      } else if (row && row.amount_kind !== "exact") {
         // A ceiling, not a total: nothing to say yes to. Declined, so nothing is charged.
         await declinePayment({ conversationId: run.conversation_id, paymentId: row.id });
         setStage(runId, "in_progress");
@@ -986,20 +1040,40 @@ export async function step(runId) {
           ? `${name} signed me out. Sign in again here and I'll pick up where we left off. Your password goes straight to ${name}, not to me.\n${linkBase()}/${token}`
           : `${name} needs you signed in before it lets anyone check out. Sign in once here and I'll use it for ${name} orders from now on. Your password goes straight to ${name}, not to me.\n${linkBase()}/${token}`);
       }
-    } else {
-      // A plain question — shipping details, a size, a choice — is the model's to answer from what it
-      // knows about them (shop_answer), or to ask them. Woken once per request.
+    } else if (told.has("superseded")) {
+      // A run started over with a corrected address: this one's questions go unanswered and it expires.
       setStage(runId, "needs_input");
-      woke = requestId;
-      if (await wake(run.conversation_id, inputEvent(run, rq, it), `shop:${runId}:${requestId}`)) tellOnce(runId, `woke:${requestId}`);
+    } else {
+      // A plain question — shipping details, a size, a choice. Answered from the record by code when the
+      // record covers it (2026-10-31: his address was on file and he was asked for it anyway), with one
+      // line saying where it ships; otherwise the model is woken once with what is still needed.
+      setStage(runId, "needs_input");
+      const pub = publicRequest(rq);
+      const filling = autoFill(run, pub);
+      if (filling.covered) {
+        const posted = await postAnswer(run, pub, filling.answers);
+        if (posted.ok) {
+          tellOnce(runId, `auto:${requestId}`);
+          const row = shipping.profileRow(run.conversation_id);
+          await say(autoAnsweredText(run, row, pub, filling));
+          shipping.markUsed(run.conversation_id);
+          return { done: false, status, said, answered: requestId, ...(await stalled(runRow(runId), say)) };
+        }
+        // Refused: the model gets the question, with the store's reason, and decides.
+        woke = requestId;
+        if (await wake(run.conversation_id, `${inputEvent(run, rq, it, { filled: [], missing: filling.missing })} (Answering it from their record was refused by the store: ${posted.detail || posted.error}.)`, `shop:${runId}:${requestId}`)) tellOnce(runId, `woke:${requestId}`);
+      } else {
+        woke = requestId;
+        if (await wake(run.conversation_id, inputEvent(run, rq, it, filling), `shop:${runId}:${requestId}`)) tellOnce(runId, `woke:${requestId}`);
+      }
     }
-  } else if (requestId && run.stage === "needs_input" && !told.has(`woke:${requestId}`) && run.request_json) {
+  } else if (requestId && run.stage === "needs_input" && !told.has(`woke:${requestId}`) && !told.has(`auto:${requestId}`) && !told.has("superseded") && run.request_json) {
     // The same plain question, and the model was never reached for it (the wake failed): raised again.
     let rq = null;
     try { rq = JSON.parse(run.request_json); } catch { rq = null; }
     if (rq && rq.kind === "form" && !(rq.fields ?? []).some(isProtected)) {
       woke = requestId;
-      if (await wake(run.conversation_id, inputEvent(run, { requestId, request: ra.request }, ra.request?.interaction ?? {}), `shop:${runId}:${requestId}`)) tellOnce(runId, `woke:${requestId}`);
+      if (await wake(run.conversation_id, inputEvent(run, { requestId, request: ra.request }, ra.request?.interaction ?? {}, autoFill(run, rq)), `shop:${runId}:${requestId}`)) tellOnce(runId, `woke:${requestId}`);
     }
   } else if (!requestId && !TERMINAL.has(status) && (run.stage === "started" || !run.stage)) {
     setStage(runId, "in_progress");
@@ -1066,19 +1140,47 @@ export async function answerRun(runId, { conversationId, answers }) {
   if (TERMINAL.has(run.status)) return { ok: false, error: "run_over", stage: run.stage, say: `That checkout is over (${run.stage}); nothing is waiting on an answer.` };
   let rq = null;
   try { rq = run.request_json ? JSON.parse(run.request_json) : null; } catch { rq = null; }
+  // A form the record answered already, and they say part of it was wrong: the record is corrected and the
+  // checkout starts over with it (the one running has the old address typed in; its payment is declined).
+  if (rq && rq.kind === "form" && run.stage === "in_progress" && toldOf(run).has(`auto:${run.last_request_id}`) && !run.paid_at) {
+    return correctAndRestart(run, rq, answers);
+  }
   if (!rq || !run.last_request_id || run.stage !== "needs_input") return { ok: false, error: "nothing_asked", stage: run.stage };
   // Only a plain form is the model's to answer: a payment is approved through shop_pay or Face ID, never here.
   if (rq.kind !== "form") return { ok: false, error: "not_a_form", kind: rq.kind };
   if ((rq.fields ?? []).some(isProtected)) return { ok: false, error: "needs_signin_link", say: "That question has a password or code in it: it goes through the sign-in link they were texted, never through you." };
-  const checked = checkAnswers(rq, answers);
-  if (!checked.ok) return { ok: false, error: checked.error, fields: (rq.fields ?? []).map((f) => ({ key: f.key, label: f.label, required: !!f.required })) };
-  const part = { type: "input_response", requestId: rq.requestId, action: "submit", response: { kind: rq.kind || "form", answers: checked.answers } };
-  let r;
-  try { r = await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(runId)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } }); } catch { return { ok: false, error: "crossmint_unreachable" }; }
-  if (!r.ok) return { ok: false, error: "crossmint_refused", status: r.status };
-  const now = clock.now();
-  q("UPDATE shop_runs SET stage = 'in_progress', stage_at = ?, progress_at = ?, updated_at = ? WHERE run_id = ?").run(now, now, now, runId);
-  return { ok: true, run_id: runId, answered: Object.keys(checked.answers), say: "Answered; the checkout is moving again. Nothing is charged until they approve the exact total they'll be texted. Say so in one line if they're waiting, otherwise nothing." };
+  // What the model gives wins; what it leaves out comes from the record (2026-10-31); a choice in words
+  // becomes the option's value (Ulta's state dropdown refused "NY" twice on 12:17).
+  const given = shapeAnswers(rq, answers ?? {});
+  const fromRecord = autoFill(run, rq).answers;
+  const merged = { ...fromRecord, ...given };
+  const checked = checkAnswers(rq, merged);
+  if (!checked.ok) return { ok: false, error: checked.error, fields: (rq.fields ?? []).map((f) => ({ key: f.key, label: f.label, required: !!f.required, ...(f.key in fromRecord ? { on_record: true } : {}) })) };
+  const posted = await postAnswer(run, rq, checked.answers);
+  if (!posted.ok) return posted;
+  try { shipping.learnFromAnswers(conversationId, rq, given); } catch { /* the answer went through either way */ }
+  const fromThem = Object.keys(given), fromUs = Object.keys(checked.answers).filter((k) => !(k in given));
+  return { ok: true, run_id: runId, answered: Object.keys(checked.answers), from_them: fromThem, from_record: fromUs,
+    say: `Answered; the checkout is moving again${fromUs.length ? `, the rest (${fromUs.join(", ")}) from their record` : ""}. Nothing is charged until they approve the exact total they'll be texted. Say so in one line if they're waiting, otherwise nothing.` };
+}
+/** The record against a run's open form (keys only in the row; the record's values never leave this process except to Crossmint). */
+function autoFill(run, rq) {
+  try { return shipping.fill(rq, shipping.profileFor(run.conversation_id)); } catch { return { answers: {}, filled: [], missing: (rq?.fields ?? []).filter((f) => f.required).map((f) => ({ key: f.key, label: f.label || f.key, ours: false })), covered: false }; }
+}
+/** Their correction to a form the record answered: the record learns it, the run is superseded, the same checkout starts again. */
+async function correctAndRestart(run, rq, answers) {
+  const given = Object.fromEntries(Object.entries(answers ?? {}).filter(([k]) => (rq.fields ?? []).some((f) => f.key === k)));
+  if (!Object.keys(given).length) return { ok: false, error: "unknown_field", fields: (rq.fields ?? []).map((f) => ({ key: f.key, label: f.label })) };
+  const row = shipping.learnFromAnswers(run.conversation_id, rq, shapeAnswers(rq, given), { source: "correction" });
+  const ask = q("SELECT * FROM shop_run_asks WHERE run_id = ?").get(run.run_id);
+  tellOnce(run.run_id, "superseded"); tellOnce(run.run_id, "end");
+  if (!ask) return { ok: false, error: "cannot_restart", say: `The record is corrected, but this checkout cannot be started over from here. Say so, and that nothing was charged.` };
+  const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: run.mode === "sign_in" });
+  if (!again.ok) return { ok: false, error: "restart_failed", status: again.status, say: "The record is corrected, but the store would not start the checkout again. Nothing was charged." };
+  q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`corrected address; started again as ${again.runId}`, run.run_id);
+  follow(again.runId);
+  return { ok: true, run_id: again.runId, corrected: Object.keys(given), superseded: run.run_id,
+    say: `Fixed on the record (now ${shipping.shortAddress(row) || "as they said"}); I started ${storeOf(run)}'s checkout over with it. Say that in one line; nothing is charged until they approve the total.` };
 }
 
 // ---------------------------------------------------------------- the record, for the model
@@ -1100,7 +1202,17 @@ export function stageLine(run) {
   switch (run.stage) {
     case "started": return `starting at ${store} (${ago(run.created_at)}); nothing charged`;
     case "in_progress": return `running at ${store}'s checkout, started ${ago(run.created_at)}, last moved ${ago(run.progress_at)}; nothing charged`;
-    case "needs_input": return `waiting since ${ago(run.stage_at)} on an answer to "${short(run.question, 120)}" (answer it with shop_answer, run_id ${run.run_id}, or ask them); nothing charged`;
+    case "needs_input": {
+      let need = "";
+      try {
+        const rq = run.request_json ? JSON.parse(run.request_json) : null;
+        if (rq?.kind === "form" && !(rq.fields ?? []).some(isProtected)) {
+          const f = autoFill(run, rq);
+          need = f.missing.length ? `; still needed from them: ${f.missing.map((m) => m.label).join(", ")}${f.filled.length ? " (the rest is on record)" : ""}` : "";
+        }
+      } catch { /* the question alone */ }
+      return `waiting since ${ago(run.stage_at)} on an answer to "${short(run.question, 120)}"${need} (answer it with shop_answer, run_id ${run.run_id}, giving only what is needed, or ask them for exactly that); nothing charged`;
+    }
     case "needs_approval": return `waiting since ${ago(run.stage_at)} on their approval of ${pay ? amountText(pay) : "the total"} at ${pay?.merchant_name || store}; nothing charged yet`;
     case "approved": return `paying ${pay ? amountText(pay) : ""} at ${pay?.merchant_name || store} now`;
     case "paid": return `paid ${pay ? amountText(pay) : ""} at ${pay?.merchant_name || store} ${ago(run.paid_at)}; ${store} still has to place it`;
@@ -1131,8 +1243,11 @@ export function checkoutNote(conversationId) {
     const runs = runsOf(conversationId, { sinceMs: 24 * 3600_000, limit: 5 });
     if (!runs.length) return "";
     const lines = runs.map((run) => `- ${storeOf(run)}${run.item ? `, ${run.item}` : ""}: ${stageLine(run)}.`);
+    const card = cardOf(conversationId);
+    const onFile = card ? `\nCard on file for paying: ${card.brand ? `${card.brand[0].toUpperCase()}${card.brand.slice(1)} ` : ""}••••${card.last4}. Never ask whether they have a card or which; the payment ask is texted for you with the total.` : "";
     return `Checkout record (code's own, from the database; it overrides anything the chat says about these orders):\n${lines.join("\n")}\n`
-      + "Answer anything about an order or checkout from this (shop_status has the same). Never say a checkout started unless store_checkout returned a run_id this turn, and never say one never ran when it is listed here.";
+      + "Answer anything about an order or checkout from this (shop_status has the same). Never say a checkout started unless store_checkout returned a run_id this turn, and never say one never ran when it is listed here."
+      + " A checkout you started is yours to finish: never offer them the store's page to buy it themselves instead." + onFile;
   } catch { return ""; }
 }
 
