@@ -107,3 +107,14 @@ Never: drive the live service's routes, or place a real call to test it (that ri
   voices; unset = "Omarion Nyarko" wording as always. The #295 "Reason team" split is gone.
 - Known, not fixed (pre-existing): `strangerLine` (inbound.js, voice-prompt.js) tells blocked/paused/
   removed/unknown callers "an AI assistant for <operator>", naming the operator to other people.
+
+## Maker = Saafi Interaction Labs (#297, 2026-10-31)
+
+`config.makerName` defaults to "Saafi Interaction Labs" (REASON_MAKER only overrides); `src/maker.js`
+is the one answer for texts (`systemFor`), onboarding and both voices, for every user, not gated. The
+"he built you, smart guy" deflection is gone: probed further, Reason says it's still the company and
+invents nothing. Test: no string literal under src/ or assets/ says Omarion/Nyarko, and the built
+prompts (text, ElevenLabs own/third-party, GPT-Live) don't either. Left on purpose: the repo address
+`github.com/omarionnn/pa` on /privacy and /terms and in the web-lookup user-agent (a real link, not a
+credit), code comments, test fixtures, drives' throwaway "Omari" operator, `config.ownerName` default,
+LICENSE copyright, docs/usecases.json (internal).
