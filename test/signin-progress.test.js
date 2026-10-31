@@ -247,36 +247,38 @@ test("an old link says it expired and to ask for a new one, with a 410, for a st
 });
 
 // ---------------------------------------------------------------- 3b. how a payment gets its yes (#285: a texted yes never pays once there is a passkey)
-test("the connect pages never say 'text yes': without a passkey they say approve the exact total, with one they name Face ID", async () => {
+test("how a payment is approved, in the page's words: without a passkey a texted yes pays and the page says so; with one every line names Face ID, never a texted yes", async () => {
   process.env.REASON_PASSKEY_PAY = "on";
   const pk = await import("../src/passkey.js");
   const seed = () => q("INSERT INTO pay_passkeys (id, conversation_id, public_key, counter, created_at, usable_at) VALUES ('pk_test', ?, X'00', 0, ?, ?)").run(OMARI, Date.now(), Date.now());
   const noYes = (seen, where) => {
     assert.doesNotMatch(seen, /text yes|texting yes|say yes|texted yes/i, `${where} still asks for a texted yes`);
   };
+  // No passkey: a texted yes pays, so the page may say so, but never promises Face ID.
+  const okYes = (seen, where) => assert.doesNotMatch(seen, /Face ID/, `${where} promises Face ID without a passkey`);
   try {
     q("DELETE FROM pay_passkeys").run();
     assert.equal(pk.requiredFor(OMARI), false);
-    // Without a passkey: approve, never "text yes", and no Face ID promised that is not there.
+    // Without a passkey: a texted yes pays, and no Face ID is promised that is not there.
     const { runId, token } = await walmartLink();
     let seen = visible((await cx.connectRequest({ sub: token, method: "GET" })).body);
-    noYes(seen, "sign-in");
-    assert.match(seen, /Only after you approve the exact total\./);
-    assert.match(seen, /nothing's bought until you approve the exact total\./);
+    okYes(seen, "sign-in");
+    assert.match(seen, /Only after you text yes to the exact total\./);
+    assert.match(seen, /nothing's bought until you text yes to the exact total\./);
     assert.doesNotMatch(seen, /Face ID/);
     await answer(token);
     seen = visible((await cx.connectRequest({ sub: token, method: "GET" })).body);
-    noYes(seen, "checking");
-    assert.match(seen, /Nothing is bought until you approve the exact total\./);
+    okYes(seen, "checking");
+    assert.match(seen, /Nothing is bought until you text yes to the exact total\./);
     runs[runId] = { status: "succeeded", requiredAction: null };
     await shop.step(runId);
     seen = visible((await cx.connectRequest({ sub: token, method: "GET" })).body);
-    noYes(seen, "connected");
-    assert.match(seen, /Check out there, after you approve the exact total\./);
+    okYes(seen, "connected");
+    assert.match(seen, /Check out there, after you text yes to the exact total\./);
     let cardSeen = visible((await cx.connectRequest({ sub: shop.cardLink(OMARI), method: "GET" })).body);
-    noYes(cardSeen, "card");
-    assert.match(cardSeen, /I only pay when you approve\./);
-    assert.match(cardSeen, /only after you approve the exact total\./);
+    okYes(cardSeen, "card");
+    assert.match(cardSeen, /I only pay when you say yes\./);
+    assert.match(cardSeen, /only after you text yes to the exact total\./);
 
     // With a passkey: the same lines name Face ID.
     seed();
@@ -308,8 +310,8 @@ test("the connect pages never say 'text yes': without a passkey they say approve
     const shoppingOf = (passkeys) => ({ stores: [], card: { brand: "visa", last4: "4242" }, lastUsed: null, passkeys });
     const base = { csrf: "x", reach: "text", browsers: [], connected: [] };
     const plain = visible(st.renderSettings({ ...base, shopping: shoppingOf([]) }).html ?? st.renderSettings({ ...base, shopping: shoppingOf([]) }));
-    noYes(plain, "settings");
-    assert.match(plain, /only after you approve the exact total\./);
+    assert.doesNotMatch(plain, /approve the exact total with Face ID/, "settings promises Face ID approval without a passkey");
+    assert.match(plain, /only after you text yes to the exact total\./);
     const withKey = visible(st.renderSettings({ ...base, shopping: shoppingOf([{ createdAt: Date.now(), usableAt: Date.now(), synced: true }]) }).html ?? st.renderSettings({ ...base, shopping: shoppingOf([{ createdAt: Date.now(), usableAt: Date.now(), synced: true }]) }));
     assert.match(withKey, /only after you approve the exact total with Face ID\./);
   } finally {

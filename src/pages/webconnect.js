@@ -109,10 +109,10 @@ const storeSays = (rq, store) => rq?.question
 
 /**
  * How a payment gets its yes. Since #285 a texted yes never pays for anyone with a passkey (src/passkey.js
- * requiredFor): their yes gets a Face ID link, and the link pays. So the page never says "text yes":
- * with a passkey it names Face ID, without one it says only "approve", which is what the chat asks for.
+ * requiredFor): their yes gets a Face ID link, and the link pays. So with a passkey the page names Face ID;
+ * without one a texted yes really does pay, and the page says so.
  */
-const approveLine = (passkey) => passkey ? "approve the exact total with Face ID" : "approve the exact total";
+const approveLine = (passkey) => passkey ? "approve the exact total with Face ID" : "text yes to the exact total";
 
 // ---------------------------------------------------------------- the store's sign-in
 /** What signing in lets Reason do, and what it never sees: beside the sign-in. */
@@ -265,7 +265,7 @@ export function renderCard({ staging = false, card = null, faceId = false, passk
     + `<p class="pf-note" id="cx-err" role="alert" hidden></p>${live({ id: "cx-wait", lines: savingLines(), hidden: true })}</form>`;
   const add = frame({
     step: "add",
-    main: headline("Add a card.", passkey ? "I only pay with your Face ID." : "I only pay when you approve.", "cx-h") + lede("It's sealed and kept securely. I only ever see the brand and the last four digits.") + form,
+    main: headline("Add a card.", passkey ? "I only pay with your Face ID." : "I only pay when you say yes.", "cx-h") + lede("It's sealed and kept securely. I only ever see the brand and the last four digits.") + form,
     margin: label("SAVING IT") + para("Spends nothing.") + para(`Lets me pay at a store's checkout, only after you ${approveLine(passkey)}.`)
       + CARD_NEVER() + label("AND", { sp: true }) + para(`Remove it any time in ${SETTINGS}.`),
   });

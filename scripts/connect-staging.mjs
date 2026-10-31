@@ -76,8 +76,8 @@ const TEXTS = [
   ["Reason", "Target needs you signed in before it lets anyone check out. Sign in once here and I'll use it for Target orders from now on. Your password goes straight to Target, not to me.\nheyreason.com/web/connect/…"],
   ["", "→ the page: sign in (1) · waiting (2) · a code if Target sends one (3) · connected ✓ (5)"],
   ["Reason", "OK to pay $9.79 at Best Buy for a 4-ft USB-C cable?"],
-  ["You", "(approve the exact total: with Face ID once it's set up, by reply until then)"],
-  ["", "→ Reason pays exactly $9.79. No approval, no payment."],
+  ["You", "(any clear yes; with Face ID set up, the yes gets a Face ID link and that pays)"],
+  ["", "→ Reason pays exactly $9.79. No yes, no payment."],
 ];
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const index = kit.webPage({
