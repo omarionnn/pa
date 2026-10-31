@@ -26,7 +26,7 @@ export const MIME_BY_EXT = {
   ".doc": "application/msword", ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".csv": "text/csv", ".txt": "text/plain",
   ".md": "text/markdown", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
-  ".webp": "image/webp", ".heic": "image/heic", ".zip": "application/zip", ".ics": "text/calendar", ".vcf": "text/vcard",
+  ".webp": "image/webp", ".heic": "image/heic", ".heif": "image/heic", ".zip": "application/zip", ".ics": "text/calendar", ".vcf": "text/vcard",
   ".caf": "audio/x-caf", ".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".aac": "audio/aac",
   ".ogg": "audio/ogg", ".opus": "audio/ogg", ".amr": "audio/amr", ".aiff": "audio/aiff",
   ".mov": "video/quicktime", ".mp4": "video/mp4", ".m4v": "video/x-m4v",

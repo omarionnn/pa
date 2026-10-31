@@ -103,7 +103,8 @@ test("?as=jpeg turns a HEIC into a JPEG for its own conversation, once; nobody e
   assert.match(got.headers["Content-Disposition"], /^inline; filename="IMG_4012\.jpg"/);
   assert.equal(got.headers["Content-Length"], JPEG.length);
   await get(kofi, path, { as: "jpeg" });
-  assert.equal(converted, 1, "kept, not converted again");
+  await get(kofi, `/web/media/u/${m.id}/another-spelling.heic`, { as: "jpeg" });
+  assert.equal(converted, 1, "kept, not converted again, however the address is spelled");
   // The plain address is untouched: the original HEIC, as before.
   const orig = await get(kofi, path);
   assert.equal(orig.headers["Content-Type"], "image/heic");
@@ -192,4 +193,17 @@ test("a video texted in plays in the viewer: a video chip, served as video inlin
   assert.match(got.headers["Content-Disposition"], /^inline;/);
   assert.equal(got.headers["X-Content-Type-Options"], "nosniff");
   assert.ok(Buffer.compare(got.body, MOV) === 0);
+});
+
+test("two asks for the same HEIC at once share one conversion; conversions run one at a time", async () => {
+  const { m } = sentPhoto(KOFI_C, { bytes: Buffer.concat([HEIC, Buffer.from("twice")]), name: "twice.heic" });
+  const { m: m2 } = sentPhoto(KOFI_C, { bytes: Buffer.concat([HEIC, Buffer.from("third")]), name: "third.heic" });
+  let calls = 0, running = 0, most = 0;
+  const slow = async () => { calls++; running++; most = Math.max(most, running); await new Promise(r => setTimeout(r, 30)); running--; return { ok: true, bytes: JPEG }; };
+  const kofi = browser(KOFI_C);
+  const outs = await Promise.all([get(kofi, `/web/media/u/${m.id}/${m.name}`, { as: "jpeg", conv: slow }), get(kofi, `/web/media/u/${m.id}/x.heic`, { as: "jpeg", conv: slow }), get(kofi, `/web/media/u/${m2.id}/${m2.name}`, { as: "jpeg", conv: slow })]);
+  assert.deepEqual(outs.map(o => o.status), [200, 200, 200]);
+  assert.equal(calls, 2, "one per file");
+  assert.equal(most, 1, "never two at once");
+  assert.equal(media.fileKey("/web/media/m/0001/0"), media.fileKey("/web/media/m/1/0"));
 });

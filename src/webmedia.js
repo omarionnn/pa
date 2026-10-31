@@ -291,20 +291,37 @@ export async function serveRowMedia({ account, rowId, index, headers = {}, metho
 // turned into a JPEG here (heif-convert on the server, sips on a Mac). The plain address still gives
 // the original. A few recent ones are kept in memory; one this machine can't convert is the same 404,
 // and the page shows a file card with Download instead.
-const jpegs = new Map(); // `${conversation} ${path}` → jpeg bytes
-const JPEG_KEEP = 12;
+const jpegs = new Map(); // `${conversation} ${file}` → jpeg bytes
+const JPEG_KEEP = 12, JPEG_KEEP_BYTES = 32 * 1024 * 1024;
+const converting = new Map(); // same key → the conversion already running, shared
+let lane = Promise.resolve(); // one conversion at a time on this machine
+/** The file a media path names, however it is spelled (`/m/0001/0` is `/m/1/0`; an upload's name is decoration). */
+export function fileKey(path) {
+  let m;
+  if ((m = /^\/web\/media\/u\/([A-Za-z0-9_-]{22})(?:\/|$)/.exec(path))) return `u:${m[1]}`;
+  if ((m = /^\/web\/media\/m\/(\d{1,15})\/(\d{1,2})$/.exec(path))) return `m:${Number(m[1])}:${Number(m[2])}`;
+  return null;
+}
 async function heicAsJpeg(out, key, { convert = toJpeg } = {}) {
   if (out.status !== 200 || out.headers["Content-Type"] !== "image/heic") return out;
   let bytes = jpegs.get(key);
   if (!bytes) {
     const body = Buffer.isBuffer(out.body) ? out.body : Buffer.from(out.body ?? []);
     if (sniff(body) !== "heic") return notFound();
-    let j = null;
-    try { j = await convert({ bytes: body, kind: "heic" }); } catch { j = null; }
-    if (!j?.ok || !j.bytes?.length) return notFound();
-    bytes = j.bytes;
+    let job = converting.get(key);
+    if (!job) {
+      job = lane.then(async () => {
+        try { const j = await convert({ bytes: body, kind: "heic" }); return j?.ok && j.bytes?.length ? j.bytes : null; } catch { return null; }
+      });
+      lane = job.catch(() => null);
+      converting.set(key, job);
+      job.finally(() => converting.delete(key)).catch(() => {});
+    }
+    bytes = await job;
+    if (!bytes) return notFound();
     jpegs.set(key, bytes);
-    while (jpegs.size > JPEG_KEEP) jpegs.delete(jpegs.keys().next().value);
+    let total = 0; for (const b of jpegs.values()) total += b.length;
+    while (jpegs.size > 1 && (jpegs.size > JPEG_KEEP || total > JPEG_KEEP_BYTES)) { const k = jpegs.keys().next().value; total -= jpegs.get(k).length; jpegs.delete(k); }
   }
   return { status: 200, headers: { ...out.headers, "Content-Type": "image/jpeg", "Content-Length": bytes.length, "Content-Disposition": String(out.headers["Content-Disposition"]).replace(/\.hei[cf](?=["']|$)/gi, ".jpg") }, body: bytes };
 }
@@ -325,7 +342,7 @@ export async function webMediaRoute({ path, method, headers = {}, readBody, log 
   if (as === "jpeg") {
     // The whole file, then the JPEG of it (a range of a HEIC is no use to anybody).
     const out = await webMediaRoute({ path, method: "GET", headers: { ...headers, range: undefined }, readBody, log, fetchImpl });
-    const j = await heicAsJpeg(out, `${account.conversation_id} ${path}`, { convert });
+    const j = await heicAsJpeg(out, `${account.conversation_id} ${fileKey(path)}`, { convert });
     if (j.status === 200 && method === "HEAD") return { ...j, body: "" };
     return j;
   }
