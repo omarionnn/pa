@@ -527,6 +527,9 @@ See [features/onboarding.md](features/onboarding.md).
 
 `npm run test:offline` under `env -i`: 4,334 tests, 4,220 passing, 0 failing. New: `test/stamps-wax.test.js` (18); `bin/web-seals-drive.mjs`: 12 steps, all ok. See [features/web-stamps-wax.md](features/web-stamps-wax.md).
 
+### Baseline — the sign-in page is never dead (wt/signin-progress, #299, 2026-10-31)
+`npm run test:offline` under `env -i` (fresh `npm ci` in the worktree): 4,972 tests, 4,840 passing, 131 skipped, 1 failing (web-ongoing "the desktop margin", date-dependent, fails on main too). New: `test/signin-progress.test.js` (9). `test/passkey-pay.test.js` decline no longer matches a ms timestamp that happens to contain 4242. Cage drive `bin/shop-connect-live-drive.mjs` 18/18 (real Chromium). Live after deploy (pid 1077161): a made-up token → 410 "This link has expired. Ask me for a new one."; `shop_links.answered_at` present. See [features/shop-connect.md](features/shop-connect.md) "Never a dead page".
+
 ### Baseline — 4,175 pass, 0 failures after Stamps (wt/stamps, 2026-10-27)
 
 `npm run test:offline` under `env -i`: 4,297 tests, 4,175 passing, 0 failing, 122 skipped. New: `test/stamps.test.js` (12), `test/stamps-web.test.js` (12); `bin/web-stamps-drive.mjs`: 11 steps, all ok. See [features/web-stamps.md](features/web-stamps.md).
