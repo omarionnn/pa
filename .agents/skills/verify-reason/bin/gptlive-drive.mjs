@@ -16,6 +16,11 @@
 // got (call 53, before the warm-up: 3,100 ms). --expect identity asks "do you know who I am? what's my
 // name?" and passes only if the voice answers with the name, warmly, straight from its instructions.
 // --expect made asks "who made you?": REASON_MAKER (Saafi Interactions Lab by default), for everyone, never a person.
+// --expect where asks "do you know where I am right now?" (call 56: answered "you're Omari"): passes only if
+// it went to Reason and the answer is not the identity line. --expect goodbye says "that was nice talking
+// to you, bye!": passes only if the voice says goodbye back and the CALL HANGS UP on its own (end_call,
+// mutual goodbye, read by the small model on claude-cli). --expect room-bye says "bye Mum, see you later"
+// to someone in the room and keeps talking: passes only if the call is NOT hung up.
 // REASON_CALL_IDENTITY (default owner): with --as user, "owner" proves Ama's call is unchanged and gets
 // nothing of Omari's; "on" proves her Reason knows her (and still nothing of his).
 //
@@ -41,7 +46,7 @@ if (!process.env.OPENAI_API_KEY || !process.argv[2]) {
 Object.assign(process.env, {
   REASON_DATA_DIR: dirname(dbPath) + "/data", REASON_RECORDING_ROOT: dirname(dbPath) + "/recordings",
   REASON_OWNER_NAME: "Omari", REASON_TZ: "America/New_York", REASON_CONVERSATION: "dm:owner",
-  REASON_OWNER_NUMBER: "+12025550100", ANTHROPIC_API_KEY: "", REASON_CALL_BACKEND: "claude-cli",
+  REASON_OWNER_NUMBER: "+12025550100", ANTHROPIC_API_KEY: "", REASON_CALL_BACKEND: "claude-cli", REASON_BACKEND: "claude-cli",
   REASON_CALL_VOICE: "gptlive", REASON_CALL_IDENTITY: process.env.REASON_CALL_IDENTITY ?? "owner", ELEVENLABS_LLM_SECRET: "drive-secret", REASON_PUBLIC_URL: "http://127.0.0.1",
 });
 const REPO = resolve(dirname(new URL(import.meta.url).pathname), "../../../..");
@@ -97,6 +102,7 @@ if (!cold) {
 }
 const heardAt = [];
 const speechAt = [];
+let hungUpAt = null;
 const t0 = Date.now();
 let startAt = 0;
 const twilio = new WebSocket(`ws://127.0.0.1:${port}${gl.STREAM_PATH}${row.webhook_token}`);
@@ -107,6 +113,7 @@ twilio.onmessage = (m) => {
   if (gl.hasSpeech(e.media.payload)) speechAt.push(Date.now() - startAt);
 };
 await new Promise((r, j) => { twilio.onopen = r; twilio.onerror = () => j(new Error("the stream socket did not open")); });
+twilio.onclose = () => { hungUpAt ??= Date.now() - startAt; };
 twilio.send(JSON.stringify({ event: "connected" }));
 startAt = Date.now();
 twilio.send(JSON.stringify({ event: "start", start: { streamSid: "MZdrive", callSid: "CAdrive" } }));
@@ -119,11 +126,12 @@ while (frames.length < seconds * 50) frames.push(silence);
 let i = 0;
 await new Promise((r) => {
   const tick = setInterval(() => {
-    if (i >= frames.length) { clearInterval(tick); return r(); }
+    if (i >= frames.length || hungUpAt != null) { clearInterval(tick); return r(); }
     twilio.send(JSON.stringify({ event: "media", media: { track: "inbound", payload: frames[i++].toString("base64") } }));
   }, 20);
 });
-twilio.send(JSON.stringify({ event: "stop" }));
+const hungUpByReason = hungUpAt != null;
+if (!hungUpByReason) twilio.send(JSON.stringify({ event: "stop" }));
 const until = Date.now() + 20_000;
 while (Date.now() < until && db.getCall(CONV, row.id)?.state === "in_progress") await new Promise(r => setTimeout(r, 250));
 server.close();
@@ -147,6 +155,11 @@ const out = {
   turns: turns.map(t => ({ voice: t.voice, heard_ms: t.first_content_ms, real_ms: t.first_real_ms, total_ms: t.total_ms, tools: t.tools })),
   row: { state: settled.state, provider: settled.provider, end_reason: settled.end_reason, duration_s: settled.duration_s, cost_cents: settled.cost_cents, recording: settled.recording_state, tts_model: settled.tts_model },
   errors: pick("gptlive_error"),
+  hung_up_by_reason: hungUpByReason,
+  hung_up_after_question_ms: hungUpAt == null ? null : Math.round(hungUpAt - askedEndMs),
+  goodbye_reads: pick("gptlive_goodbye_read").map(l => l.ended),
+  cut_off: pick("gptlive_cut_off").map(l => l.cut),
+  end_detail: settled.end_detail,
 };
 const afterQuestion = (call?.turns ?? []).slice((call?.turns ?? []).findIndex(t => t.who === "them") + 1).filter(t => t.who === "reason").map(t => t.text).join(" ");
 out.answer = afterQuestion.trim();
@@ -158,7 +171,14 @@ const omariLeak = new RegExp(`2 and 5|two and five|protein|170${askedAboutOmari 
 const identityOn = (as === "user" ? process.env.REASON_CALL_IDENTITY === "on" : true);
 const maker = process.env.REASON_MAKER || "Saafi Interactions Lab";
 out.identity = process.env.REASON_CALL_IDENTITY;
-const ok = expect === "made"
+const said = out.voice_said.join(" ");
+const ok = expect === "where"
+  ? out.delegations > 0 && !/you['’]re Omari|the person I work for/i.test(said) && out.guard_trips === 0
+  : expect === "goodbye"
+  ? hungUpByReason && settled.end_reason === "end_call" && /mutual goodbye/.test(settled.end_detail ?? "") && gl.soundsLikeFarewell(said)
+  : expect === "room-bye"
+  ? !hungUpByReason && settled.end_reason !== "end_call"
+  : expect === "made"
   ? new RegExp(maker, "i").test(afterQuestion) && (as !== "user" || !omariLeak.test(out.voice_said.join(" "))) && out.guard_trips === 0
   : expect === "identity" && as === "third"
   ? /\bReason\b/.test(afterQuestion) && /\bOmari\b/.test(afterQuestion) && !leak.test(out.voice_said.join(" ")) && out.guard_trips === 0

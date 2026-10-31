@@ -118,3 +118,12 @@ prompts (text, ElevenLabs own/third-party, GPT-Live) don't either. Left on purpo
 `github.com/omarionnn/pa` on /privacy and /terms and in the web-lookup user-agent (a real link, not a
 credit), code comments, test fixtures, drives' throwaway "Omari" operator, `config.ownerName` default,
 LICENSE copyright, docs/usecases.json (internal).
+
+## Call 56 fixes (2026-10-31)
+
+Call 56 (291 s, 9 delegations): "Checking" before nearly every reply, "how are you?" not returned, "where am I?" answered with the identity line (its ASR heard "who"), flat "Bye." and the line stayed open until Omari hung up, and a "yeah" to Reason's own train-check offer answered "Okay." without reaching Reason (the after-call note caught it: timer 389, 7:45 pm ET).
+- Prompt: call 53's lines untouched; identity line now "Only if they ask who you are, who they are or their name … Where they are, or any other question, goes to Reason; if you're not sure whether they said who or where, ask." plus `CALL56_LINES` (4): holding phrase only for a real hand-off, small talk returned, a yes/no to Reason's offer passed on, warm brief sign-off.
+- Hang-up: the voice says its goodbyes itself, so Reason's `end_call` never came. A goodbye-sounding voice line (`soundsLikeFarewell`, a cue only) → `judgeEnding({kind:"goodbye"})` on claude-cli (askJson, haiku) → mutual goodbye → hang up once its SPEECH stops (the session streams silence between words, so `lastOutAt` never goes quiet; that left end_call on the 15 s cap). Words while it waits are read again ("bye — oh wait" calls it off). null (no CLI) never hangs up. Row: `end_reason=end_call`, detail `end_call (mutual goodbye)`. Log: `gptlive_goodbye_read`, `gptlive_goodbye_called_off`.
+- Cut-off: their words after Reason's goodbye are read (`kind:"cutoff"`; "bye"/"you too" = no); with no words, ≥300 ms of their speech in the last 1.5 s of a hang-up Reason made counts. `live.cutOff` → `ownerEvent` adds one "sounded like you were saying something as we hung up, what was it?" line (owner thread, normal after-call path, once). Log `gptlive_cut_off`.
+- `ownerEvent` (both voices): a yes to something offered for later that isn't set up → set it up now or say it couldn't.
+Drives (2026-10-31, all ok, `--cold`): `where.ulaw 35 --expect where` (went to Reason, get_location, no identity line); `bye.ulaw 30 --expect goodbye` (hung up 5.4 s after "okay, bye", read=true); `room.ulaw 30 --expect room-bye` ("bye Mum…" → not hung up).
