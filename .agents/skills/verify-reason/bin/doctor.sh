@@ -89,6 +89,8 @@ if [ "$TARGET" = "live" ]; then
   # ActiveState=inactive with no LastTrigger = never installed (see Deploying, step 3).
   say "watchdog timer" "$(section watchdog | tr '\n' ' ')"
   say "GET /alive" "$(section alive | head -c 200)"
+  # Restartable now? A call still settling counts as busy (call 57, 2026-10-31; bin/idle.sh).
+  say "idle to restart" "$("$(dirname "$0")/idle.sh" 2>&1 | tr '\n' ' ' | cut -c1-200)"
   say "repo HEAD" "$(git -C "$REPO" log -1 --format='%h %s' | cut -c1-70)"
   say "repo dirty" "$(git -C "$REPO" status --porcelain | wc -l | tr -d ' ') uncommitted file(s) — deploy only from a fresh checkout of origin/main"
 

@@ -203,7 +203,16 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    straight through Sendblue, so the first run against a healthy Reason must capture nothing —
    `journalctl -u reason-watchdog -n 5`).
 
-4. **Restart in its own ssh command, then prove a NEW process started AFTER the copy.** On
+4. **Restart only when idle — and idle includes a call still settling.** Run `bin/idle.sh --wait`
+   right before the restart and restart only on `IDLE`. Busy is a live call, a call that ended under
+   2 minutes ago, or one whose after-call steps began and did not finish (`settle_started_at` without
+   `settled_at`). On 2026-10-31 call 57 ended at 19:33:54 and a restart at 19:34:06 — "no live call" —
+   killed the turn sending Omari the summary and the audio. Since then a boot finishes such a call
+   once (`resumeSettles`, src/calls/postcall.js: `after-call: finished N call(s)` in the journal), but
+   that is the net, not the plan: the cut-off line ("you were saying something as I hung up") is lost
+   on a resume. Every builder waits.
+
+   **Then restart in its own ssh command, and prove a NEW process started AFTER the copy.** On
    2026-10-24 `… && systemctl restart reason` at the end of a chained ssh line was silently skipped
    twice: the files were new, the old process kept running the old code, and only the start time
    gave it away. A plain `kill` loses to `Restart=always`.

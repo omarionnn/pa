@@ -112,6 +112,11 @@ startOps({ runtime, router, log });
 const server = createServer({ router, runtime, log });
 server.listen(config.port, config.host, () => {
   console.log(`Reason is up · ${stamp()}`);
+  // A call whose summary and audio a restart cut off (call 57, 2026-10-31): sent now, once.
+  import("./calls/postcall.js")
+    .then(({ resumeSettles }) => resumeSettles({ runtime, log }))
+    .then((ids) => { if (ids.length) console.log(`  after-call: finished ${ids.length} call(s) a restart cut off (${ids.join(", ")})`); })
+    .catch((e) => console.error("after-call resume:", e?.message ?? e));
   // Reason's contact card, once, to everybody who has an account and has not had it. After the
   // port is open, because Sendblue fetches the card from this process the moment it is asked to.
   backfillContactCards({ router, log })
