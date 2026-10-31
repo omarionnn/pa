@@ -626,6 +626,21 @@ export const config = {
   elevenWebhookSecret: process.env.ELEVENLABS_WEBHOOK_SECRET || "",
   // One pinned voice, picked by the owner by listening. Never varies per call.
   elevenVoiceId: process.env.ELEVENLABS_VOICE_ID || "",
+  // GPT-Live as the voice instead (src/calls/gptlive.js), a side-by-side trial: REASON_CALL_VOICE=gptlive
+  // switches it on for the OPERATOR's own calls only. Unset, every call is ElevenLabs exactly as before.
+  // The line is Twilio Media Streams, so it needs the number's Twilio keys, which live in ElevenLabs
+  // and must be copied here by the owner; without them an owner call quietly stays on ElevenLabs.
+  callVoice: String(process.env.REASON_CALL_VOICE ?? "").trim().toLowerCase(),
+  gptliveModel: process.env.REASON_GPTLIVE_MODEL || "gpt-live-1",
+  // The closest built-in to the ElevenLabs pick (a young adult British woman): Marin, with the accent
+  // asked for in the live prompt. There is no British built-in voice.
+  gptliveVoice: process.env.REASON_GPTLIVE_VOICE || "marin",
+  twilioSid: process.env.TWILIO_ACCOUNT_SID || "",
+  twilioToken: process.env.TWILIO_AUTH_TOKEN || "",
+  twilioFrom: process.env.TWILIO_FROM_NUMBER || process.env.ELEVENLABS_PHONE_NUMBER || "",
+  // Where everybody who is not the operator is sent if the number's voice webhook is ever pointed at
+  // /calls/gptlive/inbound: the voice URL ElevenLabs set on the number, copied as it was.
+  gptliveInboundFallbackUrl: process.env.REASON_GPTLIVE_INBOUND_FALLBACK_URL || "",
   // Which speech model the agent is set to (2026-10-07 addendum, section 2). The model is an
   // AGENT-level setting on their side — their per-conversation overrides cover the voice id, the
   // prompt, the language and the speed, not the model — so this does not change a call; it is what

@@ -18,6 +18,7 @@ import { WebChannel } from "./channels/web.js";
 import { webOn } from "./web.js";
 import { chooseCallProvider } from "./calls/choose.js";
 import { createServer } from "./http.js";
+import { withGptLive } from "./calls/gptlive.js";
 import { makeDeliver } from "./deliver.js";
 import { backfillContactCards } from "./contact.js";
 import { endAllRemoteSignins } from "./signin-remote.js";
@@ -59,7 +60,9 @@ const router = new Router({ log });
 // with a BLAND_API_KEY; the default `fake` dials nothing and is registered switched OFF, because a
 // provider that reported itself live would make `capabilities` tell people Reason can ring a
 // restaurant, which it cannot. Tests switch it on themselves.
-const calls = chooseCallProvider();
+// With REASON_CALL_VOICE=gptlive the operator's own calls go out on GPT-Live instead
+// (src/calls/gptlive.js); unset, this is the chosen provider itself, untouched.
+const calls = withGptLive(chooseCallProvider());
 
 // How a message leaves — a reply back the way it came, and anything Reason starts itself (a
 // reminder, a task's news, a watcher) to the thread that conversation lives in. See src/deliver.js.
