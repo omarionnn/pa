@@ -20,6 +20,7 @@ import { esc } from "./render.js";
 import { webPage, typed, hand, action } from "./webkit.js";
 import { rowOut, sourceLabel } from "./webconvo.js";
 import { COMPOSE_CSS } from "./webcompose.js";
+import { VIEWER_CSS, VIEWER_JS } from "./webviewer.js";
 import { displayText } from "./webnotes.js";
 
 export const MAX_QUERY = 100;
@@ -312,7 +313,7 @@ export function renderHistory({ account, query = {}, now = clock.now() }) {
       + `<main class="hist day" aria-labelledby="h-h"><h1 id="h-h" class="h1">${esc(dayName(day, now))}</h1>`
       + `<ol class="lines">${lines.map(m => `<li class="msg ${m.role === "user" ? "you" : "re"}" id="m-${m.id}">${m.html}</li>`).join("")}</ol></main>`
       + `<div class="tochat"><p>To change something, tell Reason.</p>${action("Go to chat", { href: "/web?thread" })}</div>`;
-    return webPage({ title: `Reason — ${dayName(day, now)}`, body, css: COMPOSE_CSS + CSS, script: JS, foot: "" });
+    return webPage({ title: `Reason — ${dayName(day, now)}`, body, css: COMPOSE_CSS + VIEWER_CSS + CSS, script: JS + VIEWER_JS, foot: "" });
   }
   if (query.month != null && query.month !== "") {
     if (!month) return null;

@@ -30,6 +30,7 @@ import { hearingStatus } from "../voice.js";
 import { readLine, NOTES_CSS } from "./webnotes.js";
 import { sentFile } from "../sentfiles.js";
 import { meta as uploadMeta } from "../webuploads.js";
+import { viewOf, viewSrc } from "./webviewer.js";
 
 const PLUS_SVG = `<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>`;
 const MIC_SVG = `<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>`;
@@ -62,7 +63,8 @@ export function mediaOut(row, conversationId) {
     const up = uploadIdOf(x?.url);
     // A file Reason sent has no address on the row; it opens from where the send read it (src/sentfiles.js).
     // A voice note Reason spoke or a call's recording is one too (audio roots, src/sentfiles.js).
-    const sent = !x?.url && i === 0 && row.outbox_id && (kind === "file" || kind === "voice") ? sentFile(conversationId, row.id) : null;
+    // A picture Reason sent as a file (a screenshot, a drawn image) opens the same way, from the same roots.
+    const sent = !x?.url && i === 0 && row.outbox_id ? sentFile(conversationId, row.id) : null;
     const src = x?.url ? (up ? uploadPath(up, name) : `/web/media/m/${Number(row.id)}/${i}`) : sent ? `/web/media/m/${Number(row.id)}/0` : "";
     let size = sent?.size ?? null;
     if (up && size == null) { try { size = Number(uploadMeta(up)?.bytes) || null; } catch { /* the size is a nicety */ } }
@@ -75,7 +77,7 @@ export function mediaOut(row, conversationId) {
         seconds ||= Number(it?.seconds) || null;
       } catch { /* the words are a nicety; the note still plays */ }
     }
-    return { kind, name, src, ...(x?.choice ? { choice: true } : {}), ...(sent?.callId ? { call: true } : {}), label: slipLabel({ name, kind: String(x?.kind ?? ""), pages: Number(x?.pages) || null }), size, pages: Number(x?.pages) || null, seconds: seconds ? Math.round(seconds) : null, transcript };
+    return { kind, name, src, mime: String(sent?.mime ?? x?.mimeType ?? ""), ...(x?.choice ? { choice: true } : {}), ...(sent?.callId ? { call: true } : {}), label: slipLabel({ name, kind: String(x?.kind ?? ""), pages: Number(x?.pages) || null }), size, pages: Number(x?.pages) || null, seconds: seconds ? Math.round(seconds) : null, transcript };
   });
 }
 
@@ -145,16 +147,21 @@ export function fileChip(x) {
   const opens = /^(PDF|TXT|PNG|JPE?G|GIF|WEBP)$/.test(ext);
   const facts = [ext || "FILE", x.pages ? `${x.pages} ${x.pages === 1 ? "PAGE" : "PAGES"}` : "", sizeOf(x.size).toUpperCase()].filter(Boolean).join(" · ");
   const inner = `${DOC_SVG(esc(ext.slice(0, 4)))}<span class="fc-t"><span class="fn">${esc(name)}</span><span class="fs">${esc(facts)}${x.src ? ` · ${opens ? "OPEN" : "DOWNLOAD"}` : ""}</span></span>`;
+  // A tap opens it in the viewer over the thread (src/pages/webviewer.js); the address stays the
+  // file's own, for a new tab or a page with no script.
+  const view = viewOf(name, x.mime);
   return x.src
-    ? `<a class="slip fslip fchip" href="${esc(x.src)}" target="_blank" rel="noopener"${opens ? "" : ` download="${esc(name)}"`} aria-label="${esc(`${opens ? "Open" : "Download"} ${name}${x.size ? `, ${sizeOf(x.size)}` : ""}`)}">${inner}</a>`
+    ? `<a class="slip fslip fchip" href="${esc(x.src)}" target="_blank" rel="noopener"${opens ? "" : ` download="${esc(name)}"`} data-view="${view}" data-src="${esc(view === "image" ? viewSrc(x.src, name) : x.src)}" data-name="${esc(name)}"${x.size ? ` data-size="${esc(sizeOf(x.size).toUpperCase())}"` : ""} aria-haspopup="dialog" aria-label="${esc(`${opens ? "Open" : "Download"} ${name}${x.size ? `, ${sizeOf(x.size)}` : ""}`)}">${inner}</a>`
     : `<span class="slip fslip fchip">${inner}</span>`;
 }
 
 /** The photos, slips and play control for one line (4B; sheet-uploads 3D). A file you sent is a slip that opens. */
 export function mediaHtml(m) {
   const mine = m.role === "user";
+  // A tap opens the photo in the viewer (src/pages/webviewer.js); the link keeps the original for
+  // Download and a new tab. A HEIC is shown as the JPEG the server makes of it.
   const photos = m.media.filter(x => x.kind === "photo").map(x => x.src
-    ? `<a class="photo${x.choice ? " choice" : ""}" href="${esc(x.src)}" target="_blank" rel="noopener"><img src="${esc(x.src)}" alt="${mine ? "Photo you sent" : "Photo from Reason"}" loading="lazy" decoding="async"></a>`
+    ? `<a class="photo${x.choice ? " choice" : ""}" href="${esc(x.src)}" target="_blank" rel="noopener" data-view="image" data-src="${esc(viewSrc(x.src, x.name))}" data-name="${esc(shownName(x.name))}"${x.size ? ` data-size="${esc(sizeOf(x.size).toUpperCase())}"` : ""} aria-haspopup="dialog"><img src="${esc(viewSrc(x.src, x.name))}" alt="${mine ? "Photo you sent" : "Photo from Reason"}" loading="lazy" decoding="async"></a>`
     : `<div class="photo" role="img" aria-label="${mine ? "Photo you sent" : "Photo from Reason"}"><span class="lbl">PHOTO</span></div>`).join("");
   const files = m.media.filter(x => x.kind === "file").map(fileChip).join("");
   const voice = m.media.find(x => x.kind === "voice");
@@ -457,7 +464,7 @@ function clk(s){s=Math.max(0,Math.round(s||0));return Math.floor(s/60)+':'+('0'+
 // A message with files, drawn the moment it's sent (3D / 4D): photos framed, slips that open, a voice note's words then ▶.
 R.drawFiles=function(li,p){var fs=p.files||[],v=null;
 fs.forEach(function(f){if(f.kind==='image'){var a=document.createElement('div');a.className='photo';var im=document.createElement('img');im.alt='Photo you sent';im.src=(f.id&&blobs[f.id])||f.src||f.preview||'';a.appendChild(im);li.appendChild(a)}});
-fs.forEach(function(f){if(f.kind==='voice'){v=f;return}if(f.kind==='image')return;var s=document.createElement(f.src?'a':'span');s.className='slip fslip';if(f.src){s.href=f.src;s.target='_blank';s.rel='noopener'}var n=document.createElement('span');n.className='fn';n.textContent=f.label||String(f.name||'').toUpperCase();s.appendChild(n);if(f.src){var o=document.createElement('span');o.className='fs';o.textContent='TAP TO OPEN';s.appendChild(o)}li.appendChild(s)});
+fs.forEach(function(f){if(f.kind==='voice'){v=f;return}if(f.kind==='image')return;var s=document.createElement(f.src?'a':'span');s.className='slip fslip';if(f.src){s.href=f.src;s.target='_blank';s.rel='noopener';s.dataset.view=window.reasonViewKind?reasonViewKind(f.name):'file';s.dataset.name=f.name||''}var n=document.createElement('span');n.className='fn';n.textContent=f.label||String(f.name||'').toUpperCase();s.appendChild(n);if(f.src){var o=document.createElement('span');o.className='fs';o.textContent='TAP TO OPEN';s.appendChild(o)}li.appendChild(s)});
 if(v){if(p.text){var w=document.createElement('p');w.className='said hand';w.textContent=p.text;li.appendChild(w)}var b=document.createElement('button');b.type='button';b.className='vplay';b.dataset.src=(v.id&&blobs[v.id])||v.src||v.preview||'';b.setAttribute('aria-label','Play voice note'+(v.seconds?', '+v.seconds+' seconds':''));b.innerHTML=${JSON.stringify(PLAY_SVG + WAVE_SVG + `<span class="vt"></span>`)};b.querySelector('.vt').textContent=v.seconds?clk(v.seconds):'';li.appendChild(b)}
 else if(p.text){var s=document.createElement('div');s.className='said';s.textContent=p.text;li.appendChild(s)}};
 form.addEventListener('submit',function(e){if(files.some(function(f){return f.state==='up'})){e.preventDefault();e.stopImmediatePropagation();Promise.all(files.map(function(f){return f.wait})).then(function(){if(files.some(function(f){return f.state==='ready'})||box.value.trim())form.requestSubmit?form.requestSubmit():form.dispatchEvent(new Event('submit',{cancelable:true}))})}},true);

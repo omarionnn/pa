@@ -29,6 +29,7 @@ export const MIME_BY_EXT = {
   ".webp": "image/webp", ".heic": "image/heic", ".zip": "application/zip", ".ics": "text/calendar", ".vcf": "text/vcard",
   ".caf": "audio/x-caf", ".m4a": "audio/mp4", ".mp3": "audio/mpeg", ".wav": "audio/wav", ".aac": "audio/aac",
   ".ogg": "audio/ogg", ".opus": "audio/ogg", ".amr": "audio/amr", ".aiff": "audio/aiff",
+  ".mov": "video/quicktime", ".mp4": "video/mp4", ".m4v": "video/x-m4v",
 };
 export const mimeOf = (name, given = "") => {
   const g = String(given || "").toLowerCase();

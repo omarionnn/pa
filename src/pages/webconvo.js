@@ -44,6 +44,7 @@ import { ogMargin, ogVersion, ogTabMain, OG_TAB_LIVE_JS, homeRows, needsYes, cou
 import { SECURITY_HEADERS, sameOrigin, sessionAccount, greeting, WEB_AWAY_MS } from "./websignin.js";
 import { webPage, wordmark, label, hand, action, typed, stamp, onIt, approvalCard, themeSwitch, bubble, OG_KEY } from "./webkit.js";
 import { mediaOut, mediaHtml, composerHtml, listeningHtml, composeBoot, COMPOSE_CSS, COMPOSE_JS } from "./webcompose.js";
+import { VIEWER_CSS, VIEWER_JS } from "./webviewer.js";
 import { prepareSend } from "../webmedia.js";
 import * as settle from "../settle.js";
 import { doingFor, doingEvents } from "../doing.js";
@@ -949,7 +950,7 @@ export function renderConversation({ account, csrf, lines, more, firstVisit = fa
     + tabBar("chat", count) + listeningHtml();
   // Saved's FIND IT IN THE CHAT → (src/pages/websaved.js): the thread opened at that message, scrolled to it.
   const toFound = found ? `(function(){var e=document.getElementById('m-${Number(found)}');if(e)e.scrollIntoView({block:'center'})})();` : "";
-  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS + (replying ? REPLY_CSS : ""), script: boot({ csrf, lines, more, conversationId: conv, deferred, og: ogVersion(ogMargin({ items, approvals, back })), chat, about, away: away ? { text: away, day: dayKey(now) } : null }) + composeBoot() + NINE_D_JS + (replying ? REPLY_JS : "") + CLIENT_JS + COMPOSE_JS + toFound, bodyClass: "has-tabs", loader: !found });
+  return webPage({ title: "Reason", body, css: CSS + COMPOSE_CSS + VIEWER_CSS + (replying ? REPLY_CSS : ""), script: boot({ csrf, lines, more, conversationId: conv, deferred, og: ogVersion(ogMargin({ items, approvals, back })), chat, about, away: away ? { text: away, day: dayKey(now) } : null }) + composeBoot() + NINE_D_JS + (replying ? REPLY_JS : "") + CLIENT_JS + COMPOSE_JS + VIEWER_JS + toFound, bodyClass: "has-tabs", loader: !found });
 }
 
 /** The foot of an earlier Web-only chat, in the composer's place: it is read-only, and the thread is where to go on. */
