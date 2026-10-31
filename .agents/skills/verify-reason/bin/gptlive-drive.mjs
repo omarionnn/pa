@@ -8,7 +8,13 @@
 // Run on the Hetzner box, where OPENAI_API_KEY and the claude-cli login live, from a copy of the code:
 //
 //   REASON_DB_PATH=$(mktemp -d)/gl.db OPENAI_API_KEY=… CLAUDE_CODE_OAUTH_TOKEN=… \
-//     node .agents/skills/verify-reason/bin/gptlive-drive.mjs caller.ulaw [seconds]
+//     node .agents/skills/verify-reason/bin/gptlive-drive.mjs caller.ulaw [seconds] [--expect identity] [--cold] [--ring ms]
+//
+// By default the call is placed the way the live one is: the voice is warmed up (`gptlive.prewarm`) and
+// the phone "rings" for --ring ms (5000) before the stream starts. --cold skips that (the old path), for
+// a before/after. Every run prints first_voice_ms: stream start to the first frame of speech the caller
+// got (call 53, before the warm-up: 3,100 ms). --expect identity asks "do you know who I am? what's my
+// name?" and passes only if the voice answers with the name, warmly, straight from its instructions.
 //
 // caller.ulaw is raw 8 kHz mono μ-law (Mac: say -o q.aiff "…" && ffmpeg -i q.aiff -ar 8000 -ac 1 -f mulaw q.ulaw).
 // Prints one JSON line: what Reason was asked, what it answered, what the voice said, what the
@@ -47,6 +53,8 @@ await voice.prime();
 const C = config.ownerConversation;
 db.saveConversation(C, []);
 db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025550100", name: "Omari", isOperator: true });
+// A little of what Reason knows about him, as the real profile block reads, so the voice has it to hand.
+db.saveProfile(C, "**Omari**\n- Commutes to work on the 2 and 5 trains\n- Has a daily protein target of 170g", []);
 const row = db.createCall(C, {
   provider: "gptlive", toNumber: "+12025550100", isOwner: true, goal: "a test call from the verify drive",
   facts: [], announcement: "Hey Omari, it's Reason.", state: "placing",
@@ -65,13 +73,29 @@ await new Promise(r => server.listen(0, "127.0.0.1", r));
 const port = server.address().port;
 
 const audio = readFileSync(process.argv[2]);
-const seconds = Number(process.argv[3] || 25);
+const seconds = Number(process.argv[3] && !process.argv[3].startsWith("--") ? process.argv[3] : 25);
+const flag = (k) => process.argv.indexOf(k);
+const expect = flag("--expect") > 0 ? process.argv[flag("--expect") + 1] : "delegation";
+const cold = flag("--cold") > 0;
+const ringMs = flag("--ring") > 0 ? Number(process.argv[flag("--ring") + 1]) : 5000;
+if (!cold) {
+  gl.prewarm(db.getCall(C, row.id), { log });
+  await new Promise(r => setTimeout(r, ringMs));
+}
 const heardAt = [];
+const speechAt = [];
 const t0 = Date.now();
+let startAt = 0;
 const twilio = new WebSocket(`ws://127.0.0.1:${port}${gl.STREAM_PATH}${row.webhook_token}`);
-twilio.onmessage = (m) => { const e = JSON.parse(String(m.data)); if (e.event === "media") heardAt.push(Date.now() - t0); };
+twilio.onmessage = (m) => {
+  const e = JSON.parse(String(m.data));
+  if (e.event !== "media") return;
+  heardAt.push(Date.now() - t0);
+  if (gl.hasSpeech(e.media.payload)) speechAt.push(Date.now() - startAt);
+};
 await new Promise((r, j) => { twilio.onopen = r; twilio.onerror = () => j(new Error("the stream socket did not open")); });
 twilio.send(JSON.stringify({ event: "connected" }));
+startAt = Date.now();
 twilio.send(JSON.stringify({ event: "start", start: { streamSid: "MZdrive", callSid: "CAdrive" } }));
 // 3 s of line, the question, then silence — in real time, as Twilio sends it.
 const frames = [];
@@ -92,6 +116,9 @@ while (Date.now() < until && db.getCall(C, row.id)?.state === "in_progress") awa
 server.close();
 
 const settled = db.getCall(C, row.id);
+// When their question ended, and when the first speech after it reached them.
+const askedEndMs = 3000 + (audio.length / 8);
+const answerAt = speechAt.find(ms => ms > askedEndMs + 200);
 const turns = db.callTurns(row.id);
 const pick = (k) => lines.filter(l => k in l);
 const out = {
@@ -101,11 +128,18 @@ const out = {
   voice_said: call?.turns.filter(t => t.who === "reason" && !t.seeded).map(t => t.text.trim()) ?? [],
   caller_said: call?.turns.filter(t => t.who === "them").map(t => t.text.trim()) ?? [],
   audio_frames_to_caller: heardAt.length,
+  warm: !cold, ring_ms: cold ? 0 : ringMs,
+  first_voice_ms: speechAt[0] ?? null,
+  answer_after_question_ms: answerAt == null ? null : Math.round(answerAt - askedEndMs),
   turns: turns.map(t => ({ voice: t.voice, heard_ms: t.first_content_ms, real_ms: t.first_real_ms, total_ms: t.total_ms, tools: t.tools })),
   row: { state: settled.state, provider: settled.provider, end_reason: settled.end_reason, duration_s: settled.duration_s, cost_cents: settled.cost_cents, recording: settled.recording_state, tts_model: settled.tts_model },
   errors: pick("gptlive_error"),
 };
-console.log(JSON.stringify(out, null, 1));
-const ok = out.delegations > 0 && out.results.some(r => r.chars > 0) && turns.some(t => Number.isFinite(t.first_real_ms));
+const afterQuestion = (call?.turns ?? []).slice((call?.turns ?? []).findIndex(t => t.who === "them") + 1).filter(t => t.who === "reason").map(t => t.text).join(" ");
+out.answer = afterQuestion.trim();
+const ok = expect === "identity"
+  ? /\bOmari\b/.test(afterQuestion) && !/don['’]t know|not sure who/i.test(afterQuestion) && out.guard_trips === 0 && (cold || (out.first_voice_ms ?? Infinity) < 600)
+  : out.delegations > 0 && out.results.some(r => r.chars > 0) && turns.some(t => Number.isFinite(t.first_real_ms));
+console.log(JSON.stringify({ expect, ...out }, null, 1));
 console.log(ok ? "ok" : "FAIL");
 process.exit(ok ? 0 : 1);

@@ -27,7 +27,7 @@ import { writeFileSync } from "node:fs";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { config, clock, normalizeNumber } from "../config.js";
-import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER } from "./voice.js";
+import { llmRequest, withoutSilenceMarker, ownerProfileNote, METER_KINDS, THINKING_FILLER } from "./voice.js";
 import { recordingFileFor } from "./recordings.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
@@ -63,31 +63,88 @@ export function missingForGptlive() {
 
 // ---------- what the voice is told ----------
 
+/** The most of what Reason knows about the owner that goes into the voice's instructions. */
+const ABOUT_MAX = 3000;
+
 /**
- * The live prompt. Short on purpose (their guidance: keep task rules in the backend). The rules that
- * matter are the delegation rule — everything beyond small talk goes to Reason — and the honesty rule,
- * which code also enforces (`claimsDone` and the guard in `GptLiveCall`).
+ * Who is on the line, for the voice's instructions. The owner's identity and what Reason knows about
+ * them (the same profile block an owner call's Reason turn is shown, `ownerProfileNote`) only on the
+ * OPERATOR's own owner call — the only call GPT-Live carries today — and nothing of it for anyone else.
  */
-export function liveInstructions({ name = "them" } = {}) {
+export function whoFor(call) {
+  let me = null;
+  try { me = accounts.ownerOf(call.conversation_id); } catch { /* unknown conversation */ }
+  const name = me?.name || "them";
+  const owner = !!call.is_owner && me?.isOperator === true;
+  const rang = call.direction === "in" ? "they" : "you";
+  if (!owner) return { name, owner: false, city: "", about: "", rang };
+  let about = "";
+  try { about = ownerProfileNote(call.conversation_id); } catch { /* no profile is no profile */ }
+  if (about.length > ABOUT_MAX) about = `${about.slice(0, ABOUT_MAX).replace(/\n[^\n]*$/, "")}\n…`;
+  return { name, owner: true, city: config.ownerCity || "", about, rang };
+}
+
+/**
+ * The live prompt. Short on purpose (their guidance: keep task rules in the backend). Three parts:
+ * who it is and who it is talking to (answered straight from here, never a round-trip to the backend),
+ * how it sounds, and the rules — the delegation rule (everything beyond small talk goes to Reason) and
+ * the honesty rule, which code also enforces (`claimsDone` and the guard in `GptLiveCall`).
+ *
+ * Omari's first GPT-Live call (call 53, 2026-10-31): "a big upgrade, really felt like a conversation",
+ * but "didn't sound very warm", and "do you know who I am" went to the backend and came back 3.8 s
+ * later after "let me just check that quickly".
+ */
+export function liveInstructions({ name = "them", owner = false, city = "", about = "", rang = "you", accent = accentFor(config.gptliveVoice) } = {}) {
+  const who = owner
+    ? [
+      `You are Reason: ${name}'s own personal assistant. You live in ${name}'s texts, you handle things for them, and right now you are on the phone with them.`,
+      `The person on this call is ${name}: your owner, the person you work for. You know them well and you're always glad to talk to them.${city ? ` They are in ${city}.` : ""}`,
+      rang === "they" ? `${name} rang you.` : `You rang ${name} (Reason placed this call); they did not ring you.`,
+      `If they ask who you are, you are Reason, their assistant. If they ask whether you know who they are, what their name is, or who they are to you, answer straight away and warmly, in your own words: they are ${name}, the person you work for. Never say you don't know, and never send these questions to the backend.`,
+      `You were built by Omarion Nyarko; that is the answer if they ask who made you.`,
+      ...(about ? [
+        `What you already know about ${name}, from your conversations together. Use it naturally when it fits; never recite it, and never read out an address or a number unless they ask for it:`,
+        about,
+        `All of that is for ${name} only. If somebody else comes on the line, or the person says they are not ${name}, share none of it and hand what they ask to the backend.`,
+      ] : []),
+    ]
+    : [`You are Reason, ${name}'s personal assistant, on a phone call with ${name}.`];
   return [
-    `You are the voice of Reason, ${name}'s personal assistant, on a phone call with ${name}.`,
-    "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.",
-    `You are only the voice. Reason, the backend, does all of the thinking and every action: it has ${name}'s messages, calendar, memory, tasks and tools.`,
-    "Delegate to the backend for every question, request, instruction or opinion — anything beyond a greeting, a brief listening sound, or asking them to repeat something.",
-    "Never answer from your own knowledge, and never invent a fact, time, name, number or price.",
-    "While the backend works, a very short acknowledgement is fine. Do not fill the silence with guesses.",
+    ...who,
+    "",
+    "How you sound:",
+    `Warm, relaxed and friendly, like a close friend who's happy they called. Smile while you talk.${accent ? ` ${accent}` : ""}`,
+    "Casual, everyday words and contractions: I'm, you're, it's, gonna, let's. Short sentences at an easy pace, with the little reactions people really make: oh nice, ha, fair enough, ah gotcha, mm.",
+    "A bit of light humour when the moment is light; drop it straight away when they're stressed or the news is bad.",
+    "Never corporate, scripted or robotic: no \"certainly\", \"absolutely\", \"I'd be happy to help\", \"is there anything else I can help you with\", no lists read out, no repeating their question back to them.",
+    "",
+    "What you do:",
+    `You are the voice. The backend, Reason's brain, does the thinking and every action: it has ${name}'s messages, calendar, memory, tasks and tools.`,
+    "Delegate to the backend for every question, request, instruction or opinion — anything beyond a greeting, small talk, who you are and who they are, a brief listening sound, or asking them to repeat something.",
+    "Never answer a question about the world, their plans or their stuff from your own knowledge, and never invent a fact, time, name, number or price.",
+    "While the backend works, a very short, natural acknowledgement is fine. Do not fill the silence with guesses.",
     "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
-    "When a backend result arrives, say it naturally and briefly, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
+    "When a backend result arrives, say it in your own warm, natural words and keep it brief, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
     "Never read out links, codes, IDs or anything in square brackets, and never say the words NO_REPLY.",
     "Stop speaking when they talk over you, and listen.",
   ].join("\n");
 }
 
+/**
+ * The accent line for a voice. The voices with a regional accent of their own (vesper British, willow
+ * Irish, and so on) are left alone; the neutral ones are asked for a light British one. Live since
+ * 2026-10-31: REASON_GPTLIVE_VOICE=willow, a natural recording, picked for warmth over marin-asked-to-
+ * sound-British, which Omari found not warm on call 53 (warmth wins over accent, his call).
+ */
+export function accentFor(voice) {
+  return ["marin", "cedar"].includes(String(voice ?? "")) ? "A light, natural British (London) accent." : "";
+}
+
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, greeting = "" } = {}) {
+export function sessionConfig({ name, owner = false, city = "", about = "", rang = "you", greeting = "" } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: liveInstructions({ name }),
+    instructions: liveInstructions({ name, owner, city, about, rang }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     delegation: { type: "client" },
   };
@@ -264,6 +321,162 @@ export function openLiveSocket({ url = LIVE_URL, key = config.openaiKey } = {}) 
   };
 }
 
+// ---------- warming the voice up while it rings ----------
+
+/** A μ-law sample this loud or louder is speech, not the silence the session streams between words. */
+const SPEECH_PEAK = 1500;
+
+/** Does this chunk of μ-law audio carry speech? */
+export function hasSpeech(b64) {
+  for (const u of Buffer.from(String(b64 ?? ""), "base64")) {
+    const s = ulawToPcm(u);
+    if (s >= SPEECH_PEAK || s <= -SPEECH_PEAK) return true;
+  }
+  return false;
+}
+
+/** 100 ms of μ-law silence: what the warm session is fed so its clock runs before anyone is on the line. */
+const SILENCE_100MS = Buffer.alloc(800, 0xff).toString("base64");
+/** The greeting is over once the voice has been quiet this long after speaking; the session is then paused. */
+export const WARM_QUIET_MS = 700;
+/** Fed this long and still no greeting: say it again once (the docs: the greeting is never guaranteed). */
+export const WARM_RETRY_MS = 4000;
+/** And this long: stop feeding it, so an unanswered phone costs seconds, not minutes. */
+export const WARM_FEED_MAX_MS = 9000;
+/** Nobody picked up within this: the session is closed. Twilio gives up ringing at 30 s. */
+export const WARM_MAX_MS = 60_000;
+
+/** Warm sessions waiting for their call to be answered, by call id. */
+const warm = new Map();
+
+/**
+ * A GPT-Live session opened while the phone is still ringing, so Reason speaks the moment it is picked up.
+ *
+ * Call 53 (2026-10-31): Omari answered, said "hello, hello", and heard nothing for 3.1 s — the session
+ * was only opened once Twilio's stream started, then took ~1 s to start and ~0.8 s more to greet. Now
+ * the session starts when the call is placed, with the greeting asked for; a GPT-Live session's clock
+ * only runs on input audio (measured: no input, no greeting), so it is fed silence until the greeting
+ * has been said, then paused. Its audio is kept, and played into the line the moment the stream starts.
+ *
+ * Only for a call that opens with a greeting — an owner call Reason placed. A call that opens silent (a
+ * third-party call, #232) never reaches GPT-Live and never gets one of these.
+ */
+export class WarmSession {
+  constructor({ row, openLive = openLiveSocket, log = () => {}, now = () => Date.now(), timers = globalThis }) {
+    this.row = row;
+    this.log = log;
+    this.now = now;
+    this.timers = timers;
+    this.who = whoFor(row);
+    this.greeting = String(row.announcement ?? "");
+    this.openedAt = now();
+    this.audio = [];
+    this.text = "";
+    this.spoke = false;
+    this.lastSpeechAt = 0;
+    this.feeding = false;
+    this.fedMs = 0;
+    this.retried = false;
+    this.started = false;
+    this.closed = false;
+    this.call = null;
+    this.live = openLive();
+    this.live.on("open", () => {
+      this.live.send({ type: "session.start", event_id: `start_${row.id}`, session: sessionConfig({ ...this.who, greeting: this.greeting }) });
+    });
+    this.live.on("event", (e) => (this.call ? this.call.fromLive(e) : this.take(e)));
+    this.live.on("close", (code) => (this.call ? this.call.liveClosed(code) : this.drop(`closed (${code})`)));
+    this.expiry = timers.setTimeout(() => this.drop("never answered"), WARM_MAX_MS);
+  }
+
+  take(e) {
+    if (e.type === "session.started") {
+      this.started = true;
+      this.sessionId = e.session?.id ?? "";
+      this.startedAt = this.now();
+      this.live.send({ type: "session.commentary.append", event_id: `greet_${this.row.id}`, delegation_id: null, content: greetingInstruction(this.greeting) });
+      this.feeding = true;
+      this.feed();
+    } else if (e.type === "session.output_audio.delta") {
+      const speech = hasSpeech(e.delta);
+      if (speech) { this.spoke = true; this.lastSpeechAt = this.now(); }
+      if (this.spoke) this.audio.push(e.delta);
+    } else if (e.type === "session.output_transcript.delta") {
+      this.text += String(e.delta ?? "");
+    } else if (e.type === "session.usage.updated" && Number.isFinite(e.usage?.seconds)) {
+      this.seconds = e.usage.seconds;
+    } else if (e.type === "error") {
+      this.log({ gptlive_error: this.row.id, warm: true, code: e.error?.code ?? "", message: String(e.error?.message ?? "").slice(0, 200) });
+    }
+  }
+
+  /** 100 ms of silence in, every 100 ms, until the greeting is said (or it is plainly not coming). */
+  feed() {
+    if (!this.feeding || this.closed || this.call) return;
+    const t = this.now();
+    if (this.spoke && t - this.lastSpeechAt >= WARM_QUIET_MS) return this.pause("greeted");
+    if (this.fedMs >= WARM_FEED_MAX_MS) return this.pause("no greeting");
+    if (!this.spoke && !this.retried && this.fedMs >= WARM_RETRY_MS) {
+      this.retried = true;
+      this.live.send({ type: "session.commentary.append", event_id: `greet2_${this.row.id}`, delegation_id: null, content: greetingInstruction(this.greeting) });
+    }
+    this.live.send({ type: "session.input_audio.append", audio: SILENCE_100MS });
+    this.fedMs += 100;
+    this.feedTimer = this.timers.setTimeout(() => this.feed(), 100);
+  }
+
+  pause(why) {
+    this.feeding = false;
+    this.log({ gptlive_warm: this.row.id, why, ready_ms: this.now() - this.openedAt, spoke: this.spoke, said: this.text.trim().slice(0, 120) });
+  }
+
+  /** The call picked up: everything from here is the call's. */
+  handOver(call) {
+    this.timers.clearTimeout(this.expiry);
+    if (this.feedTimer) this.timers.clearTimeout(this.feedTimer);
+    this.feeding = false;
+    this.call = call;
+  }
+
+  /** Nobody is coming: close it. */
+  drop(why) {
+    if (this.closed || this.call) return;
+    this.closed = true;
+    this.feeding = false;
+    this.timers.clearTimeout(this.expiry);
+    if (this.feedTimer) this.timers.clearTimeout(this.feedTimer);
+    if (warm.get(this.row.id) === this) warm.delete(this.row.id);
+    try { if (this.started) this.live.send({ type: "session.close", event_id: `close_${this.row.id}` }); } catch { /* going anyway */ }
+    this.timers.setTimeout(() => this.live.close(), 1000);
+    this.log({ gptlive_warm_dropped: this.row.id, why });
+  }
+}
+
+/** Start the voice for a call about to be placed, if it opens with a greeting. Never throws. */
+export function prewarm(row, { openLive = openLiveSocket, log = () => {}, now, timers } = {}) {
+  try {
+    if (!row?.id || !String(row.announcement ?? "").trim() || warm.has(row.id)) return null;
+    const w = new WarmSession({ row, openLive, log, ...(now ? { now } : {}), ...(timers ? { timers } : {}) });
+    warm.set(row.id, w);
+    return w;
+  } catch (e) {
+    log({ gptlive_warm_failed: row?.id ?? null, why: (e?.message ?? String(e)).split("\n")[0] });
+    return null;
+  }
+}
+
+/** The warm session for a call, taken (it is the call's from now on), or null. */
+export function takeWarm(callId) {
+  const w = warm.get(callId);
+  warm.delete(callId);
+  return w && !w.closed ? w : null;
+}
+
+/** The call is over before it was answered (busy, no answer, failed). */
+export function dropWarm(callId, why) {
+  warm.get(callId)?.drop(why);
+}
+
 // ---------- one call ----------
 
 /**
@@ -275,16 +488,18 @@ export function openLiveSocket({ url = LIVE_URL, key = config.openaiKey } = {}) 
  * resolves `{ text, tools, endCall, skip }` (see `readTurn`).
  */
 export class GptLiveCall {
-  constructor({ call, twilio, openLive = openLiveSocket, brain = null, log = () => {}, now = () => Date.now(), finish = async () => {}, timers = globalThis }) {
+  constructor({ call, twilio, openLive = openLiveSocket, warm = null, brain = null, log = () => {}, now = () => Date.now(), finish = async () => {}, timers = globalThis }) {
     this.call = call;
     this.twilio = twilio;
     this.openLive = openLive;
+    this.warm = warm;
     this.brain = brain ?? ((messages) => reasonTurn({ call, messages, log }));
     this.log = log;
     this.now = now;
     this.finishCall = finish;
     this.timers = timers;
-    this.name = accounts.ownerOf(call.conversation_id)?.name || "them";
+    this.who = whoFor(call);
+    this.name = this.who.name;
     this.greeting = call.direction === "in"
       ? openingLineFor({ person: accounts.ownerOf(call.conversation_id), conversationId: call.conversation_id })
       : String(call.announcement ?? "");
@@ -321,6 +536,7 @@ export class GptLiveCall {
     if (m.event === "start") {
       this.streamSid = m.start?.streamSid ?? m.streamSid ?? null;
       this.callSid = m.start?.callSid ?? "";
+      this.streamStartAt = this.now();
       this.log({ gptlive_stream_start: this.call.id, sid: this.callSid });
       this.connect();
     } else if (m.event === "media" && m.media?.payload) {
@@ -354,26 +570,50 @@ export class GptLiveCall {
     // The same ceiling an ElevenLabs call has (the agent's own, `callPlatformCapSeconds`), so a call
     // never outlives the lost-call sweep's window and is written off while it is still going.
     this.capTimer = this.timers.setTimeout(() => { this.endWhy = "duration_cap"; this.end("duration_cap").catch(() => {}); }, config.callPlatformCapSeconds * 1000);
+    const w = this.warm;
+    if (w && !w.closed && !w.call) return this.adopt(w);
     this.live = this.openLive();
     this.live.on("open", () => {
-      this.live.send({ type: "session.start", event_id: `start_${this.call.id}`, session: sessionConfig({ name: this.name, greeting: this.greeting }) });
+      this.live.send({ type: "session.start", event_id: `start_${this.call.id}`, session: sessionConfig({ ...this.who, greeting: this.greeting }) });
     });
     this.live.on("event", (e) => this.fromLive(e));
-    this.live.on("close", (code) => {
-      this.log({ gptlive_session_socket_closed: this.call.id, code });
-      if (!this.done) this.end(this.endWhy || `voice session closed (${code})`).catch(() => {});
-    });
+    this.live.on("close", (code) => this.liveClosed(code));
+  }
+
+  /**
+   * Take over the session warmed up while it rang (`WarmSession`): the greeting it has already said goes
+   * straight down the line, and from here on the session is this call's. A session that has not started
+   * yet, or has not finished greeting, carries on live — the rest of the greeting follows as it comes.
+   */
+  adopt(w) {
+    w.handOver(this);
+    this.live = w.live;
+    this.adopted = true;
+    if (w.started) this.onStarted(w.sessionId, { greet: false });
+    if (Number.isFinite(w.seconds)) this.seconds = w.seconds;
+    for (const delta of w.audio) this.audioOut(delta);
+    if (w.text) this.textOut(w.text);
+    this.log({ gptlive_warm_used: this.call.id, ready: !w.feeding && w.spoke, audio_ms: w.audio.reduce((n, d) => n + Buffer.from(d, "base64").length, 0) / 8, waited_ms: this.now() - w.openedAt });
+  }
+
+  liveClosed(code) {
+    this.log({ gptlive_session_socket_closed: this.call.id, code });
+    if (!this.done) this.end(this.endWhy || `voice session closed (${code})`).catch(() => {});
+  }
+
+  onStarted(sessionId, { greet = true } = {}) {
+    this.started = true;
+    this.sessionId = sessionId ?? "";
+    this.log({ gptlive_session: this.call.id, session: this.sessionId, warm: !!this.adopted });
+    try { db.updateCall(this.call.conversation_id, this.call.id, { tts_model: `${config.gptliveModel}/${config.gptliveVoice}` }); } catch { /* a label never breaks a call */ }
+    if (greet && this.greeting) this.live.send({ type: "session.commentary.append", event_id: `greet_${this.call.id}`, delegation_id: null, content: greetingInstruction(this.greeting) });
   }
 
   fromLive(e) {
     switch (e.type) {
       case "session.started":
-        this.started = true;
-        this.sessionId = e.session?.id ?? "";
-        this.log({ gptlive_session: this.call.id, session: this.sessionId });
-        try { db.updateCall(this.call.conversation_id, this.call.id, { tts_model: `${config.gptliveModel}/${config.gptliveVoice}` }); } catch { /* a label never breaks a call */ }
-        if (this.greeting) this.live.send({ type: "session.commentary.append", event_id: `greet_${this.call.id}`, delegation_id: null, content: greetingInstruction(this.greeting) });
-        return;
+        // An adopted session started before the call picked up; this is only ever a fresh one's.
+        return this.onStarted(e.session?.id, { greet: !this.adopted });
       case "session.output_audio.delta":
         return this.audioOut(e.delta);
       case "session.output_transcript.delta":
@@ -415,6 +655,11 @@ export class GptLiveCall {
       }
     }
     const buf = Buffer.from(b64, "base64");
+    if (this.firstVoiceMs == null && this.streamStartAt != null && hasSpeech(b64)) {
+      // How long the person who picked up waited for Reason's first word (call 53: 3.1 s).
+      this.firstVoiceMs = t - this.streamStartAt;
+      this.log({ gptlive_first_voice: this.call.id, ms: this.firstVoiceMs, warm: !!this.adopted });
+    }
     this.lastOutAt = t;
     this.tape.reason(buf);
     this.playheadAt = Math.max(this.playheadAt, t) + buf.length / 8;
@@ -600,10 +845,10 @@ export class GptLiveCall {
       turns, durationS: seconds,
       costCents: Math.round((seconds / 60) * CENTS_PER_MINUTE),
       termination: this.endWhy === "caller hung up" ? "hung up" : this.endWhy,
-      costRaw: JSON.stringify({ voice_seconds: seconds, cents_per_minute: CENTS_PER_MINUTE, session: this.sessionId ?? "", guard_trips: this.guardTrips }),
+      costRaw: JSON.stringify({ voice_seconds: seconds, cents_per_minute: CENTS_PER_MINUTE, session: this.sessionId ?? "", guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted }),
       recording, recordingWhy,
     };
-    this.log({ gptlive_call_ended: this.call.id, why: this.endWhy, seconds, delegations: this.delegations, guard_trips: this.guardTrips, closed: this.closedReason ?? "" });
+    this.log({ gptlive_call_ended: this.call.id, why: this.endWhy, seconds, delegations: this.delegations, guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted, closed: this.closedReason ?? "" });
     try { await this.finishCall(live); } catch (e) { this.log({ gptlive_settle_failed: this.call.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
   }
 }
@@ -694,7 +939,7 @@ export function stateFromTwilio(s) {
  * conversation here; `check` routes ids this file issued. With the flag unset this returns the inner
  * provider itself, so not even the wrapper is in the path.
  */
-export function withGptLive(inner, { fetchImpl = null } = {}) {
+export function withGptLive(inner, { fetchImpl = null, openLive: warmOpen = openLiveSocket, log: warmLog = () => {} } = {}) {
   if (config.callVoice !== "gptlive" || !inner) return inner;
   const live = new Map();
   const place = async (args) => {
@@ -703,12 +948,15 @@ export function withGptLive(inner, { fetchImpl = null } = {}) {
     if (missing.length) return inner.place(args);
     const row = db.getCall(args.conversationId, args.callId);
     if (!row?.webhook_token) return inner.place(args);
+    // The voice starts while Twilio dials, so its greeting is ready the moment the phone is picked up.
+    prewarm(row, { openLive: warmOpen, log: warmLog });
     const out = await twilioPost("/Calls.json", {
       To: args.to, From: config.twilioFrom, Twiml: streamTwiml(row),
       StatusCallback: `${config.publicUrl}${STATUS_PATH}${row.webhook_token}`,
       StatusCallbackEvent: ["initiated", "ringing", "answered", "completed"], StatusCallbackMethod: "POST",
       Timeout: 30,
     }, fetchImpl ? { fetchImpl } : {});
+    if (!out.ok || !out.json?.sid) dropWarm(row.id, "Twilio refused the call");
     if (!out.ok || !out.json?.sid) return { ok: false, error: `Twilio refused the call (${out.status}${out.json?.message ? `: ${out.json.message}` : ""})` };
     live.set(out.json.sid, "placing");
     return { ok: true, externalId: `${EXT}${out.json.sid}`, state: "placing", provider: PROVIDER, ttsModel: `${config.gptliveModel}/${config.gptliveVoice}` };
@@ -751,6 +999,7 @@ export async function statusRequest({ token, rawBody, headers, settle, runtime, 
     return { status: 204, body: "" };
   }
   if (state === "completed" && streams.has(row.id)) return { status: 204, body: "" };
+  dropWarm(row.id, `call ${params.CallStatus ?? "ended"} before it was answered`);
   await settleGptLive({
     row, settle, runtime, log,
     live: {
@@ -806,7 +1055,7 @@ export function acceptStream({ token, socket, settle, runtime, log = () => {}, o
   }
   db.updateCall(row.conversation_id, row.id, { state: "in_progress" });
   const call = new GptLiveCall({
-    call: db.getCall(row.conversation_id, row.id) ?? row, twilio: socket, openLive, log,
+    call: db.getCall(row.conversation_id, row.id) ?? row, twilio: socket, openLive, log, warm: takeWarm(row.id),
     brain: (messages) => reasonTurn({ call: row, messages, log, extras: runtime?.turnExtras ?? {} }),
     finish: async (live) => {
       try { await settleGptLive({ row, live, settle, runtime, log }); } finally { streams.delete(row.id); }
