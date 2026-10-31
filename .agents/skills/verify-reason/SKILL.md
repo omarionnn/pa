@@ -438,6 +438,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — the card's email rule (wt/card-email-rule, #292, 2026-10-31)
+
+`npm run test:offline` under `env -i` (fresh `npm ci` in the worktree): 4,953 tests, 4,821 passing, 131 skipped, 1 failing (web-ongoing-volume "the desktop margin", date-dependent, fails on main too). New: `test/card-email-rule.test.js` (9). Muted passkey drive: all ok. See [features/passkey-pay.md](features/passkey-pay.md) "The email rule".
+
 ### Baseline — a saved card is registered for order intents (wt/card-registration, 2026-10-31)
 
 `npm run test:offline` under `env -i` (fresh `npm ci` in the worktree): 4,926 tests, 4,794 passing, 131 skipped, 1 failing (web-ongoing "the desktop margin", date-dependent, fails on main too). New: `test/card-registration.test.js` (9). Fixtures in passkey-pay, checkout-job, checkout-anticipate and shopconnect tests seed their card `registered = 1`, as does the passkey drive. Muted passkey drive: all ok. See [features/passkey-pay.md](features/passkey-pay.md) "The card's order-intent registration".

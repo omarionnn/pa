@@ -95,7 +95,7 @@ function asked(value = "9.79") {
 const pay = (row) => runShopTool("shop_pay", { payment_id: row.id, confirmation_id: 1 }, { conversationId: OMARI, confirmationId: 1 });
 
 // ---------------------------------------------------------------- saving the card
-test("saving a card registers it with the person's email; the row says so and nothing is texted", async () => {
+test("saving a card registers it with the person's email; the row says so and the one text says it is set up to pay", async () => {
   shipping.learn(OMARI, { email: EMAIL }, { source: "said" });
   const out = await saveThroughPage();
   assert.deepEqual(out, { ok: true, registered: true });
@@ -104,7 +104,7 @@ test("saving a card registers it with the person's email; the row says so and no
   assert.equal(puts()[0].origin, "https://heyreason.com", "Crossmint's origin is the JWT issuer, never REASON_PUBLIC_URL");
   assert.equal(cardRow().registered, 1);
   assert.equal(cardRow().reg_error, "");
-  assert.equal(said.length, 0);
+  assert.deepEqual(said.map((s) => s.t), ["Card ••••1929 is set up to pay."], "said once it is set up, and only then");
   assert.ok(logged.some((l) => l.card_registration === "ok" && l.status === 200), JSON.stringify(logged));
   // The email itself is in no log line.
   assert.ok(!JSON.stringify(logged).includes(EMAIL));
@@ -117,7 +117,7 @@ test("no email on record: the card is kept, marked unregistered with the code, a
   assert.equal(cardRow().registered, 0);
   assert.equal(cardRow().reg_error, "CONSUMER_EMAIL_REQUIRED");
   assert.equal(cardRow().last4, "1929", "the card row stays");
-  assert.deepEqual(said.map((s) => s.t), ["Card saved. One more thing before it can pay: which email should receipts go to?"]);
+  assert.deepEqual(said.map((s) => s.t), ["Card ••••1929 is saved, but it can't pay until I have an email for its receipts. Which one should I use?"]);
   // Asked again before they answer: the same card, no second text.
   await shop.registerCard(OMARI);
   assert.equal(said.length, 1);
@@ -133,17 +133,17 @@ test("Crossmint refuses with 400 CONSUMER_EMAIL_REQUIRED even so: registered = 0
   assert.equal(cardRow().reg_error, "CONSUMER_EMAIL_REQUIRED");
   assert.ok(logged.some((l) => l.card_registration === "refused" && l.status === 400 && l.code === "CONSUMER_EMAIL_REQUIRED"), JSON.stringify(logged));
   assert.equal(said.length, 1);
-  assert.match(said[0].t, /which email/);
+  assert.match(said[0].t, /Which one should I use/);
 });
 
-test("another refusal is kept as its code, with no text about email", async () => {
+test("another refusal is kept as its code; the text says what happened and what Reason will do, not email", async () => {
   shipping.learn(OMARI, { email: EMAIL }, { source: "said" });
   regStatus = { status: 422, body: { error: { code: "CARD_NOT_ELIGIBLE" } } };
   const out = await saveThroughPage();
-  assert.deepEqual(out, { ok: true, registered: false, needs_email: false });
+  assert.deepEqual(out, { ok: true, registered: false, needs_email: false, emails: [EMAIL] });
   assert.equal(cardRow().registered, 0);
   assert.equal(cardRow().reg_error, "CARD_NOT_ELIGIBLE");
-  assert.equal(said.length, 0);
+  assert.deepEqual(said.map((s) => s.t), ["Card ••••1929 is saved, but it couldn't be set up to pay just now. I'll try again when it's time to pay and tell you if it still won't."]);
 });
 
 // ---------------------------------------------------------------- paying
