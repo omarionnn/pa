@@ -219,3 +219,18 @@ same env -i wrapper as above. Clips (Mac):
 `say -v Samantha -o x.aiff "…" && ffmpeg -i x.aiff -ar 8000 -ac 1 -f mulaw x.ulaw` for ivr-menu ("For
 reservations, press 1…"), ivr-connecting ("Reservations. Please hold…"), human-after-hold, receptionist,
 voicemail-greeting, hold-recording; music and the beep are synthesised in the drive.
+
+Review fixes (#316): a voicemail held for the beep is the call's last word (no more turns) and, if the
+line goes before a word of it plays, the row is put back to `voicemail_no_message`; a turn that speaks
+and presses says its words first; no overlapping turns while a press goes to Twilio, and late menu words
+during the re-attach are not a turn; an AMD verdict during a turn that spoke is read after the words;
+every background turn caught (`runLine`); stranger audio is in `recordingFiles` (data export/delete);
+the hold.js first-person floor applies to `provider='gptlive'` rows only (ElevenLabs unchanged — the
+same gap exists there: after a menu + hold the model may skip the disclosure to the first person).
+Drive results 2026-10-31 (final code): human — silent until "…this is Sam", then "Hey, hi — this is
+Reason, an AI assistant calling for Omari. Just so you know, this call is recorded…" + the question;
+ivr — pressed 1 once, stream back, held ~24 s silent, the same disclosure to Sam; voicemail — nothing
+over the greeting, message after the beep, `voicemail_left=1`, state voicemail; hold (20 s budget) —
+silent through music, give-up line, `hold_gave_up`. Latency: their last word → Reason's first ~7–9 s on
+claude-cli (1 s pause + the turn + ~0.6 s voice start); the live backend (api) is faster. Hold give-up
+overshoots the budget by up to one 15 s tick plus a turn.

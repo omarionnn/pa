@@ -233,7 +233,9 @@ const ok = !leak && (
     ? marks.music && !speechBefore(marks.music + 20_000) && settled.outcome_kind === "hold_gave_up" && out.hung_up_by_reason
   : scene === "voicemail"
     ? marks.after_beep && !speechBefore(marks.after_beep) && Number(settled.voicemail_left) === 1 && out.hung_up_by_reason && settled.state === "voicemail"
-  : marks.person && firstSpeech != null && firstSpeech > marks.person && disclosure && /table|seven|7/i.test(all)
+  // After the disclosure, Reason's own reply: the question, or (when the name was misheard) whether it
+  // has the right place — either is the errand going on.
+  : marks.person && firstSpeech != null && firstSpeech > marks.person && disclosure && /table|seven|\b7\b|Luigi/i.test(all.split(/let me know\.?/i).slice(1).join(" "))
 );
 console.log(JSON.stringify(out, null, 1));
 console.log(ok ? "ok" : "FAIL");

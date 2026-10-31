@@ -447,6 +447,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — calls to businesses on GPT-Live, phase 3 (wt/gptlive-thirdparty, #316, 2026-10-31)
+
+`node --test test/*.test.js` (ANTHROPIC_API_KEY empty): 5,064 tests, 4,931 passing, 131 skipped, 2 failing — web-ongoing "the desktop margin" and onboarding "going quiet … never at night", both failing on untouched main too (date / time of day); order-flow-1031 "pinned 13:56" flakes on main as well (2/12). New: `test/gptlive-thirdparty.test.js` (29). Drives `bin/gptlive-line-drive.mjs --scene human|ivr|voicemail|hold` all `ok` on the merged code (real GPT-Live + claude-cli). Live flag `REASON_THIRD_PARTY_VOICE=owner`. See [features/gptlive-calls.md](features/gptlive-calls.md) "Phase 3".
+
 ### Baseline — Shopping for everyone (wt/shopping-everyone, #315, 2026-10-31)
 
 `npm run test:offline` under `env -i` (fresh `npm ci` in the worktree): 5,034 tests, 4,901 passing, 131 skipped, 2 failing — web-ongoing "the desktop margin" (date-dependent, fails on main too) and order-flow-1031 "pinned 13:56 … never goes out" (load flake: 14/14 alone, three runs; 195/195 with the other shopping suites). New: `test/shopping-everyone-1031.test.js` (7; three fail on afc6ce8). Muted drives: `bin/passkey-drive.mjs` 23/23 and `bin/passkey-drive.mjs --non-owner` 23/23. Live flags `REASON_SHOP_CONNECT`, `REASON_CHOICE_CARDS`, `REASON_PASSKEY_PAY` appended as `on`. See [features/shop-connect.md](features/shop-connect.md) "Everyone".
