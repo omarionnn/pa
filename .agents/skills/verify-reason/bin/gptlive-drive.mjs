@@ -1,0 +1,111 @@
+#!/usr/bin/env node
+// Drive a GPT-Live call end to end with no phone: a fake Twilio media stream (a Node WebSocket client
+// streaming a μ-law recording in real time) into the REAL upgrade route (src/calls/wsserver.js +
+// gptlive.acceptStream), a REAL GPT-Live session on OpenAI (bills the voice layer, $0.05/min — about
+// 2¢ a run), and Reason's REAL call turn on claude-cli (the subscription, never the API) behind it
+// through client delegation. A throwaway database; nobody's phone rings and nothing is texted.
+//
+// Run on the Hetzner box, where OPENAI_API_KEY and the claude-cli login live, from a copy of the code:
+//
+//   REASON_DB_PATH=$(mktemp -d)/gl.db OPENAI_API_KEY=… CLAUDE_CODE_OAUTH_TOKEN=… \
+//     node .agents/skills/verify-reason/bin/gptlive-drive.mjs caller.ulaw [seconds]
+//
+// caller.ulaw is raw 8 kHz mono μ-law (Mac: say -o q.aiff "…" && ffmpeg -i q.aiff -ar 8000 -ac 1 -f mulaw q.ulaw).
+// Prints one JSON line: what Reason was asked, what it answered, what the voice said, what the
+// caller heard when, the guard's trips, and the settled row. Exits non-zero unless a delegation went
+// to Reason and the voice spoke after Reason's answer.
+const { resolve, dirname } = await import("node:path");
+const { existsSync, readFileSync, realpathSync } = await import("node:fs");
+const { createServer } = await import("node:http");
+const { tmpdir } = await import("node:os");
+const dbPath = process.env.REASON_DB_PATH ? resolve(process.env.REASON_DB_PATH) : "";
+const parent = dbPath && existsSync(dirname(dbPath)) ? realpathSync(dirname(dbPath)) + "/" : "";
+const roots = ["/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/", realpathSync(tmpdir()) + "/"];
+if (!dbPath || existsSync(dbPath) || !parent || !roots.some(r => parent.startsWith(r))) {
+  console.error("refusing: set REASON_DB_PATH to a new file in a temp directory, e.g. $(mktemp -d)/gl.db");
+  process.exit(2);
+}
+if (!process.env.OPENAI_API_KEY || !process.argv[2]) {
+  console.error("usage: OPENAI_API_KEY=… REASON_DB_PATH=… gptlive-drive.mjs caller.ulaw [seconds]");
+  process.exit(2);
+}
+Object.assign(process.env, {
+  REASON_DATA_DIR: dirname(dbPath) + "/data", REASON_RECORDING_ROOT: dirname(dbPath) + "/recordings",
+  REASON_OWNER_NAME: "Omari", REASON_TZ: "America/New_York", REASON_CONVERSATION: "dm:owner",
+  REASON_OWNER_NUMBER: "+12025550100", ANTHROPIC_API_KEY: "", REASON_CALL_BACKEND: "claude-cli",
+  REASON_CALL_VOICE: "gptlive", ELEVENLABS_LLM_SECRET: "drive-secret", REASON_PUBLIC_URL: "http://127.0.0.1",
+});
+const REPO = resolve(dirname(new URL(import.meta.url).pathname), "../../../..");
+const gl = await import(`${REPO}/src/calls/gptlive.js`);
+const { acceptUpgrade } = await import(`${REPO}/src/calls/wsserver.js`);
+const voice = await import(`${REPO}/src/calls/voice.js`);
+const db = await import(`${REPO}/src/db.js`);
+const { settleCall } = await import(`${REPO}/src/tools.js`);
+const { config } = await import(`${REPO}/src/config.js`);
+await voice.prime();
+
+const C = config.ownerConversation;
+db.saveConversation(C, []);
+db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025550100", name: "Omari", isOperator: true });
+const row = db.createCall(C, {
+  provider: "gptlive", toNumber: "+12025550100", isOwner: true, goal: "a test call from the verify drive",
+  facts: [], announcement: "Hey Omari, it's Reason.", state: "placing",
+});
+
+const lines = [];
+const log = (o) => lines.push(o);
+let call = null;
+const server = createServer((_, res) => res.end());
+server.on("upgrade", (req, socket) => {
+  const path = new URL(req.url, "http://x").pathname;
+  const ws = acceptUpgrade(req, socket);
+  if (ws) call = gl.acceptStream({ token: path.slice(gl.STREAM_PATH.length), socket: ws, settle: settleCall, runtime: null, log });
+});
+await new Promise(r => server.listen(0, "127.0.0.1", r));
+const port = server.address().port;
+
+const audio = readFileSync(process.argv[2]);
+const seconds = Number(process.argv[3] || 25);
+const heardAt = [];
+const t0 = Date.now();
+const twilio = new WebSocket(`ws://127.0.0.1:${port}${gl.STREAM_PATH}${row.webhook_token}`);
+twilio.onmessage = (m) => { const e = JSON.parse(String(m.data)); if (e.event === "media") heardAt.push(Date.now() - t0); };
+await new Promise((r, j) => { twilio.onopen = r; twilio.onerror = () => j(new Error("the stream socket did not open")); });
+twilio.send(JSON.stringify({ event: "connected" }));
+twilio.send(JSON.stringify({ event: "start", start: { streamSid: "MZdrive", callSid: "CAdrive" } }));
+// 3 s of line, the question, then silence — in real time, as Twilio sends it.
+const frames = [];
+const silence = Buffer.alloc(160, 0xff);
+for (let i = 0; i < 150; i++) frames.push(silence);
+for (let i = 0; i < audio.length; i += 160) frames.push(audio.subarray(i, i + 160));
+while (frames.length < seconds * 50) frames.push(silence);
+let i = 0;
+await new Promise((r) => {
+  const tick = setInterval(() => {
+    if (i >= frames.length) { clearInterval(tick); return r(); }
+    twilio.send(JSON.stringify({ event: "media", media: { track: "inbound", payload: frames[i++].toString("base64") } }));
+  }, 20);
+});
+twilio.send(JSON.stringify({ event: "stop" }));
+const until = Date.now() + 20_000;
+while (Date.now() < until && db.getCall(C, row.id)?.state === "in_progress") await new Promise(r => setTimeout(r, 250));
+server.close();
+
+const settled = db.getCall(C, row.id);
+const turns = db.callTurns(row.id);
+const pick = (k) => lines.filter(l => k in l);
+const out = {
+  delegations: pick("gptlive_delegation").length,
+  results: pick("gptlive_result").map(l => ({ ms: l.ms, chars: l.chars, tools: l.tools, error: l.error })),
+  guard_trips: pick("gptlive_guard").length,
+  voice_said: call?.turns.filter(t => t.who === "reason" && !t.seeded).map(t => t.text.trim()) ?? [],
+  caller_said: call?.turns.filter(t => t.who === "them").map(t => t.text.trim()) ?? [],
+  audio_frames_to_caller: heardAt.length,
+  turns: turns.map(t => ({ voice: t.voice, heard_ms: t.first_content_ms, real_ms: t.first_real_ms, total_ms: t.total_ms, tools: t.tools })),
+  row: { state: settled.state, provider: settled.provider, end_reason: settled.end_reason, duration_s: settled.duration_s, cost_cents: settled.cost_cents, recording: settled.recording_state, tts_model: settled.tts_model },
+  errors: pick("gptlive_error"),
+};
+console.log(JSON.stringify(out, null, 1));
+const ok = out.delegations > 0 && out.results.some(r => r.chars > 0) && turns.some(t => Number.isFinite(t.first_real_ms));
+console.log(ok ? "ok" : "FAIL");
+process.exit(ok ? 0 : 1);

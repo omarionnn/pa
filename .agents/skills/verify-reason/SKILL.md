@@ -390,6 +390,10 @@ D=$(mktemp -d) && env -i PATH=$PATH HOME=$HOME USER=$USER LOGNAME=$USER REASON_D
 
 See [features/call-machines.md](features/call-machines.md).
 
+GPT-Live as the voice (`REASON_CALL_VOICE=gptlive`, operator only) is driven with a real GPT-Live
+session and Reason's real turn on claude-cli behind a fake Twilio stream: `bin/gptlive-drive.mjs`, on
+Hetzner, see [features/gptlive-calls.md](features/gptlive-calls.md).
+
 **6 — A scheduled call, with the fake provider.** "Call me at 7": the real `timer_set`, the real
 Runtime sweep and `call_place`, the fake call provider and the fake channel, in process under the
 cage's env. No model, no phone, nothing leaves the machine.
