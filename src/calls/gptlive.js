@@ -225,9 +225,12 @@ export class CallTape {
 export function openLiveSocket({ url = LIVE_URL, key = config.openaiKey } = {}) {
   const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${key}` } });
   const handlers = { open: [], event: [], close: [] };
-  ws.onopen = () => handlers.open.forEach(f => f());
-  ws.onmessage = (m) => { let e; try { e = JSON.parse(String(m.data)); } catch { return; } handlers.event.forEach(f => f(e)); };
-  ws.onclose = (e) => handlers.close.forEach(f => f(e?.code ?? 1006));
+  // A throw inside a WebSocket listener is an uncaught exception, which would take the whole server
+  // down with one call; every handler is run inside a catch.
+  const run = (list, ...args) => { for (const f of list) { try { f(...args); } catch { /* one call never takes the process */ } } };
+  ws.onopen = () => run(handlers.open);
+  ws.onmessage = (m) => { let e; try { e = JSON.parse(String(m.data)); } catch { return; } run(handlers.event, e); };
+  ws.onclose = (e) => run(handlers.close, e?.code ?? 1006);
   ws.onerror = () => { /* the close that follows says it */ };
   return {
     send: (obj) => { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); },
@@ -281,7 +284,7 @@ export class GptLiveCall {
     this.streamSid = null;
     this.startedAt = now();
     twilio.onMessage((text) => this.fromTwilio(text));
-    twilio.onClose(() => this.end("caller hung up"));
+    twilio.onClose(() => { this.end("caller hung up").catch(() => {}); });
   }
 
   // --- Twilio side ---
@@ -300,7 +303,7 @@ export class GptLiveCall {
       this.tape.them(buf);
       if (this.started) this.live.send({ type: "session.input_audio.append", audio: m.media.payload });
     } else if (m.event === "stop") {
-      this.end("caller hung up");
+      this.end("caller hung up").catch(() => {});
     }
   }
 
@@ -329,7 +332,7 @@ export class GptLiveCall {
     this.live.on("event", (e) => this.fromLive(e));
     this.live.on("close", (code) => {
       this.log({ gptlive_session_socket_closed: this.call.id, code });
-      if (!this.done) this.end(this.endWhy || `voice session closed (${code})`);
+      if (!this.done) this.end(this.endWhy || `voice session closed (${code})`).catch(() => {});
     });
   }
 
@@ -349,7 +352,7 @@ export class GptLiveCall {
       case "session.input_transcript.delta":
         return this.textIn(String(e.delta ?? ""));
       case "session.delegation.created":
-        return void this.delegate(e.delegation?.id);
+        return void this.delegate(e.delegation?.id).catch((err) => this.log({ gptlive_delegation_failed: this.call.id, why: (err?.message ?? String(err)).split("\n")[0] }));
       case "session.instructions.appended":
         if (this.mute && e.client_event_id === this.mute.eventId) this.mute.acked = true;
         return;
@@ -519,7 +522,7 @@ export class GptLiveCall {
       if (this.done) return;
       const t = this.now();
       const quiet = t - this.lastOutAt > 1500 && this.queuedMs() === 0;
-      if ((quiet && t - started > 2500) || t - started > 15000) return void this.end("end_call");
+      if ((quiet && t - started > 2500) || t - started > 15000) return void this.end("end_call").catch(() => {});
       this.timers.setTimeout(tick, 250);
     };
     this.timers.setTimeout(tick, 250);

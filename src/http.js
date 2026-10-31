@@ -124,11 +124,17 @@ export function createServer({ router, runtime, log = () => {} }) {
   // refused by Node exactly as it always was.
   if (config.callVoice === "gptlive") {
     server.on("upgrade", (req, socket) => {
+      socket.on("error", () => { /* a dropped stream is the call ending, never the process */ });
       const path = new URL(req.url, "http://localhost").pathname;
       if (!path.startsWith(gptlive.STREAM_PATH)) return void socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
       const ws = acceptUpgrade(req, socket);
       if (!ws) return;
-      gptlive.acceptStream({ token: path.slice(gptlive.STREAM_PATH.length), socket: ws, settle: settleCall, runtime, log });
+      try {
+        gptlive.acceptStream({ token: path.slice(gptlive.STREAM_PATH.length), socket: ws, settle: settleCall, runtime, log });
+      } catch (e) {
+        log({ gptlive_stream_failed: (e?.message ?? String(e)).split("\n")[0] });
+        ws.close(1011);
+      }
     });
   }
   return server;
