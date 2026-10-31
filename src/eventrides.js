@@ -30,6 +30,17 @@ import { config, clock, stamp } from "./config.js";
 // ---------- the switches ----------
 
 /** Rides exist at all (REASON_EVENT_RIDES, on top of REASON_EVENTS). */
+/**
+ * What a failure may put in the server log: the error's class and code when they are word-shaped,
+ * and the message's length — never the message, which can carry what a guest typed or an address.
+ */
+export function errorShape(e) {
+  const error = typeof e?.name === "string" && /^\w{1,40}$/.test(e.name) ? e.name : typeof e;
+  const code = typeof e?.code === "string" && /^[\w.-]{1,40}$/.test(e.code) ? e.code : null;
+  const message = e?.message ?? (typeof e === "string" ? e : "");
+  return { error, code, message_length: typeof message === "string" ? message.length : 0 };
+}
+
 export function ridesOn() {
   return events.eventsOn() && (config.eventRides === "owner" || config.eventRides === true);
 }
@@ -574,7 +585,7 @@ export async function sweep({ runtime, now = clock.now(), log = () => {} } = {})
       await sweepOne({ runtime, ev, now, out });
     } catch (e) {
       out.failed++;
-      log({ event_rides_event_failed: ev.id, why: (e?.message ?? String(e)).split("\n")[0] });
+      log({ event_rides_event_failed: ev.id, ...errorShape(e) });
     }
   }
   return out;
