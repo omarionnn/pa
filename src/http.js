@@ -119,8 +119,8 @@ export function createServer({ router, runtime, log = () => {} }) {
   // Each request opens a scope with no person in it; the moment a signed-in cookie names one
   // (db.pageSessionOwner / pageSessionPeek), times on that page are drawn on their clock.
   const server = nodeCreateServer((req, res) => zonescope.runOpen(() => handleRequest(req, res)));
-  // The one WebSocket Reason accepts: Twilio's media stream for a call on the GPT-Live trial
-  // (src/calls/gptlive.js). Only listened for with REASON_CALL_VOICE=gptlive; otherwise an upgrade is
+  // The one WebSocket Reason accepts: Twilio's media stream for a GPT-Live call (src/calls/gptlive.js).
+  // Only listened for with REASON_CALL_VOICE set (gptlive / on / owner); otherwise an upgrade is
   // refused by Node exactly as it always was.
   if (gptlive.gptliveOn()) {
     server.on("upgrade", (req, socket) => {
