@@ -791,8 +791,7 @@ async function payRow(row, { confirmationId = null } = {}) {
   // that is what is missing the person is told what to send instead of a failure nobody can read.
   if (card.registered !== 1) {
     const reg = await registerCard(conversationId, { tell: false });
-    if (!reg.ok && reg.error === "email_required") return failed(reg.status, reg.code, { needs_email: true });
-    if (!reg.ok && reg.error === "crossmint_refused") return failed(reg.status, reg.code);
+    if (!reg.ok) return failed(reg.status ?? null, reg.code ?? reg.detail ?? reg.error, reg.error === "email_required" ? { needs_email: true } : {});
   }
   const intent = async () => asUser(conversationId, "/api/unstable/order-intents", {
     method: "POST",
@@ -858,12 +857,13 @@ export async function payByPasskey(token, response) {
   const out = await payRow(v.row);
   passkey.logEvent(v.row.conversation_id, v.row, out.ok ? "paid" : out.unknown_outcome ? "unknown_outcome" : "pay_failed", out.ok ? "" : [out.error, out.status, out.detail].filter(Boolean).join(" "));
   if (out.ok) await notify(v.row.conversation_id, `Approved with Face ID. Paid ${out.amount} at ${out.merchant}; the store still has to place it, and I'll tell you when it's through.`);
-  // No model turn runs here, so the one thing they can fix is said in plain words (once per card).
+  // No model turn runs here, so the one thing they can fix is said in plain words: once at this
+  // moment (a save-time ask, if there was one, was worded for that moment), and the link opens again below.
   else if (out.needs_email && q("UPDATE shop_cards SET asked_email = 2 WHERE conversation_id = ? AND asked_email < 2").run(v.row.conversation_id).changes === 1) await notify(v.row.conversation_id, "Face ID worked, but the card can't pay yet: which email should receipts go to? Send it here and then tap the link again.");
   // Nothing started (no order intent, so no charge is possible): the link opens again for another tap,
   // under a fresh challenge, and the page says Face ID worked but the payment did not start. Once the
   // card may have reached the store (unknown_outcome) the link stays used: never paid twice.
-  else if (RETRYABLE.has(out.error) && passkey.reopenApproval(v.a, v.row, out.error)) return { ...out, retry: true };
+  if (!out.ok && RETRYABLE.has(out.error) && passkey.reopenApproval(v.a, v.row, out.error)) return { ...out, retry: true };
   return out;
 }
 /** Failures before any order intent where another tap can only help. Never "in progress" (a pay is in flight) or a closed row. */
