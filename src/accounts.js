@@ -202,9 +202,9 @@ export function shouldTellAgain(address) {
   return true;
 }
 
-/** What somebody whose access was stopped is told. Once. No model call is spent on it. */
+/** What somebody whose access was stopped is told. Once. No model call is spent on it. Names nobody. */
 export function stoppedLine(reason) {
   return reason === "paused"
-    ? `hey — ${config.ownerName} has paused this for now, so i can't help at the moment. nothing of yours is gone.`
+    ? `hey — this is paused for now, so i can't help at the moment. nothing of yours is gone.`
     : `hey — i'm not set up to help on this number any more. nothing of yours has been deleted.`;
 }

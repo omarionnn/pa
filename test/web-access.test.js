@@ -104,7 +104,7 @@ test("the master's yes lets them in and sends their first text; their own texts 
 
   const toKofi = sentTo(h.channel, KOFI);
   assert.equal(toKofi.length, 1);
-  assert.match(toKofi[0].text, /asked for access on the website and Omari said yes/);
+  assert.match(toKofi[0].text, /asked for access on the website and you.re in/);
   assert.equal(db.accountByAddress("fake", KOFI)?.state ?? "active", "active");
 
   await h.router.deliver({ channel: "fake", externalId: "k1", from: KOFI, text: "remind me to call mom", at: clock.now() });

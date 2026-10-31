@@ -84,7 +84,7 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
       action: "tell_them",
       reason: "already_waiting",
       requestId: pending.id,
-      toThem: `still waiting on ${config.ownerName} to say yes — i'll text you the moment they do.`,
+      toThem: `still waiting on a yes for you — i'll text you the moment it comes.`,
     };
   }
 
@@ -109,7 +109,7 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
   return {
     action: "ask_master",
     requestId: request.id,
-    toThem: `hey — i'm ${config.ownerName}'s assistant. i've asked them whether to set you up with your own. i'll text you either way.`,
+    toThem: `hey, it's Reason — i've asked for you to be set up with your own. i'll text you either way.`,
     request,
   };
 }
@@ -279,8 +279,8 @@ export async function readMasterReply({ messages, masterConversationId, judge })
       decided: true, granted: true, requestId: request.id, account,
       quote: verdict.quote,
       toThem: fromWeb
-        ? `hey, it's Reason — you asked for access on the website and ${config.ownerName} said yes. i'm your own assistant now: plans, reminders, looking things up, whatever you need. ${MESSY_GOAL_LINE}`
-        : `you're in — ${config.ownerName} said yes. i'm your own assistant now: plans, reminders, looking things up, whatever you need. ${MESSY_GOAL_LINE}`,
+        ? `hey, it's Reason — you asked for access on the website and you're in. i'm your own assistant now: plans, reminders, looking things up, whatever you need. ${MESSY_GOAL_LINE}`
+        : `you're in. i'm your own assistant now: plans, reminders, looking things up, whatever you need. ${MESSY_GOAL_LINE}`,
       toMaster: `done — ${name} is set up with their own. i'll keep their stuff and yours completely separate.`,
     };
   }
@@ -298,7 +298,7 @@ export async function readMasterReply({ messages, masterConversationId, judge })
     return {
       decided: true, granted: false, requestId: request.id,
       quote: verdict.quote,
-      toThem: `thanks for texting — ${config.ownerName} isn't setting anyone up right now. all the best.`,
+      toThem: `thanks for texting — i'm not setting anyone up right now. all the best.`,
       toMaster: `no worries, i've told them no. i won't bring them up again for ${config.declineCoolOffDays} days.`,
     };
   }
