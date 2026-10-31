@@ -10,7 +10,7 @@
 // and every other fetch out of the process is refused.
 //
 //   cd ~/Desktop/pa && eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" \
-//     && D=$(mktemp -d) && REASON_DATA_DIR=$D REASON_DB_PATH=$D/pk.db node .agents/skills/verify-reason/bin/passkey-drive.mjs [--shots=DIR] [--headed]
+//     && D=$(mktemp -d) && REASON_DATA_DIR=$D REASON_DB_PATH=$D/pk.db node .agents/skills/verify-reason/bin/passkey-drive.mjs [--shots=DIR] [--headed] [--non-owner]
 //
 // --shots=DIR saves the setup, approve, paid and declined screens. Prints one line per step, `ok` or
 // `FAIL`, and exits non-zero on any FAIL.
@@ -20,8 +20,10 @@ process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ ||= "America/New_York";
-process.env.REASON_SHOP_CONNECT = "owner";
-process.env.REASON_PASSKEY_PAY = "owner";
+// --non-owner: the flags as live has them since 2026-10-31 (`on`), and a non-operator account pays.
+const NON_OWNER = process.argv.includes("--non-owner");
+process.env.REASON_SHOP_CONNECT = NON_OWNER ? "on" : "owner";
+process.env.REASON_PASSKEY_PAY = NON_OWNER ? "on" : "owner";
 delete process.env.REASON_SITE_PROXY_SECRET;
 {
   const { resolve, dirname } = await import("node:path");
@@ -87,11 +89,18 @@ const orderIntents = () => calls.filter(c => c.path === "/api/unstable/order-int
 const answers = () => calls.filter(c => c.path.endsWith("/messages"));
 
 // ---------------------------------------------------------------- people
-const OWNER = "dm:owner", AMA = "dm:fake:+13475550000";
-db.upsertAccount({ conversationId: OWNER, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
-db.upsertThread({ conversationId: OWNER, channel: "sendblue", address: "+12025551234", isOwner: true, service: "iMessage" });
-db.upsertAccount({ conversationId: AMA, channel: "fake", address: "+13475550000", name: "Ama" });
-db.upsertThread({ conversationId: AMA, channel: "fake", address: "+13475550000", isOwner: true, service: "iMessage" });
+// --non-owner (2026-10-31, shopping for everyone): the person paying is Ama, an account that is not the
+// operator, under the flags `on`; "the other person" for the negatives is a third account. OWNER below
+// then means "the person this drive pays for", as every step reads it.
+const OWNER = NON_OWNER ? "dm:fake:+13475550000" : "dm:owner", AMA = NON_OWNER ? "dm:fake:+13475550001" : "dm:fake:+13475550000";
+db.upsertAccount({ conversationId: "dm:owner", channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
+db.upsertThread({ conversationId: "dm:owner", channel: "sendblue", address: "+12025551234", isOwner: true, service: "iMessage" });
+if (NON_OWNER) {
+  db.upsertAccount({ conversationId: OWNER, channel: "fake", address: "+13475550000", name: "Ama" });
+  db.upsertThread({ conversationId: OWNER, channel: "fake", address: "+13475550000", isOwner: true, service: "iMessage" });
+}
+db.upsertAccount({ conversationId: AMA, channel: "fake", address: AMA.split(":").pop(), name: NON_OWNER ? "Kofi" : "Ama" });
+db.upsertThread({ conversationId: AMA, channel: "fake", address: AMA.split(":").pop(), isOwner: true, service: "iMessage" });
 db.db.exec("UPDATE accounts SET contact_card_sent_at = 1, web_notice_seen_at = 1");
 q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_drive_secret', 'visa', '4242', 0, 1)").run(OWNER);
 q("INSERT OR IGNORE INTO shop_runs (run_id, conversation_id, store, mode, item, status, created_at, updated_at) VALUES ('run_drive', ?, 'bestbuy', 'guest', 'USB-C cable', 'awaiting_input', 0, 0)").run(OWNER);
@@ -307,8 +316,11 @@ try {
   const amaSetupPost = await http(ama, "/web/connect/passkey/verify", { method: "POST", body: {} });
   const outSetupPost = await http(null, "/web/connect/passkey/verify", { method: "POST", body: {} });
   const flat = (r) => r.status === 404 && !bootOf(r.text);
-  step("(g) setup: signed out GET + POST → 404, no options; Ama (not owner) GET + POST → 404",
-    flat(outSetup) && flat(outSetupPost) && flat(amaSetup) && amaSetupPost.status === 404,
+  // Under the flag `owner` another account gets a flat 404; with it `on` (--non-owner) the setup page is
+  // theirs too — their own, drawn for their own account, and a bad POST is a 400, not a 404.
+  step(NON_OWNER ? "(g) setup: signed out GET + POST → 404, no options; another account GET → its own page, bad POST → 400"
+    : "(g) setup: signed out GET + POST → 404, no options; Ama (not owner) GET + POST → 404",
+    flat(outSetup) && flat(outSetupPost) && (NON_OWNER ? amaSetup.status === 200 && amaSetupPost.status === 400 : flat(amaSetup) && amaSetupPost.status === 404),
     `${outSetup.status} ${outSetupPost.status} ${amaSetup.status} ${amaSetupPost.status}`);
   const made = await http(null, `/web/approve/${"x".repeat(32)}`);
   const madeV = await http(ama, `/web/approve/${"y".repeat(32)}/verify`, { method: "POST", body: {} });

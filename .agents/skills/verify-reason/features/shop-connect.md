@@ -109,9 +109,12 @@ fail on afc6ce8: the two cap tests and the pin test).
   afterwards (`countSpend`, #304). The cap is the install's `REASON_MAX_SPEND_PER_DAY` (whole dollars per
   person per day, default 300; NOT set in live `.env`, so $300). The person's own caps (`caps_set`:
   per-purchase, monthly) are not asked here: every Crossmint payment is a yes to that exact amount, which
-  is what those two let through anyway. On the Face ID page the error reads "Face ID worked, but this is
-  past the day's spending limit here. Nothing was charged. It can go through tomorrow." and the person is
-  texted one line with the figures; the link is used (no retry today), as `pay_failed` in the log.
+  is what those two let through anyway. On the Face ID path the cap is asked BEFORE the assertion is
+  verified (verifying marks the link used), so the link stays open and the page never ends on "Already
+  approved"; the page reads "This is past the day's spending limit here. Nothing was charged. Tomorrow,
+  ask me to start the order again." (the Crossmint request itself runs out in ~30 min, so tomorrow is a
+  new order, not this link), the person is texted one line with the figures once per payment, and the
+  log gets `pay_failed over_daily_cap`. An amount that does not read as money is `bad_amount`, never $0.
 - **The store-icon fetch connects to the addresses it checked** (`pinnedGet`: `node:https` with the
   checked list as its `lookup`, `_pinnedLookup`), so a name that answers a public address to the check
   and a private one to the connect (DNS rebinding) cannot reach the private one. Every redirect hop is

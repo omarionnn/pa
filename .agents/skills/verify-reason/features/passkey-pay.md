@@ -11,8 +11,12 @@ Branch wt/passkey-approve, PR #285 (2026-10-31). Once someone has set up a passk
 
 ```bash
 cd ~/Desktop/pa && eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" \
-  && D=$(mktemp -d) && REASON_DATA_DIR=$D REASON_DB_PATH=$D/pk.db node --no-warnings .agents/skills/verify-reason/bin/passkey-drive.mjs [--shots=DIR] [--headed]
+  && D=$(mktemp -d) && REASON_DATA_DIR=$D REASON_DB_PATH=$D/pk.db node --no-warnings .agents/skills/verify-reason/bin/passkey-drive.mjs [--shots=DIR] [--headed] [--non-owner]
 ```
+
+`--non-owner` (2026-10-31, shopping for everyone): the flags `on`, the person paying is Ama (an account
+that is not the operator) and "the other person" is a third account, whose setup page is then its own
+(200) rather than a 404. Both runs 23/23 ok on 2026-10-31 (wt/shopping-everyone), muted.
 
 The drive runs the real `src/http.js` on loopback, opened in Chromium as `http://localhost:<port>` (RP ID `localhost`). The passkey is a CDP virtual authenticator (ctap2, internal, UV on), and it is used through the page's own buttons. Crossmint is answered by `shop._setFetch` and texts go to an array. Any other fetch throws. The last line reads `all ok`, or the drive exits 1.
 

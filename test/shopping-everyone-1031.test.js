@@ -218,9 +218,15 @@ test("over the install's daily cap: a texted yes does not pay, nothing reaches C
   assert.match(next.say, /\$9\.79 is already committed/);
   // Somebody else's day is their own.
   assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: asked(OMARI, "19.00").id, confirmationId: 5 })).ok, true);
+  // An amount that does not read as money is refused, never sent through as $0.
+  const odd = asked(AMA, "9.00");
+  q("UPDATE shop_payments SET amount = 'abc' WHERE id = ?").run(odd.id);
+  assert.equal((await shop.payApproved({ conversationId: AMA, paymentId: odd.id, confirmationId: 9 })).error, "bad_amount");
+  assert.equal(shop.paymentRow(odd.id).status, "asked");
+  assert.equal(orderIntents().length, 2);
 });
 
-test("over the daily cap with Face ID: the assertion verifies, the payment is refused, the page and a text say so", async () => {
+test("over the daily cap with Face ID: the cap is asked before the assertion, the link stays open, the page and one text say so", async () => {
   const { auth } = await setUp(AMA);
   const row = asked(AMA, "25.00");
   const out = await runTool("shop_pay", { payment_id: row.id }, { conversationId: AMA });
@@ -228,7 +234,7 @@ test("over the daily cap with Face ID: the assertion verifies, the payment is re
   const first = await page(token);
   const o = optionsOf(first.body);
   // The page's own words for it, ready before the tap.
-  assert.match(first.body, /over_daily_cap:"Face ID worked, but this is past the day's spending limit here/);
+  assert.match(first.body, /over_daily_cap:"This is past the day's spending limit here\. Nothing was charged\. Tomorrow, ask me to start the order again\."/);
   said.length = 0;
   const res = await page(token, "verify", auth.get(o.challenge));
   assert.equal(res.status, 400);
@@ -237,8 +243,15 @@ test("over the daily cap with Face ID: the assertion verifies, the payment is re
   assert.equal(shop.paymentRow(row.id).status, "asked");
   assert.equal(said.length, 1);
   assert.equal(said[0].c, AMA);
-  assert.match(said[0].t, /past the day's spending limit here \(\$0\.00 of \$20\.00 already spent today\)\. Nothing was charged/);
-  assert.equal(q("SELECT event FROM pay_approval_log WHERE payment_id = ? ORDER BY id DESC LIMIT 1").get(row.id)?.event, "pay_failed");
+  assert.match(said[0].t, /^\$25\.00 at Best Buy is past the day's spending limit here \(\$0\.00 of \$20\.00 already spent today\)\. Nothing was charged\. Tomorrow, ask me to start the order again\.$/);
+  assert.equal(q("SELECT event, detail FROM pay_approval_log WHERE payment_id = ? ORDER BY id DESC LIMIT 1").get(row.id)?.detail, "over_daily_cap");
+  // The cap was asked BEFORE the assertion was verified: the link is still open (not used), so the
+  // page does not end on "Already approved"; a second tap is refused the same way and texts nothing more.
+  assert.equal(passkey.approvalFor(token)?.state, "open");
+  const again = await page(token, "verify", auth.get(o.challenge));
+  assert.equal(JSON.parse(again.body).error, "over_daily_cap");
+  assert.equal(said.length, 1, "told once per payment");
+  assert.equal(orderIntents().length, 0);
 });
 
 // ---------------------------------------------------------------- 6. the icon fetch connects to the addresses it checked

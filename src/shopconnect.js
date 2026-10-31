@@ -312,7 +312,10 @@ function pinnedGet(url, { headers, signal, addresses }) {
     const u = new URL(url);
     const req = httpsRequest(u, { method: "GET", headers, signal, lookup: _pinnedLookup(addresses), servername: u.hostname }, (res) => {
       const h = {}; for (const [k, v] of Object.entries(res.headers)) if (typeof v === "string") h[k] = v;
-      try { resolve(new Response(Readable.toWeb(res), { status: res.statusCode, headers: h })); } catch (e) { res.destroy(); reject(e); }
+      // A status that carries no body (204/205/304) is a Response with none — the constructor refuses a stream there.
+      const bodiless = [204, 205, 304].includes(res.statusCode);
+      if (bodiless) res.resume();
+      try { resolve(new Response(bodiless ? null : Readable.toWeb(res), { status: res.statusCode, headers: h })); } catch (e) { res.destroy(); reject(e); }
     });
     req.on("error", reject);
     req.end();
@@ -326,7 +329,9 @@ async function fetchPublic(url, { accept, signal }) {
     const addresses = await publicAddresses(u.hostname, signal);
     if (!addresses) return null;
     const res = await iconFetch(u.href, { redirect: "manual", signal, addresses, headers: { Accept: accept, "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" } });
-    if (res.status >= 300 && res.status < 400 && res.headers?.get?.("location")) { url = new URL(res.headers.get("location"), u).href; continue; }
+    // A redirect's body is let go before the next hop, so its socket does not sit open until the abort.
+    if (res.status >= 300 && res.status < 400 && res.headers?.get?.("location")) { res.body?.cancel?.()?.catch?.(() => {}); url = new URL(res.headers.get("location"), u).href; continue; }
+    if (!res.ok) res.body?.cancel?.()?.catch?.(() => {});
     return res.ok ? res : null;
   }
   return null;
@@ -905,6 +910,20 @@ export async function payApproved({ conversationId, paymentId, confirmationId })
   if (passkey.requiredFor(conversationId)) return { ok: false, error: "approve_with_passkey" };
   return payRow(row, { confirmationId });
 }
+/**
+ * The day's cap, asked of a row before anything is paid: null when it fits, else the refusal both paths
+ * hand back as it is. A row whose amount does not read as money is refused too (bad_amount), never sent
+ * through as $0. The request Crossmint asked expires in about half an hour, so "tomorrow" means asking
+ * for the order again, not this link.
+ */
+async function capRefusal(row) {
+  const cents = Math.round(Number(row.amount) * 100);
+  if (!Number.isFinite(cents) || cents <= 0) { logFn({ shop_pay_bad_amount: true, payment_id: row.id }); return { ok: false, error: "bad_amount", say: "The payment's amount could not be read, so nothing was paid. Tell them plainly and that you will look into it." }; }
+  const cap = (await import("./trust.js")).checkSpendCap(row.conversation_id, cents);
+  if (cap.ok) return null;
+  logFn({ shop_pay_over_cap: true, payment_id: row.id, cap: cap.cap, spent_today: cap.spent_today, amount: cap.amount });
+  return { ok: false, error: "over_daily_cap", blocked: "over_daily_cap", cap: cap.cap, spent_today: cap.spent_today, left: cap.left, amount: cap.amount, say: cap.error };
+}
 /** Crossmint's reason, short, from whatever shape it answers in. Never a card detail (none is in its errors). */
 const crossmintError = (j) => short(j?.error?.code ?? j?.code ?? j?.error?.message ?? j?.message ?? (typeof j?.error === "string" ? j.error : "") ?? "", 60);
 /** Pays a row both approval paths agreed on: Crossmint's exact amount, the row's store, the person's card. */
@@ -925,12 +944,8 @@ async function payRow(row, { confirmationId = null } = {}) {
   // Crossmint payment — texted yes or Face ID — was only COUNTED after the fact (countSpend below). Now
   // it is asked first, for everyone: the row stays asked, nothing reaches Crossmint, and the refusal
   // names the limit and what is already spent. A yes cannot talk past it; it waits for tomorrow.
-  const cents = Math.round(Number(row.amount) * 100);
-  const cap = (await import("./trust.js")).checkSpendCap(conversationId, Number.isFinite(cents) && cents > 0 ? cents : 0);
-  if (!cap.ok) {
-    logFn({ shop_pay_over_cap: true, payment_id: row.id, cap: cap.cap, spent_today: cap.spent_today, amount: cap.amount });
-    return { ok: false, error: "over_daily_cap", blocked: "over_daily_cap", cap: cap.cap, spent_today: cap.spent_today, left: cap.left, amount: cap.amount, say: cap.error };
-  }
+  const capped = await capRefusal(row);
+  if (capped) return capped;
   // Claimed before any call, so two shop_pay calls at once can't both pay it.
   if (q("UPDATE shop_payments SET status = 'paying' WHERE id = ? AND status = 'asked'").run(row.id).changes !== 1) return { ok: false, error: "payment_in_progress" };
   setStage(row.run_id, "approved");
@@ -1042,12 +1057,22 @@ export function approvalView(token) {
 export async function payByPasskey(token, response) {
   const v = approvalView(token);
   if (!v) return { ok: false, error: "not_found" };
+  // The day's cap first, BEFORE the assertion is verified (verifying marks the link used): over it, the
+  // link stays open and nothing was asked of Face ID. No model turn runs here, so the one plain line is
+  // texted now, once per link; the page says it too (src/pages/webapprove.js WHY).
+  const capped = v.row.status === "asked" ? await capRefusal(v.row) : null;
+  if (capped) {
+    const told = !!q("SELECT 1 AS x FROM pay_approval_log WHERE payment_id = ? AND event = 'pay_failed' AND detail = 'over_daily_cap' LIMIT 1").get(v.row.id);
+    passkey.logEvent(v.row.conversation_id, v.row, "pay_failed", capped.error);
+    if (capped.error === "over_daily_cap" && !told) {
+      await notify(v.row.conversation_id, `${amountText(v.row)} at ${v.row.merchant_name || "the store"} is past the day's spending limit here ($${(capped.spent_today / 100).toFixed(2)} of $${(capped.cap / 100).toFixed(2)} already spent today). Nothing was charged. Tomorrow, ask me to start the order again.`);
+    }
+    return capped;
+  }
   const ok = await passkey.verifyApproval(v.a, v.row, response);
   if (!ok.ok) return ok;
   const out = await payRow(v.row);
   passkey.logEvent(v.row.conversation_id, v.row, out.ok ? "paid" : out.unknown_outcome ? "unknown_outcome" : "pay_failed", out.ok ? "" : [out.error, out.status, out.detail].filter(Boolean).join(" "));
-  // Past the day's limit: no model turn runs here, so the one plain line is said now; the page says it too.
-  if (out.error === "over_daily_cap") await notify(v.row.conversation_id, `Face ID worked, but ${amountText(v.row)} at ${v.row.merchant_name || "the store"} is past the day's spending limit here ($${(out.spent_today / 100).toFixed(2)} of $${(out.cap / 100).toFixed(2)} already spent today). Nothing was charged; it can go through tomorrow.`);
   if (out.ok) await notify(v.row.conversation_id, `Approved with Face ID. Paid ${out.amount} at ${out.merchant}; the store still has to place it, and I'll tell you when it's through.${out.receipts_email ? ` Receipts go to ${out.receipts_email}.` : ""}`);
   // No model turn runs here, so the one thing they can fix is said in plain words — what is on record
   // and why — once at this moment (a save-time ask was worded for that moment); the link opens again below.
