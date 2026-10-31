@@ -53,7 +53,7 @@ name|area; log `cached: true`). The Mac cage has no place-photo source (no PARAL
 out): prove places on the server from a scratch copy (/tmp/rp + a DB `.backup`, run as `reason`).
 No room in the search either → a second pass "<name> <area> storefront" + "<name> <area>"; a front counts only with its own name readable (own name overrides "other business"). One score for all candidates, so any room or signed front beats a cup. Live 2026-10-30: Joe Flatiron → its signed walk-up window, Devoción → inside, Bluestone → inside.
 
-## Owner-only
+## Owner-only (until 2026-10-31; `on` for everyone since, appended to live `.env` — see shop-connect.md "Everyone")
 `REASON_CHOICE_CARDS=owner`: `toolsFor` hides show_choices from every conversation whose account is
 not `is_operator`. Cage 2026-10-30: a tester number (no REASON_MASTER_NUMBER) asked for cleansers to
 pick from → 0 show_choices calls (send_picture instead); with `REASON_MASTER_NUMBER` set to that number
