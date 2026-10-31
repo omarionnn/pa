@@ -2,7 +2,7 @@
 
 Branch wt/passkey-approve, PR #285 (2026-10-31). Once someone has set up a passkey, a texted yes stops paying for Crossmint purchases. Reason texts a link instead, and only a user-verified passkey assertion pays, for that payment's exact amount and store, once, within 5 minutes. Self-hosted with `@simplewebauthn/server`.
 
-- Flag: `REASON_PASSKEY_PAY` = off (default) / `owner` / on. It only works where `REASON_SHOP_CONNECT` is also on. Origin and RP ID come from `REASON_PASSKEY_ORIGIN`, else `REASON_SITE_URL`, else `https://heyreason.com`.
+- Flag: `REASON_PASSKEY_PAY` = off (default) / `owner` / on — **`on` for everyone on live since 2026-10-31** (owner-only that morning; see shop-connect.md "Everyone"). It only works where `REASON_SHOP_CONNECT` is also on. Origin and RP ID come from `REASON_PASSKEY_ORIGIN`, else `REASON_SITE_URL`, else `https://heyreason.com`.
 - Code: `src/passkey.js` (passkeys, approval links, the challenge bound to the payment row, the log), `src/pages/webapprove.js` (pages + routes), `src/shopconnect.js` (`approvalUrl`, `approvalView`, `payByPasskey`, `declineByLink`; `payApproved` refuses with `approve_with_passkey`), `src/shoptools.js` (`shop_pay` hands out the link), and the routes in `src/http.js`.
 - Routes: `GET /web/connect/passkey` (signed-in setup page, options drawn in), `POST /web/connect/passkey/verify`, `GET /web/approve/{token}` (amount, store, item, Approve with Face ID, Decline), `POST /web/approve/{token}/verify|decline`.
 - Tests: `test/passkey-pay.test.js` (a software authenticator and a fake Crossmint).
@@ -11,8 +11,12 @@ Branch wt/passkey-approve, PR #285 (2026-10-31). Once someone has set up a passk
 
 ```bash
 cd ~/Desktop/pa && eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" \
-  && D=$(mktemp -d) && REASON_DATA_DIR=$D REASON_DB_PATH=$D/pk.db node --no-warnings .agents/skills/verify-reason/bin/passkey-drive.mjs [--shots=DIR] [--headed]
+  && D=$(mktemp -d) && REASON_DATA_DIR=$D REASON_DB_PATH=$D/pk.db node --no-warnings .agents/skills/verify-reason/bin/passkey-drive.mjs [--shots=DIR] [--headed] [--non-owner]
 ```
+
+`--non-owner` (2026-10-31, shopping for everyone): the flags `on`, the person paying is Ama (an account
+that is not the operator) and "the other person" is a third account, whose setup page is then its own
+(200) rather than a 404. Both runs 23/23 ok on 2026-10-31 (wt/shopping-everyone), muted.
 
 The drive runs the real `src/http.js` on loopback, opened in Chromium as `http://localhost:<port>` (RP ID `localhost`). The passkey is a CDP virtual authenticator (ctap2, internal, UV on), and it is used through the page's own buttons. Crossmint is answered by `shop._setFetch` and texts go to an array. Any other fetch throws. The last line reads `all ok`, or the drive exits 1.
 

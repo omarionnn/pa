@@ -1,5 +1,11 @@
 # Shop Connect (src/shopconnect.js, src/shoptools.js, src/pages/webconnect.js) — REASON_SHOP_CONNECT off | owner | on
 
+**Live: `on` for everyone since 2026-10-31 (owner's go at 15:59 ET)**, with `REASON_CHOICE_CARDS=on` and
+`REASON_PASSKEY_PAY=on` beside it — appended to live `.env` (a later line wins under `--env-file`; the
+`=owner` lines above them are history). Where Connect is on it is the ONLY way to buy, so every account
+is off AgentCard's `purchase`/`vault_enroll`/`flight_book` (src/shoptools.js AGENTCARD_BUY_TOOLS); the
+AgentCard rows and code stay, dormant. See "Everyone" below for what was checked and added before the flip.
+
 Crossmint agent checkouts: `store_checkout` starts one (guest first; Target/Walmart or `sign_in:true` →
 the person's own Crossmint browser profile + ONE texted link to sign in), the run pauses at payment,
 Reason texts Crossmint's own amount, and `shop_pay` pays only on a yes to that exact ask.
@@ -16,7 +22,7 @@ Reason texts Crossmint's own amount, and `shop_pay` pays only on a yes to that e
   a link minted for a non-owner conversation → the "expired" screen; a made-up token → "expired".
 - `GET /web/connect/jwks.json` → one RS256 key with the configured kid, no private parts (`d`,`p`,`q`).
 
-## Live (owner only, muted)
+## Live (muted; owner only until 2026-10-31)
 The real proof is heyreason.com: open a fresh `cardLink(owner)` in headless Chromium and see Crossmint's
 iframes (`frame-src` www.crossmint.com) where the card fields are — never a plain `<input>` for a card
 number or a store password. Never submit anything: Omari adds his own card.
@@ -90,3 +96,44 @@ approve page's paying step (`payingLines`, src/pages/webapprove.js) carry the sa
   polls at once, a new question and the run dying each redraw the open page, 410s. Shots in
   `~/Desktop/signin-progress-1031/` (cage-checking-95s, cage-code, cage-failed).
 - Look: `node scripts/connect-staging.mjs --deploy` → walmart-checking-{0,12,45,100,200}, walmart-failed-{timeout,stopped,lost}.
+
+## Everyone (wt/shopping-everyone, 2026-10-31)
+What was checked and added before `REASON_SHOP_CONNECT`, `REASON_CHOICE_CARDS` and `REASON_PASSKEY_PAY`
+went from `owner` to `on` on live. Pinned in `test/shopping-everyone-1031.test.js` (7; three of them
+fail on afc6ce8: the two cap tests and the pin test).
+- **The daily cap is asked before a Crossmint payment, for everyone.** `payRow` (both the texted-yes
+  path `payApproved` and the Face ID path `payByPasskey`) runs `trust.checkSpendCap` on the row's exact
+  amount before claiming the row: over it → `{ error: "over_daily_cap", cap, spent_today, left, say }`,
+  the row stays `asked`, nothing reaches Crossmint, and the journal gets `shop_pay_over_cap`. Until then
+  only AgentCard's `purchase_confirm` and `browser_submit` asked it; a Crossmint payment was only counted
+  afterwards (`countSpend`, #304). The cap is the install's `REASON_MAX_SPEND_PER_DAY` (whole dollars per
+  person per day, default 300; NOT set in live `.env`, so $300). The person's own caps (`caps_set`:
+  per-purchase, monthly) are not asked here: every Crossmint payment is a yes to that exact amount, which
+  is what those two let through anyway. On the Face ID path the cap is asked BEFORE the assertion is
+  verified (verifying marks the link used), so the link stays open and the page never ends on "Already
+  approved"; the page reads "This is past the day's spending limit here. Nothing was charged. Tomorrow,
+  ask me to start the order again." (the Crossmint request itself runs out in ~30 min, so tomorrow is a
+  new order, not this link), the person is texted one line with the figures once per payment, and the
+  log gets `pay_failed over_daily_cap`. An amount that does not read as money is `bad_amount`, never $0.
+- **The store-icon fetch connects to the addresses it checked** (`pinnedGet`: `node:https` with the
+  checked list as its `lookup`, `_pinnedLookup`), so a name that answers a public address to the check
+  and a private one to the connect (DNS rebinding) cannot reach the private one. Every redirect hop is
+  resolved, checked and pinned on its own; a test's fake fetch sees `init.addresses` per request.
+  A store named by a bare IP is never fetched at all (`hostOf` wants a lettered TLD).
+- **A page JWT alone cannot start a payment through Reason.** Read-only probe on live (GETs with a
+  throwaway `sub`, 2026-10-31 20:04Z): client key + JWT reads that user's own `payment-methods` and
+  `order-intents` (200, empty); without the JWT the client key is refused (403); the client key has NO
+  `agent-checkouts.*` scope, so it cannot read, run or answer a checkout — only the server key does that,
+  and the `orderIntentId` is useless without a checkout to submit it to. The client key DOES carry
+  `order-intents.create` / `order-intents.credentials` (Crossmint's design: order intents are the user's
+  own), so a 30-minute JWT lifted off the person's own connect page could create an order intent on
+  THEIR OWN saved card and ask for a credential — which needs the card network's own verification on
+  their device (Visa/Mastercard rail) or the encrypted-card production add-on (unknown whether this
+  project has it; a direct request without it fails `ADDON_REQUIRED`). The JWT's `sub` is the
+  conversation's Crossmint user, signed server-side, so nobody can mint one for someone else's card.
+  Not a blocker; noted.
+- **Cooling-off is the same for everyone**: `passkey.register` — first passkey usable at once, any later
+  one after `COOL_MS` (24h), no owner branch. Pinned for a non-owner.
+- **Live state at the flip**: `agentcard_users` 3 rows (owner + two others, one with a visa linked
+  2026-10-17); `agentcard_purchases` 4 open rows, all the owner's and stale (shopping / cart_shown /
+  awaiting_approval, 10-24..10-30) — nothing cancelled, nothing texted. `shop_cards` 1 (owner).

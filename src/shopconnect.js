@@ -36,6 +36,8 @@ import { createHash, createSign, createPrivateKey, createPublicKey, randomBytes,
 import { readFileSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { request as httpsRequest } from "node:https";
+import { Readable } from "node:stream";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { config, clock } from "./config.js";
@@ -267,7 +269,8 @@ export function noteStore({ store, name = "", url = "" }) {
 const ICON_MAX = 200_000;
 const ICON_RETRY_MS = 24 * 3600_000;
 // Never the real network under node --test unless a test hands in its own fake.
-const realFetch = (...a) => (process.env.NODE_TEST_CONTEXT ? Promise.reject(new Error("no network in tests")) : fetch(...a));
+// The real one connects only to the addresses fetchPublic checked (pinnedGet); plain fetch would resolve the name again.
+const realFetch = (url, init) => (process.env.NODE_TEST_CONTEXT ? Promise.reject(new Error("no network in tests")) : pinnedGet(url, init));
 const realLookup = (host) => (process.env.NODE_TEST_CONTEXT ? Promise.reject(new Error("no DNS in tests")) : lookup(host, { all: true, verbatim: true }));
 let iconFetch = realFetch;
 let iconLookup = realLookup;
@@ -278,21 +281,57 @@ const PRIVATE_HOST = /(^|\.)(localhost|local|internal|lan|home|arpa|ts\.net|test
 // alone proves nothing (pinkfrog.example can point at 127.0.0.1 or 169.254.169.254), so every hop is
 // resolved first and refused unless ALL its addresses are public (src/pictures.js isPrivateHost: loopback,
 // 10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10, ::1, fc00::/7, fe80::/10, v4-mapped).
-async function publicHost(hostname, signal) {
+//
+// And the fetch connects to THOSE addresses, not to whatever the name resolves to a moment later
+// (2026-10-31, before opening checkouts to everyone): a name that answered a public address to the
+// check and a private one to the connect — DNS rebinding — got through the check and reached the
+// private one. So the checked addresses ride with the request as its `lookup` (pinnedGet below), and
+// a name is never resolved twice for one hop. Every hop of a redirect is resolved, checked and pinned
+// on its own.
+async function publicAddresses(hostname, signal) {
   const h = hostname.replace(/^\[|\]$/g, "");
-  if (isIP(h)) return !isPrivateHost(h);
+  if (isIP(h)) return isPrivateHost(h) ? null : [{ address: h, family: isIP(h) }];
   // The lookup rides the same 4s budget as the fetch: an abort mid-lookup refuses the host.
   const aborted = new Promise((resolve) => { if (signal?.aborted) resolve([]); signal?.addEventListener?.("abort", () => resolve([]), { once: true }); });
   const addrs = await Promise.race([iconLookup(h).catch(() => []), aborted]);
-  return addrs.length > 0 && addrs.every((a) => isIP(a?.address) && !isPrivateHost(a.address));
+  if (!(addrs.length > 0 && addrs.every((a) => isIP(a?.address) && !isPrivateHost(a.address)))) return null;
+  return addrs.map((a) => ({ address: a.address, family: a.family || isIP(a.address) }));
+}
+/** dns.lookup's shape, answering from the addresses already checked, whatever the name says now. */
+export function _pinnedLookup(addresses) {
+  const list = addresses.map((a) => ({ address: a.address, family: Number(a.family) || isIP(a.address) || 4 }));
+  return (hostname, options, cb) => {
+    if (typeof options === "function") { cb = options; options = {}; }
+    if (options?.all) return cb(null, list);
+    cb(null, list[0].address, list[0].family);
+  };
+}
+/** One https GET to a pinned address: redirects are not followed here (fetchPublic re-checks each hop). */
+function pinnedGet(url, { headers, signal, addresses }) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = httpsRequest(u, { method: "GET", headers, signal, lookup: _pinnedLookup(addresses), servername: u.hostname }, (res) => {
+      const h = {}; for (const [k, v] of Object.entries(res.headers)) if (typeof v === "string") h[k] = v;
+      // A status that carries no body (204/205/304) is a Response with none — the constructor refuses a stream there.
+      const bodiless = [204, 205, 304].includes(res.statusCode);
+      if (bodiless) res.resume();
+      try { resolve(new Response(bodiless ? null : Readable.toWeb(res), { status: res.statusCode, headers: h })); } catch (e) { res.destroy(); reject(e); }
+    });
+    req.on("error", reject);
+    req.end();
+  });
 }
 async function fetchPublic(url, { accept, signal }) {
   for (let hop = 0; hop < 4; hop++) {
     let u; try { u = new URL(url); } catch { return null; }
     if (u.protocol !== "https:" || (u.port && u.port !== "443") || u.username || u.password) return null;
-    if (!hostOf(u.hostname) || PRIVATE_HOST.test(u.hostname) || !(await publicHost(u.hostname, signal))) return null;
-    const res = await iconFetch(u.href, { redirect: "manual", signal, headers: { Accept: accept, "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" } });
-    if (res.status >= 300 && res.status < 400 && res.headers?.get?.("location")) { url = new URL(res.headers.get("location"), u).href; continue; }
+    if (!hostOf(u.hostname) || PRIVATE_HOST.test(u.hostname)) return null;
+    const addresses = await publicAddresses(u.hostname, signal);
+    if (!addresses) return null;
+    const res = await iconFetch(u.href, { redirect: "manual", signal, addresses, headers: { Accept: accept, "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15" } });
+    // A redirect's body is let go before the next hop, so its socket does not sit open until the abort.
+    if (res.status >= 300 && res.status < 400 && res.headers?.get?.("location")) { res.body?.cancel?.()?.catch?.(() => {}); url = new URL(res.headers.get("location"), u).href; continue; }
+    if (!res.ok) res.body?.cancel?.()?.catch?.(() => {});
     return res.ok ? res : null;
   }
   return null;
@@ -871,6 +910,20 @@ export async function payApproved({ conversationId, paymentId, confirmationId })
   if (passkey.requiredFor(conversationId)) return { ok: false, error: "approve_with_passkey" };
   return payRow(row, { confirmationId });
 }
+/**
+ * The day's cap, asked of a row before anything is paid: null when it fits, else the refusal both paths
+ * hand back as it is. A row whose amount does not read as money is refused too (bad_amount), never sent
+ * through as $0. The request Crossmint asked expires in about half an hour, so "tomorrow" means asking
+ * for the order again, not this link.
+ */
+async function capRefusal(row) {
+  const cents = Math.round(Number(row.amount) * 100);
+  if (!Number.isFinite(cents) || cents <= 0) { logFn({ shop_pay_bad_amount: true, payment_id: row.id }); return { ok: false, error: "bad_amount", say: "The payment's amount could not be read, so nothing was paid. Tell them plainly and that you will look into it." }; }
+  const cap = (await import("./trust.js")).checkSpendCap(row.conversation_id, cents);
+  if (cap.ok) return null;
+  logFn({ shop_pay_over_cap: true, payment_id: row.id, cap: cap.cap, spent_today: cap.spent_today, amount: cap.amount });
+  return { ok: false, error: "over_daily_cap", blocked: "over_daily_cap", cap: cap.cap, spent_today: cap.spent_today, left: cap.left, amount: cap.amount, say: cap.error };
+}
 /** Crossmint's reason, short, from whatever shape it answers in. Never a card detail (none is in its errors). */
 const crossmintError = (j) => short(j?.error?.code ?? j?.code ?? j?.error?.message ?? j?.message ?? (typeof j?.error === "string" ? j.error : "") ?? "", 60);
 /** Pays a row both approval paths agreed on: Crossmint's exact amount, the row's store, the person's card. */
@@ -886,6 +939,13 @@ async function payRow(row, { confirmationId = null } = {}) {
   }
   const card = cardOf(conversationId);
   if (!card) return { ok: false, error: "no_card" };
+  // The install's daily net (src/trust.js checkSpendCap, REASON_MAX_SPEND_PER_DAY) holds for every way
+  // of paying. Until 2026-10-31 only AgentCard's purchase_confirm and browser_submit asked it, and a
+  // Crossmint payment — texted yes or Face ID — was only COUNTED after the fact (countSpend below). Now
+  // it is asked first, for everyone: the row stays asked, nothing reaches Crossmint, and the refusal
+  // names the limit and what is already spent. A yes cannot talk past it; it waits for tomorrow.
+  const capped = await capRefusal(row);
+  if (capped) return capped;
   // Claimed before any call, so two shop_pay calls at once can't both pay it.
   if (q("UPDATE shop_payments SET status = 'paying' WHERE id = ? AND status = 'asked'").run(row.id).changes !== 1) return { ok: false, error: "payment_in_progress" };
   setStage(row.run_id, "approved");
@@ -997,6 +1057,18 @@ export function approvalView(token) {
 export async function payByPasskey(token, response) {
   const v = approvalView(token);
   if (!v) return { ok: false, error: "not_found" };
+  // The day's cap first, BEFORE the assertion is verified (verifying marks the link used): over it, the
+  // link stays open and nothing was asked of Face ID. No model turn runs here, so the one plain line is
+  // texted now, once per link; the page says it too (src/pages/webapprove.js WHY).
+  const capped = v.row.status === "asked" ? await capRefusal(v.row) : null;
+  if (capped) {
+    const told = !!q("SELECT 1 AS x FROM pay_approval_log WHERE payment_id = ? AND event = 'pay_failed' AND detail = 'over_daily_cap' LIMIT 1").get(v.row.id);
+    passkey.logEvent(v.row.conversation_id, v.row, "pay_failed", capped.error);
+    if (capped.error === "over_daily_cap" && !told) {
+      await notify(v.row.conversation_id, `${amountText(v.row)} at ${v.row.merchant_name || "the store"} is past the day's spending limit here ($${(capped.spent_today / 100).toFixed(2)} of $${(capped.cap / 100).toFixed(2)} already spent today). Nothing was charged. Tomorrow, ask me to start the order again.`);
+    }
+    return capped;
+  }
   const ok = await passkey.verifyApproval(v.a, v.row, response);
   if (!ok.ok) return ok;
   const out = await payRow(v.row);
