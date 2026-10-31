@@ -434,6 +434,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — choice cards: one photo short is not a list (fix/choice-cards-fallback-1031, 2026-10-31)
+
+`npm test` under `env -i` (NO .env in the worktree — a copied .env turns on the real-model tests): 4,883 tests, 4,751 passing, 131 skipped, 1 failing (web-ongoing, date-dependent, fails on main too). New: `test/choice-cards-fallback-1031.test.js`. See [features/choice-cards.md](features/choice-cards.md).
+
 ### Baseline — purchase approval by passkey (wt/passkey-approve, #285, 2026-10-31)
 
 `npm run test:offline` under `env -i`: 4,867 tests, 4,735 passing, 131 skipped, 1 failing. The failure is web-ongoing, which also fails on main because it depends on the date. New: `test/passkey-pay.test.js`. Muted drive `bin/passkey-drive.mjs` (real HTTP, Chromium with a CDP virtual authenticator as `localhost`, Crossmint stand-in in the process, no texts, no model): setup ceremony, approve → exactly one order intent, replay `link_used`, decline, expired 410, `details_changed`, UV off refused, the texted yes doesn't pay, made-up token 404, flag off 404. Signed-out `/web/connect/passkey` still gets Connect's 410 through the http.js:331 fall-through (see [features/passkey-pay.md](features/passkey-pay.md)).

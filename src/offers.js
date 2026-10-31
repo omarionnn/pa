@@ -358,14 +358,14 @@ function replyAmountCents(s) {
 
 const DISCOUNT = /\b(coupons?|promo(?:tional)? codes?|promos?|discounts?|vouchers?|\d{1,2}\s?% off|percent off|on sale|sale price|price drop|clearance|markdown|deal ends)\b/i;
 const DISCOUNT_SOURCE = /coupon|promo|discount|voucher|% off|percent off|sale|clearance|markdown|save \$|was \$|list price/i;
-/** A whole line that is a tool's note, not words to a person: "(compared: …)", "a seller $18.99". */
-export const TOOL_NOTE_LINE = /^\s*\(?\s*(?:compared|tool note|internal|debug)\s*:|\ba seller \$\d/i;
+/** A whole bracketed line that is a tool's note, not words to a person: "(compared: a seller $18.99, …)". */
+export const TOOL_NOTE_LINE = /^\s*\((?:compared|tool note|internal|debug)\s*:.*\)\s*$|^\s*\(.*\ba seller \$\d.*\)\s*$/i;
 const BEST = /\b(best (?:deal|price|value|offer)|cheapest|lowest(?:-| )price[ds]?|lowest cost|least expensive|can't beat|cannot beat)\b/i;
 
 // "I'll find the cheapest total" is a promise, not a claim: no correction under it (cage, 2026-10-31).
-const ABOUT_TO = /\b(?:find(?:ing)?|look(?:ing)? for|search(?:ing)? for|hunt(?:ing)? for|check(?:ing)?|compar(?:e|ing)|get you|track(?:ing)? down|go with|want|need|looking)\b[^.!?\n—–;:,]{0,16}$/i;
+const ABOUT_TO = /\b(?:find(?:ing)?|look(?:ing)? for|search(?:ing)? for|hunt(?:ing)? for|check(?:ing)?|compar(?:e|ing)|get you|track(?:ing)? down|looking)\b[^.!?\n—–;:,]{0,16}$/i;
 // "That's not a proven best deal" already says the thing the correction would.
-const SAYS_NOT = /\b(?:not|isn't|isnt|no|never|can't say|cannot say)\b[^.!?\n—–;:,]{0,20}$/i;
+const SAYS_NOT = /\b(?:not|isn't|isnt|never|can't say|cannot say)(?:\s+(?:a|an|the|really|necessarily|proven|checked|verified|confirmed|guaranteed))*\s*$/i;
 /** Does the text say something IS the best / cheapest (not that it will go looking for it)? */
 export function claimsBest(text) {
   const re = new RegExp(BEST.source, "gi");
@@ -399,8 +399,10 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     const original = reply;
     const noted = reply.split("\n");
     const kept = noted.filter(l => !TOOL_NOTE_LINE.test(l));
-    if (kept.length < noted.length) flags.push({ rule: "tool_note_stripped", lines: noted.length - kept.length });
-    reply = kept.join("\n").replace(/\n+$/, "");
+    if (kept.length < noted.length) {
+      flags.push({ rule: "tool_note_stripped", lines: noted.length - kept.length });
+      reply = kept.join("\n").replace(/\n+$/, "");
+    }
     let text = reply.replace(REPLY_MONEY, (m, offset, whole) => {
       if (known.has(replyAmountCents(m))) return m;
       const near = whole.slice(Math.max(0, offset - 40), offset + m.length + 40);

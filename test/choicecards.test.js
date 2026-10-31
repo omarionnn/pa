@@ -46,6 +46,7 @@ beforeEach(() => {
   clock.reset();
   cc._setPlaceLook(async () => null);   // never a real model in the suite; the look tests set their own
   cc._setPlaceSearch(null);             // and never the paid picture search, whatever .env holds
+  cc._setProductLook(async () => null); // and never a real product look
   process.env.REASON_CHOICE_CARDS = "on";
   db.db.exec("DELETE FROM choice_sets; DELETE FROM seen_urls; DELETE FROM accounts; DELETE FROM place_photos;");
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });

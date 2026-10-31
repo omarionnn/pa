@@ -43,6 +43,7 @@ beforeEach(() => {
   clock.reset();
   cc._setPlaceLook(async () => null);
   cc._setPlaceSearch(null);
+  cc._setProductLook(async () => null);   // never a real model; the look tests set their own
   process.env.REASON_CHOICE_CARDS = "owner";
   db.db.exec("DELETE FROM choice_sets; DELETE FROM seen_urls; DELETE FROM accounts; DELETE FROM offers;");
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
@@ -129,4 +130,89 @@ test("a promise to find the cheapest is not a 'best' claim: nothing glued on", (
   assert.equal(offers.claimsBest("I'll find it — this is the best deal I've seen"), true);
   assert.equal(offers.claimsBest("That's not a proven best deal. Amazon's page did not show a price."), false);
   assert.equal(offers.claimsBest("Ulta is the cheapest, not Target"), true);
+});
+
+test("review: trailing newline alone is no change; real claims beside 'not'/'want' still caught; a user line starting 'Compared:' stays", () => {
+  const g = offers.guardReply("dm:fresh2", "Hello there\n", { asks: false });
+  assert.equal(g.changed, false);
+  assert.equal(g.text, "Hello there\n");
+  assert.equal(offers.claimsBest("Not only is it the cheapest, it ships free."), true);
+  assert.equal(offers.claimsBest("If you want the cheapest, it's the Target one."), true);
+  assert.equal(offers.claimsBest("It isn't necessarily the cheapest."), false);
+  const line = "Compared: the 8 oz is cheaper per ounce.";
+  assert.equal(offers.guardReply("dm:fresh2", line, { asks: false }).text, line);
+});
+
+test("review: cards that fail to draw fall back to a list of every option, the photo-less one too", async () => {
+  for (const sku of Object.keys(PAGES)) db.rememberSeenUrls(C, [ULTA(sku)], { kind: "page" });
+  const findPagePhoto = async (u) => (u === ULTA(2254420) ? null : pagePhotoOf(u));
+  const fresh = asked(); fresh.options.forEach(o => { o.why += " (draw fails)"; });   // a drawn card is reused by its content
+  const r = await cc.runChoiceTool("show_choices", fresh, ctx({ findPagePhoto, shoot: async () => { throw new Error("chromium gone"); } }));
+  assert.equal(r.fallback, "text");
+  assert.equal(db.openChoiceFor(C).options.length, 3);
+  assert.doesNotMatch(r.note, /Not in the set/);
+});
+
+test("a retailer page that blocks the plain read: the listing read's own picture is used, its checked price kept", async () => {
+  const T = ["https://www.target.com/p/a/-/A-1", "https://www.target.com/p/b/-/A-2"];
+  db.rememberSeenUrls(C, T, { kind: "page" });
+  const lookup = async (u) => ({ ok: true, title: u.endsWith("1") ? "CeraVe Hydrating Facial Cleanser 16 fl oz" : "CeraVe Foaming Facial Cleanser 12 fl oz", text: u.endsWith("1") ? "$17.99" : "$15.49", images: [`https://target.scene7.com/is/image/Target/${u.slice(-1)}`] });
+  const r = await cc.runChoiceTool("show_choices", { kind: "shopping", options: [
+    { name: "Hydrating Facial Cleanser 16 fl oz", brand: "CeraVe", price: "$17.99", url: T[0] },
+    { name: "Foaming Facial Cleanser 12 fl oz", brand: "CeraVe", price: "$15.49", url: T[1] },
+  ] }, ctx({ findPagePhoto: async () => null, lookup }));
+  assert.equal(r.cards, 2, r.note);
+  await show();
+  assert.deepEqual(db.openChoiceFor(C).options.map(o => o.price), ["$17.99", "$15.49"]);
+});
+
+test("no listing picture either: a searched photo of the product makes the card, with no price or size on it", async () => {
+  const T = ["https://www.meijer.com/p/cerave-hydrating-16", "https://www.target.com/p/cerave-foaming-12"];
+  db.rememberSeenUrls(C, T, { kind: "page" });
+  const productSearch = { imageSearch: async ({ queries }) => ({ ok: true, results: [
+    { image_url: `https://img.example/${queries[0].includes("Hydrating") ? "h" : "f"}.jpg`, page_url: "https://www.cerave.com/x", title: queries[0].replace(" product photo", "") },
+    { image_url: "https://img.example/other.jpg", page_url: "https://x.example/y", title: "La Roche-Posay Toleriane" },
+  ] }) };
+  cc._setProductLook(async ({ photos }) => new Set(photos.map((_, k) => k + 1)));
+  const r = await cc.runChoiceTool("show_choices", { kind: "shopping", options: [
+    { name: "Hydrating Facial Cleanser", brand: "CeraVe", price: "$17.99", detail: "16 oz", url: T[0] },
+    { name: "Foaming Facial Cleanser", brand: "CeraVe", price: "$15.49", detail: "12 oz", url: T[1] },
+  ] }, ctx({ findPagePhoto: async () => null, productSearch }));
+  assert.equal(r.cards, 2, r.note);
+  await show();
+  const set = db.openChoiceFor(C);
+  assert.deepEqual(set.options.map(o => [o.price, o.detail]), [["", ""], ["", ""]]);
+});
+
+test("a searched photo the look says is another variant is never used: below two photos, a list", async () => {
+  const T = ["https://www.meijer.com/p/cerave-hydrating-16", "https://www.target.com/p/cerave-ctf-16"];
+  db.rememberSeenUrls(C, T, { kind: "page" });
+  const productSearch = { imageSearch: async ({ queries }) => ({ ok: true, results: [{ image_url: `https://img.example/${queries[0].length}.jpg`, page_url: "https://x.example/p", title: queries[0] }] }) };
+  cc._setProductLook(async () => new Set());   // looked: not it
+  const r = await cc.runChoiceTool("show_choices", { kind: "shopping", options: [
+    { name: "Hydrating Facial Cleanser", brand: "CeraVe", url: T[0] },
+    { name: "Hydrating Cream-to-Foam Cleanser", brand: "CeraVe", url: T[1] },
+  ] }, ctx({ findPagePhoto: async () => null, productSearch }));
+  assert.equal(r.fallback, "text");
+  cc._setProductLook(async () => null);        // the look failed: no searched photo either
+  const t = await cc.runChoiceTool("show_choices", { kind: "shopping", options: [
+    { name: "Hydrating Facial Cleanser", brand: "CeraVe", url: T[0] },
+    { name: "Hydrating Cream-to-Foam Cleanser", brand: "CeraVe", url: T[1] },
+  ] }, ctx({ findPagePhoto: async () => null, productSearch }));
+  assert.equal(t.fallback, "text");
+});
+
+test("lookAtProductPhotos: one side call on the subscription path, numbers of the photos that ARE it", async () => {
+  let seen;
+  const run = async (a) => { seen = a; return { ok: true, envelope: { structured_output: { photos: [{ n: 1, is_it: false }, { n: 2, is_it: true }] } } }; };
+  const yes = await cc.lookAtProductPhotos({ name: "CeraVe Hydrating Cream-to-Foam Cleanser", photos: [{ mediaType: "image/jpeg", base64: "AA" }, { mediaType: "image/jpeg", base64: "BB" }] }, { run });
+  assert.deepEqual([...yes], [2]);
+  assert.equal(seen.feature, "product_photo");
+  assert.equal(seen.images.length, 2);
+  assert.equal(await cc.lookAtProductPhotos({ name: "x", photos: [] }, { run: async () => ({ ok: false }) }), null);
+});
+
+test("a size in the card's name stays on one line", () => {
+  const html = cc.choiceCardHtml({ n: 1, name: "CeraVe Foaming Facial Cleanser 16 oz", photo: "data:image/jpeg;base64,AA" });
+  assert.match(html, /16&nbsp;oz<\/h1>/);
 });
