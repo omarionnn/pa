@@ -60,6 +60,7 @@ import * as verify from "./verify.js";
 import * as fromcall from "./fromcall.js";
 import { profileNote } from "./profile.js";
 import * as callMetrics from "./metrics.js";
+import * as stranger from "./stranger.js";
 
 /** The route ElevenLabs is pointed at. One place, because the setup doc quotes it. */
 export const LLM_PATH = "/calls/elevenlabs/llm";
@@ -2335,6 +2336,14 @@ export async function llmRequest({
     const idIn = /"reason_call_id"\s*:\s*"?(\d+)/.exec(String(rawBody ?? ""));
     log({ voice_llm_bad_json: idIn ? Number(idIn[1]) : null, bytes: Buffer.byteLength(String(rawBody ?? "")) });
     return { status: 400, headers: JSONH, body: JSON.stringify({ error: { message: "bad json", type: "invalid_request_error" } }) };
+  }
+
+  // Somebody Reason does not know rang the number (src/calls/stranger.js): the pitch, with no call
+  // row, no account, nobody's data and no tools. Marked by inbound.js on the call's extra body.
+  const extra = (body?.elevenlabs_extra_body ?? body?.extra_body ?? body?.custom_llm_extra_body ?? {}) || {};
+  if (extra[EXTRA_BODY_KEYS.kind] === stranger.KIND) {
+    log({ voice_llm_stranger: Array.isArray(body.messages) ? body.messages.length : 0 });
+    return { status: 200, headers: SSEH, stream: stranger.strangerTurn({ body, generate: generatorFor(), sseChunk, SSE_DONE, log, now }) };
   }
 
   const found = identifyCall(body);

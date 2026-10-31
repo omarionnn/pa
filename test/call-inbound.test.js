@@ -196,29 +196,27 @@ test("with nowhere to text, the note is not marked as told — so the next call 
 
 // ---------- a number nobody approved ----------
 
-test("strangerLine names nobody, whatever the operator is called", async () => {
-  const { strangerLine } = await import("../src/calls/voice-prompt.js");
+test("the neutral line (blocked, paused, removed) names nobody, whatever the operator is called", async () => {
+  const sc = await import("../src/calls/stranger.js");
   const saved = config.ownerName;
   try {
     for (const n of ["Omari", "Ama"]) {
       config.ownerName = n;
-      assert.equal(strangerLine(), "Hi — you've reached Reason. I'm not set up to take calls from this number, so I'll pass on that you rang. Thanks.");
+      assert.equal(sc.neutralLine(), "Hi, you've reached Reason. I can't take calls from this number right now. Thanks, bye.");
     }
   } finally { config.ownerName = saved; }
 });
 
-test("a stranger gets one line, the call ends, and no turn is ever run for them", () => {
+test("an unknown caller gets Reason introducing itself, a tool-less pitch turn, and nobody's data", () => {
   const out = ring({ caller_id: STRANGER });
   assert.equal(out.status, 200);
   const agent = out.body.conversation_config_override.agent;
-  assert.match(agent.first_message, /^Hi — you've reached Reason\./);
-  assert.doesNotMatch(agent.first_message, /Omari|AI assistant for/, "nothing about the operator reaches a stranger");
-  assert.match(agent.first_message, /not set up to take calls from this number/);
-  // The prompt is replaced AND end_call is the only tool. The prompt override is the half that
-  // matters: an allowed end_call on a full Reason would be a stranger talking to a full Reason.
-  assert.match(agent.prompt.prompt, /call the end_call tool immediately/);
-  assert.deepEqual(agent.prompt.tools, [{ type: "system", name: "end_call" }]);
+  assert.match(agent.first_message, /^Hi, this is Reason, a personal AI assistant/);
+  assert.match(agent.first_message, /this call is recorded/);
+  assert.doesNotMatch(JSON.stringify(out.body), /Omari|\+12025551234|dm:owner/, "nothing about any user in what the platform is handed");
+  assert.deepEqual(agent.prompt.tools, [{ type: "system", name: "end_call" }], "end_call is the only tool");
   assert.equal(out.body.dynamic_variables.reason_kind, "stranger");
+  assert.deepEqual(out.body.custom_llm_extra_body, { reason_kind: "stranger" }, "its turns come to the pitch, and carry no call or conversation id");
 
   // Nothing of theirs exists: no account, no call row, no conversation.
   assert.equal(db.accountByNumber(STRANGER), null);
@@ -253,7 +251,7 @@ test("the same stranger ringing six times troubles the master once", () => {
 test("a withheld number is a stranger, and nothing is written down about nobody", () => {
   const out = ring({ caller_id: "" });
   assert.equal(out.status, 200);
-  assert.match(out.body.conversation_config_override.agent.first_message, /not set up to take calls/);
+  assert.match(out.body.conversation_config_override.agent.first_message, /^Hi, this is Reason/);
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM access_requests").get().n, 0);
   assert.equal(outbox().length, 0);
 });
@@ -266,31 +264,33 @@ test("with no line to text on, the stranger still gets their line and no request
     provider: provider(), router: noRouter,
   });
   assert.equal(out.status, 200);
-  assert.match(out.body.conversation_config_override.agent.first_message, /not set up to take calls/);
+  assert.match(out.body.conversation_config_override.agent.first_message, /^Hi, this is Reason/);
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM access_requests").get().n, 0);
 });
 
-test("a blocked number gets the stranger line and nothing else at all", () => {
+test("a blocked number gets the neutral line, no pitch, and nothing else at all", () => {
   db.blockNumber(STRANGER, "they kept ringing");
   const out = ring({ caller_id: STRANGER });
-  assert.match(out.body.conversation_config_override.agent.first_message, /not set up to take calls/);
+  const agent = out.body.conversation_config_override.agent;
+  assert.equal(agent.first_message, "Hi, you've reached Reason. I can't take calls from this number right now. Thanks, bye.");
+  assert.match(agent.prompt.prompt, /call the end_call tool immediately/);
+  assert.equal(out.body.custom_llm_extra_body, undefined, "no pitch turns");
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM access_requests").get().n, 0);
   assert.equal(outbox().length, 0);
   assert.equal(whoseCallIsThis(STRANGER).reason, "blocked");
 });
 
-test("a paused account is told once, in their own words, and then left alone", () => {
+test("a paused or removed account gets the neutral line every time: no pitch, no operator name", () => {
   db.upsertAccount({ conversationId: "dm:sendblue:+12125551111", channel: "sendblue", address: FRIEND, name: "Kofi" });
-  db.setAccountState("dm:sendblue:+12125551111", "paused");
-  assert.equal(whoseCallIsThis(FRIEND).reason, "paused");
-
-  const first = ring({ caller_id: FRIEND });
-  assert.match(first.body.conversation_config_override.agent.first_message, /paused this for now/);
-  assert.match(first.body.conversation_config_override.agent.first_message, /nothing of yours is gone/);
-  // Repeating it on every call turns Reason into the thing making unsolicited calls.
-  const again = ring({ caller_id: FRIEND, conversation_id: "c2" });
-  assert.match(again.body.conversation_config_override.agent.first_message, /not set up to take calls/);
-  // And no call row for either: nothing was answered.
+  for (const state of ["paused", "removed"]) {
+    db.setAccountState("dm:sendblue:+12125551111", state);
+    assert.equal(whoseCallIsThis(FRIEND).reason, state);
+    for (const c of ["c1", "c2"]) {
+      const agent = ring({ caller_id: FRIEND, conversation_id: `${state}-${c}` }).body.conversation_config_override.agent;
+      assert.equal(agent.first_message, "Hi, you've reached Reason. I can't take calls from this number right now. Thanks, bye.");
+      assert.doesNotMatch(agent.first_message, /Omari/);
+    }
+  }
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls").get().n, 0);
 });
 
@@ -384,7 +384,7 @@ test("the returning call inherits the brief, so a call that was only asking stil
 test("a number nobody called is still a stranger, and the master still hears about it", () => {
   const r = ring({ caller_id: STRANGER, conversation_id: "conv_cold" });
   assert.equal(r.status, 200);
-  assert.match(r.body.conversation_config_override.agent.first_message, /not set up to take calls/);
+  assert.match(r.body.conversation_config_override.agent.first_message, /^Hi, this is Reason/);
   assert.equal(db.listCalls(C).length, 0);
 });
 
