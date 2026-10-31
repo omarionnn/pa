@@ -21,6 +21,7 @@
 // Nothing here decides what the person meant. Intent is the model's; this checks figures.
 import { clock } from "./config.js";
 import * as shop from "./shopconnect.js";
+import { choiceWording } from "./choicecards.js";
 
 // ---------- "I've started the checkout" ----------
 // 2026-10-31 10:58: "I've started the Ulta checkout for the 16 oz. When it gets to payment I'll text
@@ -43,6 +44,16 @@ const NEVER_STARTED = /\b(?:never (?:actually |really )?(?:started|ran|began|got
 const SELF_BUY_HEDGE = /\b(?:if you(?:'d| would) rather(?: just)? (?:buy|order|finish|place|check out|checkout) (?:it|this|the order|that)(?: yourself| on your own)?|if you(?:'d| would) rather(?: just)? (?:get|grab|do) (?:it|this|that) yourself|(?:buy|order|finish|place|check out) (?:it|this|the order) (?:yourself|on your own)|here'?s the (?:page|link) (?:if|in case) you(?:'d| would)? (?:rather|want to|prefer to) (?:buy|order|finish|place|do|get) (?:it|this|that|the order))\b/i;
 const HONEST_NOT_STARTED ="I haven't actually started a checkout: nothing is running and nothing has been charged. Want me to start it now?";
 const isStartClaim = (s, near) => !NOT_A_START.test(s) && !/\?\s*$/.test(s) && (I_STARTED.test(s) || CHECKOUT_IS.test(s) || (START_IT.test(s) && CHECKOUT_WORD.test(near)));
+const ABOUT_BUYING = /\b(?:checkout|check-?out|order(?:s|ed)?|purchase[sd]?|buy|bought|buying|cart|shop(?:ping)?|pay(?:ment|ing)?|paid|charge[sd]?|store)\b/i;
+/** Is what they wrote this turn about the checkout: its words, the store, or the item? Nothing written (an event turn) is. */
+export function aboutCheckout(own, run) {
+  const text = String(own ?? "").trim();
+  if (!text) return true;
+  if (ABOUT_BUYING.test(text)) return true;
+  const store = shop.storeName(run?.store) || run?.store || "";
+  if (store && new RegExp(`\\b${store.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text)) return true;
+  return !!run?.item && shop.mentionsItem(text, run.item);
+}
 /** Lines, and each line's sentences: `[[sentence, …], …]`, joined back with the same newlines. */
 function sentencesOf(text) { return String(text).split(/(\n+)/).map((part) => (/^\n+$/.test(part) ? part : part.split(/(?<=[.!?])\s+/))); }
 const joinBack = (parts) => parts.map((p) => (typeof p === "string" ? p : p.join(" "))).join("").replace(/\n{3,}/g, "\n\n").trim();
@@ -69,11 +80,14 @@ export function checkoutClaims(conversationId, text) {
     const ran = half.find((r) => r.status !== "running") ?? half[0] ?? null;
     // Only a denial ABOUT the checkout: "the timer never started" is somebody else's business.
     const denies = (s, i) => NEVER_STARTED.test(s) && (CHECKOUT_WORD.test(s) || /\bnothing was running\b/i.test(s) || (/\bit (?:never|didn'?t|did not|wasn'?t)\b/i.test(s) && CHECKOUT_WORD.test(`${all[i - 1] ?? ""} ${all[i + 1] ?? ""}`)));
-    if (ran && all.some(denies)) {
+    // And only on a turn where THEY asked about the checkout (14:18 on 2026-10-31: "Look at the time of
+    // it", about a card charge, got "Correction, from my record: …" in front of the answer). A turn with
+    // no words of theirs (an event about the run) counts as about it.
+    if (ran && aboutCheckout(turnOf(conversationId).own, ran) && all.some(denies)) {
       const drop = new Set(all.filter(denies));
       const kept = sentencesOf(text).map((p) => (typeof p === "string" ? p : p.filter((s) => !drop.has(s))));
       const store = shop.storeName(ran.store) || "The store";
-      const line = `Correction, from my record: the ${store} checkout${ran.item ? ` for ${ran.item}` : ""} did start ${Math.max(1, Math.round((clock.now() - ran.created_at) / 60_000))} min ago; now: ${shop.stageLine(ran)}.`;
+      const line = `Actually, checking my record: the ${store} checkout${ran.item ? ` for ${ran.item}` : ""} did start ${Math.max(1, Math.round((clock.now() - ran.created_at) / 60_000))} min ago; now: ${shop.stageLine(ran)}.`;
       text = [line, joinBack(kept)].filter(Boolean).join("\n");
       flag = { rule: "never_started_with_run", run_id: ran.run_id };
     }
@@ -466,7 +480,10 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     if (!reply || typeof reply !== "string") return { text: reply, changed: false, flags: [] };
     const t = turnOf(conversationId);
     const known = new Set();
-    for (const s of [...t.sources, ...extraSources.filter(Boolean).map(String)]) for (const c of sourceAmounts(s)) known.add(c);
+    // The checkout record of the last two days is a source on every turn (src/shopconnect.js recordSource).
+    let record = "";
+    try { record = shop.connectAllowedFor(conversationId) ? shop.recordSource(conversationId) : ""; } catch { record = ""; }
+    for (const s of [...t.sources, record, ...extraSources.filter(Boolean).map(String)]) for (const c of sourceAmounts(s)) known.add(c);
     const flags = [];
 
     // 1. Dollar figures: in a source this turn, or labelled. A figure already inside a parenthesis
@@ -529,6 +546,12 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     // line with a run on record is corrected from the record as well.
     const started = checkoutClaims(conversationId, text);
     if (started.flag) { flags.push(started.flag); text = started.text; }
+    // 6. The line over a set of picture cards never says the prices couldn't be confirmed (src/choicecards.js).
+    // The reply only (the cards go out with it), for a set drawn on this turn.
+    if (asks) {
+      const chosen = choiceWording(conversationId, text, { since: t.started_at });
+      if (chosen.flag) { flags.push(chosen.flag); text = chosen.text; }
+    }
     if (extra.length) text = text + "\n" + extra.join("\n");
     return { text, changed: text !== original, flags };
   } catch {

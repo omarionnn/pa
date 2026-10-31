@@ -47,17 +47,25 @@ test("a reply with no link in it is one message, exactly as it was written", () 
   assert.deepEqual(linkParts(""), []);
 });
 
-test("the link leaves on its own, and the words about it follow as their own message", () => {
+// 2026-10-31, the owner's phone: the Walmart sign-in link landed at 13:59:43 and the sentence saying
+// what it was at 13:59:44. The words go first, then the bare link, always.
+test("the words about a link leave first, and the link follows as its own message", () => {
   assert.deepEqual(
     linkParts(`made you a page with the shortlist ${PAGE} have a look`),
-    [PAGE, "made you a page with the shortlist have a look"],
+    ["made you a page with the shortlist", PAGE, "have a look"],
   );
-  assert.deepEqual(linkParts(`${PAGE} that's the itinerary`), [PAGE, "that's the itinerary"]);
+  assert.deepEqual(linkParts(`${PAGE} that's the itinerary`), [PAGE, "that's the itinerary"], "nothing before it: the link, then what was written after");
   assert.deepEqual(linkParts(PAGE), [PAGE], "a link and nothing else is already its own message");
+  assert.deepEqual(linkParts(`here it is ${PAGE}`), ["here it is", PAGE]);
+  assert.deepEqual(
+    linkParts("Walmart needs you signed in before it lets anyone check out. Sign in once here and I'll use it for Walmart orders from now on. Your password goes straight to Walmart, not to me.\nhttps://heyreason.test/web/connect/abc"),
+    ["Walmart needs you signed in before it lets anyone check out. Sign in once here and I'll use it for Walmart orders from now on. Your password goes straight to Walmart, not to me.", "https://heyreason.test/web/connect/abc"],
+    "the 13:59 sign-in text: explanation, then the link",
+  );
 });
 
-// 2026-10-06, Omari's own thread: the connect notice ends "Privacy policy: <link>". The link was
-// lifted above its words, and the last bubble ended on a colon with nothing under it.
+// 2026-10-06, Omari's own thread: the connect notice ends "Privacy policy: <link>". Words that end on
+// a colon were the one case that already went words-first; they still do.
 test("words that end on a colon stay above the link they point at", () => {
   assert.deepEqual(linkParts(`Privacy policy: ${PAGE}`), ["Privacy policy:", PAGE]);
   assert.deepEqual(
@@ -65,22 +73,20 @@ test("words that end on a colon stay above the link they point at", () => {
     ["here's the page:", PAGE, "have a look"],
     "and what comes after the last link follows it",
   );
-  // The exchange as it was written: one ordinary pair, then the pair that points ahead.
+  // The exchange as it was written: each link under its own line.
   const google = "https://accounts.google.test/o/oauth2/v2/auth?scope=drive";
   assert.deepEqual(
     linkParts(`this link adds drive to 25. ${google}\n\nit runs out in 15 min.\n\nnever sells or shares it. Privacy policy: ${PAGE}`),
-    [google, "this link adds drive to 25.", "it runs out in 15 min.\n\nnever sells or shares it. Privacy policy:", PAGE],
+    ["this link adds drive to 25.", google, "it runs out in 15 min.\n\nnever sells or shares it. Privacy policy:", PAGE],
   );
-  // No colon, no change: the ordinary order is still link, then its words.
-  assert.deepEqual(linkParts(`here it is ${PAGE}`), [PAGE, "here it is"]);
 });
 
 test("a full stop at the end of a sentence is not part of the address", () => {
-  assert.deepEqual(linkParts(`here it is ${PAGE}.`), [PAGE, "here it is"]);
-  assert.deepEqual(linkParts(`here it is ${PAGE}!`), [PAGE, "here it is"]);
+  assert.deepEqual(linkParts(`here it is ${PAGE}.`), ["here it is", PAGE]);
+  assert.deepEqual(linkParts(`here it is ${PAGE}!`), ["here it is", PAGE]);
   // A path that really ends in a dot is vanishingly rare and a trailing dot breaks the tap, which
   // is the failure worth avoiding.
-  assert.deepEqual(linkParts(`see ${PAGE}, it has prices`), [PAGE, "see it has prices"]);
+  assert.deepEqual(linkParts(`see ${PAGE}, it has prices`), ["see", PAGE, "it has prices"]);
 });
 
 test("several links keep their own words, and never each other's", () => {
@@ -88,7 +94,7 @@ test("several links keep their own words, and never each other's", () => {
   const b = "https://b.test/two";
   assert.deepEqual(
     linkParts(`the cheap one ${a} and the good one ${b} i'd take the second`),
-    [a, "the cheap one", b, "and the good one i'd take the second"],
+    ["the cheap one", a, "and the good one", b, "i'd take the second"],
   );
 });
 
@@ -109,21 +115,21 @@ test("the words about a link keep the paragraphs they were written in", () => {
     + "to progress, add the smallest jump you can. log every session.\n\n"
     + "the page has every exercise with its reps.";
   const link = "https://reason.test/p/abc123";
-  assert.deepEqual(linkParts(`${words}\n\n${link}`), [link, words], "byte for byte, blank lines and all");
+  assert.deepEqual(linkParts(`${words}\n\n${link}`), [words, link], "byte for byte, blank lines and all");
 });
 
-test("a link in the middle of a sentence does not break the sentence in two", () => {
-  // The other half of the same rule: a blank line here would be just as wrong as losing one above.
+test("a link in the middle of a sentence: the words before it, the link, the words after it", () => {
+  // Three messages, in the order written: neither half is glued to the other across the link.
   assert.deepEqual(
     linkParts("grab it at https://x.test/a before friday"),
-    ["https://x.test/a", "grab it at before friday"],
+    ["grab it at", "https://x.test/a", "before friday"],
   );
 });
 
 test("a link on its own line separates two blocks, and they stay two blocks", () => {
   assert.deepEqual(
     linkParts("here's the shortlist\n\nhttps://x.test/a\n\nthe second one is cheaper"),
-    ["https://x.test/a", "here's the shortlist\n\nthe second one is cheaper"],
+    ["here's the shortlist", "https://x.test/a", "the second one is cheaper"],
   );
 });
 
@@ -131,7 +137,7 @@ test("spacing is tidied without the structure being lost", () => {
   // Stray trailing spaces and a run of blank lines are noise; one blank line is meaning.
   assert.deepEqual(
     linkParts("first para   \n   \n\n\n   second para\n\nhttps://x.test/a"),
-    ["https://x.test/a", "first para\n\nsecond para"],
+    ["first para\n\nsecond para", "https://x.test/a"],
   );
 });
 
@@ -145,8 +151,8 @@ test("a list under a link keeps its dashes and its lines", () => {
 
 test("numbered steps under a link survive the split and keep their spacing", () => {
   const parts = outgoingTexts("here's how\n\n1. unplug it\n\n2. plug it back in\n\nhttps://x.test/a");
-  assert.equal(parts[0], "https://x.test/a");
-  assert.equal(parts[1], "here's how\n\n1. unplug it\n\n2. plug it back in");
+  assert.equal(parts[0], "here's how\n\n1. unplug it\n\n2. plug it back in");
+  assert.equal(parts[1], "https://x.test/a");
 });
 
 test("something that only looks like a link is left in the words", () => {
@@ -155,7 +161,7 @@ test("something that only looks like a link is left in the words", () => {
 
 // ---------- what actually leaves ----------
 
-test("the delivery layer sends two messages, the link first, whatever the model wrote", async () => {
+test("the delivery layer sends the words, then the bare link, then what came after, whatever the model wrote", async () => {
   const router = new Router({});
   const ch = router.register(new FakeChannel({ number: "+15122164639" }));
   const deliver = makeDeliver({ router });
@@ -166,10 +172,11 @@ test("the delivery layer sends two messages, the link first, whatever the model 
   });
 
   assert.equal(r.ok, true);
-  assert.equal(ch.sent.length, 2);
-  assert.equal(ch.sent[0].text, PAGE, "the bare URL, with nothing around it");
-  assert.equal(ch.sent[1].text, "your shortlist is here four picks, prices on each");
-  assert.equal(r.parts.length, 2);
+  assert.equal(ch.sent.length, 3);
+  assert.equal(ch.sent[0].text, "your shortlist is here");
+  assert.equal(ch.sent[1].text, PAGE, "the bare URL, with nothing around it");
+  assert.equal(ch.sent[2].text, "four picks, prices on each");
+  assert.equal(r.parts.length, 3);
 });
 
 test("a reply with no link is still one send, and one outbox row", async () => {
@@ -194,14 +201,15 @@ test("each part is its own outbox row, chained, so neither is lost and neither i
 
   const rows = db.db.prepare("SELECT id, body, state, after_id, idem_key FROM outbox ORDER BY id").all();
   assert.equal(rows.length, 2);
-  assert.equal(rows[0].body, PAGE);
+  assert.equal(rows[0].body, "have a look");
+  assert.equal(rows[1].body, PAGE);
   assert.equal(rows[0].after_id, null);
-  assert.equal(rows[1].after_id, rows[0].id, "the summary is chained behind the link");
+  assert.equal(rows[1].after_id, rows[0].id, "the link is chained behind its words");
   assert.equal(rows.every(r => r.state === "sent"), true);
   assert.notEqual(rows[0].idem_key, rows[1].idem_key, "two messages, two keys");
 });
 
-test("the pin goes on the link, once, not on both halves", async () => {
+test("the pin goes on the first part, once, not on both halves", async () => {
   const router = new Router({});
   router.register(new FakeChannel({ number: "+15122164639" }));
   const deliver = makeDeliver({ router });
@@ -236,23 +244,27 @@ test("when the link cannot go yet, the summary does not go instead of it", async
   });
 
   assert.equal(r.ok, true, "not delivered yet, but not lost either");
-  assert.equal(ch.sent.length, 0, "nothing arrived, and in particular not the summary");
+  assert.equal(ch.sent.length, 0, "nothing arrived, and in particular not the link ahead of its words");
   const rows = db.db.prepare("SELECT body, state FROM outbox ORDER BY id").all();
   assert.equal(rows[0].state, "queued");
   assert.equal(rows[1].state, "queued");
+  assert.equal(rows[2].state, "queued");
 
-  // The summary is not even DUE until the link has gone.
-  assert.deepEqual(db.dueOutbound(clock.now() + 60_000).map(x => x.body), [PAGE]);
+  // The link is not even DUE until its words have gone.
+  assert.deepEqual(db.dueOutbound(clock.now() + 60_000).map(x => x.body), ["your shortlist"]);
 
-  // The sweep, once the backoff has elapsed and the provider has calmed down: the link, and then
-  // the summary behind it.
+  // The sweep, once the backoff has elapsed and the provider has calmed down: the words, the link
+  // behind them, the rest behind that.
   clock.skip(60_000);
   const pass1 = await outbox.pass({ router });
   assert.equal(pass1.sent, 1);
-  assert.deepEqual(ch.sent.map(s => s.text), [PAGE]);
+  assert.deepEqual(ch.sent.map(s => s.text), ["your shortlist"]);
   const pass2 = await outbox.pass({ router });
   assert.equal(pass2.sent, 1);
-  assert.deepEqual(ch.sent.map(s => s.text), [PAGE, "your shortlist four picks"]);
+  assert.deepEqual(ch.sent.map(s => s.text), ["your shortlist", PAGE]);
+  const pass3 = await outbox.pass({ router });
+  assert.equal(pass3.sent, 1);
+  assert.deepEqual(ch.sent.map(s => s.text), ["your shortlist", PAGE, "four picks"]);
 });
 
 test("a link that is never going takes its summary with it, rather than leaving a line about nothing", async () => {
@@ -270,10 +282,11 @@ test("a link that is never going takes its summary with it, rather than leaving 
   const rows = db.db.prepare("SELECT body, state, last_error FROM outbox ORDER BY id").all();
   assert.equal(rows[0].state, "failed");
   assert.equal(rows[1].state, "failed");
+  assert.equal(rows[2].state, "failed");
   assert.match(rows[1].last_error, /the message it goes with never arrived/);
 
-  // And both are owed to the next turn, in the order they were meant to arrive.
-  assert.deepEqual(db.undeliveredFor("dm:owner").map(x => x.body), [PAGE, "your shortlist four picks"]);
+  // And all of it is owed to the next turn, in the order it was meant to arrive.
+  assert.deepEqual(db.undeliveredFor("dm:owner").map(x => x.body), ["your shortlist", PAGE, "four picks"]);
 });
 
 // ---------- and what the model is told about it ----------

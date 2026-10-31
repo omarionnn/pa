@@ -39,6 +39,7 @@ import { clock, config, normalizeNumber, stamp } from "../config.js";
 import { OutageError, downLine, leftWhileDownLine } from "../down.js";
 import * as onethought from "../onethought.js";
 import { withoutNoReply } from "../plain.js";
+import { effectPartIndex } from "../links.js";
 import * as web from "../web.js";
 import { webReplyAllowedFor } from "../dailyflag.js";
 import * as choices from "../choicecards.js";
@@ -1248,11 +1249,11 @@ export class Router {
     if (channel === "console" || !conversationId) {
       let last = { ok: true };
       for (const [i, text] of parts.entries()) {
-        // The pin goes on the first part and the effect on the last: the answer lands under the
-        // message it is about, and the animation belongs to the words rather than to a bare URL.
+        // The pin goes on the first part and the effect on the last one with words in it: the answer
+        // lands under the message it is about, and the animation belongs to the words, never a bare URL.
         last = await this.sendNow({
           channel, to, text, chatId, idempotencyKey,
-          replyTo: i ? null : replyTo, sendStyle: i === parts.length - 1 ? sendStyle : null,
+          replyTo: i ? null : replyTo, sendStyle: i === effectPartIndex(parts) ? sendStyle : null,
         });
         if (!last.ok) return last;
       }

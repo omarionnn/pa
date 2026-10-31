@@ -186,9 +186,11 @@ test("a fence that is empty, or one that never closes, does not split a sentence
 
 test("a link is still its own bubble, and the stripping does not break the address", () => {
   const parts = outgoingParts("made you a **page** with the shortlist [here](https://x.com/p) have a look").parts;
-  assert.deepEqual(parts.map(p => p.kind), [LINK, TEXT]);
-  assert.equal(parts[0].text, "https://x.com/p");
-  assert.equal(parts[1].text, "made you a page with the shortlist here have a look");
+  // The words first, then the bare link, then what came after (src/links.js, 2026-10-31).
+  assert.deepEqual(parts.map(p => p.kind), [TEXT, LINK, TEXT]);
+  assert.equal(parts[0].text, "made you a page with the shortlist here");
+  assert.equal(parts[1].text, "https://x.com/p");
+  assert.equal(parts[2].text, "have a look");
 });
 
 // ---------- the cap ----------
@@ -226,8 +228,8 @@ test("nothing is ever lost, whatever the cap is set to", () => {
 
 test("asked not to touch markdown, the bubbles are still split but the markers stay", () => {
   const parts = outgoingParts("look at **this** https://x.com/p", { plain: false }).parts;
-  assert.deepEqual(parts.map(p => p.kind), [LINK, TEXT]);
-  assert.equal(parts[1].text, "look at **this**");
+  assert.deepEqual(parts.map(p => p.kind), [TEXT, LINK]);
+  assert.equal(parts[0].text, "look at **this**");
 });
 
 test("an empty message is no bubbles rather than one empty one", () => {

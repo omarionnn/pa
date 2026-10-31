@@ -34,6 +34,7 @@ import { config, clock } from "./config.js";
 import { freshRideLinks } from "./ridelinks.js";
 import * as incidents from "./incidents.js";
 import { withoutNoReply } from "./plain.js";
+import { effectPartIndex } from "./links.js";
 
 /** What a send returns when the silence marker was all there was: nothing went, on purpose. */
 const NOTHING_LEFT = Object.freeze({ ok: false, not_sent: true, silent: true, retryable: false, error: "Not sent: once NO_REPLY was taken off there was nothing left to send." });
@@ -130,10 +131,9 @@ export async function sendSequence({ channel, router, conversationId, to, parts,
     const { row } = db.enqueueOutbound({
       idemKey: `${base}#${i + 1}`, conversationId, channel, address: to, chatId,
       body: text,
-      // The effect goes on the LAST part, which is the one with the words in it. A bare link
-      // arriving with confetti on it is an animation on a URL, and the sentence it belongs to has
-      // not even landed yet.
-      sendStyle: i === texts.length - 1 ? sendStyle : null,
+      // The effect goes on the last part WITH WORDS in it (src/links.js effectPartIndex): a bare link
+      // arriving with confetti on it is an animation on a URL.
+      sendStyle: i === effectPartIndex(texts) ? sendStyle : null,
       // The pin names the message this answer is about, and the answer is the first thing to land
       // under it. A second pin under the same bubble would say the same thing twice.
       replyTo: i === 0 ? replyTo : null,

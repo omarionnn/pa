@@ -67,7 +67,7 @@ const book = () => stamps.listStamps(C).filter(s => !s.outside);
 const one = (type) => { const all = book().filter(s => s.type === type); assert.equal(all.length, 1, `one ${type} seal`); return all[0]; };
 
 test("tiers per kind: research 500 / 1000 / 2000, a call 25 / 100 / 250; the next goal; the line under the name", () => {
-  assert.deepEqual(stamps.TIERS, { looked_into: [500, 1000, 2000], rang: [25, 100, 250] });
+  assert.deepEqual(stamps.TIERS, { looked_into: [500, 1000, 2000], rang: [25, 100, 250], orders: [10, 50, 100] });
   for (const [type, list] of Object.entries(stamps.TIERS)) {
     assert.equal(list.length, 3, `${type}: three milestones over the plain seal`);
     assert.ok(list[0] > 1 && list.every((x, i) => i === 0 || x > list[i - 1]), `${type}: rising, no duplicates`);

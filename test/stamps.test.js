@@ -78,9 +78,9 @@ test("the flag file: off by default, owner, on (every spelling the brief names)"
   assert.equal(dailyAllowedFor(""), false);
 });
 
-test("the catalog: nine typed kinds plus the wax book's two one-offs and two everyday seals, one shape and one ink each, and a fixed tilt -8..+7", () => {
-  assert.deepEqual(stamps.TYPES.sort(), ["abroad", "anniversary", "early", "first", "human", "long_hold", "looked_into", "night_shift", "price_drop", "rang", "suite_key", "three_in_one", "whole_trip"]);
-  assert.deepEqual(stamps.TYPES.filter(t => stamps.CATALOG[t].waxOnly).sort(), ["anniversary", "looked_into", "rang", "suite_key"]);
+test("the catalog: nine typed kinds plus the wax book's two one-offs and three everyday seals, one shape and one ink each, and a fixed tilt -8..+7", () => {
+  assert.deepEqual(stamps.TYPES.sort(), ["abroad", "anniversary", "early", "first", "human", "long_hold", "looked_into", "night_shift", "orders", "price_drop", "rang", "suite_key", "three_in_one", "whole_trip"]);
+  assert.deepEqual(stamps.TYPES.filter(t => stamps.CATALOG[t].waxOnly).sort(), ["anniversary", "looked_into", "orders", "rang", "suite_key"]);
   for (const k of Object.values(stamps.CATALOG)) {
     assert.ok(["round", "rect", "oval", "ring"].includes(k.shape));
     assert.ok(["rust", "ink"].includes(k.ink));

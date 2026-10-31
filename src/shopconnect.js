@@ -507,9 +507,56 @@ export async function startCheckout({ conversationId, store, startUrl, what, ite
     .run(runId, conversationId, store ?? "", String(item || "").trim().slice(0, 120), plan, now, now, now, now);
   q("INSERT OR REPLACE INTO shop_run_asks (run_id, start_url, what, max_usd) VALUES (?, ?, ?, ?)").run(runId, String(startUrl ?? ""), instruction, Number(maxUsd));
   if (plan === "signed") q("UPDATE shop_stores SET last_used_at = ? WHERE conversation_id = ? AND store = ?").run(now, conversationId, store);
-  return { ok: true, runId, plan };
+  // A run still open for the same thing is over now, quietly (owner 2026-10-31: the Amazon run was
+  // left running after the Walmart one started, and texted "stopped… want me to start it again?" ten
+  // minutes later). Crossmint is told to cancel, its payment if any is declined, and nothing is said:
+  // the new run is the one that gets talked about.
+  const superseded = [];
+  for (const old of q("SELECT * FROM shop_runs WHERE conversation_id = ? AND status = 'running' AND run_id <> ?").all(conversationId, runId)) {
+    // Ended: a run for the same thing, or one already marked superseded (correctAndRestart marks the
+    // old run before starting this one, whatever its item reads). Any other open run is left alone.
+    if (!sameItem(old.item, item) && !toldOf(old).has("superseded")) continue;
+    await endQuietly(old, `superseded by ${runId}`);
+    superseded.push(old.run_id);
+  }
+  return { ok: true, runId, plan, ...(superseded.length ? { superseded } : {}) };
 }
 export const runRow = (runId) => q("SELECT * FROM shop_runs WHERE run_id = ?").get(runId) ?? null;
+const ITEM_STOP = new Set(["the", "and", "for", "with", "from", "new", "one", "pack", "oz", "fl", "ml", "ct", "count"]);
+const itemWords = (s) => new Set((String(s ?? "").toLowerCase().match(/[a-z0-9]{3,}/g) ?? []).filter((w) => !ITEM_STOP.has(w) && !/^\d+$/.test(w)));
+/** The same thing to buy, as two runs' items name it: most of the shorter one's words are in the other. */
+export function sameItem(a, b) {
+  const wa = itemWords(a), wb = itemWords(b);
+  if (!wa.size || !wb.size) return false;
+  const [small, big] = wa.size <= wb.size ? [wa, wb] : [wb, wa];
+  let hit = 0;
+  for (const w of small) if (big.has(w)) hit++;
+  // Four words in five: "CeraVe Hydrating Facial Cleanser" is not "CeraVe Foaming Facial Cleanser" (three in four).
+  return hit / small.size >= 0.8;
+}
+/** Does a message of theirs name the item: two of its words (one, for a one-word item). Looser than sameItem: "the cerave cleanser" is about it. */
+export function mentionsItem(text, item) {
+  const words = itemWords(item), said = itemWords(text);
+  if (!words.size) return false;
+  let hit = 0;
+  for (const w of words) if (said.has(w)) hit++;
+  return hit >= Math.min(2, words.size);
+}
+/** Crossmint is asked to cancel a run (202; 409 once it is over). Best effort: the row is the record either way. */
+export async function cancelAtCrossmint(run) {
+  try { const r = await server(run.conversation_id, `${CHECKOUTS}/${encodeURIComponent(run.run_id)}/cancel`, { method: "POST", body: {} }); return r.ok; } catch { return false; }
+}
+/** A run ended by Reason without a word to the person: cancelled at Crossmint, its open payment declined, told as said. */
+async function endQuietly(run, result) {
+  tellOnce(run.run_id, "superseded"); tellOnce(run.run_id, "end");
+  const open = q("SELECT id FROM shop_payments WHERE run_id = ? AND status = 'asked'").get(run.run_id);
+  if (open) { try { await declinePayment({ conversationId: run.conversation_id, paymentId: open.id }); } catch { /* it expires on its own */ } }
+  if (runRow(run.run_id)?.status === "running") await cancelAtCrossmint(run);
+  const now = clock.now();
+  q("UPDATE shop_runs SET status = 'cancelled', stage = 'cancelled', stage_at = ?, updated_at = ?, progress_at = ?, result = ? WHERE run_id = ? AND status = 'running'").run(now, now, now, String(result).slice(0, 300), run.run_id);
+  const link = openSigninLink(run.run_id);
+  if (link) q("UPDATE shop_links SET state = 'failed' WHERE id = ?").run(link.id);
+}
 
 // ---------------------------------------------------------------- the sign-in link
 export const LINK_TTL_MS = 30 * 60_000;
@@ -789,10 +836,12 @@ export const openPayment = (conversationId) => q("SELECT * FROM shop_payments WH
 /** "$9.79" for USD, "9.79 EUR" otherwise: Crossmint's string as given, never re-rounded. */
 export const amountText = (row) => row.currency === "USD" ? `$${row.amount}` : `${row.amount} ${row.currency}`;
 /** The ask, built from the row: Crossmint's amount, the store, what Reason set out to buy. */
-export function paymentAsk(row) {
+export function paymentAsk(row, { allIn = false } = {}) {
   const where = row.merchant_name || storeName(runRow(row.run_id)?.store) || "the store";
   const upTo = row.amount_kind === "exact" ? "" : "up to ";
-  return `OK to pay ${upTo}${amountText(row)} at ${where}${row.item ? ` for ${row.item}` : ""}?`;
+  // No breakdown to show (owner 2026-10-31): the one number is said to be the whole of it.
+  const whole = allIn && row.amount_kind === "exact" ? " (total incl. shipping and tax)" : "";
+  return `OK to pay ${upTo}${amountText(row)}${whole} at ${where}${row.item ? ` for ${row.item}` : ""}?`;
 }
 /** What a yes is pinned to (src/tools.js confirmTargetFor): the row, its run and request, and the amount. */
 export function payTarget(row) {
@@ -888,17 +937,49 @@ async function payRow(row, { confirmationId = null } = {}) {
   try { r = await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(row.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } }); } catch { return unknown(); }
   if (!r.ok) return unknown(r.status);
   q("UPDATE shop_payments SET status = 'paid', confirmation_id = ?, order_intent_id = ?, answered_at = ? WHERE id = ?").run(confirmationId ?? null, orderIntentId, clock.now(), row.id);
+  // Counted against the day's and the month's caps the moment it is paid, by the real amount (owner
+  // 2026-10-31: spend_today read $0.00 after the $25 Walmart payment). Never costs the payment.
+  await countSpend(row, confirmationId);
   // Paid: the job moves on, and the order confirmation is watched for in their mail (bounded).
   setStage(row.run_id, "paid");
   q("UPDATE shop_runs SET paid_at = ?, mail_until = ? WHERE run_id = ?").run(clock.now(), clock.now() + MAIL_WATCH_MS, row.run_id);
   watchMail(row.run_id);
   return { ok: true, amount: amountText(row), merchant: row.merchant_name, ...(receipts ? { receipts_email: receipts } : {}) };
 }
+/** The ledger line for a paid row (src/trust.js noteSpend): the store, the item, the amount. */
+export const spendLineOf = (row) => `${row.merchant_name || storeName(runRow(row.run_id)?.store) || "Store"}: ${row.item || "order"} (${amountText(row)})`;
+async function countSpend(row, confirmationId = null) {
+  try {
+    const trust = await import("./trust.js");
+    const cents = Math.round(Number(row.amount) * 100);
+    if (!Number.isFinite(cents) || cents <= 0) return null;
+    return trust.noteSpend({ conversationId: row.conversation_id, cents, what: spendLineOf(row), site: row.merchant_name || storeName(runRow(row.run_id)?.store) || "", confirmationId: confirmationId ?? null });
+  } catch (e) { logFn({ spend_count_failed: true, payment_id: row.id, why: short(e?.message ?? e, 80) }); return null; }
+}
+/**
+ * Paid rows the ledger never counted (the ones paid before this existed): counted now, once each, by
+ * the day they were paid. Run at boot; returns how many were added.
+ */
+export async function backfillSpend() {
+  let n = 0;
+  try {
+    const trust = await import("./trust.js");
+    for (const row of q("SELECT * FROM shop_payments WHERE status = 'paid' AND answered_at IS NOT NULL").all()) {
+      const what = spendLineOf(row);
+      if (db.db.prepare("SELECT 1 AS x FROM spend WHERE conversation_id = ? AND what = ? AND site = ? LIMIT 1").get(row.conversation_id, what, row.merchant_name || storeName(runRow(row.run_id)?.store) || "")) continue;
+      const cents = Math.round(Number(row.amount) * 100);
+      if (!Number.isFinite(cents) || cents <= 0) continue;
+      db.recordSpend({ conversationId: row.conversation_id, day: trust.spendDay(row.answered_at), cents, what, site: row.merchant_name || storeName(runRow(row.run_id)?.store) || "", confirmationId: row.confirmation_id ?? null });
+      n++;
+    }
+  } catch (e) { logFn({ spend_backfill_failed: true, why: short(e?.message ?? e, 80) }); }
+  return n;
+}
 // ---------------------------------------------------------------- approval by passkey
 /** The Face ID link for an asked payment (five minutes, one use; src/passkey.js). */
 export const approvalUrl = (row) => `${siteBase()}/web/approve/${passkey.createApproval(row)}`;
 /** The ask once they have a passkey: the same words, and the link instead of "reply yes". */
-export const passkeyAsk = (row) => `${paymentAsk(row)} Approve it with Face ID here:\n${approvalUrl(row)}`;
+export const passkeyAsk = (row, opts = {}) => `${paymentAsk(row, opts)} Approve it with Face ID here:\n${approvalUrl(row)}`;
 /** What the approval page shows: the row's own amount, store and item, and the link's state. */
 export function approvalView(token) {
   const a = passkey.approvalFor(token);
@@ -1019,23 +1100,53 @@ const itemOf = (run) => (run.item ? ` for ${run.item}` : "");
 const minutes = (ms) => Math.max(1, Math.round(ms / 60_000));
 const short = (s, n = 140) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
 
-/** Crossmint's breakdown of a payment, when it gives one: "item $18.99, shipping $6.95, tax $2.30". */
-export function itemized(it) {
-  const src = it?.breakdown ?? it?.amount?.breakdown ?? it?.lineItems ?? null;
-  if (!src || typeof src !== "object" || Array.isArray(src)) return "";
+/**
+ * Crossmint's breakdown of a payment, when it gives one: "item $18.99, shipping $6.95, tax $2.30".
+ * A structured breakdown first; failing that, the one written into the request's question. Walmart on
+ * 2026-10-31 (run ce771938…) sent no breakdown field at all — the whole of it was in the words:
+ *   "Order total $25.00 (item $15.97, shipping $6.99, estimated tax $2.04)."
+ * — and the ask went out as "$25.00" alone. The words are read only when their parts add up to the
+ * total (`total`, the row's amount), so a number that is not this order's never becomes its breakdown.
+ */
+export function itemized(it, { question = "", total = "" } = {}) {
   const cur = String(it?.amount?.currency ?? "USD").toUpperCase();
-  const money = (v) => { const n = v?.value ?? v?.amount ?? v; return /^\d+(\.\d{1,4})?$/.test(String(n ?? "")) ? (cur === "USD" ? `$${n}` : `${n} ${cur}`) : ""; };
-  const parts = [];
-  for (const [k, label] of [["subtotal", "item"], ["items", "item"], ["item", "item"], ["shipping", "shipping"], ["tax", "tax"], ["fees", "fees"], ["discount", "discount"]]) {
-    const m = money(src[k]);
-    if (m && !parts.some((p) => p.startsWith(label))) parts.push(`${label} ${m}`);
+  const fmt = (n) => (cur === "USD" ? `$${n}` : `${n} ${cur}`);
+  const src = it?.breakdown ?? it?.amount?.breakdown ?? it?.lineItems ?? null;
+  if (src && typeof src === "object" && !Array.isArray(src)) {
+    const money = (v) => { const n = v?.value ?? v?.amount ?? v; return /^\d+(\.\d{1,4})?$/.test(String(n ?? "")) ? fmt(n) : ""; };
+    const parts = [];
+    for (const [k, label] of [["subtotal", "item"], ["items", "item"], ["item", "item"], ["shipping", "shipping"], ["tax", "tax"], ["fees", "fees"], ["discount", "discount"]]) {
+      const m = money(src[k]);
+      if (m && !parts.some((p) => p.startsWith(label))) parts.push(`${label} ${m}`);
+    }
+    if (parts.length) return parts.join(", ");
   }
-  return parts.join(", ");
+  return itemizedFromWords(question, { total, fmt });
 }
-/** The payment text: the ask (with the Face ID link where they have one), under the itemization when there is one. */
+const BREAKDOWN_WORD = /\b(subtotal|items?|products?|merchandise|shipping|delivery|(?:estimated |est\.? )?tax(?:es)?|fees?|discounts?|savings?)\b[^$\d\n()]{0,24}\$?\s?(\d{1,6}\.\d{2})\b/gi;
+const LABEL_OF = (w) => /^(subtotal|item|items|product|products|merchandise)$/i.test(w) ? "item" : /^(shipping|delivery)$/i.test(w) ? "shipping" : /tax/i.test(w) ? "tax" : /^fees?$/i.test(w) ? "fees" : "discount";
+/** The breakdown a question carries in words, when it adds up to the total it is for; "" otherwise. */
+export function itemizedFromWords(question, { total = "", fmt = (n) => `$${n}` } = {}) {
+  const text = String(question ?? "");
+  if (!text) return "";
+  const seen = new Map();
+  for (const m of text.matchAll(BREAKDOWN_WORD)) {
+    const label = LABEL_OF(m[1]);
+    if (!seen.has(label)) seen.set(label, Number(m[2]));
+  }
+  if (seen.size < 2 || !seen.has("item")) return "";
+  const sum = [...seen].reduce((s, [k, v]) => s + (k === "discount" ? -v : v), 0);
+  const want = Number(total);
+  if (Number.isFinite(want) && want > 0 && Math.abs(sum - want) > 0.011) return "";
+  return ["item", "shipping", "tax", "fees", "discount"].filter((k) => seen.has(k)).map((k) => `${k} ${fmt(seen.get(k).toFixed(2))}`).join(", ");
+}
+/**
+ * The payment text: the ask (with the Face ID link where they have one), under the itemization when
+ * there is one; with none, the ask says the amount is the total with shipping and tax in it.
+ */
 export function paymentText(run, row, it) {
-  const ask = passkey.requiredFor(run.conversation_id) ? passkeyAsk(row) : paymentAsk(row);
-  const parts = itemized(it);
+  const parts = itemized(it, { question: row.question, total: row.amount });
+  const ask = passkey.requiredFor(run.conversation_id) ? passkeyAsk(row, { allIn: !parts }) : paymentAsk(row, { allIn: !parts });
   if (!parts) return ask;
   const where = row.merchant_name || storeName(run.store) || "The store";
   return `${where}'s total${row.item ? ` for ${row.item}` : ""}: ${parts}; ${amountText(row)} all in.\n${ask}`;
@@ -1113,9 +1224,13 @@ function fieldWords(f) {
   if (/gift.?card/.test(s)) return "gift card";
   if (/gift/.test(s)) return "gift option";
   if (/password|otp|one.?time|verification code|\bcode\b/.test(s)) return "sign-in";
+  // A label that only names the act of answering ("How to proceed", "What next", "Your choice") says
+  // nothing about what was wanted: on 2026-10-31 the end text read "waiting for your how to proceed".
+  if (META_LABEL.test(s)) return "";
   const label = String(f?.label ?? "").replace(/\s+/g, " ").trim();
   return label && label.length <= 24 && !/["'?:]/.test(label) ? label.toLowerCase() : "";
 }
+const META_LABEL = /how (?:to|should|would you like to|do you want to) proceed|what (?:to do|next|now)|next step|your (?:choice|decision|call)|proceed|continue\??$|^\s*(?:option|choice|action|path|decision)\s*$/i;
 const andList = (xs) => xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
 /**
  * What the store was waiting on, in the person's words — "your shipping address and phone number",
@@ -1129,8 +1244,42 @@ export function askedFor(run) {
   if (run.stage === "needs_approval" || rq?.kind === "payment") return "your approval of the payment";
   const names = [];
   for (const f of rq?.fields ?? []) { const n = fieldWords(f); if (n && !names.includes(n)) names.push(n); }
-  if (!names.length) return rq?.kind === "choice" ? "a choice" : "an answer";
-  return `your ${andList(names.slice(0, 4))}`;
+  if (names.length) return `your ${andList(names.slice(0, 4))}`;
+  // No field with a plain name: what the store put to them, in plain words — a refusal it wanted a
+  // decision on ("your word on the password reset"), else a choice between the options it offered.
+  const refused = refusalOf(rq?.question);
+  if (refused) return `your word on ${refused.topic}`;
+  const options = (rq?.fields ?? []).flatMap((f) => (f?.input?.options ?? []).map((o) => (typeof o === "string" ? o : o?.label ?? o?.value ?? ""))).filter(Boolean);
+  if (options.length >= 2) return `a choice (${options.slice(0, 3).map((o) => short(o, 40)).join(" / ")})`;
+  const gist = short(String(rq?.question ?? "").replace(/[?.!]+$/, ""), 80);
+  return gist ? `an answer to "${gist}"` : "an answer";
+}
+/**
+ * A store turning the checkout away, read off the question it asked (owner 2026-10-31: Amazon's
+ * "Password reset required… How should I proceed?"): what it wants, said as a reason to move on.
+ */
+const REFUSALS = [
+  [/password reset|reset (?:your|the|their|my) password|new password/i, "the password reset", "wants a password reset"],
+  [/account (?:is |has been )?(?:locked|suspended|disabled|on hold)|locked out|locked the account/i, "the locked account", "has locked the account"],
+  [/verify (?:your|their|my) identity|identity (?:check|verification)|unusual activity|suspicious/i, "the identity check", "wants an identity check first"],
+  [/not (?:able|allowed|possible) to (?:check ?out|proceed|continue|complete)|can'?t (?:check ?out|proceed|continue|complete)|(?:does not|doesn'?t|won'?t) (?:allow|let)/i, "its refusal", "wouldn't let the checkout through"],
+];
+export function refusalOf(question) {
+  const text = String(question ?? "");
+  if (!text) return null;
+  for (const [re, topic, reason] of REFUSALS) if (re.test(text)) return { topic, reason };
+  return null;
+}
+const STOP_OPTION = /\b(?:stop|cancel|abort|give up|don'?t (?:proceed|continue|reset)|do not (?:proceed|continue|reset)|leave it|never ?mind)\b/i;
+const PROCEED_Q = /how (?:should|do|would) (?:i|you|we|reason) (?:like to )?proceed|how to proceed|what (?:should|do) (?:i|you|we) do(?: now| next)?\??|should i (?:proceed|continue|go ahead)/i;
+/** The option on a refusal form that ends it ("Stop here"), or null when the form offers no way out. */
+export function stopOptionOf(rq) {
+  for (const f of rq?.fields ?? []) {
+    if (f?.input?.kind !== "choice") continue;
+    const o = (f.input.options ?? []).find((x) => STOP_OPTION.test(typeof x === "string" ? x : `${x?.label ?? ""} ${x?.value ?? ""}`));
+    if (o) return { key: f.key, value: typeof o === "string" ? o : o?.value ?? o?.label };
+  }
+  return null;
 }
 /** What ended a run, in their words. `paid` is a payment of theirs that went out before the end. */
 function endText(run, status, result, paid) {
@@ -1146,6 +1295,63 @@ function endText(run, status, result, paid) {
   }
   if (status === "cancelled") return `The ${store} checkout${itemOf(run)} was cancelled. Nothing was charged.`;
   return `The ${store} checkout${itemOf(run)} didn't go through${summary ? ` (${summary})` : code ? ` (${code})` : ""}. Nothing was charged. Want me to try again, or try another store?`;
+}
+
+// ---------------------------------------------------------------- a store turns the checkout away: the next one
+/**
+ * Another store this person was shown for the same item, with a listing to start from: the picture
+ * cards they picked from (choice_sets) first, then the offers read for them, newest first. Never the
+ * store that refused, nor one that already failed on this item in the last two hours.
+ */
+export function alternativeFor(run) {
+  const c = run.conversation_id;
+  const tried = new Set([run.store, ...q("SELECT store FROM shop_runs WHERE conversation_id = ? AND item = ? AND status <> 'running' AND created_at > ?").all(c, run.item, clock.now() - 2 * 3600_000).map((r) => r.store)]);
+  const candidates = [];
+  try {
+    for (const set of db.db.prepare("SELECT options FROM choice_sets WHERE conversation_id = ? AND created_at > ? ORDER BY id DESC LIMIT 3").all(c, clock.now() - 3 * 3600_000)) {
+      for (const o of JSON.parse(set.options || "[]")) if (o?.url) candidates.push({ name: o.name ?? "", url: o.url, store: o.brand || "" });
+    }
+  } catch { /* no cards shown */ }
+  try {
+    for (const o of db.db.prepare("SELECT url, product, seller FROM offers WHERE conversation_id = ? AND url <> '' AND fetched_at > ? ORDER BY id DESC LIMIT 20").all(c, clock.now() - 3 * 3600_000)) candidates.push({ name: o.product ?? "", url: o.url, store: o.seller ?? "" });
+  } catch { /* no offers read */ }
+  for (const cand of candidates) {
+    const key = checkoutStoreKey(cand.store, cand.url);
+    if (!key || tried.has(key)) continue;
+    if (!/^https?:\/\//i.test(cand.url)) continue;
+    if (cand.name && run.item && !sameItem(cand.name, run.item)) continue;
+    return { store: key, url: cand.url, name: cand.name };
+  }
+  return null;
+}
+/**
+ * The store refused (a password reset, a lock, a wall): by code, the next store they were shown is
+ * started for the same thing and one line says so, no question (owner 2026-10-31: "Amazon wants a
+ * password reset, so I moved it to Walmart, same bottle. Nothing charged."). A question is asked only
+ * when there is no other store to move to. Returns what was said, for the step's log.
+ */
+export async function moveOn(run, reason, say, { stopAnswer = null, rq = null } = {}) {
+  const store = storeOf(run);
+  // The refusal form is answered with its way out first, so the store's side ends cleanly.
+  if (stopAnswer && rq) { try { await postAnswer(run, rq, { [stopAnswer.key]: stopAnswer.value }); } catch { /* cancelled below either way */ } }
+  const alt = alternativeFor(run);
+  const ask = q("SELECT * FROM shop_run_asks WHERE run_id = ?").get(run.run_id);
+  let again = null;
+  if (alt && ask) {
+    tellOnce(run.run_id, "moved");
+    await endQuietly(run, `${reason}; moved to ${alt.store}`);
+    again = await startCheckout({ conversationId: run.conversation_id, store: alt.store, startUrl: alt.url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: storeSignIn(alt.store) === "required" });
+    if (again.ok) {
+      follow(again.runId);
+      await say(`${store} ${reason}, so I moved it to ${storeName(alt.store) || alt.store}${run.item ? ` for the same ${run.item}` : ""}. Nothing charged.`);
+      return { moved: again.runId };
+    }
+  }
+  await endQuietly(run, reason);
+  await say(alt && !again?.ok
+    ? `${store} ${reason}. Nothing charged, and ${storeName(alt.store) || alt.store} wouldn't start the same checkout. Want me to try another store?`
+    : `${store} ${reason}. Nothing charged, and I have no other store lined up${run.item ? ` for ${run.item}` : ""}. Want me to find one?`);
+  return { moved: null };
 }
 /** An order reference Crossmint names in a result, if it names one. */
 export function orderRef(result) {
@@ -1164,10 +1370,45 @@ function placedText(run, result) {
   return `${storeOf(run)} placed the order${itemOf(run)}${ref ? ` (order ${ref})` : ""}. ${watch}`;
 }
 /** A stall — nothing moved for STALL_MS — said once per run. */
+/** The wait updates: one at WAIT_MS in the same stage ("still working, not stuck"), one at WAIT_MORE_MS with what it is waiting on. */
+export const WAIT_MS = 3 * 60_000, WAIT_MORE_MS = 8 * 60_000;
+/** What a run is waiting on right now, in the person's words. */
+function waitingOn(run) {
+  const store = storeOf(run);
+  if (run.stage === "needs_input") {
+    if (openSigninLink(run.run_id)) return `waiting on your ${store} sign-in; the link I sent still works`;
+    return `waiting on ${askedFor(run)}`;
+  }
+  return `waiting on ${store} to move the checkout along`;
+}
+/**
+ * A run sat in one stage for a while, with nobody told (owner 2026-10-31: ten minutes of sign-in with
+ * no word): one line at WAIT_MS that it is working and not stuck, one at WAIT_MORE_MS with what it is
+ * waiting on. Never for a payment waiting on them (the ask said it all), never for a superseded run.
+ */
+async function waitUpdates(run, say) {
+  if (!run || TERMINAL.has(run.status) || toldOf(run).has("superseded") || !["started", "in_progress", "needs_input"].includes(run.stage)) return {};
+  const at = run.stage_at ?? run.created_at;
+  const inStage = clock.now() - at;
+  // A question the model put to THEM (woke / refused) is theirs to answer: "still working" would be
+  // wrong, so only the line saying what it waits on goes (review 2026-10-31).
+  const onThem = run.stage === "needs_input" && !openSigninLink(run.run_id) && [...toldOf(run)].some((t) => t.startsWith("woke:") || t.startsWith("refused:"));
+  if (inStage >= WAIT_MORE_MS) {
+    if (!tellOnce(run.run_id, `wait8:${at}`)) return {};
+    await say(`Still on the ${storeOf(run)} checkout${itemOf(run)}: ${waitingOn(run)}. Not stuck, and nothing's charged.`);
+    return { waited: 8 };
+  }
+  if (inStage >= WAIT_MS && !onThem) {
+    if (!tellOnce(run.run_id, `wait3:${at}`)) return {};
+    await say(`Still working on the ${storeOf(run)} checkout${itemOf(run)}, not stuck. Nothing's charged.`);
+    return { waited: 3 };
+  }
+  return {};
+}
 async function stalled(run, say) {
   if (!run || TERMINAL.has(run.status) || toldOf(run).has("superseded")) return {};
   const since = run.progress_at ?? run.created_at;
-  if (clock.now() - since < STALL_MS) return {};
+  if (clock.now() - since < STALL_MS) return waitUpdates(run, say);
   if (!tellOnce(run.run_id, "stalled")) return { stalled: true };
   const where = run.stage === "needs_input" ? `waiting on an answer for ${storeOf(run)}` : run.stage === "needs_approval" ? `waiting on your approval at ${storeOf(run)}` : `at ${storeOf(run)}'s checkout`;
   await say(`Still ${where}${itemOf(run)}: nothing has moved for ${minutes(clock.now() - since)} minutes. Nothing has been charged. If it dies I'll say so.`);
@@ -1212,7 +1453,7 @@ export async function step(runId) {
     const rq = { requestId, request: ra.request };
     const it = ra.request?.interaction ?? {};
     q("UPDATE shop_runs SET last_request_id = ?, question = ?, request_json = ?, progress_at = ?, updated_at = ? WHERE run_id = ?")
-      .run(requestId, short(ra.request?.question ?? "", 300), JSON.stringify(publicRequest(rq)), now, now, runId);
+      .run(requestId, short(ra.request?.question ?? "", 600), JSON.stringify(publicRequest(rq)), now, now, runId);
     const link = openSigninLink(runId);
     if (it.kind === "payment") {
       // Past the sign-in: the store let them in.
@@ -1258,6 +1499,17 @@ export async function step(runId) {
       // line saying where it ships; otherwise the model is woken once with what is still needed.
       setStage(runId, "needs_input");
       const pub = publicRequest(rq);
+      // The store turning the checkout away, dressed as a question (Amazon's "Password reset required…
+      // How should I proceed?", 2026-10-31): never the model's to answer. Code moves on to the next store.
+      // Only a form that offers a way out ("Stop here") or asks how to proceed is a refusal: a real
+      // form that happens to say "verify your identity" is still answered (review 2026-10-31).
+      const refused = refusalOf(pub.question);
+      const stop = stopOptionOf(pub);
+      if (refused && (stop || PROCEED_Q.test(pub.question) || (pub.fields ?? []).some((f) => META_LABEL.test(`${f?.key ?? ""} ${f?.label ?? ""}`)))) {
+        tellOnce(runId, `refusal:${requestId}`);
+        const moved = await moveOn(runRow(runId), refused.reason, say, { stopAnswer: stop, rq: pub });
+        return { done: true, status: "cancelled", said, ...moved };
+      }
       const filling = autoFill(run, pub);
       if (filling.covered) {
         const posted = await postAnswer(run, pub, filling.answers);
@@ -1315,9 +1567,22 @@ export async function step(runId) {
       if (ref) q("UPDATE shop_runs SET order_ref = ? WHERE run_id = ?").run(ref, runId);
       setStage(runId, "placed");
       if (!runRow(runId).mail_until) { q("UPDATE shop_runs SET mail_until = ? WHERE run_id = ?").run(now + MAIL_WATCH_MS, runId); watchMail(runId); }
+      // An order placed is a finished errand (src/stamps.js: the "orders" seal). Told after the write; never costs the text.
+      try { db.completionBus.emit("order", { conversationId: run.conversation_id, runId, store: storeOf(run) }); } catch { /* a listener's failure is its own */ }
       if (tellOnce(runId, "end")) await say(placedText(run, result));
     } else {
       setStage(runId, status === "cancelled" ? "cancelled" : "failed");
+      // Walled off or blocked, nothing paid: the next store they were shown, by code, rather than
+      // "want me to try another store?" (owner 2026-10-31). The question is asked only with no store to move to.
+      const code = String(result?.code ?? "").toLowerCase();
+      const wall = !paid && status !== "cancelled" && !told.has("superseded") && !toldOf(runRow(runId)).has("end")
+        && (status === "blocked" || code === "merchant.no_safe_path" || code.includes("blocked") || !!refusalOf(`${result?.summary ?? ""} ${result?.message ?? ""} ${result?.reason ?? ""}`));
+      if (wall) {
+        const summary = short(result?.summary ?? result?.message ?? "", 160);
+        const why = refusalOf(`${result?.summary ?? ""} ${result?.message ?? ""} ${result?.reason ?? ""}`)?.reason ?? `stopped the checkout${summary ? ` (${summary})` : ""}`;
+        const moved = await moveOn(runRow(runId), why, say);
+        return { done: true, status, said, ...moved };
+      }
       if (tellOnce(runId, "end")) await say(endText({ ...runRow(runId), stage: before }, status, result, paid));
     }
     return { done: true, status, said };
@@ -1479,7 +1744,9 @@ export function statusView(conversationId) {
   const runs = runsOf(conversationId).map((run) => ({
     run_id: run.run_id, store: storeOf(run), item: run.item, stage: run.stage || run.status, status: run.status,
     started_minutes_ago: minutes(clock.now() - run.created_at), where: stageLine(run),
-    ...(run.question ? { last_question: short(run.question, 200) } : {}),
+    // Whole, never cut (2026-10-31: cut at 200 it lost Walmart's "estimated tax $2.04", and the model
+    // called the figure unverified).
+    ...(run.question ? { last_question: run.question } : {}),
     ...(run.order_ref ? { order_ref: run.order_ref } : {}),
     ...(run.stage === "needs_approval" ? approvalHint(run) : {}),
   }));
@@ -1578,6 +1845,26 @@ export function follow(runId, { everyMs = 3000 } = {}) {
   };
   setTimeout(tick, 0).unref?.();
 }
+/** Orders placed (the row's own record): what the stamps book counts. Oldest first. */
+export function ordersPlaced(conversationId) {
+  return q("SELECT run_id, conversation_id, store, item, order_ref, stage_at, updated_at, created_at FROM shop_runs WHERE conversation_id = ? AND status = 'succeeded' AND stage = 'placed' ORDER BY stage_at, created_at").all(conversationId);
+}
+/**
+ * The checkout record as a source for the figures a reply may name (src/offers.js guardReply): every
+ * amount and question of this person's payments and runs of the last two days. On 2026-10-31 the
+ * model read Walmart's "$2.04" off the record and the guard, knowing nothing of the record, marked it
+ * "(unverified)" in the text.
+ */
+export function recordSource(conversationId, { sinceMs = 48 * 3600_000 } = {}) {
+  try {
+    const since = clock.now() - sinceMs;
+    const pays = q("SELECT amount, currency, question FROM shop_payments WHERE conversation_id = ? AND created_at > ?").all(conversationId, since)
+      .map((p) => `${amountText(p)} ${p.question}`);
+    const runs = q("SELECT question, request_json, result FROM shop_runs WHERE conversation_id = ? AND created_at > ?").all(conversationId, since)
+      .map((r) => `${r.question} ${r.request_json} ${r.result}`);
+    return [...pays, ...runs].join("\n");
+  } catch { return ""; }
+}
 /** After a restart: every open run is followed again, and every open mail watch resumed. */
 export function resumeFollowing() {
   const runs = q("SELECT run_id FROM shop_runs WHERE status = 'running'").all().map((r) => r.run_id);
@@ -1586,5 +1873,7 @@ export function resumeFollowing() {
   for (const id of mail) watchMail(id);
   // Cards saved before the registration was recorded: read back once, never waited on.
   setTimeout(() => { sweepCards().catch(() => {}); }, 0).unref?.();
+  // Payments the ledger never counted: counted now, by the day they were paid.
+  setTimeout(() => { backfillSpend().then((n) => { if (n) logFn({ spend_backfilled: n }); }).catch(() => {}); }, 0).unref?.();
   return { runs, mail };
 }
