@@ -39,6 +39,13 @@ export const ANNOUNCEMENTS = {
       "heyreason.com/updates",
     ],
   },
+  // For the owner alone (--to-owner only): his daily call limit is gone (REASON_CALL_CAPS_EXEMPT).
+  "calls-unlimited-1031": {
+    ownerOnly: true,
+    bubbles: [
+      "heads up — no more daily limit on our calls. call me as much and as long as you like (each call still tops out at an hour).",
+    ],
+  },
 };
 export const DEFAULT_ID = "events-1025";
 export const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
@@ -228,6 +235,7 @@ export function parseArgs(argv) {
   }
   if (!ANNOUNCEMENTS[o.id]) throw new Error(`no announcement called '${o.id}'`);
   if (o.toOwner && (o.send || o.skipOwner)) throw new Error("--to-owner is its own mode: no --send, no --skip-owner");
+  if (ANNOUNCEMENTS[o.id].ownerOnly && !o.toOwner) throw new Error(`'${o.id}' is for the owner alone: --to-owner only`);
   if (!(o.gapSeconds >= 1)) throw new Error("--gap-seconds must be at least 1");
   return o;
 }

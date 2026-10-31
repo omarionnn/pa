@@ -351,6 +351,9 @@ export const config = {
   // would refuse calls that were never going to cost that much, which is the worse of the two.
   maxCallsPerDay: Number(process.env.REASON_MAX_CALLS_PER_DAY ?? 10),
   maxCallMinutesPerDay: Number(process.env.REASON_MAX_CALL_MINUTES_PER_DAY ?? 30),
+  // Who the two daily call caps above skip. "operator" (default): the operator's own account has no
+  // daily call count or minute limit. "none": everyone, the operator included, is capped.
+  callCapsExempt: (process.env.REASON_CALL_CAPS_EXEMPT || "operator").trim().toLowerCase(),
   // How long before a number that is not invited is told again. Once a day, so being turned away
   // does not turn into Reason texting somebody repeatedly.
   turnedAwayGapMin: Number(process.env.REASON_TURNED_AWAY_GAP_MIN ?? 24 * 60),

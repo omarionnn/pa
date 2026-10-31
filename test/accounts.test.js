@@ -242,6 +242,36 @@ test("Reason interrupting people is capped separately from their own messages", 
   assert.equal(accounts.withinCap(k, "turn").ok, true);
 });
 
+test("the operator has no daily call limit; everyone else keeps theirs (REASON_CALL_CAPS_EXEMPT default)", async () => {
+  const { overCallCap } = await import("../src/calls/inbound.js");
+  assert.equal(config.callCapsExempt, "operator", "the default, with nothing set");
+  assert.equal(config.maxCallsPerDay, 10);
+  assert.equal(config.maxCallMinutesPerDay, 30);
+  giveReason(KOFI);
+  const kofi = `dm:fake:${KOFI}`;
+  const day = accounts.today();
+  for (const c of ["dm:owner", kofi]) {
+    db.bumpUsage(c, day, "calls", 12);
+    db.bumpUsage(c, day, "call_seconds", 45 * 60);
+  }
+  // The operator, past 10 calls and 30 minutes: still allowed, placed or dialled in.
+  assert.equal(accounts.withinCap("dm:owner", "call").ok, true);
+  assert.equal(accounts.withinCap("dm:owner", "call_minutes").ok, true);
+  assert.equal(overCallCap("dm:owner"), null);
+  // Anybody else at the same usage is still capped, on both counts.
+  assert.equal(accounts.withinCap(kofi, "call").ok, false);
+  assert.equal(accounts.withinCap(kofi, "call_minutes").ok, false);
+  assert.equal(overCallCap(kofi).reason, "daily_call_cap");
+  // Only the call caps: the operator's turn cap is untouched.
+  for (let i = 0; i < config.maxTurnsPerDay; i++) accounts.countUse("dm:owner", "turn");
+  assert.equal(accounts.withinCap("dm:owner", "turn").ok, false);
+  // "none" puts the operator back under the same daily call caps as everyone.
+  config.callCapsExempt = "none";
+  try {
+    assert.equal(accounts.withinCap("dm:owner", "call").ok, false);
+  } finally { config.callCapsExempt = "operator"; }
+});
+
 test("a cap of 0 means uncapped, for a self-hosted install that wants no limit", () => {
   const kept = config.maxTurnsPerDay;
   config.maxTurnsPerDay = 0;
