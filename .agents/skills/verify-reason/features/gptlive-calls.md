@@ -234,3 +234,37 @@ over the greeting, message after the beep, `voicemail_left=1`, state voicemail; 
 silent through music, give-up line, `hold_gave_up`. Latency: their last word → Reason's first ~7–9 s on
 claude-cli (1 s pause + the turn + ~0.6 s voice start); the live backend (api) is faster. Hold give-up
 overshoots the budget by up to one 15 s tick plus a turn.
+
+## Business calls TALK (2026-10-31, after call 59) — `REASON_LINE_TALK` (default on; `off` = the puppet line above)
+
+Call 59 (Chelsea Bodywork) failed on the puppet line: their "can I help you?" got Reason's first word
+8 s later (1 s pause + a Reason turn + the voice), "hello? hello?", 8 Reason turns in 39 s each cutting
+the last off, `LINE_STOP_OWN` sent while the voice was saying words they HAD heard (rawSpeechAt counted
+played audio → it repeated the intro), Twilio AMD's 30 s timeout said `machine_end_other` on the
+receptionist and a turn re-introduced the call over her; the recap blamed "a bad line". Guard: 0 trips.
+Voice was gpt-live-1/marin (the "male" label was the transcriber's guess).
+
+Now (placed third-party calls; ring-backs keep the puppet line): `lineTalkInstructions` = brief + rules;
+silent until somebody speaks (`callerVoiceAt` = frame RMS ≥ `VOICE_RMS` 2000, hiss stays under; the
+transcript lags ~2.7 s); the voice's own answer to a person is let through (`ownOpener`) and
+`startTalking` → own-call style (voice talks, `delegate` runs Reason's turn, keys/transfer from it), no
+more line turns; a line turn overtaken by the voice is not said (its key/transfer/hang-up only if
+nothing was said since). Nobody speaks 3 s (`LINE_OPEN_AFTER_MS`) → "Hi there, hello?" then waits (not
+counted as a person). AMD non-beep ignored once they have spoken since the talk began; beep →
+`stopTalking`. Mailbox rows never talk. Opener style: "Oh hey, hi! I'm calling to find out…" — no AI /
+"calling for" unless asked; asked "is this a robot?" → "yes, I'm an AI assistant calling for <first>",
+never denied. Recording line only where `src/calls/consent.js` says (14 all-party states by area code
++ toll-free/abroad/unreadable; row announcement rewritten to "Hi there — just so you know, this call's
+recorded." or ""), checked 9 s in (`checkNotice`). Hold in talk mode: voice silent; its own silence past
+the budget → give-up line + hang-up. Recap gets `howItWent` (first sound, first word, overlaps, end) +
+"never guess a bad line".
+
+Drive: clips = the `say` set above + `make-tts-line-clips.mjs <dir>` (OpenAI TTS receptionist,
+`tts-*.ulaw` + `-noisy`). `gptlive-line-drive.mjs <dir> --scene greet|hello|noisy|quiet|interrupt|robot`
+(+ ivr|hold|voicemail|human). Results 2026-10-31 (real GPT-Live, claude-cli): greet first word 0.97 s
+after their greeting, one opener, replies ~1.2 s; hello 0.9 s, no second hello needed; noisy (CA) 1.1 s,
+"just so you know, this call's recorded" said; quiet opened at 3.9–4.3 s, then 0.7 s; interrupt stopped,
+"Sure.", silent through 6 s hold, resumed 0.75 s; robot "Yes, I'm an AI assistant calling for Omari."
+~1.1 s; ivr pressed 1, silent through menu + hold; hold `hold_gave_up`; voicemail `voicemail_left=1`.
+The last review fixes (person after hold answered at once, voicemail never "talking", opener ≠ person)
+are unit-tested only: the OpenAI account hit `credit_balance_exhausted` before the re-drive.
