@@ -321,7 +321,7 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
   if (!SPOKE_TO_SOMETHING.includes(row.state) || row.state === "voicemail") return { sent: false, why: "nobody was on it" };
   // Not counted against their day. They were on the phone with it thirty seconds ago; a line that
   // finishes that conversation is not Reason starting one.
-  const reply = await runtime.event(row.conversation_id, ownerEvent({ row }), { forCall: row.id });
+  const reply = await runtime.event(row.conversation_id, ownerEvent({ row, live }), { forCall: row.id });
   if (reply) {
     db.updateCall(row.conversation_id, row.id, { told_at: clock.now() });
   } else if (row.recording_state === "stored" && runtime.flushRecording) {
@@ -385,19 +385,30 @@ export function thirdPartyEvent({ row, live }) {
  * address — already left during the call through the outbox (`queueMidCall` in ./voice.js), so there
  * is rarely anything owed; the two cases where there is are an unkept promise and missing audio.
  */
-export function ownerEvent({ row }) {
+export function ownerEvent({ row, live = null }) {
   const mins = row.duration_s ? Math.max(1, Math.round(row.duration_s / 60)) : 0;
   const audio = row.recording_state === "stored"
     ? `The audio is saved and goes out attached to the message you send about this call, automatically. Do not attach it yourself.`
     : row.recording_state === "missing"
       ? `There is NO audio for it: ${row.recording_why || "it never came back from the provider"}. Every call is recorded and they were told that, so this one is worth a short honest line.`
       : "";
+  // Call 56 (2026-10-31): "Want me to check live train status right before you go?" — "Yeah" — "Okay."
+  // The yes never reached Reason on the call; this is where it is caught (GPT-Live calls, owner-only).
+  const cut = live?.cutOff;
   return `your call with them just ended${mins ? ` — about ${mins} minute${mins === 1 ? "" : "s"}` : ""}.`
     + ` what was said on it is already in this conversation above, so do NOT recount it to them: they were on the call.`
     + ` ${audio}`
     + `\nSay something ONLY if something is genuinely owed — you promised to send something and it has not gone,`
     + ` or there is no audio for a call they were told was recorded. Otherwise reply NO_REPLY.`
-    + ` A friendly sign-off is not news.`;
+    + ` A friendly sign-off is not news.`
+    + (row.provider === "gptlive"
+      ? `\nIf on the call they said yes to something you offered to do later (a check before they leave, a reminder) and it is`
+        + ` not set up yet, set it up now with your tools and say so in one line; if you can't, say that instead.`
+      : "")
+    + (cut
+      ? `\nSomething IS owed: they started saying something just as the call ended${cut.words ? ` (all that came through: "${String(cut.words).replace(/"/g, "'")}")` : ""}`
+        + ` and it was cut off. Send one short, warm line saying it sounded like they were saying something as you hung up, and ask what it was.`
+      : "");
 }
 
 /**

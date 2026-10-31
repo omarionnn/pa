@@ -350,6 +350,193 @@ test("end_call: the goodbye is said, the line ends, and the call settles with co
   assert.equal(readFileSync(l.recording.path).toString("latin1", 0, 4), "RIFF");
 });
 
+// ---- call 56 (2026-10-31): the voice's own goodbye, and words cut off at the end ----
+
+const LOUD = Buffer.alloc(160, 0x00).toString("base64");
+
+async function goodbyeCall({ goodbye = true, cutoff = false } = {}) {
+  const asked = [];
+  on();
+  const timers = fakeTimers();
+  const twilio = fakeTwilio();
+  const live = fakeLive();
+  const finished = [];
+  const judge = async (q) => {
+    asked.push(q);
+    const v = q.kind === "goodbye" ? goodbye : cutoff;
+    return typeof v === "function" ? v(q) : v;
+  };
+  const call = new gl.GptLiveCall({
+    call: ownerCall(), twilio, openLive: () => live.socket, brain: async () => ({ text: "", tools: [] }), judge,
+    now: timers.now, timers, finish: async (l) => { finished.push(l); },
+  });
+  twilio.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
+  live.open();
+  live.emit({ type: "session.started", session: { id: "live_1" } });
+  const voice = (text) => {
+    live.emit({ type: "session.output_audio.delta", delta: ULAW_FRAME });
+    live.emit({ type: "session.output_transcript.delta", delta: text });
+  };
+  const them = (text) => live.emit({ type: "session.input_transcript.delta", delta: text });
+  return { call, timers, twilio, live, finished, asked, voice, them };
+}
+
+test("mutual goodbye: the voice's own 'bye' is read by the model and the call hangs up once it has played", async () => {
+  const { call, timers, twilio, live, finished, asked, voice, them } = await goodbyeCall();
+  them(" Okay, that was nice talking to you. Okay, bye.");
+  await timers.advance(1200);
+  voice(" Bye, Omari, talk soon!");
+  await timers.advance(gl.BYE_SETTLE_MS + 50);
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].kind, "goodbye");
+  assert.match(asked[0].transcript, /Them: Okay, that was nice talking to you\. Okay, bye\.\nReason: Bye, Omari, talk soon!$/);
+  await timers.advance(2000);
+  assert.ok(live.of("session.close").length, "it hangs up shortly after the goodbye");
+  await timers.advance(3500);
+  assert.equal(call.done, true);
+  assert.equal(twilio.open(), false);
+  assert.equal(finished[0].termination, "end_call (mutual goodbye)");
+  const { endReasonOf } = await import("../src/calls/metrics.js");
+  assert.equal(endReasonOf({ live: finished[0] }).reason, "end_call");
+  assert.equal(finished[0].cutOff, null, "nothing said after the goodbye");
+});
+
+test("goodbye hang-up: waits for the voice's speech to finish, not for the silence the session keeps streaming", async () => {
+  const { call, timers, live, them } = await goodbyeCall();
+  them(" Okay, bye.");
+  await timers.advance(1200);
+  live.emit({ type: "session.output_transcript.delta", delta: " Bye, take care!" });
+  // 1.5 s of the goodbye's speech, then silence frames for as long as the session runs.
+  for (let i = 0; i < 75; i++) { live.emit({ type: "session.output_audio.delta", delta: LOUD }); await timers.advance(20); }
+  const spokeUntil = timers.now();
+  let closedAt = null;
+  for (let i = 0; i < 400 && closedAt == null; i++) {
+    live.emit({ type: "session.output_audio.delta", delta: ULAW_FRAME });
+    await timers.advance(20);
+    if (live.of("session.close").length) closedAt = timers.now();
+  }
+  assert.ok(closedAt != null, "hung up despite the endless silence frames");
+  assert.ok(closedAt - spokeUntil < 2000, `hung up ${closedAt - spokeUntil} ms after the goodbye finished`);
+  assert.ok(closedAt - spokeUntil >= 500, "not over the end of the goodbye");
+  assert.equal(call.ending, true);
+});
+
+test("a 'bye' to someone in the room is not the end: the model says so and the call stays up", async () => {
+  const { call, timers, live, asked, voice, them } = await goodbyeCall({ goodbye: false });
+  them(" Bye Mum, see you later. Anyway, where was I?");
+  await timers.advance(1200);
+  voice(" Bye to her! You were asking about trains.");
+  await timers.advance(gl.BYE_SETTLE_MS + 50);
+  assert.equal(asked.length, 1);
+  await timers.advance(20_000);
+  assert.equal(call.done, false);
+  assert.equal(live.of("session.close").length, 0);
+});
+
+test("a read that cannot be made (no CLI) never hangs up", async () => {
+  const { call, timers, voice, them } = await goodbyeCall({ goodbye: null });
+  them(" Okay bye.");
+  await timers.advance(1200);
+  voice(" Bye!");
+  await timers.advance(20_000);
+  assert.equal(call.done, false);
+});
+
+test("'bye — oh wait': words while the goodbye hang-up waits are read again and call it off", async () => {
+  let n = 0;
+  const { call, timers, asked, voice, them } = await goodbyeCall({ goodbye: () => ++n === 1 });
+  them(" Okay, bye.");
+  await timers.advance(1200);
+  voice(" Bye!");
+  await timers.advance(gl.BYE_SETTLE_MS + 50);
+  assert.equal(call.ending, true);
+  them(" Oh wait, one more thing, what time is my train?");
+  await timers.advance(100);
+  assert.equal(asked.length, 2, "read again with their new words");
+  assert.match(asked[1].transcript, /one more thing/);
+  await timers.advance(20_000);
+  assert.equal(call.done, false, "called off: the call carries on");
+  assert.equal(call.ending, false);
+});
+
+test("not while Reason is still working on something: no goodbye read with a delegation pending", async () => {
+  const { call, timers, asked, voice, them } = await goodbyeCall();
+  them(" Can you check my train? Bye for now.");
+  call.pending.set("hold", {});
+  await timers.advance(1200);
+  voice(" Sure, bye for now!");
+  await timers.advance(5000);
+  assert.equal(asked.length, 0);
+  assert.equal(call.done, false);
+});
+
+test("cut off: words after Reason's goodbye that start something new are flagged for the after-call text", async () => {
+  const { timers, finished, asked, voice, them } = await goodbyeCall({ cutoff: true });
+  them(" Okay, bye.");
+  await timers.advance(1200);
+  voice(" Bye, take care!");
+  await timers.advance(gl.BYE_SETTLE_MS + 50);
+  await timers.advance(1200);
+  them(" Oh actually what time does the");
+  await timers.advance(30_000);
+  const q = asked.find(a => a.kind === "cutoff");
+  assert.equal(q.late, "Oh actually what time does the");
+  assert.deepEqual(finished[0].cutOff, { words: "Oh actually what time does the" });
+});
+
+test("call 56's ', bye' after Reason's 'Bye.' is only the goodbye finishing: no cut-off text", async () => {
+  const { call, timers, finished, asked, voice, them } = await goodbyeCall({ goodbye: null, cutoff: false });
+  them(" Okay, bye.");
+  await timers.advance(1200);
+  voice(" Bye.");
+  await timers.advance(1500);
+  them(" , bye");
+  await timers.advance(500);
+  const ended = call.end("caller hung up");
+  await timers.advance(3500);
+  await ended;
+  assert.equal(asked.find(a => a.kind === "cutoff").late, "bye");
+  assert.equal(finished[0].cutOff, null);
+});
+
+test("cut off with no words yet: their speech in the last moments of Reason's hang-up counts", async () => {
+  const { timers, twilio, finished, voice, them } = await goodbyeCall();
+  them(" Okay, bye.");
+  await timers.advance(1200);
+  voice(" Bye!");
+  await timers.advance(gl.BYE_SETTLE_MS + 50);
+  // Speech on their side right up to the hang-up, no transcript of it yet.
+  for (let i = 0; i < 60 && !finished.length; i++) { twilio.say({ event: "media", media: { payload: LOUD } }); await timers.advance(20); }
+  await timers.advance(4000);
+  assert.deepEqual(finished[0].cutOff, { words: "" });
+});
+
+test("after-call note: a cut-off asks what they were saying; an offered 'later' check gets set up or owned", async () => {
+  const { ownerEvent } = await import("../src/calls/postcall.js");
+  const row = db.getCall(C, ownerCall().id);
+  const plain = ownerEvent({ row });
+  assert.match(plain, /said yes to something you offered to do later .* set it up now with your tools/);
+  assert.doesNotMatch(plain, /cut off/);
+  assert.doesNotMatch(ownerEvent({ row: { ...row, provider: "elevenlabs" } }), /offered to do later/, "ElevenLabs calls unchanged");
+  const cut = ownerEvent({ row, live: { cutOff: { words: 'Oh "actually" what' } } });
+  assert.match(cut, /Something IS owed: they started saying something just as the call ended \(all that came through: "Oh 'actually' what"\)/);
+  assert.match(cut, /sounded like they were saying something as you hung up, and ask what it was/);
+  assert.match(ownerEvent({ row, live: { cutOff: { words: "" } } }), /just as the call ended and it was cut off/);
+});
+
+test("soundsLikeFarewell only picks lines worth asking about", () => {
+  for (const s of ["Bye.", "Okay, bye-bye!", "Talk soon!", "Take care, Omari.", "Have a good night"]) assert.ok(gl.soundsLikeFarewell(s), s);
+  for (const s of ["Checking.", "It ended in 1865.", "Byelaws are local rules."]) assert.ok(!gl.soundsLikeFarewell(s), s);
+});
+
+test("judgeEnding: the model's boolean, or null when it cannot be asked — never a guess", async () => {
+  assert.equal(await gl.judgeEnding({ kind: "goodbye", transcript: "x" }, { ask: async () => ({ ended: true }) }), true);
+  assert.equal(await gl.judgeEnding({ kind: "cutoff", transcript: "x", late: "y" }, { ask: async () => ({ cut_off: false }) }), false);
+  assert.equal(await gl.judgeEnding({ kind: "goodbye", transcript: "x" }, { ask: async () => { throw new Error("down"); } }), null);
+  assert.equal(await gl.judgeEnding({ kind: "goodbye", transcript: "x" }, { ask: async () => ({}) }), null);
+  assert.equal(await gl.judgeEnding({ kind: "goodbye", transcript: "x" }), null, "no subscription CLI in the suite");
+});
+
 test("what the caller heard is written onto the turn Reason's own request recorded, tagged gptlive", async () => {
   const row = ownerCall();
   db.recordCallTurn({ callId: row.id, conversationId: C, msgCount: 2, kind: "owner", startedAt: Date.now(), firstContentMs: 900, firstRealMs: 900, totalMs: 2000 });
@@ -464,11 +651,12 @@ test("the live prompt is call 53's (#290), word for word, plus only the gated id
   const s = gl.sessionConfig({ ...gl.whoFor(db.getCall(C, ownerCall().id)), greeting: "hey" }).instructions;
   const lines = s.split("\n");
   assert.equal(lines[0], "You are the voice of Reason, Omari's personal assistant, on a phone call with Omari.");
-  assert.match(lines[1], /^If they ask who you are or who they are, answer straight away yourself: you're Reason, their assistant, and they're Omari, the person you work for\.$/);
+  assert.match(lines[1], /^Only if they ask who you are, who they are or their name, answer straight away yourself: you're Reason, their assistant, and they're Omari, the person you work for\. Where they are, or any other question, goes to Reason;/);
   assert.match(lines[2], /^You were made by Saafi Interactions Lab;/);
   assert.equal(lines[3], "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.");
   assert.equal(lines.at(-1), "Stop speaking when they talk over you, and listen.");
-  assert.equal(lines.length, 12, "call 53's ten lines + identity + maker");
+  assert.equal(lines.length, 16, "call 53's ten lines + identity + maker + call 56's four");
+  for (const l of gl.CALL56_LINES) assert.ok(lines.includes(l));
   assert.doesNotMatch(s, /2 and 5 trains|How you sound|You rang|New York/, "no profile, no tone section, none of #293's additions");
   assert.equal(config.gptliveVoice, "marin", "the default voice is call 53's");
 });
@@ -476,8 +664,8 @@ test("the live prompt is call 53's (#290), word for word, plus only the gated id
 test("identity off (flag unset): call 53's prompt plus the maker line, nothing else", () => {
   on({ callIdentity: false });
   const s = gl.liveInstructions(gl.whoFor(db.getCall(C, ownerCall().id)));
-  assert.doesNotMatch(s, /If they ask who you are/);
-  assert.equal(s.split("\n").length, 11);
+  assert.doesNotMatch(s, /ask who you are/);
+  assert.equal(s.split("\n").length, 15);
 });
 
 test("identity =owner: another user's call has no identity line and nothing of the operator's", () => {
@@ -485,7 +673,7 @@ test("identity =owner: another user's call has no identity line and nothing of t
   profiles();
   const s = gl.liveInstructions(gl.whoFor(AMA_CALL()));
   assert.match(s, /^You are the voice of Reason, Ama's personal assistant/);
-  assert.doesNotMatch(s, /If they ask who you are|\bOmari\b|2 and 5 trains|peanuts/);
+  assert.doesNotMatch(s, /ask who you are|\bOmari\b|2 and 5 trains|peanuts/);
   assert.equal(vp.callIdentityFor(OTHER), false);
   assert.equal(vp.callIdentityFor(C), true);
 });

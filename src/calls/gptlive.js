@@ -78,10 +78,25 @@ export function whoFor(call) {
   return { name: named ? raw : "them", named, owner: !!call.is_owner, identity: callIdentityFor(call.conversation_id) };
 }
 
+/** Call 56: "do you know where I am?" was answered "you're Omari" (2026-10-31). Where/what goes to Reason. */
+const NOT_WHO = "Where they are, or any other question, goes to Reason; if you're not sure whether they said who or where, ask.";
+
+/**
+ * Call 56's tone fixes (2026-10-31), the only lines added to call 53's: "Checking" before nearly every
+ * reply, "how are you?" not returned, a "yeah" to Reason's offer answered "Okay." and never passed on,
+ * flat goodbyes.
+ */
+export const CALL56_LINES = [
+  "Only use a holding phrase when you've handed Reason something that takes a moment, vary it, and never put one before a quick answer or a simple yes.",
+  "Small talk is yours: if they ask how you are, answer warmly and ask them back.",
+  "If they say yes or no to something Reason offered, pass that answer to Reason; never just say okay.",
+  "When you both say goodbye, sign off warmly and briefly.",
+];
+
 /**
  * The live prompt: call 53's (#290), the one Omari called "a big upgrade, really felt like a
  * conversation", word for word, plus only the minimal identity lines — it is Reason, who they are, who
- * made it — behind REASON_CALL_IDENTITY. #293's longer prompt (tone section, profile block, who-rang-
+ * made it — behind REASON_CALL_IDENTITY, and call 56's four short lines (`CALL56_LINES`). #293's longer prompt (tone section, profile block, who-rang-
  * whom) went out with calls 54–55, which he called confused and worse; it is not here (2026-10-31).
  */
 export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false } = {}) {
@@ -91,8 +106,8 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
     ? []
     : owner
       ? [named
-        ? `If they ask who you are or who they are, answer straight away yourself: you're Reason, their assistant, and they're ${name}, the person you work for.`
-        : "If they ask who you are or who they are, answer straight away yourself: you're Reason, their assistant; you don't have their name saved yet."]
+        ? `Only if they ask who you are, who they are or their name, answer straight away yourself: you're Reason, their assistant, and they're ${name}, the person you work for. ${NOT_WHO}`
+        : `Only if they ask who you are, who they are or their name, answer straight away yourself: you're Reason, their assistant; you don't have their name saved yet. ${NOT_WHO}`]
       : [thirdPartyIdentity({ ownerName: them })];
   return [
     `You are the voice of Reason, ${theirs} personal assistant, on a phone call with ${them}.`,
@@ -103,6 +118,7 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
     "Delegate to the backend for every question, request, instruction or opinion — anything beyond a greeting, a brief listening sound, or asking them to repeat something.",
     "Never answer from your own knowledge, and never invent a fact, time, name, number or price.",
     "While the backend works, a very short acknowledgement is fine. Do not fill the silence with guesses.",
+    ...CALL56_LINES,
     "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
     "When a backend result arrives, say it naturally and briefly, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
     "Never read out links, codes, IDs or anything in square brackets, and never say the words NO_REPLY.",
@@ -193,6 +209,54 @@ export async function readTurn(stream) {
     endCall = { message: withoutSilenceMarker(String(args.message ?? "")).text.trim() };
   }
   return { text, tools: names, endCall, skip: !text && names.includes("skip_turn") };
+}
+
+// ---------- reading the end of a call ----------
+
+// Call 56 (2026-10-31): "Okay, bye" / "Bye." / ", bye" and the line stayed open until Omari hung up.
+// The voice says its goodbyes itself, without delegating, so Reason's end_call never came. Now a
+// goodbye-sounding line of the voice's is the cue to ASK the small model whether the call is over —
+// this list only picks which lines are worth asking about; it never decides anything itself.
+const FAREWELL_HINT = /\b(?:bye|goodbye|take care|talk (?:to you )?(?:soon|later)|see (?:you|ya)|catch you|good ?night|have a (?:good|great|nice|lovely))\b/i;
+/** Does this line of the voice's sound like a goodbye, so the call's end is worth reading? */
+export const soundsLikeFarewell = (text) => FAREWELL_HINT.test(String(text ?? ""));
+/** The voice's goodbye has settled for this long before the end is read. */
+export const BYE_SETTLE_MS = 900;
+
+const ENDING_SYSTEM = "You read the last lines of a phone call between a person (Them) and their AI assistant (Reason)."
+  + " Answer only from what was said. Reply with the JSON asked for, nothing else.";
+const GOODBYE_SCHEMA = { type: "object", properties: { ended: { type: "boolean" } }, required: ["ended"], additionalProperties: false };
+const CUTOFF_SCHEMA = { type: "object", properties: { cut_off: { type: "boolean" } }, required: ["cut_off"], additionalProperties: false };
+
+export function goodbyePrompt(transcript) {
+  return `${transcript}\n\nHave Them and Reason both said goodbye TO EACH OTHER, so the call is over and Reason should hang up now?`
+    + " ended=false if Them is still asking or saying anything, if the goodbye was to someone else in the room,"
+    + " or if only one side said goodbye. ended=true only for a mutual goodbye.";
+}
+
+export function cutOffPrompt(transcript, late) {
+  return `${transcript}\n\nAs the call ended, right after Reason's goodbye, Them said: "${late}"`
+    + "\nWas Them starting to say something new (a question, a request, more to tell) that got cut off? cut_off=false if it was"
+    + " only them finishing the goodbye (bye, thanks, you too, okay) or just noise.";
+}
+
+/**
+ * The small model's read of the end of a call: `{ kind: "goodbye" }` → is it a mutual goodbye;
+ * `{ kind: "cutoff", late }` → were their last words cut off. true/false, or null when it could not be
+ * asked (no subscription CLI, a timeout) — and null never hangs up or texts anyone. Subscription only.
+ */
+export async function judgeEnding({ kind, transcript, late = "" }, { ask = null } = {}) {
+  try {
+    const goodbye = kind === "goodbye";
+    const q = {
+      system: ENDING_SYSTEM, feature: goodbye ? "gptlive_goodbye" : "gptlive_cutoff",
+      prompt: goodbye ? goodbyePrompt(transcript) : cutOffPrompt(transcript, late),
+      schema: goodbye ? GOODBYE_SCHEMA : CUTOFF_SCHEMA,
+    };
+    const { value } = ask ? { value: await ask(q) } : await (await import("../onethought.js")).askJson(q);
+    const v = goodbye ? value?.ended : value?.cut_off;
+    return typeof v === "boolean" ? v : null;
+  } catch { return null; }
 }
 
 // ---------- μ-law and the recording ----------
@@ -458,12 +522,20 @@ export function dropWarm(callId, why) {
  * resolves `{ text, tools, endCall, skip }` (see `readTurn`).
  */
 export class GptLiveCall {
-  constructor({ call, twilio, openLive = openLiveSocket, warm = null, brain = null, log = () => {}, now = () => Date.now(), finish = async () => {}, timers = globalThis }) {
+  constructor({ call, twilio, openLive = openLiveSocket, warm = null, brain = null, judge = null, log = () => {}, now = () => Date.now(), finish = async () => {}, timers = globalThis }) {
     this.call = call;
     this.twilio = twilio;
     this.openLive = openLive;
     this.warm = warm;
     this.brain = brain ?? ((messages) => reasonTurn({ call, messages, log }));
+    this.judge = judge ?? ((q) => judgeEnding(q));
+    this.farewellAt = 0;
+    this.goodbyeAt = 0;
+    this.byeTimer = null;
+    this.byeAsking = false;
+    this.endHeld = false;
+    this.callerSpeechAt = 0;
+    this.callerSpeechFrom = 0;
     this.log = log;
     this.now = now;
     this.finishCall = finish;
@@ -482,6 +554,8 @@ export class GptLiveCall {
     this.lastResultAt = 0;
     this.lastCallerAt = 0;
     this.lastOutAt = 0;
+    this.lastVoiceAt = 0;
+    this.voiceEndsAt = 0;
     this.lastOutTextAt = 0;
     this.utter = "";
     this.playheadAt = 0;
@@ -513,6 +587,11 @@ export class GptLiveCall {
       if (m.media.track && m.media.track !== "inbound") return;
       const buf = Buffer.from(m.media.payload, "base64");
       this.tape.them(buf);
+      if (hasSpeech(m.media.payload)) {
+        const t = this.now();
+        if (t - this.callerSpeechAt > 200) this.callerSpeechFrom = t;
+        this.callerSpeechAt = t;
+      }
       if (this.started) this.live.send({ type: "session.input_audio.append", audio: m.media.payload });
     } else if (m.event === "stop") {
       this.end("caller hung up").catch(() => {});
@@ -633,6 +712,8 @@ export class GptLiveCall {
     this.lastOutAt = t;
     this.tape.reason(buf);
     this.playheadAt = Math.max(this.playheadAt, t) + buf.length / 8;
+    // The session streams silence between words, so "quiet" for a hang-up is no SPEECH arriving.
+    if (hasSpeech(b64)) { this.lastVoiceAt = t; this.voiceEndsAt = this.playheadAt; }
     this.toTwilio({ event: "media", media: { payload: b64 } });
     for (const turn of this.pending.values()) if (turn.firstAudioMs == null) turn.firstAudioMs = t - turn.startedAt;
     for (const turn of this.answered ?? []) {
@@ -651,7 +732,13 @@ export class GptLiveCall {
     this.utter += delta;
     const last = this.turns.at(-1);
     if (last && last.who === "reason" && !last.seeded && t - last.at < 4000) { last.text += delta; last.at = t; }
-    else this.turns.push({ who: "reason", text: delta.trimStart(), at: t });
+    else this.turns.push({ who: "reason", text: delta.trimStart(), at: t, from: t });
+    const line = this.turns.at(-1);
+    if (soundsLikeFarewell(line.text)) {
+      this.farewellAt = line.from ?? t;
+      if (this.byeTimer) this.timers.clearTimeout(this.byeTimer);
+      if (!this.ending) this.byeTimer = this.timers.setTimeout(() => void this.readGoodbye(), BYE_SETTLE_MS);
+    }
     // Words of the claim already being held back are not a second claim; anything a second on is.
     if (this.mute && t - this.mute.since < 1000) return;
     const said = withoutSilenceMarker(this.utter);
@@ -676,10 +763,15 @@ export class GptLiveCall {
 
   textIn(delta) {
     const t = this.now();
-    this.lastCallerAt = t;
+    if (delta.trim()) this.lastCallerAt = t;
     const last = this.turns.at(-1);
     if (last && last.who === "them" && t - last.at < 4000) { last.text += delta; last.at = t; }
-    else this.turns.push({ who: "them", text: delta.trimStart(), at: t });
+    else this.turns.push({ who: "them", text: delta.trimStart(), at: t, from: t });
+    // Words while a goodbye hang-up waits: hold it, and read the end again with them in it.
+    if (this.ending && this.endWhy === "goodbye" && !this.done && delta.trim()) {
+      this.endHeld = true;
+      void this.readGoodbye();
+    }
     // Barge-in. The voice stops generating when it is talked over, but what Twilio already holds keeps
     // playing; if no new audio has come since they spoke, that buffer is stale and is dropped.
     if (this.queuedMs() > 250) {
@@ -761,20 +853,81 @@ export class GptLiveCall {
     }
   }
 
-  /** Reason asked to hang up: let the goodbye play out, then end the stream (which ends the call). */
-  hangUpAfterSpeech() {
+  /** The last lines of the call, as the end readers are shown them. */
+  tail(n = 8) {
+    return this.turns.slice(-n).map(x => ({ who: x.who === "them" ? "Them" : "Reason", text: x.text.replace(/\s+/g, " ").trim() }))
+      .filter(x => x.text).map(x => `${x.who}: ${x.text}`).join("\n");
+  }
+
+  /**
+   * The voice just said something goodbye-ish: ask whether the call is over (a mutual goodbye) and, if
+   * so, hang up once it has finished speaking. Run again while that hang-up waits and they speak, so
+   * "bye — oh wait, one more thing" calls it off. A "bye" to someone in the room is not mutual, and an
+   * unanswerable read (null) never hangs up: they can always hang up themselves, as before.
+   */
+  async readGoodbye() {
+    this.byeTimer = null;
+    if (this.done || !this.farewellAt) return;
+    if (this.ending ? this.endWhy !== "goodbye" : this.pending.size > 0) return;
+    if (this.byeAsking) { this.byeAgain = true; return; }
+    this.byeAsking = true;
+    const heardTo = this.lastCallerAt;
+    const askedAt = this.now();
+    const ended = await this.judge({ kind: "goodbye", transcript: this.tail() }).catch(() => null);
+    this.byeAsking = false;
+    this.log({ gptlive_goodbye_read: this.call.id, ended, waiting: this.ending, ms: this.now() - askedAt });
+    if (this.done) return;
+    if (this.byeAgain || this.lastCallerAt !== heardTo) { this.byeAgain = false; return void this.readGoodbye(); }
+    if (this.ending) {
+      if (ended === true) this.endHeld = false;
+      else { this.ending = false; this.endWhy = ""; this.endHeld = false; this.goodbyeAt = 0; this.log({ gptlive_goodbye_called_off: this.call.id }); }
+      return;
+    }
+    if (ended === true && this.pending.size === 0) { this.goodbyeAt = this.farewellAt; this.hangUpAfterSpeech("goodbye"); }
+  }
+
+  /**
+   * Hang up once the goodbye has played out, by ending the stream (which ends the call): `end_call`
+   * when Reason asked, `goodbye` when the voice and the caller said it to each other. A goodbye
+   * hang-up also waits while they are talking, or while their words are being read.
+   */
+  hangUpAfterSpeech(why = "end_call") {
     if (this.ending) return;
     this.ending = true;
-    this.endWhy = "end_call";
+    this.endWhy = why;
     const started = this.now();
     const tick = () => {
-      if (this.done) return;
+      if (this.done || !this.ending) return;
       const t = this.now();
-      const quiet = t - this.lastOutAt > 1500 && this.queuedMs() === 0;
-      if ((quiet && t - started > 2500) || t - started > 15000) return void this.end("end_call").catch(() => {});
+      const quiet = why === "goodbye"
+        ? t - this.lastVoiceAt > 1000 && t >= this.voiceEndsAt + 500
+        : t - this.lastOutAt > 1500 && this.queuedMs() === 0;
+      const held = why === "goodbye" && (this.endHeld || t - this.lastCallerAt < 1000);
+      const minMs = why === "goodbye" ? 0 : 2500;
+      if (!held && ((quiet && t - started >= minMs) || t - started > 15000)) return void this.end(why).catch(() => {});
       this.timers.setTimeout(tick, 250);
     };
     this.timers.setTimeout(tick, 250);
+  }
+
+  /**
+   * Were they saying something as the call ended, right after Reason's goodbye? Their words after it
+   * are read by the small model ("bye" / "you too" is only the goodbye finishing); with no words yet,
+   * speech on their side in the last moments of a hang-up Reason made counts. `{ words }`, or null.
+   */
+  async cutOff() {
+    const at = this.endedAt ?? this.now();
+    if (!this.farewellAt || at - this.farewellAt > 20_000) return null;
+    const late = this.turns.filter(x => x.who === "them" && (x.from ?? x.at) >= this.farewellAt)
+      .map(x => x.text.replace(/\s+/g, " ").trim()).join(" ").replace(/^[\s,.;:—-]+/, "").trim();
+    let cut;
+    if (late) cut = (await this.judge({ kind: "cutoff", transcript: this.tail(), late }).catch(() => null)) === true;
+    else {
+      cut = ["goodbye", "end_call"].includes(this.endWhy) && this.callerSpeechFrom >= this.farewellAt
+        && at - this.callerSpeechAt < 1500 && this.callerSpeechAt - this.callerSpeechFrom >= 300;
+    }
+    this.log({ gptlive_cut_off: this.call.id, cut, words: late.length });
+    return cut ? { words: late.slice(0, 200) } : null;
   }
 
   // --- the end ---
@@ -782,8 +935,10 @@ export class GptLiveCall {
   async end(why) {
     if (this.done) return;
     this.done = true;
+    this.endedAt = this.now();
     this.endWhy = this.endWhy || why;
     if (this.capTimer) this.timers.clearTimeout(this.capTimer);
+    if (this.byeTimer) this.timers.clearTimeout(this.byeTimer);
     for (const turn of [...this.pending.values(), ...(this.answered ?? [])]) this.heard(turn);
     // Their usage arrives on session.closed; wait for it briefly, then let go either way.
     if (this.live && this.started) {
@@ -795,6 +950,8 @@ export class GptLiveCall {
     }
     this.live?.close();
     if (this.twilio.open?.()) this.twilio.close();
+    // After the line is down, so reading their last words never keeps anyone on the phone.
+    const cutOff = await this.cutOff();
     const seconds = this.seconds || Math.round((this.now() - this.startedAt) / 1000);
     const turns = this.turns.map(t => ({ who: t.who, text: t.text.replace(/\s+/g, " ").trim() })).filter(t => t.text);
     let recording = null;
@@ -814,7 +971,8 @@ export class GptLiveCall {
       transcript: turns.map(t => `${t.who === "them" ? "Them" : "Reason"}: ${t.text}`).join("\n"),
       turns, durationS: seconds,
       costCents: Math.round((seconds / 60) * CENTS_PER_MINUTE),
-      termination: this.endWhy === "caller hung up" ? "hung up" : this.endWhy,
+      termination: this.endWhy === "caller hung up" ? "hung up" : this.endWhy === "goodbye" ? "end_call (mutual goodbye)" : this.endWhy,
+      cutOff,
       costRaw: JSON.stringify({ voice_seconds: seconds, cents_per_minute: CENTS_PER_MINUTE, session: this.sessionId ?? "", guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted }),
       recording, recordingWhy,
     };
