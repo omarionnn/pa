@@ -2966,14 +2966,15 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     // Theirs: per purchase and per month, asked for once and theirs to change. The operator's: a
     // daily total for everybody on the install, set in the environment.
     const theirs = trust.capsView(conversationId);
-    cap.status = config.maxSpendPerDay || theirs ? "live" : "off";
+    cap.status = today.spent_cents >= 0 && (today.cap !== "no cap set" || theirs) ? "live" : "off";
     cap.what = (theirs
       ? `${who} set their own limits: at most ${theirs.per_purchase} on one thing without being asked, and ${theirs.monthly} in a calendar month.`
         + ` This month: ${theirs.spent_this_month} across ${theirs.commits_this_month} commit(s), ${theirs.left_this_month} left. caps_show is the truth of them, caps_set changes them.`
         + ` Something over either one still stops for a yes, including things they said not to ask about, and a yes for one purchase does not raise them. `
       : `${who} has not set a spending limit yet. The first thing that would ever spend money asks them for two numbers — the most on one thing, and the most per month — and nothing is spent until they answer. Never name a limit of their own until they have set one. `)
-      + (config.maxSpendPerDay
-        ? `On top of that the operator set a daily limit for this install: at most ${today.cap} a day per person, counted from the amounts actually approved. Today: ${today.spent} across ${today.commits} commit(s), ${today.left} left`
+      + (today.cap !== "no cap set"
+        ? `On top of that there is a DAILY limit: at most ${today.cap} a day for ${who}, ${today.cap_set_by === "them" ? "a number they set themselves" : `the default here (${today.default_cap})`}, counted from the amounts actually approved. Today: ${today.spent} across ${today.commits} commit(s), ${today.left} left.`
+          + ` They can change it: by naming a new number (spend_limit_set — lowering is immediate, a raise above the default is confirmed with Face ID or a yes; the most anyone can set is ${today.most_they_can_set}) or in Settings → Shopping on the web. Never quote words for them to type`
         : `There is no daily limit on this install either (REASON_MAX_SPEND_PER_DAY is 0), so nothing but their own limits and the per-action yes stands between a request and a charge. Worth saying if ${who} asks`);
   }
 
@@ -11471,7 +11472,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return await runChoiceTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- Crossmint checkouts (src/shoptools.js) ----------
-    case "store_checkout": case "shop_pay": case "shop_decline": case "shop_card": case "shop_status": case "shop_answer": {
+    case "store_checkout": case "shop_pay": case "shop_decline": case "shop_card": case "shop_status": case "shop_answer": case "spend_limit_set": case "spend_limit_confirm": {
       const out = await runShopTool(name, input, { ...ctx, conversationId: c });
       // The card may have been offered to the store and nobody knows: never a retry on that yes.
       if (name === "shop_pay" && out?.unknown_outcome) trust.noteUnknownOutcome({ conversationId: c, action: "shop_pay", target: confirmTargetFor("shop_pay", input, c), why: `Crossmint ${out.status ?? "no answer"} after the order intent` });
@@ -12190,14 +12191,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!caps) {
         return {
           ok: true, caps: null, has_limits: false,
-          note: `${me.name} has not set any spending limits yet, so say that plainly — do not name a number.`
-            + ` They will be asked for both the first time anything would spend money. The operator's daily limit on this install is separate and is in spend_today.`,
+          today: trust.spendToday(c),
+          note: `${me.name} has not set per-purchase or monthly limits, so do not name those. Their DAILY limit is real and is in \`today\` (spent, limit, left) — answer "how much have I spent" from it.`
+            + ` They change the daily limit by naming a number (spend_limit_set) or in Settings → Shopping; never quote words to type.`,
         };
       }
       return {
-        ok: true, has_limits: true, ...caps,
+        ok: true, has_limits: true, ...caps, today: trust.spendToday(c),
         note: `These are ${me.name}'s own limits on what you may do without asking. Read them out as the two numbers plus what is left this month.`
-          + ` The install also has a daily limit the operator set, which is a different thing — spend_today has that one.`,
+          + ` Their DAILY limit (spent today, the limit, what is left) is in \`today\`; it changes with spend_limit_set or in Settings → Shopping.`,
       };
     }
 

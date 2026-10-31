@@ -57,6 +57,7 @@ const og = await imp("src/pages/webongoing.js");
 const wm = await imp("src/pages/webmemory.js");
 const wh = await imp("src/pages/webhistory.js");
 const st = await imp("src/pages/websettings.js");
+const ap = await imp("src/pages/webapprove.js");
 const sv = await imp("src/pages/websaved.js");
 const wd = await imp("src/pages/webdaily.js");
 const { dailySamples } = await imp("scripts/web-daily-sample.mjs");
@@ -324,6 +325,15 @@ const invitesView = { links_you_can_still_make: 2, links: [
   { invite: { id: 1, token: "Qm7TzK2pLx9vBc4N", state: "unused" } }, { invite: { id: 2, token: "Hd3RwA8sYe1uJf6P", state: "redeemed" } }, { invite: { id: 3, token: "Vn5GkM0qTb2zXr7L", state: "canceled" } },
 ] };
 const settings = (o = {}) => st.renderSettings({ csrf: "staging", reach: "text", browsers, current: "staging-here", connected, invitesView, theme: "auto", now, ...o });
+// Shopping (src/shopconnect.js + src/spendcap.js): stores, card, Face ID, and the daily limit (2026-10-31).
+const shoppingSample = (o = {}) => ({
+  stores: [{ store: "target", name: "Target", connectedAt: now - 5 * day }, { store: "sephora", name: "Sephora", connectedAt: now - 12 * day }],
+  card: { brand: "visa", last4: "4242" }, lastUsed: { store: "Target", at: now - 2 * day },
+  passkeys: [{ createdAt: now - 6 * day, usableAt: now - 6 * day }],
+  ...o,
+  cap: { day: "2026-10-31", spent_cents: 1800, spent: "$18", commits_today: 1, cap_cents: 10000, cap: "$100", left_cents: 8200, left: "$82", own: false, default_cents: 10000, default: "$100", ceiling_cents: 100000, ceiling: "$1,000", ...(o.cap ?? {}) },
+});
+const capApproval = { kind: "cap", from: "$100", to: "$250", amount: "$250 a day", store: "Daily spending limit", item: "From $100 a day", expiresAt: Date.now() + 5 * 60_000, state: "open", a: {}, row: {} };
 
 // ---------------------------------------------------------------- states the page's own script draws
 // Run once the page's script has run, through that script's own hooks (REASON_WEB.api, the composer's
@@ -504,6 +514,11 @@ const S = [
   ["settings-invite-name", "Settings", "Settings · invite needs a name", "", settings({ done: "invite-name" }), {}],
   ["settings-theme-night", "Settings", "Settings · theme Night", "", settings({ theme: "night", done: "theme" }), {}],
   ["settings-nothing-connected", "Settings", "Settings · nothing connected, no invites", "", settings({ connected: [], invitesView: null, browsers: browsers.slice(0, 1) }), {}],
+  ["settings-shopping", "Settings", "Settings · Shopping with the daily limit", "Stores, card, Face ID, and the daily limit field ($100 default, up to $1,000).", settings({ shopping: shoppingSample() }), {}],
+  ["settings-shopping-cap-saved", "Settings", "Settings · daily limit saved (lowered to $60)", "", settings({ shopping: shoppingSample({ cap: { cap_cents: 6000, cap: "$60", left_cents: 4200, left: "$42", own: true } }), done: "cap" }), {}],
+  ["settings-shopping-cap-confirm", "Settings", "Settings · raise to $250? (no passkey: yes right here)", "", settings({ shopping: shoppingSample({ passkeys: [] }), confirmCap: { id: 7, from: "$100", to: "$250" } }), {}],
+  ["settings-shopping-cap-ceiling", "Settings", "Settings · over the $1,000 ceiling", "", settings({ shopping: shoppingSample(), done: "cap-ceiling" }), {}],
+  ["approve-cap", "Approve", "Approve · raise the daily limit with Face ID", "The payment page's shape, the new number where the total goes.", ap.renderApprove({ v: capApproval, staging: true, boot: { base: "/web/approve/staging", staging: true, options: {} } }).html, {}],
 
   ["stamps", "Stamps", "Stamps · the book, last page", "Wax seals tilted on a paper sheet, NEW on the newest, two not-yet spots engraved, the aside: story, SHARE IT (the compliments card), the first-errand patch kept outside.", stampsPage(STAMPS_MANY), {}],
   ["stamps-everyday", "Stamps", "Stamps · everyday seals", "Research (one a week) and a call that got what it was for land in the book: five seals plus the patch outside, two not-yet spots, the patch outside.", stampsPage(STAMPS_EVERYDAY), {}],

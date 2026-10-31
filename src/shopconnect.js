@@ -43,6 +43,7 @@ import * as accounts from "./accounts.js";
 import { config, clock } from "./config.js";
 import { isPrivateHost } from "./pictures.js";
 import * as passkey from "./passkey.js";
+import * as spendcap from "./spendcap.js";
 import * as shipping from "./shipping.js";
 import { zoneFor } from "./zone.js";
 
@@ -922,7 +923,7 @@ async function capRefusal(row) {
   const cap = (await import("./trust.js")).checkSpendCap(row.conversation_id, cents);
   if (cap.ok) return null;
   logFn({ shop_pay_over_cap: true, payment_id: row.id, cap: cap.cap, spent_today: cap.spent_today, amount: cap.amount });
-  return { ok: false, error: "over_daily_cap", blocked: "over_daily_cap", cap: cap.cap, spent_today: cap.spent_today, left: cap.left, amount: cap.amount, say: cap.error };
+  return { ok: false, error: "over_daily_cap", blocked: "over_daily_cap", cap: cap.cap, spent_today: cap.spent_today, left: cap.left, amount: cap.amount, own: cap.own, say: cap.say, note: cap.error };
 }
 /** Crossmint's reason, short, from whatever shape it answers in. Never a card detail (none is in its errors). */
 const crossmintError = (j) => short(j?.error?.code ?? j?.code ?? j?.error?.message ?? j?.message ?? (typeof j?.error === "string" ? j.error : "") ?? "", 60);
@@ -1044,10 +1045,18 @@ export const passkeyAsk = (row, opts = {}) => `${paymentAsk(row, opts)} Approve 
 export function approvalView(token) {
   const a = passkey.approvalFor(token);
   if (!a || !connectAllowedFor(a.conversation_id) || !passkey.passkeyAllowedFor(a.conversation_id)) return null;
+  // A raise of the daily spending limit rides the same link (src/spendcap.js, kind 'cap'): the page
+  // shows the new number and the old one instead of a store and an item, and a tap changes the limit.
+  if (a.kind === "cap") {
+    const row = spendcap.approvalRow(a.payment_id);
+    if (!row || row.conversation_id !== a.conversation_id) return null;
+    const state = a.state === "open" && row.status !== "asked" ? "closed" : a.state;
+    return { a, row, kind: "cap", state, amount: `${row.to} a day`, store: "Daily spending limit", item: `From ${row.from} a day`, from: row.from, to: row.to, expiresAt: a.expires_at };
+  }
   const row = paymentRow(a.payment_id);
   if (!row) return null;
   const state = a.state === "open" && row.status !== "asked" ? "closed" : a.state;
-  return { a, row, state, amount: amountText(row), store: row.merchant_name || storeName(runRow(row.run_id)?.store) || "the store", item: row.item, expiresAt: a.expires_at };
+  return { a, row, kind: "pay", state, amount: amountText(row), store: row.merchant_name || storeName(runRow(row.run_id)?.store) || "the store", item: row.item, expiresAt: a.expires_at };
 }
 /**
  * The page's assertion: verified against the row as it is now (passkey.verifyApproval), the link
@@ -1057,6 +1066,16 @@ export function approvalView(token) {
 export async function payByPasskey(token, response) {
   const v = approvalView(token);
   if (!v) return { ok: false, error: "not_found" };
+  // A raise of the daily limit: Face ID verified against the change as it is, then the number changes.
+  // Nothing is paid, nothing reaches a store. The one line is texted because no model turn runs here.
+  if (v.kind === "cap") {
+    const ok = await passkey.verifyApproval(v.a, v.row, response);
+    if (!ok.ok) return ok;
+    const out = spendcap.confirmChange(v.row.conversation_id, v.row.id, { via: "face_id" });
+    passkey.logEvent(v.row.conversation_id, v.row, out.ok ? "cap_raised" : "cap_failed", out.ok ? `${v.from} -> ${v.to}` : out.error);
+    if (out.ok) await notify(v.row.conversation_id, `Approved with Face ID. ${spendcap.appliedLine(out)}`);
+    return out.ok ? { ok: true, cap: true, from: out.from, to: out.to } : out;
+  }
   // The day's cap first, BEFORE the assertion is verified (verifying marks the link used): over it, the
   // link stays open and nothing was asked of Face ID. No model turn runs here, so the one plain line is
   // texted now, once per link; the page says it too (src/pages/webapprove.js WHY).
@@ -1065,7 +1084,8 @@ export async function payByPasskey(token, response) {
     const told = !!q("SELECT 1 AS x FROM pay_approval_log WHERE payment_id = ? AND event = 'pay_failed' AND detail = 'over_daily_cap' LIMIT 1").get(v.row.id);
     passkey.logEvent(v.row.conversation_id, v.row, "pay_failed", capped.error);
     if (capped.error === "over_daily_cap" && !told) {
-      await notify(v.row.conversation_id, `${amountText(v.row)} at ${v.row.merchant_name || "the store"} is past the day's spending limit here ($${(capped.spent_today / 100).toFixed(2)} of $${(capped.cap / 100).toFixed(2)} already spent today). Nothing was charged. Tomorrow, ask me to start the order again.`);
+      // Their limit, where this would take them, and how to change it (src/spendcap.js overCapLine).
+      await notify(v.row.conversation_id, `${amountText(v.row)} at ${v.row.merchant_name || "the store"} wasn't paid. ${capped.say} Nothing was charged.`);
     }
     return capped;
   }
@@ -1090,6 +1110,12 @@ export async function declineByLink(token) {
   const v = approvalView(token);
   if (!v || v.state !== "open") return { ok: false, error: "not_open" };
   passkey.closeApproval(v.a, "declined");
+  if (v.kind === "cap") {
+    const out = spendcap.declineChange(v.row.conversation_id, v.row.id);
+    passkey.logEvent(v.row.conversation_id, v.row, "declined");
+    if (out.ok) await notify(v.row.conversation_id, spendcap.keptLine(out.cap));
+    return out;
+  }
   const out = await declinePayment({ conversationId: v.row.conversation_id, paymentId: v.row.id });
   passkey.logEvent(v.row.conversation_id, v.row, "declined");
   if (out.ok) await notify(v.row.conversation_id, `Declined. Nothing was charged at ${v.store}.`);
@@ -1822,7 +1848,14 @@ export function statusView(conversationId) {
     ...(run.order_ref ? { order_ref: run.order_ref } : {}),
     ...(run.stage === "needs_approval" ? approvalHint(run) : {}),
   }));
-  return { ok: true, runs, note: runs.length ? "This is the record. Answer from it, never from the chat; say the stage in plain words." : "No checkout has run for them in the last two days. Say so; do not say one is running." };
+  // Today's money, the real figures (src/spendcap.js): spent, their daily limit, what is left.
+  const s = spendcap.view(conversationId);
+  const spending = {
+    spent_today: s.spent, daily_limit: s.cap, left_today: s.left, limit_set_by: s.own ? "them" : `the default here (${s.default})`, most_they_can_set: s.ceiling,
+    ...(s.pending ? { change_waiting: { to: s.pending.to, needs: s.pending.needs === "face_id" ? "their Face ID on the link sent" : "their yes" } } : {}),
+    note: "'How much have I spent', 'what's my limit', 'how much is left' are answered from these, never from memory. They change the limit by telling you a new number (spend_limit_set) or in Settings → Shopping; never quote words for them to type.",
+  };
+  return { ok: true, runs, spending, note: runs.length ? "This is the record. Answer from it, never from the chat; say the stage in plain words." : "No checkout has run for them in the last two days. Say so; do not say one is running." };
 }
 /** The note on their turns: every run of the last day, from the row, over anything the chat says. */
 export function checkoutNote(conversationId) {

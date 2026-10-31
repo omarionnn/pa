@@ -32,6 +32,7 @@ import * as invites from "../invites.js";
 import * as agentcard from "../agentcard.js";
 import * as shop from "../shopconnect.js";
 import * as passkey from "../passkey.js";
+import * as spendcap from "../spendcap.js";
 import { invitesOpenFor } from "../tools.js";
 import { config, clock } from "../config.js";
 import { readCookie, clearCookieHeader, SESSION_TTL_MS } from "./access.js";
@@ -160,6 +161,12 @@ const CSS = `
 .shp-b+.shp-b{margin-top:28px}
 #shopping .pf-go,#shopping .pf-x{font-size:26px}
 #shopping .pf-paper{margin-top:8px;max-width:420px}
+.cap-f{display:flex;flex-direction:column;gap:6px;max-width:420px}
+.cap-row{display:flex;align-items:center;gap:10px}
+.cap-cur{font:400 26px/1 var(--mono);color:var(--muted)}
+.cap-in{flex:1;min-width:0;width:8em;padding:10px 12px;border:1.5px solid var(--rule);border-radius:10px;background:transparent;color:var(--ink);font:400 26px/1.2 var(--mono);letter-spacing:.04em}
+.cap-in:focus{outline:none;border-color:var(--ink)}
+#shopping .cap-row .pf-two{flex:none}
 #shopping .pf-acts{margin-top:4px}
 .st-quiet{margin:10px 0 0;font-size:14px;line-height:1.5;color:var(--muted)}
 #invites{gap:4px}
@@ -370,7 +377,7 @@ export function notifyBody({ csrf, reach = "text", on = false, done = "", sub = 
  * store logo, never their email, never an expiry, and never Crossmint's name. `shopping` is null when
  * the flag keeps it from this person (the section is not drawn).
  */
-export function shoppingSection({ csrf, shopping, done = "", confirmCard = false }) {
+export function shoppingSection({ csrf, shopping, done = "", confirmCard = false, confirmCap = null }) {
   const day = (ms) => new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: config.tz });
   const lbl = (t, pen = false) => `<span class="pf-l${pen ? " pen" : ""}">${esc(t)}</span>`;
   const stores = shopping.stores.length
@@ -410,13 +417,51 @@ export function shoppingSection({ csrf, shopping, done = "", confirmCard = false
         + `${actions(go("Add this device", { href: "/web/connect/passkey" }))}<p class="shp-p">Lost your phone? Add the new one here. It can pay a day later, and I'll text you it was added.</p></div>`
       : `<div class="shp-b"><p class="shp-h">Face ID for purchases. <em>Not set up.</em></p><p class="shp-p">Approve each payment with Face ID instead of a texted yes.</p>${actions(go("Set up Face ID", { href: "/web/connect/passkey" }))}</div>`;
   }
-  return `<section class="st-sec" id="shopping" aria-labelledby="sh-h"><h2 id="sh-h">SHOPPING</h2>${storeBlock}${cardBlock}${faceBlock}`
+  const capBlock = shopping.cap ? capSection({ csrf, cap: shopping.cap, done, confirmCap, hasPasskey: !!pks?.length }) : "";
+  return `<section class="st-sec" id="shopping" aria-labelledby="sh-h"><h2 id="sh-h">SHOPPING</h2>${storeBlock}${cardBlock}${faceBlock}${capBlock}`
     + `<p class="st-quiet">Store passwords are sealed and go straight to the store. Your card is kept securely; I only see its brand and last four. Signing out of your last store erases every saved sign-in.</p>`
     + saved(done === "store-removed", "signed out. i won't use it again.") + saved(done === "card-removed", "card forgotten.")
     + `</section>`;
 }
 
-export function renderSettings({ csrf, reach = "text", browsers = [], current = "", connected = [], invitesView = null, shopping = null, theme = null, notify = false, done = "", confirmCard = false, now = clock.now() }) {
+/** Dollars for the field and the copy: whole when whole, else two places. */
+const usd = (cents) => `$${(cents / 100).toFixed(2).replace(/\.00$/, "")}`;
+const usdField = (cents) => (cents / 100).toFixed(2).replace(/\.00$/, "");
+
+/**
+ * Daily limit (2026-10-31, src/spendcap.js): the most Reason spends for them in a day, across every
+ * store. One field with the number that holds now, the default named, saved on SAVE. Lowering takes at
+ * once; a raise above the default is a money control — with a passkey the POST sends them to the Face ID
+ * page, without one it asks right here (`confirmCap`, ?confirm=cap&i=<change>) with a yes that expires
+ * like any other ask about money. The ceiling is drawn so nobody types a number that cannot take.
+ */
+export function capSection({ csrf, cap, done = "", confirmCap = null, hasPasskey = false }) {
+  const lbl = (t) => `<span class="pf-l">${esc(t)}</span>`;
+  if (confirmCap) {
+    return `<div class="shp-b" role="group" aria-labelledby="cap-h"><p class="shp-h" id="cap-h">Raise your daily limit to ${esc(confirmCap.to)}? <em>From ${esc(confirmCap.from)} a day.</em></p>`
+      + `<p class="shp-p">This is the most I'll spend for you in a day, across every store. The default here is ${esc(cap.default)}.</p>${paper({ label: "DAILY LIMIT", big: confirmCap.to })}`
+      + actions(post(csrf, "cap-confirm", `${hidden("i", String(confirmCap.id))}<button class="act pf-go" type="submit" data-busy="RAISING…">Yes, raise it <span aria-hidden="true">→</span></button>`), post(csrf, "cap-keep", `${hidden("i", String(confirmCap.id))}<button class="act2 pf-two" type="submit" data-busy="…">KEEP ${esc(confirmCap.from.toUpperCase())}</button>`))
+      + `<p class="shp-p">Nothing changes until you say yes. This question runs out in a day.</p></div>`;
+  }
+  const field = `<label class="pf-l" for="cap-f">DAILY LIMIT</label><div class="cap-row"><span class="cap-cur" aria-hidden="true">$</span>`
+    + `<input class="cap-in" id="cap-f" name="cap" type="text" inputmode="decimal" autocomplete="off" value="${esc(usdField(cap.cap_cents))}" aria-describedby="cap-why" required>`
+    + `<button class="act2 pf-two" type="submit" data-busy="SAVING…">SAVE</button></div>`;
+  const pending = cap.pending
+    ? `<p class="shp-p">A raise to ${esc(cap.pending.to)} is waiting for ${cap.pending.needs === "face_id" ? "your Face ID on the link I texted" : "your yes"}. Until then it's ${esc(cap.cap)}.</p>`
+    : "";
+  return `<div class="shp-b"><p class="shp-h">Daily limit. <em>${esc(cap.cap)} a day${cap.own ? "" : ", the default"}.</em></p>`
+    + `<p class="shp-p" id="cap-why">The most I'll spend for you in a day, across every store. The default here is ${esc(cap.default)}; you can set up to ${esc(cap.ceiling)}. Lowering it takes effect now. Raising it above the default ${hasPasskey ? "needs Face ID" : "asks you first"}.</p>`
+    + post(csrf, "cap", field, "cap-f")
+    + `<div class="pf-rows"><div class="pf-row"><div>${lbl("TODAY")}<p class="shp-u">${esc(cap.spent)} spent · ${esc(cap.left ?? "no limit")} left</p></div></div></div>`
+    + pending
+    + saved(done === "cap", "daily limit saved.") + saved(done === "cap-kept", "left as it was.")
+    + (done === "cap-bad" ? hand("that didn't read as an amount. dollars, like 120.", { role: "alert" }) : "")
+    + (done === "cap-ceiling" ? hand(`the most you can set here is ${cap.ceiling} a day.`, { role: "alert" }) : "")
+    + (done === "cap-expired" ? hand("that question ran out, so nothing changed.", { role: "alert" }) : "")
+    + `</div>`;
+}
+
+export function renderSettings({ csrf, reach = "text", browsers = [], current = "", connected = [], invitesView = null, shopping = null, theme = null, notify = false, done = "", confirmCard = false, confirmCap = null, now = clock.now() }) {
   if (!REACH[reach]) reach = "text";
   const ph = (t) => `<a class="ph" href="/web/settings?edit=reach" aria-describedby="reach-how">${t}</a>`;
   const reachSec = `<section class="st-sec" id="reach" aria-labelledby="reach-h"><h2 id="reach-h">HOW REASON REACHES YOU</h2>`
@@ -485,7 +530,7 @@ export function renderSettings({ csrf, reach = "text", browsers = [], current = 
     + saved(done === "theme") + `</div>`
     + `<form method="POST" action="/web/signout" class="out-f">${hidden("c", csrf)}<button class="act2 out" type="submit" data-busy="SIGNING OUT…">SIGN OUT OF THIS BROWSER</button></form></section>`;
 
-  const shoppingSec = shopping ? shoppingSection({ csrf, shopping, done, confirmCard }) : "";
+  const shoppingSec = shopping ? shoppingSection({ csrf, shopping, done, confirmCard, confirmCap }) : "";
   const shown = SECTIONS.filter(([id]) => (id !== "invites" || invitesView) && (id !== "shopping" || shopping));
   const body = `<header class="st-head"><a class="act2" href="/web?thread">← BACK TO THE CHAT</a>${wordmark({ href: "/web?home" })}</header>`
     + `<main class="st"><div class="st-side"><h1 class="st-h1">Settings</h1><nav class="st-nav" aria-label="Settings sections">`
@@ -570,7 +615,7 @@ export function settingsView(account, token) {
     current: token,
     connected: connections(conv),
     invitesView: myInvitesView(conv),
-    shopping: shop.connectAllowedFor(conv) ? { stores: shop.connectedStores(conv), card: shop.cardOf(conv), lastUsed: shop.lastPaid(conv), passkeys: passkey.passkeyAllowedFor(conv) ? passkey.passkeysOf(conv) : null } : null,
+    shopping: shop.connectAllowedFor(conv) ? { stores: shop.connectedStores(conv), card: shop.cardOf(conv), lastUsed: shop.lastPaid(conv), passkeys: passkey.passkeyAllowedFor(conv) ? passkey.passkeysOf(conv) : null, cap: spendcap.view(conv) } : null,
     theme: db.webTheme(conv),
     notify: db.pageSessionNotify(token),
   };
@@ -592,7 +637,14 @@ function settingsPage({ account, token, query }) {
     if (!inv || inv.state !== "unused") return null;
     return renderInviteMade({ invite: inv, left: invites.myInvites(conv).links_you_can_still_make });
   }
-  return renderSettings({ csrf, ...settingsView(account, token), done, confirmCard: query.confirm === "card" });
+  // ?confirm=cap&i=<change>: the yes for a raise of the daily limit, only one of THEIR open changes.
+  let confirmCap = null;
+  if (query.confirm === "cap" && shop.connectAllowedFor(conv)) {
+    const row = spendcap.changeRow(Number(query.i));
+    const open = spendcap.openChange(conv);
+    if (row && open && row.id === open.id) confirmCap = { id: row.id, from: spendcap.money(row.from_cents), to: spendcap.money(row.to_cents) };
+  }
+  return renderSettings({ csrf, ...settingsView(account, token), done, confirmCard: query.confirm === "card", confirmCap });
 }
 
 /**
@@ -685,6 +737,32 @@ export async function settingsRequest({ account, method, query = {}, headers = {
     const out = what === "store-remove" ? await shop.removeStore(conv, key) : await shop.removeCard(conv);
     log({ web_settings: what, ok: !!out.ok });
     return back(out.ok ? (what === "store-remove" ? "store-removed" : "card-removed") : "", "shopping");
+  }
+
+  // The daily spending limit (src/spendcap.js). A lowering, or anything at or under the default, is
+  // saved now. A raise above the default: with a passkey the Face ID page (the same link a payment
+  // uses); without one the yes is asked right here, and it runs out like any ask about money.
+  if (what === "cap") {
+    if (!shop.connectAllowedFor(conv)) return back("", "reach");
+    const cents = spendcap.toCents(form.get("cap"));
+    if (cents == null) { log({ web_settings: "cap", ok: false, why: "bad_amount" }); return wantsJson ? json(400, { ok: false, error: "bad_amount" }) : back("cap-bad", "shopping"); }
+    const out = spendcap.requestChange(conv, cents, { via: "web" });
+    log({ web_settings: "cap", ok: !!out.ok, ...(out.error ? { why: out.error } : {}), ...(out.needs ? { needs: out.needs } : {}), to_cents: cents });
+    if (out.ok) return wantsJson ? json(200, { ok: true, cap: out.to }) : back("cap", "shopping");
+    if (out.error === "over_ceiling") return wantsJson ? json(400, { ok: false, error: "over_ceiling", ceiling: out.ceiling }) : back("cap-ceiling", "shopping");
+    if (out.error) return wantsJson ? json(400, { ok: false, error: out.error }) : back("cap-bad", "shopping");
+    if (out.needs === "face_id") return wantsJson ? json(200, { ok: false, needs: "face_id", url: out.url }) : to(new URL(out.url).pathname);
+    return wantsJson ? json(200, { ok: false, needs: "yes", change_id: out.change_id }) : to(`/web/settings?confirm=cap&i=${out.change_id}#shopping`);
+  }
+
+  if (what === "cap-confirm" || what === "cap-keep") {
+    if (!shop.connectAllowedFor(conv)) return back("", "reach");
+    const id = Number(form.get("i"));
+    const out = what === "cap-keep" ? spendcap.declineChange(conv, id) : spendcap.confirmChange(conv, id, { via: "web" });
+    log({ web_settings: what, ok: !!out.ok, ...(out.error ? { why: out.error } : {}) });
+    if (wantsJson) return json(out.ok ? 200 : 400, out);
+    if (out.ok) return back(what === "cap-keep" ? "cap-kept" : "cap", "shopping");
+    return back(out.error === "change_expired" ? "cap-expired" : "", "shopping");
   }
 
   return back("", "reach");

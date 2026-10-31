@@ -110,6 +110,11 @@ db.db.exec(`
   );
 `);
 const q = (sql) => db.db.prepare(sql);
+// What a link approves (2026-10-31): 'pay' is a payment row (shop_payments); 'cap' is a raise of the
+// person's daily spending limit (src/spendcap.js cap_changes). payment_id holds that kind's row id, so
+// every match on it carries the kind too. The column is added to a live table, so ALTER, not CREATE.
+if (!q("PRAGMA table_info(pay_approvals)").all().some((c) => c.name === "kind")) db.db.exec("ALTER TABLE pay_approvals ADD COLUMN kind TEXT NOT NULL DEFAULT 'pay'");
+const kindOf = (x) => x?.kind ?? "pay";
 const sha = (s) => createHash("sha256").update(s).digest();
 const hashToken = (t) => sha(`pay-approval|${t}`).toString("hex");
 
@@ -121,7 +126,7 @@ const tell = async (c, text) => { try { if (sayFn) await sayFn(c, text); } catch
 /** Every approval, decline and refusal: the payment, its amount and store, and why. Never a card detail. */
 export function logEvent(conversationId, row, event, detail = "") {
   q("INSERT INTO pay_approval_log (conversation_id, payment_id, event, detail, amount, merchant, at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(conversationId, row?.id ?? null, event, String(detail).slice(0, 80), row ? `${row.amount} ${row.currency}` : "", row?.merchant_name ?? "", clock.now());
+    .run(conversationId, row && kindOf(row) === "pay" ? row.id : null, event, String(detail).slice(0, 80), row ? `${row.amount} ${row.currency}` : "", row?.merchant_name ?? "", clock.now());
 }
 export const approvalLog = (conversationId) => q("SELECT payment_id, event, detail, amount, merchant, at FROM pay_approval_log WHERE conversation_id = ? ORDER BY id").all(conversationId);
 
@@ -188,8 +193,11 @@ export async function register(conversationId, response) {
  * nonce. Recomputed from the row at verify time, so it is the payment itself that is signed.
  */
 export function bindingChallenge(row, nonce) {
-  const fields = ["reason-pay-v1", row.id, row.conversation_id, row.run_id, row.request_id, row.amount_kind, row.amount, row.currency,
-    row.merchant_name, row.merchant_url, row.merchant_country, row.item, nonce];
+  // A raise of the daily limit signs the change itself: which one, whose, from what to what.
+  const fields = kindOf(row) === "cap"
+    ? ["reason-cap-v1", row.id, row.conversation_id, row.from_cents, row.to_cents, row.amount, nonce]
+    : ["reason-pay-v1", row.id, row.conversation_id, row.run_id, row.request_id, row.amount_kind, row.amount, row.currency,
+      row.merchant_name, row.merchant_url, row.merchant_country, row.item, nonce];
   return sha(JSON.stringify(fields)).toString("base64url");
 }
 
@@ -200,9 +208,9 @@ export function createApproval(row) {
   const now = clock.now();
   const deadline = row.expires_at ? Date.parse(row.expires_at) : NaN;
   const expiresAt = Math.min(now + APPROVAL_TTL_MS, Number.isFinite(deadline) ? deadline : now + APPROVAL_TTL_MS);
-  q("UPDATE pay_approvals SET state = 'replaced' WHERE payment_id = ? AND state = 'open'").run(row.id);
-  q(`INSERT INTO pay_approvals (id, conversation_id, payment_id, nonce, challenge, state, created_at, expires_at) VALUES (?, ?, ?, ?, ?, 'open', ?, ?)`)
-    .run(hashToken(token), row.conversation_id, row.id, nonce, bindingChallenge(row, nonce), now, expiresAt);
+  q("UPDATE pay_approvals SET state = 'replaced' WHERE payment_id = ? AND kind = ? AND state = 'open'").run(row.id, kindOf(row));
+  q(`INSERT INTO pay_approvals (id, conversation_id, payment_id, kind, nonce, challenge, state, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)`)
+    .run(hashToken(token), row.conversation_id, row.id, kindOf(row), nonce, bindingChallenge(row, nonce), now, expiresAt);
   logEvent(row.conversation_id, row, "link_sent");
   return token;
 }
@@ -216,8 +224,8 @@ export function approvalFor(token) {
   return a;
 }
 /** The link still open for a payment, if one is (and still in its five minutes); else null. */
-export function openApprovalFor(paymentId) {
-  const a = q("SELECT * FROM pay_approvals WHERE payment_id = ? AND state = 'open' ORDER BY created_at DESC").get(paymentId) ?? null;
+export function openApprovalFor(paymentId, kind = "pay") {
+  const a = q("SELECT * FROM pay_approvals WHERE payment_id = ? AND kind = ? AND state = 'open' ORDER BY created_at DESC").get(paymentId, kind) ?? null;
   return a && a.expires_at >= clock.now() ? a : null;
 }
 export const closeApproval = (a, state) => q("UPDATE pay_approvals SET state = ? WHERE id = ? AND state = 'open'").run(state, a.id).changes === 1;
@@ -239,7 +247,7 @@ export async function verifyApproval(a, row, response) {
   const fail = (error) => { logEvent(a.conversation_id, row, "rejected", error); return { ok: false, error }; };
   if (a.state !== "open") return fail(`link_${a.state}`);
   if (a.expires_at < clock.now()) { closeApproval(a, "expired"); return fail("link_expired"); }
-  if (!row || row.id !== a.payment_id || row.conversation_id !== a.conversation_id) return fail("no_such_payment");
+  if (!row || row.id !== a.payment_id || row.conversation_id !== a.conversation_id || kindOf(row) !== kindOf(a)) return fail("no_such_payment");
   if (row.status !== "asked" || row.amount_kind !== "exact") return fail(`payment_${row.status !== "asked" ? row.status : "not_exact"}`);
   // The row must still be the payment the link was made for: amount, store, item, request.
   if (bindingChallenge(row, a.nonce) !== a.challenge) return fail("details_changed");
@@ -274,7 +282,7 @@ export function reopenApproval(a, row, why = "") {
     .run(nonce, bindingChallenge(row, nonce), a.id);
   if (r.changes !== 1) return false;
   // One open link per payment, as createApproval keeps it: any other made meanwhile closes.
-  q("UPDATE pay_approvals SET state = 'replaced' WHERE payment_id = ? AND state = 'open' AND id != ?").run(row.id, a.id);
+  q("UPDATE pay_approvals SET state = 'replaced' WHERE payment_id = ? AND kind = ? AND state = 'open' AND id != ?").run(row.id, kindOf(row), a.id);
   logEvent(a.conversation_id, row, "link_reopened", why);
   return true;
 }

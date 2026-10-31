@@ -204,7 +204,9 @@ test("over the install's daily cap: a texted yes does not pay, nothing reaches C
   assert.equal(out.error, "over_daily_cap");
   assert.equal(out.cap, 2000);
   assert.equal(out.spent_today, 0);
-  assert.match(out.say, /\$25\.00 and the day's limit is \$20\.00/);
+  // The person's line (2026-10-31, per-person limits): their limit, where it would take them, how to change it.
+  assert.match(out.say, /^Your daily limit is \$20 and this would take you to \$25\. You can raise it in Settings → Shopping, or tell me a new limit\.$/);
+  assert.match(out.note, /\$25\.00 and their daily limit is \$20\.00 \(the default here\)/);
   assert.equal(orderIntents().length, 0);
   assert.equal(shop.paymentRow(big.id).status, "asked");
   // Under it: paid and counted; the next one that would cross the line is refused with what is left.
@@ -215,7 +217,8 @@ test("over the install's daily cap: a texted yes does not pay, nothing reaches C
   assert.equal(next.error, "over_daily_cap");
   assert.equal(next.left, 1021);
   assert.equal(orderIntents().length, 1);
-  assert.match(next.say, /\$9\.79 is already committed/);
+  assert.match(next.say, /would take you to \$21\.79/);
+  assert.match(next.note, /\$9\.79 is already committed/);
   // Somebody else's day is their own.
   assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: asked(OMARI, "19.00").id, confirmationId: 5 })).ok, true);
   // An amount that does not read as money is refused, never sent through as $0.
@@ -234,7 +237,7 @@ test("over the daily cap with Face ID: the cap is asked before the assertion, th
   const first = await page(token);
   const o = optionsOf(first.body);
   // The page's own words for it, ready before the tap.
-  assert.match(first.body, /over_daily_cap:"This is past the day's spending limit here\. Nothing was charged\. Tomorrow, ask me to start the order again\."/);
+  assert.match(first.body, /over_daily_cap:"This is past your daily spending limit\. Nothing was charged\. You can raise it in Settings → Shopping, or text me a new limit\."/);
   said.length = 0;
   const res = await page(token, "verify", auth.get(o.challenge));
   assert.equal(res.status, 400);
@@ -243,7 +246,7 @@ test("over the daily cap with Face ID: the cap is asked before the assertion, th
   assert.equal(shop.paymentRow(row.id).status, "asked");
   assert.equal(said.length, 1);
   assert.equal(said[0].c, AMA);
-  assert.match(said[0].t, /^\$25\.00 at Best Buy is past the day's spending limit here \(\$0\.00 of \$20\.00 already spent today\)\. Nothing was charged\. Tomorrow, ask me to start the order again\.$/);
+  assert.match(said[0].t, /^\$25\.00 at Best Buy wasn't paid\. Your daily limit is \$20 and this would take you to \$25\. You can raise it in Settings → Shopping, or tell me a new limit\. Nothing was charged\.$/);
   assert.equal(q("SELECT event, detail FROM pay_approval_log WHERE payment_id = ? ORDER BY id DESC LIMIT 1").get(row.id)?.detail, "over_daily_cap");
   // The cap was asked BEFORE the assertion was verified: the link is still open (not used), so the
   // page does not end on "Already approved"; a second tap is refused the same way and texts nothing more.
