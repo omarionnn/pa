@@ -131,6 +131,7 @@ test("a request Reason cannot place gets one honest line and a hang-up, not sile
   assert.equal(out.status, 200);
   const r = await drain(out.stream);
   assert.match(r.said, /can't pick this one up/i);
+  assert.doesNotMatch(r.said, /sorry/i, "a plain line, no apology");
   assert.equal(r.toolCalls[0].function.name, "end_call");
   assert.ok(r.text.endsWith(SSE_DONE));
 
@@ -1419,8 +1420,8 @@ test("filler: \"One sec...\" at most once per call", async () => {
 
 test("holding line: 6 s once per call, then a late line at 7.5 s, never the same one twice running", async () => {
   assert.equal(voice.FIRST_WORD_DEADLINE_MS, 6_000);
-  // Replay of 15 timed owner calls on #274: 9 turns silent to 9.5 s, then "Still working on it." —
-  // six of them back to back. 7.5 s takes the silence off them; see LATE_HOLDING_MS.
+  // Replay of 15 timed owner calls on #274: 11 turns silent past 8 s, and "Still working on it."
+  // again on the same call 5 times. 7.5 s takes the silence off them; see LATE_HOLDING_MS.
   assert.equal(voice.LATE_HOLDING_MS, 7_500);
   // The agent's cascade_timeout_seconds is 15 s from the request arriving; the late line has to be
   // out with room for TTS and the network before then.
@@ -1455,6 +1456,21 @@ test("holding line: 6 s once per call, then a late line at 7.5 s, never the same
   }
   assert.deepEqual(late.slice(0, -1), [...voice.LATE_LINES], "each late turn takes the next late line");
   assert.equal(late.at(-1), voice.LATE_LINES[0], "and only once all of them are said does one come round again");
+});
+
+test("a late line with nothing after it closes the promise, never a second stall", async () => {
+  const call = ownerCall();
+  const opts = { headers: AUTH, firstWordDeadlineMs: 50, lateHoldingMs: 150, screen: async () => ({ verdict: "safe" }) };
+  // The call's holding line goes on a first slow turn; the next one hits the late deadline, then the
+  // model has nothing to say.
+  await drain((await llmRequest({ ...opts, rawBody: bodyFor(call), generate: stalled(100, ["Here."]) })).stream);
+  const quiet = async function* () { await new Promise(r => setTimeout(r, 300)); };
+  const r = await drain((await llmRequest({ ...opts, rawBody: bodyFor(call), generate: quiet })).stream);
+  assert.ok(r.said.startsWith(voice.LATE_LINES[0]), r.said);
+  const after = r.said.slice(voice.LATE_LINES[0].length).trim();
+  assert.ok(after.length > 0, "something closes the turn");
+  assert.ok(!voice.LATE_LINES.includes(after) && after !== voice.HOLDING_LINE, `not another stall: ${after}`);
+  assert.doesNotMatch(after, /sorry|bear with me|moment|second/i);
 });
 
 test("the code's own lines never apologise", () => {

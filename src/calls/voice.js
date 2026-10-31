@@ -234,7 +234,7 @@ export const FIRST_WORD_DEADLINE_MS = 6_000;
  * it the new top filler, so it is said at most once per call, at `FIRST_WORD_DEADLINE_MS`. This is
  * the floor under every other turn. The agent's `cascade_timeout_seconds` is 15 s (live agent config,
  * 2026-10-30), counted from the request arriving; 9.5 s from that same moment leaves room for TTS and
- * the network before the platform gives up on the LLM and kills the call (call 13).
+ * the network before the platform gives up on the LLM and kills the call (call 13). (It was 9.5 s.)
  *
  * 7.5 s, not 9.5 s. Replaying the 15 timed owner calls (123 turns at their recorded latencies,
  * bin/call-filler-drive.mjs) through the #274 code: 11 turns sat silent past 8 s, 8 of them then
@@ -252,11 +252,11 @@ export const LATE_HOLDING_MS = 7_500;
  */
 export const LATE_LINES = Object.freeze([
   "Still working on it.",
-  "Bear with me a second.",
   "Still on it.",
-  "Nearly there.",
   "Just a moment more.",
-  "Getting there.",
+  "Hang on a second.",
+  "Give me a moment.",
+  "Still checking.",
 ]);
 export const LATE_LINE = LATE_LINES[0];
 
@@ -290,9 +290,10 @@ export const HOLDING_LINE = "Mm-hm, one moment.";
  * A turn that ends having said nothing of its own (after anything already said, so leading space).
  *
  * None of the code's own lines open with "Sorry" any more: in the stored owner calls 4 of the 14
- * apologies were the code's (BROKE_FIRST), and an apology adds nothing a caller can use.
+ * apologies were the code's (BROKE_FIRST), and an apology adds nothing a caller can use. Not a late
+ * line either: after "Still on it." the turn has to close the promise, not stall a second time.
  */
-const NOTHING_SAID_AFTER = " Bear with me.";
+const NOTHING_SAID_AFTER = " Let me come back to you on that one.";
 // The turn's other canned lines, named so the turn meter (src/calls/metrics.js) can tell them from the
 // model's own words: "first real content" is the first thing said that was not one of these.
 const COME_BACK_LATER = "Let me come back to you on that one.";

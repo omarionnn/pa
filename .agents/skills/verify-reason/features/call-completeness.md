@@ -95,8 +95,8 @@ files but not mapped here.
 - **Fillers and dead air (#274, then this fix).** `oneSec` ("One sec..." at a tool start ≥2.5 s into
   a silent turn) once per call; `HOLDING_LINE` at 6 s once per call; any later turn silent at
   `LATE_HOLDING_MS` (7.5 s, from `t0`) gets the next of `LATE_LINES` (six, in order, so never the
-  same twice running). No code line says "sorry"; `VOICE_RULES` forbid apologising on a call at
-  all. Offline replay of stored owner calls at their recorded latencies, no model/phone:
+  same twice running). No call-turn line (`METER_KINDS`, the can't-pick-up refusal) says "sorry"
+  (hold.js's give-up to a business on hold still does); `VOICE_RULES` forbid apologising on a call. Offline replay of stored owner calls at their recorded latencies, no model/phone:
   `bin/call-filler-drive.mjs` (fake model seam, real `llmRequest`; inputs = a private calls JSON
   export + journal `voice_turn` lines; `REASON_FILLER_ROOT` picks the checkout, so before/after is
   one script on two worktrees; counts only, via `bin/call-filler-count.mjs`). Tests:

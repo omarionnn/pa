@@ -38,6 +38,15 @@ const { pathToFileURL } = await import("node:url");
 for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "BLAND_API_KEY", "AGENTCARD_CLIENT_SECRET"]) {
   if (process.env[k]) { console.error(`refusing: ${k} is set — run under caged.sh env`); process.exit(2); }
 }
+if (!process.env.REASON_VERIFY_SECRET) { console.error("refusing: not under caged.sh env (no REASON_VERIFY_SECRET)"); process.exit(2); }
+// Belt and braces: no other credential reaches the modules, and no side path can start a model run
+// (the API has no key; claude-cli is never selected). The turn's model is the fake seam below.
+for (const k of Object.keys(process.env)) {
+  if (/(_API_KEY|_SECRET|_SECRET_KEY|_TOKEN|_CLIENT_ID)$/.test(k) && k !== "REASON_VERIFY_SECRET") process.env[k] = "";
+}
+process.env.ANTHROPIC_API_KEY = "";
+process.env.REASON_BACKEND = "api";
+process.env.REASON_CALL_BACKEND = "api";
 if (!process.env.REASON_FILLER_CALLS || !process.env.REASON_FILLER_JOURNAL) {
   console.error("set REASON_FILLER_CALLS (calls JSON) and REASON_FILLER_JOURNAL (journal voice_turn lines)");
   process.exit(2);
@@ -68,6 +77,8 @@ const ROUND_TWO_MS = 1_500;
 const CANNED = [
   /One sec\.\.\.\s*/g, /Sorry — something broke on my end\. Say that again\?\s*/g, /Sorry, something broke on my end there\.\s*/g,
   /Mm-hm, one moment\.\s*/g, /Still working on it\.\s*/g, /\s*Sorry — bear with me one moment\.\s*/g,
+  /Sorry — I can't pick this one up\. Something's wrong on my end, not yours\.\s*/g,
+  /Sorry — I've been holding a while[^]*?Thanks very much\.\s*/g,
 ];
 const modelWords = (line) => CANNED.reduce((s, re) => s.replace(re, ""), String(line)).trim();
 

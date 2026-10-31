@@ -153,7 +153,7 @@ export function contentKind(content, { holdingLine, holdingLines = [], fillers =
   const exact = String(content ?? "");
   const s = exact.trim();
   if (!s) return null;
-  // The holding line and the late line (voice.js `LATE_LINE`) are both "holding_line".
+  // The holding line and the late lines (voice.js `LATE_LINES`) are all "holding_line".
   if ([holdingLine, ...holdingLines].some(h => h && s === String(h).trim())) return "holding_line";
   // Exact, not trimmed: the code's filler carries its trailing space; a model's own "..." does not.
   if (fillers.some(f => exact === String(f) || exact === ` ${f}`)) return "filler";
