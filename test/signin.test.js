@@ -360,3 +360,132 @@ test("what's signed in carries the sign-in wall for Uber instead of a way to sig
   assert.ok(amazon.how_to_sign_in, "a site that loads still says how");
   assert.equal(status.sites.find(r => r.site === "lyft"), undefined, "and Lyft is not listed at all");
 });
+
+// ---------- a page that could not be read is not a signed-out page (#279) ----------
+
+test("an unknown check never takes a live sign-in away", () => {
+  db.recordSiteSignin(OMARI, "amazon", { state: "signed_in", evidence: "order history loaded" });
+  db.recordSiteSignin(OMARI, "amazon", { state: "unknown", evidence: "could not load: interrupted by another navigation" });
+  const row = db.liveAccount(OMARI, "amazon");
+  assert.ok(row, "still connected");
+  assert.equal(row.state, "signed_in");
+  // A real signed-out answer still takes it away.
+  db.recordSiteSignin(OMARI, "amazon", { state: "signed_out", evidence: "bounced to /ap/signin" });
+  assert.equal(db.liveAccount(OMARI, "amazon"), null);
+});
+
+const FIXTURE = {
+  site: "fixture", label: "Fixture",
+  signed_in: { url: "http://fixture.test/account", when_in: ["Your trips"], when_out: ["sign in"], when_out_url: "/login" },
+};
+const SIGNED_IN_PAGE = { status: 200, text: "Your trips. DL 1234 JFK to ATL, Friday 7:15 AM. Check in for this trip." };
+const SIGNED_OUT_PAGE = { status: 200, url: "http://fixture.test/login", text: "Please sign in with your email and password to continue." };
+
+/** A page whose loads answer in turn from `script`; an entry with `throws` is a load that was cut off. */
+function scriptedPage(script) {
+  let url = "about:blank";
+  let text = "";
+  const page = {
+    gotos: [],
+    url: () => url,
+    async goto(u) {
+      page.gotos.push(u);
+      if (u === "about:blank") { url = u; text = ""; return { status: () => 200 }; }
+      const step = script.shift() ?? { throws: "no more script" };
+      if (step.throws) throw new Error(`page.goto: ${step.throws}`);
+      url = step.url ?? u;
+      text = step.text ?? "";
+      return { status: () => step.status ?? 200 };
+    },
+    async waitForTimeout() {},
+    async waitForURL() {},
+    async evaluate() { return text; },
+  };
+  return page;
+}
+const accountLoads = (page) => page.gotos.filter(u => u !== "about:blank").length;
+
+test("a cut-off load is asked once more, and a signed-in answer the second time is signed in", async () => {
+  const page = scriptedPage([{ throws: 'Navigation to "http://fixture.test/account" is interrupted by another navigation to "about:blank"' }, SIGNED_IN_PAGE]);
+  const out = await signin.probeSignedIn(page, "fixture", { entry: FIXTURE });
+  assert.equal(out.state, "signed_in", out.why);
+  assert.equal(accountLoads(page), 2);
+});
+
+test("an unreadable page (HTTP 503, then nothing on it) is asked once more and then reported as unknown", async () => {
+  const page = scriptedPage([{ status: 503 }, { status: 200, text: "" }]);
+  const out = await signin.probeSignedIn(page, "fixture", { entry: FIXTURE });
+  assert.equal(out.state, "unknown");
+  assert.equal(accountLoads(page), 2, "exactly one retry");
+});
+
+test("an HTTP 503 then a signed-in page is signed in", async () => {
+  const page = scriptedPage([{ status: 503 }, SIGNED_IN_PAGE]);
+  const out = await signin.probeSignedIn(page, "fixture", { entry: FIXTURE });
+  assert.equal(out.state, "signed_in", out.why);
+});
+
+test("a real answer is read once: signed in and signed out each cost one load, unchanged", async () => {
+  const inPage = scriptedPage([SIGNED_IN_PAGE]);
+  assert.equal((await signin.probeSignedIn(inPage, "fixture", { entry: FIXTURE })).state, "signed_in");
+  assert.equal(accountLoads(inPage), 1);
+  const outPage = scriptedPage([SIGNED_OUT_PAGE]);
+  assert.equal((await signin.probeSignedIn(outPage, "fixture", { entry: FIXTURE })).state, "signed_out");
+  assert.equal(accountLoads(outPage), 1);
+});
+
+test("signin_status recheck on an unreadable page says it could not check, and offers no sign-in", async () => {
+  // A site that refuses every load (port 1) is the honest stand-in for a page that never came back.
+  const entry = signin.entryFor("amazon");
+  const real = entry.signed_in.url;
+  entry.signed_in.url = "http://127.0.0.1:1/account";
+  try {
+    db.recordSiteSignin(OMARI, "amazon", { state: "signed_in", evidence: "order history loaded" });
+    const out = await call("signin_status", { site: "amazon", recheck: true });
+    assert.equal(out.state, "unknown");
+    assert.equal(out.could_not_check, true);
+    assert.match(out.say, /Do not say they are signed out/);
+    assert.equal(out.how_to_sign_in, undefined);
+    assert.ok(db.liveAccount(OMARI, "amazon"), "the sign-in stays");
+  } finally {
+    entry.signed_in.url = real;
+    await browser.closeAllBrowsers();
+  }
+});
+
+/**
+ * #279's race, made deterministic. Under load, `settle`'s blank-page goto gives up (its own 5 s
+ * timeout) while the navigation it asked for is still pending; when that blank page commits a
+ * moment later, it interrupts whatever the caller opened next. `settle` must not hand the tab back
+ * until its own navigation has landed.
+ */
+test("settle does not return while its own blank navigation is still pending", async () => {
+  let url = "chrome-error://chromewebdata/";
+  let pending = null;
+  const landed = [];
+  const page = {
+    url: () => url,
+    async goto(u) {
+      if (u === "about:blank") {
+        pending = new Promise(r => setTimeout(() => { url = "about:blank"; pending = null; landed.splice(0).forEach(f => f()); r(); }, 60));
+        throw new Error("page.goto: Timeout 5000ms exceeded.");
+      }
+      if (pending) {
+        await pending;
+        throw new Error(`page.goto: Navigation to "${u}" is interrupted by another navigation to "about:blank"`);
+      }
+      url = u;
+      return { status: () => 200 };
+    },
+    async waitForURL(match, { timeout }) {
+      if (match(new URL(url))) return;
+      await new Promise((res, rej) => { landed.push(res); setTimeout(() => rej(new Error("waitForURL timeout")), timeout); });
+      if (!match(new URL(url))) throw new Error("not there");
+    },
+    async evaluate() {},
+  };
+  await browser.settle(page, { timeout: 2_000 });
+  const res = await page.goto("http://fixture.test/account");
+  assert.equal(res.status(), 200);
+  assert.equal(page.url(), "http://fixture.test/account");
+});

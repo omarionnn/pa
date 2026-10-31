@@ -50,6 +50,7 @@ export async function startAirlineSite({
     refusesFare: false,      // the airline's own "cannot check in online"
     secondPassenger: "",     // another traveller on the record
     refuseEverything: false, // the site turns this browser away, like delta.com really does
+    accountFails: 0,         // the next N loads of /account come back 503: a page load cut off
   };
 
   const server = createServer((req, res) => {
@@ -93,6 +94,7 @@ export async function startAirlineSite({
     }
 
     if (url.pathname === "/account") {
+      if (state.accountFails > 0) { state.accountFails--; return send("", 503); }
       // Signed out: the sign-in words AND a bounce, which is the pair `readSignedInState` reads.
       if (!state.signedIn) return redirect("/login");
       return send(page("My trips — Fixture Air", `
@@ -198,7 +200,7 @@ export async function startAirlineSite({
       lookups.length = 0;
       Object.assign(state, {
         signedIn: false, confirms: true, showsSeat: true, showsName: true,
-        wantsMoney: false, refusesFare: false, secondPassenger: "", refuseEverything: false,
+        wantsMoney: false, refusesFare: false, secondPassenger: "", refuseEverything: false, accountFails: 0,
         // `passenger` is reset along with the rest: a test that puts somebody else's name on the
         // booking must not leave it there for the next one, or the happy path starts passing or
         // failing for a reason that is not in the test you are reading.

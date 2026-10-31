@@ -6559,7 +6559,7 @@ for (const row of db.prepare(`SELECT ca.id AS id, ca.conversation_id AS conv FRO
  * Write down what a sign-in probe found. Only a probe calls this — there is no path by which
  * wanting to be signed in makes the row say so.
  *
- * A probe that comes back anything but `signed_in` revokes the live row, so `liveAccount` (and
+ * A probe that comes back `signed_out` (or any read other than `signed_in` / `unknown`) revokes the live row, so `liveAccount` (and
  * therefore every status anybody reads) stops saying connected the moment the site stops agreeing.
  * The row is kept with its state and evidence, so "why does it think I am signed out" is answerable.
  */
@@ -6576,6 +6576,10 @@ export function recordSiteSignin(conversationId, site, { state, evidence = "", s
       VALUES (?, ?, ?, ?, ?, ?, ?)`).run(conversationId, site, JSON.stringify(scopes), now, state, evidence, now);
     return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(Number(r.lastInsertRowid));
   }
+  // `unknown` is a page that could not be read, not a site that said "signed out" — so it never
+  // revokes a live sign-in. Revoking on it is what turned one cut-off page load into every status
+  // reading "not signed in" until somebody signed in again for nothing (#279).
+  if (row && state === "unknown") return row;
   if (row) {
     db.prepare("UPDATE connected_accounts SET state = ?, evidence = ?, checked_at = ?, revoked_at = ? WHERE id = ?")
       .run(state, evidence, now, now, row.id);

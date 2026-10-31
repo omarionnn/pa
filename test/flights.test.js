@@ -512,6 +512,40 @@ test("no code but signed in: the account page is the door, not the lookup form",
   assert.equal(out.signed_in, "signed_in");
 });
 
+test("signed in, but the account page is cut off once: it is asked again and the door opens (#279)", async () => {
+  const saved = await call("flight_save", { ...FLIGHT, confirmation_code: "" });
+  const row = db.getFlight(C, saved.flight.id);
+  at(row.checkin_opens_at + HOUR);
+  site.signIn();
+  site.set({ accountFails: 1 });
+  const out = await call("flight_checkin_start", { flight_id: row.id });
+  assert.equal(out.ok, true, JSON.stringify({ site_says: out.site_says, blocked: out.blocked }));
+  assert.equal(out.signed_in, "signed_in");
+  assert.equal(site.state.accountFails, 0, "the account page was asked a second time");
+});
+
+test("signed in, but the account page will not load twice: 'couldn't check', never 'signed out' (#279)", async () => {
+  const saved = await call("flight_save", { ...FLIGHT, confirmation_code: "" });
+  const row = db.getFlight(C, saved.flight.id);
+  at(row.checkin_opens_at + HOUR);
+  site.signIn();
+  db.recordSiteSignin(C, "fixture_air", { state: "signed_in", evidence: "My trips loaded" });
+  const before = db.getFlight(C, row.id).status;
+  site.set({ accountFails: 2 });
+  const out = await call("flight_checkin_start", { flight_id: row.id });
+  assert.equal(out.ok, false);
+  assert.equal(out.blocked, "could_not_check_signin", JSON.stringify({ blocked: out.blocked, site_says: out.site_says }));
+  assert.equal(site.state.accountFails, 0, "asked twice before giving up");
+  assert.match(out.error, /could not check whether they are signed in/);
+  assert.match(out.error, /Do not say they are signed out, do not ask them to sign in/);
+  assert.equal(out.how_they_sign_in, undefined, "no sign-in link is offered");
+  assert.ok(db.liveAccount(C, "fixture_air"), "their sign-in is not taken away by a page that did not load");
+  assert.equal(db.getFlight(C, row.id).status, before, "the flight is not marked as needing them");
+  assert.doesNotMatch(db.getFlight(C, row.id).notes ?? "", /not signed in/);
+  assert.equal(site.checkins.length, 0);
+  db.db.exec("DELETE FROM connected_accounts");
+});
+
 // ---------- the gate ----------
 
 test("the press needs a yes, and it is pinned to the flight as well as the details", async () => {

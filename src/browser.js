@@ -200,11 +200,23 @@ export async function pageImages(page, max = 20) {
  * a blank page it can leave cleanly. Deliberately swallows its own failure: this is tidying up
  * after an error that has already been reported, and a second error on top of it says nothing new.
  */
-export async function settle(page) {
+export async function settle(page, { timeout = 5_000 } = {}) {
   try {
-    await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5_000 });
+    await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout });
     return true;
   } catch {
+    // The goto gave up; the navigation it asked for may not have. On a loaded machine the blank
+    // page can commit AFTER this goto's own timeout — and if this returned now, that late commit
+    // landed in the middle of whatever the caller opened next, which then came back "interrupted
+    // by another navigation to about:blank" (#279: a signed-in person told they were signed out).
+    // So the tab is not handed back until the blank page has really landed or been stopped.
+  }
+  try {
+    await page.waitForURL((u) => String(u) === "about:blank", { waitUntil: "commit", timeout });
+    return true;
+  } catch {
+    // Never landed. Stop whatever is still pending rather than leave it armed for the next goto.
+    await page.evaluate(() => window.stop()).catch(() => {});
     return false;
   }
 }
