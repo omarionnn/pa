@@ -434,6 +434,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — checkout anticipates the form (fix/checkout-anticipate-1031, 2026-10-31)
+
+`npm run test:offline` under `env -i` (fresh `npm ci` in the worktree; the main checkout's node_modules lacks `@simplewebauthn/server`): 4,908 tests, 4,776 passing, 131 skipped, 1 failing (web-ongoing, date-dependent, fails on main too). New: `test/checkout-anticipate.test.js` (9; the file does not load on de5943d, `src/shipping.js` missing). `test/checkout-job.test.js` wording pin moved to the clock-time deadline. See [features/checkout-anticipate.md](features/checkout-anticipate.md).
+
 ### Baseline — choice cards: one photo short is not a list (fix/choice-cards-fallback-1031, 2026-10-31)
 
 `npm test` under `env -i` (NO .env in the worktree — a copied .env turns on the real-model tests): 4,883 tests, 4,751 passing, 131 skipped, 1 failing (web-ongoing, date-dependent, fails on main too). New: `test/choice-cards-fallback-1031.test.js`. See [features/choice-cards.md](features/choice-cards.md).
