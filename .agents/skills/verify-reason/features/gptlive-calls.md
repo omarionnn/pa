@@ -61,7 +61,7 @@ Source: `src/calls/gptlive.js`, `src/calls/wsserver.js`, `src/http.js` (upgrade 
 
 Tests: `node --test test/gptlive.test.js` (27).
 
-Who made Reason (#295): `agent.js builtByLine(me)` — "built by Omarion Nyarko" only to the operator; every other user hears "made by the Reason team", no name (text and both call voices, via `systemFor`; GPT-Live via `whoFor().operator`). Drives: `gptlive-drive made.ulaw 16 --expect made --as user|owner`; `call-identity-drive.mjs` cases `user-made` / `owner-made`. Not changed: the first-chat onboarding classifier (src/onboarding.js, dark) still names him.
+Who made Reason (#295, superseded by #296 maker.js): `agent.js builtByLine(me)` — "built by Omarion Nyarko" only to the operator; every other user hears "made by the Reason team", no name (text and both call voices, via `systemFor`; GPT-Live via `whoFor().operator`). Drives: `gptlive-drive made.ulaw 16 --expect made --as user|owner`; `call-identity-drive.mjs` cases `user-made` / `owner-made`. Not changed: the first-chat onboarding classifier (src/onboarding.js, dark) still names him.
 
 Drive (real GPT-Live session + Reason's real turn on claude-cli, fake Twilio stream through the real
 upgrade route, throwaway db, no phone; ~2¢ of OpenAI voice) — on Hetzner from a copy of the code, as
@@ -90,3 +90,20 @@ user's today: `bin/call-identity-drive.mjs` (claude-cli, throwaway db) — owner
 main before the change the business heard "I'm an AI assistant calling on behalf of Omari" (no Reason).
 
 Never: drive the live service's routes, or place a real call to test it (that rings the owner).
+
+## Rollout gate + isolation + maker (#296, 2026-10-31)
+
+- `REASON_CALL_IDENTITY` (`voice-prompt.js callIdentityFor`): `owner` = the operator's calls only (live),
+  `on` = everyone, unset = every prompt as before #293/#294, byte for byte (checked against 89b6227).
+  Gates `ownCallIdentity` in `ownerCallFrame` (ElevenLabs), `thirdPartyIdentity` in `thirdPartyFrame`,
+  and the GPT-Live identity/profile block (`whoFor().identity`; off = the old one line, profile not read).
+- Isolation: identity, profile (`ownerProfileNote`), greeting, delegation context are all read from the
+  call row's own `conversation_id`; warm sessions/streams keyed by call id. Tests: user B's ElevenLabs
+  context (system + messages) and GPT-Live instructions never contain user A's name/profile/thread, for
+  every flag value. Drives: `call-identity-drive.mjs` (Omari + Ama, Omari's thread seeded with a locker
+  code; `user-probe` asks Ama's Reason for it and about Omari) and `gptlive-drive --as user` with
+  `REASON_CALL_IDENTITY=owner|on` and `probe.ulaw` ("…what do you know about Omari?").
+- Maker: `src/maker.js` from `REASON_MAKER` — one answer in texts (`systemFor`), onboarding and both
+  voices; unset = "Omarion Nyarko" wording as always. The #295 "Reason team" split is gone.
+- Known, not fixed (pre-existing): `strangerLine` (inbound.js, voice-prompt.js) tells blocked/paused/
+  removed/unknown callers "an AI assistant for <operator>", naming the operator to other people.

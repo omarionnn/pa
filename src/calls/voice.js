@@ -45,7 +45,7 @@ import { config, clock, stamp } from "../config.js";
 import { EXTRA_BODY_KEYS, CALL_KINDS } from "./elevenlabs.js";
 import { callRulesFor } from "./provider.js";
 import {
-  VOICE_RULES, LANGUAGE_RULE, ownerLanguageRule, announcementAgainIn, ownerCallFrame, thirdPartyFrame,
+  VOICE_RULES, LANGUAGE_RULE, ownerLanguageRule, announcementAgainIn, ownerCallFrame, thirdPartyFrame, callIdentityFor,
 } from "./voice-prompt.js";
 import * as hold from "./hold.js";
 import { WAITING_TOOLS, NEW_PERSON_TOOL, MACHINE_TOOL, WAITING_RULES } from "./hold.js";
@@ -537,7 +537,7 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     `--- you are ON A PHONE CALL right now, not texting ---`,
     VOICE_RULES,
     ownerLanguageRule(lang.language || "en"),
-    ownerCallFrame({ name: me.name }),
+    ownerCallFrame({ name: me.name, identity: callIdentityFor(conversationId) }),
     // A call REASON placed to them — scheduled ("call me at 7 to get me up") or asked for by text —
     // has a reason, and the model answering the turns must know it: a wake-up call whose second
     // line is "what's up?" is Reason forgetting why it rang. The opening line already said it.
@@ -615,6 +615,7 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
 
   const parts = [
     thirdPartyFrame({
+      identity: callIdentityFor(call.conversation_id),
       ownerName,
       goal: brief.goal || call.goal,
       facts,

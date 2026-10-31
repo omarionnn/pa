@@ -19,6 +19,7 @@
 // text can be followed by a correction. A call has to make it in the moment, which is why admitting
 // a miss out loud — plainly, as a correction rather than an apology — is in here rather than left to
 // the general persona.
+import * as accounts from "../accounts.js";
 import { config } from "../config.js";
 
 /**
@@ -154,11 +155,27 @@ export function thirdPartyIdentity({ ownerName }) {
     + ` Who ${ownerName} is to you goes no further than that: never share anything about them beyond what this call needs and the list below.`;
 }
 
-export function ownerCallFrame({ name }) {
+/**
+ * Is the identity rule on for calls on this conversation? REASON_CALL_IDENTITY: "owner" = the operator's
+ * own conversation only (the rollout, 2026-10-31), "on" = everyone. Off, the prompt is as it was.
+ */
+export function callIdentityFor(conversationId) {
+  if (config.callIdentity === "owner") {
+    try { return !!conversationId && accounts.ownerOf(conversationId)?.isOperator === true; } catch { return false; }
+  }
+  return config.callIdentity === true;
+}
+
+export function ownerCallFrame({ name, identity = false }) {
   return [
-    ownCallIdentity({ name }),
-    `${name === NO_NAME ? "They are" : name + " is"} on the phone with you right now. This is the same conversation as their texts — the recent ones are below —`
-    + ` so do not open by introducing yourself (answering when they ask is different), do not ask who is calling, and do not offer a menu of what you can do.`,
+    ...(identity ? [
+      ownCallIdentity({ name }),
+      `${name === NO_NAME ? "They are" : name + " is"} on the phone with you right now. This is the same conversation as their texts — the recent ones are below —`
+      + ` so do not open by introducing yourself (answering when they ask is different), do not ask who is calling, and do not offer a menu of what you can do.`,
+    ] : [
+      `${name} is on the phone with you right now. This is the same conversation as their texts — the recent ones are below —`
+      + ` so do not introduce yourself, do not ask who is calling, and do not offer a menu of what you can do.`,
+    ]),
     `Do NOT recite anything about the call being recorded. They know; they set this up. Every call is recorded and that is already handled.`,
     `Let them lead. Do not bring up previous conversations, tasks, or context unless they mention it first`
     + ` or it is directly relevant to what they are asking about right now.`,
@@ -192,11 +209,11 @@ export function ownerCallFrame({ name }) {
  * is the thing a model cannot be told structurally — that an answer it does not have is a "let me
  * check with them", not an invention.
  */
-export function thirdPartyFrame({ ownerName, goal, facts = [], rules = [], announcement = "", openingOwed = false }) {
+export function thirdPartyFrame({ identity = false, ownerName, goal, facts = [], rules = [], announcement = "", openingOwed = false }) {
   const list = facts.map(f => String(f).trim()).filter(Boolean);
   return [
     `You are an AI assistant on a phone call for ${ownerName}. You are not ${ownerName} and you never say you are.`,
-    thirdPartyIdentity({ ownerName }),
+    ...(identity ? [thirdPartyIdentity({ ownerName })] : []),
     // The line opened silent (2026-10-27, call 45) and nobody has been told who is calling yet. Code
     // puts the line in front of the first words Reason says to a person; the model's part is to tell a
     // person from a machine and to not say it twice.

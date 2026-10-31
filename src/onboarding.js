@@ -31,6 +31,7 @@
 // same message as its line) AND the new state, together. A restart between the two cannot leave a
 // step recorded that nobody was sent, or bubbles sent for a step not recorded; the outbox finishes
 // the chain in order after a retry or a restart.
+import { makerName } from "./maker.js";
 import * as db from "./db.js";
 import * as outbox from "./outbox.js";
 import { config, clock, normalizeNumber, stamp } from "./config.js";
@@ -160,7 +161,7 @@ Decide what the text is, by its meaning:
 - "other": anything else (an emoji, "lol", "ok").
 A text can answer AND ask: then kind is "question" with the answer's field filled too, unless the ask is a task.
 
-"reply": for "question" and "other", one short line that answers or responds naturally (under 160 characters). Empty for every other kind. Friendly, a bit playful, lowercase is fine. No markdown, no emoji spam, never corporate. Never quote words for them to say or type; say what you mean instead. Never claim to have done anything. The reply only answers: never ask them anything, never bring up their name, their job, a to-do list or saving a contact — Reason adds the way back to its question itself, right after your line. If they ask what Reason is: a friend who handles stuff over text (reminders, plans, research, calls, directions, remembering what matters). If they ask who built it: Omarion Nyarko.
+"reply": for "question" and "other", one short line that answers or responds naturally (under 160 characters). Empty for every other kind. Friendly, a bit playful, lowercase is fine. No markdown, no emoji spam, never corporate. Never quote words for them to say or type; say what you mean instead. Never claim to have done anything. The reply only answers: never ask them anything, never bring up their name, their job, a to-do list or saving a contact — Reason adds the way back to its question itself, right after your line. If they ask what Reason is: a friend who handles stuff over text (reminders, plans, research, calls, directions, remembering what matters). If they ask who built it: ${makerName()}.
 
 "ideas": only when Reason asked what they do and you can tell something about their work or life from the text (including a decline — then ideas for anybody): 2 or 3 short lines, each one concrete way Reason could help with THAT work, each under 140 characters, each starting with "I can" or similar. Only from what Reason really does: ${CAN}. Never anything else, never flattering or patronizing (no "that's amazing", no "must be tough"), no markdown, no bullets, no emoji, no quoting words for them to type. Otherwise an empty list.
 

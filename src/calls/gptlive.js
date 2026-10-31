@@ -31,7 +31,8 @@ import { llmRequest, withoutSilenceMarker, ownerProfileNote, METER_KINDS, THINKI
 import { recordingFileFor } from "./recordings.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
-import { ownCallIdentity, thirdPartyIdentity, NO_NAME } from "./voice-prompt.js";
+import { ownCallIdentity, thirdPartyIdentity, callIdentityFor, NO_NAME } from "./voice-prompt.js";
+import { makerLine } from "../maker.js";
 import { openingLineFor, recordingNoteFor, whoseCallIsThis } from "./inbound.js";
 
 export const PROVIDER = "gptlive";
@@ -83,11 +84,15 @@ export function whoFor(call) {
   const name = named ? raw : "them";
   const owner = !!call.is_owner;
   const rang = call.direction === "in" ? "they" : "you";
-  if (!owner) return { name, named, owner: false, city: "", about: "", rang };
+  // Behind REASON_CALL_IDENTITY (owner-only rollout): off, the voice gets the one line it always had and
+  // no profile is even read.
+  const identity = callIdentityFor(call.conversation_id);
+  if (!owner || !identity) return { name, named, owner, identity, city: "", about: "", rang };
   let about = "";
   try { about = ownerProfileNote(call.conversation_id); } catch { /* no profile is no profile */ }
   if (about.length > ABOUT_MAX) about = `${about.slice(0, ABOUT_MAX).replace(/\n[^\n]*$/, "")}\n…`;
-  return { name, named, owner: true, operator: me?.isOperator === true, city: me?.isOperator ? config.ownerCity || "" : "", about, rang };
+  // Isolation: only ever THIS call's conversation's own profile — the call row decides whose, nothing else.
+  return { name, named, owner: true, identity, city: me?.isOperator ? config.ownerCity || "" : "", about, rang };
 }
 
 /**
@@ -100,11 +105,13 @@ export function whoFor(call) {
  * but "didn't sound very warm", and "do you know who I am" went to the backend and came back 3.8 s
  * later after "let me just check that quickly".
  */
-export function liveInstructions({ name = "them", named = name !== "them", owner = false, operator = false, city = "", about = "", rang = "you", accent = accentFor(config.gptliveVoice) } = {}) {
+export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, city = "", about = "", rang = "you", accent = accentFor(config.gptliveVoice) } = {}) {
   const them = named ? name : "them";
-  // Who made Reason: the operator is told it is him by name; anyone else, the Reason team (agent.js).
-  const madeBy = operator ? "You were built by Omarion Nyarko; that is the answer if they ask who made you." : "You were made by the Reason team; that is the answer if they ask who made you. Do not name anyone.";
-  const who = owner
+  // Who made Reason: one answer everywhere (src/maker.js, REASON_MAKER).
+  const madeBy = makerLine();
+  const who = !identity
+    ? [`You are the voice of Reason, ${them}'s personal assistant, on a phone call with ${them}.`, madeBy]
+    : owner
     ? [
       // The same identity line every user's own call carries on ElevenLabs (voice-prompt.js).
       ownCallIdentity({ name: named ? name : NO_NAME }),
@@ -121,6 +128,7 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
     : [
       `You are Reason, an AI assistant, on a phone call on ${them}'s behalf with somebody else — not with ${them}.`,
       thirdPartyIdentity({ ownerName: them }),
+      madeBy,
     ];
   return [
     ...who,
@@ -154,10 +162,10 @@ export function accentFor(voice) {
 }
 
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, operator = false, city = "", about = "", rang = "you", greeting = "" } = {}) {
+export function sessionConfig({ name, named, owner = false, identity = false, city = "", about = "", rang = "you", greeting = "" } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: liveInstructions({ name, named, owner, operator, city, about, rang }),
+    instructions: liveInstructions({ name, named, owner, identity, city, about, rang }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     delegation: { type: "client" },
   };
