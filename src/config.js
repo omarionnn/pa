@@ -647,6 +647,9 @@ export const config = {
   // Where everybody who is not the operator is sent if the number's voice webhook is ever pointed at
   // /calls/gptlive/inbound: the voice URL ElevenLabs set on the number, copied as it was.
   gptliveInboundFallbackUrl: process.env.REASON_GPTLIVE_INBOUND_FALLBACK_URL || "",
+  // The voice Twilio itself uses for the one-line refusals on /calls/gptlive/inbound (a blocked
+  // number, a day's cap): said and hung up on, no model behind it.
+  gptliveSayVoice: process.env.REASON_GPTLIVE_SAY_VOICE || "Polly.Amy-Neural",
   // Which speech model the agent is set to (2026-10-07 addendum, section 2). The model is an
   // AGENT-level setting on their side — their per-conversation overrides cover the voice id, the
   // prompt, the language and the speed, not the model — so this does not change a call; it is what

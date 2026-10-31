@@ -838,6 +838,106 @@ test("inbound on owner: the operator's own number gets the stream; anyone else i
   assert.match(stranger.body, /<Redirect/);
 });
 
+test("inbound everyone: each caller gets their own place — user, operator, blocked, paused, stranger, withheld, capped, ring-back", async () => {
+  on({ gptliveInboundFallbackUrl: "https://api.us.elevenlabs.io/twilio/inbound_call" });
+  const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
+  const ring = (from, sid = `CA_${from}`) => {
+    const params = { CallSid: sid, From: from, To: "+16562167455" };
+    return gl.inboundTwiml({ rawBody: new URLSearchParams(params).toString(), headers: { "x-twilio-signature": gl.twilioSignature(url, params) } });
+  };
+  // Another user calling in: their own Reason, on THEIR conversation.
+  const ama = ring("+13105550000");
+  assert.match(ama.body, /<Stream url="wss:\/\/reason\.example\.test\/calls\/gptlive\/stream\//);
+  const amaRow = db.db.prepare("SELECT * FROM calls WHERE provider = 'gptlive' AND conversation_id = ?").get(OTHER);
+  assert.ok(amaRow, "a row on her own conversation");
+  assert.equal(amaRow.is_owner, 1);
+  assert.equal(amaRow.direction, "in");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls WHERE conversation_id = ?").get(C).n, 0, "nothing on the operator's");
+  assert.match(ring("+12025551234").body, /<Stream/, "the operator too");
+
+  // Blocked / paused / removed: the neutral line, said by Twilio, hung up; no stream, no row, no name.
+  db.blockNumber("+14155550111");
+  const blocked = ring("+14155550111");
+  assert.match(blocked.body, /<Say voice="Polly\.Amy-Neural">Hi, you've reached Reason\. I can't take calls from this number right now\. Thanks, bye\.<\/Say><Hangup\/>/);
+  assert.doesNotMatch(blocked.body, /Omari|Stream/);
+  db.upsertAccount({ conversationId: "sendblue:+14155550122", channel: "sendblue", address: "+14155550122", name: "Kofi", isOperator: false });
+  db.db.prepare("UPDATE accounts SET state = 'paused' WHERE conversation_id = ?").run("sendblue:+14155550122");
+  assert.match(ring("+14155550122").body, /I can't take calls from this number right now/);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls WHERE conversation_id = ?").get("sendblue:+14155550122").n, 0);
+
+  // A stranger: the pitch stream (no call row), kept against their number.
+  const before = db.db.prepare("SELECT COUNT(*) n FROM calls").get().n;
+  const stranger = ring("+14155550199", "CA_stranger");
+  assert.match(stranger.body, /<Stream url="wss:\/\/reason\.example\.test\/calls\/gptlive\/stream\/[0-9a-f]{32}"/);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls").get().n, before, "no call row for a stranger");
+  const kept = db.db.prepare("SELECT * FROM stranger_calls WHERE phone = ?").get("+14155550199");
+  assert.equal(kept.external_id, "gptlive:CA_stranger");
+  // Withheld: a stranger with nothing kept.
+  assert.match(ring("anonymous").body, /<Stream/);
+
+  // Over the day's cap: one line, no stream.
+  config.maxCallsPerDay = 1;
+  try {
+    const capped = ring("+13105550000");
+    assert.match(capped.body, /<Say[^>]*>hey — that's \d+ calls today.*<\/Say><Hangup\/>/);
+  } finally { config.maxCallsPerDay = 10; }
+
+  // owner mode: another user's call goes to ElevenLabs unchanged.
+  config.callVoice = "owner";
+  assert.match(ring("+13105550000").body, /<Redirect method="POST">https:\/\/api\.us\.elevenlabs\.io\/twilio\/inbound_call<\/Redirect>/);
+  config.callVoice = "gptlive";
+  // Missing keys: everyone goes to ElevenLabs.
+  config.openaiKey = "";
+  assert.match(ring("+13105550000").body, /<Redirect/);
+});
+
+test("a stranger's stream: the pitch persona, answers from the no-tools pitch turn, words kept, no row or audio", async () => {
+  on();
+  const { resetTurns } = await import("../src/calls/stranger.js");
+  resetTurns();
+  const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
+  const params = { CallSid: "CA_s2", From: "+14155550188", To: "+16562167455" };
+  const out = gl.inboundTwiml({ rawBody: new URLSearchParams(params).toString(), headers: { "x-twilio-signature": gl.twilioSignature(url, params) } });
+  const token = out.body.match(/stream\/([0-9a-f]{32})/)[1];
+  const timers = fakeTimers();
+  const twilio = fakeTwilio();
+  const live = fakeLive();
+  const asked = [];
+  const generate = async function* ({ system, messages, tools }) {
+    asked.push({ system, messages, tools });
+    yield { type: "text", text: "It's a personal assistant you text. Have a look at heyreason.com. Bye! END" };
+  };
+  const call = gl.acceptStream({ token, socket: twilio, openLive: () => live.socket, generate, log: () => {} });
+  assert.ok(call, "the stranger token is accepted once");
+  call.timers = timers; call.now = timers.now; call.judge = async () => null;
+  twilio.say({ event: "start", start: { streamSid: "MZ9", callSid: "CA_s2" } });
+  live.open();
+  const start = live.of("session.start")[0];
+  assert.match(start.session.instructions, /not a Reason user/);
+  assert.match(start.session.instructions, /Saafi Interactions Lab/);
+  assert.doesNotMatch(start.session.instructions, /Omari/);
+  live.emit({ type: "session.started", session: { id: "live_s" } });
+  assert.match(live.of("session.commentary.append")[0].content, /Hi, this is Reason, a personal AI assistant/);
+  live.emit({ type: "session.output_transcript.delta", delta: "Hi, this is Reason, like a friend who's weirdly good at getting things done." });
+  assert.equal(live.of("session.instructions.append").length, 0, "the intro's own words never trip the guard");
+  live.emit({ type: "session.input_transcript.delta", delta: " What is this?" });
+  live.emit({ type: "session.delegation.created", delegation: { id: "d1" } });
+  for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+  assert.equal(asked.length, 1);
+  assert.deepEqual(asked[0].tools, [], "no tools");
+  assert.match(asked[0].system, /You work for nobody on this call/);
+  const result = live.of("session.commentary.append").find(e => e.delegation_id === "d1");
+  assert.match(result.content, /hey reason dot com/);
+  assert.doesNotMatch(result.content, /END/);
+  assert.equal(gl.acceptStream({ token, socket: fakeTwilio(), log: () => {} }), null, "never twice");
+  const ended = call.end("caller hung up");
+  await timers.advance(3500);
+  await ended;
+  const kept = db.db.prepare("SELECT * FROM stranger_calls WHERE phone = ?").get("+14155550188");
+  assert.match(kept.summary, /What is this/);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls WHERE to_number = ?").get("+14155550188").n, 0);
+});
+
 // ---------- the report ----------
 
 test("the call report splits its numbers by voice", async () => {

@@ -141,3 +141,28 @@ Full-call drive for ANOTHER user (Ama), with Omari's thread seeded with a locker
 mutual goodbye, the transcript is in her thread, every after-call event went to her conversation for
 this call, cost_cents > 0, recording stored, and nothing of Omari's was said, sent or written (his
 thread byte-identical). 2026-10-31: ok — peanut allergy from her memory, hung up on "bye", 30 s, 3¢.
+
+## Calls IN on GPT-Live (2026-10-31, Omari's OK)
+
+The number's Twilio voice URL → `<REASON_PUBLIC_URL>/calls/gptlive/inbound`; its Twilio **voice fallback
+URL** = ElevenLabs' `https://api.us.elevenlabs.io/twilio/inbound_call` (also in `.env` as
+`REASON_GPTLIVE_INBOUND_FALLBACK_URL`), so Reason down / an error still answers via ElevenLabs.
+`inboundTwiml` (REASON_CALL_VOICE=gptlive):
+- account whose own calls are GPT-Live → their own Reason (row on THEIR conversation, identity, greeting
+  `openingLineFor` spoken when the stream starts — nothing made before connect); over the day's cap
+  (`inbound.overCallCap`, 10 calls / 30 min) → Twilio `<Say>` the cap line, hang up;
+- blocked / paused / removed → Twilio `<Say voice=Polly.Amy-Neural>` `stranger.neutralLine()` + `<Hangup/>`;
+- unknown / withheld → the #303 pitch on GPT-Live: `strangerInstructions()` (voice only, names nobody,
+  maker line) + every answer from `stranger.strangerReply` (no tools, public facts only, turn caps);
+  master asked (`inbound.strangerIntake`), words kept (`strangercalls.open` external_id `gptlive:<CallSid>`,
+  settled at end); no call row, no audio file;
+- a place ringing back about an errand, an account not on GPT-Live (=owner mode), missing keys →
+  `<Redirect>` to ElevenLabs, unchanged.
+The honesty guard skips the opening line while it is the greeting's own words (`fromLine`): the
+stranger intro's "getting things done" tripped it in the first drive.
+
+Drive: `gptlive-inbound-drive.mjs --who user q.ulaw 45 --then b.ulaw --then-at 26` · `--who stranger
+s.ulaw 50 --quiet 13 --then b.ulaw --then-at 36` · `--who blocked` (as the reason user, keys from .env,
+same env -i wrapper as above). 2026-10-31 all ok: user first voice 2.4 s, peanut allergy from her memory,
+hung up on bye, 33 s / 3¢, event to her conversation; stranger first voice 1.8 s, full intro, "no price
+listed… hey reason dot com", master asked, words kept, no row; blocked: the neutral line only.
