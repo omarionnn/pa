@@ -88,6 +88,16 @@ export const PAPER_CSS = `
 .pf-cells-f>legend{padding:0;margin-bottom:10px}
 .pf-cells{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:16px;max-width:460px}
 .pf-cells .pf-in{height:72px;padding:0;text-align:center;font:400 40px/1 var(--mono);letter-spacing:0}
+.pf-live{margin-top:var(--part-gap);display:flex;flex-direction:column;gap:14px;max-width:480px}
+.pf-live[hidden]{display:none}
+.pf-pulse{position:relative;height:2px;width:100%;max-width:320px;background:var(--hair);overflow:hidden}
+.pf-pulse::after{content:"";position:absolute;top:0;left:0;width:34%;height:100%;background:var(--pen);animation:pf-sweep 1.5s cubic-bezier(.45,0,.55,1) infinite alternate}
+@keyframes pf-sweep{from{transform:translateX(0)}to{transform:translateX(194%)}}
+.pf-live-t{margin:0;font-size:17px;line-height:1.5;color:var(--ink)}
+.pf-live-s{margin:0;font:400 11px/1.6 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);-webkit-font-smoothing:auto}
+.pf-live-still{display:none}
+.pf-live.done .pf-pulse::after{animation:none;width:100%}
+@media (prefers-reduced-motion:reduce){.pf-pulse{display:none}.pf-live-still{display:inline}}
 .pf-off{position:absolute!important;left:-10000px!important;top:0!important;width:600px!important;height:1px!important;overflow:hidden!important}
 .pf .pf-step:focus{outline:none}
 @media (max-width:700px){
@@ -174,6 +184,39 @@ export function steps(list, { id = "", live = false } = {}) {
   const said = { done: "done", now: "now", todo: "not yet" };
   return `<ol class="pf-steps"${id ? ` id="${esc(id)}"` : ""}${live ? ` aria-live="polite"` : ""}>${list.map(([t, s]) => `<li class="${s}"><span class="m" aria-hidden="true">${mark[s]}</span><span>${esc(t)}<span class="sr"> (${said[s]})</span></span></li>`).join("")}</ol>`;
 }
+
+/**
+ * A wait that is visibly alive (owner 2026-10-31: the Walmart sign-in page sat still for ~100 s after
+ * Sign in): a thin pen line sweeping under one status line that changes the longer it takes, and a
+ * clock counting up. `lines` is [[seconds, text], …] in order; the page's script (LIVE_JS, pfLive)
+ * moves between them by elapsed time, from a server `waited` when there is one so a reopened page is
+ * right at once. prefers-reduced-motion: no sweep, the words and the clock alone (text-only).
+ */
+export function live({ id, lines, hidden = false }) {
+  const first = lines[0]?.[1] ?? "";
+  return `<div class="pf-live" id="${esc(id)}" data-lines="${esc(JSON.stringify(lines))}"${hidden ? " hidden" : ""}>`
+    + `<div class="pf-pulse" aria-hidden="true"></div><p class="pf-live-t" role="status" aria-live="polite">${esc(first)}</p>`
+    + `<p class="pf-live-s" aria-hidden="true"><span class="pf-live-still">STILL WORKING · </span><span class="pf-live-e">0:00</span> ELAPSED</p></div>`;
+}
+/** Which of `lines` ([[seconds, text], …]) shows after `ms`: the last one whose time has come. */
+export function liveLine(lines, ms) {
+  let text = lines[0]?.[1] ?? "";
+  for (const [sec, t] of lines) if (sec * 1000 <= ms) text = t;
+  return text;
+}
+/**
+ * pfLive(el, {waited}): start the clock on a live() block (waited ms already gone, per the server) and
+ * return {sync(waited), stop()}. pfWake(fn): fn when the page comes back — a tab shown again, bfcache
+ * restore, focus, network back — so a page Safari froze in the background catches up at once.
+ */
+export const LIVE_JS = `(function(){window.pfLive=function(el,o){o=o||{};var t0=Date.now()-(o.waited||0),lines=[];try{lines=JSON.parse(el.getAttribute('data-lines')||'[]')}catch(e){}
+var tx=el.querySelector('.pf-live-t'),ck=el.querySelector('.pf-live-e');
+function line(ms){var t=lines[0]?lines[0][1]:'';for(var i=0;i<lines.length;i++)if(lines[i][0]*1000<=ms)t=lines[i][1];return t}
+function tick(){var ms=Math.max(0,Date.now()-t0),l=line(ms);if(tx&&tx.textContent!==l)tx.textContent=l;if(ck){var s=Math.floor(ms/1000);ck.textContent=Math.floor(s/60)+':'+('0'+s%60).slice(-2)}}
+el.hidden=false;el.classList.remove('done');tick();var iv=setInterval(tick,1000);
+return{sync:function(w){if(typeof w==='number'&&w>=0){t0=Date.now()-w;tick()}},waited:function(){return Math.max(0,Date.now()-t0)},stop:function(){clearInterval(iv);el.classList.add('done')},hide:function(){clearInterval(iv);el.hidden=true}}};
+window.pfWake=function(fn){var last=0;function go(){var n=Date.now();if(n-last<400)return;last=n;fn()}
+document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')go()});window.addEventListener('pageshow',go);window.addEventListener('focus',go);window.addEventListener('online',go)}})();`;
 
 /**
  * Six cells, one digit each, that also take the whole code pasted (or autofilled) into any of them.

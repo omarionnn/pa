@@ -13,7 +13,7 @@
 // never words to type.
 import { esc } from "./render.js";
 import { webPage } from "./webkit.js";
-import { PAPER_CSS, header, frame, headline, lede, label, para, note, go, two, actions, paper, steps, STEP_JS } from "./paperkit.js";
+import { PAPER_CSS, header, frame, headline, lede, label, para, note, go, two, actions, paper, steps, live, STEP_JS, LIVE_JS } from "./paperkit.js";
 import { SECURITY_HEADERS, sameOrigin } from "./websignin.js";
 import * as shop from "../shopconnect.js";
 import * as passkey from "../passkey.js";
@@ -32,9 +32,17 @@ const FACE = `<svg class="pk-face" viewBox="0 0 24 24" aria-hidden="true" fill="
 // Saying no is as plain as saying yes: a full-size, full-ink button, not small grey caps.
 const NO = (text) => `<button class="act pk-no" type="button" id="pk-no" data-busy="1">${esc(text)}</button>`;
 const minutes = (ms) => Math.max(1, Math.round(ms / 60_000));
+/** After Face ID: the payment on its way, as the wait grows (never a dead page, owner 2026-10-31). */
+export const payingLines = (store, amount) => [
+  [0, `Paying ${amount} at ${store}.`],
+  [8, `${store} is taking the payment.`],
+  [30, "Still paying. Stores can take a minute."],
+  [75, "Taking longer than usual. Still on it, and I never pay twice."],
+  [180, `${store} hasn't answered yet. If this page closes, I'll text you what happened.`],
+];
 
 function page(title, body, { staging = false, status = 200, boot = null } = {}) {
-  const script = `${STEP_JS}${boot ? JS(boot) : ""}`;
+  const script = `${STEP_JS}${LIVE_JS}${boot ? JS(boot) : ""}`;
   return { status, html: webPage({ title, body: body + (staging ? `<p class="stg">STAGING · SAMPLE</p>` : ""), css: CSS, script }) };
 }
 const shell = (main) => `${header()}<main class="pf" id="pk-main">${main}</main>`;
@@ -67,8 +75,9 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
   });
   const paying = frame({
     step: "paying", off: true,
-    main: headline("Approved.", "Paying the store now.") + lede("Keep this open for a second.")
-      + steps([["Face ID checked", "done"], [`Paying ${v.amount}`, "now"], ["Store places the order", "todo"]], { id: "pk-steps", live: true }),
+    main: headline("Approved.", "Paying the store now.") + lede("Keep this open until it's through. However it goes, I'll text you too.")
+      + steps([["Face ID checked", "done"], [`Paying ${v.amount}`, "now"], ["Store places the order", "todo"]], { id: "pk-steps", live: true })
+      + live({ id: "pk-live", lines: payingLines(v.store, v.amount) }),
     margin: label("SO FAR") + para(`Only ${esc(v.amount)}, only at ${esc(v.store)}.`),
   });
   const paid = frame({
@@ -153,7 +162,7 @@ function u2b(x){var u=new Uint8Array(x),s='';for(var i=0;i<u.length;i++)s+=Strin
 function el(id){return document.getElementById(id)}
 function oops(t){var e=el('pk-err');if(e){e.textContent=t;e.hidden=false}}
 function busy(b,on){if(!b)return;b.setAttribute('aria-busy',on?'true':'false');b.disabled=on}
-function show(n){if(window.pfShow)window.pfShow(n)}
+var liv=null;function show(n){if(window.pfShow)window.pfShow(n);var lv=el('pk-live');if(n==='paying'&&lv&&window.pfLive&&!liv)liv=pfLive(lv,{});else if(n!=='paying'&&liv){liv.stop();liv=null}}
 function post(p,body){return fetch(B.base+p,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify(body||{})}).then(function(r){return r.json().catch(function(){return{ok:false,error:'http_'+r.status}})})}
 function wait(ms){return new Promise(function(r){setTimeout(r,ms)})}
 var FAIL="Face ID didn't go through. Nothing was charged. Try again.";

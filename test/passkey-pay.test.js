@@ -267,7 +267,8 @@ test("decline from the page: Crossmint told no, nothing paid; the log has events
   const log = passkey.approvalLog(OMARI);
   assert.ok(log.some((l) => l.event === "declined" && l.amount === "9.79 USD" && l.merchant === "Best Buy"));
   assert.ok(log.some((l) => l.event === "rejected"));
-  assert.doesNotMatch(JSON.stringify(log), /pm_secret|4242|visa/i);
+  // Without the timestamps: a ms clock reading …4242… matched once (2026-10-31, at:1793470994242).
+  assert.doesNotMatch(JSON.stringify(log.map(({ at, ...l }) => l)), /pm_secret|4242|visa/i);
 });
 
 // ---------------------------------------------------------------- 6. the payment fails to start (2026-10-31 at CVS)
