@@ -2053,6 +2053,12 @@ export function getTimer(conversationId, id) {
  */
 // A call's own short title for Saved on Web (src/saved.js), written once by the same summarise as an Ongoing row's.
 addColumnIfMissing("calls", "label", "TEXT");
+// The after-call steps, so a restart can tell a call whose summary and audio never went out (call 57,
+// 2026-10-31: a deploy 12 s after end_call killed the turn that sends them). `settle_started_at` is
+// stamped once the row is written and the thread has the turns; `settled_at` once the owner was told.
+addColumnIfMissing("calls", "settle_started_at", "INTEGER");
+addColumnIfMissing("calls", "settled_at", "INTEGER");
+addColumnIfMissing("calls", "settle_resumes", "INTEGER NOT NULL DEFAULT 0");
 export function setItemLabel(kind, conversationId, id, label, { blurb = null } = {}) {
   const table = { task: "tasks", timer: "timers", series: "series", call: "calls" }[kind];
   if (!table || !label) return false;
@@ -5274,6 +5280,8 @@ export function updateCall(conversationId, id, fields) {
     "opening_waits", "machine_heard",
     // Why it ended and what the platform says it cost (the 2026-10-30 call audit).
     "end_reason", "end_detail", "cost_credits", "cost_raw",
+    // The after-call steps (call 57, 2026-10-31): begun, finished, and how often a boot picked them up.
+    "settle_started_at", "settled_at", "settle_resumes",
   ];
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
@@ -5324,6 +5332,19 @@ export function callsWithUnsentRecording(conversationId) {
         AND recording_file IS NOT NULL AND recording_sent_at IS NULL
       ORDER BY id ASC`,
   ).all(conversationId).map(r => ({ ...r, facts: JSON.parse(r.facts) }));
+}
+
+/**
+ * Calls whose after-call steps began and never finished, ended since `since`, not yet picked up by a
+ * boot. Only rows the new path stamped: an older call, or one that never reached the steps, is not one.
+ */
+export function callsToResumeSettle(since) {
+  return db.prepare(
+    `SELECT * FROM calls
+      WHERE settle_started_at IS NOT NULL AND settled_at IS NULL AND settle_resumes = 0
+        AND settle_started_at >= ? AND state NOT IN ('placing', 'ringing', 'in_progress')
+      ORDER BY id ASC`,
+  ).all(since).map(r => ({ ...r, facts: JSON.parse(r.facts) }));
 }
 
 /** Marked the moment the audio actually leaves, so it is sent once and only once. */

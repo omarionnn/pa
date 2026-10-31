@@ -107,6 +107,9 @@ export async function postCallRequest({
   const settled = settle
     ? await settle(row.conversation_id, row, live, fetchImpl ? { fetchImpl } : {})
     : row;
+  // Stamped in the same tick as the steps up to the owner's turn, so a restart from here on finds a
+  // call with only that turn left (see resumeSettles).
+  db.updateCall(settled.conversation_id, settled.id, { settle_started_at: clock.now() });
 
   const wrote = writeCallIntoThread({ row: settled, live, log });
   // Third-party calls: transcript doesn't go into conversations.messages but should feed memory.
@@ -134,6 +137,7 @@ export async function postCallRequest({
   // requested this way is not one of these, and `onCallEnded` says so and does nothing.
   const request = fromcall.onCallEnded(settled, { log });
   const told = await tellTheOwner({ row: settled, live, runtime, log });
+  db.updateCall(settled.conversation_id, settled.id, { settled_at: clock.now() });
 
   log({
     post_call: row.id, state: settled.state, recording: settled.recording_state,
@@ -150,6 +154,38 @@ export async function postCallRequest({
       ...(request.ok ? { call_request: request.state } : {}),
     },
   };
+}
+
+/**
+ * At boot: the calls a restart cut off between the thread and the owner's turn, finished once.
+ *
+ * Call 57 (2026-10-31): end_call at 19:33:54, a deploy restarted the service at 19:34:06, and the
+ * turn that sends the summary and the audio died with it. The row, the thread and the task note are
+ * written in one tick with `settle_started_at` (both providers), so what is left is `tellTheOwner`
+ * alone; it runs once per call (`settle_resumes`), and not at all when the owner was already told.
+ * The call's words come back off the row's own transcript. Run after the port is open: Sendblue
+ * fetches the audio from this process.
+ */
+export async function resumeSettles({ runtime, log = () => {}, now = clock.now(), withinMs = 24 * 60 * 60 * 1000 } = {}) {
+  const resumed = [];
+  for (const row of db.callsToResumeSettle(now - withinMs)) {
+    db.updateCall(row.conversation_id, row.id, { settle_resumes: (row.settle_resumes ?? 0) + 1 });
+    try {
+      if (!row.told_at) {
+        const live = {
+          turns: turnsFromTranscriptString(row.transcript ?? ""), transcript: row.transcript ?? "",
+          summary: row.summary ?? "", outcome: row.outcome ?? "", cutOff: null,
+        };
+        await tellTheOwner({ row, live, runtime, log });
+      }
+      db.updateCall(row.conversation_id, row.id, { settled_at: clock.now() });
+      log({ call_settle_resumed: row.id, provider: row.provider });
+      resumed.push(row.id);
+    } catch (e) {
+      log({ call_settle_resume_failed: row.id, why: (e?.message ?? String(e)).split("\n")[0] });
+    }
+  }
+  return resumed;
 }
 
 /** A late delivery's end reason and cost onto a row the sweep wrote off as lost. */

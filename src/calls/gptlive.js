@@ -1000,10 +1000,13 @@ export async function settleGptLive({ row, live, settle, runtime = null, log = (
   const fresh = db.getCall(row.conversation_id, row.id) ?? row;
   if (!["placing", "ringing", "in_progress"].includes(fresh.state) && fresh.recording_state !== "pending") return fresh;
   const settled = settle ? await settle(fresh.conversation_id, fresh, live, { log }) : fresh;
+  // The same marks as the ElevenLabs path: begun with the thread, finished once the owner was told.
+  db.updateCall(settled.conversation_id, settled.id, { settle_started_at: clock.now() });
   const wrote = writeCallIntoThread({ row: settled, live, log });
   const noted = noteOnTask({ row: settled, live, log });
   fromcall.onCallEnded(settled, { log });
   const told = await tellTheOwner({ row: settled, live, runtime, log });
+  db.updateCall(settled.conversation_id, settled.id, { settled_at: clock.now() });
   log({ post_call: settled.id, provider: PROVIDER, state: settled.state, recording: settled.recording_state, turns_written: wrote.turns, told: told.sent, task: noted.taskId ?? null });
   return settled;
 }
