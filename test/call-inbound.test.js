@@ -196,11 +196,23 @@ test("with nowhere to text, the note is not marked as told — so the next call 
 
 // ---------- a number nobody approved ----------
 
+test("strangerLine names nobody, whatever the operator is called", async () => {
+  const { strangerLine } = await import("../src/calls/voice-prompt.js");
+  const saved = config.ownerName;
+  try {
+    for (const n of ["Omari", "Ama"]) {
+      config.ownerName = n;
+      assert.equal(strangerLine(), "Hi — you've reached Reason. I'm not set up to take calls from this number, so I'll pass on that you rang. Thanks.");
+    }
+  } finally { config.ownerName = saved; }
+});
+
 test("a stranger gets one line, the call ends, and no turn is ever run for them", () => {
   const out = ring({ caller_id: STRANGER });
   assert.equal(out.status, 200);
   const agent = out.body.conversation_config_override.agent;
-  assert.match(agent.first_message, /AI assistant for Omari/);
+  assert.match(agent.first_message, /^Hi — you've reached Reason\./);
+  assert.doesNotMatch(agent.first_message, /Omari|AI assistant for/, "nothing about the operator reaches a stranger");
   assert.match(agent.first_message, /not set up to take calls from this number/);
   // The prompt is replaced AND end_call is the only tool. The prompt override is the half that
   // matters: an allowed end_call on a full Reason would be a stranger talking to a full Reason.
