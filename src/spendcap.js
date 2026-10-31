@@ -161,6 +161,12 @@ export function confirmChange(conversationId, id, { via = "text" } = {}) {
     return { ok: false, error: "change_expired", cap: money(capFor(conversationId).cents) };
   }
   if (row.to_cents > SELF_MAX_CENTS) return { ok: false, error: "over_ceiling", ceiling: money(SELF_MAX_CENTS) };
+  // A passkey on file makes a raise a Face ID matter in code, not only in the prompt: a texted yes or the
+  // Settings button cannot apply it. They get a fresh link instead (any older open link is replaced).
+  if (via !== "face_id" && passkey.requiredFor(conversationId)) {
+    const token = passkey.createApproval(approvalRow(row.id));
+    return { ok: false, error: "needs_face_id", needs: "face_id", change_id: row.id, from: money(row.from_cents), to: money(row.to_cents), url: `${siteBase()}/web/approve/${token}`, token, cap: money(capFor(conversationId).cents) };
+  }
   if (q("UPDATE cap_changes SET status = 'applied', ended_at = ?, via = ? WHERE id = ? AND status = 'asked'").run(clock.now(), via, row.id).changes !== 1) return { ok: false, error: "change_closed" };
   write(conversationId, row.to_cents, row.said);
   return { ok: true, applied: true, from: money(row.from_cents), to: money(row.to_cents), from_cents: row.from_cents, to_cents: row.to_cents };

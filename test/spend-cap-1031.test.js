@@ -422,3 +422,32 @@ test("Settings → Shopping: with a passkey a raise above the default goes to th
   assert.equal(fieldValue((await settingsGet(b)).body), "250");
   assert.equal(said.at(-1).t, "Approved with Face ID. Done. Your daily spending limit is $250 a day (it was $100).");
 });
+
+test("with a passkey, a texted yes or the Settings button never raises the limit: the code refuses and hands back a fresh Face ID link", async () => {
+  const auth = await setUp(AMA);
+  const ask = await runTool("spend_limit_set", { daily: 250, text: "raise my limit to 250" }, { conversationId: AMA });
+  assert.equal(ask.needs, "face_id");
+  const first = tokenOf(ask.url);
+  // The model asserting a yes (spend_limit_confirm) is not enough.
+  const yes = await runTool("spend_limit_confirm", { change_id: ask.change_id, answer: "yes" }, { conversationId: AMA });
+  assert.equal(yes.ok, false);
+  assert.equal(yes.error, "needs_face_id");
+  assert.match(yes.url, /^https:\/\/heyreason\.com\/web\/approve\/[A-Za-z0-9_-]{32}$/);
+  assert.match(yes.say, /Face ID/);
+  assert.equal(spendcap.capFor(AMA).cents, 10000, "a texted yes raised nothing");
+  assert.equal(spendcap.changeRow(ask.change_id).status, "asked");
+  // Nor is a POST to the Settings yes button.
+  const b = browser(AMA);
+  const web = await settingsPost(b, { do: "cap-confirm", i: String(ask.change_id) });
+  assert.equal(web.status, 303);
+  assert.match(web.headers.Location, /^\/web\/approve\/[A-Za-z0-9_-]{32}$/);
+  assert.equal(spendcap.capFor(AMA).cents, 10000, "the Settings button raised nothing");
+  // The newest link is the live one; the first was replaced. Face ID on the live link applies it.
+  const token = web.headers.Location.split("/web/approve/")[1];
+  assert.notEqual(token, first);
+  const got = await page(token);
+  assert.match(got.body, /Raise your daily limit to \$250\?/);
+  const res = await page(token, "verify", auth.get(optionsOf(got.body).challenge));
+  assert.equal(res.status, 200, res.body);
+  assert.equal(spendcap.capFor(AMA).cents, 25000);
+});

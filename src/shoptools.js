@@ -199,6 +199,7 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
     }
     const out = spendcap.confirmChange(c, input.change_id, { via: "text" });
     if (out.ok) return { ...out, say: `Say it back in one line: their daily limit is now ${out.to} a day (it was ${out.from}).` };
+    if (out.error === "needs_face_id") return { ...out, say: `A yes isn't enough here: raising it to ${out.to} needs their Face ID. Say so in one line and send this url ON ITS OWN LINE as the last line, exactly: ${out.url}` };
     if (out.error === "change_expired") return { ...out, say: `That question ran out, so nothing changed; their limit is still ${out.cap}. Say so in one line; if they still want it, they name the number again and you call spend_limit_set.` };
     return { ...out, say: `Nothing changed; their limit is ${out.cap ?? spendcap.view(c).cap}. Say so in one line.` };
   }

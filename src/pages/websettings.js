@@ -423,9 +423,6 @@ export function shoppingSection({ csrf, shopping, done = "", confirmCard = false
     + saved(done === "store-removed", "signed out. i won't use it again.") + saved(done === "card-removed", "card forgotten.")
     + `</section>`;
 }
-
-/** Dollars for the field and the copy: whole when whole, else two places. */
-const usd = (cents) => `$${(cents / 100).toFixed(2).replace(/\.00$/, "")}`;
 const usdField = (cents) => (cents / 100).toFixed(2).replace(/\.00$/, "");
 
 /**
@@ -760,6 +757,7 @@ export async function settingsRequest({ account, method, query = {}, headers = {
     const id = Number(form.get("i"));
     const out = what === "cap-keep" ? spendcap.declineChange(conv, id) : spendcap.confirmChange(conv, id, { via: "web" });
     log({ web_settings: what, ok: !!out.ok, ...(out.error ? { why: out.error } : {}) });
+    if (out.error === "needs_face_id") return wantsJson ? json(200, { ok: false, needs: "face_id", url: out.url }) : to(new URL(out.url).pathname);
     if (wantsJson) return json(out.ok ? 200 : 400, out);
     if (out.ok) return back(what === "cap-keep" ? "cap-kept" : "cap", "shopping");
     return back(out.error === "change_expired" ? "cap-expired" : "", "shopping");

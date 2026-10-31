@@ -20,7 +20,9 @@ person can change their own. Before this the cap was one number for the whole in
     (`pay_approvals.kind = 'cap'`, the challenge bound to the change's id/owner/from/to; the page
     `/web/approve/<token>` shows "Raise your daily limit to $250?" and the tap applies it, one text
     says so); without one it is a plain yes — `spend_limit_confirm` in the chat, or the yes/keep pair on
-    Settings — that runs out after `config.askTtlMoneyH` (24h) like every ask about money;
+    Settings — that runs out after `config.askTtlMoneyH` (24h) like every ask about money. With a passkey
+    on file the code itself refuses a texted yes or the Settings button (`confirmChange` →
+    `needs_face_id`) and hands back a fresh link; the prompt is not the only guard (review fix, 12th test);
   - the ceiling for self-set numbers is `SELF_MAX_CENTS` ($1,000 a day), the owner included; above it
     only the operator can go, by raising the default in `.env`. The refusal names the ceiling and never
     who could go higher or how;
