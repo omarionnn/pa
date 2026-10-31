@@ -189,9 +189,10 @@ async function bodyOf(readBody) {
 export async function approveRequest({ sub = "", method = "GET", headers = {}, readBody, log = () => {} }) {
   const [token, verb = ""] = String(sub).split("/");
   const v = shop.approvalView(token);
+  // A token we never made, or one for an account the flag leaves out: the plain 404, like any other unknown path.
+  if (!v) return null;
   if (!verb) {
     if (method !== "GET" && method !== "HEAD") return json(405, { ok: false });
-    if (!v) return send(renderApproveEnded({}));
     if (v.state !== "open") return send(renderApproveEnded({ v, state: v.state }));
     const opts = await passkey.approvalOptions(v.a);
     if (!opts.ok) return send(renderApprove({ v, blocked: opts.error, boot: { base: `/web/approve/${token}` } }));
@@ -216,16 +217,15 @@ export async function approveRequest({ sub = "", method = "GET", headers = {}, r
 /** /web/connect/passkey[/verify]: signed in to Web, and only where the flag allows. */
 export async function passkeySetupRequest({ verb = "", method = "GET", headers = {}, account = null, readBody, log = () => {} }) {
   const c = account?.conversation_id;
-  if (account && !(shop.connectAllowedFor(c) && passkey.passkeyAllowedFor(c))) return null;
+  // Signed out, or not an account the flag allows: the plain 404, so the page doesn't say it exists.
+  if (!account || !(shop.connectAllowedFor(c) && passkey.passkeyAllowedFor(c))) return null;
   if (!verb) {
-    if (!account) return send(renderSetup({ signedIn: false }));
     const opts = await passkey.registrationOptions(c);
     if (!opts.ok) return null;
     return send(renderSetup({ has: passkey.passkeysOf(c), boot: { base: "/web/connect/passkey", options: opts.options } }));
   }
   if (verb !== "verify") return null;
   if (method !== "POST") return json(405, { ok: false });
-  if (!account) return json(401, { ok: false, error: "signed_out" });
   if (!sameOrigin(headers)) return json(403, { ok: false, error: "origin" });
   const body = await bodyOf(readBody);
   if (!body) return json(400, { ok: false, error: "bad_json" });

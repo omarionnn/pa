@@ -142,11 +142,13 @@ test("setting up: UV and heyreason.com required; the first works at once, a late
   assert.match(said.at(-1).t, /new Face ID was just set up/);
 });
 
-test("the setup page needs a Reason Web sign-in", async () => {
-  const out = await passkeySetupRequest({ account: null });
-  assert.equal(out.status, 401);
-  const post = await passkeySetupRequest({ verb: "verify", method: "POST", headers: SAME, account: null, readBody: async () => "{}" });
-  assert.equal(post.status, 401);
+test("the setup page needs a Reason Web sign-in; signed out it is a plain 404", async () => {
+  assert.equal(await passkeySetupRequest({ account: null }), null);
+  assert.equal(await passkeySetupRequest({ verb: "verify", method: "POST", headers: SAME, account: null, readBody: async () => "{}" }), null);
+  // A token nobody was sent: the plain 404 too, for the page and both POSTs.
+  assert.equal(await approveRequest({ sub: "not-a-real-token" }), null);
+  assert.equal(await approveRequest({ sub: "not-a-real-token/decline", method: "POST", headers: SAME }), null);
+  assert.equal(await approveRequest({ sub: "not-a-real-token/verify", method: "POST", headers: SAME, readBody: async () => "{}" }), null);
   const acct = { conversation_id: OMARI };
   const got = await passkeySetupRequest({ account: acct });
   assert.equal(got.status, 200);
