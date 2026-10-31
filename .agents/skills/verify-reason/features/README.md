@@ -99,7 +99,7 @@ Real features with no file here. Add one when you touch them.
 - Timers, tasks, watches and the 15s sweep — `src/runtime.js`, `test/tasks.test.js`
 - Tapbacks and iMessage screen effects — `src/tapbacks.js`, `src/expressive.js`
 - The harm gate (every message screened before a turn) — `src/harm.js`, `test/harm.test.js`; what it is shown, and the 2026-10-23 outage, are in [inbound-message.md](inbound-message.md)
-- Flight records and check-in — `src/flights.js` (`flight_list`, `flight_checkin_start`). Flight *search* is mapped in [flight-search.md](flight-search.md)
+- Flight records and check-in — `src/flights.js` (`flight_list`, `flight_checkin_start`; a sign-in probe that cannot read the account page twice is `blocked: "could_not_check_signin"`, never "not signed in" — `test/flights.test.js`, `test/signin.test.js`). Flight *search* is mapped in [flight-search.md](flight-search.md)
 - Receipts, the undo window, the furthest point
 - **Stopping Reason dead, and starting it again** — `pause_everything` / `resume_everything`
   (`src/pause.js`; `grep -n 'name: "pause_everything"\|case "pause_everything"' src/tools.js`),

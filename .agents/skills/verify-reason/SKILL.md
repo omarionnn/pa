@@ -434,6 +434,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — sign-in "couldn't check" + settle race (fix/flight-signin-unknown, #279, 2026-10-30)
+
+`npm run test:offline` under `env -i`: 4,843 tests, 4,712 passing, 131 skipped, **0 failing**. The flights load flake ("no code but signed in", "the press needs a yes") is fixed, not skipped: `browser.settle()` cancels its own pending blank navigation (CDP `Page.stopLoading`) when its goto times out, so a late about:blank can no longer interrupt the next `goto`. `test/flights.test.js` 58/58 in 5/5 runs alongside a full suite (and 5/5 full suites 0 failing). An unknown sign-in probe is retried once, never revokes a live sign-in, and reaches the person as `blocked: "could_not_check_signin"` ("couldn't check right now", never "signed out", no sign-in ask). 8 new tests in `test/signin.test.js` + `test/flights.test.js` fail on f8f2f48/df1b653 and pass here. In-process drive on a fresh cage-env DB with real Chromium: fine → signed in; cut off once → signed in; cut off twice → could_not_check_signin, sign-in kept, flight untouched; signed out → not_signed_in as before.
+
 ### Baseline — to-do list (wt/todo-list-v1, 2026-10-30)
 
 4,833 tests / 4,702 pass / 0 fail / 131 skipped (`npm run test:offline` under `env -i`, rebased on origin/main f8f2f48). New: `test/todo.test.js` (24, clock pinned to midday: the wrap-up keeps out of their night). Live: cage plan step on claude-cli + `bin/todo-drive.mjs` all ok — see [features/todo-list.md](features/todo-list.md).
