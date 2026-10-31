@@ -447,6 +447,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — Daily spending limit per person (wt/spend-cap, 2026-10-31)
+
+`npm run test:offline` under `env -i` (fresh `npm ci` in the worktree): 5,047 tests, 4,915 passing, 131 skipped, 1 failing — web-ongoing "the desktop margin" (date-dependent, fails on main too). New: `test/spend-cap-1031.test.js` (11; fail on 05a40c4: no `src/spendcap.js`). Wording pins moved in `test/shopping-everyone-1031.test.js` and `test/sites.test.js` (the over-cap line now names Settings → Shopping, never the env var). See [features/spend-cap.md](features/spend-cap.md).
+
 ### Baseline — Shopping for everyone (wt/shopping-everyone, #315, 2026-10-31)
 
 `npm run test:offline` under `env -i` (fresh `npm ci` in the worktree): 5,034 tests, 4,901 passing, 131 skipped, 2 failing — web-ongoing "the desktop margin" (date-dependent, fails on main too) and order-flow-1031 "pinned 13:56 … never goes out" (load flake: 14/14 alone, three runs; 195/195 with the other shopping suites). New: `test/shopping-everyone-1031.test.js` (7; three fail on afc6ce8). Muted drives: `bin/passkey-drive.mjs` 23/23 and `bin/passkey-drive.mjs --non-owner` 23/23. Live flags `REASON_SHOP_CONNECT`, `REASON_CHOICE_CARDS`, `REASON_PASSKEY_PAY` appended as `on`. See [features/shop-connect.md](features/shop-connect.md) "Everyone".

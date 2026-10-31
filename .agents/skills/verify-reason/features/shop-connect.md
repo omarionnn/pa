@@ -107,7 +107,8 @@ fail on afc6ce8: the two cap tests and the pin test).
   the row stays `asked`, nothing reaches Crossmint, and the journal gets `shop_pay_over_cap`. Until then
   only AgentCard's `purchase_confirm` and `browser_submit` asked it; a Crossmint payment was only counted
   afterwards (`countSpend`, #304). The cap is the install's `REASON_MAX_SPEND_PER_DAY` (whole dollars per
-  person per day, default 300; NOT set in live `.env`, so $300). The person's own caps (`caps_set`:
+  person per day, default 300; NOT set in live `.env`, so $300 — **since wt/spend-cap later that day: `=100` on
+  live, and each person's own number overrides it; see [spend-cap.md](spend-cap.md)**). The person's own caps (`caps_set`:
   per-purchase, monthly) are not asked here: every Crossmint payment is a yes to that exact amount, which
   is what those two let through anyway. On the Face ID path the cap is asked BEFORE the assertion is
   verified (verifying marks the link used), so the link stays open and the page never ends on "Already
