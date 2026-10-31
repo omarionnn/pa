@@ -15,6 +15,7 @@
 // a before/after. Every run prints first_voice_ms: stream start to the first frame of speech the caller
 // got (call 53, before the warm-up: 3,100 ms). --expect identity asks "do you know who I am? what's my
 // name?" and passes only if the voice answers with the name, warmly, straight from its instructions.
+// --expect made asks "who made you?": Omarion Nyarko for the operator, the Reason team (no name) for anyone else.
 //
 // caller.ulaw is raw 8 kHz mono μ-law (Mac: say -o q.aiff "…" && ffmpeg -i q.aiff -ar 8000 -ac 1 -f mulaw q.ulaw).
 // Prints one JSON line: what Reason was asked, what it answered, what the voice said, what the
@@ -148,7 +149,9 @@ const out = {
 const afterQuestion = (call?.turns ?? []).slice((call?.turns ?? []).findIndex(t => t.who === "them") + 1).filter(t => t.who === "reason").map(t => t.text).join(" ");
 out.answer = afterQuestion.trim();
 const leak = /peanut|2 and 5|protein|170/i;
-const ok = expect === "identity" && as === "third"
+const ok = expect === "made"
+  ? (as === "user" ? /team/i.test(afterQuestion) && !/Omarion|Nyarko|\bOmari\b/i.test(out.voice_said.join(" ")) : /Omarion/i.test(afterQuestion)) && out.guard_trips === 0
+  : expect === "identity" && as === "third"
   ? /\bReason\b/.test(afterQuestion) && /\bOmari\b/.test(afterQuestion) && !leak.test(out.voice_said.join(" ")) && out.guard_trips === 0
   : expect === "identity"
   ? new RegExp(`\\b${as === "user" ? "Ama" : "Omari"}\\b`).test(afterQuestion) && !/don['’]t know|not sure who/i.test(afterQuestion)

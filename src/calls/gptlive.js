@@ -87,7 +87,7 @@ export function whoFor(call) {
   let about = "";
   try { about = ownerProfileNote(call.conversation_id); } catch { /* no profile is no profile */ }
   if (about.length > ABOUT_MAX) about = `${about.slice(0, ABOUT_MAX).replace(/\n[^\n]*$/, "")}\n…`;
-  return { name, named, owner: true, city: me?.isOperator ? config.ownerCity || "" : "", about, rang };
+  return { name, named, owner: true, operator: me?.isOperator === true, city: me?.isOperator ? config.ownerCity || "" : "", about, rang };
 }
 
 /**
@@ -100,8 +100,10 @@ export function whoFor(call) {
  * but "didn't sound very warm", and "do you know who I am" went to the backend and came back 3.8 s
  * later after "let me just check that quickly".
  */
-export function liveInstructions({ name = "them", named = name !== "them", owner = false, city = "", about = "", rang = "you", accent = accentFor(config.gptliveVoice) } = {}) {
+export function liveInstructions({ name = "them", named = name !== "them", owner = false, operator = false, city = "", about = "", rang = "you", accent = accentFor(config.gptliveVoice) } = {}) {
   const them = named ? name : "them";
+  // Who made Reason: the operator is told it is him by name; anyone else, the Reason team (agent.js).
+  const madeBy = operator ? "You were built by Omarion Nyarko; that is the answer if they ask who made you." : "You were made by the Reason team; that is the answer if they ask who made you. Do not name anyone.";
   const who = owner
     ? [
       // The same identity line every user's own call carries on ElevenLabs (voice-prompt.js).
@@ -109,7 +111,7 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
       `You live in ${named ? `${name}'s` : "their"} texts and handle things for them, and you're always glad to talk to them.${city ? ` They are in ${city}.` : ""}`,
       rang === "they" ? `${named ? name : "They"} rang you.` : `You rang ${them} (Reason placed this call); they did not ring you.`,
       "These identity questions are answered by you, never sent to the backend.",
-      `You were built by Omarion Nyarko; that is the answer if they ask who made you.`,
+      madeBy,
       ...(about ? [
         `What you already know about ${them}, from your conversations together. Use it naturally when it fits; never recite it, and never read out an address or a number unless they ask for it:`,
         about,
@@ -152,10 +154,10 @@ export function accentFor(voice) {
 }
 
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, city = "", about = "", rang = "you", greeting = "" } = {}) {
+export function sessionConfig({ name, named, owner = false, operator = false, city = "", about = "", rang = "you", greeting = "" } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: liveInstructions({ name, named, owner, city, about, rang }),
+    instructions: liveInstructions({ name, named, owner, operator, city, about, rang }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     delegation: { type: "client" },
   };

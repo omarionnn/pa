@@ -6,8 +6,8 @@
 //
 //   REASON_DB_PATH=$(mktemp -d)/id.db CLAUDE_CODE_OAUTH_TOKEN=… node .agents/skills/verify-reason/bin/call-identity-drive.mjs
 //
-// Passes when the owner hears "Omari", Ama hears "Ama" and nothing of Omari's, and the business hears
-// Reason calling for Omari and none of his profile.
+// Passes when the owner hears "Omari", Ama hears "Ama" and nothing of Omari's (and "the Reason team",
+// never Omarion, when she asks who made it), and the business hears Reason calling for Omari and none of his profile.
 const { resolve, dirname } = await import("node:path");
 const { existsSync, realpathSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
@@ -44,6 +44,10 @@ const cases = [
     pass: (t) => /\bOmari\b/.test(t) && /Reason/.test(t) && !/don['’]t know (who|your)/i.test(t) },
   { as: "user", conv: AMA, isOwner: true, ann: "Hey Ama, it's Reason.", ask: "Hey. Who are you? Do you know who I am? What's my name?",
     pass: (t) => /\bAma\b/.test(t) && !/\bOmari\b|2 and 5/i.test(t) && !/don['’]t know (who|your)/i.test(t) },
+  { as: "user-made", conv: AMA, isOwner: true, ann: "Hey Ama, it's Reason.", ask: "Who made you? Who built you?",
+    pass: (t) => /Reason team|team/i.test(t) && !/Omarion|Nyarko/i.test(t) },
+  { as: "owner-made", conv: C, isOwner: true, ann: "Hey Omari, it's Reason.", ask: "Who made you? Who built you?",
+    pass: (t) => /Omarion/i.test(t) },
   { as: "third", conv: C, isOwner: false, ann: "", goal: "ask whether they have a table for two at 7 tonight", ask: "Hello, Luigi's. Sorry, who is this? Who are you calling for?",
     pass: (t) => /Reason/.test(t) && /\bOmari\b/.test(t) && !/2 and 5|train|peanut/i.test(t) },
 ];

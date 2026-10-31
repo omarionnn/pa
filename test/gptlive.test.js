@@ -463,6 +463,7 @@ test("the owner's call: the voice knows it is Reason, that this is Omari, the pe
   assert.match(s, /2 and 5 trains/);
   assert.match(s, /You rang Omari \(Reason placed this call\)/, "it knows who rang whom");
   assert.match(s, /They are in New York/, "the install's city is the operator's");
+  assert.match(s, /built by Omarion Nyarko/, "the operator is told it is him");
   assert.match(s, /Warm, relaxed and friendly/);
   assert.match(s, /NO_REPLY/, "the old rules stay");
 });
@@ -478,6 +479,8 @@ test("every user's own call, not just the operator's: Ama's Reason knows it is h
   assert.match(s, /You are Reason — Ama's own Reason/);
   assert.match(s, /The person on this call is Ama, the person you work for/);
   assert.match(s, /peanuts/);
+  assert.match(s, /made by the Reason team/, "who made Reason, generic for anyone but the operator");
+  assert.doesNotMatch(s, /Omarion/);
   assert.doesNotMatch(s, /\bOmari\b|2 and 5 trains|New York/, "nothing of the operator's, and no city guessed");
   assert.equal(gl.gptliveFor(OTHER), false, "the GPT-Live voice itself is still the operator's only");
 });
@@ -502,6 +505,16 @@ test("a call Reason makes for someone to a third party: 'I'm Reason, calling for
   const s = gl.liveInstructions(who);
   assert.match(s, /you're Reason, an AI assistant calling for Omari/);
   assert.doesNotMatch(s, /2 and 5 trains|the person you work for\b|New York/);
+});
+
+test("who built Reason: Omarion Nyarko by name only to the operator; everyone else, the Reason team", async () => {
+  const { systemFor, builtByLine } = await import("../src/agent.js");
+  assert.match(systemFor({ name: "Omari", isOperator: true }), /You were built by Omarion Nyarko/);
+  const ama = systemFor({ name: "Ama", isOperator: false });
+  assert.match(ama, /You were made by the Reason team/);
+  assert.doesNotMatch(ama, /Omarion/);
+  assert.doesNotMatch(systemFor({ name: "the person I work for", isOperator: false }), /Omarion/);
+  assert.match(builtByLine("Omari"), /Omarion/);
 });
 
 test("the ElevenLabs path, every user's today: own calls carry the identity line, third-party calls the honest one", async () => {
