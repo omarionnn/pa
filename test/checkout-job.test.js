@@ -57,7 +57,7 @@ async function fakeFetch(url, init = {}) {
   }
   const m = /^\/api\/unstable\/agent-checkouts\/([^/]+)(\/messages)?$/.exec(p);
   if (m && m[2]) return reply(202, { ok: true });
-  if (m) return reply(200, { runId: m[1], ...runs[m[1]] });
+  if (m) return runs[m[1]] ? reply(200, { runId: m[1], ...runs[m[1]] }) : reply(404, { error: true, message: `Checkout '${m[1]}' not found` });
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}`, status: "active" });
   return reply(404, { message: "no route" });
 }
@@ -262,6 +262,69 @@ test("other ends are texted too: blocked, cancelled, and an end after a payment 
   assert.match(said.at(-1).t, /^Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz ended after the payment was approved \(Ulta's page errored after payment\.\)\. I can't tell from here whether the order went through/);
 });
 
+test("review: a payment Reason can't approve (not a card) is said once and never handed to the model; shop_answer refuses anything but a form", async () => {
+  const out = await start();
+  runs[out.runId].requiredAction = { requestId: "req_pay_x", request: { question: "Approve payment via store credit.", interaction: { kind: "payment", method: "store_credit", amount: { kind: "exact", value: "12.00", currency: "USD" }, merchant: { name: "Ulta" } } } };
+  await shop.step(out.runId);
+  assert.equal(woke.length, 0);
+  assert.equal(row(out.runId).stage, "in_progress");
+  assert.equal(said.at(-1).t, "Ulta asked for a payment I can't approve from here (by store_credit), so I didn't. Nothing was charged.");
+  await shop.step(out.runId);
+  assert.equal(said.length, 1, "once");
+  // Even forced into needs_input, a payment request is not a form: refused before any POST.
+  q("UPDATE shop_runs SET stage = 'needs_input' WHERE run_id = ?").run(out.runId);
+  const r = await shop.answerRun(out.runId, { conversationId: OMARI, answers: {} });
+  assert.equal(r.error, "not_a_form");
+  assert.equal(calls.filter((c) => c.path.endsWith("/messages")).length, 0);
+});
+
+test("review: an expired payment approval reads as that; a wake that failed is raised again on the next look", async () => {
+  const a = await start();
+  runs[a.runId].requiredAction = PAY("req_pay_1");
+  await shop.step(a.runId);
+  clock.skip(11 * 60_000);
+  runs[a.runId] = { ...EXPIRED };
+  await shop.step(a.runId);
+  assert.match(said.at(-1).t, /Ulta was waiting for your approval of the payment and didn't get it in time/);
+  // The wake fails once (the runtime threw), and the same request is put to the model on the next look.
+  const b = await start();
+  runs[b.runId].requiredAction = SHIPPING_FORM("req_ship_b");
+  shop.attach({ say: (c, t) => said.push({ c, t }), wake: async () => { throw new Error("runtime down"); }, base: "https://heyreason.test/web/connect" });
+  const s1 = await shop.step(b.runId);
+  assert.equal(s1.woke, "req_ship_b");
+  assert.ok(!String(row(b.runId).told).includes("woke:req_ship_b"));
+  shop.attach({ say: (c, t) => said.push({ c, t }), wake: (c, t, { key }) => woke.push({ c, t, key }), base: "https://heyreason.test/web/connect" });
+  const s2 = await shop.step(b.runId);
+  assert.equal(s2.woke, "req_ship_b");
+  assert.equal(woke.length, 1);
+  assert.ok(String(row(b.runId).told).includes("woke:req_ship_b"));
+  const s3 = await shop.step(b.runId);
+  assert.equal(s3.woke, null);
+  assert.equal(woke.length, 1, "raised once it got through");
+});
+
+test("review: a run Crossmint stops answering about ends after LOST_MS, said once; a run already on live with no stage still moves", async () => {
+  const out = await start();
+  await shop.step(out.runId);
+  delete runs[out.runId]; // Crossmint forgot it: 404 from here on
+  clock.skip(shop.LOST_MS - 60_000);
+  assert.equal((await shop.step(out.runId)).done, false);
+  clock.skip(2 * 60_000);
+  const s = await shop.step(out.runId);
+  assert.equal(s.lost, true);
+  assert.equal(row(out.runId).status, "failed");
+  assert.equal(said.at(-1).t, "I lost track of the Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz: the checkout service stopped answering about it. Nothing was charged that I can see. Want me to start it again?");
+  assert.match(said.at(-2).t, /^Still at Ulta's checkout/, "the stall was said first, at twelve minutes");
+  const n = said.length;
+  assert.equal((await shop.step(out.runId)).done, true);
+  assert.equal(said.length, n, "once");
+  // A row from before this change (stage '') is treated as started.
+  const old = await start();
+  q("UPDATE shop_runs SET stage = '' WHERE run_id = ?").run(old.runId);
+  await shop.step(old.runId);
+  assert.equal(row(old.runId).stage, "in_progress");
+});
+
 test("a stall — nothing moved for ten minutes — is texted once, and progress is Crossmint's revision", async () => {
   const out = await start();
   await shop.step(out.runId);
@@ -270,13 +333,13 @@ test("a stall — nothing moved for ten minutes — is texted once, and progress
   runs[out.runId].revision = 2;
   await shop.step(out.runId);
   assert.equal(said.length, 0, "it moved");
-  clock.skip(9 * 60_000);
+  clock.skip(11 * 60_000);
   await shop.step(out.runId);
-  assert.equal(said.length, 0, "nine minutes is not a stall");
+  assert.equal(said.length, 0, "eleven minutes is not a stall: Crossmint's own input expiry is ten, and that is reported as expired");
   clock.skip(2 * 60_000);
   const s = await shop.step(out.runId);
   assert.equal(s.stalled, true);
-  assert.equal(said.at(-1).t, "Still at Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz: nothing has moved for 11 minutes. Nothing has been charged. If it dies I'll say so.");
+  assert.equal(said.at(-1).t, "Still at Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz: nothing has moved for 13 minutes. Nothing has been charged. If it dies I'll say so.");
   clock.skip(5 * 60_000);
   await shop.step(out.runId);
   assert.equal(said.length, 1, "once");
@@ -347,17 +410,28 @@ test("after the payment: placed is texted, the mail is watched for the confirmat
   assert.equal(m.done, false);
   assert.deepEqual(asked[0], { c: OMARI, host: "ulta.com", since: r.paid_at - 60_000 });
   m = await shop.checkMail(out.runId);
-  assert.equal(m.done, true);
   assert.equal(m.hits, 1);
   assert.equal(woke.length, 1);
-  assert.equal(woke[0].key, `shop:${out.runId}:mail`);
+  assert.equal(woke[0].key, `shop:${out.runId}:mail:m_9`);
   assert.match(woke[0].t, /^\[checkout\] Mail from Ulta arrived after the order for CeraVe Foaming Facial Cleanser 16 oz \(run run_1\): "Your Ulta order ULTA-1234567 is confirmed" from Ulta Beauty <orders@ulta\.com> \(Sat, 31 Oct 2026 11:40:00 -0400; account omari@gmail\.com, thread_id t_9\)\. Read it with gmail_read/);
   assert.match(woke[0].t, /say exactly NO_REPLY/);
-  // Once: the watch is over.
-  assert.equal((await shop.checkMail(out.runId)).done, true);
+  // The same mail again wakes nobody; the watch stays open for a later one (the first mail from a store
+  // can be "rate your visit", and the model is the one that reads which it is).
+  assert.equal((await shop.checkMail(out.runId)).done, false);
   assert.equal(woke.length, 1);
+  shop._setMail(async () => ({ ok: true, connected: true, hits: [{ account: "omari@gmail.com", thread_id: "t_10", message_id: "m_10", subject: "Your Ulta order has shipped", from: "Ulta <orders@ulta.com>", date: "Sun, 1 Nov 2026 09:00:00 -0400" }] }));
+  assert.equal((await shop.checkMail(out.runId)).hits, 1);
+  assert.equal(woke.length, 2);
+  assert.equal(woke[1].key, `shop:${out.runId}:mail:m_10`);
+  // Placed, and the day ends with no more mail: nothing alarming is said.
+  clock.skip(25 * 3600_000);
+  const n = said.length;
+  assert.equal((await shop.checkMail(out.runId)).expired, true);
+  assert.equal(said.length, n, "a placed order with no further mail is not an alarm");
+  assert.equal((await shop.checkMail(out.runId)).done, true);
+  clock.reset();
 
-  // Bounded: a day with nothing is said, once, and the watch ends.
+  // Bounded: paid, never placed, a day with nothing → said once, and the watch ends.
   const late = await start();
   runs[late.runId].requiredAction = PAY("req_pay_2");
   await shop.step(late.runId);

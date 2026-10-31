@@ -21,11 +21,17 @@ What code does now, with no model in front of it:
   where they have a passkey;
 - **the end** → one text saying what happened: expired input (what was asked), blocked (summary),
   cancelled, placed (order ref if Crossmint gives one), ended after a payment (outcome unknown, check mail);
-- **a stall** (`STALL_MS` 10 min without the revision moving) → one text;
+- **a stall** (`STALL_MS` 12 min without the revision moving; past Crossmint's 10-min input expiry so an
+  expiring request reads as expired) → one text; Crossmint not answering about the run for `LOST_MS`
+  (36 min) → the run is marked failed ("lost") and said once;
+- **a payment Reason can't approve** (not a card, no readable amount) → said once, never the model's;
+  `shop_answer` refuses anything but a plain form (`not_a_form`, `needs_signin_link`);
+- **a wake that failed** (the runtime threw) is raised again on the next look (`told` carries `woke:<request>`);
 - **after a payment** → the person's Gmail is watched (`MAIL_EVERY_MS`, up to `MAIL_WATCH_MS` 24h) for
   mail from the store's domain since `paid_at`; a hit wakes the model (key `shop:<run>:mail`) to read it
-  with `gmail_read` and text the order number and delivery estimate, or say NO_REPLY; no mail connected or
-  24h with nothing → one text, watch over;
+  with `gmail_read` and text the order number and delivery estimate, or say NO_REPLY; each NEW message
+  id wakes once (`mail_seen`, at most `MAIL_WAKES_MAX` 5), so a "rate your visit" does not end the watch;
+  no mail connected → watch over quietly; 24h with nothing → one text unless the order is `placed`;
 - **restart** → `resumeFollowing()` follows every `status = 'running'` row and every open mail watch.
 
 The record in front of the model: `checkoutNote` on their turns (every run of the last 24h, one line
@@ -36,7 +42,8 @@ Want me to start it now?`; a "never actually started" line with a run of the las
 `Correction, from my record: …` built from `stageLine`.
 
 ## Offline
-- `node --test test/checkout-job.test.js` (12): the exact 10:58 line refused without a run and untouched
+- `node --test test/checkout-job.test.js` (15; the three "review:" ones cover non-card payment, expired
+  approval wording + wake retry, lost run + a pre-change row with stage ''): the exact 10:58 line refused without a run and untouched
   with one; the 11:17 line corrected; the shipping form → wake → `shop_answer` → in_progress, sealed;
   sign-in form never through `shop_answer`; expiry/blocked/cancelled/after-payment texts, once; stall once
   at 10 min; `shop_status` + note from the row; itemized ask; placed + mail watch + 24h bound; resume.

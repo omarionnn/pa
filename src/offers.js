@@ -29,14 +29,19 @@ import * as shop from "./shopconnect.js";
 // last 15 minutes, or still open). Without one, the claim and the promises hung on it are dropped and
 // one honest line goes instead. At 11:17 the opposite line went out — "the checkout never actually
 // started" — about a run that had run and died; with a run on record that is corrected from the record.
-const START_VERB = /\b(?:started|starting|kicked off|kicking off|began|begun|launched|fired off|got (?:it |that )?going|(?:is|'s|are|was) (?:now )?(?:running|under ?way|in progress|going|live)|(?:is|'s) (?:now )?started|put (?:it |that )?through)\b/i;
-const CHECKOUT_WORD = /\b(?:checkout|check-out|check out|order(?:ing)?|purchase|buy(?:ing)?|cart)\b/i;
-const START_IT = /\b(?:started|starting|kicked off|launched|began|begun|fired off)\s+(?:it|that|this|one|things)\b/i;
-const NOT_A_START = /\b(?:want me to|should i|shall i|can i|could i|do you want|if you want|didn'?t|did not|never|hasn'?t|haven'?t|couldn'?t|wasn'?t|isn'?t|not (?:yet |actually )?(?:started|running)|failed|stopped|expired|once you|when you|before i|after you|i'?ll start|i can start|ready to start|about to start|will start|going to start|let me start)\b/i;
+// Reason, in the first person, saying it started the checkout/order/purchase; or the checkout itself
+// said to be started/running. Never "your Amazon order is in progress, per the email", "I started
+// looking into the order", "I've started a list of things to buy": those are not claims about a job here.
+const CHECKOUT_WORD = /\b(?:checkout|check-out|check out|order|purchase)\b/i;
+const I_STARTED = /\bi(?:'ve| have|'m| am| just|'ve just| have just)?\s+(?:just\s+)?(?:started|kicked off|launched|began|begun|fired off|put through|placed)\s+(?!(?:\w+ing)\b)(?:the |a |an |your |that |this )?(?:[\w'-]+ ){0,4}?(?:checkout|check-out|order|purchase)\b/i;
+const CHECKOUT_IS = /\b(?:checkout|check-out|order|purchase)(?:'s| is| has)\s+(?:now\s+)?(?:started|running|under ?way|underway|in progress|live|begun|going through)\b/i;
+const START_IT = /\bi(?:'ve| have)?\s+(?:just\s+)?(?:started|kicked off|launched|began|begun|fired off)\s+(?:it|that|this|one)\b/i;
+const NOT_A_START = /\b(?:want me to|should i|shall i|can i|could i|do you want|if you want|didn'?t|did not|never|hasn'?t|haven'?t|couldn'?t|wasn'?t|isn'?t|not (?:yet |actually )?(?:started|running)|failed|stopped|expired|once you|when you|before i|after you|i'?ll start|i can start|ready to start|about to start|will start|going to start|let me start|per (?:the|your)|according to|says|said|tracking|delivery|arrived|shipped|email|mail)\b/i;
 const START_FOLLOWUP = /\b(?:when it (?:gets|reaches|hits)|once it (?:gets|reaches|hits)|i'?ll (?:text|send|message) you|you'?ll get a text|nothing (?:gets|is|will be|'s) charged|until you (?:approve|say)|i'?ll let you know|i'?ll keep you posted)\b/i;
-const NEVER_STARTED = /\b(?:never (?:actually |really )?(?:started|ran|began|got going|kicked off)|didn'?t (?:actually |really )?(?:start|run|go through|kick off)|did not (?:actually |really )?(?:start|run)|wasn'?t (?:actually |really )?(?:started|running)|nothing (?:was|is|'s) running|no checkout (?:was|is) running|hadn'?t (?:actually )?started)\b/i;
+// A denial about STARTING only: "didn't go through" is a true line about a run that ran and failed.
+const NEVER_STARTED = /\b(?:never (?:actually |really )?(?:started|ran|began|got going|kicked off)|didn'?t (?:actually |really )?(?:start|run|kick off)|did not (?:actually |really )?(?:start|run)|wasn'?t (?:actually |really )?(?:started|running)|nothing (?:was|is|'s) running|no checkout (?:was|is) running|hadn'?t (?:actually )?started)\b/i;
 const HONEST_NOT_STARTED = "I haven't actually started a checkout: nothing is running and nothing has been charged. Want me to start it now?";
-const isStartClaim = (s, near) => START_VERB.test(s) && !NOT_A_START.test(s) && !/\?\s*$/.test(s) && (CHECKOUT_WORD.test(s) || (START_IT.test(s) && CHECKOUT_WORD.test(near)));
+const isStartClaim = (s, near) => !NOT_A_START.test(s) && !/\?\s*$/.test(s) && (I_STARTED.test(s) || CHECKOUT_IS.test(s) || (START_IT.test(s) && CHECKOUT_WORD.test(near)));
 /** Lines, and each line's sentences: `[[sentence, …], …]`, joined back with the same newlines. */
 function sentencesOf(text) { return String(text).split(/(\n+)/).map((part) => (/^\n+$/.test(part) ? part : part.split(/(?<=[.!?])\s+/))); }
 const joinBack = (parts) => parts.map((p) => (typeof p === "string" ? p : p.join(" "))).join("").replace(/\n{3,}/g, "\n\n").trim();
@@ -62,7 +67,7 @@ export function checkoutClaims(conversationId, text) {
     const half = shop.runsOf(conversationId, { sinceMs: 30 * 60_000 }).reverse();
     const ran = half.find((r) => r.status !== "running") ?? half[0] ?? null;
     // Only a denial ABOUT the checkout: "the timer never started" is somebody else's business.
-    const denies = (s, i) => NEVER_STARTED.test(s) && (CHECKOUT_WORD.test(s) || /\bcharged\b/i.test(s) || (/\bit (?:never|didn'?t|did not|wasn'?t)\b/i.test(s) && CHECKOUT_WORD.test(`${all[i - 1] ?? ""} ${all[i + 1] ?? ""}`)));
+    const denies = (s, i) => NEVER_STARTED.test(s) && (CHECKOUT_WORD.test(s) || /\bnothing was running\b/i.test(s) || (/\bit (?:never|didn'?t|did not|wasn'?t)\b/i.test(s) && CHECKOUT_WORD.test(`${all[i - 1] ?? ""} ${all[i + 1] ?? ""}`)));
     if (ran && all.some(denies)) {
       const drop = new Set(all.filter(denies));
       const kept = sentencesOf(text).map((p) => (typeof p === "string" ? p : p.filter((s) => !drop.has(s))));
