@@ -406,7 +406,7 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
       ...(interactive ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
     } : null;
   const faceId = !!card && passkey.passkeyAllowedFor(link.conversation_id) && !passkey.hasPasskey(link.conversation_id);
-  // Has a passkey, so every payment is approved with Face ID: the copy says so instead of "approve".
+  // Has a passkey, so every payment is approved with Face ID: the copy says so instead of "text yes".
   const drawn = renderView(view, { card, faceId, passkey: passkey.requiredFor(link.conversation_id) });
   return send(boot ? { ...drawn, html: withBoot(drawn.html, boot) } : drawn);
 }
