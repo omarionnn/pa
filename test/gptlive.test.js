@@ -37,7 +37,7 @@ beforeEach(() => {
   db.saveConversation(C, []);
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: OTHER, channel: "sendblue", address: "+13105550000", name: "Ama", isOperator: false });
-  Object.assign(config, { callVoice: "", twilioSid: "", twilioToken: "", twilioFrom: "", openaiKey: "", gptliveInboundFallbackUrl: "" });
+  Object.assign(config, { callIdentity: false, makerName: "", callVoice: "", twilioSid: "", twilioToken: "", twilioFrom: "", openaiKey: "", gptliveInboundFallbackUrl: "" });
 });
 
 const on = (extra = {}) => Object.assign(config, { callVoice: "gptlive", ...TWILIO, ...extra });
@@ -449,81 +449,126 @@ test("warm: a call that opens silent never gets a warm session", () => {
   assert.equal(opened, 0);
 });
 
-// ---------- who it is, and who it is talking to ----------
+// ---------- who it is, and who it is talking to (REASON_CALL_IDENTITY, owner-only rollout) ----------
 
-test("the owner's call: the voice knows it is Reason, that this is Omari, the person it works for, and what it knows about him", () => {
-  on();
-  db.saveProfile(C, "**Omari**\n- Commutes on the 2 and 5 trains", []);
-  const row = ownerCall();
-  const s = gl.sessionConfig({ ...gl.whoFor(db.getCall(C, row.id)), greeting: "hey" }).instructions;
-  assert.match(s, /You are Reason — Omari's own Reason/);
-  assert.match(s, /The person on this call is Omari, the person you work for/);
-  assert.match(s, /Never say you don't know who they are/);
-  assert.match(s, /never sent to the backend/);
-  assert.match(s, /2 and 5 trains/);
-  assert.match(s, /You rang Omari \(Reason placed this call\)/, "it knows who rang whom");
-  assert.match(s, /They are in New York/, "the install's city is the operator's");
-  assert.match(s, /built by Omarion Nyarko/, "the operator is told it is him");
-  assert.match(s, /Warm, relaxed and friendly/);
-  assert.match(s, /NO_REPLY/, "the old rules stay");
-});
-
-test("every user's own call, not just the operator's: Ama's Reason knows it is hers, knows her, and has only her profile", () => {
-  on();
+const AMA_CALL = (over = {}) => db.createCall(OTHER, { provider: "gptlive", toNumber: "+13105550000", isOwner: true, goal: "g", facts: [], announcement: "hey Ama", state: "placing", ...over });
+const profiles = () => {
   db.saveProfile(C, "**Omari**\n- Commutes on the 2 and 5 trains", []);
   db.saveProfile(OTHER, "**Ama**\n- Allergic to peanuts", []);
-  const ama = db.createCall(OTHER, { provider: "gptlive", toNumber: "+13105550000", isOwner: true, goal: "g", facts: [], announcement: "hey Ama", state: "placing" });
-  const who = gl.whoFor(ama);
-  assert.equal(who.owner, true);
+};
+const vp = await import("../src/calls/voice-prompt.js");
+await voice.prime();
+
+test("identity off (flag unset): the voice gets the one line it always had and no profile is read", () => {
+  on({ callIdentity: false });
+  profiles();
+  const who = gl.whoFor(db.getCall(C, ownerCall().id));
+  assert.equal(who.identity, false);
+  assert.equal(who.about, "");
   const s = gl.liveInstructions(who);
-  assert.match(s, /You are Reason — Ama's own Reason/);
-  assert.match(s, /The person on this call is Ama, the person you work for/);
-  assert.match(s, /peanuts/);
-  assert.match(s, /made by the Reason team/, "who made Reason, generic for anyone but the operator");
-  assert.doesNotMatch(s, /Omarion/);
-  assert.doesNotMatch(s, /\bOmari\b|2 and 5 trains|New York/, "nothing of the operator's, and no city guessed");
-  assert.equal(gl.gptliveFor(OTHER), false, "the GPT-Live voice itself is still the operator's only");
+  assert.match(s, /You are the voice of Reason, Omari's personal assistant, on a phone call with Omari\./);
+  assert.doesNotMatch(s, /2 and 5 trains|the person you work for/);
 });
 
-test("a user with no name saved: their Reason says so honestly and never borrows a name", () => {
-  on();
+test("identity =owner: the operator's call knows it is Reason, that this is Omari, and what it knows about him", () => {
+  on({ callIdentity: "owner" });
+  profiles();
+  const s = gl.sessionConfig({ ...gl.whoFor(db.getCall(C, ownerCall().id)), greeting: "hey" }).instructions;
+  assert.match(s, /You are Reason — Omari's own Reason/);
+  assert.match(s, /The person on this call is Omari, the person you work for/);
+  assert.match(s, /never sent to the backend/);
+  assert.match(s, /2 and 5 trains/);
+  assert.match(s, /You rang Omari \(Reason placed this call\)/);
+  assert.match(s, /They are in New York/);
+  assert.match(s, /built by Omarion Nyarko/, "REASON_MAKER unset: today's wording");
+  assert.doesNotMatch(s, /peanuts|\bAma\b/, "nothing of another user's");
+  assert.match(s, /NO_REPLY/);
+});
+
+test("identity =owner: another user's call is unchanged — no identity block, and nothing of the operator's", () => {
+  on({ callIdentity: "owner" });
+  profiles();
+  const who = gl.whoFor(AMA_CALL());
+  assert.equal(who.identity, false);
+  const s = gl.liveInstructions(who);
+  assert.match(s, /You are the voice of Reason, Ama's personal assistant/);
+  assert.match(s, /built by Omarion Nyarko/, "who made Reason is answered everywhere, flag or not");
+  assert.doesNotMatch(s, /\bOmari\b|2 and 5 trains|New York|peanuts/);
+  assert.equal(vp.callIdentityFor(OTHER), false);
+  assert.equal(vp.callIdentityFor(C), true);
+});
+
+test("isolation, identity =on (ready for everyone): user B's call carries B's name and profile, never user A's", () => {
+  on({ callIdentity: true });
+  profiles();
+  const s = gl.liveInstructions(gl.whoFor(AMA_CALL()));
+  assert.match(s, /You are Reason — Ama's own Reason/);
+  assert.match(s, /peanuts/);
+  assert.doesNotMatch(s, /\bOmari\b|2 and 5 trains|New York/, "user A's name, profile and city never reach user B");
+  const a = gl.liveInstructions(gl.whoFor(db.getCall(C, ownerCall().id)));
+  assert.doesNotMatch(a, /peanuts|\bAma\b/, "and the other way round");
+});
+
+test("isolation: a user with no name saved never borrows another's", () => {
+  on({ callIdentity: true });
   const NEW = "sendblue:+13105550001";
   db.upsertAccount({ conversationId: NEW, channel: "sendblue", address: "+13105550001", name: "the person I work for", isOperator: false });
-  const row = db.createCall(NEW, { provider: "gptlive", toNumber: "+13105550001", isOwner: true, goal: "g", facts: [], announcement: "hey", state: "placing" });
-  const s = gl.liveInstructions(gl.whoFor(row));
+  const s = gl.liveInstructions(gl.whoFor(db.createCall(NEW, { provider: "gptlive", toNumber: "+13105550001", isOwner: true, goal: "g", facts: [], announcement: "hey", state: "placing" })));
   assert.match(s, /You do not have their name yet/);
-  assert.doesNotMatch(s, /\bOmari\b|the person I work for's|them's/);
+  assert.doesNotMatch(s, /\bOmari\b|\bAma\b|them's/);
 });
 
-test("a call Reason makes for someone to a third party: 'I'm Reason, calling for Omari', and none of what it knows about him", () => {
-  on();
-  db.saveProfile(C, "**Omari**\n- Commutes on the 2 and 5 trains", []);
-  const third = db.createCall(C, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "book", facts: [], announcement: "", state: "placing" });
-  const who = gl.whoFor(third);
-  assert.equal(who.owner, false);
+test("a third-party call: 'I'm Reason, calling for Omari', and none of his profile", () => {
+  on({ callIdentity: "owner" });
+  profiles();
+  const who = gl.whoFor(db.createCall(C, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "book", facts: [], announcement: "", state: "placing" }));
   assert.equal(who.about, "");
   const s = gl.liveInstructions(who);
   assert.match(s, /you're Reason, an AI assistant calling for Omari/);
-  assert.doesNotMatch(s, /2 and 5 trains|the person you work for\b|New York/);
+  assert.doesNotMatch(s, /2 and 5 trains|the person you work for\b|New York|peanuts/);
 });
 
-test("who built Reason: Omarion Nyarko by name only to the operator; everyone else, the Reason team", async () => {
-  const { systemFor, builtByLine } = await import("../src/agent.js");
-  assert.match(systemFor({ name: "Omari", isOperator: true }), /You were built by Omarion Nyarko/);
-  const ama = systemFor({ name: "Ama", isOperator: false });
-  assert.match(ama, /You were made by the Reason team/);
-  assert.doesNotMatch(ama, /Omarion/);
-  assert.doesNotMatch(systemFor({ name: "the person I work for", isOperator: false }), /Omarion/);
-  assert.match(builtByLine("Omari"), /Omarion/);
+test("ElevenLabs path, isolation: user B's whole call context (system + messages) has none of user A's name or profile", () => {
+  for (const flag of [false, "owner", true]) {
+    on({ callIdentity: flag });
+    profiles();
+    db.saveConversation(C, [{ role: "user", content: "remind me about the 2 and 5 trains" }]);
+    const ctx = voice.contextFor({ call: db.getCall(OTHER, AMA_CALL().id), kind: "owner" });
+    const all = JSON.stringify([ctx.system, ctx.messages]);
+    assert.match(all, /peanuts/, `${flag}: her own profile`);
+    assert.doesNotMatch(all, /\bOmari\b|2 and 5 trains/, `${flag}: none of user A's`);
+    assert.equal(/You are Reason — Ama's own Reason/.test(ctx.system), flag === true, `${flag}: identity only when on for her`);
+    const tp = voice.contextFor({ call: db.createCall(OTHER, { provider: "elevenlabs", toNumber: "+13105559999", isOwner: false, goal: "book a table", facts: [], announcement: "", state: "in_progress" }), kind: "third_party" });
+    assert.doesNotMatch(JSON.stringify([tp.system, tp.messages]), /peanuts|\bOmari\b|2 and 5/, `${flag}: a business hears none of either`);
+  }
 });
 
-test("the ElevenLabs path, every user's today: own calls carry the identity line, third-party calls the honest one", async () => {
-  const vp = await import("../src/calls/voice-prompt.js");
-  assert.match(vp.ownerCallFrame({ name: "Ama" }), /You are Reason — Ama's own Reason[\s\S]*Never say you don't know who they are/);
-  assert.match(vp.ownerCallFrame({ name: vp.NO_NAME }), /You do not have their name yet/);
-  assert.doesNotMatch(vp.ownerCallFrame({ name: vp.NO_NAME }), /the person I work for is on the phone/);
-  const tp = vp.thirdPartyFrame({ ownerName: "Ama", goal: "book a table", rules: ["be polite"] });
-  assert.match(tp, /you're Reason, an AI assistant calling for Ama/);
+test("ElevenLabs path, =owner: the operator's call carries the identity lines; unset, the frame is as it always was", () => {
+  on({ callIdentity: "owner" });
+  const own = voice.contextFor({ call: db.getCall(C, ownerCall().id), kind: "owner" });
+  assert.match(own.system, /You are Reason — Omari's own Reason/);
+  const tp = voice.contextFor({ call: db.createCall(C, { provider: "elevenlabs", toNumber: "+13105559999", isOwner: false, goal: "book a table", facts: [], announcement: "", state: "in_progress" }), kind: "third_party" });
+  assert.match(tp.system, /you're Reason, an AI assistant calling for Omari/);
+  assert.doesNotMatch(vp.ownerCallFrame({ name: "Ama" }), /own Reason/);
+  assert.match(vp.ownerCallFrame({ name: "Ama" }), /^Ama is on the phone with you right now\. .* so do not introduce yourself, do not ask who is calling/);
+});
+
+test("who made Reason: one value everywhere; unset = today's wording, set = the company name and nothing more", async () => {
+  const { systemFor } = await import("../src/agent.js");
+  const maker = await import("../src/maker.js");
+  config.makerName = "";
+  for (const me of [{ name: "Omari", isOperator: true }, { name: "Ama", isOperator: false }]) assert.match(systemFor(me), /You were built by Omarion Nyarko\. When anyone asks/);
+  assert.match(maker.makerLine(), /built by Omarion Nyarko/);
+  config.makerName = "Acme Labs";
+  try {
+    for (const me of [{ name: "Omari", isOperator: true }, { name: "Ama", isOperator: false }]) {
+      const s = systemFor(me);
+      assert.match(s, /You were made by Acme Labs\./);
+      assert.doesNotMatch(s, /Omarion/);
+    }
+    assert.match(maker.makerLine(), /Acme Labs/);
+    assert.equal(maker.makerName(), "Acme Labs");
+  } finally { config.makerName = ""; }
 });
 
 // ---------- Twilio's webhooks ----------

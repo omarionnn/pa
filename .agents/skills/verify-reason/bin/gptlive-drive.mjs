@@ -15,7 +15,9 @@
 // a before/after. Every run prints first_voice_ms: stream start to the first frame of speech the caller
 // got (call 53, before the warm-up: 3,100 ms). --expect identity asks "do you know who I am? what's my
 // name?" and passes only if the voice answers with the name, warmly, straight from its instructions.
-// --expect made asks "who made you?": Omarion Nyarko for the operator, the Reason team (no name) for anyone else.
+// --expect made asks "who made you?": REASON_MAKER, or Omarion Nyarko while it is unset, for everyone.
+// REASON_CALL_IDENTITY (default owner): with --as user, "owner" proves Ama's call is unchanged and gets
+// nothing of Omari's; "on" proves her Reason knows her (and still nothing of his).
 //
 // caller.ulaw is raw 8 kHz mono μ-law (Mac: say -o q.aiff "…" && ffmpeg -i q.aiff -ar 8000 -ac 1 -f mulaw q.ulaw).
 // Prints one JSON line: what Reason was asked, what it answered, what the voice said, what the
@@ -40,7 +42,7 @@ Object.assign(process.env, {
   REASON_DATA_DIR: dirname(dbPath) + "/data", REASON_RECORDING_ROOT: dirname(dbPath) + "/recordings",
   REASON_OWNER_NAME: "Omari", REASON_TZ: "America/New_York", REASON_CONVERSATION: "dm:owner",
   REASON_OWNER_NUMBER: "+12025550100", ANTHROPIC_API_KEY: "", REASON_CALL_BACKEND: "claude-cli",
-  REASON_CALL_VOICE: "gptlive", ELEVENLABS_LLM_SECRET: "drive-secret", REASON_PUBLIC_URL: "http://127.0.0.1",
+  REASON_CALL_VOICE: "gptlive", REASON_CALL_IDENTITY: process.env.REASON_CALL_IDENTITY ?? "owner", ELEVENLABS_LLM_SECRET: "drive-secret", REASON_PUBLIC_URL: "http://127.0.0.1",
 });
 const REPO = resolve(dirname(new URL(import.meta.url).pathname), "../../../..");
 const gl = await import(`${REPO}/src/calls/gptlive.js`);
@@ -149,13 +151,20 @@ const out = {
 const afterQuestion = (call?.turns ?? []).slice((call?.turns ?? []).findIndex(t => t.who === "them") + 1).filter(t => t.who === "reason").map(t => t.text).join(" ");
 out.answer = afterQuestion.trim();
 const leak = /peanut|2 and 5|protein|170/i;
+// What of Omari's must never reach Ama: his facts, always; his name, unless she said it herself.
+const askedAboutOmari = /\bOmari\b/i.test(out.caller_said.join(" "));
+const omariLeak = new RegExp(`2 and 5|two and five|protein|170${askedAboutOmari ? "" : "|\\bOmari\\b"}`, "i");
+// Identity is behind REASON_CALL_IDENTITY (default here "owner", as live): Ama's call has it only with "on".
+const identityOn = (as === "user" ? process.env.REASON_CALL_IDENTITY === "on" : true);
+const maker = process.env.REASON_MAKER || "Omarion";
+out.identity = process.env.REASON_CALL_IDENTITY;
 const ok = expect === "made"
-  ? (as === "user" ? /team/i.test(afterQuestion) && !/Omarion|Nyarko|\bOmari\b/i.test(out.voice_said.join(" ")) : /Omarion/i.test(afterQuestion)) && out.guard_trips === 0
+  ? new RegExp(maker, "i").test(afterQuestion) && (as !== "user" || !omariLeak.test(out.voice_said.join(" "))) && out.guard_trips === 0
   : expect === "identity" && as === "third"
   ? /\bReason\b/.test(afterQuestion) && /\bOmari\b/.test(afterQuestion) && !leak.test(out.voice_said.join(" ")) && out.guard_trips === 0
   : expect === "identity"
-  ? new RegExp(`\\b${as === "user" ? "Ama" : "Omari"}\\b`).test(afterQuestion) && !/don['’]t know|not sure who/i.test(afterQuestion)
-    && (as !== "user" || !/\bOmari\b|2 and 5|protein/i.test(out.voice_said.join(" "))) && out.guard_trips === 0 && (cold || (out.first_voice_ms ?? Infinity) < 600)
+  ? (identityOn ? new RegExp(`\\b${as === "user" ? "Ama" : "Omari"}\\b`).test(afterQuestion) && !/don['’]t know (who you are|your name|who this is)|not sure who you/i.test(afterQuestion) : true)
+    && (as !== "user" || !omariLeak.test(out.voice_said.join(" "))) && out.guard_trips === 0 && (cold || (out.first_voice_ms ?? Infinity) < 600)
   : out.delegations > 0 && out.results.some(r => r.chars > 0) && turns.some(t => Number.isFinite(t.first_real_ms));
 console.log(JSON.stringify({ as, expect, ...out }, null, 1));
 console.log(ok ? "ok" : "FAIL");
