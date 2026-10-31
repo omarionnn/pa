@@ -547,8 +547,11 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     const started = checkoutClaims(conversationId, text);
     if (started.flag) { flags.push(started.flag); text = started.text; }
     // 6. The line over a set of picture cards never says the prices couldn't be confirmed (src/choicecards.js).
-    const chosen = choiceWording(conversationId, text);
-    if (chosen.flag) { flags.push(chosen.flag); text = chosen.text; }
+    // The reply only (the cards go out with it), for a set drawn on this turn.
+    if (asks) {
+      const chosen = choiceWording(conversationId, text, { since: t.started_at });
+      if (chosen.flag) { flags.push(chosen.flag); text = chosen.text; }
+    }
     if (extra.length) text = text + "\n" + extra.join("\n");
     return { text, changed: text !== original, flags };
   } catch {

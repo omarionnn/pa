@@ -593,18 +593,22 @@ export const CHOICE_FRESH_MS = 3 * 60_000;
 const PRICES_UNCONFIRMED = /\b(?:i |we )?(?:couldn'?t|could not|can'?t|cannot|wasn'?t able to|weren'?t able to|unable to|didn'?t|did not|haven'?t|have not) (?:[a-z]+ ){0,2}?(?:confirm|verify|check|pull|get|see|validate|lock in|lock down) (?:the |their |these |those |all the |any |live |real |exact |current )*(?:prices?|pricing|costs?|totals?)\b[^.!?\n]*[.!?]?/i;
 const SAYS_TOTAL_FIRST = /\b(?:total|price|cost)\b[^.!?\n]*\bbefore\b[^.!?\n]*\b(?:bought|buy|buying|charged|charge|paid|pay|ordered|order)\b|\bbefore anything (?:gets |is |'s )?(?:bought|charged|ordered|paid)\b/i;
 export const TOTAL_FIRST_LINE = "The exact total comes to you before anything is bought.";
-export function choiceWording(conversationId, text) {
+export function choiceWording(conversationId, text, { since = null } = {}) {
   try {
     const t = String(text ?? "");
     if (!t.trim()) return { text, flag: null };
-    const set = db.db.prepare("SELECT options, created_at, state FROM choice_sets WHERE conversation_id = ? ORDER BY id DESC LIMIT 1").get(conversationId);
+    const set = db.db.prepare("SELECT id, options, created_at, state FROM choice_sets WHERE conversation_id = ? ORDER BY id DESC LIMIT 1").get(conversationId);
     if (!set || clock.now() - set.created_at > CHOICE_FRESH_MS) return { text, flag: null };
+    // Only the reply the cards go out with: a set drawn on THIS turn (`since`, the turn's start), never a
+    // later reply about something else, and so never twice (review 2026-10-31).
+    if (since != null && set.created_at < since) return { text, flag: null };
+    if (set.state === "dropped") return { text, flag: null };
     const unpriced = JSON.parse(set.options || "[]").some(o => !String(o?.price ?? "").trim());
     let dropped = 0;
     const lines = t.split("\n").map(line => line.split(/(?<=[.!?])\s+/).filter(s => { const hit = PRICES_UNCONFIRMED.test(s); if (hit) dropped++; return !hit; }).join(" "));
     let out = lines.join("\n").replace(/\n{3,}/g, "\n\n").replace(/[ \t]+\n/g, "\n").trim();
     let added = false;
-    if (unpriced && !SAYS_TOTAL_FIRST.test(out)) { out = `${out}${out ? " " : ""}${TOTAL_FIRST_LINE}`; added = true; }
+    if (unpriced && !SAYS_TOTAL_FIRST.test(out)) { out = `${out}${out ? "\n" : ""}${TOTAL_FIRST_LINE}`; added = true; }
     if (!dropped && !added) return { text, flag: null };
     return { text: out, flag: { rule: "choice_prices_wording", dropped, added } };
   } catch { return { text, flag: null }; }

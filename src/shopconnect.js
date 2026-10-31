@@ -513,6 +513,8 @@ export async function startCheckout({ conversationId, store, startUrl, what, ite
   // the new run is the one that gets talked about.
   const superseded = [];
   for (const old of q("SELECT * FROM shop_runs WHERE conversation_id = ? AND status = 'running' AND run_id <> ?").all(conversationId, runId)) {
+    // Ended: a run for the same thing, or one already marked superseded (correctAndRestart marks the
+    // old run before starting this one, whatever its item reads). Any other open run is left alone.
     if (!sameItem(old.item, item) && !toldOf(old).has("superseded")) continue;
     await endQuietly(old, `superseded by ${runId}`);
     superseded.push(old.run_id);
@@ -1269,6 +1271,7 @@ export function refusalOf(question) {
   return null;
 }
 const STOP_OPTION = /\b(?:stop|cancel|abort|give up|don'?t (?:proceed|continue|reset)|do not (?:proceed|continue|reset)|leave it|never ?mind)\b/i;
+const PROCEED_Q = /how (?:should|do|would) (?:i|you|we|reason) (?:like to )?proceed|how to proceed|what (?:should|do) (?:i|you|we) do(?: now| next)?\??|should i (?:proceed|continue|go ahead)/i;
 /** The option on a refusal form that ends it ("Stop here"), or null when the form offers no way out. */
 export function stopOptionOf(rq) {
   for (const f of rq?.fields ?? []) {
@@ -1387,12 +1390,15 @@ async function waitUpdates(run, say) {
   if (!run || TERMINAL.has(run.status) || toldOf(run).has("superseded") || !["started", "in_progress", "needs_input"].includes(run.stage)) return {};
   const at = run.stage_at ?? run.created_at;
   const inStage = clock.now() - at;
+  // A question the model put to THEM (woke / refused) is theirs to answer: "still working" would be
+  // wrong, so only the line saying what it waits on goes (review 2026-10-31).
+  const onThem = run.stage === "needs_input" && !openSigninLink(run.run_id) && [...toldOf(run)].some((t) => t.startsWith("woke:") || t.startsWith("refused:"));
   if (inStage >= WAIT_MORE_MS) {
     if (!tellOnce(run.run_id, `wait8:${at}`)) return {};
     await say(`Still on the ${storeOf(run)} checkout${itemOf(run)}: ${waitingOn(run)}. Not stuck, and nothing's charged.`);
     return { waited: 8 };
   }
-  if (inStage >= WAIT_MS) {
+  if (inStage >= WAIT_MS && !onThem) {
     if (!tellOnce(run.run_id, `wait3:${at}`)) return {};
     await say(`Still working on the ${storeOf(run)} checkout${itemOf(run)}, not stuck. Nothing's charged.`);
     return { waited: 3 };
@@ -1495,10 +1501,13 @@ export async function step(runId) {
       const pub = publicRequest(rq);
       // The store turning the checkout away, dressed as a question (Amazon's "Password reset required…
       // How should I proceed?", 2026-10-31): never the model's to answer. Code moves on to the next store.
+      // Only a form that offers a way out ("Stop here") or asks how to proceed is a refusal: a real
+      // form that happens to say "verify your identity" is still answered (review 2026-10-31).
       const refused = refusalOf(pub.question);
-      if (refused) {
+      const stop = stopOptionOf(pub);
+      if (refused && (stop || PROCEED_Q.test(pub.question) || (pub.fields ?? []).some((f) => META_LABEL.test(`${f?.key ?? ""} ${f?.label ?? ""}`)))) {
         tellOnce(runId, `refusal:${requestId}`);
-        const moved = await moveOn(runRow(runId), refused.reason, say, { stopAnswer: stopOptionOf(pub), rq: pub });
+        const moved = await moveOn(runRow(runId), refused.reason, say, { stopAnswer: stop, rq: pub });
         return { done: true, status: "cancelled", said, ...moved };
       }
       const filling = autoFill(run, pub);
@@ -1559,7 +1568,7 @@ export async function step(runId) {
       setStage(runId, "placed");
       if (!runRow(runId).mail_until) { q("UPDATE shop_runs SET mail_until = ? WHERE run_id = ?").run(now + MAIL_WATCH_MS, runId); watchMail(runId); }
       // An order placed is a finished errand (src/stamps.js: the "orders" seal). Told after the write; never costs the text.
-      try { db.completionBus.emit("order", { conversationId: run.conversation_id, runId }); } catch { /* a listener's failure is its own */ }
+      try { db.completionBus.emit("order", { conversationId: run.conversation_id, runId, store: storeOf(run) }); } catch { /* a listener's failure is its own */ }
       if (tellOnce(runId, "end")) await say(placedText(run, result));
     } else {
       setStage(runId, status === "cancelled" ? "cancelled" : "failed");

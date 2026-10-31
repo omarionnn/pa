@@ -233,6 +233,19 @@ test("pinned 13:58: Amazon wants a password reset; the checkout moves to the Wal
   assert.equal(said.length, 1);
   // The old run reads as moved, never as "waiting for your how to proceed".
   assert.match(shop.stageLine(row(out.runId)), /^cancelled/);
+  // A real form that merely says "verify your identity", with no way out and no "how to proceed", is still a form
+  // (answered from the record, the name being on it, or put to the model): never a move. (A new run for the
+  // same item, so the Walmart one above is superseded by it, quietly.)
+  const plain = await start({ store: "target", url: "https://www.target.com/p/cerave/-/A-3", item: "CeraVe Hydrating Facial Cleanser" });
+  runs[plain.runId].requiredAction = { requestId: "req_v", request: { question: "To verify your identity, what name is on the order?", interaction: { kind: "form", fields: [{ key: "full_name", label: "Full name", required: true, handling: "standard", input: { kind: "text" } }] } } };
+  runs[plain.runId].revision = 2;
+  const p = await shop.step(plain.runId);
+  assert.equal(p.done, false);
+  assert.equal(row(plain.runId).status, "running");
+  const formAnswered = calls.some((c) => c.path === `/api/unstable/agent-checkouts/${plain.runId}/messages` && c.body?.parts?.[0]?.response?.answers?.full_name);
+  assert.ok(formAnswered || woke.length === 1, "answered as a form");
+  assert.equal(said.length, 2, "the record's one line, nothing about moving");
+  assert.match(said.at(-1).t, /^Answered Target's name from your record/);
 });
 
 test("the same move for a run Crossmint ends blocked or walled off, with an offer on record for the next store", async () => {
@@ -362,6 +375,20 @@ test("three minutes in one stage: 'still working, not stuck'; eight: what it is 
   assert.equal(said.length, 4);
   await shop.step(out.runId);
   assert.equal(said.length, 4, "once");
+  // A question the model put to them is theirs to answer: no "still working" at three minutes, only
+  // the line at eight saying what is waited on (review 2026-10-31).
+  const asked = await start({ store: "target", url: "https://www.target.com/p/cerave/-/A-3", item: "Vitamin C serum" });
+  runs[asked.runId].requiredAction = { requestId: "req_size", request: { question: "Which size?", interaction: { kind: "form", fields: [{ key: "size", label: "Size", required: true, handling: "standard", input: { kind: "choice", options: [{ value: "s", label: "30 ml" }, { value: "l", label: "50 ml" }] } }] } } };
+  runs[asked.runId].revision = 2;
+  await shop.step(asked.runId);
+  assert.equal(woke.length, 1);
+  const before = said.length;
+  clock.skip(3 * 60_000 + 1000);
+  await shop.step(asked.runId);
+  assert.equal(said.length, before, "no 'still working' while the question is with them");
+  clock.skip(5 * 60_000);
+  await shop.step(asked.runId);
+  assert.equal(said.at(-1).t, "Still on the Target checkout for Vitamin C serum: waiting on your size. Not stuck, and nothing's charged.");
   // A payment waiting on them gets no wait update: the ask said it all.
   card();
   runs[out.runId].requiredAction = WALMART_PAY("req_pay_w"); runs[out.runId].revision = 3;
@@ -418,8 +445,19 @@ test("pinned 13:56: 'i couldn't confirm the prices live' never goes out; a card 
   offers.beginTurn(OMARI, "Wanna get Cerave face wash. Give me options");
   const wrote = "3 cerave cleansers, take your pick. the foaming one's the one made for oily skin, so i'd go with that. i couldn't confirm the prices live, so i'll check the real total before anything gets bought";
   const g = offers.guardReply(OMARI, wrote);
-  assert.equal(g.text, "3 cerave cleansers, take your pick. the foaming one's the one made for oily skin, so i'd go with that. The exact total comes to you before anything is bought.");
+  assert.equal(g.text, "3 cerave cleansers, take your pick. the foaming one's the one made for oily skin, so i'd go with that.\nThe exact total comes to you before anything is bought.");
   assert.ok(g.flags.some((f) => f.rule === "choice_prices_wording"));
+  // A later turn (the cards already out) is not touched: "what's the weather" gets no line about totals.
+  clock.skip(30_000);
+  offers.beginTurn(OMARI, "what's the weather");
+  assert.equal(offers.guardReply(OMARI, "sunny, 61 and clear till tonight.").text, "sunny, 61 and clear till tonight.");
+  // Nor a message sent mid-turn (message_send): the reply is where the line lives.
+  offers.beginTurn(OMARI, "more options");
+  cards([{ n: 1, name: "x", price: "", url: AMAZON }, { n: 2, name: "y", price: "", url: WALMART }]);
+  assert.equal(offers.guardReply(OMARI, "two more.", { asks: false }).text, "two more.");
+  assert.equal(offers.guardReply(OMARI, "two more.").text, "two more.\nThe exact total comes to you before anything is bought.");
+  offers.beginTurn(OMARI, "Wanna get Cerave face wash. Give me options");
+  cards([{ n: 1, name: "CeraVe Foaming Facial Cleanser", price: "", url: AMAZON }, { n: 2, name: "CeraVe Foaming Facial Cleanser", price: "$17.99", url: WALMART }]);
   // Said already in the model's own words: not said twice.
   const own = "3 cerave cleansers, take your pick. you'll get the exact total before anything is bought.";
   assert.equal(offers.guardReply(OMARI, own).text, own);

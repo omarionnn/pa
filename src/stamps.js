@@ -236,10 +236,11 @@ export function candidatesForResearch(r) {
  * The seal an order placed through a store checkout earns (shop_runs: succeeded, placed): one row per
  * order, so the tiered book counts them — the plain seal at the first, upgraded at TIERS.orders.
  */
-export function candidatesForOrder(run) {
+export function candidatesForOrder(run, { place = "" } = {}) {
   if (!everydaySeals() || !run || run.status !== "succeeded" || run.stage !== "placed") return [];
   const at = run.stage_at ?? run.updated_at ?? clock.now();
-  const store = String(run.store ?? "");
+  // The store as it is named to them (the event carries it); the backfill has only the key.
+  const store = String(place || run.store || "");
   return [{ type: "orders", ref: `order:${run.run_id}`, at, detail: { place: store ? (store[0].toUpperCase() + store.slice(1)) : "" } }];
 }
 
@@ -359,8 +360,8 @@ const onResearch = ({ conversationId, id }) => {
   try { if (everydaySeals()) awardLive(conversationId, candidatesForResearch(db.getResearch(conversationId, id))); } catch (e) { logger({ stamp_award_failed: (e?.message ?? String(e)).split("\n")[0] }); }
 };
 const orderRow = (runId) => db.db.prepare("SELECT run_id, conversation_id, store, item, status, stage, stage_at, updated_at, created_at FROM shop_runs WHERE run_id = ?").get(runId);
-const onOrder = ({ conversationId, runId }) => {
-  try { if (everydaySeals()) awardLive(conversationId, candidatesForOrder(orderRow(runId))); } catch (e) { logger({ stamp_award_failed: (e?.message ?? String(e)).split("\n")[0] }); }
+const onOrder = ({ conversationId, runId, store = "" }) => {
+  try { if (everydaySeals()) awardLive(conversationId, candidatesForOrder(orderRow(runId), { place: store })); } catch (e) { logger({ stamp_award_failed: (e?.message ?? String(e)).split("\n")[0] }); }
 };
 /** After any finished errand (research included): the suite key and the anniversary, if this one completed them. */
 const onAny = (conversationId) => {
