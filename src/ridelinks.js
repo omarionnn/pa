@@ -89,7 +89,7 @@ export async function freshRideLinks(text, { conversationId = null, geocode = nu
       if (fresh.ok && fresh.url !== url) {
         out = out.split(url).join(fresh.url);
         // Lengths and flags only: a ride link carries both ends' addresses and coordinates, and
-        // none of that belongs in the server log.
+        // none of that belongs in the server log. had_* describe the incoming link.
         log({
           ride_link_rebuilt: conversationId,
           from_len: url.length,
@@ -100,7 +100,9 @@ export async function freshRideLinks(text, { conversationId = null, geocode = nu
       }
     } catch (e) {
       // The error's name and code only: its message may quote the link or an address.
-      log({ ride_link_rebuild_failed: conversationId, error: e?.name ?? typeof e, code: e?.code ?? null });
+      const name = typeof e?.name === "string" && /^\w{1,40}$/.test(e.name) ? e.name : typeof e;
+      const code = typeof e?.code === "string" && /^[\w.-]{1,40}$/.test(e.code) ? e.code : null;
+      log({ ride_link_rebuild_failed: conversationId, error: name, code });
     }
   }
   return out;

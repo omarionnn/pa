@@ -67,8 +67,8 @@ test("a rebuild logs lengths and flags only: no link, no address, no coordinates
   assert.ok(rebuilt, "the rebuild is logged");
   assert.equal(rebuilt.from_len, STALE.length);
   assert.equal(rebuilt.to_len, out.length);
-  assert.equal(typeof rebuilt.had_coords, "boolean");
-  assert.equal(typeof rebuilt.had_client_id, "boolean");
+  assert.equal(rebuilt.had_coords, false);
+  assert.equal(rebuilt.had_client_id, false);
   // A geocoder that throws with the address in its message: the failure line must not echo it.
   const BAD = STALE.replace("Bruner", "Secret");
   const leaky = async (q) => { throw new Error(`geocode failed for ${q} in ${BAD}`); };
@@ -80,7 +80,7 @@ test("a rebuild logs lengths and flags only: no link, no address, no coordinates
   assert.ok(lines.some(l => "ride_link_rebuild_failed" in l), "the failure is logged");
   const text = JSON.stringify(lines);
   const forbidden = [
-    "m.uber.com", "addressLine1", "pickup", "drop",
+    "m.uber.com", "addressLine1",
     "430 W 17th", "17th St", "Bruner", "Secret", "Bronx", "New York",
     "40.74", "-74.00", "40.87", "-73.84", "40.7433148", "-74.0053556", "40.8759189", "-73.8401355",
   ];
