@@ -250,6 +250,33 @@ export function gather(conversationId) {
   } catch { /* no mail */ }
   return learn(conversationId, found, { source: "record", onlyMissing: true });
 }
+/**
+ * Every email known for this person, most deliberate first and without repeats: the one on their
+ * record, the Gmail accounts they connected (the default first), the ones in their own facts and in
+ * their earlier checkout instructions. The card's receipts need one; with two or more it is their
+ * choice (2026-10-31, the owner's rule: name what is on record, ask only for the decision).
+ */
+export function knownEmails(conversationId) {
+  const out = [];
+  const add = (e) => { const v = normalize("email", e); if (v && !out.includes(v)) out.push(v); };
+  add(profileRow(conversationId)?.email);
+  try {
+    const tokens = db.listOauthTokens(conversationId, "google").filter((t) => String(t.account_label ?? "").includes("@"));
+    for (const t of [...tokens.filter((t) => t.is_default), ...tokens]) add(t.account_label);
+  } catch { /* no mail */ }
+  try {
+    let own = "";
+    try { own = String(accounts.ownerOf(conversationId)?.name ?? "").trim().toLowerCase(); } catch { own = ""; }
+    const keys = ["user", "the user", "me", "myself", "i", "the person", "this person", "owner", "the owner", ...(own && !/^the person\b/.test(own) ? [own, own.split(/\s+/)[0]] : [])];
+    const facts = q(`SELECT f.fact FROM person_facts f JOIN people p ON p.id = f.person_id WHERE p.conversation_id = ? AND lower(p.key) IN (${keys.map(() => "?").join(", ")}) ORDER BY f.created_at DESC LIMIT 400`).all(conversationId, ...keys).map((r) => r.fact);
+    for (const f of facts) if (/\be-?mail\b/i.test(f)) for (const e of emailsIn(f)) add(e);
+  } catch { /* no facts */ }
+  try {
+    const asks = q("SELECT a.what FROM shop_run_asks a JOIN shop_runs r ON r.run_id = a.run_id WHERE r.conversation_id = ? ORDER BY r.created_at DESC LIMIT 20").all(conversationId);
+    for (const a of asks) for (const e of emailsIn(a.what)) add(e);
+  } catch { /* no runs */ }
+  return out;
+}
 /** The record, gathered first when it is missing or short. */
 export function profileFor(conversationId) {
   const have = profileRow(conversationId);

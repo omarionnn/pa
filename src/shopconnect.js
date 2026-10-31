@@ -621,40 +621,63 @@ const REG_PATH = (id) => `/api/2026-09-16/payment-methods/${encodeURIComponent(i
 const EMAIL_REQUIRED = "CONSUMER_EMAIL_REQUIRED";
 /** True for Crossmint's "no registration for this card" refusal of an order intent, in any of its spellings. */
 const noRegistration = (code) => /REGISTRATION_NOT_FOUND|ORDER_INTENT_REGISTRATION/i.test(String(code ?? ""));
-/** The email receipts go to: their shipping record (src/shipping.js gathers it from their facts, account and Gmail). Never logged. */
-function emailFor(conversationId) {
-  try { return String(shipping.profileFor(conversationId)?.email ?? "").trim(); } catch { return ""; }
+/** "Card ••••1929", or "Your card" when the last four are not on record. */
+const cardName = (card) => (card?.last4 ? `Card ••••${card.last4}` : "Your card");
+/**
+ * The email the card's receipts go to, by the owner's rule (2026-10-31): the one on their record, or
+ * exactly one known anywhere (used, and announced by the caller), or none / two or more (their
+ * decision, asked with what is on record and why). { email, inferred, choices }. Never logged.
+ */
+function receiptEmail(conversationId) {
+  const record = shipping.normalize("email", shipping.profileRow(conversationId)?.email);
+  if (record) return { email: record, inferred: false, choices: [record] };
+  let choices = [];
+  try { choices = shipping.knownEmails(conversationId); } catch { choices = []; }
+  if (choices.length === 1) {
+    shipping.learn(conversationId, { email: choices[0] }, { source: "record" });
+    return { email: choices[0], inferred: true, choices };
+  }
+  return { email: "", inferred: false, choices };
+}
+/** The ask for the email, with why and what is on record: none → why; two or more → which one. */
+export function emailAsk(card, choices, { atPay = false } = {}) {
+  const lead = atPay ? `Face ID worked, but ${cardName(card).replace(/^Card/, "card").replace(/^Your card/, "your card")} can't pay yet` : `${cardName(card)} is saved, but it can't pay`;
+  const then = atPay ? " Tell me here, then tap the link again." : "";
+  if (choices.length >= 2) return `${lead}: I need an email for its receipts, and I have ${choices.slice(0, -1).join(", ")} and ${choices[choices.length - 1]} on record. Which one?${then}`;
+  return `${lead} until I have an email for its receipts. Which one should I use?${then}`;
 }
 /**
  * Registers the saved card for order intents, with the person's email — Crossmint refuses the
  * registration without one, and an unregistered card cannot pay (order_intent_failed). The row keeps
- * the outcome: registered 1, or 0 with the code. { ok } | { ok: false, error: "email_required" | "crossmint_refused", status, code }.
- * When the email is the missing piece the person is told once, in plain words, what to send.
+ * the outcome: registered 1, or 0 with the code.
+ * { ok, email, inferred } | { ok: false, error: "email_required" | "crossmint_refused" | "crossmint_unreachable", status, code, choices }.
+ * With `tell`, the person hears once what is needed (the ask names what is on record and why); the
+ * outcome line ("set up to pay") is the caller's, so each moment is one text.
  */
 export async function registerCard(conversationId, { tell = true } = {}) {
   const card = cardOf(conversationId);
   if (!card) return { ok: false, error: "no_card" };
   const mark = (registered, code = "") => q("UPDATE shop_cards SET registered = ?, reg_error = ? WHERE conversation_id = ?").run(registered, code, conversationId);
-  const askEmail = async () => {
+  const askEmail = async (choices) => {
     if (!tell || q("UPDATE shop_cards SET asked_email = 1 WHERE conversation_id = ? AND asked_email = 0").run(conversationId).changes !== 1) return;
-    await notify(conversationId, "Card saved. One more thing before it can pay: which email should receipts go to?");
+    await notify(conversationId, emailAsk(card, choices));
   };
-  const email = emailFor(conversationId);
+  const { email, inferred, choices } = receiptEmail(conversationId);
   if (!email) {
     mark(0, EMAIL_REQUIRED);
-    logFn({ card_registration: "skipped", code: EMAIL_REQUIRED });
-    await askEmail();
-    return { ok: false, error: "email_required", code: EMAIL_REQUIRED };
+    logFn({ card_registration: "skipped", code: EMAIL_REQUIRED, known_emails: choices.length });
+    await askEmail(choices);
+    return { ok: false, error: "email_required", code: EMAIL_REQUIRED, choices };
   }
   let r;
   try { r = await asUser(conversationId, REG_PATH(card.paymentMethodId), { method: "PUT", body: { countryCode: "US", languageCode: "en-US", email } }); }
-  catch (e) { logFn({ card_registration: "error", detail: short(e?.message ?? e, 60) }); return { ok: false, error: "crossmint_unreachable", detail: short(e?.message ?? e, 60) }; }
-  if (r.ok) { mark(1, ""); q("UPDATE shop_cards SET asked_email = 0 WHERE conversation_id = ?").run(conversationId); logFn({ card_registration: "ok", status: r.status }); return { ok: true }; }
+  catch (e) { logFn({ card_registration: "error", detail: short(e?.message ?? e, 60) }); return { ok: false, error: "crossmint_unreachable", detail: short(e?.message ?? e, 60), choices }; }
+  if (r.ok) { mark(1, ""); q("UPDATE shop_cards SET asked_email = 0 WHERE conversation_id = ?").run(conversationId); logFn({ card_registration: "ok", status: r.status, inferred_email: inferred }); return { ok: true, email, inferred }; }
   const code = crossmintError(r.json);
   mark(0, code);
   logFn({ card_registration: "refused", status: r.status, code });
-  if (code === EMAIL_REQUIRED) await askEmail();
-  return { ok: false, error: code === EMAIL_REQUIRED ? "email_required" : "crossmint_refused", status: r.status, code };
+  if (code === EMAIL_REQUIRED) await askEmail(choices);
+  return { ok: false, error: code === EMAIL_REQUIRED ? "email_required" : "crossmint_refused", status: r.status, code, choices };
 }
 /** They said which email receipts go to: kept on their record, and the card registered with it. */
 export async function setReceiptEmail(conversationId, email) {
@@ -698,8 +721,13 @@ export async function saveCard(token, { paymentMethodId, brand = "", last4 = "" 
      ON CONFLICT (conversation_id) DO UPDATE SET payment_method_id = excluded.payment_method_id, brand = excluded.brand, last4 = excluded.last4, saved_at = excluded.saved_at, registered = NULL, reg_error = '', asked_email = 0`)
     .run(link.conversation_id, paymentMethodId, String(brand).slice(0, 20), l4, clock.now());
   q("UPDATE shop_links SET state = 'connected' WHERE id = ?").run(link.id);
+  const card = cardOf(link.conversation_id);
   const reg = await registerCard(link.conversation_id);
-  return { ok: true, registered: !!reg.ok, ...(reg.ok ? {} : { needs_email: reg.error === "email_required" }) };
+  // Set up at save time, and said only when it is: one line, naming the email when it was Reason's pick.
+  if (reg.ok) await notify(link.conversation_id, `${cardName(card)} is set up to pay.${reg.inferred ? ` Receipts go to ${reg.email}.` : ""}`);
+  // Refused for another reason: what happened and what Reason will do next, never silence.
+  else if (reg.error !== "email_required") await notify(link.conversation_id, `${cardName(card)} is saved, but it couldn't be set up to pay just now. I'll try again when it's time to pay and tell you if it still won't.`);
+  return { ok: true, registered: !!reg.ok, ...(reg.ok ? {} : { needs_email: reg.error === "email_required", ...(reg.choices?.length ? { emails: reg.choices } : {}) }) };
 }
 export async function removeCard(conversationId) {
   const card = cardOf(conversationId);
@@ -789,9 +817,11 @@ async function payRow(row, { confirmationId = null } = {}) {
   };
   // A card Crossmint has no registration for cannot pay: registered first (with their email), and if
   // that is what is missing the person is told what to send instead of a failure nobody can read.
+  let receipts = null; // the email Reason picked at pay time, if it did: said with the outcome
   if (card.registered !== 1) {
     const reg = await registerCard(conversationId, { tell: false });
-    if (!reg.ok) return failed(reg.status ?? null, reg.code ?? reg.detail ?? reg.error, reg.error === "email_required" ? { needs_email: true } : {});
+    if (!reg.ok) return failed(reg.status ?? null, reg.code ?? reg.detail ?? reg.error, reg.error === "email_required" ? { needs_email: true, emails: reg.choices ?? [] } : {});
+    if (reg.inferred) receipts = reg.email;
   }
   const intent = async () => asUser(conversationId, "/api/unstable/order-intents", {
     method: "POST",
@@ -809,8 +839,8 @@ async function payRow(row, { confirmationId = null } = {}) {
   // register now and try the intent once more. Only then is it a failure.
   if (!oi.ok && noRegistration(crossmintError(oi.json))) {
     const reg = await registerCard(conversationId, { tell: false });
-    if (!reg.ok && reg.error === "email_required") return failed(oi.status, crossmintError(oi.json), { needs_email: true });
-    if (reg.ok) { try { oi = await intent(); } catch (e) { return failed(null, short(e?.message ?? e, 60)); } }
+    if (!reg.ok && reg.error === "email_required") return failed(oi.status, crossmintError(oi.json), { needs_email: true, emails: reg.choices ?? [] });
+    if (reg.ok) { if (reg.inferred) receipts = reg.email; try { oi = await intent(); } catch (e) { return failed(null, short(e?.message ?? e, 60)); } }
   }
   const orderIntentId = oi.json?.orderIntentId;
   if (!oi.ok || !orderIntentId) return failed(oi.status, crossmintError(oi.json));
@@ -828,7 +858,7 @@ async function payRow(row, { confirmationId = null } = {}) {
   setStage(row.run_id, "paid");
   q("UPDATE shop_runs SET paid_at = ?, mail_until = ? WHERE run_id = ?").run(clock.now(), clock.now() + MAIL_WATCH_MS, row.run_id);
   watchMail(row.run_id);
-  return { ok: true, amount: amountText(row), merchant: row.merchant_name };
+  return { ok: true, amount: amountText(row), merchant: row.merchant_name, ...(receipts ? { receipts_email: receipts } : {}) };
 }
 // ---------------------------------------------------------------- approval by passkey
 /** The Face ID link for an asked payment (five minutes, one use; src/passkey.js). */
@@ -856,10 +886,10 @@ export async function payByPasskey(token, response) {
   if (!ok.ok) return ok;
   const out = await payRow(v.row);
   passkey.logEvent(v.row.conversation_id, v.row, out.ok ? "paid" : out.unknown_outcome ? "unknown_outcome" : "pay_failed", out.ok ? "" : [out.error, out.status, out.detail].filter(Boolean).join(" "));
-  if (out.ok) await notify(v.row.conversation_id, `Approved with Face ID. Paid ${out.amount} at ${out.merchant}; the store still has to place it, and I'll tell you when it's through.`);
-  // No model turn runs here, so the one thing they can fix is said in plain words: once at this
-  // moment (a save-time ask, if there was one, was worded for that moment), and the link opens again below.
-  else if (out.needs_email && q("UPDATE shop_cards SET asked_email = 2 WHERE conversation_id = ? AND asked_email < 2").run(v.row.conversation_id).changes === 1) await notify(v.row.conversation_id, "Face ID worked, but the card can't pay yet: which email should receipts go to? Send it here and then tap the link again.");
+  if (out.ok) await notify(v.row.conversation_id, `Approved with Face ID. Paid ${out.amount} at ${out.merchant}; the store still has to place it, and I'll tell you when it's through.${out.receipts_email ? ` Receipts go to ${out.receipts_email}.` : ""}`);
+  // No model turn runs here, so the one thing they can fix is said in plain words — what is on record
+  // and why — once at this moment (a save-time ask was worded for that moment); the link opens again below.
+  else if (out.needs_email && q("UPDATE shop_cards SET asked_email = 2 WHERE conversation_id = ? AND asked_email < 2").run(v.row.conversation_id).changes === 1) await notify(v.row.conversation_id, emailAsk(cardOf(v.row.conversation_id), out.emails ?? [], { atPay: true }));
   // Nothing started (no order intent, so no charge is possible): the link opens again for another tap,
   // under a fresh challenge, and the page says Face ID worked but the payment did not start. Once the
   // card may have reached the store (unknown_outcome) the link stays used: never paid twice.
