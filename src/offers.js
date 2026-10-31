@@ -358,7 +358,23 @@ function replyAmountCents(s) {
 
 const DISCOUNT = /\b(coupons?|promo(?:tional)? codes?|promos?|discounts?|vouchers?|\d{1,2}\s?% off|percent off|on sale|sale price|price drop|clearance|markdown|deal ends)\b/i;
 const DISCOUNT_SOURCE = /coupon|promo|discount|voucher|% off|percent off|sale|clearance|markdown|save \$|was \$|list price/i;
+/** A whole bracketed line that is a tool's note, not words to a person: "(compared: a seller $18.99, …)". */
+export const TOOL_NOTE_LINE = /^\s*\((?:compared|tool note|internal|debug)\s*:.*\)\s*$|^\s*\(.*\ba seller \$\d.*\)\s*$/i;
 const BEST = /\b(best (?:deal|price|value|offer)|cheapest|lowest(?:-| )price[ds]?|lowest cost|least expensive|can't beat|cannot beat)\b/i;
+
+// "I'll find the cheapest total" is a promise, not a claim: no correction under it (cage, 2026-10-31).
+const ABOUT_TO = /\b(?:find(?:ing)?|look(?:ing)? for|search(?:ing)? for|hunt(?:ing)? for|check(?:ing)?|compar(?:e|ing)|get you|track(?:ing)? down|looking)\b[^.!?\n—–;:,]{0,16}$/i;
+// "That's not a proven best deal" already says the thing the correction would.
+const SAYS_NOT = /\b(?:not|no|isn't|isnt|never|can't say|cannot say)(?:\s+(?:a|an|the|really|necessarily|proven|checked|verified|confirmed|guaranteed))*\s*$/i;
+/** Does the text say something IS the best / cheapest (not that it will go looking for it)? */
+export function claimsBest(text) {
+  const re = new RegExp(BEST.source, "gi");
+  for (const m of String(text ?? "").matchAll(re)) {
+    const before = text.slice(Math.max(0, m.index - 40), m.index);
+    if (!ABOUT_TO.test(before) && !SAYS_NOT.test(before)) return true;
+  }
+  return false;
+}
 
 /**
  * The check, on the text about to be sent — the turn's reply, and every message_send mid-turn
@@ -379,6 +395,14 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     // gets ", unverified" rather than a bracket of its own: "($18.99)" became "($18.99 (unverified))"
     // on 2026-10-24, and nested brackets in a text read as broken.
     const unlabelled = [];
+    // 0. A tool's bookkeeping line copied into the text ("(compared: a seller $18.99, …)") never goes out.
+    const original = reply;
+    const noted = reply.split("\n");
+    const kept = noted.filter(l => !TOOL_NOTE_LINE.test(l));
+    if (kept.length < noted.length) {
+      flags.push({ rule: "tool_note_stripped", lines: noted.length - kept.length });
+      reply = kept.join("\n").replace(/\n+$/, "");
+    }
     let text = reply.replace(REPLY_MONEY, (m, offset, whole) => {
       if (known.has(replyAmountCents(m))) return m;
       const near = whole.slice(Math.max(0, offset - 40), offset + m.length + 40);
@@ -399,7 +423,7 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     // cheapest dates are early december" is read off the fares it just pulled, and a line about not
     // comparing sellers under it is wrong. Its own limits ("from $X", not every fare) ride in the
     // tool result.
-    if (BEST.test(reply) && !t.faresCompared) {
+    if (claimsBest(reply) && !t.faresCompared) {
       const priced = t.offers.filter(o => o.price_cents != null);
       if (priced.length < 2) {
         flags.push({ rule: "best_unsupported", compared: priced.length });
@@ -407,8 +431,9 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
           ? "(that's not a checked best price — i only looked at " + (priced[0].seller || "one seller") + ": " + money(priced[0].price_cents) + ".)"
           : "(that's not a checked best price — i didn't compare sellers this time.)");
       } else if (!priced.every(o => text.includes(money(o.price_cents)))) {
+        // Compared for real: logged, never glued onto the text. "(compared: a seller $18.99, …)"
+        // under the owner's CeraVe options on 2026-10-31 read as debug output, not an answer.
         flags.push({ rule: "best_compared_listed", compared: priced.length });
-        extra.push("(compared: " + priced.slice(0, 6).map(o => (o.seller || "a seller") + " " + money(o.price_cents)).join(", ") + ".)");
       }
     }
     // 4. A purchase ask carries its offer record: AgentCard's total and the source.
@@ -421,7 +446,7 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
       if (!hasTotal || !hasSource) { flags.push({ rule: "ask_without_offer" }); extra.push(ask.line); }
     }
     if (extra.length) text = text + "\n" + extra.join("\n");
-    return { text, changed: text !== reply, flags };
+    return { text, changed: text !== original, flags };
   } catch {
     return { text: reply, changed: false, flags: [{ rule: "guard_error" }] };
   }

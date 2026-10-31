@@ -13149,6 +13149,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         html = got.html;
         url = got.url;
       }
+      // A product page this tool read is one a tool found: a choice card may use it and its picture
+      // (src/choicecards.js). A shop's bot wall answers 200 at /blocked — never that.
+      if (!/\/(blocked|captcha|challenge)\b/i.test((() => { try { return new URL(url).pathname; } catch { return "/blocked"; } })())) {
+        // The address asked for counts too, but only when it is the same page that was read.
+        const page = (u) => { try { const x = new URL(u); return x.origin + x.pathname; } catch { return null; } };
+        const asked = String(input.url ?? "").trim();
+        db.rememberSeenUrls(c, [url, ...(!input.from_browser && asked !== url && page(asked) && page(asked) === page(url) ? [asked] : [])], { kind: "page" });
+      }
       const rec = offers.offerFromHtml(html, url, clock.now());
       rec.cart_url = cartLinkFromHtml(html, url);
       const row = db.saveOffer(c, rec);

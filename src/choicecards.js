@@ -44,6 +44,7 @@ import { fetchImage } from "./media.js";
 import { checkUrl } from "./pictures.js";
 import { webLookup, plainFetch } from "./weblookup.js";
 import { parallelClient } from "./parallel.js";
+import { connectAllowedFor } from "./shopconnect.js";
 
 export const CHOICE_TOOLS = new Set(["show_choices"]);
 
@@ -139,6 +140,9 @@ export function themeFor(conversationId) {
  * One card's HTML, laid out in points (360×450) and zoomed 3× so the picture is 1080×1350.
  * `photo` is a data: URI — the bytes are already here, nothing is fetched while drawing.
  */
+/** "16 oz" never breaks across two lines of a card's name. */
+const keepSize = (html) => html.replace(/(\d)\s+(fl\.?\s?oz|oz|ml|mL|l|g|kg|lb|lbs|ct|count|pack)\b/g, (_, n, u) => `${n}&nbsp;${u.replace(/\s/g, "&nbsp;")}`);
+
 export function choiceCardHtml({ n, kind = "shopping", name, brand = "", price = "", detail = "", why = "", photo, theme = "paper" }) {
   const t = TOKENS[theme === "night" ? "night" : "paper"];
   const f = fonts();
@@ -170,7 +174,7 @@ h1{font:italic 400 ${String(name).length > 24 ? 26 : 29}px/1.06 "Card Serif",Geo
 .wm .wm-bubble path{stroke:${t.pen}}
 </style></head><body>
 <div class="ph"><img src="${photo}" alt=""><div class="num">${Number(n)}</div></div>
-<div class="tx">${brand ? `<p class="eb">${esc(brand)}</p>` : ""}<h1>${esc(name)}</h1>${meta ? `<p class="meta">${meta}</p>` : ""}</div>
+<div class="tx">${brand ? `<p class="eb">${esc(brand)}</p>` : ""}<h1>${keepSize(esc(name))}</h1>${meta ? `<p class="meta">${meta}</p>` : ""}</div>
 <div class="ft">${why ? `<p class="why">${esc(why)}</p>` : ""}<div class="wm">${wordmark()}</div></div>
 </body></html>`;
 }
@@ -632,24 +636,27 @@ const words = (s) => String(s ?? "").toLowerCase().match(/[a-z0-9]{3,}/g)?.filte
  * the listing's own picture will be used). Returns { option, dropped } — the option with anything
  * the listing does not back taken off, and a short line per thing taken off.
  */
-export function checkAgainstListing(o, listing, { photoUrl = "", photoFromListing = true } = {}) {
+export function checkAgainstListing(o, listing, { photoUrl = "", photoFromListing = true, offerCents = [] } = {}) {
   const out = { ...o };
   const dropped = [];
-  const fail = (why) => {
-    if (amountOf(out.price) != null) { dropped.push(`price ${out.price} (${why})`); out.price = ""; }
+  // The price offer_check read off this exact page for them: backed, whatever else the page says.
+  const offered = (amt) => amt != null && offerCents.some(c => Math.abs(c / 100 - amt) < 0.005);
+  const fail = (why, offerOk = false) => {
+    if (amountOf(out.price) != null && !(offerOk && offered(amountOf(out.price)))) { dropped.push(`price ${out.price} (${why})`); out.price = ""; }
     for (const k of SIZED) {
       for (const s of sizesIn(out[k])) { dropped.push(`size ${s.raw.trim()} (${why})`); out[k] = tidy(out[k].replace(s.raw, " ")); }
     }
     return { option: out, dropped };
   };
-  if (!listing) return fail("no store listing to check it against");
+  // No listing read back: only offer_check's own read of the page the card shows can back a price.
+  if (!listing) return fail("no store listing to check it against", photoFromListing);
   if (!photoFromListing) return fail("the photo is not from its listing");
   const head = `${listing.title ?? ""}\n${String(listing.text ?? "").slice(0, 1500)}`.toLowerCase();
   const want = [...new Set(words(o.name))];
   if (want.length && want.filter(w => head.includes(w)).length / want.length < 0.5) return fail("the listing is a different product");
   // Price: one of the amounts the listing itself shows.
   const amt = amountOf(out.price);
-  if (amt != null && !pricesIn(head).some(p => Math.abs(p - amt) < 0.005)) {
+  if (amt != null && !offered(amt) && !pricesIn(head).some(p => Math.abs(p - amt) < 0.005)) {
     dropped.push(`price ${out.price} (not on the listing)`); out.price = "";
   }
   // Size: the size in the listing's own title — a page lists every size it comes in, the title is
@@ -666,6 +673,13 @@ export function checkAgainstListing(o, listing, { photoUrl = "", photoFromListin
   return { option: out, dropped };
 }
 
+/** The listing is not this product (the same test checkAgainstListing fails on). */
+const isOtherProduct = (o, listing) => {
+  const head = `${listing.title ?? ""}\n${String(listing.text ?? "").slice(0, 1500)}`.toLowerCase();
+  const want = [...new Set(words(o.name))];
+  return want.length > 0 && want.filter(w => head.includes(w)).length / want.length < 0.5;
+};
+
 const LISTING_ASK = "this product's exact name, size or variant, and price on this listing";
 
 /** Find the listing an option's photo came from, read it, and check the option against it. */
@@ -674,13 +688,83 @@ async function checkListing(c, o, { lookup = (u) => webLookup(u, { maxChars: 400
   const from = img ? db.seenUrlInfo(c, img)?.from ?? "" : "";
   const page = [from, o.url].find(u => u && db.hasSeenUrl(c, u)) ?? "";
   if (!page) return checkAgainstListing(o, null);
+  // Prices offer_check read off this very page in the last day (the owner's Ulta sizes, 2026-10-31).
+  const offerCents = (() => { try { return db.offerPricesFor(c, page, clock.now() - 24 * 3600_000); } catch { return []; } })();
   const listing = await lookup(page).catch(() => null);
-  if (!listing?.ok || !(listing.title || listing.text)) return checkAgainstListing(o, null);
   // With no picture of its own the card shows this page's own picture, which is this listing.
+  if (!listing?.ok || !(listing.title || listing.text)) {
+    const off = checkAgainstListing(o, null, { offerCents, photoFromListing: !img || from === page });
+    return { ...off, option: { ...off.option, url: off.option.url || page } };
+  }
   const photoFromListing = !img || from === page || (listing.images ?? []).includes(img);
-  const checked = checkAgainstListing(o, listing, { photoUrl: img, photoFromListing });
-  return { ...checked, option: { ...checked.option, url: checked.option.url || page } };
+  const checked = checkAgainstListing(o, listing, { photoUrl: img, photoFromListing, offerCents });
+  const images = (listing.images ?? []).filter(u => /^https:\/\/\S+$/.test(String(u))).slice(0, 4);
+  const otherProduct = checked.dropped.some(d => /the listing is a different product/.test(d)) || isOtherProduct(o, listing);
+  return { ...checked, option: { ...checked.option, url: checked.option.url || page }, page, images, otherProduct };
 }
+
+/**
+ * A product card with no picture yet — a retailer's page that blocks a plain read (Target, Meijer,
+ * Walmart) has no preview picture to take. First the pictures the listing read itself returned (the
+ * photo is then that listing's, so its checked price stays); then a picture search for the product,
+ * name-matched. A searched photo from another page is not this listing's: the card then carries no
+ * price or size (checkAgainstListing with photoFromListing false), never a guess. Null: none.
+ */
+async function productPhoto(c, o, check, { fetchPhoto = fetchImage, fetchImpl, search = undefined } = {}) {
+  const tryOne = async (u) => photoFor(c, u, { fetchPhoto, ...(fetchImpl ? { fetchImpl } : {}) }).catch(() => ({ ok: false }));
+  const name = [o.brand && !/^(ulta|target|walmart|amazon|cvs|walgreens|meijer|costco|sephora)$/i.test(o.brand) ? o.brand : "", o.name].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  const samePage = (u) => { try { const a = new URL(u), b = new URL(check?.page || o.url || ""); return a.origin + a.pathname === b.origin + b.pathname; } catch { return false; } };
+  // Candidates: the listing's own pictures (only when the listing IS this product — a page's
+  // pictures also hold its logo, banners and other products), then a picture search's hits.
+  const cands = [];
+  if (!check?.otherProduct) for (const u of (check?.images ?? []).slice(0, 3)) {
+    db.rememberSeenUrls(c, [u], { kind: "page", from: check.page });
+    cands.push({ u, fromListing: true });
+  }
+  const client = search === undefined ? searchImpl() : search;
+  const out = client?.imageSearch ? await client.imageSearch({ queries: [`${name} product photo`], objective: `A clear product photo of ${name}.`, maxResults: 8 }).catch(() => null) : null;
+  const want = [...new Set(words(o.name))];
+  const hits = (out?.ok ? out.results : []).filter(r => /^https:\/\//.test(r.image_url ?? "")).filter(r => {
+    const where = `${r.title ?? ""} ${String(r.page_url ?? "").replace(/[-_/]+/g, " ")}`.toLowerCase();
+    return want.length && want.filter(w => where.includes(w)).length / want.length >= 0.75;
+  }).sort((a, b) => Number(samePage(b.page_url)) - Number(samePage(a.page_url)));
+  for (const r of hits.slice(0, 4)) {
+    db.rememberSeenUrls(c, [r.image_url], { kind: "search", from: r.page_url || "" });
+    cands.push({ u: r.image_url, fromListing: samePage(r.page_url) && !check?.otherProduct });
+  }
+  // Words can name the product while the picture is the one beside it (a "Cream-to-Foam" title over
+  // the Hydrating bottle, server check 2026-10-31): every candidate is looked at, and only a photo
+  // whose label IS this product is used. No look, no photo from here.
+  const got = [];
+  for (const x of cands) {
+    const g = await tryOne(x.u);
+    const m = g.ok ? /^data:(image\/(?:jpeg|png|webp|gif))(?:;[^,;]*)*;base64,(.+)$/s.exec(g.uri) : null;
+    if (m) got.push({ ...x, g, photo: { mediaType: m[1], base64: m[2] } });
+  }
+  if (!got.length) return null;
+  const yes = await productLookImpl({ name, photos: got.map(x => x.photo) }).catch(() => null);
+  const k = got.findIndex((_, i) => yes?.has(i + 1));
+  if (k < 0) return null;
+  return { got: got[k].g, fromListing: got[k].fromListing, labelSize: yes.get?.(k + 1)?.size ?? "" };
+}
+
+const PRODUCT_LOOK_SYSTEM = "You check product photos for a shopping card. For each numbered photo, say whether the product in it is exactly the named product: the same brand and the same product line and variant as written on its label (a different variant of the same brand — Hydrating vs Hydrating Cream-to-Foam vs Foaming — is NOT it). Size does not decide it, but give the size printed on the label (e.g. 12 fl oz) when you can read it, else an empty string. A photo of several products, a person, a box only, or an unreadable label is not it.";
+const PRODUCT_LOOK_SCHEMA = { type: "object", properties: { photos: { type: "array", items: { type: "object", properties: { n: { type: "integer" }, is_it: { type: "boolean" }, size: { type: "string" } }, required: ["n", "is_it"] } } }, required: ["photos"] };
+/** Which of these photos show exactly this product (by its label): a Map of photo number → { size on its label }, or null when the look failed. */
+export async function lookAtProductPhotos({ name, photos }, { run = null, model = process.env.REASON_PLACE_LOOK_MODEL || "haiku", timeoutMs = Number(process.env.REASON_PLACE_LOOK_TIMEOUT_MS || 30_000) } = {}) {
+  const cli = run ?? (await import("./backends/cli.js"));
+  if (!run && cli.sideCallsOut?.()) return null;
+  const images = photos.map(p => ({ type: "image", source: { type: "base64", media_type: p.mediaType, data: p.base64 } }));
+  const prompt = `The product: ${String(name).slice(0, 160)}. Photos 1 to ${photos.length}, in order.`;
+  const r = await (run ?? cli.runClaudeCli)({ prompt, system: PRODUCT_LOOK_SYSTEM, jsonSchema: PRODUCT_LOOK_SCHEMA, images, model, timeoutMs, feature: "product_photo" }).catch(() => null);
+  if (!r?.ok) return null;
+  let v = r.envelope?.structured_output;
+  if (!v || typeof v !== "object") { try { v = JSON.parse(String(r.envelope?.result ?? "")); } catch { return null; } }
+  return new Map((Array.isArray(v?.photos) ? v.photos : []).filter(x => Number.isInteger(x?.n) && x.is_it === true).map(x => [x.n, { size: String(x.size ?? "").slice(0, 40) }]));
+}
+let productLookImpl = lookAtProductPhotos;
+/** Tests: the product look, injected (never a real model in the suite). */
+export function _setProductLook(fn) { const was = productLookImpl; productLookImpl = fn ?? lookAtProductPhotos; return was; }
 
 export async function runChoiceTool(name, input, ctx) {
   const c = ctx.conversationId;
@@ -694,12 +778,12 @@ export async function runChoiceTool(name, input, ctx) {
   // Products: price and size only as the listing the photo came from says them (checkListing).
   const checks = input.kind === "places" ? asked.map(o => ({ option: o, dropped: [] }))
     : await Promise.all(asked.map(o => checkListing(c, o, ctx.lookup ? { lookup: ctx.lookup } : {}).catch(() => checkAgainstListing(o, null))));
-  const options = checks.map(x => x.option);
-  const offCards = checks.flatMap((x, i) => x.dropped.map(d => `option ${i + 1}: ${d}`));
-  if (offCards.length) log({ choice_cards_unbacked: c, dropped: offCards });
-  const offNote = offCards.length ? ` Left off because the store listing does not back it — do not say these in your line either: ${offCards.join("; ")}.` : "";
+  let options = checks.map(x => x.option);
+  const PRODUCT_PHOTO_BUDGET_MS = Number(process.env.REASON_PRODUCT_PHOTO_BUDGET_MS || 25_000);
 
-  // Every photo or none: a set where card 2 is a picture and card 3 is a sentence reads as broken.
+  // Every card a photo: a set where card 2 is a picture and card 3 is a sentence reads as broken.
+  // An option with no usable picture is left out of the set; only fewer than 2 left means a list
+  // (the owner's CeraVe sizes on 2026-10-31 all went to text over two missing pictures).
   // A place shows its room — the inside, the seating, the counter — not a cup or a logo (placePhoto).
   // Places: every place's pictures looked at together, then handed out in order so no two cards
   // in the set show the same photo (a directory can give two branches one picture).
@@ -717,6 +801,26 @@ export async function runChoiceTool(name, input, ctx) {
       if (!room.cached && room.shows && key) try { db.rememberPlacePhoto(key, { url: room.url, shows: room.shows }); } catch { /* best effort */ }
     }
     let got = room?.ok ? room : await photoFor(c, o.image_url, { ...ctx, pageUrl: o.url ?? null }).catch(e => ({ ok: false, why: e?.message ?? String(e) }));
+    if (!ranks && !got.ok) {
+      const found = await withDeadline(productPhoto(c, asked[i], checks[i], { ...ctx, ...(ctx.productSearch !== undefined ? { search: ctx.productSearch } : {}) }), PRODUCT_PHOTO_BUDGET_MS).catch(() => null);
+      if (found?.got?.ok) {
+        log({ choice_product_photo: c, n: i + 1, from_listing: found.fromListing });
+        got = found.got;
+        // A photo off its listing: nothing the listing says goes on the card (the 16-oz-over-12-oz rule).
+        if (!found.fromListing) {
+          checks[i] = { ...checkAgainstListing(asked[i], null, { photoFromListing: false }), page: checks[i]?.page };
+          options[i] = { ...checks[i].option, url: asked[i].url || checks[i].page || "" };
+        } else if (found.labelSize) {
+          // The bottle in the photo says its size: a size on the card that disagrees comes off.
+          const label = sizesIn(found.labelSize);
+          const o2 = { ...options[i] };
+          for (const k of SIZED) for (const z of sizesIn(o2[k])) {
+            if (label.length && !label.some(l => sameSize(l, z))) { checks[i].dropped.push(`size ${z.raw.trim()} (the photo is the ${label[0].raw.trim()})`); o2[k] = tidy(o2[k].replace(z.raw, " ")); }
+          }
+          options[i] = o2;
+        }
+      }
+    }
     // The ordinary path keeps the one-photo-per-set rule too (a chain's og:image on two branches).
     if (ranks && got.ok && !room?.ok) {
       const sum = uriSum(got.uri);
@@ -727,18 +831,36 @@ export async function runChoiceTool(name, input, ctx) {
     photos.push(got);
   }
   let cards = null;
-  let why = photos.find(p => !p.ok)?.why ?? null;
+  let why = null;
+  let leftOut = [];
+  let kept = options.map((_, i) => i);
+  if (photos.filter(p => p.ok).length >= 2) {
+    kept = kept.filter(i => photos[i].ok);
+    leftOut = asked.filter((_, i) => !photos[i].ok);   // as the model named it, so it knows which
+  } else why = photos.find(p => !p.ok)?.why ?? null;
+  if (leftOut.length) log({ choice_cards_left_out: c, n: leftOut.length, why: photos.filter(p => !p.ok).map(p => p.why) });
+  const shots = kept.map(i => photos[i]);
+  const all = options;
+  options = kept.map(i => all[i]);
   if (!why) {
     try {
       cards = [];
       for (const [i, o] of options.entries()) {
-        cards.push(await drawCard({ n: i + 1, kind: input.kind, theme, ...o, photo: photos[i].uri }, { shoot: ctx.shoot ?? shootWithChromium }));
+        cards.push(await drawCard({ n: i + 1, kind: input.kind, theme, ...o, photo: shots[i].uri }, { shoot: ctx.shoot ?? shootWithChromium }));
       }
     } catch (e) {
+      // No cards at all: the list carries every option again, the photo-less ones too.
       cards = null;
       why = (e?.message ?? String(e)).split("\n")[0];
+      kept = all.map((_, i) => i);
+      leftOut = [];
+      options = all;
     }
   }
+  const offCards = kept.flatMap((i, k) => checks[i].dropped.map(d => `option ${k + 1}: ${d}`));
+  if (offCards.length) log({ choice_cards_unbacked: c, dropped: offCards });
+  const offNote = offCards.length ? ` Left off because the store listing does not back it — do not say these in your line either: ${offCards.join("; ")}.` : "";
+  const outNote = leftOut.length ? ` Not in the set (no picture of it could be shown): ${leftOut.map(o => o.name).join("; ")} — do not number it; mention it in a few words only if it matters.` : "";
   const set = db.openChoiceSet({
     conversationId: c, kind: input.kind,
     options: options.map((o, i) => ({ n: i + 1, name: o.name, brand: o.brand ?? "", price: o.price ?? "", detail: o.detail ?? "", why: o.why ?? "", url: o.url ?? "", image_url: o.image_url ?? "", card: cards?.[i]?.name ?? null })),
@@ -755,7 +877,7 @@ export async function runChoiceTool(name, input, ctx) {
   log({ choice_cards_drawn: c, set: set.id, n: cards.length, theme });
   return {
     ok: true, set_id: set.id, cards: cards.length,
-    note: `${cards.length} cards are drawn and go out right after your reply, one bubble each, numbered 1–${cards.length}. Your reply is just the one short line above them — what these are and that it is their pick. Do not list them again and do not mention cards or pictures.${offNote}`,
+    note: `${cards.length} cards are drawn and go out right after your reply, one bubble each, numbered 1–${cards.length}. Your reply is just the one short line above them — what these are and that it is their pick. Do not list them again and do not mention cards or pictures.${offNote}${outNote}`,
   };
 }
 
@@ -836,6 +958,11 @@ export function inboundChoiceLine(conversationId, { text = "", replyTo = null, n
     line += hit ? ` This is a tapback on the line naming option ${hit.n} — that is their pick.` : ` This is a tapback on one of your own texts, not a pick.`;
   } else {
     line += " If this message picks one — by number, by how it looks, by name — go ahead with that one. If it is about something else, leave the options be.";
+  }
+  // A product pick where buying goes through Crossmint: straight into its checkout, never AgentCard.
+  if (set.kind !== "places" && connectAllowedFor(conversationId)) {
+    const pages = set.options.filter(o => o.url).map(o => `${o.n} = ${o.url}`).join("; ");
+    line += ` If they asked to buy it, their pick is the go-ahead to start the checkout: store_checkout for that one${pages ? ` (start_url, its page: ${pages})` : ""} — nothing is charged until they approve Crossmint's total.`;
   }
   return `${line}]`;
 }

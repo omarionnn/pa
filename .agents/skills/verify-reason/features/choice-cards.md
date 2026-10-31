@@ -15,6 +15,25 @@ not contradicted by the photo's file name ("_12oz_"). Anything not backed is lef
 tool's note (log `choice_cards_unbacked`). No listing / photo from elsewhere / different product → no
 price, no size. Places are never checked. Offline: the "listing check" tests in test/choicecards.test.js.
 
+## One photo short is not a list (owner's CeraVe, 2026-10-31)
+- A product option with no usable picture is LEFT OUT of the set (log `choice_cards_left_out`, named in the
+  note as "Not in the set"); only fewer than 2 photos → numbered text list. If drawing fails, the list carries
+  every option again.
+- Product picture order: image_url → the page's og:image (plain read) → the pictures the listing read
+  (webLookup) returned → a picture search (`choice_product_photo`, Parallel; none on the Mac) whose hits are
+  each LOOKED at (claude-cli haiku, `feature: "product_photo"`, `_setProductLook` in tests): only a label that
+  IS this product/variant is used. No look → no searched photo. A searched photo off the listing → no price,
+  no size on that card.
+- offer_check marks the page it read as seen (never a /blocked wall), and a price offer_check read off that
+  exact page in the last day backs the card's price (`db.offerPricesFor`).
+- A pick on a product set where Crossmint buys (`connectAllowedFor`): the read-along line says store_checkout
+  with that option's page. Offline: test/choice-cards-fallback-1031.test.js.
+- Server live-code check (scratch copy /tmp/rp-* + DB .backup, run as reason, no model turn, nothing sent):
+  his three Ulta sizes → 3 cards with $18.99/$16.99/$15.99 and the right bottle each; a Meijer/Ulta/Target
+  set → 3 cards (2 by look-checked search). Renders: ~/Desktop/reason-choice-cards-1031/.
+- Reply guard (src/offers.js): never a "(compared: …)" tail; a whole bracketed tool-note line is stripped
+  (`tool_note_stripped`); "I'll find the cheapest" / "not a proven best deal" are not best-price claims.
+
 ## Places: the room, not the cup (2026-10-30)
 `rankPlacePhotos`: candidates = the passed image_url + the place page's top 4 pictures (size copies
 collapsed; further down a directory page is the neighbours). Up to 6 fetched, then ONE claude-cli call

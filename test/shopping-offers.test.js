@@ -136,7 +136,7 @@ test("guardReply: a coupon claim with no live source this turn gets a plain line
   assert.equal(offers.guardReply("c2", "there's a coupon on it too").changed, false);
 });
 
-test("guardReply: 'best deal' needs two verified offers this turn, else it says what was compared", () => {
+test("guardReply: 'best deal' needs two verified offers this turn; with two, nothing is glued on (no '(compared: …)' tail, 2026-10-31)", () => {
   offers.beginTurn("c3", "");
   offers.noteOffer("c3", { seller: "Amazon", price_cents: 2250 });
   offers.noteSource("c3", "$22.50");
@@ -145,7 +145,8 @@ test("guardReply: 'best deal' needs two verified offers this turn, else it says 
   offers.noteOffer("c3", { seller: "Walmart", price_cents: 2499 });
   offers.noteSource("c3", "$24.99");
   const two = offers.guardReply("c3", "amazon is the best deal at $22.50");
-  assert.match(two.text, /compared: Amazon \$22\.50, Walmart \$24\.99/);
+  assert.equal(two.text, "amazon is the best deal at $22.50");
+  assert.ok(two.flags.some(f => f.rule === "best_compared_listed"));
 });
 
 // ---------- 2b / 3b: the money ask carries the offer record ----------

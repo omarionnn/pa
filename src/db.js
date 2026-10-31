@@ -7687,6 +7687,13 @@ export function offerForBuy(conversationId, buyConversationId) {
   return row ? getOffer(conversationId, row.id) : null;
 }
 
+/** The prices offer_check read off exactly this page for them since `since` (cents), newest first. */
+export function offerPricesFor(conversationId, url, since = 0) {
+  if (!url) return [];
+  return db.prepare("SELECT price_cents FROM offers WHERE conversation_id = ? AND url = ? AND source = 'page' AND price_cents IS NOT NULL AND fetched_at >= ? ORDER BY fetched_at DESC, id DESC")
+    .all(conversationId, String(url), since).map(r => r.price_cents);
+}
+
 /** One offer, theirs or nobody's. `unverified` comes back as an array. */
 export function getOffer(conversationId, id) {
   const row = db.prepare("SELECT * FROM offers WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
