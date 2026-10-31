@@ -404,18 +404,22 @@ export function addressInInstruction(what, row) {
  * have is added where it says to ship. An address that is somebody else's (a gift) is left exactly as written.
  */
 export function withAddress(what, row) {
-  const text = String(what ?? "").trim();
+  // Offsets from parseAddress are into the whitespace-collapsed text, so that is what is sliced.
+  const text = String(what ?? "").replace(/\s+/g, " ").trim();
   if (!complete(row)) return text;
-  const full = fullAddress(row);
   const p = parseAddress(text);
   if (p) {
     if (addressInInstruction(text, row)) return text;
-    const [a, b] = p.span;
-    const start = p.name_span && (p.first_name || p.name_word) ? p.name_span[0] : a;
-    return `${text.slice(0, start)}${full}${text.slice(b)}`.replace(/\s+/g, " ").replace(/\s+([,.])/g, "$1").trim();
+    return replaceAddress(text, p, row);
   }
-  if (/\b(ship|deliver|address on file|home address|to home|my address|their address)\b/i.test(text)) return `${text.replace(/\.?$/, ".")} Ship to ${full}.`;
+  if (/\b(ship|deliver|address on file|home address|to home|my address|their address)\b/i.test(text)) return `${text.replace(/\.?$/, ".")} Ship to ${fullAddress(row)}.`;
   return text;
+}
+/** `text` with the parsed address `p` (and the name before it) replaced by the record's, whatever ZIP it had. */
+export function replaceAddress(text, p, row) {
+  const [a, b] = p.span;
+  const start = p.name_span && (p.first_name || p.name_word) ? p.name_span[0] : a;
+  return `${text.slice(0, start)}${fullAddress(row)}${text.slice(b)}`.replace(/\s+/g, " ").replace(/\s+([,.])/g, "$1").trim();
 }
 /**
  * The record a run's form is answered from: the person's own, unless the run's instruction ships

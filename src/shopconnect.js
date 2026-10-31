@@ -1195,7 +1195,12 @@ async function correctAndRestart(run, rq, answers) {
   // A payment this run is asking for goes with the old address: declined, nothing charged.
   const open = q("SELECT id FROM shop_payments WHERE run_id = ? AND status = 'asked'").get(run.run_id);
   if (open) { try { await declinePayment({ conversationId: run.conversation_id, paymentId: open.id }); } catch { /* it expires on its own */ } }
-  const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: run.mode === "sign_in" });
+  // The instruction carries the address as it was (startCheckout wrote the old record into it): the old one
+  // — the one with the record's previous ZIP — is replaced whole, so a corrected ZIP is not read as a gift.
+  let what = String(ask.what ?? "").replace(/\s+/g, " ").trim();
+  const old = shipping.parseAddress(what);
+  if (old && (!before?.zip || old.zip === before.zip || old.zip === row?.zip) && shipping.complete(row)) what = shipping.replaceAddress(what, old, row);
+  const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what, item: run.item, maxUsd: ask.max_usd, signIn: run.mode === "sign_in" });
   if (!again.ok) return { ok: false, error: "restart_failed", status: again.status, say: "The record is corrected, but the store would not start the checkout again. Nothing was charged." };
   q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`corrected address; started again as ${again.runId}`, run.run_id);
   follow(again.runId);

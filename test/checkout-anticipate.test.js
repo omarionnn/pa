@@ -367,6 +367,18 @@ test("review: a contact's 'ship to' fact never seeds the record; a correction th
   assert.ok(calls.some((c) => c.path === `/api/unstable/agent-checkouts/${out.runId}/messages` && c.body.parts[0].action === "decline"));
   assert.equal(shipping.profileRow(OMARI).address2, "Apt 2");
   assert.match(runs[fix.run_id].task, /Apt 2/);
+  // A corrected ZIP (a move) is not a gift: the new run ships to the new ZIP and its form is filled with it.
+  runs[fix.run_id].requiredAction = LIVE_ULTA_FORM("req_f2"); runs[fix.run_id].revision = 2;
+  await shop.step(fix.run_id);
+  const moved = await runTool("shop_answer", { run_id: fix.run_id, answers: { address1: "77 Grand Concourse", zip: "10451" } }, { conversationId: OMARI });
+  assert.equal(moved.ok, true, JSON.stringify(moved));
+  assert.match(runs[moved.run_id].task, /Omari Nyarko, 77 Grand Concourse, Apt 2, Bronx, NY 10451/);
+  assert.doesNotMatch(runs[moved.run_id].task, /10469|Bruner/);
+  runs[moved.run_id].requiredAction = LIVE_ULTA_FORM("req_f3"); runs[moved.run_id].revision = 2;
+  await shop.step(moved.run_id);
+  const a3 = posted(moved.run_id)[0].response.answers;
+  assert.equal(a3.zip, "10451"); assert.equal(a3.address1, "77 Grand Concourse");
+  assert.match(said.at(-1).t, /^Shipping to 77 Grand Concourse Apt 2, Bronx, (the usual|as you gave it to me before)\./);
 });
 
 test("review: ordinary sentences with 'here's the link' or 'if you'd rather get it' are not a hedge", async () => {
