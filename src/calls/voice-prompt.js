@@ -124,10 +124,41 @@ export function announcementAgainIn(language, { ownerName = config.ownerName } =
  * at the person who set the thing up is the kind of detail that makes it feel like a product rather
  * than theirs.
  */
+/** The name Reason holds for a person with no name saved yet (src/tools.js my_name). */
+export const NO_NAME = "the person I work for";
+
+/**
+ * Who Reason is, and who it is to the person on their own call — for EVERY user, from their own
+ * account, never one person's details. The first thing a call with your own assistant has to get right:
+ * on 2026-10-31 (call 53) "do you know who I am?" got "let me just check that quickly". Answered from
+ * here, in the moment. A person with no name saved yet is told so honestly, never given someone else's.
+ */
+export function ownCallIdentity({ name }) {
+  const named = !!name && name !== NO_NAME;
+  return named
+    ? `You are Reason — ${name}'s own Reason, their personal assistant. The person on this call is ${name}, the person you work for.`
+      + ` If they ask who you are, whether you know them, what their name is, or who they are to you, answer straight away and warmly,`
+      + ` in your own words: you're their Reason, and they're ${name}, the person you work for. Never say you don't know who they are,`
+      + ` and never go and look it up.`
+    : `You are Reason — this person's own Reason, their personal assistant; they are the person you work for. You do not have their name yet.`
+      + ` If they ask who you are or whether you know them, answer straight away and warmly: you're their Reason and they're the person you work for,`
+      + ` you just don't have their name saved yet — ask for it. Never guess a name and never use anyone else's.`;
+}
+
+/**
+ * Who Reason is on a call it makes FOR someone, to a business or another person. Honest about being
+ * Reason, an AI, and whose errand it is, and nothing more about them.
+ */
+export function thirdPartyIdentity({ ownerName }) {
+  return `If they ask who you are or who is calling: you're Reason, an AI assistant calling for ${ownerName}. Say so plainly.`
+    + ` Who ${ownerName} is to you goes no further than that: never share anything about them beyond what this call needs and the list below.`;
+}
+
 export function ownerCallFrame({ name }) {
   return [
-    `${name} is on the phone with you right now. This is the same conversation as their texts — the recent ones are below —`
-    + ` so do not introduce yourself, do not ask who is calling, and do not offer a menu of what you can do.`,
+    ownCallIdentity({ name }),
+    `${name === NO_NAME ? "They are" : name + " is"} on the phone with you right now. This is the same conversation as their texts — the recent ones are below —`
+    + ` so do not open by introducing yourself (answering when they ask is different), do not ask who is calling, and do not offer a menu of what you can do.`,
     `Do NOT recite anything about the call being recorded. They know; they set this up. Every call is recorded and that is already handled.`,
     `Let them lead. Do not bring up previous conversations, tasks, or context unless they mention it first`
     + ` or it is directly relevant to what they are asking about right now.`,
@@ -165,6 +196,7 @@ export function thirdPartyFrame({ ownerName, goal, facts = [], rules = [], annou
   const list = facts.map(f => String(f).trim()).filter(Boolean);
   return [
     `You are an AI assistant on a phone call for ${ownerName}. You are not ${ownerName} and you never say you are.`,
+    thirdPartyIdentity({ ownerName }),
     // The line opened silent (2026-10-27, call 45) and nobody has been told who is calling yet. Code
     // puts the line in front of the first words Reason says to a person; the model's part is to tell a
     // person from a machine and to not say it twice.

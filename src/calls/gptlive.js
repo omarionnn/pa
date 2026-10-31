@@ -31,6 +31,7 @@ import { llmRequest, withoutSilenceMarker, ownerProfileNote, METER_KINDS, THINKI
 import { recordingFileFor } from "./recordings.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
+import { ownCallIdentity, thirdPartyIdentity, NO_NAME } from "./voice-prompt.js";
 import { openingLineFor, recordingNoteFor, whoseCallIsThis } from "./inbound.js";
 
 export const PROVIDER = "gptlive";
@@ -67,21 +68,26 @@ export function missingForGptlive() {
 const ABOUT_MAX = 3000;
 
 /**
- * Who is on the line, for the voice's instructions. The owner's identity and what Reason knows about
- * them (the same profile block an owner call's Reason turn is shown, `ownerProfileNote`) only on the
- * OPERATOR's own owner call — the only call GPT-Live carries today — and nothing of it for anyone else.
+ * Who is on the line, for the voice's instructions, derived per call from the account whose
+ * conversation it is — any user, not one. On a call with their OWN user (`is_owner`), the voice gets
+ * that person's name and what Reason knows about them (the same profile block their Reason turn is
+ * shown, `ownerProfileNote`). On a call Reason makes for them to anyone else, it gets their name only,
+ * to say whose errand it is. The city is the operator's install setting, so only the operator gets one.
+ * GPT-Live itself is still operator-only (`gptliveFor`); this is ready for when that widens.
  */
 export function whoFor(call) {
   let me = null;
   try { me = accounts.ownerOf(call.conversation_id); } catch { /* unknown conversation */ }
-  const name = me?.name || "them";
-  const owner = !!call.is_owner && me?.isOperator === true;
+  const raw = me?.name || "";
+  const named = !!raw && raw !== NO_NAME;
+  const name = named ? raw : "them";
+  const owner = !!call.is_owner;
   const rang = call.direction === "in" ? "they" : "you";
-  if (!owner) return { name, owner: false, city: "", about: "", rang };
+  if (!owner) return { name, named, owner: false, city: "", about: "", rang };
   let about = "";
   try { about = ownerProfileNote(call.conversation_id); } catch { /* no profile is no profile */ }
   if (about.length > ABOUT_MAX) about = `${about.slice(0, ABOUT_MAX).replace(/\n[^\n]*$/, "")}\n…`;
-  return { name, owner: true, city: config.ownerCity || "", about, rang };
+  return { name, named, owner: true, city: me?.isOperator ? config.ownerCity || "" : "", about, rang };
 }
 
 /**
@@ -94,21 +100,26 @@ export function whoFor(call) {
  * but "didn't sound very warm", and "do you know who I am" went to the backend and came back 3.8 s
  * later after "let me just check that quickly".
  */
-export function liveInstructions({ name = "them", owner = false, city = "", about = "", rang = "you", accent = accentFor(config.gptliveVoice) } = {}) {
+export function liveInstructions({ name = "them", named = name !== "them", owner = false, city = "", about = "", rang = "you", accent = accentFor(config.gptliveVoice) } = {}) {
+  const them = named ? name : "them";
   const who = owner
     ? [
-      `You are Reason: ${name}'s own personal assistant. You live in ${name}'s texts, you handle things for them, and right now you are on the phone with them.`,
-      `The person on this call is ${name}: your owner, the person you work for. You know them well and you're always glad to talk to them.${city ? ` They are in ${city}.` : ""}`,
-      rang === "they" ? `${name} rang you.` : `You rang ${name} (Reason placed this call); they did not ring you.`,
-      `If they ask who you are, you are Reason, their assistant. If they ask whether you know who they are, what their name is, or who they are to you, answer straight away and warmly, in your own words: they are ${name}, the person you work for. Never say you don't know, and never send these questions to the backend.`,
+      // The same identity line every user's own call carries on ElevenLabs (voice-prompt.js).
+      ownCallIdentity({ name: named ? name : NO_NAME }),
+      `You live in ${named ? `${name}'s` : "their"} texts and handle things for them, and you're always glad to talk to them.${city ? ` They are in ${city}.` : ""}`,
+      rang === "they" ? `${named ? name : "They"} rang you.` : `You rang ${them} (Reason placed this call); they did not ring you.`,
+      "These identity questions are answered by you, never sent to the backend.",
       `You were built by Omarion Nyarko; that is the answer if they ask who made you.`,
       ...(about ? [
-        `What you already know about ${name}, from your conversations together. Use it naturally when it fits; never recite it, and never read out an address or a number unless they ask for it:`,
+        `What you already know about ${them}, from your conversations together. Use it naturally when it fits; never recite it, and never read out an address or a number unless they ask for it:`,
         about,
-        `All of that is for ${name} only. If somebody else comes on the line, or the person says they are not ${name}, share none of it and hand what they ask to the backend.`,
+        `All of that is for ${them} only. If somebody else comes on the line, or the person says they are not ${them}, share none of it and hand what they ask to the backend.`,
       ] : []),
     ]
-    : [`You are Reason, ${name}'s personal assistant, on a phone call with ${name}.`];
+    : [
+      `You are Reason, an AI assistant, on a phone call on ${them}'s behalf with somebody else — not with ${them}.`,
+      thirdPartyIdentity({ ownerName: them }),
+    ];
   return [
     ...who,
     "",
@@ -119,7 +130,7 @@ export function liveInstructions({ name = "them", owner = false, city = "", abou
     "Never corporate, scripted or robotic: no \"certainly\", \"absolutely\", \"I'd be happy to help\", \"is there anything else I can help you with\", no lists read out, no repeating their question back to them.",
     "",
     "What you do:",
-    `You are the voice. The backend, Reason's brain, does the thinking and every action: it has ${name}'s messages, calendar, memory, tasks and tools.`,
+    `You are the voice. The backend, Reason's brain, does the thinking and every action: it has ${name === "them" ? "their" : `${name}'s`} messages, calendar, memory, tasks and tools.`,
     "Delegate to the backend for every question, request, instruction or opinion — anything beyond a greeting, small talk, who you are and who they are, a brief listening sound, or asking them to repeat something.",
     "Never answer a question about the world, their plans or their stuff from your own knowledge, and never invent a fact, time, name, number or price.",
     "While the backend works, a very short, natural acknowledgement is fine. Do not fill the silence with guesses.",
@@ -141,10 +152,10 @@ export function accentFor(voice) {
 }
 
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, owner = false, city = "", about = "", rang = "you", greeting = "" } = {}) {
+export function sessionConfig({ name, named, owner = false, city = "", about = "", rang = "you", greeting = "" } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: liveInstructions({ name, owner, city, about, rang }),
+    instructions: liveInstructions({ name, named, owner, city, about, rang }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     delegation: { type: "client" },
   };

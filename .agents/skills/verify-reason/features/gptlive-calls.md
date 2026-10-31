@@ -27,12 +27,16 @@ once on the same session and carries on live. Only calls with an opening line ge
 opens silent never reaches GPT-Live. Log: `gptlive_warm` (ready), `gptlive_warm_used`,
 `gptlive_first_voice` (stream start → first speech frame), `gptlive_warm_dropped`.
 
-Who it is: on the operator's own owner call (`whoFor`) the instructions say it IS Reason, that the
-person is the owner by name and the person it works for, who rang whom, and carry the same profile
-block an owner call's Reason turn reads (`ownerProfileNote`, capped 3,000 chars) with a rule to share it
-with nobody else. "Who are you / do you know who I am / what's my name" are answered from that, never
-delegated. Any other call (not owner, or not the operator) gets none of it. Tone section: warm,
-relaxed, contractions, small reactions, light humour, no corporate phrasing.
+Who it is (2026-10-31, widened the same day to EVERY user): `whoFor(call)` derives it per call from the
+account whose conversation it is. On a call with their own user (`is_owner`): `ownCallIdentity` (shared
+with the ElevenLabs owner frame in `voice-prompt.js`) — "you are Reason, <name>'s own Reason; they are
+<name>, the person you work for", answered directly, never delegated; an unnamed user is told honestly
+it has no name yet. Plus who rang whom and their own profile block (`ownerProfileNote`, ≤3,000 chars,
+"for them only"); the install city only for the operator. On a call for them to anyone else:
+`thirdPartyIdentity` — "I'm Reason, an AI assistant calling for <name>", nothing of their profile (the
+ElevenLabs `thirdPartyFrame` carries the same line; before it said only "an AI assistant"). The
+GPT-Live voice itself stays operator-only (`gptliveFor`). Tone section: warm, relaxed, contractions,
+small reactions, light humour, no corporate phrasing.
 
 The line: Twilio Media Streams (μ-law 8 kHz straight through to `audio/pcmu`), WebSocket at
 `/calls/gptlive/stream/{call webhook token}`. Outbound: `place` asks Twilio to dial with that stream as
@@ -55,7 +59,7 @@ Source: `src/calls/gptlive.js`, `src/calls/wsserver.js`, `src/http.js` (upgrade 
 (`call_turns.voice`, `markCallTurnHeard`, `provider` updatable), `src/calls/report.js` (`voices`),
 `src/config.js` (`callVoice`, `gptlive*`, `twilio*`).
 
-Tests: `node --test test/gptlive.test.js` (23).
+Tests: `node --test test/gptlive.test.js` (26).
 
 Drive (real GPT-Live session + Reason's real turn on claude-cli, fake Twilio stream through the real
 upgrade route, throwaway db, no phone; ~2¢ of OpenAI voice) — on Hetzner from a copy of the code, as
@@ -76,5 +80,11 @@ Speak-first + identity (2026-10-31, `who.ulaw` = say "Hey. Do you know who I am?
 `--cold` first_voice_ms 2,021; warm (5 s ring) 10 ms, answer "You're Omari, the person I work for",
 0 delegations, 1.35 s after the question. Willow, `q.ulaw` "who are you + calendar": first voice 10 ms,
 "Oh that's me. I'm Reason. Lemme just check your morning.", 1 delegation (calendar_events), guard 0.
+
+Identity drives (2026-10-31, all ok): `gptlive-drive.mjs who.ulaw 18 --expect identity --as owner|user|third`
+→ "You're Omari, the person I work for" / "Yeah, you're Ama! The person I work for." (nothing of Omari's) /
+"Hey, I'm Reason, an AI assistant calling for Omari." (none of his profile). ElevenLabs path, every
+user's today: `bin/call-identity-drive.mjs` (claude-cli, throwaway db) — owner, Ama and a business; on
+main before the change the business heard "I'm an AI assistant calling on behalf of Omari" (no Reason).
 
 Never: drive the live service's routes, or place a real call to test it (that rings the owner).
