@@ -33,6 +33,7 @@ import { qrSvg } from "./qr.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import { webPage, wordmark, label, hand, action, typed, textReason, WEB_FONTS, webFont, accountThemed } from "./webkit.js";
 import { linkCardTags } from "./sitecard.js";
+import { prefillLog } from "./webprefill.js";
 
 export { WEB_FONTS, webFont };
 
@@ -529,6 +530,9 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
   // ---- the landing, or the sign-in form ----
   if (sub === null) {
     if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
+    // /web?draft=…&from=… (src/pages/webprefill.js): somebody arrived with words for the composer. Who tries it, never the words.
+    const prefill = method === "GET" ? prefillLog(query, { signedIn: !!account }) : null;
+    if (prefill) log(prefill);
     if (account) {
       // REASON_WEB_DAILY: Home is the daily edition. There is one conversation (owner 10-27 07:08), so
       // nothing here starts another; an old `?newchat` link is simply the thread.
@@ -614,8 +618,10 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     }
     log({ web_signin_ok: true });
     // The session cookie on every path, so the browser is theirs on their pages and events too;
-    // the form cookie has done its job. Signing in always lands on the arrival, never the thread (?home).
-    return { status: 303, headers: HTML({ Location: "/web?home", "Content-Length": 0, "Set-Cookie": [cookieHeader(tried.token, { path: "/", headers }), clearFormCookie()] }), body: "" };
+    // the form cookie has done its job. Signing in lands on the arrival (?home), or the thread when a draft is waiting for its composer.
+    // A draft waiting in this tab (src/pages/webprefill.js) asks to land on the thread, whose composer takes it.
+    const land = form.get("next") === "thread" ? "/web?thread" : "/web?home";
+    return { status: 303, headers: HTML({ Location: land, "Content-Length": 0, "Set-Cookie": [cookieHeader(tried.token, { path: "/", headers }), clearFormCookie()] }), body: "" };
   }
 
   // sub === "signin": ask for a code.

@@ -1,0 +1,10 @@
+# Reason Web: `?draft=` prefills the composer (the /updates tear-off pad)
+
+Branch wt/web-draft-param (2026-10-31). No flag. heyreason.com/updates/events and /updates/calls link to `https://heyreason.com/web?draft=<urlencoded text>&from=updates-<events|calls>`.
+
+- `src/pages/webprefill.js` (`DRAFT_JS`, `cleanDraft`, `prefillLog`, `fromToken`), run on every Web page from `webkit.webPage`. Reads `draft`/`from`, cleans the draft (control/invisible/bidi characters out, tabs → spaces, ≤500 code points), keeps it in `sessionStorage["reason-web-draft"]` (1 h), removes `draft`/`from` from the address (`history.replaceState`, other params kept). A page with `#c-input` takes it: focused, cursor at the end, typed 2 characters / 24 ms (whole under reduced motion; a key, send or blur finishes it at once). Words already there are kept; the draft goes under them on a new line. **Never sent.**
+- Signed out: the sign-in / code forms get a hidden `next=thread`; `/web/code` success lands on `/web?thread` (exact value only, else `?home`), whose composer takes the draft. The daily-edition Home (no composer) hops once to `/web?thread`; the first-visit note leaves it for Home's composer after "Got it".
+- Signed in: `/web?draft=` opens the thread (webconvo `conversationPage`).
+- Logs (no words): `{ draft_prefilled: <from|none>, signed_in, chars }` on GET /web with a draft; `{ draft_sent: <from> }` when the message it became is sent (form field `df`; cleared if the box is emptied). Known over-count: a send accepted but failing later still logs draft_sent.
+
+Drive: `bin/web-draft-drive.mjs [--shots=DIR] [--video] [--before]` — WebKit iPhone + Chrome desktop, motion and reduced: landed, typing, append, real sign-in (fake line texts the code), send once → 56 ok; `--before` on main: the words are nowhere. Tests: `test/web-draft-param.test.js` (6; all 6 fail on main 208b87f). Staging: https://draft--reason-web-staging.netlify.app/compose-draft.html, /compose-draft-append.html, or any page with `?draft=…&from=…`.

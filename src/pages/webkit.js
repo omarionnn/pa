@@ -27,6 +27,7 @@ import { LOAD_CSS, loadJs } from "./webloading.js";
 import { webIconLinks, NOTIFY_JS, NOTIFY_CSS } from "./webnotify.js";
 import { WEB_PRINT_CSS } from "./print.js";
 import { SPRING_JS } from "./motion.js";
+import { DRAFT_JS } from "./webprefill.js";
 
 /** The handoff's colour table (§2), exactly. `deep` = deeper ground, `lifted` = lifted paper, `hair` = hairline. */
 export const TOKENS = {
@@ -316,7 +317,7 @@ ${head ? `${head}\n` : ""}<title>${esc(title)}</title>
 <script>${HEAD_JS}</script>
 <style>${KIT_CSS}${WEB_PRINT_CSS}${NOTIFY_CSS}${css}</style>
 </head><body${bodyClass ? ` class="${esc(bodyClass)}"` : ""}>${skipped.link}${loader ? `<div class="loader" role="status" aria-label="Loading"><p><span class="wm-w">reas${bubble(4)}${WORDMARK_O}n<span class="ing">ing</span></span></p></div>` : ""}
-${skipped.html}${footer}<script>${script};${THEME_JS};${NOTIFY_JS};${LOAD_JS}</script></body></html>`;
+${skipped.html}${footer}<script>${script};${THEME_JS};${NOTIFY_JS};${LOAD_JS};${DRAFT_JS}</script></body></html>`;
 }
 
 const LOAD_JS = loadJs(wordmark({ href: "/web?home" }));
