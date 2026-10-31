@@ -447,6 +447,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — Shopping for everyone (wt/shopping-everyone, #315, 2026-10-31)
+
+`npm run test:offline` under `env -i` (fresh `npm ci` in the worktree): 5,034 tests, 4,901 passing, 131 skipped, 2 failing — web-ongoing "the desktop margin" (date-dependent, fails on main too) and order-flow-1031 "pinned 13:56 … never goes out" (load flake: 14/14 alone, three runs; 195/195 with the other shopping suites). New: `test/shopping-everyone-1031.test.js` (7; three fail on afc6ce8). Muted drives: `bin/passkey-drive.mjs` 23/23 and `bin/passkey-drive.mjs --non-owner` 23/23. Live flags `REASON_SHOP_CONNECT`, `REASON_CHOICE_CARDS`, `REASON_PASSKEY_PAY` appended as `on`. See [features/shop-connect.md](features/shop-connect.md) "Everyone".
+
 ### Baseline — the card's email rule (wt/card-email-rule, #292, 2026-10-31)
 
 `npm run test:offline` under `env -i` (fresh `npm ci` in the worktree): 4,953 tests, 4,821 passing, 131 skipped, 1 failing (web-ongoing-volume "the desktop margin", date-dependent, fails on main too). New: `test/card-email-rule.test.js` (9). Muted passkey drive: all ok. See [features/passkey-pay.md](features/passkey-pay.md) "The email rule".
