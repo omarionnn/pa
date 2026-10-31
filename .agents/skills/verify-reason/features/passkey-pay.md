@@ -34,6 +34,44 @@ A link is marked `used` the moment the assertion verifies, before the order inte
 
 Notes: the approve page is a bearer link by design, not signed-in only: it opens on a phone that may not be signed in to Web, and paying still needs the owner's passkey. Signed out, a non-owner, or the flag off, `/web/connect/passkey` is a plain 404 (http.js keeps it out of the Connect store-link route).
 
+## The card's order-intent registration (wt/card-registration, 2026-10-31)
+
+Why the 16:23 UTC approval failed: Crossmint makes an order intent only for a card with an
+**order-intent registration**, and the owner's card had none. `saveCard` had PUT
+`/api/2026-09-16/payment-methods/{id}/order-intent-registration` as "best effort" with an empty
+catch and a body without the email Crossmint requires, so it had been refused (400
+`CONSUMER_EMAIL_REQUIRED`) and nobody knew. The owner's card was registered by hand that afternoon
+(PUT with his email → 200, rails agentic-token + spt).
+
+Now (`src/shopconnect.js`, `registerCard`/`sweepCards`; `shop_cards.registered` NULL/1/0 and
+`reg_error`, the code only):
+
+- `saveCard` registers with the email on their shipping record (`src/shipping.js` gathers it from
+  facts, the account and the connected Gmail). Refused: the card row stays, `registered = 0` with the
+  code, `card_registration` logged with status+code (never the email). When the email is what is
+  missing they are texted once: "Card saved. One more thing before it can pay: which email should
+  receipts go to?" The answer goes through `shop_card { receipt_email }`, which keeps it on the record
+  and registers the card.
+- `payRow`: a card not known registered is registered before the order intent; an intent refused with
+  `ORDER_INTENT_REGISTRATION_NOT_FOUND` registers and retries the intent once; only then
+  `order_intent_failed`, with `order_intent_failed` logged (status + code) and `needs_email` set when
+  that is the cause. `shop_pay` tells the model to ask for the email; `payByPasskey` texts it (once),
+  since no model turn runs there.
+- Boot: `resumeFollowing` starts `sweepCards()` — every card with `registered IS NULL` is read back
+  once (GET → 1, 404 → 0, unreachable stays NULL for next boot), `card_registrations_swept` logged.
+- Crossmint's `Origin` is `JWT_ISS()` (`CROSSMINT_JWT_ISSUER`, default `https://heyreason.com`), never
+  `REASON_PUBLIC_URL` (the tailscale URL).
+
+Tests: `test/card-registration.test.js` (9: the PUT carries the email; no email → 0 + one text; 400
+`CONSUMER_EMAIL_REQUIRED` → 0 + one text; another code → 0, no text; unknown card registered before
+the intent; NOT_FOUND → register + retry once, twice → failure with the code logged; no email → payment
+stays open, `shop_card receipt_email` registers and the same yes pays; boot sweep; no email in logs).
+The passkey drive seeds its card `registered = 1`.
+
+Live check after deploy: `journalctl -u reason` shows `card_registrations_swept` with
+`registered: 1` for the owner's card (saved 2026-10-30, registered by hand 2026-10-31), and
+`sqlite3 data/reason.db "SELECT last4, registered, reg_error FROM shop_cards"` reads `1929|1|`.
+
 ## Live check (after the flag flip, read-only, never create a payment)
 
 - Signed in as the owner (headless with the `reason_page` cookie): `https://heyreason.com/web/connect/passkey` returns 200, and the `var B=` boot holds options with `rp.id` = `heyreason.com` and `authenticatorSelection.userVerification` = `required`.

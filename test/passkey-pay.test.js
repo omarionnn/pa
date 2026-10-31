@@ -84,6 +84,7 @@ async function fakeFetch(url, init = {}) {
   calls.push({ method: init.method ?? "GET", path: p, body });
   if (p === "/api/unstable/order-intents") { const no = refuseIntents.shift(); return no ? reply(no.status, no.body) : reply(201, { orderIntentId: `oi_${calls.length}` }); }
   if (/^\/api\/unstable\/agent-checkouts\/[^/]+\/messages$/.test(p)) return reply(202, { ok: true });
+  if (/order-intent-registration$/.test(p) && init.method === "PUT") return body?.email ? reply(200, { status: "active" }) : reply(400, { error: { code: "CONSUMER_EMAIL_REQUIRED" } });
   return reply(404, {});
 }
 const said = [];
@@ -119,7 +120,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   calls = []; refuseIntents = []; said.length = 0; clock.reset();
   for (const t of ["shop_runs", "shop_cards", "shop_payments", "pay_passkeys", "pay_passkey_regs", "pay_approvals", "pay_approval_log"]) db.db.exec(`DELETE FROM ${t}`);
-  q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_secret_123', 'visa', '4242', 0)").run(OMARI);
+  q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_secret_123', 'visa', '4242', 0, 1)").run(OMARI);
 });
 
 // ---------------------------------------------------------------- 1. setting it up
@@ -424,4 +425,40 @@ test("without a passkey, or with the flag off, nothing changes: the texted yes p
   } finally { process.env.REASON_PASSKEY_PAY = "owner"; }
   // Somebody else's conversation never gets it while the flag says owner.
   assert.equal(passkey.passkeyAllowedFor("dm:fake:+13475550000"), false);
+});
+
+test("the card has no registration and no email is known: Face ID works, the payment does not start, they are texted once what to send, the link reopens; the email registers the card and the next tap pays", async () => {
+  const shipping = await import("../src/shipping.js");
+  db.db.exec("DELETE FROM shop_shipping");
+  q("UPDATE shop_cards SET registered = NULL WHERE conversation_id = ?").run(OMARI);
+  const a = await setUp();
+  said.length = 0;
+  const row = asked("26.65");
+  const token = await linkFor(row);
+  const o1 = optionsOf((await page(token)).body);
+  const first = await page(token, "verify", a.get(o1.challenge));
+  assert.equal(first.status, 400);
+  const out = JSON.parse(first.body);
+  assert.equal(out.error, "order_intent_failed");
+  assert.equal(out.retry, true, "the link can be tapped again once the email is in");
+  assert.equal(orderIntents().length, 0, "no order intent without a registration");
+  assert.equal(shop.paymentRow(row.id).status, "asked");
+  assert.deepEqual(said.map((s) => s.t), ["Face ID worked, but the card can't pay yet: which email should receipts go to? Send it here and then tap the link again."]);
+  assert.ok(passkey.approvalLog(OMARI).some((l) => l.event === "pay_failed" && /CONSUMER_EMAIL_REQUIRED/.test(l.detail)));
+  // A second tap before the email: the same text is not sent again.
+  const o2 = optionsOf((await page(token)).body);
+  assert.equal(JSON.parse((await page(token, "verify", a.get(o2.challenge))).body).error, "order_intent_failed");
+  assert.equal(said.length, 1);
+  // They send the email; the card is registered with it; the next tap pays once.
+  const set = await shop.setReceiptEmail(OMARI, "omari.receipts@example.com");
+  assert.equal(set.ok, true, JSON.stringify(set));
+  assert.equal(shipping.profileRow(OMARI).email, "omari.receipts@example.com");
+  const reg = calls.find((c) => c.method === "PUT" && /order-intent-registration$/.test(c.path));
+  assert.equal(reg?.body?.email, "omari.receipts@example.com");
+  const o3 = optionsOf((await page(token)).body);
+  const paid = JSON.parse((await page(token, "verify", a.get(o3.challenge))).body);
+  assert.equal(paid.ok, true, JSON.stringify(paid));
+  assert.equal(orderIntents().length, 1);
+  assert.equal(shop.paymentRow(row.id).status, "paid");
+  assert.doesNotMatch(JSON.stringify(passkey.approvalLog(OMARI)), /example\.com/);
 });

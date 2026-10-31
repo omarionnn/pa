@@ -93,7 +93,7 @@ db.upsertThread({ conversationId: OWNER, channel: "sendblue", address: "+1202555
 db.upsertAccount({ conversationId: AMA, channel: "fake", address: "+13475550000", name: "Ama" });
 db.upsertThread({ conversationId: AMA, channel: "fake", address: "+13475550000", isOwner: true, service: "iMessage" });
 db.db.exec("UPDATE accounts SET contact_card_sent_at = 1, web_notice_seen_at = 1");
-q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_drive_secret', 'visa', '4242', 0)").run(OWNER);
+q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_drive_secret', 'visa', '4242', 0, 1)").run(OWNER);
 q("INSERT OR IGNORE INTO shop_runs (run_id, conversation_id, store, mode, item, status, created_at, updated_at) VALUES ('run_drive', ?, 'bestbuy', 'guest', 'USB-C cable', 'awaiting_input', 0, 0)").run(OWNER);
 let nextReq = 1;
 /** An asked payment at Best Buy, recorded as the checkout follower records Crossmint's request. */

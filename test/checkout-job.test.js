@@ -253,7 +253,7 @@ test("other ends are texted too: blocked, cancelled, and an end after a payment 
   assert.equal(said.at(-1).t, "The Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz was cancelled. Nothing was charged.");
   assert.equal(row(b.runId).stage, "cancelled");
   // Paid, then the run failed: the outcome is unknown and they are told exactly that.
-  q("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_1', 'visa', '4242', ?)").run(OMARI, clock.now());
+  q("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
   const c = await start();
   runs[c.runId].requiredAction = PAY("req_pay_1");
   await shop.step(c.runId);
@@ -392,7 +392,7 @@ test("the payment ask is itemized when Crossmint itemizes it; plain when it does
 });
 
 test("after the payment: placed is texted, the mail is watched for the confirmation, the model is woken when it lands, and the watch is bounded", async () => {
-  q("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_1', 'visa', '4242', ?)").run(OMARI, clock.now());
+  q("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
   const out = await start();
   runs[out.runId].requiredAction = PAY("req_pay_1");
   await shop.step(out.runId);

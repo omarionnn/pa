@@ -392,6 +392,6 @@ test("the turn note names the card on file and says never to ask whether they ha
   await start();
   assert.match(shop.checkoutNote(OMARI), /never offer them the store's page to buy it themselves/);
   assert.doesNotMatch(shop.checkoutNote(OMARI), /Card on file/);
-  q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at) VALUES (?, 'pm_1', 'mastercard', '1929', ?)").run(OMARI, clock.now());
+  q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'mastercard', '1929', ?, 1)").run(OMARI, clock.now());
   assert.match(shop.checkoutNote(OMARI), /Card on file for paying: Mastercard ••••1929\. Never ask whether they have a card/);
 });
