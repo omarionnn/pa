@@ -330,7 +330,8 @@ export function createServer({ router, runtime, log = () => {} }) {
         }
       }
       const connectRoute = /^\/web\/connect\/([A-Za-z0-9_-]{1,64}(?:\/(?:state|answer|card))?|island\.js|jwks\.json)$/.exec(url.pathname);
-      if (connectRoute && webOn() && (await import("./shopconnect.js")).connectMode() !== "off") {
+      // /web/connect/passkey is never a store-link token: a setup page that answered nothing falls to the plain 404.
+      if (connectRoute && !setupRoute && webOn() && (await import("./shopconnect.js")).connectMode() !== "off") {
         let out = null;
         try {
           const { connectRequest } = await import("./pages/webconnect.js");

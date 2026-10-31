@@ -434,6 +434,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — purchase approval by passkey (wt/passkey-approve, #285, 2026-10-31)
+
+`npm run test:offline` under `env -i`: 4,867 tests, 4,735 passing, 131 skipped, 1 failing. The failure is web-ongoing, which also fails on main because it depends on the date. New: `test/passkey-pay.test.js`. Muted drive `bin/passkey-drive.mjs` (real HTTP, Chromium with a CDP virtual authenticator as `localhost`, Crossmint stand-in in the process, no texts, no model): setup ceremony, approve → exactly one order intent, replay `link_used`, decline, expired 410, `details_changed`, UV off refused, the texted yes doesn't pay, made-up token 404, flag off 404. Signed-out `/web/connect/passkey` still gets Connect's 410 through the http.js:331 fall-through (see [features/passkey-pay.md](features/passkey-pay.md)).
+
 ### Baseline — ride link log carries no link text (fix/ride-link-log, 2026-10-31)
 
 `npm run test:offline` under `env -i`: 4,846 tests, 4,715 passing, 131 skipped, **0 failing**. `ride_link_rebuilt` logs lengths/flags only and `ride_link_rebuild_failed` the error name/code; the new `test/ridelinks.test.js` case fails on b2e9c25 and passes here.
@@ -783,6 +787,8 @@ Reason Web reply to one message (`REASON_WEB_REPLY` off/`owner`/on; button, comp
 Reason Web notes + file chips (no flag; a shared location / inline reply / contact card drawn as a tag, never the model's note — no coordinates, no tool instructions, no U+FFFD "?"; a file Reason texted is a chip linking `/web/media/m/<row>/<i>`, served from `outbox.media.file` only for the signed-in conversation and only inside the documents/images roots; inline only pdf/raster image/audio/video/text, else attachment): [features/web-notes.md](features/web-notes.md); `test/web-notes.test.js`, `test/web-file-chip.test.js`; `bin/web-notes-drive.mjs` (real HTTP, caged, no sound): 12 steps incl. another person 404, signed out 404, symlink out of the root 404.
 
 Reason Web audio chips (no flag; voice notes and call recordings play inline, owner-only `/web/media/m/<row>/<i>`, .caf → .m4a in `data/web-audio`, Range for iPhone): [features/web-audio.md](features/web-audio.md); `test/web-audio-chip.test.js`, `bin/web-audio-drive.mjs [--shots=DIR]` (HTTP + WebKit + Chrome).
+
+Purchase approval by passkey (`REASON_PASSKEY_PAY` off/`owner`/on, needs `REASON_SHOP_CONNECT`; `/web/connect/passkey` setup, `/web/approve/{token}` Face ID link, one use, 5 min, bound to the payment row; with a passkey saved, a texted yes never pays): [features/passkey-pay.md](features/passkey-pay.md); `test/passkey-pay.test.js`, `bin/passkey-drive.mjs [--shots=DIR]` (HTTP + Chromium virtual authenticator, muted).
 
 To-do list (`REASON_TODO` off/`owner`/on; the plan, the one yes, the list's call grant, the checklist page, the wrap-up): [features/todo-list.md](features/todo-list.md); `test/todo.test.js`, `bin/todo-drive.mjs` (whole road on claude-cli with the fake call provider on).
 
