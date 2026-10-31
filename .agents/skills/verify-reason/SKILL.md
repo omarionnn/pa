@@ -449,7 +449,7 @@ See [features/onboarding.md](features/onboarding.md).
 
 ### Baseline — Daily spending limit per person (wt/spend-cap, 2026-10-31)
 
-`npm run test:offline` under `env -i` (fresh `npm ci` in the worktree): 5,047 tests, 4,915 passing, 131 skipped, 1 failing — web-ongoing "the desktop margin" (date-dependent, fails on main too). New: `test/spend-cap-1031.test.js` (11; fail on 05a40c4: no `src/spendcap.js`). Wording pins moved in `test/shopping-everyone-1031.test.js` and `test/sites.test.js` (the over-cap line now names Settings → Shopping, never the env var). See [features/spend-cap.md](features/spend-cap.md).
+`npm run test:offline` under `env -i` (after the review fix, 399c435): 5,048 tests, 4,915 passing, 131 skipped, 2 failing — web-ongoing "the desktop margin" (date-dependent) and onboarding "going quiet: one nudge later" (time-of-day; both fail on main 05a40c4 too, checked). A first run also tripped order-flow "pinned 13:56" and two web-signin tests under load; all three pass alone. New: `test/spend-cap-1031.test.js` (12; fail on 05a40c4: no `src/spendcap.js`). Fresh review found one blocker — a raise's Face ID was prompt-only — closed in code (`confirmChange` → `needs_face_id`, 12th test). Schema tried on a copy of live `reason.db` first: `pay_approvals.kind` added by ALTER (existing rows → `pay`), `daily_caps` + `cap_changes` created, `integrity_check` ok. Wording pins moved in `test/shopping-everyone-1031.test.js` and `test/sites.test.js` (the over-cap line now names Settings → Shopping, never the env var). See [features/spend-cap.md](features/spend-cap.md).
 
 ### Baseline — Shopping for everyone (wt/shopping-everyone, #315, 2026-10-31)
 
