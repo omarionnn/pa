@@ -68,6 +68,8 @@ const TABLES = [
   "spend_caps", "unknown_outcomes",
   // The people they said Reason may write to but never send to. Their list and their reasons.
   "important_people",
+  // A to-do list they sent and the plan made of it, with the words of their approval (src/todo.js).
+  "todo_lists", "todo_items",
   // What they turned down and why, in their own words. As much theirs as a memory or a permission —
   // every row quotes a sentence they said — so it is in an export, and a delete has to take it or
   // somebody who wiped their Reason and came back would be offered around a taste they thought they

@@ -89,6 +89,9 @@ export const GATED_ACTIONS = new Set([
   // way it stops a purchase. In NEVER_STANDING below: "just book me an Uber whenever" is the gate
   // switched off, and the $14 UberX somebody said yes to must not become a $31 Black on the next ask.
   "uber_request",
+  // The one yes to a to-do list's whole plan (src/todo.js). In NEVER_STANDING below: the yes is to
+  // a plan they read, and "approve all my lists" would be a yes to plans nobody has written yet.
+  "todo_approve",
 ]);
 
 /**
@@ -141,7 +144,7 @@ export const CATEGORIES = {
  * The thing somebody actually wants when they say that sentence is not fewer questions, it is less
  * waiting — and that is what the offer arriving by itself the moment check-in opens already does.
  */
-export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm", "uber_request", "shop_pay"]);
+export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm", "uber_request", "shop_pay", "todo_approve"]);
 
 /**
  * Why each one cannot be granted, in the words to say it in.
@@ -165,6 +168,7 @@ export const WHY_NEVER_STANDING = {
   // AgentCard picked, what it put in there instead of what was asked for, the service fees and
   // the real total only exist once the cart comes back, and "just buy it" would have to cover every
   // one of them. That is not a bound, it is the gate switched off.
+  todo_approve: "the yes to a to-do list covers the plan they were shown — the businesses it names, what it says costs money — and the next list's plan does not exist yet",
   shop_pay: "the yes for a store checkout covers the exact total Crossmint asks for at that store, and that total does not exist until the checkout reaches payment — so it is always asked, by text, with the number in it",
   purchase_confirm: "the yes for a purchase covers the cart AgentCard came back with — which shop it picked,"
     + " what it actually put in the basket, the fees and the real total — and none of that exists yet when a"

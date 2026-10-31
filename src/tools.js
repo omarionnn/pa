@@ -61,6 +61,7 @@ import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDir
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import * as shopConnect from "./shopconnect.js";
+import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import * as rhythms from "./rhythms.js";
@@ -290,6 +291,8 @@ const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_connect", "ac
 export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "purchase_confirm", "github_pr_merge", "uber_request",
   // A Crossmint checkout's payment (src/shoptools.js): the yes is pinned to Crossmint's own amount.
   "shop_pay",
+  // The one yes to a whole to-do list's plan (src/todo.js), pinned to the plan's fingerprint.
+  "todo_approve",
   // Every X write is a draft: the person sees exactly what goes out before it does. A bad tweet is
   // public and hard to undo, a DM reaches a real person, and deleting a tweet is irreversible.
   "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete"]);
@@ -359,7 +362,8 @@ export function toolsFor(conversationId) {
     && directionsToolVisible(t.name, conversationId)
     && choiceToolVisible(t.name, conversationId)
     && shopToolVisible(t.name, conversationId)
-    && agentcardToolVisible(t.name, conversationId))
+    && agentcardToolVisible(t.name, conversationId)
+    && todoToolVisible(t.name, conversationId))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
     .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
 }
@@ -4319,6 +4323,7 @@ export const tools = [
   ...DIRECTIONS_TOOL_DEFS,
   ...CHOICE_TOOL_DEFS,
   ...SHOP_TOOL_DEFS,
+  ...TODO_TOOL_DEFS,
   {
     name: "capabilities",
     description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things. Its `whats_new` list is what 'what's new' and 'what can you do now' are answered from.",
@@ -6817,6 +6822,7 @@ const S = {
   ...DIRECTIONS_SCHEMAS,
   ...CHOICE_SCHEMAS,
   ...SHOP_SCHEMAS,
+  ...TODO_SCHEMAS,
   invites_list: z.object({}),
   invite_link_create: z.object({}),
   invite_link_cancel: z.object({ number: z.number().int().min(1), replace: z.boolean().optional() }),
@@ -8909,6 +8915,9 @@ function confirmTargetFor(name, input, c = null) {
     case "x_bookmark_remove": return `unbookmark ${input.tweet_id}`;
     case "x_dm": return `dm ${input.participant_id}: ${input.text}`;
     case "x_delete": return `delete ${input.tweet_id}`;
+    // The whole plan of a to-do list, by its stored fingerprint: a plan changed since the ask is a
+    // different target, so it needs a fresh yes.
+    case "todo_approve": return todoApprovalTarget(c, input.list_id);
     default: return null;
   }
 }
@@ -8949,7 +8958,7 @@ function signinBlockedAnswer(entry) {
  * not sources, or a figure the model typed could vouch for itself.
  */
 const AGENTCARD_TOOLS = new Set(["vault_enroll", "purchase", "purchase_confirm", "purchase_track", "flight_book"]);
-const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memory|remember|plan|task|timer|notice|note|goal|commitment|permission|caps_|pattern|fact|profile|doc)/;
+const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memory|remember|plan|task|timer|notice|note|goal|commitment|permission|caps_|pattern|fact|profile|doc|todo)/;
 /** Tools that put words in front of somebody: held while a text of theirs is waiting to be read. */
 const SPEAKS = new Set(["message_send", "voice_note_send", "voice_note_say"]);
 
@@ -8982,7 +8991,14 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
     if (quiet.silent) { const { [field]: _dropped, ...rest } = rawInput; rawInput = rest; }
     else if (quiet.stripped) rawInput = { ...rawInput, [field]: quiet.text };
   }
-  const out = await runToolInner(name, rawInput, ctx);
+  let out = await runToolInner(name, rawInput, ctx);
+  // An approved to-do list with items nothing is working yet (src/todo.js): said on the result of
+  // anything that could be one of them, so the model links it while it still knows which. Which item
+  // it is, if any, is the model's call. Nothing at all unless REASON_TODO reaches this conversation.
+  if (ctx?.conversationId && todoNudgeAfter(name) && out && typeof out === "object" && !Array.isArray(out) && out.ok !== false) {
+    const nudge = todoNudge(ctx.conversationId);
+    if (nudge) out = { ...out, todo_list: nudge };
+  }
   // A shared location on another clock from the zone they confirmed: asked about once, never applied.
   if (name === "get_location" && out?.ok && out.latitude != null && ctx?.conversationId) {
     try {
@@ -9086,6 +9102,11 @@ async function runToolInner(name, rawInput, ctx) {
   }
   // Crossmint on: AgentCard's buying tools are not shown, and one named anyway does nothing.
   if (AGENTCARD_BUY_TOOLS.has(name) && !agentcardToolVisible(name, c)) return AGENTCARD_REFUSAL;
+  // The to-do list while REASON_TODO does not reach this conversation: refused before the gate, so
+  // nobody is ever asked to approve a plan that cannot exist here.
+  if (TODO_TOOLS.has(name) && !todoToolVisible(name, c)) {
+    return { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
+  }
   if (FLIGHT_BOOKING_TOOLS.has(name) && !flightbook.bookingEnabled(c)) {
     return { ok: false, blocked: "not_available", error: "Reason doesn't book flights here. Hand over the Google Flights link from the search so they can book it themselves, and do not mention booking." };
   }
@@ -9162,7 +9183,12 @@ async function runToolInner(name, rawInput, ctx) {
       // granted. Checked here rather than inside `covers`, because it is a fact about the service
       // and not about the shape of the permission.
       const beyond = standing.ok ? beyondAnyPermission(name, input, ctx.cancelRoutes ?? cancelRoutes) : null;
-      if (standing.ok && !beyond) underPermission = standing.permission;
+      // An approved to-do list's plan (src/todo.js): a call to a business the plan named, and nothing
+      // else — never somebody they know, never a call that could agree to spend. Checked only when no
+      // standing permission covers it, and a miss leaves the refusal as it was, with the reason added.
+      const listGrant = !(standing.ok && !beyond) ? todoGrantCovering({ conversationId: c, action: name, input, target: target ?? "" }) : { ok: false };
+      if (listGrant.ok) underPermission = listGrant.permission;
+      else if (standing.ok && !beyond) underPermission = standing.permission;
       else if (beyond) {
         gate = { ...gate, blocked: "needs_confirmation", beyond_the_permission: beyond, error: `${gate.error} ${beyond}` };
       } else if (standing.near.length) {
@@ -9171,6 +9197,7 @@ async function runToolInner(name, rawInput, ctx) {
           error: `${gate.error} ${nearMissLine(standing.near)}`,
         };
       }
+      if (!underPermission && listGrant.why) gate = { ...gate, todo_list_does_not_cover: listGrant.why, error: `${gate.error} ${listGrant.why}` };
     }
 
     if (!underPermission && !gate.ok) {
@@ -11400,6 +11427,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "directions":
       return await runDirectionsTool(name, input, { ...ctx, conversationId: c });
 
+    // ---------- to-do lists (src/todo.js) ----------
+    case "todo_plan": case "todo_approve": case "todo_item_update": case "todo_list_get":
+      return await runTodoTool(name, input, { ...ctx, conversationId: c });
+
     // ---------- choice cards (src/choicecards.js) ----------
     case "show_choices":
       return await runChoiceTool(name, input, { ...ctx, conversationId: c });
@@ -11777,6 +11808,18 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // that reaches a person or commits on a site has to carry its target, and an ask that says
       // money is involved has to say how much. The summary's wording is the model's and is not read.
       const asked = trust.toolName(input.action);
+      // A call the approved plan of their to-do list already covers (src/todo.js) is not asked again:
+      // that was the point of approving the plan. The same check call_place makes, on the target.
+      if (asked === "call_place" && String(input.target ?? "").trim()) {
+        const listGrant = todoAskCovered({ conversationId: c, target: input.target, stakes: input.stakes ?? "", amount: input.amount ?? null });
+        if (listGrant.ok) {
+          return {
+            ok: true, not_needed: true, covered_by_todo_list: listGrant.permission.todo_list_id, business: listGrant.permission.business,
+            note: `No need to ask: they approved the plan for their to-do list, which named ${listGrant.permission.business}. Nothing was asked and nothing was recorded.`
+              + ` Call call_place with no confirmation_id. A call that could agree to spend money is still asked about — call_place will say so.`,
+          };
+        }
+      }
       const carries = checkAsk({
         action: asked,
         stakes: input.stakes ?? "",
