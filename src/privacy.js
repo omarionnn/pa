@@ -30,6 +30,7 @@
 //
 // Nothing here is a substitute for that delete, which is immediate, total, and theirs to run.
 import { rmSync } from "node:fs";
+import { forgetPlayable, sweepPlayable } from "./webaudio.js";
 import { db } from "./db.js";
 import { config, clock } from "./config.js";
 import { fromOutside } from "./outside.js";
@@ -101,6 +102,7 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
       `UPDATE calls SET transcript = '' WHERE transcript <> ''
        AND COALESCE(ended_at, created_at) < ?`).run(content)));
     del("call_recordings", deleteOldRecordings(content, now, log));
+    del("web_audio_copies", sweepPlayable({ now }));
     // Documents Reason wrote: the file on disk and the row together. A document is content all the
     // way through — the blocks are somebody's own writing and the file is a copy of it — so there is
     // nothing in it worth keeping once the window has passed. What stays is the ledger row saying a
@@ -206,7 +208,7 @@ function deleteOldRecordings(before, now, log) {
      AND COALESCE(ended_at, created_at) < ?`).all(before);
   let gone = 0;
   for (const r of rows) {
-    try { rmSync(r.recording_file, { force: true }); } catch (e) {
+    try { forgetPlayable(r.recording_file); rmSync(r.recording_file, { force: true }); } catch (e) {
       log({ retention_recording_failed: r.id, why: (e?.message ?? String(e)).split("\n")[0] });
       continue;
     }

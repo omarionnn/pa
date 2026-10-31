@@ -782,6 +782,8 @@ Per-person time zone (`REASON_TZ_ASK`; guess + ask once before the first clock-t
 Reason Web reply to one message (`REASON_WEB_REPLY` off/`owner`/on; button, composer line, quote lines, read as an inline reply): [features/web-reply.md](features/web-reply.md); `test/web-reply.test.js`, `bin/web-reply-drive.mjs` (HTTP + Chromium + touch).
 Reason Web notes + file chips (no flag; a shared location / inline reply / contact card drawn as a tag, never the model's note — no coordinates, no tool instructions, no U+FFFD "?"; a file Reason texted is a chip linking `/web/media/m/<row>/<i>`, served from `outbox.media.file` only for the signed-in conversation and only inside the documents/images roots; inline only pdf/raster image/audio/video/text, else attachment): [features/web-notes.md](features/web-notes.md); `test/web-notes.test.js`, `test/web-file-chip.test.js`; `bin/web-notes-drive.mjs` (real HTTP, caged, no sound): 12 steps incl. another person 404, signed out 404, symlink out of the root 404.
 
+Reason Web audio chips (no flag; voice notes and call recordings play inline, owner-only `/web/media/m/<row>/<i>`, .caf → .m4a in `data/web-audio`, Range for iPhone): [features/web-audio.md](features/web-audio.md); `test/web-audio-chip.test.js`, `bin/web-audio-drive.mjs [--shots=DIR]` (HTTP + WebKit + Chrome).
+
 To-do list (`REASON_TODO` off/`owner`/on; the plan, the one yes, the list's call grant, the checklist page, the wrap-up): [features/todo-list.md](features/todo-list.md); `test/todo.test.js`, `bin/todo-drive.mjs` (whole road on claude-cli with the fake call provider on).
 
 ## Facts worth not rediscovering

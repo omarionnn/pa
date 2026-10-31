@@ -26,6 +26,7 @@ import { hear, hearingStatus, cannotHearLine } from "./voice.js";
 import { clock } from "./config.js";
 import { isLinkPreviewAttachment } from "./linkpreview.js";
 import { sentFile, mimeOf } from "./sentfiles.js";
+import { playable } from "./webaudio.js";
 import { fitPhoto, FIT_BYTES } from "./webshrink.js";
 import { readCookie } from "./pages/access.js";
 import { SECURITY_HEADERS, sameOrigin, sessionAccount } from "./pages/websignin.js";
@@ -181,8 +182,10 @@ export async function prepareSend({ conversationId, text = "", files = [], liste
 const RANGE = /^bytes=(\d*)-(\d*)$/;
 /** Bytes to the browser: private, never cached by anything shared, ranges for audio (Safari asks for them). */
 function bytesOut({ bytes, mime, name = "", headers = {}, method = "GET" }) {
+  // A recording converted for the browser (src/webaudio.js) is named for what it now is.
+  if (mime === "audio/mp4" && name && !/\.(m4a|mp4)$/i.test(name)) name = String(name).replace(/\.[a-z0-9]{1,5}$/i, "") + ".m4a";
   const base = {
-    "Content-Type": mime, "X-Content-Type-Options": "nosniff", "Cache-Control": "private, max-age=86400",
+    "Content-Type": mime, "X-Content-Type-Options": "nosniff", "Cache-Control": /^audio\//.test(mime) ? "private, no-store" : "private, max-age=86400",
     "Referrer-Policy": "same-origin", "Cross-Origin-Resource-Policy": "same-origin", "Accept-Ranges": "bytes",
     // A PDF, a picture or a recording opens in the browser; anything else (a .docx, a sheet) comes
     // down as the file under its own name, which iPhone Safari hands to Quick Look.
@@ -257,7 +260,10 @@ export async function serveRowMedia({ account, rowId, index, headers = {}, metho
   // A file Reason sent keeps no address on the row: it is served from where the send read it.
   if (a && !a.url) {
     const f = sentFile(account.conversation_id, rowId);
-    return f && Number(index) === 0 ? bytesOut({ bytes: readFileSync(f.path), mime: f.mime, name: a.filename || f.name, headers, method }) : notFound();
+    if (!f || Number(index) !== 0) return notFound();
+    // A voice note or call recording: something the browser plays (src/webaudio.js), from its own root only.
+    if (f.audio) return bytesOut({ ...(await playable({ path: f.path, root: f.root, mime: f.mime })), name: a.filename || f.name, headers, method });
+    return bytesOut({ bytes: readFileSync(f.path), mime: f.mime, name: a.filename || f.name, headers, method });
   }
   if (!a?.url) return notFound();
   // A choice card Reason drew (src/choicecards.js): its own file on this machine, by name only.
@@ -271,7 +277,10 @@ export async function serveRowMedia({ account, rowId, index, headers = {}, metho
     return m && m.conversationId === account.conversation_id ? serveUpload(m, { headers, method }) : notFound();
   }
   const got = await fetchRemote(a, { fetchImpl });
-  return got ? bytesOut({ ...got, name: a.filename, headers, method }) : notFound();
+  if (!got) return notFound();
+  // A voice note texted in is a .caf: Chrome plays none of them, so it goes out as .m4a.
+  if (String(got.mime).startsWith("audio/")) return bytesOut({ ...(await playable({ bytes: got.bytes, mime: got.mime })), name: a.filename, headers, method });
+  return bytesOut({ ...got, name: a.filename, headers, method });
 }
 
 /**

@@ -1,0 +1,11 @@
+# Reason Web: voice notes and call recordings play in their chip
+
+Branch feat/web-audio-chips (2026-10-30). No flag. Closes the #267 gap: voice notes (.caf) and call recordings drew with nothing to open.
+
+- `src/pages/webcompose.js` `audioChip`: a paper slip with ▶/❚❚ (pen ring, filled while playing), a serif italic title (Voice note / Voice note you sent / Call recording), a waveform that fills in the pen as it plays (tap or ←/→ seeks; `role="slider"`), `0:00 / 2:34 · CALL`. No address to serve → the same chip, dashed, `NOT KEPT HERE`, nothing to press. The recording's filename (it has the number in it) is never drawn.
+- `src/sentfiles.js`: audio files only (by the real file's extension) may also come from `config.recordingRoot` and `config.audioTmpRoot`; realpath strictly inside; an outbox row with `call_id` must be a call of the same conversation with `recording_state = 'stored'`.
+- `src/webaudio.js` `playable`: mp3/m4a/aac/wav/webm as they are; else a playable sibling in the same root (`call-15.caf` → `call-15.mp3`); else converted once to AAC .m4a (ffmpeg with the input format pinned from the bytes + `-protocol_whitelist file`, or afconvert on a Mac), kept in `data/web-audio/<sha256>.m4a`, swept after 30 days, at most 2 conversions at once, a failure not retried for 30 min. `forgetPlayable` runs when a recording is deleted (recordings.js, privacy.js retention). No converter → original bytes.
+- `src/webmedia.js` `/web/media/m/<row>/<i>`: same owner-only 404 for everyone else; Range (206/416) as before; a converted file is named `.m4a`. Voice notes texted in (CDN .caf) go through the same conversion; the CDN address never reaches the browser.
+
+Drive: `bin/web-audio-drive.mjs [--shots=DIR]` — 16 HTTP steps (owner 200 + type + 206 for all three, signed out / made-up cookie / another person / wrong index / guessed row / symlink / `../` / another conversation's call → 404), then plays the call recording and the converted voice note in WebKit (iPhone) and Google Chrome (desktop), seeks by tapping the wave, and saves light/night shots. Tests: `test/web-audio-chip.test.js` (9, all fail on main b2e9c25).
+Server: Hetzner has `/usr/bin/ffmpeg` 6.1.1, which reads iMessage's Opus-in-CAF (checked 10-30 with an afconvert-made note).

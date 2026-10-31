@@ -61,11 +61,12 @@ export function mediaOut(row, conversationId) {
     const name = String(x?.filename ?? "").slice(0, 80) || "FILE";
     const up = uploadIdOf(x?.url);
     // A file Reason sent has no address on the row; it opens from where the send read it (src/sentfiles.js).
-    const sent = !x?.url && i === 0 && row.outbox_id && kind === "file" ? sentFile(conversationId, row.id) : null;
+    // A voice note Reason spoke or a call's recording is one too (audio roots, src/sentfiles.js).
+    const sent = !x?.url && i === 0 && row.outbox_id && (kind === "file" || kind === "voice") ? sentFile(conversationId, row.id) : null;
     const src = x?.url ? (up ? uploadPath(up, name) : `/web/media/m/${Number(row.id)}/${i}`) : sent ? `/web/media/m/${Number(row.id)}/0` : "";
     let size = sent?.size ?? null;
     if (up && size == null) { try { size = Number(uploadMeta(up)?.bytes) || null; } catch { /* the size is a nicety */ } }
-    let seconds = Number(x?.seconds) || null;
+    let seconds = Number(x?.seconds) || sent?.seconds || null;
     let transcript = x?.transcript ? String(x.transcript) : null;
     if (kind === "voice" && x?.media_id && (!transcript || !seconds)) {
       try {
@@ -74,7 +75,7 @@ export function mediaOut(row, conversationId) {
         seconds ||= Number(it?.seconds) || null;
       } catch { /* the words are a nicety; the note still plays */ }
     }
-    return { kind, name, src, ...(x?.choice ? { choice: true } : {}), label: slipLabel({ name, kind: String(x?.kind ?? ""), pages: Number(x?.pages) || null }), size, pages: Number(x?.pages) || null, seconds: seconds ? Math.round(seconds) : null, transcript };
+    return { kind, name, src, ...(x?.choice ? { choice: true } : {}), ...(sent?.callId ? { call: true } : {}), label: slipLabel({ name, kind: String(x?.kind ?? ""), pages: Number(x?.pages) || null }), size, pages: Number(x?.pages) || null, seconds: seconds ? Math.round(seconds) : null, transcript };
   });
 }
 
@@ -88,6 +89,44 @@ export const ownWords = (text) => readLine(text).words;
 export function playButton({ src, seconds }) {
   const len = seconds ? `, ${seconds} second${seconds === 1 ? "" : "s"}` : "";
   return `<button type="button" class="vplay" data-src="${esc(src)}" aria-label="Play voice note${len}">${PLAY_SVG}${WAVE_SVG}<span class="vt">${seconds ? esc(clockOf(seconds)) : ""}</span></button>`;
+}
+
+const PAUSE_SVG = `<svg class="ap-pause" aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>`;
+const PHONE_SVG = `<svg class="fc-i" aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M5 3h4l2 5-2.5 1.5a11 11 0 0 0 6 6L16 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 5a2 2 0 0 1 2-2z"/></svg>`;
+/** Bars of a waveform, the same every time for the same address, so a line never redraws differently. */
+function waveBars(seed, n = 28) {
+  let h = 2166136261;
+  for (const c of String(seed)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    h = Math.imul(h ^ (h >>> 13), 1274126177) >>> 0;
+    const env = Math.sin(Math.PI * (i + 0.5) / n) * 0.55 + 0.45;
+    out.push(Math.max(3, Math.round((4 + (h % 13)) * env)));
+  }
+  return out.map((v, i) => `M${2 + i * 6} ${10 - v / 2}v${v}`).join("");
+}
+
+/**
+ * A voice note or a call recording on a line: a chip with its own player. ▶/❚❚, a waveform that
+ * fills in the pen as it plays (a tap on it seeks; arrow keys too), the time, and what it is.
+ * The bytes come from /web/media/… for this conversation's own session only (src/webmedia.js).
+ */
+export function audioChip(x, { mine = false } = {}) {
+  const call = !!x.call;
+  const what = call ? "Call recording" : mine ? "Voice note you sent" : "Voice note";
+  const len = x.seconds ? clockOf(x.seconds) : "";
+  const tag = call ? "CALL" : "VOICE NOTE";
+  const bars = waveBars(x.src || x.name);
+  const wave = (cls) => `<svg class="${cls}" aria-hidden="true" viewBox="0 0 168 20" preserveAspectRatio="none"><path d="${bars}" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg>`;
+  if (!x.src) {
+    return `<div class="slip achip off${call ? " call" : ""}"><span class="ap" aria-hidden="true">${call ? PHONE_SVG : PLAY_SVG}</span><span class="ac-t"><span class="fn">${esc(what)}</span><span class="ac-w">${wave("w0")}</span><span class="fs">${esc([tag, len, "NOT KEPT HERE"].filter(Boolean).join(" · "))}</span></span></div>`;
+  }
+  const label = `Play ${call ? "call recording" : "voice note"}${x.seconds ? `, ${x.seconds} second${x.seconds === 1 ? "" : "s"}` : ""}`;
+  return `<div class="slip achip${call ? " call" : ""}" data-src="${esc(x.src)}">`
+    + `<button type="button" class="vplay ap" data-src="${esc(x.src)}" aria-pressed="false" aria-label="${esc(label)}">${PLAY_SVG}${PAUSE_SVG}</button>`
+    + `<span class="ac-t"><span class="fn">${esc(what)}</span>`
+    + `<span class="ac-w" role="slider" tabindex="0" aria-label="Position" aria-valuemin="0" aria-valuemax="${x.seconds || 0}" aria-valuenow="0" aria-valuetext="0:00">${wave("w0")}${wave("w1")}</span>`
+    + `<span class="fs"><span class="vnow">0:00</span><span class="vlen"> / <span class="vt">${esc(len)}</span></span> · ${tag}</span></span></div>`;
 }
 
 /** "rytCHiLR_Stella_Rosa.vcf" → "Stella_Rosa.vcf": the inbound store's 8-character prefix is not part of the name. */
@@ -119,7 +158,7 @@ export function mediaHtml(m) {
     : `<div class="photo" role="img" aria-label="${mine ? "Photo you sent" : "Photo from Reason"}"><span class="lbl">PHOTO</span></div>`).join("");
   const files = m.media.filter(x => x.kind === "file").map(fileChip).join("");
   const voice = m.media.find(x => x.kind === "voice");
-  const play = voice?.src ? playButton(voice) : "";
+  const play = voice ? audioChip(voice, { mine }) : "";
   return { photos, files, play, voice };
 }
 
@@ -281,6 +320,26 @@ a.slip.fchip{min-height:56px}
 .fchip .fs{font:400 9.5px/1.2 var(--mono);letter-spacing:.12em;color:var(--muted)}
 a.slip.fchip:hover .fn{color:var(--hov)}
 .fslip .fs{font:400 9.5px/1.2 var(--mono);letter-spacing:.1em;color:var(--muted)}
+.slip.achip{display:flex;align-items:center;gap:14px;padding:10px 18px 10px 10px;width:min(100%,360px);box-sizing:border-box;white-space:normal;transform:rotate(-.4deg);margin-top:4px}
+.achip .ap{flex:none;width:44px;height:44px;border-radius:50%;border:1px solid var(--pen);background:transparent;color:var(--pen);display:grid;place-items:center;cursor:pointer;padding:0;min-height:0}
+.achip .ap svg{grid-area:1/1;margin-left:2px}
+.achip .ap .ap-pause{display:none;margin-left:0}
+.achip .ap[aria-pressed=true]{background:var(--pen);color:var(--lifted)}
+.achip .ap[aria-pressed=true] svg{display:none}
+.achip .ap[aria-pressed=true] .ap-pause{display:block}
+.achip.off .ap{border-style:dashed;border-color:var(--hair);color:var(--muted)}
+.achip .ac-t{display:flex;flex-direction:column;gap:5px;min-width:0;flex:1}
+.achip .fn{font:italic 400 18px/1.15 var(--serif);letter-spacing:0;color:var(--ink)}
+.achip .fs{font:400 9.5px/1.2 var(--mono);letter-spacing:.12em;color:var(--muted)}
+.achip .fs .vnow{color:var(--ink)}
+.achip .ac-w{position:relative;display:block;height:20px;cursor:pointer;color:var(--muted);outline:0;touch-action:none}
+.achip .ac-w .w0{opacity:.4}
+.achip .vlen:has(.vt:empty){display:none}
+.achip .ac-w:focus-visible{outline:1px dashed var(--pen);outline-offset:3px}
+.achip .ac-w svg{position:absolute;inset:0;width:100%;height:100%}
+.achip .ac-w .w1{color:var(--pen);clip-path:inset(0 calc(100% - var(--p,0%)) 0 0)}
+.achip.off .ac-w{cursor:default}
+.achip .vplay{min-height:0}
 .vplay{min-height:44px;border:0;background:transparent;display:flex;align-items:center;gap:10px;cursor:pointer;padding:0;color:var(--ink)}
 .vplay .vt{font:400 11px/1 var(--mono)}
 .vplay[aria-pressed=true] .vwave{color:var(--pen)}
@@ -497,7 +556,14 @@ document.addEventListener('keydown',function(e){if(!rec)return;if(e.key==='Escap
 else if(rec.full&&e.key==='Tab'){var f=Array.prototype.filter.call(ls.querySelectorAll('button'),function(b){return b.offsetParent!==null}),a=f[0],z=f[f.length-1];if(!f.length){e.preventDefault();ls.focus();return}if(e.shiftKey&&document.activeElement===a){e.preventDefault();z.focus()}else if(!e.shiftKey&&document.activeElement===z){e.preventDefault();a.focus()}}});
 })();
 // Playing a voice note in the thread: one at a time.
-(function(){var cur=null;document.addEventListener('click',function(e){var b=e.target&&e.target.closest&&e.target.closest('.vplay');if(!b)return;
-if(cur&&cur.b===b){if(cur.a.paused)cur.a.play();else cur.a.pause();return}if(cur){cur.a.pause();cur.b.setAttribute('aria-pressed','false')}
-var a=new Audio(b.dataset.src),t=b.querySelector('.vt');cur={a:a,b:b};a.onplay=function(){b.setAttribute('aria-pressed','true')};a.onpause=a.onended=function(){b.setAttribute('aria-pressed','false')};
-a.onloadedmetadata=function(){if(t&&!t.textContent&&isFinite(a.duration)){var s=Math.round(a.duration);t.textContent=Math.floor(s/60)+':'+('0'+s%60).slice(-2)}};a.play().catch(function(){})})})();`;
+(function(){var cur=null,fmt=function(s){s=Math.max(0,Math.floor(s||0));return Math.floor(s/60)+':'+('0'+s%60).slice(-2)};
+function chip(b){return b.closest('.achip')}
+function paint(c,a){var w=c&&c.querySelector('.ac-w'),n=c&&c.querySelector('.vnow'),d=a.duration;if(!w)return;var p=isFinite(d)&&d>0?Math.min(100,a.currentTime/d*100):0;w.style.setProperty('--p',p+'%');w.setAttribute('aria-valuenow',Math.round(a.currentTime));w.setAttribute('aria-valuetext',fmt(a.currentTime));if(n)n.textContent=fmt(a.currentTime)}
+function audioFor(b){if(cur&&cur.b===b)return cur.a;if(cur){var o=cur;o.a.pause();o.b.setAttribute('aria-pressed','false');o.a.currentTime=0;paint(chip(o.b),o.a);o.a.ontimeupdate=null}
+var a=new Audio(b.dataset.src),c=chip(b),t=(c||b).querySelector('.vt');a.preload='metadata';cur={a:a,b:b};
+a.onplay=function(){b.setAttribute('aria-pressed','true')};a.onpause=function(){b.setAttribute('aria-pressed','false')};a.onended=function(){b.setAttribute('aria-pressed','false');a.currentTime=0;paint(c,a)};
+a.ontimeupdate=function(){paint(c,a)};a.onloadedmetadata=function(){if(isFinite(a.duration)){var w=c&&c.querySelector('.ac-w');if(w)w.setAttribute('aria-valuemax',Math.round(a.duration));if(t&&!t.textContent)t.textContent=fmt(a.duration)}};return a}
+function seek(w,frac){var c=w.closest('.achip'),b=c&&c.querySelector('.vplay');if(!b)return;var a=audioFor(b),go=function(){if(isFinite(a.duration)){a.currentTime=Math.max(0,Math.min(a.duration-0.05,frac*a.duration));paint(c,a)}};if(a.readyState>=1)go();else a.addEventListener('loadedmetadata',go,{once:true});if(a.paused)a.play().catch(function(){})}
+document.addEventListener('click',function(e){var w=e.target&&e.target.closest&&e.target.closest('.achip:not(.off) .ac-w');if(w){var r=w.getBoundingClientRect();seek(w,(e.clientX-r.left)/r.width);return}
+var b=e.target&&e.target.closest&&e.target.closest('.vplay');if(!b)return;var a=audioFor(b);if(a.paused)a.play().catch(function(){});else a.pause()});
+document.addEventListener('keydown',function(e){var w=e.target&&e.target.closest&&e.target.closest('.achip:not(.off) .ac-w');if(!w||(e.key!=='ArrowRight'&&e.key!=='ArrowLeft'))return;e.preventDefault();var b=w.closest('.achip').querySelector('.vplay'),a=audioFor(b),d=a.duration;if(!isFinite(d)||!d)return;seek(w,(a.currentTime+(e.key==='ArrowRight'?5:-5))/d)})})();`;
