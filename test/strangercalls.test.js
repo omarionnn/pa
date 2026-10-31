@@ -33,7 +33,7 @@ const DAY = 86_400_000;
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM stranger_calls; DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM outbox;");
+  db.db.exec("DELETE FROM stranger_calls; DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM outbox; DELETE FROM person_facts; DELETE FROM people;");
   db.upsertAccount({ conversationId: config.ownerConversation, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
 });
 
@@ -49,6 +49,11 @@ async function pitchTurn(extra, theirs) {
     generate: async function* () { yield { type: "text", text: "Sure." }; }, sseChunk: voice.sseChunk, SSE_DONE: voice.SSE_DONE,
   }));
 }
+/** A reply to them that really went out, as the outbox marks it. */
+const sent = (conv, address, body = "hey!") => {
+  const { row } = db.enqueueOutbound({ idemKey: `t:${Math.random()}`, conversationId: conv, channel: "sendblue", address, body, toOwner: true });
+  db.markOutboundSent(row.id, { messageId: "m1" });
+};
 const signUp = (address, conv = `dm:sendblue:${address}`) => { db.upsertAccount({ conversationId: conv, channel: "sendblue", address, name: "" }); return conv; };
 
 test("an unknown caller's call is kept against the number it came from, with what they asked; withheld and blocked keep nothing", async () => {
@@ -92,10 +97,31 @@ test("they sign up from the same number: the first turn says it's good to reconn
   assert.match(note, /rang Reason's number yesterday/);
   assert.match(note, /good to reconnect/);
   assert.match(note, /dentist/);
-  assert.equal(sc.reconnectNote(conv), "", "said once");
+  sent(conv, CALLER);
+  assert.equal(sc.reconnectNote(conv), "", "said once: a reply went out after it was offered");
   const facts = JSON.stringify(db.recall(conv, "me"));
   assert.match(facts, /Called Reason's number on \d{4}-\d{2}-\d{2} before signing up/);
   assert.equal(db.db.prepare("SELECT matched_conversation_id m FROM stranger_calls").get().m, conv);
+});
+
+test("a reply that failed or is being retried keeps it: offered again until one is really delivered", () => {
+  ring(CALLER);
+  const conv = signUp(CALLER);
+  sent(conv, CALLER, "an older reply, before the offer");  // delivered BEFORE the offer: does not count
+  clock.skip(1000);
+  assert.match(sc.reconnectNote(conv), /good to reconnect/);
+  // The reply was queued and failed (never marked sent): still owed.
+  const { row } = db.enqueueOutbound({ idemKey: "t:failed", conversationId: conv, channel: "sendblue", address: CALLER, body: "x", toOwner: true });
+  db.markOutboundRetry(row.id, { error: "503", nextAt: clock.now() + 60_000 });
+  assert.match(sc.reconnectNote(conv), /good to reconnect/, "a retried turn still has it");
+  assert.equal(db.db.prepare("SELECT used_at FROM stranger_calls").get().used_at, null);
+  // The retry goes out.
+  clock.skip(1000);
+  db.markOutboundSent(row.id, { messageId: "m2" });
+  assert.equal(sc.reconnectNote(conv), "");
+  assert.ok(db.db.prepare("SELECT used_at FROM stranger_calls").get().used_at);
+  const facts = db.recall(conv, "me")[0]?.facts?.filter(f => /Called Reason's number/.test(f.fact)) ?? [];
+  assert.equal(facts.length, 1, "the memory row is written once, however many times it was offered");
 });
 
 test("a different number, the operator, and a typed claim get nothing", async () => {
@@ -120,6 +146,7 @@ test("onboarding's first step says it first, once", () => {
   ring(CALLER);
   const conv = signUp(CALLER);
   assert.match(sc.reconnectLine(conv), /^oh hey, good to reconnect, we spoke on the phone earlier today!$/);
+  sent(conv, CALLER);
   assert.equal(sc.reconnectLine(conv), "");
   assert.equal(typeof onboarding.handle, "function");
 });
