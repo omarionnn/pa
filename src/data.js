@@ -29,6 +29,8 @@ import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { db, recordingFiles, documentFiles } from "./db.js";
 import { config } from "./config.js";
+// Creates stranger_calls if this runs before anything else has (npm run data:*).
+import "./strangercalls.js";
 import { profilePath } from "./browser.js";
 import { readRecording, deleteRecordingFile, mimeFor } from "./calls/recordings.js";
 import { readDocument, deleteDocumentFile, mimeForKind } from "./documents/store.js";
@@ -41,6 +43,10 @@ const TABLES = [
   // How each of their calls went, turn by turn: timings and tool names, no words. Keyed by
   // conversation like the call rows they belong to, so a delete takes them with the calls.
   "call_turns",
+ // A call they made to Reason's number before they were a user (src/strangercalls.js), once it has
+ // been matched to them by their own number. Unmatched rows are nobody's account and age out by the
+ // retention setting; a full delete takes them too.
+ "stranger_calls",
   // The documents Reason wrote for them. The row carries the title and the blocks it was built
   // from, which is their own writing; the files themselves are carried separately, below, the same
   // way the recordings are.
@@ -235,6 +241,7 @@ const CHILD_SCOPE = {
   video_accounts: ["url IN (SELECT url FROM media_items WHERE conversation_id = ? AND url IS NOT NULL"
     + " UNION SELECT url FROM seen_urls WHERE conversation_id = ?)", 2],
   remote_events: ["job_id IN (SELECT id FROM remote_jobs WHERE conversation_id = ?)", 1],
+  stranger_calls: ["matched_conversation_id = ?", 1],
 };
 
 // Which column ties a row to a conversation, or null for anything in CHILD_SCOPE.

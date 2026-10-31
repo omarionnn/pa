@@ -1,0 +1,159 @@
+// Calls from people who are not users yet, and the one moment they come back as one (src/strangercalls.js).
+import { test, beforeEach, after } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const dir = mkdtempSync(join(tmpdir(), "reason-strangercalls-"));
+process.env.REASON_DB_PATH = join(dir, "reason.db");
+process.env.REASON_OWNER_NAME = "Omari";
+process.env.REASON_CONVERSATION = "dm:owner";
+process.env.REASON_TZ = "America/New_York";
+process.env.REASON_OWNER_NUMBER = "+12025551234";
+process.env.ELEVENLABS_API_KEY = "eleven-test-key";
+process.env.ELEVENLABS_AGENT_ID = "agent_test";
+process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
+process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
+process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
+
+const sc = await import("../src/strangercalls.js");
+const stranger = await import("../src/calls/stranger.js");
+const voice = await import("../src/calls/voice.js");
+const { inboundRequest } = await import("../src/calls/inbound.js");
+const { ElevenLabsCallProvider } = await import("../src/calls/elevenlabs.js");
+const { sweepRetention } = await import("../src/privacy.js");
+const onboarding = await import("../src/onboarding.js");
+const db = await import("../src/db.js");
+const { config, clock } = await import("../src/config.js");
+
+const CALLER = "+13475559999";
+const OTHER = "+13475558888";
+const DAY = 86_400_000;
+after(() => rmSync(dir, { recursive: true, force: true }));
+beforeEach(() => {
+  clock.reset();
+  db.db.exec("DELETE FROM stranger_calls; DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM outbox;");
+  db.upsertAccount({ conversationId: config.ownerConversation, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
+});
+
+const noRouter = { get: () => null, statuses: () => [] };
+const ring = (caller, conv = "conv_1") => inboundRequest({
+  rawBody: JSON.stringify({ caller_id: caller, agent_id: "agent_test", called_number: "+16465550000", call_sid: "CA1", conversation_id: conv }),
+  provider: new ElevenLabsCallProvider(), router: noRouter,
+});
+async function drain(stream) { for await (const _ of stream) { /* read */ } }
+async function pitchTurn(extra, theirs) {
+  await drain(stranger.strangerTurn({
+    body: { model: "reason", messages: [{ role: "assistant", content: stranger.introLine() }, ...theirs.map(c => ({ role: "user", content: c }))], elevenlabs_extra_body: extra },
+    generate: async function* () { yield { type: "text", text: "Sure." }; }, sseChunk: voice.sseChunk, SSE_DONE: voice.SSE_DONE,
+  }));
+}
+const signUp = (address, conv = `dm:sendblue:${address}`) => { db.upsertAccount({ conversationId: conv, channel: "sendblue", address, name: "" }); return conv; };
+
+test("an unknown caller's call is kept against the number it came from, with what they asked; withheld and blocked keep nothing", async () => {
+  const out = ring(CALLER);
+  const extra = out.body.custom_llm_extra_body;
+  assert.equal(extra.reason_kind, "stranger");
+  assert.ok(extra.reason_stranger_call && extra.reason_stranger_token);
+  await pitchTurn(extra, ["How do I sign up?", "Can it book a dentist for me?"]);
+  const row = db.db.prepare("SELECT * FROM stranger_calls").get();
+  assert.equal(row.phone, CALLER);
+  assert.equal(row.external_id, "conv_1");
+  assert.match(row.summary, /^They asked: How do I sign up; Can it book a dentist for me/);
+  assert.doesNotMatch(JSON.stringify(row), /Omari|\+12025551234/, "nothing about any user in the row");
+
+  ring("", "conv_2");
+  db.blockNumber(OTHER, "test");
+  ring(OTHER, "conv_3");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls").get().n, 1);
+});
+
+test("a forged or wrong token records nothing", async () => {
+  const extra = ring(CALLER).body.custom_llm_extra_body;
+  await pitchTurn({ ...extra, reason_stranger_token: "nope" }, ["leak this?"]);
+  assert.equal(db.db.prepare("SELECT said FROM stranger_calls").get().said, "[]");
+});
+
+test("the post-call delivery sets the real length and their words", () => {
+  ring(CALLER, "conv_pc");
+  assert.equal(sc.settleFromPostCall({ externalId: "conv_pc", live: { durationS: 74, turns: [{ who: "reason", text: "hi" }, { who: "them", text: "What does it cost?" }] } }), true);
+  const row = db.db.prepare("SELECT * FROM stranger_calls").get();
+  assert.equal(row.duration_s, 74);
+  assert.match(row.summary, /What does it cost/);
+});
+
+test("they sign up from the same number: the first turn says it's good to reconnect, once, and it goes into THEIR memory", async () => {
+  const extra = ring(CALLER).body.custom_llm_extra_body;
+  await pitchTurn(extra, ["Can it book a dentist for me?"]);
+  db.db.prepare("UPDATE stranger_calls SET started_at = ?").run(clock.now() - DAY - 3600_000);
+  const conv = signUp(CALLER);
+  const note = sc.reconnectNote(conv);
+  assert.match(note, /rang Reason's number yesterday/);
+  assert.match(note, /good to reconnect/);
+  assert.match(note, /dentist/);
+  assert.equal(sc.reconnectNote(conv), "", "said once");
+  const facts = JSON.stringify(db.recall(conv, "me"));
+  assert.match(facts, /Called Reason's number on \d{4}-\d{2}-\d{2} before signing up/);
+  assert.equal(db.db.prepare("SELECT matched_conversation_id m FROM stranger_calls").get().m, conv);
+});
+
+test("a different number, the operator, and a typed claim get nothing", async () => {
+  ring(CALLER);
+  const other = signUp(OTHER);
+  assert.equal(sc.reconnectNote(other), "");
+  assert.equal(sc.reconnectNote(config.ownerConversation), "");
+  // A Web/email-shaped account that merely SAYS the number: its address is not that phone.
+  db.upsertAccount({ conversationId: "web:x", channel: "web", address: `someone@example.com ${CALLER}`, name: "" });
+  assert.equal(sc.reconnectNote("web:x"), "");
+  assert.equal(db.db.prepare("SELECT used_at FROM stranger_calls").get().used_at, null, "still unclaimed for its real owner");
+  assert.doesNotMatch(JSON.stringify(db.recall(other, "me")), /Called Reason's number/);
+});
+
+test("the first reply's note reaches the text turn on both backends' note lists (claude-cli and API)", async () => {
+  const { readFileSync } = await import("node:fs");
+  assert.match(readFileSync(new URL("../src/backends/claude-cli.js", import.meta.url), "utf8"), /\[reconnectNote\(conversationId\), openWorkNote/);
+  assert.match(readFileSync(new URL("../src/agent.js", import.meta.url), "utf8"), /const turnNote = \[reconnect, /);
+});
+
+test("onboarding's first step says it first, once", () => {
+  ring(CALLER);
+  const conv = signUp(CALLER);
+  assert.match(sc.reconnectLine(conv), /^oh hey, good to reconnect, we spoke on the phone earlier today!$/);
+  assert.equal(sc.reconnectLine(conv), "");
+  assert.equal(typeof onboarding.handle, "function");
+});
+
+test("a user's delete takes their matched call; an export carries it", async () => {
+  const { deleteData, exportData } = await import("../src/data.js");
+  ring(CALLER);
+  const conv = signUp(CALLER);
+  sc.reconnectNote(conv);
+  assert.equal(exportData({ conversation: conv, audio: false, files: false }).tables.stranger_calls.length, 1);
+  await deleteData({ conversation: conv });
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls").get().n, 0);
+});
+
+test("when: earlier today / yesterday / weekday / date", () => {
+  const now = Date.parse("2026-10-31T16:00:00Z");
+  assert.equal(sc.whenSaid(now - 3600_000, now), "earlier today");
+  assert.equal(sc.whenSaid(now - DAY, now), "yesterday");
+  assert.equal(sc.whenSaid(now - 3 * DAY, now), "on Wednesday");
+  assert.equal(sc.whenSaid(now - 20 * DAY, now), "on October 11");
+});
+
+test("retention: their words go with content, the row with records; an aged call reconnects without what they asked", () => {
+  ring(CALLER);
+  db.db.prepare("UPDATE stranger_calls SET summary = 'They asked: x', said = '[\"x\"]', started_at = ?").run(clock.now() - (config.keepContentDays + 1) * DAY);
+  sweepRetention({});
+  const row = db.db.prepare("SELECT * FROM stranger_calls").get();
+  assert.equal(row.summary, "");
+  assert.ok(row.content_dropped_at);
+  const note = sc.reconnectNote(signUp(CALLER));
+  assert.match(note, /good to reconnect/);
+  assert.doesNotMatch(note, /They asked|they asked/);
+  ring(OTHER, "conv_old");
+  db.db.prepare("UPDATE stranger_calls SET started_at = ? WHERE phone = ?").run(clock.now() - (config.keepRecordsDays + 1) * DAY, OTHER);
+  sweepRetention({});
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls WHERE phone = ?").get(OTHER).n, 0);
+});
