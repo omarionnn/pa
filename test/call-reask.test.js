@@ -27,7 +27,7 @@ process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
 process.env.REASON_UNDO_SECONDS = "0";
 
 const voice = await import("../src/calls/voice.js");
-const { llmRequest, SSE_DONE, HOLDING_LINE, LATE_LINE } = voice;
+const { llmRequest, SSE_DONE, HOLDING_LINE, LATE_LINES } = voice;
 const { EXTRA_BODY_KEYS } = await import("../src/calls/elevenlabs.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
@@ -214,7 +214,7 @@ test("the holding line is said once across a re-ask, and its deadline runs from 
     rawBody: bodyFor(call, [{ role: "user", content: "what's on tomorrow?" }, { role: "assistant", content: HOLDING_LINE }]),
   });
   const [r1, r2] = await Promise.all([ra, drain(b.stream)]);
-  const holds = (s) => [HOLDING_LINE, LATE_LINE].reduce((k, h) => k + s.split(h).length - 1, 0);
+  const holds = (s) => [HOLDING_LINE, ...LATE_LINES].reduce((k, h) => k + s.split(h).length - 1, 0);
 
   assert.equal(first.runs.n + second.runs.n, 1, "one model run");
   assert.equal(holds(r1.said), 1, "the first stream had the holding line");

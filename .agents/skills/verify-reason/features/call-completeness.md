@@ -92,6 +92,16 @@ files but not mapped here.
   Cage drive 2026-10-30 (`/tmp/reask-drive/burst.mjs`, four identical posts at once, then a
   new-words pair): 1 turn + 3 `voice_turn_attached`, all four streams `stop` + `[DONE]`; the pair →
   `voice_turn_superseded new_from_their_side`, old stream `stop` + `[DONE]`.
+- **Fillers and dead air (#274, then this fix).** `oneSec` ("One sec..." at a tool start ≥2.5 s into
+  a silent turn) once per call; `HOLDING_LINE` at 6 s once per call; any later turn silent at
+  `LATE_HOLDING_MS` (7.5 s, from `t0`) gets the next of `LATE_LINES` (six, in order, so never the
+  same twice running). No call-turn line (`METER_KINDS`, the can't-pick-up refusal) says "sorry"
+  (hold.js's give-up to a business on hold still does); `VOICE_RULES` forbid apologising on a call. Offline replay of stored owner calls at their recorded latencies, no model/phone:
+  `bin/call-filler-drive.mjs` (fake model seam, real `llmRequest`; inputs = a private calls JSON
+  export + journal `voice_turn` lines; `REASON_FILLER_ROOT` picks the checkout, so before/after is
+  one script on two worktrees; counts only, via `bin/call-filler-count.mjs`). Tests:
+  `test/call-voice.test.js` ("holding line: 6 s once per call…", "the code's own lines never
+  apologise", the prompt test).
 - **No thinking pass before the first word (PR #59).** `claude-sonnet-5-5` thinks before every reply
   by default — ~3.5s of silence on the line (call 38: 4–6s per turn). `apiRequestFor` sends
   `thinking: { type: config.callThinking }`, default `between_tools` (`REASON_CALL_THINKING`; empty

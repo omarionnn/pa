@@ -274,11 +274,11 @@ test("a key pressed before anybody has spoken is a menu on the row, even when th
   assert.equal(db.getCall(C, call.id).outcome_kind, "machine_menu");
 });
 
-test("if the turn breaks before the first words to a person, the apology still comes after the disclosure", async () => {
+test("if the turn breaks before the first words to a person, the fallback line still comes after the disclosure", async () => {
   const call = strandCall();
   const broken = async function* () { throw new Error("model fell over"); };
   const r = await turn(call, broken, theyAnswer("Strand, hello?"));
-  assert.ok(r.said.startsWith(`${ANN} Sorry`), r.said);
+  assert.ok(r.said.startsWith(`${ANN} Something broke`), r.said);
   assert.equal(db.getCall(C, call.id).parties_told, "[1]");
 });
 
