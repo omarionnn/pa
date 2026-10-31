@@ -11468,7 +11468,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return await runChoiceTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- Crossmint checkouts (src/shoptools.js) ----------
-    case "store_checkout": case "shop_pay": case "shop_decline": case "shop_card": {
+    case "store_checkout": case "shop_pay": case "shop_decline": case "shop_card": case "shop_status": case "shop_answer": {
       const out = await runShopTool(name, input, { ...ctx, conversationId: c });
       // The card may have been offered to the store and nobody knows: never a retry on that yes.
       if (name === "shop_pay" && out?.unknown_outcome) trust.noteUnknownOutcome({ conversationId: c, action: "shop_pay", target: confirmTargetFor("shop_pay", input, c), why: `Crossmint ${out.status ?? "no answer"} after the order intent` });

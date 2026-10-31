@@ -20,6 +20,67 @@
 //     reply does not show AgentCard's total and the source, the code-composed ask line is added.
 // Nothing here decides what the person meant. Intent is the model's; this checks figures.
 import { clock } from "./config.js";
+import * as shop from "./shopconnect.js";
+
+// ---------- "I've started the checkout" ----------
+// 2026-10-31 10:58: "I've started the Ulta checkout for the 16 oz. When it gets to payment I'll text
+// you the exact total…" — that one had a run behind it, but the shape is the problem: a started line
+// is a claim about a job, and the only evidence for it is a run of theirs on record (started in the
+// last 15 minutes, or still open). Without one, the claim and the promises hung on it are dropped and
+// one honest line goes instead. At 11:17 the opposite line went out — "the checkout never actually
+// started" — about a run that had run and died; with a run on record that is corrected from the record.
+// Reason, in the first person, saying it started the checkout/order/purchase; or the checkout itself
+// said to be started/running. Never "your Amazon order is in progress, per the email", "I started
+// looking into the order", "I've started a list of things to buy": those are not claims about a job here.
+const CHECKOUT_WORD = /\b(?:checkout|check-out|check out|order|purchase)\b/i;
+const I_STARTED = /\bi(?:'ve| have|'m| am| just|'ve just| have just)?\s+(?:just\s+)?(?:started|kicked off|launched|began|begun|fired off|put through|placed)\s+(?!(?:\w+ing)\b)(?:the |a |an |your |that |this )?(?:[\w'-]+ ){0,4}?(?:checkout|check-out|order|purchase)\b/i;
+const CHECKOUT_IS = /\b(?:checkout|check-out|order|purchase)(?:'s| is| has)\s+(?:now\s+)?(?:started|running|under ?way|underway|in progress|live|begun|going through)\b/i;
+const START_IT = /\bi(?:'ve| have)?\s+(?:just\s+)?(?:started|kicked off|launched|began|begun|fired off)\s+(?:it|that|this|one)\b/i;
+const NOT_A_START = /\b(?:want me to|should i|shall i|can i|could i|do you want|if you want|didn'?t|did not|never|hasn'?t|haven'?t|couldn'?t|wasn'?t|isn'?t|not (?:yet |actually )?(?:started|running)|failed|stopped|expired|once you|when you|before i|after you|i'?ll start|i can start|ready to start|about to start|will start|going to start|let me start|per (?:the|your)|according to|says|said|tracking|delivery|arrived|shipped|email|mail)\b/i;
+const START_FOLLOWUP = /\b(?:when it (?:gets|reaches|hits)|once it (?:gets|reaches|hits)|i'?ll (?:text|send|message) you|you'?ll get a text|nothing (?:gets|is|will be|'s) charged|until you (?:approve|say)|i'?ll let you know|i'?ll keep you posted)\b/i;
+// A denial about STARTING only: "didn't go through" is a true line about a run that ran and failed.
+const NEVER_STARTED = /\b(?:never (?:actually |really )?(?:started|ran|began|got going|kicked off)|didn'?t (?:actually |really )?(?:start|run|kick off)|did not (?:actually |really )?(?:start|run)|wasn'?t (?:actually |really )?(?:started|running)|nothing (?:was|is|'s) running|no checkout (?:was|is) running|hadn'?t (?:actually )?started)\b/i;
+const HONEST_NOT_STARTED = "I haven't actually started a checkout: nothing is running and nothing has been charged. Want me to start it now?";
+const isStartClaim = (s, near) => !NOT_A_START.test(s) && !/\?\s*$/.test(s) && (I_STARTED.test(s) || CHECKOUT_IS.test(s) || (START_IT.test(s) && CHECKOUT_WORD.test(near)));
+/** Lines, and each line's sentences: `[[sentence, …], …]`, joined back with the same newlines. */
+function sentencesOf(text) { return String(text).split(/(\n+)/).map((part) => (/^\n+$/.test(part) ? part : part.split(/(?<=[.!?])\s+/))); }
+const joinBack = (parts) => parts.map((p) => (typeof p === "string" ? p : p.join(" "))).join("").replace(/\n{3,}/g, "\n\n").trim();
+export function checkoutClaims(conversationId, text) {
+  try {
+    if (!conversationId || !text || !shop.connectAllowedFor(conversationId)) return { text, flag: null };
+    const parts = sentencesOf(text);
+    const all = parts.filter((p) => typeof p !== "string").flat();
+    const behind = shop.recentRun(conversationId, { withinMs: 15 * 60_000 });
+    let flag = null;
+    if (!behind) {
+      const claims = all.filter((s, i) => isStartClaim(s, `${all[i - 1] ?? ""} ${all[i + 1] ?? ""}`));
+      if (claims.length) {
+        const drop = new Set(claims);
+        for (const s of all) if (START_FOLLOWUP.test(s)) drop.add(s);
+        const kept = parts.map((p) => (typeof p === "string" ? p : p.filter((s) => !drop.has(s))));
+        text = [joinBack(kept), HONEST_NOT_STARTED].filter(Boolean).join("\n");
+        flag = { rule: "started_without_run", dropped: drop.size };
+      }
+    }
+    // The run being denied is the one that ran and ended (11:17 was about the 10:58 run, not the one
+    // just started in the same breath): the oldest ended run of the last half hour, else the oldest open one.
+    const half = shop.runsOf(conversationId, { sinceMs: 30 * 60_000 }).reverse();
+    const ran = half.find((r) => r.status !== "running") ?? half[0] ?? null;
+    // Only a denial ABOUT the checkout: "the timer never started" is somebody else's business.
+    const denies = (s, i) => NEVER_STARTED.test(s) && (CHECKOUT_WORD.test(s) || /\bnothing was running\b/i.test(s) || (/\bit (?:never|didn'?t|did not|wasn'?t)\b/i.test(s) && CHECKOUT_WORD.test(`${all[i - 1] ?? ""} ${all[i + 1] ?? ""}`)));
+    if (ran && all.some(denies)) {
+      const drop = new Set(all.filter(denies));
+      const kept = sentencesOf(text).map((p) => (typeof p === "string" ? p : p.filter((s) => !drop.has(s))));
+      const store = shop.storeName(ran.store) || "The store";
+      const line = `Correction, from my record: the ${store} checkout${ran.item ? ` for ${ran.item}` : ""} did start ${Math.max(1, Math.round((clock.now() - ran.created_at) / 60_000))} min ago; now: ${shop.stageLine(ran)}.`;
+      text = [line, joinBack(kept)].filter(Boolean).join("\n");
+      flag = { rule: "never_started_with_run", run_id: ran.run_id };
+    }
+    return { text, flag };
+  } catch {
+    return { text, flag: null };
+  }
+}
 
 // ---------- reading an offer off a page ----------
 
@@ -445,6 +506,12 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
       const hasSource = !ask.url || text.includes(ask.url);
       if (!hasTotal || !hasSource) { flags.push({ rule: "ask_without_offer" }); extra.push(ask.line); }
     }
+    // 5. "I've started the checkout" needs a checkout run behind it (src/shopconnect.js): one of
+    // theirs started in the last 15 minutes or still open. On 2026-10-31 the opposite happened too —
+    // "the checkout never actually started" about a run that had run and died — so a never-started
+    // line with a run on record is corrected from the record as well.
+    const started = checkoutClaims(conversationId, text);
+    if (started.flag) { flags.push(started.flag); text = started.text; }
     if (extra.length) text = text + "\n" + extra.join("\n");
     return { text, changed: text !== original, flags };
   } catch {

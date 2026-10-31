@@ -209,6 +209,26 @@ db.db.exec(`
   );
 `);
 const q = (sql) => db.db.prepare(sql);
+// The checkout job (2026-10-31, after the 10:58 CeraVe run): a run is a persistent job with a stage,
+// kept moving by code across turns and restarts. A table already on live never gets a column from
+// CREATE TABLE IF NOT EXISTS, so each one is added here.
+function addRunColumn(column, decl) {
+  const have = db.db.prepare("SELECT name FROM pragma_table_info('shop_runs')").all().map((r) => r.name);
+  if (!have.includes(column)) db.db.exec(`ALTER TABLE shop_runs ADD COLUMN ${column} ${decl}`);
+}
+addRunColumn("stage", "TEXT NOT NULL DEFAULT ''");
+addRunColumn("stage_at", "INTEGER");
+addRunColumn("revision", "INTEGER NOT NULL DEFAULT 0");
+addRunColumn("progress_at", "INTEGER");
+addRunColumn("told", "TEXT NOT NULL DEFAULT ''");
+addRunColumn("question", "TEXT NOT NULL DEFAULT ''");
+addRunColumn("request_json", "TEXT NOT NULL DEFAULT ''");
+addRunColumn("paid_at", "INTEGER");
+addRunColumn("order_ref", "TEXT NOT NULL DEFAULT ''");
+addRunColumn("mail_until", "INTEGER");
+addRunColumn("mail_checked_at", "INTEGER");
+addRunColumn("mail_seen", "TEXT NOT NULL DEFAULT ''");
+addRunColumn("last_ok_at", "INTEGER");
 function siteRow(key) { return q("SELECT * FROM shop_sites WHERE store = ?").get(key) ?? null; }
 /** What Reason learned about a store it was asked to shop at: its site and the name it was called by. */
 export function noteStore({ store, name = "", url = "" }) {
@@ -458,8 +478,8 @@ export async function startCheckout({ conversationId, store, startUrl, what, ite
   const runId = r.json?.runId ?? r.json?.id;
   if (!r.ok || !runId) return { ok: false, status: r.status, error: r.json?.message ?? r.json?.error ?? "Crossmint did not start the checkout." };
   const now = clock.now();
-  q("INSERT INTO shop_runs (run_id, conversation_id, store, item, mode, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'running', ?, ?)")
-    .run(runId, conversationId, store ?? "", String(item || "").trim().slice(0, 120), plan, now, now);
+  q("INSERT INTO shop_runs (run_id, conversation_id, store, item, mode, status, created_at, updated_at, stage, stage_at, progress_at) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, 'started', ?, ?)")
+    .run(runId, conversationId, store ?? "", String(item || "").trim().slice(0, 120), plan, now, now, now, now);
   q("INSERT OR REPLACE INTO shop_run_asks (run_id, start_url, what, max_usd) VALUES (?, ?, ?, ?)").run(runId, String(startUrl ?? ""), String(what ?? ""), Number(maxUsd));
   if (plan === "signed") q("UPDATE shop_stores SET last_used_at = ? WHERE conversation_id = ? AND store = ?").run(now, conversationId, store);
   return { ok: true, runId, plan };
@@ -487,6 +507,7 @@ const openSigninLink = (runId) => q("SELECT * FROM shop_links WHERE run_id = ? A
 function publicRequest(rq) {
   return {
     requestId: rq.requestId,
+    kind: String((rq.request?.interaction ?? rq.interaction)?.kind ?? "form"),
     question: String(rq.request?.question ?? rq.question ?? ""),
     expiresAt: rq.request?.expiresAt ?? rq.expiresAt ?? null,
     // Only what draws the field: a value Crossmint prefilled (an email) is never kept.
@@ -568,6 +589,7 @@ export async function answerLink(token, { requestId, answers }) {
   const r = await server(link.conversation_id, `${CHECKOUTS}/${encodeURIComponent(link.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } });
   if (!r.ok) return { ok: false, error: "crossmint_refused", status: r.status };
   q("UPDATE shop_links SET answered_keys = ?, answered_request_id = ? WHERE id = ?").run(Object.keys(checked.answers).join(","), requestId, link.id);
+  q("UPDATE shop_runs SET stage = 'in_progress', stage_at = ?, progress_at = ?, updated_at = ? WHERE run_id = ? AND stage = 'needs_input'").run(clock.now(), clock.now(), clock.now(), link.run_id);
   return { ok: true, state: "checking" };
 }
 
@@ -668,7 +690,8 @@ async function payRow(row, { confirmationId = null } = {}) {
   if (!card) return { ok: false, error: "no_card" };
   // Claimed before any call, so two shop_pay calls at once can't both pay it.
   if (q("UPDATE shop_payments SET status = 'paying' WHERE id = ? AND status = 'asked'").run(row.id).changes !== 1) return { ok: false, error: "payment_in_progress" };
-  const reopen = () => q("UPDATE shop_payments SET status = 'asked' WHERE id = ? AND status = 'paying'").run(row.id);
+  setStage(row.run_id, "approved");
+  const reopen = () => { q("UPDATE shop_payments SET status = 'asked' WHERE id = ? AND status = 'paying'").run(row.id); setStage(row.run_id, "needs_approval"); };
   let oi;
   try {
     oi = await asUser(conversationId, "/api/unstable/order-intents", {
@@ -695,6 +718,10 @@ async function payRow(row, { confirmationId = null } = {}) {
   try { r = await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(row.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } }); } catch { return unknown(); }
   if (!r.ok) return unknown(r.status);
   q("UPDATE shop_payments SET status = 'paid', confirmation_id = ?, order_intent_id = ?, answered_at = ? WHERE id = ?").run(confirmationId ?? null, orderIntentId, clock.now(), row.id);
+  // Paid: the job moves on, and the order confirmation is watched for in their mail (bounded).
+  setStage(row.run_id, "paid");
+  q("UPDATE shop_runs SET paid_at = ?, mail_until = ? WHERE run_id = ?").run(clock.now(), clock.now() + MAIL_WATCH_MS, row.run_id);
+  watchMail(row.run_id);
   return { ok: true, amount: amountText(row), merchant: row.merchant_name };
 }
 // ---------------------------------------------------------------- approval by passkey
@@ -747,38 +774,187 @@ export async function declinePayment({ conversationId, paymentId }) {
   return { ok: true };
 }
 
-// ---------------------------------------------------------------- following a checkout
+// ---------------------------------------------------------------- following a checkout: the job
+//
+// A checkout is a JOB, not a turn (2026-10-31). At 10:58 that day store_checkout started a real Ulta
+// run for the owner; at 11:00 Crossmint asked a plain form (shipping and contact details), which this
+// follower handed to nobody; at 11:10 the request expired, the run failed, and nothing was said. Asked
+// "Updates?" at 11:17, the model — with no record to read — said the checkout had never started (false),
+// started another, and that one died the same way, in the same silence. So:
+//
+//   - every run has a `stage` (started → in_progress → needs_input → needs_approval → approved → paid
+//     → placed, or failed / cancelled), moved by code from Crossmint's answers, kept in the row;
+//   - a plain question wakes the model (an event turn, once per request) to answer it with shop_answer
+//     from what it knows, or to ask the person; a protected form still goes to the sign-in link; a
+//     payment is texted as the ask, itemized when Crossmint itemizes it (plus the Face ID link);
+//   - the end of a run is texted by code whatever the end was — expired input, blocked, cancelled,
+//     placed — and so is a stall (STALL_MS without Crossmint's revision moving), each once;
+//   - the record is in front of the model on their turns (checkoutNote) and on demand (shop_status),
+//     and the reply guard (src/offers.js) refuses a "started" that has no run behind it;
+//   - after a payment the person's mail is watched for the store's confirmation (MAIL_WATCH_MS), and
+//     the model is woken to text the order number when one lands;
+//   - a restart resumes every open run and every open mail watch (resumeFollowing).
 const TERMINAL = new Set(["succeeded", "failed", "blocked", "cancelled", "expired"]);
+export const STAGES = ["started", "in_progress", "needs_input", "needs_approval", "approved", "paid", "placed", "failed", "cancelled"];
+// Past Crossmint's own 10-minute input expiry, so an expiring request is reported as expired, not as stalled.
+export const STALL_MS = 12 * 60_000;
+// Crossmint not answering about a run for this long (it forgot it, or the key no longer sees it): the run is over.
+export const LOST_MS = 3 * STALL_MS;
+export const MAIL_WATCH_MS = 24 * 3600_000;
+export const MAIL_EVERY_MS = 10 * 60_000;
 let sayFn = null;
+let wakeFn = null;
 // Web lives on the website (REASON_SITE_URL, heyreason.com): Crossmint's client key allows that origin only.
 const siteBase = () => (process.env.REASON_SITE_URL || process.env.REASON_PUBLIC_URL || "https://heyreason.com").replace(/\/+$/, "");
 let linkBase = () => `${siteBase()}/web/connect`;
 /** A card link as the person taps it. */
 export const cardLinkUrl = (conversationId) => `${linkBase()}/${cardLink(conversationId)}`;
-/** serve.js hands over how to text a person. Nothing is texted before this. */
-export function attach({ say, base } = {}) { sayFn = say ?? null; passkey.attach({ say }); if (base) linkBase = () => base; }
+/**
+ * serve.js hands over how to text a person (`say`) and how to wake the model with an event turn
+ * (`wake(conversationId, text, { key })`). Nothing is texted or woken before this.
+ */
+export function attach({ say, wake, base } = {}) { sayFn = say ?? null; wakeFn = wake ?? null; passkey.attach({ say }); if (base) linkBase = () => base; }
 const notify = async (c, text) => { try { if (sayFn) await sayFn(c, text); } catch { /* paid or declined either way */ } };
+/** An event turn for the model. True once it was raised; false when it could not be (tried again next look). */
+const wake = async (c, text, key) => { try { if (wakeFn) await wakeFn(c, text, { key }); return true; } catch { return false; } };
+
+function setStage(runId, stage) {
+  const now = clock.now();
+  q("UPDATE shop_runs SET stage = ?, stage_at = ?, updated_at = ? WHERE run_id = ? AND stage <> ?").run(stage, now, now, runId, stage);
+}
+const toldOf = (run) => new Set(String(run?.told ?? "").split(",").filter(Boolean));
+/** Claims an event as texted. False when it already was: each is said once, across restarts too. */
+function tellOnce(runId, what) {
+  const run = runRow(runId);
+  if (!run) return false;
+  const told = toldOf(run);
+  if (told.has(what)) return false;
+  told.add(what);
+  q("UPDATE shop_runs SET told = ? WHERE run_id = ?").run([...told].join(","), runId);
+  return true;
+}
+const storeOf = (run) => storeName(run.store) || "The store";
+const itemOf = (run) => (run.item ? ` for ${run.item}` : "");
+const minutes = (ms) => Math.max(1, Math.round(ms / 60_000));
+const short = (s, n = 140) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+
+/** Crossmint's breakdown of a payment, when it gives one: "item $18.99, shipping $6.95, tax $2.30". */
+export function itemized(it) {
+  const src = it?.breakdown ?? it?.amount?.breakdown ?? it?.lineItems ?? null;
+  if (!src || typeof src !== "object" || Array.isArray(src)) return "";
+  const cur = String(it?.amount?.currency ?? "USD").toUpperCase();
+  const money = (v) => { const n = v?.value ?? v?.amount ?? v; return /^\d+(\.\d{1,4})?$/.test(String(n ?? "")) ? (cur === "USD" ? `$${n}` : `${n} ${cur}`) : ""; };
+  const parts = [];
+  for (const [k, label] of [["subtotal", "item"], ["items", "item"], ["item", "item"], ["shipping", "shipping"], ["tax", "tax"], ["fees", "fees"], ["discount", "discount"]]) {
+    const m = money(src[k]);
+    if (m && !parts.some((p) => p.startsWith(label))) parts.push(`${label} ${m}`);
+  }
+  return parts.join(", ");
+}
+/** The payment text: the ask (with the Face ID link where they have one), under the itemization when there is one. */
+export function paymentText(run, row, it) {
+  const ask = passkey.requiredFor(run.conversation_id) ? passkeyAsk(row) : paymentAsk(row);
+  const parts = itemized(it);
+  if (!parts) return ask;
+  const where = row.merchant_name || storeName(run.store) || "The store";
+  return `${where}'s total${row.item ? ` for ${row.item}` : ""}: ${parts}; ${amountText(row)} all in.\n${ask}`;
+}
+
+/** The event that wakes the model for a plain question: what is asked, the fields, and what to do. */
+function inputEvent(run, rq, it) {
+  const store = storeOf(run);
+  const expiresAt = Date.parse(rq.request?.expiresAt ?? "");
+  const left = Number.isFinite(expiresAt) ? ` It expires in ${minutes(expiresAt - clock.now())} minutes.` : "";
+  const fields = (it.fields ?? []).map((f) => `${f.key}${f.required ? "" : " (optional)"}: ${f.label ?? f.key}`).join("; ");
+  const options = Array.isArray(it.options) ? ` Options: ${it.options.map((o) => (typeof o === "string" ? o : o?.label ?? o?.value ?? "")).filter(Boolean).join(", ")}.` : "";
+  return `[checkout] ${store}'s checkout${itemOf(run)} (run ${run.run_id}) is waiting on an answer.${left} ${store} asks: "${short(rq.request?.question ?? "", 300)}".`
+    + `${fields ? ` Fields (key: label): ${fields}.` : ""}${options}`
+    + " Answer it with shop_answer from what you know about them (their name, home address, phone, email; never a card number)."
+    + " If something it needs is not known, ask them for exactly that in one line and nothing else. Nothing is charged by this.";
+}
+
+/** What ended a run, in their words. `paid` is a payment of theirs that went out before the end. */
+function endText(run, status, result, paid) {
+  const store = storeOf(run);
+  const code = String(result?.code ?? "").toLowerCase();
+  const summary = short(result?.summary ?? result?.message ?? "", 160);
+  if (paid) {
+    return `${store}'s checkout${itemOf(run)} ended after the payment was approved (${summary || status}). I can't tell from here whether the order went through: check your email for ${store}'s confirmation, and if there's a charge with no order, tell me and I'll take it up with them.`;
+  }
+  const expired = code === "input_expired" || /expired while waiting/i.test(summary);
+  if (expired) {
+    const what = run.stage === "needs_approval" ? "your approval of the payment" : run.question ? `an answer to "${short(run.question, 120)}"` : "an answer";
+    return `The ${store} checkout${itemOf(run)} stopped: ${store} was waiting for ${what} and didn't get it in time, so it expired. Nothing was charged. Want me to start it again?`;
+  }
+  if (status === "cancelled") return `The ${store} checkout${itemOf(run)} was cancelled. Nothing was charged.`;
+  return `The ${store} checkout${itemOf(run)} didn't go through${summary ? ` (${summary})` : code ? ` (${code})` : ""}. Nothing was charged. Want me to try again, or try another store?`;
+}
+/** An order reference Crossmint names in a result, if it names one. */
+export function orderRef(result) {
+  for (const k of ["orderId", "orderNumber", "confirmationNumber", "orderReference", "reference"]) {
+    const v = result?.[k] ?? result?.order?.[k];
+    if (v && /^[A-Za-z0-9-]{4,40}$/.test(String(v))) return String(v);
+  }
+  return "";
+}
+const mailConnected = (conversationId) => { try { return db.listOauthTokens(conversationId, "google").length > 0; } catch { return false; } };
+function placedText(run, result) {
+  const ref = orderRef(result);
+  const watch = mailConnected(run.conversation_id)
+    ? `I'm watching your email for ${storeOf(run)}'s confirmation and will send the order number and delivery date when it lands.`
+    : `Check your email for ${storeOf(run)}'s confirmation; I can't see your mail, so the order number and delivery date will be there.`;
+  return `${storeOf(run)} placed the order${itemOf(run)}${ref ? ` (order ${ref})` : ""}. ${watch}`;
+}
+/** A stall — nothing moved for STALL_MS — said once per run. */
+async function stalled(run, say) {
+  if (!run || TERMINAL.has(run.status)) return {};
+  const since = run.progress_at ?? run.created_at;
+  if (clock.now() - since < STALL_MS) return {};
+  if (!tellOnce(run.run_id, "stalled")) return { stalled: true };
+  const where = run.stage === "needs_input" ? `waiting on an answer for ${storeOf(run)}` : run.stage === "needs_approval" ? `waiting on your approval at ${storeOf(run)}` : `at ${storeOf(run)}'s checkout`;
+  await say(`Still ${where}${itemOf(run)}: nothing has moved for ${minutes(clock.now() - since)} minutes. Nothing has been charged. If it dies I'll say so.`);
+  return { stalled: true };
+}
 
 /**
  * One look at a run: what changed, and what to text. Returns the text(s) sent, for the caller's log.
  * A sign-in question → the link (texted once per run; later questions land on the same page).
- * A card payment → the ask, from the row. Anything else is left to the model (`question`).
+ * A card payment → the ask, from the row. A plain question → the model is woken (`woke`).
+ * The end → the row's stage and status, and one text saying what happened.
  */
 export async function step(runId) {
   const run = runRow(runId);
   if (!run || TERMINAL.has(run.status)) return { done: true };
-  const r = await server(run.conversation_id, `${CHECKOUTS}/${encodeURIComponent(runId)}`);
-  if (!r.ok || !r.json) return { done: false };
-  const cur = r.json;
-  const status = String(cur.status ?? "");
   const said = [];
   const say = async (text) => { said.push(text); if (sayFn) await sayFn(run.conversation_id, text); };
+  let r;
+  try { r = await server(run.conversation_id, `${CHECKOUTS}/${encodeURIComponent(runId)}`); } catch { r = { ok: false, json: null }; }
+  if (!r.ok || !r.json) {
+    // Crossmint not answering about it at all, for LOST_MS: the run is over as far as anyone can tell.
+    if (clock.now() - (run.last_ok_at ?? run.created_at) > LOST_MS) {
+      q("UPDATE shop_runs SET status = 'failed', result = 'lost: Crossmint stopped answering about this run', stage = 'failed', stage_at = ?, updated_at = ? WHERE run_id = ?").run(clock.now(), clock.now(), runId);
+      q("UPDATE shop_payments SET status = 'expired' WHERE run_id = ? AND status = 'asked'").run(runId);
+      if (tellOnce(runId, "end")) await say(`I lost track of the ${storeOf(run)} checkout${itemOf(run)}: the checkout service stopped answering about it. Nothing was charged that I can see. Want me to start it again?`);
+      return { done: true, status: "failed", said, lost: true };
+    }
+    return { done: false, said, ...(await stalled(run, say)) };
+  }
+  const cur = r.json;
+  const status = String(cur.status ?? "");
+  const now = clock.now();
+  q("UPDATE shop_runs SET last_ok_at = ? WHERE run_id = ?").run(now, runId);
+  const told = toldOf(run);
+  // Progress is Crossmint's revision moving, a new request, or the end.
+  const rev = Number(cur.revision ?? 0);
+  if (rev !== Number(run.revision ?? 0)) q("UPDATE shop_runs SET revision = ?, progress_at = ?, updated_at = ? WHERE run_id = ?").run(rev, now, now, runId);
   const ra = cur.requiredAction;
   const requestId = ra?.requestId ?? "";
+  let woke = null;
   if (requestId && requestId !== run.last_request_id) {
-    q("UPDATE shop_runs SET last_request_id = ?, updated_at = ? WHERE run_id = ?").run(requestId, clock.now(), runId);
     const rq = { requestId, request: ra.request };
     const it = ra.request?.interaction ?? {};
+    q("UPDATE shop_runs SET last_request_id = ?, question = ?, request_json = ?, progress_at = ?, updated_at = ? WHERE run_id = ?")
+      .run(requestId, short(ra.request?.question ?? "", 300), JSON.stringify(publicRequest(rq)), now, now, runId);
     const link = openSigninLink(runId);
     if (it.kind === "payment") {
       // Past the sign-in: the store let them in.
@@ -787,9 +963,19 @@ export async function step(runId) {
       if (row && row.amount_kind !== "exact") {
         // A ceiling, not a total: nothing to say yes to. Declined, so nothing is charged.
         await declinePayment({ conversationId: run.conversation_id, paymentId: row.id });
+        setStage(runId, "in_progress");
         await say(`${row.merchant_name || storeName(run.store) || "The store"} only gave me a ceiling (${amountText(row)}), not the real total, so I stopped before paying. Nothing was charged.`);
-      } else if (row && it.method === "card") await say(passkey.requiredFor(run.conversation_id) ? passkeyAsk(row) : paymentAsk(row));
+      } else if (row && it.method === "card") {
+        setStage(runId, "needs_approval");
+        await say(paymentText(run, row, it));
+      } else {
+        // A payment Reason cannot approve from here (not a card, or no readable amount): never the
+        // model's to answer. Said once; the request expires on its own and the end is texted.
+        setStage(runId, "in_progress");
+        if (tellOnce(runId, `nopay:${requestId}`)) await say(`${storeOf(run)} asked for a payment I can't approve from here (${it.method ? `by ${it.method}` : "no readable amount"}), so I didn't. Nothing was charged.`);
+      }
     } else if (it.kind === "form" && (it.fields ?? []).some(isProtected)) {
+      setStage(runId, "needs_input");
       if (link) {
         q("UPDATE shop_links SET request_id = ?, request_json = ? WHERE id = ?").run(requestId, JSON.stringify(publicRequest(rq)), link.id);
       } else {
@@ -800,30 +986,60 @@ export async function step(runId) {
           ? `${name} signed me out. Sign in again here and I'll pick up where we left off. Your password goes straight to ${name}, not to me.\n${linkBase()}/${token}`
           : `${name} needs you signed in before it lets anyone check out. Sign in once here and I'll use it for ${name} orders from now on. Your password goes straight to ${name}, not to me.\n${linkBase()}/${token}`);
       }
+    } else {
+      // A plain question — shipping details, a size, a choice — is the model's to answer from what it
+      // knows about them (shop_answer), or to ask them. Woken once per request.
+      setStage(runId, "needs_input");
+      woke = requestId;
+      if (await wake(run.conversation_id, inputEvent(run, rq, it), `shop:${runId}:${requestId}`)) tellOnce(runId, `woke:${requestId}`);
     }
+  } else if (requestId && run.stage === "needs_input" && !told.has(`woke:${requestId}`) && run.request_json) {
+    // The same plain question, and the model was never reached for it (the wake failed): raised again.
+    let rq = null;
+    try { rq = JSON.parse(run.request_json); } catch { rq = null; }
+    if (rq && rq.kind === "form" && !(rq.fields ?? []).some(isProtected)) {
+      woke = requestId;
+      if (await wake(run.conversation_id, inputEvent(run, { requestId, request: ra.request }, ra.request?.interaction ?? {}), `shop:${runId}:${requestId}`)) tellOnce(runId, `woke:${requestId}`);
+    }
+  } else if (!requestId && !TERMINAL.has(status) && (run.stage === "started" || !run.stage)) {
+    setStage(runId, "in_progress");
   }
   if (TERMINAL.has(status)) {
-    q("UPDATE shop_runs SET status = ?, result = ?, updated_at = ? WHERE run_id = ?").run(status, String(cur.result?.code ?? cur.result?.summary ?? "").slice(0, 300), clock.now(), runId);
+    const before = runRow(runId).stage;
+    const result = cur.result ?? (cur.reason ? { code: String(cur.reason) } : null);
+    q("UPDATE shop_runs SET status = ?, result = ?, updated_at = ?, progress_at = ? WHERE run_id = ?").run(status, String(result?.code ?? result?.summary ?? "").slice(0, 300), now, now, runId);
     const link = openSigninLink(runId);
     if (status === "succeeded" && (link || run.mode === "sign_in")) finishSignin(run, link);
     else if (link) q("UPDATE shop_links SET state = 'failed' WHERE id = ?").run(link.id);
     q("UPDATE shop_payments SET status = 'expired' WHERE run_id = ? AND status = 'asked'").run(runId);
+    const paid = q("SELECT * FROM shop_payments WHERE run_id = ? AND status IN ('paid', 'unknown') ORDER BY id DESC").get(runId) ?? null;
     // A guest checkout the store walled off behind an account: remembered for this store, and the same
     // checkout starts again signed in, which sends them the sign-in link. Once per checkout.
     const ask = q("SELECT * FROM shop_run_asks WHERE run_id = ?").get(runId);
-    if (run.mode === "guest" && status !== "succeeded" && status !== "cancelled" && ask && !ask.retried && needsAccount(cur.result)) {
+    if (!paid && run.mode === "guest" && status !== "succeeded" && status !== "cancelled" && ask && !ask.retried && needsAccount(result)) {
       q("UPDATE shop_run_asks SET retried = 1 WHERE run_id = ?").run(runId);
       if (run.store && !STORES[run.store]?.signIn) {
         q("INSERT INTO shop_sites (store, sign_in) VALUES (?, 'required') ON CONFLICT (store) DO UPDATE SET sign_in = 'required'").run(run.store);
       }
+      setStage(runId, "failed");
       const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: true });
-      if (again.ok) follow(again.runId);
-      else await say(`${storeName(run.store) || "The store"} wants an account to check out, and I couldn't start the signed-in checkout. Nothing was charged.`);
+      if (again.ok) { tellOnce(runId, "end"); q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`sign-in wall; started again signed in as ${again.runId}`, runId); follow(again.runId); }
+      else if (tellOnce(runId, "end")) await say(`${storeName(run.store) || "The store"} wants an account to check out, and I couldn't start the signed-in checkout. Nothing was charged.`);
       return { done: true, status, said, retried: again.ok ? again.runId : null };
+    }
+    if (status === "succeeded") {
+      const ref = orderRef(result);
+      if (ref) q("UPDATE shop_runs SET order_ref = ? WHERE run_id = ?").run(ref, runId);
+      setStage(runId, "placed");
+      if (!runRow(runId).mail_until) { q("UPDATE shop_runs SET mail_until = ? WHERE run_id = ?").run(now + MAIL_WATCH_MS, runId); watchMail(runId); }
+      if (tellOnce(runId, "end")) await say(placedText(run, result));
+    } else {
+      setStage(runId, status === "cancelled" ? "cancelled" : "failed");
+      if (tellOnce(runId, "end")) await say(endText({ ...runRow(runId), stage: before }, status, result, paid));
     }
     return { done: true, status, said };
   }
-  return { done: false, status, said };
+  return { done: false, status, said, woke, ...(await stalled(runRow(runId), say)) };
 }
 /** Crossmint's result for a checkout the store wouldn't let a guest finish (Target, Walmart: merchant.no_safe_path at "Sign in or create account"). */
 function needsAccount(result) {
@@ -838,6 +1054,157 @@ function finishSignin(run, link) {
   q("UPDATE shop_runs SET signed_in = 1 WHERE run_id = ?").run(run.run_id);
   if (link) q("UPDATE shop_links SET state = 'connected' WHERE id = ?").run(link.id);
 }
+
+/**
+ * The model's answer to a plain question (shop_answer): checked against the request on record, never
+ * a protected field, posted to Crossmint. The values are never logged or stored (src/privacy.js seals
+ * them out of the tool log), only that the request was answered.
+ */
+export async function answerRun(runId, { conversationId, answers }) {
+  const run = runRow(runId);
+  if (!run || run.conversation_id !== conversationId) return { ok: false, error: "no_such_run" };
+  if (TERMINAL.has(run.status)) return { ok: false, error: "run_over", stage: run.stage, say: `That checkout is over (${run.stage}); nothing is waiting on an answer.` };
+  let rq = null;
+  try { rq = run.request_json ? JSON.parse(run.request_json) : null; } catch { rq = null; }
+  if (!rq || !run.last_request_id || run.stage !== "needs_input") return { ok: false, error: "nothing_asked", stage: run.stage };
+  // Only a plain form is the model's to answer: a payment is approved through shop_pay or Face ID, never here.
+  if (rq.kind !== "form") return { ok: false, error: "not_a_form", kind: rq.kind };
+  if ((rq.fields ?? []).some(isProtected)) return { ok: false, error: "needs_signin_link", say: "That question has a password or code in it: it goes through the sign-in link they were texted, never through you." };
+  const checked = checkAnswers(rq, answers);
+  if (!checked.ok) return { ok: false, error: checked.error, fields: (rq.fields ?? []).map((f) => ({ key: f.key, label: f.label, required: !!f.required })) };
+  const part = { type: "input_response", requestId: rq.requestId, action: "submit", response: { kind: rq.kind || "form", answers: checked.answers } };
+  let r;
+  try { r = await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(runId)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } }); } catch { return { ok: false, error: "crossmint_unreachable" }; }
+  if (!r.ok) return { ok: false, error: "crossmint_refused", status: r.status };
+  const now = clock.now();
+  q("UPDATE shop_runs SET stage = 'in_progress', stage_at = ?, progress_at = ?, updated_at = ? WHERE run_id = ?").run(now, now, now, runId);
+  return { ok: true, run_id: runId, answered: Object.keys(checked.answers), say: "Answered; the checkout is moving again. Nothing is charged until they approve the exact total they'll be texted. Say so in one line if they're waiting, otherwise nothing." };
+}
+
+// ---------------------------------------------------------------- the record, for the model
+/** This person's runs: every open one, and the ones that started in the window. Newest first. */
+export function runsOf(conversationId, { sinceMs = 48 * 3600_000, limit = 10 } = {}) {
+  return q("SELECT * FROM shop_runs WHERE conversation_id = ? AND (status = 'running' OR created_at >= ?) ORDER BY created_at DESC LIMIT ?").all(conversationId, clock.now() - sinceMs, limit);
+}
+/** A run most recently started, within `withinMs`, or still open: what a "started" claim has to have behind it. */
+export function recentRun(conversationId, { withinMs = 15 * 60_000 } = {}) {
+  return q("SELECT * FROM shop_runs WHERE conversation_id = ? AND (status = 'running' OR created_at >= ?) ORDER BY created_at DESC LIMIT 1").get(conversationId, clock.now() - withinMs) ?? null;
+}
+const payOf = (run) => q("SELECT * FROM shop_payments WHERE run_id = ? ORDER BY id DESC").get(run.run_id) ?? null;
+/** Where a run stands, in one line, from the row. */
+export function stageLine(run) {
+  const ago = (t) => { const m = minutes(clock.now() - (t ?? run.created_at)); return m < 120 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`; };
+  const store = storeOf(run);
+  const pay = payOf(run);
+  const result = run.result ? ` (${short(run.result, 120)})` : "";
+  switch (run.stage) {
+    case "started": return `starting at ${store} (${ago(run.created_at)}); nothing charged`;
+    case "in_progress": return `running at ${store}'s checkout, started ${ago(run.created_at)}, last moved ${ago(run.progress_at)}; nothing charged`;
+    case "needs_input": return `waiting since ${ago(run.stage_at)} on an answer to "${short(run.question, 120)}" (answer it with shop_answer, run_id ${run.run_id}, or ask them); nothing charged`;
+    case "needs_approval": return `waiting since ${ago(run.stage_at)} on their approval of ${pay ? amountText(pay) : "the total"} at ${pay?.merchant_name || store}; nothing charged yet`;
+    case "approved": return `paying ${pay ? amountText(pay) : ""} at ${pay?.merchant_name || store} now`;
+    case "paid": return `paid ${pay ? amountText(pay) : ""} at ${pay?.merchant_name || store} ${ago(run.paid_at)}; ${store} still has to place it`;
+    case "placed": return `placed ${ago(run.stage_at)}${run.order_ref ? `, order ${run.order_ref}` : ""}${pay ? `, ${amountText(pay)} paid` : ""}`;
+    case "cancelled": return `cancelled ${ago(run.stage_at)}; nothing charged`;
+    case "failed": {
+      const expired = /input_expired|expired while waiting/i.test(run.result);
+      const why = expired ? ` (${store} was waiting for ${run.question ? `an answer to "${short(run.question, 100)}"` : "an answer"} and it expired after 10 minutes)` : result;
+      return `failed ${ago(run.stage_at)}${why}; ${pay && ["paid", "unknown"].includes(pay.status) ? `a payment of ${amountText(pay)} had gone out, outcome unknown` : "nothing charged"}`;
+    }
+    default: return `${run.status} ${ago(run.updated_at)}${result}`;
+  }
+}
+/** shop_status: the record the model answers from. */
+export function statusView(conversationId) {
+  const runs = runsOf(conversationId).map((run) => ({
+    run_id: run.run_id, store: storeOf(run), item: run.item, stage: run.stage || run.status, status: run.status,
+    started_minutes_ago: minutes(clock.now() - run.created_at), where: stageLine(run),
+    ...(run.question ? { last_question: short(run.question, 200) } : {}),
+    ...(run.order_ref ? { order_ref: run.order_ref } : {}),
+  }));
+  return { ok: true, runs, note: runs.length ? "This is the record. Answer from it, never from the chat; say the stage in plain words." : "No checkout has run for them in the last two days. Say so; do not say one is running." };
+}
+/** The note on their turns: every run of the last day, from the row, over anything the chat says. */
+export function checkoutNote(conversationId) {
+  try {
+    if (!connectAllowedFor(conversationId)) return "";
+    const runs = runsOf(conversationId, { sinceMs: 24 * 3600_000, limit: 5 });
+    if (!runs.length) return "";
+    const lines = runs.map((run) => `- ${storeOf(run)}${run.item ? `, ${run.item}` : ""}: ${stageLine(run)}.`);
+    return `Checkout record (code's own, from the database; it overrides anything the chat says about these orders):\n${lines.join("\n")}\n`
+      + "Answer anything about an order or checkout from this (shop_status has the same). Never say a checkout started unless store_checkout returned a run_id this turn, and never say one never ran when it is listed here.";
+  } catch { return ""; }
+}
+
+// ---------------------------------------------------------------- the order confirmation, in their mail
+let mailImpl = null;
+/** Tests point this at a fake mailbox: (conversationId, { host, since }) → { ok, connected, hits }. */
+export function _setMail(f) { mailImpl = f ?? null; }
+async function readMail(conversationId, { host, since }) {
+  const google = await import("./google.js");
+  const tokens = await google.allAccessTokens(conversationId, { scope: google.GMAIL_SCOPE });
+  if (!tokens.ok) return { ok: true, connected: false, hits: [] };
+  const hits = [];
+  for (const a of tokens.accounts ?? []) {
+    const list = await google.api(a.token, "GET", "/gmail/v1/users/me/messages", { query: { q: `from:${host} after:${Math.floor(since / 1000)}`, maxResults: 5 } });
+    if (!list.ok) continue;
+    for (const m of list.body?.messages ?? []) {
+      const one = await google.api(a.token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(m.id)}`, { query: { format: "metadata", metadataHeaders: ["From", "Subject", "Date"] } });
+      if (!one.ok) continue;
+      const v = google.messageBrief(one.body);
+      hits.push({ account: a.account, thread_id: v.thread_id, message_id: m.id, subject: v.subject, from: v.from, date: v.date });
+    }
+  }
+  return { ok: true, connected: true, hits };
+}
+function mailEvent(run, hits) {
+  const list = hits.slice(0, 3).map((h) => `"${short(h.subject, 120)}" from ${short(h.from, 80)} (${h.date}; account ${h.account}, thread_id ${h.thread_id})`).join("; ");
+  return `[checkout] Mail from ${storeOf(run)} arrived after the order${itemOf(run)} (run ${run.run_id}): ${list}. Read it with gmail_read (thread_id, in that account) and text them the order number and the delivery estimate in one line. If it is not the confirmation for this order, say exactly NO_REPLY.`;
+}
+/**
+ * One look at their mail for the store's confirmation. Stops (and says why, once) when the window
+ * closes or no mail is connected; wakes the model, once, when something from the store arrives.
+ */
+export const MAIL_WAKES_MAX = 5;
+export async function checkMail(runId) {
+  const run = runRow(runId);
+  if (!run || !run.mail_until || toldOf(run).has("mail")) return { done: true };
+  const store = storeOf(run);
+  if (clock.now() > run.mail_until) {
+    // A placed order with nothing in the mail is not an alarm; a payment with no order might be.
+    const worry = run.stage !== "placed";
+    if (tellOnce(runId, "mail") && worry) await notify(run.conversation_id, `No confirmation email from ${store} in the 24 hours since the payment. Check ${store}'s site or your card for the charge, and tell me what you see; I'll take it from there.`);
+    return { done: true, expired: true };
+  }
+  q("UPDATE shop_runs SET mail_checked_at = ? WHERE run_id = ?").run(clock.now(), runId);
+  const host = storeHost(run.store).replace(/^www\./, "");
+  if (!host) { tellOnce(runId, "mail"); return { done: true }; }
+  let r;
+  try { r = await (mailImpl ?? readMail)(run.conversation_id, { host, since: (run.paid_at ?? run.created_at) - 60_000 }); } catch { return { done: false }; }
+  if (!r?.ok || !r.connected) { tellOnce(runId, "mail"); return { done: true, connected: false }; }
+  // Every NEW message from the store is put to the model (it decides whether it is the confirmation);
+  // the first one — a "rate your visit" — does not end the watch. Bounded: MAIL_WAKES_MAX wakes, then done.
+  const seen = new Set(String(run.mail_seen ?? "").split(",").filter(Boolean));
+  const fresh = (r.hits ?? []).filter((h) => h.message_id && !seen.has(h.message_id));
+  if (!fresh.length) return { done: false };
+  for (const h of fresh) seen.add(h.message_id);
+  q("UPDATE shop_runs SET mail_seen = ? WHERE run_id = ?").run([...seen].slice(-50).join(","), runId);
+  const wakes = [...toldOf(run)].filter((t) => t.startsWith("mailwake:")).length + 1;
+  tellOnce(runId, `mailwake:${fresh[0].message_id}`);
+  await wake(run.conversation_id, mailEvent(run, fresh), `shop:${runId}:mail:${fresh[0].message_id}`);
+  if (wakes >= MAIL_WAKES_MAX) { tellOnce(runId, "mail"); return { done: true, hits: fresh.length, capped: true }; }
+  return { done: false, hits: fresh.length };
+}
+/** Watches their mail every few minutes until the confirmation lands or the window closes. */
+export function watchMail(runId, { everyMs = MAIL_EVERY_MS } = {}) {
+  const tick = async () => {
+    let out = { done: false };
+    try { out = await checkMail(runId); } catch { /* next tick */ }
+    if (!out.done) setTimeout(tick, everyMs).unref?.();
+  };
+  setTimeout(tick, 0).unref?.();
+}
+
 /** Follows a run every few seconds until it ends. In-process; resumeFollowing picks runs up after a restart. */
 export function follow(runId, { everyMs = 3000 } = {}) {
   const tick = async () => {
@@ -847,6 +1214,11 @@ export function follow(runId, { everyMs = 3000 } = {}) {
   };
   setTimeout(tick, 0).unref?.();
 }
+/** After a restart: every open run is followed again, and every open mail watch resumed. */
 export function resumeFollowing() {
-  for (const r of q("SELECT run_id FROM shop_runs WHERE status = 'running'").all()) follow(r.run_id);
+  const runs = q("SELECT run_id FROM shop_runs WHERE status = 'running'").all().map((r) => r.run_id);
+  for (const id of runs) follow(id);
+  const mail = q("SELECT run_id, told FROM shop_runs WHERE mail_until IS NOT NULL AND mail_until > ?").all(clock.now()).filter((r) => !toldOf(r).has("mail")).map((r) => r.run_id);
+  for (const id of mail) watchMail(id);
+  return { runs, mail };
 }

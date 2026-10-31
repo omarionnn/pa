@@ -93,7 +93,16 @@ startOps({ runtime, router, log });
 // ask, and the runs a restart interrupted, followed again.
 {
   const shop = await import("./shopconnect.js");
-  if (shop.connectMode() !== "off") { shop.attach({ say: (c, text) => runtime.say(c, text) }); shop.resumeFollowing(); }
+  if (shop.connectMode() !== "off") {
+    shop.attach({
+      say: (c, text) => runtime.say(c, text),
+      // A plain question from the store, or the confirmation email: an event turn, keyed so a restart
+      // cannot raise the same one twice.
+      wake: (c, text, { key } = {}) => runtime.event(c, text, { idempotencyKey: key }),
+    });
+    const resumed = shop.resumeFollowing();
+    if (resumed.runs.length || resumed.mail.length) log({ checkouts_resumed: resumed.runs.length, mail_watches_resumed: resumed.mail.length });
+  }
 }
 
 const server = createServer({ router, runtime, log });
