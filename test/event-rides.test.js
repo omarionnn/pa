@@ -68,11 +68,16 @@ function fakeRuntime() {
   };
 }
 
+// Today in New York, read ONCE. Every date below is counted from it in calendar days. It used to be
+// `Date.now() + days * 24h`, read again at every call: in the hour after midnight before the clocks
+// go back, "two days from now" and "one day from now" were the same date (a 25-hour day), so the
+// "too early" sweep was really the day before and asked everybody; and a run that crossed midnight
+// had DAY on one calendar and the later dates on the next.
+const TODAY = new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(Date.now());
 /** A local wall-clock date `days` from today in New York, as YYYY-MM-DD. */
 function dayFromNow(days) {
-  const d = new Date(Date.now() + days * 86_400_000);
-  const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(d).map(x => [x.type, x.value]));
-  return `${p.year}-${p.month}-${p.day}`;
+  const [y, m, d] = TODAY.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
 }
 /** Move the clock to this local wall-clock moment. */
 function goTo(isoLocal) {

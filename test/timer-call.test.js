@@ -51,9 +51,15 @@ const CONV = "dm:owner";
 const MIN = 60_000;
 const GOAL = "you asked me to call at 7 to get you up";
 
+// Every test starts at one fixed midday in New York. The cap test counts two calls "today", then
+// winds the clock 10 minutes to the timer; started on the real clock after 23:50, those 10 minutes
+// crossed midnight into a fresh day with no calls used, the call was placed and the test failed.
+const MIDDAY = Date.parse("2026-10-28T16:00:00Z");
+
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
+  clock.skip(MIDDAY - Date.now());
   db.db.exec("DELETE FROM timers; DELETE FROM series; DELETE FROM calls; DELETE FROM outbox; DELETE FROM accounts; DELETE FROM threads; DELETE FROM conversations; DELETE FROM usage; DELETE FROM inbound_messages; DELETE FROM notice_seen;");
   db.upsertAccount({ conversationId: CONV, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   db.upsertThread({ conversationId: CONV, channel: "fake", address: OWNER, isOwner: true, service: "iMessage" });

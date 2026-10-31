@@ -647,7 +647,8 @@ export class Runtime extends EventEmitter {
       // marker once deliver read it (src/deliver.js, `silent`). Either way it decided to be quiet;
       // nothing failed.
       const heldBack = async ({ why = "held_back" } = {}) => {
-        if (reply) this.log({ [why]: meta, said: reply.slice(0, 120) });
+        // How long, never what: the reply is somebody's conversation and the log is not the place for it.
+        if (reply) this.log({ [why]: meta, conversation: conversationId, chars: reply.length });
         // "leave it" answered with a tapback or nothing still closes the question it answered —
         // above all as declined, so the catch is never raised again. Only reads when one is open.
         if (kind === "user") {
@@ -718,7 +719,8 @@ export class Runtime extends EventEmitter {
                 attempted: { they_said: String(text ?? "").slice(0, 400) }, outcome: "asked",
                 result: { question: asked.question }, receipt: `asked back: ${asked.question}`,
               });
-              this.log({ asked_back: asked.question, conversation: conversationId });
+              // The question is on the ledger row above; the log gets that it happened, not the words.
+              this.log({ asked_back: true, conversation: conversationId, chars: asked.question.length });
             }
           }
         }

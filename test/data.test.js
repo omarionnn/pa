@@ -22,6 +22,10 @@ process.env.REASON_TOKEN_KEY = "44".repeat(32); // stored login tokens are seale
 // in test/call-handling.test.js, against a fixed clock.
 process.env.REASON_CALL_QUIET_HOURS = "";
 process.env.REASON_RECORDING_ROOT = join(dir, "recordings");
+// Browser profiles here too. Left unset they went to ./data/profiles in the checkout, shared with
+// every other run in it: a second suite (or anything else writing dm:owner's profile) could put the
+// directory back between the delete and the check, and "their profile is gone" failed.
+process.env.REASON_DATA_DIR = dir;
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";

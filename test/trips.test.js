@@ -36,8 +36,15 @@ const { config, clock } = await import("../src/config.js");
 
 const C = config.ownerConversation;
 const GUEST = "dm:+12025550111";
+// The trips below are written for fixed dates (arrive by 2026-10-30 19:00, a party on 10-31 at 21:00),
+// so the clock is pinned to the morning they are for. On the real clock the first one went into the
+// past at 7pm ET on 10-30 and "be there by 7:00 PM" stopped coming back: a pass that expired.
+const MORNING_OF = Date.parse("2026-10-30T14:00:00Z");
+
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
+  clock.reset();
+  clock.skip(MORNING_OF - Date.now());
   trips.clearArrivalCache?.();
   db.db.exec("DELETE FROM trips; DELETE FROM page_sessions; DELETE FROM page_codes; DELETE FROM page_attempts; DELETE FROM saved_places;");
 });

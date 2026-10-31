@@ -176,7 +176,7 @@ export function noteMachineLine(call, { what = "", deadEnd = false, heard = "", 
   // What it said is kept even when the next thing it says is different: the menu that read out an
   // email address is still the place the email address came from.
   const keep = said ? { machine_heard: said } : {};
-  log({ call_machine: call?.id, what, dead_end: deadEnd === true, heard: said.slice(0, 80) });
+  log({ call_machine: call?.id, what, dead_end: deadEnd === true, heard_chars: said.length });
 
   // A person already settled something on this call — answered, confirmed, paused for the owner — and
   // a handover then reached a machine. What the person did stands: the row is not rewritten as "no
