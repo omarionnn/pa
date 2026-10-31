@@ -629,8 +629,11 @@ const cardName = (card) => (card?.last4 ? `Card ••••${card.last4}` : "Yo
  * decision, asked with what is on record and why). { email, inferred, choices }. Never logged.
  */
 function receiptEmail(conversationId) {
-  const record = shipping.normalize("email", shipping.profileRow(conversationId)?.email);
-  if (record) return { email: record, inferred: false, choices: [record] };
+  // Decided only when they gave it (said, typed in a form, corrected). An email gather() wrote from
+  // their Gmail or a fact is a guess like any other: with a second one around, it is their choice.
+  const row = shipping.profileRow(conversationId);
+  const record = shipping.normalize("email", row?.email);
+  if (record && shipping.emailDecided(row)) return { email: record, inferred: false, choices: [record] };
   let choices = [];
   try { choices = shipping.knownEmails(conversationId); } catch { choices = []; }
   if (choices.length === 1) {

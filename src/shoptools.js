@@ -123,7 +123,7 @@ export function shopPayTarget(input, conversationId = null) {
 /** What to say about the email the card lacks: with the ones on record and why, asking only for the decision. */
 function emailSay(emails = []) {
   const why = "Nothing was charged and the payment is still open; the card can't pay until there's an email for its receipts.";
-  if (emails.length >= 2) return `${why} Tell them you need an email for the card, that you have ${emails.join(" and ")} on record, and ask which one — one plain line, no other question.`;
+  if (emails.length >= 2) return `${why} Tell them you need an email for the card, that you have ${emails.slice(0, -1).join(", ")} and ${emails[emails.length - 1]} on record, and ask which one — one plain line, no other question.`;
   return `${why} Tell them that in one plain line and ask which email to use.`;
 }
 export async function runShopTool(name, input, { conversationId: c, confirmationId = null } = {}) {

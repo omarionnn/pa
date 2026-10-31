@@ -269,14 +269,17 @@ export function knownEmails(conversationId) {
     try { own = String(accounts.ownerOf(conversationId)?.name ?? "").trim().toLowerCase(); } catch { own = ""; }
     const keys = ["user", "the user", "me", "myself", "i", "the person", "this person", "owner", "the owner", ...(own && !/^the person\b/.test(own) ? [own, own.split(/\s+/)[0]] : [])];
     const facts = q(`SELECT f.fact FROM person_facts f JOIN people p ON p.id = f.person_id WHERE p.conversation_id = ? AND lower(p.key) IN (${keys.map(() => "?").join(", ")}) ORDER BY f.created_at DESC LIMIT 400`).all(conversationId, ...keys).map((r) => r.fact);
-    for (const f of facts) if (/\be-?mail\b/i.test(f)) for (const e of emailsIn(f)) add(e);
+    // Their own email: "my email", "his email is", "email: x" — never a second person's ("my accountant's
+    // email", "Ama's email", "ship to Ama at …").
+    const theirs = /\b(?:my|his|her|their|user'?s?|owner'?s?)\s+(?:(?:work|personal|other|second|school|main)\s+)?e-?mail\b|\be-?mail(?:\s+address)?\s*(?:is|:)/i;
+    const someoneElse = /\b[A-Z][a-z]+'s\s+(?:\w+\s+)?e-?mail\b|\b(?:accountant|assistant|wife|husband|partner|mom|dad|mother|father|sister|brother|friend|boss|colleague)'?s?\s+(?:\w+\s+)?e-?mail\b/i;
+    for (const f of facts) if (theirs.test(f) && !someoneElse.test(f)) for (const e of emailsIn(f)) add(e);
   } catch { /* no facts */ }
-  try {
-    const asks = q("SELECT a.what FROM shop_run_asks a JOIN shop_runs r ON r.run_id = a.run_id WHERE r.conversation_id = ? ORDER BY r.created_at DESC LIMIT 20").all(conversationId);
-    for (const a of asks) for (const e of emailsIn(a.what)) add(e);
-  } catch { /* no runs */ }
+  // Earlier checkout instructions are not read here: "ship to Ama at ama@…" names a contact, not them.
   return out;
 }
+/** True when the record's email is one they gave (typed in a form, said, or corrected), not one gathered. */
+export const emailDecided = (row) => !!row?.email && /\b(said|answer|correction|typed)\b/.test(String(row.source ?? ""));
 /** The record, gathered first when it is missing or short. */
 export function profileFor(conversationId) {
   const have = profileRow(conversationId);

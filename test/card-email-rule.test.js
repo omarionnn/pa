@@ -160,3 +160,30 @@ test("Crossmint refuses the registration for another reason at save time: told w
     assert.equal(cardRow().reg_error, "CARD_NOT_ELIGIBLE");
   } finally { shop._setFetch(fakeFetch); }
 });
+
+test("an email gather() wrote from their Gmail is a guess, not a decision: a second one on record still means asking which", async () => {
+  gmail(GMAIL);
+  fact(`My work email is ${OTHER}.`);
+  shipping.profileFor(OMARI); // a store_checkout gathered first (source "record")
+  assert.ok(shipping.profileRow(OMARI).email, "gather picked one");
+  assert.equal(shipping.profileRow(OMARI).source, "record");
+  const out = await save();
+  assert.equal(out.needs_email, true);
+  assert.deepEqual([...out.emails].sort(), [GMAIL, OTHER].sort());
+  assert.equal(puts().length, 0);
+  assert.match(said[0], /I have \S+ and \S+ on record\. Which one\?$/);
+});
+
+test("only their own email counts: a contact's email in a fact or a checkout instruction is never a candidate", async () => {
+  fact(`Ama's email is ama@example.org.`);
+  fact(`His accountant's email is books@example.org.`);
+  fact(`Ship to Ama at ama@example.org, 12 Elm St, Brooklyn NY 11201.`);
+  q("INSERT INTO shop_runs (run_id, conversation_id, store, mode, item, status, created_at, updated_at) VALUES ('run_a', ?, 'target', 'guest', 'gift', 'done', 0, 0)").run(OMARI);
+  q("INSERT INTO shop_run_asks (run_id, start_url, what, max_usd) VALUES ('run_a', 'https://www.target.com', 'Buy a candle, ship to Ama at ama@example.org, 12 Elm St, Brooklyn NY 11201.', 40)").run();
+  assert.deepEqual(shipping.knownEmails(OMARI), []);
+  fact(`My email is ${GMAIL}.`);
+  assert.deepEqual(shipping.knownEmails(OMARI), [GMAIL]);
+  const out = await save();
+  assert.equal(out.registered, true);
+  assert.equal(puts()[0].body.email, GMAIL);
+});
