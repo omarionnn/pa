@@ -35,6 +35,7 @@
 import * as db from "./db.js";
 import { refusalWhy, REFUSAL_WHOSE } from "./agentcard.js";
 import { config, clock } from "./config.js";
+import { connectAllowedFor } from "./shopconnect.js";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -194,7 +195,7 @@ export function purchasesNote(conversationId, { now = clock.now(), days = PURCHA
     const rows = recentPurchases(conversationId, { now, days, max });
     if (!rows.length) return "";
     log({ purchases_note: rows.length, why, conversation: conversationId });
-    return blockFor(rows, days);
+    return forConversation(conversationId, blockFor(rows, days));
   } catch {
     return "";
   }
@@ -212,6 +213,16 @@ export function blockFor(rows, days = PURCHASE_DAYS, { background = false } = {}
     r.reason && r.reason !== "no reason given" ? `why: ${r.reason}${r.status.startsWith("CANCELLED") ? "" : ` (${r.whose})`}` : ""].filter(Boolean).join(" · "));
   const verdict = cardVerdict(rows);
   return `PURCHASES ON RECORD (AgentCard, last ${days} days, newest first). ${OVERRIDES}\n${lines.join("\n")}${verdict ? `\n${verdict}` : ""}${background ? `\n${ONLY_IF_BUYING}` : ""}`;
+}
+
+/**
+ * Where Crossmint is the only way to buy (src/shoptools.js), these rows are the old checkout's: said
+ * as that, with no tool name that is not there, and never something to pick up again.
+ */
+export function forConversation(conversationId, block) {
+  if (!block || !connectAllowedFor(conversationId)) return block;
+  return block.split("AgentCard").join("the old checkout").split(" or purchase_track says so now").join("")
+    + "\nThese went through the old checkout, which is retired: none of them is confirmed, retried or tracked again. Anything new to buy goes through store_checkout.";
 }
 
 /** A snippet of Reason's last message in the thread, newest last. "" when there is none. */
@@ -240,7 +251,7 @@ export function startPurchasesNote(conversationId, { text = "", kind = "user", n
     if (!rows.length) return Promise.resolve("");
     if (kind !== "user" || !String(text ?? "").trim()) return Promise.resolve(purchasesNote(conversationId, { now, log }));
     log({ purchases_note: rows.length, why: "their_message", conversation: conversationId });
-    return Promise.resolve(blockFor(rows, PURCHASE_DAYS, { background: true }));
+    return Promise.resolve(forConversation(conversationId, blockFor(rows, PURCHASE_DAYS, { background: true })));
   } catch {
     return Promise.resolve("");
   }

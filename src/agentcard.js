@@ -951,7 +951,11 @@ export const DECLINE_REASONS = {
   // doing, not the card's and not the person's (2026-10-26, Target, twice).
   place: "the store turned the order down when AgentCard tried to place it, after the payment was approved. Nothing was charged.",
   prepare: "the store couldn't get the order ready, so AgentCard never placed it. Nothing was charged.",
+  retired_moved_to_crossmint: "it was called off when buying moved to the new checkout. Nothing was ordered and nothing was charged.",
 };
+
+/** The decline code on an AgentCard purchase Reason called off itself when buying moved to Crossmint. */
+export const RETIRED_CODE = "retired_moved_to_crossmint";
 
 export function declineLine(code) {
   const c = String(code ?? "").trim();
@@ -998,6 +1002,8 @@ export function refusalWhy(row) {
   if (CARD_REFUSED_CODES.includes(code)) return { code, words: "the bank turned the card down", whose: "card", card: true };
   if (billingSetupRequired(code)) return { code, words: "Reason's AgentCard fee setup wasn't finished", whose: "reason_setup", card: false };
   if (code === "sandbox_mode" || code === "sandbox_unavailable") return { code, words: "this install was on AgentCard's sandbox credentials", whose: "reason_setup", card: false };
+  // Called off by Reason when buying moved to Crossmint (2026-10-30): nobody refused anything.
+  if (code === RETIRED_CODE) return { code, words: "called off when buying moved to the new checkout; nothing was ordered or charged", whose: "reason_setup", card: false };
   if (code === "items_unavailable") return { code, words: "the shop no longer had the item", whose: "store", card: false };
   // The store refused to place it after the approval (order.failed, no order id): the store's, never the card's.
   // (A named decline on a row the store had refused earlier is that decline, not the refusal.)

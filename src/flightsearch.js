@@ -26,6 +26,7 @@
 
 import { FliError } from "./fli.js";
 import { bookingEnabled } from "./flightbook.js";
+import { connectAllowedFor } from "./shopconnect.js";
 
 export const CABINS = ["ECONOMY", "PREMIUM_ECONOMY", "BUSINESS", "FIRST"];
 export const STOPS = ["ANY", "NON_STOP", "ONE_STOP_OR_FEWER", "TWO_OR_FEWER_STOPS"];
@@ -480,7 +481,7 @@ export async function runFlightSearch(c, input, { sidecar, db, today, now = () =
     options,
     limits: limitsFor({ params, found: result.count, options, refused: result.refused_fetches || 0 }),
     note: result.count
-      ? `Present these as a short list: price, airline, times, duration, stops and layover airports, and the link (it opens Google Flights on this route and date — they pick the flight with these numbers there and pay there${bookingEnabled(c) ? "" : "; Reason never books"}). ${bookingEnabled(c) ? "There are two ways to finish, and which one is THEIR choice: book it themselves from that link, or ask you to book it here (flight_book, with their approval before any money moves). Keep the link on every option and offer both without steering either way. " : ""}To change something they said ('no layovers', 'leave after work', 'make it five days'), call flight_search again with refine_of and ONLY the fields that change. Before recommending one specific fare, flight_verify it.`
+      ? `Present these as a short list: price, airline, times, duration, stops and layover airports, and the link (it opens Google Flights on this route and date — they pick the flight with these numbers there and pay there${(bookingEnabled(c) && !connectAllowedFor(c)) ? "" : "; Reason never books"}). ${(bookingEnabled(c) && !connectAllowedFor(c)) ? "There are two ways to finish, and which one is THEIR choice: book it themselves from that link, or ask you to book it here (flight_book, with their approval before any money moves). Keep the link on every option and offer both without steering either way. " : ""}To change something they said ('no layovers', 'leave after work', 'make it five days'), call flight_search again with refine_of and ONLY the fields that change. Before recommending one specific fare, flight_verify it.`
       : "Nothing came back for these exact constraints. That is what Google showed for this search, not proof no flight exists — say what was searched and offer to loosen something (stops, times, nearby airports, dates).",
   };
 }

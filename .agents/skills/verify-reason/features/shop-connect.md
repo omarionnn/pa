@@ -49,3 +49,22 @@ texted link), never shows an email, never offers guest checkout.
 - The card form stays on screen while Crossmint saves (a bank check inside its iframe stays reachable); the saving step shows only once it says saved.
 - Look: `node scripts/connect-staging.mjs` → dist/connect-staging (screens.json maps each to its
   handoff screen); `--deploy` → https://connect--reason-web-staging.netlify.app (alias, never prod).
+
+## Crossmint only (2026-10-30, owner: "we are moving off AgentCard")
+Where `connectAllowedFor` is true, Crossmint is the ONLY way to buy. `AGENTCARD_BUY_TOOLS` (src/shoptools.js:
+vault_enroll, purchase, purchase_confirm, purchase_track, purchases_recent, flight_book + the four
+flight_traveler_* tools) are hidden by `toolsFor` and refused in `runTool` (`blocked: not_available`, points
+at store_checkout). `shop_card` is the card tool ("add a card", "what card do I have"): the saved card,
+and a 30-minute `/web/connect/<token>` link only when asked or when none is saved. `crossmintWords` rewords
+offer_check, shop_handoff, deal_watch_set and the shopping playbook (on both toolsFor and mcpToolsFor), the
+`buy_things` capability names store_checkout, and the purchases note calls old AgentCard rows "the old
+checkout", never to be confirmed or tracked again. Everybody else: tools and descriptions byte-identical.
+- Offline: `node --test test/crossmint-only-buys.test.js` (7).
+- Drive (cage, claude-cli, one turn, owner, card seeded in `shop_cards`, no Crossmint server key): "order me
+  the CeraVe foaming cleanser 16 oz from walmart" → web_search, offer_check, **store_checkout** (fails on
+  "CROSSMINT_SERVER_KEY is not set", as the cage intends), shop_handoff. No AgentCard tool in any turn.
+- Live: `toolsFor("dm:owner")` on the server (as reason, `--env-file=.env`): store_checkout + shop_card true,
+  purchase/purchase_confirm/vault_enroll/flight_book false.
+- Retiring an AgentCard row (no AgentCard void API): `db.markAgentcardPurchase(buyConv, { status: "declined",
+  declineCode: "retired_moved_to_crossmint" })`; an `approved` webhook then does nothing (it acts only on
+  awaiting_approval) and purchase_confirm is refused for the owner anyway. Row 8 (CeraVe, $17.79) done 10-30.
