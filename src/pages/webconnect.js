@@ -23,6 +23,7 @@ import { webPage } from "./webkit.js";
 import { PAPER_CSS, header, frame, headline, lede, label, para, note, sealed, field, slot, go, two, actions, paper, steps, codeInput, CODE_JS, STEP_JS } from "./paperkit.js";
 import { SECURITY_HEADERS } from "./websignin.js";
 import * as shop from "../shopconnect.js";
+import * as passkey from "../passkey.js";
 
 // No store logos, marks, icons or colours anywhere on these pages (owner 10-30): they are Reason's
 // pages and name the store in text. Nothing here says Crossmint either: people know Reason. Copy
@@ -207,12 +208,14 @@ const cardStandIn = () => `<div aria-label="Card form (staging stand-in)" class=
   + field({ id: "s-c", label: "CARD NUMBER", mono: true, attrs: ` value="4242 4242 4242 4242" readonly tabindex="-1"` })
   + `<div class="pf-g2">${field({ id: "s-e", label: "EXPIRES", mono: true, attrs: ` value="12 / 29" readonly tabindex="-1"` })}${field({ id: "s-s", label: "SECURITY CODE", mono: true, attrs: ` value="•••" readonly tabindex="-1"` })}</div></div>`;
 
-export function renderCard({ staging = false, card = null }) {
+export function renderCard({ staging = false, card = null, faceId = false }) {
   if (card) {
-    const main = headline("Card saved.", "Back to the chat.", "cx-h")
-      + lede("Next time you want something, I'll text you the exact total first. Nothing is bought until you say yes.")
+    // faceId: purchase approval by passkey is on for them and not set up yet (src/passkey.js).
+    const main = headline("Card saved.", faceId ? "Now approve with Face ID." : "Back to the chat.", "cx-h")
+      + lede(faceId ? "Set up Face ID and every payment needs it, from a link I text you with the exact total. A yes alone won't pay." : "Next time you want something, I'll text you the exact total first. Nothing is bought until you say yes.")
       + paper({ stamp: "SAVED", label: "ON FILE", big: `${brandOf(card)} •••• ${card.last4 || "····"}` })
-      + `<div class="cx-note">${actions(go("Back to Reason", { href: BACK }), two("SEE IT IN SETTINGS", { href: "/web/settings#shopping" }))}</div>`;
+      + `<div class="cx-note">${faceId ? actions(go("Set up Face ID", { href: "/web/connect/passkey" }), two("BACK TO REASON", { href: BACK }))
+        : actions(go("Back to Reason", { href: BACK }), two("SEE IT IN SETTINGS", { href: "/web/settings#shopping" }))}</div>`;
     const margin = label("I CAN SEE") + para("The brand and the last four digits.") + CARD_NEVER();
     return page("Reason — card saved", `${header()}<main class="pf" id="cx-main">${frame({ main, margin })}</main>`, { staging });
   }
@@ -357,7 +360,8 @@ export async function connectRequest({ sub = "", method = "GET", account = null,
       token, state: view.state, watch: view.state !== "card",
       ...(live ? { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: shop.mintJwt(link.conversation_id), fields: (view.request?.fields ?? []).filter((f) => f.handling === "protected") } : {}),
     } : null;
-  const drawn = renderView(view, { card });
+  const faceId = !!card && passkey.passkeyAllowedFor(link.conversation_id) && !passkey.hasPasskey(link.conversation_id);
+  const drawn = renderView(view, { card, faceId });
   return send(boot ? { ...drawn, html: withBoot(drawn.html, boot) } : drawn);
 }
 /** The screen is drawn once; a live page's boot data and script ride in their own tag at the end. */
