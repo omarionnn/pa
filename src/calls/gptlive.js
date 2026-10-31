@@ -1239,6 +1239,16 @@ export function inboundTwiml({ rawBody, headers, router = null, log = () => {} }
   const away = config.gptliveInboundFallbackUrl
     ? `<?xml version="1.0" encoding="UTF-8"?><Response><Redirect method="POST">${xml(config.gptliveInboundFallbackUrl)}</Redirect></Response>`
     : `<?xml version="1.0" encoding="UTF-8"?><Response><Reject/></Response>`;
+  // Nothing thrown here may drop a ringing call: anything that fails goes to ElevenLabs, as before.
+  try {
+    return routeInbound({ params, router, log, away });
+  } catch (e) {
+    log({ gptlive_inbound_failed: (e?.message ?? String(e)).split("\n")[0] });
+    return { status: 200, body: away, type: "text/xml" };
+  }
+}
+
+function routeInbound({ params, router, log, away }) {
   const twiml = (body) => ({ status: 200, body, type: "text/xml" });
   if (!gptliveOn() || missingForGptlive().length) return twiml(away);
   const callSid = String(params.CallSid ?? "");
@@ -1254,11 +1264,7 @@ export function inboundTwiml({ rawBody, headers, router = null, log = () => {} }
     log({ gptlive_inbound_stranger: "withheld" });
     return twiml(streamTwimlFor(strangerStream({ callSid })));
   }
-  let who;
-  try { who = whoseCallIsThis(address); } catch (e) {
-    log({ gptlive_inbound_failed: (e?.message ?? String(e)).split("\n")[0] });
-    return twiml(away);
-  }
+  const who = whoseCallIsThis(address);
   if (!who.allow && ["blocked", "paused", "removed"].includes(who.reason)) {
     log({ gptlive_inbound_refused: who.reason });
     return twiml(sayAndHangUp(strangerCall.neutralLine()));
@@ -1303,6 +1309,11 @@ export function acceptStream({ token, socket, settle, runtime, log = () => {}, o
   const stranger = rowless.get(token);
   if (stranger) {
     rowless.delete(token);
+    if (Date.now() - stranger.at > ROWLESS_TTL_MS) {
+      log({ gptlive_stream_refused: "stranger token expired" });
+      socket.close(1008);
+      return null;
+    }
     return acceptStrangerStream({ stranger, socket, log, openLive, generate });
   }
   const row = db.callByWebhookToken(token);

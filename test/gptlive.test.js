@@ -886,6 +886,13 @@ test("inbound everyone: each caller gets their own place — user, operator, blo
   config.callVoice = "owner";
   assert.match(ring("+13105550000").body, /<Redirect method="POST">https:\/\/api\.us\.elevenlabs\.io\/twilio\/inbound_call<\/Redirect>/);
   config.callVoice = "gptlive";
+  // Anything failing while it rings goes to ElevenLabs, never a dropped call.
+  const sig = (p) => ({ "x-twilio-signature": gl.twilioSignature(url, p) });
+  const p2 = { CallSid: "CA_boom", From: "+13105550000", To: "+16562167455" };
+  db.db.exec("ALTER TABLE blocked_numbers RENAME TO blocked_numbers_x");
+  try {
+    assert.match(gl.inboundTwiml({ rawBody: new URLSearchParams(p2).toString(), headers: sig(p2) }).body, /<Redirect/);
+  } finally { db.db.exec("ALTER TABLE blocked_numbers_x RENAME TO blocked_numbers"); }
   // Missing keys: everyone goes to ElevenLabs.
   config.openaiKey = "";
   assert.match(ring("+13105550000").body, /<Redirect/);
