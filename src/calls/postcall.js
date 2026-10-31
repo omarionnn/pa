@@ -27,6 +27,7 @@
 // Nothing here has run against the real platform. The signature scheme, the event names and the
 // field names are from their docs; which of `metadata.termination_reason` and friends really carries
 // "voicemail" is the one that most needs proving on Friday, and it is in docs/unverified.md.
+import * as strangerCalls from "../strangercalls.js";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { config, clock, stamp } from "../config.js";
@@ -71,6 +72,10 @@ export async function postCallRequest({
     // Acknowledged so they stop retrying — there is nothing wrong with the delivery, Reason simply
     // has no call under that id, which is what a conversation started outside Reason looks like.
     log({ post_call_unknown: parsed.externalId, type: parsed.type });
+    // An unknown caller's call has no row, only its stranger_calls entry: its real length and words.
+    if (parsed.type !== "post_call_audio" && parsed.live) {
+      try { if (strangerCalls.settleFromPostCall({ externalId: parsed.externalId, live: parsed.live, now })) log({ stranger_call_settled: parsed.externalId }); } catch { /* acknowledged anyway */ }
+    }
     return { status: 200, body: { ok: true, known: false, type: parsed.type } };
   }
 

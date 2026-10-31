@@ -32,6 +32,7 @@
 // step recorded that nobody was sent, or bubbles sent for a step not recorded; the outbox finishes
 // the chain in order after a retry or a restart.
 import { makerName } from "./maker.js";
+import { reconnectLine } from "./strangercalls.js";
 import * as db from "./db.js";
 import * as outbox from "./outbox.js";
 import { config, clock, normalizeNumber, stamp } from "./config.js";
@@ -386,6 +387,9 @@ export async function handle({ router, conversationId, route, texts = [], attach
     // Their name already in the first text ("hey it's kofi"): never asked for again.
     if (read.name) { bubbles = [...(read.kind === "question" ? replyLine : []), ...step2(read.name)]; next = "awaiting_occupation"; }
     else { bubbles = [...(read.kind === "question" ? replyLine : []), pick(OPENERS)]; next = "awaiting_name"; }
+    // They rang Reason's number before signing up (src/strangercalls.js): said first, once.
+    const back = reconnectLine(conversationId);
+    if (back) bubbles = [back, ...bubbles];
   } else if (state === "awaiting_name") {
     if (read.name) { bubbles = [...replyLine, ...step2(read.name)]; next = "awaiting_occupation"; }
     else if (read.kind === "decline") { bubbles = step2(""); next = "awaiting_occupation"; }

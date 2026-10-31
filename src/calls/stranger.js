@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { clock } from "../config.js";
 import { makerName } from "../maker.js";
 import { withoutSilenceMarker } from "./voice.js";
+import * as strangerCalls from "../strangercalls.js";
 
 export const KIND = "stranger";
 
@@ -118,6 +119,11 @@ export async function* strangerTurn({ body, generate, sseChunk, SSE_DONE, log = 
   yield chunk({ role: "assistant" });
 
   const messages = spokenOnly(body?.messages);
+  // What they have said so far, kept against their number (src/strangercalls.js) — nobody else's words.
+  const extra = (body?.elevenlabs_extra_body ?? body?.extra_body ?? body?.custom_llm_extra_body ?? {}) || {};
+  if (extra.reason_stranger_call) {
+    try { strangerCalls.noteTurn({ id: extra.reason_stranger_call, token: extra.reason_stranger_token, messages: body?.messages, now }); } catch { /* the call goes on */ }
+  }
   const theirTurns = messages.filter(m => m.role === "user").length;
   if (!messages.length || messages.at(-1).role !== "user") {
     yield chunk({}, "stop");

@@ -31,6 +31,7 @@ import * as accounts from "../accounts.js";
 import * as access from "../access.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import * as strangerCall from "./stranger.js";
+import * as strangerCalls from "../strangercalls.js";
 import { warmCallCache } from "./voice.js";
 import { announcementFor } from "./provider.js";
 
@@ -95,7 +96,7 @@ export function inboundRequest({
       // A short neutral line naming nobody (2026-10-31). The texted stoppedLine names the operator.
       return { status: 200, body: endItHere({ line: strangerCall.neutralLine(), reason: who.reason }), conversationId };
     }
-    return { ...stranger({ address, router, log, reason: who.reason }), conversationId };
+    return { ...stranger({ address, router, log, reason: who.reason, externalId: conversationId }), conversationId };
   }
 
   const person = accounts.ownerOf(who.conversationId);
@@ -391,7 +392,7 @@ export function recordingNoteFor({ conversationId, row, log = () => {} }) {
  * The master's text is QUEUED, not sent. This is running while a phone rings; a channel that takes
  * two seconds would be two seconds of ringing, and the outbox pass picks it up well inside the call.
  */
-function stranger({ address, router = null, log = () => {}, reason = "no_account_yet" }) {
+function stranger({ address, router = null, log = () => {}, reason = "no_account_yet", externalId = "" }) {
   if (!address) {
     log({ call_inbound_withheld: true });
     return { status: 200, body: pitch({ reason: "withheld" }) };
@@ -405,7 +406,7 @@ function stranger({ address, router = null, log = () => {}, reason = "no_account
     // Nowhere to ask the master and nowhere to answer this person if the answer were yes. They still
     // get the one line; nothing is written down as a request nobody can act on.
     log({ call_inbound_unknown_no_channel: address });
-    return { status: 200, body: pitch({ reason: "no_channel" }) };
+    return { status: 200, body: pitch({ reason: "no_channel", address, externalId, log }) };
   }
 
   const seen = access.handleUnknown({
@@ -431,7 +432,7 @@ function stranger({ address, router = null, log = () => {}, reason = "no_account
     log({ call_inbound_unknown: address, why: seen.reason });
   }
 
-  return { status: 200, body: pitch({ reason: seen.reason ?? reason }) };
+  return { status: 200, body: pitch({ reason: seen.reason ?? reason, address, externalId, log }) };
 }
 
 /**
@@ -439,7 +440,13 @@ function stranger({ address, router = null, log = () => {}, reason = "no_account
  * turns come to Reason's own endpoint marked `stranger`, where they get the pitch prompt, no tools and
  * nobody's data; `end_call` is the only tool the platform may run. Nothing here names anybody.
  */
-function pitch({ reason }) {
+function pitch({ reason, address = "", externalId = "", log = () => {} }) {
+  // The call is kept against the number it came from (src/strangercalls.js), so that if this person
+  // later gets their own Reason, it can say it's good to reconnect. A withheld number keeps nothing.
+  let kept = null;
+  try { kept = address ? strangerCalls.open({ phone: address, externalId }) : null; } catch (e) {
+    log({ stranger_call_not_kept: (e?.message ?? String(e)).split("\n")[0] });
+  }
   return {
     type: "conversation_initiation_client_data",
     dynamic_variables: { reason_kind: strangerCall.KIND, reason_why: reason },
@@ -453,7 +460,10 @@ function pitch({ reason }) {
       },
       ...(config.elevenVoiceId ? { tts: { voice_id: config.elevenVoiceId } } : {}),
     },
-    custom_llm_extra_body: { reason_kind: strangerCall.KIND },
+    custom_llm_extra_body: {
+      reason_kind: strangerCall.KIND,
+      ...(kept ? { reason_stranger_call: kept.id, reason_stranger_token: kept.token } : {}),
+    },
   };
 }
 

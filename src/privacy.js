@@ -29,6 +29,7 @@
 //   their data (`npm run data:delete`), not on a timer.
 //
 // Nothing here is a substitute for that delete, which is immediate, total, and theirs to run.
+import * as strangerCalls from "./strangercalls.js";
 import { rmSync } from "node:fs";
 import { forgetPlayable, sweepPlayable } from "./webaudio.js";
 import { db } from "./db.js";
@@ -59,6 +60,10 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
   const n = (r) => Number(r?.changes ?? 0);
   const drop = (name, value) => { if (value) out.dropped[name] = value; };
   const del = (name, value) => { if (value) out.deleted[name] = value; };
+
+  // Calls from people who are not users yet (src/strangercalls.js): their words go with content,
+  // the row (number, time, length) with records.
+  { const sc = strangerCalls.prune({ content, records, now }); drop("stranger_call_words", sc.dropped); del("stranger_calls", sc.deleted); }
 
   if (content) {
     // The words in a voice note. The row stays and is marked, so what is lost is the content and

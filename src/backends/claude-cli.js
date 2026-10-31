@@ -34,6 +34,7 @@ import * as whatsnew from "../whatsnew.js";
 import { openWorkNote } from "../openwork.js";
 import * as saidLedger from "../said.js";
 import { keptNote } from "../kept.js";
+import { reconnectNote } from "../strangercalls.js";
 import { memoryNotes } from "../memorynote.js";
 import { startPurchasesNote, purchaseRecordSource } from "../purchasesnote.js";
 import { withoutSelfNote, readSilence } from "../plain.js";
@@ -326,7 +327,7 @@ async function runTurnOnCli({
     const standing = [purchases,
       // What it has already told them that still stands, and its open and settled questions
       // (src/said.js) — the same block as the API path.
-      ...(kind === "event" ? [saidLedger.declinedNote(conversationId)] : [openWorkNote(conversationId), keptNote(conversationId), saidLedger.standingNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
+      ...(kind === "event" ? [saidLedger.declinedNote(conversationId)] : [reconnectNote(conversationId), openWorkNote(conversationId), keptNote(conversationId), saidLedger.standingNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
 
     // The history: its older part at the end of the system prompt, where the cache keeps it, and
     // what came after that here (see historyParts).

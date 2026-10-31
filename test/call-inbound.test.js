@@ -216,7 +216,9 @@ test("an unknown caller gets Reason introducing itself, a tool-less pitch turn, 
   assert.doesNotMatch(JSON.stringify(out.body), /Omari|\+12025551234|dm:owner/, "nothing about any user in what the platform is handed");
   assert.deepEqual(agent.prompt.tools, [{ type: "system", name: "end_call" }], "end_call is the only tool");
   assert.equal(out.body.dynamic_variables.reason_kind, "stranger");
-  assert.deepEqual(out.body.custom_llm_extra_body, { reason_kind: "stranger" }, "its turns come to the pitch, and carry no call or conversation id");
+  const extra = out.body.custom_llm_extra_body;
+  assert.equal(extra.reason_kind, "stranger", "its turns come to the pitch");
+  assert.deepEqual(Object.keys(extra).sort(), ["reason_kind", "reason_stranger_call", "reason_stranger_token"], "no call row, no conversation id: only its own stranger_calls entry");
 
   // Nothing of theirs exists: no account, no call row, no conversation.
   assert.equal(db.accountByNumber(STRANGER), null);
