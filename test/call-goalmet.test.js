@@ -38,9 +38,15 @@ Reason: Great, thanks Jeff. Omari would like you to call him back when you get a
 Them: For sure. I will.
 Reason: Perfect, thank you so much, Jeff. Have a good one.`;
 
+// One fixed daytime moment, 11:00 on the morning of the Jeffrey call in New York. The calls below end
+// "now", and a call that ends between midnight and 6am on the owner's clock also earns a night_shift
+// seal (src/stamps.js) — so on the real clock the first-seal test failed every night and passed by day.
+const MORNING = Date.parse("2026-10-27T15:00:00Z");
+
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
+  clock.skip(MORNING - Date.now());
   delete process.env.REASON_WEB_DAILY;
   stamps.installStamps({ tell: null, delayMs: 0 });
   db.db.exec("DELETE FROM accounts; DELETE FROM calls; DELETE FROM stamps; DELETE FROM tasks;");
@@ -48,7 +54,7 @@ beforeEach(() => {
 });
 
 function call({ is_owner = 0, direction = "out", brief = "{}", ...fields } = {}) {
-  const now = Date.now();
+  const now = clock.now();
   const r = db.db.prepare(`INSERT INTO calls (conversation_id, provider, to_number, goal, is_owner, direction, brief, created_at, updated_at) VALUES (?, 'fake', '+16165550100', ?, ?, ?, ?, ?, ?)`)
     .run(C, "Reach Jeffrey and ask him to call Omari back when he gets a chance.", is_owner, direction, brief, now, now);
   return db.updateCall(C, Number(r.lastInsertRowid), { state: "completed", transcript: JEFF, outcome_kind: "dropped_before_confirmation", ended_at: now, ...fields });

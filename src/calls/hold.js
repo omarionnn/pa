@@ -176,7 +176,7 @@ export function noteMachineLine(call, { what = "", deadEnd = false, heard = "", 
   // What it said is kept even when the next thing it says is different: the menu that read out an
   // email address is still the place the email address came from.
   const keep = said ? { machine_heard: said } : {};
-  log({ call_machine: call?.id, what, dead_end: deadEnd === true, heard: said.slice(0, 80) });
+  log({ call_machine: call?.id, what, dead_end: deadEnd === true, heard_chars: said.length });
 
   // A person already settled something on this call — answered, confirmed, paused for the owner — and
   // a handover then reached a machine. What the person did stands: the row is not rewritten as "no
@@ -421,6 +421,17 @@ export function pressed(call) {
  * menu that is never going to answer, so the third identical press in a row is refused and the model
  * is told to try speaking instead — most menus have a human option.
  */
+/**
+ * Keys as they go in the server log. A menu choice ("1", "0", "#", "1w1") is how a stuck call is
+ * debugged, so it stays. A longer run is an account number, a PIN or a date of birth typed into
+ * somebody's phone system: the log gets how long, never which keys. The full sequence is still on the
+ * call row (`menu_presses`) for the people allowed to read that.
+ */
+export function tonesForLog(tones) {
+  const t = String(tones ?? "");
+  return t.replace(/[wW]/g, "").length <= 2 ? t : `${t.length} chars`;
+}
+
 export function notePress(call, { tones = "", log = () => {} } = {}) {
   // Validated, never salvaged. The first version of this stripped out anything that was not a valid
   // tone character, which quietly turned "press 1w1 now" into "1w1w" — the `w` came out of the word
@@ -440,7 +451,7 @@ export function notePress(call, { tones = "", log = () => {} } = {}) {
   let sameInARow = 0;
   for (let i = history.length - 1; i >= 0 && history[i] === t; i--) sameInARow++;
   if (sameInARow >= 2) {
-    log({ call_menu_stuck: call.id, tones: t, tried: sameInARow });
+    log({ call_menu_stuck: call.id, tones: tonesForLog(t), tried: sameInARow });
     return {
       ok: false, stuck: true,
       // Not "say something out loud": words to a menu are taken as words to a person, and would spend
@@ -451,7 +462,7 @@ export function notePress(call, { tones = "", log = () => {} } = {}) {
     };
   }
   patch(call, { menu_presses: JSON.stringify([...history, t].slice(-12)) });
-  log({ call_menu_press: call.id, tones: t });
+  log({ call_menu_press: call.id, tones: tonesForLog(t) });
   return { ok: true, tones: t, pressedBefore: sameInARow };
 }
 

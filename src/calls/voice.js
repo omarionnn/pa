@@ -1736,7 +1736,7 @@ export async function* voiceTurn({
           // Thinking out loud, down a phone line. Dropped rather than cleaned, because there is no
           // useful half of it, and logged, because the real fix is the prompt and this is the floor.
           if (aNoteToItself(spoken)) {
-            log({ voice_self_note_dropped: call.id, text: spoken.slice(0, 80) });
+            log({ voice_self_note_dropped: call.id, chars: spoken.length });
             continue;
           }
           // One leading space between sentences, because each piece was trimmed on the way through.
@@ -1841,7 +1841,7 @@ export async function* voiceTurn({
         if (hangingUpOnAMachine || toolUses.some(t => QUIET_ON_A_MACHINE.has(t.name))) {
           // It waited, pressed a key, or said a machine answered: whatever it wrote was about the line,
           // not to anybody on it. Logged, because the prompt says to write nothing and this is the floor.
-          log({ call_machine_words_dropped: call.id, text: held.join(" ").slice(0, 120) });
+          log({ call_machine_words_dropped: call.id, chars: held.join(" ").length });
           // Never said, so never a voicemail either: the mailbox branch below reads `roundText`.
           roundText = "";
         } else {
@@ -1947,7 +1947,7 @@ export async function* voiceTurn({
         if (!press.ok) {
           // Logged, because a press that is refused is invisible otherwise: the call simply never
           // presses anything and stalls on a menu, which is exactly how it was found.
-          log({ call_menu_refused: call.id, asked: String(asked.dtmf_tones ?? "").slice(0, 40), stuck: press.stuck === true });
+          log({ call_menu_refused: call.id, asked: hold.tonesForLog(asked.dtmf_tones), stuck: press.stuck === true });
           // NOT forwarded. Fed back as a tool result so the next round speaks instead of pressing, which
           // is what gets a human on most menus anyway.
           system = null;

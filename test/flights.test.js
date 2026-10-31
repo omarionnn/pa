@@ -87,19 +87,23 @@ async function withYes(name, input, { conversationId = C, summary = "the thing" 
 }
 
 /**
- * A Friday at 07:15 that is always in the future: the nearest upcoming Friday if today is not
- * Friday, or the one a week out if today IS Friday — because a Friday test run at 08:00 ET would
- * be after the 07:15 departure and `flight_save` would refuse it.
+ * A Friday at 07:15 New York time whose 24-hour check-in window is still shut when the file starts:
+ * at least two NEW YORK calendar days out, so the next Friday from Saturday to Wednesday, and the
+ * one after when today is Thursday or Friday. Counted on the flight's own calendar. It used to be
+ * counted in UTC with only "not today": from 07:15 ET on a Thursday (11:15 UTC) to 20:00 ET (UTC
+ * midnight) the flight was tomorrow morning, check-in was already open, and every test that
+ * expects `too_early` failed — the same file passing that evening once UTC had rolled to Friday.
  */
-const _d = new Date();
-let _daysToFri = (5 - _d.getUTCDay() + 7) % 7;
-if (_daysToFri < 1) _daysToFri += 7;
-const _fri = new Date(_d.getTime() + _daysToFri * 86_400_000);
-const FLIGHT_DEPARTS = `${_fri.getUTCFullYear()}-${String(_fri.getUTCMonth() + 1).padStart(2, '0')}-${String(_fri.getUTCDate()).padStart(2, '0')}T07:15:00`;
+const _today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(Date.now());
+const [_y, _m, _dd] = _today.split("-").map(Number);
+const _weekday = new Date(Date.UTC(_y, _m - 1, _dd)).getUTCDay();
+let _daysToFri = (5 - _weekday + 7) % 7;
+if (_daysToFri < 2) _daysToFri += 7;
+const _ymd = (days) => new Date(Date.UTC(_y, _m - 1, _dd + days)).toISOString().slice(0, 10);
+const FLIGHT_DEPARTS = `${_ymd(_daysToFri)}T07:15:00`;
 
 // The day after the Friday, for a second flight that needs a different departure.
-const _sat = new Date(_fri.getTime() + 86_400_000);
-const FLIGHT_OTHER_DEPARTS = `${_sat.getUTCFullYear()}-${String(_sat.getUTCMonth() + 1).padStart(2, '0')}-${String(_sat.getUTCDate()).padStart(2, '0')}T06:00:00`;
+const FLIGHT_OTHER_DEPARTS = `${_ymd(_daysToFri + 1)}T06:00:00`;
 
 // Pre-compute the expected UTC instants so assertions stay in sync with the dynamic date.
 const _dep = flights.departureInstant(FLIGHT_DEPARTS, "America/New_York");
@@ -500,7 +504,10 @@ test("no code but signed in: the account page is the door, not the lookup form",
   at(row.checkin_opens_at + HOUR);
   site.signIn();
   const out = await call("flight_checkin_start", { flight_id: row.id });
-  assert.equal(out.ok, true, JSON.stringify(out).slice(0, 300));
+  // What the probe read is the first thing in the message: this failed about once in a hundred runs
+  // under a loaded suite, in ~13 ms (so the probe's page load threw), and the old 300-character cut
+  // ended before `site_says`, which is the one field that would say why.
+  assert.equal(out.ok, true, JSON.stringify({ site_says: out.site_says, blocked: out.blocked, error: out.error }));
   assert.match(out.opened_url, /\/account$/);
   assert.equal(out.signed_in, "signed_in");
 });
