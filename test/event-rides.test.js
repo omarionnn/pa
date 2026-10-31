@@ -490,3 +490,29 @@ test("with REASON_EVENT_RIDES off, the organizer's view carries no ride counts",
   config.eventRides = false;
   assert.equal(events.organizerView(db.getEventRow(ev.id)).rides, undefined);
 });
+
+// The two sweep failure lines once logged the first line of the error message, which can be what a
+// guest typed (an address, a name). Only the error's class, a word-shaped code and the length go out.
+test("a failed event sweep logs the error's class, code and length — never its message", async () => {
+  const ev = party();
+  const lines = [];
+  const secret = "pick me up at 12 Dekalb Ave, Ama's phone 347 555 0000";
+  const now = { [Symbol.toPrimitive]() { throw Object.assign(new TypeError(secret + "\nsecond line"), { code: "E_RIDE" }); } };
+  const out = await rides.sweep({ runtime: fakeRuntime(), now, log: (l) => lines.push(l) });
+  assert.equal(out.failed, 1);
+  assert.deepEqual(lines, [{ event_rides_event_failed: ev.id, error: "TypeError", code: "E_RIDE", message_length: secret.length + 12 }]);
+  assert.ok(!JSON.stringify(lines).includes("Dekalb"));
+});
+
+test("the runtime's sweep wrapper logs the shape only, and a code that isn't word-shaped is dropped", async () => {
+  const { Runtime } = await import("../src/runtime.js");
+  const lines = [];
+  const was = Object.getOwnPropertyDescriptor(config, "eventRides");
+  Object.defineProperty(config, "eventRides", { configurable: true, get() { throw Object.assign(new Error("12 Dekalb Ave"), { code: "no such place 12 Dekalb" }); } });
+  try {
+    const out = await Runtime.prototype.eventRides.call({ log: (l) => lines.push(l) }, {});
+    assert.deepEqual(out, { failed: true });
+  } finally { Object.defineProperty(config, "eventRides", was); }
+  assert.deepEqual(lines, [{ event_rides_failed: true, error: "Error", code: null, message_length: 13 }]);
+  assert.ok(!JSON.stringify(lines).includes("Dekalb"));
+});

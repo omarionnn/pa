@@ -2594,7 +2594,7 @@ export class Runtime extends EventEmitter {
     try {
       return await eventRides.sweep({ runtime: this, now, log: this.log });
     } catch (e) {
-      this.log({ event_rides_failed: (e?.message ?? String(e)).split("\n")[0] });
+      this.log({ event_rides_failed: true, ...eventRides.errorShape(e) });
       return { failed: true };
     }
   }
