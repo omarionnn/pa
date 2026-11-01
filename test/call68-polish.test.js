@@ -131,6 +131,12 @@ test("a real unbacked send is still caught, and the honest line takes its place 
   assert.equal(two.dropped, 2);
   assert.equal(two.text, "I'll text that to you. Anything else?", "said once");
   assert.equal(gl.withoutUnbackedSends(`I've texted you "the tighter caption".`, []).dropped, 1, "a claim around a quote is still a claim");
+  // An inch mark is not a quotation, and a lone quote mark is kept as it was (review, call 68).
+  const inch = gl.withoutUnbackedSends('It has a 5" screen. I texted you the link. Also "great".', []);
+  assert.equal(inch.dropped, 1);
+  assert.equal(inch.text, `It has a 5" screen. I'll text that to you. Also "great".`);
+  const lone = gl.withoutUnbackedSends('He said "hi. I sent you the link.', []);
+  assert.equal(lone.text, `He said "hi. I'll text that to you.`);
 });
 
 test("call 68's first answer reaches the voice with no stray line in front", async () => {
@@ -207,8 +213,11 @@ test("a line call's empty result is unchanged: never a follow-up of the voice's 
   c.line = true;
   assert.equal(c.promisedThought({ startedAt: 0, ack: "let me check" }), false);
   c.line = false;
-  assert.equal(c.promisedThought({ startedAt: c.lastCallerAt, ack: "let me check" }), true);
-  assert.equal(c.promisedThought({ startedAt: c.lastCallerAt, ack: "Mm-hmm." }), false);
+  const at = c.lastCallerAt + 1;
+  assert.equal(c.promisedThought({ startedAt: at, ack: "let me check" }), true);
+  assert.equal(c.promisedThought({ startedAt: at, ack: "Mm-hmm." }), false);
+  assert.equal(c.promisedThought({ startedAt: at, ack: "I think the second line looks great — want me to tweak it?" }), false, "plain speech is no promise");
+  assert.equal(c.promisedThought({ startedAt: at, ack: "Let me think — which one do you like?" }), false, "already handed back");
 });
 
 test("the quiet line on their own call asks for the 'let me think' to be followed through; others unchanged", () => {

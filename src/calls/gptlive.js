@@ -425,7 +425,10 @@ export function withoutUnbackedSends(spoken, tools = []) {
   const text = String(spoken ?? "");
   if (!SENT_CLAIM.test(unquoted(text)) || (tools ?? []).some(n => SENDS.test(String(n)))) return { text, dropped: 0 };
   // Split on sentence ends outside quotes only: a quoted caption's "???" is not the end of the sentence.
-  const sentences = text.match(/(?:"[^"]*"|“[^”]*”|[^.!?…"“])+[.!?…]*\s*/g) ?? [text];
+  // Quotes are held aside as tokens while splitting, so a lone or stray quote mark is just a character.
+  const held = [];
+  const masked = text.replace(QUOTED, (q) => `\u0000${held.push(q) - 1}\u0000`);
+  const sentences = (masked.match(/[^.!?…]+[.!?…]*\s*/g) ?? [masked]).map(x => x.replace(/\u0000(\d+)\u0000/g, (_, i) => held[Number(i)]));
   const claims = (x) => { const own = unquoted(x); return SENT_CLAIM.test(own) && claimsDone(own) && !EARLIER.test(own); };
   let dropped = 0;
   // The honest line goes where the claim was, once — never in front of words that claimed nothing.
@@ -440,8 +443,11 @@ export function withoutUnbackedSends(spoken, tools = []) {
  * its opinion. Words in quotes are somebody else's, not a claim.
  */
 export function unquoted(text) {
-  return String(text ?? "").replace(/"[^"]*"|“[^”]*”/g, " ");
+  return String(text ?? "").replace(QUOTED, " ");
 }
+// A quotation: opened at the start or after a space/bracket/dash, closed before a space, punctuation or the
+// end, one line, at most 400 characters. A 5" screen's inch mark does not open one.
+const QUOTED = /(?<=^|[\s([—–-])(?:"[^"\n]{1,400}"|“[^”\n]{1,400}”)(?=$|[\s.,!?;:…)\]—–-])/g;
 
 /** Does this say something has been done? Exported for the tests. */
 export function claimsDone(text) {
@@ -457,7 +463,7 @@ export function fromLine(said, line) {
 }
 
 // The voice's own "let me think / let me check / one sec" while a hand-off runs (`promisedThought`).
-export const THINKING_ACK = /\b(?:think|thinking|thought|check|checking|look|looking|moment|sec|second|hang on|hold on|bear with)\b/i;
+export const THINKING_ACK = /\b(?:(?:let me|lemme|let's)\s+(?:have a\s+)?(?:think|check|look|see)|have a (?:think|look)|think (?:it|that) over|one (?:sec|second|moment)|just a (?:sec|second|moment)|give me a (?:sec|second|moment)|hang on|hold on|bear with me)\b/i;
 /** What is said when Reason had nothing to add after the voice promised a thought: the turn handed back. */
 export const SKIP_FOLLOW_UP = "So — what do you reckon?";
 
@@ -1221,7 +1227,7 @@ export class GptLiveCall {
     if (t - this.lastOutTextAt > 1500) this.utter = "";
     this.lastOutTextAt = t;
     this.utter += delta;
-    for (const p of this.pending.values()) p.ack = (p.ack ?? "") + delta;
+    for (const p of this.pending.values()) { p.ackAt ??= t; p.ack = (p.ack ?? "") + delta; }
     // The seeded opener stands in until the voice's own words arrive, then gives way to them: call 68
     // (2026-11-01) had it once in the recording and twice in the transcript, seed then the real words.
     if (!this.line && this.turns.some(x => x.seeded)) this.turns = this.turns.filter(x => !x.seeded);
@@ -1376,7 +1382,10 @@ export class GptLiveCall {
    */
   promisedThought(turn) {
     if (this.line) return false;
-    return THINKING_ACK.test(turn.ack ?? "") && this.lastCallerAt <= turn.startedAt;
+    const ack = String(turn.ack ?? "").trim();
+    // Their words up to the voice's "let me think" are the question still being transcribed; words after
+    // it are them talking again. An ack that ends on a question already handed the turn back.
+    return THINKING_ACK.test(ack) && !/\?\s*$/.test(ack) && this.lastCallerAt < (turn.ackAt ?? turn.startedAt);
   }
 
   /** What the caller heard for one turn, onto the call_turns row Reason's own turn wrote. */
