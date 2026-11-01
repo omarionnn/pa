@@ -75,7 +75,7 @@ import { retentionSays, markOutside, looksLikeACredential, refuseCredential } fr
 import { sourceName } from "./outside.js";
 import { checkContent, LINE_LIMIT } from "./pages/content.js";
 import { generateIllustration } from "./pages/card.js";
-import { preparePictures } from "./pages/pictures.js";
+import { preparePictures, imageBase } from "./pages/pictures.js";
 import { BRAND_PEN } from "./pages/brand.js";
 import { checkDocument, DOCUMENT_KINDS } from "./documents/content.js";
 import { KINDS as DOCUMENT_FORMATS, documentFilename, renderDocument, writeDocument, deleteDocumentFile, documentUrl, documentOnDisk, mimeForKind } from "./documents/store.js";
@@ -11417,8 +11417,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (send) return await sendGeneratedImages({ images: out.images, say: input.say ?? "", model: out.model, ctx, c });
       const images = out.images.map(img => {
         const filename = img.path.split("/").pop();
-        const base = config.publicUrl || `http://127.0.0.1:${config.port}`;
-        const url = `${base}/img/${filename}`;
+        const url = `${imageBase()}${filename}`;
         db.rememberSeenUrls(c, [url], { kind: "generated" });
         return { url, bytes: img.bytes };
       });

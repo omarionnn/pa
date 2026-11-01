@@ -170,6 +170,7 @@ export function documentOnDisk(doc) {
  * carries a key for the same reason a page's owner link does — the id alone must not open it.
  */
 export function documentUrl(doc) {
-  const base = (config.publicUrl || `http://${config.host}:${config.port}`).replace(/\/+$/, "");
+  // The files domain first (files.heyreason.com/f/* goes straight to this server, 2026-11-01).
+  const base = (config.pagesUrl || config.publicUrl || `http://${config.host}:${config.port}`).replace(/\/+$/, "");
   return `${base}/f/${doc.id}?k=${doc.owner_key}`;
 }

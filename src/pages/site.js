@@ -25,7 +25,7 @@ import { config } from "../config.js";
 import { linkCardTags } from "./sitecard.js";
 
 /** Where this install is reachable, for the page to name its own address honestly. */
-const where = () => config.publicUrl || `http://127.0.0.1:${config.port}`;
+const where = () => config.siteUrl || config.publicUrl || `http://127.0.0.1:${config.port}`;
 
 /**
  * The Search Console meta tag, when this install has been given one. Google's brand verification

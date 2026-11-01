@@ -69,7 +69,8 @@ function whyNotCopied(got) {
 
 /** The address pictures Reason stores are served from — the same base image_generate uses. */
 export function imageBase() {
-  return `${config.publicUrl || `http://127.0.0.1:${config.port}`}/img/`;
+  // The files domain first (files.heyreason.com/img/* goes straight to this server, 2026-11-01).
+  return `${config.pagesUrl || config.publicUrl || `http://127.0.0.1:${config.port}`}/img/`;
 }
 
 export function hostOf(url) {
