@@ -3,6 +3,8 @@
 //
 //   a session starts 30 minutes after the last inbound (29 min is the same session, 31 is a new one)
 //   the 25th session's reply still answers; then three bubbles, once, ever; the link last, on its own
+//   (only once Reason has a win for them — test/paywall-win.test.js has the rule; here every person
+//   who reaches the ask has one finished task on the record)
 //   grandfathered: the operator, REASON_TEST_NUMBERS, accounts from before the ship time — never asked
 //   lapsed: questions answered, acting tools refused with the line + link once a session, things held
 //   Stripe webhook: bad / stale signature 401; a good one acts once per event id; paid resumes + one line
@@ -98,6 +100,10 @@ function newcomer(name = "Ama") {
 function sessions(c, k) {
   for (let i = 0; i < k; i++) { if (i) clock.skip(31 * MIN); accounts.countUse(c, "turn"); }
 }
+/** One win on the record: a finished task (stamps.completions), so the ask goes at the 25th. */
+function win(c) {
+  db.db.prepare("INSERT INTO tasks (conversation_id, title, goal, state, max_attempts, created_at, updated_at, finished_at) VALUES (?, 'w', 'w', 'done', 3, ?, ?, ?)").run(c, clock.now(), clock.now(), clock.now());
+}
 function fakeRouter() {
   const sent = [];
   return { sent, send: async (m) => { sent.push(m); return { ok: true }; } };
@@ -105,6 +111,7 @@ function fakeRouter() {
 const noSleep = async () => {};
 /** 25 sessions, the ask gone after the 25th, then a 26th: lapsed. The way it really happens. */
 async function lapse(c, router = fakeRouter()) {
+  win(c);
   sessions(c, 25);
   const out = await plan.afterTurn({ conversationId: c, router, sleep: noSleep });
   assert.equal(out.did, "asked");
@@ -132,11 +139,12 @@ test("a session is a stretch of chat: 29 minutes later is the same one, 31 minut
   // Three texts in a burst are one turn and one session; a refund is not a visit.
   accounts.countUse(c, "turn"); accounts.countUse(c, "turn", -1);
   assert.equal(plan.row(c).sessions_used, 2);
-  assert.deepEqual(plan.status(c), { status: "trial", applies: true, sessions_used: 2, left: 23, paid_until: null, trial_sessions: 25 });
+  assert.deepEqual(plan.status(c), { status: "trial", applies: true, sessions_used: 2, left: 23, paid_until: null, trial_sessions: 25, extended: false });
 });
 
 test("the 25th session owes the ask, exactly once; the next session after the ask has gone lapses", async () => {
   const { c } = newcomer();
+  win(c);
   sessions(c, 24);
   assert.equal(plan.row(c).ask_due, 0);
   clock.skip(31 * MIN); accounts.countUse(c, "turn");
@@ -212,9 +220,10 @@ test("after the 25th session's reply: what Reason did, the ask, the link — thr
   assert.equal(router.sent.filter(m => /25 chats/.test(m.text)).length, 1);
 });
 
-test("nothing done yet: the first bubble still thanks them and lists nothing", () => {
-  const [first] = plan.askBubbles({ counts: { calls: 0, orders: 0, tasks: 0, reminders: 0, events: 0 }, url: "https://x" });
-  assert.equal(first, "that's 25 chats between us. thanks for giving me a real go.");
+test("nothing done yet (the 30th, no win): the first bubble owns it, softly, and lists nothing", () => {
+  const [first] = plan.askBubbles({ counts: { calls: 0, orders: 0, tasks: 0, reminders: 0, events: 0 }, url: "https://x", sessions: 30 });
+  assert.equal(first, "that's 30 chats between us. i haven't pulled off something real for you yet, and i'd like the chance to.");
+  assert.match(plan.askBubbles({ counts: { calls: 1, orders: 0, tasks: 0, reminders: 0, events: 0 }, url: "https://x", sessions: 27, name: "Ama" })[0], /^that's 27 chats between us, Ama\. so far i've made 1 call/);
   assert.equal(plan.recapLine({ calls: 1, orders: 2, tasks: 0, reminders: 0, events: 1 }), "made 1 call that got an answer, placed 2 orders and set up an event");
 });
 
@@ -228,6 +237,7 @@ test("the 25th session's own reply goes first, then the bubbles, down the real r
   runtime.turnExtras.channels = router;
   const text = (body) => ({ channel: "fake", externalId: `m${Math.random()}`, from: num, text: body, at: clock.now() });
   await router.deliver(text("hey"));
+  win(c);
   assert.equal(plan.row(c).sessions_used, 1);
   for (let i = 1; i < 25; i++) { clock.skip(31 * MIN); await router.deliver(text(`msg ${i}`)); }
   // The contact-card offer after a first reply is its own feature (src/contact.js); not what this proves.
@@ -353,6 +363,7 @@ test("lapsed: their standing things are held after the turn, reminders wait unfi
   const { c } = newcomer();
   db.createTimer(c, { fireAt: clock.now() + 60 * MIN, note: "gym" });
   db.createSeries(c, { what: "check-in", rule: { every: "day" }, tz: "America/New_York", nextAt: clock.now() + 3_600_000 });
+  win(c);
   sessions(c, 25);
   const router = fakeRouter();
   assert.equal((await plan.afterTurn({ conversationId: c, router, sleep: noSleep })).did, "asked");
@@ -379,6 +390,7 @@ test("lapsed: their standing things are held after the turn, reminders wait unfi
 
 test("a pause they asked for themselves before lapsing is left alone by the hold and by the payment", async () => {
   const { c } = newcomer();
+  win(c);
   sessions(c, 3);
   pause.pauseAll({ conversationId: c, said: "pause everything" });
   clock.skip(31 * MIN); sessions(c, 22); // 25 in all
@@ -536,6 +548,7 @@ test("with no Stripe set up the ask is held for a later turn rather than sent wi
   process.env.STRIPE_SECRET_KEY = "";
   try {
     const { c } = newcomer();
+    win(c);
     sessions(c, 25);
     const router = fakeRouter();
     const out = await plan.afterTurn({ conversationId: c, router, sleep: noSleep });
