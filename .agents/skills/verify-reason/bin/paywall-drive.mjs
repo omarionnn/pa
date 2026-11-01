@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 // The free trial and the subscription (src/plan.js), driven end to end on a fresh database with a
-// fake Stripe on this machine: 24 sessions quiet, the 25th's bubbles once, the 26th lapsing, an acting
-// tool refused once a session, a plain tool answering, a signed webhook paying them up (held things
-// back, one line said), a redelivery doing nothing, cancel-by-text saying the end date. No model, no
-// phone, nothing leaves the machine, no sound. Prints one line per step and "all ok" or "FAILED".
+// fake Stripe on this machine: 24 sessions quiet, the 25th's bubbles once (she has a win on the record),
+// the 26th lapsing, an acting tool refused once a session, a plain tool answering, a signed webhook
+// paying them up (held things back, one line said), a redelivery doing nothing, cancel-by-text saying
+// the end date. Then the win rule (2026-11-01): a second person with no win is not asked at the 25th
+// and the trial runs on; a win at the 27th is asked on the next text; a third with no win through the
+// 30th is asked there with the softer line. No model, no phone, nothing leaves the machine, no sound.
+// Prints one line per step and "all ok" or "FAILED".
 //
 //   REASON_DB_PATH=$(mktemp -d)/paywall.db node bin/paywall-drive.mjs
 import http from "node:http";
@@ -56,9 +59,11 @@ const sent = [];
 const router = { send: async (m) => { sent.push(m); return { ok: true }; } };
 const said = [];
 const runtime = { say: (c, t) => said.push({ c, t }) };
-const after = () => plan.afterTurn({ conversationId: C, router, sleep: async () => {} });
-const visit = () => { clock.skip(31 * 60_000); accounts.countUse(C, "turn"); };
+const after = (c = C) => plan.afterTurn({ conversationId: c, router, sleep: async () => {} });
+const visit = (c = C) => { clock.skip(31 * 60_000); accounts.countUse(c, "turn"); };
+const taskDone = (c) => db.db.prepare("INSERT INTO tasks (conversation_id, title, goal, state, max_attempts, created_at, updated_at, finished_at) VALUES (?, 'w', 'w', 'done', 3, ?, ?, ?)").run(c, clock.now(), clock.now(), clock.now());
 
+taskDone(C); // Ama has a win on the record, so the 25th asks
 for (let i = 0; i < 24; i++) { visit(); await after(); }
 step("24 sessions: nothing said, still trial", sent.length === 0 && plan.status(C).status === "trial", `${plan.row(C).sessions_used} used`);
 visit(); const r25 = await after();
@@ -87,6 +92,33 @@ step("acting tool works again once paid", ok.ok === true);
 const cancel = await runTool("subscription_cancel", {}, { conversationId: C, messages: [] });
 step("cancel by text: Stripe asked for cancel_at_period_end, date said back", cancel.ok === true && calls.some(x => /subscriptions\/sub_d/.test(x.path) && x.form.cancel_at_period_end === "true") && !!cancel.access_until, cancel.access_until);
 step("ops label", plan.opsLabel(C)?.startsWith("cancelled · until "), plan.opsLabel(C));
+
+// ---- the win rule
+const D = "dm:fake:+13475550002";
+db.upsertAccount({ conversationId: D, channel: "fake", address: "+13475550002", name: "Kofi", isOperator: false });
+const before = sent.length;
+for (let i = 0; i < 25; i++) { visit(D); await after(D); }
+step("no win at the 25th: nothing said, trial runs on", sent.length === before && plan.status(D).status === "trial" && plan.status(D).extended === true && plan.row(D).ask_due === 0, plan.opsLabel(D));
+step("ops label says so", plan.opsLabel(D) === "trial 25/30 (no win yet)", plan.opsLabel(D));
+step("the turn is told to stay quiet about paying", /Nothing has been said to them about paying/.test(plan.note(D)));
+visit(D); await after(D); visit(D); await after(D);
+step("27th, still no win: still quiet, still free", sent.length === before && plan.row(D).sessions_used === 27 && !plan.blocked(D), plan.opsLabel(D));
+taskDone(D);
+clock.skip(2 * 60_000); accounts.countUse(D, "turn"); const r27 = await after(D);
+step("a win lands: the next text (same session) gets the three bubbles, counting 27 chats", r27.did === "asked" && sent.length === before + 3 && /^that's 27 chats between us, Kofi\. so far i've finished 1 thing/.test(sent[before].text), sent[before]?.text.slice(0, 60));
+visit(D); await after(D);
+step("the session after that lapses, as before", plan.status(D).status === "lapsed" && plan.opsLabel(D) === "lapsed");
+
+const E = "dm:fake:+13475550003";
+db.upsertAccount({ conversationId: E, channel: "fake", address: "+13475550003", name: "Efua", isOperator: false });
+const b2 = sent.length;
+for (let i = 0; i < 29; i++) { visit(E); await after(E); }
+step("29 sessions, no win: nothing said", sent.length === b2 && plan.opsLabel(E) === "trial 29/30 (no win yet)", plan.opsLabel(E));
+visit(E); const r30 = await after(E);
+step("the 30th, no win: asked anyway, softer first line", r30.did === "asked" && sent.length === b2 + 3 && sent[b2].text === "that's 30 chats between us, Efua. i haven't pulled off something real for you yet, and i'd like the chance to." && /^https:\/\/checkout/.test(sent[b2 + 2].text), sent[b2]?.text.slice(0, 60));
+visit(E); await after(E);
+step("the 31st lapses", plan.status(E).status === "lapsed");
+step("the operator (grandfathered under `on`) is never asked and never extended", (() => { for (let i = 0; i < 30; i++) visit("dm:owner"); return plan.status("dm:owner").status === "free" && plan.status("dm:owner").extended === false && plan.row("dm:owner").ask_due === 0; })());
 fake.close();
 console.log(failed ? `FAILED (${failed})` : "all ok");
 process.exit(failed ? 1 : 0);

@@ -14,6 +14,12 @@
 //   - At the 25th session the turn's own reply still answers them; THEN three short bubbles go, the
 //     onboarding way (one ordered chain, a beat apart): what Reason really did for them, counted from
 //     the record (stamps.completions); the ask; the link on its own line. Once, ever.
+//   - The WIN RULE (owner, 2026-11-01, the pricing page's words: "pay once it's done something real
+//     for you"): the ask at the 25th goes only if Reason has at least one win for them — any finished
+//     errand on the record (stamps.completions: a done task, a call that got somewhere, an order
+//     placed). No win yet: nothing is said and the trial keeps going a session at a time, up to the
+//     30th. The ask then goes on the first inbound after a win lands, or at the 30th regardless, with a
+//     softer first line when there is still nothing to point to.
 //   - Lapsed (26th session on, unpaid): questions are still answered. Anything that acts — a call, an
 //     order, a reminder, research, directions, an event — is refused at the tool with ONE line and the
 //     link, at most once a session, and their standing things are held (pause.pauseAll) until they pay.
@@ -29,8 +35,11 @@
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
 import * as stripe from "./stripe.js";
+import * as stamps from "./stamps.js";
 
 export const TRIAL_SESSIONS = Number(process.env.REASON_PAYWALL_SESSIONS || 25);
+/** The trial's hard end when no win has landed: the ask goes here whatever the record says. */
+export const TRIAL_MAX_SESSIONS = Math.max(TRIAL_SESSIONS, Number(process.env.REASON_PAYWALL_MAX_SESSIONS || 30));
 export const SESSION_GAP_MS = Number(process.env.REASON_PAYWALL_GAP_MIN || 30) * 60_000;
 export const PRICE = "$24.99";
 export const PRICE_LINE = `${PRICE} a month`;
@@ -149,7 +158,9 @@ function write(conversationId, fields, now = clock.now()) {
 export function status(conversationId, now = clock.now()) {
   const r = row(conversationId);
   const used = r?.sessions_used ?? 0;
-  const base = { sessions_used: used, left: Math.max(0, TRIAL_SESSIONS - used), paid_until: r?.paid_until ?? null, trial_sessions: TRIAL_SESSIONS };
+  // Extended: past the 25th on the trial with the ask neither owed nor gone — the win rule is holding it.
+  const extended = !!r && r.status === "trial" && used >= TRIAL_SESSIONS && used < TRIAL_MAX_SESSIONS && !r.asked_at && !r.ask_due;
+  const base = { sessions_used: used, left: Math.max(0, TRIAL_SESSIONS - used), paid_until: r?.paid_until ?? null, trial_sessions: TRIAL_SESSIONS, extended: false };
   if (!appliesTo(conversationId)) return { status: "off", applies: false, ...base };
   if (grandfathered(conversationId) || r?.status === "free") return { status: "free", applies: true, ...base };
   if (!r) return { status: "trial", applies: true, ...base };
@@ -158,6 +169,7 @@ export function status(conversationId, now = clock.now()) {
   // Lapsed is written by noteTurn (a new session after the ask has gone), never inferred from the
   // count alone: somebody past 25 who was never asked is still on the trial until they have been.
   if (r.status === "lapsed") return { status: "lapsed", applies: true, ...base };
+  if (extended) return { status: "trial", applies: true, ...base, left: Math.max(0, TRIAL_MAX_SESSIONS - used), trial_sessions: TRIAL_MAX_SESSIONS, extended: true };
   return { status: "trial", applies: true, ...base };
 }
 
@@ -177,14 +189,39 @@ export function noteTurn(conversationId, now = clock.now()) {
   const fields = { last_inbound_at: now };
   let used = r.sessions_used;
   if (fresh) { used += 1; fields.sessions_used = used; }
-  const subject = fresh && appliesTo(conversationId) && !grandfathered(conversationId) && r.status === "trial";
+  const subject = appliesTo(conversationId) && !grandfathered(conversationId) && r.status === "trial";
   // The ask comes before any lapse, always: a session at or past the 25th with the ask never sent owes
   // it (this covers somebody whose sessions were counted while the switch was off), and only a NEW
   // session after the ask has gone lapses them. No ask gone — no link to pay with — no lapse.
-  if (subject && used >= TRIAL_SESSIONS && !r.asked_at) fields.ask_due = 1;
-  if (subject && used > TRIAL_SESSIONS && r.asked_at) fields.status = "lapsed";
+  // The win rule: between the 25th and the 30th the ask waits for a win, and is checked on EVERY
+  // inbound (not only a new session), so it goes on the first text after the win lands.
+  let extended = false;
+  if (subject && used >= TRIAL_SESSIONS && !r.asked_at && !r.ask_due) {
+    if (used >= TRIAL_MAX_SESSIONS || hasWin(conversationId)) fields.ask_due = 1;
+    else extended = true;
+  }
+  if (fresh && subject && used > TRIAL_SESSIONS && r.asked_at) fields.status = "lapsed";
   write(conversationId, fields, now);
-  return { session_started: fresh, sessions_used: used, ask_due: !!fields.ask_due, lapsed: fields.status === "lapsed" };
+  return { session_started: fresh, sessions_used: used, ask_due: !!fields.ask_due, extended, lapsed: fields.status === "lapsed" };
+}
+
+/**
+ * Every finished errand on their record, oldest first: stamps.completions (a done task, a call that got
+ * somewhere, an AgentCard order) plus the orders placed through a store checkout (shop_runs, the live
+ * buy path since 2026-10-30), as `{ kind, id, at }`.
+ */
+export function wins(conversationId) {
+  const out = [];
+  try { out.push(...stamps.completions(conversationId)); } catch { /* the rows below still count */ }
+  try {
+    for (const r of q("SELECT run_id, COALESCE(stage_at, updated_at) AS at FROM shop_runs WHERE conversation_id = ? AND status = 'succeeded' AND stage = 'placed'").all(conversationId)) out.push({ kind: "purchase", id: r.run_id, at: r.at });
+  } catch { /* no checkouts on this install */ }
+  return out.sort((a, b) => a.at - b.at);
+}
+
+/** Has Reason done something real for them yet — at least one win on the record? */
+export function hasWin(conversationId) {
+  return wins(conversationId).length > 0;
 }
 
 // ---------------------------------------------------------------- the link
@@ -223,14 +260,11 @@ export async function payLink(conversationId, { fetchImpl = globalThis.fetch, lo
 /** Plain human counts of what really got done, from the record. Zeros are left out. */
 export async function recapCounts(conversationId) {
   const counts = { calls: 0, orders: 0, tasks: 0, reminders: 0, events: 0 };
-  try {
-    const stamps = await import("./stamps.js");
-    for (const c of stamps.completions(conversationId)) {
-      if (c.kind === "call") counts.calls++;
-      else if (c.kind === "purchase") counts.orders++;
-      else if (c.kind === "task") counts.tasks++;
-    }
-  } catch { /* the counts below still stand */ }
+  for (const c of wins(conversationId)) {
+    if (c.kind === "call") counts.calls++;
+    else if (c.kind === "purchase") counts.orders++;
+    else if (c.kind === "task") counts.tasks++;
+  }
   try { counts.reminders = q("SELECT COUNT(*) AS n FROM timers WHERE conversation_id = ? AND fired_at IS NOT NULL AND call_goal IS NULL AND COALESCE(label, '') = ''").get(conversationId).n; } catch {}
   try { counts.events = q("SELECT COUNT(*) AS n FROM events WHERE organizer_conversation_id = ?").get(conversationId).n; } catch {}
   return counts;
@@ -251,12 +285,17 @@ export function recapLine(counts) {
   return `${bits.slice(0, -1).join(", ")} and ${bits.at(-1)}`;
 }
 
-/** The three bubbles at the 25th session. Warm, short, no "unlock", no "upgrade". */
-export function askBubbles({ counts, url, name = "" }) {
+/**
+ * The three bubbles when the ask goes. Warm, short, no "unlock", no "upgrade". `sessions` is how many
+ * chats it took (25, or up to 30 under the win rule); with nothing real to point to — the 30th with
+ * no win — the first line is softer and owns it.
+ */
+export function askBubbles({ counts, url, name = "", sessions = TRIAL_SESSIONS }) {
   const did = recapLine(counts);
+  const who = name ? `, ${name}` : "";
   const first = did
-    ? `that's 25 chats between us${name ? `, ${name}` : ""}. so far i've ${did}.`
-    : `that's 25 chats between us${name ? `, ${name}` : ""}. thanks for giving me a real go.`;
+    ? `that's ${sessions} chats between us${who}. so far i've ${did}.`
+    : `that's ${sessions} chats between us${who}. i haven't pulled off something real for you yet, and i'd like the chance to.`;
   const ask = `from here it's ${PRICE_LINE} to keep going. everything stays exactly as it is — what i remember, your reminders, all of it — and you can cancel any time just by telling me.`;
   return url ? [first, ask, url] : [first, ask];
 }
@@ -287,7 +326,7 @@ export async function afterTurn({ conversationId, router = null, sleep = realSle
     if (!url) return { did: "ask_held", why: "no link" }; // owed still; tried again next turn
     const account = db.getAccount(conversationId);
     const counts = await recapCounts(conversationId);
-    const bubbles = askBubbles({ counts, url, name: account?.name ? firstName(account.name) : "" }).slice(0, Math.max(3, config.maxBubbles));
+    const bubbles = askBubbles({ counts, url, name: account?.name ? firstName(account.name) : "", sessions: r.sessions_used }).slice(0, Math.max(3, config.maxBubbles));
     // Claimed before the first send so a second drain in the same moment cannot say it twice.
     if (q("UPDATE plan SET asked_at = ?, ask_due = 0, updated_at = ? WHERE conversation_id = ? AND asked_at IS NULL").run(now, now, conversationId).changes !== 1) return { did: "nothing" };
     const sent = await sayBubbles({ conversationId, router, bubbles, key: `paywall:ask:${conversationId}`, sleep, log });
@@ -393,6 +432,9 @@ export function note(conversationId, now = clock.now()) {
   }
   if (st.status === "cancelled") {
     return `PLAN: they cancelled; everything keeps working until ${when(st.paid_until, conversationId)}, then holds. subscription_show has the facts; only mention it if they ask.`;
+  }
+  if (st.status === "trial" && st.extended) {
+    return `PLAN: they are past ${TRIAL_SESSIONS} free sessions (${st.sessions_used} so far) and the trial is running on, up to ${TRIAL_MAX_SESSIONS}, because nothing real has been finished for them yet. Nothing has been said to them about paying and nothing should be: do not bring up a plan, a price or a trial unless they ask (then subscription_show has the facts). Do something real for them.`;
   }
   if (st.status === "trial" && st.sessions_used >= TRIAL_SESSIONS) {
     return `PLAN: this is their last free session and they were just told about the ${PRICE_LINE} plan (subscription_show has the facts). Answer questions about it plainly if asked; never push, never "unlock" or "upgrade".`;
@@ -537,8 +579,8 @@ export async function markPaid(conversationId, { customerId = "", subscriptionId
 export function view(conversationId, now = clock.now()) {
   const st = status(conversationId, now);
   const r = row(conversationId);
-  const out = { status: st.status, sessions_used: st.sessions_used, trial_sessions: TRIAL_SESSIONS, price: PRICE_LINE };
-  if (st.status === "trial") out.sessions_left = st.left;
+  const out = { status: st.status, sessions_used: st.sessions_used, trial_sessions: st.trial_sessions, price: PRICE_LINE };
+  if (st.status === "trial") { out.sessions_left = st.left; if (st.extended) out.extended = true; }
   if (st.status === "paid") { out.next_bill = st.paid_until ? when(st.paid_until, conversationId) : "unknown yet"; out.next_bill_at = st.paid_until; }
   if (st.status === "cancelled") { out.access_until = when(st.paid_until, conversationId); out.access_until_at = st.paid_until; }
   out.has_subscription = !!r?.stripe_subscription_id;
@@ -550,7 +592,7 @@ export async function cancel(conversationId, { fetchImpl = globalThis.fetch, log
   const st = status(conversationId, now);
   const r = row(conversationId);
   if (st.status === "free") return { ok: false, error: "Reason is free for them, for good — there is no subscription to cancel. Say that, warmly." };
-  if (st.status === "trial") return { ok: false, error: `They are on the free trial (${st.sessions_used} of ${TRIAL_SESSIONS} sessions used) and have never subscribed, so there is nothing to cancel and nothing will be charged. Say that.` };
+  if (st.status === "trial") return { ok: false, error: `They are on the free trial (${st.sessions_used} of ${st.trial_sessions} sessions used) and have never subscribed, so there is nothing to cancel and nothing will be charged. Say that.` };
   if (st.status === "cancelled") return { ok: true, already: true, access_until: when(st.paid_until, conversationId), note: "Already cancelled. Nothing more will be charged; everything keeps working until access_until. Say that in one line." };
   if (!r?.stripe_subscription_id) return { ok: false, error: "No subscription id is on record here, so it cannot be cancelled from this side. Say the person running Reason will sort it, and that nothing further is charged until it is." };
   const out = await stripe.cancelAtPeriodEnd(r.stripe_subscription_id, { fetchImpl });
@@ -564,24 +606,30 @@ export async function cancel(conversationId, { fetchImpl = globalThis.fetch, log
   return { ok: true, access_until: when(end, conversationId), access_until_at: end, note: `Cancelled at the end of the paid period. Confirm in ONE line: nothing more is charged, and everything keeps working until ${when(end, conversationId)}. No guilt, no offer to stay.` };
 }
 
-/** The /ops label for one person: "trial 3/25", "free", "paid", "lapsed", "cancelled · until Nov 30". Null when the switch is off. */
+/** The /ops label for one person: "trial 3/25", "trial 27/30 (no win yet)", "free", "paid", "lapsed", "cancelled · until Nov 30". Null when the switch is off. */
 export function opsLabel(conversationId, now = clock.now()) {
   if (mode() === "off") return null;
   const st = status(conversationId, now);
   if (st.status === "off") return null;
-  if (st.status === "trial") return `trial ${st.sessions_used}/${TRIAL_SESSIONS}`;
+  if (st.status === "trial") return st.extended ? `trial ${st.sessions_used}/${TRIAL_MAX_SESSIONS} (no win yet)` : `trial ${st.sessions_used}/${TRIAL_SESSIONS}`;
   if (st.status === "cancelled") return `cancelled · until ${when(st.paid_until, conversationId)}`;
   return st.status;
 }
 
-/** scripts/plan-set.js: set one person's plan by hand. */
-export function setManually(conversationId, { status: s, sessions = null, paidUntil = null, now = clock.now() } = {}) {
+/**
+ * scripts/plan-set.js: set one person's plan by hand. `lastInboundAt`: a time (ms) to pretend their
+ * last text came, or null to forget it (so their very next text starts a new session); undefined
+ * leaves it alone.
+ */
+export function setManually(conversationId, { status: s, sessions = null, paidUntil = null, lastInboundAt = undefined, now = clock.now() } = {}) {
   const allowed = new Set(["trial", "free", "paid", "lapsed", "cancelled"]);
   if (!allowed.has(s)) throw new Error(`status must be one of ${[...allowed].join(", ")}`);
   const fields = { status: s };
   if (sessions != null) fields.sessions_used = Number(sessions);
   if (paidUntil != null) fields.paid_until = paidUntil;
+  if (lastInboundAt !== undefined) fields.last_inbound_at = lastInboundAt;
   if (s === "trial" || s === "free" || s === "paid") { fields.ask_due = 0; fields.told_session = null; }
-  if (s === "trial" && sessions != null && Number(sessions) < TRIAL_SESSIONS) fields.asked_at = null;
+  // Set back onto the trial under the 30th: the ask is owed again, so the rule can be watched once more.
+  if (s === "trial" && sessions != null && Number(sessions) < TRIAL_MAX_SESSIONS) fields.asked_at = null;
   return write(conversationId, fields, now);
 }

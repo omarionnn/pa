@@ -15,6 +15,17 @@ What a person sees:
   fired reminders and events, zeros left out), the ask ($24.99 a month, keeps everything, cancel by
   text), the pay link alone on the last line. No bubbles without a link: with no Stripe configured the
   ask stays owed (`ask_due`) and is tried on the next turn.
+- **The win rule (2026-11-01, the pricing page's words: "pay once it's done something real for you").**
+  The 25th asks only if Reason has a win for them — any finished errand on the record
+  (`plan.hasWin` → `stamps.completions`: a done task, a call that got somewhere, an order placed; a
+  fired reminder is not one). No win: nothing is said, the trial runs on a session at a time up to the
+  30th (`TRIAL_MAX_SESSIONS`, `REASON_PAYWALL_MAX_SESSIONS`), and `noteTurn` checks on EVERY inbound, so
+  the bubbles go on the first text after a win lands (same session or not), counting the chats it took
+  ("that's 27 chats between us"). The 30th asks whatever the record says, with a softer first line
+  ("i haven't pulled off something real for you yet, and i'd like the chance to."). While extended:
+  `status().extended`, `/ops` tag `trial 27/30 (no win yet)`, `subscription_show` says 30 and the
+  sessions left, and the turn's PLAN note says nothing has been said about paying and nothing should be.
+  Grandfather, `owner` mode and lapsing are untouched.
 - **The ask always comes before a lapse.** A session at or past the 25th with the ask never sent owes it
   (this is how somebody whose sessions were counted while the switch was off is treated: asked on their
   first session under the paywall, not cut off), and only a NEW session after the ask has gone lapses
@@ -32,8 +43,14 @@ What a person sees:
 
 ```bash
 cd ~/Desktop/pa/.agents/skills/verify-reason
-REASON_DB_PATH=$(mktemp -d)/paywall.db node bin/paywall-drive.mjs    # 14 steps, "all ok"
+REASON_DB_PATH=$(mktemp -d)/paywall.db node bin/paywall-drive.mjs    # 24 steps, "all ok"
 ```
+
+Evidence 2026-11-01 (worktree wt/win-rule): 24/24 ok — the 14 above (Ama now has a win on the record),
+then Kofi: no win at the 25th → nothing said, `trial 25/30 (no win yet)`, the quiet PLAN note, the 27th
+still quiet, a win → the next text in the same session gets the three bubbles ("that's 27 chats"), the
+session after lapses; Efua: 29 quiet, the 30th asked with the softer line, the 31st lapses; the operator
+30 sessions under `on` never asked, never extended.
 
 Evidence 2026-10-31 (worktree wt/paywall, 3b527ff): 14/14 ok — 24 quiet sessions, the 25th's three
 bubbles with the Checkout Session link last, asked once only, the 26th lapsed and held, `timer_set`
@@ -44,7 +61,11 @@ asking Stripe for `cancel_at_period_end=true` and saying the date, the `/ops` ta
 
 ## Offline
 
-`test/paywall.test.js` (23): the 29-vs-31-minute gap, the 25th trigger exactly once (unit, and down the
+`test/paywall-win.test.js` (9; 8 fail on c67e5c9): what a win is, win → asked at 25, no win → runs on
+(label, note, view, 26th and 27th quiet), win at 27 → asked on the next text and the 28th lapses, no win
+→ asked at 30 with the softer line and the 31st lapses, a 40-session backlog asked at once, grandfather
+untouched at 30 and 31, `owner` mode follows the rule on his thread only, `plan-set.js --last-inbound
+none` + `win` in its output. `test/paywall.test.js` (23; everyone who reaches the ask has one done task): the 29-vs-31-minute gap, the 25th trigger exactly once (unit, and down the
 real Router with a FakeChannel: the 25th turn ran before the three bubbles), grandfather (operator, test
 number, pre-ship account), `owner` and `off` modes, the ship-time rule, lapsed gating (which tools, once
 a session), hold/release including a pause of their own left alone, webhook reject (missing / wrong /
@@ -68,4 +89,5 @@ Stripe test mode: a recurring $24.99/month price (`STRIPE_PRICE_ID`), a secret k
 `checkout.session.completed`, `invoice.paid`, `customer.subscription.updated`,
 `customer.subscription.deleted` (`STRIPE_WEBHOOK_SECRET`); optionally `STRIPE_PAYMENT_LINK_URL` for the
 pricing page. Then `REASON_PAYWALL=owner`, a restart, and 25 of his own sessions (or
-`scripts/plan-set.js dm:owner trial --sessions 24 --apply`) to see the bubbles for real.
+`scripts/plan-set.js dm:owner trial --sessions 24 --last-inbound none --apply`, so his very next text is
+the 25th; the output's `win` says whether the bubbles go then or the trial runs on) to see the bubbles for real.
