@@ -263,6 +263,7 @@ const out = {
   first_speech_to_line_ms: firstSpeech,
   voice_said: said, they_said: theirs,
   dropped_frames: pick("gptlive_call_ended")[0]?.dropped_frames ?? null,
+  sounds_dropped: pick("gptlive_call_ended")[0]?.sounds_dropped ?? null,
   guard_trips: pick("gptlive_guard").length,
   trace,
   hung_up_by_reason: pick("gptlive_call_ended")[0]?.why !== "caller hung up",
