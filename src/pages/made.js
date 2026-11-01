@@ -17,7 +17,7 @@
 // one copy is display:none (which also takes it out of the accessibility tree), never moved by script.
 import { TOKENS, WEB_FONTS } from "./webkit.js";
 import { THEME, iconLinks } from "./render.js";
-import { WORDMARK_O as WM_O } from "./wordmark.js";
+import { WORDMARK_O as WM_O, homeLink } from "./wordmark.js";
 import { PRINT_CSS, printUrl } from "./print.js";
 
 export const PRIVATE_FOOT = "Only you can see this page. Reply to Reason to change anything.";
@@ -59,6 +59,8 @@ a{color:var(--ink)}
 .top{display:flex;justify-content:space-between;align-items:center;gap:12px}
 .wm{font-family:${SERIF};font-style:italic;font-size:20px;display:inline-flex;white-space:nowrap;flex:none;align-items:center;text-decoration:none;color:var(--ink)}
 .wm svg{width:12px;height:12px;transform:skewX(-10deg);margin:3px 1px 0}
+.wm-home{display:inline-flex;align-items:center;min-height:44px;color:inherit;text-decoration:none;border-radius:4px}
+.wm-home:focus-visible{outline:2px solid var(--pen);outline-offset:3px}
 .kick{font-family:${MONO};font-size:10px;letter-spacing:.14em;color:var(--mut);text-align:right}
 .cols{display:flex;flex-direction:column;gap:28px;flex:1}
 .main{display:flex;flex-direction:column;gap:28px;min-width:0}
@@ -273,7 +275,7 @@ export function turned(title) {
  * The shared frame: wordmark + typed line, then content and margin, then the line saying who can
  * see it. `head` is extra <head> markup (the link preview tags); `script` is the page's own few lines.
  */
-export function madeDoc({ title, kicker = "", main, side = "", foot = PRIVATE_FOOT, head = "", script = "", lang = "en", robots = true, url = "" }) {
+export function madeDoc({ title, kicker = "", main, side = "", foot = PRIVATE_FOOT, head = "", script = "", lang = "en", robots = true, url = "", home = "" }) {
   return `<!doctype html><html lang="${esc(lang)}"><head><meta charset="utf-8">`
     + `<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">`
     + `<meta name="referrer" content="no-referrer">`
@@ -284,7 +286,7 @@ export function madeDoc({ title, kicker = "", main, side = "", foot = PRIVATE_FO
     + `<title>${esc(title)}</title>${iconLinks()}${head}`
     + `<script>${THEME.head}</script><style>${MADE_CSS}${PRINT_CSS}</style></head>`
     + `<body><div class="mp">`
-    + `<header class="top">${wordmark()}${kicker ? `<span class="kick">${esc(kicker)}</span>` : ""}</header>`
+    + `<header class="top">${home ? homeLink(wordmark(), home) : wordmark()}${kicker ? `<span class="kick">${esc(kicker)}</span>` : ""}</header>`
     + `<div class="cols"><main class="main">${main}</main><aside class="side" aria-label="Notes">${side}</aside></div>`
     + (foot ? `<p class="foot">${esc(foot)}</p>` : "")
     + printUrl(url, esc)
@@ -326,7 +328,7 @@ export function renderShortlist(vm) {
   const side = (first.pick && vm.opinion ? `<p class="hand tilt d">${esc(`${first.n} is my pick. ${vm.opinion}`)}</p>` : "")
     + (vm.choice ? `<p class="quiet d">Picking one sends that reply to Reason. Nothing is booked until you say so.</p>` : "")
     + (vm.choice ? `<span class="tight d">${vm.picked ? "SENT · NOTHING BOOKED YET" : "NOTHING BOOKED YET"}</span>` : "");
-  return madeDoc({ title: vm.title, kicker: vm.kicker, main, side, head: vm.head, foot: vm.foot ?? PRIVATE_FOOT, script: PICK_JS, url: vm.url });
+  return madeDoc({ title: vm.title, kicker: vm.kicker, main, side, head: vm.head, foot: vm.foot ?? PRIVATE_FOOT, script: PICK_JS, url: vm.url, home: vm.home });
 }
 
 // A pick posts without leaving the page when script runs; without it the form posts and the server
@@ -344,7 +346,7 @@ export function renderDay(vm) {
     + (vm.tomorrow ? `<div class="tg m" style="gap:6px"><p class="lbl">TOMORROW</p><p style="margin:0;font-size:15px;line-height:1.5">${esc(vm.tomorrow)}</p></div>` : "");
   const side = (vm.note ? `<p class="hand tilt big d">${esc(vm.note)}</p>` : "")
     + (vm.tomorrow ? `<div class="tg d"><span class="lbl">TOMORROW</span><p class="tmrw">${esc(vm.tomorrow)}</p></div>` : "");
-  return madeDoc({ title: vm.title, kicker: vm.kicker, main, side, head: vm.head, url: vm.url });
+  return madeDoc({ title: vm.title, kicker: vm.kicker, main, side, head: vm.head, url: vm.url, home: vm.home });
 }
 
 // ---------------------------------------------------------------- P3 call
@@ -386,7 +388,7 @@ export function renderCall(vm) {
     + tx;
   const side = (vm.worth ? `<span class="lbl d">WORTH KNOWING</span><p class="hand tilt mid d">${esc(vm.worth)}</p>` : "")
     + (vm.transcript.length ? `<a class="typed d" href="#transcript" data-open-tx>READ THE TRANSCRIPT ↓</a>` : "");
-  return madeDoc({ title: vm.title, kicker: vm.kicker, main, side, head: vm.head, script: CALL_JS, url: vm.url });
+  return madeDoc({ title: vm.title, kicker: vm.kicker, main, side, head: vm.head, script: CALL_JS, url: vm.url, home: vm.home });
 }
 
 // The player plays in place; with script off the link opens the recording itself. The desk's margin
@@ -474,7 +476,7 @@ export function renderReceipt(vm) {
     + (acts ? `<div class="acts m">${acts}</div>` : "");
   const side = (vm.note ? `<p class="hand tilt d">${esc(vm.note)}</p>` : "")
     + (acts ? `<div class="d" style="display:flex;flex-direction:column;gap:22px">${acts}</div>` : "");
-  return madeDoc({ title: vm.title, kicker: vm.kicker, main, side, head: vm.head, script: PRINT_JS, url: vm.url });
+  return madeDoc({ title: vm.title, kicker: vm.kicker, main, side, head: vm.head, script: PRINT_JS, url: vm.url, home: vm.home });
 }
 // "Save as PDF" is the browser's own print-to-PDF, so it exists only when script does.
 const PRINT_JS = `document.querySelectorAll('[data-print]').forEach(function(b){b.hidden=false;b.addEventListener('click',function(){window.print()})})`;

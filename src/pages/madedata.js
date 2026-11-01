@@ -12,6 +12,7 @@ import { config } from "../config.js";
 import { webAllowedFor } from "../web.js";
 import * as made from "./made.js";
 import { pageUrl } from "./access.js";
+import { yourPagesHref } from "./wordmark.js";
 
 const TZ = () => config.tz || "America/New_York";
 const fmt = (ms, opts) => new Date(ms).toLocaleString("en-US", { timeZone: TZ(), ...opts });
@@ -182,6 +183,7 @@ export function renderMadePage(page, { picked = {}, interactive = false, head = 
   if (!vm) return null;
   vm.head = head;
   vm.url = pageUrl(page.id);
+  vm.home = yourPagesHref();
   return kind === "shortlist" ? made.renderShortlist(vm)
     : kind === "day" ? made.renderDay(vm)
       : kind === "call" ? made.renderCall(vm)

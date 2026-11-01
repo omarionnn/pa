@@ -13,7 +13,7 @@
 import { stamp, config, normalizeNumber } from "../config.js";
 import { CALLOUT_TONES } from "./content.js";
 import { pageUrl, ownerUrl } from "./access.js";
-import { wordmark, WORDMARK_CSS } from "./wordmark.js";
+import { wordmark, WORDMARK_CSS, homeLink, yourPagesHref } from "./wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, BRAND_ART, PAPER, PAPER_GRAIN } from "./brand.js";
 import { PRINT_CSS, printUrl } from "./print.js";
 import { readFileSync } from "node:fs";
@@ -285,6 +285,8 @@ body{margin:0;background:var(--grain) var(--ground);color:var(--ink);font:17px/1
 a{color:var(--mark)}
 .bar{display:flex;align-items:center;justify-content:space-between;gap:.8rem;max-width:44rem;margin:0 auto;padding:1.1rem 1.15rem 1rem;font-size:.9rem}
 .brand{display:flex;align-items:center;gap:.45rem;min-width:0;color:var(--ink);font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
+.wm-home{display:inline-flex;align-items:center;min-height:44px;color:inherit;text-decoration:none;border-radius:4px}
+.wm-home:focus-visible{outline:2px solid var(--pen,currentColor);outline-offset:3px}
 .who{color:var(--dim);font:400 .9rem/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .pill{flex:none;font-size:.68rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:.2rem .55rem}
 .pill-btn{-webkit-appearance:none;appearance:none;margin:0;background:none;font-family:inherit;line-height:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:color .15s,border-color .15s,transform .1s}
@@ -787,7 +789,7 @@ export function iconLinks() {
 // not-found page and a plain notice open flat, and the first two stay byte-identical to each other.
 // `pillButton` makes the top-right pill a button with that accessible name (the invite page's
 // confetti, src/pages/confetti.js); the page's own script decides what a press does.
-export function shell({ title, body, script = "", css = "", pill = "", pillButton = "", indexable = false, head = "", top = "", intro = false, theme = true, referrer = "no-referrer", url = "" }) {
+export function shell({ title, body, script = "", css = "", pill = "", pillButton = "", indexable = false, head = "", top = "", intro = false, theme = true, referrer = "no-referrer", url = "", home = "" }) {
   // Every page carries the Light · Dark · Auto choice at its foot (owner, 2026-10-25: "every page
   // Reason serves"); only a printed one leaves it out (`theme: false`), because paper has no choice.
   const scripts = `${script}${intro ? INTRO_JS : ""}${theme ? THEME.js : ""}`;
@@ -805,7 +807,7 @@ ${iconLinks()}
 <title>${esc(title)}</title>${headJs ? `\n<script>${headJs}</script>` : ""}
 <style>${CSS}${WORDMARK_CSS}${THEME.css}${css}${intro ? INTRO_CSS : ""}${PRINT_CSS}</style>
 </head><body>${intro ? `\n<div class="intro" aria-hidden="true"><div class="ib">${wordmark({ ing: `<span class="ing">ing</span>` })}</div><div class="il"></div></div>` : ""}
-<header class="bar"><div class="brand">${wordmark()}${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? (pillButton ? `<button type="button" class="pill pill-btn" data-pop aria-label="${esc(pillButton)}">${esc(pill)}</button>` : `<span class="pill">${esc(pill)}</span>`) : ""}</header>
+<header class="bar"><div class="brand">${home ? homeLink(wordmark(), home) : wordmark()}${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? (pillButton ? `<button type="button" class="pill pill-btn" data-pop aria-label="${esc(pillButton)}">${esc(pill)}</button>` : `<span class="pill">${esc(pill)}</span>`) : ""}</header>
 <main class="sheet"><div class="wrap">${body}${theme ? THEME_SWITCH : ""}${printUrl(url, esc)}</div></main>${scripts ? `<script>${scripts}</script>` : ""}</body></html>`;
 }
 
@@ -977,6 +979,8 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
     top,
     url: page.id ? pageUrl(page.id) : "",
     intro: !printing,
+    // The wordmark goes to the reader's own pages (src/pages/wordmark.js yourPagesHref); not on paper.
+    home: printing ? "" : yourPagesHref(),
     // Light · Dark · Auto is a choice a reader makes in a browser. A printed document is already
     // whichever one it was printed as, so the switch is left out rather than drawn and hidden.
     theme: !printing,

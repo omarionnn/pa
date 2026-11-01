@@ -96,7 +96,7 @@ test("a fresh arrival plays the opening and hands the page over clean", async ()
   assert.equal(await phaseOf(page), "loading", "the attribute is on before the first paint");
   assert.equal(await page.locator(".intro .ib").innerText(), "reasoning", "the hidden o is in the text: copy-paste reads reasoning");
   assert.equal(await page.locator(".intro .ib .wm-bubble").count(), 1, "the bubble is the o");
-  assert.equal(await page.locator(".bar .brand > .wordmark").getAttribute("aria-label"), "Reason", "the top line it lands on is the wordmark");
+  assert.equal(await page.locator(".bar .brand > .wm-home > .wordmark").getAttribute("aria-label"), "Reason", "the top line it lands on is the wordmark");
   assert.equal(await page.locator(".intro").isVisible(), true);
   const seen = new Set();
   const until = Date.now() + 3500;

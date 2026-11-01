@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.REASON_DB_PATH = join(mkdtempSync(join(tmpdir(), "wordmark-test-")), "x.db");
-const { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE, WORDMARK_BUBBLE_DARK, WORDMARK_O } = await import("../src/pages/wordmark.js");
+const { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE, WORDMARK_BUBBLE_DARK, WORDMARK_O, homeLink } = await import("../src/pages/wordmark.js");
 const { BRAND_PEN, BRAND_PEN_DARK } = await import("../src/pages/brand.js");
 const card = await import("../src/pages/card.js");
 const cover = await import("../src/eventcover.js");
@@ -48,7 +48,8 @@ test("every page template opens with the wordmark and no dot-and-Reason top line
   for (const [name, page] of Object.entries(pages)) {
     const html = typeof page === "string" ? page : page.body;
     const top = html.slice(html.indexOf("<body>"));
-    assert.ok(top.includes(`<div class="brand">${wordmark()}`) || top.includes(`<div class="bar">${wordmark()}</div>`), `${name}: wordmark in the top line`);
+    // A page Reason made carries it as the link to the reader's own pages (src/pages/wordmark.js homeLink).
+    assert.ok(top.includes(`<div class="brand">${wordmark()}`) || top.includes(`<div class="brand">${homeLink(wordmark())}`) || top.includes(`<div class="bar">${wordmark()}</div>`), `${name}: wordmark in the top line`);
     assert.ok(html.includes(WORDMARK_CSS), `${name}: wordmark styles`);
     assert.doesNotMatch(html, /<span class="dot"><\/span>Reason(<\/div>|<span class="who">|\$)/, `${name}: old top line gone`);
   }

@@ -11,6 +11,24 @@
 const FONT = "data:font/woff2;base64,d09GMgABAAAAAAXUAA4AAAAACuAAAAWAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGhYbgXocKgZgAFwRCAqJQIdqATYCJAMgCxIABCAFhF4HIBv/CFGUL04e4GdCmTLgsfPQ4HRYRquX3LLTlC3/4bPZ49jv3r5rFLOEqW6YJRo1UxpEEt43/Hvm652TwjrYOdjL5nRzMQO/AHiiv9jb/y+MMKGaJAssaKaZiyihcgqj9LY6AP///Vz9bypxUbRkFaCFu/lFxNLEE2ISf+JQ2hIQxUJeQkvmcDqhWyiV0As2lnPVWAfa770JCGAEAABDiAYhgF5IATud+8dhft7EIcyUAPQZM9b76SG08CkoMSWjF2gw4uXEfglRI4p+Gk75pW69cKdxUjf53jHys0ur/Dq6AU++P4p0EQwx6rjmFNRUvoShyoepiKQ+MCLG9S4glyuzJ3O5AnsNpD8XcyVGUiYSA2JPQv+vfCaeVOLz+XaZuzv+OAVtTjen+ygADCa1kwLJlboHzLTpee+KDVt2HOIt4EadfnDfXdalXVJHrXBxQhqZJKK9EbACjEAfgO1AKuP5iGyK5OZD6HBcipQQTaTg5RFG/zzsNA59QJKwZR/DZpCxHA4ZHbkrO1PgOM9Gv3sXwu7LZA67rU9quYNO4lAIu/qN3gU3SWDeT8KWY+A4IXct2zoBPHWKH/hki6w21hU+mCMs5QUOB3PzcpWxff1uETAmGTbWjhvj6CZwIzZpt0MYm7WdsU3sRb5r18oDrYsUeZdOOVWnaMI22HLnAQ7dDmE375ZYHpzAoceDlev30i+eBG+VY5tx6BFhEw6WYLtlxUsWYyeezLVCGO/Bgyt+uV1iZOGi5CXY8zEXE0Bgb7WxZupG9ykzPpKaxME3fVpWvGJx4EASYjZYaGCMJYTJjycIFy9BHiq3LA+7r7SzRI4Cq26Zyk/g0OXbtcfLAPbxcwobXdIoU7h692R4FDxlOLXrf93dq4iHfDQ0SNQVUB+fkW5U0YQ7EDc3ZMdDN4IBGSNGylhp1Egt5B7CopZGZBpU4qiL55mowr8mN+M0e1FgsamRXykN03GX+2ZoazgtvjIPMMHDLyI7NdqIpjQWRehMM5WGcKQjLoWc6+xGcg9qlCrj48bVnm4apqigqLDIiTm98mZOrDZPo5UIYmKCWkHJg4ysILXMPzpJu864ftcOTorOSly3Y7PM37cECQpgfdtT7JIsYNTSaAUUwqVFMPNiYHjBPF+TOjc++BHtcmn/y8d/8kTdm1Tm8Lh6BfOvcSNH3CQp8fa2ckVDkmIeUxXD2SGRQJ+UTJ8fpTkiRS64UkLDaDwSg76Rzhc11El2XkgKjWsgUddyk0IhUiUj1pwmYsh8KqfHeKeLQH/ZbDQl+U2wm906FcrMhLIfXAWPkCJpPkKm19CTtJCHjkWN0aVeY8lD/qdK1r8jMvuCygL69egzLawhgkiiXihun/8cRX5YjJq3lcMZpZFf1Ix7kkwp/hO8V1BztDDo9pAk0oy1MGMiH4KJIrZcIX6oZt1/uoJHlEakp4TxTKSpWt4UvaenwBRSLRcPiyT+r6bckGjlUaLvAQAEIJCR6+KSJfSvJTm/BHiD/o4B8B50o31s92bEfGxQYzij/RReEYR+4qUvIF9AOxDmPLZPCWPm9WjEzMMTmNPBHGO/BaD1xM0zF4Q0KMZ+jVnbrMUTAK/ApiU+r1rG6EOr0Opfq5SJv1ZFpOYx1VJ56OjIsSundmzZJvgU5BQU+IzbtsGnxyFOOHXmwMYWwg6M2eDFzQmHbeVHdm1Y86+SFmeEbUdOcT4x2wThGNeQlbVlBwXY1KqMtY3+QDY08DG1M5LG47C7eCwn9xBW7NuZMnkZOZpqGjS00XZoSlm4bkoPq8yTxRwNk37INzxCb/bFAQYigEu+4kx+ZDsicSDmfMSaTkrGVWll69NXxTVt2Zw+d0f2cXNyMuoyCqoWUpRSgPwynpYqggAAAA==";
 
 import { BRAND_PEN, BRAND_PEN_DARK } from "./brand.js";
+import { config } from "../config.js";
+
+/**
+ * Where the wordmark on a page Reason made goes (owner ask 2026-11-01: "if a user clicks the logo …
+ * it should go to a page where they can see all their pages and search too"): Reason Web's Saved,
+ * pages only, on heyreason.com. The link names nobody: who is signed in on that browser decides whose
+ * pages it lists (src/pages/websaved.js, scoped to the session's conversation), and a browser signed in
+ * to nobody is sent to sign in and brought back (src/pages/websignin.js NEXT_COOKIE). So a page opened
+ * by somebody else, by a shared link, shows them their own pages or a sign-in, never the owner's.
+ */
+export const YOUR_PAGES_PATH = "/web/saved?kind=pages";
+export function yourPagesHref() {
+  return `${String(config.siteUrl || "").replace(/\/+$/, "")}${YOUR_PAGES_PATH}`;
+}
+/** The mark (or any html) as that link. `_top`, so a page drawn inside Saved's own frame opens the list in the tab. */
+export function homeLink(inner, href = yourPagesHref(), cls = "wm-home") {
+  return `<a class="${cls}" href="${String(href).replace(/&/g, "&amp;").replace(/"/g, "&quot;")}" target="_top" aria-label="Reason: your pages">${inner}</a>`;
+}
 
 /**
  * The speech bubble's colour: the brand pen colour (brick red since 2026-10-26, orange from
