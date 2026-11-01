@@ -94,6 +94,11 @@ export function shipTs() {
   return now;
 }
 
+// The ship time is fixed at boot when the switch is on, so a newcomer admitted in the very first turn
+// after a flip is made AFTER it and is not grandfathered by a few milliseconds. (Set
+// REASON_PAYWALL_SHIP_TS in .env when flipping, and this is moot.)
+if (mode() !== "off") { try { shipTs(); } catch { /* read again on first use */ } }
+
 const isOperator = (conversationId, row = db.getAccount(conversationId)) => conversationId === config.ownerConversation || !!row?.is_operator;
 
 /** Does the paywall reach this conversation at all, under the switch as it is? */
@@ -150,7 +155,9 @@ export function status(conversationId, now = clock.now()) {
   if (!r) return { status: "trial", applies: true, ...base };
   if (r.status === "paid") return { status: "paid", applies: true, ...base };
   if (r.status === "cancelled") return { status: r.paid_until && r.paid_until > now ? "cancelled" : "lapsed", applies: true, ...base };
-  if (r.status === "lapsed" || used > TRIAL_SESSIONS) return { status: "lapsed", applies: true, ...base };
+  // Lapsed is written by noteTurn (a new session after the ask has gone), never inferred from the
+  // count alone: somebody past 25 who was never asked is still on the trial until they have been.
+  if (r.status === "lapsed") return { status: "lapsed", applies: true, ...base };
   return { status: "trial", applies: true, ...base };
 }
 
@@ -171,8 +178,11 @@ export function noteTurn(conversationId, now = clock.now()) {
   let used = r.sessions_used;
   if (fresh) { used += 1; fields.sessions_used = used; }
   const subject = fresh && appliesTo(conversationId) && !grandfathered(conversationId) && r.status === "trial";
-  if (subject && used === TRIAL_SESSIONS && !r.asked_at) fields.ask_due = 1;
-  if (subject && used > TRIAL_SESSIONS) fields.status = "lapsed";
+  // The ask comes before any lapse, always: a session at or past the 25th with the ask never sent owes
+  // it (this covers somebody whose sessions were counted while the switch was off), and only a NEW
+  // session after the ask has gone lapses them. No ask gone — no link to pay with — no lapse.
+  if (subject && used >= TRIAL_SESSIONS && !r.asked_at) fields.ask_due = 1;
+  if (subject && used > TRIAL_SESSIONS && r.asked_at) fields.status = "lapsed";
   write(conversationId, fields, now);
   return { session_started: fresh, sessions_used: used, ask_due: !!fields.ask_due, lapsed: fields.status === "lapsed" };
 }
@@ -249,8 +259,6 @@ export function askBubbles({ counts, url, name = "" }) {
   return url ? [first, ask, url] : [first, ask];
 }
 
-export const ONE_LINE = (url) => `your 25 free chats are used up, so that part needs the ${PRICE_LINE} plan — cancel any time by text.${url ? `\n${url}` : ""}`;
-
 // ---------------------------------------------------------------- after a turn
 
 const realSleep = (ms) => new Promise(r => setTimeout(r, ms).unref?.());
@@ -263,9 +271,12 @@ const beat = () => config.onboardingGapMs + Math.floor(Math.random() * 600);
  */
 export async function afterTurn({ conversationId, router = null, sleep = realSleep, fetchImpl = globalThis.fetch, log = () => {}, now = clock.now() } = {}) {
   const st = status(conversationId, now);
-  if (!st.applies || st.status === "free" || st.status === "off") return { did: "nothing" };
   const r = row(conversationId);
   if (!r) return { did: "nothing" };
+  // No longer lapsed but still held by us — set free or paid by hand (scripts/plan-set.js), or
+  // grandfathered after the fact: their things come back on this turn.
+  if (st.status !== "lapsed" && r.held_at > 0) { await release(conversationId, { log, now }); return { did: "released" }; }
+  if (!st.applies || st.status === "free" || st.status === "off") return { did: "nothing" };
   if (st.status === "lapsed" && !r.held_at) {
     await hold(conversationId, { log, now });
   }
@@ -425,6 +436,18 @@ export async function handleStripeEvent(event, { say = null, log = () => {}, now
   if (q("INSERT OR IGNORE INTO stripe_events (event_id, type, received_at) VALUES (?, ?, ?)").run(id, type, now).changes !== 1) {
     return { ok: true, duplicate: true };
   }
+  try {
+    return await actOn(event, { say, log, now });
+  } catch (e) {
+    // The claim is given back so Stripe's retry is not answered "duplicate" for an event nothing acted on.
+    q("DELETE FROM stripe_events WHERE event_id = ?").run(id);
+    log({ stripe_webhook_failed: type, why: (e?.message ?? String(e)).split("\n")[0] });
+    return { ok: false, why: (e?.message ?? String(e)).split("\n")[0] };
+  }
+}
+
+async function actOn(event, { say, log, now }) {
+  const type = String(event.type);
   const obj = event?.data?.object ?? {};
   const conversationId = conversationFor(obj);
   if (!conversationId) { log({ stripe_webhook: type, unmatched: true }); return { ok: true, matched: false }; }
@@ -445,6 +468,13 @@ export async function handleStripeEvent(event, { say = null, log = () => {}, now
     case "invoice.paid": {
       const before = row(conversationId)?.status;
       const end = obj?.lines?.data?.[0]?.period?.end ?? obj?.period_end ?? null;
+      // Already cancelled at the period's end: the invoice (a retried or late first one) extends the
+      // paid-until date and nothing else — the cancellation on record stands.
+      if (before === "cancelled") {
+        if (end) write(conversationId, { paid_until: Number(end) * 1000 }, now);
+        log({ stripe_webhook: type, conversation: conversationId, cancelled_kept: true });
+        return { ok: true, matched: true, conversationId };
+      }
       await markPaid(conversationId, {
         customerId: typeof obj.customer === "string" ? obj.customer : "",
         subscriptionId: typeof obj.subscription === "string" ? obj.subscription : "",

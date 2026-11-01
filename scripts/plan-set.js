@@ -8,7 +8,8 @@
 //
 // `free` is the grandfather status by hand (a friend let in after the ship date). `trial --sessions 0`
 // starts somebody over. `paid --until <date>` marks a payment taken outside Stripe. Lapsed / paid set
-// here do NOT hold or release their standing things — that follows on their next turn (plan.afterTurn)
+// here do NOT hold or release their standing things on the spot — that follows on their next turn
+// (plan.afterTurn releases what the paywall held once they are no longer lapsed, and holds on a lapse)
 // or on the next Stripe event; say so to whoever asked.
 import { pathToFileURL } from "node:url";
 import * as db from "../src/db.js";

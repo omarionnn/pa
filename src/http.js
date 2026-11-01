@@ -1309,6 +1309,8 @@ export async function stripeWebhookRequest({ rawBody, headers = {}, runtime = nu
   if (!event?.id || !event?.type) return { status: 400, body: { error: "no event id or type" } };
   const say = runtime?.say ? (c, text) => runtime.say(c, text) : null;
   const out = await plan.handleStripeEvent(event, { say, log });
+  // A 500 is the one answer that makes Stripe try again, which is what an event nothing acted on needs.
+  if (out.ok === false) return { status: 500, body: { error: "not handled; try again" } };
   return { status: 200, body: { ok: true, ...(out.duplicate ? { duplicate: true } : {}), ...(out.matched === false ? { matched: false } : {}) } };
 }
 

@@ -15,7 +15,11 @@ What a person sees:
   fired reminders and events, zeros left out), the ask ($24.99 a month, keeps everything, cancel by
   text), the pay link alone on the last line. No bubbles without a link: with no Stripe configured the
   ask stays owed (`ask_due`) and is tried on the next turn.
-- **Lapsed** (26th session on, unpaid): questions are answered; anything that acts is refused at the tool
+- **The ask always comes before a lapse.** A session at or past the 25th with the ask never sent owes it
+  (this is how somebody whose sessions were counted while the switch was off is treated: asked on their
+  first session under the paywall, not cut off), and only a NEW session after the ask has gone lapses
+  them. No link to pay with (Stripe not configured) → the ask stays owed → nobody lapses.
+- **Lapsed** (the session after the ask, unpaid): questions are answered; anything that acts is refused at the tool
   (`tools.lapsedBlocked` → `plan.gate`): the first refusal in a session carries the one line and the
   link for the model to say, later ones only "can't do that part". Their standing things are held
   (`pause.pauseAll`, recorded in `plan.held_at`; a pause they asked for themselves is left alone), timers
@@ -40,7 +44,7 @@ asking Stripe for `cancel_at_period_end=true` and saying the date, the `/ops` ta
 
 ## Offline
 
-`test/paywall.test.js` (21): the 29-vs-31-minute gap, the 25th trigger exactly once (unit, and down the
+`test/paywall.test.js` (23): the 29-vs-31-minute gap, the 25th trigger exactly once (unit, and down the
 real Router with a FakeChannel: the 25th turn ran before the three bubbles), grandfather (operator, test
 number, pre-ship account), `owner` and `off` modes, the ship-time rule, lapsed gating (which tools, once
 a session), hold/release including a pause of their own left alone, webhook reject (missing / wrong /

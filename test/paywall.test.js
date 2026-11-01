@@ -103,6 +103,15 @@ function fakeRouter() {
   return { sent, send: async (m) => { sent.push(m); return { ok: true }; } };
 }
 const noSleep = async () => {};
+/** 25 sessions, the ask gone after the 25th, then a 26th: lapsed. The way it really happens. */
+async function lapse(c, router = fakeRouter()) {
+  sessions(c, 25);
+  const out = await plan.afterTurn({ conversationId: c, router, sleep: noSleep });
+  assert.equal(out.did, "asked");
+  clock.skip(31 * MIN); accounts.countUse(c, "turn");
+  assert.equal(plan.status(c).status, "lapsed");
+  return router;
+}
 const ctx = (c) => ({ conversationId: c, messages: [] });
 const sign = (raw, { t = Math.floor(clock.now() / 1000), secret = process.env.STRIPE_WEBHOOK_SECRET } = {}) => ({ "stripe-signature": stripe.sign(raw, secret, t), "content-type": "application/json" });
 const deliver = (event, opts = {}) => { const raw = JSON.stringify(event); return stripeWebhookRequest({ rawBody: raw, headers: opts.headers ?? sign(raw, opts), runtime: opts.runtime ?? null }); };
@@ -126,7 +135,7 @@ test("a session is a stretch of chat: 29 minutes later is the same one, 31 minut
   assert.deepEqual(plan.status(c), { status: "trial", applies: true, sessions_used: 2, left: 23, paid_until: null, trial_sessions: 25 });
 });
 
-test("the 25th session owes the ask, exactly once; the 26th lapses", () => {
+test("the 25th session owes the ask, exactly once; the next session after the ask has gone lapses", async () => {
   const { c } = newcomer();
   sessions(c, 24);
   assert.equal(plan.row(c).ask_due, 0);
@@ -135,9 +144,30 @@ test("the 25th session owes the ask, exactly once; the 26th lapses", () => {
   assert.equal(plan.row(c).ask_due, 1);
   assert.equal(plan.status(c).status, "trial", "the 25th session is still free");
   assert.match(plan.note(c), /last free session/);
+  // The ask never went (say, no link yet): nobody is cut off before they have been asked.
+  clock.skip(31 * MIN); accounts.countUse(c, "turn");
+  assert.equal(plan.status(c).status, "trial", "no ask gone, no lapse");
+  assert.equal(plan.row(c).ask_due, 1, "still owed");
+  // The ask goes; the session after that lapses.
+  assert.equal((await plan.afterTurn({ conversationId: c, router: fakeRouter(), sleep: noSleep })).did, "asked");
   clock.skip(31 * MIN); accounts.countUse(c, "turn");
   assert.equal(plan.status(c).status, "lapsed");
   assert.ok(plan.blocked(c));
+});
+
+test("sessions counted while the switch was off: the first session under the paywall gets the ask, not a cut-off", async () => {
+  process.env.REASON_PAYWALL = "off";
+  const { c } = newcomer();
+  sessions(c, 40);
+  process.env.REASON_PAYWALL = "on";
+  clock.skip(31 * MIN); accounts.countUse(c, "turn");
+  assert.equal(plan.status(c).status, "trial", "asked first");
+  assert.equal(plan.row(c).ask_due, 1);
+  const router = fakeRouter();
+  assert.equal((await plan.afterTurn({ conversationId: c, router, sleep: noSleep })).did, "asked");
+  assert.equal(router.sent.length, 3);
+  clock.skip(31 * MIN); accounts.countUse(c, "turn");
+  assert.equal(plan.status(c).status, "lapsed");
 });
 
 // ---------------------------------------------------------------- the bubbles
@@ -244,14 +274,13 @@ test("REASON_PAYWALL=owner reaches only the operator, and skips his grandfather 
     assert.equal(plan.status(c).status, "off", "everyone else is untouched");
     assert.ok(!plan.blocked(c));
     assert.equal(plan.opsLabel(c), null);
-    sessions(OMARI, 26);
-    assert.equal(plan.status(OMARI).status, "lapsed");
+    await lapse(OMARI);
     assert.ok(toolsFor(OMARI).some(t => t.name === "subscription_show"));
   } finally { process.env.REASON_PAYWALL = "on"; }
 });
 
-test("REASON_PAYWALL=off: sessions are counted, nothing else", async () => {
-  process.env.REASON_PAYWALL = "off";
+for (const off of ["off", undefined]) test(`REASON_PAYWALL=${off ?? "(unset)"}: sessions are counted, nothing else`, async () => {
+  if (off === undefined) delete process.env.REASON_PAYWALL; else process.env.REASON_PAYWALL = off;
   try {
     const { c } = newcomer();
     sessions(c, 27);
@@ -286,7 +315,7 @@ test("the ship time: the env wins; otherwise it is written once, the first time 
 
 test("lapsed: plain tools still run; acting tools are refused with the line and the link once a session, then only 'can't'", async () => {
   const { c } = newcomer();
-  sessions(c, 26);
+  await lapse(c);
   assert.ok(plan.blocked(c));
   assert.match(plan.note(c), /PLAN: their 25 free sessions are used up/);
   // Reading and talking stay.
@@ -352,9 +381,12 @@ test("a pause they asked for themselves before lapsing is left alone by the hold
   const { c } = newcomer();
   sessions(c, 3);
   pause.pauseAll({ conversationId: c, said: "pause everything" });
-  clock.skip(31 * MIN); sessions(c, 23); // 26 sessions in all
+  clock.skip(31 * MIN); sessions(c, 22); // 25 in all
+  const router = fakeRouter();
+  await plan.afterTurn({ conversationId: c, router, sleep: noSleep });
+  clock.skip(31 * MIN); accounts.countUse(c, "turn");
   assert.ok(plan.blocked(c));
-  await plan.afterTurn({ conversationId: c, router: fakeRouter(), sleep: noSleep });
+  await plan.afterTurn({ conversationId: c, router, sleep: noSleep });
   assert.equal(plan.row(c).held_at, -1, "noted: not ours to release");
   await plan.markPaid(c, { subscriptionId: "sub_x" });
   assert.ok(pause.isPaused(c), "their own pause stands");
@@ -386,8 +418,8 @@ test("the webhook refuses a missing, wrong or stale signature, and a body that w
 
 test("paid: checkout.session.completed marks them paid, releases what was held, says one line — and a redelivery does nothing twice", async () => {
   const { c } = newcomer();
-  sessions(c, 26);
-  await plan.afterTurn({ conversationId: c, router: fakeRouter(), sleep: noSleep });
+  const router = await lapse(c);
+  await plan.afterTurn({ conversationId: c, router, sleep: noSleep });
   assert.ok(pause.isPaused(c));
   const { s, runtime } = said();
   const r = await deliver(checkoutDone(c), { runtime });
@@ -465,6 +497,10 @@ test("subscription_cancel stops the renewal at the period's end through Stripe a
   const show = await runTool("subscription_show", {}, ctx(c));
   assert.equal(show.status, "cancelled");
   assert.equal(show.access_until, out.access_until);
+  // A late or retried invoice after the cancel extends the date and keeps the cancellation on record.
+  await deliver({ id: "evt_late", type: "invoice.paid", data: { object: { object: "invoice", customer: "cus_1", subscription: "sub_1", lines: { data: [{ period: { end: periodEnd + 86_400 } }] } } } });
+  assert.equal(plan.status(c).status, "cancelled");
+  assert.equal(plan.row(c).paid_until, (periodEnd + 86_400) * 1000);
   // Twice: already cancelled, no second call to Stripe.
   const before = stripeCalls.length;
   const twice = await runTool("subscription_cancel", {}, ctx(c));
@@ -513,8 +549,9 @@ test("with no Stripe set up the ask is held for a later turn rather than sent wi
 test("scripts/plan-set.js sets a plan by hand, dry run first", async () => {
   const { run } = await import("../scripts/plan-set.js");
   const { c, num } = newcomer();
-  sessions(c, 26);
-  assert.equal(plan.status(c).status, "lapsed");
+  const router = await lapse(c);
+  await plan.afterTurn({ conversationId: c, router, sleep: noSleep });
+  assert.ok(pause.isPaused(c), "held");
   const dry = run([num, "free"]);
   assert.equal(dry.dryRun, true);
   assert.equal(plan.status(c).status, "lapsed", "a dry run changes nothing");
@@ -522,6 +559,11 @@ test("scripts/plan-set.js sets a plan by hand, dry run first", async () => {
   assert.equal(done.dryRun, false);
   assert.equal(plan.status(c).status, "free");
   assert.ok(!plan.blocked(c));
+  // Their held things come back on the next turn, not by magic in the script.
+  assert.ok(pause.isPaused(c));
+  assert.equal((await plan.afterTurn({ conversationId: c, router, sleep: noSleep })).did, "released");
+  assert.ok(!pause.isPaused(c));
+  assert.equal(plan.row(c).held_at, null);
   run([c, "trial", "--sessions", "0", "--apply"]);
   assert.equal(plan.row(c).sessions_used, 0);
   assert.equal(plan.status(c).status, "trial");

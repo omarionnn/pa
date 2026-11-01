@@ -1038,7 +1038,7 @@ export class Runtime extends EventEmitter {
    */
   mayInterrupt(conversationId) {
     // Past the free trial and unpaid (src/plan.js): nothing Reason starts goes out until they pay.
-    if (plan.blocked(conversationId)) { this.log({ proactive_held_lapsed: conversationId }); return false; }
+    if (plan.blocked(conversationId)) { this.log({ proactive_held: conversationId, why: "trial over, unpaid" }); return false; }
     const cap = accounts.withinCap(conversationId, "proactive");
     if (!cap.ok) this.log({ proactive_capped: conversationId, used: cap.used, limit: cap.limit });
     return cap.ok;
