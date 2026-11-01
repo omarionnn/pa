@@ -109,6 +109,9 @@ import { join } from "node:path";
 import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
 // Stamps (REASON_WEB_DAILY, or everyone at REASON_STAMPS_ALL): awarded as errands finish (src/stamps.js listens on db.completionBus once loaded).
 import * as stamps from "./stamps.js";
+// The free trial and the subscription (REASON_PAYWALL): Stripe's webhook and the two pages it sends people back to.
+import * as plan from "./plan.js";
+import * as stripeapi from "./stripe.js";
 import { config, stamp, clock } from "./config.js";
 
 const MAX_BODY = 1_000_000;
@@ -801,6 +804,23 @@ export function createServer({ router, runtime, log = () => {} }) {
         return send(out.status, out.body);
       }
 
+      // ---------- Stripe pushing back: somebody paid for Reason, renewed, cancelled (src/plan.js) ----------
+      if (req.method === "POST" && url.pathname === "/stripe/webhook") {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = await stripeWebhookRequest({ rawBody, headers: req.headers, runtime, log });
+        return send(out.status, out.body);
+      }
+      // Where Stripe sends them back after paying, or after changing their mind. Said once, plainly;
+      // the thread is where the real confirmation lands (the webhook's line).
+      if (req.method === "GET" && (url.pathname === "/pay/done" || url.pathname === "/pay/back")) {
+        res.writeHead(200, HTML());
+        return res.end(brandedPage(url.pathname === "/pay/done" ? "You're all set" : "No charge",
+          url.pathname === "/pay/done"
+            ? `<h1>You're all set.</h1><p>Thank you. Reason will text you in a moment — everything picks up right where it was.</p>`
+            : `<h1>Nothing was charged.</h1><p>No worries. Whenever you want to keep going, just text Reason and ask for the link again.</p>`));
+      }
+
       // ---------- AgentCard pushing back: a card landed, a payment was approved ----------
       if (req.method === "POST" && url.pathname === "/agentcard/webhook") {
         const rawBody = await readBody(req);
@@ -1270,6 +1290,26 @@ export async function parallelWebhookRequest({ rawBody, headers = {}, runtime = 
 
   log({ parallel_webhook: type, ignored: true });
   return { status: 200, body: { ok: true, ignored: true } };
+}
+
+/**
+ * POST /stripe/webhook. The signature first (STRIPE_WEBHOOK_SECRET over the raw body, src/stripe.js),
+ * then the event id — a redelivered event is answered 200 and does nothing twice — then src/plan.js
+ * acts on it. A 401 for a bad signature and a 400 for a body that will not read; everything else is a
+ * 200, because Stripe retries anything else for days and the row already says what happened.
+ */
+export async function stripeWebhookRequest({ rawBody, headers = {}, runtime = null, log = () => {} } = {}) {
+  const v = stripeapi.verifyWebhook({ rawBody, headers, nowMs: clock.now() });
+  if (!v.ok) {
+    log({ stripe_webhook_rejected: v.why });
+    return { status: 401, body: { error: `rejected: ${v.why}` } };
+  }
+  let event;
+  try { event = JSON.parse(rawBody); } catch { return { status: 400, body: { error: "bad json" } }; }
+  if (!event?.id || !event?.type) return { status: 400, body: { error: "no event id or type" } };
+  const say = runtime?.say ? (c, text) => runtime.say(c, text) : null;
+  const out = await plan.handleStripeEvent(event, { say, log });
+  return { status: 200, body: { ok: true, ...(out.duplicate ? { duplicate: true } : {}), ...(out.matched === false ? { matched: false } : {}) } };
 }
 
 export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime = null, log = () => {} } = {}) {

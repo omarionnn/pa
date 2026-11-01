@@ -31,6 +31,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as db from "./db.js";
 import { spendCheck, fallbackCheck, callCapCheck } from "./spend.js";
 import * as accounts from "./accounts.js";
+import { opsLabel as planLabel } from "./plan.js";
 import * as agentcard from "./agentcard.js";
 import { config, clock, callbackUrl } from "./config.js";
 import { fli, LEDGER_ID as FLI_LEDGER_ID } from "./fli.js";
@@ -454,6 +455,9 @@ function peopleRows({ now, day }) {
     operator: !!a.is_operator,
     last_seen_at: a.last_seen_at ?? null,
     turns_today: turns[a.conversation_id] ?? 0,
+    // Where they stand on Reason's own plan (src/plan.js): "trial 3/25", "free", "paid", "lapsed",
+    // "cancelled · until …". Null while REASON_PAYWALL is off, and the page shows nothing.
+    plan: planLabel(a.conversation_id, now),
     open_tasks: openTasks[a.conversation_id] ?? 0,
     texts_owed: owed[a.conversation_id] ?? 0,
     week: week[a.conversation_id] ?? [0, 0, 0, 0, 0, 0, 0],

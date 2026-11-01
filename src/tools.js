@@ -100,6 +100,7 @@ import { handBackNeeded, madeFrom, fromWalk, walkNote } from "./furthest.js";
 import { activityBlocks, RECENTLY_MS } from "./activity.js";
 import { letGo } from "./letgo.js";
 import * as pause from "./pause.js";
+import * as plan from "./plan.js";
 import * as undo from "./undo.js";
 import { reverseGeocode } from "./places.js";
 import * as ops from "./ops.js";
@@ -364,9 +365,35 @@ export function toolsFor(conversationId) {
     && choiceToolVisible(t.name, conversationId)
     && shopToolVisible(t.name, conversationId)
     && agentcardToolVisible(t.name, conversationId)
-    && todoToolVisible(t.name, conversationId))
+    && todoToolVisible(t.name, conversationId)
+    && planToolVisible(t.name, conversationId))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
     .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
+}
+
+// Reason's own plan (src/plan.js, REASON_PAYWALL): shown only where the paywall reaches this person and
+// Reason is not free for them. Off, nobody's model is told these exist.
+export const PLAN_TOOLS = new Set(["subscription_show", "subscription_cancel"]);
+export function planToolVisible(name, conversationId) {
+  if (!PLAN_TOOLS.has(name)) return true;
+  const st = plan.status(conversationId);
+  return st.applies && st.status !== "free" && st.status !== "off";
+}
+
+// What is refused while somebody is past the free trial and unpaid (src/plan.js gate): everything that
+// leaves the machine or needs a yes, plus what makes or schedules a thing of theirs. Reading, remembering,
+// talking and their own plan's two tools stay. A tool added later that reaches out is caught by
+// OUTSIDE_WORLD / ALWAYS_NEEDS_CONFIRMATION; one that only schedules has to be named here.
+const LAPSED_EXTRA = new Set(["timer_set", "series_pause", "series_resume", "resume_everything", "watch_set", "deal_watch_set", "task_start", "call_errand_start",
+  "page_create", "document_create", "notice_send", "commitment_set", "uber_request", "store_checkout", "shop_handoff", "purchase", "purchase_confirm",
+  "flight_book", "flight_checkin_start", "research", "gmail_draft", "calendar_create", "calendar_change", "apple_calendar_create", "apple_calendar_change",
+  "x_post", "x_reply", "x_dm", "drive_create", "drive_upload", "drive_share", "github_issue_create", "github_issue_comment", "spotify_playlist_create", "spotify_send_link", "important_add"]);
+const LAPSED_READS = new Set(["event_list", "event_guests", "shop_status", "browser_close"]);
+export function lapsedBlocked(name) {
+  const n = String(name);
+  if (LAPSED_READS.has(n) || PLAN_TOOLS.has(n)) return false;
+  return OUTSIDE_WORLD.has(n) || ALWAYS_NEEDS_CONFIRMATION.has(n) || LAPSED_EXTRA.has(n) || TODO_TOOLS.has(n)
+    || /^event_/.test(n) || /^(shop_|store_|browser_)/.test(n);
 }
 
 // How a flight search finishes. Off (the default): search only, and the Google Flights link is the one
@@ -546,7 +573,7 @@ export const SAFE_WHILE_SCREENED = new Set([
   "goal_list",
   // Events: reading your own event list and your own guest list reaches nobody.
   "event_list", "event_guests",
-  "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
+  "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today", "subscription_show",
   // What was bought, read off their own purchase rows: no AgentCard call, nothing bought or changed.
   "purchases_recent",
   // Their own invite links and counts, read off their own rows. Making, canceling and requesting
@@ -2326,6 +2353,9 @@ export const CAPABILITIES = [
   { name: "saved_signins", status: "live", what: "keep a site signed in" },
   { name: "site_errands", status: "live", what: "do a thing on a real site" },
   { name: "spending_cap", status: "live", what: "a limit on what can be committed in a day" },
+  // Rewritten by capabilitiesNow() from REASON_PAYWALL and this person's own plan row (src/plan.js):
+  // absent while the switch is off or for somebody Reason is free for.
+  { name: "your_plan", status: "live", what: `Reason's own plan: ${plan.TRIAL_SESSIONS} free sessions, then ${plan.PRICE_LINE}; cancel any time by text (subscription_show, subscription_cancel)` },
   { name: "spotify", status: "not connected", what: "Spotify" },
   { name: "github", status: "not connected", what: "GitHub" },
   { name: "x", status: "not connected", what: "X (Twitter) — read mentions, timeline, search, bookmarks, and draft posts, replies, DMs for them to approve" },
@@ -2442,7 +2472,7 @@ export function wontDoFor(conversationId) {
  */
 export function capabilitiesNow({ channels = null, calls = null, conversationId = config.ownerConversation, ownerName = null } = {}) {
   const who = ownerName ?? accounts.ownerOf(conversationId).name;
-  const out = CAPABILITIES.map(c => ({ ...c }));
+  const out = CAPABILITIES.map(c => ({ ...c })).filter(c => c.name !== "your_plan" || planToolVisible("subscription_show", conversationId));
   // Read from config every time rather than frozen into the list, because the answer to "how long
   // do you keep my voice notes" is two environment variables and an install can change them.
   // Retention, plus the three things somebody asks about their data that are not about a timer: what
@@ -4608,6 +4638,17 @@ export const tools = [
   {
     name: "caps_show",
     description: "The spending limits they set, what has been committed this month against the monthly one, and what is left. This answers 'what are my limits', 'how much have I spent', 'what's my cap'. Never answer those from memory. It also says plainly when they have not set any yet.",
+    input_schema: { type: "object", properties: {} },
+  },
+  // ---------- Reason's own plan: the free trial and the $24.99/month subscription (src/plan.js) ----------
+  {
+    name: "subscription_show",
+    description: `Where this person stands with REASON'S OWN plan — the free trial (${plan.TRIAL_SESSIONS} sessions) and the ${plan.PRICE_LINE} subscription: sessions used and left, whether they are paying, the next bill date, or the date access ends after a cancellation. Call it when they ask about their trial, their plan, what Reason costs, when they are billed, or whether they are still paying. Never answer those from memory. This is about paying for Reason — NOT their own merchant subscriptions (Netflix, a gym): those are subscription_list and subscription_cancel_start.`,
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "subscription_cancel",
+    description: `Cancel this person's REASON subscription when they say they want to stop paying for Reason, cancel their plan, or not be charged again. It stops the renewal at the end of the paid period through Stripe and comes back with the date access ends — say that date back in one line, no guilt and no offer to stay. Nothing is deleted. If they are on the free trial, or Reason is free for them, it says so and nothing happens. NOT for a merchant subscription of theirs (that is subscription_cancel_start).`,
     input_schema: { type: "object", properties: {} },
   },
   // ---------- AgentCard: buying things from real shops ----------
@@ -6931,6 +6972,8 @@ const S = {
   }),
   pattern_still: z.object({ ids: z.array(z.number().int()).max(40) }),
   caps_show: z.object({}),
+  subscription_show: z.object({}),
+  subscription_cancel: z.object({}),
   vault_enroll: z.object({}),
   purchase: z.object({
     ask: z.string().min(1).max(2000),
@@ -9139,6 +9182,19 @@ async function runToolInner(name, rawInput, ctx) {
   // nobody is ever asked to approve a plan that cannot exist here.
   if (TODO_TOOLS.has(name) && !todoToolVisible(name, c)) {
     return { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
+  }
+  // Reason's own plan tools where the paywall does not reach this person: nothing to show or cancel.
+  if (PLAN_TOOLS.has(name) && !planToolVisible(name, c)) {
+    return { ok: false, blocked: "not_available", error: "Reason is free here — there is no plan to show or cancel. If they asked about a merchant subscription of theirs, that is subscription_list / subscription_cancel_start." };
+  }
+  // Past the free trial and unpaid (src/plan.js): anything that acts is refused here, before any yes
+  // is collected for it, with the one line (once a session) and the link for the model to say.
+  if (lapsedBlocked(name)) {
+    const refusal = await plan.gate(c, name, { log: ctx.log ?? (() => {}) });
+    if (refusal) {
+      if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) });
+      return refusal;
+    }
   }
   if (FLIGHT_BOOKING_TOOLS.has(name) && !flightbook.bookingEnabled(c)) {
     return { ok: false, blocked: "not_available", error: "Reason doesn't book flights here. Hand over the Google Flights link from the search so they can book it themselves, and do not mention booking." };
@@ -12201,6 +12257,23 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: `These are ${me.name}'s own limits on what you may do without asking. Read them out as the two numbers plus what is left this month.`
           + ` Their DAILY limit (spent today, the limit, what is left) is in \`today\`; it changes with spend_limit_set or in Settings → Shopping.`,
       };
+    }
+
+    // ---------- Reason's own plan (src/plan.js) ----------
+    case "subscription_show": {
+      const v = plan.view(c);
+      return {
+        ok: true, ...v,
+        note: v.status === "trial"
+          ? `${me.name} is on the free trial: ${v.sessions_used} of ${v.trial_sessions} sessions used, ${v.sessions_left} left. A session is a stretch of chat (a new one after 30 quiet minutes). After that it is ${v.price}; cancel any time by text. Say only what they asked; never "unlock" or "upgrade".`
+          : v.status === "paid" ? `Paying ${v.price}. Next bill ${v.next_bill}. Cancel any time by text (subscription_cancel), and everything keeps working until the period ends.`
+            : v.status === "cancelled" ? `Cancelled. Nothing more is charged; everything keeps working until ${v.access_until}, then holds. They can start again any time.`
+              : v.status === "lapsed" ? `Their free sessions are used up and they have not subscribed; reminders and check-ins are held until they do. ${v.price}, cancel any time by text.`
+                : `Reason is free for ${me.name}, for good. Nothing to pay, nothing to cancel.`,
+      };
+    }
+    case "subscription_cancel": {
+      return await plan.cancel(c, { log: ctx.log ?? (() => {}) });
     }
 
     // ---------- AgentCard: a card in their own vault, and buying things with it ----------

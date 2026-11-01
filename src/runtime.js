@@ -41,6 +41,7 @@ import { ownerUrl } from "./pages/access.js";
 import { sheetView, tasteView, whyView } from "./sheet.js";
 import * as harm from "./harm.js";
 import { isPaused } from "./pause.js";
+import * as plan from "./plan.js";
 import * as landed from "./landed.js";
 import * as subs from "./subscriptions.js";
 import { readOutage, OutageError, MAX_REHOLDS } from "./down.js";
@@ -1036,6 +1037,8 @@ export class Runtime extends EventEmitter {
    * person costs nothing.
    */
   mayInterrupt(conversationId) {
+    // Past the free trial and unpaid (src/plan.js): nothing Reason starts goes out until they pay.
+    if (plan.blocked(conversationId)) { this.log({ proactive_held_lapsed: conversationId }); return false; }
     const cap = accounts.withinCap(conversationId, "proactive");
     if (!cap.ok) this.log({ proactive_capped: conversationId, used: cap.used, limit: cap.limit });
     return cap.ok;
@@ -1128,6 +1131,9 @@ export class Runtime extends EventEmitter {
     // the same pass has finished, and another sweep may have dealt with this one since.
     const t = db.getTimer(due.conversation_id, due.id);
     if (!t || t.fired_at || t.cancelled_at) return false;
+    // Lapsed on the free trial (src/plan.js): their reminders and calls wait, unfired, and run on the
+    // first sweep after they pay — not dropped, so nothing they set up is lost to the hold.
+    if (plan.blocked(t.conversation_id)) return false;
 
     // The proactive ceiling is for things Reason starts. A call they asked for at a time is not
     // one of those, and a wake-up call quietly dropped because the day's proactive texts were

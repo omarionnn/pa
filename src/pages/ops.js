@@ -409,7 +409,8 @@ function peopleSection(people, now) {
   const day = 24 * 60 * 60 * 1000;
   const today = sorted.filter(p => p.last_seen_at && now - p.last_seen_at < day).length;
   const rows = sorted.map(p => {
-    const tags = `${p.operator ? `<span class="tag">you</span>` : ""}${p.state && p.state !== "active" ? `<span class="tag">${esc(p.state)}</span>` : ""}`;
+    const tags = `${p.operator ? `<span class="tag">you</span>` : ""}${p.state && p.state !== "active" ? `<span class="tag">${esc(p.state)}</span>` : ""}`
+      + (p.plan ? `<span class="tag plan">${esc(p.plan)}</span>` : "");
     const bits = [p.last_seen_at ? `active ${esc(ago(now - p.last_seen_at))} ago` : "never texted"];
     if (p.turns_today) bits.push(`${Number(p.turns_today)} turns today`);
     if (p.open_tasks) bits.push(`${Number(p.open_tasks)} open tasks`);

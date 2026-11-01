@@ -145,7 +145,7 @@ function nightShift(conversationId, at, extra = {}) {
 
 // ---------------------------------------------------------------- what counts as finished
 /** Every finished errand in a conversation, oldest first: `{ kind, id, at }` (done tasks, calls that got somewhere, orders placed). */
-function completions(conversationId) {
+export function completions(conversationId) {
   const out = [];
   for (const t of ALL("SELECT id, finished_at AS at FROM tasks WHERE conversation_id = ? AND state = 'done' AND finished_at IS NOT NULL", conversationId)) out.push({ kind: "task", id: t.id, at: t.at });
   for (const c of ALL("SELECT id, outcome_kind, COALESCE(ended_at, updated_at) AS at FROM calls WHERE conversation_id = ? AND outcome_kind <> ''", conversationId)) {
