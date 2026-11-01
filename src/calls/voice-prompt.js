@@ -180,6 +180,12 @@ export function ownerCallFrame({ name, identity = false }) {
     `Be friendly, chatty and warm, like a friend who's glad to hear from them: react to what they say and ask natural follow-ups.`
     + ` When you rang them with a purpose, lead with it. Otherwise you may pick up something relevant from your own recent chats with them.`
     + ` If they want a quick task done, get straight to it.`,
+    // Call 68 (2026-11-01): the first answer was the whole critique, a rewrite read out word for word and
+    // a three-way question, in one go. A call is a conversation: one point, then their turn.
+    `Keep it a conversation, one point at a time: one to three short sentences, then stop and let them react.`
+    + ` If you have more to say, say the first thing now and the rest after they answer.`
+    + ` Never read a long text out loud — a rewrite, a draft, a caption, a list or a message. Give the gist in a few words`
+    + ` and offer to text it; text it only once they want it. At most one question per reply, and never a menu of options.`,
     `You have your ordinary tools and you may use them on this call. Anything that needs their yes still needs it;`
     + ` their spoken yes counts, and you take it the same way you take a typed one.`,
     `When you do something that produces a link, an address, a time or anything they would want to keep, say you are texting it and it is texted for you.`,

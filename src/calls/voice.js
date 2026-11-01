@@ -330,9 +330,20 @@ export const LINE_IS_QUIET = `[The line is quiet — they have not said anything
   + ` and never ask whether they are there or can hear you.`
   + ` Otherwise stay quiet: call skip_turn and wait — never write NO_REPLY.]`;
 
-export function endOnTheirSide(messages = []) {
+/**
+ * Their own call: a "let me think" the voice said is a promise (call 68, 2026-11-01: it said "Hmm. Lemme
+ * have a think.", this turn skipped, and the line sat silent until he said "Hello").
+ */
+export const OWN_LINE_IS_QUIET = `[The line is quiet — they have not said anything new since your last words, and the turn is yours.`
+  + ` If your last words told them you were thinking it over or checking something, follow through now: one or two short`
+  + ` sentences — your take, or the question handed back to them. Never leave a "let me think" hanging.`
+  + ` If there is a task you were in the middle of, carry on with it in one short sentence. Do not repeat what you already said,`
+  + ` and never ask whether they are there or can hear you.`
+  + ` Otherwise stay quiet: call skip_turn and wait — never write NO_REPLY.]`;
+
+export function endOnTheirSide(messages = [], { own = false } = {}) {
   const out = [...messages];
-  if (out.length && out.at(-1)?.role === "assistant") out.push({ role: "user", content: LINE_IS_QUIET });
+  if (out.length && out.at(-1)?.role === "assistant") out.push({ role: "user", content: own ? OWN_LINE_IS_QUIET : LINE_IS_QUIET });
   return out;
 }
 
@@ -1634,7 +1645,7 @@ export async function* voiceTurn({
   // The first chunk of an OpenAI stream carries the role and nothing else.
   yield chunk({ role: "assistant" });
 
-  const messages = withCallRecord(endOnTheirSide(context.messages), db.callLookups(call));
+  const messages = withCallRecord(endOnTheirSide(context.messages, { own: context.kind === "owner" }), db.callLookups(call));
   // A line that opened silent and stayed silent: the platform hands the turn over with nothing from
   // either side yet, and the call model refuses a request with no messages in it.
   if (!messages.length) messages.push({ role: "user", content: LINE_OPENED });
@@ -1973,7 +1984,11 @@ export async function* voiceTurn({
       // Waiting. The platform stays silent; the budget is ours, because their silence timer measures
       // silence and hold music is audio. Out of budget, the call rings off politely rather than sitting
       // there — and that is an outcome of its own, not a failure.
-      if (system?.name === "skip_turn") {
+      // Only a call to somebody else holds. On their own call a skip is them talking with Reason and a
+      // pause in it, not a hold (call 68, 2026-11-01: "waiting for Omari to answer" started a hold clock).
+      if (system?.name === "skip_turn" && context.kind === "owner") {
+        log({ voice_own_call_skip: call.id, reason: String(system.input?.reason ?? "").slice(0, 60) });
+      } else if (system?.name === "skip_turn") {
         const wait = hold.noteWaiting(call, { reason: String(system.input?.reason ?? ""), log });
         if (!wait.wait) {
           db.updateCall(call.conversation_id, call.id, { outcome_kind: "hold_gave_up", outcome: wait.why });
