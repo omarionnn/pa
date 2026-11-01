@@ -159,7 +159,7 @@ export function status(conversationId, now = clock.now()) {
   const r = row(conversationId);
   const used = r?.sessions_used ?? 0;
   // Extended: past the 25th on the trial with the ask neither owed nor gone — the win rule is holding it.
-  const extended = !!r && r.status === "trial" && used >= TRIAL_SESSIONS && !r.asked_at && !r.ask_due;
+  const extended = !!r && r.status === "trial" && used >= TRIAL_SESSIONS && used < TRIAL_MAX_SESSIONS && !r.asked_at && !r.ask_due;
   const base = { sessions_used: used, left: Math.max(0, TRIAL_SESSIONS - used), paid_until: r?.paid_until ?? null, trial_sessions: TRIAL_SESSIONS, extended: false };
   if (!appliesTo(conversationId)) return { status: "off", applies: false, ...base };
   if (grandfathered(conversationId) || r?.status === "free") return { status: "free", applies: true, ...base };
@@ -205,9 +205,23 @@ export function noteTurn(conversationId, now = clock.now()) {
   return { session_started: fresh, sessions_used: used, ask_due: !!fields.ask_due, extended, lapsed: fields.status === "lapsed" };
 }
 
-/** Has Reason done something real for them yet — any finished errand on the record (stamps.completions)? */
+/**
+ * Every finished errand on their record, oldest first: stamps.completions (a done task, a call that got
+ * somewhere, an AgentCard order) plus the orders placed through a store checkout (shop_runs, the live
+ * buy path since 2026-10-30), as `{ kind, id, at }`.
+ */
+export function wins(conversationId) {
+  const out = [];
+  try { out.push(...stamps.completions(conversationId)); } catch { /* the rows below still count */ }
+  try {
+    for (const r of q("SELECT run_id, COALESCE(stage_at, updated_at) AS at FROM shop_runs WHERE conversation_id = ? AND status = 'succeeded' AND stage = 'placed'").all(conversationId)) out.push({ kind: "purchase", id: r.run_id, at: r.at });
+  } catch { /* no checkouts on this install */ }
+  return out.sort((a, b) => a.at - b.at);
+}
+
+/** Has Reason done something real for them yet — at least one win on the record? */
 export function hasWin(conversationId) {
-  try { return stamps.completions(conversationId).length > 0; } catch { return false; }
+  return wins(conversationId).length > 0;
 }
 
 // ---------------------------------------------------------------- the link
@@ -246,13 +260,11 @@ export async function payLink(conversationId, { fetchImpl = globalThis.fetch, lo
 /** Plain human counts of what really got done, from the record. Zeros are left out. */
 export async function recapCounts(conversationId) {
   const counts = { calls: 0, orders: 0, tasks: 0, reminders: 0, events: 0 };
-  try {
-    for (const c of stamps.completions(conversationId)) {
-      if (c.kind === "call") counts.calls++;
-      else if (c.kind === "purchase") counts.orders++;
-      else if (c.kind === "task") counts.tasks++;
-    }
-  } catch { /* the counts below still stand */ }
+  for (const c of wins(conversationId)) {
+    if (c.kind === "call") counts.calls++;
+    else if (c.kind === "purchase") counts.orders++;
+    else if (c.kind === "task") counts.tasks++;
+  }
   try { counts.reminders = q("SELECT COUNT(*) AS n FROM timers WHERE conversation_id = ? AND fired_at IS NOT NULL AND call_goal IS NULL AND COALESCE(label, '') = ''").get(conversationId).n; } catch {}
   try { counts.events = q("SELECT COUNT(*) AS n FROM events WHERE organizer_conversation_id = ?").get(conversationId).n; } catch {}
   return counts;
@@ -580,7 +592,7 @@ export async function cancel(conversationId, { fetchImpl = globalThis.fetch, log
   const st = status(conversationId, now);
   const r = row(conversationId);
   if (st.status === "free") return { ok: false, error: "Reason is free for them, for good — there is no subscription to cancel. Say that, warmly." };
-  if (st.status === "trial") return { ok: false, error: `They are on the free trial (${st.sessions_used} of ${TRIAL_SESSIONS} sessions used) and have never subscribed, so there is nothing to cancel and nothing will be charged. Say that.` };
+  if (st.status === "trial") return { ok: false, error: `They are on the free trial (${st.sessions_used} of ${st.trial_sessions} sessions used) and have never subscribed, so there is nothing to cancel and nothing will be charged. Say that.` };
   if (st.status === "cancelled") return { ok: true, already: true, access_until: when(st.paid_until, conversationId), note: "Already cancelled. Nothing more will be charged; everything keeps working until access_until. Say that in one line." };
   if (!r?.stripe_subscription_id) return { ok: false, error: "No subscription id is on record here, so it cannot be cancelled from this side. Say the person running Reason will sort it, and that nothing further is charged until it is." };
   const out = await stripe.cancelAtPeriodEnd(r.stripe_subscription_id, { fetchImpl });

@@ -9,7 +9,8 @@
 // `free` is the grandfather status by hand (a friend let in after the ship date). `trial --sessions 0`
 // starts somebody over. `--last-inbound none` forgets when they last texted, so their very next text
 // starts a new session (`trial --sessions 24 --last-inbound none` puts the 25th on their next text; the
-// output's `win` says whether the ask will go then or the trial runs on — src/plan.js, the win rule). `paid --until <date>` marks a payment taken outside Stripe. Lapsed / paid set
+// output's `win` says whether the ask will go then or the trial runs on — src/plan.js, the win rule).
+// `trial --sessions N` with N under 30 also forgets that the ask went, so it can be watched again. `paid --until <date>` marks a payment taken outside Stripe. Lapsed / paid set
 // here do NOT hold or release their standing things on the spot — that follows on their next turn
 // (plan.afterTurn releases what the paywall held once they are no longer lapsed, and holds on a lapse)
 // or on the next Stripe event; say so to whoever asked.

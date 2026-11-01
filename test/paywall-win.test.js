@@ -50,6 +50,7 @@ process.env.STRIPE_API_BASE = `http://127.0.0.1:${fake.address().port}`;
 
 const plan = await import("../src/plan.js");
 const accounts = await import("../src/accounts.js");
+await import("../src/shopconnect.js"); // the shop_runs table (an order placed there is a win)
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
 
@@ -64,7 +65,7 @@ after(() => { fake.close(); rmSync(dir, { recursive: true, force: true }); });
 beforeEach(() => {
   clock.reset();
   config.autoAdmit = true;
-  db.db.exec("DELETE FROM accounts; DELETE FROM plan; DELETE FROM stripe_events; DELETE FROM usage; DELETE FROM conversations; DELETE FROM threads; DELETE FROM inbound_messages; DELETE FROM outbox; DELETE FROM timers; DELETE FROM tasks; DELETE FROM calls; DELETE FROM ops_state WHERE k = 'paywall_ship_ts';");
+  db.db.exec("DELETE FROM accounts; DELETE FROM plan; DELETE FROM stripe_events; DELETE FROM usage; DELETE FROM conversations; DELETE FROM threads; DELETE FROM inbound_messages; DELETE FROM outbox; DELETE FROM timers; DELETE FROM tasks; DELETE FROM calls; DELETE FROM shop_runs; DELETE FROM ops_state WHERE k = 'paywall_ship_ts';");
   db.upsertAccount({ conversationId: OMARI, channel: "fake", address: MASTER, name: "Omari", isOperator: true });
 });
 
@@ -106,6 +107,34 @@ test("what counts as a win: nothing on the record is no win; a done task or an a
   taskDone(other);
   assert.equal(plan.hasWin(other), true);
   assert.equal(plan.hasWin(newcomer().c), false, "somebody else's win is not theirs");
+  // An order placed through a store checkout (shop_runs, the live buy path) is a win too — and one
+  // still running is not.
+  const shopper = newcomer().c;
+  db.db.prepare("INSERT INTO shop_runs (run_id, conversation_id, store, item, mode, status, stage, stage_at, created_at, updated_at) VALUES ('run_open', ?, 'ulta', 'cerave', 'buy', 'running', 'in_progress', ?, ?, ?)").run(shopper, clock.now(), clock.now(), clock.now());
+  assert.equal(plan.hasWin(shopper), false);
+  db.db.prepare("INSERT INTO shop_runs (run_id, conversation_id, store, item, mode, status, stage, stage_at, created_at, updated_at) VALUES ('run_done', ?, 'ulta', 'cerave', 'buy', 'succeeded', 'placed', ?, ?, ?)").run(shopper, clock.now(), clock.now(), clock.now());
+  assert.equal(plan.hasWin(shopper), true);
+  assert.deepEqual(plan.wins(shopper).map(w => w.kind), ["purchase"]);
+});
+
+test("an order placed through a store checkout is the win that brings the ask at the 25th, and the first bubble says so", async () => {
+  const { c } = newcomer("Ama");
+  db.db.prepare("INSERT INTO shop_runs (run_id, conversation_id, store, item, mode, status, stage, stage_at, created_at, updated_at) VALUES ('run_a', ?, 'ulta', 'cerave', 'buy', 'succeeded', 'placed', ?, ?, ?)").run(c, clock.now(), clock.now(), clock.now());
+  sessions(c, 25);
+  const router = fakeRouter();
+  assert.equal((await after_(c, router)).did, "asked");
+  assert.equal(router.sent[0].text, "that's 25 chats between us, Ama. so far i've placed an order.");
+});
+
+test("a backlog past the 30th before any text under the switch: the label does not read as extended", () => {
+  process.env.REASON_PAYWALL = "off";
+  try {
+    const { c } = newcomer();
+    sessions(c, 40);
+    process.env.REASON_PAYWALL = "on";
+    assert.equal(plan.status(c).extended, false);
+    assert.equal(plan.opsLabel(c), "trial 40/25");
+  } finally { process.env.REASON_PAYWALL = "on"; }
 });
 
 test("a win before the 25th: the ask goes at the 25th, as before, counting 25 chats", async () => {
