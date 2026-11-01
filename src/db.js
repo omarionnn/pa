@@ -4478,6 +4478,11 @@ export function pendingReadyAt(conversationId) {
 }
 
 /** The newest message this conversation is holding, or null. Read only — nothing is claimed. */
+/** One held message by its handle, without taking it (the mid-turn read looks before it takes). */
+export function pendingByHandle(conversationId, externalId) {
+  return db.prepare("SELECT * FROM pending_inbound WHERE conversation_id = ? AND external_id = ? ORDER BY id LIMIT 1").get(conversationId, externalId) ?? null;
+}
+
 export function lastPendingInbound(conversationId) {
   return db.prepare("SELECT * FROM pending_inbound WHERE conversation_id = ? ORDER BY arrived_at DESC, id DESC LIMIT 1").get(conversationId) ?? null;
 }

@@ -141,17 +141,30 @@ test("call_place: a second call to a phone already ringing is handed into that c
   assert.ok(db.getCall(C, first.call_id).facts.includes("Night street one: strong hook"), "the new part is on the live call's row");
 });
 
-test("call_place: the same number on somebody else's live call is busy — refused, and nothing crosses over", async () => {
-  call({ conversationId: OTHER, toNumber: "+12125550123", isOwner: false, state: "in_progress", goal: "Ama's errand" });
+test("call_place: a person's own phone on somebody else's call is busy — refused, nothing crosses over; a business is not", async () => {
+  call({ conversationId: OTHER, toNumber: "+13105550000", isOwner: true, state: "ringing", goal: "Ama's own call about her locker" });
+  assert.equal(db.liveCallTo("+13105550000").conversation_id, OTHER);
   const calls = new FakeCallProvider();
-  const out = await tools.runTool("call_place", { to: "+12125550123", goal: "ask the hours", confirmation_id: 1 }, { conversationId: C, calls, confirmationId: 1 });
+  const out = await tools.runTool("call_place", { to: "+13105550000", goal: "ask Ama about dinner" }, { conversationId: C, calls, confirmationId: 1 });
   if (out.status === "line_busy") {
-    assert.doesNotMatch(JSON.stringify(out), /Ama/);
+    assert.doesNotMatch(JSON.stringify(out), /Ama|locker/);
     assert.equal(calls.placed.length, 0);
   } else {
     assert.equal(out.ok, false, "refused one way or another (the confirm gate comes first)");
   }
-  assert.equal(db.liveCallTo("+12125550123").conversation_id, OTHER);
+  call({ conversationId: OTHER, toNumber: "+12125550123", isOwner: false, state: "in_progress", provider: "elevenlabs", goal: "Ama's pharmacy errand" });
+  const shop = db.liveCallTo("+12125550123");
+  assert.equal(shop.conversation_id, OTHER, "the row is there…");
+});
+
+test("a GPT-Live row left 'in_progress' after its voice has gone does not block the next call", async () => {
+  const stale = call({ state: "in_progress" });
+  assert.equal(gl.isRunning(stale.id), false);
+  const calls = new FakeCallProvider();
+  const out = await tools.runTool("call_place", { to: "owner", goal: "call me back" }, { conversationId: C, calls });
+  assert.equal(out.ok, true, out.error);
+  assert.notEqual(out.status, "already_on_the_call");
+  assert.equal(calls.placed.length, 1);
 });
 
 test("liveCallTo: a call older than the platform cap is a crash, not a ringing phone", () => {
@@ -258,6 +271,11 @@ test("Reason's call turn is told why it rang, what it has, and the photos with t
   assert.equal(voice.placedCallNote({ ...row, is_owner: 0 }), "", "not on an errand");
 });
 
+test("chattier sign-offs are read as a possible goodbye (the small model still decides)", () => {
+  for (const t of ["Lovely talking too. Chat soon.", "Speak soon!", "Nice chatting, cheers.", "Bye! Talk soon."]) assert.equal(gl.soundsLikeFarewell(t), true, t);
+  for (const t of ["Let's chat about the captions.", "I'll speak to them tomorrow.", "Sure, go on."]) assert.equal(gl.soundsLikeFarewell(t), false, t);
+});
+
 // ---------- 3. honest about texts ----------
 
 test("'Just texted.' is a claim, and a result that says it with no send behind it never reaches the voice", () => {
@@ -266,7 +284,8 @@ test("'Just texted.' is a claim, and a result that says it with no send behind i
   const r = gl.withoutUnbackedSends("Sounds good. Just texted. Pick whichever one feels most like you.", ["end_call"]);
   assert.equal(r.dropped, 1);
   assert.doesNotMatch(r.text, /Just texted/);
-  assert.match(r.text, /^I'll text that over to you now\./);
+  assert.match(r.text, /^I'll text that to you\./);
+  assert.equal(gl.withoutUnbackedSends("I texted you the link earlier. Want me to resend it?", []).dropped, 0, "a send from before, said as such, stays");
   assert.equal(gl.withoutUnbackedSends("Just texted it.", ["message_send"]).dropped, 0, "a send that ran stands");
 });
 
@@ -278,7 +297,7 @@ test("call 67's ending: the unbacked 'Just texted.' is replaced before the voice
   await timers.advance(10);
   const said = live.of("session.commentary.append").find(e => e.delegation_id === "d1").content;
   assert.doesNotMatch(said, /Just texted/);
-  assert.match(said, /I'll text that over to you now/);
+  assert.match(said, /I'll text that to you\./);
 });
 
 test("a text to their own phone is not held for the caller check; a text to anybody else still is", () => {

@@ -45,7 +45,7 @@ import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } fr
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
 import { recordingNoteFor } from "./calls/inbound.js";
-import { PROVIDER as gptliveProvider, tellLive as gptliveTell, toldNote as gptliveToldNote, notePlace as gptliveNotePlace } from "./calls/gptlive.js";
+import { PROVIDER as gptliveProvider, tellLive as gptliveTell, toldNote as gptliveToldNote, notePlace as gptliveNotePlace, isRunning as gptliveRunning, gptliveFor as gptliveForConversation } from "./calls/gptlive.js";
 import { checkCallForPaymentDetails } from "./calls/payments.js";
 import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./calls/brief.js";
 import * as callErrand from "./calls/errand.js";
@@ -11121,7 +11121,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // and the row below, so two turns racing each other cannot both get past it. A call to this
       // number already placing, ringing or connected is told the new part instead of a second ring;
       // somebody else's call to it is only refused — nothing of theirs or ours crosses over.
-      const already = db.liveCallTo(to);
+      let already = db.liveCallTo(to);
+      // Somebody else's errand to the same business is not this call's business: a shop has many
+      // lines. Only a person's own phone is one line, whoever is ringing it.
+      if (already && already.conversation_id !== c && !toOwner && !Number(already.is_owner)) already = null;
+      // A GPT-Live row still marked connected after its call has gone (settle pending) is not a call.
+      if (already && already.provider === gptliveProvider && already.state === "in_progress" && !gptliveRunning(already.id)) already = null;
       if (already) {
         if (already.conversation_id !== c) {
           return { ok: false, status: "line_busy", error: "That number is on another call right now, so nothing was dialled. Say it's busy and offer to try again in a few minutes." };
@@ -11130,7 +11135,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         db.updateCall(c, already.id, { facts: JSON.stringify(facts) });
         // A GPT-Live call takes the note into its voice now or when its session starts; a row still
         // "placing" may not have been relabelled gptlive by its place() yet, so it is handed too.
-        const handed = (already.provider === gptliveProvider || already.state === "placing")
+        // Only a person's own GPT-Live call takes words into its voice; an errand's voice says only
+        // what Reason's call turn hands it, and ElevenLabs has no way in.
+        const handed = Number(already.is_owner) === 1 && (already.provider === gptliveProvider || (already.state === "placing" && gptliveForConversation(c)))
           && gptliveTell(already.id, gptliveToldNote({ goal: input.goal, facts: input.facts ?? [] }));
         (ctx.log ?? (() => {}))({ call_place_joined_live: already.id, state: already.state, handed });
         return {
@@ -11164,7 +11171,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (toOwner) recordingNoteFor({ conversationId: c, row, log: ctx.log ?? (() => {}) });
       // Roughly where they are, for the voice's small talk — only while they share their location
       // with Reason, and never waited on: a name that is not back before the voice starts is left out.
-      if (toOwner && row.provider === gptliveProvider) void roughPlaceFor(c, ctx).then(p => p && gptliveNotePlace(row.id, p)).catch(() => {});
+      if (toOwner && gptliveForConversation(c)) void roughPlaceFor(c, ctx).then(p => p && gptliveNotePlace(row.id, p)).catch(() => {});
 
       // Where this one call's outcome may be pushed back to. The token in it is this call's alone,
       // so a delivery that turns up knows which call it is about without anything in its body being
@@ -18194,9 +18201,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 }
 
 /**
- * A call_place input whose goal or facts are too long for the schema, made to fit without losing a
- * word: the goal keeps its first sentences up to 600 characters and the rest becomes facts; a fact
- * over 200 characters is split at word boundaries; past 20 facts the rest is cut to one last fact (4,000 characters is past what any call uses).
+ * A call_place input whose goal or facts are too long for the schema, made to fit: the goal keeps
+ * its first sentences up to 600 characters and the rest becomes facts; a fact over 200 characters is
+ * split at word boundaries; past 20 facts the rest is cut to one last fact (4,000 characters is past what any call uses).
  */
 export function fitCallBrief(raw) {
   if (!raw || typeof raw !== "object") return raw;

@@ -410,6 +410,8 @@ const CLAIM = new RegExp([
 
 // A send the words say happened: the verbs that need a send tool behind them in the same turn.
 const SENT_CLAIM = /\b(?:sent|texted|emailed|messaged)\b/i;
+// A send from before this turn, said as such, is true and stays: "I texted you the link earlier".
+const EARLIER = /\b(?:earlier|before|yesterday|this morning|last (?:night|week)|this afternoon)\b/i;
 const SENDS = /send|email|text|message|page_|picture|voice_note/;
 
 /**
@@ -421,10 +423,10 @@ export function withoutUnbackedSends(spoken, tools = []) {
   const text = String(spoken ?? "");
   if (!SENT_CLAIM.test(text) || (tools ?? []).some(n => SENDS.test(String(n)))) return { text, dropped: 0 };
   const sentences = text.match(/[^.!?…]+[.!?…]*\s*/g) ?? [text];
-  const kept = sentences.filter(x => !(SENT_CLAIM.test(x) && claimsDone(x)));
+  const kept = sentences.filter(x => !(SENT_CLAIM.test(x) && claimsDone(x) && !EARLIER.test(x)));
   const dropped = sentences.length - kept.length;
   if (!dropped) return { text, dropped: 0 };
-  return { text: ["I'll text that over to you now.", kept.join("").trim()].filter(Boolean).join(" "), dropped };
+  return { text: ["I'll text that to you.", kept.join("").trim()].filter(Boolean).join(" "), dropped };
 }
 
 /** Does this say something has been done? Exported for the tests. */
@@ -502,7 +504,9 @@ export async function readTurn(stream) {
 // The voice says its goodbyes itself, without delegating, so Reason's end_call never came. Now a
 // goodbye-sounding line of the voice's is the cue to ASK the small model whether the call is over —
 // this list only picks which lines are worth asking about; it never decides anything itself.
-const FAREWELL_HINT = /\b(?:bye|goodbye|take care|talk (?:to you )?(?:soon|later)|see (?:you|ya)|catch you|good ?night|have a (?:good|great|nice|lovely))\b/i;
+// Only a hint: the small model reads the ending (`judgeEnding`). Chattier own calls sign off more
+// ways — "Lovely talking too. Chat soon." went unread on a 2026-11-01 drive and the call stayed up.
+const FAREWELL_HINT = /\b(?:bye|goodbye|take care|(?:talk|chat|speak) (?:to you )?(?:soon|later)|see (?:you|ya)|catch you|good ?night|have a (?:good|great|nice|lovely)|(?:lovely|nice|great|good) (?:talking|chatting|speaking)|cheers)\b/i;
 /** Does this line of the voice's sound like a goodbye, so the call's end is worth reading? */
 export const soundsLikeFarewell = (text) => FAREWELL_HINT.test(String(text ?? ""));
 /** The voice's goodbye has settled for this long before the end is read. */
@@ -2403,6 +2407,9 @@ const running = new Map();
  * call (calls 66 and 67, 2026-11-01: a second photo started a second turn, which rang the same phone
  * 19 s later). The note goes into the voice's instructions now, or the moment its session starts.
  */
+/** Is this process running the voice for this call right now? */
+export const isRunning = (callId) => running.has(callId);
+
 export function tellLive(callId, content) {
   const text = String(content ?? "").trim();
   if (!text) return false;

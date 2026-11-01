@@ -511,8 +511,9 @@ export class Router {
       // what was in it. A link is words. A photo is folded by its media id and rides, as the picture
       // itself, on the turn's next tool result (calls 66/67, 2026-11-01: a second photo seconds
       // after the first got its own turn, and that turn rang the same phone a second time).
-      const row = db.lastPendingInbound(conversationId);
-      const atts = row?.external_id === externalId ? (() => { try { return JSON.parse(row.attachments || "[]"); } catch { return []; } })() : [];
+      // This message's own row, by its handle: the newest held row may already be a later one.
+      const row = db.pendingByHandle(conversationId, externalId);
+      const atts = row ? (() => { try { return JSON.parse(row.attachments || "[]"); } catch { return []; } })() : [];
       const isPhoto = (a) => a?.kind === "image" && Number.isInteger(a?.media_id);
       if (atts.some(a => a?.kind !== "link" && !isPhoto(a))) {
         this.log({ midturn: "left", inbound: externalId, conversation: conversationId, why: "attachments" });
