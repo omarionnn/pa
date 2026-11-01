@@ -34,9 +34,16 @@ import { config, clock } from "../config.js";
 export const MAX_PASSPHRASE_TRIES = 2;
 
 /** The tools that need the person on an owner call to be verified before they run. */
-export function isConsequential(name) {
+export function isConsequential(name, input = null, { toSelf = () => false } = {}) {
+  // A text to their own phone is not "a text to somebody else" (call 67, 2026-11-01: "text me the
+  // options" on his own call was held for a check that texted the same phone). Whoever is holding
+  // this phone, the words land with the owner, so there is nothing for a voice to authorize.
+  if (SELF_SENDS.has(name) && input && toSelf(input.to)) return false;
   return GATED_ACTIONS.has(name) || name === "confirm_record";
 }
+
+/** Sends whose `to` may be the owner themself: those are not gated when it is. */
+const SELF_SENDS = new Set(["message_send"]);
 
 /** Has the person on this call passed the second check? Read off the row, never off a turn. */
 export function isVerified(call) {

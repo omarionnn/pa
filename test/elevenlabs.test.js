@@ -476,11 +476,14 @@ test("a call placed as a step of a job is stamped with the job", async () => {
     { conversationId: C, calls: new ElevenLabsCallProvider({ fetchImpl: stubFetch(placed) }), messages: [] });
   assert.equal(out.ok, true);
   assert.equal(db.getCall(C, out.call_id).task_id, taskId);
+  // Over before the next one: a second call to a phone still ringing joins it (calls 66/67, 2026-11-01).
+  db.updateCall(C, out.call_id, { state: "completed" });
 
   // A job it does not name is still an ordinary call that belongs to nothing.
   const loose = await runTool("call_place", { to: "owner", goal: "say hi" },
     { conversationId: C, calls: new ElevenLabsCallProvider({ fetchImpl: stubFetch(placed) }), messages: [] });
   assert.equal(db.getCall(C, loose.call_id).task_id, null);
+  db.updateCall(C, loose.call_id, { state: "completed" });
 
   // And a job that is not this conversation's is refused rather than quietly ignored.
   const wrong = await runTool("call_place", { to: "owner", goal: "say hi", task_id: 9999 },

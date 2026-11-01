@@ -644,6 +644,8 @@ export const config = {
   // too (phase 3, 2026-10-31): =gptlive (or on) for everyone's errands, =owner for the operator's only.
   // Unset, those calls are ElevenLabs exactly as before.
   thirdPartyVoice: String(process.env.REASON_THIRD_PARTY_VOICE ?? "").trim().toLowerCase(),
+  // A quiet café (own calls) or office (errands) under Reason's GPT-Live voice: owner | on | off (unset = off).
+  callAmbience: String(process.env.REASON_CALL_AMBIENCE ?? "").trim().toLowerCase(),
   // How a GPT-Live third-party call talks once a person answers (2026-10-31, call 59): "on" (default)
   // = the voice talks with them itself, like an own call, and hands decisions to Reason; "off" = the
   // older puppet line, where every reply waits on a Reason turn (4–8 s a reply on call 59).

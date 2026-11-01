@@ -45,6 +45,7 @@ import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } fr
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
 import { recordingNoteFor } from "./calls/inbound.js";
+import { PROVIDER as gptliveProvider, tellLive as gptliveTell, toldNote as gptliveToldNote, notePlace as gptliveNotePlace, isRunning as gptliveRunning, gptliveFor as gptliveForConversation } from "./calls/gptlive.js";
 import { checkCallForPaymentDetails } from "./calls/payments.js";
 import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./calls/brief.js";
 import * as callErrand from "./calls/errand.js";
@@ -1475,7 +1476,7 @@ const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_co
  * party and still goes through the gate. The scope is what makes that safe: the address is read
  * off this conversation's account, never off the message.
  */
-function addressedToOwner(conversationId, to) {
+export function addressedToOwner(conversationId, to) {
   const t = String(to ?? "").trim();
   if (SELF_TOKENS.has(t.toLowerCase())) return true;
   const mine = accounts.ownerOf(conversationId).address;
@@ -4064,6 +4065,7 @@ export const tools = [
         goal: { type: "string", description: "What you are ringing to achieve, specific enough that the result settles it: 'ask if they have a table for 4 at 8pm Saturday, and if not the nearest time'." },
         facts: { type: "array", items: { type: "string" }, description: "The ONLY things this call may tell them. Name, party size, a phone number to hold it under — whatever the job needs and nothing more. Everything you leave out stays private. NEVER payment details: no card number, no expiry, no security code, no bank details, no PIN, for any reason, not even to hold a booking. A call carrying them is refused before it is dialled." },
         max_minutes: { type: "integer", description: "Hang up after this long. Default from config." },
+        opening: { type: "string", description: "Only when ringing the owner: why you're ringing, in a few words you'd say to them as the call opens, after 'hey <name> —'. 'got your two screenshots, wanted to talk them through'. Omit when they just asked you to ring." },
         confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
         task_id: { type: "integer", description: "The job this call is a step of, when it is one. Name it: what the call comes back with is then written onto that job's log, so the job knows what was said without you having to remember it hours later." },
         may_book: {
@@ -6806,6 +6808,7 @@ const S = {
   call_place: z.object({
     to: z.string().min(1).max(40), goal: z.string().min(1).max(600),
     facts: z.array(z.string().max(200)).max(20).optional(),
+    opening: z.string().max(200).optional(),
     max_minutes: z.number().int().min(1).max(60).optional(),
     confirmation_id: z.number().int().optional(),
     task_id: z.number().int().optional(),
@@ -9046,10 +9049,11 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
   // text adds to what it is working on: a message about to go out was written without it, so it is
   // not sent — the model is handed the new text instead, to write the one message that uses it.
   if (ctx?.foldToken && SPEAKS.has(String(name)) && onethought.hasUnseen(ctx.foldToken)) {
-    return {
+    const pics = onethought.unseenPhotos(ctx.foldToken);
+    return withFoldedPhoto(ctx, pics, {
       ok: false, not_sent: true, NEW_FROM_THEM: onethought.noteFor(ctx.foldToken),
       error: "Not sent: they texted more before this went out. Fold it in and send one message that uses it.",
-    };
+    });
   }
   // The silence marker is a reply convention, never words for somebody (src/plain.js readSilence —
   // the same rule the turn's own reply gets). Marker on its own last line: it goes without it. Only
@@ -9084,9 +9088,29 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
   if (ctx?.conversationId && !ECHOES_MODEL.test(String(name))) offers.noteSource(ctx.conversationId, out);
   // Anything they texted since the last tool call rides on this result, first, so the turn has it
   // while it can still change the work.
+  const pics = ctx?.foldToken ? onethought.unseenPhotos(ctx.foldToken) : [];
   const added = ctx?.foldToken ? onethought.noteFor(ctx.foldToken) : "";
-  if (added) return out && typeof out === "object" && !Array.isArray(out) ? { NEW_FROM_THEM: added, ...out } : { NEW_FROM_THEM: added, result: out };
+  if (added) return withFoldedPhoto(ctx, pics, out && typeof out === "object" && !Array.isArray(out) ? { NEW_FROM_THEM: added, ...out } : { NEW_FROM_THEM: added, result: out });
   return out;
+}
+
+/**
+ * A photo they sent mid-turn, put in front of the model on the result that tells it about the photo
+ * (`_image`, the same carrier photo_look uses). One picture per result — the first not already
+ * carrying one; any others are named in NEW_FROM_THEM and photo_look brings them. Never throws.
+ */
+async function withFoldedPhoto(ctx, pics, out) {
+  if (!pics?.length || out?._image) return out;
+  try {
+    const row = db.mediaItem(ctx.conversationId, pics[0]);
+    if (!row?.url || row.kind !== "image") return out;
+    const got = await fetchImage({ url: row.url, filename: row.filename, ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}) });
+    if (!got.ok) return out;
+    try { reviewed.cover(row.id, { coverage: "looked", bytes: got.bytes }); } catch { /* the record is best-effort */ }
+    return { ...out, photo_attached: row.id, _image: { media_type: got.mediaType, data: got.base64, bytes: got.bytes } };
+  } catch {
+    return out;
+  }
 }
 
 async function runToolInner(name, rawInput, ctx) {
@@ -9126,6 +9150,10 @@ async function runToolInner(name, rawInput, ctx) {
     return refusal;
   }
 
+  // A call's brief is never refused for being long (call 66/67, 2026-11-01: a 700-character goal
+  // failed "at most 600", the turn retried, and the retry raced a second turn into a second call).
+  // The overflow moves into facts, where the call still has every word of it.
+  if (name === "call_place") rawInput = fitCallBrief(rawInput);
   const parsed = schema.safeParse(rawInput ?? {});
   if (!parsed.success) return { ok: false, error: "Bad input: " + parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ") };
   const input = parsed.data;
@@ -11008,11 +11036,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // A scheduled call (the runtime placing a "call me at 7" timer, src/runtime.js) opens with
       // why it is ringing, so the first words are not a bare "what's up" at 6:30 in the morning.
       const scheduled = Number.isInteger(ctx.scheduledTimerId) ? ctx.scheduledTimerId : null;
-      let announcement = announcementFor({ ownerName: me.name, toOwner, because: toOwner && scheduled ? input.goal : "" });
+      // Any call to them opens with why when the model gave an opening line (calls 66/67, 2026-11-01:
+      // "hey Omari, what's up?" on a call Reason placed about his photos).
+      const because = toOwner ? String(input.opening ?? "").trim() || (scheduled ? input.goal : "") : "";
+      let announcement = announcementFor({ ownerName: me.name, toOwner, because });
       // The goal is the model's words, and the provider refuses an owner greeting that reads like
       // the stranger line ("...a call for the airport" trips "call for"). The plain greeting then,
-      // and the voice turn still knows why it rang (scheduledCallNote in src/calls/voice.js).
-      if (toOwner && scheduled && !requireAnnouncement({ announcement, ownerName: me.name, toOwner }).ok) {
+      // and the voice turn still knows why it rang (placedCallNote in src/calls/voice.js).
+      if (toOwner && because && !requireAnnouncement({ announcement, ownerName: me.name, toOwner }).ok) {
         announcement = announcementFor({ ownerName: me.name, toOwner });
       }
       const rules = callRulesFor({ ownerName: me.name });
@@ -11086,6 +11117,37 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const onCallTask = taskFromInput(c, input, ctx);
       if (onCallTask.ok === false) return onCallTask;
 
+      // One phone, one call (calls 66 and 67, 2026-11-01). Checked here, with no await between this
+      // and the row below, so two turns racing each other cannot both get past it. A call to this
+      // number already placing, ringing or connected is told the new part instead of a second ring;
+      // somebody else's call to it is only refused — nothing of theirs or ours crosses over.
+      let already = db.liveCallTo(to);
+      // Somebody else's errand to the same business is not this call's business: a shop has many
+      // lines. Only a person's own phone is one line, whoever is ringing it.
+      if (already && already.conversation_id !== c && !toOwner && !Number(already.is_owner)) already = null;
+      // A GPT-Live row still marked connected after its call has gone (settle pending) is not a call.
+      if (already && already.provider === gptliveProvider && already.state === "in_progress" && !gptliveRunning(already.id)) already = null;
+      if (already) {
+        if (already.conversation_id !== c) {
+          return { ok: false, status: "line_busy", error: "That number is on another call right now, so nothing was dialled. Say it's busy and offer to try again in a few minutes." };
+        }
+        const facts = [...new Set([...(already.facts ?? []), ...(input.facts ?? [])])].slice(0, 40);
+        db.updateCall(c, already.id, { facts: JSON.stringify(facts) });
+        // A GPT-Live call takes the note into its voice now or when its session starts; a row still
+        // "placing" may not have been relabelled gptlive by its place() yet, so it is handed too.
+        // Only a person's own GPT-Live call takes words into its voice; an errand's voice says only
+        // what Reason's call turn hands it, and ElevenLabs has no way in.
+        const handed = Number(already.is_owner) === 1 && (already.provider === gptliveProvider || (already.state === "placing" && gptliveForConversation(c)))
+          && gptliveTell(already.id, gptliveToldNote({ goal: input.goal, facts: input.facts ?? [] }));
+        (ctx.log ?? (() => {}))({ call_place_joined_live: already.id, state: already.state, handed });
+        return {
+          ok: true, status: "already_on_the_call", call_id: already.id, state: already.state, handed_to_call: !!handed,
+          note: handed
+            ? "You are already ringing or on the phone with them on this call, so nothing new was dialled: what you wanted to bring up has been handed into that call. Do not place another call and do not text that you are calling."
+            : "You are already ringing or on the phone with them on this call, so nothing new was dialled. Do not place another call; bring it up on that call or after it.",
+        };
+      }
+
       // The row exists before the dial, so a call that is placed and then crashes is still on
       // the record. A call nobody can account for is the thing worth preventing.
       const row = db.createCall(c, {
@@ -11107,6 +11169,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // text, the first time their number is on a call — the same note the inbound path sends, and
       // the same once-only claim, so an inbound and an outbound call cannot both send it.
       if (toOwner) recordingNoteFor({ conversationId: c, row, log: ctx.log ?? (() => {}) });
+      // Roughly where they are, for the voice's small talk — only while they share their location
+      // with Reason, and never waited on: a name that is not back before the voice starts is left out.
+      if (toOwner && gptliveForConversation(c)) void roughPlaceFor(c, ctx).then(p => p && gptliveNotePlace(row.id, p)).catch(() => {});
 
       // Where this one call's outcome may be pushed back to. The token in it is this call's alone,
       // so a delivery that turns up knows which call it is about without anything in its body being
@@ -18133,4 +18198,54 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     default: return { error: `Unknown tool ${name}` };
   }
+}
+
+/**
+ * A call_place input whose goal or facts are too long for the schema, made to fit: the goal keeps
+ * its first sentences up to 600 characters and the rest becomes facts; a fact over 200 characters is
+ * split at word boundaries; past 20 facts the rest is cut to one last fact (4,000 characters is past what any call uses).
+ */
+export function fitCallBrief(raw) {
+  if (!raw || typeof raw !== "object") return raw;
+  const out = { ...raw };
+  const split = (text, max) => {
+    const parts = [];
+    let rest = String(text).replace(/\s+/g, " ").trim();
+    while (rest.length > max) {
+      let cut = Math.max(rest.lastIndexOf(". ", max - 1) + 1, 0);
+      if (cut < max * 0.5) cut = rest.lastIndexOf(" ", max);
+      if (cut <= 0) cut = max;
+      parts.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest) parts.push(rest);
+    return parts;
+  };
+  let facts = Array.isArray(out.facts) ? out.facts.map(String) : (out.facts == null ? [] : null);
+  if (facts === null) return raw;
+  if (typeof out.goal === "string" && out.goal.length > 600) {
+    const [head, ...tail] = split(out.goal, 600);
+    out.goal = head;
+    facts = [...split(tail.join(" "), 200), ...facts];
+  }
+  facts = facts.flatMap(f => f.length > 200 ? split(f, 200) : [f]);
+  if (facts.length > 20) facts = [...facts.slice(0, 19), ...split(facts.slice(19).join(" "), 200).slice(0, 1)];
+  if (facts.length || Array.isArray(raw.facts)) out.facts = facts;
+  return out;
+}
+
+/**
+ * A neighbourhood and city for a person who shares their location with Reason right now (a live share
+ * still running, or a location they sent in the last three hours), or "" — never coordinates, never a
+ * street. Only this conversation's own location is read.
+ */
+export async function roughPlaceFor(conversationId, ctx = {}, { now = clock.now() } = {}) {
+  const th = db.getThread(conversationId);
+  const last = db.lastSharedLocation(conversationId);
+  if (!last) return "";
+  const age = now - last.at;
+  const sharing = (Number(th?.location_sharing_until ?? 0) > now && age <= 24 * 60 * 60_000) || age <= 3 * 60 * 60_000;
+  if (!sharing) return "";
+  const geo = await (ctx.reverseGeocode ?? reverseGeocode)(last.latitude, last.longitude, { timeoutMs: 2500 }).catch(() => null);
+  return [geo?.neighbourhood, geo?.city].filter(Boolean).join(", ");
 }

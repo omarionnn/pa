@@ -39,6 +39,7 @@ import { makerLine } from "../maker.js";
 import { announcementFor, callRulesFor } from "./provider.js";
 import { briefLines } from "./brief.js";
 import { recordingNoticeFor } from "./consent.js";
+import * as ambience from "./ambience.js";
 import { openingLineFor, recordingNoteFor, whoseCallIsThis, strangerIntake, overCallCap } from "./inbound.js";
 import * as strangerCall from "./stranger.js";
 import * as strangerCalls from "../strangercalls.js";
@@ -118,7 +119,87 @@ export function whoFor(call) {
   const named = !!raw && raw !== NO_NAME;
   // Only this call's own account, by the call row's conversation — never anyone else's. No profile:
   // the voice gets the name and nothing more (the backend has the rest, per turn, for this person).
-  return { name: named ? raw : "them", named, owner: !!call.is_owner, identity: callIdentityFor(call.conversation_id) };
+  const own = !!call.is_owner;
+  return {
+    name: named ? raw : "them", named, owner: own, identity: callIdentityFor(call.conversation_id),
+    ...(own ? { brief: preCallBrief(call), purpose: openingPurpose(call) } : {}),
+  };
+}
+
+/**
+ * Roughly where they are, for one own call's small talk, once it is known (it is looked up while the
+ * call dials and never waited on): handed to the session like anything else told mid-call (`tellLive`).
+ */
+export function notePlace(callId, label) {
+  const l = String(label ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (!l) return false;
+  return tellLive(callId, placeLine(l));
+}
+
+const placeLine = (place) => `Roughly where they are right now (they share their location with you): ${place}. Fine for a light, relevant bit of small talk; never say an address.`;
+
+const clip = (t, n) => {
+  const x = String(t ?? "").replace(/\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
+  return x.length > n ? `${x.slice(0, n - 1).trimEnd()}…` : x;
+};
+
+/** The words of one thread message, text parts only. */
+const wordsOf = (m) => typeof m?.content === "string" ? m.content
+  : Array.isArray(m?.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join(" ") : "";
+
+/**
+ * A few lines from this person's own recent chat, newest last — for a warm start and small talk, never
+ * as facts to answer from. Only the call row's own conversation is read (sealed per person).
+ */
+export function recentChatLines(conversationId, { max = 6, chars = 700 } = {}) {
+  let thread = [];
+  try { thread = db.loadConversation(conversationId); } catch { return []; }
+  const out = [];
+  let used = 0;
+  for (const m of thread.slice(-30).reverse()) {
+    if (m?.role !== "user" && m?.role !== "assistant") continue;
+    // Their lines carry "[time] Name: " in front; the time and name are not for the voice.
+    const raw = wordsOf(m).replace(/^\s*\[[^\]]*\]\s*[^:\n]{1,40}:\s*/, "");
+    const line = clip(raw, 150);
+    if (!line || /NO_REPLY/.test(line)) continue;
+    const next = `${m.role === "user" ? "them" : "you"}: ${line}`;
+    if (used + next.length > chars) break;
+    out.unshift(next);
+    used += next.length;
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/**
+ * The pre-call brief for a person's own call (Omari, 2026-11-01: warmer, chattier own calls that lead
+ * with why Reason rang). Why it rang and what it brought (a call Reason placed), a few lines from
+ * their recent chats, and — only while they share their location with Reason — roughly where they
+ * are. Everything here is this call's own person's; nothing for any other call.
+ */
+export function preCallBrief(call, { place = "" } = {}) {
+  if (!call?.is_owner) return "";
+  const lines = [];
+  if (call.direction !== "in") {
+    const goal = clip(call.goal, 300);
+    if (goal) lines.push(`Why you rang them: ${goal}`);
+    const facts = (Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })())
+      .map(f => clip(f, 160)).filter(Boolean).slice(0, 5);
+    if (facts.length) lines.push(`What you've got for it:\n${facts.map(f => `- ${f}`).join("\n")}`);
+  }
+  const chat = recentChatLines(call.conversation_id);
+  if (chat.length) lines.push(`Lately in your chats:\n${chat.join("\n")}`);
+  if (place) lines.push(placeLine(place));
+  if (!lines.length) return "";
+  return `PRE-CALL BRIEF — background for you, so the call starts warm and on point. Anything they ask still goes to Reason.\n${lines.join("\n")}`;
+}
+
+/** Why Reason is ringing, for the opening line, when the line itself does not already say it. */
+export function openingPurpose(call) {
+  if (!call?.is_owner || call.direction === "in" || call.timer_id) return "";
+  const greeting = String(call.announcement ?? "");
+  if (!/what's up\?\s*$/i.test(greeting)) return "";
+  return clip(call.goal, 220);
 }
 
 /** Call 56: "do you know where I am?" was answered "you're Omari" (2026-10-31). Where/what goes to Reason. */
@@ -142,7 +223,7 @@ export const CALL56_LINES = [
  * made it — behind REASON_CALL_IDENTITY, and call 56's four short lines (`CALL56_LINES`). #293's longer prompt (tone section, profile block, who-rang-
  * whom) went out with calls 54–55, which he called confused and worse; it is not here (2026-10-31).
  */
-export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false } = {}) {
+export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, brief = "" } = {}) {
   const them = named ? name : "them";
   const theirs = named ? `${name}'s` : "their";
   const who = !identity
@@ -162,12 +243,23 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
     "Never answer from your own knowledge, and never invent a fact, time, name, number or price.",
     "While the backend works, a very short acknowledgement is fine. Do not fill the silence with guesses.",
     ...CALL56_LINES,
+    ...(owner ? OWN_CALL_LINES : []),
     "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
     "When a backend result arrives, say it naturally and briefly, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
     "Never read out links, codes, IDs or anything in square brackets, and never say the words NO_REPLY.",
     "Stop speaking when they talk over you, and listen.",
+    ...(owner && brief ? [brief] : []),
   ].join("\n");
 }
+
+/**
+ * A person's own call (Omari, 2026-11-01): warm and chatty, a friend glad to hear from them. Short on
+ * purpose — the long tone section of #293 made calls 54–55 worse.
+ */
+export const OWN_CALL_LINES = [
+  "This is their own call: be friendly, chatty and warm, like a friend who's glad to hear from them. React to what they say, ask a natural follow-up, enjoy the small talk.",
+  "If you rang them for a reason, lead with it. If not, you may pick up one thing from your recent chats when it fits. If they want something quick done, get straight to it.",
+];
 
 /**
  * The voice's instructions for somebody who rang and has no account (src/calls/stranger.js): the same
@@ -278,22 +370,27 @@ export function lineAnnouncement(ann) {
 }
 
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, identity = false, greeting = "", instructions = "", line = false } = {}) {
+export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: instructions || liveInstructions({ name, named, owner, identity }),
+    instructions: instructions || liveInstructions({ name, named, owner, identity, brief }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     // A line call: room to cancel the voice's automatic "one moment" before it is generated.
     delegation: line ? { type: "client", acknowledgement_delay_ms: 800 } : { type: "client" },
   };
   if (greeting) {
-    session.input = [{ type: "message", role: "developer", content: [{ type: "input_text", text: greetingInstruction(greeting) }] }];
+    session.input = [{ type: "message", role: "developer", content: [{ type: "input_text", text: greetingInstruction(greeting, purpose) }] }];
   }
   return session;
 }
 
-export function greetingInstruction(greeting) {
-  return `Greet them now in English with this line, in your own voice: "${String(greeting).replace(/"/g, "'")}" Then stop and listen.`;
+export function greetingInstruction(greeting, purpose = "") {
+  const line = String(greeting).replace(/"/g, "'");
+  if (purpose) {
+    return `Greet them now in English, in your own voice, starting with "${line.replace(/,?\s*what's up\?\s*$/i, "")}" and then, in the same breath, a few natural words of why you're ringing`
+      + ` (${String(purpose).replace(/"/g, "'")}) — like "hey, got your photos, wanted to talk them through". If it's only that they asked you to ring, say "${line}" as it is. Then stop and listen.`;
+  }
+  return `Greet them now in English with this line, in your own voice: "${line}" Then stop and listen.`;
 }
 
 // ---------- the honesty guard ----------
@@ -307,7 +404,30 @@ const CLAIM = new RegExp([
   `\\bi\\s+(?:just\\s+|already\\s+)?(?:booked|sent|texted|emailed|messaged|ordered|paid|cancel+ed|reserved|purchased|bought|scheduled|placed|submitted|confirmed)\\b`,
   `\\byou(?:'|’)re (?:all )?(?:set|booked|confirmed|sorted)\\b`,
   `\\b(?:all )?done\\s*[.!]`,
+  // The subject dropped, the way people talk: "Just texted." "Already sent it over." (call 67, 2026-11-01).
+  `(?:^|[.!?…,]\\s*)(?:just|already)\\s+(?:booked|sent|texted|emailed|messaged|ordered|paid|cancel+ed|reserved|purchased|bought|scheduled|placed|submitted|confirmed)\\b`,
 ].join("|"), "i");
+
+// A send the words say happened: the verbs that need a send tool behind them in the same turn.
+const SENT_CLAIM = /\b(?:sent|texted|emailed|messaged)\b/i;
+// A send from before this turn, said as such, is true and stays: "I texted you the link earlier".
+const EARLIER = /\b(?:earlier|before|yesterday|this morning|last (?:night|week)|this afternoon)\b/i;
+const SENDS = /send|email|text|message|page_|picture|voice_note/;
+
+/**
+ * A result's words with any sentence that claims a send this turn did not make taken out, and an
+ * honest line in its place (call 67, 2026-11-01: the result said "Just texted." with only end_call
+ * behind it; the guard trusted it as Reason's own words and he never got a text). Exported for tests.
+ */
+export function withoutUnbackedSends(spoken, tools = []) {
+  const text = String(spoken ?? "");
+  if (!SENT_CLAIM.test(text) || (tools ?? []).some(n => SENDS.test(String(n)))) return { text, dropped: 0 };
+  const sentences = text.match(/[^.!?…]+[.!?…]*\s*/g) ?? [text];
+  const kept = sentences.filter(x => !(SENT_CLAIM.test(x) && claimsDone(x) && !EARLIER.test(x)));
+  const dropped = sentences.length - kept.length;
+  if (!dropped) return { text, dropped: 0 };
+  return { text: ["I'll text that to you.", kept.join("").trim()].filter(Boolean).join(" "), dropped };
+}
 
 /** Does this say something has been done? Exported for the tests. */
 export function claimsDone(text) {
@@ -384,7 +504,9 @@ export async function readTurn(stream) {
 // The voice says its goodbyes itself, without delegating, so Reason's end_call never came. Now a
 // goodbye-sounding line of the voice's is the cue to ASK the small model whether the call is over —
 // this list only picks which lines are worth asking about; it never decides anything itself.
-const FAREWELL_HINT = /\b(?:bye|goodbye|take care|talk (?:to you )?(?:soon|later)|see (?:you|ya)|catch you|good ?night|have a (?:good|great|nice|lovely))\b/i;
+// Only a hint: the small model reads the ending (`judgeEnding`). Chattier own calls sign off more
+// ways — "Lovely talking too. Chat soon." went unread on a 2026-11-01 drive and the call stayed up.
+const FAREWELL_HINT = /\b(?:bye|goodbye|take care|(?:talk|chat|speak) (?:to you )?(?:soon|later)|see (?:you|ya)|catch you|good ?night|have a (?:good|great|nice|lovely)|(?:lovely|nice|great|good) (?:talking|chatting|speaking)|cheers)\b/i;
 /** Does this line of the voice's sound like a goodbye, so the call's end is worth reading? */
 export const soundsLikeFarewell = (text) => FAREWELL_HINT.test(String(text ?? ""));
 /** The voice's goodbye has settled for this long before the end is read. */
@@ -609,7 +731,7 @@ export class WarmSession {
       this.started = true;
       this.sessionId = e.session?.id ?? "";
       this.startedAt = this.now();
-      this.live.send({ type: "session.commentary.append", event_id: `greet_${this.row.id}`, delegation_id: null, content: greetingInstruction(this.greeting) });
+      this.live.send({ type: "session.commentary.append", event_id: `greet_${this.row.id}`, delegation_id: null, content: greetingInstruction(this.greeting, this.who?.purpose ?? "") });
       this.feeding = true;
       this.feed();
     } else if (e.type === "session.output_audio.delta") {
@@ -633,7 +755,7 @@ export class WarmSession {
     if (this.fedMs >= WARM_FEED_MAX_MS) return this.pause("no greeting");
     if (!this.spoke && !this.retried && this.fedMs >= WARM_RETRY_MS) {
       this.retried = true;
-      this.live.send({ type: "session.commentary.append", event_id: `greet2_${this.row.id}`, delegation_id: null, content: greetingInstruction(this.greeting) });
+      this.live.send({ type: "session.commentary.append", event_id: `greet2_${this.row.id}`, delegation_id: null, content: greetingInstruction(this.greeting, this.who?.purpose ?? "") });
     }
     this.live.send({ type: "session.input_audio.append", audio: SILENCE_100MS });
     this.fedMs += 100;
@@ -790,6 +912,10 @@ export class GptLiveCall {
     this.finishCall = finish;
     this.timers = timers;
     this.who = persona ? { name: "them", named: false, owner: false, identity: false, instructions: persona.instructions } : whoFor(call);
+    // The room under Reason's voice (REASON_CALL_AMBIENCE): a café on their own call, an office on an
+    // errand; never on a stranger's call to Reason's number.
+    this.bed = persona ? null : ambience.bedFor(call);
+    if (!persona && call?.id != null) running.set(call.id, this);
     if (this.line) this.who = { ...this.who, instructions: lineInstructions(this.who) };
     // A business call Reason placed TALKS once a person answers (REASON_LINE_TALK; `lineTalkInstructions`).
     // A place ringing back keeps the puppet line: it hears who is calling first, by code.
@@ -876,14 +1002,16 @@ export class GptLiveCall {
       if (this.live) {
         // The stream back after a key press: the same voice session carries on.
         this.playheadAt = this.now();
+        this.bed?.cleared(this.now());
         if (this.rejoining) this.log({ gptlive_keypad_rejoined: this.call.id, ms: this.now() - this.rejoining.at });
         this.rejoining = null;
         if (this.rejoinTimer) this.timers.clearTimeout(this.rejoinTimer);
         return;
       }
       this.streamStartAt = this.now();
-      this.log({ gptlive_stream_start: this.call.id, sid: this.callSid });
+      this.log({ gptlive_stream_start: this.call.id, sid: this.callSid, ...(this.bed ? { ambience: this.bed.kind } : {}) });
       this.connect();
+      this.roomTick();
     } else if (m.event === "media" && m.media?.payload) {
       if (m.media.track && m.media.track !== "inbound") return;
       const buf = Buffer.from(m.media.payload, "base64");
@@ -906,7 +1034,16 @@ export class GptLiveCall {
 
   toTwilio(obj) {
     if (!this.streamSid) return;
+    if (this.bed && obj.event === "media" && obj.media?.payload) obj = { ...obj, media: { ...obj.media, payload: this.bed.mix(obj.media.payload, this.now()) } };
     this.twilio.send(JSON.stringify({ ...obj, streamSid: this.streamSid }));
+  }
+
+  /** The room under the call (src/calls/ambience.js): topped up every TICK_MS while the call is up. */
+  roomTick() {
+    if (!this.bed || this.done) return;
+    const frames = this.streamSid && !this.rejoining ? this.bed.fill(this.now()) : null;
+    if (frames) this.twilio.send(JSON.stringify({ event: "media", streamSid: this.streamSid, media: { payload: frames } }));
+    this.roomTimer = this.timers.setTimeout(() => this.roomTick(), ambience.TICK_MS);
   }
 
   queuedMs() { return Math.max(0, this.playheadAt - this.now()); }
@@ -916,6 +1053,7 @@ export class GptLiveCall {
     this.toTwilio({ event: "clear" });
     this.tape.cut();
     this.playheadAt = this.now();
+    this.bed?.cleared(this.now());
     this.log({ gptlive_cleared: this.call.id, why });
   }
 
@@ -962,7 +1100,19 @@ export class GptLiveCall {
     this.log({ gptlive_session: this.call.id, session: this.sessionId, warm: !!this.adopted });
     if (!this.persona) try { db.updateCall(this.call.conversation_id, this.call.id, { tts_model: `${config.gptliveModel}/${config.gptliveVoice}` }); } catch { /* a label never breaks a call */ }
     if (this.line) return this.lineStarted();
-    if (greet && this.greeting) this.live.send({ type: "session.commentary.append", event_id: `greet_${this.call.id}`, delegation_id: null, content: greetingInstruction(this.greeting) });
+    if (greet && this.greeting) this.live.send({ type: "session.commentary.append", event_id: `greet_${this.call.id}`, delegation_id: null, content: greetingInstruction(this.greeting, this.who?.purpose ?? "") });
+    this.flushTold();
+  }
+
+  /** Anything handed to this call while it was being placed (`tellLive`), now the session is up. */
+  flushTold() {
+    const notes = told.get(this.call.id);
+    if (!notes?.length || !this.live) return;
+    told.delete(this.call.id);
+    for (const [i, content] of notes.entries()) {
+      this.live.send({ type: "session.instructions.append", event_id: `told_${this.call.id}_${Date.now()}_${i}`, delegation_id: null, content });
+    }
+    this.log({ gptlive_told: this.call.id, notes: notes.length });
   }
 
   fromLive(e) {
@@ -1160,7 +1310,9 @@ export class GptLiveCall {
     }
     turn.resultAt = this.now();
     turn.totalMs = turn.resultAt - turn.startedAt;
-    const spoken = [reply.text, reply.endCall?.message].filter(Boolean).join(" ").trim();
+    const honest = withoutUnbackedSends([reply.text, reply.endCall?.message].filter(Boolean).join(" ").trim(), reply.tools);
+    if (honest.dropped) this.log({ gptlive_unbacked_send: this.call.id, dropped: honest.dropped, tools: reply.tools ?? [] });
+    const spoken = honest.text;
     if (spoken) {
       this.lastResultClaimed = claimsDone(spoken);
       this.lastResultAt = turn.resultAt;
@@ -1730,13 +1882,15 @@ export class GptLiveCall {
       return void this.end("a fax machine answered").catch(() => {});
     }
     if (!v.startsWith("machine_end")) return;
-    if (this.heldVoicemail) return this.releaseVoicemail("beep");
+    // No room behind a voicemail: a message on a tape should be only the words.
+    if (this.heldVoicemail) { if (this.bed) this.bed.off = true; return this.releaseVoicemail("beep"); }
     if (this.ending) return;
     // Somebody is already talking with us: Twilio's "machine" there is its 30 s timeout guessing, not a
     // mailbox (call 59: machine_end_other at 30.0 s on the receptionist, and a turn re-introduced the
     // call over her). Only a beep is believed, and then the voice stops talking.
     // "Somebody" = words from their side since the voice started talking, not the voice having spoken.
     if (this.talking && v !== "machine_end_beep" && this.theySpokeSince(this.talkingAt)) return void this.log({ gptlive_amd_ignored: this.call.id, answered_by: v });
+    if (this.bed) this.bed.off = true;
     if (this.talking) {
       this.stopTalking("answering machine");
       this.clearPlayback("voicemail");
@@ -1870,11 +2024,13 @@ export class GptLiveCall {
   async end(why) {
     if (this.done) return;
     this.done = true;
+    if (running.get(this.call.id) === this) running.delete(this.call.id);
+    told.delete(this.call.id);
     this.endedAt = this.now();
     this.endWhy = this.endWhy || why;
     if (this.capTimer) this.timers.clearTimeout(this.capTimer);
     if (this.byeTimer) this.timers.clearTimeout(this.byeTimer);
-    for (const k of ["lineTimer", "holdTimer", "rejoinTimer", "vmTimer", "openTimer", "noticeTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
+    for (const k of ["lineTimer", "holdTimer", "rejoinTimer", "vmTimer", "openTimer", "noticeTimer", "roomTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
     // Reason's turn wrote the voicemail down as left when it wrote the words; if the line went before
     // a word of it played (held for the beep, or never started), nothing was left (hold.noteVoicemail).
     if (this.line && (this.heldVoicemail || (this.voicemailGate && !this.voicemailGate.heard))) {
@@ -2240,6 +2396,37 @@ function streamTwimlFor(token, base = config.publicUrl) {
 
 /** Calls whose stream is up, by call id. */
 const streams = new Map();
+
+/** Notes for calls whose voice session is not up yet, by call id (`tellLive`). */
+const told = new Map();
+/** Every GptLiveCall this process is running, by call id, from construction to `end`. */
+const running = new Map();
+
+/**
+ * Hand something new to a call that is already ringing or connected, instead of placing a second
+ * call (calls 66 and 67, 2026-11-01: a second photo started a second turn, which rang the same phone
+ * 19 s later). The note goes into the voice's instructions now, or the moment its session starts.
+ */
+/** Is this process running the voice for this call right now? */
+export const isRunning = (callId) => running.has(callId);
+
+export function tellLive(callId, content) {
+  const text = String(content ?? "").trim();
+  if (!text) return false;
+  told.set(callId, [...(told.get(callId) ?? []), text]);
+  const call = running.get(callId);
+  if (call?.started && !call.done) call.flushTold();
+  if (told.size > 50) told.delete(told.keys().next().value);
+  return true;
+}
+
+/** The words a live call is handed: what the second call would have been about. */
+export function toldNote({ goal = "", facts = [] } = {}) {
+  const list = (facts ?? []).map(f => `- ${String(f).replace(/\s+/g, " ").trim()}`).filter(f => f.length > 2).join("\n");
+  return `New since this call was placed — you were about to ring them again about it, so it is yours to bring up on THIS call:`
+    + ` ${String(goal).replace(/\s+/g, " ").trim()}${list ? `\n${list}` : ""}`
+    + `\nWork it in naturally at the next pause (for example "oh, and I've got your other photo now"). Do not say you were going to call again.`;
+}
 
 /**
  * Twilio's media stream for one call, upgraded. The token in the path is the call row's own; anything

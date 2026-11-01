@@ -117,6 +117,8 @@ if (!cold) {
   await new Promise(r => setTimeout(r, ringMs));
 }
 const heardAt = [];
+// --heard <file>: everything the caller was sent, in order, raw μ-law (with REASON_CALL_AMBIENCE, the room too).
+const heardAudio = [];
 const speechAt = [];
 let hungUpAt = null;
 const t0 = Date.now();
@@ -126,6 +128,7 @@ twilio.onmessage = (m) => {
   const e = JSON.parse(String(m.data));
   if (e.event !== "media") return;
   heardAt.push(Date.now() - t0);
+  heardAudio.push(Buffer.from(e.media.payload, "base64"));
   if (gl.hasSpeech(e.media.payload)) speechAt.push(Date.now() - startAt);
 };
 await new Promise((r, j) => { twilio.onopen = r; twilio.onerror = () => j(new Error("the stream socket did not open")); });
@@ -223,6 +226,7 @@ const ok = expect === "full"
   ? (identityOn ? new RegExp(`\\b${as === "user" ? "Ama" : "Omari"}\\b`).test(afterQuestion) && !/don['’]t know (who you are|your name|who this is)|not sure who you/i.test(afterQuestion) : true)
     && (as !== "user" || !omariLeak.test(out.voice_said.join(" "))) && out.guard_trips === 0 && (cold || (out.first_voice_ms ?? Infinity) < 600)
   : out.delegations > 0 && out.results.some(r => r.chars > 0) && turns.some(t => Number.isFinite(t.first_real_ms));
+if (flag("--heard") > 0) (await import("node:fs")).writeFileSync(process.argv[flag("--heard") + 1], Buffer.concat(heardAudio));
 console.log(JSON.stringify({ as, expect, ...out }, null, 1));
 console.log(ok ? "ok" : "FAIL");
 process.exit(ok ? 0 : 1);
