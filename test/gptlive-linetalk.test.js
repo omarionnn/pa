@@ -428,3 +428,83 @@ test("review 8: talk-mode hold: a hold recording talking doesn't reset the budge
   for (let i = 0; i < 5; i++) { await s.timers.advance(15_000); s.live.emit({ type: "session.input_transcript.delta", delta: " your call is important to us" }); }
   assert.ok(s.live.of("session.commentary.append").some(e => /try again another time/.test(e.content)));
 });
+
+// 2026-10-31 greet drives: one opener. A listening sound ("Mm.") into their pause or after its own
+// words never reaches them; a reply to a finished sentence is not held at all.
+async function frames(s, payload, n, { from = "voice" } = {}) {
+  for (let i = 0; i < n; i++) {
+    if (from === "voice") s.live.emit({ type: "session.output_audio.delta", delta: payload });
+    else s.twilio.say({ event: "media", media: { payload } });
+    await s.timers.advance(20);
+  }
+}
+
+const spoken = (s) => s.twilio.media().filter(m => gl.hasSpeech(m.media.payload)).length;
+
+async function talkingCall() {
+  const s = startLine({ row: bizRow(), brain: async () => ({ text: "", tools: [], calls: [], endCall: null, skip: true }) });
+  await theySay(s, "Chelsea Bodywork, can I help you?");
+  await voiceOwn(s, "Oh hey, hi! I'm calling about low back pain.");
+  assert.equal(s.call.talking, true);
+  return s;
+}
+
+test("one opener: 'Mm.' into the receptionist's mid-sentence pause is dropped, words and all", async () => {
+  const s = await talkingCall();
+  await s.timers.advance(5000);
+  await frames(s, SPEECH, 40, { from: "them" });
+  const before = spoken(s);
+  // 200 ms into their pause the voice says "Mm." (300 ms) …
+  await s.timers.advance(200);
+  s.live.emit({ type: "session.output_transcript.delta", delta: " Mm." });
+  await frames(s, SPEECH, 15);
+  await frames(s, QUIET, 16);
+  assert.equal(spoken(s), before, "nothing of it reached the line");
+  assert.ok(!s.call.turns.some(t => t.who === "reason" && /^\s*Mm/.test(t.text)), "and it is not in the transcript");
+  // … and the same sound they talk over is dropped too.
+  await frames(s, SPEECH, 10, { from: "them" });
+  await s.timers.advance(300);
+  await frames(s, SPEECH, 5);
+  await frames(s, SPEECH, 5, { from: "them" });
+  await frames(s, SPEECH, 30);
+  assert.equal(spoken(s), before, "a sound they talked over never plays");
+  assert.equal(s.call.soundsDropped, 2);
+});
+
+test("one opener: 'Mm.' a second after its own opener, into silence, is dropped (no audio after it either)", async () => {
+  const s = await talkingCall();
+  const before = spoken(s);
+  await s.timers.advance(1000);
+  await frames(s, SPEECH, 12);
+  await s.timers.advance(gl.BC_WAIT_MS + 20);
+  assert.equal(spoken(s), before);
+  assert.equal(s.call.sound, null);
+});
+
+test("a reply to their finished sentence plays at once; a held start that grows into words plays in full", async () => {
+  const s = await talkingCall();
+  await s.timers.advance(4000);
+  await frames(s, SPEECH, 30, { from: "them" });
+  await s.timers.advance(900);
+  const before = spoken(s);
+  await frames(s, SPEECH, 1);
+  assert.equal(spoken(s), before + 1, "~1 s after their sentence: no hold, no added wait");
+  // Starting 200 ms into their pause but carrying on: held, then all of it plays, from its first frame.
+  await s.timers.advance(3000);
+  await frames(s, SPEECH, 30, { from: "them" });
+  await s.timers.advance(200);
+  const n = spoken(s);
+  await frames(s, SPEECH, 10);
+  assert.equal(spoken(s), n, "held while it might be a sound");
+  await frames(s, SPEECH, 15);
+  assert.equal(spoken(s), n + 25, "a real reply: every frame, none lost");
+});
+
+test("talk off (puppet line) and before talking: nothing is held", async () => {
+  config.lineTalk = false;
+  const s = startLine({ row: bizRow(), brain: async () => ({ text: "", tools: [], calls: [], endCall: null, skip: true }) });
+  assert.equal(s.call.talk, false);
+  assert.equal(s.call.heldSound.length, 2);
+  await frames(s, SPEECH, 5);
+  assert.equal(s.call.sound, null);
+});

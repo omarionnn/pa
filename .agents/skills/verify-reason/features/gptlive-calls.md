@@ -268,3 +268,14 @@ after their greeting, one opener, replies ~1.2 s; hello 0.9 s, no second hello n
 ~1.1 s; ivr pressed 1, silent through menu + hold; hold `hold_gave_up`; voicemail `voicemail_left=1`.
 The last review fixes (person after hold answered at once, voicemail never "talking", opener ≠ person)
 are unit-tested only: the OpenAI account hit `credit_balance_exhausted` before the re-drive.
+
+One opener (2026-10-31, after #321): the greet re-drive heard 2 — a GPT-Live "Mm." into the
+receptionist's mid-sentence pause (and, an earlier run, into silence ~1 s after its own opener). Talk
+mode now holds a sound that starts <650 ms after their last loud frame, or 0.6–3 s after its own speech
+with nothing from them (no delegation pending, no result in the last 4 s): 450 ms of speech plays it
+whole, a shorter sound or one they talk over is dropped with its transcript (`heldSound`, `BC_*`; log
+`gptlive_sound_dropped|played`, `sounds_dropped` on call end) + a "no listening sounds" line. Replies to a
+finished sentence (~1 s later) are never held. Owner calls untouched (`talk` only). Re-drive, all ok:
+greet ×3 0.94/1.30/1.01 s one opener; hello 0.54; noisy 1.06; quiet open 3.96 s then 1.07; interrupt
+1.13 (resumed 0.92); robot 1.14; ivr, hold (`hold_gave_up`), voicemail (`voicemail_left`), human ok;
+own `gptlive-drive bye.ulaw 30 --expect goodbye --cold` mutual goodbye, first voice 1.8 s.

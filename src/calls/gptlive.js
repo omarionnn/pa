@@ -250,6 +250,7 @@ export function lineTalkInstructions({ name = "them", named = name !== "them", b
     `Say who you're calling for only when it matters — a booking or a name they need, or they ask who's calling: "I'm calling for ${first}." If they ask your name, it's Reason; never make up a person's name, and never say you are ${first}.`,
     "Then talk with them yourself, the way a person would: short replies, one thing at a time, and let them finish. If they start talking while you're speaking, stop at once and listen."
       + " A small sound — \"mm\", \"uh\", a breath, line noise — is not their turn: don't answer it and don't restart.",
+    "No listening sounds: never \"mm\", \"mhm\" or \"uh-huh\" while they talk or after you've finished speaking. Say nothing until it's your turn.",
     "Don't fill pauses. Never say \"no rush\" or \"take your time\" unless they ask you to hold on. If they say \"hold on\" or put you on hold, say \"sure\" once, then stay silent — through hold music and recordings — until a person speaks to you again.",
     "Repeat back a price, a time or a name once, to be sure you have it right.",
     `Hand it to Reason (delegate) whenever they ask something you weren't given above (a name, number, email, address, a preference), they offer to book, hold, reserve, charge or sign ${first} up for anything, they want payment details, a phone menu wants a key pressed, or you aren't sure what to say.`
@@ -725,6 +726,20 @@ export const LINE_AMD_WAIT_MS = 30_000;
 export const LINE_VOICEMAIL_WAIT_MS = 20_000;
 /** A key press re-opens the stream; a stream not back in this long is a lost call. */
 export const LINE_REJOIN_MS = 20_000;
+/**
+ * Talk mode: a listening sound ("Mm.") is not a reply (2026-10-31 greet drives: "Mm." into the
+ * receptionist's mid-sentence pause, and once into silence a second after its own opener). A sound
+ * the voice starts within BC_CALLER_MS of their last word, or BC_SELF_MS after its own speech with
+ * nothing from them since, is held: BC_REAL_MS of speech makes it a reply (let through), a sound
+ * that ends sooner (BC_END_MS quiet in the audio, or BC_WAIT_MS with no audio) or that they talk
+ * over is dropped. Replies to a finished sentence start ~1 s after it, so they are never held.
+ */
+export const BC_CALLER_MS = 650;
+export const BC_SELF_MS = [600, 3000];
+export const BC_REAL_MS = 450;
+export const BC_END_MS = 300;
+export const BC_WAIT_MS = 400;
+const BARE_SOUND = /^[\s.,!?…-]*(?:m+|hm+|mhm+|mm-?hm+|uh-?huh|uh+|um+)?[\s.,!?…-]*$/i;
 const AMD_NOTE = "Twilio's answering-machine check says a machine took this call and its greeting has just ended."
   + " If it was a voicemail greeting, call machine_on_the_line with what \"voicemail_greeting\" and do what it says."
   + " If it was a phone menu, a recording or hold, carry on exactly as you would.";
@@ -813,6 +828,12 @@ export class GptLiveCall {
     this.lastOutAt = 0;
     this.lastVoiceAt = 0;
     this.voiceEndsAt = 0;
+    // Talk mode: a sound held back until it is a reply (`heldSound`), and their last loud frame.
+    this.sound = null;
+    this.soundDroppedAt = -Infinity;
+    this.soundCutAt = -Infinity;
+    this.soundsDropped = 0;
+    this.theirVoiceAt = -Infinity;
     this.lastOutTextAt = 0;
     this.utter = "";
     this.playheadAt = 0;
@@ -869,6 +890,7 @@ export class GptLiveCall {
       this.tape.them(buf);
       if (this.line && hasVoice(m.media.payload)) {
         this.firstCallerVoiceAt ??= this.now();
+        if (this.talk) this.theirVoiceAt = this.now();
         if (this.talk && !this.talking) this.callerVoiceAt = this.now();
       }
       if (hasSpeech(m.media.payload)) {
@@ -998,6 +1020,7 @@ export class GptLiveCall {
       // handed too told it "nobody heard you" mid-sentence, and it said the intro again (call 59).
       if (!open) { this.dropped++; if (hasSpeech(b64)) this.rawSpeechAt = t; return; }
     }
+    if (this.talking && this.heldSound(t, b64)) return;
     const buf = Buffer.from(b64, "base64");
     if (this.firstVoiceMs == null && this.streamStartAt != null && hasSpeech(b64)) {
       // How long the person who picked up waited for Reason's first word (call 53: 3.1 s).
@@ -1022,6 +1045,8 @@ export class GptLiveCall {
 
   textOut(delta) {
     const t = this.now();
+    // The words of a listening sound held back or dropped (`heldSound`) were never said.
+    if (this.talking && (this.sound || t - this.soundDroppedAt < 1500) && BARE_SOUND.test(delta)) return;
     // Words of audio that never reached the line were never said (a line call's gate was shut).
     if (this.line && !this.talking && (this.gate ? !this.gate.acked : t - this.gateClosedAt > 1500)) return;
     if (t - this.lastOutTextAt > 1500) this.utter = "";
@@ -1314,6 +1339,77 @@ export class GptLiveCall {
     return true;
   }
 
+  /**
+   * Talk mode: is this frame part of a sound held back (BC_* above)? Returns true when the frame was
+   * taken (held or dropped); a held sound that turns into a reply is played from its first frame.
+   */
+  heldSound(t, b64) {
+    if (this.soundFlushing) return false;
+    const speech = hasSpeech(b64);
+    const ms = Buffer.from(b64, "base64").length / 8;
+    const h = this.sound;
+    if (!h) {
+      if (!speech) return false;
+      // The rest of a run of speech whose start was dropped: dropped too (never half a sentence).
+      if (t - this.soundCutAt < BC_SELF_MS[0]) { this.soundCutAt = t; return true; }
+      // Still the same run of speech: let it through.
+      if (t - this.lastVoiceAt < BC_SELF_MS[0]) return false;
+      const playsAt = Math.max(this.playheadAt, t);
+      const intoTheirPause = playsAt - this.theirVoiceAt < BC_CALLER_MS;
+      const sinceOwn = playsAt - this.voiceEndsAt;
+      const afterItself = this.lastVoiceAt > 0 && this.theirVoiceAt < this.lastVoiceAt && sinceOwn >= BC_SELF_MS[0] && sinceOwn <= BC_SELF_MS[1]
+        && !this.pending.size && t - this.lastResultAt > 4000 && !this.ending;
+      if (!intoTheirPause && !afterItself) return false;
+      this.sound = { since: t, frames: [b64], speechMs: ms, quietMs: 0, speechAt: t, why: intoTheirPause ? "into their pause" : "after its own words" };
+      this.soundTimer = this.timers.setTimeout(() => this.soundEnded(), BC_WAIT_MS);
+      return true;
+    }
+    h.frames.push(b64);
+    if (speech) { h.speechMs += ms; h.quietMs = 0; h.speechAt = t; } else h.quietMs += ms;
+    if (this.theirVoiceAt > h.since) this.dropSound("they talked");
+    else if (h.speechMs >= BC_REAL_MS) this.playSound();
+    else if (h.quietMs >= BC_END_MS) this.dropSound("a short sound");
+    else {
+      this.timers.clearTimeout(this.soundTimer);
+      this.soundTimer = this.timers.setTimeout(() => this.soundEnded(), BC_WAIT_MS);
+    }
+    return true;
+  }
+
+  /** No more audio came for a held sound: it was short (dropped) unless it already ran long. */
+  soundEnded() {
+    this.soundTimer = null;
+    if (!this.sound) return;
+    if (this.sound.speechMs >= BC_REAL_MS && this.theirVoiceAt <= this.sound.since) this.playSound();
+    else this.dropSound(this.theirVoiceAt > this.sound.since ? "they talked" : "a short sound");
+  }
+
+  playSound() {
+    const h = this.sound;
+    this.sound = null;
+    if (this.soundTimer) { this.timers.clearTimeout(this.soundTimer); this.soundTimer = null; }
+    this.soundFlushing = true;
+    try { for (const f of h.frames) this.audioOut(f); } finally { this.soundFlushing = false; }
+    this.log({ gptlive_sound_played: this.call.id, held_ms: this.now() - h.since });
+  }
+
+  dropSound(why) {
+    const h = this.sound;
+    this.sound = null;
+    if (this.soundTimer) { this.timers.clearTimeout(this.soundTimer); this.soundTimer = null; }
+    const t = this.now();
+    this.soundDroppedAt = t;
+    this.soundCutAt = h.speechAt;
+    this.soundsDropped++;
+    // Its words, if the transcript came first, were never said either.
+    const last = this.turns.at(-1);
+    if (last && last.who === "reason" && !last.seeded && t - last.at < 2000) {
+      if (BARE_SOUND.test(last.text)) this.turns.pop();
+      else last.text = last.text.replace(/\s+(?:m+|hm+|mhm+|mm-?hm+|uh-?huh)[.!?…]*\s*$/i, "");
+    }
+    this.log({ gptlive_sound_dropped: this.call.id, why, kind: h.why, speech_ms: h.speechMs });
+  }
+
   /** Has Reason's turn written this line down as a mailbox? (Read at most every 400 ms: the audio path.) */
   mailboxNow(t) {
     if (t - (this.lineReadAt ?? -Infinity) > 400) {
@@ -1334,6 +1430,7 @@ export class GptLiveCall {
    */
   stopTalking(why) {
     if (!this.talking) return;
+    if (this.sound) this.dropSound("talk stopped");
     this.talking = false;
     this.callerVoiceAt = 0;
     this.talkCutoff = this.now();
@@ -1825,7 +1922,7 @@ export class GptLiveCall {
       recording, recordingWhy,
       ...(this.line ? { howItWent: this.howItWent(seconds) } : {}),
     };
-    this.log({ gptlive_call_ended: this.call.id, why: this.endWhy, seconds, delegations: this.delegations, guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted, closed: this.closedReason ?? "", ...(this.line ? { line: true, dropped_frames: this.dropped, amd: this.amdVerdict ?? "" } : {}) });
+    this.log({ gptlive_call_ended: this.call.id, why: this.endWhy, seconds, delegations: this.delegations, guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted, closed: this.closedReason ?? "", ...(this.line ? { line: true, dropped_frames: this.dropped, sounds_dropped: this.soundsDropped, amd: this.amdVerdict ?? "" } : {}) });
     try { await this.finishCall(live); } catch (e) { this.log({ gptlive_settle_failed: this.call.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
   }
 }
