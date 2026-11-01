@@ -35,7 +35,7 @@ const {
   llmRequest, verifyLlmBearer, identifyCall, contextFor, ownerContext, thirdPartyContext,
   sseChunk, SSE_DONE, withoutSpokenLinks, sentenceSplitter, callLanguage, callBackendName,
   SYSTEM_TOOL_NAMES, MAX_VOICE_TOOL_ROUNDS, LLM_PATH, latestSpoken,
-  LINE_IS_QUIET, endOnTheirSide, CALL_TOOL_BUDGET_MS,
+  LINE_IS_QUIET, OWN_LINE_IS_QUIET, endOnTheirSide, CALL_TOOL_BUDGET_MS,
 } = voice;
 const { EXTRA_BODY_KEYS } = await import("../src/calls/elevenlabs.js");
 const harm = await import("../src/harm.js");
@@ -750,7 +750,7 @@ test("a history that ends on Reason's own words is handed to the model as its tu
   assert.equal(seen.length, 1);
   const sent = seen[0];
   assert.equal(sent.at(-1).role, "user", "the request ends on their side");
-  assert.equal(sent.at(-1).content, LINE_IS_QUIET);
+  assert.equal(sent.at(-1).content, OWN_LINE_IS_QUIET, "their own call: a promised check is followed through (call 68)");
   assert.deepEqual(sent.at(-2), { role: "assistant", content: "One sec..." }, "what was already said stays in the history");
   assert.match(r.said, /Still here/);
   assert.ok(!/something broke/.test(r.said));
@@ -1590,4 +1590,6 @@ test("quiet line: stay quiet or carry on the task, never ask whether they are th
   assert.match(LINE_IS_QUIET, /never ask whether they are there/i);
   assert.match(LINE_IS_QUIET, /skip_turn/);
   assert.match(LINE_IS_QUIET, /never write NO_REPLY/);
+  assert.doesNotMatch(OWN_LINE_IS_QUIET, /check they are still there/i);
+  assert.match(OWN_LINE_IS_QUIET, /never ask whether they are there/i);
 });
