@@ -22,6 +22,7 @@
 //   - **A cap per person per day**, counted in the database. The operator pays for every turn, so
 //     one person cannot spend the whole month.
 import * as db from "./db.js";
+import * as plan from "./plan.js";
 import { config, clock, normalizeNumber } from "./config.js";
 
 /** The console is always the operator: there is nobody else on the other end of a terminal. */
@@ -190,6 +191,9 @@ export function withinCap(conversationId, kind = "turn") {
  */
 export function countUse(conversationId, kind = "turn", amount = 1) {
   const cap = CAPS[kind] ?? CAPS.turn;
+  // A turn of theirs is also a visit for the free trial (src/plan.js): a new session when 30 minutes
+  // have passed. A refund (negative) is not a visit. Never allowed to cost the turn.
+  if (kind === "turn" && amount > 0) { try { plan.noteTurn(conversationId); } catch { /* the count above still stands */ } }
   return db.bumpUsage(conversationId, today(), cap.column, amount);
 }
 

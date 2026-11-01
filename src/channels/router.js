@@ -45,6 +45,7 @@ import { webReplyAllowedFor } from "../dailyflag.js";
 import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 import * as onboarding from "../onboarding.js";
+import * as plan from "../plan.js";
 
 /** What somebody whose event code did not work is told, by why. */
 const EVENT_CLAIM_LINES = {
@@ -811,6 +812,10 @@ export class Router {
     // After the turn: if this person now has a name and hasn't gotten their card, send it.
     // Fires here rather than before the turn so the card arrives after "nice to meet you".
     void this.#offerCardIfNamed(conversationId);
+    // The free trial's 25th-session bubbles, after that session's reply has answered them, and the
+    // hold once they have lapsed (src/plan.js). Nothing under REASON_PAYWALL=off; never throws here.
+    await plan.afterTurn({ conversationId, router: this, log: this.log })
+      .catch(e => this.log({ paywall_after_turn_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }));
     return {
       ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator,
       messages: held.length, replied: reply !== null,

@@ -23,6 +23,7 @@ import { ridesNote } from "./eventrides.js";
 import { commitmentNote } from "./commitment.js";
 import { goalNote } from "./goals.js";
 import { pauseNote } from "./pause.js";
+import { note as planNote, blocked as planBlocked } from "./plan.js";
 import { memoryNotes } from "./memorynote.js";
 import { startPurchasesNote, purchaseRecordSource } from "./purchasesnote.js";
 import { checkoutNote as shopCheckoutNote } from "./shopconnect.js";
@@ -478,7 +479,11 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   const reqs = kind === "user" ? openRequests(conversationId) : [];
   const reqsNote = reqs.length ? requestsNote(reqs) : "";
 
-  const pauseInfo = kind === "user" ? pauseNote(conversationId) : "";
+  // Where they stand on the free trial (src/plan.js): empty for everyone the paywall does not reach.
+  // While the paywall itself holds their things, its note speaks and the pause note does not — the
+  // pause note would send the model asking "one-off or resuming?" about a hold that is not theirs.
+  const planInfo = kind === "user" ? planNote(conversationId) : "";
+  const pauseInfo = kind === "user" && !planBlocked(conversationId) ? pauseNote(conversationId) : "";
   const recentPhotos = kind === "user" ? reviewed.recentPhotosNote(conversationId) : "";
   // What it already knows about them: the profile and the closest saved facts. Same call as the
   // CLI path (src/memorynote.js), so the two backends are shown the same memory.
@@ -505,7 +510,7 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // (src/said.js), so an update corrects out loud and a settled question is never asked again.
   // On a turn that is not theirs, only what they turned down: a sweep must not raise it either.
   const saidNote = kind === "user" ? saidLedger.standingNote(conversationId) : saidLedger.declinedNote(conversationId);
-  const turnNote = [reconnect, pauseInfo, noticeNote, newThing, resolvedMiss, purchases, checkouts, openWork, kept, ridesNow, standing, goalsNote, reqsNote, saidNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
+  const turnNote = [reconnect, planInfo, pauseInfo, noticeNote, newThing, resolvedMiss, purchases, checkouts, openWork, kept, ridesNow, standing, goalsNote, reqsNote, saidNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;
