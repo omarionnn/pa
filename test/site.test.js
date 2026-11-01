@@ -239,14 +239,20 @@ test("the public pages answer only GET and HEAD", async () => {
   }
 });
 
-test("the pages name the address this install is really reachable at", async () => {
-  const was = config.publicUrl;
+test("the pages name the website first, and the server's own address only when there is no website", async () => {
+  const was = { publicUrl: config.publicUrl, siteUrl: config.siteUrl };
   config.publicUrl = "https://reason.example.ts.net";
   try {
-    const { body } = await get("/privacy");
+    // A website is set (REASON_SITE_URL above): a person reads that, never the server's address (2026-11-01).
+    let { body } = await get("/privacy");
+    assert.match(body, /site\.example\.test/);
+    assert.doesNotMatch(body, /reason\.example\.ts\.net/);
+    config.siteUrl = "";
+    ({ body } = await get("/privacy"));
     assert.match(body, /reason\.example\.ts\.net/);
   } finally {
-    config.publicUrl = was;
+    config.publicUrl = was.publicUrl;
+    config.siteUrl = was.siteUrl;
   }
 });
 
