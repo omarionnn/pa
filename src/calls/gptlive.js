@@ -463,7 +463,9 @@ export function fromLine(said, line) {
 }
 
 // The voice's own "let me think / let me check / one sec" while a hand-off runs (`promisedThought`).
-export const THINKING_ACK = /\b(?:(?:let me|lemme|let's)\s+(?:have a\s+)?(?:think|check|look|see)|have a (?:think|look)|think (?:it|that) over|one (?:sec|second|moment)|just a (?:sec|second|moment)|give me a (?:sec|second|moment)|hang on|hold on|bear with me)\b/i;
+// Phrasings the live voice really used on drives (2026-11-01): "Lemme have a think", "Give me a moment.
+// I'll have a proper think", "I'm giving it some thought", "one sec, I'm on it", "mull it over".
+export const THINKING_ACK = /\b(?:(?:let me|lemme|let's|i'll)\s+(?:have a\s+(?:proper\s+|quick\s+)?)?(?:think|check|look|see)|have a (?:proper |quick )?(?:think|look)|giv(?:e|ing) it (?:some |a )?(?:thought|think)|mull|think(?:ing)? (?:it|that|about it) (?:over|through)|i'm (?:on it|checking|looking)|one (?:sec|second|moment)|just a (?:sec|second|moment)|give me a (?:sec|second|moment)|hang on|hold on|bear with me)\b/i;
 /** What is said when Reason had nothing to add after the voice promised a thought: the turn handed back. */
 export const SKIP_FOLLOW_UP = "So — what do you reckon?";
 
