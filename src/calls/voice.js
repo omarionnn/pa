@@ -61,6 +61,7 @@ import * as fromcall from "./fromcall.js";
 import { profileNote } from "./profile.js";
 import * as callMetrics from "./metrics.js";
 import * as stranger from "./stranger.js";
+import * as reviewed from "../reviewed.js";
 
 /** The route ElevenLabs is pointed at. One place, because the setup doc quotes it. */
 export const LLM_PATH = "/calls/elevenlabs/llm";
@@ -527,6 +528,23 @@ export function scheduledCallNote(call) {
     + ` Keep it short; they asked for a ring, not a conversation.`;
 }
 
+/**
+ * Why Reason rang them, and what it already has for it, for a call it placed that no timer asked for
+ * (call 67, 2026-11-01: the backend spent 19 s finding the photos the call was about). The goal and
+ * facts off the row, and the photos they sent around then with what was seen in each and its id.
+ */
+export function placedCallNote(call) {
+  if (!call || call.direction === "in" || call.timer_id || !Number(call.is_owner)) return "";
+  const why = String(call.goal ?? "").trim();
+  if (!why) return "";
+  const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
+  let photos = "";
+  try { photos = reviewed.recentPhotosNote(call.conversation_id, { since: Number(call.created_at ?? clock.now()) - 2 * 60 * 60_000 }); } catch { /* no note */ }
+  return `YOU rang THEM, and this is why: "${why}". Lead with it and stay on it until they move on — do not ask what they called about: they did not call.`
+    + (facts.length ? `\nWhat you already have for it:\n${facts.map(f => `- ${f}`).join("\n")}` : "")
+    + (photos ? `\nThe ${photos}` : "");
+}
+
 export function ownerContext({ call, callMessages = [], now = clock.now() }) {
   const conversationId = call.conversation_id;
   const me = accounts.ownerOf(conversationId);
@@ -543,6 +561,7 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // has a reason, and the model answering the turns must know it: a wake-up call whose second
     // line is "what's up?" is Reason forgetting why it rang. The opening line already said it.
     scheduledCallNote(call),
+    placedCallNote(call),
     // The half of the turn profile the model is responsible for: telling a pause for thought from a
     // finished turn (2026-10-07 addendum, section 4). The numbers in that profile are agent-level
     // settings on the platform and nothing a prompt can act on; this sentence is the part that is.
@@ -1437,7 +1456,7 @@ function queueToMaster({ text, key, log = () => {} }) {
  * business starting a browser. `prime()` is called once before the first turn.
  */
 export const contextDeps = {
-  systemFor: null, toolsFor: null, runTool: null, openWorkNote: () => "", keptNote: () => "", purchasesNote: () => "",
+  systemFor: null, toolsFor: null, runTool: null, toSelf: null, openWorkNote: () => "", keptNote: () => "", purchasesNote: () => "",
 };
 
 let primed = null;
@@ -1450,6 +1469,7 @@ export async function prime() {
     contextDeps.systemFor = agent.systemFor;
     contextDeps.toolsFor = tools.toolsFor;
     contextDeps.runTool = tools.runTool;
+    contextDeps.toSelf = tools.addressedToOwner;
     contextDeps.openWorkNote = openwork.openWorkNote;
     contextDeps.keptNote = kept.keptNote;
     contextDeps.purchasesNote = purchases.purchasesNote;
@@ -2198,7 +2218,7 @@ export async function* voiceTurn({
         // phone, so the first thing on this call that spends, books, sends or changes state stops
         // here. `confirm_record` is on the list because it is how a spoken yes becomes a granted
         // confirmation — exactly the thing that must not be grantable by whoever is on the line.
-        if (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name)) {
+        if (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf: (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false })) {
           out = verify.gateRefusal({ call, name: t.name });
           log({ call_tool_needs_verification: t.name, call_id: call.id });
           results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });

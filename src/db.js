@@ -5100,6 +5100,18 @@ export function taskCallLive(conversationId, taskId, { now = clock.now(), within
     .get(conversationId, taskId, now - withinMs);
 }
 
+/**
+ * The newest call to this number that is still placing, ringing or connected, from ANY conversation
+ * (two turns, or two people, must never ring one phone twice at once). Rows older than `withinMs`
+ * are a crashed call the lost-call sweep has not written off yet, not a ringing phone.
+ */
+export function liveCallTo(toNumber, { now = clock.now(), withinMs = 75 * 60_000 } = {}) {
+  if (!toNumber) return null;
+  const r = db.prepare("SELECT * FROM calls WHERE to_number = ? AND state IN ('placing','ringing','in_progress') AND created_at >= ? ORDER BY id DESC LIMIT 1")
+    .get(toNumber, now - withinMs);
+  return r ? { ...r, facts: safeJson(r.facts, []) } : null;
+}
+
 /** Calls on this errand that are still going, for the parallel limit. */
 export function liveErrandCalls(conversationId, errandId) {
   return db.prepare("SELECT * FROM calls WHERE conversation_id = ? AND errand_id = ? AND state IN ('placing','ringing','in_progress')")
@@ -5265,6 +5277,8 @@ export function updateCall(conversationId, id, fields) {
     "external_id", "state", "outcome", "summary", "transcript", "duration_s", "cost_cents",
     // Which voice really carried an owner call: GPT-Live's place() reports itself (src/calls/gptlive.js).
     "provider",
+    // What a second call_place handed into this one while it rang or ran (tools.js, calls 66/67).
+    "facts",
     "recording_state", "recording_file", "recording_format", "recording_seconds",
     "recording_bytes", "recording_sha256", "recording_why",
     "language", "language_announced",

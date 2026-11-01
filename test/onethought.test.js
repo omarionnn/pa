@@ -210,13 +210,32 @@ test("a text folded into a turn refused by the screen goes back for a turn of it
   assert.ok(!h.fake.sent.some(m => /answered: something refused/.test(m.text)), "the refused turn's reply never went");
 });
 
-test("a photo sent mid-turn is never folded (the fold hands over words): it keeps its own turn", async () => {
+test("a photo sent mid-turn joins the running turn (calls 66/67, 2026-11-01): one turn, the photo named by id", async () => {
+  onethought.setMidTurnReader(() => "continuation");
+  const g = gate();
+  const seen = [];
+  const h = harness(async (args, n) => { seen.push(String(args.text)); if (n === 1) await g.wait(); return `turn ${n}`; });
+  const first = h.router.deliver(text("what do you think of this jacket"));
+  await until(() => h.turns.length === 1, "turn");
+  await h.router.deliver(text("", { attachments: [{ kind: "image", url: "https://example.com/j.jpg", mimeType: "image/jpeg" }] }));
+  await until(() => h.logs.some(l => l.folded), "the fold");
+  g.open();
+  await first;
+  await until(() => !h.router.waiting.has(C), "done");
+  assert.equal(h.turns.length, 2, "the first turn and its recompose — never a turn of the photo's own");
+  const fold = h.logs.find(l => l.folded);
+  assert.equal(fold.photos, 1);
+  assert.match(seen.at(-1), /they sent a photo, #\d+: photo_look \d+ puts it in front of you/);
+  assert.equal(h.fake.sent.length, 1, "one reply");
+});
+
+test("a voice note sent mid-turn still keeps its own turn (only words and photos fold)", async () => {
   onethought.setMidTurnReader(() => "continuation");
   const g = gate();
   const h = harness(async (args, n) => { if (n === 1) { await g.wait(); await lookUp(args); } return `turn ${n}`; });
-  const first = h.router.deliver(text("what do you think of this jacket"));
+  const first = h.router.deliver(text("what do you think of this"));
   await until(() => h.turns.length === 1, "turn");
-  await h.router.deliver(text("", { attachments: [{ kind: "photo", url: "https://example.com/j.jpg", mimeType: "image/jpeg" }] }));
+  await h.router.deliver(text("", { attachments: [{ kind: "audio", url: "https://example.com/v.m4a", mimeType: "audio/mp4" }] }));
   await until(() => h.logs.some(l => l.midturn === "left"), "the read");
   g.open();
   await first;

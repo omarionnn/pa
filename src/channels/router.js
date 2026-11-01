@@ -74,6 +74,12 @@ export function quietWindowFor(channel) {
   return channel === web.WEB ? Math.min(config.burstQuietWebMs, config.burstQuietMs) : config.burstQuietMs;
 }
 
+/** A folded photo, in words: what they wrote with it, and which photo it is. */
+export function photoWords(text, photos) {
+  const which = photos.map(id => `[they sent a photo, #${id}: photo_look ${id} puts it in front of you]`).join(" ");
+  return [String(text ?? "").trim(), which].filter(Boolean).join(" ");
+}
+
 export class Router {
   /**
    * `judge` is what reads the master's reply to an access request. Injectable for the same reason
@@ -500,14 +506,29 @@ export class Router {
    */
   async #readMidTurn(conversationId, working, { externalId, text }) {
     try {
-      // Words only. A photo, a voice note, a file or a contact card mid-turn keeps its own turn,
-      // where it is looked at, heard or read like any other — the fold hands the turn words, so
-      // folding one would lose what was in it. A link is words, and is folded like any.
+      // Words and photos. A voice note, a file or a contact card mid-turn keeps its own turn, where
+      // it is heard or read like any other — the fold hands the turn words, so folding one would lose
+      // what was in it. A link is words. A photo is folded by its media id and rides, as the picture
+      // itself, on the turn's next tool result (calls 66/67, 2026-11-01: a second photo seconds
+      // after the first got its own turn, and that turn rang the same phone a second time).
       const row = db.lastPendingInbound(conversationId);
       const atts = row?.external_id === externalId ? (() => { try { return JSON.parse(row.attachments || "[]"); } catch { return []; } })() : [];
-      if (atts.some(a => a?.kind !== "link")) {
+      const isPhoto = (a) => a?.kind === "image" && Number.isInteger(a?.media_id);
+      if (atts.some(a => a?.kind !== "link" && !isPhoto(a))) {
         this.log({ midturn: "left", inbound: externalId, conversation: conversationId, why: "attachments" });
         return { left: "attachments" };
+      }
+      const photos = atts.filter(isPhoto).map(a => a.media_id);
+      if (photos.length && !String(text ?? "").trim()) {
+        // A bare photo has no words to read or screen: it goes with what is being worked on.
+        if (working.ended || working.closing) return { left: "turn_ended" };
+        const taken = db.takePendingByHandle(conversationId, externalId);
+        if (!taken) return { left: "already_taken" };
+        onethought.fold(working, { handle: externalId, text: photoWords("", photos), photos, row: taken });
+        const requestId = onethought.activeRequestId(working);
+        if (requestId) db.linkRequestMessage(conversationId, requestId, externalId, "continuation");
+        this.log({ folded: externalId, into: requestId, conversation: conversationId, photos: photos.length });
+        return { folded: true };
       }
       // The thread this turn is in: a Web-only chat's own (fold.webChat), or the shared one.
       const thread = db.loadConversation(working.webChat ? db.historyKeyFor(conversationId, db.webChatRoute(working.webChat)) : conversationId);
@@ -534,7 +555,7 @@ export class Router {
       const taken = db.takePendingByHandle(conversationId, externalId);
       // A drain got there first (the turn had already ended and the next one took it): nothing to do.
       if (!taken) return { left: "already_taken" };
-      onethought.fold(working, { handle: externalId, text, unclear: verdict.kind === "unclear", row: taken });
+      onethought.fold(working, { handle: externalId, text: photos.length ? photoWords(text, photos) : text, photos, unclear: verdict.kind === "unclear", row: taken });
       const requestId = onethought.activeRequestId(working);
       if (requestId) {
         db.linkRequestMessage(conversationId, requestId, externalId, "continuation");

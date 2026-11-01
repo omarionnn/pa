@@ -668,9 +668,10 @@ test("the live prompt is call 53's (#290), word for word, plus only the gated id
   assert.match(lines[1], /^Only if they ask who you are, who they are or their name, answer straight away yourself: you're Reason, their assistant, and they're Omari, the person you work for\. Where they are, or any other question, goes to Reason;/);
   assert.match(lines[2], /^You were made by Saafi Interactions Lab;/);
   assert.equal(lines[3], "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.");
-  assert.equal(lines.at(-1), "Stop speaking when they talk over you, and listen.");
-  assert.equal(lines.length, 16, "call 53's ten lines + identity + maker + call 56's four");
-  for (const l of gl.CALL56_LINES) assert.ok(lines.includes(l));
+  const end = lines.indexOf("Stop speaking when they talk over you, and listen.");
+  assert.equal(end, 17, "call 53's ten lines + identity + maker + call 56's four + the two own-call lines (2026-11-01)");
+  for (const l of [...gl.CALL56_LINES, ...gl.OWN_CALL_LINES]) assert.ok(lines.includes(l));
+  assert.match(lines.slice(end + 1).join("\n"), /^PRE-CALL BRIEF/, "only the pre-call brief after call 53's last line");
   assert.doesNotMatch(s, /2 and 5 trains|How you sound|You rang|New York/, "no profile, no tone section, none of #293's additions");
   assert.equal(config.gptliveVoice, "marin", "the default voice is call 53's");
 });
@@ -679,7 +680,7 @@ test("identity off (flag unset): call 53's prompt plus the maker line, nothing e
   on({ callIdentity: false });
   const s = gl.liveInstructions(gl.whoFor(db.getCall(C, ownerCall().id)));
   assert.doesNotMatch(s, /ask who you are/);
-  assert.equal(s.split("\n").length, 15);
+  assert.equal(s.split("\n").indexOf("Stop speaking when they talk over you, and listen."), 16);
 });
 
 test("identity =owner: another user's call has no identity line and nothing of the operator's", () => {

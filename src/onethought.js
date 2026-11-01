@@ -78,11 +78,11 @@ const byToken = (token) => {
 export const activeRequestId = (turn) => turn?.requests?.at(-1)?.id ?? null;
 
 /** Hand the running turn a text it now owns. `row` is the pending_inbound row it was taken from. */
-export function fold(turn, { handle, text, unclear = false, row = null }) {
+export function fold(turn, { handle, text, unclear = false, row = null, photos = [] }) {
   if (!turn || turn.ended || turn.closing) return false;
   const at = row?.arrived_at ?? clock.now();
   // In the order they were SENT: two reads in flight at once can finish the other way round.
-  turn.added.push({ handle, text: String(text ?? ""), unclear, row, seen: false, at });
+  turn.added.push({ handle, text: String(text ?? ""), unclear, row, seen: false, at, photos: [...photos] });
   // Two texts can land in the same millisecond (the test suite under load does it every few runs),
   // so a tie falls back to the pending_inbound row id, which is the order they were taken in.
   turn.added.sort((a, b) => (a.at - b.at) || ((a.row?.id ?? 0) - (b.row?.id ?? 0)));
@@ -114,6 +114,9 @@ export function noteFor(token) {
   if (!items.length) return "";
   return addedLine(items, { midTool: true });
 }
+
+/** Media ids of photos folded in that the turn has not been shown yet (without taking them). */
+export const unseenPhotos = (token) => unseen(byToken(token)).flatMap(a => a.photos ?? []);
 
 /** Whether something is waiting for this turn's tools (without taking it). */
 export const hasUnseen = (token) => unseen(byToken(token)).length > 0;
