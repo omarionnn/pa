@@ -259,6 +259,8 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
 export const OWN_CALL_LINES = [
   "This is their own call: be friendly, chatty and warm, like a friend who's glad to hear from them. React to what they say, ask a natural follow-up, enjoy the small talk.",
   "If you rang them for a reason, lead with it. If not, you may pick up one thing from your recent chats when it fits. If they want something quick done, get straight to it.",
+  // Call 68 (2026-11-01): a whole critique, a rewrite read out and a three-way question in one breath.
+  "Keep it a back-and-forth: one point at a time, a few short sentences, then let them react. Never read a long text out loud; offer to text it. Ask at most one question at a time.",
 ];
 
 /**
@@ -421,12 +423,24 @@ const SENDS = /send|email|text|message|page_|picture|voice_note/;
  */
 export function withoutUnbackedSends(spoken, tools = []) {
   const text = String(spoken ?? "");
-  if (!SENT_CLAIM.test(text) || (tools ?? []).some(n => SENDS.test(String(n)))) return { text, dropped: 0 };
-  const sentences = text.match(/[^.!?…]+[.!?…]*\s*/g) ?? [text];
-  const kept = sentences.filter(x => !(SENT_CLAIM.test(x) && claimsDone(x) && !EARLIER.test(x)));
-  const dropped = sentences.length - kept.length;
+  if (!SENT_CLAIM.test(unquoted(text)) || (tools ?? []).some(n => SENDS.test(String(n)))) return { text, dropped: 0 };
+  // Split on sentence ends outside quotes only: a quoted caption's "???" is not the end of the sentence.
+  const sentences = text.match(/(?:"[^"]*"|“[^”]*”|[^.!?…"“])+[.!?…]*\s*/g) ?? [text];
+  const claims = (x) => { const own = unquoted(x); return SENT_CLAIM.test(own) && claimsDone(own) && !EARLIER.test(own); };
+  let dropped = 0;
+  // The honest line goes where the claim was, once — never in front of words that claimed nothing.
+  const out = sentences.map(x => (claims(x) ? (dropped++ === 0 ? "I'll text that to you. " : "") : x));
   if (!dropped) return { text, dropped: 0 };
-  return { text: ["I'll text that to you.", kept.join("").trim()].filter(Boolean).join(" "), dropped };
+  return { text: out.join("").replace(/\s+/g, " ").trim(), dropped };
+}
+
+/**
+ * The words with anything quoted taken out. Call 68 (2026-11-01): a result quoting his caption ("i texted
+ * Reason one voice note…") read as Reason claiming a send, and "I'll text that to you." was said before
+ * its opinion. Words in quotes are somebody else's, not a claim.
+ */
+export function unquoted(text) {
+  return String(text ?? "").replace(/"[^"]*"|“[^”]*”/g, " ");
 }
 
 /** Does this say something has been done? Exported for the tests. */
@@ -441,6 +455,11 @@ export function fromLine(said, line) {
   const w = words(said);
   return own.size > 0 && w.length > 0 && w.filter(x => own.has(x)).length / w.length >= 0.8;
 }
+
+// The voice's own "let me think / let me check / one sec" while a hand-off runs (`promisedThought`).
+export const THINKING_ACK = /\b(?:think|thinking|thought|check|checking|look|looking|moment|sec|second|hang on|hold on|bear with)\b/i;
+/** What is said when Reason had nothing to add after the voice promised a thought: the turn handed back. */
+export const SKIP_FOLLOW_UP = "So — what do you reckon?";
 
 /** The words the voice is given when it claimed something nobody confirmed. Code's words, never the caller's. */
 export const GUARD_CORRECTION = "Stop. Nothing has been confirmed as done yet. In a few words, correct yourself: say it is not done yet"
@@ -1202,6 +1221,10 @@ export class GptLiveCall {
     if (t - this.lastOutTextAt > 1500) this.utter = "";
     this.lastOutTextAt = t;
     this.utter += delta;
+    for (const p of this.pending.values()) p.ack = (p.ack ?? "") + delta;
+    // The seeded opener stands in until the voice's own words arrive, then gives way to them: call 68
+    // (2026-11-01) had it once in the recording and twice in the transcript, seed then the real words.
+    if (!this.line && this.turns.some(x => x.seeded)) this.turns = this.turns.filter(x => !x.seeded);
     const last = this.turns.at(-1);
     if (last && last.who === "reason" && !last.seeded && t - last.at < 4000) { last.text += delta; last.at = t; }
     else this.turns.push({ who: "reason", text: delta.trimStart(), at: t, from: t });
@@ -1318,6 +1341,12 @@ export class GptLiveCall {
       this.lastResultAt = turn.resultAt;
       this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: spoken.slice(0, 1800) });
       (this.answered ??= []).push(turn);
+    } else if (this.promisedThought(turn)) {
+      // Call 68 (2026-11-01): "Hmm. Lemme have a think." then Reason skipped, the voice was told to say
+      // nothing, and the line sat silent until he said "Hello". A thought announced is closed out loud.
+      this.log({ gptlive_skip_followed_up: this.call.id });
+      this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: SKIP_FOLLOW_UP });
+      (this.answered ??= []).push(turn);
     } else {
       this.live.send({ type: "session.thinking.append", event_id: `result_${id}`, delegation_id: id, content: "Reason has nothing to add right now. Say nothing more about it and listen." });
       this.heard(turn);
@@ -1338,6 +1367,16 @@ export class GptLiveCall {
       if (transfer) this.handOff(transfer.args ?? {});
     }
     if (reply.endCall) this.hangUpAfterSpeech();
+  }
+
+  /**
+   * Did the voice, while this hand-off ran, tell them it was thinking or checking — on a call where they
+   * are talking with Reason (not a line call), with nothing said by them since? Then an empty result
+   * must still be answered out loud.
+   */
+  promisedThought(turn) {
+    if (this.line) return false;
+    return THINKING_ACK.test(turn.ack ?? "") && this.lastCallerAt <= turn.startedAt;
   }
 
   /** What the caller heard for one turn, onto the call_turns row Reason's own turn wrote. */

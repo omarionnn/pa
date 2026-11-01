@@ -29,6 +29,10 @@
 // up on the mutual goodbye, the transcript went into HER thread, the after-call note and the recording
 // went to HER conversation (a recording runtime stands in for the real one), cost_cents was set, and
 // nothing of Omari's (thread, profile, name) was said, sent or written anywhere — his thread untouched.
+// --expect think-skip (call 68): the first hand-off returns skip_turn after 2.5 s, as Reason did after the
+// voice's "Hmm. Lemme have a think."; passes only if the voice still speaks within 6 s of the skip
+// (gptlive_skip_followed_up) — the line never sits silent on a promised thought. Ask for a think, e.g.
+// "hmm, what do you think of my caption? take a sec and think it over."
 // caller.ulaw is raw 8 kHz mono μ-law (Mac: say -o q.aiff "…" && ffmpeg -i q.aiff -ar 8000 -ac 1 -f mulaw q.ulaw).
 // Prints one JSON line: what Reason was asked, what it answered, what the voice said, what the
 // caller heard when, the guard's trips, and the settled row. Exits non-zero unless a delegation went
@@ -102,7 +106,20 @@ server.on("upgrade", (req, socket) => {
   const path = new URL(req.url, "http://x").pathname;
   const ws = acceptUpgrade(req, socket);
   if (ws) call = gl.acceptStream({ token: path.slice(gl.STREAM_PATH.length), socket: ws, settle: settleCall, runtime: expect === "full" ? runtime : null, log });
+  // --expect think-skip: the first hand-off comes back as Reason's skip_turn after 2.5 s (the voice has
+  // had time to say "let me think"), exactly call 68's second turn; later ones are Reason's real turn.
+  if (call && expect === "think-skip") {
+    const real = call.brain;
+    let n = 0;
+    call.brain = async (messages) => {
+      if (n++ > 0) return real(messages);
+      await new Promise(r => setTimeout(r, 2500));
+      skipAt = Date.now() - startAt;
+      return { text: "", tools: ["skip_turn"], calls: [], endCall: null, skip: true };
+    };
+  }
 });
+let skipAt = null;
 await new Promise(r => server.listen(0, "127.0.0.1", r));
 const port = server.address().port;
 
@@ -206,7 +223,16 @@ out.full = expect === "full" ? {
   omari_thread_untouched: JSON.stringify(db.loadConversation(C)) === omariBefore,
   omari_leak: /2 and 5|two and five|protein|170|4471|locker|\bOmari\b/i.test(everything),
 } : undefined;
-const ok = expect === "full"
+if (expect === "think-skip") {
+  out.think_skip = {
+    skip_at_ms: skipAt,
+    followed_up: pick("gptlive_skip_followed_up").length > 0,
+    speech_after_skip_ms: skipAt == null ? null : (speechAt.find(ms => ms > skipAt + 100) ?? null) - skipAt,
+  };
+}
+const ok = expect === "think-skip"
+  ? skipAt != null && out.think_skip.followed_up && out.think_skip.speech_after_skip_ms > 0 && out.think_skip.speech_after_skip_ms < 6000 && out.guard_trips === 0
+  : expect === "full"
   ? as === "user" && out.delegations > 0 && turnConvs.length === 1 && turnConvs[0] === AMA
     && hungUpByReason && settled.end_reason === "end_call" && /mutual goodbye/.test(settled.end_detail ?? "")
     && events.length > 0 && events.every(e => e.conversationId === AMA && e.forCall === row.id)

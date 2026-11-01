@@ -284,7 +284,7 @@ test("'Just texted.' is a claim, and a result that says it with no send behind i
   const r = gl.withoutUnbackedSends("Sounds good. Just texted. Pick whichever one feels most like you.", ["end_call"]);
   assert.equal(r.dropped, 1);
   assert.doesNotMatch(r.text, /Just texted/);
-  assert.match(r.text, /^I'll text that to you\./);
+  assert.match(r.text, /^Sounds good\. I'll text that to you\./, "the honest line where the claim was (call 68)");
   assert.equal(gl.withoutUnbackedSends("I texted you the link earlier. Want me to resend it?", []).dropped, 0, "a send from before, said as such, stays");
   assert.equal(gl.withoutUnbackedSends("Just texted it.", ["message_send"]).dropped, 0, "a send that ran stands");
 });
