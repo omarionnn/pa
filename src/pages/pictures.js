@@ -69,7 +69,13 @@ function whyNotCopied(got) {
 
 /** The address pictures Reason stores are served from — the same base image_generate uses. */
 export function imageBase() {
-  return `${config.publicUrl || `http://127.0.0.1:${config.port}`}/img/`;
+  // The files domain first (files.heyreason.com/img/* goes straight to this server, 2026-11-01).
+  return `${config.pagesUrl || config.publicUrl || `http://127.0.0.1:${config.port}`}/img/`;
+}
+
+/** Every address this install's pictures have been handed out under, so an older link is still ours. */
+export function ownImageBases() {
+  return [config.pagesUrl, config.publicUrl, `http://127.0.0.1:${config.port}`].filter(Boolean).map(u => `${u.replace(/\/+$/, "")}/img/`);
 }
 
 export function hostOf(url) {
@@ -260,7 +266,9 @@ export async function preparePictures(conversationId, blocks, {
 
   const settle = async (url, { at, inCards }) => {
     const seen = info(url) ?? { kind: "", from: "" };
-    const ours = url.startsWith(base);
+    // Ours on any address this install has served pictures from: the current base, and the
+    // server's own address for pictures remembered before the files domain came first (2026-11-01).
+    const ours = url.startsWith(base) || ownImageBases().some(b => url.startsWith(b));
     const generated = seen.kind === "generated" || (ours && seen.kind !== "mirror" && !/\/img\/m-/.test(url));
     if (generated) {
       if (inCards) {

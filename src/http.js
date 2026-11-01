@@ -817,7 +817,7 @@ export function createServer({ router, runtime, log = () => {} }) {
         res.writeHead(200, HTML());
         return res.end(brandedPage(url.pathname === "/pay/done" ? "You're all set" : "No charge",
           url.pathname === "/pay/done"
-            ? `<h1>You're all set.</h1><p>Thank you. Reason will text you in a moment — everything picks up right where it was.</p>`
+            ? `<h1>You're all set.</h1><p>Thank you. Everything is back on.</p><p class="lead">Head back to Messages — Reason will text you there in a moment, and whatever you were in the middle of picks up right where it was.</p>`
             : `<h1>Nothing was charged.</h1><p>No worries. Whenever you want to keep going, just text Reason and ask for the link again.</p>`));
       }
 

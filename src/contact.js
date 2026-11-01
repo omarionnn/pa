@@ -70,7 +70,10 @@ export function cardHash({ router = null, channel = null } = {}) {
 
 /** Where the card lives, by content, or null when this install has no public address. */
 export function contactCardUrl({ router = null, channel = null } = {}) {
-  return config.publicUrl ? `${config.publicUrl}/reason-${cardHash({ router, channel })}.vcf` : null;
+  if (!config.publicUrl && !config.pagesUrl) return null;
+  // The files domain when there is one (files.heyreason.com serves /reason-*.vcf straight through,
+  // 2026-11-01), so nothing a person receives names the server's own address.
+  return `${config.pagesUrl || config.publicUrl}/reason-${cardHash({ router, channel })}.vcf`;
 }
 
 /**

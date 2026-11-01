@@ -195,7 +195,9 @@ export function conversationOfRef(ref) {
   try { const s = Buffer.from(String(ref ?? ""), "base64url").toString("utf8"); return /^[\w:+.@-]{1,120}$/.test(s) ? s : null; } catch { return null; }
 }
 
-const base = () => (config.publicUrl || config.siteUrl || "https://heyreason.com").replace(/\/+$/, "");
+// Where Stripe sends a person afterwards: the website (heyreason.com proxies /pay/* to this server,
+// 2026-11-01). A person never lands on the server's own address (owner rule, 2026-11-01).
+const base = () => (config.siteUrl || config.publicUrl || "https://heyreason.com").replace(/\/+$/, "");
 
 /**
  * The link that starts paying: STRIPE_PAYMENT_LINK_URL when the owner set one (his own pricing page),

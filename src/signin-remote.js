@@ -90,7 +90,9 @@ async function realLaunch({ conversationId, url }) {
 }
 
 export function remoteSigninStatus() {
-  const base = config.publicUrl || `http://${config.host}:${config.port}`;
+  // The link a person taps lives on the website (heyreason.com/s/* is proxied to this server), else
+  // the files domain, never the server's own address when either is set (owner rule, 2026-11-01).
+  const base = (config.siteUrl || config.pagesUrl || config.publicUrl || `http://${config.host}:${config.port}`).replace(/\/+$/, "");
   return {
     reachable_from_a_phone: !!config.publicUrl,
     base,

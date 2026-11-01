@@ -744,7 +744,7 @@ async function addressOf(token, granted, { fetchImpl = fetch } = {}) {
 
 /** Where this install's privacy policy is, for the in-product notice that goes out with a connect link. */
 export function privacyUrl() {
-  return `${config.publicUrl || `http://127.0.0.1:${config.port}`}/privacy`;
+  return `${config.siteUrl || config.publicUrl || `http://127.0.0.1:${config.port}`}/privacy`;
 }
 
 /** Every Google address this person has connected, oldest first. Their own rows and nobody else's. */
