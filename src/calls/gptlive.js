@@ -1387,7 +1387,10 @@ export class GptLiveCall {
     const ack = String(turn.ack ?? "").trim();
     // Their words up to the voice's "let me think" are the question still being transcribed; words after
     // it are them talking again. An ack that ends on a question already handed the turn back.
-    return THINKING_ACK.test(ack) && !/\?\s*$/.test(ack) && this.lastCallerAt < (turn.ackAt ?? turn.startedAt);
+    // Any words of its own count, not only the phrasings in THINKING_ACK: drives showed the voice words
+    // its promise a new way nearly every run. A bare listening sound ("mm-hmm") is not one.
+    const promised = THINKING_ACK.test(ack) || (ack && !BARE_SOUND.test(ack) && !/^(?:mm-?hmm|uh-?huh|yeah|okay|right|sure)[.!,\s]*$/i.test(ack));
+    return promised && !/\?\s*$/.test(ack) && this.lastCallerAt < (turn.ackAt ?? turn.startedAt);
   }
 
   /** What the caller heard for one turn, onto the call_turns row Reason's own turn wrote. */

@@ -216,7 +216,8 @@ test("a line call's empty result is unchanged: never a follow-up of the voice's 
   const at = c.lastCallerAt + 1;
   assert.equal(c.promisedThought({ startedAt: at, ack: "let me check" }), true);
   assert.equal(c.promisedThought({ startedAt: at, ack: "Mm-hmm." }), false);
-  for (const said of ["Hmm. Lemme have a think.", "Hmm, yeah okay, I'm giving it some thought.", "Give me a moment. I'll have a proper think.", "Alright, one sec, I'm on it.", "Give me a moment to mull it over carefully."]) {
+  assert.equal(c.promisedThought({ startedAt: at, ack: "Yeah." }), false, "a bare yeah is listening, not a promise");
+  for (const said of ["Hmm. Lemme have a think.", "Hmm, yeah okay, I'm giving it some thought.", "Give me a moment. I'll have a proper think.", "Alright, one sec, I'm on it.", "Give me a moment to mull it over carefully.", "Right, let me chew on that one."]) {
     assert.equal(c.promisedThought({ startedAt: at, ack: said }), true, `the live voice's own words: ${said}`);
   }
   assert.equal(c.promisedThought({ startedAt: at, ack: "I think the second line looks great — want me to tweak it?" }), false, "plain speech is no promise");
