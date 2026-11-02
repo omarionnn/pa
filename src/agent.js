@@ -30,6 +30,7 @@ import { checkoutNote as shopCheckoutNote } from "./shopconnect.js";
 import { withoutSelfNote, readSilence } from "./plain.js";
 import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "./offers.js";
 import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
+import { REFUSAL_LINE } from "./harm.js";
 
 import { recordApi } from "./spend.js";
 import * as zonescope from "./zonescope.js";
@@ -406,13 +407,41 @@ function withBreakpoint(m) {
 /**
  * The messages as one request sends them: from `start`, with a breakpoint on the last message of the
  * thread before this turn (index `historyEnd - 1`) and one on the newest message. Copies only: what
- * the thread keeps never carries a breakpoint.
+ * the thread keeps never carries a breakpoint. `drop` (indices into `messages`) are left out.
  */
-export function cachedMessages(messages, { start = 0, historyEnd = messages.length } = {}) {
-  const view = messages.slice(start);
-  const marks = new Set([historyEnd - 1 - start, view.length - 1].filter(i => i >= 0 && i < view.length));
-  return view.map((m, i) => (marks.has(i) ? withBreakpoint(m) : m));
+export function cachedMessages(messages, { start = 0, historyEnd = messages.length, drop = null } = {}) {
+  const kept = [];
+  for (let i = start; i < messages.length; i++) if (!drop?.has(i)) kept.push(i);
+  const lastHistory = kept.findLast(i => i < historyEnd);
+  const marks = new Set([lastHistory, kept.at(-1)].filter(i => i != null));
+  return kept.map(i => (marks.has(i) ? withBreakpoint(messages[i]) : messages[i]));
 }
+
+/**
+ * The exchanges the harm screen refused in code (their line, then REFUSAL_LINE), as indices into
+ * `messages` from `from` up to `to`. On the API, the model's own safeguards read the whole request:
+ * with one of these still in view, the next turns came back `stop_reason: "refusal"` ("can't help
+ * with that one" to "what's 17 times 23", 2 of 2 on the cage, 2026-11-02) where the CLI path
+ * answered. That exchange was already answered and counted by code (src/harm.js), and the screen
+ * still reads it from the thread, which is saved unchanged. Only the API request leaves it out, and
+ * only once a request with it in view has been refused (`refusedHistory`).
+ */
+export function refusedExchanges(messages, from = 0, to = messages.length) {
+  const out = new Set();
+  const text = (m) => typeof m?.content === "string" ? m.content
+    : Array.isArray(m?.content) && m.content.length && m.content.every(b => b?.type === "text") ? m.content.map(b => b.text).join("") : null;
+  for (let i = Math.max(from + 1, 1); i < to; i++) {
+    const m = messages[i], before = messages[i - 1];
+    if (m?.role !== "assistant" || text(m)?.trim() !== REFUSAL_LINE) continue;
+    if (before?.role !== "user" || text(before) == null) continue;
+    out.add(i - 1); out.add(i);
+  }
+  return out;
+}
+/** Conversations whose API request was refused with a code-refused exchange in view. In memory, like the anchors. */
+const refusedHistory = new Set();
+/** For tests. */
+export const resetRefusedHistory = () => refusedHistory.clear();
 
 function requestsNote(reqs) {
   if (!reqs.length) return "";
@@ -604,7 +633,8 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
       // regardless, so this is about nobody else being told they are there.
       tools: toolsFor(conversationId),
       // The thread from its anchor, with the history and the newest message cached (cachedMessages).
-      messages: cachedMessages(messages, { start: viewStart, historyEnd: userIndex }),
+      // Less any exchange code already refused, once the platform refused a request over one (refusedExchanges).
+      messages: cachedMessages(messages, { start: viewStart, historyEnd: userIndex, drop: refusedHistory.has(historyId) ? refusedExchanges(messages, viewStart, userIndex) : null }),
       output_config: { effort: "medium" },
     };
     let response;
@@ -621,7 +651,16 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
     }
     log({ usage: response.usage, stop: response.stop_reason });
 
-    if (response.stop_reason === "refusal") { reply = "can't help with that one"; break; }
+    if (response.stop_reason === "refusal") {
+      // Once more without the exchanges code already refused, when there are any in view and nothing
+      // has run yet this turn. A second refusal is the platform's answer to this message itself.
+      if (round === 0 && !refusedHistory.has(historyId) && refusedExchanges(messages, viewStart, userIndex).size) {
+        refusedHistory.add(historyId);
+        log({ refusal_retry_without_refused: conversationId });
+        round--; continue;
+      }
+      reply = "can't help with that one"; break;
+    }
 
     messages.push({ role: "assistant", content: response.content });
     const toolUses = response.content.filter(b => b.type === "tool_use");

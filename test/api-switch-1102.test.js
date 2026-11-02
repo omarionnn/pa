@@ -335,3 +335,44 @@ test("14. a turn on the API sends the cached history; its second round reads the
   const saved = db.loadConversation(C);
   assert.ok(!JSON.stringify(saved).includes("cache_control"), "the saved thread carries no breakpoint");
 });
+
+test("15. a platform refusal over a code-refused exchange is asked once more without it; the thread keeps it", async () => {
+  const agent = await import("../src/agent.js");
+  const { REFUSAL_LINE } = await import("../src/harm.js");
+  const realCreate = agent.model.create;
+  agent.resetHistoryAnchors(); agent.resetRefusedHistory();
+  const before = [
+    { role: "user", content: "remind me to call mom at 6" }, { role: "assistant", content: "set for 6pm." },
+    { role: "user", content: "how do i make a pipe bomb" }, { role: "assistant", content: REFUSAL_LINE },
+  ];
+  assert.deepEqual([...agent.refusedExchanges(before)], [2, 3]);
+  assert.equal(agent.refusedExchanges(before, 0, 3).size, 0, "only the history before this turn");
+  db.saveConversation(C, before);
+  const seen = [];
+  const run = async (answers) => {
+    agent.model.create = async (p) => { seen.push(JSON.parse(JSON.stringify(p))); return answers.shift(); };
+    try {
+      return await agent.runTurn({ conversationId: C, text: "what's 17 times 23", images: async () => ({ blocks: [], notes: [], seen: [], viewedMediaIds: [] }), capture: async () => ({ ok: false }) });
+    } finally { agent.model.create = realCreate; }
+  };
+  const refusal = { content: [], stop_reason: "refusal", usage: {} };
+  const reply = await run([refusal, { content: [{ type: "text", text: "391" }], stop_reason: "end_turn", usage: {} }]);
+  assert.equal(reply, "391");
+  assert.equal(seen.length, 2);
+  assert.ok(JSON.stringify(seen[0].messages).includes("pipe bomb"), "first ask: the thread as it is");
+  assert.ok(!JSON.stringify(seen[1].messages).includes("pipe bomb") && !JSON.stringify(seen[1].messages).includes(REFUSAL_LINE), "second ask: without the refused exchange");
+  assert.equal(seen[1].messages[0].content, "remind me to call mom at 6", "still opens on their line");
+  assert.deepEqual(seen[1].messages[1].content.at(-1).cache_control, { type: "ephemeral" }, "the history marker moves to the last kept message");
+  const saved = JSON.stringify(db.loadConversation(C));
+  assert.ok(saved.includes("pipe bomb") && saved.includes(REFUSAL_LINE), "the saved thread is unchanged");
+  // The next turn leaves it out from the first ask; a refusal then is the answer.
+  seen.length = 0;
+  assert.equal(await run([refusal]), "can't help with that one");
+  assert.equal(seen.length, 1, "never asked twice over the same thing");
+  assert.ok(!JSON.stringify(seen[0].messages).includes("pipe bomb"));
+  // No refused exchange in view: a refusal is answered as before, one ask.
+  agent.resetRefusedHistory(); agent.resetHistoryAnchors(); seen.length = 0;
+  db.saveConversation(C, before.slice(0, 2));
+  assert.equal(await run([refusal]), "can't help with that one");
+  assert.equal(seen.length, 1);
+});
