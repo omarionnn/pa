@@ -646,6 +646,8 @@ export const config = {
   thirdPartyVoice: String(process.env.REASON_THIRD_PARTY_VOICE ?? "").trim().toLowerCase(),
   // A quiet café (own calls) or office (errands) under Reason's GPT-Live voice: owner | on | off (unset = off).
   callAmbience: String(process.env.REASON_CALL_AMBIENCE ?? "").trim().toLowerCase(),
+  // That room's level (calls/ambience.js ambienceGain): a number 0–0.2; unset = the default (0.075).
+  callAmbienceGain: String(process.env.REASON_CALL_AMBIENCE_GAIN ?? "").trim(),
   // How a GPT-Live third-party call talks once a person answers (2026-10-31, call 59): "on" (default)
   // = the voice talks with them itself, like an own call, and hands decisions to Reason; "off" = the
   // older puppet line, where every reply waits on a Reason turn (4–8 s a reply on call 59).
