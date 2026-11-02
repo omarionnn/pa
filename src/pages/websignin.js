@@ -136,6 +136,33 @@ function same(a, b) {
 const secure = () => ((config.publicUrl || "").startsWith("https://") ? "; Secure" : "");
 const formCookieHeader = (token) => `${FORM_COOKIE}=${token}; Path=/web; Max-Age=${FORM_TTL_S}; HttpOnly; SameSite=Lax${secure()}`;
 const clearFormCookie = () => `${FORM_COOKIE}=; Path=/web; Max-Age=0; HttpOnly; SameSite=Lax${secure()}`;
+/**
+ * Where a browser that was signed in to nobody wanted to go (only Saved: the wordmark on every page
+ * Reason made links to the person's own pages, src/pages/wordmark.js yourPagesHref). Remembered for
+ * half an hour on this browser, then signing in lands there instead of the arrival. Only a path on
+ * this site that names Saved is ever kept or followed, so it cannot send anyone elsewhere.
+ */
+export const NEXT_COOKIE = "reason_web_next";
+const NEXT_TTL_S = 30 * 60;
+const NEXT_OK = /^\/web\/saved(\/(page|call|receipt|event|album)\/[A-Za-z0-9_-]{1,40})?(\?[A-Za-z0-9_.~%+=&-]{0,200})?$/;
+export function safeNext(v) {
+  const s = String(v ?? "");
+  return s.length <= 300 && NEXT_OK.test(s) ? s : null;
+}
+function nextFor(sub, query) {
+  const q = new URLSearchParams(Object.entries(query ?? {}).filter(([k, v]) => /^(kind|q|all)$/.test(k) && typeof v === "string")).toString();
+  return safeNext(`/web/${sub}${q ? `?${q}` : ""}`);
+}
+const nextCookieHeader = (path) => `${NEXT_COOKIE}=${encodeURIComponent(path)}; Path=/web; Max-Age=${NEXT_TTL_S}; HttpOnly; SameSite=Lax${secure()}`;
+const clearNextCookie = () => `${NEXT_COOKIE}=; Path=/web; Max-Age=0; HttpOnly; SameSite=Lax${secure()}`;
+function readNextCookie(header) {
+  for (const part of String(header ?? "").split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === NEXT_COOKIE) { try { return safeNext(decodeURIComponent(v.join("="))); } catch { return null; } }
+  }
+  return null;
+}
+
 function readFormCookie(header) {
   for (const part of String(header ?? "").split(";")) {
     const [k, ...v] = part.trim().split("=");
@@ -490,7 +517,11 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
 
   // ---- Saved (src/pages/websaved.js): the list, one item opened, the page itself framed, pin / remove / restore ----
   if (sub === "saved" || String(sub ?? "").startsWith("saved/")) {
-    if (!account) return redirect("/web");
+    if (!account) {
+      // Signed in to nobody (a page's wordmark brought them): sign in, then back to exactly this list.
+      const next = method === "GET" ? nextFor(sub, query) : null;
+      return redirect("/web", next ? { "Set-Cookie": nextCookieHeader(next) } : {});
+    }
     const { savedRequest } = await import("./websaved.js");
     return await savedRequest({ account, path: sub === "saved" ? "" : sub.slice("saved/".length), method, query, headers, readBody, log });
   }
@@ -615,7 +646,11 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     log({ web_signin_ok: true });
     // The session cookie on every path, so the browser is theirs on their pages and events too;
     // the form cookie has done its job. Signing in always lands on the arrival, never the thread (?home).
-    return { status: 303, headers: HTML({ Location: "/web?home", "Content-Length": 0, "Set-Cookie": [cookieHeader(tried.token, { path: "/", headers }), clearFormCookie()] }), body: "" };
+    // A list they were on the way to before signing in (NEXT_COOKIE) is where they land instead.
+    const next = readNextCookie(headers?.cookie);
+    const cookies = [cookieHeader(tried.token, { path: "/", headers }), clearFormCookie()];
+    if (next) cookies.push(clearNextCookie());
+    return { status: 303, headers: HTML({ Location: next ?? "/web?home", "Content-Length": 0, "Set-Cookie": cookies }), body: "" };
   }
 
   // sub === "signin": ask for a code.

@@ -33,6 +33,7 @@ export const EARLIER_TOP = 1;
 /** The Caveat line under an opened item (the reference's quotes a phrase to ask with; per owner rule 10-25 it says the intent). */
 export const AGAIN_NOTE = "want this again next time? just ask me for it in the chat.";
 export const EMPTY = { title: ["Nothing saved", "yet."], note: ["anything i make for you,", "a list, a call, a receipt, lands here."] };
+export const EMPTY_PAGES = { title: ["No pages", "yet."], note: ["when i make you a page,", "a list, a plan, a receipt, it lands here."] };
 
 const KIND_WORD = { page: "PAGE", call: "CALL", receipt: "RECEIPT", event: "EVENT", album: "ALBUM" };
 const filterOf = (v) => (FILTERS.some(([k]) => k === v) ? v : "all");
@@ -94,7 +95,10 @@ function listHtml({ all, shown, ctx, open, now, notice }) {
     ? hand(ctx.q ? "nothing saved matches that. try fewer words." : `no ${kindWord} saved yet.`, { tilt: true, role: "status" })
     : "";
   return `<section class="sv-list" aria-label="Saved list">`
-    + `<div class="sv-hd"><h1 class="sv-h1">Saved</h1><p class="sv-sub">Everything Reason made for you, kept.</p></div>`
+    // Pages only (where the wordmark on every page Reason made brings them): "Your pages".
+    + (ctx.kind === "pages"
+      ? `<div class="sv-hd"><h1 class="sv-h1">Your pages</h1><p class="sv-sub">Every page Reason made for you, newest first.</p></div>`
+      : `<div class="sv-hd"><h1 class="sv-h1">Saved</h1><p class="sv-sub">Everything Reason made for you, kept.</p></div>`)
     + (notice || "")
     + `<form class="sv-find" method="GET" action="/web/saved" role="search"><label for="sv-find">FIND SOMETHING</label>`
     + (ctx.kind !== "all" ? `<input type="hidden" name="kind" value="${esc(ctx.kind)}">` : "")
@@ -303,14 +307,16 @@ export function renderSaved({ account, csrf, query = {}, openKey = null, now = c
   }
   let main;
   if (!all.length) {
-    main = `<main class="sv-empty" aria-labelledby="sv-e">${notice}<h1 id="sv-e">${esc(EMPTY.title[0])}<br>${esc(EMPTY.title[1])}</h1>`
-      + `<p class="hand">${esc(EMPTY.note[0])}<br>${esc(EMPTY.note[1])}</p></main>`;
+    const e = ctx.kind === "pages" ? EMPTY_PAGES : EMPTY;
+    main = `<main class="sv-empty" aria-labelledby="sv-e">${notice}<h1 id="sv-e">${esc(e.title[0])}<br>${esc(e.title[1])}</h1>`
+      + `<p class="hand">${esc(e.note[0])}<br>${esc(e.note[1])}</p></main>`;
   } else {
     const back = open ? itemHref(open, ctx) : "/web/saved";
     main = `<main class="sv-wrap${asked ? " sv-has-open" : ""}">${listHtml({ all, shown, ctx, open, now, notice })}`
       + (open ? openedHtml(open, { csrf, conv, auto: !asked, back }) : "") + `</main>`;
   }
-  const title = asked ? `${open.title} · Saved · Reason` : "Saved · Reason";
+  const listName = ctx.kind === "pages" ? "Your pages" : "Saved";
+  const title = asked ? `${open.title} · ${listName} · Reason` : `${listName} · Reason`;
   return webPage({ title, body: topHtml() + main + tabBar("saved", count), css: CSS, script: FRAME_JS, bodyClass: "has-tabs", foot: "" });
 }
 

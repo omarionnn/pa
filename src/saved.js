@@ -72,15 +72,28 @@ const money = (cents) => `$${(Number(cents) / 100).toFixed(2)}`;
 // ---------------------------------------------------------------- the five sources
 
 function pageItems(conv) {
-  return ALL("SELECT id, title, content, revision, role, created_at, updated_at, owner_key FROM pages WHERE conversation_id = ?", conv).map((p) => {
+  return ALL("SELECT id, title, content, revision, role, created_at, updated_at, owner_key, state FROM pages WHERE conversation_id = ?", conv).map((p) => {
     const picks = ALL("SELECT picked FROM page_choices WHERE page_id = ? AND conversation_id = ? ORDER BY id", p.id, conv);
     const picked = picks.length ? String(picks[picks.length - 1].picked ?? "").trim() : "";
+    const blocks = parse(p.content, []);
+    const type = pageType(blocks);
+    // An archived page stays listed (it is still theirs, and its link says it was put away), marked ARCHIVED.
+    const archived = p.state === "archived";
     return {
       kind: "page", id: p.id, title: p.title, at: p.created_at, updatedAt: p.updated_at,
-      what: "PAGE", note: picked ? `YOU PICKED ${picked.toUpperCase()}` : "",
-      words: textOf(parse(p.content, [])), stamp: null,
+      what: type ? `PAGE · ${type}` : "PAGE", note: archived ? "ARCHIVED" : (picked ? `YOU PICKED ${picked.toUpperCase()}` : ""),
+      words: textOf(blocks), stamp: null, archived,
     };
   });
+}
+/** What kind of page it is, in a word, from its blocks (the designed kinds of src/pages/madedata.js madeKind); "" for an ordinary page. */
+export function pageType(blocks) {
+  const b = Array.isArray(blocks) ? blocks : [];
+  if (b.length === 1 && b[0]?.type === "day") return "DAY PLAN";
+  if (b.length === 1 && b[0]?.type === "call") return "CALL NOTES";
+  if (b.length === 1 && b[0]?.type === "receipt") return "RECEIPT";
+  if (b.some(x => x?.type === "cards") && b.some(x => x?.type === "choice")) return "SHORTLIST";
+  return "";
 }
 /** Every string in a page's block list, for FIND SOMETHING. */
 function textOf(v) {
