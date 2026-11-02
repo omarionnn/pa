@@ -29,6 +29,7 @@ const purchases = await import("../src/purchasesnote.js");
 const ops = await import("../src/ops.js");
 const voice = await import("../src/calls/voice.js");
 const { cliConfig } = await import("../src/backends/cli.js");
+const side = await import("../src/backends/side.js");
 // No test here may start the real CLI: anything that reaches it finds no binary and fails at once.
 cliConfig.bin = join(dir, "no-claude-here");
 
@@ -221,14 +222,16 @@ test("4: the per-message checks are on the subscription's small model", () => {
   if (!process.env.REASON_MIDTURN_CLI_MODEL) assert.equal(config.midTurnCliModel, "haiku");
 });
 
-test("4: the harm screen of a text never asks the API, even with a key and no CLI backend", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: null }, async () => {
+// Owner, 2026-11-02: every model call moves to the API key on REASON_BACKEND=api. On that backend a
+// text's screen asks the API (same small model, same instructions); on claude-cli it never does (below).
+test("4: on the API backend (2026-11-02) a text's harm screen asks the API, on the small model, counted", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: null }, async () => {
   let apiAsks = 0;
-  harm.setScreenClient({ messages: { create: async () => { apiAsks++; return { content: [{ type: "tool_use", name: "verdict", input: { verdict: "clear" } }] }; } } });
+  harm.setScreenClient({ messages: { create: async (p) => { apiAsks++; return { content: [{ type: "tool_use", name: "verdict", input: { verdict: "clear" } }], usage: { input_tokens: 1, output_tokens: 1 } }; } } });
   try {
     const r = await harm.screen({ text: "book me a table friday" });
-    assert.equal(r.verdict, "unscreened", "no CLI here: unread, never 'clear', never the API");
-    assert.equal(apiAsks, 0);
-    assert.equal(usageRows().filter(u => u.via === "api").length, 0);
+    assert.equal(r.verdict, "clear");
+    assert.equal(apiAsks, 1);
+    assert.equal(usageRows().filter(u => u.via === "api" && u.feature === "harm").length, 1);
   } finally { harm.setScreenClient(null); }
 }));
 
@@ -249,7 +252,7 @@ test("4: the pre-send check (said ledger) is on the subscription, with a warm CL
   const src = readFileSync("src/said.js", "utf8");
   const check = src.slice(src.indexOf("export async function checkDraft"));
   assert.match(check, /feature: "said_check"/);
-  assert.match(check, /warm \}\)\)\.value/);
+  assert.match(check, /warm(, effort: [^}]*)? \}\)\)\.value/);
   assert.doesNotMatch(src, /@anthropic-ai\/sdk|callApi|ANTHROPIC_API_KEY/);
 }));
 
@@ -259,9 +262,9 @@ test("4: askJson is the subscription's only: with a key in the environment it ne
   assert.doesNotMatch(readFileSync("src/onethought.js", "utf8"), /@anthropic-ai\/sdk|callApi|ANTHROPIC_API_KEY/);
 }));
 
-test("4: the said-ledger's record (after the reply) is kept to the subscription, through the background lane", () => {
+test("4: the said-ledger's record (after the reply) goes through the background lane whenever there is a model", () => {
   const src = readFileSync("src/said.js", "utf8");
-  assert.match(src, /REASON_BACKEND === "claude-cli"\s*\? await background\.enqueue\(`said:[^\n]*feature: "said_record"/);
+  assert.match(src, /sideModelOn\(\)\s*\? await background\.enqueue\(`said:[^\n]*feature: "said_record"/);
 });
 
 test("4: the purchases note makes no side call at all — no API, no CLI (2026-10-27)", () => {
@@ -344,15 +347,19 @@ test("owner: the Pre-reply checks row says the subscription, and a dry key never
   assert.equal(sent.length, 0);
 }));
 
-test("guardrail: the said-ledger's record on the subscription goes through the background lane — it waits out a reply in flight", env({ REASON_BACKEND: "claude-cli", ANTHROPIC_API_KEY: "sk-test" }, async () => {
+test("guardrail: the said-ledger's record goes through the background lane — it waits out a reply in flight", env({ REASON_BACKEND: null, ANTHROPIC_API_KEY: "sk-test" }, async () => {
   const src = readFileSync("src/said.js", "utf8");
   assert.match(src, /background\.enqueue\(`said:/);
-  let release;
-  const turn = background.whileTurn(() => new Promise(r => { release = r; }));
-  const rec = said.record({ conversationId: C, requestId: 991, userText: "move dinner to 8", reply: "done — dinner is at 8pm now" });
-  await new Promise(r => setTimeout(r, 30));
-  assert.ok(background.status().waiting.some(k => k.startsWith(`said:${C}:`)), JSON.stringify(background.status()));
-  assert.equal(usageRows().filter(r => r.feature === "said_record").length, 0, "nothing ran beside the reply");
-  release(); await turn; await rec;
-  assert.equal(usageRows().filter(r => r.feature === "said_record" && r.via === "api").length, 0, "never the paid key");
+  // On the API backend since 2026-11-02 (a stand-in API here, never the real key).
+  side.setSideApiClient({ messages: { create: async () => ({ stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer", input: { claims: [], supersedes: [], closes: [], declined: [], questions: [] } }], usage: { input_tokens: 1, output_tokens: 1 } }) } });
+  try {
+    let release;
+    const turn = background.whileTurn(() => new Promise(r => { release = r; }));
+    const rec = said.record({ conversationId: C, requestId: 991, userText: "move dinner to 8", reply: "done — dinner is at 8pm now" });
+    await new Promise(r => setTimeout(r, 30));
+    assert.ok(background.status().waiting.some(k => k.startsWith(`said:${C}:`)), JSON.stringify(background.status()));
+    assert.equal(usageRows().filter(r => r.feature === "said_record").length, 0, "nothing ran beside the reply");
+    release(); await turn; await rec;
+    assert.equal(usageRows().filter(r => r.feature === "said_record" && r.via === "api").length, 1, "then once, after the reply");
+  } finally { side.setSideApiClient(null); }
 }));

@@ -22,7 +22,7 @@
 //   - At most one nudge, ever, on the timer system, for somebody who went quiet mid-flow.
 //
 // What their text MEANS (a name? a question? a real ask? a no?) is the model's read, never a regex
-// (owner rule): one structured side call on the subscription (askStructuredViaCli), never the API.
+// (owner rule): one structured side call (src/backends/side.js askStructured): the subscription on claude-cli, the API key on api.
 // If that read fails — or the harm screen, run beside it, says anything but clear — the flow ends
 // there and the message gets the normal, screened turn (with the prompt told the name was asked, so
 // the old prompt-led welcome never runs the same steps a second time).
@@ -36,7 +36,7 @@ import { reconnectLine } from "./strangercalls.js";
 import * as db from "./db.js";
 import * as outbox from "./outbox.js";
 import { config, clock, normalizeNumber, stamp } from "./config.js";
-import { askStructuredViaCli } from "./backends/cli.js";
+import { askStructured, sideAskAllowed } from "./backends/side.js";
 import { contactCardUrl, lineNumber, RETRY_AFTER_MS } from "./contact.js";
 import { zoneFor } from "./zone.js";
 
@@ -172,8 +172,8 @@ Fields you have nothing for are "" (or [] for ideas).`;
 const clean = (s, max) => String(s ?? "").replace(/[*_`#]/g, "").replace(/\s+/g, " ").trim().slice(0, max);
 
 /** One read of their text for this step, or null when the read could not be had. */
-export async function readText({ state, text, ask = askStructuredViaCli }) {
-  if (ask === askStructuredViaCli && (process.env.REASON_BACKEND !== "claude-cli" || process.env.NODE_TEST_CONTEXT)) return null;
+export async function readText({ state, text, ask = askStructured }) {
+  if (ask === askStructured && !sideAskAllowed()) return null;
   const r = await ask({
     prompt: `Their text, verbatim:\n${String(text ?? "").slice(0, 2_000)}`,
     system: instructions(state),
@@ -313,7 +313,7 @@ const pick = (list) => list[Math.floor(Math.random() * list.length)];
  * clear ends the flow and goes to the normal turn, which screens it again and does what that
  * verdict needs.
  */
-export async function handle({ router, conversationId, route, texts = [], attachments = [], ask = askStructuredViaCli, screen = null, sleep = realSleep, log = () => {} }) {
+export async function handle({ router, conversationId, route, texts = [], attachments = [], ask = askStructured, screen = null, sleep = realSleep, log = () => {} }) {
   if (!active(conversationId)) return { handled: false };
   const row = db.getAccount(conversationId);
   const state = row.onboarding;

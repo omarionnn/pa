@@ -376,10 +376,11 @@ const SHOWS_SCORE = { inside: 10, outside: 5, other: 0, people_closeup: -2, prod
 
 export async function lookAtPlacePhotos({ name, photos }, { run = null, model = process.env.REASON_PLACE_LOOK_MODEL || "haiku", timeoutMs = Number(process.env.REASON_PLACE_LOOK_TIMEOUT_MS || 30_000) } = {}) {
   const cli = run ?? (await import("./backends/cli.js"));
-  if (!run && cli.sideCallsOut?.()) return null;
+  const side = run ? null : await import("./backends/side.js");
+  if (!run && side.onCli() && cli.sideCallsOut?.()) return null;
   const images = photos.map(p => ({ type: "image", source: { type: "base64", media_type: p.mediaType, data: p.base64 } }));
   const prompt = `The place: ${String(name).slice(0, 120)}. Photos 1 to ${photos.length}, in order.`;
-  const r = await (run ?? cli.runClaudeCli)({ prompt, system: LOOK_SYSTEM, jsonSchema: LOOK_SCHEMA, images, model, timeoutMs, feature: "place_photo" }).catch(() => null);
+  const r = await (run ?? side.runStructured)({ prompt, system: LOOK_SYSTEM, jsonSchema: LOOK_SCHEMA, images, model, timeoutMs, feature: "place_photo" }).catch(() => null);
   if (!r?.ok) return null;
   let v = r.envelope?.structured_output;
   if (!v || typeof v !== "object") { try { v = JSON.parse(String(r.envelope?.result ?? "")); } catch { return null; } }
@@ -782,10 +783,11 @@ const PRODUCT_LOOK_SCHEMA = { type: "object", properties: { photos: { type: "arr
 /** Which of these photos show exactly this product (by its label): a Map of photo number → { size on its label }, or null when the look failed. */
 export async function lookAtProductPhotos({ name, photos }, { run = null, model = process.env.REASON_PLACE_LOOK_MODEL || "haiku", timeoutMs = Number(process.env.REASON_PLACE_LOOK_TIMEOUT_MS || 30_000) } = {}) {
   const cli = run ?? (await import("./backends/cli.js"));
-  if (!run && cli.sideCallsOut?.()) return null;
+  const side = run ? null : await import("./backends/side.js");
+  if (!run && side.onCli() && cli.sideCallsOut?.()) return null;
   const images = photos.map(p => ({ type: "image", source: { type: "base64", media_type: p.mediaType, data: p.base64 } }));
   const prompt = `The product: ${String(name).slice(0, 160)}. Photos 1 to ${photos.length}, in order.`;
-  const r = await (run ?? cli.runClaudeCli)({ prompt, system: PRODUCT_LOOK_SYSTEM, jsonSchema: PRODUCT_LOOK_SCHEMA, images, model, timeoutMs, feature: "product_photo" }).catch(() => null);
+  const r = await (run ?? side.runStructured)({ prompt, system: PRODUCT_LOOK_SYSTEM, jsonSchema: PRODUCT_LOOK_SCHEMA, images, model, timeoutMs, feature: "product_photo" }).catch(() => null);
   if (!r?.ok) return null;
   let v = r.envelope?.structured_output;
   if (!v || typeof v !== "object") { try { v = JSON.parse(String(r.envelope?.result ?? "")); } catch { return null; } }

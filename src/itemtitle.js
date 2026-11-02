@@ -10,7 +10,7 @@
 // strips Reason's own note prefixes so a row with no title yet is still readable.
 import { config } from "./config.js";
 import * as db from "./db.js";
-import { askStructuredViaCli } from "./backends/cli.js";
+import { askStructured, sideAskAllowed } from "./backends/side.js";
 
 export const TITLE_HINT = "A short plain title for their Ongoing list on Reason Web: 2-5 words, the thing itself, the way they would name it ('Speedrun reply', 'Daily Twi check-in', 'Prep for Wednesday'). Never their name, never 'remind', no times or dates.";
 
@@ -71,9 +71,9 @@ export function normLine(raw, { name } = {}) {
   return /[.!?]$/.test(t) ? t : `${t}.`;
 }
 
-/** The title and the description line from one claude-cli summarise. Null when the CLI is not the backend or anything goes wrong. */
-export async function summariseItem(text, { name = config.ownerName, ask = askStructuredViaCli } = {}) {
-  if (ask === askStructuredViaCli && (process.env.REASON_BACKEND !== "claude-cli" || process.env.NODE_TEST_CONTEXT)) return null;
+/** The title and the description line from one model summarise (src/backends/side.js). Null when there is no model or anything goes wrong. */
+export async function summariseItem(text, { name = config.ownerName, ask = askStructured } = {}) {
+  if (ask === askStructured && !sideAskAllowed()) return null;
   const { value, error } = await ask({
     prompt: `Their first name, which must NOT appear: ${firstName(name) || "(unknown)"}\n\nThe note:\n${String(text ?? "").slice(0, 600)}`,
     system: SYSTEM,
@@ -86,7 +86,7 @@ export async function summariseItem(text, { name = config.ownerName, ask = askSt
   return { title: normTitle(value?.title, { name }), line: normLine(value?.line, { name }) };
 }
 
-/** One title from the claude-cli subscription. Null when the CLI is not the backend or anything goes wrong. */
+/** One title from the model. Null when there is no model or anything goes wrong. */
 export async function summariseTitle(text, opts = {}) {
   return (await summariseItem(text, opts))?.title ?? null;
 }
@@ -100,9 +100,8 @@ let chain = Promise.resolve();
  * never blocks the caller; a series' title also goes onto its pending firing.
  */
 export function queueTitle(kind, conversationId, id, text, { name, ask } = {}) {
-  if (!ask && process.env.REASON_BACKEND !== "claude-cli") return null;
-  // Under the test runner nothing reaches the real CLI: only a test's own `ask` is ever called.
-  if (!ask && process.env.NODE_TEST_CONTEXT) return null;
+  // Under the test runner nothing reaches a real model: only a test's own `ask` (or test client) is called.
+  if (!ask && !sideAskAllowed()) return null;
   if (process.env.REASON_ITEM_TITLES === "0") return null;
   const key = `${kind}:${id}`;
   if (asked.has(key)) return null;
@@ -123,8 +122,7 @@ export function queueTitle(kind, conversationId, id, text, { name, ask } = {}) {
  */
 export function queueBlurb(kind, conversationId, id, text, { name, ask } = {}) {
   if (kind !== "timer" && kind !== "series") return null;
-  if (!ask && process.env.REASON_BACKEND !== "claude-cli") return null;
-  if (!ask && process.env.NODE_TEST_CONTEXT) return null;
+  if (!ask && !sideAskAllowed()) return null;
   if (process.env.REASON_ITEM_TITLES === "0") return null;
   const key = `${kind}:${id}:blurb`;
   if (asked.has(key) || asked.has(`${kind}:${id}`)) return null;

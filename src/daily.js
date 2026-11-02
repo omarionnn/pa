@@ -31,7 +31,7 @@ import * as db from "./db.js";
 import { clock, config } from "./config.js";
 import * as notice from "./notice.js";
 import { ongoing, approvals as pendingApprovals } from "./ongoing.js";
-import { askStructuredViaCli } from "./backends/cli.js";
+import { askStructured, sideAskAllowed } from "./backends/side.js";
 import * as background from "./background.js";
 import { dailyAllowedFor } from "./dailyflag.js";
 import { WEB, webAllowedFor } from "./web.js";
@@ -392,7 +392,7 @@ Reply with the greeting only.`;
 const SCHEMA = { type: "object", properties: { greeting: { type: "string" } }, required: ["greeting"], additionalProperties: false };
 
 let testAsk = null;
-/** For tests: the stand-in for the claude-cli call (null puts the real path back). */
+/** For tests: the stand-in for the model call (null puts the real path back). */
 export function setGreetingAsk(f) { testAsk = f; }
 
 /** Keep a written greeting only if it is one plain line in the voice; null otherwise (the plain one is used). */
@@ -404,10 +404,10 @@ export function cleanGreeting(text, name = "") {
   return t;
 }
 
-/** The greeting from the claude-cli subscription, or null. Never the billed API. */
+/** The greeting from the model (the CLI on claude-cli, the API key on api: src/backends/side.js), or null. */
 async function written({ name, overnight }) {
-  const ask = testAsk ?? askStructuredViaCli;
-  if (ask === askStructuredViaCli && (process.env.REASON_BACKEND !== "claude-cli" || process.env.NODE_TEST_CONTEXT || process.env.REASON_DAILY_WRITE === "0")) return null;
+  const ask = testAsk ?? askStructured;
+  if (ask === askStructured && (!sideAskAllowed() || process.env.REASON_DAILY_WRITE === "0")) return null;
   const kinds = { decision: "needs their yes or no", update: "news", done: "finished" };
   const { value, error } = await ask({
     prompt: `First name: ${name || "(unknown)"}\nOvernight (${overnight.length}):\n${overnight.slice(0, 8).map(x => `- ${kinds[x.kind]}`).join("\n")}`,

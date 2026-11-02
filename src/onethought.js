@@ -30,6 +30,7 @@
 // one at a time (Runtime.enqueue). A folded text's row is deleted when it is taken, the same bargain
 // takePendingInbound makes, and a turn that is interrupted hands it back with its own (Router).
 import { askStructuredViaCli } from "./backends/cli.js";
+import { onCli, sideModelOn, askStructuredViaApi } from "./backends/side.js";
 import { config, clock, stamp } from "./config.js";
 
 /** How many times a turn may discard its draft for texts that landed after it was written. */
@@ -209,8 +210,15 @@ const SCHEMA = {
  * (src/backends/cli.js sideCallsOut). Shared with src/said.js and src/ticketcheck.js. `warm` is a
  * started CLI (startWarm) to ask instead of a cold one; `feature` names the call in the usage count.
  */
-export async function askJson({ system, prompt, schema, feature = "onethought", cliModel = config.midTurnCliModel, cliTimeoutMs = config.midTurnCliTimeoutMs, warm = null }) {
-  if (process.env.REASON_BACKEND !== "claude-cli") throw new Error("no subscription CLI on this backend");
+export async function askJson({ system, prompt, schema, feature = "onethought", cliModel = config.midTurnCliModel, cliTimeoutMs = config.midTurnCliTimeoutMs, warm = null, effort = null }) {
+  if (!sideModelOn()) throw new Error("no model for side calls on this backend");
+  // On the API backend (2026-11-02): the same question, instructions, schema and model tier, on the
+  // API key (src/backends/side.js). There is no cold start to hide there, so no warm start either.
+  if (!onCli()) {
+    const r = await askStructuredViaApi({ prompt, system, schema, model: cliModel, timeoutMs: cliTimeoutMs, feature, effort });
+    if (r.error || !r.value) throw new Error(r.error ?? "api: no answer");
+    return { value: r.value, via: "api" };
+  }
   const r = warm ? await warm.ask(prompt) : await askStructuredViaCli({ prompt, system, schema, model: cliModel, timeoutMs: cliTimeoutMs, feature });
   if (r.error || !r.value) throw new Error(`cli: ${r.error ?? "no answer"}`);
   return { value: r.value, via: "cli" };

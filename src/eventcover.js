@@ -33,7 +33,7 @@ import { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE_DARK } from "./pages/wordmark.j
 import { BRAND_PEN_DARK } from "./pages/brand.js";
 import { shootWithChromium, NoCardRenderer } from "./pages/card.js";
 import { fetchImage } from "./media.js";
-import { runClaudeCli } from "./backends/cli.js";
+import { runStructured } from "./backends/side.js";
 
 /** The card's one line, the same for every event: an invitation, and nothing about the event itself. */
 export const INVITE_LINE = "You're invited. Join with the event password.";
@@ -206,7 +206,7 @@ function fromReading(v) {
 }
 
 /** The picture, read through the CLI on the subscription — never the paid key. */
-export async function readFlyerViaCli({ block, hidden = [] }, { run = runClaudeCli, model = process.env.REASON_CAPTURE_CLI_MODEL || "sonnet", timeoutMs = Number(process.env.REASON_CAPTURE_TIMEOUT_MS || 90_000) } = {}) {
+export async function readFlyerViaCli({ block, hidden = [] }, { run = runStructured, model = process.env.REASON_CAPTURE_CLI_MODEL || "sonnet", timeoutMs = Number(process.env.REASON_CAPTURE_TIMEOUT_MS || 90_000) } = {}) {
   const r = await run({ prompt: flyerPrompt(hidden), system: FLYER_INSTRUCTIONS, jsonSchema: FLYER_SCHEMA, images: [block], model, timeoutMs, feature: "event_cover" });
   if (!r.ok) return { ok: false, error: r.error ?? "the reader failed" };
   if (r.envelope?.structured_output && typeof r.envelope.structured_output === "object") return fromReading(r.envelope.structured_output);

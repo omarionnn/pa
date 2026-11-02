@@ -341,6 +341,79 @@ export function withoutToolImages(messages) {
 /** The newest MAX_HISTORY messages, starting on theirs. Same cut as the CLI path: src/thread.js. */
 const trimHistory = (messages) => trimThread(messages, MAX_HISTORY);
 
+/**
+ * The prompt cache, for the history (2026-11-02, the move of every turn onto the API key).
+ *
+ * Until now the API path cached the instructions and the tools and nothing else, so on every model
+ * call — 2.6 a message on average, each tool round is one — the whole thread was written to the
+ * cache again at 1.25x. Two things fix it, the same two the CLI path got in Speed 6/6 (6f9e0dd,
+ * e3f893b, 4c145e6):
+ *
+ * 1. Breakpoints on the messages (`cachedMessages`): one on the last message of the thread as it
+ *    stood before this turn, which the next turn reads back, and one on the newest message, which
+ *    each tool round of this turn reads back. With the one on the system prompt that is three of
+ *    the API's four.
+ *
+ * 2. A start that does not slide (`historyStart`). Once a thread is full (src/thread.js keeps 60) its
+ *    oldest messages are cut on every save, so a request that opened at the oldest kept message
+ *    changed its first bytes every turn and nothing after the tools could ever be read from cache.
+ *    So the request opens at an ANCHOR message and stays there while that message is still kept and
+ *    the newest VIEW_MIN messages all come after it; then it moves to the start of the newest
+ *    VIEW_MIN. The model sees the newest 40 messages plus up to 20 before them — what the CLI path
+ *    shows — and always the thread as it is stored now: a message redacted after the anchor was set
+ *    is read as it now reads (it costs a cache write, never a stale line). The thread itself is
+ *    saved exactly as before; only the request is cut.
+ *
+ * In memory only, like the CLI's: a restart re-anchors on the next turn.
+ */
+const VIEW_MIN = 40;
+const anchors = new Map();
+const fingerprint = (messages, i) => JSON.stringify([messages[i] ?? null, messages[i + 1] ?? null]);
+
+export function historyStart(historyId, messages, { log = () => {} } = {}) {
+  const window = messages.length - trimThread(messages, VIEW_MIN).length;
+  const a = anchors.get(historyId);
+  if (a) {
+    // Last match wins; the next message is part of the print so two lone "ok"s are not confused.
+    for (let s = Math.min(window, messages.length - 1); s >= 0; s--) {
+      if (fingerprint(messages, s) === a) {
+        log({ history_anchor: "kept", start: s, of: messages.length, conversation: historyId });
+        return s;
+      }
+    }
+  }
+  if (!messages.length) { anchors.delete(historyId); return 0; }
+  anchors.set(historyId, fingerprint(messages, window));
+  log({ history_anchor: a ? "reset" : "new", start: window, of: messages.length, conversation: historyId });
+  return window;
+}
+/** For tests: forget every anchor, as a restart does. */
+export const resetHistoryAnchors = () => anchors.clear();
+
+const EPHEMERAL = { type: "ephemeral" };
+/** A copy of `m` with a cache breakpoint on its last block that can carry one; `m` is never changed. */
+function withBreakpoint(m) {
+  if (typeof m.content === "string") return m.content ? { ...m, content: [{ type: "text", text: m.content, cache_control: EPHEMERAL }] } : m;
+  if (!Array.isArray(m.content)) return m;
+  // Thinking blocks cannot carry one, and neither can an empty text block.
+  const k = m.content.findLastIndex(b => b && !/thinking/.test(b.type) && !(b.type === "text" && !b.text));
+  if (k < 0) return m;
+  const content = m.content.slice();
+  content[k] = { ...content[k], cache_control: EPHEMERAL };
+  return { ...m, content };
+}
+
+/**
+ * The messages as one request sends them: from `start`, with a breakpoint on the last message of the
+ * thread before this turn (index `historyEnd - 1`) and one on the newest message. Copies only: what
+ * the thread keeps never carries a breakpoint.
+ */
+export function cachedMessages(messages, { start = 0, historyEnd = messages.length } = {}) {
+  const view = messages.slice(start);
+  const marks = new Set([historyEnd - 1 - start, view.length - 1].filter(i => i >= 0 && i < view.length));
+  return view.map((m, i) => (marks.has(i) ? withBreakpoint(m) : m));
+}
+
 function requestsNote(reqs) {
   if (!reqs.length) return "";
   const lines = reqs.map(r => {
@@ -513,6 +586,8 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   const turnNote = [reconnect, planInfo, pauseInfo, noticeNote, newThing, resolvedMiss, purchases, checkouts, openWork, kept, ridesNow, standing, goalsNote, reqsNote, saidNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
+  // Where the request opens (historyStart, above), fixed for the whole turn so its rounds share a prefix.
+  const viewStart = historyStart(historyId, messages, { log });
   const userIndex = messages.length;
   messages.push(forModel);
 
@@ -528,7 +603,8 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
       // when the install switched them on. See `toolsFor` — `runTool` refuses on the conversation
       // regardless, so this is about nobody else being told they are there.
       tools: toolsFor(conversationId),
-      messages,
+      // The thread from its anchor, with the history and the newest message cached (cachedMessages).
+      messages: cachedMessages(messages, { start: viewStart, historyEnd: userIndex }),
       output_config: { effort: "medium" },
     };
     let response;

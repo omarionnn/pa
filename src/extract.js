@@ -3,7 +3,7 @@ import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { rememberOnce, distinct } from "./samefact.js";
 import { vectorsFor, embed, embedAndStore } from "./embedding.js";
-import { runClaudeCli } from "./backends/cli.js";
+import { runStructured, onCli, sideModelOn } from "./backends/side.js";
 import * as background from "./background.js";
 
 
@@ -322,21 +322,21 @@ export function batchPrompt(conversationId, events, context) {
 const empty = (shown, via) => ({ facts: [], episodes: [], entities: [], relations: [], shown, via });
 const tidyResult = (v, shown, via) => ({ facts: v?.facts || [], episodes: [], entities: v?.entities || [], relations: v?.relations || [], shown, via });
 
-/** One read of a batch, on the subscription, never the paid API. */
+/** One read of a batch: on the subscription on the claude-cli backend, on the API key otherwise (2026-11-02). */
 async function extractMessages(conversationId, events, context) {
   const { prompt, shown } = batchPrompt(conversationId, events, context);
-  const r = await runClaudeCli({ prompt, system: SYSTEM, jsonSchema: EXTRACT_TOOL.input_schema, model: config.extractionCliModel, timeoutMs: config.extractionCliTimeoutMs, feature: "extraction" });
+  const r = await runStructured({ prompt, system: SYSTEM, jsonSchema: EXTRACT_TOOL.input_schema, model: onCli() ? config.extractionCliModel : config.extractionModel, timeoutMs: config.extractionCliTimeoutMs, feature: "extraction" });
   if (!r.ok) throw new Error(r.error ?? `the CLI reported an error: ${String(r.envelope?.result ?? "").split("\n")[0] || "no detail"}`);
   const v = r.envelope?.structured_output && typeof r.envelope.structured_output === "object" ? r.envelope.structured_output : JSON.parse(String(r.envelope?.result ?? ""));
-  return tidyResult(v, shown, "cli");
+  return tidyResult(v, shown, r.envelope?.via ?? "cli");
 }
 
 /**
- * Rebuild the profile when there is a model to choose it: on the subscription, as a background-lane
- * job (one per conversation waiting, never during a reply); on the API backend, now.
+ * Rebuild the profile. With a model to choose it (the subscription, or the API key since 2026-11-02),
+ * as a background-lane job (one per conversation waiting, never during a reply); without one, now, by score.
  */
 export function scheduleProfile(conversationId, { log = () => {} } = {}) {
-  if (!onSubscription()) return rebuildProfile(conversationId, { log });
+  if (!sideModelOn()) return rebuildProfile(conversationId, { log });
   background.enqueue(`profile:${conversationId}`, () => rebuildProfile(conversationId, { log }))
     .catch(e => log(`profile rebuild failed: ${e.message}`));
   return Promise.resolve();
@@ -451,15 +451,15 @@ const profilePrompt = (candidates, max) => `Today is ${savedOn(clock.now())}. Ch
 
 /** The model's choice, on the subscription: `[{ id, same_as }]`, best first. Throws when it cannot be asked. */
 async function chooseViaCli(candidates, max) {
-  const r = await runClaudeCli({ prompt: profilePrompt(candidates, max), system: PROFILE_SYSTEM.replace("Answer only by calling the profile tool.", "Answer with the picks only."), jsonSchema: PROFILE_TOOL.input_schema, model: config.profileCliModel, timeoutMs: config.extractionCliTimeoutMs, feature: "profile" });
+  const r = await runStructured({ prompt: profilePrompt(candidates, max), system: PROFILE_SYSTEM.replace("Answer only by calling the profile tool.", "Answer with the picks only."), jsonSchema: PROFILE_TOOL.input_schema, model: onCli() ? config.profileCliModel : config.profileModel, timeoutMs: config.extractionCliTimeoutMs, feature: "profile" });
   if (!r.ok) throw new Error(r.error ?? "the CLI reported an error");
   const v = r.envelope?.structured_output && typeof r.envelope.structured_output === "object" ? r.envelope.structured_output : JSON.parse(String(r.envelope?.result ?? ""));
   if (!Array.isArray(v?.picks)) throw new Error("the profile model answered without choosing");
   return v.picks;
 }
 
-/** Who chooses the profile: the subscription on the claude-cli backend, else nobody (the score). Never the paid API. */
-const defaultChoose = () => (onSubscription() ? chooseViaCli : null);
+/** Who chooses the profile: the model (the subscription on claude-cli, the API key on api), else nobody (the score). */
+const defaultChoose = () => (sideModelOn() ? chooseViaCli : null);
 
 /**
  * The profile: the facts most worth having in front of Reason on every turn, one line each.
