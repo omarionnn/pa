@@ -3,6 +3,7 @@
 // synthesized (scripts/make-ambience.mjs) — 20 s of 8 kHz μ-law each, looped without a seam.
 //
 // REASON_CALL_AMBIENCE: "owner" — the operator's calls only; "on" — everyone's; unset or "off" — none.
+// REASON_CALL_AMBIENCE_GAIN: the bed's level, 0–0.2 (unset = AMBIENCE_GAIN); no code change to tune it.
 //
 // The bed is mixed into every frame of Reason's audio as it goes to Twilio, and between Reason's words
 // the call is kept topped up with bed-only frames a few tens of milliseconds ahead of what Twilio is
@@ -15,8 +16,10 @@ import { config } from "../config.js";
 import * as accounts from "../accounts.js";
 import { ulawToPcm, pcmToUlaw } from "./gptlive.js";
 
-/** Bed level against the files' own (RMS 3000): ≈ −39 dBFS, about 20 dB under Reason's voice. */
-export const AMBIENCE_GAIN = 0.12;
+/** Bed level against the files' own (RMS 3000): ≈ −43 dBFS, about 24 dB under Reason's voice.
+ *  Was 0.12 (≈ −39 dBFS) until Omari, 2026-11-02: "reduce the background noise a little" — 4 dB down. */
+export const AMBIENCE_GAIN = 0.075;
+export const AMBIENCE_GAIN_MAX = 0.2;
 /** How far ahead of the playout the room is kept, and when it is topped up. */
 export const LEAD_MS = 80;
 export const FILL_BELOW_MS = 40;
@@ -32,6 +35,14 @@ export function ambienceMode(v = config.callAmbience) {
   const s = String(v ?? "").trim().toLowerCase();
   if (s === "owner") return "owner";
   return ["on", "everyone", "1", "true", "yes"].includes(s) ? "everyone" : "";
+}
+
+/** REASON_CALL_AMBIENCE_GAIN read: a number clamped to 0–AMBIENCE_GAIN_MAX; unset or not a number = the default. */
+export function ambienceGain(v = config.callAmbienceGain) {
+  const s = String(v ?? "").trim();
+  const n = s === "" ? NaN : Number(s);
+  if (!Number.isFinite(n)) return AMBIENCE_GAIN;
+  return Math.min(AMBIENCE_GAIN_MAX, Math.max(0, n));
 }
 
 /** Café or office for this call, or "" when this call gets no room at all. */
@@ -59,7 +70,7 @@ function samples(kind, gain) {
 }
 
 export class Bed {
-  constructor(kind, { gain = AMBIENCE_GAIN, data = null } = {}) {
+  constructor(kind, { gain = ambienceGain(), data = null } = {}) {
     this.kind = kind;
     this.s = data ?? samples(kind, gain);
     this.pos = 0;
