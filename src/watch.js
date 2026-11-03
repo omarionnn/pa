@@ -10,6 +10,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { tracked } from "./spend.js";
 import { config } from "./config.js";
 import { checkWatchViaCli } from "./backends/cli.js";
+import { oneToolCall } from "./backends/side.js";
 
 const CHECK_TOOL = {
   name: "watch_check",
@@ -54,13 +55,15 @@ export async function checkWatch({ lookingFor, text, previousText = null }) {
     const before = previousText == null
       ? "This is the first check, so there is nothing to compare against."
       : `What the page said at the last check:\n${String(previousText).slice(0, 4000)}`;
+    // Steered, not forced, on the models that refuse forced tool use (src/backends/side.js).
+    const one = oneToolCall(config.judgeModel, "watch_check", INSTRUCTIONS);
     const res = await anthropic().messages.create(
       {
         model: config.judgeModel,
-        max_tokens: 300,
-        system: INSTRUCTIONS,
+        max_tokens: 4000,
+        system: one.system,
         tools: [CHECK_TOOL],
-        tool_choice: { type: "tool", name: "watch_check" },
+        tool_choice: one.tool_choice,
         messages: [{
           role: "user",
           content: `What they are waiting for:\n${lookingFor}\n\nThe page as it reads now:\n${String(text ?? "").slice(0, 8000)}\n\n${before}`,

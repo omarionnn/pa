@@ -28,6 +28,7 @@
 import * as db from "./db.js";
 import { askJson } from "./onethought.js";
 import { startWarm } from "./backends/cli.js";
+import { sideModelOn } from "./backends/side.js";
 import * as background from "./background.js";
 import { config, clock } from "./config.js";
 
@@ -129,7 +130,8 @@ export async function record({ conversationId, requestId = null, userText = "", 
       // On the subscription only (2026-10-25): this runs after the reply has gone, so a cold CLI
       // start costs nobody a wait. Background work like extraction: through the background lane
       // (src/background.js), one at a time, never beside a reply in flight, parked while limited.
-      : process.env.REASON_BACKEND === "claude-cli"
+      // Since 2026-11-02 the same on the API backend, on the API key (src/onethought.js askJson).
+      : sideModelOn()
         ? await background.enqueue(`said:${conversationId}:${requestId ?? started}`, () => askJson({ system: RECORD_INSTRUCTIONS, prompt: recordPrompt({ userText, reply, claims, open }), schema: RECORD_SCHEMA, feature: "said_record" }))
         : null;
     if (!r) return null;
@@ -229,7 +231,7 @@ export async function checkDraft({ conversationId, draft, log = () => {}, now = 
     const closed = db.closedQuestions(conversationId, { since, limit: 5 });
     if (!claims.length && !closed.length) return { ok: true };
     closed.push(...db.declinedQuestions(conversationId, { since: now - DECLINED_WINDOW_MS, limit: 5 }));
-    if (!checker && process.env.REASON_BACKEND !== "claude-cli") return { ok: true, skipped: "no_model" };
+    if (!checker && !sideModelOn()) return { ok: true, skipped: "no_model" };
     const started = Date.now();
     const prompt = `Standing claims:\n${claims.length ? claims.map(claimLine).join("\n") : "  (none)"}\n\nClosed questions:\n${closed.length ? closed.map(questionLine).join("\n") : "  (none)"}\n\nThe draft:\n${String(draft).slice(0, 3_000)}`;
     let v;
@@ -238,7 +240,7 @@ export async function checkDraft({ conversationId, draft, log = () => {}, now = 
         ? await checker({ draft, claims, closed })
         // The subscription, never the API (2026-10-27): the turn's warm CLI when it has one, so
         // the cold start was paid while the turn ran.
-        : (await askJson({ system: CHECK_INSTRUCTIONS, prompt, schema: CHECK_SCHEMA, feature: "said_check", cliModel: config.saidCheckCliModel, cliTimeoutMs: config.saidCheckCliTimeoutMs, warm })).value;
+        : (await askJson({ system: CHECK_INSTRUCTIONS, prompt, schema: CHECK_SCHEMA, feature: "said_check", cliModel: config.saidCheckCliModel, cliTimeoutMs: config.saidCheckCliTimeoutMs, warm, effort: warm ? null : "low" })).value;
     } catch (e) {
       log({ said_check_failed: (e?.message ?? String(e)).split("\n")[0].slice(0, 160), conversation: conversationId, ms: Date.now() - started });
       return { ok: true, skipped: "check_failed" };

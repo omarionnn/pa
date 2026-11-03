@@ -13,7 +13,7 @@
 // subscription after the call ends, never the billed API. It never guesses upward: no CLI, an error,
 // or an answer off the schema all leave the row as it was.
 import * as db from "../db.js";
-import { askStructuredViaCli } from "../backends/cli.js";
+import { askStructured, sideAskAllowed } from "../backends/side.js";
 import { theySpoke } from "./outcome.js";
 
 const SCHEMA = {
@@ -53,10 +53,10 @@ const parse = (s) => { try { return typeof s === "string" ? JSON.parse(s) : (s ?
 
 /**
  * The model's read: `{ met, why }`, or null when it could not be asked or did not answer cleanly.
- * `ask` is the claude-cli structured call; tests pass their own.
+ * `ask` is the structured side call (src/backends/side.js); tests pass their own.
  */
-export async function judgeGoal(row, { transcript = row?.transcript, ask = askStructuredViaCli } = {}) {
-  if (ask === askStructuredViaCli && (process.env.REASON_BACKEND !== "claude-cli" || process.env.NODE_TEST_CONTEXT)) return null;
+export async function judgeGoal(row, { transcript = row?.transcript, ask = askStructured } = {}) {
+  if (ask === askStructured && !sideAskAllowed()) return null;
   let out;
   try {
     out = await ask({

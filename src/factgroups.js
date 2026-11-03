@@ -5,14 +5,14 @@
 // The extractor files what it writes as it writes it (src/extract.js, the `group` field). This files
 // everything else — facts the `remember` tool saved, a guess they confirmed, and, once, every fact
 // saved before the page existed — in small batches on the background lane, on Reason's own
-// subscription (claude-cli). Never on the paid API: on the API backend nothing is filed here and
-// the page reads the extractor's category instead until something is (src/pages/webmemory.js).
+// subscription (claude-cli), or since 2026-11-02 on the API key on the API backend
+// (src/backends/side.js). With no model at all nothing is filed here and the page reads the
+// extractor's category instead until something is (src/pages/webmemory.js).
 //
 // One conversation per batch, so one person's facts are never read beside another's.
 import * as db from "./db.js";
 import { config } from "./config.js";
-import { runClaudeCli } from "./backends/cli.js";
-import { onSubscription } from "./extract.js";
+import { runStructured, onCli, sideModelOn } from "./backends/side.js";
 
 export const GROUPS = db.MEMORY_GROUPS;
 const BATCH = 60;
@@ -52,7 +52,7 @@ export function filingPrompt(rows, ownKey) {
 }
 
 async function readViaCli(rows, ownKey) {
-  const r = await runClaudeCli({ prompt: filingPrompt(rows, ownKey), system: SYSTEM, jsonSchema: SCHEMA, model: config.extractionCliModel, timeoutMs: config.extractionCliTimeoutMs, feature: "fact_groups" });
+  const r = await runStructured({ prompt: filingPrompt(rows, ownKey), system: SYSTEM, jsonSchema: SCHEMA, model: onCli() ? config.extractionCliModel : config.extractionModel, timeoutMs: config.extractionCliTimeoutMs, feature: "fact_groups" });
   if (!r.ok) throw new Error(r.error ?? "the CLI reported an error");
   const v = r.envelope?.structured_output && typeof r.envelope.structured_output === "object" ? r.envelope.structured_output : JSON.parse(String(r.envelope?.result ?? ""));
   return Array.isArray(v?.filed) ? v.filed : [];
@@ -67,7 +67,7 @@ export function setFilingReader(f) { reader = f; }
  * the model chose. Returns how many were filed. Nothing to read with (API backend, no test reader): 0.
  */
 export async function fileFacts({ limit = BATCH, log = () => {} } = {}) {
-  const read = reader ?? (onSubscription() ? readViaCli : null);
+  const read = reader ?? (sideModelOn() ? readViaCli : null);
   if (!read) return 0;
   const rows = db.unfiledFacts({ limit, skip: [...tries].filter(([, n]) => n >= MAX_TRIES).map(([id]) => id) });
   if (!rows.length) return 0;

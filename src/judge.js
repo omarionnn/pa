@@ -11,6 +11,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { tracked } from "./spend.js";
 import { config } from "./config.js";
 import { judgeViaCli } from "./backends/cli.js";
+import { oneToolCall } from "./backends/side.js";
 
 export const VERDICTS = ["yes", "no", "change", "unclear"];
 
@@ -60,13 +61,16 @@ export async function judgeReply({ summary, reply }) {
     return await judgeViaCli({ summary, reply, instructions: INSTRUCTIONS });
   }
   try {
+    // On Opus 5.5 (the live REASON_MODEL) forced tool use is a 400 and thinking cannot be turned
+    // off, so the tool is steered rather than forced and the answer has room after the thinking.
+    const one = oneToolCall(config.judgeModel, "verdict", INSTRUCTIONS);
     const res = await anthropic().messages.create(
       {
         model: config.judgeModel,
-        max_tokens: 200,
-        system: INSTRUCTIONS,
+        max_tokens: 4000,
+        system: one.system,
         tools: [VERDICT_TOOL],
-        tool_choice: { type: "tool", name: "verdict" },
+        tool_choice: one.tool_choice,
         messages: [{
           role: "user",
           content: `The action, exactly as the assistant described it:\n${summary}\n\nThe owner's reply, verbatim:\n${reply}`,

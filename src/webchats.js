@@ -6,7 +6,7 @@
 // subscription path (never the billed API), or the first words of their first message when the CLI is
 // not the backend or the summarise fails. A later reply never retitles it.
 import * as db from "./db.js";
-import { askStructuredViaCli } from "./backends/cli.js";
+import { askStructured, sideAskAllowed } from "./backends/side.js";
 import { normTitle } from "./itemtitle.js";
 
 const FALLBACK_WORDS = 6, FALLBACK_CHARS = 48;
@@ -31,13 +31,13 @@ Never use their name. No quotes, no dates, no punctuation at the end.`;
 const SCHEMA = { type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false };
 
 let testAsk = null;
-/** For tests: the stand-in for the claude-cli summarise (null puts the real path back). */
+/** For tests: the stand-in for the model summarise (null puts the real path back). */
 export function setTitleAsk(f) { testAsk = f; }
 
-/** One title from the claude-cli subscription, or null (not the backend, under the test runner, or anything went wrong). */
+/** One title from the model (src/backends/side.js), or null (no model, under the test runner, or anything went wrong). */
 async function modelTitle({ first, reply, name }) {
-  const ask = testAsk ?? askStructuredViaCli;
-  if (ask === askStructuredViaCli && (process.env.REASON_BACKEND !== "claude-cli" || process.env.NODE_TEST_CONTEXT || process.env.REASON_WEB_CHAT_TITLES === "0")) return null;
+  const ask = testAsk ?? askStructured;
+  if (ask === askStructured && (!sideAskAllowed() || process.env.REASON_WEB_CHAT_TITLES === "0")) return null;
   const { value, error } = await ask({
     prompt: `Their first name, which must NOT appear: ${String(name ?? "").trim().split(/\s+/)[0] || "(unknown)"}\n\nTheir first message:\n${String(first ?? "").slice(0, 600)}\n\nThe first reply:\n${String(reply ?? "").slice(0, 600)}`,
     system: SYSTEM,

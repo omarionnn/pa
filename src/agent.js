@@ -30,6 +30,7 @@ import { checkoutNote as shopCheckoutNote } from "./shopconnect.js";
 import { withoutSelfNote, readSilence } from "./plain.js";
 import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "./offers.js";
 import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
+import { REFUSAL_LINE } from "./harm.js";
 
 import { recordApi } from "./spend.js";
 import * as zonescope from "./zonescope.js";
@@ -341,6 +342,107 @@ export function withoutToolImages(messages) {
 /** The newest MAX_HISTORY messages, starting on theirs. Same cut as the CLI path: src/thread.js. */
 const trimHistory = (messages) => trimThread(messages, MAX_HISTORY);
 
+/**
+ * The prompt cache, for the history (2026-11-02, the move of every turn onto the API key).
+ *
+ * Until now the API path cached the instructions and the tools and nothing else, so on every model
+ * call — 2.6 a message on average, each tool round is one — the whole thread was written to the
+ * cache again at 1.25x. Two things fix it, the same two the CLI path got in Speed 6/6 (6f9e0dd,
+ * e3f893b, 4c145e6):
+ *
+ * 1. Breakpoints on the messages (`cachedMessages`): one on the last message of the thread as it
+ *    stood before this turn, which the next turn reads back, and one on the newest message, which
+ *    each tool round of this turn reads back. With the one on the system prompt that is three of
+ *    the API's four.
+ *
+ * 2. A start that does not slide (`historyStart`). Once a thread is full (src/thread.js keeps 60) its
+ *    oldest messages are cut on every save, so a request that opened at the oldest kept message
+ *    changed its first bytes every turn and nothing after the tools could ever be read from cache.
+ *    So the request opens at an ANCHOR message and stays there while that message is still kept and
+ *    the newest VIEW_MIN messages all come after it; then it moves to the start of the newest
+ *    VIEW_MIN. The model sees the newest 40 messages plus up to 20 before them — what the CLI path
+ *    shows — and always the thread as it is stored now: a message redacted after the anchor was set
+ *    is read as it now reads (it costs a cache write, never a stale line). The thread itself is
+ *    saved exactly as before; only the request is cut.
+ *
+ * In memory only, like the CLI's: a restart re-anchors on the next turn.
+ */
+const VIEW_MIN = 40;
+const anchors = new Map();
+const fingerprint = (messages, i) => JSON.stringify([messages[i] ?? null, messages[i + 1] ?? null]);
+
+export function historyStart(historyId, messages, { log = () => {} } = {}) {
+  const window = messages.length - trimThread(messages, VIEW_MIN).length;
+  const a = anchors.get(historyId);
+  if (a) {
+    // Last match wins; the next message is part of the print so two lone "ok"s are not confused.
+    for (let s = Math.min(window, messages.length - 1); s >= 0; s--) {
+      if (fingerprint(messages, s) === a) {
+        log({ history_anchor: "kept", start: s, of: messages.length, conversation: historyId });
+        return s;
+      }
+    }
+  }
+  if (!messages.length) { anchors.delete(historyId); return 0; }
+  anchors.set(historyId, fingerprint(messages, window));
+  log({ history_anchor: a ? "reset" : "new", start: window, of: messages.length, conversation: historyId });
+  return window;
+}
+/** For tests: forget every anchor, as a restart does. */
+export const resetHistoryAnchors = () => anchors.clear();
+
+const EPHEMERAL = { type: "ephemeral" };
+/** A copy of `m` with a cache breakpoint on its last block that can carry one; `m` is never changed. */
+function withBreakpoint(m) {
+  if (typeof m.content === "string") return m.content ? { ...m, content: [{ type: "text", text: m.content, cache_control: EPHEMERAL }] } : m;
+  if (!Array.isArray(m.content)) return m;
+  // Thinking blocks cannot carry one, and neither can an empty text block.
+  const k = m.content.findLastIndex(b => b && !/thinking/.test(b.type) && !(b.type === "text" && !b.text));
+  if (k < 0) return m;
+  const content = m.content.slice();
+  content[k] = { ...content[k], cache_control: EPHEMERAL };
+  return { ...m, content };
+}
+
+/**
+ * The messages as one request sends them: from `start`, with a breakpoint on the last message of the
+ * thread before this turn (index `historyEnd - 1`) and one on the newest message. Copies only: what
+ * the thread keeps never carries a breakpoint. `drop` (indices into `messages`) are left out.
+ */
+export function cachedMessages(messages, { start = 0, historyEnd = messages.length, drop = null } = {}) {
+  const kept = [];
+  for (let i = start; i < messages.length; i++) if (!drop?.has(i)) kept.push(i);
+  const lastHistory = kept.findLast(i => i < historyEnd);
+  const marks = new Set([lastHistory, kept.at(-1)].filter(i => i != null));
+  return kept.map(i => (marks.has(i) ? withBreakpoint(messages[i]) : messages[i]));
+}
+
+/**
+ * The exchanges the harm screen refused in code (their line, then REFUSAL_LINE), as indices into
+ * `messages` from `from` up to `to`. On the API, the model's own safeguards read the whole request:
+ * with one of these still in view, the next turns came back `stop_reason: "refusal"` ("can't help
+ * with that one" to "what's 17 times 23", 2 of 2 on the cage, 2026-11-02) where the CLI path
+ * answered. That exchange was already answered and counted by code (src/harm.js), and the screen
+ * still reads it from the thread, which is saved unchanged. Only the API request leaves it out, and
+ * only once a request with it in view has been refused (`refusedHistory`).
+ */
+export function refusedExchanges(messages, from = 0, to = messages.length) {
+  const out = new Set();
+  const text = (m) => typeof m?.content === "string" ? m.content
+    : Array.isArray(m?.content) && m.content.length && m.content.every(b => b?.type === "text") ? m.content.map(b => b.text).join("") : null;
+  for (let i = Math.max(from + 1, 1); i < to; i++) {
+    const m = messages[i], before = messages[i - 1];
+    if (m?.role !== "assistant" || text(m)?.trim() !== REFUSAL_LINE) continue;
+    if (before?.role !== "user" || text(before) == null) continue;
+    out.add(i - 1); out.add(i);
+  }
+  return out;
+}
+/** Conversations whose API request was refused with a code-refused exchange in view. In memory, like the anchors. */
+const refusedHistory = new Set();
+/** For tests. */
+export const resetRefusedHistory = () => refusedHistory.clear();
+
 function requestsNote(reqs) {
   if (!reqs.length) return "";
   const lines = reqs.map(r => {
@@ -513,6 +615,8 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   const turnNote = [reconnect, planInfo, pauseInfo, noticeNote, newThing, resolvedMiss, purchases, checkouts, openWork, kept, ridesNow, standing, goalsNote, reqsNote, saidNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
+  // Where the request opens (historyStart, above), fixed for the whole turn so its rounds share a prefix.
+  const viewStart = historyStart(historyId, messages, { log });
   const userIndex = messages.length;
   messages.push(forModel);
 
@@ -528,7 +632,9 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
       // when the install switched them on. See `toolsFor` — `runTool` refuses on the conversation
       // regardless, so this is about nobody else being told they are there.
       tools: toolsFor(conversationId),
-      messages,
+      // The thread from its anchor, with the history and the newest message cached (cachedMessages).
+      // Less any exchange code already refused, once the platform refused a request over one (refusedExchanges).
+      messages: cachedMessages(messages, { start: viewStart, historyEnd: userIndex, drop: refusedHistory.has(historyId) ? refusedExchanges(messages, viewStart, userIndex) : null }),
       output_config: { effort: "medium" },
     };
     let response;
@@ -545,7 +651,16 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
     }
     log({ usage: response.usage, stop: response.stop_reason });
 
-    if (response.stop_reason === "refusal") { reply = "can't help with that one"; break; }
+    if (response.stop_reason === "refusal") {
+      // Once more without the exchanges code already refused, when there are any in view and nothing
+      // has run yet this turn. A second refusal is the platform's answer to this message itself.
+      if (round === 0 && !refusedHistory.has(historyId) && refusedExchanges(messages, viewStart, userIndex).size) {
+        refusedHistory.add(historyId);
+        log({ refusal_retry_without_refused: conversationId });
+        round--; continue;
+      }
+      reply = "can't help with that one"; break;
+    }
 
     messages.push({ role: "assistant", content: response.content });
     const toolUses = response.content.filter(b => b.type === "tool_use");

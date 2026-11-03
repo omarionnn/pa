@@ -15,6 +15,7 @@ import { parallelClient } from "./parallel.js";
 import { checkWatch as realCheckWatch } from "./watch.js";
 import * as deals from "./deals.js";
 import { runTurnViaCli as cliRunTurn } from "./backends/claude-cli.js";
+import { sideModelOn } from "./backends/side.js";
 import * as zonescope from "./zonescope.js";
 import { mimeFor } from "./calls/recordings.js";
 import { findConverter, runConverter, VOICE_AFCONVERT_ARGS, VOICE_FFMPEG_ARGS, effectAllowed } from "./expressive.js";
@@ -1869,10 +1870,11 @@ export class Runtime extends EventEmitter {
 
   async extract() {
     try {
-      const { processQueue, onSubscription } = await import("./extract.js");
-      // On the subscription it is a background-lane job (src/background.js): one waiting at a time,
-      // run between replies and never during one, so the sweep is not held up by it either.
-      if (onSubscription()) {
+      const { processQueue } = await import("./extract.js");
+      // With a model for it (the subscription, or since 2026-11-02 the API key) it is a background-lane
+      // job (src/background.js): one waiting at a time, run between replies and never during one, so
+      // the sweep is not held up by it either.
+      if (sideModelOn()) {
         const background = await import("./background.js");
         background.enqueue("extract", () => processQueue({ log: this.log })).catch(e => this.log({ extraction_error: (e?.message ?? String(e)).split("\n")[0] }));
         // Facts saved without a memory-page heading (src/factgroups.js), a batch at a time on the same lane.
@@ -2626,9 +2628,9 @@ export class Runtime extends EventEmitter {
   }
 
   async ticketChecks({ now = clock.now() } = {}) {
-    // One pass at a time. On the claude-cli backend its email reads wait in the background lane
-    // (src/ticketcheck.js readEmail), so the pass runs off the sweep's path: a reminder never waits
-    // behind somebody's e-ticket.
+    // One pass at a time. Whenever there is a model to read its email with (the claude-cli backend,
+    // or since 2026-11-02 the API key), its reads wait in the background lane (src/ticketcheck.js
+    // readEmail), so the pass runs off the sweep's path: a reminder never waits behind somebody's e-ticket.
     if (this._ticketPass) return { running: true };
     const pass = checkTickets({
       now, log: this.log,
@@ -2638,7 +2640,7 @@ export class Runtime extends EventEmitter {
       return { checked: 0 };
     }).finally(() => { this._ticketPass = null; });
     this._ticketPass = pass;
-    if (process.env.REASON_BACKEND === "claude-cli") return { started: true };
+    if (sideModelOn()) return { started: true };
     return await pass;
   }
 

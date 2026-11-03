@@ -541,7 +541,9 @@ test("the ledger only ever touches its own conversation's rows", () => {
   assert.equal(db.getClaim("dm:other", theirs).status, "standing", "another person's claim is untouched");
 });
 
-test("pinned: the mid-turn reader is on the subscription only — a key in the environment is never used", async () => {
+// Since 2026-11-02 the API backend reads mid-turn texts on the API key (test/api-switch-1102.test.js);
+// under the test runner a key in the environment is still never used — only a test's stand-in API.
+test("pinned: under test a key in the environment is never used; on claude-cli the reader is the CLI", async () => {
   const { askJson } = await import("../src/onethought.js");
   const { cliConfig, resetSideCalls } = await import("../src/backends/cli.js");
   const was = { key: process.env.ANTHROPIC_API_KEY, backend: process.env.REASON_BACKEND, bin: cliConfig.bin };
@@ -549,7 +551,7 @@ test("pinned: the mid-turn reader is on the subscription only — a key in the e
   cliConfig.bin = "/nonexistent/claude";
   try {
     delete process.env.REASON_BACKEND;
-    await assert.rejects(askJson({ system: "s", prompt: "p", schema: {} }), /no subscription CLI/);
+    await assert.rejects(askJson({ system: "s", prompt: "p", schema: {} }), /no model for side calls/);
     process.env.REASON_BACKEND = "claude-cli";
     resetSideCalls();
     await assert.rejects(askJson({ system: "s", prompt: "p", schema: {} }), /cli: could not run/);

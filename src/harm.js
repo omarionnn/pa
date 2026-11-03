@@ -113,10 +113,12 @@ async function askApiThenCli({ system, prompt, model, verdicts, categories, feat
 }
 
 /**
- * Which path screens a text: the subscription, always (owner, 2026-10-27: never bill the API). Only
- * a phone call on the API backend says "api" for itself (src/calls/voice.js).
+ * Which path screens a text: the backend the install runs on. On claude-cli, the subscription (owner,
+ * 2026-10-27: never bill the API there); a phone call on the API says "api" for itself
+ * (src/calls/voice.js). On REASON_BACKEND=api (owner, 2026-11-02: all model work on the API key),
+ * the API, on the same small model, the same instructions and the same verdicts.
  */
-export const screenBackend = () => "claude-cli";
+export const screenBackend = () => process.env.REASON_BACKEND === "claude-cli" ? "claude-cli" : "api";
 
 /**
  * The most of one message the screen is shown. A message of any length used to go in whole, so a
@@ -356,6 +358,12 @@ Say 'harm' if any of that is in the reply, even wrapped in warnings. Say 'clear'
 export async function screenReply({ text, asked = "" }) {
   if (!modelAvailable()) return { verdict: "clear", skipped: "no_model" };
   const prompt = `What they had asked:\n${String(asked).slice(0, 600)}\n\nThe reply the assistant wrote, verbatim:\n${capForScreen(text)}`;
+  // On the API backend, the API (screenBackend); same instructions, same two verdicts.
+  if (screenBackend() === "api") {
+    const a = await askApi({ system: REPLY_INSTRUCTIONS, prompt, feature: "harm_reply" });
+    if (a.platform_refusal) return PLATFORM_REFUSAL;
+    return a.verdict === "clear" || a.verdict === "harm" ? a : { verdict: "unscreened", error: a.error ?? `the screen returned ${a.verdict}` };
+  }
   const r = await cliScreen({ prompt, instructions: REPLY_INSTRUCTIONS, verdicts: ["clear", "harm"], categories: CATEGORIES });
   if (r.platform_refusal) return PLATFORM_REFUSAL;
   return r.error ? { verdict: "unscreened", error: r.error } : tidy(r);
