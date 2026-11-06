@@ -163,19 +163,13 @@ test("the 25th session owes the ask, exactly once; the next session after the as
   assert.ok(plan.blocked(c));
 });
 
-test("sessions counted while the switch was off: the first session under the paywall gets the ask, not a cut-off", async () => {
+test("nothing is counted while the switch is off: a later flip starts nobody part-way through a trial", async () => {
   process.env.REASON_PAYWALL = "off";
   const { c } = newcomer();
-  sessions(c, 40);
-  process.env.REASON_PAYWALL = "on";
-  clock.skip(31 * MIN); accounts.countUse(c, "turn");
-  assert.equal(plan.status(c).status, "trial", "asked first");
-  assert.equal(plan.row(c).ask_due, 1);
-  const router = fakeRouter();
-  assert.equal((await plan.afterTurn({ conversationId: c, router, sleep: noSleep })).did, "asked");
-  assert.equal(router.sent.length, 3);
-  clock.skip(31 * MIN); accounts.countUse(c, "turn");
-  assert.equal(plan.status(c).status, "lapsed");
+  try {
+    sessions(c, 40);
+    assert.equal(plan.row(c), null, "no plan row while off");
+  } finally { process.env.REASON_PAYWALL = "on"; }
 });
 
 // ---------------------------------------------------------------- the bubbles
@@ -289,13 +283,12 @@ test("REASON_PAYWALL=owner reaches only the operator, and skips his grandfather 
   } finally { process.env.REASON_PAYWALL = "on"; }
 });
 
-for (const off of ["off", undefined]) test(`REASON_PAYWALL=${off ?? "(unset)"}: sessions are counted, nothing else`, async () => {
+for (const off of ["off", undefined]) test(`REASON_PAYWALL=${off ?? "(unset)"}: nothing is counted, said, refused or shown`, async () => {
   if (off === undefined) delete process.env.REASON_PAYWALL; else process.env.REASON_PAYWALL = off;
   try {
     const { c } = newcomer();
     sessions(c, 27);
-    assert.equal(plan.row(c).sessions_used, 27);
-    assert.equal(plan.row(c).status, "trial");
+    assert.equal(plan.row(c), null, "not counted");
     assert.equal(plan.status(c).status, "off");
     assert.ok(!plan.blocked(c));
     const router = fakeRouter();
@@ -305,20 +298,42 @@ for (const off of ["off", undefined]) test(`REASON_PAYWALL=${off ?? "(unset)"}: 
     assert.ok(!toolsFor(c).some(t => t.name === "subscription_show"));
     assert.equal(plan.note(c), "");
     assert.equal(plan.opsLabel(c), null);
-    assert.equal(db.opsGet("paywall_ship_ts"), null, "the ship time is not written while off");
+    assert.equal(plan.shipTs(), null);
   } finally { process.env.REASON_PAYWALL = "on"; }
 });
 
-test("the ship time: the env wins; otherwise it is written once, the first time the switch is seen on", () => {
-  const saved = process.env.REASON_PAYWALL_SHIP_TS;
+test("the cut-off is the flip moment: before it free for good, after it the trial; a stale earlier SHIP_TS cannot pull it back", () => {
+  const savedEnv = process.env.REASON_PAYWALL_SHIP_TS;
+  const savedOn = db.opsGet("paywall_on_since");
   try {
-    assert.equal(plan.shipTs(), Date.parse("2026-10-31T00:00:00Z"));
-    process.env.REASON_PAYWALL_SHIP_TS = "";
-    const first = plan.shipTs();
-    assert.ok(Math.abs(first - clock.now()) < 2_000, "written now");
+    db.db.exec("DELETE FROM ops_state WHERE k = 'paywall_on_since'");
+    process.env.REASON_PAYWALL = "off";
+    process.env.REASON_PAYWALL_SHIP_TS = "1793500000000"; // the Oct 31 value still in live .env
+    clock.skip(10 * MIN);
+    const { c: before } = newcomer("Before");          // joined while Reason was free
+    assert.equal(plan.onSince(), null, "nothing recorded while off");
+    clock.skip(MIN);
+    process.env.REASON_PAYWALL = "on";
+    const flip = plan.onSince();                         // what boot does with the switch on
+    assert.ok(Math.abs(flip - clock.now()) < 2_000, "the flip moment is now");
+    assert.equal(plan.shipTs(), flip, "the earlier env value is ignored");
+    clock.skip(MIN);
+    const { c: after } = newcomer("After");
+    sessions(before, 27); sessions(after, 3);
+    assert.equal(plan.status(before).status, "free");
+    assert.equal(plan.status(after).status, "trial");
+    assert.equal(plan.opsLabel(after), "trial 3/25");
     clock.skip(5 * MIN);
-    assert.equal(plan.shipTs(), first, "kept, not moved");
-  } finally { process.env.REASON_PAYWALL_SHIP_TS = saved; }
+    assert.equal(plan.onSince(), flip, "kept, not moved");
+    process.env.REASON_PAYWALL_SHIP_TS = new Date(clock.now() + 60_000).toISOString();
+    assert.equal(plan.shipTs(), clock.now() + 60_000, "a later SHIP_TS does move it later");
+    assert.equal(plan.status(after).status, "free");
+  } finally {
+    process.env.REASON_PAYWALL = "on";
+    process.env.REASON_PAYWALL_SHIP_TS = savedEnv;
+    db.db.exec("DELETE FROM ops_state WHERE k = 'paywall_on_since'");
+    if (savedOn) db.opsSet("paywall_on_since", savedOn);
+  }
 });
 
 // ---------------------------------------------------------------- lapsed

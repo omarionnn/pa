@@ -814,6 +814,8 @@ export function createServer({ router, runtime, log = () => {} }) {
       // Where Stripe sends them back after paying, or after changing their mind. Said once, plainly;
       // the thread is where the real confirmation lands (the webhook's line).
       if (req.method === "GET" && (url.pathname === "/pay/done" || url.pathname === "/pay/back")) {
+        // Switch off (Reason is free for everyone): no page about paying, just the home page.
+        if (plan.mode() === "off") { res.writeHead(302, { Location: `${(config.siteUrl || "https://heyreason.com").replace(/\/+$/, "")}/` }); return res.end(); }
         res.writeHead(200, HTML());
         return res.end(brandedPage(url.pathname === "/pay/done" ? "You're all set" : "No charge",
           url.pathname === "/pay/done"
