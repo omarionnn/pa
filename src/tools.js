@@ -33,6 +33,7 @@ import * as google from "./google.js";
 import * as icloud from "./icloud.js";
 import * as agentcard from "./agentcard.js";
 import * as offers from "./offers.js";
+import * as said from "./said.js";
 import * as deals from "./deals.js";
 import { handoffFor, cartLinkFromHtml } from "./handoff.js";
 import * as x from "./x.js";
@@ -9115,6 +9116,8 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
   }
   // The task this call worked on, for the turn to write its messages down under (src/settle.js).
   if (ctx?.turnTasks) { const t = taskOfCall(name, rawInput, out); if (t) ctx.turnTasks.add(t); }
+  // What this call came to, for the check in front of the reply (src/said.js): no "done" without it.
+  if (ctx?.turnActs) said.noteAct(ctx.turnActs, name, out);
   if (ctx?.conversationId && !ECHOES_MODEL.test(String(name))) offers.noteSource(ctx.conversationId, out);
   // Anything they texted since the last tool call rides on this result, first, so the turn has it
   // while it can still change the work.

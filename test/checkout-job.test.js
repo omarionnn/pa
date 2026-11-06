@@ -309,18 +309,21 @@ test("review: an expired payment approval reads as that; a wake that failed is r
   assert.equal(woke.length, 1, "raised once it got through");
 });
 
-test("review: a run Crossmint stops answering about ends after LOST_MS, said once; a run already on live with no stage still moves", async () => {
+test("review: a run Crossmint stops answering about ends after LOST_MS (about a minute), said once; a run already on live with no stage still moves", async () => {
+  assert.ok(shop.LOST_MS <= 60_000, "a dead run is told within about a minute (it was 36, and reached them 45 minutes late)");
   const out = await start();
   await shop.step(out.runId);
   delete runs[out.runId]; // Crossmint forgot it: 404 from here on
-  clock.skip(shop.LOST_MS - 60_000);
+  assert.equal((await shop.step(out.runId)).done, false, "one failed look is not the end");
+  clock.skip(shop.LOST_MS - 5_000);
   assert.equal((await shop.step(out.runId)).done, false);
-  clock.skip(2 * 60_000);
+  assert.equal(said.length, 0, "nothing said while it is only a few failed looks");
+  clock.skip(10_000);
   const s = await shop.step(out.runId);
   assert.equal(s.lost, true);
   assert.equal(row(out.runId).status, "failed");
   assert.equal(said.at(-1).t, "I lost track of the Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz: the checkout service stopped answering about it. Nothing was charged that I can see. Want me to start it again?");
-  assert.match(said.at(-2).t, /^Still at Ulta's checkout/, "the stall was said first, at twelve minutes");
+  assert.equal(said.length, 1, "the end only: no stall line about a run nobody can see");
   const n = said.length;
   assert.equal((await shop.step(out.runId)).done, true);
   assert.equal(said.length, n, "once");

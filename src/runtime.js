@@ -476,6 +476,9 @@ export class Runtime extends EventEmitter {
       meta = rest;
       const mark = db.outboxMark();
       const turnTasks = new Set();
+      // Every tool call of this turn and what it came to (src/said.js noteAct, from src/tools.js runTool),
+      // so the check in front of the reply can hold "I've started the checkout" against what really ran.
+      const turnActs = [];
       // `ctx` is extra context for the TOOLS of this turn, not for the model: runTurn spreads its
       // leftovers into every tool call's ctx. One caller uses it — the digest pass, which has to
       // tell `notice_send` that this turn IS the batched line rather than an interruption.
@@ -512,6 +515,7 @@ export class Runtime extends EventEmitter {
         // The tasks this turn works on (task_start / task_update / task_finish, src/tools.js runTool),
         // so its messages can be written down as theirs once it ends (src/settle.js).
         turnTasks,
+        turnActs,
         // Where they are speaking from, for the one case the model has to know: a web message is
         // labelled as such on its own line (src/agent.js, src/backends/claude-cli.js). A text is
         // labelled nothing, exactly as before.
@@ -541,7 +545,7 @@ export class Runtime extends EventEmitter {
       // A draft shows nothing until the screen has said clear (webdraft `screen`).
       const draft = kind === "user" && meta.channel === "web" && !shouldSend && (screened.verdict === "clear" || screened.verdict === "pending")
         && this.runTurn !== realRunTurn && webdraft.streamOn(conversationId)
-        ? webdraft.startDraft({ conversationId, log: this.log, screen: screened.ready ?? null }) : null;
+        ? webdraft.startDraft({ conversationId, log: this.log, screen: screened.ready ?? null, acts: turnActs, userText: text }) : null;
       // The said check's CLI, started now so its cold start is paid while the turn runs (src/said.js).
       // Not for a Web draft, which checks its pieces as they are written (src/webdraft.js).
       const warmCheck = kind === "user" && !draft ? said.warmCheck(conversationId) : null;
@@ -568,11 +572,11 @@ export class Runtime extends EventEmitter {
         // of its own after it (Router.deliver's loop).
         if (fold) fold.closing = true;
         // Updates replace (src/said.js): a draft that changes a value already given without saying
-        // so, or asks a question already settled, is rewritten once before it goes. API-only and
-        // only when something is standing, so almost every reply pays nothing for it.
+        // so, asks a question already settled, or says a thing is done that no tool of this turn did
+        // (the claim check), is rewritten once before it goes.
         if (kind === "user" && reply && reply.trim() !== "NO_REPLY") {
           // A reply the tab already watched pass this check, word for word, is not asked twice (src/webdraft.js).
-          const check = draft ? await draft.check(reply) : await said.checkDraft({ conversationId, draft: reply, log: this.log, warm: warmCheck });
+          const check = draft ? await draft.check(reply) : await said.checkDraft({ conversationId, draft: reply, log: this.log, warm: warmCheck, acts: turnActs, userText: text });
           if (!check.ok) {
             // What the tab was shown goes; the rewrite arrives whole.
             draft?.taken();

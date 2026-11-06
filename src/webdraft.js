@@ -109,12 +109,12 @@ export function shapeDraft(conversationId, raw, { complete = false } = {}) {
  * check rejected the finished reply); `end()` takes back what is left once the reply has gone, and
  * stops. `check(text)` is the said check for the finished reply, shared with the piece that matches it.
  */
-export function startDraft({ conversationId, log = () => {}, check = checkDraft, emit = (e) => draftEvents.emit("draft", e), screen = null }) {
+export function startDraft({ conversationId, log = () => {}, check = checkDraft, emit = (e) => draftEvents.emit("draft", e), screen = null, acts = null, userText = "" }) {
   let msg = null, seq = 0, shownFrom = -1, shown = "", busy = false, again = false, stopped = false;
   // One said check per exact text, shared: the finished reply's own check reuses a piece's, in flight or done.
   const checks = new Map();
   const checkOnce = (text) => {
-    if (!checks.has(text)) checks.set(text, Promise.resolve().then(() => check({ conversationId, draft: text, log })).catch(() => ({ ok: true })));
+    if (!checks.has(text)) checks.set(text, Promise.resolve().then(() => check({ conversationId, draft: text, log, ...(acts ? { acts, userText } : {}) })).catch(() => ({ ok: true })));
     return checks.get(text);
   };
   const me = {};
