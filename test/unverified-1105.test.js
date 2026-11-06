@@ -196,3 +196,25 @@ test("a photo looked at this turn whose words are not in hand yet: its figures a
   offers.beginTurn(C, "what's my balance");
   assert.equal(offers.guardReply(C, "you've got $812.40", { extraSources: ["Bank app. Words in it, verbatim:\nBalance $812.40"] }).recompose, null);
 });
+
+test("a small plain number or a year of theirs vouches for no price: '3 of us' is not $3", () => {
+  theySaid("there are 3 of us, back in 2025 it was cheaper", DAY);
+  offers.beginTurn(C, "what's the subway now");
+  const g = offers.guardReply(C, "it's $3 a ride, so $9 for the three of you");
+  assert.deepEqual(g.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$3", "$9"], "sums only count when worked from known figures");
+  offers.beginTurn(C, "what's the subway now");
+  assert.ok(offers.guardReply(C, "that's $2,025").recompose);
+});
+
+test("their own deal counts; their question about one does not", () => {
+  offers.beginTurn(C, "is there a promo code for the cerave?");
+  assert.ok(offers.guardReply(C, "yes, there's a promo code at checkout").recompose);
+  offers.beginTurn(C, "i've got code GLOW15 for 15% off, use it");
+  assert.equal(offers.guardReply(C, "will do, the 15% off code goes on at checkout").recompose, null);
+});
+
+test("arithmetic on their own figure is known: a tip, a total, a split", () => {
+  offers.beginTurn(C, "dinner was 84, what's an 18% tip and what do we each owe, 3 of us");
+  const g = offers.guardReply(C, "18% on $84 is $15.12, so $99.12 total, $33.04 each.");
+  assert.equal(g.recompose, null, JSON.stringify(g.flags));
+});

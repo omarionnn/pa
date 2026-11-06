@@ -446,9 +446,15 @@ function sourceAmounts(text, { bare = false } = {}) {
   for (const m of t.matchAll(/(\d[\d,]*(?:\.\d{1,2})?)\s?(?:dollars|bucks|USD)\b/gi)) add(m[1]);
   for (const m of t.matchAll(/(?:USD|price\\?"?\s*:\s*\\?"?)\s?(\d[\d,]*(?:\.\d{1,2})?)/gi)) add(m[1]);
   for (const m of t.matchAll(/(\d+(?:\.\d+)?)\s?k\b/gi)) add(m[1], 100_000);
-  // What THEY wrote, sent or are remembered by: any number in it ("my budget is 100", a balance
-  // read off their screenshot). A tool's JSON is not read this way — its ids and timestamps are not prices.
-  if (bare) for (const m of t.matchAll(/(?<![\d.,])(\d[\d,]*(?:\.\d{1,2})?)(?![\d])/g)) add(m[1]);
+  // What THEY wrote, sent or are remembered by: a plain number in it counts too ("keep it under 100").
+  // Not a small one — "3 of us", "at 4" would vouch for any invented $3 or $4 — nor a year. A tool's
+  // JSON is never read this way: its ids and timestamps are not prices.
+  if (bare) {
+    for (const m of t.matchAll(/(?<![\d.,:\/-])(\d[\d,]*)(?![\d.,:\/]?\d)/g)) {
+      const n = Number(m[1].replace(/,/g, ""));
+      if (n >= 20 && !(n >= 1900 && n <= 2100 && !m[1].includes(","))) add(m[1]);
+    }
+  }
   return out;
 }
 
@@ -517,6 +523,7 @@ const DISCOUNT = /\b(coupons?|promo(?:tional)? codes?|promos?|discounts?|voucher
 const DISCOUNT_SOURCE = /coupon|promo|discount|voucher|% off|percent off|sale|clearance|markdown|save \$|was \$|list price/i;
 /** A whole bracketed line that is a tool's note, not words to a person: "(compared: a seller $18.99, …)". */
 export const TOOL_NOTE_LINE = /^\s*\((?:compared|tool note|internal|debug)\s*:.*\)\s*$|^\s*\(.*\ba seller \$\d.*\)\s*$/i;
+const THEIR_DEAL = /\d{1,2}\s?% off|\$\s?\d+(?:\.\d{2})? off|\b[Cc]ode:?\s+[A-Z0-9]{4,}\b|\bsave \$\d/;
 const BEST = /\b(best (?:deal|price|value|offer)|cheapest|lowest(?:-| )price[ds]?|lowest cost|least expensive|can't beat|cannot beat)\b/i;
 
 // "I'll find the cheapest total" is a promise, not a claim: no correction under it (cage, 2026-10-31).
@@ -559,7 +566,7 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     for (const s of [...t.sources, record]) for (const c of sourceAmounts(s)) known.add(c);
     // Their own words this turn and what they sent with them are theirs: read like their history.
     const extra = extraSources.filter(Boolean).map(String);
-    const theirs = [...[t.kind === "user" ? t.own : "", ...extra].filter(Boolean).map(text => ({ kind: "them", at: now, text, amounts: sourceAmounts(text, { bare: true }) })), ...theirSources(conversationId, now)];
+    const theirs = [...[t.kind === "user" ? t.own : "", ...extra].filter(Boolean).map(text => ({ kind: "them", at: now, text, amounts: sourceAmounts(text, { bare: true }) })), ...(t.theirs ??= theirSources(conversationId, now))];
     const fresh = new Set(known);
     for (const s of theirs) if (s.kind !== "memory" || now - s.at < STALE_MEMORY_MS) for (const c of s.amounts) fresh.add(c);
     const flags = [];
@@ -591,10 +598,13 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     }
     // Sums worked out of known figures in the same message ("$2,341.17 less the $1,850 rent leaves
     // $491", "two at $45 is $90") are known too: arithmetic on what is known, not a new claim.
+    // A percentage of one ("18% tip on $84 is $15.12") and a split ("$33.04 each") count the same way.
     const settled = figures.filter(f => !loose.includes(f)).map(f => f.cents);
+    const pcts = [...String(reply).matchAll(/(\d{1,2}(?:\.\d+)?)\s?%/g)].map(m => Number(m[1]) / 100);
     const worked = new Set();
     for (const a of settled) {
-      for (let k = 2; k <= 10; k++) worked.add(a * k);
+      for (let k = 2; k <= 10; k++) { worked.add(a * k); worked.add(Math.round(a / k)); }
+      for (const p of pcts) { const part = Math.round(a * p); worked.add(part); worked.add(a + part); worked.add(a - part); for (let k = 2; k <= 10; k++) worked.add(Math.round((a + part) / k)); }
       for (const b of settled) { worked.add(a + b); if (a > b) worked.add(a - b); }
     }
     for (const f of loose) if (!figureKnown(f.fig, f.cents, worked, { approx: false })) unchecked.push(f.fig);
@@ -609,7 +619,10 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     }
 
     // 2. A coupon / discount / sale needs something read or theirs that mentions one.
-    const discountSourced = [...t.sources.map(s => s.slice(0, 200_000)), record, ...theirs.map(s => s.text)].some(s => DISCOUNT_SOURCE.test(s));
+    // Their words count only for a concrete deal of theirs ("i have a code SAVE20", "20% off at
+    // checkout"): asking "is there a promo?" vouches for none.
+    const discountSourced = [...t.sources.filter(s => s !== t.own).map(s => s.slice(0, 200_000)), record].some(s => DISCOUNT_SOURCE.test(s))
+      || theirs.some(s => THEIR_DEAL.test(s.text));
     const discountClaimed = DISCOUNT.test(reply) && !discountSourced;
     if (discountClaimed) {
       flags.push({ rule: "discount_unsourced" });
