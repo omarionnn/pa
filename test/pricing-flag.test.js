@@ -126,3 +126,40 @@ test("flip on: a pre-flip person whose number moves to another channel after the
     assert.ok(!toolsFor(moved).some(t => t.name === "subscription_show"));
   } finally { process.env.REASON_PAYWALL = "off"; }
 });
+
+// Owner, 2026-11-05: anybody who joins through an invite is free for good, whenever they join; only
+// people who come in on their own (ads, website, texting the number) get the trial after the flip.
+test("flip on: invited after the flip → free; joined via a member's event after the flip → free; uninvited after the flip → trial", async () => {
+  const inviter = person("Inviter");
+  process.env.REASON_PAYWALL = "on";
+  try {
+    clock.skip(MIN);
+    const flip = plan.shipTs();
+    const made = db.createInvite(inviter);
+    assert.ok(made.ok, JSON.stringify(made));
+    const inv = made.invite;
+    const invitedNum = `+1347666${String(1000 + n++).slice(-4)}`;
+    const out = db.redeemInvite({ claimCode: inv.claim_code, channel: "fake", address: invitedNum, name: "Invited" });
+    assert.ok(out.ok, JSON.stringify(out));
+    const invited = out.account.conversation_id;
+    assert.ok(db.getAccount(invited).created_at > flip, "joined after the flip");
+    sessions(invited, 30);
+    assert.equal(plan.status(invited).status, "free");
+    assert.ok(!toolsFor(invited).some(t => t.name === "subscription_show"));
+    assert.equal(plan.note(invited), "");
+    // Same invitee's number on another channel later: still free.
+    const moved = `dm:other:${invitedNum}`;
+    db.upsertAccount({ conversationId: moved, channel: "other", address: invitedNum, name: "Invited", isOperator: false });
+    assert.equal(plan.status(moved).status, "free");
+
+    const guest = person("Guest");
+    db.db.prepare("UPDATE accounts SET joined_via_event = 1 WHERE conversation_id = ?").run(guest);
+    assert.equal(plan.status(guest).status, "free");
+
+    const walkIn = person("WalkIn");         // texted the number from an ad: no invite, no event
+    assert.ok(db.getAccount(walkIn).created_at > flip);
+    sessions(walkIn, 2);
+    assert.equal(plan.status(walkIn).status, "trial");
+    assert.ok(toolsFor(walkIn).some(t => t.name === "subscription_show"));
+  } finally { process.env.REASON_PAYWALL = "off"; }
+});

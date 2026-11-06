@@ -8,7 +8,8 @@
 //   - `plan` is one row per conversation: sessions used, when they were first seen, where they stand
 //     (trial | free | paid | lapsed | cancelled) and the Stripe ids. NOT `subscriptions` — that table
 //     is a person's own merchant subscriptions (src/subs.js), nothing to do with paying for Reason.
-//   - Grandfathered — free, for good: the operator, every number in REASON_TEST_NUMBERS, and every
+//   - Grandfathered — free, for good: the operator, every number in REASON_TEST_NUMBERS, everybody who
+//     came in through an invite or a member's event (whenever they joined, owner 2026-11-05), and every
 //     account made before the switch was first turned on (the flip moment, written once in ops_state;
 //     REASON_PAYWALL_SHIP_TS may only move it later — shipTs() below).
 //   - At the 25th session the turn's own reply still answers them; THEN three short bubbles go, the
@@ -140,12 +141,20 @@ export function appliesTo(conversationId) {
   return true;
 }
 
-/** Free for good: the operator, a test number, or an account from before the paywall shipped. */
+/** Free for good: the operator, a test number, anybody who came in by invite or event, or an account from before the flip. */
 export function grandfathered(conversationId) {
   const row = db.getAccount(conversationId);
   if (mode() === "owner" && isOperator(conversationId, row)) return false; // so he can try it on himself
   if (isOperator(conversationId, row)) return true;
   if (row?.address && config.testNumbers.some(n => String(n).replace(/[^\d+]/g, "") === String(row.address).replace(/[^\d+]/g, ""))) return true;
+  // Came in through somebody already here (owner, 2026-11-05): free for good whenever they joined,
+  // before or after the flip — the invite card's "Free for you, for good." is the promise. Two ways in
+  // count: a member's invite (accounts.invited_by, set by db.redeemInvite) and an event a member made
+  // (accounts.joined_via_event, set by db.redeemEventClaim). Only people who came in on their own —
+  // texting the number from an ad or the website — get the trial. Checked across every account on the
+  // number, so an invitee whose number later shows up on another channel keeps it.
+  if (row?.invited_by || row?.joined_via_event) return true;
+  if (row?.address && q("SELECT 1 FROM accounts WHERE address = ? AND (invited_by IS NOT NULL OR joined_via_event IS NOT NULL) LIMIT 1").get(row.address)) return true;
   const ship = shipTs();
   if (row?.created_at && ship && row.created_at < ship) return true;
   // The same number moved channel after the cut-off (a new `dm:<channel>:<number>` account, made later):

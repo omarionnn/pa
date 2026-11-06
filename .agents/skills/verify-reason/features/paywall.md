@@ -4,8 +4,9 @@ Shipped 2026-10-31 (PR #323). **2026-11-05 owner decision: Reason is FREE for ev
 OFF.** Off = nothing counted (no `plan` row), nothing said, no plan tool or price in the model's tools /
 capabilities / note, `/pay/done` + `/pay/back` 302 to the site home, Stripe's webhook acts on nothing.
 `owner` reaches only the operator's own thread (his grandfather rules skipped there, so he can try it);
-`on` reaches everybody who is not grandfathered — the operator, `REASON_TEST_NUMBERS`, and every account
-with `created_at` before the FLIP MOMENT (`ops_state` key `paywall_on_since`, written the first time a
+`on` reaches everybody who is not grandfathered — the operator, `REASON_TEST_NUMBERS`, anybody who joined
+through an invite or a member's event (`accounts.invited_by` / `joined_via_event` on any account on the
+number; owner 2026-11-05, whenever they joined), and every account with `created_at` before the FLIP MOMENT (`ops_state` key `paywall_on_since`, written the first time a
 process boots with the switch on). `REASON_PAYWALL_SHIP_TS` can only move that cut-off later, so the old
 Oct 31 value in live .env cannot put anybody who joined while free on a trial. The website's matching
 switch is `REASON_PRICING` (reason-site `tools/build-site.mjs`); flip both together.
