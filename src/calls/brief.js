@@ -237,18 +237,25 @@ export function briefLines(brief, { ownerName = config.ownerName } = {}) {
  * It is a different goal (find out whether it went through) with booking switched off, and it is
  * built here so no caller has to remember to switch it off.
  */
-export function askWhetherItWentThrough(brief, { what = "" } = {}) {
-  const thing = String(what || brief?.goal || "the booking").trim();
+export function askWhetherItWentThrough(brief, { what = "", then = null } = {}) {
+  const thing = String(what || brief?.goal || "the booking").trim().replace(/[.!?\s]+$/, "");
+  // What this call was asked to do NOW, when it is something other than the old errand. It rides
+  // along after the check instead of being dropped: the 2026-11-05 call to Yaw lost a brand-new
+  // message to the old call's script because only the old brief survived this rewrite.
+  const next = then && String(then.goal ?? "").trim() && String(then.goal).trim() !== String(brief?.goal ?? "").trim() ? then : null;
+  const base = brief ?? next ?? {};
   return buildBrief({
-    ...brief,
+    ...base,
     goal: `Find out whether this already went through, and change nothing: ${thing}.`
       + ` The last call dropped before it was confirmed, so it may or may not exist on their side.`
       + ` Ask them to check. If it IS there, read back what they have and confirm those details.`
-      + ` If it is NOT there, say you will come back to them — do NOT make it now.`,
+      + ` If it is NOT there, say you will come back to them — do NOT make it now.`
+      + (next ? ` Once that is settled, this call is also for this, asking only: ${String(next.goal).trim()}` : ""),
+    facts: next ? [...new Set([...(next.facts ?? []), ...(base.facts ?? [])])] : (base.facts ?? []),
     // The whole point. Even though the original brief may have been allowed to book, this one is not:
     // the one thing that must not happen is a second booking made while checking for the first.
     approved: askOnly(),
-    questions: [],
+    questions: next ? [...(next.questions ?? [])] : [],
   });
 }
 
