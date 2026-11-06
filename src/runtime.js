@@ -48,6 +48,7 @@ import * as subs from "./subscriptions.js";
 import { readOutage, OutageError, MAX_REHOLDS } from "./down.js";
 import * as onethought from "./onethought.js";
 import * as said from "./said.js";
+import * as offers from "./offers.js";
 import { PROVIDER as GOOGLE } from "./google.js";
 import * as eventRides from "./eventrides.js";
 import { sweepListNotes } from "./events.js";
@@ -574,20 +575,29 @@ export class Runtime extends EventEmitter {
         // Updates replace (src/said.js): a draft that changes a value already given without saying
         // so, asks a question already settled, or says a thing is done that no tool of this turn did
         // (the claim check), is rewritten once before it goes.
-        if (kind === "user" && reply && reply.trim() !== "NO_REPLY") {
+        // The figures check (src/offers.js guardReply, run by the turn) asks for the same one rewrite
+        // when the reply states a price nothing backs — not theirs, not read, not remembered — or an
+        // unchecked deal: the model checks it or says once, in its own words, that it hasn't. On any
+        // turn, not just theirs: a morning brief is where a stack of figures goes out.
+        const figures = offers.takeRecompose(conversationId);
+        if (reply && reply.trim() !== "NO_REPLY") {
           // A reply the tab already watched pass this check, word for word, is not asked twice (src/webdraft.js).
-          const check = draft ? await draft.check(reply) : await said.checkDraft({ conversationId, draft: reply, log: this.log, warm: warmCheck, acts: turnActs, userText: text });
-          if (!check.ok) {
+          const check = kind !== "user" ? { ok: true }
+            : draft ? await draft.check(reply) : await said.checkDraft({ conversationId, draft: reply, log: this.log, warm: warmCheck, acts: turnActs, userText: text });
+          const notes = [check.ok ? "" : check.note, figures ?? ""].filter(Boolean);
+          if (notes.length) {
+            const note = notes.join(" ");
             // What the tab was shown goes; the rewrite arrives whole.
             draft?.taken();
             if (!db.retractDraft(conversationId, reply)) this.log({ draft_not_retracted: conversationId });
-            this.log({ draft_rewritten: conversationId, why: check.note.slice(0, 200) });
+            this.log({ draft_rewritten: conversationId, why: note.slice(0, 200), ...(figures ? { figures: true } : {}) });
             // The re-ask is code's, not theirs: the line it leaves in the thread comes off again.
             // `continueSession`: on the CLI backend the rewrite continues the session the draft was
             // written in rather than running the whole turn again (src/backends/claude-cli.js).
+            // `recompose`: the same turn going on, so what its tools read still counts as checked.
             reply = await this._afterScreen(screened, await this.runTurn(turnArgs({
-              text: `[Your draft reply was NOT sent. ${check.note} Write the reply again with that fixed; keep everything else that was right.\nThe draft:\n\"\"\"${reply.slice(0, 3_000)}\"\"\"]`,
-              keep: onethought.CODE_LINE, attachments: [], continueSession: true,
+              text: `[Your draft reply was NOT sent. ${note} Write the reply again with that fixed; keep everything else that was right.\nThe draft:\n\"\"\"${reply.slice(0, 3_000)}\"\"\"]`,
+              keep: onethought.CODE_LINE, attachments: [], continueSession: true, recompose: true,
             })), { conversationId, text, meta });
             db.dropUserLineEndingWith(conversationId, onethought.CODE_LINE);
           }

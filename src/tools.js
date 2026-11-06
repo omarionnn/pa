@@ -10657,25 +10657,24 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       // The figures check the reply gets (src/offers.js guardReply), on this message too: before
       // 2026-10-23 a price texted mid-turn skipped it, so a remembered shipping fee could go out as
-      // fact as long as it went by message_send. To their own person it is labelled in place, the
-      // same as the reply. To anybody else nothing is altered in their name: it is refused, and
-      // nothing is sent, until the figure is checked or said to be unverified. A release from the
-      // undo window was checked when it was parked and is not checked again against a later turn.
+      // fact as long as it went by message_send. Nothing is labelled in code (2026-11-05): a figure
+      // nothing backs — not read this turn, not theirs, not remembered — is sent back once, unsent,
+      // to be checked or said once in plain words to be unconfirmed; the next try goes. An unchecked
+      // coupon or deal is sent back every time. To anybody else, anything the check would change
+      // is refused, never altered in their name. A release from the undo window was checked when it
+      // was parked and is not checked again against a later turn.
       let text = input.text;
-      let figures = null;
       if (!ctx.heldIdemKey) {
         const g = offers.guardReply(c, input.text, { asks: false, extraSources: [exactly ?? "", input.exactly_as_asked ?? "", purchasesNoteMod.purchaseRecordSource(c)] });
-        if (g.changed) {
-          figures = g.flags;
-          if (!toOwner) {
-            return {
-              ok: false, blocked: "unchecked_figures", flags: g.flags,
-              error: `Not sent — nothing went to ${input.to}. It states figures or deal claims no source this turn backs (${g.flags.map(f => f.figures ? `${f.rule}: ${f.figures.join(", ")}` : f.rule).join("; ")}).`
-                + ` Check them first (offer_check, or the tool that read them), or drop them, or say plainly in the message that they are unverified — then send again.`,
-            };
-          }
-          text = g.text;
+        const back = g.recompose ? offers.sendBack(c, g.fixes) : null;
+        if (back || (g.changed && !toOwner)) {
+          return {
+            ok: false, blocked: "unchecked_figures", flags: g.flags,
+            error: `Not sent — nothing went to ${toOwner ? "them" : input.to}. ${back ?? "It carries a line the figures check would change."}`
+              + " Fix that in the message itself, in your own words (never a bracketed tag like \"(unverified)\"), then send again.",
+          };
         }
+        if (g.changed) text = g.text;
       }
 
       const chatId = toOwner || normalizeNumber(thread?.address) === to ? (thread?.chat_id ?? null) : null;
@@ -10735,7 +10734,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!r.ok) return { ...r, note: "Nothing was sent, and nothing more will be. Tell them exactly that, and what it said." };
       return {
         ok: true, sent_to: to, text, delivered: r.delivered,
-        ...(figures ? { figures_labelled: figures, note_on_text: "Figures no source this turn backed went out marked unverified — that is what they read, so do not restate them as checked." } : {}),
         ...(style ? { style } : {}), ...(styleNote ? { style_dropped: styleNote } : {}),
         ...(exactly ? { sent_exactly_as_asked: exactly } : {}),
         note: "This actually went out. You may say you sent it.",
@@ -13579,7 +13577,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: (row.price_cents == null
           ? `The page carries no machine-readable price, so the price is UNVERIFIED — do not quote one from it as checked.`
           : `Verified from the page just now: ${view.price}.`)
-          + (view.unverified.length ? ` Not stated on the page, so say "unverified" (never guess): ${view.unverified.join(", ")}.` : "")
+          + (view.unverified.length ? ` Not stated on the page, so never guess them; if one matters, say once in plain words that the page doesn't say (never a "(unverified)" tag): ${view.unverified.join(", ")}.` : "")
           + ` If they want it, purchase with offer_id ${row.id} — the cart that comes back is checked against this exact product.`,
       }, { source: url, text: `${rec.product} ${rec.seller} ${rec.stock} ${rec.shipping_time} ${rec.return_terms}` });
     }

@@ -10871,6 +10871,21 @@ export function recentEvents(conversationId, { limit = 20 } = {}) {
     .all(conversationId, limit);
 }
 
+/**
+ * What the person themselves put in front of Reason since `since`, as text: their own messages
+ * (voice notes arrive transcribed), and what was read off the photos and recordings they sent — the
+ * photo note's words, a recording's transcript. The reply check (src/offers.js guardReply) counts a
+ * figure in any of these as theirs, never something to hedge. Scoped by conversation.
+ */
+export function theirOwnWords(conversationId, { since = 0, limit = 400 } = {}) {
+  const said = db.prepare(`SELECT content AS text, at, 'them' AS kind FROM event_log
+    WHERE conversation_id = ? AND role = 'user' AND at >= ? ORDER BY at DESC LIMIT ?`).all(conversationId, since, limit);
+  const sent = db.prepare(`SELECT TRIM(COALESCE(description, '') || ' ' || COALESCE(transcript, '')) AS text, at, 'sent' AS kind FROM media_items
+    WHERE conversation_id = ? AND at >= ? AND (COALESCE(description, '') != '' OR COALESCE(transcript, '') != '')
+    ORDER BY id DESC LIMIT ?`).all(conversationId, since, limit);
+  return [...said, ...sent];
+}
+
 // -- profile_blocks queries --
 
 export function getProfile(conversationId) {

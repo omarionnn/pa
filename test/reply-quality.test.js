@@ -133,8 +133,9 @@ test("what a turn texted them through message_send is in the thread the next tur
   });
   assert.deepEqual(lines().slice(1).map(m => [m.role, m.content]), [
     ["assistant", "on it, checking tap and united now"],
-    // The final reply is the one the figures check ran on (src/offers.js): no tool fetched $612 in
-    // this turn, so it goes out labelled — and the identical mid-turn text is still not written twice.
-    ["assistant", "tap at 9:40, $612 (unverified)"],
+    // The final reply is the one the figures check ran on (src/offers.js): no tool fetched $612, so
+    // it is sent back for a rewrite (Runtime._turn), never tagged — and the identical mid-turn text
+    // is still not written twice.
+    ["assistant", "tap at 9:40, $612"],
   ]);
 });

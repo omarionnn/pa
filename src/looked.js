@@ -139,3 +139,21 @@ export async function recordLooked({ viewedMediaIds = [], reply = "", captured =
   }
   return stored;
 }
+
+/**
+ * What this turn's photos said, for the reply check (src/offers.js guardReply): a figure on their
+ * screenshot is theirs, not something to hedge. Waits for the quiet pass at most `waitMs` (it started
+ * with the turn, so it is nearly always in). `unread` when a photo was looked at and its words are not
+ * in hand — then an unmatched figure may well be off the photo, and is not sent back.
+ */
+export async function capturedWords(captured, viewedMediaIds = [], { waitMs = 4_000 } = {}) {
+  if (!viewedMediaIds.length) return { texts: [], unread: false };
+  let timer;
+  const got = await Promise.race([
+    Promise.resolve(captured).catch(() => null),
+    new Promise((r) => { timer = setTimeout(() => r(null), waitMs); timer.unref?.(); }),
+  ]);
+  clearTimeout(timer);
+  const ok = (got ?? []).filter(r => r?.ok);
+  return { texts: ok.map(r => noteFrom(r)), unread: ok.length < viewedMediaIds.length };
+}

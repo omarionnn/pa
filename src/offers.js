@@ -6,16 +6,19 @@
 // `unverified`; it is never filled from what the model remembers about a shop, because a remembered
 // return window or shipping fee said as fact is exactly the wrong answer somebody pays for.
 //
-// The reply check (guardReply) is mechanical on purpose, and it only reads Reason's own outgoing
-// text against the sources this turn fetched:
-//   - every dollar figure in the reply has to appear in a source fetched this turn (or in the
-//     person's own message this turn, or in their own purchase record — purchaseRecordSource in
-//     src/purchasesnote.js, passed in as `extraSources`), or it gets the word "unverified" put next
-//     to it — ", unverified" inside a parenthesis it already sits in, never a second pair of brackets;
-//   - a coupon / discount / sale claim needs a source this turn that mentions one, or a line saying
-//     there was none is added;
-//   - "best deal" / "cheapest" needs at least two verified offers read this turn, or a line saying
-//     exactly what was compared is added;
+// The reply check (guardReply) reads Reason's own outgoing text against what is known:
+//   - a dollar figure is known when a tool read it this turn, when it is THEIRS — anything they said
+//     or sent in the last weeks of the thread (texts, voice notes, what was read off their photos and
+//     screenshots), their purchase and checkout record — or when Reason remembers it about them
+//     (saved facts, the profile). Known figures are never hedged. A remembered price older than two
+//     weeks is said with its date. A figure that is none of those is NOT labelled by code: the reply
+//     goes back to the model once (Runtime._turn) to check it with a tool, or to say ONCE, in its own
+//     words, that it hasn't confirmed it. Until 2026-11-05 code stamped "(unverified)" after every
+//     such figure — 618 times in a week, on people's own budgets and balances;
+//   - a coupon / discount / sale claim needs something read or theirs that mentions one, or the
+//     model is sent back to check it or drop it; on the rewrite, a deal still unchecked comes out;
+//   - "best deal" / "cheapest" needs at least two verified offers read this turn, or the model is
+//     sent back to compare or say what it looked at;
 //   - a purchase ask (confirm_request for purchase_confirm) has to carry the offer record: if the
 //     reply does not show AgentCard's total and the source, the code-composed ask line is added.
 // Nothing here decides what the person meant. Intent is the model's; this checks figures.
@@ -23,6 +26,7 @@ import { guardedFetch } from "./netguard.js";
 import { clock } from "./config.js";
 import * as shop from "./shopconnect.js";
 import { choiceWording } from "./choicecards.js";
+import * as db from "./db.js";
 
 // ---------- "I've started the checkout" ----------
 // 2026-10-31 10:58: "I've started the Ulta checkout for the 16 oz. When it gets to payment I'll text
@@ -395,13 +399,20 @@ export function matchCartToOffer(cart, offer) {
 
 const turns = new Map(); // conversationId -> { sources: string[], offers: object[], asks: object[] }
 
-/** Start a turn: forget last turn's sources. The person's own message this turn counts as a source. */
-export function beginTurn(conversationId, ownText = "", kind = "user") {
+/**
+ * Start a turn: forget last turn's sources. The person's own message this turn counts as a source.
+ * `carry`: this is the one rewrite of a draft the check sent back (Runtime._turn) — the same turn
+ * going on, so what its tools already read still counts, the rewrite instruction (which quotes the
+ * draft) is NOT a source, and the check on the rewrite is the last one (`recomposed`).
+ */
+export function beginTurn(conversationId, ownText = "", kind = "user", { carry = false } = {}) {
+  const prev = turns.get(conversationId);
+  if (carry && prev) { prev.recomposed = true; prev.recompose = null; return; }
   // `own` and `kind` are kept apart from the sources for deal_watch_set (src/tools.js): a price
   // watch is only made on a turn THEY started, from words that are really in their message.
   // `started_at` is for flight_traveler_confirm: details read back on an earlier turn can only be
   // agreed to on a later one, so "those are right" is never the same turn that wrote them.
-  turns.set(conversationId, { sources: ownText ? [String(ownText)] : [], offers: [], asks: [], own: String(ownText ?? ""), kind, started_at: clock.now() });
+  turns.set(conversationId, { sources: ownText ? [String(ownText)] : [], offers: [], asks: [], own: String(ownText ?? ""), kind, started_at: clock.now(), warned: new Set(), recompose: null, recomposed: !!carry });
 }
 function turnOf(conversationId) {
   if (!turns.has(conversationId)) beginTurn(conversationId);
@@ -420,20 +431,70 @@ export function noteOffer(conversationId, row) { if (row) turnOf(conversationId)
 export function noteAsk(conversationId, ask) { if (ask) turnOf(conversationId).asks.push(ask); }
 export function turnState(conversationId) { return turnOf(conversationId); }
 
-// A figure never ends on a comma: "$3, now $4" is "$3", or its label lands after the comma.
+// A figure never ends on a comma: "$3, now $4" is "$3".
 const REPLY_MONEY = /(?:US)?\$\s?\d(?:[\d,]*\d)?(?:\.\d{1,2})?(?:k\b|K\b)?/g;
 
 /** Every amount in a piece of source text, as cents. Lenient on purpose: a source is evidence, not prose. */
-function sourceAmounts(text) {
+function sourceAmounts(text, { bare = false } = {}) {
   const out = new Set();
   const t = String(text);
   const add = (s, scale = 100) => { const n = Number(String(s).replace(/,/g, "")); if (Number.isFinite(n)) out.add(Math.round(n * scale)); };
   for (const m of t.matchAll(/\$\s?(\d[\d,]*(?:\.\d{1,2})?)/g)) add(m[1]);
-  for (const m of t.matchAll(/(?<![\d.])(\d[\d,]*\.\d{2})(?!\d)/g)) add(m[1]);
+  for (const m of t.matchAll(/(?<![\d.])(\d[\d,]*\.\d{1,4})(?!\d)/g)) add(m[1]);
+  for (const m of t.matchAll(/(?<![\d.,])(\d{1,3}(?:,\d{3})+)(?![\d,])/g)) add(m[1]);
   for (const m of t.matchAll(/(?:_cents|Cents)\\?"?\s*:\s*(\d+)/g)) add(m[1], 1);
-  for (const m of t.matchAll(/(\d[\d,]*(?:\.\d{1,2})?)\s?(?:dollars|USD)\b/gi)) add(m[1]);
+  for (const m of t.matchAll(/(\d[\d,]*(?:\.\d{1,2})?)\s?(?:dollars|bucks|USD)\b/gi)) add(m[1]);
   for (const m of t.matchAll(/(?:USD|price\\?"?\s*:\s*\\?"?)\s?(\d[\d,]*(?:\.\d{1,2})?)/gi)) add(m[1]);
+  for (const m of t.matchAll(/(\d+(?:\.\d+)?)\s?k\b/gi)) add(m[1], 100_000);
+  // What THEY wrote, sent or are remembered by: any number in it ("my budget is 100", a balance
+  // read off their screenshot). A tool's JSON is not read this way — its ids and timestamps are not prices.
+  if (bare) for (const m of t.matchAll(/(?<![\d.,])(\d[\d,]*(?:\.\d{1,2})?)(?![\d])/g)) add(m[1]);
   return out;
+}
+
+/**
+ * Does a figure in the reply stand on a known amount? Exact for anything with cents. A whole-dollar
+ * figure stands on the amount it rounds or truncates from ("$4,012" off 4012.35); a round one
+ * ("$4,000", "$100", "$4k") on an amount within a few percent, which is how people say a number they
+ * read. Arithmetic, not meaning.
+ */
+function figureKnown(figure, cents, amounts, { approx = true } = {}) {
+  if (amounts.has(cents)) return true;
+  const f = String(figure).trim();
+  if (/\.\d{1,2}$/.test(f)) return false;
+  const dollars = cents / 100;
+  const k = /k$/i.test(f);
+  const digits = String(Math.trunc(dollars)).length;
+  const round = approx && (k || (dollars >= 10 && dollars % 10 ** Math.max(1, digits - 2) === 0));
+  for (const a of amounts) {
+    if (Math.floor(a / 100) * 100 === cents || Math.round(a / 100) * 100 === cents) return true;
+    if (round && Math.abs(a - cents) <= cents * (k ? 0.05 : 0.03)) return true;
+  }
+  return false;
+}
+
+const DAY = 86_400_000;
+/** How far back what they said or sent counts as theirs. */
+export const THEIR_WORDS_MS = 45 * DAY;
+/** A remembered price older than this is said with its date ("as of Oct 3"). */
+export const STALE_MEMORY_MS = 14 * DAY;
+const shortDate = (at) => new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+
+/**
+ * Everything known that is THEIRS, each with its amounts: what they said and sent (src/db.js
+ * theirOwnWords), and what Reason remembers about them — saved facts and the profile. Never throws.
+ */
+function theirSources(conversationId, now) {
+  const out = [];
+  try {
+    for (const r of db.theirOwnWords(conversationId, { since: now - THEIR_WORDS_MS })) out.push({ kind: r.kind, at: r.at, text: r.text });
+  } catch { /* no history: nothing of theirs to add */ }
+  try {
+    for (const f of db.memoryFacts(conversationId)) out.push({ kind: "memory", at: f.created_at, text: f.fact });
+    const p = db.getProfile(conversationId);
+    if (p?.block) out.push({ kind: "memory", at: p.built_at, text: p.block });
+  } catch { /* no memory */ }
+  return out.map(s => ({ ...s, amounts: sourceAmounts(s.text, { bare: true }) }));
 }
 
 /** Is `offset` inside an open "(" on its own line? A stray ")" (a smiley) never takes it below zero. */
@@ -474,26 +535,36 @@ export function claimsBest(text) {
 
 /**
  * The check, on the text about to be sent — the turn's reply, and every message_send mid-turn
- * (src/tools.js), which until 2026-10-23 went out unchecked. `asks: false` leaves rule 4 to the
- * reply; `extraSources` adds text that counts as evidence for this one message (the person's own
- * words when it is sent exactly as they asked). Returns { text, changed, flags } — `text` is what to send.
+ * (src/tools.js). `asks: false` leaves rule 4 to the reply; `extraSources` adds text that counts as
+ * evidence for this one message (the person's own words when it is sent exactly as they asked, the
+ * notes on the photos they sent this turn). `unread`: they sent something this turn whose words code
+ * could not read (a photo note still being written), so an unmatched figure may well be theirs.
+ * `turnReply`: this is the turn's reply, so what it needs fixing is kept for Runtime._turn (takeRecompose).
+ *
+ * Returns { text, changed, flags, recompose } — `text` is what to send; `recompose` is null, or the
+ * instruction for the model to rewrite it once: check an unchecked figure, or say ONCE in its own
+ * words that it hasn't confirmed it. Code never writes a hedge or a footnote into the text
+ * (owner, 2026-11-05: 618 "(unverified)" tags in a week, most on the person's own numbers).
  * `flags` names every rule that fired, for the log. Never throws: a broken check must not eat a reply.
  */
-export function guardReply(conversationId, reply, { asks = true, extraSources = [] } = {}) {
+export function guardReply(conversationId, reply, { asks = true, extraSources = [], unread = false, turnReply = false } = {}) {
   try {
-    if (!reply || typeof reply !== "string") return { text: reply, changed: false, flags: [] };
+    if (!reply || typeof reply !== "string") return { text: reply, changed: false, flags: [], recompose: null };
     const t = turnOf(conversationId);
+    const now = clock.now();
     const known = new Set();
     // The checkout record of the last two days is a source on every turn (src/shopconnect.js recordSource).
     let record = "";
     try { record = shop.connectAllowedFor(conversationId) ? shop.recordSource(conversationId) : ""; } catch { record = ""; }
-    for (const s of [...t.sources, record, ...extraSources.filter(Boolean).map(String)]) for (const c of sourceAmounts(s)) known.add(c);
+    for (const s of [...t.sources, record]) for (const c of sourceAmounts(s)) known.add(c);
+    // Their own words this turn and what they sent with them are theirs: read like their history.
+    const extra = extraSources.filter(Boolean).map(String);
+    const theirs = [...[t.kind === "user" ? t.own : "", ...extra].filter(Boolean).map(text => ({ kind: "them", at: now, text, amounts: sourceAmounts(text, { bare: true }) })), ...theirSources(conversationId, now)];
+    const fresh = new Set(known);
+    for (const s of theirs) if (s.kind !== "memory" || now - s.at < STALE_MEMORY_MS) for (const c of s.amounts) fresh.add(c);
     const flags = [];
+    const fixes = [];
 
-    // 1. Dollar figures: in a source this turn, or labelled. A figure already inside a parenthesis
-    // gets ", unverified" rather than a bracket of its own: "($18.99)" became "($18.99 (unverified))"
-    // on 2026-10-24, and nested brackets in a text read as broken.
-    const unlabelled = [];
     // 0. A tool's bookkeeping line copied into the text ("(compared: a seller $18.99, …)") never goes out.
     const original = reply;
     const noted = reply.split("\n");
@@ -502,47 +573,82 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
       flags.push({ rule: "tool_note_stripped", lines: noted.length - kept.length });
       reply = kept.join("\n").replace(/\n+$/, "");
     }
-    let text = reply.replace(REPLY_MONEY, (m, offset, whole) => {
-      if (known.has(replyAmountCents(m))) return m;
-      const near = whole.slice(Math.max(0, offset - 40), offset + m.length + 40);
-      if (/unverified/i.test(near)) return m;
-      unlabelled.push(m.trim());
-      return insideParens(whole, offset) ? m + ", unverified" : m + " (unverified)";
-    });
-    if (unlabelled.length) flags.push({ rule: "dollar_unsourced", figures: unlabelled });
+    let text = reply;
 
-    const extra = [];
-    // 2. Coupon / discount claims need a live source this turn.
-    if (DISCOUNT.test(reply) && !t.sources.some(s => DISCOUNT_SOURCE.test(s.slice(0, 200_000)))) {
+    // 1. Dollar figures. Known when a tool read it this turn, when it is THEIRS (said, sent, a photo
+    // of theirs, anywhere in the last weeks of the thread), or when Reason remembers it about them.
+    // Those are never hedged. A figure that is none of those is not labelled in code: the model is
+    // sent back once to check it or say, once, in its own words, that it hasn't confirmed it.
+    const unchecked = [];
+    const stale = [];
+    const figures = [...reply.matchAll(REPLY_MONEY)].map(m => ({ fig: m[0].trim(), cents: replyAmountCents(m[0].trim()) }));
+    const loose = [];
+    for (const f of figures) {
+      if (figureKnown(f.fig, f.cents, fresh)) continue;
+      const remembered = theirs.filter(s => s.kind === "memory" && figureKnown(f.fig, f.cents, s.amounts));
+      if (remembered.length) { stale.push({ figure: f.fig, as_of: shortDate(Math.max(...remembered.map(s => s.at))) }); continue; }
+      loose.push(f);
+    }
+    // Sums worked out of known figures in the same message ("$2,341.17 less the $1,850 rent leaves
+    // $491", "two at $45 is $90") are known too: arithmetic on what is known, not a new claim.
+    const settled = figures.filter(f => !loose.includes(f)).map(f => f.cents);
+    const worked = new Set();
+    for (const a of settled) {
+      for (let k = 2; k <= 10; k++) worked.add(a * k);
+      for (const b of settled) { worked.add(a + b); if (a > b) worked.add(a - b); }
+    }
+    for (const f of loose) if (!figureKnown(f.fig, f.cents, worked, { approx: false })) unchecked.push(f.fig);
+    if (unchecked.length) {
+      flags.push({ rule: "dollar_unsourced", figures: unchecked });
+      if (!unread) fixes.push({ key: "dollar:" + unchecked.join(","), line: `It states ${unchecked.length > 1 ? "figures" : "a figure"} nothing backs — ${unchecked.join(", ")}: no tool read ${unchecked.length > 1 ? "them" : "it"} this turn, and ${unchecked.length > 1 ? "they are" : "it is"} not something they said or sent or something you remember about them. If a quick tool can check it (web_search, offer_check, a quote), check it now and use what it says. Otherwise keep it only if it matters, and say ONCE, in your own words, that you haven't confirmed it ("haven't confirmed that price yet") — one such line in the whole message at most, never a tag after each number.` });
+    }
+    const staleNow = stale.filter(x => !new RegExp(`as of|${x.as_of.split(" ")[0]}`, "i").test(reply));
+    if (staleNow.length) {
+      flags.push({ rule: "dollar_remembered_stale", figures: staleNow });
+      fixes.push({ key: "stale:" + staleNow.map(x => x.figure).join(","), line: staleNow.map(x => `${x.figure} is from what you saved about them on ${x.as_of}: give that date with it (as of ${x.as_of}).`).join(" ") });
+    }
+
+    // 2. A coupon / discount / sale needs something read or theirs that mentions one.
+    const discountSourced = [...t.sources.map(s => s.slice(0, 200_000)), record, ...theirs.map(s => s.text)].some(s => DISCOUNT_SOURCE.test(s));
+    const discountClaimed = DISCOUNT.test(reply) && !discountSourced;
+    if (discountClaimed) {
       flags.push({ rule: "discount_unsourced" });
-      extra.push("(i didn't find a live source for any coupon or discount this time, so don't count on one.)");
+      fixes.push({ key: "discount", hard: true, line: "It mentions a coupon, discount or sale that nothing you read this turn shows and they never mentioned. Check it with a tool now, or leave it out — never point them at a deal you haven't seen." });
     }
     // 3. "Best deal" needs a comparison set of verified offers; otherwise say what was compared.
     // A flight search or date sweep this turn IS the comparison set (src/flightsearch.js): "the
-    // cheapest dates are early december" is read off the fares it just pulled, and a line about not
-    // comparing sellers under it is wrong. Its own limits ("from $X", not every fare) ride in the
-    // tool result.
+    // cheapest dates are early december" is read off the fares it just pulled.
     if (claimsBest(reply) && !t.faresCompared) {
       const priced = t.offers.filter(o => o.price_cents != null);
       if (priced.length < 2) {
         flags.push({ rule: "best_unsupported", compared: priced.length });
-        extra.push(priced.length
-          ? "(that's not a checked best price — i only looked at " + (priced[0].seller || "one seller") + ": " + money(priced[0].price_cents) + ".)"
-          : "(that's not a checked best price — i didn't compare sellers this time.)");
+        fixes.push({ key: "best", line: `It calls something the best or cheapest, but ${priced.length ? `you only looked at ${priced[0].seller || "one seller"} (${money(priced[0].price_cents)})` : "you didn't compare sellers this turn"}. Compare a few now, or say plainly what you did look at instead of "best".` });
       } else if (!priced.every(o => text.includes(money(o.price_cents)))) {
-        // Compared for real: logged, never glued onto the text. "(compared: a seller $18.99, …)"
-        // under the owner's CeraVe options on 2026-10-31 read as debug output, not an answer.
+        // Compared for real: logged, never glued onto the text.
         flags.push({ rule: "best_compared_listed", compared: priced.length });
       }
     }
+    // The rewrite's own check is the last: what it still says unchecked is logged and left, except an
+    // unchecked deal, whose sentences come out — an invented coupon is the one that costs somebody money.
+    if (t.recomposed && turnReply) {
+      if (discountClaimed) {
+        const parts = sentencesOf(text);
+        const left = joinBack(parts.map(p => (typeof p === "string" ? p : p.filter(x => !DISCOUNT.test(x)))));
+        if (left) { text = left; flags.push({ rule: "discount_dropped" }); }
+      }
+      fixes.length = 0;
+    }
+    const recompose = fixes.length ? fixes.map(f => f.line).join(" ") : null;
+    const out = { text, changed: false, flags, recompose, fixes };
     // 4. A purchase ask carries its offer record: AgentCard's total and the source.
     // Only on the reply: a message sent mid-turn (message_send) is not where the ask is put, and
     // the ask line glued onto a text to somebody else would be wrong twice over.
+    const asksExtra = [];
     for (const ask of asks ? t.asks : []) {
       if (!ask?.line) continue;
       const hasTotal = !ask.total || text.includes(ask.total);
       const hasSource = !ask.url || text.includes(ask.url);
-      if (!hasTotal || !hasSource) { flags.push({ rule: "ask_without_offer" }); extra.push(ask.line); }
+      if (!hasTotal || !hasSource) { flags.push({ rule: "ask_without_offer" }); asksExtra.push(ask.line); }
     }
     // 5. "I've started the checkout" needs a checkout run behind it (src/shopconnect.js): one of
     // theirs started in the last 15 minutes or still open. On 2026-10-31 the opposite happened too —
@@ -556,10 +662,34 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
       const chosen = choiceWording(conversationId, text, { since: t.started_at });
       if (chosen.flag) { flags.push(chosen.flag); text = chosen.text; }
     }
-    if (extra.length) text = text + "\n" + extra.join("\n");
-    return { text, changed: text !== original, flags };
+    if (asksExtra.length) text = text + "\n" + asksExtra.join("\n");
+    if (turnReply) t.recompose = recompose;
+    return { ...out, text, changed: text !== original };
   } catch {
-    return { text: reply, changed: false, flags: [{ rule: "guard_error" }] };
+    return { text: reply, changed: false, flags: [{ rule: "guard_error" }], recompose: null };
   }
+}
+
+/**
+ * The rewrite the turn's reply needs (set by guardReply with `turnReply`), taken once: the
+ * instruction Runtime._turn hands the model, or null. The rewrite's own check never sets one.
+ */
+export function takeRecompose(conversationId) {
+  const t = turns.get(conversationId);
+  const r = t?.recompose ?? null;
+  if (t) t.recompose = null;
+  return r;
+}
+
+/**
+ * A message_send that needs fixing (src/tools.js): the first time a thing is pointed out this turn it
+ * is sent back; the model has then had its chance, and the same figures go on the next try. An
+ * unchecked deal (`hard`) is sent back every time.
+ */
+export function sendBack(conversationId, fixes = []) {
+  const t = turnOf(conversationId);
+  const back = fixes.filter(f => f.hard || !t.warned.has(f.key));
+  for (const f of fixes) t.warned.add(f.key);
+  return back.length ? back.map(f => f.line).join(" ") : null;
 }
 
