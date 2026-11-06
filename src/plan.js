@@ -537,7 +537,14 @@ async function actOn(event, { say, log, now }) {
   const obj = event?.data?.object ?? {};
   const conversationId = conversationFor(obj);
   if (!conversationId) { log({ stripe_webhook: type, unmatched: true }); return { ok: true, matched: false }; }
-  const tell = (text) => { if (say) { try { say(conversationId, text); } catch (e) { log({ paywall_text_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); } } };
+  // Somebody the paywall does not reach (everybody but the operator under `owner`), or somebody free for
+  // good (before the flip, invited, the operator under `on`): an old test subscription ending, renewing or
+  // lapsing changes nothing for them — no lapse, no hold, no "your plan's ended" text.
+  if (!appliesTo(conversationId) || grandfathered(conversationId)) {
+    log({ stripe_webhook: type, conversation: conversationId, ignored: appliesTo(conversationId) ? "free for good" : "paywall does not reach them" });
+    return { ok: true, matched: true, conversationId, ignored: true };
+  }
+  const tell =(text) => { if (say) { try { say(conversationId, text); } catch (e) { log({ paywall_text_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); } } };
 
   switch (type) {
     case "checkout.session.completed": {

@@ -163,3 +163,25 @@ test("flip on: invited after the flip → free; joined via a member's event afte
     assert.ok(toolsFor(walkIn).some(t => t.name === "subscription_show"));
   } finally { process.env.REASON_PAYWALL = "off"; }
 });
+
+// Review 2026-11-05: Stripe events reach only people the paywall reaches and who are not free for good.
+test("Stripe: under owner a non-operator, and under on a free-for-good person, are never lapsed, held or texted by an old subscription", async () => {
+  const walker = person("OldSub");
+  const pre = person("PreFlipSub");
+  db.db.prepare("UPDATE accounts SET created_at = ? WHERE conversation_id = ?").run(plan.onSince() - 60 * MIN, pre);
+  const said = [];
+  const say = (to, text) => said.push({ to, text });
+  let k = 0;
+  const deleted = (c) => ({ id: `evt_rev_${k++}`, type: "customer.subscription.deleted", data: { object: { id: "sub_old", metadata: { conversation_id: c }, client_reference_id: plan.refFor(c), current_period_end: 1 } } });
+  for (const [mode, c] of [["owner", walker], ["on", pre]]) {
+    process.env.REASON_PAYWALL = mode;
+    try {
+      db.db.prepare("INSERT OR REPLACE INTO plan (conversation_id, sessions_used, first_seen_at, status, stripe_subscription_id, updated_at) VALUES (?, 3, 1, 'paid', 'sub_old', 1)").run(c);
+      const out = await plan.handleStripeEvent(deleted(c), { say });
+      assert.equal(out.ignored, true, mode);
+      assert.equal(plan.row(c).status, "paid", `${mode}: not lapsed`);
+      assert.equal(plan.row(c).held_at ?? null, null, `${mode}: not held`);
+    } finally { process.env.REASON_PAYWALL = "off"; }
+  }
+  assert.equal(said.length, 0);
+});
