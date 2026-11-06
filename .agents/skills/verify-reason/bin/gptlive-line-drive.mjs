@@ -80,16 +80,21 @@ const C = config.ownerConversation;
 db.saveConversation(C, [{ role: "user", content: "remember my gym locker code is 4471" }, { role: "assistant", content: "got it, locker 4471." }]);
 db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025550100", name: "Omari", isOperator: true });
 const biz = BIZ.includes(scene);
-const GOAL = biz
+// `--goal "…"` (+ any number of `--fact "…"`): a call to a PERSON with that errand instead (2026-11-06,
+// call 74 — "Has Yaw heard…?" said to Yaw). Use with --scene hello; read Reason's first line.
+const argAll = (k) => process.argv.flatMap((a, i) => a === k && process.argv[i + 1] ? [process.argv[i + 1]] : []);
+const ownGoal = argAll("--goal")[0] ?? "";
+const ownFacts = argAll("--fact");
+const GOAL = ownGoal ? ownGoal : biz
   ? "Ask which service they would recommend for someone with low back pain, and how much that service costs for one hour. Asking only, do not book anything."
   : "ask whether Luigi's has a table for two at 7pm tonight (just ask; do not book)";
 const row0 = db.createCall(C, {
   provider: "gptlive", toNumber: biz && scene !== "noisy" ? "+16465550123" : "+13105559999", isOwner: false, goal: GOAL,
-  facts: biz ? ["Calling for Omari, who has low back pain and is looking for a massage."] : ["party of two", "7pm tonight"],
+  facts: ownGoal ? ownFacts : biz ? ["Calling for Omari, who has low back pain and is looking for a massage."] : ["party of two", "7pm tonight"],
   announcement: gl.lineAnnouncement(announcementFor({ ownerName: "Omari" })), state: "in_progress",
 });
 db.updateCall(C, row0.id, {
-  brief: JSON.stringify(brief.buildBrief({ goal: GOAL, ...(biz ? { questions: ["Which service would you recommend for low back pain?", "How much is that service for 60 minutes?"] } : {}) })), opening_waits: 1,
+  brief: JSON.stringify(brief.buildBrief({ goal: GOAL, ...(ownGoal ? { facts: ownFacts } : biz ? { questions: ["Which service would you recommend for low back pain?", "How much is that service for 60 minutes?"] } : {}) })), opening_waits: 1,
   hold_budget_s: scene === "hold" ? 20 : 300, external_id: "gptlive:CAdrive",
 });
 const row = db.getCall(C, row0.id);

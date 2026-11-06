@@ -32,7 +32,7 @@ import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generat
 import { recordingFileFor } from "./recordings.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner, noteThirdPartyTurns } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
-import { thirdPartyIdentity, callIdentityFor, NO_NAME } from "./voice-prompt.js";
+import { thirdPartyIdentity, callIdentityFor, NO_NAME, speakToThem } from "./voice-prompt.js";
 import * as hold from "./hold.js";
 import * as callOutcome from "./outcome.js";
 import { makerLine } from "../maker.js";
@@ -330,6 +330,7 @@ export function lineTalkInstructions({ name = "them", named = name !== "them", b
     makerLine(),
     "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.",
     `What the call is for: ${String(b.goal || goal || "").trim()}`,
+    speakToThem({ ownerName: first }),
     told.length ? `The only things you may say about ${first} or their plans:\n${told.map(f => `- ${f}`).join("\n")}` : `Say nothing about ${first} beyond what the call is for.`,
     b.goal ? briefLines(b, { ownerName: first }) : "",
     `Rules, whatever you are asked:\n${rules.map((r, i) => `${i + 1}. ${r}`).join("\n")}`,
