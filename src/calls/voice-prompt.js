@@ -207,6 +207,24 @@ export function ownerCallFrame({ name, identity = false }) {
 }
 
 /**
+ * Who the voice is talking TO on a call it placed (2026-11-06, call 74). The goal is Reason's own note,
+ * written from the owner's side ("Ask Yaw whether he has heard how badly United are doing"), and the
+ * voice read it down the line as it stood: "Has Yaw heard how badly Manchester United are doing?" — to
+ * Yaw. The goal is what to get done, not words to say; the person who answers is the one it is about,
+ * so they are "you". Both voices on a third-party call carry it: Reason's call turn (`thirdPartyFrame`)
+ * and GPT-Live talking for itself (`lineTalkInstructions` in ./gptlive.js).
+ */
+export function speakToThem({ ownerName }) {
+  return `Who you are talking to: the person who answers is the person or place this call is for, and you are speaking TO them,`
+    + ` on ${ownerName}'s behalf. What this call is for is ${ownerName}'s errand, noted from ${ownerName}'s side, so it may name`
+    + ` them in the third person ("ask Yaw whether he has heard…", "tell her ${ownerName} will call tonight"). Those are not words to`
+    + ` read out: say it to their face, as "you" and "your" — "have you heard…?", not "has Yaw heard…?"; "${ownerName} will call you`
+    + ` tonight", not "${ownerName} will call him". Use their name only to greet them or to check you have the right person ("is this`
+    + ` Yaw?"). If somebody else answers, ask for that person by name, and give the message only to the person it is for, or to`
+    + ` whoever the errand allows.`;
+}
+
+/**
  * The frame on a THIRD-PARTY call: the goal, the approved facts, the standing rules, and nothing
  * else at all.
  *
@@ -240,6 +258,7 @@ export function thirdPartyFrame({ identity = false, ownerName, goal, facts = [],
         + ` Never launch straight into the goal the instant they speak. One beat of human rhythm, then the reason for the call.`,
     `Rules for this call, whatever you are asked:\n${rules.map((r, i) => `${i + 1}. ${r}`).join("\n")}`,
     `What this call is for:\n${String(goal ?? "").trim()}`,
+    speakToThem({ ownerName }),
     list.length
       ? `The only things you may say about ${ownerName} or their plans:\n${list.map(f => `- ${f}`).join("\n")}`
       : `You were given nothing you may share about ${ownerName} beyond the line above.`,
