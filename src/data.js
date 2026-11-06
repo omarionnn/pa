@@ -191,7 +191,9 @@ const SECRET_COLUMNS = { oauth_tokens: ["access_token", "refresh_token"], agentc
 const REDACTED_AS = { "flight_travelers.details": "[not exported: passenger details stay sealed on this machine; ask Reason for flight_travelers to read them]" };
 // A handshake in flight belongs to nobody once it is spent, and a live one is a credential. Not
 // redacted — dropped, because there is nothing in it worth having.
-const DROP_FROM_EXPORT = ["oauth_states"];
+// fact_embeddings: vectors made from their facts, calls, actions and messages (src/recallindex.js).
+// Nothing readable to export, but made from their words, so a delete takes them.
+const DROP_FROM_EXPORT = ["oauth_states", "fact_embeddings"];
 const REDACTED = "[not exported: this is a live credential]";
 
 function redactSecrets(table, rows) {

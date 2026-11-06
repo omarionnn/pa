@@ -126,7 +126,10 @@ function pendingExchanges(conversationId, limit, now) {
   for (const c of convs) {
     if (out.length >= limit) break;
     const after = db.prepare("SELECT MAX(fact_id) AS m FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'event_log'").get(c)?.m ?? 0;
-    const rows = db.prepare("SELECT id, conversation_id, role, content, at FROM event_log WHERE conversation_id = ? AND id > ? AND role IN ('user','assistant') ORDER BY id LIMIT 400").all(c, after);
+    // Rows the retention sweep has emptied (src/privacy.js) are skipped in the query, not after it:
+    // a window of 400 emptied rows makes no exchange, so `after` would never move past them and
+    // nothing said since would ever be indexed.
+    const rows = db.prepare("SELECT id, conversation_id, role, content, at FROM event_log WHERE conversation_id = ? AND id > ? AND role IN ('user','assistant') AND content <> '' ORDER BY id LIMIT 400").all(c, after);
     let run = [];
     const close = () => {
       if (run.length && exchangeText(run)) out.push({ conversation_id: c, from: run[0].id, to: run.at(-1).id, rows: run });
@@ -215,8 +218,10 @@ export function snippetFor(conversationId, table, id, spanFrom = null, { chars =
   if (table === "event_log") {
     const rows = db.prepare("SELECT role, content, at FROM event_log WHERE conversation_id = ? AND id BETWEEN ? AND ? AND role IN ('user','assistant') ORDER BY id")
       .all(conversationId, spanFrom ?? id, id);
-    if (!rows.length) return null;
-    return { kind: "thread", at: rows[0].at, text: clip(exchangeText(rows), chars) };
+    const text = clip(exchangeText(rows), chars);
+    // Emptied by the retention sweep: there are no words left to show, so no match.
+    if (!text) return null;
+    return { kind: "thread", at: rows[0].at, text };
   }
   return null;
 }

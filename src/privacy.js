@@ -79,6 +79,11 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
       `UPDATE event_log SET content = '', attachments = '[]', tool_calls = '[]'
         WHERE content <> '' AND at < ?
           AND id NOT IN (SELECT event_log_id FROM extraction_queue WHERE state IN ('pending', 'processing'))`).run(content)));
+    // ...and the recall index's vector for an exchange whose words just went (src/recallindex.js):
+    // it is made from those words, so it goes with them. fact_id is the exchange's last row.
+    drop("event_log_vectors", n(db.prepare(
+      `DELETE FROM fact_embeddings WHERE source_table = 'event_log'
+         AND fact_id IN (SELECT id FROM event_log WHERE content = '' AND at < ?)`).run(content)));
 
     // A page or video Reason fetched, cached by video rather than by person. A cache: deleting it
     // costs a re-fetch and nothing else.

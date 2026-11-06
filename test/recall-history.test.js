@@ -203,12 +203,54 @@ test("recall with no saved fact points at memory_search instead of saying nothin
   assert.match(out.note, /memory_search/);
 });
 
-test("both backends' system prompt sends a back-reference to memory_search before any 'nothing saved'", async () => {
-  // The CLI backend builds its system prompt from the same systemFor (src/backends/claude-cli.js).
-  const { systemFor } = await import("../src/agent.js");
-  const accounts = await import("../src/accounts.js");
-  const prompt = systemFor(accounts.ownerOf("dm:spa"));
-  assert.match(prompt, /Pointing back \("the spa place", "that link"\)\? memory_search before ever saying "nothing saved"/);
+test("both backends are told to run memory_search on a back-reference before any 'nothing saved'", async () => {
+  // The rule rides in the tool's own description, not the system prompt (which sits right at its
+  // 72,000-char budget): the API path sends `toolsFor` as is, and the CLI path's MCP server hands
+  // the same description over (src/backends/mcp-core.js).
   const { toolsFor } = await import("../src/tools.js");
-  assert.ok(toolsFor("dm:spa").some(t => t.name === "memory_search"), "the tool is offered");
+  const t = toolsFor("dm:spa").find(x => x.name === "memory_search");
+  assert.ok(t, "the tool is offered");
+  assert.match(t.description, /point back at something \('the spa place', 'that link you sent'/);
+  assert.match(t.description, /before you ever say you don't remember or have nothing saved/);
+  const { mcpToolsFor } = await import("../src/backends/mcp-core.js");
+  assert.match(mcpToolsFor("dm:spa").find(x => x.name === "memory_search").description, /the spa place/);
+});
+
+test("a thread whose old words the retention sweep emptied is still indexed from where the words resume", async () => {
+  const C = "dm:scrubbed";
+  const old = base - 90 * DAY;
+  // 450 rows past the content window, emptied — more than one 400-row window of nothing.
+  for (let i = 0; i < 450; i++) said(C, i % 2 ? "assistant" : "user", "", old + i * 60_000);
+  said(C, "user", "which spa did you call for the massage", base);
+  said(C, "assistant", "Renew Body Spa, $90 an hour", base + 1000);
+  chatter(C, base + DAY);
+  await index(C);
+  assert.match((await searchFor(C, "spa massage")).text, /thread: them: which spa did you call/);
+});
+
+test("the retention sweep drops an exchange's vector with its words, and a delete takes every vector", async () => {
+  const C = "dm:retain";
+  said(C, "user", "pizza tonight?", base);
+  said(C, "assistant", "Joe's Pizza", base + 1000);
+  chatter(C, base + DAY);
+  await index(C);
+  const vectors = () => db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'event_log'").get(C).n;
+  const before = vectors();
+  assert.ok(before > 0);
+  const { sweepRetention } = await import("../src/privacy.js");
+  // Far enough on that every row of this thread is past a 30-day content window.
+  sweepRetention({ now: base + 400 * DAY });
+  assert.equal(vectors(), 0, "no vector outlives the words it was made from");
+  assert.equal(ri.searchHistory(C, fakeVec("pizza"), { minScore: 0 }).length, 0);
+
+  const D = "dm:delete-me";
+  call(D, { to: "+15550001111", label: "Spa", goal: "Ask about a spa massage" });
+  chatter(D, base + DAY);
+  await index(D);
+  assert.ok(db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = ?").get(D).n > 0);
+  const keepA = db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = 'dm:spa'").get().n;
+  const { deleteData } = await import("../src/data.js");
+  await deleteData({ conversation: D });
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = ?").get(D).n, 0);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = 'dm:spa'").get().n, keepA, "another person's vectors are left alone");
 });
