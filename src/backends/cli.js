@@ -8,7 +8,7 @@
 //
 // Owner-local only. See the README section on REASON_BACKEND.
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -210,15 +210,20 @@ export function prepareSealedCli(env = process.env) {
     mkdirSync(sealed.configDir, { recursive: true });
     const creds = join(env.HOME || homedir(), ".claude", ".credentials.json");
     const link = join(sealed.configDir, ".credentials.json");
-    if (!env.CLAUDE_CODE_OAUTH_TOKEN && existsSync(creds) && !existsSync(link)) symlinkSync(creds, link);
+    try {
+      if (!env.CLAUDE_CODE_OAUTH_TOKEN && existsSync(creds) && !existsSync(link)) symlinkSync(creds, link);
+    } catch { /* two children linking at once: one of them made it */ }
     // The CLI writes its own .claude.json here. If a later version ever fetches the login profile
-    // into it, the profile (and with it the email) is taken back out before the next run.
+    // into it, the profile (and with it the email) is taken back out before the next run —
+    // written aside and renamed over, so a child reading it never sees half a file.
     const file = join(sealed.configDir, ".claude.json");
     if (existsSync(file)) {
       const cfg = JSON.parse(readFileSync(file, "utf8"));
       if (cfg && typeof cfg === "object" && "oauthAccount" in cfg) {
         delete cfg.oauthAccount;
-        writeFileSync(file, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+        const aside = `${file}.${process.pid}.${Date.now()}.tmp`;
+        writeFileSync(aside, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+        renameSync(aside, file);
       }
     }
   } catch { /* the spawn reports a missing cwd itself; nothing here is worth a turn */ }
