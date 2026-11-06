@@ -3824,7 +3824,7 @@ export const tools = [
   },
   {
     name: "memory_search",
-    description: "Semantic search across everything you know about this person — facts and guesses. Returns the most relevant matches for a query, ranked by similarity. Use this when recall by name alone might miss something, or when the question is about a topic rather than a person.",
+    description: "Search by meaning across EVERYTHING you have with this person: saved facts, and what you did and said before — calls you made (who, the number, what for, how it went), places and pages you looked up, links and pages you sent, orders, calendar entries, reminders, searches, and the past thread itself, each with its date. Use it whenever they point back at something ('the spa place', 'that link you sent', 'the guy you called') and before you ever say you don't remember or have nothing saved. If two results could be what they mean, ask one short question naming both.",
     input_schema: {
       type: "object",
       properties: {
@@ -6964,6 +6964,9 @@ const S = {
     task_id: z.number().int().positive().optional(),
   }),
   memory_page: z.object({}),
+  // Without a schema here the tool was offered to the model and refused as "Unknown tool" on every
+  // call (until 11-05): the one search that could have found the spa call never ran once.
+  memory_search: z.object({ query: z.string().min(1).max(300), limit: z.number().int().min(1).max(10).optional() }),
   memory_fix: z.object({
     row: z.enum(["fact", "guess", "pattern", "preference", "why"]),
     id: z.number().int().positive(),
@@ -10233,7 +10236,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: people.length
           ? "This is everything you actually know. Anything not in here, you do not remember."
           : input.about
-            ? `Nothing is saved about '${input.about}'. Do not pretend otherwise — ask them.`
+            ? `Nothing is saved as a fact about '${input.about}'. That is not everything: calls you made, places you looked up, links you sent and the past thread are in memory_search — run it before you tell them you don't remember. Do not pretend otherwise.`
             : "You do not know anything about anyone yet.",
       };
     }
@@ -10322,19 +10325,42 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "memory_search": {
-      if (!config.openaiKey) return { ok: false, error: "Semantic search is not available — no OpenAI key configured." };
       const limit = Math.min(input.limit ?? 5, 10);
+      // What Reason did and said (src/recallindex.js) is searched with the same vector as the facts;
+      // with no embeddings (no key, or the API down) it falls back to the same rows by their words,
+      // so "nothing" is never the answer of a search that did not run.
+      const recallIndex = await import("./recallindex.js");
+      const fallback = (why) => {
+        const history = recallIndex.keywordHistory(c, input.query, { limit });
+        return {
+          ok: true, facts: [], history, count: history.length, searched: "by words only — meaning search is down",
+          note: history.length
+            ? `Meaning search is down (${why}); these matched the words. If more than one could be what they mean, ask which.`
+            : `Meaning search is down (${why}) and nothing matched the words. Do not tell them nothing is saved — say you can't check right now, or ask them for a detail.`,
+        };
+      };
+      if (!config.openaiKey) return fallback("not configured");
       try {
-        const { search: memSearch } = await import("./embedding.js");
-        const hits = await memSearch(c, input.query, { limit, minScore: 0.3 });
-        const results = hits.map(h => {
+        const { search: memSearch, embed } = await import("./embedding.js");
+        const [vector] = await embed(input.query);
+        const hits = await memSearch(c, input.query, { limit, minScore: 0.3, vector });
+        const facts = hits.map(h => {
           const f = db.getFact(c, h.factId);
           if (!f) return null;
           return { id: f.id, about: f.about, fact: f.fact, source: f.source, confidence: f.confidence, score: Math.round(h.score * 100) / 100 };
         }).filter(Boolean);
-        return { ok: true, results, count: results.length, note: results.length ? undefined : "Nothing matched that query." };
+        const history = recallIndex.searchHistory(c, vector, { limit, minScore: 0.3 });
+        const count = facts.length + history.length;
+        return {
+          ok: true,
+          // `results` kept for the facts, as before; `history` is what you did and said, with dates.
+          results: facts, history, count,
+          note: count
+            ? (history.length > 1 ? "If more than one of these could be what they mean, ask ONE short question naming them." : undefined)
+            : "Nothing matched — not in saved facts, not in anything you did, not in the thread. Only now is it true that you have nothing on it.",
+        };
       } catch (e) {
-        return { ok: false, error: `Search failed: ${(e?.message ?? String(e)).slice(0, 200)}` };
+        return fallback((e?.message ?? String(e)).slice(0, 120));
       }
     }
 

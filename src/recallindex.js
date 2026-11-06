@@ -1,0 +1,279 @@
+// What Reason DID and SAID, searchable by meaning — beside the saved facts.
+//
+// Until 2026-11-05 recall searched only person_facts. "Do you remember the spa place?" came back
+// "nothing saved" two days after Reason had itself called Renew Body Spa (call 52): the call was a
+// row in `calls`, never a fact, so no search could reach it. 152 of 345 turns found nothing at all.
+//
+// So the things Reason did are indexed into the same vector store (fact_embeddings), one row per
+// thing, under their own source_table:
+//   action_ledger  every outside-world action: lookups, searches, places, pages and links made,
+//                  texts sent, orders, calendar entries, check-ins (call rows are below instead)
+//   calls          a call once it has ended: who, the number, what for, how it went
+//   timers         a one-off reminder or timer they set
+//   event_log      the thread itself, one exchange (their message + the reply) per row; fact_id is
+//                  the last row of the run and span_from the first
+// Only the vector is stored. The words shown are read back from the source row when a match is
+// used, so a deleted row cannot come back through here and nothing is copied twice.
+//
+// SEALED: every write takes the conversation from the source row, and every read is filtered on
+// conversation_id — the store query AND each source-row read. One person's Reason never sees a
+// row that came from another's.
+import { config, clock } from "./config.js";
+import { db } from "./db.js";
+import { embed, float32ToBlob, blobToFloat32, cosine } from "./embedding.js";
+
+export const SOURCES = ["action_ledger", "calls", "timers", "event_log"];
+const MODEL = "text-embedding-3-small";
+
+/**
+ * Ledger rows that are bookkeeping, not something a person would ever point back at. call_place
+ * and call_recording are covered by the call row itself, which knows how the call went.
+ */
+const SKIP_ACTIONS = [
+  "asked_back", "react", "flagged_content", "harm_refuse", "harm_void", "vault_enroll",
+  "call_place", "call_recording", "access_decline", "signin_status", "time_zone", "get_location",
+  "pause_everything", "resume_everything",
+];
+/** Calls still in motion are left until they settle, so the row indexed knows how it went. */
+const CALL_SETTLE_MS = 3 * 60_000;
+/** A message with no reply yet is left for this long, so the exchange is indexed whole. */
+const EXCHANGE_WAIT_MS = 10 * 60_000;
+/** One exchange's text, at most. Long replies are mostly their opening anyway. */
+const EXCHANGE_CHARS = 1200;
+/** What one embedding input may carry. */
+const INPUT_CHARS = 1500;
+/** Inputs per embeddings request. */
+const BATCH = 96;
+/** After a failed request, the store is left alone this long: a down API is not hammered. */
+const BACKOFF_MS = 5 * 60_000;
+
+const clip = (s, n) => {
+  const t = String(s ?? "").replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+};
+
+/** Their words without the lines Reason itself adds to a message ("[3 min ago you showed them …]"). */
+function ownWords(content) {
+  return String(content ?? "").split("\n").filter(l => !/^\s*\[[^\]]*\]\s*$/.test(l)).join("\n").trim();
+}
+
+const parse = (s) => { try { return JSON.parse(s || "{}"); } catch { return {}; } };
+
+// ---------- the words for each kind of row ----------
+
+function ledgerText(r) {
+  const a = parse(r.attempted);
+  // The receipt is the one-line account already written for "what did you do"; the query or URL
+  // asked for is added when the receipt leaves it out, so a search finds it by what was looked for.
+  const extra = [a.query, a.question, a.url, a.to && a.place_name ? `to ${a.place_name}` : "", a.title, a.summary, a.ask]
+    .filter(v => typeof v === "string" && v && !String(r.receipt).includes(v)).join(" · ");
+  return clip(`${r.action.replace(/_/g, " ")}: ${r.receipt}${extra ? ` (${extra})` : ""}`, INPUT_CHARS);
+}
+
+function callNotes(summary) {
+  // The summary opens with the goal again; what the call service heard is the part worth showing.
+  const s = String(summary ?? "");
+  const i = s.indexOf("notes:");
+  return i >= 0 ? s.slice(i + 6) : s;
+}
+
+function callText(r) {
+  const who = r.label ? `${r.label}, ` : "";
+  const dir = r.direction === "in" ? "Took a call from" : "Called";
+  return clip(`${dir} ${r.to_number} (${who}${r.state}${r.outcome ? `, ${r.outcome}` : ""}): ${r.goal}. ${callNotes(r.summary)}`, INPUT_CHARS);
+}
+
+function timerText(r) {
+  const what = r.call_goal ? `call: ${r.call_goal}` : (r.note || r.label || "");
+  return clip(`Reminder set for ${new Date(r.fire_at).toISOString().slice(0, 16).replace("T", " ")} UTC: ${what}${r.label && r.note ? ` (${r.label})` : ""}`, INPUT_CHARS);
+}
+
+function exchangeText(rows) {
+  const lines = rows.map(r => `${r.role === "user" ? "them" : "you"}: ${ownWords(r.content)}`).filter(l => !/^(them|you):\s*$/.test(l));
+  return clip(lines.join("\n"), EXCHANGE_CHARS);
+}
+
+// ---------- what is not indexed yet ----------
+
+function pendingLedger(conversationId, limit) {
+  return db.prepare(`SELECT l.* FROM action_ledger l
+    WHERE ${conversationId ? "l.conversation_id = ? AND" : ""} l.action NOT IN (${SKIP_ACTIONS.map(() => "?").join(",")})
+      AND NOT EXISTS (SELECT 1 FROM fact_embeddings e WHERE e.fact_id = l.id AND e.source_table = 'action_ledger')
+    ORDER BY l.id LIMIT ?`).all(...(conversationId ? [conversationId] : []), ...SKIP_ACTIONS, limit);
+}
+
+function pendingCalls(conversationId, limit, now) {
+  return db.prepare(`SELECT c.* FROM calls c
+    WHERE ${conversationId ? "c.conversation_id = ? AND" : ""} (c.ended_at IS NOT NULL OR c.state IN ('completed','failed','no_answer','voicemail','busy','canceled','cancelled'))
+      AND COALESCE(c.updated_at, c.created_at) <= ?
+      AND NOT EXISTS (SELECT 1 FROM fact_embeddings e WHERE e.fact_id = c.id AND e.source_table = 'calls')
+    ORDER BY c.id LIMIT ?`).all(...(conversationId ? [conversationId] : []), now - CALL_SETTLE_MS, limit);
+}
+
+function pendingTimers(conversationId, limit) {
+  // Standing check-ins make a timer row per firing; the check-in itself is on the ledger (series_set).
+  return db.prepare(`SELECT t.* FROM timers t
+    WHERE ${conversationId ? "t.conversation_id = ? AND" : ""} t.series_id IS NULL
+      AND NOT EXISTS (SELECT 1 FROM fact_embeddings e WHERE e.fact_id = t.id AND e.source_table = 'timers')
+    ORDER BY t.id LIMIT ?`).all(...(conversationId ? [conversationId] : []), limit);
+}
+
+/** The thread after the last exchange indexed, cut into exchanges: a message of theirs and what followed it. */
+function pendingExchanges(conversationId, limit, now) {
+  const convs = conversationId ? [conversationId]
+    : db.prepare("SELECT DISTINCT conversation_id FROM event_log WHERE role IN ('user','assistant')").all().map(r => r.conversation_id);
+  const out = [];
+  for (const c of convs) {
+    if (out.length >= limit) break;
+    const after = db.prepare("SELECT MAX(fact_id) AS m FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'event_log'").get(c)?.m ?? 0;
+    const rows = db.prepare("SELECT id, conversation_id, role, content, at FROM event_log WHERE conversation_id = ? AND id > ? AND role IN ('user','assistant') ORDER BY id LIMIT 400").all(c, after);
+    let run = [];
+    const close = () => {
+      if (run.length && exchangeText(run)) out.push({ conversation_id: c, from: run[0].id, to: run.at(-1).id, rows: run });
+      run = [];
+    };
+    for (const r of rows) {
+      if (r.role === "user" && run.some(x => x.role === "assistant")) close();
+      run.push(r);
+    }
+    // The newest run is held back while a reply may still be coming, so it is indexed whole.
+    if (run.length && (run.some(x => x.role === "assistant") || now - run.at(-1).at > EXCHANGE_WAIT_MS)) {
+      // ...and an exchange whose reply is still being written (more may follow) waits a little too.
+      if (now - run.at(-1).at > 60_000) close();
+    }
+  }
+  return out.slice(0, limit);
+}
+
+let backoffUntil = 0;
+let running = null;
+
+/**
+ * Index what is not indexed yet: for one conversation, or across all of them. Bounded per pass;
+ * a backlog drains over passes. Never throws — a failure is logged and the rows are tried again
+ * on a later pass (after a short back-off, so a down API is not hammered).
+ */
+export async function indexPending({ conversationId = null, limit = 200, embedFn = embed, log = () => {}, now = clock.now() } = {}) {
+  if (embedFn === embed && !config.openaiKey) return 0;
+  if (now < backoffUntil) return 0;
+  if (running) return running;
+  running = (async () => {
+    let done = 0;
+    try {
+      const items = [];
+      for (const r of pendingCalls(conversationId, limit, now)) items.push({ c: r.conversation_id, id: r.id, table: "calls", text: callText(r), at: r.created_at });
+      for (const r of pendingLedger(conversationId, limit)) items.push({ c: r.conversation_id, id: r.id, table: "action_ledger", text: ledgerText(r), at: r.created_at });
+      for (const r of pendingTimers(conversationId, limit)) items.push({ c: r.conversation_id, id: r.id, table: "timers", text: timerText(r), at: r.created_at });
+      for (const x of pendingExchanges(conversationId, limit, now)) items.push({ c: x.conversation_id, id: x.to, from: x.from, table: "event_log", text: exchangeText(x.rows) });
+      const todo = items.slice(0, limit);
+      for (let i = 0; i < todo.length; i += BATCH) {
+        const batch = todo.slice(i, i + BATCH);
+        const vectors = await embedFn(batch.map(b => b.text || "(no words)"));
+        const put = db.prepare(`INSERT INTO fact_embeddings (conversation_id, fact_id, source_table, embedding, model, created_at, span_from)
+          VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(fact_id, source_table) DO NOTHING`);
+        for (const [j, b] of batch.entries()) {
+          if (!vectors[j]) continue;
+          put.run(b.c, b.id, b.table, float32ToBlob(vectors[j]), MODEL, now, b.from ?? null);
+          done++;
+        }
+      }
+      if (done) log({ recall_indexed: done, conversation: conversationId ?? "all" });
+    } catch (e) {
+      backoffUntil = now + BACKOFF_MS;
+      log({ recall_index_failed: (e?.message ?? String(e)).split("\n")[0].slice(0, 200), indexed_before_failure: done });
+    }
+    return done;
+  })();
+  try { return await running; } finally { running = null; }
+}
+
+/** For tests: forget a back-off left by an earlier failure. */
+export function resetBackoff() { backoffUntil = 0; }
+
+// ---------- reading back ----------
+
+const dayOf = (at) => at ? new Date(at).toLocaleDateString("en-US", { timeZone: config.tz, month: "short", day: "numeric" }) : "";
+
+/**
+ * The words for one stored match, read from its source row — on THIS conversation only. A row
+ * that has gone (deleted, or never this conversation's) gives null and the match is dropped.
+ */
+export function snippetFor(conversationId, table, id, spanFrom = null, { chars = 220 } = {}) {
+  if (table === "action_ledger") {
+    const r = db.prepare("SELECT * FROM action_ledger WHERE id = ? AND conversation_id = ?").get(id, conversationId);
+    return !r ? null : { kind: "did", at: r.created_at, text: clip(`${r.receipt}${r.outcome && r.outcome !== "ok" ? ` [${r.outcome}]` : ""}`, chars) };
+  }
+  if (table === "calls") {
+    const r = db.prepare("SELECT * FROM calls WHERE id = ? AND conversation_id = ?").get(id, conversationId);
+    return !r ? null : { kind: "call", at: r.created_at, text: clip(`${r.direction === "in" ? "took a call from" : "called"} ${r.to_number}${r.label ? ` (${r.label})` : ""}: ${r.goal} → ${r.outcome || r.state}. ${callNotes(r.summary)}`, chars) };
+  }
+  if (table === "timers") {
+    const r = db.prepare("SELECT * FROM timers WHERE id = ? AND conversation_id = ?").get(id, conversationId);
+    const state = r?.cancelled_at ? "cancelled" : r?.fired_at ? "went off" : "still set";
+    return !r ? null : { kind: "reminder", at: r.created_at, text: clip(`reminder for ${dayOf(r.fire_at)} (${state}): ${r.call_goal || r.note || r.label}`, chars) };
+  }
+  if (table === "event_log") {
+    const rows = db.prepare("SELECT role, content, at FROM event_log WHERE conversation_id = ? AND id BETWEEN ? AND ? AND role IN ('user','assistant') ORDER BY id")
+      .all(conversationId, spanFrom ?? id, id);
+    if (!rows.length) return null;
+    return { kind: "thread", at: rows[0].at, text: clip(exchangeText(rows), chars) };
+  }
+  return null;
+}
+
+/** The stored rows of THIS conversation closest in meaning to `vector`. */
+export function searchHistory(conversationId, vector, { limit = 4, minScore = 0.35, chars = 220 } = {}) {
+  if (!vector || !conversationId) return [];
+  const rows = db.prepare(`SELECT fact_id, source_table, span_from, embedding FROM fact_embeddings
+    WHERE conversation_id = ? AND source_table IN (${SOURCES.map(() => "?").join(",")})`).all(conversationId, ...SOURCES);
+  const scored = [];
+  for (const r of rows) {
+    const score = cosine(vector, blobToFloat32(r.embedding));
+    if (score >= minScore) scored.push({ table: r.source_table, id: r.fact_id, spanFrom: r.span_from, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const out = [];
+  const seen = new Set();
+  for (const s of scored) {
+    if (out.length >= limit) break;
+    const snip = snippetFor(conversationId, s.table, s.id, s.spanFrom, { chars });
+    // The same lookup run twice reads the same; one slot for it.
+    if (!snip || seen.has(snip.text)) continue;
+    seen.add(snip.text);
+    out.push({ ...snip, source: s.table, id: s.id, score: Math.round(s.score * 100) / 100, date: dayOf(snip.at) });
+  }
+  return out;
+}
+
+/**
+ * When the embeddings API is down: the same sources, matched on the longer words of the query.
+ * Plain retrieval, not a reading of what they meant — the model still decides that from what comes
+ * back. Newest first among equal counts.
+ */
+const COMMON = new Set(["the", "and", "you", "your", "for", "was", "that", "this", "with", "what", "when", "where", "who", "did", "can", "remember", "about", "from", "have", "had", "are", "one", "place", "thing", "again", "last", "time", "sent", "told"]);
+export function keywordHistory(conversationId, query, { limit = 5, chars = 220 } = {}) {
+  const words = [...new Set(String(query ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 3 && !COMMON.has(w)))].slice(0, 6);
+  if (!words.length || !conversationId) return [];
+  const like = (cols) => `(${words.map(() => `(${cols.map(c => `LOWER(${c}) LIKE ?`).join(" OR ")})`).join(" + ")})`;
+  const args = (cols) => words.flatMap(w => cols.map(() => `%${w}%`));
+  const found = [];
+  const q = (table, cols, extraWhere = "") => db.prepare(`SELECT id, ${like(cols)} AS hits, ${table === "event_log" ? "at" : "created_at"} AS at FROM ${table}
+      WHERE conversation_id = ? ${extraWhere} AND ${like(cols)} > 0 ORDER BY hits DESC, id DESC LIMIT ?`)
+    .all(...args(cols), conversationId, ...args(cols), limit).map(r => ({ table, ...r }));
+  found.push(...q("calls", ["goal", "COALESCE(label,'')", "summary", "to_number"]));
+  found.push(...q("action_ledger", ["receipt", "target"], `AND action NOT IN (${SKIP_ACTIONS.map(a => `'${a}'`).join(",")})`));
+  found.push(...q("timers", ["COALESCE(note,'')", "COALESCE(label,'')", "COALESCE(call_goal,'')"]));
+  found.push(...q("event_log", ["content"], "AND role IN ('user','assistant')"));
+  found.sort((a, b) => b.hits - a.hits || b.at - a.at);
+  const out = [];
+  const seen = new Set();
+  for (const f of found) {
+    if (out.length >= limit) break;
+    const snip = snippetFor(conversationId, f.table, f.id, null, { chars });
+    if (!snip || seen.has(snip.text)) continue;
+    seen.add(snip.text);
+    out.push({ ...snip, source: f.table, id: f.id, date: dayOf(snip.at) });
+  }
+  return out;
+}
+
