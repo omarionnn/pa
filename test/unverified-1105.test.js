@@ -170,7 +170,46 @@ for (const backend of ["cli", "api"]) {
     assert.equal(out.sent, fixed);
     assert.ok(hedges(out.sent) <= 1, out.sent);
   });
+
+  test(`[${backend}] gate 11-05: a reply with no figure and no deal pays for nothing — one run, no history read`, async () => {
+    theySaid("keep it under 100", DAY);
+    const out = await exchange(backend, { text: "thanks!", drafts: ["anytime. talk soon."] });
+    assert.equal(out.runs, 1);
+    assert.equal(out.sent, "anytime. talk soon.");
+    assert.equal(offers.turnState(C).theirs, undefined, "their history is only read when a figure or deal is in the reply");
+  });
+
+  test(`[${backend}] gate 11-05: a figure Reason made up, quoted back by an inline reply, is not theirs`, async () => {
+    const quoted = `[they sent this as an inline reply to your message: "the ferry's $4.50 each way, so $45 for the ten-trip" — so it is about that, whatever came after]`;
+    theySaid(`${quoted}\nok`, DAY);
+    const out = await exchange(backend, {
+      text: `${quoted}\nso which one`,
+      drafts: ["the ferry: $4.50 each way, $45 for ten trips.", "the ferry — about $4.50 a ride, though i haven't confirmed the fare."],
+    });
+    assert.equal(out.runs, 2, "sent back: Reason's own earlier words vouch for nothing");
+    assert.match(out.prompts[1], /\$4\.50, \$45/);
+  });
 }
+
+test("gate 11-05: a price said in words, a code or another currency is read like a $ figure", () => {
+  for (const reply of ["it's 1299 dollars", "about 40 bucks", "USD 40 a night", "£40 a night", "€1,299.00 all in", "1,299 USD"]) {
+    offers.beginTurn(C, "how much is it");
+    assert.ok(offers.guardReply(C, reply).flags.some(f => f.rule === "dollar_unsourced"), reply);
+  }
+  offers.beginTurn(C, "how much is it");
+  offers.noteSource(C, { price: "£40.00", total: "1,299 USD" });
+  assert.equal(offers.guardReply(C, "£40 a night, 1299 dollars all in").recompose, null);
+});
+
+test("gate 11-05: BOGO, free shipping and $10 off are deals: unsourced, sent back; read, they stand", () => {
+  for (const reply of ["it's BOGO this week", "and shipping's free — free shipping on everything", "there's $10 off your first order"]) {
+    offers.beginTurn(C, "anything good?");
+    assert.ok(offers.guardReply(C, reply).flags.some(f => f.rule === "discount_unsourced"), reply);
+  }
+  offers.beginTurn(C, "anything good?");
+  offers.noteSource(C, { page: "Buy one, get one 50% off all vitamins. Free shipping on orders $35+." });
+  assert.equal(offers.guardReply(C, "vitamins are buy one get one, with free shipping.").flags.some(f => f.rule === "discount_unsourced"), false);
+});
 
 test("message_send: an unchecked deal is refused every time; an unchecked figure once", async () => {
   const sent = [];

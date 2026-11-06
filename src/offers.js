@@ -431,15 +431,24 @@ export function noteOffer(conversationId, row) { if (row) turnOf(conversationId)
 export function noteAsk(conversationId, ask) { if (ask) turnOf(conversationId).asks.push(ask); }
 export function turnState(conversationId) { return turnOf(conversationId); }
 
-// A figure never ends on a comma: "$3, now $4" is "$3".
-const REPLY_MONEY = /(?:US)?\$\s?\d(?:[\d,]*\d)?(?:\.\d{1,2})?(?:k\b|K\b)?/g;
+// A figure never ends on a comma: "$3, now $4" is "$3". Said with a sign ("$40", "£40", "€40"), a code
+// ("USD 40") or a word ("40 dollars", "40 bucks"): until gate 11-05 only the "$" form was read, so
+// "1299 dollars" went out unchecked.
+const MONEY_NUM = String.raw`\d(?:[\d,]*\d)?(?:\.\d{1,2})?`;
+const REPLY_MONEY = new RegExp(String.raw`(?:US)?[$£€]\s?${MONEY_NUM}(?:k\b|K\b)?|\bUSD\s?${MONEY_NUM}|(?<![\d.,$£€])${MONEY_NUM}\s?(?:[Dd]ollars|[Bb]ucks|USD)\b`, "g");
+
+// An inline reply arrives with a line code wrote quoting the message it answers (src/replies.js
+// inboundReplyLine) — usually Reason's own. Those words are not theirs: a figure Reason made up and
+// they replied under would otherwise vouch for itself, on this turn and for weeks in their history.
+const QUOTED_LINE = /^\[they sent this as an inline reply\b[^\n]*$/gm;
+const ownWords = (s) => String(s ?? "").replace(QUOTED_LINE, "");
 
 /** Every amount in a piece of source text, as cents. Lenient on purpose: a source is evidence, not prose. */
 function sourceAmounts(text, { bare = false } = {}) {
   const out = new Set();
   const t = String(text);
   const add = (s, scale = 100) => { const n = Number(String(s).replace(/,/g, "")); if (Number.isFinite(n)) out.add(Math.round(n * scale)); };
-  for (const m of t.matchAll(/\$\s?(\d[\d,]*(?:\.\d{1,2})?)/g)) add(m[1]);
+  for (const m of t.matchAll(/[$£€]\s?(\d[\d,]*(?:\.\d{1,2})?)/g)) add(m[1]);
   for (const m of t.matchAll(/(?<![\d.])(\d[\d,]*\.\d{1,4})(?!\d)/g)) add(m[1]);
   for (const m of t.matchAll(/(?<![\d.,])(\d{1,3}(?:,\d{3})+)(?![\d,])/g)) add(m[1]);
   for (const m of t.matchAll(/(?:_cents|Cents)\\?"?\s*:\s*(\d+)/g)) add(m[1], 1);
@@ -467,7 +476,7 @@ function sourceAmounts(text, { bare = false } = {}) {
 function figureKnown(figure, cents, amounts, { approx = true } = {}) {
   if (amounts.has(cents)) return true;
   const f = String(figure).trim();
-  if (/\.\d{1,2}$/.test(f)) return false;
+  if (/\.\d{1,2}(?!\d)/.test(f)) return false;
   const dollars = cents / 100;
   const k = /k$/i.test(f);
   const digits = String(Math.trunc(dollars)).length;
@@ -493,7 +502,7 @@ const shortDate = (at) => new Date(at).toLocaleDateString("en-US", { month: "sho
 function theirSources(conversationId, now) {
   const out = [];
   try {
-    for (const r of db.theirOwnWords(conversationId, { since: now - THEIR_WORDS_MS })) out.push({ kind: r.kind, at: r.at, text: r.text });
+    for (const r of db.theirOwnWords(conversationId, { since: now - THEIR_WORDS_MS })) out.push({ kind: r.kind, at: r.at, text: ownWords(r.text) });
   } catch { /* no history: nothing of theirs to add */ }
   try {
     for (const f of db.memoryFacts(conversationId)) out.push({ kind: "memory", at: f.created_at, text: f.fact });
@@ -503,24 +512,16 @@ function theirSources(conversationId, now) {
   return out.map(s => ({ ...s, amounts: sourceAmounts(s.text, { bare: true }) }));
 }
 
-/** Is `offset` inside an open "(" on its own line? A stray ")" (a smiley) never takes it below zero. */
-function insideParens(whole, offset) {
-  let depth = 0;
-  for (let i = whole.lastIndexOf("\n", offset - 1) + 1; i < offset; i++) {
-    if (whole[i] === "(") depth++;
-    else if (whole[i] === ")") depth = Math.max(0, depth - 1);
-  }
-  return depth > 0;
-}
-
 function replyAmountCents(s) {
   const k = /k$/i.test(s.trim());
   const n = Number(s.replace(/[^0-9.]/g, ""));
   return Math.round(n * (k ? 1000 : 1) * 100);
 }
 
-const DISCOUNT = /\b(coupons?|promo(?:tional)? codes?|promos?|discounts?|vouchers?|\d{1,2}\s?% off|percent off|on sale|sale price|price drop|clearance|markdown|deal ends)\b/i;
-const DISCOUNT_SOURCE = /coupon|promo|discount|voucher|% off|percent off|sale|clearance|markdown|save \$|was \$|list price/i;
+// "BOGO", "free shipping" and "$10 off" are deals too (gate 11-05: they went out unchecked before).
+const DISCOUNT = /\b(coupons?|promo(?:tional)? codes?|promos?|discounts?|vouchers?|\d{1,2}\s?% off|percent off|on sale|sale price|price drop|clearance|markdown|deal ends|bogo|buy one,? get one|free (?:shipping|delivery))\b|[$£€]\s?\d+(?:\.\d{2})? off\b/i;
+const DISCOUNT_SOURCE = /coupon|promo|discount|voucher|% off|percent off|sale|clearance|markdown|save \$|was \$|list price|bogo|buy one,? get one|free (?:shipping|delivery)|\$\s?\d+(?:\.\d{2})? off/i;
+const THEIR_DEAL_WORDS = /\b(bogo|buy one,? get one|free (?:shipping|delivery))\b/i;
 /** A whole bracketed line that is a tool's note, not words to a person: "(compared: a seller $18.99, …)". */
 export const TOOL_NOTE_LINE = /^\s*\((?:compared|tool note|internal|debug)\s*:.*\)\s*$|^\s*\(.*\ba seller \$\d.*\)\s*$/i;
 const DEAL_TOKEN = /\b[Cc]ode:?\s+([A-Z0-9]{4,})\b|(\d{1,2})\s?% off|\$\s?(\d+(?:\.\d{2})?) off/g;
@@ -564,12 +565,6 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     // The checkout record of the last two days is a source on every turn (src/shopconnect.js recordSource).
     let record = "";
     try { record = shop.connectAllowedFor(conversationId) ? shop.recordSource(conversationId) : ""; } catch { record = ""; }
-    for (const s of [...t.sources, record]) for (const c of sourceAmounts(s)) known.add(c);
-    // Their own words this turn and what they sent with them are theirs: read like their history.
-    const extra = extraSources.filter(Boolean).map(String);
-    const theirs = [...[t.kind === "user" ? t.own : "", ...extra].filter(Boolean).map(text => ({ kind: "them", at: now, text, amounts: sourceAmounts(text, { bare: true }) })), ...(t.theirs ??= theirSources(conversationId, now))];
-    const fresh = new Set(known);
-    for (const s of theirs) if (s.kind !== "memory" || now - s.at < STALE_MEMORY_MS) for (const c of s.amounts) fresh.add(c);
     const flags = [];
     const fixes = [];
 
@@ -583,13 +578,24 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     }
     let text = reply;
 
+    // What is known is only read when the reply states a figure or a deal: almost every reply states
+    // neither, and pays for no history query and no pass over the turn's sources.
+    const figures = [...reply.matchAll(REPLY_MONEY)].map(m => ({ fig: m[0].trim(), cents: replyAmountCents(m[0].trim()) }));
+    const weighs = figures.length > 0 || DISCOUNT.test(reply);
+    // Their own message is read without the line code put above an inline reply (QUOTED_LINE).
+    if (figures.length) for (const s of [...t.sources.map(s => (s === t.own ? ownWords(s) : s)), record]) for (const c of sourceAmounts(s)) known.add(c);
+    // Their own words this turn and what they sent with them are theirs: read like their history.
+    const extra = extraSources.filter(Boolean).map(String);
+    const theirs = weighs ? [...[t.kind === "user" ? ownWords(t.own) : "", ...extra].filter(Boolean).map(text => ({ kind: "them", at: now, text, amounts: sourceAmounts(text, { bare: true }) })), ...(t.theirs ??= theirSources(conversationId, now))] : [];
+    const fresh = new Set(known);
+    for (const s of theirs) if (s.kind !== "memory" || now - s.at < STALE_MEMORY_MS) for (const c of s.amounts) fresh.add(c);
+
     // 1. Dollar figures. Known when a tool read it this turn, when it is THEIRS (said, sent, a photo
     // of theirs, anywhere in the last weeks of the thread), or when Reason remembers it about them.
     // Those are never hedged. A figure that is none of those is not labelled in code: the model is
     // sent back once to check it or say, once, in its own words, that it hasn't confirmed it.
     const unchecked = [];
     const stale = [];
-    const figures = [...reply.matchAll(REPLY_MONEY)].map(m => ({ fig: m[0].trim(), cents: replyAmountCents(m[0].trim()) }));
     const loose = [];
     for (const f of figures) {
       if (figureKnown(f.fig, f.cents, fresh)) continue;
@@ -624,14 +630,16 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     // theirs that carry that same code or amount. A deal in general words ("there's a coupon too")
     // needs a source that mentions one, or a concrete deal of theirs from the last day — "is there a
     // promo?" vouches for none, and a code they mentioned weeks ago for another store vouches for nothing here.
-    const toolText = [...t.sources.filter(s => s !== t.own).map(s => s.slice(0, 200_000)), record].join("\n");
-    const theirText = theirs.map(s => s.text).join("\n");
-    const deals = [...reply.matchAll(DEAL_TOKEN)].map(m => m[1] ? { re: new RegExp(`\\b${m[1]}\\b`, "i") }
-      : m[2] ? { re: new RegExp(`(?<![\\d.])${m[2]}\\s?%`) } : { re: new RegExp(`\\$\\s?${m[3].replace(".", "\\.")}(?![\\d])|(?<![\\d.])${m[3].replace(".", "\\.")}\\s?(?:dollars|bucks) off`) });
-    const discountSourced = deals.length
-      ? deals.every(d => d.re.test(toolText) || d.re.test(theirText))
-      : DISCOUNT_SOURCE.test(toolText) || theirs.some(s => now - s.at < DAY && s.kind !== "memory" && THEIR_DEAL.test(s.text));
-    const discountClaimed = DISCOUNT.test(reply) && !discountSourced;
+    const discountSourced = () => {
+      const toolText = [...t.sources.filter(s => s !== t.own).map(s => s.slice(0, 200_000)), record].join("\n");
+      const theirText = theirs.map(s => s.text).join("\n");
+      const deals = [...reply.matchAll(DEAL_TOKEN)].map(m => m[1] ? { re: new RegExp(`\\b${m[1]}\\b`, "i") }
+        : m[2] ? { re: new RegExp(`(?<![\\d.])${m[2]}\\s?%`) } : { re: new RegExp(`\\$\\s?${m[3].replace(".", "\\.")}(?![\\d])|(?<![\\d.])${m[3].replace(".", "\\.")}\\s?(?:dollars|bucks) off`) });
+      return deals.length
+        ? deals.every(d => d.re.test(toolText) || d.re.test(theirText))
+        : DISCOUNT_SOURCE.test(toolText) || theirs.some(s => now - s.at < DAY && s.kind !== "memory" && (THEIR_DEAL.test(s.text) || THEIR_DEAL_WORDS.test(s.text)));
+    };
+    const discountClaimed = DISCOUNT.test(reply) && !discountSourced();
     if (discountClaimed) {
       flags.push({ rule: "discount_unsourced" });
       fixes.push({ key: "discount", hard: true, line: "It mentions a coupon, discount or sale that nothing you read this turn shows and they never mentioned. Check it with a tool now, or leave it out — never point them at a deal you haven't seen." });
