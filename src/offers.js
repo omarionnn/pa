@@ -523,6 +523,7 @@ const DISCOUNT = /\b(coupons?|promo(?:tional)? codes?|promos?|discounts?|voucher
 const DISCOUNT_SOURCE = /coupon|promo|discount|voucher|% off|percent off|sale|clearance|markdown|save \$|was \$|list price/i;
 /** A whole bracketed line that is a tool's note, not words to a person: "(compared: a seller $18.99, …)". */
 export const TOOL_NOTE_LINE = /^\s*\((?:compared|tool note|internal|debug)\s*:.*\)\s*$|^\s*\(.*\ba seller \$\d.*\)\s*$/i;
+const DEAL_TOKEN = /\b[Cc]ode:?\s+([A-Z0-9]{4,})\b|(\d{1,2})\s?% off|\$\s?(\d+(?:\.\d{2})?) off/g;
 const THEIR_DEAL = /\d{1,2}\s?% off|\$\s?\d+(?:\.\d{2})? off|\b[Cc]ode:?\s+[A-Z0-9]{4,}\b|\bsave \$\d/;
 const BEST = /\b(best (?:deal|price|value|offer)|cheapest|lowest(?:-| )price[ds]?|lowest cost|least expensive|can't beat|cannot beat)\b/i;
 
@@ -599,8 +600,8 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     // Sums worked out of known figures in the same message ("$2,341.17 less the $1,850 rent leaves
     // $491", "two at $45 is $90") are known too: arithmetic on what is known, not a new claim.
     // A percentage of one ("18% tip on $84 is $15.12") and a split ("$33.04 each") count the same way.
-    const settled = figures.filter(f => !loose.includes(f)).map(f => f.cents);
-    const pcts = [...String(reply).matchAll(/(\d{1,2}(?:\.\d+)?)\s?%/g)].map(m => Number(m[1]) / 100);
+    const settled = [...figures.filter(f => !loose.includes(f)).map(f => f.cents), ...theirs.filter(s => s.at === now).flatMap(s => [...s.amounts])];
+    const pcts = [reply, ...theirs.filter(s => s.at === now).map(s => s.text)].flatMap(x => [...String(x).matchAll(/(\d{1,2}(?:\.\d+)?)\s?(?:%|percent)/g)].map(m => Number(m[1]) / 100));
     const worked = new Set();
     for (const a of settled) {
       for (let k = 2; k <= 10; k++) { worked.add(a * k); worked.add(Math.round(a / k)); }
@@ -619,10 +620,17 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     }
 
     // 2. A coupon / discount / sale needs something read or theirs that mentions one.
-    // Their words count only for a concrete deal of theirs ("i have a code SAVE20", "20% off at
-    // checkout"): asking "is there a promo?" vouches for none.
-    const discountSourced = [...t.sources.filter(s => s !== t.own).map(s => s.slice(0, 200_000)), record].some(s => DISCOUNT_SOURCE.test(s))
-      || theirs.some(s => THEIR_DEAL.test(s.text));
+    // A concrete deal in the reply (a code, "40% off", "$25 off") stands only on a source or words of
+    // theirs that carry that same code or amount. A deal in general words ("there's a coupon too")
+    // needs a source that mentions one, or a concrete deal of theirs from the last day — "is there a
+    // promo?" vouches for none, and a code they mentioned weeks ago for another store vouches for nothing here.
+    const toolText = [...t.sources.filter(s => s !== t.own).map(s => s.slice(0, 200_000)), record].join("\n");
+    const theirText = theirs.map(s => s.text).join("\n");
+    const deals = [...reply.matchAll(DEAL_TOKEN)].map(m => m[1] ? { re: new RegExp(`\\b${m[1]}\\b`, "i") }
+      : m[2] ? { re: new RegExp(`(?<![\\d.])${m[2]}\\s?%`) } : { re: new RegExp(`\\$\\s?${m[3].replace(".", "\\.")}(?![\\d])|(?<![\\d.])${m[3].replace(".", "\\.")}\\s?(?:dollars|bucks) off`) });
+    const discountSourced = deals.length
+      ? deals.every(d => d.re.test(toolText) || d.re.test(theirText))
+      : DISCOUNT_SOURCE.test(toolText) || theirs.some(s => now - s.at < DAY && s.kind !== "memory" && THEIR_DEAL.test(s.text));
     const discountClaimed = DISCOUNT.test(reply) && !discountSourced;
     if (discountClaimed) {
       flags.push({ rule: "discount_unsourced" });

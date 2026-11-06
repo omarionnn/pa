@@ -218,3 +218,18 @@ test("arithmetic on their own figure is known: a tip, a total, a split", () => {
   const g = offers.guardReply(C, "18% on $84 is $15.12, so $99.12 total, $33.04 each.");
   assert.equal(g.recompose, null, JSON.stringify(g.flags));
 });
+
+test("a deal of theirs from weeks ago vouches for no new code; the same code they gave does", () => {
+  theySaid("used code SPRING20 for 20% off at sephora", 20 * DAY);
+  offers.beginTurn(C, "any promo for a first uber eats order?");
+  assert.ok(offers.guardReply(C, "yep, use code EATS25 for $25 off your first order.").recompose);
+  assert.ok(offers.guardReply(C, "there's usually a first-order discount").recompose, "general words need a source or a recent deal of theirs");
+  offers.beginTurn(C, "can i use SPRING20 again?");
+  assert.equal(offers.guardReply(C, "SPRING20 was 20% off at sephora, worth trying code SPRING20 again").recompose, null);
+});
+
+test("pinned real run 11-05: the tip's percent is in THEIR message, not the reply", () => {
+  offers.beginTurn(C, "dinner was 84, what's an 18% tip and what do the 3 of us each owe?");
+  const g = offers.guardReply(C, "The tip is $15.12, which makes the total $99.12.\n\nSplit 3 ways, you each owe $33.04.");
+  assert.equal(g.recompose, null, JSON.stringify(g.flags));
+});
