@@ -148,6 +148,12 @@ export function grandfathered(conversationId) {
   if (row?.address && config.testNumbers.some(n => String(n).replace(/[^\d+]/g, "") === String(row.address).replace(/[^\d+]/g, ""))) return true;
   const ship = shipTs();
   if (row?.created_at && ship && row.created_at < ship) return true;
+  // The same number moved channel after the cut-off (a new `dm:<channel>:<number>` account, made later):
+  // still the person who was here before it, so still free. Any account on that number counts.
+  if (row?.address && ship) {
+    const first = q("SELECT MIN(created_at) AS t FROM accounts WHERE address = ?").get(row.address)?.t;
+    if (first && first < ship) return true;
+  }
   return false;
 }
 

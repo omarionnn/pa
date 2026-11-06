@@ -110,3 +110,19 @@ test("flip on: accounts from before the flip stay free for good; an account made
     assert.ok(toolsFor(after_).some(t => t.name === "subscription_show"), "the newcomer is shown the plan");
   } finally { process.env.REASON_PAYWALL = "off"; }
 });
+
+test("flip on: a pre-flip person whose number moves to another channel after the flip stays free", async () => {
+  const old = person("Mover");               // account on channel `fake`, dated before the flip recorded above
+  const num = db.getAccount(old).address;
+  db.db.prepare("UPDATE accounts SET created_at = ? WHERE conversation_id = ?").run(plan.onSince() - 60 * MIN, old);
+  process.env.REASON_PAYWALL = "on";
+  try {
+    clock.skip(MIN);
+    const moved = `dm:other:${num}`;
+    db.upsertAccount({ conversationId: moved, channel: "other", address: num, name: "Mover", isOperator: false });
+    assert.ok(db.getAccount(moved).created_at > plan.shipTs(), "the new channel's account is after the flip");
+    sessions(moved, 2);
+    assert.equal(plan.status(moved).status, "free");
+    assert.ok(!toolsFor(moved).some(t => t.name === "subscription_show"));
+  } finally { process.env.REASON_PAYWALL = "off"; }
+});
