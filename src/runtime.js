@@ -1869,6 +1869,15 @@ export class Runtime extends EventEmitter {
   }
 
   async extract() {
+    // What Reason did and said, into the recall index (src/recallindex.js): calls once they settle,
+    // ledger actions, reminders, the thread. Off every path that waits — never awaited, throttled
+    // to once a minute, and a failure is a log line and a retry on a later pass.
+    if (clock.now() - (this._recallIndexedAt ?? 0) >= 60_000) {
+      this._recallIndexedAt = clock.now();
+      import("./recallindex.js")
+        .then(m => m.indexPending({ log: this.log }))
+        .catch(e => this.log({ recall_index_failed: (e?.message ?? String(e)).split("\n")[0] }));
+    }
     try {
       const { processQueue } = await import("./extract.js");
       // With a model for it (the subscription, or since 2026-11-02 the API key) it is a background-lane

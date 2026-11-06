@@ -10510,6 +10510,9 @@ addColumnIfMissing("person_facts", "memory_group", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("saved_places", "mode", "TEXT");
 addColumnIfMissing("saved_places", "travel_minutes", "INTEGER");
 addColumnIfMissing("saved_places", "route_description", "TEXT");
+// A past-messages entry in fact_embeddings covers a run of event_log rows (src/recallindex.js): fact_id is
+// the last of them and span_from the first, so the snippet is read back from the rows themselves.
+addColumnIfMissing("fact_embeddings", "span_from", "INTEGER");
 
 db.prepare("UPDATE person_facts SET valid_from = created_at WHERE valid_from IS NULL").run();
 // The backlog of duplicated facts, duplicated subjects and names-as-facts. Defined up with
