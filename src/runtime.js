@@ -170,6 +170,25 @@ function missedTimerLine(t) {
 }
 
 /**
+ * Past its moment by more than config.timerLateMs, so skipped rather than fired. A timer made to fire
+ * at once (code's own "do this now" events: an approval that landed, a sign-in that finished) was
+ * always "now", so it is never too late — that is the one case where running it once is clearly what
+ * was wanted. A timer row from before `created_at` existed is judged on its time alone.
+ */
+export function timerTooLate(t, now = clock.now()) {
+  if (!t || !Number.isFinite(Number(t.fire_at))) return false;
+  if (now - Number(t.fire_at) <= config.timerLateMs) return false;
+  if (t.created_at != null && Math.abs(Number(t.fire_at) - Number(t.created_at)) <= 1_000) return false;
+  return true;
+}
+
+/** Their own reminder (or call), skipped for being too late: one line, never the late reminder itself. */
+function lateTimerLine(t) {
+  const what = t.call_goal ? `a call i was meant to give u at ${stamp(t.fire_at)} (${t.call_goal})` : `a reminder set for ${stamp(t.fire_at)}: "${t.note}"`;
+  return `heads up — i missed ${what}. it's long past that time, so i'm not sending it late. tell me if u still want it.`;
+}
+
+/**
  * The one text a scheduled call that could not be placed gets, in code's words. `why` is what
  * `call_place` refused with, which already names the cap, the missing provider or the provider's
  * error; what they read is that the phone was tried, why it did not ring, and the thing the call
@@ -436,7 +455,7 @@ export class Runtime extends EventEmitter {
    * and before anything leaves, so code rather than the model's own judgement decides whether a
    * reply earns an interruption. Returns what Reason said, even when it was held back.
    */
-  _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null, attachments = [], ctx = {}, onSend = null, keep = null }) {
+  _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null, gate = null, attachments = [], ctx = {}, onSend = null, keep = null }) {
     return this.enqueue(conversationId, async () => {
       // A pointer left by a turn that never used it must not pin THIS turn's reply somewhere.
       db.setReplyTarget(conversationId, null);
@@ -622,6 +641,15 @@ export class Runtime extends EventEmitter {
       // read were mined for "facts" about the person exactly as if they had been said to them. A
       // draft is Reason thinking out loud, not something anybody heard or agreed with. It is queued
       // below, once the reply has really gone out.
+      // `gate`, when a caller hands one in, sees the reply before anything else does and returns the
+      // text to send, or null to send nothing. A repeating check's firing uses it: only a reply that
+      // claims, with series.SEND_MARK, to carry something new goes out (see _runTimer).
+      let gatedQuiet = false;
+      if (gate && reply && reply.trim() !== "NO_REPLY") {
+        const g = gate(reply);
+        if (g == null || !String(g).trim()) gatedQuiet = true;
+        else reply = g;
+      }
       let aEvId = null;
       if (reply) {
         try {
@@ -668,7 +696,7 @@ export class Runtime extends EventEmitter {
         // question is worse. Taken rather than left, so it cannot fire on a later turn.
         await this._fireHeldReaction(conversationId, false);
       };
-      if (reply && (!shouldSend || shouldSend(reply))) {
+      if (reply && !gatedQuiet && (!shouldSend || shouldSend(reply))) {
         const out = await this._emit({
           conversationId, text: reply,
           meta: { ...meta, ...(replyTo ? { replyTo } : {}), ...(sendStyle ? { sendStyle } : {}) },
@@ -728,7 +756,7 @@ export class Runtime extends EventEmitter {
           }
         }
       } else {
-        await heldBack();
+        await heldBack(gatedQuiet ? { why: "quiet_nothing_new" } : {});
       }
       // The reply has gone (or there is none): the tab's growing copy is taken back, after the real one.
       draft?.end();
@@ -1163,6 +1191,15 @@ export class Runtime extends EventEmitter {
     // does not ring them twice. (A call that was refused before the row — no provider, a cap —
     // left no row, so its text goes out below like any other try.)
     if (t.call_goal && db.callByTimer(t.id)) { db.markTimerFired(t.id); this._noteSeriesFired(t); return true; }
+    // A firing of a check-in that is no longer running (paused or ended since it was armed) is not
+    // sent: stopping a series means it stops, whatever timer was already made for it.
+    if (t.series_id) {
+      const owner = db.seriesById(t.series_id);
+      if (owner && owner.state !== "active") { db.markTimerSkipped(t.id, { why: `series ${owner.state}` }); return true; }
+    }
+    // Too late to be worth anything. Held by a pause or a lapse, or the process was down, and its
+    // moment has gone: it is skipped, never sent 17-26 hours after its time (seen live, 2026-11).
+    if (timerTooLate(t)) return await this._skipLateTimer(t);
     // Out of tries before this one starts, which is what a turn that killed the process leaves.
     if (t.attempts >= config.timerMaxAttempts) {
       return await this._giveUpOnTimer(t, t.last_error ?? "the process stopped in the middle of the turn");
@@ -1198,19 +1235,27 @@ export class Runtime extends EventEmitter {
    */
   async _stopForUnreachable(conversationId, gone) {
     const paused = [];
+    // An opt-out (they texted STOP) is a stop, not a pause: their check-ins END, so texting START
+    // later lets texts through again without bringing back what they stopped (2026-11, a scan they
+    // had stopped came back after STOP/START). Anything else — sends failing — is a pause, because
+    // nobody asked for it to stop. Either way the chains Reason kept going itself are called off.
     for (const s of db.listSeries(conversationId)) {
-      if (s.state !== "active") continue;
-      const r = series.pause({ conversationId, seriesId: s.id });
+      if (gone.optedOut ? s.state === "ended" : s.state !== "active") continue;
+      const r = gone.optedOut
+        ? series.end({ conversationId, seriesId: s.id, why: "they opted out of texts (STOP)" })
+        : series.pause({ conversationId, seriesId: s.id });
       if (r.ok) paused.push(s.id);
     }
-    this.log({ unreachable: conversationId, why: gone.why, series_paused: paused });
+    const chains = series.stopChains(conversationId);
+    this.log({ unreachable: conversationId, why: gone.why, [gone.optedOut ? "series_ended" : "series_paused"]: paused, ...(chains.length ? { chains_stopped: chains } : {}) });
     const key = `unreachable_told:${conversationId}`;
     if (db.opsGet(key) === String(gone.outboxId)) return;
     db.opsSet(key, String(gone.outboxId));
     const me = accounts.ownerOf(conversationId);
     const who = me.name && me.name !== "the person I work for" ? `${me.name} (${me.address})` : me.address;
     const line = `heads up — i can't reach ${who}: ${gone.why}. i've stopped running their scheduled check-ins`
-      + (paused.length ? ` (${paused.length} paused)` : "") + ` so i'm not doing that work for nobody. if they come back, they can text me and i'll pick it up.`;
+      + (paused.length ? ` (${paused.length} ${gone.optedOut ? "ended" : "paused"})` : "") + ` so i'm not doing that work for nobody.`
+      + (gone.optedOut ? ` they opted out, so nothing comes back on its own if they opt in again: they'd have to ask for it.` : ` if they come back, they can text me and i'll pick it up.`);
     const router = this.turnExtras?.channels;
     if (router?.tellMaster) {
       const r = await router.tellMaster(line, null, { idempotencyKey: `ops:unreachable:${conversationId}:${clock.now()}` }).catch(e => ({ ok: false, error: e?.message }));
@@ -1252,6 +1297,9 @@ export class Runtime extends EventEmitter {
       await this._turn({
         conversationId: t.conversation_id, kind: "event", ...args,
         meta: { ...args.meta, idempotencyKey: key },
+        // Which timer this turn is the firing of, for its tools: a timer_set made here is a link in
+        // a chain Reason keeps going itself, and is counted and held like one (src/tools.js).
+        ctx: { ...(args.ctx ?? {}), fromTimer: t.id },
         onSend: (out) => { sent = out; },
       });
       // Written, and it went nowhere: no row, so nothing will retry it and nothing will report it.
@@ -1302,6 +1350,10 @@ export class Runtime extends EventEmitter {
     // only what they have never seen. Read off the rows here, at fire time, because the criteria
     // may have changed since this occurrence was scheduled. See src/goals.js.
     const forGoal = standing ? db.goalBySeries(standing.id) : null;
+    // A link in a chain: this timer was set by an earlier firing's turn, which makes it a repeating
+    // check Reason keeps going itself. Held to the same rule as a series — quiet unless new.
+    const chained = !standing && t.chained_from != null;
+    const repeating = !!standing || chained;
     const text = `timer #${t.id} fired (set for ${stamp(t.fire_at)}). your note: "${t.note}".` +
       (plan ? ` plan #${plan.id} is now: ${JSON.stringify({ title: plan.title, status: plan.status, when: plan.when, where: plan.where, who: plan.who, open_questions: plan.open_questions })}.` : "") +
       (standing ? series.frameFor(standing) : "") +
@@ -1309,9 +1361,14 @@ export class Runtime extends EventEmitter {
       // The earlier try may have left its own event line in the conversation, and without this the
       // second one reads as a second reminder rather than the first one arriving late.
       (t.attempts > 1 ? ` This is try ${t.attempts} at the same timer: an earlier try broke before anything reached them, so they have not had this yet. It is one reminder, late — not a second one.` : "") +
-      (standing ? "" : ` Decide whether to say something. If nothing is worth sending, reply NO_REPLY.`);
+      (chained ? ` You set this timer yourself from an earlier firing, so it is a repeating check you are keeping going.`
+        + ` Set the next one only if they still want it; it counts toward their limit on repeating things, and stopping it is cancelling the pending one.` : "") +
+      (standing ? "" : ` Decide whether to say something. If nothing is worth sending, reply NO_REPLY.`) +
+      (repeating ? series.quietRule({ checkIn: !!standing && !forGoal }) : "");
     await turn({
       text,
+      // Quiet unless new, in code: a repeating firing's reply goes out only when it carries the mark.
+      ...(repeating ? { gate: series.takeSendMark, ctx: { repeatingCheck: true } } : {}),
       // The thread keeps one line for a search rather than the criteria and the whole sent list:
       // the frame is for one decision, and a copy of it in the history would be re-read on every
       // later turn describing criteria they may since have changed. Same choice as the sweep's.
@@ -1368,6 +1425,29 @@ export class Runtime extends EventEmitter {
       throw new Error(`the call could not be placed (${out?.error ?? "no reason given"}) and the text saying so could not be handed over: ${sent.error ?? "no reason given"}`);
     }
     return sent;
+  }
+
+  /**
+   * A timer whose time passed too long ago, finished with and never run. Always true.
+   *
+   * What is said depends on whose it was. A repeating check — a series firing or a link in a chain
+   * Reason set itself — is dropped quietly: a series makes its next one on the next sweep, and a
+   * chain is over (nothing scans on behalf of somebody who was paused or away). A catch Reason
+   * parked goes back to being held, as on a give-up. Their own reminder or call gets one line, in
+   * code's words and under its own key, saying it was missed rather than sending it late.
+   */
+  async _skipLateTimer(t) {
+    const late = Math.round((clock.now() - t.fire_at) / 60_000);
+    const owned = db.noticeByTimer(t.id);
+    const theirs = !t.series_id && t.chained_from == null && !owned && t.label !== db.ONBOARDING_NUDGE_LABEL;
+    this.log({ timer: t.id, skipped_late_min: late, ...(t.series_id ? { series: t.series_id } : {}), ...(t.chained_from != null ? { chain: true } : {}) });
+    if (owned && !owned.said_at && !owned.resolved_at) db.unparkNotice(owned.id);
+    if (theirs) {
+      const out = await this._tell(t.conversation_id, lateTimerLine(t), { fromTimer: t.id, idempotencyKey: `timer:${t.id}:late` });
+      if (out?.ok === false) this.log({ timer: t.id, could_not_say_it_was_late: out.error ?? "no reason given" });
+    }
+    db.markTimerSkipped(t.id, { why: `late by ${late} min` });
+    return true;
   }
 
   /**

@@ -6,8 +6,9 @@
 // commitments) and narrower than admin_pause (which blocks all interaction). It persists
 // across restarts because the state is a column on the account row, not in memory.
 import * as db from "./db.js";
-import { stamp, clock } from "./config.js";
+import { stamp, clock, config } from "./config.js";
 import * as notice from "./notice.js";
+import * as series from "./series.js";
 
 export function isPaused(conversationId) {
   const acct = db.getAccount(conversationId);
@@ -40,7 +41,9 @@ export function pauseAll({ conversationId, said, now = clock.now() }) {
   const pausedSeries = [];
   for (const s of seriesList) {
     if (s.state !== "active") continue;
-    const r = db.setSeriesState(conversationId, s.id, "paused");
+    // series.pause, not the bare state change: it also calls off the firing already armed, which
+    // would otherwise sit due through the pause and go out the moment it lifted.
+    const r = series.pause({ conversationId, seriesId: s.id });
     if (r.ok) pausedSeries.push({ id: s.id, what: s.what || s.topic || `series #${s.id}` });
   }
 
@@ -51,6 +54,11 @@ export function pauseAll({ conversationId, said, now = clock.now() }) {
     db.setCommitmentState(c.id, { state: "paused", why: "pause everything", at: now });
     pausedCommitments.push({ id: c.id, what: c.what || `commitment #${c.id}` });
   }
+
+  // Repeating checks Reason kept going itself (a timer set from a timer) are called off, not held:
+  // a chain has nothing to resume, and a stopped scan must not restart on "resume" or START.
+  const chains = db.pendingChainedTimers(conversationId).map(t => ({ id: t.id, what: t.label || t.note }));
+  series.stopChains(conversationId);
 
   // Cancel parked notices and their timers.
   const parked = db.parkedNotices(conversationId);
@@ -75,6 +83,7 @@ export function pauseAll({ conversationId, said, now = clock.now() }) {
     stopped: [
       ...pausedSeries.map(s => ({ kind: "check-in", what: s.what })),
       ...pausedCommitments.map(c => ({ kind: "habit", what: c.what })),
+      ...chains.map(c => ({ kind: "repeating check (stopped for good)", what: c.what })),
       ...(priorMode !== "off" ? [{ kind: "initiative", what: `was on "${priorMode}", now off` }] : []),
       ...parked.map(r => ({ kind: "heads-up", what: r.what || r.key })),
     ],
@@ -91,7 +100,18 @@ export function pauseAll({ conversationId, said, now = clock.now() }) {
   };
 }
 
-export function resumeAll({ conversationId, now = clock.now() }) {
+/**
+ * Lift the pause.
+ *
+ * What it does NOT do by default is bring back the standing check-ins and scans: "Stop" then
+ * "Start" (or the carrier's STOP/START) brought back a scan somebody had stopped (2026-11). Their
+ * check-ins stay paused unless their words asked for them — `checkins: "all"` when they said to turn
+ * everything back on, or the ids they named. The rest are listed so the model can ask once.
+ *
+ * Reminders whose time passed during the pause are not fired late: they are finished with here and
+ * listed as missed, so the reply can say what was missed once instead of a burst of stale texts.
+ */
+export function resumeAll({ conversationId, now = clock.now(), checkins = null }) {
   if (!isPaused(conversationId)) {
     return { ok: false, error: "Not paused. There is nothing to resume — say that." };
   }
@@ -103,17 +123,29 @@ export function resumeAll({ conversationId, now = clock.now() }) {
   db.clearPaused(conversationId);
   db.setNoticePrefs(conversationId, { mode: priorMode, snoozeUntil: null });
 
-  // Resume series that were paused.
+  // Missed while paused: held, never fired, and long past their moment now (config.timerLateMs).
+  // Not sent late. One that is only just due still fires on the next sweep.
+  const missed = [];
+  for (const t of db.listTimers(conversationId)) {
+    if (!(now - t.fire_at > config.timerLateMs)) continue; // still on time, or only just due: it fires
+    if (t.created_at != null && Math.abs(t.fire_at - t.created_at) <= 1_000) continue; // a "do this now" event: it runs
+    db.markTimerSkipped(t.id, { why: "missed while paused" });
+    if (!t.series_id && t.chained_from == null && !db.noticeByTimer(t.id)) missed.push({ what: t.label || t.note, was_for: stamp(t.fire_at) });
+  }
+
+  // Series that were paused come back only when their words asked for them.
+  const want = checkins === "all" ? "all" : new Set((Array.isArray(checkins) ? checkins : []).map(Number));
   const seriesList = db.listSeries(conversationId);
   const resumed = [];
+  const stillPaused = [];
   for (const s of seriesList) {
     if (s.state !== "paused") continue;
-    const r = db.setSeriesState(conversationId, s.id, "active");
-    if (r.ok) {
-      // Schedule the next occurrence, skipping any that would have fired during the pause.
-      const next = s.next_at && s.next_at > now ? s.next_at : null;
-      resumed.push({ kind: "check-in", what: s.what || s.topic || `series #${s.id}`, next: next ? stamp(next) : "needs scheduling" });
+    if (want !== "all" && !want.has(Number(s.id))) {
+      stillPaused.push({ series_id: s.id, what: s.what || `series #${s.id}` });
+      continue;
     }
+    const r = series.resume({ conversationId, seriesId: s.id, now });
+    if (r.ok) resumed.push({ kind: "check-in", what: s.what || `series #${s.id}`, next: r.series?.next ?? "needs scheduling" });
   }
 
   // Resume commitments that were paused.
@@ -127,7 +159,7 @@ export function resumeAll({ conversationId, now = clock.now() }) {
     conversationId, action: "resume_everything", target: "",
     attempted: {},
     outcome: "ok",
-    result: { resumed: resumed.length, was_paused_since: pausedSince },
+    result: { resumed: resumed.length, still_paused: stillPaused.length, missed: missed.length, was_paused_since: pausedSince },
     receipt: `Resumed: ${resumed.length} thing(s) restored, initiative back to "${priorMode}".`,
   });
 
@@ -136,12 +168,18 @@ export function resumeAll({ conversationId, now = clock.now() }) {
     paused_since: stamp(pausedSince), resumed_at: stamp(now),
     mode_restored: priorMode,
     restored: resumed,
+    ...(stillPaused.length ? { still_paused: stillPaused } : {}),
+    ...(missed.length ? { missed_while_paused: missed } : {}),
     say: `Tell them what is back on, in a short list. Initiative is back to "${priorMode}".`
       + (resumed.length
         ? ` ${resumed.length} thing(s) restored: ${resumed.map(r => `${r.what} (${r.kind})`).join(", ")}.`
         : ` Nothing was waiting — say that.`)
-      + ` Do not flood them with missed reminders. If anything time-sensitive expired during the pause, say what was missed`
-      + ` rather than firing it late. Things that are still in the future pick up normally.`,
+      + (stillPaused.length
+        ? ` Their standing check-ins are STILL STOPPED (${stillPaused.map(x => x.what).join("; ")}): a resume does not bring back what they stopped.`
+          + ` Ask once, in one line, whether they want any of them back; series_resume only the ones they name.`
+        : "")
+      + (missed.length ? ` ${missed.length} reminder(s) came due while paused and were NOT sent late: say so in one line.` : "")
+      + ` Never fire anything late. Things that are still in the future pick up normally.`,
   };
 }
 
@@ -151,7 +189,7 @@ export function pauseNote(conversationId) {
   return `PAUSED since ${stamp(at)}. Everything is held — no reminders, no check-ins, no proactive texts.`
     + ` You can still answer their questions. If they ask you to DO something (a task, a search, a send),`
     + ` ask in one line: "you're paused — is this a one-off, or are you resuming?" Do not silently restart`
-    + ` anything. "Resume", "unpause", "start again" → resume_everything.`;
+    + ` anything. "Resume", "unpause", "start again" → resume_everything; it brings back their check-ins only when they ask for those too.`;
 }
 
 function ownedByThem(conversationId, now = clock.now()) {

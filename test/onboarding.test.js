@@ -610,8 +610,9 @@ test("going quiet: one nudge later on the timer system, never at night, never tw
   await h.router.deliver(text(num, "kofi"));
   assert.equal(nudges().filter(t => !t.cancelled_at).length, 1);
 
-  // Quiet: it fires once, with the pending step's line.
-  clock.skip(2 * 24 * 3_600_000);
+  // Quiet: it fires once, at its time, with the pending step's line. (Its time, not two days on:
+  // a timer more than config.timerLateMs past its moment is skipped, never sent late.)
+  clock.skip(nudges().find(t => !t.cancelled_at).fire_at - clock.now() + 60_000);
   const before = to(h, num).length;
   await h.runtime.tick();
   assert.deepEqual(words(h, num).slice(before), [ob.NUDGES.awaiting_occupation]);

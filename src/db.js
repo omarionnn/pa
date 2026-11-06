@@ -1802,6 +1802,16 @@ addColumnIfMissing("timers", "call_goal", "TEXT");
 // When a timer was set (Reason Web's Ongoing "See all", newest first: owner's handoff v2, sheet 2B).
 // Older rows have none and sort after every dated one; nothing is guessed for them.
 addColumnIfMissing("timers", "created_at", "INTEGER");
+// A timer set BY a timer (2026-11-06): the turn a firing ran set the next one, which is a repeating
+// check Reason keeps going itself — "scan again in an hour", every hour. `chained_from` is the timer
+// whose turn made it. NULL is every timer a person or code set. A pending chained timer IS the
+// chain: it counts toward the same cap a series does, its firing is held to the same "only when
+// there is something new" rule, cancelling it stops the chain, and a stop or an opt-out cancels it.
+// The live case: a person getting 10-24 texts a day off hourly scans, ~6 of them "nothing new".
+addColumnIfMissing("timers", "chained_from", "INTEGER");
+// A timer that was finished with WITHOUT running, because its time had long passed by the time
+// anything could fire it (a pause, a lapse, a stopped process). Why, in a word, for the record.
+addColumnIfMissing("timers", "skipped_why", "TEXT");
 addColumnIfMissing("series", "call_goal", "TEXT");
 addColumnIfMissing("calls", "timer_id", "INTEGER");
 // The one text a scheduled call that reached nobody is owed, stamped so it goes exactly once
@@ -2025,9 +2035,9 @@ export function setPlanStatus(conversationId, id, status) {
 }
 
 // ---------- timers ----------
-export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null, callGoal = null, label = null }) {
-  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id, call_goal, label, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(conversationId, fireAt, note, planId, taskId, seriesId, callGoal ? String(callGoal) : null, label || null, clock.now());
+export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null, callGoal = null, label = null, chainedFrom = null }) {
+  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id, call_goal, label, created_at, chained_from) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(conversationId, fireAt, note, planId, taskId, seriesId, callGoal ? String(callGoal) : null, label || null, clock.now(), chainedFrom ?? null);
   return getTimer(conversationId, Number(r.lastInsertRowid));
 }
 /** The call a timer's firing placed, if the phone has already rung for it. Unscoped: the fire path holds the timer row. */
@@ -2122,6 +2132,30 @@ export function claimTimerAttempt(id, { nextTryAt }) {
 export function markTimerAttemptFailed(id, { error, nextTryAt }) {
   db.prepare("UPDATE timers SET last_error = ?, next_try_at = ? WHERE id = ? AND fired_at IS NULL")
     .run(String(error ?? "").slice(0, 500), nextTryAt, id);
+}
+/**
+ * Finished with and never run: its time had passed too long ago to be worth anything. Spent like a
+ * fired timer so nothing picks it up again; `skipped_why` keeps it from reading as delivered.
+ */
+export function markTimerSkipped(id, { why = "late" } = {}) {
+  db.prepare("UPDATE timers SET fired_at = ?, next_try_at = NULL, skipped_why = ? WHERE id = ? AND fired_at IS NULL AND cancelled_at IS NULL")
+    .run(clock.now(), String(why).slice(0, 200), id);
+}
+/**
+ * The repeating checks Reason keeps going itself: pending timers a firing set (`chained_from`).
+ * One conversation's only. `except` leaves out the timer whose turn is asking, which is the link
+ * being replaced rather than a new chain.
+ */
+export function pendingChainedTimers(conversationId, { except = null } = {}) {
+  return db.prepare(`SELECT * FROM timers WHERE conversation_id = ? AND chained_from IS NOT NULL
+    AND fired_at IS NULL AND cancelled_at IS NULL AND id <> ? ORDER BY fire_at`).all(conversationId, except ?? -1);
+}
+/**
+ * Everything that comes back on its own for one person: live series plus self-set chains. The cap
+ * (config.maxSeries) is on this number, counted here on every attempt so a restart cannot lose it.
+ */
+export function countRecurring(conversationId, { exceptTimer = null } = {}) {
+  return countActiveSeries(conversationId) + pendingChainedTimers(conversationId, { except: exceptTimer }).length;
 }
 /**
  * Out of tries. Spent like a fired timer so nothing picks it up again, and marked as given up so
@@ -11524,7 +11558,7 @@ export function unreachable(conversationId) {
   const since = db.prepare("SELECT 1 FROM inbound_messages WHERE conversation_id = ? AND received_at > ? LIMIT 1")
     .get(conversationId, last.failed_at ?? 0);
   if (since) return null;
-  if (last.last_error_key === "OPTED_OUT") return { why: "they've opted out of texts from this number", outboxId: last.id };
+  if (last.last_error_key === "OPTED_OUT") return { why: "they've opted out of texts from this number", outboxId: last.id, optedOut: true };
   if (rows.length === UNREACHABLE_AFTER && rows.every(r => r.state === "failed")) {
     return { why: `my last ${UNREACHABLE_AFTER} messages to them all failed (${last.last_error || "no reason given"})`, outboxId: last.id };
   }

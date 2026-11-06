@@ -419,3 +419,22 @@ export function outgoingParts(text, { maxBubbles = config.maxBubbles, plain = tr
 
 /** Just the strings, for a caller that only has to send them. */
 export const outgoingTexts = (text, opts) => outgoingParts(text, opts).parts.map(p => p.text);
+
+// ---------- the mark a repeating check's reply carries to be sent (src/series.js) ----------
+// Here rather than in series.js so the deliver path can strip it without importing the scheduler.
+export const SEND_MARK = "[send]";
+const SEND_MARK_LEAD = /^\s*\[send\][ \t]*:?[ \t]*\n?/i;
+
+/** The reply with the mark taken off when it starts with it; null when it does not. */
+export function takeSendMark(reply) {
+  const s = String(reply ?? "");
+  const m = SEND_MARK_LEAD.exec(s);
+  return m ? s.slice(m[0].length) : null;
+}
+
+/** Any outgoing text, with a stray leading mark taken off. Never changes a text without one. */
+export function withoutSendMark(text) {
+  const s = String(text ?? "");
+  const taken = takeSendMark(s);
+  return taken === null ? s : taken;
+}
