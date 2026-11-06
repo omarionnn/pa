@@ -3587,7 +3587,7 @@ export const tools = [
         outcome: { type: "string", description: "One line: what actually came of it." },
         result: {
           type: "object",
-          description: "What they see under BACK TO YOU on their Ongoing list on Reason Web. For 'done': the result itself — headline (the thing, e.g. the restaurant's name), facts (up to 4 short lines of the details that matter: 'SAT · 7:30 PM', '4 PEOPLE · UNDER OMARI'), note (one plain line, e.g. 'They'll hold the table 15 minutes.'). For 'failed': why (ONE short line in your own voice, lowercase, said to them: 'sold out before i got in. sorry.') and next (what happens next, plainly, or leave it out if nothing does). Only what is true; nothing for 'cancelled'.",
+          description: "What they see under BACK TO YOU on their Ongoing list on Reason Web. For 'done': the result itself — headline (the thing, e.g. the restaurant's name), facts (up to 4 short lines of the details that matter: 'SAT · 7:30 PM', '4 PEOPLE · UNDER KOFI'), note (one plain line, e.g. 'They'll hold the table 15 minutes.'). For 'failed': why (ONE short line in your own voice, lowercase, said to them: 'sold out before i got in. sorry.') and next (what happens next, plainly, or leave it out if nothing does). Only what is true; nothing for 'cancelled'.",
           properties: {
             headline: { type: "string" }, facts: { type: "array", items: { type: "string" } }, note: { type: "string" },
             why: { type: "string" }, next: { type: "string" },

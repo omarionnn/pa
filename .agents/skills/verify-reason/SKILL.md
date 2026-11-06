@@ -447,6 +447,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — sealed CLI turns (fix/sealed-engine-context, 2026-11-06)
+
+`npm test` (worktree of origin/main 842f41f + this branch, no `.env`): 5,235 tests, 5,104 passing, 131 skipped, **0 failing**. New: `test/cli-sealed.test.js` (4; 3 fail on 842f41f). `bin/cli-seal-probe.mjs` on Hetzner with the branch code and the real CLI 2.1.296: control leaks the operator email + AGENTS.md, sealed run clean. See [features/cli-sealed.md](features/cli-sealed.md).
+
 ### Baseline — the paywall win rule (wt/win-rule, #325, 2026-11-01)
 
 `node --test test/*.test.js` under `env -i` (ANTHROPIC_API_KEY empty, fresh `npm ci` in the worktree): 5,139 tests, 5,006 passing, 131 skipped, 2 failing — web-ongoing "the desktop margin" (date-dependent) and order-flow-1031 "pinned 13:56" (load flake), both known and failing on main too. New: `test/paywall-win.test.js` (11; 8 of the first 9 fail on c67e5c9), `test/paywall.test.js` 23 (one done task seeded wherever the ask is expected). Muted drive `bin/paywall-drive.mjs`: 24/24 ok. Fresh review: one blocker, closed in code — `stamps.completions` knows AgentCard orders only, so `plan.wins` adds `shop_runs` placed orders (the live buy path) for both the win and the recap; notes closed: `extended` only under the 30th, `cancel()` says the trial's real length. No schema change; live stays `REASON_PAYWALL=owner`. See [features/paywall.md](features/paywall.md).
@@ -809,6 +813,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 | `bin/call-turn.sh new \| "…" \| show` | One spoken call turn against the cage's custom-LLM endpoint; `show` prints the call's lookups record. |
 | `bin/peek.sh thread\|inbound\|outbox\|pages\|confirms\|ledger\|schema <t>\|sql "…"` | Read the caged database. `schema` first when a column name is in doubt. |
 | `bin/fake-sendblue.mjs <port> <capture.jsonl> [ok\|fail]` | A loopback stand-in for api.sendblue.com: logs every request, answers sends 200 or 400. For `REASON_VERIFY_FAKE_SENDBLUE` and `REASON_WATCHDOG_SEND_URL`. Background it under setsid like `caged.sh` (a bare `&` dies with the agent's command). |
+| `bin/cli-seal-probe.mjs [--unsealed]` | What a non-owner's CLI turn puts in front of the model, read off the wire: the real `claude` via `runClaudeCli`, `ANTHROPIC_BASE_URL` on a loopback stand-in (no model, no bill, no message). Must show 0 emails, no AGENTS.md, no repo path; `--unsealed` is the control. See [features/cli-sealed.md](features/cli-sealed.md). |
 | `bin/evidence.sh new <slug>` / `run <dir> <name> -- cmd…` | Make an evidence folder; run a command into it. |
 | `bin/onboarding-drive.sh [outdir] [before]` | The first-chat onboarding end to end: its own fake Sendblue + cage (claude-cli, one test number), five texts, `transcript.txt` with both sides and the gaps; `before` = flag off. Tears both down. |
 | `bin/tagline.mjs [--out <dir>] \| --live <url>` | Tagline "Your personal concierge" on the home page + an invite page (body and og:description), old "lives in your texts" gone. In-process uses its own temp DB and a fake channel; `--live` is one read-only GET /. |
@@ -821,6 +826,8 @@ behaviour, change its feature file in the same commit.
 
 Reason Web thread scrolling (S2 note, S3 DONE lines, TODAY ↓, L1/L2/L10, SR4): [features/web-thread.md](features/web-thread.md);
 `bin/web-thread-preview.mjs` drives and draws it beside the reference boards.
+
+Sealed CLI turns (no operator email / AGENTS.md / repo path in a person's CLI turn): [features/cli-sealed.md](features/cli-sealed.md); `bin/cli-seal-probe.mjs`.
 
 Reason Web Saved (phone tab S-A/S-B, desktop list + opened page, pin/remove): [features/web-saved.md](features/web-saved.md).
 Your pages (the wordmark on a page Reason made → its owner's pages list, sign-in round trip, own only): [features/pages-index.md](features/pages-index.md); `bin/pages-index-drive.mjs` (20 steps).

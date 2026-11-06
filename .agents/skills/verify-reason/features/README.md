@@ -11,6 +11,7 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Feature | File | Primary drive |
 |---|---|---|
 | Inbound message handling | [inbound-message.md](inbound-message.md) | `bin/inbound.sh` → caged webhook |
+| Sealed CLI turns (no operator email, no AGENTS.md / CLAUDE.md, no repo path in any person's turn on the claude-cli backend) | [cli-sealed.md](cli-sealed.md) | `node --test test/cli-sealed.test.js`; real CLI on the wire, no model: `bin/cli-seal-probe.mjs` (+ `--unsealed` control) on Hetzner as `reason` |
 | Pages (answers you can open and keep) | [pages.md](pages.md) | `node --test test/pages.test.js`, then `GET /p/<id>` |
 | Location share handling | [location-share.md](location-share.md) | `bin/inbound.sh file payloads/location.json` |
 | Generated images on pages | [page-images.md](page-images.md) | `node --test test/imagen.test.js`, then `GET /img/<f>` |

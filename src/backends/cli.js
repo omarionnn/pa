@@ -8,7 +8,9 @@
 //
 // Owner-local only. See the README section on REASON_BACKEND.
 import { spawn } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { StringDecoder } from "node:string_decoder";
 
@@ -163,9 +165,69 @@ export function runClaudeCli({ feature = "other", ...args }) {
  * 0.71 s CPU, four paired measurements on 2026-10-27. The model call itself is untouched.
  */
 export function childEnvFor(env = process.env) {
-  const childEnv = { ...env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
+  const sealed = sealedCliHome(env);
+  const childEnv = {
+    ...env,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    // SEALED (prompt audit 2026-10-31, privacy): see sealedCliHome. No CLAUDE.md / AGENTS.md from
+    // anywhere, and a config dir of Reason's own, so the CLI's login profile (the operator's
+    // account email) is not in it to be put in front of the model.
+    CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+    CLAUDE_CONFIG_DIR: sealed.configDir,
+  };
   delete childEnv.ANTHROPIC_API_KEY;
+  delete childEnv.CLAUDE_CODE_USER_EMAIL;
   return childEnv;
+}
+
+/**
+ * Where a CLI child runs, sealed off from the machine it runs on.
+ *
+ * The prompt audit of 2026-10-31 found two things in EVERY person's turn on the CLI backend that
+ * were not Reason's: (1) the AGENTS.md in /opt/reason — another assistant's workspace file, whose
+ * rules contradict Reason's — which the CLI auto-loads from its working directory, with "is a git
+ * repository" and the path beside it; and (2) a `userEmail` block holding the operator's own
+ * account email, which the CLI adds from the login profile in its config (`oauthAccount` in
+ * ~/.claude.json). Each person's Reason is sealed, and the operator is a person too.
+ *
+ * So every child runs in `cwd` — an empty directory outside any repository — with CLAUDE.md /
+ * AGENTS.md loading off, and with `configDir` as its CLAUDE_CONFIG_DIR: a config of its own with
+ * no login profile in it. It authenticates with CLAUDE_CODE_OAUTH_TOKEN (how the server runs);
+ * where there is a credentials file in ~/.claude instead, it is linked in. Verified against the
+ * real CLI 2.1.296 on the server on 2026-11-06 with a capturing fake endpoint: email and AGENTS.md
+ * present before, both gone after, the run otherwise identical. REASON_CLI_HOME moves it.
+ */
+export function sealedCliHome(env = process.env) {
+  const root = env.REASON_CLI_HOME || join(env.HOME || homedir(), ".reason-cli");
+  return { root, cwd: join(root, "cwd"), configDir: join(root, "config") };
+}
+
+/** Make the sealed dirs exist and keep the login profile out of the sealed config. Never throws. */
+export function prepareSealedCli(env = process.env) {
+  const sealed = sealedCliHome(env);
+  try {
+    mkdirSync(sealed.cwd, { recursive: true });
+    mkdirSync(sealed.configDir, { recursive: true });
+    const creds = join(env.HOME || homedir(), ".claude", ".credentials.json");
+    const link = join(sealed.configDir, ".credentials.json");
+    try {
+      if (!env.CLAUDE_CODE_OAUTH_TOKEN && existsSync(creds) && !existsSync(link)) symlinkSync(creds, link);
+    } catch { /* two children linking at once: one of them made it */ }
+    // The CLI writes its own .claude.json here. If a later version ever fetches the login profile
+    // into it, the profile (and with it the email) is taken back out before the next run —
+    // written aside and renamed over, so a child reading it never sees half a file.
+    const file = join(sealed.configDir, ".claude.json");
+    if (existsSync(file)) {
+      const cfg = JSON.parse(readFileSync(file, "utf8"));
+      if (cfg && typeof cfg === "object" && "oauthAccount" in cfg) {
+        delete cfg.oauthAccount;
+        const aside = `${file}.${process.pid}.${Date.now()}.tmp`;
+        writeFileSync(aside, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+        renameSync(aside, file);
+      }
+    }
+  } catch { /* the spawn reports a missing cwd itself; nothing here is worth a turn */ }
+  return sealed;
 }
 
 function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, onEvent = null, input = null, effort = null, sessionId = null, resume = null }) {
@@ -173,10 +235,11 @@ function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = []
 
   return new Promise((resolve) => {
     const childEnv = childEnvFor(process.env);
+    const { cwd } = prepareSealedCli(process.env);
 
     let child;
     try {
-      child = spawn(cliConfig.bin, args, { env: childEnv, stdio: [stdin || input ? "pipe" : "ignore", "pipe", "pipe"] });
+      child = spawn(cliConfig.bin, args, { cwd, env: childEnv, stdio: [stdin || input ? "pipe" : "ignore", "pipe", "pipe"] });
     } catch (e) {
       return resolve({ ok: false, error: `could not run '${cliConfig.bin}': ${e.message}` });
     }
