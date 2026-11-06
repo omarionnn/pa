@@ -127,14 +127,11 @@ test("an order placed through a store checkout is the win that brings the ask at
 });
 
 test("a backlog past the 30th before any text under the switch: the label does not read as extended", () => {
-  process.env.REASON_PAYWALL = "off";
-  try {
-    const { c } = newcomer();
-    sessions(c, 40);
-    process.env.REASON_PAYWALL = "on";
-    assert.equal(plan.status(c).extended, false);
-    assert.equal(plan.opsLabel(c), "trial 40/25");
-  } finally { process.env.REASON_PAYWALL = "on"; }
+  // Nothing is counted while the switch is off (2026-11-05), so a backlog only comes from a row set by hand.
+  const { c } = newcomer();
+  plan.setManually(c, { status: "trial", sessions: 40 });
+  assert.equal(plan.status(c).extended, false);
+  assert.equal(plan.opsLabel(c), "trial 40/25");
 });
 
 test("a win before the 25th: the ask goes at the 25th, as before, counting 25 chats", async () => {
@@ -239,16 +236,12 @@ test("no win through the 30th: the ask goes at the 30th anyway, with the softer 
   assert.equal(plan.status(c).status, "lapsed");
 });
 
-test("a bigger backlog: counted while the switch was off, 40 sessions and no win — asked on the first session under the paywall", async () => {
-  process.env.REASON_PAYWALL = "off";
-  try {
-    const { c } = newcomer();
-    sessions(c, 40);
-    process.env.REASON_PAYWALL = "on";
-    clock.skip(31 * MIN); accounts.countUse(c, "turn");
-    assert.equal(plan.row(c).ask_due, 1);
-    assert.equal((await after_(c, fakeRouter())).did, "asked");
-  } finally { process.env.REASON_PAYWALL = "on"; }
+test("a bigger backlog (set by hand), 40 sessions and no win — asked on the next session, never cut off first", async () => {
+  const { c } = newcomer();
+  plan.setManually(c, { status: "trial", sessions: 40, lastInboundAt: null });
+  accounts.countUse(c, "turn");
+  assert.equal(plan.row(c).ask_due, 1);
+  assert.equal((await after_(c, fakeRouter())).did, "asked");
 });
 
 test("grandfathered people are untouched by the rule: 30 sessions and no win, still free, nothing said, no extension shown", async () => {

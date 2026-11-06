@@ -1,10 +1,15 @@
 # The free trial and the subscription (src/plan.js, src/stripe.js — REASON_PAYWALL)
 
-Shipped 2026-10-31 (PR #323) with the switch OFF on live: sessions are counted into a new `plan` table
-and nothing else happens. `owner` reaches only the operator's own thread (his grandfather rules skipped
-there, so he can try it); `on` reaches everybody who is not grandfathered — the operator,
-`REASON_TEST_NUMBERS`, and every account with `created_at` before `REASON_PAYWALL_SHIP_TS` (unset: the
-moment the flag was first seen on, written once to `ops_state` key `paywall_ship_ts`).
+Shipped 2026-10-31 (PR #323). **2026-11-05 owner decision: Reason is FREE for everyone; the switch stays
+OFF.** Off = nothing counted (no `plan` row), nothing said, no plan tool or price in the model's tools /
+capabilities / note, `/pay/done` + `/pay/back` 302 to the site home, Stripe's webhook acts on nothing.
+`owner` reaches only the operator's own thread (his grandfather rules skipped there, so he can try it);
+`on` reaches everybody who is not grandfathered — the operator, `REASON_TEST_NUMBERS`, anybody who joined
+through an invite or a member's event (`accounts.invited_by` / `joined_via_event` on any account on the
+number; owner 2026-11-05, whenever they joined), and every account with `created_at` before the FLIP MOMENT (`ops_state` key `paywall_on_since`, written the first time a
+process boots with the switch on). `REASON_PAYWALL_SHIP_TS` can only move that cut-off later, so the old
+Oct 31 value in live .env cannot put anybody who joined while free on a trial. The website's matching
+switch is `REASON_PRICING` (reason-site `tools/build-site.mjs`); flip both together.
 
 What a person sees:
 
@@ -76,7 +81,7 @@ payment-link override, no-Stripe hold, `scripts/plan-set.js`.
 ## Live, read-only
 
 - `sqlite3 -readonly /opt/reason/data/reason.db "SELECT conversation_id, sessions_used, status FROM plan"`
-  — rows appear as people text, status `trial` for everyone while the switch is off.
+  — no rows appear while the switch is off (nothing is counted).
 - `/ops` shows a plan tag per person only when `REASON_PAYWALL` is not off.
 - `grep -c REASON_PAYWALL /opt/reason/.env` → 1 (`REASON_PAYWALL=off`, appended at deploy).
 - Journal lines: `paywall_asked`, `paywall_refused`, `paywall_held`, `paywall_released`,

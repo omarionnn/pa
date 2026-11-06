@@ -8,9 +8,10 @@
 //   - `plan` is one row per conversation: sessions used, when they were first seen, where they stand
 //     (trial | free | paid | lapsed | cancelled) and the Stripe ids. NOT `subscriptions` — that table
 //     is a person's own merchant subscriptions (src/subs.js), nothing to do with paying for Reason.
-//   - Grandfathered — free, for good: the operator, every number in REASON_TEST_NUMBERS, and every
-//     account made before the paywall shipped (REASON_PAYWALL_SHIP_TS, or the moment the flag was first
-//     turned on, written down once in ops_state). The 13 people on the line today are all free.
+//   - Grandfathered — free, for good: the operator, every number in REASON_TEST_NUMBERS, everybody who
+//     came in through an invite or a member's event (whenever they joined, owner 2026-11-05), and every
+//     account made before the switch was first turned on (the flip moment, written once in ops_state;
+//     REASON_PAYWALL_SHIP_TS may only move it later — shipTs() below).
 //   - At the 25th session the turn's own reply still answers them; THEN three short bubbles go, the
 //     onboarding way (one ordered chain, a beat apart): what Reason really did for them, counted from
 //     the record (stamps.completions); the ask; the link on its own line. Once, ever.
@@ -27,9 +28,9 @@
 //     (pause.resumeAll) and one line says they're all set. Cancelling is a tool (subscription_cancel):
 //     at the period's end, with the date access stops said back.
 //
-// REASON_PAYWALL (off | owner | on). Off is the default and what live runs until the owner flips it:
-// sessions are still counted (a row in a new table, invisible to everyone), nothing is ever said, no
-// tool is ever refused, and no tool is shown. `owner`: the operator's own thread only — and HIS
+// REASON_PAYWALL (off | owner | on). Off is the default and what live runs until the owner flips it
+// (2026-11-05: Reason is free for everyone for now): nothing is counted, nothing is ever said, no tool
+// is ever refused or shown, the /pay pages are not served and Stripe's webhook acts on nothing. `owner`: the operator's own thread only — and HIS
 // grandfather rules are skipped there, or there would be nothing to try. `on`: everybody, minus the
 // grandfathered. Read at call time, so a test sets the env and a restart is the only switch.
 import * as db from "./db.js";
@@ -86,27 +87,48 @@ export function mode() {
   return ["1", "true", "on", "yes"].includes(v) ? "on" : "off";
 }
 
-const SHIP_KEY = "paywall_ship_ts";
+// The grandfather cut-off (owner, 2026-11-05: "Reason is free for everyone for now"; when the switch
+// goes on, only people who join FROM THAT MOMENT get the trial, everyone before stays free for good).
+//
+//   - ON_KEY in ops_state is the flip moment: written once, the first time this process sees the switch
+//     `on` (at boot, below), never moved after. The old key `paywall_ship_ts` (written by the 11-01
+//     owner-mode trial) is never read again: it predates the decision.
+//   - REASON_PAYWALL_SHIP_TS can only push the cut-off LATER, never earlier: the cut-off is the later of
+//     the env and the flip moment. So the Oct 31 value still sitting in live .env (1793500000000) can never
+//     put anybody who joined while Reason was free onto a trial. To re-flip after a later off spell and
+//     keep everybody who joined during it free, set REASON_PAYWALL_SHIP_TS to the new flip moment.
+//   - Owner mode reaches only the operator and skips his grandfather rule, so it records nothing.
+const ON_KEY = "paywall_on_since";
 
-/** When the paywall shipped, ms: the env, else the moment the flag was first seen on (kept in ops_state). */
-export function shipTs() {
+function envShipTs() {
   const raw = String(process.env.REASON_PAYWALL_SHIP_TS ?? "").trim();
-  if (raw) {
-    const n = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw);
-    if (Number.isFinite(n)) return n < 1e12 ? n * 1000 : n;
-  }
-  const stored = Number(db.opsGet(SHIP_KEY));
+  if (!raw) return null;
+  const n = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw);
+  if (!Number.isFinite(n)) return null;
+  return n < 1e12 ? n * 1000 : n;
+}
+
+/** The flip moment, ms: when the switch was first seen `on`, written then. Null until it has been. */
+export function onSince() {
+  const stored = Number(db.opsGet(ON_KEY));
   if (stored) return stored;
-  if (mode() === "off") return null;
+  if (mode() !== "on") return null;
   const now = clock.now();
-  db.opsSet(SHIP_KEY, now);
+  db.opsSet(ON_KEY, now);
   return now;
 }
 
-// The ship time is fixed at boot when the switch is on, so a newcomer admitted in the very first turn
-// after a flip is made AFTER it and is not grandfathered by a few milliseconds. (Set
-// REASON_PAYWALL_SHIP_TS in .env when flipping, and this is moot.)
-if (mode() !== "off") { try { shipTs(); } catch { /* read again on first use */ } }
+/** The grandfather cut-off, ms: accounts made before it are free for good. Null while the switch is not on. */
+export function shipTs() {
+  if (mode() !== "on") return null;
+  const flip = onSince();
+  const env = envShipTs();
+  return env && env > flip ? env : flip;
+}
+
+// Written at boot when the switch is on, so a newcomer admitted in the very first turn after a flip is
+// made AFTER it, and everybody already on the line is before it.
+if (mode() === "on") { try { onSince(); } catch { /* read again on first use */ } }
 
 const isOperator = (conversationId, row = db.getAccount(conversationId)) => conversationId === config.ownerConversation || !!row?.is_operator;
 
@@ -119,14 +141,28 @@ export function appliesTo(conversationId) {
   return true;
 }
 
-/** Free for good: the operator, a test number, or an account from before the paywall shipped. */
+/** Free for good: the operator, a test number, anybody who came in by invite or event, or an account from before the flip. */
 export function grandfathered(conversationId) {
   const row = db.getAccount(conversationId);
   if (mode() === "owner" && isOperator(conversationId, row)) return false; // so he can try it on himself
   if (isOperator(conversationId, row)) return true;
   if (row?.address && config.testNumbers.some(n => String(n).replace(/[^\d+]/g, "") === String(row.address).replace(/[^\d+]/g, ""))) return true;
+  // Came in through somebody already here (owner, 2026-11-05): free for good whenever they joined,
+  // before or after the flip — the invite card's "Free for you, for good." is the promise. Two ways in
+  // count: a member's invite (accounts.invited_by, set by db.redeemInvite) and an event a member made
+  // (accounts.joined_via_event, set by db.redeemEventClaim). Only people who came in on their own —
+  // texting the number from an ad or the website — get the trial. Checked across every account on the
+  // number, so an invitee whose number later shows up on another channel keeps it.
+  if (row?.invited_by || row?.joined_via_event) return true;
+  if (row?.address && q("SELECT 1 FROM accounts WHERE address = ? AND (invited_by IS NOT NULL OR joined_via_event IS NOT NULL) LIMIT 1").get(row.address)) return true;
   const ship = shipTs();
   if (row?.created_at && ship && row.created_at < ship) return true;
+  // The same number moved channel after the cut-off (a new `dm:<channel>:<number>` account, made later):
+  // still the person who was here before it, so still free. Any account on that number counts.
+  if (row?.address && ship) {
+    const first = q("SELECT MIN(created_at) AS t FROM accounts WHERE address = ?").get(row.address)?.t;
+    if (first && first < ship) return true;
+  }
   return false;
 }
 
@@ -184,6 +220,9 @@ export const blocked = (conversationId, now = clock.now()) => status(conversatio
  */
 export function noteTurn(conversationId, now = clock.now()) {
   if (!conversationId) return null;
+  // Nothing is counted where the paywall does not reach (switch off; everybody but the operator under
+  // `owner`): no row, no number, so a flip later starts nobody part-way through a trial.
+  if (!appliesTo(conversationId)) return null;
   const r = ensure(conversationId, now);
   const fresh = !r.last_inbound_at || now - r.last_inbound_at >= SESSION_GAP_MS;
   const fields = { last_inbound_at: now };
@@ -477,6 +516,9 @@ export async function handleStripeEvent(event, { say = null, log = () => {}, now
   const id = String(event?.id ?? "");
   const type = String(event?.type ?? "");
   if (!id || !type) return { ok: false, why: "no id or type" };
+  // Switch off: Reason is free for everyone, so nothing Stripe says (an old test subscription renewing,
+  // say) marks anybody paid or lapsed, or texts them. Taken (200) so Stripe stops retrying.
+  if (mode() === "off") { log({ stripe_webhook: type, ignored: "paywall off" }); return { ok: true, ignored: true }; }
   if (q("INSERT OR IGNORE INTO stripe_events (event_id, type, received_at) VALUES (?, ?, ?)").run(id, type, now).changes !== 1) {
     return { ok: true, duplicate: true };
   }
@@ -495,7 +537,14 @@ async function actOn(event, { say, log, now }) {
   const obj = event?.data?.object ?? {};
   const conversationId = conversationFor(obj);
   if (!conversationId) { log({ stripe_webhook: type, unmatched: true }); return { ok: true, matched: false }; }
-  const tell = (text) => { if (say) { try { say(conversationId, text); } catch (e) { log({ paywall_text_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); } } };
+  // Somebody the paywall does not reach (everybody but the operator under `owner`), or somebody free for
+  // good (before the flip, invited, the operator under `on`): an old test subscription ending, renewing or
+  // lapsing changes nothing for them — no lapse, no hold, no "your plan's ended" text.
+  if (!appliesTo(conversationId) || grandfathered(conversationId)) {
+    log({ stripe_webhook: type, conversation: conversationId, ignored: appliesTo(conversationId) ? "free for good" : "paywall does not reach them" });
+    return { ok: true, matched: true, conversationId, ignored: true };
+  }
+  const tell =(text) => { if (say) { try { say(conversationId, text); } catch (e) { log({ paywall_text_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); } } };
 
   switch (type) {
     case "checkout.session.completed": {
