@@ -19,26 +19,44 @@
 // Everything here reads rows. Nothing asks a model whether it thinks it already called — a model
 // looking at its own transcript is the least reliable possible source for "did I already do this",
 // and the rows are right there.
-import { config } from "../config.js";
+import { config, clock } from "../config.js";
 import * as db from "../db.js";
 import { OUTCOMES, redialMode } from "./outcome.js";
 import { askWhetherItWentThrough } from "./brief.js";
 import * as commit from "./commit.js";
 
 /**
+ * How far back "calling again" reaches. The retry limit and the one-voicemail rule are about ringing
+ * the same person over and over for the same thing — a run of attempts, not a lifetime. A friend rung
+ * on Sunday and again on Thursday is not being redialled; without this window the second call to any
+ * contact inherited the first one's errand (2026-11-05, Yaw: Thursday's new message went out as
+ * Sunday's Man U script) and a third call was refused as "out of tries" for good.
+ * Something that may already be agreed at the number is NOT windowed: that is a fact about them.
+ */
+export const REDIAL_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Could this call have agreed to anything? Only then can a dropped line have left something half-done. */
+function couldCommit(call) {
+  const b = safeBrief(call);
+  return b?.approved?.book === true;
+}
+
+/**
  * May this number be called again for this errand, and to do what?
  *
  * Returns one of three shapes, and the middle one is the one that matters:
  *
- *   `{ok: true, mode: "retry"}`  — go again with the same goal. Nobody answered, or the line was too
- *                                  bad to settle anything.
- *   `{ok: true, mode: "ask"}`    — go again, but ONLY to find out what happened, with booking off.
- *                                  `brief` comes back rewritten for that; use it rather than the
- *                                  original, which is the whole point.
+ *   `{ok: true, mode: "retry"}`  — go again. Nobody answered, or the line was too bad to settle
+ *                                  anything. No brief comes back: the call carries what it was asked
+ *                                  to carry NOW, never the old call's script.
+ *   `{ok: true, mode: "ask"}`    — go again, but first find out what happened, with booking off.
+ *                                  `brief` comes back rewritten for that, carrying the new call's
+ *                                  purpose (`brief` passed in) after the check; use it rather than
+ *                                  the new one, which is the whole point.
  *   `{ok: false, error}`         — do not call. Something is already agreed, a message is already
  *                                  sitting in their voicemail, or this number has had its attempts.
  */
-export function safeToRedial(conversationId, { toNumber, errandId = null, brief = null, now = Date.now() } = {}) {
+export function safeToRedial(conversationId, { toNumber, errandId = null, brief = null, now = clock.now() } = {}) {
   const number = String(toNumber ?? "").trim();
   if (!number) return { ok: false, error: "There is no number to call." };
 
@@ -64,10 +82,10 @@ export function safeToRedial(conversationId, { toNumber, errandId = null, brief 
   const maybe = commit.unresolvedAt(conversationId, number);
   if (maybe.length) {
     const m = maybe.at(-1);
-    const original = brief ?? safeBrief(db.callsToNumber(conversationId, { errandId, toNumber: number }).at(-1));
+    const original = safeBrief(db.callsToNumber(conversationId, { errandId, toNumber: number }).at(-1)) ?? brief;
     return {
       ok: true, mode: "ask", unresolved: m,
-      brief: askWhetherItWentThrough(original, { what: m.what || original?.goal || "" }),
+      brief: askWhetherItWentThrough(original, { what: m.what || original?.goal || "", then: brief }),
       why: `A call to this number ended before anybody knew whether "${m.what}" went through, so it may already`
         + ` exist. Ring them ONLY to find out: ask whether it is on their book under the name, and do not agree`
         + ` to anything, book anything or offer to. If it is there, that is the answer; if it is not, say so and`
@@ -75,7 +93,9 @@ export function safeToRedial(conversationId, { toNumber, errandId = null, brief 
     };
   }
 
-  const history = db.callsToNumber(conversationId, { errandId, toNumber: number });
+  // Only the recent run of calls counts as "again" (REDIAL_WINDOW_MS above).
+  const history = db.callsToNumber(conversationId, { errandId, toNumber: number })
+    .filter(k => !Number.isFinite(Number(k.created_at)) || now - Number(k.created_at) < REDIAL_WINDOW_MS);
   if (!history.length) return { ok: true, mode: "first", attempt: 1 };
 
   // A message already in their voicemail. His rule, and it is per number rather than per errand: a
@@ -90,7 +110,13 @@ export function safeToRedial(conversationId, { toNumber, errandId = null, brief 
   }
 
   const last = history.at(-1);
-  const mode = redialMode(last.outcome_kind);
+  // "Dropped before it was confirmed" only means something may be half-agreed when the call was
+  // allowed to agree to anything. An asking-only call (a message for a friend, a question for a shop)
+  // cannot have left a booking behind, so ringing again is simply ringing again — call 63 to Yaw was a
+  // mailbox filed this way, and its "find out whether it went through" rewrite replaced Thursday's
+  // new message with Sunday's script.
+  const kindMode = redialMode(last.outcome_kind);
+  const mode = kindMode === "ask" && !couldCommit(last) ? "retry" : kindMode;
   if (mode === "no") {
     return {
       ok: false, settled: true,
@@ -115,17 +141,19 @@ export function safeToRedial(conversationId, { toNumber, errandId = null, brief 
   if (mode === "ask") {
     // The important rewrite. Booking is off, the goal is now "find out whether this exists", and it is
     // built from the brief the dropped call was placed under rather than from anything remembered.
-    const original = brief ?? safeBrief(last);
+    const original = safeBrief(last) ?? brief;
     return {
       ok: true, mode: "ask", attempt: attempts + 1,
-      brief: askWhetherItWentThrough(original, { what: original?.goal || last.goal }),
+      brief: askWhetherItWentThrough(original, { what: original?.goal || last.goal, then: brief }),
       why: `The last call dropped before it was confirmed, so this one only checks whether it went through.`
         + ` It is not allowed to book anything.`,
       note: `Open by saying you are ringing to check on something, not to make a new one.`,
     };
   }
 
-  return { ok: true, mode: "retry", attempt: attempts + 1, brief: brief ?? safeBrief(last) };
+  // No brief: the call goes with what it was asked to carry now. Handing back the last call's brief
+  // here is how "call Yaw again and tell him X" rang him with the old call's questions.
+  return { ok: true, mode: "retry", attempt: attempts + 1 };
 }
 
 /**

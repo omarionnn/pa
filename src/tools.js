@@ -1541,6 +1541,24 @@ function holdFor(name, input, conversationId) {
  * because they said yes to the thing and the window is the out that follows it, not a second
  * question — and a yes left unspent for thirty seconds is a yes something else could ride.
  */
+/**
+ * One line per older call, for `call_status` with no id: who, when, what it was for, how it ended.
+ * Owner calls are included (a call he asked for is his record too); the number is his own data.
+ */
+function olderCallIndex(conversationId, { skip = [], days = 60, limit = 40, now = clock.now() } = {}) {
+  const since = now - days * 24 * 60 * 60 * 1000;
+  return db.listCalls(conversationId, { limit: limit + skip.length })
+    .filter(r => !skip.includes(r.id) && Number(r.created_at) >= since)
+    .slice(0, limit)
+    .map(r => ({
+      call_id: r.id,
+      to: Number(r.is_owner) === 1 ? "them (their own phone)" : r.to_number,
+      placed: new Date(Number(r.created_at)).toLocaleString("en-US", { timeZone: config.tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
+      goal: String(r.goal ?? "").slice(0, 160),
+      ended: callOutcome.OUTCOMES[r.outcome_kind]?.label ?? r.state,
+    }));
+}
+
 function parkHeld({ name, input, conversationId, ctx = {}, describe, to = null }) {
   if (ctx.releasedHold) return null;
   const held = holdFor(name, input, conversationId);
@@ -4139,7 +4157,7 @@ export const tools = [
   },
   {
     name: "call_status",
-    description: "How a call went: whether it connected, what was said, how long it took, and whether there is a recording. Call this after call_place rather than guessing — a call that is still ringing has no result yet, and you may not claim one. The audio, when there is any, goes out by itself with the message about the call or within the hour after it, and recording_note says which applies; never promise it beyond that. When there is none the result says so and you must say so too instead of implying one exists. With no id, the recent calls on this conversation.",
+    description: "How a call went: whether it connected, what was said, how long it took, and whether there is a recording. Call this after call_place rather than guessing — a call that is still ringing has no result yet, and you may not claim one. The audio, when there is any, goes out by itself with the message about the call or within the hour after it, and recording_note says which applies; never promise it beyond that. When there is none the result says so and you must say so too instead of implying one exists. With no id, the five most recent calls in full plus a one-line index of older ones (earlier_calls) — look there before saying a call to someone is not on record.",
     input_schema: { type: "object", properties: { call_id: { type: "integer", description: "The id call_place returned. Omit for the recent ones." } } },
   },
   {
@@ -11057,24 +11075,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Did this already happen? The owner's rule — never book twice, never leave two voicemails — and
       // the one case worth naming: a call that dropped right after somebody said "you're booked" comes
       // back to ASK whether it went through, with booking switched off, which is a different goal.
-      const again = toOwner ? { ok: true, mode: "first" } : safeToRedial(c, { toNumber: to, errandId: input.errand_id ?? null });
-      if (!again.ok) {
-        return {
-          ok: false, status: "already_happened", error: again.error,
-          note: again.alreadyDone
-            ? `Say out loud that it is already arranged, and what it is. Do not call them.`
-            : `Say what actually happened last time rather than trying again.`,
-        };
-      }
-
-      // What this call may say, ask, wait for and agree to. Built here, in code, from what the owner
-      // approved — and handed to the provider as its own argument, so a provider or a refactor that
-      // drops it gets a refused call rather than a call that may agree to anything.
-      //
-      // `again.brief` wins when there is one: that is the rewritten "find out whether it went through"
-      // brief from the dropped call above, and it has booking switched off on purpose.
       const errandRow = input.errand_id ? db.getErrand(c, input.errand_id) : null;
-      const brief = again.brief ?? buildBrief({
+      const freshBrief = buildBrief({
         goal: input.goal,
         facts: input.facts ?? [],
         approved: {
@@ -11091,6 +11093,26 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         returnNumber: config.elevenPhoneNumber || "",
         language: "en",
       });
+      const again = toOwner ? { ok: true, mode: "first" } : safeToRedial(c, { toNumber: to, errandId: input.errand_id ?? null, brief: freshBrief });
+      if (!again.ok) {
+        return {
+          ok: false, status: "already_happened", error: again.error,
+          note: again.alreadyDone
+            ? `Say out loud that it is already arranged, and what it is. Do not call them.`
+            : `Say what actually happened last time rather than trying again.`,
+        };
+      }
+
+      // What this call may say, ask, wait for and agree to. Built here, in code, from what the owner
+      // approved — and handed to the provider as its own argument, so a provider or a refactor that
+      // drops it gets a refused call rather than a call that may agree to anything.
+      //
+      // `again.brief` wins only when there is one: the "find out whether it went through" rewrite of
+      // a dropped call that could have booked something, with booking switched off on purpose and
+      // THIS call's purpose carried after the check. Every other call — a first call, a retry, a
+      // friend rung again with a new message — goes with what it was asked to carry now (2026-11-05,
+      // call 74 to Yaw: the new message was dropped for the old call's Man U script).
+      const brief = again.brief ?? freshBrief;
       // An inquiry errand's legs can never book, whatever was asked for: the errand's kind is the
       // ceiling, so `may_book` arriving on a leg of an ask-everywhere errand does not quietly raise it.
       if (errandRow && errandRow.kind !== "booking") brief.approved.book = false;
@@ -11360,8 +11382,20 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         .join("\n")
         .trim();
       const alreadyReported = out.filter(cv => cv && cv.already_reported);
+      // The calls before those five, one line each, so "call Yaw again" can find Sunday's call to Yaw
+      // when the last five were all to the owner (2026-11-05: the first look missed call 63 and said
+      // there was no call to Yaw on record). Which line is the person asked about is the model's
+      // read of the goal — no name matching here.
+      const earlier = input.call_id ? [] : olderCallIndex(c, { skip: rows.filter(Boolean).map(r => r.id) });
       const base = {
         calls: out, count: out.length,
+        ...(earlier.length
+          ? {
+            earlier_calls: earlier,
+            earlier_note: "Older calls on this conversation, one line each (last 60 days). If they ask about a call to somebody"
+              + " and it is not in `calls`, look here before saying there is none, then call_status with that call_id for the detail.",
+          }
+          : {}),
         note: out.some(cv => cv.still_going)
           ? "At least one of these has not finished. You do not know how it went; do not say you do."
           : out.length ? "This is what really happened on the phone. Quote it; do not embellish it." : "No calls on this conversation.",
