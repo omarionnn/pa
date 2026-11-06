@@ -3667,6 +3667,13 @@ after it, bound to 127.0.0.1 on a port the OS picks. Claude Code's own tools (Ba
 and the rest) are denied, so a turn cannot succeed by going around Reason. The confirm gate's judge
 and the watcher's page check take the same route.
 
+Every CLI child is sealed (`sealedCliHome` in `src/backends/cli.js`): it runs in an empty directory
+outside the repository (`~/.reason-cli/cwd`), with CLAUDE.md / AGENTS.md loading off, and with
+`~/.reason-cli/config` as its `CLAUDE_CONFIG_DIR`, so the CLI's login profile — the operator's
+account email — and any workspace file on the machine never reach a person's turn. The child
+signs in with `CLAUDE_CODE_OAUTH_TOKEN` (or a linked `~/.claude/.credentials.json`); a login that
+lives only in the macOS keychain is not seen from the sealed config. `REASON_CLI_HOME` moves it.
+
 The point of serving the tools in-process rather than as a CLI-spawned subprocess is that the
 tools are then *the same code in the same process*: one SQLite writer, one Chromium that stays open
 across turns, and every tool call landing in the same log the API backend writes. The gate, the
