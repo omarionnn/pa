@@ -72,10 +72,10 @@ Facts are things worth remembering across sessions: personal details, preference
 DO NOT extract: transient states ("they are typing"), task instructions ("look up X"), pleasantries, or things the assistant said about itself.
 Each fact should be atomic — one piece of information, not a compound sentence.
 
-Never extract somebody's own name as a fact about them. "Her name is Irene", "The user's name is Irene" and "Irene's name is Irene" are not facts: the name is already on record, and restating it is not new information. Put the name in "about" and extract what was said BESIDES the name.
+Never extract somebody's own name as a fact about them. "Her name is <her name>", "The user's name is <their name>" and "<name>'s name is <name>" are not facts: the name is already on record, and restating it is not new information. Put the name in "about" and extract what was said BESIDES the name.
 
 "about" is the person's name whenever you know it. Never "user", "the user" or "me" once a name has been said anywhere in the conversation — those file the same person twice and split what is known about them in half.
-"about" is never an email address or a phone number either, and never an account's label with the domain left off ("jdoe20", or a pair of them like "jdoe25 and jdoe16"). An identifier is how you reach somebody, not who they are: a fact filed under "omariij20@gmail.com" cannot be found by looking up "Omari". Use the person's name — and if an account rather than a person is really the subject, there is no personal fact here to extract.
+"about" is never an email address or a phone number either, and never an account's label with the domain left off ("jdoe20", or a pair of them like "jdoe25 and jdoe16"). An identifier is how you reach somebody, not who they are: a fact filed under "jdoe20@gmail.com" cannot be found by looking up their name. Use the person's name — and if an account rather than a person is really the subject, there is no personal fact here to extract.
 
 DO NOT extract the state of a connected account: that it was connected, disconnected or reconnected, which scopes it was granted, or which subscriptions bill to it. The assistant already holds all of that and keeps it current, so a fact restating it is a copy that goes wrong the next time the account changes. One account being disconnected and reconnected over a morning is not nine things learned about a person; it is nothing learned about a person.
 
@@ -86,7 +86,7 @@ If the new message changes something already known, return it once, as the new s
 Entities are named things mentioned in the conversation: people, places, businesses, events, accounts, orders, reminders, topics.
 Extract each distinct entity with its canonical name and type. Include aliases if the conversation uses more than one name for it.
 
-Relations connect two entities: "Kofi" works_at "Google", "Ama" sister_of "Kofi", "appointment" at "Dr. Lee's office".
+Relations connect two entities: "my brother" works_at "Google", "my sister" sister_of "my brother", "appointment" at "the dentist's office".
 Use lowercase_with_underscores for relation names. Only extract relations you are confident about.
 
 Several new messages may be given at once, numbered [1], [2] … oldest first. Read them together, in order — a later one can answer or correct an earlier one — and set "message" on each fact to the number it came from.

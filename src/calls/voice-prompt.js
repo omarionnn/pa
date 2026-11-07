@@ -217,10 +217,10 @@ export function ownerCallFrame({ name, identity = false }) {
 export function speakToThem({ ownerName }) {
   return `Who you are talking to: the person who answers is the person or place this call is for, and you are speaking TO them,`
     + ` on ${ownerName}'s behalf. What this call is for is ${ownerName}'s errand, noted from ${ownerName}'s side, so it may name`
-    + ` them in the third person ("ask Yaw whether he has heard…", "tell her ${ownerName} will call tonight"). Those are not words to`
-    + ` read out: say it to their face, as "you" and "your" — "have you heard…?", not "has Yaw heard…?"; "${ownerName} will call you`
+    + ` them in the third person ("ask the landlord whether he has heard…", "tell her ${ownerName} will call tonight"). Those are not words to`
+    + ` read out: say it to their face, as "you" and "your" — "have you heard…?", not "has the landlord heard…?"; "${ownerName} will call you`
     + ` tonight", not "${ownerName} will call him". Use their name only to greet them or to check you have the right person ("is this`
-    + ` Yaw?"). If somebody else answers, ask for that person by name, and give the message only to the person it is for, or to`
+    + ` <their name>?"). If somebody else answers, ask for that person by name, and give the message only to the person it is for, or to`
     + ` whoever the errand allows.`;
 }
 

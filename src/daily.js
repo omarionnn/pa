@@ -368,7 +368,7 @@ export function momentOf({ issue, overnight, away, hadAnything }) {
   return null;
 }
 
-/** The deterministic greeting: the fixed lines, else "morning, Ama. two things moved while you slept." */
+/** The deterministic greeting: the fixed lines, else "morning, <their name>. two things moved while you slept." */
 export function plainGreeting({ moment, name, overnight, since, tz, now = clock.now() }) {
   if (moment === "first") return FIRST_GREETING;
   if (moment === "away") {
@@ -387,7 +387,7 @@ const SYSTEM = `You write the one handwritten line at the top of a person's morn
 You are given their first name and what happened overnight. Write a greeting in Reason's margin voice:
 all lowercase except their name, warm, plain, at most 12 words, one line, no emoji, no exclamation marks.
 It names how much happened, never details (no prices, places, people or companies).
-Shape: "morning, Ama. two things moved while you slept." Never mention streaks, days in a row, or missing anything.
+Shape: "morning, <their name>. two things moved while you slept." Never mention streaks, days in a row, or missing anything.
 Reply with the greeting only.`;
 const SCHEMA = { type: "object", properties: { greeting: { type: "string" } }, required: ["greeting"], additionalProperties: false };
 

@@ -36,7 +36,7 @@ function assertSecondPerson(prompt, owner) {
   assert.match(line, new RegExp(`on ${owner}'s behalf`), "and it is on the owner's behalf");
   assert.match(line, /not words to\s+read out/, "the goal is an errand, not a script");
   // The exact failure is named as the thing not to say, so a model reading it knows the shape.
-  assert.match(line, /not "has Yaw heard…\?"/);
+  assert.match(line, /not "has the landlord heard…\?"/);
 }
 
 test("GPT-Live talking for itself (line talk): a call to Yaw is framed so Yaw is 'you'", () => {

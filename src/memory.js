@@ -467,7 +467,7 @@ export function answerNote(got, { hasPage = false } = {}) {
       + ` count their missed ones back at them. A schedule is changed by them just saying the new time and stopped`
       + ` whenever they ask; say that once, in plain words, rather than naming a tool.`);
   }
-  bits.push(`Say each line in plain words — "your sister's name is Ama", not "i know about your sister" — and never type a`
+  bits.push(`Say each line in plain words — "your sister's name is <her name>", not "i know about your sister" — and never type a`
     + ` row's number into the text: "#640" reads as a database id to them. The numbers are on the page, beside each line.`
     + ` To fix one they just say what is wrong, and you find the row in this result.`);
   bits.push(hasPage
