@@ -179,6 +179,17 @@ const FIT_SCHEMA = {
 const FIT_SYSTEM = `You check one purchase before an assistant starts the checkout. You get what the person said recently (their own words), the need the assistant noted, and the exact item and instruction the checkout will buy.
 Answer "mismatch" only when the person stated a requirement — a skin or hair type, a size, a model or device it must fit, a flavour, scent, colour, dietary need, an exact product name — and this item clearly is a different variant than that (for example a cleanser "for oily skin" when they said dry skin, a 12 oz when they asked for 16 oz, a case for a different phone).
 Answer "fits" when the item matches what they asked for. Answer "unclear" when they stated no requirement, or the item's name does not say enough to tell. Never call a difference in brand, price or store a mismatch unless they asked for that brand or store. Product names can be read with ordinary knowledge (CeraVe Foaming Facial Cleanser is the one for normal to oily skin; CeraVe Hydrating is for normal to dry).`;
+/** Each ask's deadline (a cold CLI start is ~3 s, but a busy one has run past 20 s), and how many asks. */
+const FIT_TIMEOUT_MS = Number(process.env.REASON_FIT_TIMEOUT_MS || 30_000);
+const FIT_TRIES = 2;
+const FIT_RETRY_MS = Number(process.env.REASON_FIT_RETRY_MS ?? 1500);
+/** The answer, read leniently where the meaning is unambiguous: "Mismatch" or a JSON string still count. */
+function readFit(value) {
+  let v = value;
+  if (typeof v === "string") { try { v = JSON.parse(v); } catch { return null; } }
+  const verdict = String(v?.verdict ?? "").trim().toLowerCase();
+  return ["fits", "mismatch", "unclear"].includes(verdict) ? { ...v, verdict } : null;
+}
 let fitImpl = null;
 /** For tests: what reads the fit (same shape as askStructured). null puts the real one back. */
 export function _setFitCheck(fn) { fitImpl = fn; }
@@ -186,15 +197,22 @@ export async function checkFit({ texts = [], need = "", item = "", what = "" }, 
   if (ask === askStructured && !sideAskAllowed()) return { verdict: "unclear", skipped: true };
   const said = texts.slice(-12).map((t) => `- ${String(t).slice(0, 400)}`).join("\n");
   if (!said && !String(need).trim()) return { verdict: "unclear" };
-  let out;
-  try {
-    out = await ask({
-      prompt: `What they said, oldest first:\n${said || "(nothing recent)"}\n\nThe need the assistant noted: ${String(need).trim() || "(none)"}\n\nThe checkout will buy: ${item}\nInstruction: ${what}`,
-      system: FIT_SYSTEM, schema: FIT_SCHEMA, model: process.env.REASON_FIT_MODEL || "haiku", timeoutMs: 20_000, feature: "shop_fit",
-    });
-  } catch { return { verdict: "unclear", error: true }; }
-  const v = out?.value;
-  if (!v || !["fits", "mismatch", "unclear"].includes(v.verdict)) return { verdict: "unclear", error: true };
+  const prompt = `What they said, oldest first:\n${said || "(nothing recent)"}\n\nThe need the assistant noted: ${String(need).trim() || "(none)"}\n\nThe checkout will buy: ${item}\nInstruction: ${what}`;
+  // One retry: a side call that fails once (a CLI cold start past its deadline, a busy subscription, an
+  // answer off the schema) usually answers on the second ask. Why each failed is kept for the log.
+  const why = [];
+  let v = null;
+  for (let attempt = 0; attempt < FIT_TRIES && !v; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, FIT_RETRY_MS));
+    let out;
+    try {
+      out = await ask({ prompt, system: FIT_SYSTEM, schema: FIT_SCHEMA, model: process.env.REASON_FIT_MODEL || "haiku", timeoutMs: FIT_TIMEOUT_MS, feature: "shop_fit" });
+    } catch (e) { why.push(`threw: ${String(e?.message ?? e).split("\n")[0].slice(0, 100)}`); continue; }
+    const got = readFit(out?.value);
+    if (got) v = got;
+    else why.push(out?.error ? String(out.error).slice(0, 100) : `off the schema: ${JSON.stringify(out?.value ?? null).slice(0, 80)}`);
+  }
+  if (!v) return { verdict: "unclear", error: true, why: why.join(" | ") };
   const clip = (x) => String(x ?? "").replace(/\s+/g, " ").trim().slice(0, 240);
   return { verdict: v.verdict, need: clip(v.need), why: clip(v.why) };
 }
@@ -206,7 +224,7 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
     if (!store) return { ok: false, error: "Which store? Give its site." };
     if (!input.variant_confirmed) {
       const fit = await checkFit({ texts: trust.ownerTexts(messages), need: input.their_need ?? "", item: input.item, what: input.what });
-      log({ shop_fit: fit.verdict, ...(fit.skipped ? { skipped: true } : {}), ...(fit.error ? { error: true } : {}) });
+      log({ shop_fit: fit.verdict, ...(fit.skipped ? { skipped: true } : {}), ...(fit.error ? { error: true, why: fit.why } : {}) });
       if (fit.verdict === "mismatch") {
         return { ok: false, blocked: "variant_mismatch", need: fit.need, why: fit.why,
           say: `Not started: they said ${fit.need || "what they need"}. ${fit.why || `${input.item} is a different variant.`} Find the variant that matches and start that one instead; if you can't tell which they want, ask them in one line. Only if they then say they want this exact one, call store_checkout again with variant_confirmed: true. Nothing was charged.` };
