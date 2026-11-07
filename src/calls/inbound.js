@@ -32,7 +32,7 @@ import * as access from "../access.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import * as strangerCall from "./stranger.js";
 import * as strangerCalls from "../strangercalls.js";
-import { warmCallCache } from "./voice.js";
+import { warmCallCache, verifyLlmBearer } from "./voice.js";
 import { announcementFor } from "./provider.js";
 
 /** The route ElevenLabs is pointed at for personalization. Quoted in the setup checklist. */
@@ -66,6 +66,23 @@ export function inboundRequest({
   if (st.directions?.in !== true) {
     log({ call_inbound_not_ready: st.directions?.missingIn ?? [] });
     return { status: 503, body: { error: `inbound calls are not set up on this machine: no ${(st.directions?.missingIn ?? []).join(", ") || "ELEVENLABS settings"}` } };
+  }
+
+  // Is this really ElevenLabs? Their personalization webhook is not signed; it is authenticated by
+  // the header secret configured next to its URL in Agents settings. Checked before the body is even
+  // parsed, because everything below trusts `caller_id`: it answers with that number's name and
+  // conversation id, writes a call row, counts a call against the day's cap and warms the model —
+  // none of which a stranger guessing the URL gets to do. Same constant-time bearer / x-api-key
+  // check as the custom-LLM route, against its own secret.
+  const secret = String(provider?.inboundSecret ?? "");
+  if (secret) {
+    const auth = verifyLlmBearer({ headers, secret });
+    if (!auth.ok) {
+      log({ call_inbound_refused: auth.why.replace("ELEVENLABS_LLM_SECRET", "ELEVENLABS_INBOUND_SECRET") });
+      return { status: 401, body: { error: "unauthorized" } };
+    }
+  } else {
+    log({ call_inbound_unauthenticated: "no ELEVENLABS_INBOUND_SECRET on this machine; the ring is answered on caller_id alone" });
   }
 
   let body;

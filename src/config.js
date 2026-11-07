@@ -646,6 +646,12 @@ export const config = {
   // this one is not optional: a post-call delivery writes a transcript into somebody's thread and
   // carries the audio, so an unsigned one is refused.
   elevenWebhookSecret: process.env.ELEVENLABS_WEBHOOK_SECRET || "",
+  // The header secret on the inbound personalization webhook (Agents settings -> webhook "secrets",
+  // sent as `Authorization: Bearer <it>` or `x-api-key`). That webhook has no signature, and it
+  // answers with the caller's name, writes a call row, counts a call and warms the model cache, so
+  // with this set a request not carrying it is refused before any of that. Empty = not enforced
+  // (logged on every ring) until the same value is added in the ElevenLabs dashboard.
+  elevenInboundSecret: process.env.ELEVENLABS_INBOUND_SECRET || "",
   // One pinned voice, picked by the owner by listening. Never varies per call.
   elevenVoiceId: process.env.ELEVENLABS_VOICE_ID || "",
   // GPT-Live as the voice instead (src/calls/gptlive.js): REASON_CALL_VOICE=gptlive (or on) for every
