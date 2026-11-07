@@ -1,5 +1,6 @@
 // Every tool: a JSON schema the model sees, a zod check on what it sends, and a run() that touches the DB.
 // Guards live here, never in routing. The result is the only thing the model may treat as true.
+import { randomUUID } from "node:crypto";
 import * as onethought from "./onethought.js";
 import { taskOfCall } from "./settle.js";
 import { carServicesAt } from "./rides.js";
@@ -1043,7 +1044,7 @@ async function reconcilePurchase(c, buyConversationId, userToken, orderId = "", 
   const r = agentcard.reconcileLine(got, orderId || row?.order_id || "");
   if (r.placed && r.order && row && row.status !== "placed" && row.status !== "partially_placed" && row.status !== "cancelled") {
     db.markAgentcardPurchase(buyConversationId, { status: "placed", orderId: r.order.order_id || undefined });
-    trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
+    trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }, row.conversation_id), confirmationId: row.confirmation_id ?? null });
   }
   if (r.order && row) {
     const applied = applyOrderRecord(db.getAgentcardPurchase(buyConversationId), r.order, { say });
@@ -1064,7 +1065,7 @@ async function reconcilePurchase(c, buyConversationId, userToken, orderId = "", 
   // itself said it did not know whether money moved, and that is ambiguity.
   if (r.declined && row && row.status === "outcome_unknown" && row.charge_status !== "unknown") {
     db.markAgentcardPurchase(buyConversationId, { status: "declined", declineCode: r.decline_code, chargeStatus: r.charge_status || undefined });
-    trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
+    trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }, row.conversation_id), confirmationId: row.confirmation_id ?? null });
     db.removeUnknownOutcomeSpend({ conversationId: c, confirmationId: row.confirmation_id ?? null, site: row.merchant, cents: row.amount_cents });
     return { ...r, settled: "declined" };
   }
@@ -1098,7 +1099,7 @@ function applyOrderRecord(row, order, { say = null } = {}) {
   });
   if (!cancelled) return { cancelled: false, told: false };
   // Whatever was unknown about this confirm is known now: an order existed, and it was called off.
-  trust.settleUnknownOutcome({ conversationId: row.conversation_id, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: row.buy_conversation_id, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
+  trust.settleUnknownOutcome({ conversationId: row.conversation_id, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: row.buy_conversation_id, cart_hash: row.cart_hash }, row.conversation_id), confirmationId: row.confirmation_id ?? null });
   let told = false;
   if (db.claimAgentcardCancelNotice(row.buy_conversation_id) && say) {
     say(row.conversation_id, cancelledLine(db.getAgentcardPurchase(row.buy_conversation_id) ?? row));
@@ -9013,7 +9014,9 @@ function confirmTargetFor(name, input, c = null) {
     case "shop_pay": return shopPayTarget(input, c);
     case "purchase_confirm": {
       const row = db.getAgentcardPurchase(input.conversation_id);
-      if (!row || row.cart_hash !== input.cart_hash) return `unknown cart ${input.cart_hash} in ${input.conversation_id}`;
+      // Someone else's cart reads as unknown, the same as shop_pay: its merchant, items and amount
+      // never reach this model, whatever ids it guessed (audit lead 21).
+      if (!row || row.conversation_id !== c || row.cart_hash !== input.cart_hash) return `unknown cart ${input.cart_hash} in ${input.conversation_id}`;
       const base = `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(Math.round(row.amount_cents))}) [${input.cart_hash}] in ${input.conversation_id}`;
       // A flight's yes is also pinned to exactly who flies: AgentCard's cart hash does not change when
       // the passenger does (sandbox, 2026-10-25), so a corrected name must not ride the old yes.
@@ -9036,11 +9039,13 @@ function confirmTargetFor(name, input, c = null) {
      *
      * A quote_id with no row produces a target naming the id and nothing else: it cannot match a
      * yes collected against a real quote, so the gate refuses rather than authorizing a ride
-     * nobody can describe.
+     * nobody can describe. Another thread's quote reads exactly the same way: the gate hands this
+     * target back to the caller before the handler checks ownership, so describing it would show
+     * somebody else's pickup, destination and fare (audit lead 21).
      */
     case "uber_request": {
       const ride = db.getUberRide(input.quote_id);
-      return ride ? uberRideLine(ride) : `unknown uber quote ${input.quote_id}`;
+      return ride && ride.conversation_id === c ? uberRideLine(ride) : `unknown uber quote ${input.quote_id}`;
     }
     case "x_post": return `post: ${input.text}`;
     case "x_reply": return `reply to ${input.tweet_id}: ${input.text}`;
@@ -12959,7 +12964,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ctx.spend?.();
         db.markAgentcardPurchase(input.conversation_id, { status: "outcome_unknown", confirmationId: ctx.confirmationId ?? null });
         trust.noteSpend({ conversationId: c, cents, what: `${line} (OUTCOME UNKNOWN)`, site: row.merchant, confirmationId: ctx.confirmationId ?? null });
-        trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), why: out.error, cents });
+        trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input, c), why: out.error, cents });
         // Read, never resend: GET /buy/conversations/{id}. An order it lists is recorded so the cart
         // cannot be bought again; anything it cannot see stays unknown and is said to be.
         const known = await reconcilePurchase(c, input.conversation_id, userToken, "");
@@ -13130,7 +13135,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (out.status === "declined" && out.charge_status === "unknown") {
         ctx.spend?.();
         db.markAgentcardPurchase(input.conversation_id, { status: "outcome_unknown", declineCode: out.decline_code, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null });
-        trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), why: `declined with charge_status unknown (${out.decline_code || "no code"})`, cents });
+        trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input, c), why: `declined with charge_status unknown (${out.decline_code || "no code"})`, cents });
         const known = await reconcilePurchase(c, input.conversation_id, userToken, out.order_id || "");
         return {
           ok: false, blocked: "charge_unknown", decline_code: out.decline_code || undefined, cart_line: line, reconcile: known.line,
@@ -13142,7 +13147,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (out.status === "declined") {
         ctx.spend?.();
         db.markAgentcardPurchase(input.conversation_id, { status: "declined", declineCode: out.decline_code, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null });
-        trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), confirmationId: ctx.confirmationId ?? null });
+        trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input, c), confirmationId: ctx.confirmationId ?? null });
         const handoff = handoffOf(c, { buyConversationId: input.conversation_id, why: agentcard.declineLine(out.decline_code) });
         return {
           ok: false, blocked: "declined", decline_code: out.decline_code, cart_line: line,
@@ -13180,7 +13185,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Placed. Past here somebody's money has moved, so the yes is spent, the spend is counted
       // against their caps, and any earlier unknown outcome on this action has its answer.
       ctx.spend?.();
-      trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), confirmationId: ctx.confirmationId ?? null });
+      trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input, c), confirmationId: ctx.confirmationId ?? null });
       db.markAgentcardPurchase(input.conversation_id, {
         status: out.status === "partially_placed" ? "partially_placed" : "placed",
         orderId: out.order_id, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null,
@@ -14419,7 +14424,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (!est.ok) { options.push({ product, error: est.error }); continue; }
         const quote = uber.quoteView(est.body);
         if (!quote) { options.push({ product, error: "Uber quoted nothing for this product." }); continue; }
-        const quoteId = `q_${Date.now()}_${p.product_id.slice(0, 8)}`;
+        // Random, not clock + product prefix: quote ids are one namespace across every thread, and a
+        // guessable one is a way to aim at somebody else's row (audit lead 21).
+        const quoteId = `q_${randomUUID()}`;
         db.recordUberQuote({
           conversationId: c, quoteId,
           productId: p.product_id, productName: product.name,

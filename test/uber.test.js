@@ -298,3 +298,42 @@ test("disconnect drops the tokens", async () => {
   const st2 = uber.stateOf(OMARI);
   assert.equal(st2.state, "not_connected");
 });
+
+// ---------- the confirm gate never describes someone else's quote (audit lead 21) ----------
+
+test("the uber_request gate does not show another person's quote: route and fare stay theirs", async () => {
+  db.recordUberQuote({
+    conversationId: OMARI, quoteId: "q_1_abcdefgh", productName: "UberX",
+    start: { label: "Victim Home" }, end: { label: "Clinic" }, fareCents: 1432, fareDisplay: "$14.32",
+  });
+  const out = await call("uber_request", { quote_id: "q_1_abcdefgh" }, AMA);
+  assert.equal(out.ok, false);
+  const seen = JSON.stringify(out);
+  for (const secret of ["Victim Home", "Clinic", "$14.32", "UberX"]) assert.ok(!seen.includes(secret), `leaked ${secret}: ${seen}`);
+  if (out.use_target !== undefined) assert.equal(out.use_target, "unknown uber quote q_1_abcdefgh");
+  // The owner's own gate still describes the ride, so their yes is pinned to the real route and fare.
+  const mine = await call("uber_request", { quote_id: "q_1_abcdefgh" }, OMARI);
+  assert.match(mine.use_target, /Victim Home.*Clinic.*\$14\.32/);
+});
+
+test("a quote id from one thread cannot overwrite another thread's quote row", async () => {
+  db.recordUberQuote({ conversationId: OMARI, quoteId: "q_2_abcdefgh", productName: "UberX", fareCents: 1432, fareDisplay: "$14.32" });
+  db.markUberRide("q_2_abcdefgh", { status: "accepted" });
+  const before = db.getUberRide("q_2_abcdefgh");
+  db.recordUberQuote({ conversationId: AMA, quoteId: "q_2_abcdefgh", productName: "UberX", fareCents: 1, fareDisplay: "$0.01" });
+  const after = db.getUberRide("q_2_abcdefgh");
+  assert.equal(after.conversation_id, OMARI);
+  assert.equal(after.fare_display, "$14.32");
+  assert.equal(after.status, before.status);
+});
+
+test("uber quote ids are not guessable from the clock and a product prefix", async () => {
+  await connect(OMARI);
+  const opts = await call("uber_options", {
+    start_latitude: 40.7128, start_longitude: -74.006,
+    end_latitude: 40.758, end_longitude: -73.9855,
+  }, OMARI);
+  const quoteId = opts.options[0].quote_id;
+  assert.doesNotMatch(quoteId, /^q_\d{10,}_/, `quote id is clock-shaped: ${quoteId}`);
+  assert.match(quoteId, /^q_[0-9a-f-]{32,}$/);
+});
