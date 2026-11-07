@@ -280,7 +280,7 @@ export class LinqChannel extends Channel {
     if (isGroupChat(d)) {
       return { status: 200, body: { ok: true, ignored: "group" }, inbound: [] };
     }
-    const from =d.sender_handle?.handle ?? d.from ?? d.from_handle?.handle ?? "";
+    const from = d.sender_handle?.handle ?? d.from ?? d.from_handle?.handle ?? "";
     const chatId = d.chat?.id ?? d.chat_id ?? null;
     // iMessage's link card is not something anybody sent (src/linkpreview.js): left out of the
     // words, and a message that was nothing but one is no message at all.
