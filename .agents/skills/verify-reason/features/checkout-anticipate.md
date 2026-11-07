@@ -46,7 +46,9 @@ What code does now:
   they have a card").
 
 ## Offline
-- `node --test test/checkout-anticipate.test.js` (9): the live 12:15 Ulta form (keys `address1`, `state`
+- `node --test test/checkout-anticipate.test.js` (12 pass 2026-11-07; the three "review:" tests are the
+  gift address, a contact's "ship to" fact / nothing-changed correction, and ordinary "here's the link"
+  sentences not read as a hedge): the live 12:15 Ulta form (keys `address1`, `state`
   choice, `email` required, `phone` optional) with the record → posted by code, `state: "option-33"`, one
   line, no wake; a size form still wakes the model; email unknown → wake names only `email`, clock-time
   deadline, `shop_answer {email}` merges 7 keys from the record, record learns, next form whole; "NY" shaped,

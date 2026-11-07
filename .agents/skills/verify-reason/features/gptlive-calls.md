@@ -63,7 +63,7 @@ Source: `src/calls/gptlive.js`, `src/calls/wsserver.js`, `src/http.js` (upgrade 
 (`call_turns.voice`, `markCallTurnHeard`, `provider` updatable), `src/calls/report.js` (`voices`),
 `src/config.js` (`callVoice`, `gptlive*`, `twilio*`).
 
-Tests: `node --test test/gptlive.test.js` (27).
+Tests: `node --test test/gptlive.test.js` (45 at `8113bcf`, 2026-11-07; 27 at first).
 
 Who made Reason (#295, superseded by #296 maker.js): `agent.js builtByLine(me)` — "built by Omarion Nyarko" only to the operator; every other user hears "made by the Reason team", no name (text and both call voices, via `systemFor`; GPT-Live via `whoFor().operator`). Drives: `gptlive-drive made.ulaw 16 --expect made --as user|owner`; `call-identity-drive.mjs` cases `user-made` / `owner-made`. Not changed: the first-chat onboarding classifier (src/onboarding.js, dark) still names him.
 

@@ -79,7 +79,11 @@ Tests (pass counts at time of writing): `memory.test.js` 33, `memory-page.test.j
   `data:delete`. Offline `node --test test/recall-history.test.js` (12). In process under
   `caged.sh env` with `OPENAI_API_KEY=` (no spend): two `calls` rows on two conversations, a spa goal
   each, `runTool("memory_search", { query: "spa massage" }, { conversationId: "dm:owner", messages: [] })`
-  → `count: 1`, the owner's call only, by words (2026-11-06, `c6ce172`).
+  → `count: 1`, the owner's call only, by words (2026-11-06, `c6ce172`). Since #354 / #335
+  (11-07): done things rank above the thread, Reason's own "nothing saved" replies are never handed
+  back, and `forget` takes the calls, exchanges, actions and reminders naming them out of recall
+  (`recall_forgotten`) — all of that, with its drive, is [recall.md](recall.md);
+  `test/recall-history.test.js` grew with it.
 - **Isolation.** Nothing crosses conversations: graph, facts, embeddings are all keyed on
   `conversation_id`. The recall index filters every store query AND each source-row read on it.
 

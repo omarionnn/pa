@@ -21,15 +21,15 @@ Source: `src/calls/gptlive.js` (`dialGptLive`: `openingWaits`, AMD; `GptLiveCall
 writes `opening_waits`; `settleCall` keeps a machine row's own outcome — `recording`),
 `src/calls/hold.js` (`MACHINE_TOOL`, `noteMachineLine`, `openingOwed`, `notePerson`, `WAITING_RULES`),
 `src/calls/voice.js` (`holdBack` / `QUIET_ON_A_MACHINE` / `openingIfOwed` in `voiceTurn`, `LINE_OPENED`,
-`case "machine_on_the_line"` in `runCallTool`, `endNow`), `src/calls/voice-prompt.js`
+`case "machine_on_the_line"` in `runCallTool`, src/calls/voice.js:1008, acting on `noteMachineLine`'s `endNow`, src/calls/hold.js:190,208), `src/calls/voice-prompt.js`
 (`thirdPartyFrame` `openingOwed`), `src/calls/outcome.js` (`machine_menu`, `machine_recording`,
 `machine_dead_end`, `voicemail_full`, `onAMachine`, `answeredByMachine`, `callSummary`),
 `src/calls/postcall.js` (`thirdPartyEvent` machine line; no memory extraction from a machine),
 `src/db.js` (`calls.opening_waits`, `calls.machine_heard`).
 
-Tests: `test/call-machines.test.js` (18 at `cc9538d`; 14 at first), `test/gptlive-thirdparty.test.js` (silent opening, AMD), `test/call-voice.test.js` (tool list).
+Tests: `test/call-machines.test.js` (19 at `8113bcf`; 18 at `cc9538d`; 14 at first), `test/gptlive-thirdparty.test.js` (silent opening, AMD), `test/call-voice.test.js` (tool list).
 
-Drive (real model, claude-cli, no phone): `bin/call-machines-drive.mjs` — five cases from the real
+Drive (real model, claude-cli, no phone; never on the cage, never the API): `bin/call-machines-drive.mjs` — five cases from the real
 call-45 words: the Strand's recording → silent `end_call`, `machine_dead_end`, email kept; a person →
 disclosure verbatim then the question; a menu → presses 2, `machine_menu`; a voicemail greeting → one
 `end_call` message; a hold queue → `skip_turn`, `machine_recording`. 2026-10-27: 5/5 ok.

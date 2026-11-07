@@ -8,7 +8,9 @@ Code: `src/stamps.js` (catalog, tables `stamps` + `stamp_shares`, awarding, back
 `newestStamp`, `stampMarkup`), `src/pages/webstamps.js` (the book, the share API, `/s/` pages, the
 1200×630 card), `src/pages/webdailyhead.js` (`dailyHeader`, shared with the daily Home),
 `scripts/stamps-backfill.mjs`. Completion hooks: `db.completionBus` emitted by `finishTask` (done),
-`updateCall` (outcome_kind written), `markAgentcardPurchase` (placed / ticket issued).
+`updateCall` (outcome_kind written), `markAgentcardPurchase` (placed / ticket issued), research
+(src/db.js:6431, 6452) and a store checkout's placed order (`"order"`, src/shopconnect.js:1695);
+listeners src/stamps.js:373-381 (research/order seals only with `REASON_STAMPS_EVERYDAY`).
 
 ## Sub-features
 

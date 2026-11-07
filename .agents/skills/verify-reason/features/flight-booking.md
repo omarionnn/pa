@@ -10,9 +10,14 @@ alone. `REASON_FLIGHT_BOOKING=owner` is on in the owner's conversation only (`ac
 the invites check) and exactly off for everyone else; `1/true/on/yes` is everyone. `bookingEnabled(c)`
 takes the conversation; with none it is false under `owner`.
 
-Search is the Fli feature (src/flightsearch.js, src/fli.js). Payment is the AgentCard purchase path
+Search is [flight-search.md](flight-search.md) (src/flightsearch.js over src/flightproviders.js —
+SerpApi, then Duffel, since 2026-11-06; Fli is out of the path). Payment is the AgentCard purchase path
 ([agentcard.md](agentcard.md)) — `purchase_confirm`, the confirm gate, the caps, the passkey pause —
-with no parallel payment path.
+with no parallel payment path. **Where Shop Connect is on (live: everyone since 2026-10-31)
+`flight_book` and the four `flight_traveler_*` tools are `AGENTCARD_BUY_TOOLS`** (`src/shoptools.js:28`):
+hidden by `toolsFor` and refused in `runTool` with "Buying here goes through store_checkout…", whatever
+`REASON_FLIGHT_BOOKING` says (cage 2026-11-07, `REASON_SHOP_CONNECT=owner`: owner 0 booking tools,
+`flight_book`/`flight_travelers` → that refusal). So on live this feature is doubly dark.
 
 Source: `src/flightbook.js` (price view, finality, itinerary match, traveler fingerprint,
 `BOOKING_STATES` / `bookingState`, `TICKETING_FIELDS`), `src/tools.js` (`flight_traveler_save`,
@@ -54,7 +59,7 @@ RECORDED from the AgentCard sandbox on 2026-10-25, `constructed.js` built from t
 
 ```bash
 cd ~/Desktop/pa
-node --test test/flight-booking.test.js test/ticket-check.test.js   # 36 + 17 offline (1 skipped: the live reader) at f3669e8; 35 + 17 when merged with #115/#116
+node --test test/flight-booking.test.js test/ticket-check.test.js   # 36 + 17 offline (1 skipped: the live reader) at f3669e8; 35 + 17 when merged with #115/#116; 36 + 17 (1 skipped) on 2026-11-07
 REASON_TICKET_EVAL=1 REASON_BACKEND=claude-cli ANTHROPIC_API_KEY= node --import ./test/paid-key-guard.js --test --test-name-pattern=live test/ticket-check.test.js  # the real reader, 3 emails, on the subscription (~42 s through the lane; passed 2026-10-25)
 REASON_FLIGHT_SMOKE=1 AGENTCARD_SMOKE_USER_ID=usr_… node scripts/flight-booking-smoke.mjs .env
 ```
@@ -74,7 +79,10 @@ with "hand over the Google Flights link"; `checkTickets()` → all zeros, no tel
 `checkTickets` all zeros, `ANTHROPIC_API_KEY` blank in the drive process since `caged.sh env` blanks it).
 Tool counts drift as tools are added — compare the booking-tool count (0 or 5), not the total: on
 2026-10-30 (feat/first-chat-onboarding) off → 255 owner / 249 other, `1` → 260 / 254, `owner` →
-260 / 249. In a worktree with no `.env`, `flight_traveler_save` throws "REASON_TOKEN_KEY is not
+260 / 249. Again 2026-11-07 (rel/verify-maint, `REASON_SHOP_CONNECT` unset): off → 255 owner, 0
+booking tools, `not_available` twice, `checkTickets` all zeros; `owner` → 260 with 5, other 0,
+`flight_traveler_save` → `confirmed:false` + `read_back`, the other conversation's save →
+`not_available`. In a worktree with no `.env`, `flight_traveler_save` throws "REASON_TOKEN_KEY is not
 set": export a throwaway `REASON_TOKEN_KEY=$(openssl rand -hex 32)` for the drive process.
 
 **The flag on, in one drive process on the cage only** (never in `/opt/reason/.env`):

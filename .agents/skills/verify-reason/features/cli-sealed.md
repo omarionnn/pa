@@ -66,7 +66,9 @@ workspace file. `systemFor` for a non-owner carries no operator name or email.
    2026-11-06 at `c6ce172` (worktree, no AGENTS.md in it): control → `any_email: 1`,
    `operator_email`, `user_email_block`, `git_repository_true`, `repo_path` all true; sealed →
    `run_ok: true`, 1 request, every field false, `working_dir` = `$REASON_CLI_HOME/cwd`.
-   `node --test test/cli-sealed.test.js` 4/4.
+   `node --test test/cli-sealed.test.js` 4/4. Re-run 2026-11-07 at `8113bcf` (sealed run only,
+   `env -i HOME PATH REASON_CLI_HOME=$(mktemp -d)/rc CLAUDE_CODE_OAUTH_TOKEN=probe-not-a-key`):
+   `run_ok: true`, 1 request, every field false; test 4/4.
 
 Evidence 2026-11-06 (branch code on the box, CLI 2.1.296): control → 1 email (the operator's),
 userEmail block, AGENTS.md, repo path; sealed → 0 emails, none of the rest, run ok.

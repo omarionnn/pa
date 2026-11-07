@@ -1,10 +1,14 @@
-# Flight search (Fli)
+# Flight search (SerpApi, then Duffel; the Fli sidecar is out of the path)
 
-Somebody planning a trip asks what flights there are, or when it's cheapest to go. Reason reads live
-fares from Google Flights' public search through [Fli](https://github.com/punitarani/fli) (PyPI
-`flights` 0.9.0, a Python sidecar) and answers with a short list and a Google Flights link per
-option. **Search only** — nothing books, holds or pays; the person picks and pays on Google Flights.
-Shipped in #109 (`b04eb74`, 2026-10-25). Design notes: `docs/flight-search.md`.
+Somebody planning a trip asks what flights there are, or when it's cheapest to go. Reason asks a flight
+source for live fares and answers with a short list and a Google Flights link per option. **Search
+only** — nothing books, holds or pays; the person picks and pays on Google Flights. Shipped in #109
+(`b04eb74`, 2026-10-25) on Fli; since free-flights (2026-11-06) the source is
+`src/flightproviders.js`: **SerpApi's Google Flights engine** (`SERPAPI_API_KEY`), then **Duffel offer
+requests** (`DUFFEL_ACCESS_TOKEN`), then ONE honest "prices aren't available" answer with the link. The
+Fli sidecar (`src/fli.js`) was refused by Google from 2026-10-24 and is no longer called; only its
+`FliError` and answer shape remain (`src/flightsearch.js:1-5`, `src/flightproviders.js:1-27`). Design
+notes: `docs/flight-search.md`.
 
 ## Sub-features
 
@@ -15,112 +19,71 @@ Shipped in #109 (`b04eb74`, 2026-10-25). Design notes: `docs/flight-search.md`.
 - **A refinement** — `refine_of: <search_id>` plus only what changed; `clear: [...]` drops a field
   back to the default (`mergeConstraints`). A `refine_of` from another conversation is "no flight
   search N for this person".
-- **A date sweep** — `flight_dates` (`runDateSweep`): Google's fare calendar, ≤93 days, one fetch
-  per ≤61-day page; `trip_days` for a round trip, `depart_weekdays` filtered after the fact
-  (`sweepView`). **One sweep per message**: a second in the same turn is refused
-  (`offers.turnState(c).flightSweep`, `src/tools.js` `case "flight_dates"`).
+- **Sources, in order** (`FlightProviders.searchFlights`, `src/flightproviders.js:346`): SerpApi, then
+  Duffel, each tried once. Each search is counted per calendar month (UTC) **before** it is sent
+  (`db.reserveFlightProviderSearch`) and a source at its cap is skipped until the month turns:
+  `SERPAPI_MONTHLY_LIMIT` (default 240, under the free plan's 250), `DUFFEL_MONTHLY_LIMIT` (default
+  1000). A search that errors still counts. Each outcome is a `provider_calls` row under
+  `flights_serpapi` / `flights_duffel` (`LEDGER`).
+- **No source answered** (no key, cap used, or both failed) → `FliError("unavailable")` →
+  `unavailable(link)` (`src/flightsearch.js:432`): `kind: "unavailable"`, the Google Flights `link`
+  on their route and dates (`askedLink`), and a `say` telling the model to say it ONCE, promise no
+  retry, start no task/watch, give no prices from memory. On a wake that isn't their message within
+  24 h of being told (`ALREADY_TOLD_MS`, `db.lastFlightsUnavailableAt`) → `alreadyTold`: NO_REPLY and
+  finish the task. This replaced the week-of-11-02 "still trying" texts. Other kinds (`blocked`,
+  `network`, `timeout`, `parse`, `down`, `internal`) still go through `couldntCheck`; `invalid` is a
+  plain `error`.
+- **A date sweep** — `flight_dates` (`runDateSweep`): **no source has a fare calendar**, so
+  `searchDates()` always throws `unavailable` (`src/flightproviders.js:376`) and a sweep answers with
+  the link, even with keys set. One sweep per message is still enforced (`offers.turnState(c).flightSweep`,
+  "One date sweep per request", `src/flightsearch.js:542`).
 - **A re-check before recommending** — `flight_verify {search_id, option}` (`runVerify`): same
-  search again, same itinerary key → `still_there`, `price_then`/`price_now`, `moved`/`change`; gone
-  → `still_there:false` + `fresh_options`; a passed date is refused; a partly refused recheck is
-  `couldnt_check`, never "gone".
-- **Couldn't check ≠ no flights** — any sidecar failure is `{couldnt_check:true, kind, link}` with a
-  `say` line (`couldntCheck`); kinds `blocked`, `network`, `timeout`, `parse`, `down`, `internal`.
-  `link` (`askedLink`, #114) is Google Flights on the asked route and date (first airport of a metro
-  list), and `say` tells the model to send it, say it couldn't pull live fares, and give no prices
-  from memory — a refused search still hands the person something useful.
-  `invalid` is a plain `error` (the request was wrong, not the service).
-- **The sidecar** — `src/fli.js` `FliSidecar`: started on demand, stopped after 10 idle minutes,
-  restarted after a crash (called down after 3 in 5 min), **30-minute back-off after Google refuses**
-  (every later call in that window is `blocked` at 0 ms without asking Google). Python is
-  `FLI_PYTHON` or `/home/reason/fli-venv/bin/python` (`DEFAULT_PYTHON`).
-- **The record** — every search/sweep/verify is a `flight_searches` row (conversation-scoped) and a
-  `provider_calls` row for provider `fli` (the call ledger).
-- **/ops "Flight search · Fli"** — `src/ops.js` `flightSearchCheck`, read off the LAST REAL SEARCH in
-  the ledger, never probed: `off` (not installed), `ok` ("ready · no searches yet" / "healthy · last
-  search …"), `bad` (blocked / down), `warn` (any other failure). Since #114 a `blocked`, `network`
-  or `timeout` row is `quiet` — shown on /ops, never texted (`settle` skips it); `down` and `parse`
-  still text the owner.
+  search again (SerpApi with `no_cache`), same itinerary key → `still_there`, `price_then`/`price_now`;
+  gone → `still_there:false` + `fresh_options`; a passed date is refused; a round trip listed by
+  Duffel that can't be re-checked is `couldnt_check`, never "sold out".
+- **The record** — every search/sweep/verify is a `flight_searches` row (conversation-scoped,
+  outcome `ok`/`empty`/the error kind, e.g. `unavailable`).
+- **/ops "Flight search"** — `src/ops.js:533` `flightSearchCheck`: `off` with neither key ("no
+  SERPAPI_API_KEY or DUFFEL_ACCESS_TOKEN — searches answer with a Google Flights link"); else per source
+  `<name> <used>/<limit> this month, N searches today`, `warn` at the cap or after a failed last call.
+  `quiet: true` (shown, never texted) unless the last failure is `auth` or `provider` (a bad key).
 
 ## How to get to it (user POV)
 
-"flights from nyc to miami dec 12", "no layovers", "what about business", "cheapest time to fly to
-Lisbon in March", "is that $195 one still there?". The model expands metros, sets the fields and
-calls the tools; the reply is a short list with prices, times, stops and links.
+"flights from nyc to miami dec 12", "no layovers", "what about business", "is that $195 one still
+there?". The model expands metros, sets the fields and calls the tools; the reply is a short list with
+prices, times, stops and links — or, with no source, one message with the Google Flights link.
 
 ## Driving it with the harness
 
-**Offline first** — `node --test test/flight-search.test.js test/flights.test.js` (87 pass at
-`b04eb74`, 32 + 56 = 88 at `00f3300`); the suite hands a fake sidecar in through `ctx.fli`, so no Python and no Google.
-`test/fixtures/fli/` holds recorded Google responses (incl. `refused-rpc13.txt`).
+**Offline first** — `node --test test/flight-search.test.js test/flights.test.js test/flight-providers.test.js`
+(31 + 58 + 19 = 108 pass on 2026-11-07, rel/verify-maint). The suite hands a fake source in through
+`ctx.fli` (`src/tools.js:17189`); `test/flight-providers.test.js` uses recorded SerpApi/Duffel bodies
+in `test/fixtures/flights/` and an injected `fetchImpl`, so nothing leaves the process.
 
-**On the cage, for real (Drive 2).** This Mac has no Fli; make a throwaway venv and point the cage at
-it (Python 3.12 — the Mac's 3.9 can't install `flights`):
+**The no-source path on the cage (default; no network).** The cage does NOT blank `SERPAPI_API_KEY` /
+`DUFFEL_ACCESS_TOKEN` (`bin/caged.sh` blanks texting, calling, AgentCard and Uber only), so blank them
+yourself in the drive process. With `caged.sh env` exported plus `SERPAPI_API_KEY= DUFFEL_ACCESS_TOKEN=`:
+`runTool("flight_search", {origin:"JFK,EWR,LGA", destination:"MIA", depart_date:"<future>",
+max_stops:"NON_STOP", show:3}, ctx)` → `ok:false, couldnt_check:true, kind:"unavailable"`, a `link`,
+the "say it ONCE … Nothing is retrying" `say`; `flight_dates` → the same `unavailable`;
+`ops.flightSearchCheck()` → `state:"off"`. Driven so 2026-11-07 (evidence `20261107T1400Z-g2/tool-drive.out`).
 
-```bash
-uv venv "${REASON_VERIFY_RUN:-/tmp/rv}-fli-venv" --python 3.12
-VIRTUAL_ENV="${REASON_VERIFY_RUN:-/tmp/rv}-fli-venv" uv pip install -r ~/Desktop/pa/scripts/fli-requirements.txt
-export FLI_PYTHON="${REASON_VERIFY_RUN:-/tmp/rv}-fli-venv"/bin/python    # before caged.sh start AND the in-process drive
-```
+**With a real key** — every search spends the owner's monthly allowance (SerpApi free plan 250/month)
+and reaches the network: not a verification drive. Prove the source mapping offline.
 
-Then, with `caged.sh env` exported, `runTool("flight_search", {origin:"JFK,EWR,LGA",
-destination:"MIA", depart_date:"<future YYYY-MM-DD>", max_stops:"NON_STOP", show:3}, ctx)` →
-`ok:true`, a `search_id`, `found` > 0, `headline` "from $…", `applied` saying "nonstop only".
-`flight_verify {search_id, option:1}` → `still_there:true`, `price_now`. `flight_dates` over 21 days
-→ `swept: "… (21 dates, 1 page fetch)"`; a **second** `flight_dates` in the same turn →
-`ok:false`, "One date sweep per request". End state: three `flight_searches` rows for `dm:owner`
-(`bin/peek.sh sql "select id,kind,outcome,found from flight_searches"`), `provider_calls` row
-`fli` with calls 3 / failures 0, and `flightSearchCheck()` → `ok`, "healthy · last search …".
-Seen exactly so on 2026-10-25 from this Mac (37 nonstops, from $195). On 2026-10-27 the same drive
-from this Mac came back `couldnt_check`, kind `blocked`, with the route `link`, the sweep at the
-back-off, `flight_searches` outcome `blocked` and `/ops` `bad`, `quiet:true` — Google refusing this
-Mac's address that hour, not the code; don't retry to "check". `rm -rf "${REASON_VERIFY_RUN:-/tmp/rv}-fli-venv"` after.
-
-Without `FLI_PYTHON` the same drive is the not-installed path: `couldnt_check`, kind `down`, a
-`link` ("Flights from JFK to MIA on <date> one way"), and `/ops` reads `off`. That path needs no
-Google traffic, so it is the default cage drive; driven so 2026-10-25 at #114.
-
-**The quiet /ops row, no Google traffic** — with `caged.sh env` exported, `db.recordProviderCall({provider:"fli",
-day, ok:false, status:0, ms:240, error:"blocked: …"})`, then `ops.flightSearchCheck({sidecar:{installed:()=>true}})`
-→ `bad`, `quiet:true`; `ops.settle({report:{at, checks:[row]}})` three hours on → `changes: []`.
-Record `"down: …"` instead → no `quiet` key (that one still texts). Re-driven so 2026-10-27. Seen exactly so 2026-10-25.
-
-**On Hetzner — the gated smoke test, once, by hand only** (after an install or a Fli upgrade; never
-on a schedule, never from /ops):
-
-```bash
-ssh root@91.98.19.150 'cd /opt/reason && sudo -u reason env REASON_FLI_SMOKE=1 \
-  FLI_PYTHON=/home/reason/fli-venv/bin/python node --env-file=.env scripts/fli-smoke.mjs --record \
-  > /tmp/fli-smoke.out 2>&1; grep -E "\"(name|ok|kind|error)\"" /tmp/fli-smoke.out; rm /tmp/fli-smoke.out'
-```
-
-`--record` writes the outcomes to the ledger so `/ops` reads the smoke run as the last search. Read
-the row without the page: `sudo -u reason node --env-file=.env -e 'const o=await
-import("./src/ops.js");console.log(JSON.stringify(o.flightSearchCheck()))'` in `/opt/reason`.
+**The real-model drive** — `bin/flights-unavailable-drive.mjs` (one ask + six task wakes → exactly ONE
+message with the link; `FLIGHT_DRIVE_FAKE_BLOCKED=1` replays the old refused path). Subscription
+turns: see SKILL.md "Baseline — free flight sources".
 
 ## Gotchas
 
-- **Hetzner's IP was refused by Google on 2026-10-25.** The post-deploy smoke's first search came
-  back `blocked` ("Google returned an RPC error [13] with no data") in 243 ms, and the other three
-  cases were the sidecar's own 30-minute back-off at 0 ms. The same search from this Mac, minutes
-  later, returned 37 flights. So a `blocked` on live is about the server's address, not the code;
-  there is no workaround by design. Don't re-run the smoke to "check" — that is the traffic that
-  keeps an address refused.
-- **The 2026-10-25 refusal was transient.** One hand-run search from Hetzner at ~09:58 UTC (JFK→MIA,
-  no `--record`) returned 136 flights from $210 in 902 ms. Treat a `blocked` as "back off and hand
-  over the link", not as "the server is banned".
-- **A hand-set `alerted:flights` hold must be deleted after the deploy that needed it.** #114 held
-  the owner's alert with one in `ops_state`; it was still there on 2026-10-25 13:23 UTC, half an
-  hour after the deploy. Left in place, the next good search is a `told` check gone `ok`, and
-  `settle` texts him "back to normal" about a problem he never heard of. Check with
-  `sqlite3 data/reason.db "select k from ops_state where k like 'alerted:%'"` after any such deploy.
-- **A smoke `--record` that fails turns the /ops row `bad`.** Since #114 a `blocked`/`network`/
-  `timeout` row is quiet, but a `down` or `parse` one is texted to the owner by the sustained-alert
-  path (`settle`, `ALERT_AFTER_MS`). To test one search without touching /ops, build `FliSidecar({onOutcome:null})`
-  in place of the 4-case smoke script.
-- **The live sidecar uses `/home/reason/fli-venv` by default** — the unit sets no `FLI_PYTHON`
-  (`/proc/<pid>/environ` has none), and `DEFAULT_PYTHON` is that path.
-- Prices follow the server's IP (EUR from Germany), so every request sends `curr=USD`.
-- No per-flight deep links exist in 0.9.0; the link is a Google Flights search for the route and
-  date, and the option names the flight numbers to pick there.
-- Fare rules (bags, seats, basic economy) are never checked; an unusually cheap fare says so in
-  `limits`.
+- An `unavailable` is not "no flights": the answer must never say none exist.
+- Prices follow the server's IP, so every SerpApi request sends `currency` (USD unless set,
+  `src/flightproviders.js:74`).
+- No per-flight deep links; the link is a Google Flights search for the route and date, and the option
+  names the flight numbers to pick there.
+- Fare rules (bags, seats, basic economy) are never checked; an unusually cheap fare says so in `limits`.
+- The old Fli recipes (throwaway `uv` venv + `FLI_PYTHON`, `scripts/fli-smoke.mjs` on Hetzner, the
+  30-minute Google back-off) drive code that is no longer on the search path; don't use them to prove
+  flight search.

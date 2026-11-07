@@ -43,8 +43,10 @@ gets `TODO_FRAME_UNASKED`. Both notes live in `src/onboardframes.js` and `harm.o
 lines only), so the screen reads their own words. Idle past `REASON_ONBOARDING_IDLE_DAYS` (7) → `complete` on the next text.
 The nudge's waking hour is THEIR zone (`zoneFor`).
 
-Meaning is the model's: one structured side call per text (`readText`, `askStructuredViaCli`,
-`REASON_ONBOARDING_CLI_MODEL` haiku, feature `onboarding` in `model_usage`), never a regex.
+Meaning is the model's: one structured side call per text (`readText`, `src/onboarding.js:175`, through
+`askStructured` in `src/backends/side.js:110` — the CLI on claude-cli, the API on `REASON_BACKEND=api`,
+skipped when `sideAskAllowed()` says no; `REASON_ONBOARDING_CLI_MODEL` haiku, feature `onboarding` in
+`model_usage`), never a regex.
 
 Source: `src/onboarding.js`; hooks in `src/channels/router.js` (`deliver`: `arrivedNow` → `begin`, the
 first-text card skipped while in it; `#drainHeld`: `onboarding.handle` before requests are opened,

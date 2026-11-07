@@ -77,6 +77,9 @@ What the cage sets, beyond the blanks (all in `bin/caged.sh start`, and the same
 - **Its own data dir** (`REASON_DATA_DIR=$RUN/data`). Page cards, previews and illustrations are
   written under it; before 2026-10-23 a caged page landed in the checkout's real `data/cards`.
 - **Uber blanked** (`UBER_CLIENT_ID`, `UBER_CLIENT_SECRET`) alongside texting, calling and AgentCard.
+  So are the flight sources (`SERPAPI_API_KEY`, `DUFFEL_ACCESS_TOKEN`, since 2026-11-07, start and `env`):
+  a cage `flight_search` on a checkout with a `.env` would otherwise spend the owner's monthly allowance
+  (`src/flightproviders.js:314`); blank, it answers `unavailable` with the Google Flights link.
 - **Reason's paid API key blanked** (`ANTHROPIC_API_KEY=`, since #115 on 2026-10-25: no verification
   spends it; `caged.sh env` blanks it too, for in-process drives). Startup then says `NO ANTHROPIC_API_KEY set, so no turn can run` and the Anthropic
   provider row reads `not set up` — drive tools (Drive 2) and routes (Drive 3). A webhook text
@@ -462,9 +465,25 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — release 11-07 (recall-rank + unverified-plus)
+
+Release head `36db733` (branch `rel/unverified-fix`: origin/main `8a1fe18` + #354 recall ranking /
+`busy_timeout` + #335 no "(unverified)" / receipts say "them" / unchecked prices dropped / money words
+within 4 words / forget clears recall + `recall_reindex`), suite run as
+`env -i HOME=$HOME PATH=$PATH node --import ./test/paid-key-guard.js --test test/*.test.js`:
+**5,415 tests, 5,283 passing, 131 skipped, 1 failing** — `test/web-ongoing.test.js` "5. the desktop
+margin" ("the margin types the day"), date-dependent and failing the same on main `8a1fe18`
+(5,359 / 5,227 / 1). `test/video.test.js` needs `yt-dlp` on `PATH`: a minimal `env -i PATH` without
+`~/.local/bin` gives 26 pass / **24 fail** there — that is the "25 failing on main" report, not a
+regression; keep `PATH=$PATH` from a shell that has it. New feature files this release:
+[recall.md](features/recall.md), [no-false-done.md](features/no-false-done.md),
+[security-boundaries.md](features/security-boundaries.md); `bin/recall-figures-drive.mjs` 19/19 at
+`36db733` (and 4 FAIL + a missing table at `8a1fe18`). `bin/timer-call-drive.mjs` (20/20) and
+`bin/web-convo-drive.mjs` (18/18) repaired the same day — both were stale against #326 / `7a1476d`.
+
 ### Baseline — free flight sources (free-flights, 2026-11-06)
 
-`node --test test/*.test.js` under `env -i`: 5,251 tests, 5,120 passing, 131 skipped, **0 failing** (main c6ce172: 5,235 / 5,104 / 0). New: `test/flight-providers.test.js` (17, recorded SerpApi + Duffel bodies in `test/fixtures/flights/`). Drive on the real model, no flight keys: `bin/flights-unavailable-drive.mjs` — one ask + six task wakes → exactly one message with the Google Flights link. On a Mac the sealed CLI (#336) can't read the Keychain login; export `CLAUDE_CODE_OAUTH_TOKEN` from `security find-generic-password -s "Claude Code-credentials" -w` (`.claudeAiOauth.accessToken`) into the drive's shell only. `FLIGHT_DRIVE_FAKE_BLOCKED=1` replays the old refused-Google path on main.
+`node --test test/*.test.js` under `env -i`: 5,251 tests, 5,120 passing, 131 skipped, **0 failing** (main c6ce172: 5,235 / 5,104 / 0). New: `test/flight-providers.test.js` (17, recorded SerpApi + Duffel bodies in `test/fixtures/flights/`). Drive on the real model, no flight keys: `bin/flights-unavailable-drive.mjs` — one ask + six task wakes → exactly one message with the Google Flights link. On a Mac the sealed CLI (#336) can't read the Keychain login; export `CLAUDE_CODE_OAUTH_TOKEN=$(security find-generic-password -s reason-test-claude-token -w)` (the test account's token — never the `Claude Code-credentials` item, which is this Mac's own login) with a scratch `CLAUDE_CONFIG_DIR=$(mktemp -d)`, into the drive's shell only, never echoed. `FLIGHT_DRIVE_FAKE_BLOCKED=1` replays the old refused-Google path on main.
 
 ### Baseline — sealed CLI turns (fix/sealed-engine-context, 2026-11-06)
 
@@ -828,6 +847,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 |---|---|
 | `bin/caged.sh start\|stop\|status\|env` | The caged instance. `env` prints the exports for driving tools in-process against its database. |
 | `bin/delete-coverage-drive.mjs` | Under `caged.sh env`, from the repo root: seeds every table for a test + control person, runs `deleteData`, scans for anything of theirs left. Exit 0 = nothing unexplained, control untouched. See [features/data-delete.md](features/data-delete.md). |
+| `bin/recall-figures-drive.mjs` | Under `caged.sh env`, from the repo root, `OPENAI_API_KEY=` and a mktemp `REASON_DB_PATH`: recall ranking + the "nothing saved" filter, forget clearing recall (sealed), the figures gate on the reply and `message_send`, receipts without the operator's name, own-files-only. 19 steps, no model, no network. See [features/recall.md](features/recall.md). |
 | `bin/doctor.sh [live\|port]` | Read-only health verdict. Default `live` = Hetzner over ssh: service + pid start, every `src/` file checksummed, `data/` backups, `.env.bak*`, backup timer, `/health`, `reason-watchdog.timer` + `data/watchdog.json` age, `GET /alive`. A port = a local instance. |
 | `bin/inbound.sh text "…" \| file <p> \| -` | POST one webhook to the caged instance. Refuses 8787. |
 | `bin/peek.sh thread\|inbound\|outbox\|pages\|confirms\|ledger\|schema <t>\|sql "…"` | Read the caged database. `schema` first when a column name is in doubt. |
@@ -845,6 +865,8 @@ behaviour, change its feature file in the same commit.
 
 Reason Web thread scrolling (S2 note, S3 DONE lines, TODAY ↓, L1/L2/L10, SR4): [features/web-thread.md](features/web-thread.md);
 `bin/web-thread-preview.mjs` drives and draws it beside the reference boards.
+
+Recall (done things first, no "nothing saved" handed back, forget clears recall): [features/recall.md](features/recall.md). No false "done" (the claim check): [features/no-false-done.md](features/no-false-done.md); `bin/no-false-done-drive.mjs`. Security boundaries (own files, inbound-call secret, `/health` redaction): [features/security-boundaries.md](features/security-boundaries.md).
 
 Sealed CLI turns (no operator email / AGENTS.md / repo path in a person's CLI turn): [features/cli-sealed.md](features/cli-sealed.md); `bin/cli-seal-probe.mjs`.
 

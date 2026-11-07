@@ -13,8 +13,10 @@ returns "" and the calendar override is skipped).
   `/web/signal` poll → `accounts.web_tz`) > last shared location (`get_location` → tz-lookup →
   `accounts.place_tz`) > connected calendar (`notice_sweeps.time_zone`) > phone prefix
   (`src/phone-zones.txt`, libphonenumber's map, offline) > `config.installTz`.
-- Held tools (`CLOCK_TOOLS`): `timer_set` (unless `relative: true`, or a series), `commitment_set`,
-  `calendar_create/change`, `apple_calendar_create/change`, `event_create` without `timezone`.
+- Held tools (`CLOCK_TOOLS`, `src/zone.js:148`; the gate is `zone.gate`, `src/zone.js:163`):
+  `timer_set` with a `fire_at` unless `relative: true` — a series (`repeat`) is held too
+  (`src/zone.js:149`) — `commitment_set`, `calendar_create/change`, `apple_calendar_create/change`
+  (only when a start/end is given), `event_create` without `timezone`.
   Only on the person's own turns (`ctx.kind === "user"`); timers firing and Reason's own check-ins
   never ask. Up to 5 held per person, 2 h window (`PENDING_TTL_MS`).
 - Confirmed zone = `accounts.notice_tz` (+ `tz_confirmed_at`). The operator is confirmed on the

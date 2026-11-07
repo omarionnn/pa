@@ -72,9 +72,18 @@ eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" \
 
 `bin/timer-call-drive.mjs` runs the real `timer_set`, the real Runtime sweep, the real `call_place`
 and settle paths against the fake call provider and the fake texting channel, in process, under the
-cage's blanked env: 20 steps, `all ok` (again 2026-10-27 at `00f3300`). It proves the call is placed with the goal and the opening
+cage's blanked env: 20 steps, `all ok` (2026-10-27 at `00f3300`). It proves the call is placed with the goal and the opening
 line, no text first, the cancel, the unanswered call's single text, the cap text, the provider
 failure text, the series, and the set-time refusal.
+
+**The drive was stale from #326 (`7ea4735`, "one phone, one call") to 2026-11-07: 13 ok, 7 FAIL.**
+`call_place` joins a live call to the same number instead of dialling (`db.liveCallTo`,
+`src/tools.js:11246`; live = `placing|ringing|in_progress` within 75 min, `src/db.js:5231`), and the
+drive's answered call 1 stayed `placing`, so call 4 logged `{"call_place_joined_live":1}`. And since
+10-31 the operator has no daily call cap (`REASON_CALL_CAPS_EXEMPT=operator`, `src/accounts.js:177-180`),
+so the cap step rang instead of texting. Fixed in the drive 2026-11-07: call 1 is ended the way the
+status callback would before step 4, and the drive sets `REASON_CALL_CAPS_EXEMPT=none`. 20 ok,
+`all ok` at `36db733`.
 
 **End state that proves it:** `calls.placed[0].announcement` is `hey Omari — <goal>.` and
 `fake.sent` is empty after the firing; after the no-answer settle, one outbox row

@@ -76,7 +76,15 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   With no caps set at all, anything that would spend answers `blocked: "needs_caps"` and asks once
   for both numbers (saved with `caps_set`) before doing anything that costs money.
 - **A receipt for everything.** A row in `action_ledger` with the outcome, linked to its
-  `confirmation_id`.
+  `confirmation_id`. **Receipts and the confirm flow never name the operator** (PR #335, 11-07):
+  `receiptFor` (`src/trust.js:985`) and the `requestConfirmation` / `recordConfirmation` /
+  `authorizeConfirmation` / `retryBlocked` lines say "them"/"they" — "Sent them the recording of
+  call #73", "Told them, unprompted: …", "they already have a Visa stored with AgentCard", access
+  grants "In their words: …" (`src/trust.js:156,245,293,948,1188,1260,1264,1302`). Before, every
+  line read `config.ownerName`, so "Sent Omari the recording of call #73" landed in another person's
+  own ledger. Pinned in `test/receipts-no-owner-name-1107.test.js` (3); driven by
+  `bin/recall-figures-drive.mjs` step "receipts never name the operator" (command in
+  [recall.md](recall.md)).
 
 ## How to get to it (user POV)
 

@@ -21,7 +21,7 @@ Find lines: `grep -n 'case "uber_' src/tools.js`.
 Tests: the link in `test/sites.test.js` (46 in the file; the Uber link from ~line 425, "the uber deep link"), `test/rides.test.js`
 (5: the NYC geofence and the two verified numbers), `test/ridelinks.test.js` (5: coordinates, the
 outbox rebuild, and a log with no link text), `test/uber.test.js` (14) against `test/fixture-uber.js`; the sign-in plumbing in
-`test/signin.test.js` (21), `test/signin-window.test.js` (11), `test/signin-remote.test.js` (44).
+`test/signin.test.js` (29 on 2026-11-07), `test/signin-window.test.js` (11), `test/signin-remote.test.js` (44).
 `test/flow-resend-link.test.js` (#79, needs a model) pins that a link they tap to act on is sent
 again, never pointed at. (There is no `uber_status` tool: status is `uber.uberStatus()` and the
 `/health` block; ride state is `uber_ride`.)
@@ -75,9 +75,13 @@ Uber's consent screen, a "connected" page, then fares in the thread.
 
 ```bash
 cd ~/Desktop/pa
-node --test test/sites.test.js test/rides.test.js test/ridelinks.test.js test/uber.test.js   # 69 at 226ff17
-node --test test/signin*.test.js              # 21 + 11 + 44
+node --test test/sites.test.js test/rides.test.js test/ridelinks.test.js test/uber.test.js   # 69 at 226ff17; 46 + 5 + 5 + 14 = 70 on 2026-11-07
+node --test test/signin*.test.js              # 29 + 11 + 44, plus signin-progress (10), which the glob also takes
 ```
+
+Driven 2026-11-07 (rel/verify-maint, cage :8832, `caged.sh env`): `uber_link` → `/go/looking` url,
+`has_pickup`/`has_coordinates` true; `uber_connect` → `not_for_rides`; `uber_options` → `not_connected`
+with both `missing`; `/uber/callback?state=nope` → 400; `/health` `uber` block `app_configured:false`.
 
 **The link, on the cage, in-process** (`caged.sh env` exported; pass coordinates so nothing is
 geocoded over the network):

@@ -53,6 +53,9 @@ for (const [c, a, n] of [[KOFI_C, KOFI, "Kofi"], [AMA_C, AMA, "Ama"]]) {
   db.upsertAccount({ conversationId: c, channel: "fake", address: a, name: n });
   db.upsertThread({ conversationId: c, channel: "fake", address: a, isOwner: true, service: "iMessage" });
 }
+// Both are past their first two days, so the Web line (decision 9) is theirs to get — since 7a1476d it waits
+// for a person's third day (src/deliver.js accountDay), and the two decision-9 steps failed on every run.
+db.db.prepare("UPDATE accounts SET created_at = created_at - ?").run(3 * 24 * 60 * 60 * 1000);
 db.db.exec("UPDATE accounts SET contact_card_sent_at = 1");
 
 // The model: answers at once, except a message with "slow" in it, which waits to be let go.

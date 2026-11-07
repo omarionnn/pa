@@ -94,7 +94,12 @@ Keep the filename at least 8 characters of `[A-Za-z0-9_-]` or the `/img/` route 
 `http://127.0.0.1:<port>/img/…` and `page_create` refuses it ("needs an https url"). Export
 `REASON_PUBLIC_URL=https://reason.tail3753c7.ts.net` for the in-process drive — only the string is
 used; a generated picture is never fetched (`preparePictures` skips `kind: "generated"`). Driven
-2026-10-27: fake provider → `/img/` 200 `image/png`, page `<img>` present, no paid call.
+2026-10-27: fake provider → `/img/` 200 `image/png`, page `<img>` present, no paid call. Any https
+origin does (2026-11-07, 8113bcf, `REASON_PUBLIC_URL=https://example.test` — no live host in the
+drive at all): `send:false` → `ok, sent:false, …/img/verifyimg….png`; without it → `ok:false,
+status:"not_connected"`; `/img/<file>` 200 `image/png`, 70 bytes = the file on disk; the page with
+that block opens with the `<img>`; `https://example.com/x.png` refused ("has not come back from any
+tool in this conversation").
 
 **Export `GEMINI_API_KEY= OPENAI_API_KEY=` before using the fake.** If the fake ever answers
 `ok: false` and `config.openaiKey` is set, `image_generate` retries on `openaiImageProvider()` — a

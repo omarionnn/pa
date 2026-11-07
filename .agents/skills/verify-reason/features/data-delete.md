@@ -45,6 +45,11 @@ person, runs the real `deleteData({ conversation })` with network refused, and s
 of every table for the person's number. End state: `unexplained: []` and `control_rows_lost: []`.
 2026-11-07 at `8a1fe18`: 160 tables, all 160 seeded, 134 rows deleted, left only in `kept` (7),
 `global` (3) and `install_wide` (16, synthetic: the seed writes the id into every column).
+2026-11-07 on the release branch (`8113bcf`, cage started first): 161 tables — the new
+`recall_forgotten` (forget's out-of-recall marks) is in `TABLES` (`src/data.js:212`)
+— all seeded, 135 rows deleted, same `kept`/`global`/`install_wide`, `unexplained: []`. At the release head `36db733` `recall_reindex` (forget's re-index queue, `src/db.js:10579`) joins it in `TABLES` (`src/data.js:215`), so expect 162. Run it with
+the cage **started**: under `caged.sh env` alone only the tables of the modules the drive imports
+exist (137 that way), which reads like lost coverage and is not.
 
 Never run it against live: it writes to the database it is pointed at, and it refuses unless
 `REASON_DB_PATH` looks like a cage.
