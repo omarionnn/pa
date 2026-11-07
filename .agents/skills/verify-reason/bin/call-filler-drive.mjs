@@ -2,7 +2,7 @@
 // Replay stored owner calls through the REAL call turn (`llmRequest` in src/calls/voice.js) with a fake
 // model seam, and count what the caller would have heard: fillers, apologies, presence checks, the
 // same filler twice on a call, and the silence before the first word of each turn. No model, no
-// ElevenLabs, no Sendblue, no phone: the model is a script that waits each turn's RECORDED latency
+// voice platform, no Sendblue, no phone: the model is a script that waits each turn's RECORDED latency
 // (journal `voice_turn` first_word_ms / turn_ms / rounds) and then says the model's own words from the
 // stored transcript (the code's canned lines stripped out, since the code under test adds its own).
 //
@@ -35,7 +35,7 @@ const { pathToFileURL } = await import("node:url");
   process.env.REASON_DATA_DIR ||= dirname(db) + "/data";
   process.env.REASON_RECORDING_ROOT ||= dirname(db) + "/recordings";
 }
-for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "BLAND_API_KEY", "AGENTCARD_CLIENT_SECRET"]) {
+for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "ANTHROPIC_API_KEY", "TWILIO_AUTH_TOKEN", "BLAND_API_KEY", "AGENTCARD_CLIENT_SECRET"]) {
   if (process.env[k]) { console.error(`refusing: ${k} is set — run under caged.sh env`); process.exit(2); }
 }
 if (!process.env.REASON_VERIFY_SECRET) { console.error("refusing: not under caged.sh env (no REASON_VERIFY_SECRET)"); process.exit(2); }
@@ -58,7 +58,7 @@ const root = process.env.REASON_FILLER_ROOT
 const imp = (p) => import(new URL(p, root));
 const voice = await imp("src/calls/voice.js");
 const db = await imp("src/db.js");
-const { EXTRA_BODY_KEYS } = await imp("src/calls/elevenlabs.js");
+const { EXTRA_BODY_KEYS } = await imp("src/calls/voice.js");
 const { countCall, addCounts, ZERO, gapStats, transcriptLines } = await import("./call-filler-count.mjs");
 
 const CONV = process.env.REASON_CONVERSATION;
@@ -164,7 +164,7 @@ async function replay(stored) {
   const evs = turns.get(stored.id) ?? [];
   const { agent, them } = transcriptLines(stored.transcript);
   const call = db.createCall(CONV, {
-    provider: "elevenlabs", toNumber: process.env.REASON_OWNER_NUMBER, isOwner: true,
+    provider: "gptlive", toNumber: process.env.REASON_OWNER_NUMBER, isOwner: true,
     goal: "Omari called Reason", facts: [], direction: "in", externalId: `conv_replay_${stored.id}`, state: "in_progress",
   });
   const history = [];

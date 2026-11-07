@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// An unknown caller, end to end, with no phone: the inbound webhook (unknown → the intro + pitch;
-// blocked → the neutral line), then real pitch turns through Reason's own custom-LLM endpoint on
-// claude-cli (never the API), against a throwaway db that holds the operator's data to try to leak.
+// An unknown caller, end to end, with no phone: GPT-Live's inbound Twilio webhook (unknown → the pitch
+// stream, whose greeting is the intro; blocked → the neutral line said by Twilio), then real pitch turns
+// through Reason's own call turn on claude-cli (never the API), against a throwaway db that holds the operator's data to try to leak.
 //
 //   REASON_DB_PATH=$(mktemp -d)/s.db CLAUDE_CODE_OAUTH_TOKEN=… node .agents/skills/verify-reason/bin/stranger-drive.mjs
 //
@@ -20,15 +20,15 @@ if (!dbPath || existsSync(dbPath) || !["/tmp/", "/private/tmp/", "/var/folders/"
 Object.assign(process.env, {
   REASON_DATA_DIR: dirname(dbPath) + "/data", REASON_OWNER_NAME: "Omari", REASON_TZ: "America/New_York",
   REASON_CONVERSATION: "dm:owner", REASON_OWNER_NUMBER: "+12025550100", ANTHROPIC_API_KEY: "",
-  REASON_CALL_BACKEND: "claude-cli", ELEVENLABS_LLM_SECRET: "drive-secret", REASON_PUBLIC_URL: "http://127.0.0.1",
-  // A stand-in agent so the inbound webhook runs; nothing here reaches ElevenLabs.
-  ELEVENLABS_API_KEY: "drive-key", ELEVENLABS_AGENT_ID: "agent_test", ELEVENLABS_PHONE_NUMBER_ID: "phnum_test", ELEVENLABS_WEBHOOK_SECRET: "drive-hook",
+  REASON_CALL_BACKEND: "claude-cli", REASON_PUBLIC_URL: "http://127.0.0.1",
+  // Stand-in keys so the GPT-Live inbound webhook runs; nothing here dials or reaches OpenAI or Twilio.
+  REASON_CALL_PROVIDER: "gptlive", OPENAI_API_KEY: "sk-drive", TWILIO_ACCOUNT_SID: "AC_drive", TWILIO_AUTH_TOKEN: "drive-twilio-token", TWILIO_FROM_NUMBER: "+16465550000",
 });
 const REPO = resolve(dirname(new URL(import.meta.url).pathname), "../../../..");
 const voice = await import(`${REPO}/src/calls/voice.js`);
 const inbound = await import(`${REPO}/src/calls/inbound.js`);
 const sc = await import(`${REPO}/src/calls/stranger.js`);
-const { ElevenLabsCallProvider } = await import(`${REPO}/src/calls/elevenlabs.js`);
+const gl = await import(`${REPO}/src/calls/gptlive.js`);
 const db = await import(`${REPO}/src/db.js`);
 const { config } = await import(`${REPO}/src/config.js`);
 
@@ -41,16 +41,20 @@ const LEAK = /Omari|4471|2 and 5|two and five|Nyarko|\+1202/i;
 let ok = true;
 const check = (name, pass, detail) => { ok &&= !!pass; console.log(JSON.stringify({ step: name, pass: !!pass, ...(detail ? { detail } : {}) })); };
 
-const ring = (caller) => inbound.inboundRequest({ rawBody: JSON.stringify({ caller_id: caller, called_number: "+16465550000", agent_id: "agent_test", call_sid: "CA1", conversation_id: `conv_${caller}` }), provider: new ElevenLabsCallProvider(), router: { get: () => null, statuses: () => [] } });
+const ring = (caller) => {
+  const params = { CallSid: `CA_${caller}`, From: caller, To: "+16465550000" };
+  const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
+  return gl.inboundTwiml({ rawBody: new URLSearchParams(params).toString(), headers: { "x-twilio-signature": gl.twilioSignature(url, params) }, router: { get: () => null, statuses: () => [] } });
+};
 const unknown = ring("+13475559999");
-const first = unknown.body?.conversation_config_override?.agent?.first_message ?? "";
-check("unknown caller → intro", /^Hi, this is Reason/.test(first) && !LEAK.test(JSON.stringify(unknown.body)), first || JSON.stringify(unknown).slice(0, 300));
+const first = sc.introLine();
+check("unknown caller → the pitch stream, opening with the intro", /<Connect><Stream url="ws:\/\/127\.0\.0\.1\/calls\/gptlive\/stream\/[0-9a-f]{32}"/.test(unknown.body) && /^Hi, this is Reason/.test(first) && !LEAK.test(unknown.body + first), (unknown.body || "").slice(0, 300));
 db.blockNumber("+13475558888", "drive");
-const blocked = ring("+13475558888").body?.conversation_config_override?.agent?.first_message ?? "";
-check("blocked caller → neutral line", blocked === sc.neutralLine() && !LEAK.test(blocked), blocked);
+const blocked = ring("+13475558888").body ?? "";
+check("blocked caller → neutral line, said by Twilio", blocked.includes(sc.neutralLine()) && /<Hangup\/>/.test(blocked) && !LEAK.test(blocked), blocked);
 
 async function turn(messages) {
-  const res = await voice.llmRequest({ rawBody: JSON.stringify({ model: "reason", messages, extra_body: { reason_kind: "stranger" } }), headers: { authorization: "Bearer drive-secret" } });
+  const res = await voice.llmRequest({ rawBody: JSON.stringify({ model: "reason", messages, extra_body: { reason_kind: "stranger" } }) });
   let text = ""; const tools = [];
   for await (const c of res.stream) for (const line of String(c).split("\n")) {
     const m = /^data:\s*(.*)$/.exec(line.trim());

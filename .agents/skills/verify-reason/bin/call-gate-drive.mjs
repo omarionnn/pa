@@ -28,7 +28,7 @@ process.env.REASON_CALL_QUIET_HOURS = "";
   }
   process.env.REASON_DATA_DIR ||= dirname(db) + "/data";
 }
-for (const k of ["ANTHROPIC_API_KEY", "SENDBLUE_API_KEY_ID", "LINQ_API_KEY", "ELEVENLABS_API_KEY", "BLAND_API_KEY", "AGENTCARD_CLIENT_SECRET", "TWILIO_AUTH_TOKEN"]) {
+for (const k of ["ANTHROPIC_API_KEY", "SENDBLUE_API_KEY_ID", "LINQ_API_KEY", "BLAND_API_KEY", "AGENTCARD_CLIENT_SECRET", "TWILIO_AUTH_TOKEN"]) {
   if (process.env[k]) { console.error(`refusing: ${k} is set — this drive must not be able to reach anybody or bill the API`); process.exit(2); }
 }
 if (process.env.REASON_BACKEND !== "claude-cli") {

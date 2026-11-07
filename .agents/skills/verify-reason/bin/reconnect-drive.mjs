@@ -32,7 +32,7 @@ process.env.SENDBLUE_API_BASE = "http://127.0.0.1:9";
   process.env.REASON_DATA_DIR ||= dirname(db) + "/data";
   process.env.REASON_RECORDING_ROOT ||= dirname(db) + "/recordings";
 }
-for (const k of ["ANTHROPIC_API_KEY", "LINQ_API_KEY", "ELEVENLABS_API_KEY", "BLAND_API_KEY", "AGENTCARD_CLIENT_SECRET"]) {
+for (const k of ["ANTHROPIC_API_KEY", "LINQ_API_KEY", "TWILIO_AUTH_TOKEN", "BLAND_API_KEY", "AGENTCARD_CLIENT_SECRET"]) {
   if (process.env[k]) { console.error(`refusing: ${k} is set — run under caged.sh env`); process.exit(2); }
 }
 if (process.env.REASON_BACKEND !== "claude-cli" || !process.env.REASON_TEST_NUMBERS || process.env.REASON_AUTO_ADMIT !== "1") {

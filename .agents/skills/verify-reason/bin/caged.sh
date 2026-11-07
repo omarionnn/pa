@@ -7,9 +7,8 @@
 #   - its own port and its own SQLite file, so nothing touches data/reason.db
 #   - every texting credential blanked, so both channel adapters report not_connected and a send
 #     fails loudly in the log instead of reaching a person
-#   - every call credential blanked, so no tool can ring anybody; the two ElevenLabs INBOUND secrets
-#     (custom-LLM bearer, post-call webhook) are set to the cage's own secret instead, so
-#     bin/call-turn.sh can drive a call turn here and nothing signed for the live install gets in
+#   - every call credential blanked (the TWILIO_* keys GPT-Live dials with, Bland's), so no tool can
+#     ring anybody and every Twilio webhook here refuses a signature made for the live install
 #
 # It runs serve.js with `--log`, which is the only thing that turns the router's own decision log
 # on (src/serve.js:33). Without it `log` is a no-op and every routing decision is invisible —
@@ -100,9 +99,9 @@ start)
     SENDBLUE_WEBHOOK_SECRET="$SECRET" \
     LINQ_API_KEY= \
     LINQ_WEBHOOK_SECRET= \
-    ELEVENLABS_API_KEY= \
-    ELEVENLABS_LLM_SECRET="$SECRET" \
-    ELEVENLABS_WEBHOOK_SECRET="$SECRET" \
+    TWILIO_ACCOUNT_SID= \
+    TWILIO_AUTH_TOKEN= \
+    TWILIO_FROM_NUMBER= \
     REASON_USAGE_INGEST_SECRET="$SECRET" \
     BLAND_API_KEY= \
     AGENTCARD_CLIENT_ID= \
@@ -185,16 +184,12 @@ env)
   # REASON_TOKEN_KEY from .env, and a cage database holding sealed token rows will not open.
   [ -f "$RUN/token-key" ] && echo "REASON_TOKEN_KEY=$(cat "$RUN/token-key")"
   for v in SENDBLUE_API_KEY_ID SENDBLUE_API_SECRET_KEY SENDBLUE_FROM_NUMBER LINQ_API_KEY LINQ_WEBHOOK_SECRET \
-           ELEVENLABS_API_KEY BLAND_API_KEY AGENTCARD_CLIENT_ID AGENTCARD_CLIENT_SECRET AGENTCARD_WEBHOOK_SECRET \
+           TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_FROM_NUMBER BLAND_API_KEY AGENTCARD_CLIENT_ID AGENTCARD_CLIENT_SECRET AGENTCARD_WEBHOOK_SECRET \
            UBER_CLIENT_ID UBER_CLIENT_SECRET; do
     echo "$v="
   done
   # Reason's paid API key, as the server above (#115): an in-process drive spends nothing either.
   [ "${REASON_VERIFY_ALLOW_API:-}" = 1 ] || echo "ANTHROPIC_API_KEY="
-  # The cage's own secrets for the two ElevenLabs inbound routes, never the real ones: bin/call-turn.sh
-  # drives the custom-LLM endpoint with this bearer, and a request signed for the live install fails.
-  echo "ELEVENLABS_LLM_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
-  echo "ELEVENLABS_WEBHOOK_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
   # And for the Mac's subscription push (POST /ops/usage): signed with the cage's secret, never live's.
   echo "REASON_USAGE_INGEST_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
   ;;
