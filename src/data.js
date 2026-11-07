@@ -181,6 +181,8 @@ const TABLES = [
   // Reason Web's thread and its chats, the message log the memory graph is built from, the queue of
   // turns still to extract, the graph itself and the profile blocks summarising it.
   "messages", "web_chats", "event_log", "extraction_queue", "profile_blocks",
+  // Their how-to-treat-me rules and the nightly memory review's watermark and per-pass cost (src/dream.js).
+  "treat_rules", "memory_reviews", "memory_review_passes",
   "graph_entities", "graph_edges", "graph_mentions", "graph_merge_candidates",
   // Places they saved and the things they pinned on their Saved page.
   "saved_places", "saved_marks",

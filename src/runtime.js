@@ -54,6 +54,7 @@ import * as eventRides from "./eventrides.js";
 import { sweepListNotes } from "./events.js";
 import { sweep as sweepAlbums } from "./albums.js";
 import * as dailyEdition from "./daily.js";
+import * as dream from "./dream.js";
 import * as webdraft from "./webdraft.js";
 import * as onboarding from "./onboarding.js";
 import * as opsDigest from "./opsdigest.js";
@@ -2351,7 +2352,13 @@ export class Runtime extends EventEmitter {
     return out;
   }
 
+  /** The nightly memory review's sweep (src/dream.js sweepDreams). Never throws into the sweep. */
+  dreams({ now = clock.now() } = {}) {
+    try { return dream.sweepDreams({ now, log: this.log }); } catch (e) { this.log({ memory_review: "sweep_failed" }); return { queued: 0 }; }
+  }
+
   /** The daily edition's overnight write (src/daily.js sweepDaily). Never throws into the sweep. */
+
   daily({ now = clock.now() } = {}) {
     try { return dailyEdition.sweepDaily({ now, log: this.log }); } catch (e) { this.log({ daily_edition_failed: (e?.message ?? String(e)).split("\n")[0] }); return { queued: 0 }; }
   }
@@ -2873,9 +2880,12 @@ export class Runtime extends EventEmitter {
     // says nothing itself and because the one thing it can send — the consent question, once ever —
     // is the least urgent thing in this sweep and should lose to a bill due on Friday.
     const shapes = await this.rhythms();
+    // The nightly memory review (src/dream.js): at their quiet hour, on the background lane, on the
+    // subscription only. Says nothing to anybody and never waits here.
+    const dreams = this.dreams();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, todo_wraps, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, retention };
+    return { undone, outbox, held, standing, timers, tasks, todo_wraps, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, dreams, retention };
   }
 
   start(everyMs = 15_000) {
@@ -2899,6 +2909,8 @@ export class Runtime extends EventEmitter {
     if (requeued) this.log({ requeued_extractions: requeued, note: "the last stop was mid-extraction" });
     // A card refresh a purchase turn sets off lands in the same log as the sweep's own.
     setAgentcardRefreshLog((l) => this.log(l));
+    // The nightly memory review: one line saying it is armed, on which model, and its next window.
+    try { this.log(dream.armedLine()); } catch { /* a boot line is never worth a boot */ }
     this.interval = setInterval(() => this.sweep().catch(e => this.emit("error", e)), everyMs);
     this.interval.unref?.();
   }

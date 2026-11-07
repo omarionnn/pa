@@ -439,9 +439,15 @@ function readStructured(r) {
   }
   noteSideRun(r, "");
   // Newer CLI builds put a schema'd answer under `structured_output`; older ones in `result`.
-  if (r.envelope?.structured_output && typeof r.envelope.structured_output === "object") return { value: r.envelope.structured_output, usage: r.envelope.usage ?? null };
-  try { return { value: JSON.parse(String(r.envelope.result ?? "")), usage: r.envelope.usage ?? null }; }
-  catch { return { error: `the answer was not JSON: ${String(r.envelope.result ?? "").slice(0, 120)}` }; }
+  // What the run used, for whoever wants to cost it (src/dream.js): the tokens, the CLI's own
+  // list-price $ (`total_cost_usd`: what the same run would bill on the API, not what the
+  // subscription charged), and the model ids that actually answered (`modelUsage` keys).
+  const used = { usage: r.envelope?.usage ?? null,
+    costUsd: Number.isFinite(r.envelope?.total_cost_usd) ? r.envelope.total_cost_usd : null,
+    models: Object.keys(r.envelope?.modelUsage ?? {}) };
+  if (r.envelope?.structured_output && typeof r.envelope.structured_output === "object") return { value: r.envelope.structured_output, ...used };
+  try { return { value: JSON.parse(String(r.envelope.result ?? "")), ...used }; }
+  catch { return { error: `the answer was not JSON: ${String(r.envelope.result ?? "").slice(0, 120)}`, ...used }; }
 }
 
 /** Structured output from one no-tools CLI call, or `{ error }` if anything at all went wrong. */

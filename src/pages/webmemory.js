@@ -29,7 +29,7 @@ import { SECURITY_HEADERS, sameOrigin } from "./websignin.js";
 
 /** The five headings, in the page's order, as the page writes them. */
 export const GROUPS = [
-  ["preferences", "PREFERENCES"], ["people", "PEOPLE"], ["places", "PLACES"], ["routines", "ROUTINES"], ["why", "WHY"],
+  ["rules", "HOW TO TREAT ME"], ["preferences", "PREFERENCES"], ["people", "PEOPLE"], ["places", "PLACES"], ["routines", "ROUTINES"], ["why", "WHY"],
 ];
 /** Until a fact is filed, the extractor's category (a model's reading too) stands in where it says the same thing. */
 const FROM_CATEGORY = { preference: "preferences", interest: "preferences", relationship: "people", location: "places", routine: "routines", goal: "why", belief: "why" };
@@ -63,6 +63,10 @@ export function memoryView(account) {
   for (const f of db.memoryFacts(conv)) {
     const own = !!ownKey && f.about_key === ownKey;
     by.get(groupOf(f, ownKey)).push({ key: `fact-${f.id}`, kind: "fact", id: f.id, raw: f.fact, line: lineFor(f.about, f.fact, { own }), at: f.created_at, ...subjectOf(f.about, f.about_key) });
+  }
+  // How they asked Reason to treat them (src/dream.js): the rule as written, theirs to forget or reword.
+  for (const r of db.activeRules(conv)) {
+    by.get("rules").push({ key: `rule-${r.id}`, kind: "rule", id: r.id, raw: r.rule, line: r.rule, at: r.created_at, subject: "", subjectKey: "" });
   }
   for (const w of db.listWhys(conv, { limit: 200 })) {
     const k = db.personKey(w.about);
@@ -127,11 +131,15 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 /** `3 FACTS · 1 GUESS`. */
 export const searchCount = (s) => `${plural(s.facts.length, "FACT", "FACTS")} · ${plural(s.guesses.length, "GUESS", "GUESSES")}`;
 
-/** One saved row by its page key ("fact-12", "why-3"), inside this conversation only. */
+/** One saved row by its page key ("fact-12", "why-3", "rule-4"), inside this conversation only. */
 export function findRow(conv, key) {
-  const m = /^(fact|why)-(\d{1,12})$/.exec(String(key ?? ""));
+  const m = /^(fact|why|rule)-(\d{1,12})$/.exec(String(key ?? ""));
   if (!m) return null;
   const id = Number(m[2]);
+  if (m[1] === "rule") {
+    const r = db.getRule(conv, id);
+    return r ? { kind: "rule", id, raw: r.rule, about: "" } : null;
+  }
   if (m[1] === "fact") {
     const f = db.getFact(conv, id);
     return f ? { kind: "fact", id, raw: f.fact, about: f.about } : null;
@@ -438,7 +446,14 @@ export async function correctRow(conv, key, text, { log = () => {} } = {}) {
   if (clean.length > MAX_TEXT) return { ok: false, status: 413, error: "too_long", say: "that's a bit long for one line." };
   if (clean === row.raw) return { ok: true, key, unchanged: true };
   let newKey;
-  if (row.kind === "fact") {
+  if (row.kind === "rule") {
+    // Reworded on their word: the old one is taken back (never revived by a review), the new one saved.
+    const was = db.getRule(conv, row.id);
+    db.dropRule(conv, row.id);
+    const out = db.addRule(conv, { rule: clean, why: was?.why ?? "", sourceMessageId: was?.source_message_id ?? null, source: "they_said" });
+    if (!out.ok) return { ok: false, status: 409, error: "not_corrected" };
+    newKey = `rule-${out.rule.id}`;
+  } else if (row.kind === "fact") {
     const out = db.correctFact(conv, row.id, { fact: clean });
     if (!out.ok) return /already saved/.test(out.error ?? "") ? { ok: false, status: 409, error: "same_as_another", say: "that's already saved as its own line." } : { ok: false, status: 404, error: "not_found" };
     newKey = `fact-${out.newId}`;
@@ -460,7 +475,7 @@ export async function correctRow(conv, key, text, { log = () => {} } = {}) {
 export async function forgetRow(conv, key, { log = () => {} } = {}) {
   const row = findRow(conv, key);
   if (!row) return { ok: false, status: 404, error: "not_found" };
-  const out = row.kind === "fact" ? db.dropFact(conv, row.id) : db.dropWhy(conv, row.id);
+  const out = row.kind === "rule" ? db.dropRule(conv, row.id) : row.kind === "fact" ? db.dropFact(conv, row.id) : db.dropWhy(conv, row.id);
   if (!out.ok) return { ok: false, status: 404, error: "not_found" };
   db.scrubToolResults(conv, { tools: db.MEMORY_TOOL_NAMES, mentioning: [row.raw] });
   db.redactFromReplies(conv, [row.raw]);
@@ -499,7 +514,7 @@ const json = (status, obj) => {
 };
 const html = (status, body) => ({ status, headers: { "Content-Type": "text/html; charset=utf-8", ...SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) }, body });
 const to = (location) => ({ status: 303, headers: { ...SECURITY_HEADERS, Location: location, "Content-Length": 0 }, body: "" });
-const KEY = /^(fact|why)-\d{1,12}$/;
+const KEY = /^(fact|why|rule)-\d{1,12}$/;
 function same(a, b) {
   const x = Buffer.from(String(a ?? "")), y = Buffer.from(String(b ?? ""));
   return x.length > 0 && x.length === y.length && timingSafeEqual(x, y);
