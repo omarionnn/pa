@@ -101,8 +101,8 @@ function make({ conversationId = CONV, entry = amazon, said = { ok: true, state:
   return { out, token, b, logs, booked, released, checks };
 }
 
-const req = (token, action = "", { method = "GET", cookie = "", body = null, raw = null, query = {}, tell = null } = {}) =>
-  remote.remoteRequest({ token, action, method, headers: cookie ? { cookie } : {}, query, tell, readBody: async () => (raw !== null ? raw : body === null ? "" : JSON.stringify(body)) });
+const req = (token, action = "", { method = "GET", cookie = "", body = null, raw = null, query = {}, tell = null, headers = {} } = {}) =>
+  remote.remoteRequest({ token, action, method, headers: { ...headers, ...(cookie ? { cookie } : {}) }, query, tell, readBody: async () => (raw !== null ? raw : body === null ? "" : JSON.stringify(body)) });
 
 /** Tap Start on the person's own proved Reason browser, and come back with the cookie that browser was given. */
 async function start(token, conversationId = CONV) {
@@ -812,10 +812,10 @@ test("a sign-in that did not work says so in the reply, rather than claiming it 
 // the link is not enough to take it: Start needs the person's own proved Reason browser, or a code
 // texted to their own thread, the same rule private pages and trips keep.
 
-/** A Reason browser session (Web, a page, an event) proved for this conversation. */
+/** A Reason Web sign-in (`wsign:`, one of the two #358 trusts) proved for this conversation. */
 function provedCookie(conversationId) {
   const t = `sess-${conversationId}-${Math.random().toString(36).slice(2)}`;
-  db.startPageSession("web", t, { conversationId });
+  db.startPageSession(`wsign:${conversationId}`, t, { conversationId });
   return `reason_page=${t}`;
 }
 
@@ -873,9 +873,9 @@ test("a browser not yet proved gets a code texted to the person's own thread, an
 
   const right = await req(token, "start", { method: "POST", raw: `code=${code}`, tell });
   assert.equal(right.status, 303);
-  assert.match(right.headers["Set-Cookie"], /^rs_/);
+  assert.match(right.headers["Set-Cookie"][0], /^rs_/);
   assert.equal(b.launched.length, 1);
-  const cookie = right.headers["Set-Cookie"].split(";")[0];
+  const cookie = right.headers["Set-Cookie"][0].split(";")[0];
   assert.equal((await req(token, "view", { cookie })).status, 200, "and that browser is the one that drives it");
 
   // The code is used up: a second browser with the same code gets nothing.
@@ -928,5 +928,105 @@ test("over real HTTP: Start on a fresh browser texts the code through the runtim
     assert.equal(ok.status, 303);
     assert.match(ok.headers.get("set-cookie"), /^rs_/);
     assert.equal(b.launched.length, 1);
+    // Both cookies arrive over the wire, and the remembered one opens the next link with no code.
+    const browser = ok.headers.getSetCookie().find(c => c.startsWith("reason_page="))?.split(";")[0];
+    assert.ok(browser, "reason_page set over HTTP");
+    const next = make();
+    const again = await fetch(`${base}/s/${next.token}/start`, { method: "POST", redirect: "manual", headers: { cookie: browser } });
+    assert.equal(again.status, 303);
+    assert.equal(next.b.launched.length, 1);
+    await new Promise(res => setTimeout(res, 10));
+    assert.equal(told.length, 1, "nothing more was texted");
   } finally { await new Promise(r => server.close(r)); }
+});
+
+// ---------- a browser proved once is remembered (lead 6, Omari 11-07: the way #358's connect links work) ----------
+
+/** The texted code out of the last thing told. */
+const codeOf = (told) => /code is (\d{6})/.exec(told.at(-1).text)[1];
+/** The `reason_page` cookie a response set, as a request header value. */
+const pageCookieOf = (r) => [].concat(r.headers["Set-Cookie"] ?? []).find(c => c.startsWith("reason_page="))?.split(";")[0] ?? "";
+
+test("first time on a new browser the code is required; after it, the next link on that browser goes straight to Start with nothing texted", async () => {
+  db.db.exec("DELETE FROM page_codes; DELETE FROM page_attempts;");
+  const told = [];
+  const tell = async (c, text, meta) => { told.push({ c, text, meta }); };
+
+  // A new browser: the code step, and nothing opens until the code.
+  const first = make();
+  const asked = await req(first.token, "start", { method: "POST", tell });
+  assert.equal(asked.status, 401);
+  assert.match(asked.body, /Enter the code Reason texted you/);
+  assert.match(asked.body, /remembers this browser/);
+  await new Promise(r => setImmediate(r));
+  assert.equal(told.length, 1);
+  assert.equal(first.b.launched.length, 0);
+
+  const right = await req(first.token, "start", { method: "POST", raw: `code=${codeOf(told)}`, tell });
+  assert.equal(right.status, 303);
+  assert.match(right.headers["Set-Cookie"][0], /^rs_/);
+  const browser = pageCookieOf(right);
+  assert.match(browser, /^reason_page=/, "the right code leaves the browser remembered");
+  assert.match(right.headers["Set-Cookie"].find(c => c.startsWith("reason_page=")), /Path=\/; .*Max-Age=\d+; HttpOnly; SameSite=Lax/);
+  const { browserConversation } = await import("../src/connectgate.js");
+  assert.equal(browserConversation({ cookie: browser }), CONV, "remembered the way #358's connect links prove a browser: one mechanism");
+
+  // The next link (a new link replaces the old one), same browser: straight on, nothing texted.
+  const next = make();
+  const again = await req(next.token, "start", { method: "POST", cookie: browser, tell });
+  assert.equal(again.status, 303);
+  assert.equal(typeof again.headers["Set-Cookie"], "string", "only the link's own cookie: nothing new to remember");
+  assert.match(again.headers["Set-Cookie"], /^rs_/);
+  assert.equal(next.b.launched.length, 1);
+  await new Promise(r => setImmediate(r));
+  assert.equal(told.length, 1, "no second code was texted");
+});
+
+test("a different browser holding only the link is refused, even after the person's own browser was remembered", async () => {
+  db.db.exec("DELETE FROM page_codes; DELETE FROM page_attempts;");
+  const told = [];
+  const tell = async (c, text, meta) => { told.push({ c, text, meta }); };
+  const first = make();
+  await req(first.token, "start", { method: "POST", tell });
+  await new Promise(r => setImmediate(r));
+  const mine = pageCookieOf(await req(first.token, "start", { method: "POST", raw: `code=${codeOf(told)}`, tell }));
+  assert.ok(mine);
+
+  db.upsertAccount({ conversationId: THEIRS, channel: "fake", address: FRIEND, name: "Kofi", isOperator: false });
+  // A page's or an event's code session is not one #358 trusts, so it is not "remembered" either.
+  const pageOnly = `pg-${Math.random().toString(36).slice(2)}`;
+  db.startPageSession("somepage", pageOnly, { conversationId: CONV });
+  for (const cookie of ["", provedCookie(THEIRS), `reason_page=${pageOnly}`, "reason_page=made-up"]) {
+    const link = make();
+    const r = await req(link.token, "start", { method: "POST", cookie, tell });
+    assert.equal(r.status, 401, `refused: ${cookie || "no cookie"}`);
+    assert.equal(r.headers["Set-Cookie"], undefined);
+    assert.equal(link.b.launched.length, 0, "the saved profile is never opened");
+    await new Promise(res => setImmediate(res));
+    assert.equal(told.at(-1).c, CONV, "the code goes to the person's own thread, which the link holder does not have");
+    // An old code (used up) is no way in either.
+    const old = await req(link.token, "start", { method: "POST", cookie, raw: "code=123456", tell });
+    assert.notEqual(old.status, 303);
+    assert.equal(link.b.launched.length, 0);
+    for (const [action, body] of [["view", null], ["type", { text: "x" }]]) {
+      assert.equal((await req(link.token, action, { method: action === "view" ? "GET" : "POST", body, cookie })).status, 404);
+    }
+    db.db.exec("DELETE FROM page_codes; DELETE FROM page_attempts;");
+  }
+});
+
+test("a right code posted from another site is refused, so nobody's sign-in can be planted in a victim's browser", async () => {
+  db.db.exec("DELETE FROM page_codes; DELETE FROM page_attempts;");
+  const told = [];
+  const tell = async (c, text) => { told.push({ c, text }); };
+  const { token, b } = make();
+  await req(token, "start", { method: "POST", tell });
+  await new Promise(r => setImmediate(r));
+  const r = await req(token, "start", { method: "POST", raw: `code=${codeOf(told)}`, tell, headers: { origin: "https://evil.example", "sec-fetch-site": "cross-site" } });
+  assert.equal(r.status, 403);
+  assert.equal(r.headers["Set-Cookie"], undefined);
+  assert.equal(b.launched.length, 0);
+  // The code itself is still good on the link's own page.
+  const ok = await req(token, "start", { method: "POST", raw: `code=${codeOf(told)}`, tell });
+  assert.equal(ok.status, 303);
 });

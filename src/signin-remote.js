@@ -36,8 +36,9 @@
 // **Who can use a link.** The person themselves, first to tap Start, and nobody after: Start hands
 // that browser a cookie and every later request needs it. Holding the link is not enough to tap
 // Start (security audit lead 6, 2026-11-07): the browser must be one already signed in to Reason as
-// this person, or prove the phone with a code texted to their own thread — so a forwarded or
-// misdirected link cannot open their saved profile. A link preview fetches the page but does not
+// this person (Web, or a connect/sign-in link's code, src/connectgate.js), or prove itself once with
+// a code texted to their own thread, after which it is remembered — so a forwarded or misdirected
+// link cannot open their saved profile. A link preview fetches the page but does not
 // tap anything, so previews cannot take the session. A link is good for a few minutes, a session
 // for a few more, and making a new link kills the old one.
 //
@@ -49,7 +50,8 @@ import * as db from "./db.js";
 import * as signin from "./signin.js";
 import { readSignedInState } from "./sites.js";
 import { profileDirFor } from "./browser.js";
-import { readCookie as readPageCookie, newCode, typedCode, codeHost, boundTo, SESSION_TTL_MS, CODE_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS, MAX_CODES_SENT } from "./pages/access.js";
+import { issueCode, trySubmittedCode, cookieHeader, codeHost, boundTo, CODE_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT } from "./pages/access.js";
+import { browserConversation, proofPage } from "./connectgate.js";
 import { config, clock } from "./config.js";
 import { backToReason, dark, THEME, iconLinks } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
@@ -365,32 +367,32 @@ function readCookie(headers, name) {
 }
 
 // ---------- who may tap Start ----------
+//
+// The same proof connect links use (#358, src/connectgate.js): a browser signed in to Reason as this
+// person through Web's own sign-in or a texted browser code. A right code here leaves that same
+// `connect:` session on the browser (90 days, like pages), so the next sign-in link, or connect link,
+// on it goes straight on. A new browser asks once; a browser that only holds the link never gets in.
 
-/** Is this the person's own browser: a Reason session (Web, a page, an event) proved for this conversation? */
+/** Is this the person's own browser, proved the way connect links are? */
 function provedOwner(s, headers) {
-  const cookie = readPageCookie(headers?.cookie);
-  return !!cookie && db.pageSessionOwner(cookie, SESSION_TTL_MS) === s.conversationId;
+  return browserConversation(headers) === s.conversationId;
 }
 
-/**
- * Codes and wrong guesses are counted per person, not per link, so a fresh link does not reset the
- * count. Kept in the private pages' tables (one store for every texted code), under a key no page
- * id can take.
- */
-const codeKey = (s) => `signin:${s.conversationId}`;
+/** Codes and wrong guesses are counted per person, not per link, in the one table connect links use too. */
+const gateFor = (s) => proofPage(s.conversationId, `${s.entry.label} sign-in`);
 
 /** Text the person a code to their own thread, at most MAX_CODES_SENT in the window, and ask for it. */
 function sendCode(s, tell) {
   if (typeof tell !== "function") {
     return { status: 403, headers: HTML(), body: shell("Open this on your own browser", `<p class="lead">This link only starts on a browser you've signed in to Reason on. Ask Reason for a fresh one.</p>`) };
   }
-  const key = codeKey(s);
-  if (db.pageCodesIssued(key, ATTEMPT_WINDOW_MS) >= MAX_CODES_SENT) {
+  const page = gateFor(s);
+  if (db.pageCodesIssued(page.id, ATTEMPT_WINDOW_MS) >= MAX_CODES_SENT) {
     return codePage(s, { status: 429, error: `Reason has already texted you a code. Use that one, or try again in about ${Math.ceil(ATTEMPT_WINDOW_MS / 60_000)} minutes.` });
   }
-  const { id, code } = db.createPageCode(key, { code: newCode(), ttlMs: CODE_TTL_MS });
+  const { id, code } = issueCode(page.id);
   const mins = Math.round(CODE_TTL_MS / 60_000);
-  const line = `Your Reason code is ${code}, to start the ${s.entry.label} sign-in link. Good for ${mins} minutes. If that wasn't you, ignore this — nothing was opened.${boundTo(codeHost(remoteSigninStatus().base), code)}`;
+  const line = `Your Reason code is ${code}, to start the ${s.entry.label} sign-in link on that browser. Good for ${mins} minutes. If that wasn't you, ignore this — nothing was opened.${boundTo(codeHost(remoteSigninStatus().base), code)}`;
   Promise.resolve()
     .then(() => tell(s.conversationId, line, { idempotencyKey: `scode:${s.token.slice(0, 12)}:${id}` }))
     .catch((e) => s.log({ signin_remote: "code_text_failed", site: s.entry.site, why: (e?.message ?? String(e)).split("\n")[0] }));
@@ -398,22 +400,18 @@ function sendCode(s, tell) {
   return codePage(s, { status: 401 });
 }
 
-/** Check a typed code. Every try is written down before the answer, so guessing is bounded by the table. */
-function tryCode(s, typed) {
-  const key = codeKey(s);
-  const failed = db.failedPageAttempts(key, ATTEMPT_WINDOW_MS);
-  if (failed >= MAX_FAILED_ATTEMPTS) {
+/** Check a typed code. A right one proves this browser as the person's: `{ ok, cookie }` to remember it. */
+function tryCode(s, typed, headers) {
+  const tried = trySubmittedCode({ page: gateFor(s), code: typed });
+  if (tried.ok) {
+    s.log({ signin_remote: "browser_proved", site: s.entry.site, conversation: s.conversationId });
+    return { ok: true, cookie: cookieHeader(tried.token, { path: "/", headers }) };
+  }
+  if (tried.reason === "rate_limited") {
     return { ok: false, status: 429, error: `Too many wrong codes. Try again in about ${Math.ceil(ATTEMPT_WINDOW_MS / 60_000)} minutes.` };
   }
-  const live = db.livePageCode(key);
-  if (!live || !db.pageCodeIs(live.code, typedCode(typed))) {
-    db.recordPageAttempt(key, false);
-    const left = Math.max(0, MAX_FAILED_ATTEMPTS - (failed + 1));
-    return { ok: false, status: 401, error: `That code is not right.${left ? ` ${left} ${left === 1 ? "try" : "tries"} left.` : ""}` };
-  }
-  db.recordPageAttempt(key, true);
-  db.usePageCode(live.id);
-  return { ok: true };
+  const left = tried.tries_left;
+  return { ok: false, status: 401, error: `That code is not right.${left ? ` ${left} ${left === 1 ? "try" : "tries"} left.` : ""}` };
 }
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex", ...extra });
@@ -446,19 +444,30 @@ export async function remoteRequest({ token, action = "", method = "GET", header
   if (method === "POST" && action === "start") {
     if (s.ended) return gone();
     if (s.secret && !mine) return gone();
+    let remember = null;
     if (!s.secret) {
       // Holding the link is not enough (security audit lead 6, 2026-11-07): it opens the person's
       // whole saved profile, every site's session in it. The browser tapping Start must be the
       // person's own — a Reason session proved for this conversation — or prove the phone with a
       // code texted to their own thread, the same rule private pages and trips keep.
       if (!provedOwner(s, headers)) {
+        // Only from this link's own page: a right code signs the browser in to Reason as this
+        // person, and a page elsewhere posting someone's own code from a victim's browser would
+        // plant that sign-in there (login CSRF), the hole #358 closed on connect links.
+        // Loaded here, not at the top, for the same import-cycle reason as connectgate.js.
+        const { sameOrigin } = await import("./pages/websignin.js");
+        if (!sameOrigin(headers)) {
+          s.log({ signin_remote: "cross_site_start", site: s.entry.site });
+          return codePage(s, { status: 403, error: "This page has to be used directly. Open the link Reason texted again." });
+        }
         const form = new URLSearchParams(String((await readBody()) ?? ""));
         // Another tap may have claimed or ended it while the body was read.
         if (s.secret || s.ended) return gone();
         const typed = form.get("code");
         if (typed === null || form.has("send")) return sendCode(s, tell);
-        const tried = tryCode(s, typed);
+        const tried = tryCode(s, typed, headers);
         if (!tried.ok) return codePage(s, { status: tried.status, error: tried.error });
+        remember = tried.cookie;
       }
       const blocked = s.busy(s.conversationId);
       if (blocked) return { status: 409, headers: HTML(), body: shell("Not right now", `<p class="lead">${esc(blocked)}</p>`) };
@@ -479,11 +488,13 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       s.log({ signin_remote: "started", site: s.entry.site, conversation: s.conversationId });
     }
     const secure = /^https:/i.test(config.publicUrl || "") ? "; Secure" : "";
+    const session = `${name}=${s.secret}; Path=${PATH}/${s.token}; HttpOnly; SameSite=Strict; Max-Age=${Math.ceil(config.remoteSigninSessionMs / 1000)}${secure}`;
     return {
       status: 303,
       headers: {
         Location: `${PATH}/${s.token}`, "Cache-Control": "no-store",
-        "Set-Cookie": `${name}=${s.secret}; Path=${PATH}/${s.token}; HttpOnly; SameSite=Strict; Max-Age=${Math.ceil(config.remoteSigninSessionMs / 1000)}${secure}`,
+        // A browser that just proved itself with the code is remembered too, so the next link skips it.
+        "Set-Cookie": remember ? [session, remember] : session,
       },
       body: "",
     };
@@ -680,7 +691,7 @@ function codePage(s, { status = 401, error = "" } = {}) {
     status, headers: HTML(),
     body: shell(`Sign in to ${s.entry.label}`, `
 <h1>Enter the code Reason texted you</h1>
-<p class="lead">This browser isn't signed in to Reason yet, so Reason texted you a code first. That keeps a forwarded link from opening your ${label} sign-in.</p>
+<p class="lead">This browser isn't signed in to Reason yet, so Reason texted you a code first. That keeps a forwarded link from opening your ${label} sign-in. After this once, Reason remembers this browser and its links open straight away.</p>
 ${error ? `<p class="lead"><b>${esc(error)}</b></p>` : ""}
 <form method="post" action="${PATH}/${s.token}/start">
 <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="12" placeholder="6-digit code" aria-label="Code" required>
