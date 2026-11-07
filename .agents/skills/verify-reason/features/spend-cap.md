@@ -48,6 +48,21 @@ person can change their own. Before this the cap was one number for the whole in
     dedupe as paid rows; `spend_backfilled: n` in the log). The Face ID path (`payByPasskey`) now writes
     the same `trust.noteUnknownOutcome` record the texted-yes `shop_pay` writes. Pinned in
     `test/shop-unknown-spend.test.js` (4) and `test/passkey-pay.test.js` (the unknown-outcome test).
+  - **…and stops counting once Crossmint confirms it never charged (security lead 5b, 2026-11-07).**
+    `settleUnknownPayments` (`src/shopconnect.js`) reads each `unknown` row's order intent
+    (`GET /api/unstable/order-intents/{id}`, client key + the person's JWT). Only `intentNeverCharged`
+    releases it: same `orderIntentId`, `status` `cancelled` or `expired` (Crossmint's only non-active
+    states; it has no "failed"/"declined" on an intent), and `amount.spent` and `amount.reserved` both
+    plain decimals equal to 0 (every credential handed to the store draws on the intent, so 0 = the card
+    never reached it, and a non-active intent can't hand it over later). Then, in one `db.atomically`:
+    the row `unknown` → `failed` (compare-and-set, so once) and its "(OUTCOME UNKNOWN)" spend line is
+    rewritten to 0 cents, `what` ending "(CROSSMINT CONFIRMED NOT CHARGED, not counted)" — the note
+    stays in `spend_today.lines`; `spentToday`/`spentThisMonth`/ops count only `cents > 0` lines as
+    commits. Log `unknown_payment_released`. Anything else — `active` (our intents run 15 min), any
+    amount spent/reserved, a missing/odd field, another id, 404/500/timeout — leaves it counted. Asked
+    when a Crossmint payment would be refused `over_daily_cap` (`capRefusal`, then the cap is re-read)
+    and at boot after `backfillSpend`. The run's own `failed`/`cancelled` status is NOT a release (a run
+    can fail after the card was used). Pinned in `test/shop-unknown-spend.test.js` (18; the line released is the one on the day the payment went out).
 - Tools (`src/shoptools.js`, shown where Shop Connect is): `spend_limit_set { daily, text }` and
   `spend_limit_confirm { change_id, answer }`. The spending playbook (`src/playbooks.js`) and the
   `spending_cap` capability line point at them.
@@ -77,7 +92,9 @@ $100 cap → a $90 payment whose checkout message answers 500 → `unknown_outco
 "Best Buy: USB-C cable ($90.00) (OUTCOME UNKNOWN)", `spend_today` $90 spent / $10 left → a second $90
 is `over_daily_cap` ("…would take you to $180…"), no second order intent, row stays `asked` → an old
 uncounted `unknown` row counted once by `backfillSpend`, a second run adds 0. 10 steps, all ok on
-7e38e15 (2026-11-07, cage on port 8839 doctor-clean first).
+7e38e15 (2026-11-07, cage on port 8839 doctor-clean first). Lead 5b adds: order intent `active` →
+still counted, a third $90 refused; `expired` with $0 spent → the unknown $90 released (row `failed`,
+$0 note line), the next $90 paid, spent stays $90; a second `settleUnknownPayments` releases 0. 14 steps, all ok (cage port 8882 doctor-clean first, 2026-11-07).
 
 ## Live (muted; read-only)
 

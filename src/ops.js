@@ -591,7 +591,7 @@ async function memoryChecks({ now, probe, emit = (r) => r }) {
 
 function moneyChecks({ now, day }) {
   const out = [];
-  const today = db.db.prepare("SELECT COALESCE(SUM(cents), 0) AS c, COUNT(*) AS k FROM spend WHERE day = ?").get(day);
+  const today = db.db.prepare("SELECT COALESCE(SUM(cents), 0) AS c, COUNT(CASE WHEN cents > 0 THEN 1 END) AS k FROM spend WHERE day = ?").get(day);
   const month = db.db.prepare("SELECT COALESCE(SUM(cents), 0) AS c FROM spend WHERE day LIKE ?").get(`${day.slice(0, 7)}-%`);
   const capCents = Math.round((config.maxSpendPerDay || 0) * 100);
   const top = db.db.prepare("SELECT COALESCE(MAX(c), 0) AS c FROM (SELECT SUM(cents) AS c FROM spend WHERE day = ? GROUP BY conversation_id)").get(day).c;
