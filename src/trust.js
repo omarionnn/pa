@@ -246,6 +246,11 @@ export async function recordConfirmation({ conversationId, messages, confirmatio
     };
   }
   const latest = texts.at(-1);
+  // One reply is a yes to one ask. Two asks opened in the same turn share one mark, so without this the
+  // "yes" they meant for the one they were shown would grant the other as well, including one they were
+  // never told about (security audit 2026-11-06, lead 27).
+  const used = db.grantedByReply(c, texts.length);
+  if (used) return replyUsed(c, used);
 
   // A flat no needs no reading, and is honoured even if the judge is down.
   if (isBareRefusal(latest)) {
@@ -275,8 +280,20 @@ export async function recordConfirmation({ conversationId, messages, confirmatio
         : `Their reply does not read as a clear yes or no, so nothing is authorized. Ask once, plainly, for a yes.`,
     };
   }
-  db.grantConfirmation(c.id, latest);
+  if (!db.grantConfirmationByReply(c.id, latest, texts.length)) {
+    const fresh = db.getConfirmation(conversationId, c.id);
+    if (fresh?.granted_at) return { ok: true, state: "granted", confirmation_id: c.id, action: c.action, quote: fresh.granted_quote };
+    return replyUsed(c, db.grantedByReply(c, texts.length));
+  }
   return { ok: true, state: "granted", confirmation_id: c.id, action: c.action, quote: latest };
+}
+
+/** Their latest reply already said yes to another ask: nothing about this one is decided. */
+function replyUsed(c, used) {
+  return {
+    ok: false, state: "waiting_for_yes",
+    error: `Their last reply was already taken as the yes to confirmation #${used?.id ?? "?"}${used ? ` (${used.action})` : ""}. One reply is a yes to one thing, so nothing is authorized for #${c.id} (${c.action}). If they want this too, say this one to them on its own and wait for their next reply.`,
+  };
 }
 
 /**

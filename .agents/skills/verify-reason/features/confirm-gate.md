@@ -9,7 +9,7 @@ connected account in one tap."*
 Source: `src/trust.js` (the guard, the caps, `amountsIn`), `src/tools.js` (`confirm_request`,
 `confirm_record`, `confirm_pending`, `permission_grant`), `src/receipts.js`, `src/db.js`
 (`confirmations`, `action_ledger`, `permissions`).
-Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.js`,
+Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.js`, `test/one-reply-one-yes.test.js`,
 `test/permission-readback.test.js`,
 `test/trustline-loop.test.js`, `test/receipts.test.js`, `test/undo-window.test.js`,
 `test/flow-gate.test.js` and `test/flow-trust.test.js` (real model reading real sentences).
@@ -63,6 +63,20 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
 - **A yes is pinned.** `target` is checked, so a yes for one phone number cannot be spent on
   another, and a yes for an 8:00 booking cannot be carried to a 9:00 one.
 - **A yes is spent once.** `consumed_at`.
+- **One reply is a yes to one ask (audit lead 27, 2026-11-07).** Two asks opened in the same turn
+  share one `asked_after_msgs` mark, so before this the owner's "yes" to the one they were shown also
+  granted any other open ask, including one never mentioned to them. Now a grant stores
+  `granted_by_msg` (which of their texts in that thread said it, same count as `asked_after_msgs`),
+  and `confirm_record` on a second ask answered by that same reply returns `waiting_for_yes` with
+  "already taken as the yes to confirmation #N": nothing granted, nothing refused; its own later
+  reply grants it. The check is in the grant's UPDATE (`db.grantConfirmationByReply`), so two calls
+  at once cannot both win. `shiftThreadMarks` moves the mark with a trimmed thread;
+  `adoptWebChatAsks` clears it. Only asks already open at that grant share the reply
+  (`granted_upto_id`, the newest ask id then), so a fresh ask in a thread that counts from the start
+  again is not blocked by an old yes at the same count. Drive: `test/one-reply-one-yes.test.js` (5), or the cage drive
+  below with two `confirm_request`s before one owner reply and `judge: async () => ({ verdict: "yes" })`:
+  end state A `granted`, B `waiting_for_yes`, `authorizeConfirmation` on B `not_granted`, then B
+  `granted` after a reply of its own (cage, 2026-11-07, `granted_by_msg` 2 and 3).
 - **Open asks are findable.** `confirm_pending`, so Reason records against the id it already has
   instead of asking twice and landing their yes on nothing.
 - **Standing permissions.** `permission_grant` saves "you can reorder groceries without asking" with
