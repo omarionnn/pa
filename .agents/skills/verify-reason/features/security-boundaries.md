@@ -48,6 +48,16 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
   its questions from the errand row). A hit → `status: "payment_details_refused"`, nothing dialled,
   no call row, the value never echoed. Before this only goal and facts were scanned, and a card in
   `requirements` was dialled and rendered into the voice prompt.
+  **Explained calmly (lead 31 follow-up).** One instruction, `calmWhy` in `src/calls/payments.js`,
+  rides in three places the model reads — never a script, never a regex verdict: the refusal note
+  (`error`) of `call_place` and of `timer_set` `then_call` (the owner asked, by text or on his own
+  call — the voice says the backend's result); rule 2 of `callRulesFor` (src/calls/provider.js), so the
+  GPT-Live line voice (`lineTalkInstructions`) and Reason's third-party call turn (`thirdPartyFrame`
+  via `thirdPartyContext`) get it when THEY ask for a card; and the `say` of a declined proposal in
+  `src/calls/commit.js`. It says: tell them, in your own words, Reason doesn't share or ask for card
+  or account details on calls, to keep their (or Omari's) money safe; not an error, no blame, not the
+  same way twice; then offer another way (call without them, a pay link). The scheduled-call fallback
+  text (`unplacedCallLine` in src/runtime.js) is code's own words and is unchanged.
 - **Only he instructs a remote builder (lead 34).** `src/tools.js` `remoteRefusal` refuses
   `remote_start`, `remote_say` and `remote_decline` (`BUILDER_INSTRUCTIONS`) on any turn whose
   `ctx.kind` is not `"user"` (a missing kind counts as `"event"`): `blocked: "not_his_turn"`, nothing
@@ -80,6 +90,13 @@ No model, no phone: `bin/call-payments-drive.mjs` under `caged.sh env` with a fr
 in a requirements value/key, cvv in `ask`, a card number in `approved_terms` or facts → refused,
 nothing placed; an ordinary ask-only call with requirements and a "do they take card" question still
 goes. 8 ok on `sec/lead31` 2026-11-07; on `c55094b` (main before) the requirements card was placed.
+Since `sec/lead31-explain` (2026-11-07) each refusal also checks its note carries the calm-why
+instruction (no quoted script, no `say` field), and the placed call's rules, the GPT-Live line voice
+prompt and the real `thirdPartyContext` system prompt carry it; `--transcript` prints what the model
+sees and what a STUB model following it would say (echoes the instruction — not real model speech;
+no model runs). The yes now follows the pinned-target flow (`call_place` without a confirmation_id →
+`use_target` → `confirm_request`); before that fix the ordinary call step failed on main too.
+17 ok on a cage (port 8885).
 
 No model, no builder: `bin/remote-gate-drive.mjs` under `caged.sh env` with a fresh temp
 `REASON_DB_PATH` + `REASON_REMOTE_ROOT`, `REASON_REMOTE_BUILD=1`, `REASON_OPENCLAW_BIN=/nonexistent/…`
