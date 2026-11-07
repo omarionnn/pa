@@ -3694,7 +3694,8 @@ export const tools = [
   },
   {
     name: "remember",
-    description: "Save a durable fact about a person or a thing: a preference, an allergy, a usual spot, who someone is, how they like things. Facts pile up under the same subject, so use the person's name as they say it and one fact per call. Not for plan details — those belong in the plan, which changes; this is for what stays true. Only for what somebody actually TOLD you: a thing you worked out, or read off a picture, is not a fact about them and this will refuse it. Ask them instead and save what they answer.",
+    description: "Save a durable fact about a person or a thing: a preference, an allergy, a usual spot, who someone is, how they like things. Facts pile up under the same subject, so use the person's name as they say it and one fact per call. Not for plan details — those belong in the plan, which changes; this is for what stays true. Only for what somebody actually TOLD you: a thing you worked out, or read off a picture, is not a fact about them and this will refuse it. Ask them instead and save what they answer."
+      + " When they correct how YOU behave — when you text, your tone, what you put first, something to stop doing — save it with kind 'how_to_treat_me': the rule in 'fact', what it came from in 'why'. It rides on every later turn.",
     input_schema: {
       type: "object",
       properties: {
@@ -3705,6 +3706,8 @@ export const tools = [
           enum: ["they_said", "i_saw_it_in_a_photo", "i_worked_it_out"],
           description: "Where this came from. 'they_said' means somebody said it to you in words, which is the only kind of thing that gets saved. The other two are refused on purpose: say what you think in the conversation instead, or ask, and save their answer.",
         },
+        kind: { type: "string", enum: ["fact", "how_to_treat_me"], description: "'fact' (default), or 'how_to_treat_me' for a rule about how you behave with them, from their correction." },
+        why: { type: "string", description: "how_to_treat_me only: what the rule came from, in a few words ('said a 7am text was too early')." },
       },
       required: ["about", "fact"],
     },
@@ -3822,11 +3825,12 @@ export const tools = [
       + " never said that', 'drop #7'. One row only, and it is irreversible; the copies of it in what you already said go too."
       + " Use `forget` instead when they want a whole person gone rather than one line. A STANDING PERMISSION is not dropped"
       + " here: permission_revoke is the only path the gate reads. One rhythm is dropped here too ('stop thinking that');"
-      + " when they want you to stop noticing them AT ALL, that is patterns_set with on=false, which deletes every one.",
+      + " when they want you to stop noticing them AT ALL, that is patterns_set with on=false, which deletes every one."
+      + " A how-to-treat-me rule they no longer want is row 'rule'.",
     input_schema: {
       type: "object",
       properties: {
-        row: { type: "string", enum: ["fact", "guess", "pattern", "preference", "why"], description: "Which section the line is in. 'pattern' is one of the rhythms you noticed. 'permission' is not one of them \u2014 use permission_revoke." },
+        row: { type: "string", enum: ["fact", "guess", "pattern", "preference", "why", "rule"], description: "Which section the line is in. 'pattern' is one of the rhythms you noticed; 'rule' is one of their how-to-treat-me rules. 'permission' is not one of them \u2014 use permission_revoke." },
         id: { type: "integer", description: "The number on that row, from memory_page." },
       },
       required: ["row", "id"],
@@ -6762,6 +6766,8 @@ const S = {
     about: z.string().min(1).max(100),
     fact: z.string().min(1).max(500),
     source: z.enum(["they_said", "i_saw_it_in_a_photo", "i_worked_it_out"]).optional(),
+    kind: z.enum(["fact", "how_to_treat_me"]).optional(),
+    why: z.string().max(300).optional(),
   }),
   recall: z.object({ about: z.string().max(100).optional() }),
   forget: z.object({ about: z.string().min(1).max(100) }),
@@ -6988,7 +6994,7 @@ const S = {
     category: z.enum(READINGS).optional(),
   }),
   memory_drop: z.object({
-    row: z.enum(["fact", "guess", "pattern", "preference", "why"]),
+    row: z.enum(["fact", "guess", "pattern", "preference", "why", "rule"]),
     id: z.number().int().positive(),
   }),
   patterns_set: z.object({
@@ -10260,6 +10266,25 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const credential = looksLikeACredential(`${input.about} ${input.fact}`);
       if (credential) return refuseCredential(credential, { what: "that", ownerName: me.name });
 
+      // A rule about how Reason behaves with them, from their own correction (src/dream.js reviews
+      // these nightly). Rides on every later turn (src/memorynote.js), sealed to this conversation.
+      if (input.kind === "how_to_treat_me") {
+        const made = db.addRule(c, { rule: input.fact, why: input.why ?? "", sourceMessageId: db.latestUserEventId(c), source: "they_said" });
+        if (!made.ok) {
+          return {
+            ok: false, refused: made.refused ?? "not_saved",
+            error: made.refused === "too_many"
+              ? `They already have ${db.RULES_CEILING} rules for how you treat them. Ask which one this replaces, memory_drop it (row 'rule'), then save this.`
+              : "Nothing was saved: a rule needs its words in 'fact'.",
+          };
+        }
+        return {
+          ok: true, kind: "how_to_treat_me", rule_id: made.rule.id, rule: made.rule.rule, already_knew: !!made.already,
+          note: "Saved as a rule for how you treat them; it is in front of you on every turn from now on. Follow it from this reply on."
+            + " Say it back in a few words at most, and they can delete it from their memory page any time.",
+        };
+      }
+
       const saved = db.remember(c, input.about, input.fact);
       // A subject that is an email address or a phone number Reason cannot tie to a person it knows.
       // Unlike the other refusals, there IS something here worth keeping — it just needs somebody to
@@ -10476,6 +10501,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         page_blocks: memory.pageBlocks(got, { ownerName: me.name }),
         how_to_correct: `Every row has an id. memory_fix changes exactly one of them from their own words; memory_drop`
           + ` deletes one. A standing permission is the exception: taking one back is permission_revoke.`
+          + (got.counts.rules ? ` A how-to-treat-me rule is row "rule" for memory_drop; a changed one is saved again with remember.` : "")
           + (got.counts.commitments
             ? ` So is something they do on a schedule: "make leg day 8" is commitment_set with the same thing and the new`
               + ` time — which keeps every session logged against it — and "drop leg day" is commitment_end. A number they`
@@ -10573,14 +10599,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "memory_drop": {
-      const out = input.row === "fact" ? db.dropFact(c, input.id)
+      const out = input.row === "rule" ? db.dropRule(c, input.id)
+        : input.row === "fact" ? db.dropFact(c, input.id)
         : input.row === "why" ? db.dropWhy(c, input.id)
           : (input.row === "guess" || input.row === "pattern") ? db.dropGuess(c, input.id)
           : db.dropPreference(c, input.id);
       if (!out.ok) {
         return { ...out, error: `${out.error} Call memory_page for the real numbers rather than guessing at one.` };
       }
-      const words = out.was.fact ?? out.was.guess ?? out.was.words ?? out.was.why ?? "";
+      const words = input.row === "rule" ? out.was.rule : (out.was.fact ?? out.was.guess ?? out.was.words ?? out.was.why ?? "");
       const cleared = words ? db.scrubToolResults(c, { tools: db.MEMORY_TOOL_NAMES, mentioning: [words] }) : 0;
       const rewritten = words ? db.redactFromReplies(c, [words]) : 0;
       // Facts: remove embedding and rebuild profile.

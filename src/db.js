@@ -13055,3 +13055,162 @@ export function knownPersonByName(conversationId, name) {
   const imp = db.prepare("SELECT who FROM important_people WHERE conversation_id = ? AND who_key = ?").get(conversationId, String(name ?? "").trim().toLowerCase().replace(/\s+/g, " "));
   return imp ? { who: imp.who, from: "important_people" } : null;
 }
+
+// ---------- how to treat me: rules from their own corrections (src/dream.js, the remember tool) ----------
+//
+// When somebody puts Reason right about how it BEHAVES — "don't text me before 9", "lead with the
+// price", "stop sending me three options" — that is not a fact about them, it is a rule for Reason.
+// Kept apart from person_facts so it rides on every turn (src/memorynote.js) instead of competing
+// for a profile slot, and so the nightly review can merge and retire rules without touching facts.
+// Every query is scoped by conversation_id: one person's rules are never read on another's turn.
+//
+// status: active | deleted (they took it back: never comes back from a review) | superseded (merged
+// into `superseded_by`, or retired by a later message). Nothing is ever hard-deleted here except by a
+// data delete (src/data.js).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS treat_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    rule_key TEXT NOT NULL,
+    why TEXT NOT NULL DEFAULT '',
+    source_message_id INTEGER,
+    source TEXT NOT NULL DEFAULT 'they_said',
+    status TEXT NOT NULL DEFAULT 'active',
+    superseded_by INTEGER,
+    created_at INTEGER NOT NULL,
+    retired_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS treat_rules_conv ON treat_rules (conversation_id, status);
+  CREATE TABLE IF NOT EXISTS memory_reviews (
+    conversation_id TEXT PRIMARY KEY,
+    last_event_id INTEGER NOT NULL DEFAULT 0,
+    last_day TEXT NOT NULL DEFAULT '',
+    reviewed_at INTEGER,
+    last_outcome TEXT NOT NULL DEFAULT ''
+  );
+`);
+
+/** The hard cap on active rules per person. Past it the nightly review consolidates. */
+export const RULES_CAP = 8;
+/** In-turn ceiling: a few over the cap is allowed until the night, never an unbounded pile. */
+export const RULES_CEILING = 12;
+
+const ruleRow = (r) => r ? { ...r } : null;
+
+/** Their active rules, newest first. */
+export function activeRules(conversationId, { limit = 50 } = {}) {
+  return db.prepare("SELECT * FROM treat_rules WHERE conversation_id = ? AND status = 'active' ORDER BY created_at DESC, id DESC LIMIT ?")
+    .all(conversationId, limit);
+}
+
+/** One active rule, inside this conversation only. */
+export function getRule(conversationId, id) {
+  return ruleRow(db.prepare("SELECT * FROM treat_rules WHERE id = ? AND conversation_id = ? AND status = 'active'").get(id, conversationId));
+}
+
+/**
+ * Save a rule. `source` 'they_said' (the in-turn tool, on their word) or 'review' (the nightly pass).
+ * A rule they deleted is never brought back by a review; only their own word revives it. The same
+ * rule already active is not doubled. Past the ceiling an in-turn save is refused.
+ */
+export function addRule(conversationId, { rule, why = "", sourceMessageId = null, source = "they_said", at = clock.now() } = {}) {
+  const clean = String(rule ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
+  if (!clean) return { ok: false, error: "empty" };
+  const key = normalize(clean);
+  const same = db.prepare("SELECT * FROM treat_rules WHERE conversation_id = ? AND rule_key = ? ORDER BY id DESC").all(conversationId, key);
+  const active = same.find(r => r.status === "active");
+  if (active) return { ok: true, already: true, rule: active };
+  const takenBack = same.find(r => r.status === "deleted");
+  if (takenBack && source !== "they_said") return { ok: false, refused: "taken_back", error: "they took that one back" };
+  if (activeRules(conversationId, { limit: RULES_CEILING + 1 }).length >= RULES_CEILING) {
+    return { ok: false, refused: "too_many", error: `there are already ${RULES_CEILING} rules; replace one instead of adding` };
+  }
+  const msg = Number.isInteger(Number(sourceMessageId)) && Number(sourceMessageId) > 0 ? Number(sourceMessageId) : null;
+  const r = db.prepare(`INSERT INTO treat_rules (conversation_id, rule, rule_key, why, source_message_id, source, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`).run(conversationId, clean, key, String(why ?? "").trim().slice(0, 300), msg, source, at);
+  return { ok: true, rule: getRule(conversationId, Number(r.lastInsertRowid)) };
+}
+
+/** They took one back. It stays on disk as 'deleted' so a review can never revive it. */
+export function dropRule(conversationId, id, { at = clock.now() } = {}) {
+  const row = getRule(conversationId, id);
+  if (!row) return { ok: false, error: `There is no rule #${id} here.` };
+  db.prepare("UPDATE treat_rules SET status = 'deleted', retired_at = ? WHERE id = ?").run(at, id);
+  return { ok: true, was: row };
+}
+
+/** Retired by the review: contradicted later, or folded into `by`. Not theirs to have taken back. */
+export function supersedeRule(conversationId, id, { by = null, at = clock.now() } = {}) {
+  const row = getRule(conversationId, id);
+  if (!row) return { ok: false, error: "not an active rule here" };
+  if (by != null && (by === id || !db.prepare("SELECT 1 FROM treat_rules WHERE id = ? AND conversation_id = ?").get(by, conversationId))) {
+    return { ok: false, error: "not a rule here" };
+  }
+  db.prepare("UPDATE treat_rules SET status = 'superseded', superseded_by = ?, retired_at = ? WHERE id = ?").run(by, at, id);
+  return { ok: true, was: row };
+}
+
+/** The newest user message in this conversation: what an in-turn rule came from. */
+export function latestUserEventId(conversationId) {
+  return db.prepare("SELECT id FROM event_log WHERE conversation_id = ? AND role = 'user' ORDER BY at DESC, id DESC LIMIT 1").get(conversationId)?.id ?? null;
+}
+
+// ---------- the nightly memory review (src/dream.js) ----------
+
+export function memoryReviewState(conversationId) {
+  return db.prepare("SELECT * FROM memory_reviews WHERE conversation_id = ?").get(conversationId)
+    ?? { conversation_id: conversationId, last_event_id: 0, last_day: "", reviewed_at: null, last_outcome: "" };
+}
+
+/** Record a night's pass. `lastEventId` moves only when the pass really read up to it. */
+export function markMemoryReview(conversationId, { day, lastEventId = null, outcome = "", at = clock.now() }) {
+  const was = memoryReviewState(conversationId);
+  const last = lastEventId == null ? was.last_event_id : Math.max(was.last_event_id, Number(lastEventId));
+  db.prepare(`INSERT INTO memory_reviews (conversation_id, last_event_id, last_day, reviewed_at, last_outcome) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(conversation_id) DO UPDATE SET last_event_id = excluded.last_event_id, last_day = excluded.last_day,
+      reviewed_at = excluded.reviewed_at, last_outcome = excluded.last_outcome`).run(conversationId, last, String(day ?? ""), at, String(outcome).slice(0, 40));
+}
+
+/** Has anything been said since `afterId`? One indexed query. */
+export function hasEventsSince(conversationId, afterId = 0) {
+  return !!db.prepare("SELECT 1 FROM event_log WHERE conversation_id = ? AND id > ? AND role = 'user' LIMIT 1").get(conversationId, Number(afterId) || 0);
+}
+
+/** Event rows by id, this conversation only: a fact's source messages, resolved. */
+export function eventsByIds(conversationId, ids) {
+  const want = [...new Set((ids ?? []).map(Number).filter(n => Number.isInteger(n) && n > 0))].slice(0, 400);
+  if (!want.length) return [];
+  return db.prepare(`SELECT id, role, content, at FROM event_log WHERE conversation_id = ? AND id IN (${want.map(() => "?").join(",")})`)
+    .all(conversationId, ...want);
+}
+
+/**
+ * Has the person taken back this wording about this subject (memory_drop, memory_fix)? A review must
+ * never write a sentence they removed.
+ */
+export function factTakenBack(conversationId, personId, fact) {
+  const key = factKey(fact);
+  return db.prepare(`SELECT f.fact FROM person_facts f JOIN people p ON p.id = f.person_id
+    WHERE p.conversation_id = ? AND f.person_id = ? AND f.status IN ('deleted', 'corrected')`).all(conversationId, personId)
+    .some(r => factKey(r.fact) === key);
+}
+
+/**
+ * A fact the review found stale or contradicted by a later message, with no replacement. 'superseded'
+ * rather than 'deleted': the person did not take it back, and a state that flips back can return.
+ */
+export function retireFact(conversationId, id, { at = clock.now() } = {}) {
+  const row = getFact(conversationId, id);
+  if (!row) return { ok: false, error: "not an active fact here" };
+  db.prepare("UPDATE person_facts SET status = 'superseded', valid_to = ? WHERE id = ?").run(at, id);
+  db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ? AND source_table = 'person_facts'").run(id);
+  return { ok: true, was: row };
+}
+
+/** Point a fact's source at the message that justified it (the review's correction). */
+export function setFactSources(conversationId, id, messageIds) {
+  if (!getFact(conversationId, id)) return false;
+  db.prepare("UPDATE person_facts SET source_message_ids = ? WHERE id = ?").run(JSON.stringify(messageIds), id);
+  return true;
+}

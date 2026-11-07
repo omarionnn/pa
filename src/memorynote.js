@@ -34,6 +34,18 @@ export async function memoryNotes(conversationId, text, { find = search, vectors
   } catch (e) {
     log({ profile_note_failed: e.message });
   }
+  // How they want to be treated: rules from their own corrections of how Reason behaves (the remember
+  // tool's how_to_treat_me, and the nightly review, src/dream.js). Every turn, beside the profile,
+  // short: the rule only, at most db.RULES_CAP.
+  try {
+    const rules = db.activeRules(conversationId, { limit: db.RULES_CAP });
+    if (rules.length) {
+      notes.push(`HOW THEY WANT YOU TO TREAT THEM (their own corrections of how you behave — follow these; a newer one wins):\n`
+        + rules.map(r => `- ${String(r.rule).slice(0, 200)}`).join("\n"));
+    }
+  } catch (e) {
+    log({ rules_note_failed: e.message });
+  }
 
   if (!enabled || !String(text ?? "").trim()) return notes;
   try {

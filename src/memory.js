@@ -163,20 +163,24 @@ export function remembered({ conversationId, now = clock.now() } = {}) {
       ...(v.their_numbers.length ? { their_numbers: v.their_numbers } : {}),
       set_on: v.set_on,
     }));
+  // How they want to be treated: rules from their own corrections of how Reason behaves (src/dream.js).
+  const rules = db.activeRules(conversationId).map(r => ({
+    id: r.id, rule: r.rule, ...(r.why ? { why: r.why } : {}), since: stamp(r.created_at),
+  }));
   return {
-    facts, guesses, patterns, preferences: prefs, whys, permissions: perms, commitments,
+    facts, guesses, patterns, preferences: prefs, whys, permissions: perms, commitments, rules,
     initiative: initiativeNow({ conversationId, now }),
     counts: {
       facts: facts.length, guesses: guesses.length, patterns: patterns.length, preferences: prefs.length,
       whys: whys.length, permissions: perms.length,
-      commitments: commitments.length,
+      commitments: commitments.length, rules: rules.length,
     },
   };
 }
 
 /** Is any of it filled in? One place, so the page, the text answer and the tests agree. */
 const nothingYet = (got) => !got.counts.facts && !got.counts.guesses && !got.counts.patterns
-  && !got.counts.preferences && !got.counts.whys && !got.counts.permissions && !got.counts.commitments;
+  && !got.counts.preferences && !got.counts.whys && !got.counts.permissions && !got.counts.commitments && !got.counts.rules;
 
 /**
  * Their initiative settings in plain words, for the page.
@@ -264,6 +268,14 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
     blocks.push({
       type: "rows",
       items: got.facts.map(f => ({ name: f.fact, detail: `about ${f.about} · since ${f.since}`, n: `#${f.id}` })),
+    });
+  }
+
+  if (got.counts.rules) {
+    blocks.push({ type: "section", title: "How you want me to treat you" });
+    blocks.push({
+      type: "rows",
+      items: got.rules.map(r => ({ name: r.rule, detail: [r.why ? `because ${r.why}` : null, `since ${r.since}`].filter(Boolean).join(" · "), n: `#${r.id}` })),
     });
   }
 
@@ -457,6 +469,9 @@ export function answerNote(got, { hasPage = false } = {}) {
     bits.push(`The reasons are what you RANK by, so say them as the goals they are and not as facts about them —`
       + ` "you said the move is about saving money" rather than "you want to save money". Never add one that is not`
       + ` in the list.`);
+  }
+  if (got.counts.rules) {
+    bits.push(`How they asked you to treat them goes right after what they told you: each rule in a few plain words.`);
   }
   if (got.counts.permissions) {
     bits.push(`Quote a permission in THEIR words, not your reading of it.`);

@@ -137,3 +137,19 @@ every pass — and `select feature,via,count(*) from model_usage where feature i
 - Extraction needs a working `claude` login, not a key (see the cage note above); embeddings need
   `OPENAI_API_KEY`, and absent one `backfillEmbeddings` returns 0 (`src/extract.js:185`).
 - Don't read `person_facts` content from the live database into a report; it is the user's data.
+
+## The nightly review and how-to-treat-me rules (src/dream.js)
+
+Once a night per person (4am in their zone, New York when none is known; `REASON_DREAM_HOUR`), on
+the background lane, **claude-cli only** — on `REASON_BACKEND=api` it never runs, and a CLI that
+cannot answer skips the night without moving `memory_reviews.last_event_id`. One pass reads the
+messages since the last review (capped: 150 messages / 30k chars; first review = last 7 days) and
+every active fact with its source messages, and answers keep / correct / merge / retire per fact
+with a cited `m<id>`; code refuses any change whose citation it did not show, any cross-subject
+merge, and any wording the person took back. Rules live in `treat_rules` (cap `db.RULES_CAP` = 8,
+in-turn ceiling 12), are saved in-turn by `remember` with `kind: "how_to_treat_me"`, ride on every
+turn as `HOW THEY WANT YOU TO TREAT THEM` (src/memorynote.js), and are on `memory_page` and
+`/web/memory` (HOW TO TREAT ME) with delete (`memory_drop` row `rule`).
+**Offline proof:** `node --test test/memory-dream.test.js`. **Live proof (when deployed):**
+`journalctl -u reason | grep '"memory_review"'` — counts only, never text — and
+`select last_outcome, count(*) from memory_reviews group by 1`.
