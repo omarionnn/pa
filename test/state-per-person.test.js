@@ -29,6 +29,7 @@ const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const db = await import("../src/db.js");
+const { whoseCallIsThis } = await import("../src/calls/inbound.js");
 const { clock, config } = await import("../src/config.js");
 
 const MASTER = "+12025551234";
@@ -134,4 +135,15 @@ test("an active account on one line is untouched: the other line still asks, as 
   assert.equal(accounts.accountState("fake", KOFI), "active");
   assert.equal(accounts.accountState("other", KOFI), null, "no stop anywhere, so the other line is still a fresh ask");
   assert.equal(accounts.admit({ channel: "other", address: KOFI }).reason, "no_account_yet");
+});
+
+test("a call from the number is refused when a non-newest row is paused", () => {
+  db.upsertAccount({ conversationId: `dm:other:${KOFI}`, channel: "other", address: KOFI, name: "Kofi" });
+  db.setAccountState(`dm:other:${KOFI}`, "paused");
+  // The active fake row is the newest seen, which is the one a call joins.
+  db.db.prepare("UPDATE accounts SET last_seen_at = ? WHERE conversation_id = ?").run(clock.now() + 60_000, `dm:fake:${KOFI}`);
+  assert.equal(db.accountByNumber(KOFI).conversation_id, `dm:fake:${KOFI}`);
+  const who = whoseCallIsThis(KOFI);
+  assert.equal(who.allow, false);
+  assert.equal(who.reason, "paused");
 });
