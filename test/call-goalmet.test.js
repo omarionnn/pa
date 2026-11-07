@@ -67,15 +67,18 @@ test("goal_met is a success that reached a person and is never redialled", () =>
   assert.equal(outcome.redialMode("goal_met"), "no");
 });
 
-test("only a third-party call that reached a person and settled nothing is asked about", () => {
+test("only a call that reached a person and settled nothing is asked about (their own call too, 2026-11-07)", () => {
   assert.equal(goal.judgeable(call()), true);
-  assert.equal(goal.judgeable(call({ is_owner: 1 })), false);
+  assert.equal(goal.judgeable(call({ is_owner: 1 })), true);
   assert.equal(goal.judgeable(call({ direction: "in" })), false);
   assert.equal(goal.judgeable(call({ outcome_kind: "confirmed" })), false);
   assert.equal(goal.judgeable(call({ outcome_kind: "line_silent" })), false);
   assert.equal(goal.judgeable(call({ transcript: "Reason: Hello?\nThem: ...\nReason: Hello?" })), false);
-  // Cleared to book: only the read-back gate settles it.
-  assert.equal(goal.judgeable(call({ brief: JSON.stringify({ approved: { book: true } }) })), false);
+  // Cleared to book: only the read-back gate settles whether it was done; a machine answering it still names itself.
+  const booking = call({ brief: JSON.stringify({ approved: { book: true } }) });
+  assert.equal(goal.kindFrom(booking, { met: true, how: "talked" }), "");
+  assert.equal(goal.kindFrom(booking, { met: false, how: "hung_up_early" }), "");
+  assert.equal(goal.kindFrom(booking, { met: false, how: "voicemail_not_set_up" }), "voicemail_full");
 });
 
 test("a transcript that grew while it was being read is read again", async () => {

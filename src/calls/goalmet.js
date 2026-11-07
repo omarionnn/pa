@@ -16,23 +16,36 @@ import * as db from "../db.js";
 import { askStructured, sideAskAllowed } from "../backends/side.js";
 import { theySpoke } from "./outcome.js";
 
+// How the call went, when it was not met (2026-11-07: every unsettled call read "dropped before
+// confirmation" — a mailbox that isn't set up, a person who hung up on the first second, a chat).
+export const HOW = ["talked", "hung_up_early", "voicemail_not_set_up", "voicemail_greeting", "recording", "unsure"];
 const SCHEMA = {
   type: "object",
   properties: {
     met: { type: "boolean" },
+    how: { type: "string", enum: HOW },
     why: { type: "string" },
   },
-  required: ["met", "why"],
+  required: ["met", "how", "why"],
   additionalProperties: false,
 };
+
+/** The outcome a not-met read moves the row to, or "" to leave it as it is. */
+export const KIND_FOR = {
+  talked: "picked_up", hung_up_early: "hung_up_early", voicemail_not_set_up: "voicemail_full",
+  voicemail_greeting: "voicemail_no_message", recording: "machine_recording", unsure: "",
+};
+/** A machine answered: nothing could have been agreed, so these stand even on a call cleared to book. */
+const MACHINE_HOW = new Set(["voicemail_not_set_up", "voicemail_greeting", "recording"]);
 
 const SYSTEM = `You read the transcript of a phone call an AI assistant made on someone's behalf, and the goal it was given. Say whether the call achieved that goal.
 met = true only when the transcript itself shows it happened: the message was given to the person it was meant for (or to whoever the goal allows) and they took it; the question was asked and actually answered; the information the goal wanted was actually obtained.
 met = false when the goal was to book, buy, reserve, change, cancel or agree to something (those are judged elsewhere); when the person never heard or never took the message; when the questions went unanswered or were only promised for later; when it reached a recording, a menu or voicemail; when the line was silent; when the call was cut off before the point was made; or when you are unsure. Warmth and politeness are not achievement.
+how: what the call was, read from the transcript — talked (a person answered and there was a real exchange), hung_up_early (a person picked up and the line ended within the first moments, before the point of the call was made, e.g. only "hello? hello?"), voicemail_not_set_up (a recording said the mailbox is not set up, is full, or cannot take messages), voicemail_greeting (a voicemail greeting answered), recording (another recorded message or a phone menu, no person), unsure.
 why: one plain sentence saying what was achieved, or what was missing.`;
 
 /** The goal and the transcript, as one prompt. */
-const promptFor = (row, transcript) => `The goal the call was given:\n${String(row.goal ?? "").slice(0, 1200)}\n\nThe transcript ("Reason" is the assistant, "Them" is the other side):\n${String(transcript ?? "").slice(0, 8000)}`;
+const promptFor = (row, transcript) => `${Number(row.is_owner) === 1 ? "This was a call between the assistant and the person it works for.\n" : ""}The goal the call was given:\n${String(row.goal ?? "").slice(0, 1200)}\n\nThe transcript ("Reason" is the assistant, "Them" is the other side):\n${String(transcript ?? "").slice(0, 8000)}`;
 
 /**
  * Whether this row is one the question is asked about at all: a finished call Reason placed to
@@ -40,14 +53,35 @@ const promptFor = (row, transcript) => `The goal the call was given:\n${String(r
  * call already settled — the only kind it can change is the "spoke to someone, settled nothing" one.
  */
 export function judgeable(row, transcript = row?.transcript) {
-  if (!row || Number(row.is_owner) === 1 || String(row.direction ?? "out") !== "out") return false;
+  if (!row) return false;
+  // Their own call (either way round) is read too, for how it went; a call to somebody else, as before,
+  // only one Reason placed.
+  if (Number(row.is_owner) !== 1 && String(row.direction ?? "out") !== "out") return false;
   if (row.outcome_kind !== "dropped_before_confirmation") return false;
+  return theySpoke(transcript) === true;
+}
+
+/**
+ * May the read say this call met its goal, or that it was only a chat? Not a call cleared to book or
+ * one that got as far as a commitment: those are settled by the read-back gate and nothing else, and
+ * the model is never the route by which something counts as booked — or as not booked.
+ */
+function goalReadable(row) {
   if (!String(row.goal ?? "").trim()) return false;
-  // A call cleared to book, or one that got as far as a commitment, is settled by the read-back gate
-  // and nothing else: the model is never the route by which something counts as booked.
   if (parse(row.brief)?.approved?.book === true) return false;
   if (row.conversation_id && db.callCommitments(row.conversation_id, row.id).length) return false;
-  return theySpoke(transcript) === true;
+  return true;
+}
+
+/** The outcome a read moves this row to, or "" to leave it. */
+export function kindFrom(row, verdict) {
+  if (!verdict) return "";
+  if (MACHINE_HOW.has(verdict.how)) return KIND_FOR[verdict.how];
+  // Their own call: a conversation, never an errand's success (no seal on the book for it).
+  if (Number(row.is_owner) === 1) return verdict.how === "hung_up_early" ? "hung_up_early" : verdict.how === "talked" || verdict.met ? "talked" : "";
+  if (!goalReadable(row)) return "";
+  if (verdict.met) return "goal_met";
+  return KIND_FOR[verdict.how] ?? "";
 }
 const parse = (s) => { try { return typeof s === "string" ? JSON.parse(s) : (s ?? {}); } catch { return {}; } };
 
@@ -70,7 +104,8 @@ export async function judgeGoal(row, { transcript = row?.transcript, ask = askSt
   } catch (e) { return null; }
   const { value, error } = out ?? {};
   if (error || typeof value?.met !== "boolean") return null;
-  return { met: value.met, why: String(value.why ?? "").replace(/\s+/g, " ").trim().slice(0, 300) };
+  const how = HOW.includes(value.how) ? value.how : "unsure";
+  return { met: value.met, how, why: String(value.why ?? "").replace(/\s+/g, " ").trim().slice(0, 300) };
 }
 
 // One question per call per process; a second settle of the same call waits on the first.
@@ -92,11 +127,12 @@ export function settleGoal(conversationId, row, { ask, log = () => {} } = {}) {
     for (let tries = 0; tries < 3; tries++) {
       const verdict = await judgeGoal(read, ask ? { ask } : {});
       const now = db.getCall(conversationId, row.id) ?? read;
-      if (verdict) log({ call_goal: row.id, met: verdict.met });
+      if (verdict) log({ call_goal: row.id, met: verdict.met, how: verdict.how });
       else log({ call_goal_unjudged: row.id });
-      if (verdict?.met && now.outcome_kind === "dropped_before_confirmation") {
+      const kind = kindFrom(now, verdict);
+      if (kind && now.outcome_kind === "dropped_before_confirmation") {
         // Only the kind: `outcome` stays the provider's own word for how the call went.
-        return db.updateCall(conversationId, row.id, { outcome_kind: "goal_met" });
+        return db.updateCall(conversationId, row.id, { outcome_kind: kind });
       }
       if (!judgeable(now) || String(now.transcript ?? "").length <= String(read.transcript ?? "").length) return now;
       read = now;
