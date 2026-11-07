@@ -4,6 +4,7 @@
 // onboarding runs.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
+import { withYes } from "./fixture-yes.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,6 +55,8 @@ function fakeRuntime() {
   };
 }
 const tool = (name, input, c, rt = fakeRuntime()) => runTool(name, input, { conversationId: c, messages: [], events: rt });
+// A blast the organizer said yes to (audit lead 28: every blast needs one).
+const blastYes = (input, c, rt = fakeRuntime()) => withYes(runTool, "event_blast", input, { conversationId: c, messages: [], events: rt });
 async function ownerEvent(over = {}) {
   const out = await tool("event_create", {
     name: "Halloween Party", description: "costumes mandatory", starts_at: "2026-10-31T21:00", location: "12 Elm St, Apt 4",
@@ -172,7 +175,7 @@ test("mute stops blasts but not a cancellation; leaving ends messages and the pa
   await tool("event_join", { name: "Halloween Party", password: "pumpkin" }, YAW_C);
   await tool("event_mute", { event_id: ev.id, muted: true }, AMA_C);
   const rt = fakeRuntime();
-  await tool("event_blast", { event_id: ev.id, message: "snacks" }, OWNER_C, rt);
+  await blastYes({ event_id: ev.id, message: "snacks" }, OWNER_C, rt);
   assert.deepEqual(rt.sent.map(s => s.conversationId), [YAW_C]);
   const token = db.attendeeRow(ev.id, YAW_C).token;
   const left = await tool("event_leave", { event_id: ev.id }, YAW_C);

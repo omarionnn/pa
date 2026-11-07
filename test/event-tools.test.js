@@ -5,6 +5,7 @@
 // but the organizer exactly as a made-up event is.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
+import { withYes } from "./fixture-yes.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,6 +61,8 @@ function fakeRuntime() {
   };
 }
 const tool = (name, input, c, rt = fakeRuntime()) => runTool(name, input, { conversationId: c, messages: [], events: rt });
+// A blast the organizer said yes to (audit lead 28: every blast needs one).
+const blastYes = (input, c, rt = fakeRuntime()) => withYes(runTool, "event_blast", input, { conversationId: c, messages: [], events: rt });
 const answers = (over = {}) => ({
   name: "Halloween Party", description: "costumes mandatory", starts_at: "2026-10-31T21:00", location: "12 Elm St, Apt 4",
   welcome_message: "so glad you're coming!", password: "pumpkin", show_time_on_join: true, show_location_on_join: false,
@@ -179,7 +182,7 @@ test("blast: to every unmuted guest, tracked; refused while paused", async () =>
   await joinAs(AMA_C); const y = await joinAs(YAW_C);
   db.updateAttendeeRow(y.id, { muted: 1 });
   const rt = fakeRuntime();
-  const out = await tool("event_blast", { event_id: ev.id, message: "bring snacks" }, KOFI_C, rt);
+  const out = await blastYes({ event_id: ev.id, message: "bring snacks" }, KOFI_C, rt);
   assert.equal(out.sent.guests, 1);
   assert.equal(out.sent.skipped_muted, 1);
   assert.match(rt.sent[0].text, /^Halloween Party — from Kofi:\nbring snacks$/);

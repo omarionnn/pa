@@ -98,6 +98,20 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   spent: a second save on it is `already_spent`; a different person or "anyone" on it is
   `wrong_target`; a no saves nothing. Undo class `easy` (`permission_revoke`). Other tests grant
   through `test/fixture-grant.js` (`grantWithYes`).
+- **Broadcasts and GitHub writes need a yes in code (audit lead 28, 2026-11-07).** `event_blast`,
+  `github_issue_create` and `github_issue_comment` are in `ALWAYS_NEEDS_CONFIRMATION` (and
+  `GATED_ACTIONS`, so a standing permission can name them). Before, the draft-then-yes rule for a
+  blast lived only in its description, and issues/comments posted under the owner's GitHub name with
+  no gate. The first call reaches nobody and answers `blocked: "needs_confirmation"` with
+  `use_target`: `blast to <event> (event #<id>): "<preview>" [<sha256 16>]` (`blastTarget`,
+  `src/eventtools.js`), `issue on <repo>: "<title>" [<hash of title+body+labels+assignees>]` or
+  `comment on <repo>#<n>: "<preview>" [<hash>]` (`issueTarget`/`commentTarget`, `src/github.js`).
+  The hash pins the exact words (targets are ≤400 chars and compared case-folded), so a yes for one
+  message cannot send another. A blast on somebody else's event, an ambiguous name, or a
+  cancelled/paused event is refused BEFORE the gate (`organizerRefusal`), exactly as the handler
+  would, and names nothing about the event. Drive: `node --test test/outbound-gate.test.js` (6);
+  other tests go through a yes via `test/fixture-yes.js` (`withYes`); `bin/events-drive.mjs` step
+  "a blast with no yes texts nobody".
 - **Caps.** Per-purchase and monthly (`checkCaps` in `src/trust.js`), with what is already
   committed summed from the `spend` table (`db.spentThisMonth`) so a restart does not reset them.
   With no caps set at all, anything that would spend answers `blocked: "needs_caps"` and asks once

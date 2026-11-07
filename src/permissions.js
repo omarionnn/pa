@@ -92,6 +92,10 @@ export const GATED_ACTIONS = new Set([
   // The one yes to a to-do list's whole plan (src/todo.js). In NEVER_STANDING below: the yes is to
   // a plan they read, and "approve all my lists" would be a yes to plans nobody has written yet.
   "todo_approve",
+  // Model-written words in front of other people (audit lead 28): a blast to every guest of an
+  // event, and an issue or a comment under their GitHub name. Grantable — "you can comment on my
+  // own repos without asking" is a real bound, because the target names the repo.
+  "event_blast", "github_issue_create", "github_issue_comment",
 ]);
 
 /**

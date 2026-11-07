@@ -5,6 +5,7 @@
 // — never the newest one picked silently. (§15 tests 11, 12 and 14.)
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
+import { withYes } from "./fixture-yes.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,6 +58,8 @@ function fakeRuntime() {
   };
 }
 const tool = (name, input, c, rt = fakeRuntime()) => runTool(name, input, { conversationId: c, messages: [], events: rt });
+// A blast the organizer said yes to (audit lead 28: every blast needs one).
+const blastYes = (input, c, rt = fakeRuntime()) => withYes(runTool, "event_blast", input, { conversationId: c, messages: [], events: rt });
 const make = (c, over = {}) => {
   const out = events.create(c, {
     name: "Halloween Party", description: "costumes mandatory", starts_at: "2026-10-31T21:00", location: "12 Elm St, Apt 4",
@@ -82,7 +85,7 @@ test("the organizer's own membership carries role organizer; it is never counted
   assert.equal(events.roleIn(KOFI_C, a.id).role, "organizer");
   await join_(AMA_C, "Kofi's Birthday", "candles");
   const rt = fakeRuntime();
-  await tool("event_blast", { event_id: a.id, message: "bring snacks" }, KOFI_C, rt);
+  await blastYes({ event_id: a.id, message: "bring snacks" }, KOFI_C, rt);
   assert.deepEqual(rt.sent.map(s => s.conversationId), [AMA_C], "a blast reaches guests, never the organizer");
   assert.deepEqual(events.guestList(a).map(g => g.display_name), ["Ama"]);
   // Joining your own event, by any route, is refused as before.
@@ -114,7 +117,7 @@ test("§15.11 mixed roles: organizes A, guest at B — edits and blasts A; in B 
   // A: Kofi organizes — update and blast work.
   const up = await tool("event_update", { event_id: a.id, event_named: "my birthday", description: "cake at 9" }, KOFI_C);
   assert.equal(up.ok, true, JSON.stringify(up));
-  const bl = await tool("event_blast", { event_id: a.id, event_named: "Kofi's Birthday", message: "bring snacks" }, KOFI_C);
+  const bl = await blastYes({ event_id: a.id, event_named: "Kofi's Birthday", message: "bring snacks" }, KOFI_C);
   assert.equal(bl.ok, true, JSON.stringify(bl));
 
   // B: Kofi is a guest — every organizer tool says so, and nothing changes.
@@ -263,7 +266,7 @@ test("every message to guests says which event it is from", async () => {
   const a = make(KOFI_C, { name: "Kofi's Birthday", password: "candles", show_location_on_join: false });
   await join_(AMA_C, "Kofi's Birthday", "candles");
   await join_(YAW_C, "Kofi's Birthday", "candles");
-  await tool("event_blast", { event_id: a.id, message: "bring snacks" }, KOFI_C, rt);
+  await blastYes({ event_id: a.id, message: "bring snacks" }, KOFI_C, rt);
   await tool("event_update", { event_id: a.id, starts_at: "2026-10-31T22:00" }, KOFI_C, rt);
   await tool("event_release", { event_id: a.id, detail: "location" }, KOFI_C, rt);
   await tool("event_guest_remove", { event_id: a.id, guest_id: db.attendeeRow(a.id, YAW_C).id }, KOFI_C, rt);
