@@ -36,10 +36,13 @@ test("a phone number still normalizes the way it always did", () => {
   assert.equal(normalizeNumber("+1 (415) 555-9876"), USER);
   assert.equal(normalizeNumber("14155559876"), USER);
   assert.equal(normalizeNumber("tel:+14155559876"), USER);
+  assert.equal(normalizeNumber("TEL:+14155559876"), USER);
+  assert.equal(normalizeNumber("  +1 415 555 9876  "), USER);
+  assert.equal(normalizeNumber("Mom: +1 415 555 9876"), USER, "a label before a number is not a scheme");
 });
 
 test("an email, SIP or client handle is not a number", () => {
-  for (const h of ["14155559876@attacker.example", "omari12025551234@icloud.com", "sip:+12025551234@evil.example", "client:12025551234", "sips:12025551234@x"]) {
+  for (const h of ["14155559876@attacker.example", "omari12025551234@icloud.com", "sip:+12025551234@evil.example", "client:12025551234", "sips:12025551234@x", "14155559876\uFF20icloud.com", "14155559876%40icloud.com", " SIP:+12025551234"]) {
     assert.equal(normalizeNumber(h), "", h);
   }
   assert.equal(isOwnerNumber("12025551234@attacker.example"), false);

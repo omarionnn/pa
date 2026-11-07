@@ -1151,9 +1151,10 @@ export function callbackUrl(path) {
  */
 export function normalizeNumber(n) {
   let s = String(n ?? "").trim();
-  if (s.includes("@")) return "";
+  if (/[@\uFF20]|%40/i.test(s)) return "";
   if (/^tel:/i.test(s)) s = s.slice(4);
-  else if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return "";
+  // "sip:+1…", "client:1202…": a scheme glued to what follows. "Mom: +1 415…" is a label, not one.
+  else if (/^[a-z][a-z0-9+.-]*:(?!\s)/i.test(s)) return "";
   const digits = s.replace(/\D/g, "");
   return digits ? `+${digits}` : "";
 }
