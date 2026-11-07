@@ -12268,6 +12268,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // card number in it, and the card number would outlive the permission.
       const inThere = looksLikeACredential(said);
       if (inThere) return refuseCredential(inThere, { what: "that permission", ownerName: me.name });
+      // A standing permission skips every later yes it covers, so its authority is their own sentence and
+      // nothing else: it must be in one of their recent messages, checked in code (security audit
+      // 2026-11-06, lead 4). A page, an email or a call transcript the model read is not them saying it.
+      if (!trust.ownerSaid(ctx.messages ?? [], said)) {
+        return {
+          ok: false, blocked: "not_their_words",
+          error: `Nothing was saved: a standing permission has to be ${me.name}'s own sentence, word for word from one of their messages, and this is not in any of them.`
+            + ` If they really said it, pass their sentence exactly as they typed it. If they did not, do not save one; ask them in one line whether they want you to stop asking about this.`,
+        };
+      }
       const scope = input.scope ?? {};
       const covered = permissions.actionsFor(scope.action);
       if (!covered) {
@@ -12450,6 +12460,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const hasSecret = looksLikeACredential(said);
       if (hasSecret) return refuseCredential(hasSecret, { what: "that, so the limits were not changed either", ownerName: me.name });
       const before = trust.capsView(c);
+      // Lowering is always fine. Setting or raising one decides what can be bought without asking, so it
+      // rests on their own sentence, checked in code (security audit 2026-11-06, lead 7).
+      const prior = db.getSpendCaps(c);
+      const loosens = !prior || perPurchase > prior.per_purchase_cents || monthly > prior.monthly_cents;
+      if (loosens && !trust.ownerSaid(ctx.messages ?? [], said)) {
+        return {
+          ok: false, blocked: "not_their_words",
+          error: `Nothing was changed: setting or raising their spending limits needs ${me.name}'s own sentence with the numbers, word for word from one of their messages, as \`text\`.`
+            + ` If they said it, pass it exactly. If not, ask them in one line what the limits should be.`,
+        };
+      }
       db.setSpendCaps(c, { perPurchaseCents: perPurchase, monthlyCents: monthly, said });
       const now = trust.capsView(c);
       return {

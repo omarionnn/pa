@@ -17,6 +17,8 @@ import { z } from "zod";
 import * as shop from "./shopconnect.js";
 import * as passkey from "./passkey.js";
 import * as spendcap from "./spendcap.js";
+import * as trust from "./trust.js";
+import { judgeReply } from "./judge.js";
 import * as shipping from "./shipping.js";
 
 export const SHOP_TOOLS = new Set(["store_checkout", "shop_pay", "shop_decline", "shop_card", "shop_status", "shop_answer", "spend_limit_set", "spend_limit_confirm"]);
@@ -153,7 +155,7 @@ function emailSay(emails = []) {
   if (emails.length >= 2) return `${why} Tell them you need an email for the card, that you have ${emails.slice(0, -1).join(", ")} and ${emails[emails.length - 1]} on record, and ask which one — one plain line, no other question.`;
   return `${why} Tell them that in one plain line and ask which email to use.`;
 }
-export async function runShopTool(name, input, { conversationId: c, confirmationId = null } = {}) {
+export async function runShopTool(name, input, { conversationId: c, confirmationId = null, messages = [], judge = null } = {}) {
   if (!shop.connectAllowedFor(c)) return { ok: false, error: "Not available." };
   if (name === "store_checkout") {
     const store = shop.checkoutStoreKey(input.store, input.start_url);
@@ -184,7 +186,7 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
   if (name === "shop_status") return shop.statusView(c);
   if (name === "spend_limit_set") {
     const cents = spendcap.toCents(input.daily);
-    const out = spendcap.requestChange(c, cents, { said: String(input.text ?? "").slice(0, 300), via: "text" });
+    const out = spendcap.requestChange(c, cents, { said: String(input.text ?? "").slice(0, 300), via: "text", askedAfterMsgs: trust.ownerTexts(messages).length });
     const was = spendcap.view(c);
     if (out.ok) return { ...out, say: `Say it back in one line: their daily limit is now ${out.to} a day${out.from !== out.to ? ` (it was ${out.from})` : ""}. Today they have spent ${was.spent}, so ${was.left} is left.` };
     if (out.error === "over_ceiling") return { ...out, say: `The most anyone can set here is ${out.ceiling} a day, so nothing changed; their limit is still ${out.cap}. Say that in one line and offer ${out.ceiling} if they want it. Never say who could go higher or how.` };
@@ -196,6 +198,23 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
     if (input.answer === "no") {
       const out = spendcap.declineChange(c, input.change_id);
       return out.ok ? { ...out, say: `Left as it was: their daily limit stays ${out.cap}. One line.` } : { ...out, say: "That question isn't open anymore. Say the limit is unchanged; if they still want a change, they name the number again." };
+    }
+    // Their yes, read off their own messages in code, never the model's `answer` alone (security audit
+    // 2026-11-06, lead 7): a message of theirs after the ask, and it has to mean yes to this raise.
+    const row = spendcap.changeRow(input.change_id);
+    if (row && row.conversation_id === c && row.status === "asked" && !passkey.requiredFor(c)) {
+      const texts = trust.ownerTexts(messages);
+      if (row.asked_after_msgs == null || texts.length <= row.asked_after_msgs) {
+        return { ok: false, error: "waiting_for_yes", say: "They have not answered since you asked, so nothing changed. Wait for their reply; never answer for them." };
+      }
+      const latest = texts.at(-1);
+      const verdict = trust.isBareRefusal(latest) ? "no"
+        : (await (judge ?? judgeReply)({ summary: `raise their daily spending limit from ${spendcap.money(row.from_cents)} to ${spendcap.money(row.to_cents)}`, reply: latest }))?.verdict;
+      if (verdict === "no") {
+        const out = spendcap.declineChange(c, row.id);
+        return { ...out, say: `That reads as a no: their daily limit stays ${out.cap ?? spendcap.view(c).cap}. One line.` };
+      }
+      if (verdict !== "yes") return { ok: false, error: "not_a_yes", quote: latest, say: "Their reply doesn't read as a clear yes to that raise, so nothing changed. Ask once, plainly." };
     }
     const out = spendcap.confirmChange(c, input.change_id, { via: "text" });
     if (out.ok) return { ...out, say: `Say it back in one line: their daily limit is now ${out.to} a day (it was ${out.from}).` };

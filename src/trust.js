@@ -46,10 +46,34 @@ export function isBareRefusal(text) {
 }
 
 /** The owner's own messages in this conversation, oldest first, with the timestamp prefix stripped. */
+/**
+ * What a caller said on a call that was matched to them by caller ID alone, and never passed the
+ * second check (src/calls/verify.js), is written into the thread with this tag (src/calls/postcall.js).
+ * A spoofed number can say anything; those words are kept for the record but are never the owner's
+ * own reply to anything (security audit 2026-11-06, leads 10-12).
+ */
+export const UNVERIFIED_CALL_TAG = "(on the call, caller not verified)";
+const unverifiedSpeech = (content) => /^\[[^\]]*\]\s*[^:]{0,80}\(on the call, caller not verified\):/.test(content)
+  // …and the line postcall.js writes to say a call happened is a note, not anything they said.
+  || /^\[[^\]]*\]\s*\[on a phone call with /.test(content);
+
 export function ownerTexts(messages = []) {
   return messages
-    .filter(m => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[event "))
+    .filter(m => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[event ") && !unverifiedSpeech(m.content))
     .map(m => m.content.replace(/^\[[^\]]*\]\s*/, "").replace(/^[^:]{0,40}:\s*/, "").trim());
+}
+
+/**
+ * Did the owner really say this? `said` must appear, give or take case, spacing and punctuation, in
+ * one of their own recent messages (`ownerTexts`, so never a tool result, an event or an unverified
+ * call). For a change to the gate itself (a standing permission, spending limits), whose words are
+ * the whole of the authority: the model's paraphrase of what they wanted is not their saying it.
+ */
+export function ownerSaid(messages, said, { last = 12 } = {}) {
+  const norm = (t) => String(t ?? "").toLowerCase().normalize("NFKC").replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}$%.'\s]/gu, " ").replace(/\s+/g, " ").trim();
+  const want = norm(said);
+  if (want.length < 4) return false;
+  return ownerTexts(messages).slice(-last).some(t => norm(t).includes(want));
 }
 
 /**
