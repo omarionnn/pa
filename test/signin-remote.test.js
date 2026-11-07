@@ -101,12 +101,12 @@ function make({ conversationId = CONV, entry = amazon, said = { ok: true, state:
   return { out, token, b, logs, booked, released, checks };
 }
 
-const req = (token, action = "", { method = "GET", cookie = "", body = null, query = {} } = {}) =>
-  remote.remoteRequest({ token, action, method, headers: cookie ? { cookie } : {}, query, readBody: async () => (body === null ? "" : JSON.stringify(body)) });
+const req = (token, action = "", { method = "GET", cookie = "", body = null, raw = null, query = {}, tell = null } = {}) =>
+  remote.remoteRequest({ token, action, method, headers: cookie ? { cookie } : {}, query, tell, readBody: async () => (raw !== null ? raw : body === null ? "" : JSON.stringify(body)) });
 
-/** Tap Start, and come back with the cookie that browser was given. */
-async function start(token) {
-  const r = await req(token, "start", { method: "POST" });
+/** Tap Start on the person's own proved Reason browser, and come back with the cookie that browser was given. */
+async function start(token, conversationId = CONV) {
+  const r = await req(token, "start", { method: "POST", cookie: provedCookie(conversationId) });
   const cookie = String(r.headers["Set-Cookie"] ?? "").split(";")[0];
   return { r, cookie };
 }
@@ -592,7 +592,7 @@ test("a new link cancels the old one", async () => {
 
 test("while the window on the Mac has the profile, Start says so and takes nothing", async () => {
   const { token, b } = make({ busy: () => "A sign-in window is already open on the Mac for this account." });
-  const r = await req(token, "start", { method: "POST" });
+  const r = await req(token, "start", { method: "POST", cookie: provedCookie(CONV) });
   assert.equal(r.status, 409);
   assert.match(r.body, /already open on the Mac/);
   assert.equal(b.launched.length, 0);
@@ -601,7 +601,7 @@ test("while the window on the Mac has the profile, Start says so and takes nothi
 
 test("a browser that will not start ends the link cleanly", async () => {
   const { token, logs } = make({ launch: async () => { throw new Error("Executable doesn't exist"); } });
-  const r = await req(token, "start", { method: "POST" });
+  const r = await req(token, "start", { method: "POST", cookie: provedCookie(CONV) });
   assert.equal(r.status, 500);
   assert.match(r.body, /The browser would not open\. Nothing was changed/);
   assert.ok(logs.some(l => l.signin_remote === "launch_failed"));
@@ -613,7 +613,7 @@ test("two people's links are two browsers on two profiles", async () => {
   const mine = make();
   const theirs = make({ conversationId: THEIRS });
   const a = await start(mine.token);
-  const b = await start(theirs.token);
+  const b = await start(theirs.token, THEIRS);
   assert.deepEqual(mine.b.launched[0].conversationId, CONV);
   assert.deepEqual(theirs.b.launched[0].conversationId, THEIRS);
   // One person's cookie does nothing on the other's link.
@@ -835,4 +835,97 @@ test("a stranger's browser with the link cannot take the session, even one signe
     }
     assert.equal(b.did.length, 0, "the browser was never touched");
   }
+});
+
+test("the person's own proved browser starts at once, with no code", async () => {
+  const told = [];
+  const { token, b } = make();
+  const r = await req(token, "start", { method: "POST", cookie: provedCookie(CONV), tell: async (...a) => { told.push(a); } });
+  assert.equal(r.status, 303);
+  assert.match(r.headers["Set-Cookie"], /^rs_/);
+  assert.equal(b.launched.length, 1);
+  assert.equal(told.length, 0, "nobody is texted");
+});
+
+test("a browser not yet proved gets a code texted to the person's own thread, and only that code starts it", async () => {
+  db.db.exec("DELETE FROM page_codes; DELETE FROM page_attempts;");
+  const told = [];
+  const tell = async (c, text, meta) => { told.push({ c, text, meta }); };
+  const { token, b } = make();
+  const asked = await req(token, "start", { method: "POST", tell });
+  assert.equal(asked.status, 401);
+  assert.match(asked.body, /Enter the code Reason texted you/);
+  assert.match(asked.body, /autocomplete="one-time-code"/);
+  await new Promise(r => setImmediate(r));
+  assert.equal(told.length, 1);
+  assert.equal(told[0].c, CONV, "the code goes to the person whose profile it is, never to whoever asked");
+  const code = /code is (\d{6})/.exec(told[0].text)[1];
+  assert.match(told[0].text, /Amazon sign-in link/);
+  assert.match(told[0].text, /@reason\.example #\d{6}$/, "bound to the site, so the phone offers it above the keyboard");
+  assert.doesNotMatch(told[0].text, new RegExp(token), "and the link is not in the text");
+  assert.equal(b.launched.length, 0, "nothing opens before the code");
+
+  const wrong = await req(token, "start", { method: "POST", raw: `code=${code === "000000" ? "111111" : "000000"}`, tell });
+  assert.equal(wrong.status, 401);
+  assert.match(wrong.body, /That code is not right\. 4 tries left/);
+  assert.equal(b.launched.length, 0);
+
+  const right = await req(token, "start", { method: "POST", raw: `code=${code}`, tell });
+  assert.equal(right.status, 303);
+  assert.match(right.headers["Set-Cookie"], /^rs_/);
+  assert.equal(b.launched.length, 1);
+  const cookie = right.headers["Set-Cookie"].split(";")[0];
+  assert.equal((await req(token, "view", { cookie })).status, 200, "and that browser is the one that drives it");
+
+  // The code is used up: a second browser with the same code gets nothing.
+  assert.equal((await req(token, "start", { method: "POST", raw: `code=${code}`, tell })).status, 404);
+});
+
+test("codes are bounded per person: a few texts, a few wrong guesses, and a fresh link resets neither", async () => {
+  db.db.exec("DELETE FROM page_codes; DELETE FROM page_attempts;");
+  const told = [];
+  const tell = async (c, text) => { told.push(text); };
+  let { token } = make();
+  for (let i = 0; i < 3; i++) assert.equal((await req(token, "start", { method: "POST", raw: "send=1", tell })).status, 401);
+  ({ token } = make());
+  const fourth = await req(token, "start", { method: "POST", tell });
+  assert.equal(fourth.status, 429);
+  assert.match(fourth.body, /already texted you a code/);
+  await new Promise(r => setImmediate(r));
+  assert.equal(told.length, 3, "the phone buzzed three times, not four");
+
+  for (let i = 0; i < 5; i++) await req(token, "start", { method: "POST", raw: "code=999999", tell });
+  const locked = await req(token, "start", { method: "POST", raw: "code=999999", tell });
+  assert.equal(locked.status, 429);
+  assert.match(locked.body, /Too many wrong codes/);
+});
+
+test("with no way to text a code, a browser not proved is told to use their own, and nothing opens", async () => {
+  const { token, b } = make();
+  const r = await req(token, "start", { method: "POST" });
+  assert.equal(r.status, 403);
+  assert.match(r.body, /signed in to Reason on/);
+  assert.equal(b.launched.length, 0);
+});
+
+test("over real HTTP: Start on a fresh browser texts the code through the runtime", async () => {
+  db.db.exec("DELETE FROM page_codes; DELETE FROM page_attempts;");
+  const told = [];
+  const { token, b } = make();
+  const server = createServer({ router: { statuses: () => [] }, runtime: { _tell: async (c, text) => { told.push([c, text]); } } });
+  await new Promise(r => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const r = await fetch(`${base}/s/${token}/start`, { method: "POST", redirect: "manual" });
+    assert.equal(r.status, 401);
+    assert.equal(r.headers.get("set-cookie"), null);
+    await new Promise(res => setTimeout(res, 10));
+    assert.equal(told.length, 1);
+    assert.equal(told[0][0], CONV);
+    const code = /code is (\d{6})/.exec(told[0][1])[1];
+    const ok = await fetch(`${base}/s/${token}/start`, { method: "POST", redirect: "manual", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `code=${code}` });
+    assert.equal(ok.status, 303);
+    assert.match(ok.headers.get("set-cookie"), /^rs_/);
+    assert.equal(b.launched.length, 1);
+  } finally { await new Promise(r => server.close(r)); }
 });

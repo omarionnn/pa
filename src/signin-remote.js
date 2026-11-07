@@ -33,8 +33,11 @@
 //   - a password offered in a MESSAGE is still refused. That one is in the messaging app and the
 //     transcript for good, which is a different thing from a relay that forgets.
 //
-// **Who can use a link.** Whoever opens it first and taps Start, and nobody after: Start hands that
-// browser a cookie and every later request needs it. A link preview fetches the page but does not
+// **Who can use a link.** The person themselves, first to tap Start, and nobody after: Start hands
+// that browser a cookie and every later request needs it. Holding the link is not enough to tap
+// Start (security audit lead 6, 2026-11-07): the browser must be one already signed in to Reason as
+// this person, or prove the phone with a code texted to their own thread — so a forwarded or
+// misdirected link cannot open their saved profile. A link preview fetches the page but does not
 // tap anything, so previews cannot take the session. A link is good for a few minutes, a session
 // for a few more, and making a new link kills the old one.
 //
@@ -46,6 +49,7 @@ import * as db from "./db.js";
 import * as signin from "./signin.js";
 import { readSignedInState } from "./sites.js";
 import { profileDirFor } from "./browser.js";
+import { readCookie as readPageCookie, newCode, typedCode, codeHost, boundTo, SESSION_TTL_MS, CODE_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS, MAX_CODES_SENT } from "./pages/access.js";
 import { config, clock } from "./config.js";
 import { backToReason, dark, THEME, iconLinks } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
@@ -360,6 +364,58 @@ function readCookie(headers, name) {
   return "";
 }
 
+// ---------- who may tap Start ----------
+
+/** Is this the person's own browser: a Reason session (Web, a page, an event) proved for this conversation? */
+function provedOwner(s, headers) {
+  const cookie = readPageCookie(headers?.cookie);
+  return !!cookie && db.pageSessionOwner(cookie, SESSION_TTL_MS) === s.conversationId;
+}
+
+/**
+ * Codes and wrong guesses are counted per person, not per link, so a fresh link does not reset the
+ * count. Kept in the private pages' tables (one store for every texted code), under a key no page
+ * id can take.
+ */
+const codeKey = (s) => `signin:${s.conversationId}`;
+
+/** Text the person a code to their own thread, at most MAX_CODES_SENT in the window, and ask for it. */
+function sendCode(s, tell) {
+  if (typeof tell !== "function") {
+    return { status: 403, headers: HTML(), body: shell("Open this on your own browser", `<p class="lead">This link only starts on a browser you've signed in to Reason on. Ask Reason for a fresh one.</p>`) };
+  }
+  const key = codeKey(s);
+  if (db.pageCodesIssued(key, ATTEMPT_WINDOW_MS) >= MAX_CODES_SENT) {
+    return codePage(s, { status: 429, error: `Reason has already texted you a code. Use that one, or try again in about ${Math.ceil(ATTEMPT_WINDOW_MS / 60_000)} minutes.` });
+  }
+  const { id, code } = db.createPageCode(key, { code: newCode(), ttlMs: CODE_TTL_MS });
+  const mins = Math.round(CODE_TTL_MS / 60_000);
+  const line = `Your Reason code is ${code}, to start the ${s.entry.label} sign-in link. Good for ${mins} minutes. If that wasn't you, ignore this — nothing was opened.${boundTo(codeHost(remoteSigninStatus().base), code)}`;
+  Promise.resolve()
+    .then(() => tell(s.conversationId, line, { idempotencyKey: `scode:${s.token.slice(0, 12)}:${id}` }))
+    .catch((e) => s.log({ signin_remote: "code_text_failed", site: s.entry.site, why: (e?.message ?? String(e)).split("\n")[0] }));
+  s.log({ signin_remote: "code_sent", site: s.entry.site, conversation: s.conversationId });
+  return codePage(s, { status: 401 });
+}
+
+/** Check a typed code. Every try is written down before the answer, so guessing is bounded by the table. */
+function tryCode(s, typed) {
+  const key = codeKey(s);
+  const failed = db.failedPageAttempts(key, ATTEMPT_WINDOW_MS);
+  if (failed >= MAX_FAILED_ATTEMPTS) {
+    return { ok: false, status: 429, error: `Too many wrong codes. Try again in about ${Math.ceil(ATTEMPT_WINDOW_MS / 60_000)} minutes.` };
+  }
+  const live = db.livePageCode(key);
+  if (!live || !db.pageCodeIs(live.code, typedCode(typed))) {
+    db.recordPageAttempt(key, false);
+    const left = Math.max(0, MAX_FAILED_ATTEMPTS - (failed + 1));
+    return { ok: false, status: 401, error: `That code is not right.${left ? ` ${left} ${left === 1 ? "try" : "tries"} left.` : ""}` };
+  }
+  db.recordPageAttempt(key, true);
+  db.usePageCode(live.id);
+  return { ok: true };
+}
+
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex", ...extra });
 const JSONH = { "Content-Type": "application/json", "Cache-Control": "no-store" };
 const json = (status, body) => ({ status, headers: JSONH, body: JSON.stringify(body) });
@@ -372,7 +428,7 @@ const gone = () => ({ status: 404, headers: HTML(), body: shell("This link is no
  * A token that does not exist and a session somebody else already owns answer the same 404, so
  * the link space cannot be probed and a forwarded link tells its second reader nothing.
  */
-export async function remoteRequest({ token, action = "", method = "GET", headers = {}, query = {}, readBody = async () => "" }) {
+export async function remoteRequest({ token, action = "", method = "GET", headers = {}, query = {}, readBody = async () => "", tell = null }) {
   const s = TOKEN.test(String(token ?? "")) ? sessions.get(token) : null;
   if (!s) return gone();
   const name = cookieName(s.token);
@@ -391,6 +447,17 @@ export async function remoteRequest({ token, action = "", method = "GET", header
     if (s.ended) return gone();
     if (s.secret && !mine) return gone();
     if (!s.secret) {
+      // Holding the link is not enough (security audit lead 6, 2026-11-07): it opens the person's
+      // whole saved profile, every site's session in it. The browser tapping Start must be the
+      // person's own — a Reason session proved for this conversation — or prove the phone with a
+      // code texted to their own thread, the same rule private pages and trips keep.
+      if (!provedOwner(s, headers)) {
+        const form = new URLSearchParams(String((await readBody()) ?? ""));
+        const typed = form.get("code");
+        if (typed === null || form.has("send")) return sendCode(s, tell);
+        const tried = tryCode(s, typed);
+        if (!tried.ok) return codePage(s, { status: tried.status, error: tried.error });
+      }
       const blocked = s.busy(s.conversationId);
       if (blocked) return { status: 409, headers: HTML(), body: shell("Not right now", `<p class="lead">${esc(blocked)}</p>`) };
       s.secret = newToken();
@@ -602,6 +669,24 @@ function startPage(s) {
 </ul></div>
 <form method="post" action="${PATH}/${s.token}/start"><button class="go" type="submit" data-busy="Starting…">Start</button></form>
 <p class="small">Did not ask Reason for this? Close the page. Nothing happens unless you tap Start.</p>`);
+}
+
+/** The code step, for a browser that is not the person's own proved one. The code went to their own thread. */
+function codePage(s, { status = 401, error = "" } = {}) {
+  const label = esc(s.entry.label);
+  return {
+    status, headers: HTML(),
+    body: shell(`Sign in to ${s.entry.label}`, `
+<h1>Enter the code Reason texted you</h1>
+<p class="lead">This browser isn't signed in to Reason yet, so Reason texted you a code first. That keeps a forwarded link from opening your ${label} sign-in.</p>
+${error ? `<p class="lead"><b>${esc(error)}</b></p>` : ""}
+<form method="post" action="${PATH}/${s.token}/start">
+<input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="12" placeholder="6-digit code" aria-label="Code" required>
+<div class="row"><button class="go" type="submit" data-busy="Starting…">Start</button></div>
+</form>
+<form method="post" action="${PATH}/${s.token}/start"><input type="hidden" name="send" value="1"><button type="submit">Text me a new code</button></form>
+<p class="small">Didn't ask Reason for this? Close the page. Nothing happens without the code.</p>`),
+  };
 }
 
 /**
