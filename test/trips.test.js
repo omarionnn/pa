@@ -341,6 +341,16 @@ test("a guessed id is told nothing: a wrong code reads the same on a real trip a
   assert.equal(ga.body, gb.body, "locked alike");
 });
 
+test("a trip id is its own namespace: /d/ops cannot fill the status page's code count or use its code (audit lead 23)", async () => {
+  const { requestCode } = await import("../src/pages/access.js");
+  const asked = requestCode({ id: "ops", title: "Reason status" });
+  const post = (code) => directionsRequest({ method: "POST", pathname: "/d/ops", req: Readable.from([Buffer.from(`code=${code}`)]), config, headers: {} });
+  assert.notEqual((await post(asked.code)).status, 303, "the status page's code opens nothing here");
+  for (let n = 0; n < 6; n++) await post("000000");
+  assert.equal(db.failedPageAttempts("ops", 15 * 60 * 1000), 0, "nothing counted against the status page");
+  assert.ok(db.livePageCode("ops"), "and its outstanding code is not used up");
+});
+
 test("the ledger keeps that a walk was made, never where they stood or the key that opens it", async () => {
   await tool({ to: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng });
   const row = db.db.prepare("SELECT * FROM action_ledger WHERE action = 'directions' ORDER BY id DESC LIMIT 1").get();

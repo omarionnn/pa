@@ -163,8 +163,17 @@ Real features with no file here. Add one when you touch them.
 - **The /ops status page** (#106) — `src/pages/ops.js`, `src/opspassword.js`, `opsRequest` in
   `src/http.js`; `test/ops-gate.test.js`. Password gate (`REASON_OPS_PASSWORD_HASH`, sign-in 303),
   instant Check again / Clear (202 as JSON), `running` in `/ops.json`; public at
-  `heyreason.com/ops` via Netlify. On the cage both routes answer 401 (this Mac's `.env`
-  sets the hash).
+  `heyreason.com/ops` via Netlify. On the cage both routes answer 401 without a sign-in; this
+  Mac's `.env` has no hash (checked 2026-11-07), so the cage shows the code gate unless started
+  with a throwaway `REASON_OPS_PASSWORD_HASH=… bin/caged.sh start` (the shell env passes through;
+  `start` begins on a fresh database, so read the ops key again after each start). Lockout rules (audit lead 23, `test/ops-gate-lockout.test.js`): a code is only
+  sent **and only taken** with the ops key (`?k=`, `ops_state` row `key`); a keyless `code=` POST
+  answers the gate (401) and adds nothing to `page_attempts` page `ops`. Keyless wrong passwords
+  count under `ops:pw:<ip>` (5) and the shared `ops:pw` (30); keyed ones only under `ops:pw:key`
+  (5), so strangers' guesses never 429 the keyed link. Cage drive (2026-11-07, 8863): 7 keyless `code=`
+  POSTs → 401 and no `ops` rows; 30 keyless `password=` POSTs with varied `x-forwarded-for`, then
+  the right one keyless → 429, keyed wrong → 401 "4 tries left", keyed right → 303 + cookie; key
+  = `SELECT v FROM ops_state WHERE k='key'`; `peek.sh sql "SELECT page_id, ok, count(*) FROM page_attempts GROUP BY 1,2"`.
 - **Invites, dark** (#104) — `src/invites.js`, `GET /i/{token}`, claim by text in
   `src/channels/router.js`, owner-only tools behind `REASON_INVITES_OPEN` (off on live);
   `test/invites*.test.js`, `test/flow-invites.test.js`; tagline "Your personal concierge" on page + og:description → `bin/tagline.mjs`.

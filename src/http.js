@@ -1837,7 +1837,9 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
     // ---- the password ----
     if (form.has("password") && opspw.passwordEnabled()) {
       const ip = opspw.clientIp(headers ?? {}, remoteAddress);
-      const tried = await opspw.tryPassword({ password: form.get("password"), ip });
+      // The keyed link is counted apart from everyone else, so a stranger's wrong guesses cannot
+      // lock the owner out of it (audit lead 23).
+      const tried = await opspw.tryPassword({ password: form.get("password"), ip, keyed: via_key });
       if (tried.ok) {
         const token = randomBytes(32).toString("base64url");
         db.startPageSession(page.id, token, { conversationId: page.conversation_id ?? null });
@@ -1869,6 +1871,10 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
       log({ ops_code_sent: true });
       return gate({ sent: true });
     }
+    // A code is only taken with the key, as one is only sent with it (audit lead 23). The form
+    // posts back to the keyed address, so the owner's browser always carries it. Without the key
+    // nothing is compared or counted: the five tries on "ops" are the owner's, not a stranger's.
+    if (!via_key) return gate();
     const tried = trySubmittedCode({ page, code: form.get("code") ?? "" });
     if (tried.ok) {
       log({ ops_opened: "code" });
