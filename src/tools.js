@@ -9333,7 +9333,9 @@ async function runToolInner(name, rawInput, ctx) {
     // the action is refused exactly as it was before, with the closest permission quoted and the
     // reason it does not reach, so the model can say "you told me X, and this isn't X" instead of
     // talking itself into stretching one.
-    if (!gate.ok && gate.blocked === "needs_confirmation") {
+    // The after-call pickup of something an UNVERIFIED caller asked for (src/calls/postcall.js): only a
+    // yes in this thread counts — no standing permission or to-do grant stands in for it (review 11-06).
+    if (!gate.ok && gate.blocked === "needs_confirmation" && !ctx.onlyAnExplicitYes) {
       const standing = permissions.covering({
         conversationId: c, action: name, target: target ?? "", amountCents: amountForAction(name, input),
       });

@@ -199,6 +199,8 @@ test("4. a non-urgent incident is held for the digest; an outage-shaped one is s
 test("4. which status checks are emergencies: Reason down, a provider down, a spending cap — nothing else", () => {
   assert.equal(digest.checkIsUrgent({ id: "process", group: "alive", state: "bad" }), true);
   assert.equal(digest.checkIsUrgent({ id: "outbox", group: "alive", state: "warn" }), false);
+  // Red too: an opted-out person's text failing turns it bad, and that is never a live text (review 11-06).
+  assert.equal(digest.checkIsUrgent({ id: "outbox", group: "alive", state: "bad" }), false);
   assert.equal(digest.checkIsUrgent({ id: "provider:openai", group: "services", state: "warn" }), true);
   assert.equal(digest.checkIsUrgent({ id: "spend", group: "money", state: "warn" }), true);
   assert.equal(digest.checkIsUrgent({ id: "api_spend", group: "money", state: "warn" }), true);

@@ -1052,8 +1052,8 @@ export class Runtime extends EventEmitter {
   }
 
   /** An event turn: Reason is told something happened and decides whether to say anything. */
-  event(conversationId, text, meta = {}) {
-    return this._turn({ conversationId, text, kind: "event", meta });
+  event(conversationId, text, meta = {}, ctx = null) {
+    return this._turn({ conversationId, text, kind: "event", meta, ...(ctx ? { ctx } : {}) });
   }
 
   /**

@@ -167,6 +167,15 @@ test("a permission that has already run out is not saved", async () => {
 
 // ---------- the gate consults them before it stops ----------
 
+test("an unverified caller's after-call pickup: a standing permission does NOT stand in for a yes (review 11-06)", async () => {
+  await call("permission_grant", { text: "you can text kofi for me whenever", scope: { action: "texts", target: FRIEND } });
+  const out = await call("message_send", { to: FRIEND, text: "Hello, 8pm works for Omari." }, { onlyAnExplicitYes: true });
+  assert.notEqual(out.ok, true, JSON.stringify(out));
+  assert.equal(out.blocked, "needs_confirmation");
+  assert.equal(out.under_permission, undefined);
+  assert.equal(sent.length, 0, "nothing went");
+});
+
 test("the gate lets through exactly what a permission covers, with no yes, and the receipt names it", async () => {
   await call("permission_grant", { text: "you can text kofi for me whenever", scope: { action: "texts", target: FRIEND } });
 
