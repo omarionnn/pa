@@ -126,6 +126,10 @@ test("an attachment is named by the only clue the payload carries, its extension
   assert.equal(attachmentOf("https://cdn/x/preview.jpg?sig=abc").filename, "preview.jpg", "the query string is not part of the name");
   assert.equal(attachmentOf("https://cdn/x/AudioMessage.caf").kind, "voice");
   assert.equal(attachmentOf("https://cdn/x/demo.m4a").kind, "audio");
+  // iMessage's own name for a recorded voice message, served as .m4a too (live 2026-11-01 02:31).
+  assert.equal(attachmentOf("https://storage.example/inbound/X3GT0zmv_Audio_Message.m4a").kind, "voice");
+  assert.equal(attachmentOf("https://cdn/x/Audio Message.m4a").kind, "voice");
+  assert.equal(attachmentOf("https://cdn/x/podcast_audio_message_board.m4a").kind, "audio", "only the whole name, at the end");
   assert.equal(attachmentOf("https://cdn/x/lease.pdf").kind, "pdf");
   assert.equal(attachmentOf("https://cdn/x/clip.mov").kind, "video");
   // No extension to go on, so it is a file and not a guess.

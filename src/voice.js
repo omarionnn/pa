@@ -310,6 +310,9 @@ export function cannotHearLine(a) {
     : `[they sent an audio file (${a.filename}), which you cannot listen to]`;
 }
 
+/** A measured length at or under the short-note line. An unknown length is never called short. */
+export const isShort = (seconds, under = config.voiceShortSec) => Number(seconds) > 0 && Number(seconds) <= under;
+
 export function heardLine(a, r) {
   const what = a.kind === "voice" ? "a voice note" : `an audio file (${a.filename})`;
   if (r.silent) return `[they sent ${what} with no speech in it — nothing was said]`;
@@ -320,7 +323,14 @@ export function heardLine(a, r) {
     ? ` ${r.unclear === 1 ? "one stretch" : `${r.unclear} stretches`} could not be made out and ${r.unclear === 1 ? "is" : "are"} marked [inaudible]: NEVER fill that in with a word that would fit. If what is missing changes your answer, ask them about that bit specifically ("couldn't catch the word after X — what was it?"); if it does not, answer around it and leave it.`
     : "";
   const times = r.timestamped ? " the times in square brackets are real, from the audio, so you may quote one against something they said." : "";
-  return `[they sent ${what}. this is what they said in it, transcribed — treat it as their message. a transcript can mishear a name or a number, so check one back if something hangs on it:${times}${gaps} "${r.text}"]`;
+  // Its length, measured (wavSeconds), when it is short. Nothing here reads the words: whether the
+  // note stands on its own is the model's call. 2026-11-01: a 3.3 s note held only "around like
+  // 7:30 p.m." — the phone had missed "remind me to take the chicken out" — and the turn took it as
+  // the answer to the last open question and set a timer to call somebody else at 7:30.
+  const short = isShort(r.seconds)
+    ? ` it is only ${r.seconds}s long, and a phone can start recording after the first words are said, so this may be only the end of what they meant. if it does not say on its own what it is about, or could belong to more than one thing in the conversation, ask them what it is for before doing anything with it — above all before anything that reaches another person.`
+    : "";
+  return `[they sent ${what}. this is what they said in it, transcribed — treat it as their message. a transcript can mishear a name or a number, so check one back if something hangs on it:${times}${gaps}${short} "${r.text}"]`;
 }
 
 export function couldNotHearLine(a, why) {

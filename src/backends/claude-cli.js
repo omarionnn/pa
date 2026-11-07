@@ -24,7 +24,7 @@ import { systemFor } from "../agent.js";
 import * as accounts from "../accounts.js";
 import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold, unmarkUndeliveredTold, outboxMark, ownerTextsSince } from "../db.js";
 import { undeliveredNotice } from "../outbox.js";
-import { imagesFor, pdfsFor } from "../media.js";
+import { imagesFor, pdfsFor, videosFor } from "../media.js";
 import { docsFor } from "../docread.js";
 import * as doing from "../doing.js";
 import { startCapture, recordLooked, captureViaCli, capturedWords } from "../looked.js";
@@ -206,7 +206,7 @@ async function runTurnOnCli({
   recompose = false,
   // Injectable so the whole turn is testable with no CLI, no network and no port: what the model
   // is handed, what the history keeps and what the record says are all decided in this function.
-  run = runClaudeCli, images = imagesFor, pdfs = pdfsFor, startMcp = startMcpHttp,
+  run = runClaudeCli, images = imagesFor, pdfs = pdfsFor, videos = videosFor, startMcp = startMcpHttp,
   // The quiet pass that writes each photo down (src/looked.js). Injectable so a test can state
   // what it noted, or that it failed, without a second CLI.
   capture = captureViaCli,
@@ -264,6 +264,13 @@ async function runTurnOnCli({
   seen.push(...pdfResult.seen);
   notes.push(...docResult.notes);
   seen.push(...docResult.seen);
+  // A video — a clip from their camera roll, a screen recording — watched by the video model, the
+  // same call the API path makes (src/agent.js). Until 2026-11-07 this backend, the live one, never
+  // watched one: two screen recordings sat at `waiting` for good on 2026-11-01 (media 194, 195) while
+  // the turn kept telling them it would check again. videosFor holds a hard deadline of its own.
+  const videoResult = await videos(attachments, { log, cover: reviewed.cover });
+  notes.push(...videoResult.notes);
+  seen.push(...videoResult.seen);
   const said = [`${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
   // The history says the looking has already happened, so a later turn does not offer to go back
   // and check a picture that is out of reach by then. The model's own copy of this turn says where

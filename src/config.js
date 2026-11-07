@@ -545,6 +545,10 @@ export const config = {
   // sentence or two and [0:00] markers are noise in the middle of what should read as their own
   // message; over it, "where did they say that" is a real question somebody might want checked.
   voiceTimestampAfterSec: Number(process.env.REASON_VOICE_TIMESTAMP_AFTER_SEC || 30),
+  // A voice note this short (seconds of audio) is told to the model as short: a phone can start
+  // recording after the first words, so a 3-second note can be the tail of what was meant
+  // (2026-11-01: a 3.3 s note held only "around like 7:30 p.m." and was taken as a call time).
+  voiceShortSec: Number(process.env.REASON_VOICE_SHORT_SEC || 5),
   // Listening to a voice note somebody sent: download, convert, transcribe.
   // Who listens when the usual model is busy. A voice note is a few seconds of one person talking,
   // which the small model transcribes as well as the big one — and a busy 503 is common enough on
@@ -752,6 +756,10 @@ export const config = {
   videoModel: process.env.REASON_VIDEO_MODEL || "gemini-3.8-flash",
   geminiBase: (process.env.GEMINI_API_BASE || "https://generativelanguage.googleapis.com").replace(/\/+$/, ""),
   videoModelTimeoutMs: Number(process.env.REASON_VIDEO_MODEL_TIMEOUT_MS || 300_000),
+  // A video they sent (src/media.js videosFor): the hard deadline on one whole watch — download,
+  // upload, processing and description. The turn waits on it, so past this it answers without the
+  // video and says so, rather than sitting silent (2026-11-01: screen recordings, 15+ min, no word).
+  videoWatchTimeoutMs: Number(process.env.REASON_VIDEO_WATCH_TIMEOUT_MS || 180_000),
   // An uploaded file carries a state and cannot be used in a prompt until it is ACTIVE.
   geminiFilePollMs: Number(process.env.REASON_GEMINI_FILE_POLL_MS || 2_000),
   geminiFileMaxPolls: Number(process.env.REASON_GEMINI_FILE_MAX_POLLS || 30),

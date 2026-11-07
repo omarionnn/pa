@@ -214,6 +214,47 @@ test("a long note is transcribed with timestamps; a short one is not", async () 
   assert.match(voice.heardLine(note(), long), /the times in square brackets are real/);
 });
 
+// ---------- a note of a few seconds may be only the end of what they meant ----------
+
+// 2026-11-01 16:51 UTC: a 3.3 s note transcribed as "around like 7:30 p.m." (the phone had missed
+// "remind me to take the chicken out"). The line said nothing about its length, so the turn hung it
+// on the last open question and set a timer to call somebody else at 7:30.
+test("a short note is told as short, with its measured length, and the turn is told to ask before acting", () => {
+  const line = voice.heardLine(note(), { ok: true, text: "around like 7:30 p.m.", seconds: 3.3 });
+  assert.match(line, /only 3\.3s long/);
+  assert.match(line, /may be only the end of what they meant/);
+  assert.match(line, /ask them what it is for before doing anything with it/);
+  assert.match(line, /before anything that reaches another person/);
+  assert.match(line, /"around like 7:30 p\.m\."/, "and their words are still there, whole");
+});
+
+test("a note past the short line, or of unknown length, carries no such warning", () => {
+  assert.equal(/only .*s long/.test(voice.heardLine(note(), { ok: true, text: "running late, be there at 8", seconds: 9 })), false);
+  assert.equal(/only .*s long/.test(voice.heardLine(note(), { ok: true, text: "running late" })), false, "a length nobody measured is never called short");
+  assert.equal(voice.isShort(config.voiceShortSec), true);
+  assert.equal(voice.isShort(config.voiceShortSec + 0.1), false);
+  assert.equal(voice.isShort(null), false);
+  assert.equal(voice.isShort(0), false);
+});
+
+test("a short note's length reaches the turn from the WAV it was measured off", async () => {
+  const given = reviewed.record({ channel: "fake", conversationId: "dm:owner", inbound: inbound({}) });
+  const wav = Buffer.alloc(44 + 32_000 * 3.3);
+  const out = await voice.hearInto(voice.cannotHearLine(note()), given, {
+    status: () => ({ ok: true }), cover: reviewed.cover,
+    listen: async () => await voice.hear({
+      url: CAF, tmpDir: join(dir, "t"), apiKey: "k", converter: AF,
+      convert: async (args) => { writeFileSync(args.at(-1), wav); return { ok: true }; },
+      read: () => wav,
+      fetchImpl: async (url) => url === CAF
+        ? { ok: true, status: 200, headers: { get: () => null }, arrayBuffer: async () => Buffer.from("caf") }
+        : { ok: true, status: 200, text: async () => JSON.stringify({ candidates: [{ content: { parts: [{ text: "around like 7:30 p.m." }] } }] }) },
+    }),
+  });
+  assert.match(out, /only 3\.3s long/);
+  assert.equal(db.mediaFor("dm:owner")[0].seconds, 3.3);
+});
+
 // ---------- their words survive the conversation rolling past them ----------
 
 test("what they said in a note is readable later, by id, and only by id", async () => {

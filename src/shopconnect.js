@@ -253,6 +253,12 @@ addRunColumn("mail_until", "INTEGER");
 addRunColumn("mail_checked_at", "INTEGER");
 addRunColumn("mail_seen", "TEXT NOT NULL DEFAULT ''");
 addRunColumn("last_ok_at", "INTEGER");
+// The approval half hour (2026-11-07): when the person was first asked to approve this purchase, carried
+// to a checkout asked again after the store let go of the cart, and how many times it was asked again.
+addRunColumn("ask_since", "INTEGER");
+// The store's breakdown of a payment, as [label, amount] pairs (2026-11-07): the approval page shows item, shipping, tax, total.
+if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().some((r) => r.name === "breakdown")) db.db.exec("ALTER TABLE shop_payments ADD COLUMN breakdown TEXT NOT NULL DEFAULT ''");
+addRunColumn("renewals", "INTEGER NOT NULL DEFAULT 0");
 function siteRow(key) { return q("SELECT * FROM shop_sites WHERE store = ?").get(key) ?? null; }
 /** What Reason learned about a store it was asked to shop at: its site and the name it was called by. */
 export function noteStore({ store, name = "", url = "" }) {
@@ -897,6 +903,8 @@ export function recordPayment({ conversationId, runId, request, item = "" }) {
     conversationId, runId, request.requestId, String(amount.value), String(amount.currency ?? "USD").toUpperCase(), String(amount.kind ?? "exact"),
     String(it.merchant?.name ?? ""), String(it.merchant?.url ?? ""), String(it.merchant?.countryCode ?? ""), item,
     String(request.request?.question ?? request.question ?? ""), String(request.request?.expiresAt ?? request.expiresAt ?? ""), clock.now());
+  const parts = itemizedParts(it, { question: request.request?.question ?? request.question ?? "", total: amount.value });
+  if (parts.length) q("UPDATE shop_payments SET breakdown = ? WHERE request_id = ? AND breakdown = ''").run(JSON.stringify(parts), request.requestId);
   return q("SELECT * FROM shop_payments WHERE request_id = ?").get(request.requestId);
 }
 /**
@@ -1104,11 +1112,23 @@ export async function settleUnknownPayments({ conversationId = null, sinceMs = 7
   return n;
 }
 // ---------------------------------------------------------------- approval by passkey
-/** The Face ID link for an asked payment (five minutes, one use; src/passkey.js). */
-export const approvalUrl = (row) => `${siteBase()}/web/approve/${passkey.createApproval(row)}`;
+/** When this purchase's approval half hour ends: from the first time they were asked, across a store asked again. */
+export function askDeadline(row) {
+  const run = row?.run_id ? runRow(row.run_id) : null;
+  return (run?.ask_since ?? row?.created_at ?? clock.now()) + passkey.APPROVAL_TTL_MS;
+}
+/** The Face ID link for an asked payment (thirty minutes from the first ask, one use; src/passkey.js). */
+export const approvalUrl = (row) => `${siteBase()}/web/approve/${passkey.createApproval(row, { until: askDeadline(row) })}`;
 /** The ask once they have a passkey: the same words, and the link instead of "reply yes". */
 export const passkeyAsk = (row, opts = {}) => `${paymentAsk(row, opts)} Approve it with Face ID here:\n${approvalUrl(row)}`;
 /** What the approval page shows: the row's own amount, store and item, and the link's state. */
+/** The row's breakdown as [label, "$15.97"] pairs, money said the way the ask says it; [] when the store gave one number. */
+export function breakdownOf(row) {
+  let parts = [];
+  try { parts = JSON.parse(row?.breakdown || "[]"); } catch { parts = []; }
+  if (!Array.isArray(parts)) return [];
+  return parts.filter((p) => Array.isArray(p) && p.length === 2 && /^\d+(\.\d{1,4})?$/.test(String(p[1]))).map(([l, n]) => [String(l), amountText({ amount: String(n), currency: row.currency })]);
+}
 export function approvalView(token) {
   const a = passkey.approvalFor(token);
   if (!a || !connectAllowedFor(a.conversation_id) || !passkey.passkeyAllowedFor(a.conversation_id)) return null;
@@ -1123,7 +1143,7 @@ export function approvalView(token) {
   const row = paymentRow(a.payment_id);
   if (!row) return null;
   const state = a.state === "open" && row.status !== "asked" ? "closed" : a.state;
-  return { a, row, kind: "pay", state, amount: amountText(row), store: row.merchant_name || storeName(runRow(row.run_id)?.store) || "the store", item: row.item, expiresAt: a.expires_at };
+  return { a, row, kind: "pay", state, amount: amountText(row), store: row.merchant_name || storeName(runRow(row.run_id)?.store) || "the store", item: row.item, expiresAt: a.expires_at, breakdown: breakdownOf(row) };
 }
 /**
  * The page's assertion: verified against the row as it is now (passkey.verifyApproval), the link
@@ -1300,34 +1320,41 @@ const short = (s, n = 140) => { const t = String(s ?? "").replace(/\s+/g, " ").t
 export function itemized(it, { question = "", total = "" } = {}) {
   const cur = String(it?.amount?.currency ?? "USD").toUpperCase();
   const fmt = (n) => (cur === "USD" ? `$${n}` : `${n} ${cur}`);
+  return itemizedParts(it, { question, total }).map(([label, n]) => `${label} ${fmt(n)}`).join(", ");
+}
+/** The same breakdown as [label, "15.97"] pairs (item, shipping, tax, fees, discount), or []. Kept on the row for the approval page. */
+export function itemizedParts(it, { question = "", total = "" } = {}) {
   const src = it?.breakdown ?? it?.amount?.breakdown ?? it?.lineItems ?? null;
   if (src && typeof src === "object" && !Array.isArray(src)) {
-    const money = (v) => { const n = v?.value ?? v?.amount ?? v; return /^\d+(\.\d{1,4})?$/.test(String(n ?? "")) ? fmt(n) : ""; };
+    const money = (v) => { const n = v?.value ?? v?.amount ?? v; return /^\d+(\.\d{1,4})?$/.test(String(n ?? "")) ? String(n) : ""; };
     const parts = [];
     for (const [k, label] of [["subtotal", "item"], ["items", "item"], ["item", "item"], ["shipping", "shipping"], ["tax", "tax"], ["fees", "fees"], ["discount", "discount"]]) {
       const m = money(src[k]);
-      if (m && !parts.some((p) => p.startsWith(label))) parts.push(`${label} ${m}`);
+      if (m && !parts.some(([l]) => l === label)) parts.push([label, m]);
     }
-    if (parts.length) return parts.join(", ");
+    if (parts.length) return parts;
   }
-  return itemizedFromWords(question, { total, fmt });
+  return partsFromWords(question, { total });
 }
 const BREAKDOWN_WORD = /\b(subtotal|items?|products?|merchandise|shipping|delivery|(?:estimated |est\.? )?tax(?:es)?|fees?|discounts?|savings?)\b[^$\d\n()]{0,24}\$?\s?(\d{1,6}\.\d{2})\b/gi;
 const LABEL_OF = (w) => /^(subtotal|item|items|product|products|merchandise)$/i.test(w) ? "item" : /^(shipping|delivery)$/i.test(w) ? "shipping" : /tax/i.test(w) ? "tax" : /^fees?$/i.test(w) ? "fees" : "discount";
 /** The breakdown a question carries in words, when it adds up to the total it is for; "" otherwise. */
 export function itemizedFromWords(question, { total = "", fmt = (n) => `$${n}` } = {}) {
+  return partsFromWords(question, { total }).map(([k, n]) => `${k} ${fmt(n)}`).join(", ");
+}
+function partsFromWords(question, { total = "" } = {}) {
   const text = String(question ?? "");
-  if (!text) return "";
+  if (!text) return [];
   const seen = new Map();
   for (const m of text.matchAll(BREAKDOWN_WORD)) {
     const label = LABEL_OF(m[1]);
     if (!seen.has(label)) seen.set(label, Number(m[2]));
   }
-  if (seen.size < 2 || !seen.has("item")) return "";
+  if (seen.size < 2 || !seen.has("item")) return [];
   const sum = [...seen].reduce((s, [k, v]) => s + (k === "discount" ? -v : v), 0);
   const want = Number(total);
-  if (Number.isFinite(want) && want > 0 && Math.abs(sum - want) > 0.011) return "";
-  return ["item", "shipping", "tax", "fees", "discount"].filter((k) => seen.has(k)).map((k) => `${k} ${fmt(seen.get(k).toFixed(2))}`).join(", ");
+  if (Number.isFinite(want) && want > 0 && Math.abs(sum - want) > 0.011) return [];
+  return ["item", "shipping", "tax", "fees", "discount"].filter((k) => seen.has(k)).map((k) => [k, seen.get(k).toFixed(2)]);
 }
 /**
  * The payment text: the ask (with the Face ID link where they have one), under the itemization when
@@ -1595,7 +1622,8 @@ async function waitUpdates(run, say) {
   return {};
 }
 async function stalled(run, say) {
-  if (!run || TERMINAL.has(run.status) || toldOf(run).has("superseded")) return {};
+  // A payment waiting on them has its own one reminder (remindApproval): no "nothing has moved" on top.
+  if (!run || TERMINAL.has(run.status) || toldOf(run).has("superseded") || run.stage === "needs_approval") return {};
   const since = run.progress_at ?? run.created_at;
   if (clock.now() - since < STALL_MS) return waitUpdates(run, say);
   if (!tellOnce(run.run_id, "stalled")) return { stalled: true };
@@ -1670,7 +1698,8 @@ export async function step(runId) {
         await say(`${row.merchant_name || storeName(run.store) || "The store"} only gave me a ceiling (${amountText(row)}), not the real total, so I stopped before paying. Nothing was charged.`);
       } else if (row && it.method === "card") {
         setStage(runId, "needs_approval");
-        await say(paymentText(run, row, it));
+        q("UPDATE shop_runs SET ask_since = COALESCE(ask_since, ?) WHERE run_id = ?").run(now, runId);
+        await say(paymentText(runRow(runId), row, it));
       } else {
         // A payment Reason cannot approve from here (not a card, or no readable amount): never the
         // model's to answer. Said once; the request expires on its own and the end is texted.
@@ -1761,6 +1790,13 @@ export async function step(runId) {
       else if (tellOnce(runId, "end")) await say(`${storeName(run.store) || "The store"} wants an account to check out, and I couldn't start the signed-in checkout. Nothing was charged.`);
       return { done: true, status, said, retried: again.ok ? again.runId : null };
     }
+    // The store let go of the cart while they still had time on their approval (2026-11-07): Crossmint holds
+    // a payment ten minutes, the approval half hour is thirty, so the same checkout is asked again by code,
+    // the new total comes with a fresh link, and the first ask's half hour carries over. Nothing is charged.
+    if (!paid && status !== "succeeded" && before === "needs_approval" && !told.has("superseded") && ask) {
+      const renewed = await renewHold(runRow(runId), ask, result, say);
+      if (renewed) return { done: true, status, said, renewed };
+    }
     if (status === "succeeded") {
       const ref = orderRef(result);
       if (ref) q("UPDATE shop_runs SET order_ref = ? WHERE run_id = ?").run(ref, runId);
@@ -1786,7 +1822,60 @@ export async function step(runId) {
     }
     return { done: true, status, said };
   }
-  return { done: false, status, said, woke, ...(await stalled(runRow(runId), say)) };
+  return { done: false, status, said, woke, ...(await remindApproval(runRow(runId), say)), ...(await stalled(runRow(runId), say)) };
+}
+/** How many times one purchase's checkout is asked again after the store let go, inside the half hour. */
+export const RENEW_MAX = 2;
+/** The one reminder goes this long before the approval runs out. */
+export const REMIND_BEFORE_MS = 5 * 60_000;
+const holdExpired = (result) => { const code = String(result?.code ?? "").toLowerCase(); return code === "input_expired" || /expired while waiting/i.test(`${result?.summary ?? ""} ${result?.message ?? ""}`); };
+/**
+ * The store's hold on the payment ran out before they approved, inside their half hour: the same
+ * checkout is started again, quietly but for one line, carrying the first ask's time. Returns the new
+ * run id, or null (outside the half hour, asked again too often, declined, or the store wouldn't start).
+ */
+async function renewHold(run, ask, result, say) {
+  if (!run || !holdExpired(result)) return null;
+  const since = run.ask_since ?? run.created_at;
+  if ((run.renewals ?? 0) >= RENEW_MAX || clock.now() >= since + passkey.APPROVAL_TTL_MS - REMIND_BEFORE_MS) return null;
+  // Declined, or Face ID already tapped and the payment still in flight: never a second ask for the same thing.
+  if (q("SELECT 1 AS x FROM shop_payments WHERE run_id = ? AND status IN ('declined', 'paying') LIMIT 1").get(run.run_id)) return null;
+  const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: run.mode === "sign_in" });
+  if (!again.ok) return null;
+  tellOnce(run.run_id, "end");
+  // The new run carries the half hour, the count, and whether the one reminder went already.
+  const carried = [...toldOf(runRow(again.runId)), "renewed", ...(toldOf(run).has("reminded") ? ["reminded"] : [])];
+  q("UPDATE shop_runs SET ask_since = ?, renewals = ?, told = ? WHERE run_id = ?").run(since, (run.renewals ?? 0) + 1, [...new Set(carried)].join(","), again.runId);
+  q("UPDATE shop_runs SET result = ? WHERE run_id = ?").run(`renewed: store hold ran out; asked again as ${again.runId}`, run.run_id);
+  // The link they hold for the old payment can't pay it any more: closed, so its page says a newer one is coming.
+  for (const p of q("SELECT id FROM shop_payments WHERE run_id = ?").all(run.run_id)) {
+    const a = passkey.openApprovalFor(p.id);
+    if (a) passkey.closeApproval(a, "renewed");
+  }
+  follow(again.runId);
+  await say(`${storeOf(run)} let go of the cart before you approved, so I'm asking again${itemOf(run)}. Nothing was charged. A fresh link comes with the total.`);
+  return again.runId;
+}
+/**
+ * One text before the approval runs out, per purchase (carried across a store asked again): the
+ * amount, the store, and the clock time it ends. Only while a payment is asked and nobody answered.
+ */
+async function remindApproval(run, say) {
+  if (!run || run.stage !== "needs_approval" || toldOf(run).has("reminded")) return {};
+  const pay = payOf(run);
+  if (!pay || pay.status !== "asked") return {};
+  const ends = askDeadline(pay);
+  // The store's hold, when it will not be asked again: the reminder goes before that instead.
+  const hold = pay.expires_at ? Date.parse(pay.expires_at) : NaN;
+  const last = (run.renewals ?? 0) >= RENEW_MAX || (Number.isFinite(hold) && hold >= ends - REMIND_BEFORE_MS);
+  const by = last && Number.isFinite(hold) ? Math.min(ends, hold) : ends;
+  if (clock.now() < by - REMIND_BEFORE_MS || clock.now() >= by) return {};
+  if (!tellOnce(run.run_id, "reminded")) return {};
+  const how = passkey.requiredFor(run.conversation_id)
+    ? (passkey.openApprovalFor(pay.id) ? "The Face ID link I sent still works until then." : `Approve it with Face ID here:\n${approvalUrl(pay)}`)
+    : "Reply to approve it, or tell me to stop.";
+  await say(`Still waiting on your approval: ${amountText(pay)} at ${pay.merchant_name || storeOf(run)}${pay.item ? ` for ${pay.item}` : ""}, until ${clockTime(by, run.conversation_id)}. ${how}`);
+  return { reminded: true };
 }
 /** Crossmint's result for a checkout the store wouldn't let a guest finish (Target, Walmart: merchant.no_safe_path at "Sign in or create account"). */
 function needsAccount(result) {
@@ -1936,7 +2025,7 @@ function approvalHint(run) {
   if (!passkey.requiredFor(run.conversation_id)) return { approval: "they approve by replying yes to the payment text; if they haven't, ask again in one line." };
   const open = passkey.openApprovalFor(pay.id);
   if (open) return { approval: `their Face ID link from the payment text still works for ${minutes(open.expires_at - clock.now())} more minutes; nothing is paid until they approve there. If they say they have no link, call shop_pay with payment_id ${pay.id} for a fresh one.` };
-  return { approve_url: approvalUrl(pay), approval: "their earlier Face ID link was used up without paying or ran out. Send this fresh url ON ITS OWN LINE as the last thing, untouched; it works once, for 5 minutes. Don't say it's paid." };
+  return { approve_url: approvalUrl(pay), approval: "their earlier Face ID link was used up without paying or ran out. Send this fresh url ON ITS OWN LINE as the last thing, untouched; it works once, until the half hour from the first ask is up. Don't say it's paid." };
 }
 /** shop_status: the record the model answers from. */
 export function statusView(conversationId) {

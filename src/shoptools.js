@@ -20,6 +20,7 @@ import * as spendcap from "./spendcap.js";
 import * as trust from "./trust.js";
 import { judgeReply } from "./judge.js";
 import * as shipping from "./shipping.js";
+import { askStructured, sideAskAllowed } from "./backends/side.js";
 
 export const SHOP_TOOLS = new Set(["store_checkout", "shop_pay", "shop_decline", "shop_card", "shop_status", "shop_answer", "spend_limit_set", "spend_limit_confirm"]);
 export const shopToolVisible = (name, conversationId) => !SHOP_TOOLS.has(name) || shop.connectAllowedFor(conversationId);
@@ -62,6 +63,8 @@ export const SHOP_TOOL_DEFS = [
         item: { type: "string", description: "The item in a few words, as the payment ask will name it: 'a 4-ft USB-C cable'." },
         max_usd: { type: "number", description: "A ceiling Crossmint enforces. Not a price anybody agreed to." },
         sign_in: { type: "boolean", description: "True when a guest checkout at this store was blocked because it needs an account." },
+        their_need: { type: "string", description: "What they said it has to be or be for, in their words, when they said it: 'for dry skin', 'fits an iPhone 16', 'unscented', 'the 16 oz'. Empty when they named only the item." },
+        variant_confirmed: { type: "boolean", description: "True ONLY after store_checkout refused with variant_mismatch and they then told you they want exactly this one anyway." },
       },
       required: ["store", "start_url", "what", "item", "max_usd"],
     },
@@ -132,7 +135,7 @@ export const SHOP_TOOL_DEFS = [
 ];
 
 export const SHOP_SCHEMAS = {
-  store_checkout: z.object({ store: z.string().min(1).max(80), start_url: z.string().url().max(1000), what: z.string().min(1).max(400), item: z.string().min(1).max(120), max_usd: z.number().positive().max(2000), sign_in: z.boolean().optional() }),
+  store_checkout: z.object({ store: z.string().min(1).max(80), start_url: z.string().url().max(1000), what: z.string().min(1).max(400), item: z.string().min(1).max(120), max_usd: z.number().positive().max(2000), sign_in: z.boolean().optional(), their_need: z.string().max(400).optional(), variant_confirmed: z.boolean().optional() }),
   shop_pay: z.object({ payment_id: z.number().int().positive(), confirmation_id: z.number().int().optional() }),
   shop_decline: z.object({ payment_id: z.number().int().positive() }),
   shop_card: z.object({ send_link: z.boolean().optional(), receipt_email: z.string().max(200).optional() }),
@@ -155,11 +158,60 @@ function emailSay(emails = []) {
   if (emails.length >= 2) return `${why} Tell them you need an email for the card, that you have ${emails.slice(0, -1).join(", ")} and ${emails[emails.length - 1]} on record, and ask which one — one plain line, no other question.`;
   return `${why} Tell them that in one plain line and ask which email to use.`;
 }
-export async function runShopTool(name, input, { conversationId: c, confirmationId = null, messages = [], judge = null } = {}) {
+// ---------------------------------------------------------------- the right one, before the checkout
+// 2026-10-31: he asked for a face wash for his skin, and the run that finally paid was for the Hydrating
+// cleanser after three runs for the Foaming one (made for oily skin): the variant was never held up
+// against what he had said. Whether this item is the one they need is MEANING, so a model reads it —
+// their own recent words and the need the model passed, against the item and the instruction — never a
+// keyword list. It runs once per checkout start, fails open (a side call that can't answer never stops a
+// purchase; nothing is charged by starting one anyway), and a mismatch goes back to the model to fix
+// or to ask them.
+const FIT_SCHEMA = {
+  type: "object",
+  properties: {
+    verdict: { type: "string", enum: ["fits", "mismatch", "unclear"] },
+    need: { type: "string", description: "What they said it has to be, in a few words (empty if nothing)." },
+    why: { type: "string", description: "For a mismatch: one short sentence on how the item differs from that." },
+  },
+  required: ["verdict", "need", "why"],
+  additionalProperties: false,
+};
+const FIT_SYSTEM = `You check one purchase before an assistant starts the checkout. You get what the person said recently (their own words), the need the assistant noted, and the exact item and instruction the checkout will buy.
+Answer "mismatch" only when the person stated a requirement — a skin or hair type, a size, a model or device it must fit, a flavour, scent, colour, dietary need, an exact product name — and this item clearly is a different variant than that (for example a cleanser "for oily skin" when they said dry skin, a 12 oz when they asked for 16 oz, a case for a different phone).
+Answer "fits" when the item matches what they asked for. Answer "unclear" when they stated no requirement, or the item's name does not say enough to tell. Never call a difference in brand, price or store a mismatch unless they asked for that brand or store. Product names can be read with ordinary knowledge (CeraVe Foaming Facial Cleanser is the one for normal to oily skin; CeraVe Hydrating is for normal to dry).`;
+let fitImpl = null;
+/** For tests: what reads the fit (same shape as askStructured). null puts the real one back. */
+export function _setFitCheck(fn) { fitImpl = fn; }
+export async function checkFit({ texts = [], need = "", item = "", what = "" }, { ask = fitImpl ?? askStructured } = {}) {
+  if (ask === askStructured && !sideAskAllowed()) return { verdict: "unclear", skipped: true };
+  const said = texts.slice(-12).map((t) => `- ${String(t).slice(0, 400)}`).join("\n");
+  if (!said && !String(need).trim()) return { verdict: "unclear" };
+  let out;
+  try {
+    out = await ask({
+      prompt: `What they said, oldest first:\n${said || "(nothing recent)"}\n\nThe need the assistant noted: ${String(need).trim() || "(none)"}\n\nThe checkout will buy: ${item}\nInstruction: ${what}`,
+      system: FIT_SYSTEM, schema: FIT_SCHEMA, model: process.env.REASON_FIT_MODEL || "haiku", timeoutMs: 20_000, feature: "shop_fit",
+    });
+  } catch { return { verdict: "unclear", error: true }; }
+  const v = out?.value;
+  if (!v || !["fits", "mismatch", "unclear"].includes(v.verdict)) return { verdict: "unclear", error: true };
+  const clip = (x) => String(x ?? "").replace(/\s+/g, " ").trim().slice(0, 240);
+  return { verdict: v.verdict, need: clip(v.need), why: clip(v.why) };
+}
+
+export async function runShopTool(name, input, { conversationId: c, confirmationId = null, messages = [], judge = null, log = () => {} } = {}) {
   if (!shop.connectAllowedFor(c)) return { ok: false, error: "Not available." };
   if (name === "store_checkout") {
     const store = shop.checkoutStoreKey(input.store, input.start_url);
     if (!store) return { ok: false, error: "Which store? Give its site." };
+    if (!input.variant_confirmed) {
+      const fit = await checkFit({ texts: trust.ownerTexts(messages), need: input.their_need ?? "", item: input.item, what: input.what });
+      log({ shop_fit: fit.verdict, ...(fit.skipped ? { skipped: true } : {}), ...(fit.error ? { error: true } : {}) });
+      if (fit.verdict === "mismatch") {
+        return { ok: false, blocked: "variant_mismatch", need: fit.need, why: fit.why,
+          say: `Not started: they said ${fit.need || "what they need"}. ${fit.why || `${input.item} is a different variant.`} Find the variant that matches and start that one instead; if you can't tell which they want, ask them in one line. Only if they then say they want this exact one, call store_checkout again with variant_confirmed: true. Nothing was charged.` };
+      }
+    }
     shop.noteStore({ store, name: input.store, url: input.start_url });
     shop.ensureIcon(store); // for the sign-in page, if it comes to that; never waited on
     const out = await shop.startCheckout({ conversationId: c, store, startUrl: input.start_url, what: input.what, item: input.item, maxUsd: input.max_usd, signIn: !!input.sign_in });
@@ -173,7 +225,7 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
     if (passkey.requiredFor(c)) {
       const row = shop.paymentRow(input.payment_id);
       if (!row || row.conversation_id !== c || row.status !== "asked") return { ok: false, error: "not_open" };
-      return { ok: false, approve_with_face_id: true, url: shop.approvalUrl(row), say: "Their purchases are approved with Face ID, so a yes in the chat doesn't pay. Send this url ON ITS OWN LINE as the last thing, untouched; it works once, for 5 minutes. Don't say it's paid." };
+      return { ok: false, approve_with_face_id: true, url: shop.approvalUrl(row), say: "Their purchases are approved with Face ID, so a yes in the chat doesn't pay. Send this url ON ITS OWN LINE as the last thing, untouched; it works once, for 30 minutes. Don't say it's paid." };
     }
     const out = await shop.payApproved({ conversationId: c, paymentId: input.payment_id, confirmationId });
     if (out.ok) return { ...out, say: `Paid ${out.amount} at ${out.merchant}. The store still has to place it; say it's going through, not that it's done.${out.receipts_email ? ` Mention that receipts go to ${out.receipts_email} (Reason picked it, the only one on record).` : ""}` };
@@ -191,7 +243,7 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
     if (out.ok) return { ...out, say: `Say it back in one line: their daily limit is now ${out.to} a day${out.from !== out.to ? ` (it was ${out.from})` : ""}. Today they have spent ${was.spent}, so ${was.left} is left.` };
     if (out.error === "over_ceiling") return { ...out, say: `The most anyone can set here is ${out.ceiling} a day, so nothing changed; their limit is still ${out.cap}. Say that in one line and offer ${out.ceiling} if they want it. Never say who could go higher or how.` };
     if (out.error === "bad_amount") return { ...out, say: "That didn't read as an amount. Ask once, plainly, what the daily limit should be in dollars." };
-    if (out.needs === "face_id") return { ...out, say: `Raising it from ${out.from} to ${out.to} a day needs their Face ID. Say so in one line and send this url ON ITS OWN LINE as the last thing, untouched; it works once, for 5 minutes. Don't say it's done.` };
+    if (out.needs === "face_id") return { ...out, say: `Raising it from ${out.from} to ${out.to} a day needs their Face ID. Say so in one line and send this url ON ITS OWN LINE as the last thing, untouched; it works once, for 30 minutes. Don't say it's done.` };
     return { ...out, say: `Raising it from ${out.from} to ${out.to} a day needs a yes from them. Ask once, in one line, whether to raise it to ${out.to} a day; when they answer, spend_limit_confirm with change_id ${out.change_id}. Don't say it's done.` };
   }
   if (name === "spend_limit_confirm") {
