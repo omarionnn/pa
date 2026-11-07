@@ -1030,3 +1030,20 @@ test("a right code posted from another site is refused, so nobody's sign-in can 
   const ok = await req(token, "start", { method: "POST", raw: `code=${codeOf(told)}`, tell });
   assert.equal(ok.status, 303);
 });
+
+test("a right code is not used up on a Start the Mac window blocks, and the outbox key carries no link token", async () => {
+  db.db.exec("DELETE FROM page_codes; DELETE FROM page_attempts;");
+  const told = [];
+  const tell = async (c, text, meta) => { told.push({ c, text, meta }); };
+  let busy = "A sign-in window is already open on the Mac for this account.";
+  const { token, b } = make({ busy: () => busy });
+  await req(token, "start", { method: "POST", tell });
+  await new Promise(r => setImmediate(r));
+  assert.ok(!told[0].meta.idempotencyKey.includes(token.slice(0, 8)), "no part of the link in the outbox key");
+  const blocked = await req(token, "start", { method: "POST", raw: `code=${codeOf(told)}`, tell });
+  assert.equal(blocked.status, 409);
+  assert.equal(b.launched.length, 0);
+  busy = null;
+  const ok = await req(token, "start", { method: "POST", raw: `code=${codeOf(told)}`, tell });
+  assert.equal(ok.status, 303, "the same code still works once the window is closed");
+});

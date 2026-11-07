@@ -394,7 +394,7 @@ function sendCode(s, tell) {
   const mins = Math.round(CODE_TTL_MS / 60_000);
   const line = `Your Reason code is ${code}, to start the ${s.entry.label} sign-in link on that browser. Good for ${mins} minutes. If that wasn't you, ignore this — nothing was opened.${boundTo(codeHost(remoteSigninStatus().base), code)}`;
   Promise.resolve()
-    .then(() => tell(s.conversationId, line, { idempotencyKey: `scode:${s.token.slice(0, 12)}:${id}` }))
+    .then(() => tell(s.conversationId, line, { idempotencyKey: `scode:${cookieName(s.token)}:${id}` }))
     .catch((e) => s.log({ signin_remote: "code_text_failed", site: s.entry.site, why: (e?.message ?? String(e)).split("\n")[0] }));
   s.log({ signin_remote: "code_sent", site: s.entry.site, conversation: s.conversationId });
   return codePage(s, { status: 401 });
@@ -465,6 +465,9 @@ export async function remoteRequest({ token, action = "", method = "GET", header
         if (s.secret || s.ended) return gone();
         const typed = form.get("code");
         if (typed === null || form.has("send")) return sendCode(s, tell);
+        // Busy first, so a right code is not used up on a Start that cannot open anything.
+        const busyNow = s.busy(s.conversationId);
+        if (busyNow) return { status: 409, headers: HTML(), body: shell("Not right now", `<p class="lead">${esc(busyNow)}</p>`) };
         const tried = tryCode(s, typed, headers);
         if (!tried.ok) return codePage(s, { status: tried.status, error: tried.error });
         remember = tried.cookie;
