@@ -223,12 +223,6 @@ function xmlResponses(text) {
 // ---------- CalDAV requests ----------
 
 /**
- * One CalDAV request. Returns { ok, status, body } or { ok: false, error }.
- *
- * The base URL and timeout are taken from config, and the auth credential is constructed from
- * the Apple ID email and app-specific password stored in the oauth_tokens row.
- */
-/**
  * May the Apple ID credential go to this absolute URL? Only to the CalDAV server itself: the
  * configured origin, or (on iCloud) one of its own https hosts, which is where Apple puts a person's
  * calendars (p123-caldav.icloud.com). An event href is the model's to pass, and a credential sent
@@ -238,11 +232,18 @@ function xmlResponses(text) {
 export function caldavUrlAllowed(url) {
   let u, b;
   try { u = new URL(url); b = new URL(base()); } catch { return false; }
+  if (u.username || u.password) return false;
   if (u.origin === b.origin) return true;
-  const icloud = (h) => h === "icloud.com" || h.endsWith(".icloud.com");
-  return u.protocol === "https:" && !u.username && !u.password && icloud(b.hostname) && icloud(u.hostname);
+  const caldavHost = (h) => h === "caldav.icloud.com" || /^p\d+-caldav\.icloud\.com$/.test(h);
+  return u.protocol === "https:" && caldavHost(b.hostname) && caldavHost(u.hostname);
 }
 
+/**
+ * One CalDAV request. Returns { ok, status, body } or { ok: false, error }.
+ *
+ * The base URL and timeout are taken from config, and the auth credential is constructed from
+ * the Apple ID email and app-specific password stored in the oauth_tokens row.
+ */
 export async function caldav(method, path, { body = null, headers = {}, email = "", password = "", depth, fetchImpl = fetch } = {}) {
   const url = /^https?:/i.test(path) ? path : `${base()}${path}`;
   if (!caldavUrlAllowed(url)) {
