@@ -330,7 +330,12 @@ test("asking for card details is refused outright, not paused for approval", () 
   });
   assert.equal(r.allowed, false);
   assert.equal(r.reason, "payment_details");
-  assert.match(r.say, /cannot take or give payment details/);
+  // An instruction the model says in its own words (calmWhy), not a fixed opening phrase to read out.
+  assert.match(r.say, /own words/i, "said in the model's own words");
+  assert.match(r.say, /card or account details/i, "names what is not shared");
+  assert.match(r.say, /money safe/i, "and why");
+  assert.match(r.say, /payment link|another way/i, "then what it can do instead");
+  assert.doesNotMatch(r.say, /Tell them you cannot take or give payment details/, "no fixed opening phrase before the instruction");
   assert.equal(sent.length, 0, "this is not a thing to ask him about; it is refused");
 });
 

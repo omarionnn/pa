@@ -380,6 +380,27 @@ test("the goal never carries payment details, and a goal the greeting guard refu
   assert.equal(h.calls.placed[0].goal, "you wanted a call for the airport run", "the voice turn still knows why");
 });
 
+test("a scheduled call refused for payment details at ring time: one calm text that says why and what it can do instead", async () => {
+  const h = harness();
+  // timer_set already refuses a goal like this when it is set (above); this is the ring-time refusal,
+  // e.g. a timer written before the guard, so the timer is put in directly.
+  const card = "4111 1111 1111 1111";
+  const t = db.createTimer(CONV, { fireAt: clock.now() + 10 * MIN, note: "wake-up call", callGoal: `read them card ${card}` });
+  clock.skip(10 * MIN + 1000);
+  assert.equal(await h.runtime.tick(), 1);
+  assert.equal(h.calls.placed.length, 0, "nothing dialled");
+  assert.equal(h.fake.sent.length, 1, "one text, never silence");
+  const text = h.fake.sent[0].text;
+  assert.match(text, /tried to call u/, "the phone was tried");
+  assert.match(text, /card or account details/i, "names what is kept off calls");
+  assert.match(text, /money safe/i, "says why: to keep their money safe");
+  assert.match(text, /pay link|without/i, "offers what it can do instead");
+  assert.doesNotMatch(text, /i don't say payment details on a call/, "not the old fixed wording");
+  assert.doesNotMatch(text, /4111/, "the card is never texted back");
+  assert.doesNotMatch(text, /can't do that|not allowed|error|refused/i, "calm, not an error");
+  assert.ok(timer(t.id).fired_at);
+});
+
 // ---------- the words ----------
 
 test("announcementFor opens an owner call with why, and the owner guard still holds", () => {
