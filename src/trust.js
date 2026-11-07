@@ -45,7 +45,6 @@ export function isBareRefusal(text) {
   return BARE_REFUSALS.has(t);
 }
 
-/** The owner's own messages in this conversation, oldest first, with the timestamp prefix stripped. */
 /**
  * What a caller said on a call that was matched to them by caller ID alone, and never passed the
  * second check (src/calls/verify.js), is written into the thread with this tag (src/calls/postcall.js).
@@ -60,6 +59,7 @@ const unverifiedSpeech = (content) => /^\[[^\]]*\]\s*[^:]{0,80}\(on the call, ca
   // not from them either: an event's name, which somebody else chose, is in it.
   || /^\[[^\]]*\]\s*\(nothing from them\b/.test(content);
 
+/** The owner's own messages in this conversation, oldest first, with the timestamp prefix stripped. */
 export function ownerTexts(messages = []) {
   return messages
     .filter(m => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[event ") && !unverifiedSpeech(m.content))
@@ -81,8 +81,19 @@ const contentWords = (t) => sayNorm(t).split(" ").map(w => w.replace(/^[$.']+|[.
  * [brackets] (the text of a PDF they sent, the message an inline reply was under, which card a number
  * picks), and none of that is their saying anything.
  */
-const typed = (messages, last) => ownerTexts(messages).slice(-last)
-  .map(t => t.split("\n").filter(l => !/^\s*\[/.test(l)).join("\n").trim()).filter(Boolean);
+function typedOnly(t) {
+  // A note opens with "[" at the start of a line and runs to its matching "]", across as many lines as
+  // the text inside it has (a PDF's whole body is one note): the whole span goes, not just its first line.
+  const out = [];
+  let depth = 0;
+  for (const line of String(t).split("\n")) {
+    if (depth === 0 && !/^\s*\[/.test(line)) { out.push(line); continue; }
+    for (const ch of line) { if (ch === "[") depth++; else if (ch === "]") depth = Math.max(0, depth - 1); }
+  }
+  return out.join("\n").trim();
+}
+const typed = (messages, last) => ownerTexts(messages).slice(-last).map(typedOnly).filter(Boolean);
+const NEGATION = /\b(never|don'?t|do not|doesn'?t|no longer|stop|not)\b/;
 
 export function ownerSaid(messages, said, { last = 12 } = {}) {
   const want = sayNorm(said);
@@ -91,6 +102,8 @@ export function ownerSaid(messages, said, { last = 12 } = {}) {
   if (words.length < 3) return false;
   return typed(messages, last).some(t => {
     const theirs = sayNorm(t);
+    // "never text my mom without asking me" contains "text my mom without asking me": a no, quoted as a yes.
+    if (NEGATION.test(theirs) && !NEGATION.test(want)) return false;
     if (theirs.includes(want)) return true;
     // A light retelling of one message of theirs (the model tidied the wording): nearly every word that
     // carries meaning is theirs. A sentence they never sent shares almost none.

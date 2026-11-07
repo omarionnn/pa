@@ -3122,6 +3122,13 @@ export function shiftThreadMarks(historyId, { ownerTexts = 0, userLines = 0 } = 
   }
   // A call's check is texted to their phone: it lives in the shared thread only.
   if (cut) return;
+  // An open daily-limit raise counts the same way (src/spendcap.js, src/shoptools.js spend_limit_confirm).
+  if (ownerTexts > 0) {
+    try {
+      db.prepare(`UPDATE cap_changes SET asked_after_msgs = MAX(0, asked_after_msgs - ?)
+        WHERE conversation_id = ? AND status = 'asked' AND asked_after_msgs IS NOT NULL`).run(ownerTexts, conversationId);
+    } catch { /* no shopping on this install: no table */ }
+  }
   if (userLines > 0) {
     db.prepare(`UPDATE calls SET verify_sent_after_msgs = MAX(0, verify_sent_after_msgs - ?)
       WHERE conversation_id = ? AND verify_sent_at IS NOT NULL AND verified_at IS NULL AND verify_sent_after_msgs IS NOT NULL`)
