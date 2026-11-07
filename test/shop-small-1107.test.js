@@ -175,3 +175,33 @@ test("the store's last hold ends before the half hour: the reminder comes before
   assert.equal(out.reminded, true);
   assert.match(said.at(-1).t, /Still waiting on your approval: \$26\.65 at CVS/);
 });
+
+// ---------------------------------------------------------------- 3. the price, in parts
+test("the Face ID page shows item, shipping, tax and total from the store's figures (Walmart's words, 10-31)", async () => {
+  withPasskey();
+  const a = await start();
+  runs[a.runId].requiredAction = PAY("req_1", { value: "25.00", question: "Order total $25.00 (item $15.97, shipping $6.99, estimated tax $2.04). Approve the card payment?" });
+  await shop.step(a.runId);
+  const row = q("SELECT * FROM shop_payments WHERE request_id = 'req_1'").get();
+  assert.deepEqual(JSON.parse(row.breakdown), [["item", "15.97"], ["shipping", "6.99"], ["tax", "2.04"]]);
+  const body = (await page(tokenIn(said.at(-1).t))).body;
+  const rows = [...body.matchAll(/<tr[^>]*><th scope="row">([^<]+)<\/th><td>([^<]+)<\/td><\/tr>/g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(rows.slice(0, 4), [["Item", "$15.97"], ["Shipping", "$6.99"], ["Tax", "$2.04"], ["Total", "$25.00"]]);
+});
+
+test("a structured breakdown is shown too; a store that gave one number is said plainly, never invented", async () => {
+  withPasskey();
+  const a = await start();
+  runs[a.runId].requiredAction = PAY("req_1", { value: "28.24", breakdown: { subtotal: { value: "19.99" }, shipping: { value: "5.99" }, tax: { value: "2.26" } } });
+  await shop.step(a.runId);
+  let body = (await page(tokenIn(said.at(-1).t))).body;
+  assert.match(body, /<th scope="row">Item<\/th><td>\$19\.99<\/td>.*<th scope="row">Shipping<\/th><td>\$5\.99<\/td>.*<th scope="row">Tax<\/th><td>\$2\.26<\/td>.*<th scope="row">Total<\/th><td>\$28\.24<\/td>/s);
+  const b = await start();
+  runs[b.runId].requiredAction = PAY("req_2", { value: "26.65" });
+  await shop.step(b.runId);
+  body = (await page(tokenIn(said.at(-1).t))).body;
+  assert.match(body, /Item, shipping and tax<\/th><td>all in the total/);
+  assert.match(body, /<th scope="row">Total<\/th><td>\$26\.65<\/td>/);
+  assert.match(body, /CVS gave one number, with shipping and tax in it\./);
+  assert.doesNotMatch(body, /\$0\.00/);
+});

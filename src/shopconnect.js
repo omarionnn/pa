@@ -256,6 +256,8 @@ addRunColumn("last_ok_at", "INTEGER");
 // The approval half hour (2026-11-07): when the person was first asked to approve this purchase, carried
 // to a checkout asked again after the store let go of the cart, and how many times it was asked again.
 addRunColumn("ask_since", "INTEGER");
+// The store's breakdown of a payment, as [label, amount] pairs (2026-11-07): the approval page shows item, shipping, tax, total.
+if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().some((r) => r.name === "breakdown")) db.db.exec("ALTER TABLE shop_payments ADD COLUMN breakdown TEXT NOT NULL DEFAULT ''");
 addRunColumn("renewals", "INTEGER NOT NULL DEFAULT 0");
 function siteRow(key) { return q("SELECT * FROM shop_sites WHERE store = ?").get(key) ?? null; }
 /** What Reason learned about a store it was asked to shop at: its site and the name it was called by. */
@@ -901,6 +903,8 @@ export function recordPayment({ conversationId, runId, request, item = "" }) {
     conversationId, runId, request.requestId, String(amount.value), String(amount.currency ?? "USD").toUpperCase(), String(amount.kind ?? "exact"),
     String(it.merchant?.name ?? ""), String(it.merchant?.url ?? ""), String(it.merchant?.countryCode ?? ""), item,
     String(request.request?.question ?? request.question ?? ""), String(request.request?.expiresAt ?? request.expiresAt ?? ""), clock.now());
+  const parts = itemizedParts(it, { question: request.request?.question ?? request.question ?? "", total: amount.value });
+  if (parts.length) q("UPDATE shop_payments SET breakdown = ? WHERE request_id = ? AND breakdown = ''").run(JSON.stringify(parts), request.requestId);
   return q("SELECT * FROM shop_payments WHERE request_id = ?").get(request.requestId);
 }
 /**
@@ -1118,6 +1122,13 @@ export const approvalUrl = (row) => `${siteBase()}/web/approve/${passkey.createA
 /** The ask once they have a passkey: the same words, and the link instead of "reply yes". */
 export const passkeyAsk = (row, opts = {}) => `${paymentAsk(row, opts)} Approve it with Face ID here:\n${approvalUrl(row)}`;
 /** What the approval page shows: the row's own amount, store and item, and the link's state. */
+/** The row's breakdown as [label, "$15.97"] pairs, money said the way the ask says it; [] when the store gave one number. */
+export function breakdownOf(row) {
+  let parts = [];
+  try { parts = JSON.parse(row?.breakdown || "[]"); } catch { parts = []; }
+  if (!Array.isArray(parts)) return [];
+  return parts.filter((p) => Array.isArray(p) && p.length === 2 && /^\d+(\.\d{1,4})?$/.test(String(p[1]))).map(([l, n]) => [String(l), amountText({ amount: String(n), currency: row.currency })]);
+}
 export function approvalView(token) {
   const a = passkey.approvalFor(token);
   if (!a || !connectAllowedFor(a.conversation_id) || !passkey.passkeyAllowedFor(a.conversation_id)) return null;
@@ -1132,7 +1143,7 @@ export function approvalView(token) {
   const row = paymentRow(a.payment_id);
   if (!row) return null;
   const state = a.state === "open" && row.status !== "asked" ? "closed" : a.state;
-  return { a, row, kind: "pay", state, amount: amountText(row), store: row.merchant_name || storeName(runRow(row.run_id)?.store) || "the store", item: row.item, expiresAt: a.expires_at };
+  return { a, row, kind: "pay", state, amount: amountText(row), store: row.merchant_name || storeName(runRow(row.run_id)?.store) || "the store", item: row.item, expiresAt: a.expires_at, breakdown: breakdownOf(row) };
 }
 /**
  * The page's assertion: verified against the row as it is now (passkey.verifyApproval), the link
@@ -1309,34 +1320,41 @@ const short = (s, n = 140) => { const t = String(s ?? "").replace(/\s+/g, " ").t
 export function itemized(it, { question = "", total = "" } = {}) {
   const cur = String(it?.amount?.currency ?? "USD").toUpperCase();
   const fmt = (n) => (cur === "USD" ? `$${n}` : `${n} ${cur}`);
+  return itemizedParts(it, { question, total }).map(([label, n]) => `${label} ${fmt(n)}`).join(", ");
+}
+/** The same breakdown as [label, "15.97"] pairs (item, shipping, tax, fees, discount), or []. Kept on the row for the approval page. */
+export function itemizedParts(it, { question = "", total = "" } = {}) {
   const src = it?.breakdown ?? it?.amount?.breakdown ?? it?.lineItems ?? null;
   if (src && typeof src === "object" && !Array.isArray(src)) {
-    const money = (v) => { const n = v?.value ?? v?.amount ?? v; return /^\d+(\.\d{1,4})?$/.test(String(n ?? "")) ? fmt(n) : ""; };
+    const money = (v) => { const n = v?.value ?? v?.amount ?? v; return /^\d+(\.\d{1,4})?$/.test(String(n ?? "")) ? String(n) : ""; };
     const parts = [];
     for (const [k, label] of [["subtotal", "item"], ["items", "item"], ["item", "item"], ["shipping", "shipping"], ["tax", "tax"], ["fees", "fees"], ["discount", "discount"]]) {
       const m = money(src[k]);
-      if (m && !parts.some((p) => p.startsWith(label))) parts.push(`${label} ${m}`);
+      if (m && !parts.some(([l]) => l === label)) parts.push([label, m]);
     }
-    if (parts.length) return parts.join(", ");
+    if (parts.length) return parts;
   }
-  return itemizedFromWords(question, { total, fmt });
+  return partsFromWords(question, { total });
 }
 const BREAKDOWN_WORD = /\b(subtotal|items?|products?|merchandise|shipping|delivery|(?:estimated |est\.? )?tax(?:es)?|fees?|discounts?|savings?)\b[^$\d\n()]{0,24}\$?\s?(\d{1,6}\.\d{2})\b/gi;
 const LABEL_OF = (w) => /^(subtotal|item|items|product|products|merchandise)$/i.test(w) ? "item" : /^(shipping|delivery)$/i.test(w) ? "shipping" : /tax/i.test(w) ? "tax" : /^fees?$/i.test(w) ? "fees" : "discount";
 /** The breakdown a question carries in words, when it adds up to the total it is for; "" otherwise. */
 export function itemizedFromWords(question, { total = "", fmt = (n) => `$${n}` } = {}) {
+  return partsFromWords(question, { total }).map(([k, n]) => `${k} ${fmt(n)}`).join(", ");
+}
+function partsFromWords(question, { total = "" } = {}) {
   const text = String(question ?? "");
-  if (!text) return "";
+  if (!text) return [];
   const seen = new Map();
   for (const m of text.matchAll(BREAKDOWN_WORD)) {
     const label = LABEL_OF(m[1]);
     if (!seen.has(label)) seen.set(label, Number(m[2]));
   }
-  if (seen.size < 2 || !seen.has("item")) return "";
+  if (seen.size < 2 || !seen.has("item")) return [];
   const sum = [...seen].reduce((s, [k, v]) => s + (k === "discount" ? -v : v), 0);
   const want = Number(total);
-  if (Number.isFinite(want) && want > 0 && Math.abs(sum - want) > 0.011) return "";
-  return ["item", "shipping", "tax", "fees", "discount"].filter((k) => seen.has(k)).map((k) => `${k} ${fmt(seen.get(k).toFixed(2))}`).join(", ");
+  if (Number.isFinite(want) && want > 0 && Math.abs(sum - want) > 0.011) return [];
+  return ["item", "shipping", "tax", "fees", "discount"].filter((k) => seen.has(k)).map((k) => [k, seen.get(k).toFixed(2)]);
 }
 /**
  * The payment text: the ask (with the Face ID link where they have one), under the itemization when

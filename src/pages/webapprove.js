@@ -26,6 +26,11 @@ const CSS = `${PAPER_CSS}
 .pk-no:hover{border-color:var(--hov)}
 .pk-go+.pf-l{margin-top:22px}
 .pk-face{display:inline-block;width:22px;height:22px;margin-right:10px;vertical-align:-3px}
+.pk-bd{width:100%;margin:14px 0 0;border-collapse:collapse;font-size:16px;color:var(--ink)}
+.pk-bd th{text-align:left;font-weight:400;padding:5px 0}
+.pk-bd td{text-align:right;padding:5px 0;font-variant-numeric:tabular-nums}
+.pk-bd .pk-sum th,.pk-bd .pk-sum td{border-top:1px solid var(--ink);font-weight:600;padding-top:8px}
+.pk-bd-note{margin:8px 0 0;font-size:14px;opacity:.75}
 `;
 const BACK = "/web?thread";
 const FACE = `<svg class="pk-face" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M9 9v1.5M15 9v1.5M12 9v4h-1M9 16.5c1.8 1.4 4.2 1.4 6 0"/></svg>`;
@@ -46,7 +51,27 @@ function page(title, body, { staging = false, status = 200, boot = null } = {}) 
   return { status, html: webPage({ title, body: body + (staging ? `<p class="stg">STAGING · SAMPLE</p>` : ""), css: CSS, script }) };
 }
 const shell = (main) => `${header()}<main class="pf" id="pk-main">${main}</main>`;
-const theTotal = (v) => paper({ stamp: v.stampText || "", label: v.store.toUpperCase(), big: v.amount, extra: v.item ? `<p class="pk-item">${esc(v.item)}</p>` : "" });
+const LABELS = { item: "Item", shipping: "Shipping", tax: "Tax", fees: "Fees", discount: "Discount" };
+/**
+ * What the total is made of (2026-11-07: the page showed one number and no breakdown): item, shipping,
+ * tax, then the total, from the store's own figures. When the store gave one number, that is said
+ * plainly instead of inventing parts.
+ */
+export function breakdownRows(v) {
+  if (v.kind === "cap") return "";
+  const parts = Array.isArray(v.breakdown) ? v.breakdown : [];
+  const row = (l, n, cls = "") => `<tr${cls ? ` class="${cls}"` : ""}><th scope="row">${esc(l)}</th><td>${esc(n)}</td></tr>`;
+  if (!parts.length) {
+    return `<table class="pk-bd" aria-label="What the total covers">${row("Item, shipping and tax", "all in the total")}${row("Total", v.amount, "pk-sum")}</table>`
+      + `<p class="pk-bd-note">${esc(v.store)} gave one number, with shipping and tax in it.</p>`;
+  }
+  const has = new Set(parts.map(([l]) => l));
+  const rows = parts.map(([l, n]) => row(LABELS[l] ?? l, l === "discount" ? `−${n}` : n));
+  if (!has.has("shipping")) rows.splice(1, 0, row("Shipping", "none listed"));
+  if (!has.has("tax")) rows.push(row("Tax", "none listed"));
+  return `<table class="pk-bd" aria-label="What the total covers">${rows.join("")}${row("Total", v.amount, "pk-sum")}</table>`;
+}
+const theTotal = (v) => paper({ stamp: v.stampText || "", label: v.store.toUpperCase(), big: v.amount, extra: (v.item ? `<p class="pk-item">${esc(v.item)}</p>` : "") + breakdownRows(v) });
 
 // ---------------------------------------------------------------- the approval
 const WHAT_IT_COVERS = (v) => label("FACE ID APPROVES") + para(v.kind === "cap"
@@ -117,7 +142,7 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
   const ask = frame({
     step: "ask",
     main: headline(`Pay ${v.amount} at ${v.store}?`, "Approve it with Face ID.", "pk-h")
-      + lede("This is the exact total, with tax and shipping, from the store's checkout.")
+      + lede(v.breakdown?.length ? "The store's own figures, from its checkout. The total is exactly what's paid." : "This is the exact total, with tax and shipping, from the store's checkout.")
       + theTotal(v)
       + `<div class="pk-note pk-go">${actions(`<button class="act pf-go" type="button" id="pk-go" data-busy="1">${FACE}Approve with Face ID <span aria-hidden="true">→</span></button>`, NO("Decline"))}</div>`
       + label(`RUNS OUT IN ${minutes(left)} MIN · NOTHING CHARGED YET`)
