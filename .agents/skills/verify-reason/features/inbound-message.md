@@ -41,7 +41,8 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   blank so Linq is still `not_connected`), then `node bin/linq-inbound.mjs group "hi"` →
   `ignored:"group"`, `delivered:0`, `threads` empty; `node bin/linq-inbound.mjs dm "hi"` →
   `delivered:1`, an `inbound_messages` row `linq|dm:owner`, `threads.chat_id = cage-dm-chat`
-  (driven 2026-11-07). The 2025-01-01 payload documents no group flag, so only 2026-02-03 is caught.
+  (driven 2026-11-07). Both documented spellings are caught: `data.chat.is_group` (2026-02-03)
+  and `data.is_group` (2025-01-01).
 - **Deduplication.** A retried webhook with a `message_handle` already seen is answered once.
 - **Who is the sender.** The `number` field, which the docs define as the end user — not
   `from_number`, even when they match. Normalised to E.164.
