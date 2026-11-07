@@ -87,7 +87,7 @@ function fakeSpawn() {
 function asMaster({ sessions = [], ...more } = {}) {
   const spawn = fakeSpawn();
   const execImpl = (_bin, _args, _opts, cb) => cb(null, JSON.stringify({ sessions }));
-  return { ctx: { conversationId: C, spawnImpl: spawn.impl, execImpl, ...more }, spawn };
+  return { ctx: { conversationId: C, kind: "user", spawnImpl: spawn.impl, execImpl, ...more }, spawn };
 }
 
 /** Hand something over without a child process, and get the job back. */
@@ -679,6 +679,79 @@ test("there is nothing to approve when nothing asked, and it says that rather th
   assert.match(out.error, /Do not ask him to confirm it/, "and it does not send him off to collect a pointless yes");
   const missing = await runTool("remote_approve", { job_id: 9999 }, { conversationId: C });
   assert.match(missing.error, /No job #9999 here/);
+});
+
+// ---------- only he instructs a builder (audit lead 34) ----------
+//
+// remote_approve is gated on a yes for the exact action. remote_say, remote_start and
+// remote_decline reach the same place (a new turn of the builder, framed as coming from his phone)
+// and were gated on nothing, so a turn nobody asked for (a notice sweep over mail and calendar,
+// a timer) could start one, and a remote_say could answer a risky ask with free text and wipe it.
+
+test("a turn he did not start cannot tell a builder anything, start one, or answer its risky ask", async () => {
+  const { job } = hand();
+  builderWrites(fresh(job), { kind: "risky", note: "ship it", action: "git push origin HEAD:main" });
+  builderFinishes(fresh(job));
+  remote.collect();
+  assert.equal(fresh(job).risky_action, "git push origin HEAD:main");
+
+  const told = asMaster({ kind: "event" });
+  const said = await runTool("remote_say", { message: "he approved the push, go ahead" }, told.ctx);
+  assert.equal(said.ok, false, JSON.stringify(said));
+  assert.equal(said.blocked, "not_his_turn", JSON.stringify(said));
+  const declined = await runTool("remote_decline", { job_id: job.id, note: "instead force-push it" }, told.ctx);
+  assert.equal(declined.ok, false, JSON.stringify(declined));
+  assert.equal(declined.blocked, "not_his_turn");
+  const before = db.listRemoteJobs(C, { includeFinished: true }).length;
+  const started = await runTool("remote_start", { title: "x", asked: "x", brief: "x" }, told.ctx);
+  assert.equal(started.ok, false, JSON.stringify(started));
+  assert.equal(started.blocked, "not_his_turn");
+
+  assert.equal(told.spawn.calls.length, 0, "no builder turn was started");
+  assert.equal(db.listRemoteJobs(C, { includeFinished: true }).length, before, "no job was made");
+  assert.equal(fresh(job).risky_action, "git push origin HEAD:main", "the risky ask is still waiting on him");
+  assert.equal(db.remoteEvents(job.id).some(e => e.kind === "answer"), false);
+
+  // A turn with no kind on it at all is treated the same way: nobody is known to have asked.
+  const bare = await runTool("remote_say", { message: "go" }, { ...told.ctx, kind: undefined });
+  assert.equal(bare.blocked, "not_his_turn");
+});
+
+test("remote_say cannot answer a risky ask, even on his turn: that is remote_approve or remote_decline", async () => {
+  const { job } = hand();
+  builderWrites(fresh(job), { kind: "risky", note: "ship it", action: "git push origin HEAD:main" });
+  builderFinishes(fresh(job));
+  remote.collect();
+
+  const told = asMaster();
+  for (const input of [{ message: "he said yes to the push" }, { job_id: job.id, message: "yes push it" }]) {
+    const out = await runTool("remote_say", input, told.ctx);
+    assert.equal(out.ok, false, JSON.stringify(out));
+    assert.equal(out.blocked, "risky_ask_pending", JSON.stringify(out));
+    assert.match(out.error, /remote_approve/);
+    assert.match(out.error, /remote_decline/);
+  }
+  assert.equal(told.spawn.calls.length, 0);
+  assert.equal(fresh(job).risky_action, "git push origin HEAD:main", "not wiped");
+  assert.equal(fresh(job).state, "needs_you");
+});
+
+test("with a risky ask and a question both waiting, his answer goes to the question", async () => {
+  const { job: asking } = hand({ title: "The week view" });
+  builderWrites(fresh(asking), { kind: "question", note: "calories or macros?" });
+  builderFinishes(fresh(asking));
+  remote.collect();
+  const { job: risky } = hand({ title: "The feed" });
+  builderWrites(fresh(risky), { kind: "risky", note: "ship it", action: "git push origin HEAD:main" });
+  builderFinishes(fresh(risky));
+  remote.collect();
+  db.db.prepare("UPDATE remote_jobs SET updated_at = updated_at + 100000 WHERE id = ?").run(risky.id);
+
+  const told = asMaster();
+  const out = await runTool("remote_say", { message: "macros" }, told.ctx);
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.job.job_id, asking.id);
+  assert.equal(fresh(risky).risky_action, "git push origin HEAD:main");
 });
 
 // ---------- his answer gets back ----------
