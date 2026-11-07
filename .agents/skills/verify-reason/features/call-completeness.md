@@ -8,7 +8,7 @@ how long the first word took. What Reason looked up on a call stays known for th
 and in the texts after it, and the call model starts talking without a thinking pass first.
 
 Source: `src/calls/postcall.js` (`writeCallIntoThread`, `worthExtracting`, `FILLER`,
-`MIN_EXTRACT_CHARS` 12, `turnsFromTranscriptString`; the `postCallRequest` once-only guard),
+`MIN_EXTRACT_CHARS` 12, `turnsFromTranscriptString`; the once-only guard is `settleGptLive` in `src/calls/gptlive.js`),
 `src/calls/verify.js` (the `verify_caller` tool definition and the texted-yes check,
 `verify_sent_at`; the text is "confirm what was just asked", no action detail), `src/calls/voice.js`
 (`voiceTurn`; `timing()` → `first_word_ms` and `turn_ms` on each `voice_turn` log line;
@@ -119,7 +119,7 @@ files but not mapped here.
 - **Another language on the owner's own call is a mishearing (#65),** not a switch
   (`ownerLanguageRule`). Both pinned in `test/call-voice.test.js`.
 - **Once-only post-call write.** A second `writeCallIntoThread` for the same call would double the
-  rows; the guard is in `postCallRequest`, not in the function.
+  rows; the guard is in `settleGptLive` (a row already settled is returned as is), not in the function.
 - **"Call X again" carries the NEW purpose (#332, 2026-11-05, call 63 → call 74).** `call_place`
   builds this call's brief first (`freshBrief`) and hands it to `safeToRedial` (`src/calls/redial.js`);
   only the "did it go through?" rewrite of a dropped call that could have booked something replaces it,

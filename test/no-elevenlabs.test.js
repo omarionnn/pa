@@ -131,3 +131,26 @@ test("GPT-Live is its own provider: live with Twilio + OpenAI keys alone, and pl
   // The wrapper is not in the way: GPT-Live as the provider is handed back as it is.
   assert.equal(gl.withGptLive(p), p);
 });
+
+test("a GPT-Live row stuck live with no voice session running is written off by the lost-call sweep", async () => {
+  const { settleLostCalls, callLostAfterMs } = await import("../src/tools.js");
+  const { clock } = await import("../src/config.js");
+  const p = chooseCallProvider({ provider: "gptlive" });
+  // A restart mid-call, or a status callback that never came: the row still says in_progress.
+  const stuck = db.createCall(C, {
+    provider: "gptlive", toNumber: "+12025551234", isOwner: true, goal: "check in", facts: [],
+    direction: "in", externalId: "gptlive:CA_stuck", state: "in_progress", announcement: "",
+  });
+  assert.equal(gl.isRunning(stuck.id), false);
+  const checked = await p.check("gptlive:CA_stuck");
+  assert.equal(checked.ok, false, "nothing running here can vouch for it");
+  try {
+    clock.skip(callLostAfterMs("in_progress") + 1000);
+    const out = await settleLostCalls({ calls: p });
+    assert.equal(out.still_going, 0, "not believed live forever");
+    assert.equal(out.unknown, 1);
+    const after = db.getCall(C, stuck.id);
+    assert.equal(after.state, "failed");
+    assert.equal(after.end_reason, "lost");
+  } finally { clock.reset(); }
+});

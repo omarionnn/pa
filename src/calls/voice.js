@@ -391,7 +391,9 @@ export function identifyCall(body, { provider = "gptlive" } = {}) {
     call = db.getCall(conversationId, callId);
     if (!call) return { ok: false, why: `there is no call #${callId} on ${conversationId}` };
   } else {
-    // No ids of Reason's: the voice's own call id, if the turn carries one.
+    // No ids of Reason's. GPT-Live always sends them (`reasonTurn`), so no caller in the code takes this
+    // branch today; it is kept so a turn carrying only the voice's external call id (`gptlive:<CallSid>`)
+    // is still matched to its row rather than refused, and is pinned in test/call-voice.test.js.
     const external = [
       body?.conversation_id, body?.conversationId,
     ].map(v => (v == null ? "" : String(v).trim())).find(Boolean);

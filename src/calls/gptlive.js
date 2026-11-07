@@ -2260,10 +2260,19 @@ export async function dialGptLive(args, { fetchImpl = null } = {}) {
   };
 }
 
-/** A GPT-Live call's state, off its own row: Twilio's status callback and the stream keep it current. */
+/**
+ * A GPT-Live call's state, off its own row: Twilio's status callback and the stream keep it current.
+ * A row still saying placing/ringing/in_progress with no voice session running in this process is not
+ * something this can vouch for (a restart mid-call, a lost status callback): `{ ok: false }`, so the
+ * lost-call sweep (`settleLostCalls`) writes it off instead of believing it is live forever.
+ */
 function checkGptLive(externalId) {
   const row = db.callByExternalId(PROVIDER, externalId);
-  return { ok: true, state: row?.state ?? "placing" };
+  if (!row) return { ok: false, error: "no GPT-Live call under that id" };
+  if (["placing", "ringing", "in_progress"].includes(row.state) && !running.has(row.id)) {
+    return { ok: false, error: "no GPT-Live session is running for this call" };
+  }
+  return { ok: true, state: row.state };
 }
 
 /**
