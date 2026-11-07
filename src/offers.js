@@ -713,7 +713,9 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     // nothing backs that survived its one rewrite was sent anyway). A stale remembered figure is only
     // missing its date, so it is logged and left. If nothing is left, one plain line says why.
     if (t.recomposed && turnReply) {
-      const drop = (x) => (discountClaimed && DISCOUNT.test(x)) || unchecked.some(fig => x.includes(fig));
+      // Whole figures only: an unchecked "$4" takes no sentence that says "$45" (review 11-07).
+      const carries = unchecked.map(fig => new RegExp(`(?<![\\d.,])${fig.replace(/[.*+?^${}()|[\]\\$]/g, "\\$&")}(?![\\d]|[.,]\\d)`));
+      const drop = (x) => (discountClaimed && DISCOUNT.test(x)) || carries.some(re => re.test(x));
       if (discountClaimed || unchecked.length) {
         const parts = sentencesOf(text);
         const left = joinBack(parts.map(p => (typeof p === "string" ? p : p.filter(x => !drop(x)))));

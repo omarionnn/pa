@@ -399,3 +399,13 @@ test("review 11-07: a money word far off in the sentence vouches for nothing; 'i
     assert.equal(offers.guardReply(C, reply).recompose, null, `${said} -> ${reply}`);
   }
 });
+
+// Review 11-07 (9): the rewrite's unchecked figure takes out its own sentence, not one with a longer figure.
+test("review 11-07: an unchecked $1 left in the rewrite drops its sentence, not the one that says $1,299 (read)", () => {
+  offers.beginTurn(C, "what's the tv and the parking?");
+  offers.noteSource(C, { item: "LG C4 65 inch", price: "$1,299" });
+  offers.beginTurn(C, "", "user", { carry: true });
+  const g = offers.guardReply(C, "the tv's $1,299 at best buy. parking's $1 an hour.", { turnReply: true });
+  assert.deepEqual(g.flags.find(f => f.rule === "dollar_dropped")?.figures, ["$1"]);
+  assert.equal(g.text, "the tv's $1,299 at best buy.");
+});
