@@ -453,6 +453,10 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — free flight sources (free-flights, 2026-11-06)
+
+`node --test test/*.test.js` under `env -i`: 5,251 tests, 5,120 passing, 131 skipped, **0 failing** (main c6ce172: 5,235 / 5,104 / 0). New: `test/flight-providers.test.js` (17, recorded SerpApi + Duffel bodies in `test/fixtures/flights/`). Drive on the real model, no flight keys: `bin/flights-unavailable-drive.mjs` — one ask + six task wakes → exactly one message with the Google Flights link. On a Mac the sealed CLI (#336) can't read the Keychain login; export `CLAUDE_CODE_OAUTH_TOKEN` from `security find-generic-password -s "Claude Code-credentials" -w` (`.claudeAiOauth.accessToken`) into the drive's shell only. `FLIGHT_DRIVE_FAKE_BLOCKED=1` replays the old refused-Google path on main.
+
 ### Baseline — sealed CLI turns (fix/sealed-engine-context, 2026-11-06)
 
 `npm test` (worktree of origin/main 842f41f + this branch, no `.env`): 5,235 tests, 5,104 passing, 131 skipped, **0 failing**. New: `test/cli-sealed.test.js` (4; 3 fail on 842f41f). `bin/cli-seal-probe.mjs` on Hetzner with the branch code and the real CLI 2.1.296: control leaks the operator email + AGENTS.md, sealed run clean. See [features/cli-sealed.md](features/cli-sealed.md).

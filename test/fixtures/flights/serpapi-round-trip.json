@@ -1,0 +1,31 @@
+{
+  "search_metadata": {
+    "id": "7b2c3d4e5f6a",
+    "status": "Success",
+    "google_flights_url": "https://www.google.com/travel/flights?hl=en&gl=us&curr=USD&tfs=CBwQAhoeEgoyMDI2LTEyLTEwagcIARIDSkZLcgcIARIDTUlBGh4SCjIwMjYtMTItMTVqBwgBEgNNSUFyBwgBEgNKRktAAUgBcAGCAQsI____________AZgBAQ"
+  },
+  "best_flights": [
+    {
+      "flights": [
+        {
+          "departure_airport": { "name": "John F. Kennedy International Airport", "id": "JFK", "time": "2026-12-10 08:59" },
+          "arrival_airport": { "name": "Miami International Airport", "id": "MIA", "time": "2026-12-10 12:18" },
+          "duration": 199, "airline": "American", "travel_class": "Economy", "flight_number": "AA 1001"
+        }
+      ],
+      "total_duration": 199, "price": 241, "type": "Round trip", "departure_token": "WyJDalJJ..."
+    }
+  ],
+  "other_flights": [
+    {
+      "flights": [
+        {
+          "departure_airport": { "name": "John F. Kennedy International Airport", "id": "JFK", "time": "2026-12-10 14:05" },
+          "arrival_airport": { "name": "Miami International Airport", "id": "MIA", "time": "2026-12-10 17:20" },
+          "duration": 195, "airline": "Delta", "travel_class": "Economy", "flight_number": "DL 2133"
+        }
+      ],
+      "total_duration": 195, "price": 268, "type": "Round trip", "departure_token": "WyJDalJJ..."
+    }
+  ]
+}

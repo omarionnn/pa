@@ -1,5 +1,8 @@
 // Flight search: what `flight_search`, `flight_dates` and `flight_verify` (src/tools.js) do between
-// the model's tool call and the Fli sidecar (src/fli.js).
+// the model's tool call and the flight source — SerpApi's Google Flights engine, then Duffel
+// (src/flightproviders.js). The Fli sidecar (src/fli.js) that scraped Google Flights directly was
+// refused by Google from 2026-10-24 and is no longer in the path; its answer shape is kept, so the
+// `sidecar` below is anything with `searchFlights` / `searchDates`.
 //
 // The model reads the meaning — "NYC" is JFK,EWR,LGA, "leave after work" is a departure window,
 // "no layovers" is NON_STOP, "make it five days" moves the return date — and passes plain fields.
@@ -309,9 +312,10 @@ export function shortList(result, params, { show = 5 } = {}) {
       // matched leg by leg against what AgentCard offers (src/flightbook.js itineraryMatches).
       legs: rawLegs(it.legs),
       ...(it.return ? { return: { ...sideView(it.return), legs: rawLegs(it.return.legs) } } : {}),
-      link: googleFlightsLink({
+      // SerpApi hands back the real Google Flights page for the search; otherwise one is built.
+      link: it.link || googleFlightsLink({
         from: first.from, to: it.legs.at(-1).to, depart: String(first.depart).slice(0, 10),
-        ret: it.return ? String(it.return.legs[0].depart).slice(0, 10) : null,
+        ret: it.return ? String(it.return.legs[0].depart).slice(0, 10) : (params.return_date || null),
         cabin: params.cabin, adults: params.adults, children: params.children,
         infants: (params.infants_in_seat || 0) + (params.infants_on_lap || 0),
       }),
@@ -345,10 +349,13 @@ export function constraintsWords(p) {
 }
 
 /** The limits worth saying, for this search. The model says the ones that matter, not all of them. */
-export function limitsFor({ params, found, options = [], refused = 0 }) {
+export function limitsFor({ params, found, options = [], refused = 0, source = "fli", notes = [], returnsNotListed = false }) {
+  const seen = source === "duffel"
+    ? "what the airlines on Duffel offered for this search (some low-cost carriers, Southwest among them, aren't there)"
+    : "what Google's page showed for this search";
   const out = [
-    `Coverage: ${found} itineraries came back — what Google's page showed for this search, not every fare that exists. Say "from $X", never "the cheapest flight".`,
-    "Live quote: nothing is cached and prices change; if they're about to book, flight_verify re-checks first.",
+    `Coverage: ${found} itineraries came back — ${seen}, not every fare that exists. Say "from $X", never "the cheapest flight".`,
+    "Live quote: prices change; if they're about to book, flight_verify re-checks first.",
   ];
   if (options.some(o => o.unusually_cheap)) {
     out.push("A fare here is well under the rest: baggage, seat selection and whether it's basic economy were NOT checked — say so next to it.");
@@ -359,7 +366,9 @@ export function limitsFor({ params, found, options = [], refused = 0 }) {
   if (family && !found) out.push("Searches with children or infants often come back thin or empty from Google — this does NOT mean there are no flights. Say that, and suggest checking the link directly.");
   else if (family) out.push("Results for searches with children or infants can be thinner than for adults alone.");
   if (refused > 0) out.push(`Partial: Google refused ${refused} of the pages this search needed (Reason is backing off), so this list is missing options — say it's a partial list, not everything.`);
-  if (params.return_date) out.push(`Round trip: the first ${params.top_n} ways out were paired with returns (${1 + params.top_n} page fetches). More options means a slower search.`);
+  if (params.return_date && returnsNotListed) out.push("Round trip: each price is the WHOLE trip, but only the way out is listed — they pick the return flight on the link. Say that; don't invent return times.");
+  else if (params.return_date && source === "fli") out.push(`Round trip: the first ${params.top_n} ways out were paired with returns (${1 + params.top_n} page fetches). More options means a slower search.`);
+  out.push(...notes);
   return out;
 }
 
@@ -414,8 +423,49 @@ export function askedLink(params) {
   });
 }
 
+/**
+ * No flight source answered (no key, the month's free searches used, or an error): ONE honest line
+ * with the Google Flights link. Nothing retries in the background, so nothing may be promised. The
+ * week of 2026-11-02 a task re-ran a refused search for nine hours and texted "still trying" six
+ * times without ever getting a price — this is the answer that replaces that.
+ */
+export function unavailable(link = null) {
+  return {
+    ok: false,
+    couldnt_check: true,
+    kind: "unavailable",
+    say: `Flight prices aren't available right now. Tell them that ONCE, in one message${link ? ", with `link` (Google Flights on their route and dates, where they can see live prices themselves)" : ""}. Nothing is retrying: don't say you're still trying or will keep checking, don't offer to try again later, and don't start a task, watch or reminder to search again. Give no prices, airlines or times from memory, and say nothing that sounds like "no flights". Don't search flights again this turn. If this is a task's wake, finish the task now (task_finish, outcome: flight prices unavailable, link sent).`,
+    ...(link ? { link } : {}),
+  };
+}
+
+/** The same failure on a wake that isn't their message, after they were already told: say nothing. */
+export function alreadyTold(link = null) {
+  return {
+    ok: false,
+    couldnt_check: true,
+    kind: "unavailable",
+    already_told: true,
+    say: "Flight prices still aren't available, and they were already told so (with the Google Flights link). This turn is not a message from them: send them NOTHING about flights — reply NO_REPLY — and if this is a task's wake, finish the task (task_finish, outcome: flight prices unavailable, link sent). Don't search again.",
+    ...(link ? { link } : {}),
+  };
+}
+
+/** Hours within which a second "unavailable" on a wake (not their message) stays silent. */
+export const ALREADY_TOLD_MS = 24 * 60 * 60 * 1000;
+
+function failed(c, err, link, { db, eventTurn = false, now = () => Date.now() }) {
+  if (err instanceof FliError && err.kind === "unavailable") {
+    const told = db.lastFlightsUnavailableAt?.(c);
+    if (eventTurn && told != null && now() - told < ALREADY_TOLD_MS) return alreadyTold(link);
+    return unavailable(link);
+  }
+  return couldntCheck(err, link);
+}
+
 export function couldntCheck(err, link = null) {
   const kind = err instanceof FliError ? err.kind : "internal";
+  if (kind === "unavailable") return unavailable(link);
   const why = {
     blocked: "Google refused or throttled the search (Reason backs off rather than working around it)",
     network: "Google Flights couldn't be reached",
@@ -445,7 +495,7 @@ const fromCentsOf = (result) => {
  * Run a flight search for conversation `c`. `deps` = `{ sidecar, db, today }`; tests pass fakes.
  * Returns what the tool hands the model.
  */
-export async function runFlightSearch(c, input, { sidecar, db, today, now = () => Date.now() }) {
+export async function runFlightSearch(c, input, { sidecar, db, today, now = () => Date.now(), eventTurn = false }) {
   let base = null;
   if (input.refine_of != null) {
     const prev = db.getFlightSearch(c, input.refine_of);
@@ -463,8 +513,9 @@ export async function runFlightSearch(c, input, { sidecar, db, today, now = () =
     result = await sidecar.searchFlights(params);
   } catch (e) {
     if (e instanceof FliError && e.kind === "invalid") return { ok: false, error: `Fli refused the search: ${e.message}` };
+    const out = failed(c, e, askedLink(params), { db, eventTurn, now });
     db.recordFlightSearch(c, { kind: "flights", params: { asked, sent: params }, outcome: e.kind || "internal", ms: now() - t0 });
-    return couldntCheck(e, askedLink(params));
+    return out;
   }
   const options = shortList(result, params, { show });
   const fromCents = fromCentsOf(result);
@@ -479,14 +530,14 @@ export async function runFlightSearch(c, input, { sidecar, db, today, now = () =
     found: result.count,
     headline: fromCents != null ? `${params.return_date ? "round trip " : ""}from ${money(fromCents / 100)}` : null,
     options,
-    limits: limitsFor({ params, found: result.count, options, refused: result.refused_fetches || 0 }),
+    limits: limitsFor({ params, found: result.count, options, refused: result.refused_fetches || 0, source: result.source || "fli", notes: result.notes || [], returnsNotListed: !!result.returns_not_listed }),
     note: result.count
       ? `Present these as a short list: price, airline, times, duration, stops and layover airports, and the link (it opens Google Flights on this route and date — they pick the flight with these numbers there and pay there${(bookingEnabled(c) && !connectAllowedFor(c)) ? "" : "; Reason never books"}). ${(bookingEnabled(c) && !connectAllowedFor(c)) ? "There are two ways to finish, and which one is THEIR choice: book it themselves from that link, or ask you to book it here (flight_book, with their approval before any money moves). Keep the link on every option and offer both without steering either way. " : ""}To change something they said ('no layovers', 'leave after work', 'make it five days'), call flight_search again with refine_of and ONLY the fields that change. Before recommending one specific fare, flight_verify it.`
-      : "Nothing came back for these exact constraints. That is what Google showed for this search, not proof no flight exists — say what was searched and offer to loosen something (stops, times, nearby airports, dates).",
+      : "Nothing came back for these exact constraints. That is what the flight source showed for this search, not proof no flight exists — say what was searched and offer to loosen something (stops, times, nearby airports, dates).",
   };
 }
 
-export async function runDateSweep(c, input, { sidecar, db, today, now = () => Date.now(), alreadySwept = false }) {
+export async function runDateSweep(c, input, { sidecar, db, today, now = () => Date.now(), alreadySwept = false, eventTurn = false }) {
   if (alreadySwept) {
     return { ok: false, error: "One date sweep per request. You already ran one for this message — present what it found; if they want a wider or different range, ask them first, then sweep on their next message." };
   }
@@ -498,8 +549,9 @@ export async function runDateSweep(c, input, { sidecar, db, today, now = () => D
     result = await sidecar.searchDates(built.params);
   } catch (e) {
     if (e instanceof FliError && e.kind === "invalid") return { ok: false, error: `Fli refused the sweep: ${e.message}` };
+    const out = failed(c, e, askedLink(built.params), { db, eventTurn, now });
     db.recordFlightSearch(c, { kind: "dates", params: { asked: input, sent: built.params }, outcome: e.kind || "internal", ms: now() - t0 });
-    return couldntCheck(e, askedLink(built.params));
+    return out;
   }
   const view = sweepView(result, { weekdays: built.weekdays, show: Math.min(8, Math.max(1, input.show ?? 5)) });
   const id = db.recordFlightSearch(c, {
@@ -526,7 +578,7 @@ export async function runDateSweep(c, input, { sidecar, db, today, now = () => D
  * Before one specific fare is recommended: run the same search again, find the same flights, and
  * say what the price is NOW. A price that moved is said as moved; a flight that's gone is said gone.
  */
-export async function runVerify(c, input, { sidecar, db, today = null, now = () => Date.now() }) {
+export async function runVerify(c, input, { sidecar, db, today = null, now = () => Date.now(), eventTurn = false }) {
   const prev = db.getFlightSearch(c, input.search_id);
   if (!prev || prev.kind !== "flights") return { ok: false, error: `no flight search ${input.search_id} for this person` };
   const opt = prev.options.find(o => o.option === input.option);
@@ -536,17 +588,28 @@ export async function runVerify(c, input, { sidecar, db, today = null, now = () 
   const t0 = now();
   let result;
   try {
-    result = await sidecar.searchFlights(params);
+    // `fresh`: a recheck is never a cached copy of the first search.
+    result = await sidecar.searchFlights(params, { fresh: true });
   } catch (e) {
     if (e instanceof FliError && e.kind === "invalid") return { ok: false, error: `Fli refused the recheck: ${e.message}` };
+    const out = failed(c, e, opt.link || askedLink(params), { db, eventTurn, now });
     db.recordFlightSearch(c, { kind: "flights", params: prev.params, outcome: e.kind || "internal", ms: now() - t0 });
-    return { ...couldntCheck(e, askedLink(params)), price_then: opt.price, stale: true, note: `Couldn't re-check. The ${opt.price} from earlier is NOT current — if you mention it, say it was the price when you looked, not now.` };
+    return { ...out, price_then: opt.price, stale: true, note: `Couldn't re-check. The ${opt.price} from earlier is NOT current — if you mention it, say it was the price when you looked, not now.` };
   }
   const exact = (result.itineraries || []).find(it => itineraryKey(it) === opt.key) || null;
   // Missing from a list Google only partly answered is not "gone": it may sit on a refused page.
   if (!exact && result.refused_fetches > 0) {
     db.recordFlightSearch(c, { kind: "flights", params: prev.params, outcome: "blocked", found: result.count, ms: now() - t0 });
     return { ...couldntCheck(new FliError("blocked", "part of the recheck was refused"), opt.link || askedLink(params)), price_then: opt.price, stale: true, note: `Couldn't re-check that one — Google refused part of the search. The ${opt.price} from earlier is NOT current; say it was the price when you looked.` };
+  }
+  // A round trip first listed by one source and re-checked on the other (SerpApi lists only the way
+  // out, Duffel both ways) can never match key for key: that is "couldn't re-check", not "gone".
+  const roundTripShape = (k) => String(k).includes("|");
+  const firstBack = (result.itineraries || [])[0];
+  if (!exact && params.return_date && firstBack && roundTripShape(itineraryKey(firstBack)) !== roundTripShape(opt.key)) {
+    db.recordFlightSearch(c, { kind: "flights", params: prev.params, outcome: "unconfirmed", found: result.count, ms: now() - t0 });
+    const link = opt.link || askedLink(params);
+    return { ok: false, couldnt_check: true, kind: "unconfirmed", ...(link ? { link } : {}), price_then: opt.price, stale: true, note: `Couldn't re-check that exact trip. The ${opt.price} from earlier is NOT current; say it was the price when you looked, and point them to the link for the live price.` };
   }
   const options = shortList(result, params, { show: prev.options.length || 5 });
   db.recordFlightSearch(c, {

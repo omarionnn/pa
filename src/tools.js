@@ -21,7 +21,7 @@ import * as flights from "./flights.js";
 import * as flightbook from "./flightbook.js";
 import * as ticketcheck from "./ticketcheck.js";
 import * as flightSearch from "./flightsearch.js";
-import { fli } from "./fli.js";
+import { flightProviders } from "./flightproviders.js";
 import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
 import * as spotify from "./spotify.js";
@@ -6146,7 +6146,7 @@ export const tools = [
   },
   {
     name: "flight_search",
-    description: "Look up flights for a trip they're planning: live fares from Google Flights' public search, read through Fli. SEARCH ONLY — Reason never books, holds or buys a flight and never says it did; the hand-off is the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves. YOU read the meaning and pass plain fields: a city with several airports is a comma list on that side ('NYC' → JFK,EWR,LGA; 'London' → LHR,LGW,STN,LTN,LCY; 'DC' → DCA,IAD,BWI; 'Bay Area' → SFO,OAK,SJC), 'nonstop'/'no layovers' → max_stops NON_STOP, 'leave after work' → depart_after_hour (say back the hour you picked), 'no red-eyes' → depart_after_hour/depart_before_hour, 'not Spirit' → exclude_airlines. A CHANGE to what they already asked ('no layovers', 'make it five days', 'what about business') is refine_of with the last search_id and ONLY the fields that change — everything they said before stays until they change it; when the change is ambiguous ('a bit later'), say back the constraint you're applying. Present a short choice list: price, airline, times, duration, stops and layover airports, and the link. Say 'from $X' — never 'the cheapest flight': this is what Google's page showed, not every fare. Each result carries `limits`; say the ones that matter (an unusually cheap fare: bags/seats/basic economy weren't checked; a family search that came back empty is NOT 'no flights'). Before recommending ONE specific fare as the one to book, flight_verify it. If it comes back couldnt_check, say you couldn't check flights right now — never that there are none. Multi-city trips aren't priced as one fare: offer to search each leg separately and say the total may differ from a real multi-city ticket.",
+    description: "Look up flights for a trip they're planning: live fares from Google Flights (through SerpApi) or, when that's unavailable, from airlines through Duffel. SEARCH ONLY — Reason never books, holds or buys a flight and never says it did; the hand-off is the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves. YOU read the meaning and pass plain fields: a city with several airports is a comma list on that side ('NYC' → JFK,EWR,LGA; 'London' → LHR,LGW,STN,LTN,LCY; 'DC' → DCA,IAD,BWI; 'Bay Area' → SFO,OAK,SJC), 'nonstop'/'no layovers' → max_stops NON_STOP, 'leave after work' → depart_after_hour (say back the hour you picked), 'no red-eyes' → depart_after_hour/depart_before_hour, 'not Spirit' → exclude_airlines. A CHANGE to what they already asked ('no layovers', 'make it five days', 'what about business') is refine_of with the last search_id and ONLY the fields that change — everything they said before stays until they change it; when the change is ambiguous ('a bit later'), say back the constraint you're applying. Present a short choice list: price, airline, times, duration, stops and layover airports, and the link. Say 'from $X' — never 'the cheapest flight': this is what Google's page showed, not every fare. Each result carries `limits`; say the ones that matter (an unusually cheap fare: bags/seats/basic economy weren't checked; a family search that came back empty is NOT 'no flights'). Before recommending ONE specific fare as the one to book, flight_verify it. If it comes back couldnt_check, follow its `say`: one message that flight prices aren't available right now, with its Google Flights link — never that there are none, and never a promise to keep trying. Multi-city trips aren't priced as one fare: offer to search each leg separately and say the total may differ from a real multi-city ticket.",
     input_schema: {
       type: "object",
       properties: {
@@ -6180,7 +6180,7 @@ export const tools = [
   },
   {
     name: "flight_dates",
-    description: "Find the lowest-fare dates to fly in a window — 'cheapest time to go to Lisbon in March', 'when should I fly home for a long weekend'. One sweep reads Google's fare calendar for every departure date in the range (up to 93 days) and returns the lowest few with prices, each compared with the dates around it INSIDE THIS SWEEP. Every comparison you make ('$120 less than the weekends around it') has to come from those numbers — never from what you think fares usually are. ONE sweep per message from them: never run a second to widen or shift the range on your own; ask first. Round trip: pass trip_days (5 for 'five days'). depart_weekdays narrows to trips leaving on those days ('a Friday to Monday' → depart_weekdays ['FRI'], trip_days 3). These are calendar lows, not specific flights — flight_search the date they like before recommending a fare. Couldnt_check means you couldn't check, never that there are no flights.",
+    description: "Find the lowest-fare dates to fly in a window — 'cheapest time to go to Lisbon in March', 'when should I fly home for a long weekend'. One sweep reads Google's fare calendar for every departure date in the range (up to 93 days) and returns the lowest few with prices, each compared with the dates around it INSIDE THIS SWEEP. Every comparison you make ('$120 less than the weekends around it') has to come from those numbers — never from what you think fares usually are. ONE sweep per message from them: never run a second to widen or shift the range on your own; ask first. Round trip: pass trip_days (5 for 'five days'). depart_weekdays narrows to trips leaving on those days ('a Friday to Monday' → depart_weekdays ['FRI'], trip_days 3). These are calendar lows, not specific flights — flight_search the date they like before recommending a fare. Couldnt_check means you couldn't check, never that there are no flights. Right now no flight source has a fare calendar, so this usually comes back couldnt_check with a Google Flights link (its date grid shows the cheap days): send that once, and offer to price two or three specific dates they pick with flight_search.",
     input_schema: {
       type: "object",
       properties: {
@@ -13118,7 +13118,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       // 6a — the fresh quote: the same search again, the same flights, the price now.
       let v;
-      const verify = ctx.flightVerify ?? ((cc, inp) => flightSearch.runVerify(cc, inp, { sidecar: fli(), db, today: flightToday(cc) }));
+      const verify = ctx.flightVerify ?? ((cc, inp) => flightSearch.runVerify(cc, inp, { sidecar: flightProviders(), db, today: flightToday(cc), now: () => clock.now() }));
       try { v = await verify(c, { search_id: input.search_id, option: input.option }); }
       catch (e) { v = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
       if (!v?.ok || v.stale) {
@@ -17033,11 +17033,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
 
-    // Flight search through Fli (src/fli.js, src/flightsearch.js). Search only: nothing here can
-    // book, hold or pay. `ctx.fli` is the test seam — the suite hands in a fake sidecar so no Python
-    // and no Google is touched offline.
+    // Flight search through SerpApi, then Duffel (src/flightproviders.js, src/flightsearch.js).
+    // Search only: nothing here can book, hold or pay. `ctx.fli` is the test seam — the suite hands
+    // in a fake source so no network is touched offline. `eventTurn`: a wake that isn't their message
+    // (a task, a watch) stays silent about flights they were already told are unavailable.
     case "flight_search": {
-      const out = await flightSearch.runFlightSearch(c, input, { sidecar: ctx.fli || fli(), db, today: flightToday(c) });
+      const out = await flightSearch.runFlightSearch(c, input, { sidecar: ctx.fli || flightProviders(), db, today: flightToday(c), now: () => clock.now(), eventTurn: offers.turnState(c).kind === "event" });
       // Two or more fares came back: the reply guard's "best price" rule reads that as compared.
       if (out.ok && out.options?.filter(o => o.price).length > 1) offers.turnState(c).faresCompared = true;
       return out;
@@ -17047,14 +17048,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // One deliberate sweep per message from them (the owner's rule): a second one in the same
       // turn is refused and the model is told to ask first.
       const turn = offers.turnState(c);
-      const out = await flightSearch.runDateSweep(c, input, { sidecar: ctx.fli || fli(), db, alreadySwept: !!turn.flightSweep, today: flightToday(c) });
+      const out = await flightSearch.runDateSweep(c, input, { sidecar: ctx.fli || flightProviders(), db, alreadySwept: !!turn.flightSweep, today: flightToday(c), now: () => clock.now(), eventTurn: turn.kind === "event" });
       if (out.ok || out.couldnt_check) turn.flightSweep = true;
       if (out.ok && out.dates_priced > 1) turn.faresCompared = true;
       return out;
     }
 
     case "flight_verify":
-      return flightSearch.runVerify(c, input, { sidecar: ctx.fli || fli(), db, today: flightToday(c) });
+      return flightSearch.runVerify(c, input, { sidecar: ctx.fli || flightProviders(), db, today: flightToday(c), now: () => clock.now(), eventTurn: offers.turnState(c).kind === "event" });
 
     case "flight_list": {
       const rows = db.listFlights(c, { includeClosed: !!input.include_past });

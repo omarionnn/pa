@@ -14,3 +14,8 @@ if (!apiAllowed && hadKey) {
   // A run that came with a key meant to be live: it still is, on the subscription.
   if (!process.env.REASON_BACKEND) process.env.REASON_BACKEND = "claude-cli";
 }
+
+// The same for the flight sources (src/flightproviders.js): SerpApi's free month is 250 searches,
+// and a suite run on a machine whose .env has the key must never spend them.
+delete process.env.SERPAPI_API_KEY;
+delete process.env.DUFFEL_ACCESS_TOKEN;
