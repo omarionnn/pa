@@ -12084,7 +12084,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // Everything in here has been used end to end on the live Reason by a person, which is why
         // it can be offered at all, and it is filtered to what works in THIS conversation.
         whats_new: whatsnew.liveFor({ conversationId: c, capabilities }),
-        owner: me.name, city: config.ownerCity,
+        owner: me.name,
+        // The configured city is the operator's, and only the operator's turn may hold it (the
+        // same rule as whoLine in src/agent.js). Anyone else's turn handed it labelled `city` next
+        // to their own name would learn where the operator lives and may take it as their own.
+        ...(me.isOperator ? { city: config.ownerCity } : {}),
         // The thing somebody asking "what can you do" most needs to hear, and the one answer that is
         // not a list of features: HOW to hand work over. It is here because this is the result the
         // model is holding when it writes that reply, and a feature list with no line about messy
