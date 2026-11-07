@@ -13089,7 +13089,50 @@ db.exec(`
     reviewed_at INTEGER,
     last_outcome TEXT NOT NULL DEFAULT ''
   );
+  -- One row per person per pass that asked the model: what it cost and what it changed. Counts and
+  -- token numbers only, never a fact, a rule or a message. cost_usd is the API-equivalent (list
+  -- price) of the run, from the CLI's own total_cost_usd, else priced off the token counts.
+  CREATE TABLE IF NOT EXISTS memory_review_passes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    day TEXT NOT NULL DEFAULT '',
+    at INTEGER NOT NULL,
+    outcome TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+    cost_usd REAL, cost_from TEXT NOT NULL DEFAULT '',
+    messages INTEGER NOT NULL DEFAULT 0, facts INTEGER NOT NULL DEFAULT 0, rules INTEGER NOT NULL DEFAULT 0,
+    kept INTEGER NOT NULL DEFAULT 0, corrected INTEGER NOT NULL DEFAULT 0, merged INTEGER NOT NULL DEFAULT 0,
+    retired INTEGER NOT NULL DEFAULT 0, refused INTEGER NOT NULL DEFAULT 0,
+    rules_added INTEGER NOT NULL DEFAULT 0, rules_merged INTEGER NOT NULL DEFAULT 0,
+    rules_retired INTEGER NOT NULL DEFAULT 0, rules_capped INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS memory_review_passes_day ON memory_review_passes (day, conversation_id);
 `);
+// The last pass's model and $ on the watermark row too, for a glance (the history is the table above).
+for (const col of ["last_model TEXT NOT NULL DEFAULT ''", "last_cost_usd REAL"]) {
+  try { db.exec(`ALTER TABLE memory_reviews ADD COLUMN ${col}`); } catch { /* already there */ }
+}
+
+const PASS_COUNTS = ["messages", "facts", "rules", "kept", "corrected", "merged", "retired", "refused", "rules_added", "rules_merged", "rules_retired", "rules_capped"];
+const intOrNull = (v) => v != null && Number.isFinite(Number(v)) ? Math.round(Number(v)) : null;
+
+/** One review pass that asked the model, per person: tokens, API-equivalent $, and counts. */
+export function recordMemoryReviewPass(conversationId, { day = "", at = clock.now(), outcome = "", model = "", usage = null, costUsd = null, costFrom = "", counts = {} } = {}) {
+  const u = usage ?? {};
+  const cost = Number.isFinite(costUsd) ? costUsd : null;
+  const cols = ["conversation_id", "day", "at", "outcome", "model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd", "cost_from", ...PASS_COUNTS];
+  const vals = [conversationId, String(day ?? ""), at, String(outcome).slice(0, 40), String(model ?? "").slice(0, 80),
+    intOrNull(u.input_tokens), intOrNull(u.output_tokens), intOrNull(u.cache_read_input_tokens), intOrNull(u.cache_creation_input_tokens),
+    cost, String(costFrom ?? ""), ...PASS_COUNTS.map(k => Number(counts[k]) || 0)];
+  db.prepare(`INSERT INTO memory_review_passes (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`).run(...vals);
+  db.prepare("UPDATE memory_reviews SET last_model = ?, last_cost_usd = ? WHERE conversation_id = ?").run(String(model ?? "").slice(0, 80), cost, conversationId);
+}
+
+/** For tests and the status page: one person's passes, oldest first. */
+export function memoryReviewPasses(conversationId) {
+  return db.prepare("SELECT * FROM memory_review_passes WHERE conversation_id = ? ORDER BY id").all(conversationId);
+}
 
 /** The hard cap on active rules per person. Past it the nightly review consolidates. */
 export const RULES_CAP = 8;

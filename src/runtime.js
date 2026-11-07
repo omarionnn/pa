@@ -2342,11 +2342,12 @@ export class Runtime extends EventEmitter {
     return out;
   }
 
-  /** The daily edition's overnight write (src/daily.js sweepDaily). Never throws into the sweep. */
   /** The nightly memory review's sweep (src/dream.js sweepDreams). Never throws into the sweep. */
   dreams({ now = clock.now() } = {}) {
     try { return dream.sweepDreams({ now, log: this.log }); } catch (e) { this.log({ memory_review: "sweep_failed" }); return { queued: 0 }; }
   }
+
+  /** The daily edition's overnight write (src/daily.js sweepDaily). Never throws into the sweep. */
 
   daily({ now = clock.now() } = {}) {
     try { return dailyEdition.sweepDaily({ now, log: this.log }); } catch (e) { this.log({ daily_edition_failed: (e?.message ?? String(e)).split("\n")[0] }); return { queued: 0 }; }
@@ -2898,6 +2899,8 @@ export class Runtime extends EventEmitter {
     if (requeued) this.log({ requeued_extractions: requeued, note: "the last stop was mid-extraction" });
     // A card refresh a purchase turn sets off lands in the same log as the sweep's own.
     setAgentcardRefreshLog((l) => this.log(l));
+    // The nightly memory review: one line saying it is armed, on which model, and its next window.
+    try { this.log(dream.armedLine()); } catch { /* a boot line is never worth a boot */ }
     this.interval = setInterval(() => this.sweep().catch(e => this.emit("error", e)), everyMs);
     this.interval.unref?.();
   }

@@ -18,7 +18,7 @@
 // No model, no network, no API key.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -38,7 +38,7 @@ const { memoryNotes } = await import("../src/memorynote.js");
 const { runTurnViaCli } = await import("../src/backends/claude-cli.js");
 const memory = await import("../src/memory.js");
 const webmemory = await import("../src/pages/webmemory.js");
-const { cliConfig } = await import("../src/backends/cli.js");
+const { cliConfig, resetSideCalls, askStructuredViaCli } = await import("../src/backends/cli.js");
 // Nothing in here may reach a real `claude`: a profile rebuild that tries gets a missing binary and scores instead.
 cliConfig.bin = join(dir, "no-claude-here");
 
@@ -54,7 +54,7 @@ beforeEach(() => {
   dream.resetDreams();
   side.setSideApiClient(null);
   db.db.exec(`DELETE FROM person_facts; DELETE FROM people; DELETE FROM event_log; DELETE FROM treat_rules;
-    DELETE FROM memory_reviews; DELETE FROM profile_blocks; DELETE FROM fact_embeddings; DELETE FROM conversations;`);
+    DELETE FROM memory_reviews; DELETE FROM memory_review_passes; DELETE FROM profile_blocks; DELETE FROM fact_embeddings; DELETE FROM conversations;`);
 });
 
 /** A thread, oldest first, as the router writes it. Returns the event ids. */
@@ -349,6 +349,84 @@ test("(h) logs carry counts and outcomes, never a fact, a rule or a message", as
   for (const words of ["Okafor", "Thursdays", "Tuesdays", "therapist", "noon", "nights"]) {
     assert.ok(!all.includes(words), `"${words}" reached the log`);
   }
+});
+
+test("every pass records, per person: model, tokens, API-equivalent $, and counts (CLI envelope, end to end)", async () => {
+  const [m1, , m3] = thread(C, [
+    ["user", "my therapist dr. okafor moved my session to thursdays"],
+    ["assistant", "noted"],
+    ["user", "never call me before noon, i work nights"],
+  ]);
+  const f = saved(C, "Ama", "Sees Dr. Okafor on Tuesdays", m1);
+  // A stand-in `claude` that answers the way the real one does with --output-format json.
+  const answer = { ...empty, facts: [{ id: f, action: "correct", wording: "Sees Dr. Okafor on Thursdays", message: m1 }],
+    rules_new: [{ rule: "Never call before noon", why: "works nights", message: m3 }] };
+  const envelope = { type: "result", subtype: "success", is_error: false, stop_reason: "end_turn", num_turns: 1, result: "",
+    structured_output: answer, total_cost_usd: 0.0731,
+    usage: { input_tokens: 12, output_tokens: 840, cache_read_input_tokens: 9000, cache_creation_input_tokens: 4100 },
+    modelUsage: { "claude-opus-5-5": { inputTokens: 12, outputTokens: 840, costUSD: 0.0731 } } };
+  const fake = join(dir, "claude-dream.sh");
+  writeFileSync(fake, `#!/bin/sh\ncat >/dev/null\necho '${JSON.stringify(envelope).replace(/'/g, "'\\''")}'\n`, { mode: 0o755 });
+  const savedBin = cliConfig.bin;
+  cliConfig.bin = fake;
+  resetSideCalls();
+  process.env.REASON_DREAM_CLI_MODEL = "claude-opus-5-5";
+  const asked = [];
+  dream.setDreamAsk((args) => { asked.push(args.model); return askStructuredViaCli(args); });
+  const logs = [];
+  try {
+    const out = await dream.reviewOne(C, { rebuild: noRebuild, log: (l) => logs.push(l) });
+    assert.equal(out.corrected, 1);
+    assert.equal(out.rules_added, 1);
+  } finally { cliConfig.bin = savedBin; delete process.env.REASON_DREAM_CLI_MODEL; }
+  assert.deepEqual(asked, ["claude-opus-5-5"], "the model env is read on the pass");
+
+  const [pass] = db.memoryReviewPasses(C);
+  assert.equal(pass.model, "claude-opus-5-5");
+  assert.equal(pass.outcome, "reviewed");
+  assert.deepEqual([pass.input_tokens, pass.output_tokens, pass.cache_read_tokens, pass.cache_write_tokens], [12, 840, 9000, 4100]);
+  assert.equal(pass.cost_usd, 0.0731);
+  assert.equal(pass.cost_from, "cli");
+  assert.deepEqual([pass.messages, pass.facts, pass.corrected, pass.merged, pass.retired, pass.rules_added, pass.rules_retired], [3, 1, 1, 0, 0, 1, 0]);
+  const state = db.memoryReviewState(C);
+  assert.equal(state.last_model, "claude-opus-5-5");
+  assert.equal(state.last_cost_usd, 0.0731);
+
+  const done = logs.find(l => l.memory_review === "done");
+  assert.equal(done.model, "claude-opus-5-5");
+  assert.equal(done.cost_usd, 0.0731);
+  assert.deepEqual([done.input_tokens, done.output_tokens, done.cache_read_tokens, done.cache_write_tokens], [12, 840, 9000, 4100]);
+  assert.equal(done.corrected, 1);
+  // Counts only, in the log and in the table.
+  const all = JSON.stringify(logs) + JSON.stringify(db.memoryReviewPasses(C));
+  for (const words of ["Okafor", "Thursdays", "Tuesdays", "therapist", "noon", "nights"]) assert.ok(!all.includes(words), `"${words}" was recorded`);
+});
+
+test("the boot line says the review is armed, its model and the next 4am New York window", () => {
+  process.env.REASON_DREAM_CLI_MODEL = "claude-opus-5-5";
+  try {
+    const l = dream.armedLine({ now: Date.parse("2026-11-07T23:00:00Z") });
+    assert.equal(l.memory_review, "armed");
+    assert.equal(l.model, "claude-opus-5-5");
+    assert.equal(l.next_default_window, "2026-11-08T09:00:00.000Z", "4am EST on Nov 8");
+  } finally { delete process.env.REASON_DREAM_CLI_MODEL; }
+});
+
+test("with no $ from the CLI, the pass is priced off its tokens; a skipped pass is still a row", async () => {
+  const [m1] = thread(C, [["user", "hello"]]);
+  saved(C, "Ama", "Says hello", m1);
+  await dream.reviewOne(C, { rebuild: noRebuild, ask: async () => ({ value: empty, models: ["claude-sonnet-5-5"],
+    usage: { input_tokens: 1_000_000, output_tokens: 100_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }) });
+  const [p] = db.memoryReviewPasses(C);
+  assert.equal(p.model, "claude-sonnet-5-5");
+  assert.equal(p.cost_from, "tokens");
+  assert.ok(Math.abs(p.cost_usd - 3) < 1e-9, `${p.cost_usd}: $2/M in + $10/M out`);
+  thread(C, [["user", "again"]]);
+  await dream.reviewOne(C, { rebuild: noRebuild, ask: async () => ({ error: "Not logged in · Please run /login" }) });
+  const rows = db.memoryReviewPasses(C);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].outcome, "skipped:cli_unavailable");
+  assert.equal(rows[1].cost_usd, null);
 });
 
 test("the review only ever reads one person's own thread and facts", async () => {

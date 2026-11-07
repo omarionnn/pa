@@ -30,6 +30,7 @@ import { askStructuredViaCli } from "./backends/cli.js";
 import { onCli } from "./backends/side.js";
 import { confirmedZone } from "./zone.js";
 import { rebuildProfile, savedOn } from "./extract.js";
+import { costOf } from "./spend.js";
 
 /** The hour (their clock) the review may start, and how long after it the night still counts. */
 export const DREAM_HOUR = Number(process.env.REASON_DREAM_HOUR || 4);
@@ -48,7 +49,29 @@ const SOURCES_PER_FACT = 2;
 /** On someone's first review, only this far back: a year of history is not one night's read. */
 const FIRST_LOOKBACK_MS = 7 * 24 * 3600_000;
 
+/** Read on every pass, so a changed .env value takes effect at the next restart's first night. */
 const MODEL = () => process.env.REASON_DREAM_CLI_MODEL || "opus";
+
+/**
+ * What one pass cost, per person: the model that answered, its tokens, and the API-equivalent $.
+ * The $ is the CLI's own list-price figure (total_cost_usd) when it gave one, else priced off the
+ * tokens (src/spend.js costOf). On the subscription nothing is billed; this is for comparing models.
+ */
+export function passCost(answer, asked) {
+  const model = (answer?.models?.length ? answer.models.join(",") : "") || asked;
+  const usage = answer?.usage ?? null;
+  if (Number.isFinite(answer?.costUsd)) return { model, usage, costUsd: answer.costUsd, costFrom: "cli" };
+  if (usage) {
+    const usd = costOf(answer?.models?.[0] || asked, usage);
+    return { model, usage, costUsd: usd || null, costFrom: usd ? "tokens" : "" };
+  }
+  return { model, usage, costUsd: null, costFrom: "" };
+}
+const tokenLog = ({ model, usage, costUsd, costFrom }) => ({
+  model, input_tokens: usage?.input_tokens ?? null, output_tokens: usage?.output_tokens ?? null,
+  cache_read_tokens: usage?.cache_read_input_tokens ?? null, cache_write_tokens: usage?.cache_creation_input_tokens ?? null,
+  cost_usd: costUsd == null ? null : Math.round(costUsd * 1e6) / 1e6, cost_from: costFrom,
+});
 const TIMEOUT_MS = () => Number(process.env.REASON_DREAM_TIMEOUT_MS || 240_000);
 
 const SCHEMA = {
@@ -189,6 +212,18 @@ export function sweepDreams({ now = clock.now(), log = () => {}, queue = backgro
   return out;
 }
 
+/**
+ * The boot line: the review is armed (or why not), the model it will ask, its hour, and when the
+ * next window opens in the default zone. People with a known zone get theirs. Counts only.
+ */
+export function armedLine({ now = clock.now() } = {}) {
+  let next = null;
+  for (let t = Math.ceil(now / 60_000) * 60_000, end = now + 26 * 3600_000; t < end; t += 60_000) {
+    if (localHour(t, DEFAULT_ZONE) === DREAM_HOUR && new Date(t).getUTCMinutes() === 0) { next = new Date(t).toISOString(); break; }
+  }
+  return { memory_review: "armed", model: MODEL(), hour: DREAM_HOUR, window_h: DREAM_WINDOW_H, default_zone: DEFAULT_ZONE, next_default_window: next, off: whyNot() };
+}
+
 /** For tests. */
 export function resetDreams() { reviewing.clear(); sweeping = false; testAsk = null; }
 
@@ -269,16 +304,23 @@ export async function reviewOne(conversationId, { now = clock.now(), day = local
   const rules = db.activeRules(c);
   const shown = reviewPrompt(c, { messages, facts, rules, now });
 
+  const model = MODEL();
   const answer = await (ask ?? testAsk ?? askStructuredViaCli)({
     prompt: shown.prompt, system: SYSTEM.replace("{CAP}", String(db.RULES_CAP)), schema: SCHEMA,
-    model: MODEL(), timeoutMs: TIMEOUT_MS(), feature: "memory_review",
+    model, timeoutMs: TIMEOUT_MS(), feature: "memory_review",
   });
+  const cost = passCost(answer, model);
+  const sizes = { messages: messages.length, facts: facts.length, rules: rules.length };
+  const record = (outcome, n = {}) => {
+    try { db.recordMemoryReviewPass(c, { day, at: now, outcome, ...cost, counts: { ...sizes, ...n } }); } catch { /* a counter never costs a review */ }
+  };
   if (!answer?.value) {
     // The CLI is signed out, limited, missing, or answered off the schema. Quietly skipped; the
     // watermark does not move, so the same messages are read the next night.
     const kind = answer?.refusal ? "refused" : errorKind(answer?.error);
     db.markMemoryReview(c, { day, outcome: `skipped:${kind}`, at: now });
-    log({ memory_review: "skipped", conversation: c, why: kind });
+    record(`skipped:${kind}`);
+    log({ memory_review: "skipped", conversation: c, why: kind, ...tokenLog(cost) });
     return { skipped: kind };
   }
 
@@ -370,6 +412,7 @@ export async function reviewOne(conversationId, { now = clock.now(), day = local
   if (changed || !db.getProfile(c)) {
     try { await (rebuild ?? ((id) => rebuildProfile(id, { log })))(c); } catch (e) { log({ memory_review: "profile_failed", conversation: c, error_kind: errorKind(e) }); }
   }
-  log({ memory_review: "done", conversation: c, messages: messages.length, facts: facts.length, rules: rules.length, more, ...counts });
-  return { ok: true, messages: messages.length, more, ...counts };
+  record("reviewed", counts);
+  log({ memory_review: "done", conversation: c, ...sizes, more, ...counts, ...tokenLog(cost) });
+  return { ok: true, messages: messages.length, more, ...counts, model: cost.model, cost_usd: cost.costUsd };
 }
