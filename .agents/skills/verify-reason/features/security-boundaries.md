@@ -33,6 +33,15 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
   its questions from the errand row). A hit → `status: "payment_details_refused"`, nothing dialled,
   no call row, the value never echoed. Before this only goal and facts were scanned, and a card in
   `requirements` was dialled and rendered into the voice prompt.
+- **Only he instructs a remote builder (lead 34).** `src/tools.js` `remoteRefusal` refuses
+  `remote_start`, `remote_say` and `remote_decline` (`BUILDER_INSTRUCTIONS`) on any turn whose
+  `ctx.kind` is not `"user"` (a missing kind counts as `"event"`): `blocked: "not_his_turn"`, nothing
+  sent, no builder turn. A notice sweep built from mail/calendar can no longer start or steer one.
+  `remote_say` also cannot answer a job waiting on a risky yes (`blocked: "risky_ask_pending"`,
+  pointing at `remote_approve` / `remote_decline`); left without `job_id` it goes to the newest
+  `needs_you` job with no `risky_action` (`db.remoteJobAwaitingAnswer(c, { withoutRisky: true })`).
+  `remote_approve` keeps its exact-action confirmation; `remote_list`/`remote_stop`/`remote_page`
+  are unchanged.
 
 ## How to get to it (user POV)
 
@@ -54,6 +63,14 @@ No model, no phone: `bin/call-payments-drive.mjs` under `caged.sh env` with a fr
 in a requirements value/key, cvv in `ask`, a card number in `approved_terms` or facts → refused,
 nothing placed; an ordinary ask-only call with requirements and a "do they take card" question still
 goes. 8 ok on `sec/lead31` 2026-11-07; on `c55094b` (main before) the requirements card was placed.
+
+No model, no builder: `bin/remote-gate-drive.mjs` under `caged.sh env` with a fresh temp
+`REASON_DB_PATH` + `REASON_REMOTE_ROOT`, `REASON_REMOTE_BUILD=1`, `REASON_OPENCLAW_BIN=/nonexistent/…`
+(recording `spawnImpl`, nothing ever runs) — event-turn `remote_start`/`remote_say`/`remote_decline`
+→ `not_his_turn`; `remote_say` on a risky ask (with or without `job_id`) → `risky_ask_pending`, ask
+kept; his own decline and his answer to a plain question still go. 12 ok on `sec/lead34`
+2026-11-07; 11 FAIL on `ae913c7` (main before: event-turn start went through). Offline:
+`test/remote.test.js` (75).
 
 On the cage (2026-11-07): `curl -s http://127.0.0.1:$P/health` → `owner: null`, `holding: []`, every
 monitoring key present; `POST /calls/elevenlabs/inbound` → `404` (the route is gone since #359).

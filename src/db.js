@@ -7372,9 +7372,13 @@ export function releaseRemoteNews(id, was) {
   db.prepare("UPDATE remote_jobs SET sent_through = ? WHERE id = ?").run(was, id);
 }
 
-/** The job whose question the master is being asked right now, if there is one. */
-export function remoteJobAwaitingAnswer(conversationId) {
+/**
+ * The job whose question the master is being asked right now, if there is one. `withoutRisky`
+ * skips the ones waiting on a yes for a risky action, which only remote_approve may answer.
+ */
+export function remoteJobAwaitingAnswer(conversationId, { withoutRisky = false } = {}) {
   return rowToJob(db.prepare(`SELECT * FROM remote_jobs WHERE conversation_id = ? AND state = 'needs_you'
+    ${withoutRisky ? "AND (risky_action IS NULL OR risky_action = '')" : ""}
     ORDER BY updated_at DESC LIMIT 1`).get(conversationId));
 }
 
