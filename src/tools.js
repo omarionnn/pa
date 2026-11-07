@@ -11873,9 +11873,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const state = name === "admin_pause" ? "paused" : name === "admin_resume" ? "active" : "removed";
         // Every line this number has a Reason on: the note says Reason stopped answering the NUMBER,
         // and a resume has to clear a stop on any of them (accounts.accountState reads them all).
-        for (const r of rows) db.setAccountState(r.conversation_id, state);
+        // A pause never softens a removal already on one of them: removed stays removed.
+        for (const r of rows) {
+          if (state === "paused" && r.state === "removed") continue;
+          db.setAccountState(r.conversation_id, state);
+        }
         return {
-          ok: true, number, state,
+          ok: true, number, state: state === "active" ? state : (db.stoppedStateOf(row.address) ?? state),
           note: state === "active"
             ? `Answering ${number} again.`
             : `Reason has stopped answering ${number}. Everything of theirs is KEPT — say that plainly, because ${state === "removed" ? "'removed'" : "'paused'"} sounds like deletion and is not. ${config.ownerName} has to ask separately to delete it.`,

@@ -157,3 +157,13 @@ test("background sweeps skip a number paused on its other line", async () => {
   db.setAccountState(`dm:other:${KOFI}`, "paused");
   assert.equal((await runtime.commitments()).people, 0, "paused on the other line: nothing unprompted on this one");
 });
+
+test("a pause does not soften a removal already on the number's other line", async () => {
+  db.upsertAccount({ conversationId: `dm:other:${KOFI}`, channel: "other", address: KOFI, name: "Kofi" });
+  db.setAccountState(`dm:other:${KOFI}`, "removed");
+  const out = await runTool("admin_pause", { number: KOFI }, { conversationId: config.ownerConversation });
+  assert.equal(out.ok, true);
+  assert.equal(db.getAccount(`dm:other:${KOFI}`).state, "removed", "the removed row stays removed");
+  assert.equal(accounts.accountState("fake", KOFI), "removed");
+  assert.equal(accounts.accountState("other", KOFI), "removed");
+});
