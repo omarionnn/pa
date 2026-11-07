@@ -145,3 +145,21 @@ fail on afc6ce8: the two cap tests and the pin test).
 - **Live state at the flip**: `agentcard_users` 3 rows (owner + two others, one with a visa linked
   2026-10-17); `agentcard_purchases` 4 open rows, all the owner's and stale (shopping / cart_shown /
   awaiting_approval, 10-24..10-30) — nothing cancelled, nothing texted. `shop_cards` 1 (owner).
+
+## The item is checked against what they said (#376 shop-small, 2026-11-07)
+Live 10-31: three Ulta runs bought the **Foaming** CeraVe (normal to oily skin) for someone who needed it for
+dry skin. Before `store_checkout` starts (`src/shoptools.js:207`), `checkFit` (`:185`) makes one structured
+side call (`askStructured`, `REASON_FIT_MODEL` default haiku, 20 s, `feature: "shop_fit"`: the subscription on
+claude-cli, the API on api) with their own last 12 texts (`trust.ownerTexts`), the model's new `their_need`
+argument and the item → `fits` / `mismatch` / `unclear`. Only a mismatch refuses: `blocked:
+"variant_mismatch"`, `say: "Not started: they said dry skin. … Find the variant that matches …"`. After they
+say they want that exact one, `variant_confirmed: true` skips the check. **Fails open**: a thrown call, a bad
+shape, or no side call allowed (`sideAskAllowed`) → `unclear` and the checkout starts. No keyword lists.
+Journal: `{"shop_fit":"<verdict>"}`.
+- Driven 2026-11-07 (rel-1107): in process with an injected reader, mismatch → `{verdict:"mismatch",need:"dry skin",…}`,
+  a throwing reader → `{verdict:"unclear",error:true}`; `test/shop-small-1107.test.js` (mismatch / confirmed /
+  fail-open) in a 70/70 run; real model: `scripts/shop-fit-drive.mjs` on claude-cli (test token, scratch config)
+  — **4/6 then 5/6** (rc 0 both): every miss was `{verdict:"unclear",error:true}` (the side call threw or
+  returned no valid shape — 3 of 12 calls, once on the dry-skin Foaming mismatch), which fails open, so a
+  mismatched variant can still start. The PR reported 6/6. Every verdict that did come back was right.
+- The 30-minute approval, the re-ask and the reminder are in [passkey-pay.md](passkey-pay.md) "Thirty minutes".

@@ -97,6 +97,20 @@ db.updateCall(C, row0.id, {
   brief: JSON.stringify(brief.buildBrief({ goal: GOAL, ...(ownGoal ? { facts: ownFacts } : biz ? { questions: ["Which service would you recommend for low back pain?", "How much is that service for 60 minutes?"] } : {}) })), opening_waits: 1,
   hold_budget_s: scene === "hold" ? 20 : 300, external_id: "gptlive:CAdrive",
 });
+// The pickup opener (src/calls/opener.js, 2026-11-07): made while the phone "rings", as dialGptLive
+// does, before the stream opens. `--about "…"` is call_place's words; `--no-opener` = the old opening.
+// On code without opener.js this is skipped, so the same drive measures before and after.
+const opener = process.argv.includes("--no-opener") ? null : await import(`${REPO}/src/calls/opener.js`).catch(() => null);
+let openerReady = null;
+if (opener && biz) {
+  const about = argAll("--about")[0] ?? (ownGoal ? "" : "to ask about a massage for low back pain");
+  if (about) db.updateCall(C, row0.id, { pickup_about: about });
+  const { recordingNoticeFor } = await import(`${REPO}/src/calls/consent.js`);
+  const r = db.getCall(C, row0.id);
+  const t = Date.now();
+  const clip = await opener.prepare(r, { notice: recordingNoticeFor(r.to_number).notice });
+  openerReady = { ms: Date.now() - t, kind: clip?.kind ?? null, text: clip?.text ?? null, audio_ms: clip ? Math.round(clip.audio.length / 8) : 0 };
+}
 const row = db.getCall(C, row0.id);
 
 // ---------- the line's sound ----------
@@ -126,10 +140,10 @@ const plans = {
   hold: { first: [silence(1000), clip("hold-recording"), mark("music"), music(70_000), silence(10_000)] },
   voicemail: { first: [silence(800), mark("greeting"), clip("voicemail-greeting"), mark("beep"), beep(), mark("after_beep"), { amd: "machine_end_beep" }, silence(30_000)] },
   human: { first: [silence(1200), mark("person"), clip("receptionist"), { amd: "human" }, silence(30_000)] },
-  greet: { first: [silence(700), mark("person"), tts("greet"), mark("greet_end"), afterReason(), tts("recommend"), mark("r2"), afterReason(), tts("price"), mark("r3"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
-  hello: { first: [silence(900), mark("person"), tts("hello"), mark("greet_end"), silence(1400), ifSilent(tts("hello")), afterReason(), tts("recommend"), mark("r2"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
+  greet: { first: [silence(700), mark("person"), tts("greet"), mark("greet_end"), afterReason(), mark("reply_start"), tts("recommend"), mark("r2"), afterReason(), tts("price"), mark("r3"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
+  hello: { first: [silence(900), mark("person"), tts("hello"), mark("greet_end"), silence(1400), ifSilent(tts("hello")), afterReason(), mark("reply_start"), tts("recommend"), mark("r2"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
   noisy: { first: [silence(800), mark("person"), tts("greet"), mark("greet_end"), afterReason(), tts("recommend"), mark("r2"), afterReason(), tts("price"), mark("r3"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
-  quiet: { first: [mark("person"), silence(4000), mark("quiet_end"), afterReason(700, 4000), tts("yes"), mark("greet_end"), afterReason(), tts("recommend"), mark("r2"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
+  quiet: { first: [mark("person"), silence(4000), mark("quiet_end"), afterReason(700, 4000), mark("reply_start"), tts("yes"), mark("greet_end"), afterReason(), tts("recommend"), mark("r2"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
   interrupt: { first: [silence(700), mark("person"), tts("greet"), mark("greet_end"), whileReason(800), mark("holdon_at"), tts("holdon"), mark("hold_start"), silence(6000), mark("hold_end"), tts("back"), mark("r2"), afterReason(), tts("okay"), mark("r3"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
   robot: { first: [silence(700), mark("person"), tts("greet"), mark("greet_end"), afterReason(), tts("robot"), mark("robot_end"), afterReason(), tts("okay"), mark("r3"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
 };
@@ -260,6 +274,7 @@ const firstSpeech = heard.find(([, sp]) => sp)?.[0] ?? null;
 const speechBefore = (ms) => heard.some(([at, sp]) => sp && at < ms);
 const out = {
   scene,
+  opener: openerReady,
   marks, pressed,
   line_turns: pick("gptlive_line_turn").map(l => l.why),
   results: pick("gptlive_result").map(l => ({ ms: l.ms, chars: l.chars, tools: l.tools, ends: l.ends, error: l.error })),
@@ -286,6 +301,9 @@ const firstAfter = (ms) => heard.find(([at, sp]) => sp && at > ms)?.[0] ?? null;
 const runsBetween = (a, b) => { let n = 0, last = -Infinity; for (const [at, sp] of heard) if (sp && at > a && at < b) { if (at - last > 2000) n++; last = at; } return n; };
 const nextTheirs = (k) => ["r2", "robot_end", "holdon_at"].map(x => marks[x]).filter(v => v > (marks[k] ?? Infinity)).sort((x, y) => x - y)[0] ?? Date.now() - t0;
 out.talking = pick("gptlive_line_talking").map(l => ({ why: l.why, ms: l.ms }));
+out.first_voice_log = pick("gptlive_first_voice")[0] ?? null;
+out.pickup_opener = pick("gptlive_pickup_opener")[0] ?? pick("gptlive_pickup_opener_skipped")[0] ?? null;
+out.first_audio_ms_row = settled.first_audio_ms ?? null;
 out.opened_quiet = pick("gptlive_line_opened_quiet").length;
 // A voice session that never came up (OpenAI refused or dropped it) is said, not left as an empty run.
 out.voice_errors = [...pick("gptlive_error"), ...pick("gptlive_session_socket_closed"), ...pick("gptlive_line_turn_failed")].map(l => JSON.stringify(l).slice(0, 200));
@@ -298,6 +316,13 @@ if (biz) {
   if (marks.hold_start != null) out.spoke_during_hold = heard.some(([at, sp]) => sp && at > marks.hold_start + 1500 && at < marks.hold_end);
   if (marks.r2 != null) out.r2_to_word_ms = firstAfter(marks.r2) != null ? firstAfter(marks.r2) - marks.r2 : null;
   out.notice = pick("gptlive_notice");
+  // A leak (2026-11-07): Reason's audio on the line while they are answering the opener — the tail of
+  // the voice's dropped reply to their hello. A fresh reply starts after they stop, never during.
+  const replyEnd = scene === "quiet" ? marks.greet_end : marks.r2;
+  if (marks.reply_start != null && replyEnd != null) {
+    out.leak_frames = heard.filter(([at, sp]) => sp && at > marks.reply_start + 250 && at < replyEnd).length;
+  }
+  out.stale_runs = pick("gptlive_call_ended")[0]?.stale_runs ?? null;
 }
 const firstLine = said[0] ?? "";
 const fillers = /no rush|take your time/i.test(all);

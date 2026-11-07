@@ -21,9 +21,15 @@ in `src/ops.js`, `GET /alive` in `src/http.js` (`ops.alive`), `scripts/watchdog.
   `messaging`, `calls`, `purchases` (src/opsdigest.js:136); `actions`, `reminders`, `tasks` and
   `runtime` are held as one line per episode for the once-a-day digest (`opsDigest.hold`, key
   `incident:<key>@<first_at>`; `flush` after `REASON_OPS_DIGEST_HOUR`, default 9). The 5-minute
-  pass does the same for checks (`checkIsUrgent`, src/ops.js:792-800). Tests: `test/incidents.test.js`
+  pass does the same for checks (`checkIsUrgent`, src/ops.js:821, in `settle`). Tests: `test/incidents.test.js`
   ("a runtime error goes to the daily digest…", "a non-urgent alert's whole episode is ONE digest
   line…"), `test/fewer-gates.test.js` section 4.
+- **Spend warnings go live, beside the incidents** (#374, 2026-11-07). Not incidents: `startOps`
+  (src/ops.js:947-950) wires `src/spend.js` `startAlerts` + `capWarnings` to `runtime.say(owner,
+  digest.scrub(text), { toMaster, idempotencyKey: "ops:…" })` — the 80% daily/monthly heads-up after
+  every pass, and the provider usage-limit refusal the moment `recordApi` sees it, once per episode.
+  The `api_limit` row ("API usage limit (provider)") is `quiet` like the incident rows. Details,
+  texts and the no-model drive (`bin/spend-alert-drive.mjs`): [api-caps.md](api-caps.md).
 - **One alert per failure key.** Key = kind of failure, e.g. `send:sendblue:<error_key>`. Repeats
   bump `count` on the same `incidents` row. For an urgent area the owner gets the first text at once (idem key
   `incident:<key>@<first_at>:open`), at most one "Still failing … N times since 3:40pm" an hour,

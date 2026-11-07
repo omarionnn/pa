@@ -4120,6 +4120,7 @@ export const tools = [
         facts: { type: "array", items: { type: "string" }, description: "The ONLY things this call may tell them. Name, party size, a phone number to hold it under — whatever the job needs and nothing more. Everything you leave out stays private. NEVER payment details: no card number, no expiry, no security code, no bank details, no PIN, for any reason, not even to hold a booking. A call carrying them is refused before it is dialled." },
         max_minutes: { type: "integer", description: "Hang up after this long. Default from config." },
         opening: { type: "string", description: "Only when ringing the owner: why you're ringing, in a few words you'd say to them as the call opens, after 'hey <name> —'. 'got your two screenshots, wanted to talk them through'. Omit when they just asked you to ring." },
+        about: { type: "string", description: "Only when ringing anyone else: what you're calling about, in a few casual words that finish the sentence 'Hi there! I'm calling …' — 'to ask about a massage for low back pain', 'to see if you've got a table for two tonight', 'about the Man United game'. Said the instant they pick up, before anything else, so no names, numbers or anything private, and nothing about being an AI." },
         confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
         task_id: { type: "integer", description: "The job this call is a step of, when it is one. Name it: what the call comes back with is then written onto that job's log, so the job knows what was said without you having to remember it hours later." },
         may_book: {
@@ -6872,6 +6873,7 @@ const S = {
     to: z.string().min(1).max(40), goal: z.string().min(1).max(600),
     facts: z.array(z.string().max(200)).max(20).optional(),
     opening: z.string().max(200).optional(),
+    about: z.string().max(200).optional(),
     max_minutes: z.number().int().min(1).max(60).optional(),
     confirmation_id: z.number().int().optional(),
     task_id: z.number().int().optional(),
@@ -11415,6 +11417,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         hold_budget_s: brief.maxHoldSeconds,
         errand_id: errandRow?.id ?? null,
         attempt: again.attempt ?? 1,
+        // The few words the pickup opener says it is calling about (src/calls/opener.js).
+        ...(!toOwner && String(input.about ?? "").trim() ? { pickup_about: String(input.about).trim().slice(0, 200) } : {}),
       });
       ctx.spend?.(); // past this line a phone may already be ringing
 

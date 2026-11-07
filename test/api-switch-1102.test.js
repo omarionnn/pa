@@ -185,7 +185,8 @@ test("6. a call's goal is judged on the API", async () => {
   const gm = await import("../src/calls/goalmet.js");
   const asks = fakeApi(() => ({ met: true, why: "they confirmed the table for 8" }));
   const r = await gm.judgeGoal({ goal: "book a table for 2 at 8", transcript: "Reason: hi, a table for 2 at 8?\nThem: yes, you're booked." });
-  assert.deepEqual(r, { met: true, why: "they confirmed the table for 8" });
+  // `how` is the read of what kind of call it was (2026-11-07); a model that leaves it out is "unsure".
+  assert.deepEqual(r, { met: true, how: "unsure", why: "they confirmed the table for 8" });
   assert.equal(asks[0].params.model, "claude-sonnet-5-5");
 });
 

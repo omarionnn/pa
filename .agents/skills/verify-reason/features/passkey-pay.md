@@ -1,6 +1,6 @@
 # Purchase approval by passkey (Face ID)
 
-Branch wt/passkey-approve, PR #285 (2026-10-31). Once someone has set up a passkey, a texted yes stops paying for Crossmint purchases. Reason texts a link instead, and only a user-verified passkey assertion pays, for that payment's exact amount and store, once, within 5 minutes. Self-hosted with `@simplewebauthn/server`.
+Branch wt/passkey-approve, PR #285 (2026-10-31). Once someone has set up a passkey, a texted yes stops paying for Crossmint purchases. Reason texts a link instead, and only a user-verified passkey assertion pays, for that payment's exact amount and store, once, within 30 minutes (5 until #376, 2026-11-07). Self-hosted with `@simplewebauthn/server`.
 
 - Flag: `REASON_PASSKEY_PAY` = off (default) / `owner` / on — **`on` for everyone on live since 2026-10-31** (owner-only that morning; see shop-connect.md "Everyone"). It only works where `REASON_SHOP_CONNECT` is also on. Origin and RP ID come from `REASON_PASSKEY_ORIGIN`, else `REASON_SITE_URL`, else `https://heyreason.com`.
 - Code: `src/passkey.js` (passkeys, approval links, the challenge bound to the payment row, the log), `src/pages/webapprove.js` (pages + routes), `src/shopconnect.js` (`approvalUrl`, `approvalView`, `payByPasskey`, `declineByLink`; `payApproved` refuses with `approve_with_passkey`), `src/shoptools.js` (`shop_pay` hands out the link), and the routes in `src/http.js`.
@@ -29,7 +29,7 @@ The drive runs the real `src/http.js` on loopback, opened in Chromium as `http:/
 | (c) | The approve page shows $12.49 at Best Buy and lists only the owner's credential. **Approve with Face ID** makes one order intent for exactly 12.49 USD, the row is paid and the owner is texted. Replaying the same assertion gets 400 `link_used`, and the page then says Already approved |
 | (j) | **The payment does not start** (live 2026-10-31 at CVS, PR #288): Face ID passes, Crossmint refuses the order intent. The page shows "Face ID worked. The payment didn't start. Nothing was charged." with **Try again**; the row stays asked, `pay_approval_log` has `pay_failed order_intent_failed 400 <code>` then `link_reopened`; `shop_status` names the still-open link and makes no new one. Try again reloads under a fresh challenge (the first assertion replayed → `not_verified`); the next tap pays: one more order intent, row paid, run stage `paid`, "Paid $26.65" texted; then the link is used up |
 | (d) | **Decline** tells Crossmint to decline. The row is declined and nothing is charged |
-| (e) | 5 minutes on (in-process clock): verify gets `link_expired`, the page says "run out", GET returns 410 and nothing is paid |
+| (e) | `APPROVAL_TTL_MS` (30 min since #376, was 5) on, in-process clock: verify gets `link_expired`, the page says "run out", GET returns 410 and nothing is paid |
 | (f) | The row's amount changes after the link is made: `details_changed`, nothing paid |
 | (i) | Virtual authenticator `isUserVerified: false`: the browser refuses (UV required). A UV-less assertion posted straight to the route gets 400. Nothing is paid |
 | (g) | A made-up approve token gets 404 with no options on GET, verify and decline. Signed out, setup GET and POST should get 404 with no options. With the real link, anyone can view the page (it is a bearer link), but a credential that isn't the owner's gets `unknown_passkey`. With the flag off, approve gets 404. For a non-owner, or with the flag off, setup gets 404 or the Connect page for an unknown link (no options) |
@@ -38,6 +38,39 @@ The drive runs the real `src/http.js` on loopback, opened in Chromium as `http:/
 A link is marked `used` the moment the assertion verifies, before the order intent. If the payment fails to start (no order intent: `order_intent_failed`, `no_card`, …) `passkey.reopenApproval` sets it back to `open` under a NEW nonce/challenge, so the same URL works for another tap and the first assertion is dead; the five-minute deadline does not move. Once the card may have reached the store (`unknown_outcome`) the link stays used — never paid twice; since #357 the amount counts against the day's cap ("(OUTCOME UNKNOWN)" ledger line) and `payByPasskey` writes the same `trust.noteUnknownOutcome` record (`shop_pay`, the payment's target) as the texted-yes path. `shop_status` (`approvalHint`) hands the model a fresh `approve_url` only when no open link exists for an asked payment whose Crossmint window is still open; an open link is named with its minutes left; a passed window says to start again. Accepted origins: the site and its `www.` form (`passkey.ORIGINS()`); the RP ID is the apex host. The expired-checkout texts (`endText`, `stageLine`) name what the store wanted from the form's fields — "your shipping address and phone number" — via `askedFor(run)`, never the store's prompt.
 
 Notes: the approve page is a bearer link by design, not signed-in only: it opens on a phone that may not be signed in to Web, and paying still needs the owner's passkey. Signed out, a non-owner, or the flag off, `/web/connect/passkey` is a plain 404 (http.js keeps it out of the Connect store-link route).
+
+## Thirty minutes, one re-ask, one reminder, the breakdown (#376 shop-small, 2026-11-07)
+
+Live 10-31 CVS: the ask went at 16:22:49, Crossmint's hold ran out at 16:32:47 (10.0 min) and the Face ID
+link lasted 5 min, cut further to Crossmint's `expires_at`; the run ended "didn't get it in time".
+
+- **The link lasts 30 min** (`APPROVAL_TTL_MS` `src/passkey.js:67`); `createApproval(row, { until })`
+  (`:219`) ends it at the first ask's half hour when sooner, never at Crossmint's hold. A tap after the
+  hold pays nothing (`payRow` refuses an expired row). Spend-limit (`kind: 'cap'`) links keep their own deadline.
+- **The half hour runs from the first ask** across re-asks: `shop_runs.ask_since` (`src/shopconnect.js:258`,
+  set at the first `needs_approval` `:1701`), `askDeadline` `:1116`.
+- **The store let go → asked again** (`renewHold` `src/shopconnect.js:1837`): hold expired
+  (`input_expired` / "expired while waiting") during `needs_approval`, before `ask_since + 30 min − 5 min`,
+  nothing `declined` or `paying`, at most `RENEW_MAX` (2, `:1828`) times → the same checkout starts again,
+  carrying `ask_since`, `renewals` and whether the reminder went; the old run's link closes `renewed` and its
+  page reads "Stores hold a payment for ten minutes. I asked again for the same thing, and a fresh link comes…"
+  (`src/pages/webapprove.js:199`); one text: "<Store> let go of the cart before you approved, so I'm asking
+  again for <item>. Nothing was charged. A fresh link comes with the total."
+- **One reminder** (`remindApproval` `:1863`, `REMIND_BEFORE_MS` 5 min `:1830`): "Still waiting on your
+  approval: $26.65 at CVS for …, until 4:52 PM. The Face ID link I sent still works until then." — 5 min
+  before the half hour ends, or before the last hold ends when no re-ask is left. `told` carries
+  `reminded` across a re-ask, so never twice. The 12-min stall text no longer fires in `needs_approval`.
+- **The page shows what the total is made of** (`breakdownRows` `src/pages/webapprove.js:60`): Item ·
+  Shipping · Tax · Total from `shop_payments.breakdown` (new column, `src/shopconnect.js:259-260`; written
+  from `itemizedParts` `:1326` — Crossmint's structured breakdown, or the question's words when the parts
+  add up). A missing shipping/tax row reads "none listed"; one number → "Item, shipping and tax: all in the
+  total" + "<Store> gave one number, with shipping and tax in it." The bound challenge is unchanged.
+- Driven 2026-11-07 (rel-1107): `bin/passkey-drive.mjs` 23/23 ok rc 0 (step (e) now labelled thirty
+  minutes); in-process probe: `APPROVAL_TTL_MS` 1800000, `RENEW_MAX` 2, `REMIND_BEFORE_MS` 300000,
+  `itemizedParts` from words and from a structured breakdown both `item 15.97 / shipping 6.99 / tax 2.04`,
+  `breakdownRows` → "Item $15.97 Shipping $6.99 Tax $2.04 Total $25.00" and the one-number note;
+  `test/shop-small-1107.test.js` (re-ask, old-link page, no re-ask past the half hour or after a decline,
+  one reminder) in a 70/70 run. Not proven live: a real re-ask after Crossmint's hold, the reminder on a phone.
 
 ## The card's order-intent registration (wt/card-registration, 2026-10-31)
 

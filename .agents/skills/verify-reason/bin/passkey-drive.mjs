@@ -272,7 +272,7 @@ try {
   await pg.waitForLoadState("load");
   await pg.waitForFunction(() => /run out/i.test(document.querySelector("h1")?.textContent ?? ""), null, { timeout: 15000 }).catch(() => {});
   const gotE = await http(null, `/web/approve/${tokE}`);
-  step("(e) five minutes on: Approve → refused link_expired, page shows run out, GET → 410, nothing paid",
+  step("(e) thirty minutes on (APPROVAL_TTL_MS): Approve → refused link_expired, page shows run out, GET → 410, nothing paid",
     rejected().includes("link_expired") && /run out/i.test(await pg.textContent("h1")) && gotE.status === 410 && orderIntents().length === 0 && status(rowE) === "asked",
     `log=${rejected().join(",")} h1=${(await pg.textContent("h1")).trim()} get=${gotE.status} oi=${orderIntents().length}`);
   clock.reset();

@@ -647,6 +647,11 @@ export const config = {
   // = the voice talks with them itself, like an own call, and hands decisions to Reason; "off" = the
   // older puppet line, where every reply waits on a Reason turn (4–8 s a reply on call 59).
   lineTalk: String(process.env.REASON_LINE_TALK ?? "on").trim().toLowerCase() !== "off",
+  // A call Reason places to somebody else opens with a short pre-made clip in its own voice the moment
+  // the line is answered (src/calls/opener.js), while the live voice connects: "on" (default) / "off".
+  pickupOpener: String(process.env.REASON_PICKUP_OPENER ?? "on").trim().toLowerCase() !== "off",
+  // The speech model that makes that clip (OpenAI TTS; the same voice name as the live voice).
+  openerTtsModel: process.env.REASON_OPENER_TTS_MODEL || "gpt-4o-mini-tts",
   gptliveModel: process.env.REASON_GPTLIVE_MODEL || "gpt-live-1",
   // The voice (a young adult British woman was the owner's pick): Marin, with the accent
   // asked for in the live prompt. There is no British built-in voice.

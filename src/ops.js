@@ -628,6 +628,10 @@ function moneyChecks({ now, day }) {
   } catch (e) { out.push(check("api_fallback", "money", "Pre-reply checks", "warn", `could not be read: ${short(e)}`)); }
 
   out.push(check("calls", "money", "Phone calls", "ok", `${n(calls.calls, "call")} today · ${Math.round(calls.secs / 60)} min${cost ? ` · ${money(cost)} in the last day` : ""}`));
+  try {
+    const pk = pickupCheck();
+    out.push(check("call_pickup", "money", "Calls: pickup → first word", pk.state, pk.detail));
+  } catch (e) { out.push(check("call_pickup", "money", "Calls: pickup → first word", "warn", `could not be read: ${short(e)}`)); }
 
   // Only what really happened at the till (2026-10-24: "4 purchases in the last day · $50.30" when
   // nothing had been bought — two carts shown, one still shopping). A cart shown or never confirmed
@@ -651,6 +655,27 @@ function moneyChecks({ now, day }) {
 
   out.push(...cardConnectionChecks({ now }));
   return out;
+}
+
+/**
+ * How long the person who picked up waited for Reason's first word (the 2026-11-07 review: 4–5 s on
+ * business calls, and they hung up). From the call rows' `first_audio_ms` (src/calls/gptlive.js),
+ * the last 20 calls that spoke. Amber when the typical wait is over two seconds.
+ */
+export function pickupCheck({ limit = 20 } = {}) {
+  const rows = db.db.prepare("SELECT id, first_audio_ms AS ms, pickup_opener AS opener, is_owner FROM calls WHERE first_audio_ms IS NOT NULL ORDER BY id DESC LIMIT ?").all(limit);
+  if (!rows.length) return { state: "ok", detail: "no calls timed yet" };
+  const s = (ms) => `${(ms / 1000).toFixed(1)} s`;
+  const sorted = rows.map(r => r.ms).sort((a, b) => a - b);
+  const median = sorted[Math.floor((sorted.length - 1) / 2)];
+  const slow = rows.reduce((a, b) => (b.ms > a.ms ? b : a));
+  const last = rows[0];
+  const errands = rows.filter(r => Number(r.is_owner) !== 1);
+  const opened = errands.filter(r => r.opener).length;
+  const detail = `last ${rows.length}: typical ${s(median)}, slowest ${s(slow.ms)} (call ${slow.id})`
+    + ` · latest call ${last.id} ${s(last.ms)}${last.opener ? " (opener clip)" : ""}`
+    + (errands.length ? ` · opener clip on ${opened}/${errands.length} errand calls` : "");
+  return { state: median > 2000 ? "warn" : "ok", detail, median, slowest: slow.ms };
 }
 
 /** Statuses that are something that really happened to money. Not shopping, cart_shown or awaiting_approval. */

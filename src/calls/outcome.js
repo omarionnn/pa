@@ -55,6 +55,24 @@ export const OUTCOMES = {
     // calling it a success here would make "I asked them" and "it is booked" the same word.
     what: "A person gave the answers the call was asking for. Nothing was agreed or committed.",
   },
+  // The 2026-11-07 review: every call that reached somebody and settled nothing was filed as
+  // "dropped before confirmation", including a person who picked up and hung up on the silence, and an
+  // own call that simply ended. The model's read of the transcript (./goalmet.js) now names these two.
+  picked_up: {
+    success: false, spokeToHuman: true, redial: "retry",
+    label: "they picked up and talked, but what it rang for wasn't settled",
+    what: "A person answered and talked with Reason; nothing was agreed and the call's point was not got.",
+  },
+  talked: {
+    success: false, spokeToHuman: true, redial: "no",
+    label: "they talked",
+    what: "Their own call with Reason: they picked up and talked, and it ended there.",
+  },
+  hung_up_early: {
+    success: false, spokeToHuman: true, redial: "retry",
+    label: "they hung up before it could say why it rang",
+    what: "A person picked up and hung up within the first moments, before the reason for the call was made.",
+  },
   needs_owner: {
     success: false, spokeToHuman: true, redial: "no",
     label: "it needs your word before anything is agreed",

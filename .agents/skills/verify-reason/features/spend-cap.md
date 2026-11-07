@@ -20,7 +20,9 @@ person can change their own. Before this the cap was one number for the whole in
   - a raise above the default is a money control: with a passkey it is a Face ID link
     (`pay_approvals.kind = 'cap'`, the challenge bound to the change's id/owner/from/to; the page
     `/web/approve/<token>` shows "Raise your daily limit to $250?" and the tap applies it, one text
-    says so); without one it is a plain yes — `spend_limit_confirm` in the chat, or the yes/keep pair on
+    says so; since #376 the link lasts `APPROVAL_TTL_MS` 30 min, capped at the change's own deadline
+    `changeTtlMs` — src/passkey.js:67, :217-219, src/spendcap.js:29 — and the page says "Works once,
+    and runs out in thirty minutes.", with no reminder text, src/pages/webapprove.js:80); without one it is a plain yes — `spend_limit_confirm` in the chat, or the yes/keep pair on
     Settings — that runs out after `config.askTtlMoneyH` (24h) like every ask about money. With a passkey
     on file the code itself refuses a texted yes or the Settings button (`confirmChange` →
     `needs_face_id`) and hands back a fresh link; the prompt is not the only guard (review fix, 12th test).
@@ -95,6 +97,11 @@ uncounted `unknown` row counted once by `backfillSpend`, a second run adds 0. 10
 7e38e15 (2026-11-07, cage on port 8839 doctor-clean first). Lead 5b adds: order intent `active` →
 still counted, a third $90 refused; `expired` with $0 spent → the unknown $90 released (row `failed`,
 $0 note line), the next $90 paid, spent stays $90; a second `settleUnknownPayments` releases 0. 14 steps, all ok (cage port 8882 doctor-clean first, 2026-11-07).
+Re-run 2026-11-07 on rel-1107 `8bbcb96` (#374/#376/#379 merged), `caged.sh env` + throwaway DB, no
+cage started: 14/14 ok, rc 0.
+
+Not this file's: the install-wide **paid-API** caps and their 80% heads-up (#374) are
+[api-caps.md](api-caps.md) — a different "spend cap".
 
 ## Live (muted; read-only)
 

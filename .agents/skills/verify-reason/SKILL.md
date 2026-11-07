@@ -466,6 +466,19 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — release 11-07b (spend-alert + shop-small + call-pickup)
+
+Branch `rel-1107` (origin/main `bb0b91b` + #374 spend-alert, #376 shop-small, #379 call-pickup);
+suite: see release. Scoped maintain pass, no model on the API, nothing sent: `bin/spend-alert-drive.mjs`
+(new) 16/16, `bin/spend-unknown-drive.mjs` 14/14, `bin/passkey-drive.mjs` 23/23 (step e relabelled 30 min),
+`bin/recall-figures-drive.mjs` all ok, in-process call-pickup probe (opener words, μ-law, stub TTS,
+outcome labels, /ops pickup row, one mailbox text) 17/17; `test/spend-alert`, `call-pickup`,
+`call-goalmet`, `call-machines` and the shop-small files pass on their own. `scripts/shop-fit-drive.mjs`
+on claude-cli: 4/6 then 5/6 (the PR said 6/6) — `checkFit` came back `unclear, error:true` in 3 of 12
+calls and fails open. `bin/gptlive-line-drive.mjs` not run (real OpenAI key + GPT-Live: Hetzner, owner-run).
+New feature file: [tool-limits.md](features/tool-limits.md). A worktree whose `node_modules` is empty
+cannot load `src/` (no `@anthropic-ai/sdk`) — check `ls node_modules/@anthropic-ai` before a drive.
+
 ### Baseline — release 11-07 (recall-rank + unverified-plus)
 
 Release head `36db733` (branch `rel/unverified-fix`: origin/main `8a1fe18` + #354 recall ranking /
