@@ -120,8 +120,11 @@ export async function connectStartRequest({ state, method, headers, readBody, ru
       // `pcode:` keeps the code out of the conversation's history (db.js HISTORY_EXCLUDED_KEYS) and
       // stops a retried send texting it twice.
       try {
-        if (runtime?._tell) await runtime._tell(row.conversation_id, line, { idempotencyKey: `pcode:${page.id}:${id}` });
-        else runtime?.say?.(row.conversation_id, line);
+        // _tell answers a refused send rather than throwing it; either way it is logged.
+        const told = runtime?._tell
+          ? await runtime._tell(row.conversation_id, line, { idempotencyKey: `pcode:${page.id}:${id}` })
+          : runtime?.say?.(row.conversation_id, line);
+        if (told && told.ok === false) log({ connect_code_text_failed: row.provider, why: String(told.error ?? told.reason ?? "refused").split("\n")[0] });
       } catch (e) {
         log({ connect_code_text_failed: row.provider, why: (e?.message ?? String(e)).split("\n")[0] });
       }
