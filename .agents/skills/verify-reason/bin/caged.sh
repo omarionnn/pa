@@ -78,6 +78,11 @@ start)
     FAKE_SB=(SENDBLUE_API_KEY_ID=cage-fake SENDBLUE_API_SECRET_KEY=cage-fake SENDBLUE_FROM_NUMBER=+12025550101
              SENDBLUE_API_BASE="$REASON_VERIFY_FAKE_SENDBLUE")
   fi
+  # A checkout with no REASON_MASTER_NUMBER in .env (a fresh worktree has no .env at all) has no owner,
+  # so bin/inbound.sh's text — sent as REASON_VERIFY_OWNER — landed as a stranger and became an access
+  # request (`asked_master_about`, 2026-11-06). The cage's owner is then the documentation number
+  # owner_number falls back to. A .env that names one is left alone.
+  MASTER=(); grep -qE '^REASON_MASTER_NUMBER=.' "$REPO/.env" 2>/dev/null || MASTER=(REASON_MASTER_NUMBER="$(owner_number)")
   detach() { if command -v setsid >/dev/null 2>&1; then exec setsid "$@"; else exec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die "exec: $!"' "$@"; fi; }
   detach env ${KEY[@]+"${KEY[@]}"} \
     REASON_PORT="$PORT" \
@@ -107,6 +112,7 @@ start)
     UBER_CLIENT_ID= \
     UBER_CLIENT_SECRET= \
     ${FAKE_SB[@]+"${FAKE_SB[@]}"} \
+    ${MASTER[@]+"${MASTER[@]}"} \
     node --env-file-if-exists=.env src/serve.js --log < /dev/null > "$RUN/serve.log" 2>&1 &
   echo $! > "$RUN/pid"
   echo "$PORT" > "$RUN/port"

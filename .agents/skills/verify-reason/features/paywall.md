@@ -2,12 +2,15 @@
 
 Shipped 2026-10-31 (PR #323). **2026-11-05 owner decision: Reason is FREE for everyone; the switch stays
 OFF.** Off = nothing counted (no `plan` row), nothing said, no plan tool or price in the model's tools /
-capabilities / note, `/pay/done` + `/pay/back` 302 to the site home, Stripe's webhook acts on nothing.
+capabilities / note, `/pay/done` + `/pay/back` 302 to the site home, Stripe's webhook acts on nothing. With it on, a Stripe event for
+somebody the paywall does not reach (everyone but the operator under `owner`) or somebody grandfathered
+changes nothing and texts nothing (e875fbb) — an old test subscription cannot lapse or hold them.
 `owner` reaches only the operator's own thread (his grandfather rules skipped there, so he can try it);
 `on` reaches everybody who is not grandfathered — the operator, `REASON_TEST_NUMBERS`, anybody who joined
 through an invite or a member's event (`accounts.invited_by` / `joined_via_event` on any account on the
 number; owner 2026-11-05, whenever they joined), and every account with `created_at` before the FLIP MOMENT (`ops_state` key `paywall_on_since`, written the first time a
-process boots with the switch on). `REASON_PAYWALL_SHIP_TS` can only move that cut-off later, so the old
+process boots with the switch on) — or any account on the same number made before it, so a pre-flip
+person whose number shows up on a new channel after the flip stays free (b996019). `REASON_PAYWALL_SHIP_TS` can only move that cut-off later, so the old
 Oct 31 value in live .env cannot put anybody who joined while free on a trial. The website's matching
 switch is `REASON_PRICING` (reason-site `tools/build-site.mjs`); flip both together.
 
@@ -50,6 +53,10 @@ What a person sees:
 cd ~/Desktop/pa/.agents/skills/verify-reason
 REASON_DB_PATH=$(mktemp -d)/paywall.db node bin/paywall-drive.mjs    # 24 steps, "all ok"
 ```
+
+Evidence 2026-11-06 (`c6ce172`): `paywall-drive.mjs` all ok; `test/paywall*.test.js` +
+`test/pricing-flag.test.js` green; `GET /pay/done` → 302 `https://heyreason.com/` on the cage and on live
+(`REASON_PAYWALL=off` in live `.env`).
 
 Evidence 2026-11-01 (worktree wt/win-rule): 24/24 ok — the 14 above (Ama now has a win on the record),
 then Kofi: no win at the 25th → nothing said, `trial 25/30 (no win yet)`, the quiet PLAN note, the 27th

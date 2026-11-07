@@ -140,6 +140,17 @@ started="$(ps -p "$pid" -o lstart= | xargs)"
 committed="$(git -C "$REPO" log -1 --format=%cd --date=format:'%a %b %e %T %Y')"
 say "process started" "$started"
 say "HEAD committed" "$committed"
+# Printed is not checked: on 2026-11-06 a cage left running from another checkout for 8 days read
+# all clear here. Another checkout, or a process older than HEAD, is code you are not reading.
+if [ -n "$cwd" ] && [ "$(cd "$cwd" 2>/dev/null && pwd -P)" != "$(cd "$REPO" && pwd -P)" ]; then
+  say "STALE" "serving $cwd, not this checkout — stop it, or use REASON_VERIFY_RUN + REASON_VERIFY_PORT"
+  fail=1
+fi
+started_s="$(date -j -f '%a %b %e %T %Y' "$started" +%s 2>/dev/null || date -d "$started" +%s 2>/dev/null || echo 0)"
+if [ "$started_s" -gt 0 ] && [ "$started_s" -lt "$(git -C "$REPO" log -1 --format=%ct)" ]; then
+  say "STALE" "process started before HEAD was committed — restart it before trusting a drive"
+  fail=1
+fi
 
 # 3. Health answers, and says the things that mean "driving this will go nowhere".
 h="$(curl -s -m 5 "http://127.0.0.1:$PORT/health" || true)"
