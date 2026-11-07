@@ -529,6 +529,8 @@ export function createServer({ router, runtime, log = () => {} }) {
           // Only the hash of the picture the phone already has, so an unchanged one is not resent.
           query: { h: url.searchParams.get("h") ?? "" },
           readBody: () => readBody(req),
+          // Start on a browser not proved as the person's own texts them a code first (lead 6).
+          tell: typeof runtime?._tell === "function" ? (c, text, meta) => runtime._tell(c, text, meta) : null,
         });
         res.writeHead(out.status, out.headers);
         return res.end(out.body);

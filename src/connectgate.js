@@ -48,8 +48,12 @@ export function startLink(state, providerUrl, redirectUri) {
 // browser by a cross-site post would carry the asker's identity to the provider's callback.
 const TRUSTED_SIGNIN = /^(wsign|connect):/;
 
-/** The conversation this browser is signed in as through a trusted sign-in, or null. */
-function browserConversation(headers) {
+/**
+ * The conversation this browser is signed in as through a trusted sign-in, or null. Also what a
+ * remote sign-in link (src/signin-remote.js, lead 6) asks before Start: one browser, proved once,
+ * is remembered for both.
+ */
+export function browserConversation(headers) {
   for (const token of new Set([readCookie(headers?.cookie), ...readCookies(headers?.cookie)].filter(Boolean))) {
     if (!TRUSTED_SIGNIN.test(db.pageSessionSource(token) ?? "")) continue;
     const owner = db.pageSessionOwner(token, SESSION_TTL_MS);
@@ -80,11 +84,16 @@ export function refuseForeignBrowser({ provider, state, error = "", headers }) {
   };
 }
 
-/** The pseudo page a conversation's connect codes are counted and rate limited under. */
-function gatePage(row) {
-  const id = `connect:${createHash("sha256").update(String(row.conversation_id)).digest("hex").slice(0, 24)}`;
-  return { id, conversation_id: row.conversation_id, title: `Connect ${nameOf(row.provider)}` };
+/**
+ * The pseudo page a conversation's browser-proving codes are counted and rate limited under, and the
+ * source of the `connect:` session a right code leaves. Shared with remote sign-in links, so a
+ * browser proved on either is the person's own for both, and the limits are one per person.
+ */
+export function proofPage(conversationId, title) {
+  const id = `connect:${createHash("sha256").update(String(conversationId)).digest("hex").slice(0, 24)}`;
+  return { id, conversation_id: conversationId, title };
 }
+const gatePage = (row) => proofPage(row.conversation_id, `Connect ${nameOf(row.provider)}`);
 
 function codeLine(provider, code, host) {
   const mins = Math.round(CODE_TTL_MS / 60000);

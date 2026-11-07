@@ -41,6 +41,11 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
   The other gates that set the shared session at `Path=/` refuse a cross-site POST too (`403`): the
   walking-directions gate (`src/pages/directions.js`) and the private-page gate on the files domain
   (`src/http.js` `pageRequest`), so no page elsewhere can sign a victim's browser in as the asker.
+- **Sign-in links start only on the person's own browser (lead 6).** `/s/<token>` Start uses the
+  same proof (`connectgate.browserConversation`, exported); a new browser gets a code texted to the
+  person's own thread, counted under connect's `proofPage` id, and the right code leaves the same
+  `connect:` session, so that browser is remembered for later sign-in and connect links. A cross-site
+  code POST → `403`. [signin-link.md](signin-link.md).
 - **No payment details in anything a call is handed (lead 31).** `src/calls/payments.js`
   `checkCallForPaymentDetails` scans goal, facts, `ask`, `approved_terms` and every `requirements`
   key and value; `checkBriefForPaymentDetails` scans the final brief in `call_place` too (a redial

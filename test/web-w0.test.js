@@ -354,7 +354,15 @@ test("a page's or /ops's sign-in code is never history (pcode: key)", async () =
   await runtime._tell(CONV, "Your Reason code is 123456, to open \"Trip\" on that browser.", { idempotencyKey: "pcode:pg1:7" });
   assert.equal(fake.sent.length, 1, "the code went");
   assert.deepEqual(db.messagesFor(CONV), []);
-  assert.deepEqual(db.HISTORY_EXCLUDED_KEYS, ["pcode:", "esign:", "wsign:"]);
+  assert.deepEqual(db.HISTORY_EXCLUDED_KEYS, ["pcode:", "esign:", "wsign:", "scode:"]);
+});
+
+test("the code that starts a remote sign-in link is never history either (scode: key, lead 6)", async () => {
+  const { runtime, fake } = harness();
+  texted(CONV, OWNER);
+  await runtime._tell(CONV, "Your Reason code is 654321, to start the Amazon sign-in link.\n\n@reason.example #654321", { idempotencyKey: "scode:abcdefabcdef:9" });
+  assert.equal(fake.sent.length, 1, "the code went");
+  assert.deepEqual(db.messagesFor(CONV), [], "and is not a line in the conversation");
 });
 
 test("the history dedupes on the handle even when written twice by hand", () => {
