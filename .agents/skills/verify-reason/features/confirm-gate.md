@@ -77,8 +77,9 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   the target was the number alone, so a yes to "running late" could carry any words to that number.
   `account_connect` is pinned the same way to `connect <name> (<scopes>)`, and its ask must carry a
   target, so a yes to one provider cannot connect another.
-  Drive: `node --test test/person-pin.test.js` (5; all fail on main dc3b781), then Drive 2 on the cage
-  (eval `caged.sh env`, then `runTool` with a `FakeChannel` router and `FakeCallProvider` in ctx):
+  Drive: `node --test test/person-pin.test.js` (6; all fail on main ae913c7), then Drive 2 on the cage:
+  `bin/person-pin-drive.mjs` under `caged.sh env` with `REASON_UNDO_SECONDS=0` (`runTool` with a
+  `FakeChannel` router and `FakeCallProvider` in ctx, stub judge):
   probe → `use_target`, bare-number ask → `target_needs_the_words`, other words / `may_book` added →
   `wrong_target` with nothing sent or placed, the agreed text / brief → sent 1 / placed 1 (2026-11-07).
 - **A yes is spent once.** `consumed_at`.
