@@ -355,9 +355,10 @@ comment is missing routes that exist in the code: five OAuth callbacks — `/spo
 `/github/callback`, `/uber/callback`, `/x/callback`, `/google/callback` (`googleCallbackRequest`);
 `grep -n '_callback:' src/http.js` finds them — plus `/spotify/join`, `POST /parallel/webhook`,
 `POST /ops/usage` (the Mac's signed usage push), the event pages `/e/{id}` and
-`/e/{id}/(join|who|signin|signout)` (also under `/p/`), `/ops` and `/ops.json` (behind a password when `REASON_OPS_PASSWORD_HASH` is set — this Mac's
-`.env` sets it, so on the cage both answer **401** without the sign-in; `caged.sh` does not blank
-it; never read or change the hash), and the site's static files (`/`, `/privacy`, `/terms`, `/og.png`,
+`/e/{id}/(join|who|signin|signout)` (also under `/p/`), `/ops` and `/ops.json` (behind a password when `REASON_OPS_PASSWORD_HASH` is set, else the texted
+code; on the cage both answer **401** without the sign-in. This Mac's `.env` has no hash
+(2026-11-07); `caged.sh` passes one through from the shell, so start with a throwaway hash to drive
+the password gate; never read or change a real hash), and the site's static files (`/`, `/privacy`, `/terms`, `/og.png`,
 `/favicon.svg`, `/apple-touch-icon.png`, `/reason.vcf` + `/reason-<sha8>.vcf`). Line numbers churn; grep. It says so itself — *"Every route is matched by a
 regex in `createServer` below, and that is the list of record; this one is a reader's index and
 goes stale if nobody tends it."* Use it as the index, and confirm against the `exec` lines before
