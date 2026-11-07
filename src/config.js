@@ -246,6 +246,13 @@ export const config = {
   // signature is believed about the visitor's address or that it came through the website. Unset:
   // nothing is, and /web is served on whatever host asked.
   siteProxySecret: (process.env.REASON_SITE_PROXY_SECRET || "").trim(),
+  // The secret Caddy on this machine sends as `X-Reason-Caddy` on the hosts it proxies here
+  // (`header_up X-Reason-Caddy <secret>` beside `X-Files-Domain true`). The Tailscale Funnel lands on
+  // the same port from the same loopback address and passes a browser's headers through, so the
+  // marker alone proves nothing: only with this secret is Caddy's X-Forwarded-For believed about a
+  // visitor's address (src/pages/siteproxy.js caddyClientIp). Unset: it never is, and every unsigned
+  // browser shares the socket's one count.
+  caddySecret: (process.env.REASON_CADDY_SECRET || "").trim(),
   // The website's Netlify site id; when set, a signature for any other site is not ours.
   siteProxyId: (process.env.REASON_SITE_PROXY_ID || "").trim(),
   // Where the owner opens the status page (src/ops.js): every link Reason hands them for it — the
