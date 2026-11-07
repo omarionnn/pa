@@ -805,3 +805,34 @@ test("a sign-in that did not work says so in the reply, rather than claiming it 
   await req(token, "done", { method: "POST", cookie });
   assert.match((await req(token)).body, /body=Amazon%20blocked%20the%20sign-in"/);
 });
+
+// ---------- who may tap Start (security audit lead 6) ----------
+//
+// The link drives the person's own saved browser profile, which holds every site's session. Holding
+// the link is not enough to take it: Start needs the person's own proved Reason browser, or a code
+// texted to their own thread, the same rule private pages and trips keep.
+
+/** A Reason browser session (Web, a page, an event) proved for this conversation. */
+function provedCookie(conversationId) {
+  const t = `sess-${conversationId}-${Math.random().toString(36).slice(2)}`;
+  db.startPageSession("web", t, { conversationId });
+  return `reason_page=${t}`;
+}
+
+test("a stranger's browser with the link cannot take the session, even one signed in to Reason as somebody else", async () => {
+  db.upsertAccount({ conversationId: THEIRS, channel: "fake", address: FRIEND, name: "Kofi", isOperator: false });
+  for (const cookie of ["", provedCookie(THEIRS)]) {
+    remote.forgetAllRemoteSignins();
+    const told = [];
+    const { token, b } = make();
+    const r = await remote.remoteRequest({ token, action: "start", method: "POST", headers: cookie ? { cookie } : {}, readBody: async () => "", tell: async (c, text) => { told.push([c, text]); } });
+    assert.notEqual(r.status, 303, "Start is not taken on the link alone");
+    assert.equal(r.headers?.["Set-Cookie"], undefined, "no browser cookie is handed out");
+    assert.equal(b.launched.length, 0, "and the saved profile is never opened");
+    for (const [action, body] of [["view", null], ["type", { text: "x" }], ["tap", { x: 0.5, y: 0.5 }]]) {
+      const x = await req(token, action, { method: action === "view" ? "GET" : "POST", body });
+      assert.equal(x.status, 404, `${action} drives nothing`);
+    }
+    assert.equal(b.did.length, 0, "the browser was never touched");
+  }
+});
