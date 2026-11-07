@@ -10665,7 +10665,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // was parked and is not checked again against a later turn.
       let text = input.text;
       if (!ctx.heldIdemKey) {
-        const g = offers.guardReply(c, input.text, { asks: false, extraSources: [exactly ?? "", input.exactly_as_asked ?? "", purchasesNoteMod.purchaseRecordSource(c)] });
+        // The photos they sent this turn count here too (review 11-07): a text quoting a figure off
+        // their screenshot was refused every time.
+        const photos = await offers.photoWords(c);
+        const g = offers.guardReply(c, input.text, { asks: false, extraSources: [exactly ?? "", input.exactly_as_asked ?? "", ...photos.texts], records: [purchasesNoteMod.purchaseRecordSource(c)], unread: photos.unread });
         const back = g.recompose ? offers.sendBack(c, g.fixes) : null;
         if (back || (g.changed && !toOwner)) {
           return {

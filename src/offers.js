@@ -430,6 +430,19 @@ export function noteOffer(conversationId, row) { if (row) turnOf(conversationId)
 /** A money ask put to the person this turn, with the line it has to carry. */
 export function noteAsk(conversationId, ask) { if (ask) turnOf(conversationId).asks.push(ask); }
 export function turnState(conversationId) { return turnOf(conversationId); }
+/**
+ * The photos looked at this turn, as a reader of their words (src/looked.js capturedWords, bound by
+ * the backend). Kept on the turn so every check of it reads them: a message_send mid-turn, and the
+ * one rewrite, which runs with no attachments of its own (review 11-07: a figure read off their
+ * screenshot was dropped from the rewrite as unchecked). Set once, on the turn that looked.
+ */
+export function notePhotos(conversationId, read) { if (conversationId && typeof read === "function") turnOf(conversationId).photos = read; }
+/** What this turn's photos said: { texts, unread }. Nothing looked at: no words, nothing unread. */
+export async function photoWords(conversationId) {
+  const read = turns.get(conversationId)?.photos;
+  if (!read) return { texts: [], unread: false };
+  try { return (await read()) ?? { texts: [], unread: true }; } catch { return { texts: [], unread: true }; }
+}
 
 // A figure never ends on a comma: "$3, now $4" is "$3". Said with a sign ("$40", "£40", "€40"), a code
 // ("USD 40") or a word ("40 dollars", "40 bucks"): until gate 11-05 only the "$" form was read, so
@@ -579,7 +592,7 @@ export const PRICE_LEFT_OUT = "I couldn't confirm the price, so I've left it out
  * (owner, 2026-11-05: 618 "(unverified)" tags in a week, most on the person's own numbers).
  * `flags` names every rule that fired, for the log. Never throws: a broken check must not eat a reply.
  */
-export function guardReply(conversationId, reply, { asks = true, extraSources = [], unread = false, turnReply = false } = {}) {
+export function guardReply(conversationId, reply, { asks = true, extraSources = [], records = [], unread = false, turnReply = false } = {}) {
   try {
     if (!reply || typeof reply !== "string") return { text: reply, changed: false, flags: [], recompose: null };
     const t = turnOf(conversationId);
@@ -606,7 +619,10 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     const figures = [...reply.matchAll(REPLY_MONEY)].map(m => ({ fig: m[0].trim(), cents: replyAmountCents(m[0].trim()) }));
     const weighs = figures.length > 0 || DISCOUNT.test(reply);
     // Their own message is read without the line code put above an inline reply (QUOTED_LINE).
-    if (figures.length) for (const s of [...t.sources.map(s => (s === t.own ? ownWords(s) : s)), record]) for (const c of sourceAmounts(s)) known.add(c);
+    // `records` (their purchase record, src/purchasesnote.js) is known like a tool read: a figure on
+    // it stands, but it is no base for the arithmetic below — fifty carts of amounts summed and
+    // multiplied vouched for nearly any whole-dollar price (review 11-07).
+    if (figures.length) for (const s of [...t.sources.map(s => (s === t.own ? ownWords(s) : s)), record, ...records.filter(Boolean).map(String)]) for (const c of sourceAmounts(s)) known.add(c);
     // Their own words this turn and what they sent with them are theirs: read like their history.
     const extra = extraSources.filter(Boolean).map(String);
     const theirs = weighs ? [...[t.kind === "user" ? ownWords(t.own) : "", ...extra].filter(Boolean).map(text => ({ kind: "them", at: now, text, amounts: sourceAmounts(text, { bare: true }) })), ...(t.theirs ??= theirSources(conversationId, now))] : [];

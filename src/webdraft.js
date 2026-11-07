@@ -99,7 +99,7 @@ export function shapeDraft(conversationId, raw, { complete = false } = {}) {
   if (q.silent) return complete ? { stop: true } : { hold: true };
   text = q.text;
   if (/NO_REPLY/.test(text)) return { stop: true };
-  const g = guardReply(conversationId, text, { extraSources: [purchaseRecordSource(conversationId)] });
+  const g = guardReply(conversationId, text, { records: [purchaseRecordSource(conversationId)] });
   // A piece the check would change, or send back for a rewrite, is not shown: the rewrite arrives whole.
   if (g.changed || g.recompose) return { stop: true };
   return { text };

@@ -29,7 +29,7 @@ import { memoryNotes } from "./memorynote.js";
 import { startPurchasesNote, purchaseRecordSource } from "./purchasesnote.js";
 import { checkoutNote as shopCheckoutNote } from "./shopconnect.js";
 import { withoutSelfNote, readSilence } from "./plain.js";
-import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "./offers.js";
+import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource, notePhotos as noteOfferPhotos, photoWords as offerPhotoWords } from "./offers.js";
 import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
 import { REFUSAL_LINE } from "./harm.js";
 
@@ -511,6 +511,9 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // Started now, alongside the turn, and awaited only once the reply is in hand — what each photo
   // shows and every word in it, so the next turn can answer a form it can no longer see.
   const captured = startCapture({ blocks, viewedMediaIds, attachments, capture, log });
+  // Every figures check of this turn reads those words — a message_send mid-turn, and the rewrite,
+  // which looks at no photo of its own (src/offers.js notePhotos).
+  if (viewedMediaIds.length) noteOfferPhotos(conversationId, () => capturedWords(captured, viewedMediaIds));
 
   // A PDF — a receipt, a ticket, a lease — read on this machine and handed to the model as text.
   const reading = doing.counter(conversationId, attachments);
@@ -761,8 +764,8 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   if (!quiet.silent) {
     // Their own purchase record counts as a source too (src/purchasesnote.js purchaseRecordSource).
     // So do the words on the photos they sent this turn (src/looked.js capturedWords).
-    const photos = await capturedWords(captured, viewedMediaIds);
-    const g = guardReply(conversationId, reply, { extraSources: [purchaseRecordSource(conversationId), ...photos.texts], unread: photos.unread, turnReply: true });
+    const photos = await offerPhotoWords(conversationId);
+    const g = guardReply(conversationId, reply, { records: [purchaseRecordSource(conversationId)], extraSources: photos.texts, unread: photos.unread, turnReply: true });
     if (g.recompose) log({ reply_guard: g.flags, recompose: true, conversation: conversationId });
     if (g.changed) {
       log({ reply_guard: g.flags, conversation: conversationId });

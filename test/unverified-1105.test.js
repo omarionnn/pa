@@ -48,9 +48,14 @@ const hedges = (s) => (String(s).match(HEDGE) ?? []).length;
  * what the model writes on its i-th run; a function gets the run's prompt and may read sources the
  * way a tool would (offers.noteSource). Returns what was sent and every prompt the model was handed.
  */
-async function exchange(backend, { text, kind = "user", drafts }) {
+async function exchange(backend, { text, kind = "user", drafts, photo = null }) {
   const prompts = [];
   let i = 0;
+  // `photo`: { id, read } — the turn's first run looks at one photo whose quiet read gives `read`;
+  // the rewrite, like the real one (attachments: []), looks at none.
+  let looked = 0;
+  const images = async () => (photo && !looked++ ? { blocks: [{ type: "image" }], notes: [], seen: [], viewedMediaIds: [photo.id] } : { blocks: [], notes: [], seen: [], viewedMediaIds: [] });
+  const capture = async () => (photo ? { ok: true, ...photo.read } : { ok: false });
   const next = (prompt) => {
     prompts.push(prompt);
     const d = drafts[Math.min(i++, drafts.length - 1)];
@@ -61,8 +66,7 @@ async function exchange(backend, { text, kind = "user", drafts }) {
       ...args,
       run: async (a) => ({ ok: true, envelope: { result: next(a.prompt) } }),
       startMcp: async () => ({ url: "http://127.0.0.1:1/mcp", close: async () => {} }),
-      images: async () => ({ blocks: [], notes: [], seen: [], viewedMediaIds: [] }),
-      capture: async () => null, recall: async () => [],
+      images, capture, recall: async () => [],
     })
     : (args) => {
       agent.model.create = async (req) => {
@@ -70,7 +74,7 @@ async function exchange(backend, { text, kind = "user", drafts }) {
         const said = typeof last.content === "string" ? last.content : last.content.filter(b => b.type === "text").map(b => b.text).join("\n");
         return { id: "m", type: "message", role: "assistant", model: "stub", content: [{ type: "text", text: next(said) }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } };
       };
-      return agent.runTurn({ ...args, images: async () => ({ blocks: [], notes: [], seen: [], viewedMediaIds: [] }), capture: async () => ({ ok: false }) });
+      return agent.runTurn({ ...args, images, capture });
     };
   const sent = [];
   const rt = new Runtime({ screen: async () => ({ verdict: "clear" }), runTurn: turn, log: () => {} });
@@ -80,6 +84,9 @@ async function exchange(backend, { text, kind = "user", drafts }) {
   agent.model.create = realCreate;
   return { sent: sent.join("\n"), prompts, runs: i };
 }
+
+const photoRow = (ext) => Number(db.db.prepare(`INSERT INTO media_items (conversation_id, channel, external_id, ordinal, kind, coverage, at)
+  VALUES (?, 'test', ?, 0, 'image', 'looked', ?)`).run(C, ext, clock.now()).lastInsertRowid);
 
 const theySaid = (content, ago) => db.writeEvent({ conversationId: C, role: "user", content, at: clock.now() - ago });
 
@@ -323,4 +330,45 @@ test("review 11-07: a photo note kept from Reason's own reply is not their words
   await recordLooked({ viewedMediaIds: [read], reply: "nice", captured: [{ mediaId: read, ok: true, description: "A receipt.", text: "Total $58.13" }] });
   offers.beginTurn(C, "what was the total?");
   assert.equal(offers.guardReply(C, "it was $58.13", { turnReply: true }).recompose, null, "the photo read's words are theirs");
+});
+
+for (const backend of ["cli", "api"]) {
+  // Review 11-07 (2): the rewrite runs with no attachments, and on the CLI the list of what is theirs
+  // was built before the photo note was saved — so their balance, read off the screenshot they sent,
+  // was dropped from the rewrite as unchecked.
+  test(`[${backend}] review 11-07: a figure off the photo they sent this turn still stands on the rewrite`, async () => {
+    const id = photoRow("img-bal");
+    const draft = "you've got $812.40 in checking. the ferry's $4.50 each way.";
+    const fixed = "you've got $812.40 in checking. the ferry's $4.50 each way.";
+    const out = await exchange(backend, { text: "can i afford the trip?", photo: { id, read: { description: "A bank app.", text: "Checking\nBalance $812.40" } }, drafts: [draft, fixed] });
+    assert.equal(out.runs, 2, "the ferry fare sends it back once");
+    assert.equal(out.sent, "you've got $812.40 in checking.", "the photo's figure stays; only the unchecked fare's sentence goes");
+  });
+}
+
+// Review 11-07 (4): a text sent mid-turn reads the photos of this turn like the reply does.
+test("review 11-07: message_send may quote a figure off the photo they sent this turn", async () => {
+  const sent = [];
+  const channels = { list: () => [{ name: "test" }], send: async (m) => { sent.push(m); return { ok: true, delivered: true }; } };
+  const call = (input) => runTool("message_send", input, { conversationId: C, messages: [], channels });
+  offers.beginTurn(C, "text me my balance so i have it");
+  assert.equal((await call({ to: "owner", text: "balance: $812.40" })).blocked, "unchecked_figures", "no photo: nothing backs it");
+  offers.beginTurn(C, "text me my balance so i have it");
+  offers.notePhotos(C, async () => ({ texts: ["A bank app. Words in it, verbatim:\nBalance $812.40"], unread: false }));
+  const out = await call({ to: "owner", text: "balance: $812.40" });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  offers.beginTurn(C, "text me my balance so i have it");
+  offers.notePhotos(C, async () => ({ texts: [], unread: true }));
+  assert.equal((await call({ to: "owner", text: "balance: $97.12" })).ok, true, "a photo still being read: its figure is not refused");
+  assert.deepEqual(sent.map(m => m.text), ["balance: $812.40", "balance: $97.12"]);
+});
+
+// Review 11-07 (3): the "worked out" sums are built from the reply's own known figures and their
+// message this turn — never from every amount on fifty purchase records.
+test("review 11-07: the purchase record vouches for its own amounts, not for sums and multiples of them", () => {
+  const record = Array.from({ length: 60 }, (_, i) => `$${(i * 7 + 11)}.${String(i * 13 % 100).padStart(2, "0")}`).join(" ");
+  offers.beginTurn(C, "what do the noise cancelling ones cost?");
+  assert.equal(offers.guardReply(C, "they're $18.13 again", { records: [record] }).recompose, null, "a figure on the record stands");
+  const g = offers.guardReply(C, "they're $349 at best buy", { records: [record] });
+  assert.deepEqual(g.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$349"], JSON.stringify(g.flags));
 });
