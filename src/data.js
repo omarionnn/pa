@@ -272,7 +272,7 @@ export const INSTALL_WIDE = {
 // approval, a guest's directory key, a join claim's code, a public stamp page, the saved card's
 // and shopping profile's handles at Crossmint.
 const SECRET_COLUMNS = {
-  oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token"], flight_travelers: ["details"],
+  oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token", "session_url", "vault_session_id", "exchanged_session"], flight_travelers: ["details"],
   shop_cards: ["payment_method_id"], shop_profiles: ["profile_id"], shop_links: ["id"],
   pay_approvals: ["id", "nonce", "challenge"], event_attendees: ["token"], event_claims: ["code"], stamp_shares: ["share_id"],
 };
