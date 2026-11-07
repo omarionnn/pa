@@ -1223,7 +1223,11 @@ export class GptLiveCall {
     // Runs of the voice's speech, as they arrive (a gap of VOICE_RUN_GAP_MS starts a new one): a run
     // begun before they answered the pickup opener is the voice's reply to their hello, never a reply.
     if (hasSpeech(b64)) {
-      if (t - (this.voiceSpeechAt ?? -Infinity) > VOICE_RUN_GAP_MS) this.voiceRunFrom = t;
+      if (t - (this.voiceSpeechAt ?? -Infinity) > VOICE_RUN_GAP_MS) {
+        this.voiceRunFrom = t;
+        // Begun while they were speaking: not a reply to them (a reply waits for their pause).
+        this.voiceRunOverThem = t - this.callerSpeechAt < VOICE_RUN_GAP_MS;
+      }
       this.voiceSpeechAt = t;
     }
     if (this.line && !this.talking) {
@@ -1763,7 +1767,9 @@ export class GptLiveCall {
     // answer, and let through it reached them as "…low back" (2026-11-07 greet drive).
     if (this.pickup?.startedAt) {
       if (!this.callerVoiceAt) return false;
-      if ((this.voiceRunFrom ?? 0) < this.callerVoiceAt) {
+      // A pause inside that reply looks like a new run (greet drive 5: "…recommend? [pause] And how much
+      // would" went out as they spoke), so a run begun while they were still talking is not one either.
+      if ((this.voiceRunFrom ?? 0) < this.callerVoiceAt || this.voiceRunOverThem) {
         if (!this.staleRun || this.staleRun !== this.voiceRunFrom) { this.staleRun = this.voiceRunFrom; this.staleRuns = (this.staleRuns ?? 0) + 1; this.log({ gptlive_stale_voice_dropped: this.call.id }); }
         return false;
       }

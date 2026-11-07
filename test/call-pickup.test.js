@@ -288,3 +288,21 @@ test("the voice's reply to their hello, made while the opener played, never leak
   for (let i = 0; i < 40; i++) { s.live.emit({ type: "session.output_audio.delta", delta: SPEECH }); await s.timers.advance(20); }
   assert.ok(s.twilio.media().length > atEnd, "the fresh reply is heard");
 });
+
+test("a pause inside that stale reply, while they are still answering, does not let its next words out", async () => {
+  const s = startCall();
+  s.up();
+  await line(s, 200, QUIET);
+  await line(s, 1200, SPEECH);
+  await line(s, 600, QUIET);
+  const both = async (n, voiceP, lineP) => { for (let i = 0; i < n; i++) { if (voiceP) s.live.emit({ type: "session.output_audio.delta", delta: voiceP }); s.twilio.say({ event: "media", media: { track: "inbound", payload: lineP } }); await s.timers.advance(20); } };
+  await both(120, SPEECH, QUIET);        // the stale reply, over the clip and past it
+  const atEnd = s.twilio.media().length;
+  await both(10, SPEECH, SPEECH);        // they start answering; the reply's tail still streams
+  await both(25, QUIET, SPEECH);         // a pause in the reply (they keep talking)…
+  await both(25, SPEECH, SPEECH);        // …and its next words, while they talk
+  assert.equal(s.twilio.media().length, atEnd, "nothing said over their answer");
+  await both(25, null, QUIET);           // they finish; the voice's real reply, after their pause
+  await both(40, SPEECH, QUIET);
+  assert.ok(s.twilio.media().length > atEnd, "the reply to them is heard");
+});
