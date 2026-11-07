@@ -207,7 +207,9 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
       if (row.asked_after_msgs == null || texts.length <= row.asked_after_msgs) {
         return { ok: false, error: "waiting_for_yes", say: "They have not answered since you asked, so nothing changed. Wait for their reply; never answer for them." };
       }
-      const latest = texts.at(-1);
+      // What they typed, never a note riding under it (a PDF's text, the message a reply was under).
+      const latest = trust.typedOnly(texts.at(-1));
+      if (!latest) return { ok: false, error: "not_a_yes", say: "Their last message doesn't answer the question, so nothing changed. Ask once, plainly." };
       const verdict = trust.isBareRefusal(latest) ? "no"
         : (await (judge ?? judgeReply)({ summary: `raise their daily spending limit from ${spendcap.money(row.from_cents)} to ${spendcap.money(row.to_cents)}`, reply: latest }))?.verdict;
       if (verdict === "no") {

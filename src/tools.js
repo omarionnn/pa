@@ -12309,7 +12309,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // What would be saved, built from the scope only (never from the model's `said`): the judge reads
       // their own message against it. A number is shown with who it is on record as, so "text Kofi
       // whenever" is not read as covering somebody else's number.
-      const tgt = String(scope.target ?? "").slice(0, 120);
+      const tgt = String(scope.target ?? "").trim().slice(0, 200);
       const numeric = tgt && /^[+\d\s().-]+$/.test(tgt);
       const who = numeric ? db.knownPersonByNumber(c, tgt)?.who : null;
       const capsAsk = input.caps ? `, and set their spending limits to $${input.caps.per_purchase} on one thing and $${input.caps.monthly} a month` : "";

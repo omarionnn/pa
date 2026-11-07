@@ -75,7 +75,7 @@ const contentWords = (t) => sayNorm(t).split(" ").map(w => w.replace(/^[$.']+|[.
  * [brackets] (the text of a PDF they sent, the message an inline reply was under, which card a number
  * picks), and none of that is their saying anything.
  */
-function typedOnly(t) {
+export function typedOnly(t) {
   // Notes come in two places: one-line ones in front of what they typed (the message an inline reply is
   // under, which card a number picks) and the rest after it (a PDF's whole text, what a photo was). So:
   // the one-line notes in front are skipped, and from the first note after their words on, nothing is
