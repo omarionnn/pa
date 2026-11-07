@@ -82,7 +82,7 @@ test("after their yes it saves exactly what was read back, and that yes is then 
 });
 
 test("a no saves nothing", async () => {
-  const { id, rec } = await askAndAnswer(KOFI_GRANT, "no actually don't");
+  const { id, rec } = await askAndAnswer(KOFI_GRANT, "no actually don't", async () => ({ verdict: "no" }));
   assert.equal(rec.state, "refused");
   const out = await call("permission_grant", { ...KOFI_GRANT, confirmation_id: id });
   assert.equal(out.ok, false);
