@@ -274,8 +274,10 @@ export function tellUnreached({ row, log = () => {} }) {
   // Once: the column is claimed before anything is queued, and the outbox key is the call's own.
   const claimed = db.db.prepare("UPDATE calls SET unreached_told_at = ? WHERE id = ? AND unreached_told_at IS NULL").run(clock.now(), row.id).changes === 1;
   if (!claimed) return { sent: false, why: "already told" };
-  const name = String(row.label ?? "").trim();
-  const them = name || String(row.to_number ?? "").trim() || "them";
+  const num = String(row.to_number ?? "").trim();
+  const us = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(num);
+  const about = String(row.pickup_about ?? "").replace(/\s+/g, " ").trim().replace(/[.!?]+$/, "");
+  const them = `${us ? `(${us[1]}) ${us[2]}-${us[3]}` : num || "them"}${about ? ` ${about}` : ""}`;
   const { row: queued } = db.enqueueOutbound({
     idemKey: `call:${row.id}:unreached`, conversationId: row.conversation_id, channel, address,
     body: `i rang ${them} but it went to a voicemail box that isn't set up or is full — so it didn't reach anyone and no message was left. want me to try again later, or text them instead?`,
