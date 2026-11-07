@@ -170,7 +170,17 @@ Real features with no file here. Add one when you touch them.
   sent **and only taken** with the ops key (`?k=`, `ops_state` row `key`); a keyless `code=` POST
   answers the gate (401) and adds nothing to `page_attempts` page `ops`. Keyless wrong passwords
   count under `ops:pw:<ip>` (5) and the shared `ops:pw` (30); keyed ones only under `ops:pw:key`
-  (5), so strangers' guesses never 429 the keyed link. Cage drive (2026-11-07, 8863): 7 keyless `code=`
+  (5), so strangers' guesses never 429 the keyed link. Follow-up (`test/ops-gate-per-source.test.js`):
+  a keyless request the website **signed** (`x-nf-sign` valid for `REASON_SITE_PROXY_SECRET`,
+  `opspw.verifiedSource`; IPv6 as its /64) counts only under `ops:pw:src:<addr>` (5) plus
+  `ops:pw:every` (300, every non-keyed wrong try), never the shared 30 — so unsigned/forged
+  guesses cannot 429 it. Caddy's `X-Files-Domain` is NOT trusted here (the Funnel lands on the same
+  port from loopback). Takes effect live only once the site's `/ops` + `/ops.json` rewrites carry
+  `signed = "REASON_SITE_PROXY_SECRET"` (they did not as of 2026-11-07); the cookie stays host-only
+  either way. Cage drive (2026-11-07, 8879, throwaway hash + `REASON_SITE_PROXY_SECRET=cage-proxy-secret`
+  in the shell): 30 forged unsigned wrong → unsigned right, forged-signature right, forged
+  `x-files-domain` right all 429; signed wrong → 401 "4 tries left"; signed right → 303 + host-only
+  cookie; signed stranger 5 wrong → 429 for that address, another signed address → 303. Cage drive (2026-11-07, 8863): 7 keyless `code=`
   POSTs → 401 and no `ops` rows; 30 keyless `password=` POSTs with varied `x-forwarded-for`, then
   the right one keyless → 429, keyed wrong → 401 "4 tries left", keyed right → 303 + cookie; key
   = `SELECT v FROM ops_state WHERE k='key'`; `peek.sh sql "SELECT page_id, ok, count(*) FROM page_attempts GROUP BY 1,2"`.
