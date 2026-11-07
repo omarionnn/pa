@@ -27,6 +27,7 @@ import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { blockingUnclear, exactMoney, recordOf, settled, spokenMoney } from "./readback.js";
 import { LIVE_STATES } from "./provider.js";
+import { calmWhy } from "./payments.js";
 
 /** Reason's own tool: may I agree to this? Asked before a word of it is said to the other person. */
 export const PROPOSE_TOOL = {
@@ -234,8 +235,8 @@ export function propose({
     return {
       allowed: false, commitment: r, reason: "payment_details",
       say: `Do not agree to that and do not read out any card or bank detail — not a number, not an expiry, not a`
-        + ` security code, for any reason. Tell them you cannot take or give payment details over the phone, ask`
-        + ` whether they can send a payment link or take it another way, and say you will pass it on.`,
+        + ` security code, for any reason. Tell them you cannot take or give payment details over the phone, ${calmWhy(`${ownerName(call)}'s`)}`
+        + ` Then ask whether they can send a payment link or take it another way, and say you will pass it on.`,
     };
   }
 
