@@ -963,6 +963,16 @@ export class GptLiveCall {
       this.call = { ...call, announcement: opening };
     }
     this.name = this.who.name;
+    // The pickup opener (./opener.js): a clip made while it rang, played as soon as their hello ends
+    // (or into a silent line) while the live voice connects. `state`: waiting → playing → played, or
+    // cut (talked over) / none (no clip, or a long greeting that is a machine's).
+    if (this.talk && opener.openerFor(call)) {
+      const clip = opener.take(call.id);
+      this.pickup = clip?.audio?.length ? { clip, state: "waiting" } : { clip: null, state: "none", why: "no clip ready" };
+    } else this.pickup = null;
+    // Their side's first audio, kept until the voice session is up (~1.2–1.9 s on calls 59–74), so their
+    // "hello, Chelsea Bodywork" is heard by the voice instead of lost before it started.
+    this.preStart = [];
     // A third-party call Reason placed opens SILENT (#232): nothing until their side has spoken, and the
     // disclosure then comes from Reason's own turn. A place ringing back hears it at once (it rang us).
     this.greeting = persona ? persona.greeting
@@ -1038,17 +1048,20 @@ export class GptLiveCall {
         return;
       }
       this.streamStartAt = this.now();
-      this.log({ gptlive_stream_start: this.call.id, sid: this.callSid, ...(this.bed ? { ambience: this.bed.kind } : {}) });
+      this.log({ gptlive_stream_start: this.call.id, sid: this.callSid, ...(this.bed ? { ambience: this.bed.kind } : {}), ...(this.pickup ? { opener: this.pickup.clip?.kind ?? "none" } : {}) });
       this.connect();
       this.roomTick();
     } else if (m.event === "media" && m.media?.payload) {
       if (m.media.track && m.media.track !== "inbound") return;
       const buf = Buffer.from(m.media.payload, "base64");
       this.tape.them(buf);
-      if (this.line && hasVoice(m.media.payload)) {
+      const voiced = this.line && hasVoice(m.media.payload);
+      if (this.pickup && (this.pickup.state === "waiting" || this.pickup.state === "playing")) this.pickupFrame(this.now(), voiced);
+      if (voiced) {
         this.firstCallerVoiceAt ??= this.now();
         if (this.talk) this.theirVoiceAt = this.now();
-        if (this.talk && !this.talking) this.callerVoiceAt = this.now();
+        // While the opener plays, their voice is not an answer to it yet (a hello over its first words).
+        if (this.talk && !this.talking && !(this.pickup?.state === "playing")) this.callerVoiceAt = this.now();
       }
       if (hasSpeech(m.media.payload)) {
         const t = this.now();
@@ -1056,6 +1069,7 @@ export class GptLiveCall {
         this.callerSpeechAt = t;
       }
       if (this.started) this.live.send({ type: "session.input_audio.append", audio: m.media.payload });
+      else if (this.talk && this.preStart.length < 250) this.preStart.push(m.media.payload);
     } else if (m.event === "stop") {
       if (!this.rejoining) this.end("caller hung up").catch(() => {});
     }
@@ -1128,7 +1142,15 @@ export class GptLiveCall {
     this.sessionId = sessionId ?? "";
     this.log({ gptlive_session: this.call.id, session: this.sessionId, warm: !!this.adopted });
     if (!this.persona) try { db.updateCall(this.call.conversation_id, this.call.id, { tts_model: `${config.gptliveModel}/${config.gptliveVoice}` }); } catch { /* a label never breaks a call */ }
-    if (this.line) return this.lineStarted();
+    if (this.line) {
+      this.lineStarted();
+      // What their side said before the session was up, now, after the opener note (`tellOpener`).
+      const early = this.preStart;
+      this.preStart = [];
+      for (const audio of early) this.live.send({ type: "session.input_audio.append", audio });
+      if (early.length) this.log({ gptlive_early_audio: this.call.id, ms: early.length * 20 });
+      return;
+    }
     if (greet && this.greeting) this.live.send({ type: "session.commentary.append", event_id: `greet_${this.call.id}`, delegation_id: null, content: greetingInstruction(this.greeting, this.who?.purpose ?? "") });
     this.flushTold();
   }
@@ -1272,18 +1294,24 @@ export class GptLiveCall {
   textIn(delta) {
     const t = this.now();
     if (delta.trim()) this.lastCallerAt = t;
+    // Their hello, said before the pickup opener and transcribed after it: written down before it,
+    // and not a new thing to answer (the opener answered it).
+    const pre = this.beforeOpener(t);
     const last = this.turns.at(-1);
-    if (last && last.who === "them" && t - last.at < 4000) { last.text += delta; last.at = t; }
+    if (pre) { pre.text += pre.text ? delta : delta.trimStart(); pre.at = t; }
+    else if (last && last.who === "them" && t - last.at < 4000) { last.text += delta; last.at = t; }
     else this.turns.push({ who: "them", text: delta.trimStart(), at: t, from: t });
     // Words while a goodbye hang-up waits: hold it, and read the end again with them in it.
-    if (this.line && !this.talking && delta.trim()) this.lineHeard();
+    if (this.line && !this.talking && delta.trim() && !pre) this.lineHeard();
     if (this.ending && this.endWhy === "goodbye" && !this.done && delta.trim()) {
       this.endHeld = true;
       void this.readGoodbye();
     }
     // Barge-in. The voice stops generating when it is talked over, but what Twilio already holds keeps
     // playing; if no new audio has come since they spoke, that buffer is stale and is dropped.
-    if (this.queuedMs() > 250) {
+    // Not the opener: its own talk-over check reads their audio (`pickupFrame`), and a late transcript
+    // of the hello it answers would cut it.
+    if (this.queuedMs() > 250 && this.pickup?.state !== "playing") {
       this.timers.setTimeout(() => {
         if (this.lastOutAt < t && this.queuedMs() > 250) { this.bargeIns++; this.clearPlayback("barge_in"); }
       }, 350);
@@ -1488,8 +1516,112 @@ export class GptLiveCall {
 
   // --- a line call: a business, a menu, hold, a mailbox (phase 3) ---
 
+  // --- the pickup opener (./opener.js) ---
+
+  /** One frame of their side while the opener waits for its moment or plays. */
+  pickupFrame(t, voiced) {
+    const p = this.pickup;
+    if (this.done || this.rejoining) return;
+    const since = t - (this.streamStartAt ?? t);
+    if (p.state === "waiting") {
+      if (voiced) { p.theirsFrom ??= t; p.theirsAt = t; }
+      if (p.theirsFrom != null) {
+        if (t - p.theirsAt >= opener.OPENER_AFTER_THEM_MS) return this.playOpener("after their hello");
+        if (t - p.theirsFrom > opener.OPENER_MAX_THEIRS_MS) return this.skipOpener("a long greeting (a recording or a menu)");
+      } else if (since >= opener.OPENER_SILENT_MS) return this.playOpener("a silent line");
+      if (since > opener.OPENER_GIVE_UP_MS) this.skipOpener("the line never paused");
+      return;
+    }
+    // Playing: done once its last frame has played; stopped if they talk over it for long.
+    if (t >= p.endsAt) { p.state = "played"; return; }
+    if (voiced) {
+      p.overFrom ??= t; p.overAt = t;
+      if (t - p.overFrom >= opener.OPENER_TALKED_OVER_MS) this.cutOpener();
+    } else if (p.overAt && t - p.overAt > 300) p.overFrom = null;
+  }
+
+  skipOpener(why) {
+    this.pickup.state = "none";
+    this.pickup.why = why;
+    this.log({ gptlive_pickup_opener_skipped: this.call.id, why, ms: this.now() - (this.streamStartAt ?? this.startedAt) });
+  }
+
+  /** Play the clip down the line now, and write it down as said. */
+  playOpener(why) {
+    const p = this.pickup;
+    const t = this.now();
+    const buf = p.clip.audio;
+    p.state = "playing";
+    p.startedAt = t;
+    p.why = why;
+    p.afterThem = p.theirsFrom != null;
+    // Their hello, if its words are already written down, is placed already; else it is placed when they land.
+    p.preDone = !p.afterThem || this.turns.some(x => x.who === "them" && x.text.trim());
+    for (let i = 0; i < buf.length; i += 160) this.toTwilio({ event: "media", media: { payload: buf.subarray(i, i + 160).toString("base64") } });
+    this.tape.reason(buf);
+    this.playheadAt = Math.max(this.playheadAt, t) + buf.length / 8;
+    p.endsAt = this.playheadAt;
+    this.lastOutAt = t; this.lastVoiceAt = t; this.voiceEndsAt = this.playheadAt;
+    if (this.firstVoiceMs == null && this.streamStartAt != null) {
+      this.firstVoiceMs = t - this.streamStartAt;
+      this.log({ gptlive_first_voice: this.call.id, ms: this.firstVoiceMs, warm: false, opener: p.clip.kind });
+    }
+    p.turn = { who: "reason", text: p.clip.text, at: t, from: t, opener: true };
+    this.turns.push(p.turn);
+    // Only their voice after the opener answers it (`ownOpener`); a hand-off due on the hello is moot.
+    this.callerVoiceAt = 0;
+    if (this.lineTimer) { this.timers.clearTimeout(this.lineTimer); this.lineTimer = null; this.lineHeardFrom = null; }
+    if (this.openTimer) { this.timers.clearTimeout(this.openTimer); this.openTimer = null; }
+    this.log({ gptlive_pickup_opener: this.call.id, kind: p.clip.kind, why, ms: this.firstVoiceMs, audio_ms: Math.round(buf.length / 8), session_up: this.started });
+    // A hello-only clip after they spoke: the voice says why straight on, so the call talks from here.
+    if (p.clip.kind === "hello" && p.afterThem) this.startTalking("pickup opener");
+    this.tellOpener();
+  }
+
+  /** Tell the voice what the opener said for it — at once, or the moment its session is up. */
+  tellOpener() {
+    const p = this.pickup;
+    if (!this.started) { p.tellOnStart = true; return; }
+    const said = p.clip.text.replace(/"/g, "'");
+    const id = `opener_${this.call.id}`;
+    if (p.state === "cut") {
+      this.live.send({ type: "session.instructions.append", event_id: `${id}_cut`, delegation_id: null, content: `The call opened with code saying "${said}" for you, but they talked over it, so they may not have heard it. When a person speaks to you, greet them briefly and say why you're calling.` });
+    } else if (p.clip.kind === "hello" && p.afterThem) {
+      this.live.send({ type: "session.commentary.append", event_id: id, delegation_id: null, content: `Code has just said "${said}" to them for you, in your voice. Without saying hi again, say in one short, natural breath what you're calling about, then stop and listen.` });
+    } else if (p.clip.kind === "hello") {
+      this.live.send({ type: "session.instructions.append", event_id: id, delegation_id: null, content: `The call has opened: code just said "${said}" to them for you, in your voice. When they answer, don't say hi again — go straight to what you're calling about.` });
+    } else {
+      this.live.send({ type: "session.instructions.append", event_id: id, delegation_id: null, content: `The call has opened: code just said this to them for you, in your voice: "${said}" They heard it. Don't greet them again and don't repeat why you're calling — your next words answer whatever they say to it.` });
+    }
+  }
+
+  /** They talked over the opener: the rest of it is dropped, and the voice is told they may have missed it. */
+  cutOpener() {
+    const p = this.pickup;
+    p.state = "cut";
+    this.clearPlayback("opener talked over");
+    this.callerVoiceAt = this.now();
+    this.log({ gptlive_pickup_opener_cut: this.call.id, played_ms: this.now() - p.startedAt });
+    this.tellOpener();
+  }
+
+  /** Their first words after the opener began, from speech before it: the hello it answered. */
+  beforeOpener(t) {
+    const p = this.pickup;
+    if (!p?.turn || !p.afterThem) return null;
+    if (p.pre) return t - p.pre.at < 1500 ? p.pre : null;
+    if (p.preDone) return null;
+    p.preDone = true;
+    if (t - p.startedAt > 4000) return null;
+    const i = this.turns.indexOf(p.turn);
+    p.pre = { who: "them", text: "", at: t, from: p.theirsFrom };
+    this.turns.splice(i < 0 ? this.turns.length : i, 0, p.pre);
+    return p.pre;
+  }
+
   /** The session is up on a line call: a ring-back hears the disclosure; a call Reason placed waits. */
   lineStarted() {
+    if (this.pickup?.tellOnStart) { this.pickup.tellOnStart = false; this.tellOpener(); }
     if (this.greeting) {
       this.speakLine(this.greeting);
       this.turns.push({ who: "reason", text: this.greeting, at: this.now(), from: this.now(), seeded: true });
@@ -1536,8 +1668,10 @@ export class GptLiveCall {
   /** Talk mode, before anyone is confirmed: the voice answering somebody who spoke is let through. */
   ownOpener(t, b64) {
     if (!this.talk || this.rejoining || this.heldVoicemail || !hasSpeech(b64)) return false;
-    // Somebody has spoken (their voice, before its transcript arrives, or the transcript).
-    if (!this.callerVoiceAt && !this.theySpokeSince(this.talkCutoff ?? 0)) return false;
+    // Somebody has spoken (their voice, before its transcript arrives, or the transcript). After the
+    // pickup opener only their voice since it counts: the transcript of the hello it answered lands late.
+    if (this.pickup?.startedAt) { if (!this.callerVoiceAt) return false; }
+    else if (!this.callerVoiceAt && !this.theySpokeSince(this.talkCutoff ?? 0)) return false;
     // A mailbox stays silent (Reason's turn leaves the message, after the beep). A menu or hold does
     // not: the voice is silent through those itself (drives), and the person who comes on after them
     // gets its answer at once — blocked, Sam waited 12 s for Reason's turn (2026-10-31 ivr drive).
@@ -1649,6 +1783,8 @@ export class GptLiveCall {
   openIfQuiet() {
     this.openTimer = null;
     if (this.done || this.talking || this.gate || this.pendingSay || this.pending.size || this.rejoining) return;
+    // The pickup opener already said hello (or is about to).
+    if (this.pickup && this.pickup.state !== "none") return;
     // Somebody has spoken (even if the words are not transcribed yet): they get answered, not talked over.
     if (this.callerVoiceAt || this.theySpokeSince(0)) return;
     const place = String(briefOf(this.call)?.place ?? "").trim();
@@ -1807,6 +1943,16 @@ export class GptLiveCall {
     if (this.done) return;
     turn.resultAt = this.now();
     turn.totalMs = turn.resultAt - turn.startedAt;
+    // A turn begun on their hello before the pickup opener played: the opener answered it, so its words
+    // would be a second opener. A key or a hang-up it decided still goes.
+    if (!this.talking && this.pickup?.startedAt && turn.startedAt < this.pickup.startedAt) {
+      const calls = reply.calls ?? [];
+      if (!calls.some(c => c.name === "play_keypad_touch_tone" || c.name === "transfer_to_number") && !reply.endCall) {
+        this.log({ gptlive_line_turn_before_opener: this.call.id, n: this.lineN });
+        this.heard(turn);
+        return;
+      }
+    }
     if (this.talking) {
       // The voice answered them while this ran (talk mode): its words are the reply, and these would be
       // a second one over the top (call 59: two openers queued). A key it asked for still goes.
@@ -2133,7 +2279,16 @@ export class GptLiveCall {
       recording, recordingWhy,
       ...(this.line ? { howItWent: this.howItWent(seconds) } : {}),
     };
-    this.log({ gptlive_call_ended: this.call.id, why: this.endWhy, seconds, delegations: this.delegations, guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted, closed: this.closedReason ?? "", ...(this.line ? { line: true, dropped_frames: this.dropped, sounds_dropped: this.soundsDropped, amd: this.amdVerdict ?? "" } : {}) });
+    // Pickup → first word they heard, on the row for /ops (src/ops.js `pickupCheck`).
+    if (!this.persona) {
+      try {
+        db.updateCall(this.call.conversation_id, this.call.id, {
+          first_audio_ms: this.firstVoiceMs ?? null,
+          pickup_opener: this.pickup?.startedAt ? this.pickup.clip.kind : "",
+        });
+      } catch { /* a number never breaks a call */ }
+    }
+    this.log({ gptlive_call_ended: this.call.id, why: this.endWhy, seconds, ...(this.pickup ? { opener: this.pickup.startedAt ? `${this.pickup.clip.kind}:${this.pickup.state}` : `none:${this.pickup.why ?? ""}` } : {}), delegations: this.delegations, guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted, closed: this.closedReason ?? "", ...(this.line ? { line: true, dropped_frames: this.dropped, sounds_dropped: this.soundsDropped, amd: this.amdVerdict ?? "" } : {}) });
     try { await this.finishCall(live); } catch (e) { this.log({ gptlive_settle_failed: this.call.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
   }
 }
