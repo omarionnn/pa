@@ -258,11 +258,18 @@ const NOTHING_SAID = [
   /\bI (?:don['’]?t|do not) know (?:which|what|where|who)\b/i,
 ];
 
-/** True when Reason's side of an exchange (`you: …` lines, or the reply text itself) says it had nothing on it. */
+/**
+ * True when Reason's LAST reply in an exchange (its last `you: …` line, or the reply text itself)
+ * opens by saying it had nothing on it. Only that opening sentence is read, and a sentence that goes
+ * on to give something ("couldn't find anything cheaper than $90", "don't know what time, but it's
+ * on 23rd") is not a "nothing": a figure or a "but" there means the reply carried an answer.
+ */
 export function saidNothing(reply) {
   const t = String(reply ?? "");
-  const mine = t.includes("\n") || /^(them|you):/.test(t) ? t.split("\n").filter(l => l.startsWith("you:")).join("\n") : t;
-  return !!mine && NOTHING_SAID.some(re => re.test(mine));
+  const mine = t.includes("\n") || /^(them|you):/.test(t) ? (t.split("\n").filter(l => l.startsWith("you:")).at(-1) ?? "") : t;
+  const first = mine.replace(/^you:\s*/, "").trim().split(/(?<=[.!?])\s+|\n/)[0] ?? "";
+  if (!first || /\d|\b(?:but|though|however|although)\b/i.test(first)) return false;
+  return NOTHING_SAID.some(re => re.test(first));
 }
 
 /** Reason's own words in the exchange behind an event_log match — whole, not the clipped snippet. */

@@ -331,6 +331,13 @@ test("saidNothing reads only Reason's side, and only its 'nothing on it' phrasin
     "them: x\nyou: It's saved, I can see it in your notes.",
     "them: x\nyou: Nothing to worry about, it's booked.",
     "them: I couldn't find anything\nyou: Here are three spas.",
+    // review: a denial that goes on to give an answer is not a "nothing"
+    "them: x\nyou: I couldn't find anything cheaper than $90 at Renew Body Spa.",
+    "them: x\nyou: I don't know what time they close, but it's Renew Body Spa on 23rd.",
+    "them: x\nyou: I can't find any slots before 5, want 6pm?",
+    "them: x\nyou: I don't have your card saved, but the spa is Renew Body Spa.",
+    // review: only the last reply of a multi-message exchange decides
+    "them: spa?\nyou: I don't remember that one.\nyou: Found it: Renew Body Spa, called Oct 29.",
   ]) assert.equal(ri.saidNothing(no), false, no);
 });
 
