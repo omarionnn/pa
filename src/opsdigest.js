@@ -31,12 +31,27 @@ function oneLine(text, max = 220) {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 
+// Who and what never ride in an operator notice (owner, 2026-11-06): a line that reaches him states the
+// system problem only — never a name, a number, an address or what somebody said. Each sender writes
+// its line without them; this takes out anything shaped like a phone number, an email address or a
+// conversation id that still slipped through (a provider's error text quoting the number, say).
+// Structure only — digit runs, @-addresses, ids — never a reading of what the words mean.
+const PHONE = /\+\d{10,15}\b|\(?\b\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/g;
+const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+const CONV = /\b(?:dm|group|web):[^\s,;)]+/g;
+/** An operator line with every phone number, email address and conversation id taken out. */
+export function scrub(text) {
+  return String(text ?? "").replace(EMAIL, "[an address]").replace(CONV, "[a conversation]")
+    // A phone number's shapes (+14155559876, (415) 555-9876, 415.555.9876); a date or a time is not one.
+    .replace(PHONE, "[a number]");
+}
+
 const localDay = (ms) => new Date(ms).toLocaleDateString("en-CA", { timeZone: config.installTz });
 const localHour = (ms) => Number(new Date(ms).toLocaleString("en-US", { timeZone: config.installTz, hour: "numeric", hourCycle: "h23" }));
 
 /** Keep a notice for the digest instead of sending it now. Returns the row id. */
 export function hold({ text, key = "", at = clock.now() }) {
-  const line = oneLine(text);
+  const line = oneLine(scrub(text));
   if (!line) return null;
   if (key) {
     const open = db.db.prepare("SELECT id FROM ops_digest WHERE key = ? AND sent_at IS NULL ORDER BY id DESC LIMIT 1").get(key);

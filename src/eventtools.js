@@ -486,7 +486,8 @@ export async function runEventTool(name, input, ctx) {
       let opsLink = null;
       try { opsLink = `${(await import("./ops.js")).opsUrl("events")}#events`; } catch { /* the text still goes without it */ }
       // News, not an emergency: one line in the owner's daily digest (src/opsdigest.js, 2026-11-06).
-      if (opsDigest.hold({ text: events.ownerCreationLine(ev, { opsLink }), key: `event-created:${ev.id}` })) db.updateEventRow(ev.id, { owner_told_at: clock.now() });
+      // Never who or what: that an event was made, and where the page shows the rest (owner, 2026-11-06).
+      if (opsDigest.hold({ text: `A new event was made on Reason.${opsLink ? ` On the status page: ${opsLink}` : ""}`, key: `event-created:${ev.id}` })) db.updateEventRow(ev.id, { owner_told_at: clock.now() });
     }
     // The organizer on their own list, by the same rules as a guest: the note after this turn's reply.
     events.scheduleListNote({ runtime, ev, att: events.afterCreate(ev) });

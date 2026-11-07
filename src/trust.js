@@ -842,7 +842,7 @@ export function noteUnknownOutcome({ conversationId, action, target = "", why = 
   try {
     incidents.raise({
       key: `unknown:${toolName(action)}`, area: /purchase|buy|book/.test(toolName(action)) ? "purchases" : "actions", covers: "unknown",
-      what: `${toolName(action)} ended with an unknown outcome — it may or may not have happened`,
+      what: `${toolName(action)} ended with an unknown outcome — it may or may not have happened${cents != null ? ` ($${(Number(cents) / 100).toFixed(2)})` : ""}`,
       who: `${conversationId}${target ? ` · ${String(target).slice(0, 80)}` : ""}${cents != null ? ` · $${(Number(cents) / 100).toFixed(2)}` : ""}`,
       error: why, tried: "sent once; never resent, so nothing happens twice",
       next: "the provider's own record (AgentCard dashboard / order, or the sent folder), then clear it on /ops",

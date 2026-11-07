@@ -373,6 +373,34 @@ test("a failed message to somebody else reaches the owner, in code's words, once
   assert.equal(fake.sent.filter(s => s.to === OWNER).length, 1);
 });
 
+test("another person's failed text never reaches the owner: it goes to them, and the status page counts it with no who or what", async () => {
+  // The leak (owner, 2026-11-06): Ama's Reason texts Kofi, Kofi's number refuses it, and the operator
+  // was the one told — with Kofi's number in it. Now Ama hears, in her own thread; Omari's phone gets
+  // nothing; the status page shows that texts are failing and why, and nobody's number.
+  const AMA = "+13125550101", AMA_C = `dm:${AMA}`;
+  db.upsertAccount({ conversationId: AMA_C, channel: "fake", address: AMA, name: "Ama", isOperator: false });
+  const { runtime, router, fake } = harness({ failFor: FRIEND, failWith: `number ${FRIEND} has opted out of messages`, retryable: false });
+  const toPeople = [];
+  runtime.on("outbound", (m) => toPeople.push(m));
+  await router.send({ channel: "fake", to: FRIEND, text: "hi from ama's assistant", conversationId: AMA_C, toOwner: false });
+  const pass = await runtime.outbox();
+  assert.equal(pass.owner_told, 1);
+  assert.equal(fake.sent.filter(s => s.to === OWNER).length, 0, "nothing on the owner's phone");
+  assert.ok(toPeople.every(m => m.conversationId !== OWNER_CONV), "nothing in the owner's thread");
+  const hers = toPeople.filter(m => m.conversationId === AMA_C);
+  assert.equal(hers.length, 1, "Ama is told about her own text");
+  assert.match(hers[0].text, /never actually went out/);
+
+  // The status page: the count and the error, with the number taken out.
+  const ops = await import("../src/ops.js");
+  const report = await ops.runChecks({ runtime, probe: async () => ({ ok: true, status: 200 }) });
+  const row = report.checks.find(c => c.id === "outbox");
+  assert.equal(row.state, "bad");
+  assert.match(row.detail, /1 text failed/);
+  assert.match(row.detail, /opted out/);
+  assert.doesNotMatch(row.detail, /4155559876|Ama|3125550101|hi from/);
+});
+
 test("when even the line to the owner is down, the bad news becomes a row instead of vanishing", async () => {
   // The nastiest case: Reason cannot reach Kofi AND cannot reach the owner to say so. The notice is
   // itself a durable message, so it retries — and if it never gets there either, it lands at the top

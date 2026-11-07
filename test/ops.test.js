@@ -291,7 +291,9 @@ test("the first pass after install reports anything already wrong — there is n
   // (owner, 2026-11-06). The access question itself still went to him live when Kofi asked.
   assert.equal(sent.length, 0);
   const digest = await import("../src/opsdigest.js");
-  assert.match(digest.pending().map(r => r.text).join("\n"), /Waiting for a yes: 1 person asked for access and has no answer: Kofi/);
+  const held = digest.pending().map(r => r.text).join("\n");
+  assert.match(held, /Waiting for a yes: 1 person asked for access and has no answer — see the status page/);
+  assert.doesNotMatch(held, /Kofi|5550002222/, "never who (owner, 2026-11-06); the page has the name");
 });
 
 test("a check's 'since' is when it entered its current state, not when it was last checked", async () => {

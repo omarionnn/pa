@@ -56,14 +56,15 @@ function harness(opts = {}) {
 }
 const sendTo = (router, to = FRIEND, over = {}) => router.send({ channel: "fake", to, text: "hi", conversationId: `dm:${to}`, toOwner: false, ...over });
 
-test("a forced send failure texts the owner at once, with what failed, for whom, the error, what was tried and what to check", async () => {
+test("a forced send failure texts the owner at once, with what failed (never for whom), the error, what was tried and what to check", async () => {
   const { router } = harness({ failWith: "account suspended", retryable: false });
   const r = await sendTo(router);
   assert.equal(r.ok, false);
   assert.equal(texts.length, 1, "texted at the failure, not on the next pass");
   const t = texts[0].text;
   assert.match(t, /Reason alert: texts over fake are failing/);
-  assert.match(t, /Who: dm:\+14155559876/);
+  // Never who (owner, 2026-11-06): the system problem, the error, what was tried — no person.
+  assert.doesNotMatch(t, /Who:|4155559876/);
   assert.match(t, /Error: account suspended/);
   assert.match(t, /Already tried: not retried/);
   assert.match(t, /Check next: /);

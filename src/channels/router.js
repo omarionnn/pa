@@ -1007,7 +1007,9 @@ export class Router {
       this.log({ inbound: inbound.externalId, auto_admitted: address, conversationId: seen.conversationId });
       const who = inbound.displayName ? `${inbound.displayName} (${address})` : address;
       // Not an emergency: one line in the owner's daily digest, not a text now (src/opsdigest.js).
-      try { opsDigest.hold({ text: `${who} texted Reason for the first time and was let in; they are not on your list yet.`, key: `new-contact:${seen.conversationId}` }); } catch { /* never costs the admit */ }
+      // Never who: how many, and that the page has the rest (owner, 2026-11-06).
+      void who;
+      try { opsDigest.hold({ text: `A new number texted Reason for the first time and was let in (auto-admit is on).`, key: `new-contact:${seen.conversationId}` }); } catch { /* never costs the admit */ }
       return { ok: true, autoAdmitted: true, conversationId: seen.conversationId };
     }
 

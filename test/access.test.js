@@ -530,19 +530,19 @@ test("auto-admit notifies the master about the new number", async () => {
     const toMaster = (await import("../src/opsdigest.js")).pending().filter(r => r.key.startsWith("new-contact:"));
     assert.equal(toMaster.length, 1, "the master gets exactly one line");
     assert.match(toMaster[0].text, /first time/i, "it says this is a new number");
-    assert.ok(toMaster[0].text.includes(KOFI), "the number is in the line");
+    assert.ok(!toMaster[0].text.includes(KOFI.slice(2)), "and never which number (owner, 2026-11-06)");
   } finally { config.autoAdmit = kept; }
 });
 
-test("auto-admit notification includes the display name when the channel provides one", async () => {
+test("auto-admit notification never names who, even when the channel provides a display name", async () => {
   const kept = config.autoAdmit;
   config.autoAdmit = true;
   try {
     const h = harness();
     await h.router.deliver({ ...texts(KOFI, "hey", "a"), displayName: "Kofi Mensah" });
     const toMaster = (await import("../src/opsdigest.js")).pending().filter(r => r.key.startsWith("new-contact:")).slice(-1);
-    assert.ok(toMaster[0].text.includes("Kofi Mensah"), "the display name is shown");
-    assert.ok(toMaster[0].text.includes(KOFI), "the number is still shown too");
+    assert.ok(!toMaster[0].text.includes("Kofi"), "never the name");
+    assert.ok(!toMaster[0].text.includes(KOFI.slice(2)), "never the number");
   } finally { config.autoAdmit = kept; }
 });
 

@@ -94,8 +94,9 @@ test("creation: missing answers make nothing; the finished event hands back name
   assert.equal(rt.sent.filter(s => s.conversationId === OWNER_C).length, 0);
   const toOwner = (await import("../src/opsdigest.js")).pending().filter(r => r.key === `event-created:${ev.id}`);
   assert.equal(toOwner.length, 1);
-  assert.match(toOwner[0].text, /new event: "Halloween Party", made by Kofi/);
-  assert.match(toOwner[0].text, new RegExp(`its page: https://files.example.test/e/${ev.public_id}( |$)`));
+  // Never who or what (owner, 2026-11-06): that an event was made, and the status page.
+  assert.match(toOwner[0].text, /A new event was made on Reason/);
+  assert.doesNotMatch(toOwner[0].text, /Halloween|Kofi|4155559876/);
   assert.ok(!toOwner[0].text.includes(ev.organizer_token), "never the organizer's own key");
   assert.ok(!/pumpkin/.test(toOwner[0].text), "never the password");
   assert.ok(!/pumpkin/.test(JSON.stringify(sealTravelers("event_create", { input: answers(), out }))), "sealed in every log line");

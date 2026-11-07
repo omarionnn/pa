@@ -282,3 +282,27 @@ test("7. the owner may ask how Reason's own code works; nobody else is told abou
   // Running code is still refused for everybody.
   assert.match(theirs, /Running code is not your job/);
 });
+
+// ---------- no who or what in anything that reaches the owner (owner, 2026-11-06) ----------
+
+test("4. operator lines carry the system problem only: numbers, addresses and conversation ids are taken out, dates are not", () => {
+  const line = digest.scrub("texts over sendblue failing to +1 (415) 555-9876 for dm:+13125550101 (ama@example.com) since 2026-11-06 10:30");
+  assert.doesNotMatch(line, /415|9876|3125550101|ama@|dm:/);
+  assert.match(line, /2026-11-06 10:30/);
+  digest.hold({ text: "error: number +14155559876 opted out", key: "x" });
+  assert.doesNotMatch(digest.pending()[0].text, /4155559876/);
+});
+
+test("4. a live alert and its dashboard row name no person: no Who line, no number in the error", () => {
+  const texts = [];
+  incidents.start({ send: (text) => { texts.push(text); } });
+  incidents.raise({ key: "send:fake:x", area: "messaging", what: "texts over fake are failing", who: "dm:+13125550101 (+14155559876), outbox #4", addr: "+14155559876", error: "number +14155559876 opted out" });
+  assert.equal(texts.length, 1);
+  assert.match(texts[0], /texts over fake are failing/);
+  assert.match(texts[0], /opted out/);
+  assert.doesNotMatch(texts[0], /Who:|3125550101|4155559876|outbox #4/);
+  const row = incidents.checks().find(r => r.id === "incident:send:fake:x");
+  assert.match(row.detail, /opted out/);
+  assert.doesNotMatch(row.detail, /3125550101|4155559876/);
+  incidents.stop();
+});

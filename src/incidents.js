@@ -87,7 +87,7 @@ function deliver(text, idem, row = null) {
     return;
   }
   try {
-    Promise.resolve(sender(text, `${KEY_PREFIX}${idem}`)).catch((e) => logger({ incident_text_failed: one(e?.message ?? e, 120) }));
+    Promise.resolve(sender(digest.scrub(text), `${KEY_PREFIX}${idem}`)).catch((e) => logger({ incident_text_failed: one(e?.message ?? e, 120) }));
   } catch (e) { logger({ incident_text_failed: one(e?.message ?? e, 120) }); }
 }
 
@@ -193,7 +193,7 @@ export function checks(now = clock.now()) {
     const live = r.resolved_at == null;
     const body = live
       ? `${r.count > 1 ? `still failing, ${times(r.count)} since ${clockWords(r.first_at, now)}` : `failed at ${clockWords(r.first_at, now)}`}`
-        + `${r.who ? ` · ${r.who}` : ""}${r.error ? ` — ${r.error}` : ""}${r.tried ? ` · tried: ${r.tried}` : ""}${r.next ? ` · check next: ${r.next}` : ""}`
+        + `${r.error ? ` — ${digest.scrub(r.error)}` : ""}${r.tried ? ` · tried: ${r.tried}` : ""}${r.next ? ` · check next: ${r.next}` : ""}`
         + `${r.texted_at == null ? " · not texted yet (under its threshold)" : ""}`
       : `resolved ${clockWords(r.resolved_at, now)} (${r.resolved_how}) · failed ${times(r.count)} from ${clockWords(r.first_at, now)}`;
     return {
@@ -207,7 +207,6 @@ export function checks(now = clock.now()) {
 function openText(r) {
   return [
     `Reason alert: ${r.what}.`,
-    r.who ? `Who: ${r.who}` : null,
     r.error ? `Error: ${r.error}` : null,
     r.tried ? `Already tried: ${r.tried}` : null,
     r.next ? `Check next: ${r.next}` : null,

@@ -588,8 +588,9 @@ test("a contact who opted out gets no more turns: their check-ins END (a stop, n
   assert.equal(told.length, 0);
   const held = (await import("../src/opsdigest.js")).pending().filter(r => r.key === `unreachable:${OTHER}`);
   assert.equal(held.length, 1);
-  assert.match(held[0].text, /can't reach Agu/);
+  assert.match(held[0].text, /can't be reached/);
   assert.match(held[0].text, /opted out/);
+  assert.doesNotMatch(held[0].text, /Agu|5550001111/, "never who (owner, 2026-11-06)");
   assert.ok(logs.some(l => l.unreachable === OTHER));
 });
 

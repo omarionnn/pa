@@ -332,7 +332,7 @@ function aliveChecks({ runtime, router, now }) {
     FROM outbox`).get(now - DAY, wo.since);
   const lastFail = db.db.prepare("SELECT last_error FROM outbox WHERE state = 'failed' AND failed_at >= ? ORDER BY failed_at DESC LIMIT 1").get(wo.since);
   out.push(check("outbox", "alive", "Texts out", ob.failed ? "bad" : ob.retrying ? "warn" : "ok",
-    ob.failed ? `${n(ob.failed, "text")} failed ${wo.words ?? "in the last day"}${lastFail?.last_error ? ` — ${trim(lastFail.last_error, 90)}` : ""}`
+    ob.failed ? `${n(ob.failed, "text")} failed ${wo.words ?? "in the last day"}${lastFail?.last_error ? ` — ${trim(digest.scrub(lastFail.last_error), 90)}` : ""}`
       : ob.retrying ? `${n(ob.retrying, "text")} retrying`
         : `${ob.sent} sent in the last day${ob.waiting ? ` · ${ob.waiting} waiting` : ""}`));
 
@@ -473,9 +473,11 @@ function peopleChecks({ now, day }) {
   const out = [check("people", "people", "People", "ok",
     `${n(people.length, "person", "people")} on the line · ${seen24} texted in the last day · ${seen7} this week · ${n(turns, "turn")} today`)];
   const pending = db.listAccessRequests({ state: "pending" });
-  out.push(check("access", "people", "Waiting for a yes", pending.length ? "warn" : "ok",
+  out.push({ ...check("access", "people", "Waiting for a yes", pending.length ? "warn" : "ok",
     pending.length ? `${n(pending.length, "person", "people")} asked for access and ${pending.length === 1 ? "has" : "have"} no answer: ${pending.slice(0, 4).map(r => r.display_name || r.address).join(", ")}`
-      : "nobody waiting"));
+      : "nobody waiting"),
+    // What reaches his phone says how many, never who: the names are on the page (owner, 2026-11-06).
+    ...(pending.length ? { alert: `Waiting for a yes: ${n(pending.length, "person", "people")} asked for access and ${pending.length === 1 ? "has" : "have"} no answer — see the status page.` } : {}) });
   return out;
 }
 
@@ -793,10 +795,11 @@ export function settle({ report, runtime = null, log = () => {}, silent = new Se
     try { digest.hold({ text: line, key: `check:${ch.check.id}` }); } catch (e) { log({ ops_digest_hold_failed: short(e) }); }
   }
   const text = alertText(live, report);
+  // Never who or what — the system problem only (owner, 2026-11-06); digest.hold scrubs its own.
   if (text && runtime?.say) {
     // Under an `ops:` key, so its history row is tagged an operator notice (db.OPS_KEY_PREFIXES) and
     // never shows as news on Web's Home.
-    try { runtime.say(config.ownerConversation, text, { toMaster: true, idempotencyKey: `ops:check:${report.at ?? Date.now()}:${randomBytes(4).toString("hex")}` }); } catch (e) { log({ ops_alert_failed: short(e) }); }
+    try { runtime.say(config.ownerConversation, digest.scrub(text), { toMaster: true, idempotencyKey: `ops:check:${report.at ?? Date.now()}:${randomBytes(4).toString("hex")}` }); } catch (e) { log({ ops_alert_failed: short(e) }); }
   }
   log({ ops: report.verdict, checks: report.checks.length, changed: changes.length, texted: !!text, held: later.length });
   return { changes, text, held: later.length };
