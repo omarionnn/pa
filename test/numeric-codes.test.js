@@ -159,18 +159,31 @@ test("a letter code minted before the switch still opens, for the minutes it has
   assert.equal(access.trySubmittedCode({ page: { id: "p-legacy" }, code: " ab3d9k " }).ok, true);
 });
 
-test("event sign-in: past 40 wrong codes in a day for one person, even the right code stops working", () => {
-  const conversationId = "dm:fake:+12025550188";
-  const key = events.signinKey(conversationId);
+/** 40 wrong event sign-in tries for one person, spread over the day, never 20 in 15 minutes, from many browsers. */
+function strangersGuess(conversationId) {
   const real = clock.now;
   try {
-    // 40 wrong tries spread over the day, never 20 inside one 15-minute window, from many browsers.
     for (let i = 0; i < events.SIGNIN_WRONG.perPersonDay; i++) {
       const at = real() - (events.SIGNIN_WRONG.dayMs - 60_000) + i * 30 * 60_000;
       clock.now = () => at;
       events.trySigninCode({ conversationId, code: "000000", actor: `b${i}` });
     }
   } finally { clock.now = real; }
-  const { code } = access.requestCode({ id: key, title: "x" }, { host: "" });
-  assert.equal(events.trySigninCode({ conversationId, code, actor: "fresh" }).ok, false);
+}
+
+test("event sign-in: past 40 strangers' wrong codes in a day, the person's own fresh code still opens on the browser that asked (lead 25)", () => {
+  const conversationId = "dm:fake:+12025550188";
+  strangersGuess(conversationId);
+  const { code } = access.requestCode({ id: events.signinKey(conversationId), title: "x" }, { host: "", bound: events.signinBinding?.("mine") });
+  assert.equal(events.trySigninCode({ conversationId, code, actor: "mine" }).ok, true);
+});
+
+test("event sign-in past the ceiling: the code works only from the browser that asked, and one wrong try there ends it", () => {
+  const conversationId = "dm:fake:+12025550189";
+  strangersGuess(conversationId);
+  const key = events.signinKey(conversationId);
+  const { code } = access.requestCode({ id: key, title: "x" }, { host: "", bound: events.signinBinding?.("mine") });
+  assert.equal(events.trySigninCode({ conversationId, code, actor: "elsewhere" }).ok, false, "not from another browser");
+  assert.equal(events.trySigninCode({ conversationId, code: code === "000000" ? "000001" : "000000", actor: "mine" }).ok, false);
+  assert.equal(events.trySigninCode({ conversationId, code, actor: "mine" }).ok, false, "one wrong try past the ceiling ends the code");
 });

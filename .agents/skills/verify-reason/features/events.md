@@ -183,7 +183,10 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
     `pageCodeIs`; older bare rows still compare), 15 minutes, once, a new one kills the old, 3 sent
     per 15 minutes per person. Wrong tries (`events.trySigninCode`): 5 per 15 minutes per BROWSER
     (`esignb:<ip>` — the only limit ever said, so the answer never depends on the number and a
-    stranger cannot lock the real person out) plus a silent 20 per person across browsers (and 40 per person per day, since six digits). Never in
+    stranger cannot lock the real person out) plus a silent 20 per person across browsers (and 40 per person per day, since six digits).
+    The ceiling bounds guessing, not the person (lead 25): each code is bound to the asking browser
+    (`page_codes.bound` = `events.signinBinding(<ip actor>)`; a new request kills only that browser's
+    old code); past the ceiling a code opens only on its own browser and gets one try. Never in
     a log line (`event_signin_*` log only ok/why). The code text itself sits in that one outbox row,
     like every sent message. A person's export/delete (`src/data.js`) reaches `esign:` rows and every
     `page_sessions` row of theirs.
@@ -315,7 +318,7 @@ node --test test/event-roles.test.js  # v3 §15.11/12/14: organizer of A + guest
 node --test test/event-verify.test.js # v3 §15.13: gate, code to the link's owner, expired/reused/wrong, send + attempt limits, non-member, removal, sign out
 node --test test/event-rides.test.js  # v3 §15.15: off → nobody asked; day-before ask once; one match at a time; first name + area; both-yes; cancel; counts only; hidden details hold
 node --test test/event-join.test.js   # text + pasted-link joins, same-name events, welcome tracked once, info/leave/mute/directory
-node --test test/numeric-codes.test.js # #132: six digits, `@<host> #code` last line, one-time-code box, pasted text, 40/day
+node --test test/numeric-codes.test.js # #132: six digits, `@<host> #code` last line, one-time-code box, pasted text, past-40/day: own fresh code still opens, bound + one try
 node --test test/code-guards.test.js   # #134: every code text ends `@<live host> #code`; every code box is one-time-code
 # the real Runtime + Router + outbox + FakeChannel, in process, cage env, throwaway DB (no model):
 node --test test/event-ops.test.js    # the status page section, pause/resume/retry, owner-only

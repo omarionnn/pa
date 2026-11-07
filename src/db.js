@@ -1297,6 +1297,8 @@ function addColumnIfMissing(table, column, decl) {
   if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
 }
 addColumnIfMissing("confirmations", "target", "TEXT NOT NULL DEFAULT ''");
+// Which browser asked for a sign-in code (a hash; null for a page's own code gate): see createPageCode.
+addColumnIfMissing("page_codes", "bound", "TEXT");
 // A timer used to be marked fired BEFORE its turn ran, so a turn that died took the reminder with
 // it (2026-10-06, see Runtime.tick). Now it is fired only once its message is in the outbox, and
 // these are what a timer that has not got there yet carries: how many tries it has had, when the
@@ -6080,14 +6082,24 @@ export function pageCodeIs(stored, typed) {
   return a.length === b.length && a.length > 0 && timingSafeEqual(a, b);
 }
 
-export function createPageCode(pageId_, { code, ttlMs }) {
+/**
+ * `bound` ties a sign-in code to the browser that asked for it (a hash, src/events.js
+ * `signinBinding`; null for a page's own code gate). One live code per browser: asking again
+ * kills that browser's old code, never the one somebody else's browser asked for — so a stranger
+ * typing a person's number cannot kill the code the person is about to type (audit lead 25).
+ */
+export function createPageCode(pageId_, { code, ttlMs, bound = null }) {
   const now = clock.now();
-  // One live code at a time: asking for a new one should not leave the old one usable.
-  db.prepare("UPDATE page_codes SET expires_at = ? WHERE page_id = ? AND used_at IS NULL AND expires_at > ?")
-    .run(now, pageId_, now);
-  const r = db.prepare("INSERT INTO page_codes (page_id, code, created_at, expires_at) VALUES (?, ?, ?, ?)")
-    .run(pageId_, pageCodeHash(code), now, now + ttlMs);
+  db.prepare("UPDATE page_codes SET expires_at = ? WHERE page_id = ? AND bound IS ? AND used_at IS NULL AND expires_at > ?")
+    .run(now, pageId_, bound, now);
+  const r = db.prepare("INSERT INTO page_codes (page_id, code, created_at, expires_at, bound) VALUES (?, ?, ?, ?, ?)")
+    .run(pageId_, pageCodeHash(code), now, now + ttlMs, bound);
   return { id: Number(r.lastInsertRowid), code, expires_at: now + ttlMs };
+}
+
+/** End one code now, unused: a sign-in code that had its one try past the per-person ceiling. */
+export function expirePageCode(id) {
+  db.prepare("UPDATE page_codes SET expires_at = ? WHERE id = ? AND expires_at > ?").run(clock.now(), id, clock.now());
 }
 
 /** How many codes this page has had texted out in the window, so a held link cannot make a phone buzz all night. */
@@ -6096,7 +6108,12 @@ export function pageCodesIssued(pageId_, windowMs) {
     .get(pageId_, clock.now() - windowMs).n;
 }
 
-export function livePageCode(pageId_) {
+/** The newest live code for this page — or, with `bound`, the newest one that browser asked for. */
+export function livePageCode(pageId_, { bound } = {}) {
+  if (bound !== undefined) {
+    return db.prepare("SELECT * FROM page_codes WHERE page_id = ? AND bound IS ? AND used_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1")
+      .get(pageId_, bound, clock.now()) ?? null;
+  }
   return db.prepare("SELECT * FROM page_codes WHERE page_id = ? AND used_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1")
     .get(pageId_, clock.now()) ?? null;
 }

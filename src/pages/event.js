@@ -367,9 +367,10 @@ export function renderSignin({ ev, number = "", sent = false, error = "" }) {
  * minutes per person). Not waited on: a page that answered slower for a real number than for a
  * made-up one would say which numbers use Reason.
  */
-function sendSigninCode({ ev, conversationId, runtime, what, log }) {
+function sendSigninCode({ ev, conversationId, runtime, what, log, actor }) {
   // The line requestCode builds is a page's; this one is the event's own, below, bound to its host.
-  const asked = requestCode({ id: events.signinKey(conversationId), title: ev.name }, { host: "" });
+  // The code belongs to the browser that asked (events.trySigninCode, audit lead 25).
+  const asked = requestCode({ id: events.signinKey(conversationId), title: ev.name }, { host: "", bound: events.signinBinding(actor) });
   if (!asked.ok) { log({ event_signin_code_refused: ev.id, why: asked.reason }); return asked; }
   if (!runtime?._tell) return asked;
   // Never the code in a log line: only that one went, or didn't. Keyed on the code's own row, not
@@ -422,7 +423,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
         const actor = eventActor(headers, remoteAddress);
         if (!events.signinGate(actor)) return { ok: false, reason: "rate_limited", retry_after_s: 3600 };
         events.noteSigninRequest(actor);
-        return sendSigninCode({ ev, conversationId, runtime, what, log });
+        return sendSigninCode({ ev, conversationId, runtime, what, log, actor });
       },
       tryCode: ({ conversationId, code }) => events.trySigninCode({ conversationId, code, actor: eventActor(headers, remoteAddress) }),
     });
@@ -467,7 +468,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     }
     if (!events.signinGate(actor)) return page(429, renderSignin({ ev, number, error: "Too many sign-in tries from this browser. Try again in an hour." }));
     events.noteSigninRequest(actor);
-    if (who) sendSigninCode({ ev, conversationId: who.conversation_id, runtime, what: "sign in to", log });
+    if (who) sendSigninCode({ ev, conversationId: who.conversation_id, runtime, what: "sign in to", log, actor });
     return page(200, renderSignin({ ev, number, sent: true }));
   }
 
@@ -498,7 +499,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     const owner = tokenOwner(ev, token);
     if (!owner) return page(404, renderNotFound());
     if (form?.get("step") === "send") {
-      const asked = sendSigninCode({ ev, conversationId: owner.conversationId, runtime, what: owner.organizer ? "open your guest list for" : "open", log });
+      const asked = sendSigninCode({ ev, conversationId: owner.conversationId, runtime, what: owner.organizer ? "open your guest list for" : "open", log, actor: eventActor(headers, remoteAddress) });
       // The link is the owner's own, so saying no code went is no secret — and the page must not
       // say "Code sent ✓" when none did (a fast "Text it again" lands here).
       if (!asked.ok) return page(200, renderGate({ ev, token, sent: true, error: `Reason has already texted this link's code. Use that one, or try again in about ${Math.max(1, Math.ceil((asked.retry_after_s ?? 900) / 60))} minutes.` }));
