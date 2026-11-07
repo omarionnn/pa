@@ -7,7 +7,9 @@
 //
 // Proves who may tap Start (security audit lead 6): a stranger's browser and a browser signed in to
 // Reason as somebody else get a code step, never the session; the code goes to the person's own
-// thread; the right code starts it; the person's own proved browser starts at once.
+// thread; the right code starts it AND remembers that browser (the same `connect:` session #358's
+// connect links use), so the next link on it starts with nothing texted, while a different browser
+// with only the link is still refused; the person's own Reason Web browser starts at once.
 const { runTool } = await import(`${process.cwd()}/src/tools.js`);
 const remote = await import(`${process.cwd()}/src/signin-remote.js`);
 const { createServer } = await import(`${process.cwd()}/src/http.js`);
@@ -32,9 +34,11 @@ const mint = async () => {
   return new URL(out.link).pathname;
 };
 const post = (path, { cookie = "", body = "" } = {}) => fetch(`${base}${path}/start`, { method: "POST", redirect: "manual", headers: { ...(cookie ? { cookie } : {}), "Content-Type": "application/x-www-form-urlencoded" }, body });
+const cancel = (path, r) => fetch(`${base}${path}/cancel`, { method: "POST", headers: { cookie: (r.headers.getSetCookie()[0] ?? "").split(";")[0], "Content-Type": "application/json" }, body: "{}" });
+const sessionsBefore = new Set(db.db.prepare("SELECT token FROM page_sessions").all().map(r => r.token));
 
 try {
-  db.db.exec("DELETE FROM page_codes WHERE page_id LIKE 'signin:%'; DELETE FROM page_attempts WHERE page_id LIKE 'signin:%';");
+  db.db.exec("DELETE FROM page_codes WHERE page_id LIKE 'connect:%'; DELETE FROM page_attempts WHERE page_id LIKE 'connect:%';");
   // 1. A stranger: no Reason session at all.
   let path = await mint();
   let r = await post(path);
@@ -46,28 +50,47 @@ try {
 
   // 2. Signed in to Reason, but as somebody else.
   const other = `other-${Date.now()}`;
-  db.startPageSession("web", other, { conversationId: "dm:fake:+15550000002" });
+  db.startPageSession("wsign:dm:fake:+15550000002", other, { conversationId: "dm:fake:+15550000002" });
   r = await post(path, { cookie: `reason_page=${other}`, body: "code=000001" });
   check("somebody else's Reason browser + wrong code → refused", r.status === 401 && !r.headers.get("set-cookie") && launched.length === 0, `status ${r.status}`);
 
-  // 3. The right code from the person's own text.
+  // 3. The right code from the person's own text: starts it, and remembers this browser.
   const code = /code is (\d{6})/.exec(told[0][1])?.[1];
   r = await post(path, { body: `code=${code}` });
-  const rs = (r.headers.get("set-cookie") ?? "").split(";")[0];
+  const cookies = r.headers.getSetCookie();
+  const rs = (cookies[0] ?? "").split(";")[0];
+  const remembered = (cookies.find(c => c.startsWith("reason_page=")) ?? "").split(";")[0];
   check("the texted code starts it", r.status === 303 && /^rs_/.test(rs) && launched.length === 1, `status ${r.status}`);
+  check("and remembers this browser (reason_page, connect: source)", !!remembered && /^connect:/.test(db.pageSessionSource(remembered.split("=")[1]) ?? ""));
   const live = await fetch(`${base}${path}/view`, { headers: { cookie: rs } });
   check("and that browser drives it", live.status === 200, `status ${live.status}`);
-  await fetch(`${base}${path}/cancel`, { method: "POST", headers: { cookie: rs, "Content-Type": "application/json" }, body: "{}" });
+  await cancel(path, r);
 
-  // 4. The person's own proved browser: no code.
+  // 4. The next link on that same browser: straight to Start, nothing texted.
+  let n = told.length;
+  path = await mint();
+  r = await post(path, { cookie: remembered });
+  await new Promise(res => setTimeout(res, 20));
+  check("next link, same browser → starts with no code, nothing texted", r.status === 303 && told.length === n && launched.length === 2, `status ${r.status}`);
+  await cancel(path, r);
+
+  // 5. A different browser with only the link: still refused.
+  path = await mint();
+  r = await post(path);
+  check("different browser, link only → code step, nothing launched", r.status === 401 && !r.headers.get("set-cookie") && launched.length === 2, `status ${r.status}`);
+
+  // 6. The person's own Reason Web browser: no code.
   const mine = `mine-${Date.now()}`;
-  db.startPageSession("web", mine, { conversationId: CONV });
-  const n = told.length;
+  db.startPageSession(`wsign:${CONV}`, mine, { conversationId: CONV });
+  await new Promise(res => setTimeout(res, 20));
+  n = told.length;
   path = await mint();
   r = await post(path, { cookie: `reason_page=${mine}` });
-  check("own proved browser starts at once, no text", r.status === 303 && told.length === n && launched.length === 2, `status ${r.status}`);
-  await fetch(`${base}${path}/cancel`, { method: "POST", headers: { cookie: (r.headers.get("set-cookie") ?? "").split(";")[0], "Content-Type": "application/json" }, body: "{}" });
-  db.db.prepare("DELETE FROM page_sessions WHERE token IN (?, ?)").run(other, mine);
+  check("own Reason Web browser starts at once, no text", r.status === 303 && told.length === n && launched.length === 3, `status ${r.status}`);
+  await cancel(path, r);
+  for (const { token } of db.db.prepare("SELECT token FROM page_sessions").all()) {
+    if (!sessionsBefore.has(token)) db.db.prepare("DELETE FROM page_sessions WHERE token = ?").run(token);
+  }
 } finally {
   await remote.endAllRemoteSignins("shutdown");
   await new Promise(r => server.close(r));
