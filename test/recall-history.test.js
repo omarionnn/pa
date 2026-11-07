@@ -402,3 +402,53 @@ test("forget with nothing saved as a fact still clears the calls that name them;
   const none = await runTool("forget", { about: "Zanele" }, { conversationId: C });
   assert.equal(none.ok, false);
 });
+
+// Review 11-07 (5): with nobody saved under it, a vague subject clears nothing from recall.
+test("review 11-07: 'forget that' / 'forget work' with nobody saved under it clears nothing from recall", async () => {
+  const C = "dm:forget-vague";
+  said(C, "user", "work was rough, the spa massage after helped", base);
+  said(C, "assistant", "glad the spa massage helped after work", base + 1000);
+  chatter(C, base + DAY);
+  await index(C);
+  for (const about of ["that", "work", "it", "money"]) {
+    const out = await runTool("forget", { about }, { conversationId: C });
+    assert.equal(out.ok, false, `${about}: ${JSON.stringify(out)}`);
+  }
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM recall_forgotten WHERE conversation_id = ?").get(C).n, 0);
+  assert.match((await searchFor(C, "spa massage")).text, /spa massage/, "still findable");
+});
+
+// Review 11-07 (6): an action row that names them only in what it attempted (a query, a title) leaves recall too.
+test("review 11-07: forget reaches an action row that names them only in `attempted`", async () => {
+  const C = "dm:forget-attempted";
+  const { id } = db.recordAction({ conversationId: C, action: "web_search", target: "spa", attempted: { query: "massage spa near Ama's office" }, outcome: "ok", result: {}, receipt: "looked up spa places" });
+  chatter(C, base + DAY);
+  await index(C);
+  assert.ok(ri.snippetFor(C, "action_ledger", id));
+  const out = await runTool("forget", { about: "Ama" }, { conversationId: C });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.recall_cleared.actions, 1);
+  assert.equal(ri.snippetFor(C, "action_ledger", id), null);
+});
+
+// Review 11-07 (7): the exchange a forgotten line sat in is indexed again without it — the lines
+// around it stay findable.
+test("review 11-07: forget re-indexes the rest of the exchange a forgotten line was in", async () => {
+  const C = "dm:forget-span";
+  said(C, "user", "Kwesi says hi. also book me the dentist for friday", base);
+  said(C, "assistant", "booked the dentist for friday at 10", base + 1000);
+  said(C, "user", "and the pizza place?", base + 2000);
+  said(C, "assistant", "Joe's Pizza, open late", base + 3000);
+  chatter(C, base + DAY);
+  await index(C);
+  assert.match((await searchFor(C, "dentist")).text, /booked the dentist/);
+  const out = await runTool("forget", { about: "Kwesi" }, { conversationId: C });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  await index(C);
+  const found = (await searchFor(C, "dentist")).text;
+  assert.match(found, /booked the dentist/, "Reason's own line in that exchange is findable again");
+  assert.doesNotMatch(found, /Kwesi/);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM recall_reindex WHERE conversation_id = ?").get(C).n, 0, "the queue is drained");
+  await index(C);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'event_log' AND fact_id = (SELECT MIN(id) + 1 FROM event_log WHERE conversation_id = ?)").get(C, C).n, 1, "indexed once");
+});

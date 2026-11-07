@@ -2752,6 +2752,10 @@ export function forgetPerson(conversationId, about) {
   // Recall reaches the calls Reason made and the thread itself (src/recallindex.js), not only saved
   // facts: a forget that left "called Yaw about the deposit" findable by "what do you remember about
   // Yaw" would be no forget (review 11-05). Cleared whether or not any fact was saved about them.
+  // With nobody saved under it, the subject alone decides what recall loses — and a vague one ("that",
+  // "it", "work", "money") would hide every exchange that says the word, for good (review 11-07). Only
+  // a real name or topic clears recall then.
+  if (!rows.length && !specificSubject(key)) return { ok: false, error: `'${about}' is too general to forget on its own — nothing was cleared. Ask which person or thing they mean.` };
   const recall = forgetFromRecall(conversationId, [about, ...rows.map(p => p.name)]);
   const recalled = recall.calls + recall.exchanges + recall.actions + recall.reminders;
   if (!rows.length) {
@@ -2865,6 +2869,11 @@ export function redactFromReplies(conversationId, facts) {
 }
 
 /** Do the words of `needle` appear as a run inside the words of `key`? */
+// Words too common to forget by on their own (forgetPerson with nobody saved under them).
+const VAGUE = new Set("a an the this that these those it its it's they them their there here he him his she her hers you your me my mine we us our i about all any anything everything something nothing stuff thing things one ones what which who that's said say says talk talked conversation chat message messages last earlier before today yesterday tomorrow work job money time day week month year home life people person someone somebody everyone everybody plan plans thing idea and or of to for with on in at".split(" "));
+function specificSubject(key) {
+  return wordsOf(key).some(w => w.length >= 3 && !VAGUE.has(w));
+}
 const wordsOf = (s) => String(s ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 
 /**
@@ -2892,7 +2901,8 @@ export function forgetFromRecall(conversationId, names = []) {
   };
   {
     const calls = sweep("calls", ["goal", "label", "summary"]);
-    const actions = sweep("action_ledger", ["receipt", "target"]);
+    // `attempted` too (the query, title, summary, ask): recall indexes it (src/recallindex.js ledgerText).
+    const actions = sweep("action_ledger", ["receipt", "target", "attempted"]);
     const reminders = sweep("timers", ["note", "label", "call_goal"]);
     const said = sweep("event_log", ["content"], "AND role IN ('user','assistant')");
     const unembed = db.prepare("DELETE FROM fact_embeddings WHERE conversation_id = ? AND source_table = ? AND fact_id = ?");
@@ -2901,9 +2911,11 @@ export function forgetFromRecall(conversationId, names = []) {
     for (const id of reminders) unembed.run(conversationId, "timers", id);
     // An exchange's vector covers the run span_from..fact_id: any run with a forgotten line in it goes.
     const spans = db.prepare(`DELETE FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'event_log'
-      AND ? BETWEEN COALESCE(span_from, fact_id) AND fact_id`);
+      AND ? BETWEEN COALESCE(span_from, fact_id) AND fact_id RETURNING COALESCE(span_from, fact_id) AS from_id, fact_id AS to_id`);
+    // ...and the rest of that run is indexed again without the forgotten lines (recall_reindex).
+    const requeue = db.prepare("INSERT OR IGNORE INTO recall_reindex (conversation_id, span_from, span_to, at) VALUES (?, ?, ?, ?)");
     let runs = 0;
-    for (const id of said) runs += spans.run(conversationId, id).changes;
+    for (const id of said) for (const r of spans.all(conversationId, id)) { requeue.run(conversationId, r.from_id, r.to_id, at); runs++; }
     Object.assign(out, { calls: calls.length, actions: actions.length, reminders: reminders.length, exchanges: Math.max(runs, said.length ? 1 : 0) });
   }
   return out;
@@ -10573,6 +10585,16 @@ db.exec(`
     row_id INTEGER NOT NULL,
     at INTEGER NOT NULL,
     PRIMARY KEY (conversation_id, source_table, row_id)
+  );
+  -- An exchange whose vector a forget deleted (one of its lines named them): the lines left in it are
+  -- indexed again by src/recallindex.js, without the forgotten ones, so the rest of what was said
+  -- stays findable — the indexer otherwise only moves forward (review 11-07).
+  CREATE TABLE IF NOT EXISTS recall_reindex (
+    conversation_id TEXT NOT NULL,
+    span_from INTEGER NOT NULL,
+    span_to INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, span_from)
   );
 
   -- episodes and thread_summaries used to be here. Neither was ever read; the first was written by

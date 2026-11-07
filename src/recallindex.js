@@ -132,6 +132,14 @@ function pendingExchanges(conversationId, limit, now) {
   const out = [];
   for (const c of convs) {
     if (out.length >= limit) break;
+    // First the runs a forget took the vector off (src/db.js forgetFromRecall): what is left of each
+    // is indexed again, so the lines around a forgotten one are not lost from recall for good.
+    for (const q of db.prepare("SELECT span_from, span_to FROM recall_reindex WHERE conversation_id = ? ORDER BY span_from").all(c)) {
+      const left = db.prepare(`SELECT id, conversation_id, role, content, at FROM event_log e WHERE conversation_id = ? AND id BETWEEN ? AND ? AND role IN ('user','assistant') AND content <> ''
+        AND ${notForgotten("e", "event_log")} ORDER BY id`).all(c, q.span_from, q.span_to);
+      if (left.length && exchangeText(left)) out.push({ conversation_id: c, from: left[0].id, to: left.at(-1).id, rows: left, reindex: q.span_from });
+      else db.prepare("DELETE FROM recall_reindex WHERE conversation_id = ? AND span_from = ?").run(c, q.span_from);
+    }
     const after = db.prepare("SELECT MAX(fact_id) AS m FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'event_log'").get(c)?.m ?? 0;
     // Rows the retention sweep has emptied (src/privacy.js) are skipped in the query, not after it:
     // a window of 400 emptied rows makes no exchange, so `after` would never move past them and
@@ -176,7 +184,7 @@ export async function indexPending({ conversationId = null, limit = 200, embedFn
       for (const r of pendingCalls(conversationId, limit, now)) items.push({ c: r.conversation_id, id: r.id, table: "calls", text: callText(r), at: r.created_at });
       for (const r of pendingLedger(conversationId, limit)) items.push({ c: r.conversation_id, id: r.id, table: "action_ledger", text: ledgerText(r), at: r.created_at });
       for (const r of pendingTimers(conversationId, limit)) items.push({ c: r.conversation_id, id: r.id, table: "timers", text: timerText(r), at: r.created_at });
-      for (const x of pendingExchanges(conversationId, limit, now)) items.push({ c: x.conversation_id, id: x.to, from: x.from, table: "event_log", text: exchangeText(x.rows) });
+      for (const x of pendingExchanges(conversationId, limit, now)) items.push({ c: x.conversation_id, id: x.to, from: x.from, table: "event_log", text: exchangeText(x.rows), reindex: x.reindex });
       const todo = items.slice(0, limit);
       for (let i = 0; i < todo.length; i += BATCH) {
         const batch = todo.slice(i, i + BATCH);
@@ -186,6 +194,7 @@ export async function indexPending({ conversationId = null, limit = 200, embedFn
         for (const [j, b] of batch.entries()) {
           if (!vectors[j]) continue;
           put.run(b.c, b.id, b.table, float32ToBlob(vectors[j]), MODEL, now, b.from ?? null);
+          if (b.reindex != null) db.prepare("DELETE FROM recall_reindex WHERE conversation_id = ? AND span_from = ?").run(b.c, b.reindex);
           done++;
         }
       }
