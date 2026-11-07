@@ -30,7 +30,7 @@ const deploy = process.argv.includes("--deploy");
 const SITE = process.env.REASON_STAGING_SITE || "c749fa22-03a3-4a51-9b80-1081b789fede";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-web-staging-"));
-for (const k of Object.keys(process.env)) if (/^(SENDBLUE|LINQ|ANTHROPIC|AGENTCARD|OPENAI|GEMINI|ELEVENLABS|TWILIO|BLAND)_/.test(k)) delete process.env[k];
+for (const k of Object.keys(process.env)) if (/^(SENDBLUE|LINQ|ANTHROPIC|AGENTCARD|OPENAI|GEMINI|TWILIO|BLAND)_/.test(k)) delete process.env[k];
 delete process.env.REASON_BACKEND;
 Object.assign(process.env, {
   TZ: "America/New_York",

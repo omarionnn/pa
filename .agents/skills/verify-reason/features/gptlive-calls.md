@@ -1,10 +1,16 @@
-# GPT-Live calls — OpenAI's voice in front of Reason, owner-only trial
+# GPT-Live calls — the only voice Reason has
 
-`REASON_CALL_VOICE=gptlive` puts OpenAI GPT-Live (`gpt-live-1`; voice `REASON_GPTLIVE_VOICE`, live =
-`willow` since 2026-10-31, default `marin` which is asked for a light British accent) on the **operator's own** calls, in place of ElevenLabs, so the two can be compared.
-Unset: every call is ElevenLabs byte for byte — `withGptLive` hands back the provider itself and the
-upgrade listener and the two Twilio routes are not registered. Another person's calls and every
-business call stay on ElevenLabs whatever the flag says.
+**Now (2026-11-07, ElevenLabs removed):** `REASON_CALL_PROVIDER=gptlive` makes GPT-Live the call
+provider (`GptLiveCallProvider` in `src/calls/gptlive.js`): every call — own, business, ring-back,
+inbound — is OpenAI GPT-Live (`gpt-live-1`; voice `REASON_GPTLIVE_VOICE`, live = `willow`, default
+`marin`) over Twilio. Live once `missingForGptlive()` is empty: OPENAI_API_KEY, TWILIO_ACCOUNT_SID,
+TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, REASON_PUBLIC_URL (no ElevenLabs key of any kind). The
+`/calls/elevenlabs/*` routes are gone (404). Inbound never redirects anywhere: a caller GPT-Live
+cannot take (keys missing, routing threw) gets Twilio `<Reject/>`. `REASON_CALL_VOICE` /
+`REASON_THIRD_PARTY_VOICE` (below) only matter in front of another provider (`withGptLive`); a GPT-Live
+dial it cannot make returns `{ok:false}` rather than falling back. Proof: `test/no-elevenlabs.test.js`.
+The sections below are the build history (2026-10-31); where they say "ElevenLabs" for the
+non-GPT-Live branch, that branch no longer exists.
 
 GPT-Live is only the voice. It delegates with **client delegation**; each `session.delegation.created`
 runs Reason's own call turn (`llmRequest`, the same one ElevenLabs' custom-LLM requests run: context,
@@ -40,18 +46,16 @@ small reactions, light humour, no corporate phrasing.
 
 The line: Twilio Media Streams (μ-law 8 kHz straight through to `audio/pcmu`), WebSocket at
 `/calls/gptlive/stream/{call webhook token}`. Outbound: `place` asks Twilio to dial with that stream as
-TwiML; status at `/calls/gptlive/status/{token}`. Inbound: `/calls/gptlive/inbound` (owner → stream,
-everyone else `<Redirect>` to `REASON_GPTLIVE_INBOUND_FALLBACK_URL`, ElevenLabs' own Twilio URL), live
-only if the number's voice webhook is pointed there. **Needs `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN`
-in `.env`** — the number lives inside ElevenLabs and its keys were never on the box; without them an
-owner call quietly stays on ElevenLabs (`missingForGptlive`).
+TwiML; status at `/calls/gptlive/status/{token}`. Inbound: `/calls/gptlive/inbound` (every caller
+served on GPT-Live, `<Reject/>` if it cannot), the number's Twilio voice webhook. **Needs the TWILIO_*
+keys in `.env`**; without them GPT-Live reports not connected (`missingForGptlive`).
 
 Metrics: the row's `provider` = `gptlive`, `tts_model` = `gpt-live-1/marin`, `cost_cents` = voice
 seconds at 5¢/min (Reason's own turn tokens are on its call_turns rows as before), `end_reason` as
 ever. Each turn's call_turns row (written by Reason's turn) gets `voice = 'gptlive'` and what the
 caller HEARD: `first_content_ms` = first voice audio after the delegation (usually its own ack),
 `first_real_ms` = first audio after Reason's answer reached the voice. `scripts/call-report.js`
-prints a `voice elevenlabs:` and a `voice gptlive:` line. The recording is the bridge's own mix
+prints one `voice <provider>:` line per provider on record. The recording is the bridge's own mix
 (`CallTape`, 16-bit 8 kHz WAV).
 
 Source: `src/calls/gptlive.js`, `src/calls/wsserver.js`, `src/http.js` (upgrade + two routes),
@@ -145,8 +149,8 @@ thread byte-identical). 2026-10-31: ok — peanut allergy from her memory, hung 
 ## Calls IN on GPT-Live (2026-10-31, Omari's OK)
 
 The number's Twilio voice URL → `<REASON_PUBLIC_URL>/calls/gptlive/inbound`; its Twilio **voice fallback
-URL** = ElevenLabs' `https://api.us.elevenlabs.io/twilio/inbound_call` (also in `.env` as
-`REASON_GPTLIVE_INBOUND_FALLBACK_URL`), so Reason down / an error still answers via ElevenLabs.
+URL** was ElevenLabs' own inbound URL until 2026-11-07; with ElevenLabs removed it must be cleared
+(or set to a Twilio-only TwiML), and `REASON_GPTLIVE_INBOUND_FALLBACK_URL` is no longer read.
 `inboundTwiml` (REASON_CALL_VOICE=gptlive):
 - account whose own calls are GPT-Live → their own Reason (row on THEIR conversation, identity, greeting
   `openingLineFor` spoken when the stream starts — nothing made before connect); over the day's cap
@@ -156,9 +160,8 @@ URL** = ElevenLabs' `https://api.us.elevenlabs.io/twilio/inbound_call` (also in 
   maker line) + every answer from `stranger.strangerReply` (no tools, public facts only, turn caps);
   master asked (`inbound.strangerIntake`), words kept (`strangercalls.open` external_id `gptlive:<CallSid>`,
   settled at end); no call row; the audio is kept on the stranger row (phase 3, below);
-- a place ringing back about an errand → GPT-Live when `REASON_THIRD_PARTY_VOICE` covers the account
-  (phase 3), else ElevenLabs; an account not on GPT-Live (=owner mode), missing keys →
-  `<Redirect>` to ElevenLabs, unchanged.
+- a place ringing back about an errand → the third-party line on GPT-Live; GPT-Live not set up, or
+  routing threw → `<Reject/>` (no redirect, no second voice; since 2026-11-07).
 The honesty guard skips the opening line while it is the greeting's own words (`fromLine`): the
 stranger intro's "getting things done" tripped it in the first drive.
 

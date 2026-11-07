@@ -2,14 +2,13 @@
 // each call ended, what the platform says it cost — and a read-only report over them.
 //
 // No call is placed and nothing leaves the machine: the custom-LLM endpoint runs on a scripted
-// generator, the post-call webhook on a signed fixture payload, the sweep with no provider at all.
+// generator, the settle on a finished call's own record, the sweep with no provider at all.
 // Every assertion reads the database, because the database is what the next audit will read.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHmac } from "node:crypto";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-callmetrics-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
@@ -19,16 +18,11 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_CALL_MAX_MINUTES = "10";
-process.env.ELEVENLABS_API_KEY = "eleven-test-key";
-process.env.ELEVENLABS_AGENT_ID = "agent_test";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
 process.env.REASON_UNDO_SECONDS = "0";
 
 const voice = await import("../src/calls/voice.js");
-const { EXTRA_BODY_KEYS, ElevenLabsCallProvider } = await import("../src/calls/elevenlabs.js");
-const { postCallRequest } = await import("../src/calls/postcall.js");
+const { EXTRA_BODY_KEYS } = voice;
+const { settleGptLive } = await import("../src/calls/gptlive.js");
 const { settleCall, settleLostCalls, callLostAfterMs } = await import("../src/tools.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
@@ -47,16 +41,15 @@ beforeEach(async () => {
 });
 
 const ownerCall = (over = {}) => db.createCall(C, {
-  provider: "elevenlabs", toNumber: "+12025551234", isOwner: true,
-  goal: "Omari called Reason", facts: [], direction: "in", externalId: over.externalId ?? "conv_in", state: "in_progress",
+  provider: "gptlive", toNumber: "+12025551234", isOwner: true,
+  goal: "Omari called Reason", facts: [], direction: "in", externalId: over.externalId ?? "gptlive:CA_in", state: "in_progress",
 });
 
 const bodyFor = (call, messages = [{ role: "user", content: "hey" }]) => JSON.stringify({
   model: "reason", stream: true,
   messages: [{ role: "system", content: "dashboard prompt" }, ...messages],
-  elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: call.conversation_id },
+  extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: call.conversation_id },
 });
-const AUTH = { authorization: "Bearer llm-test-secret" };
 
 /** A model that waits `ms`, then says `events` — strings are words, objects are tool uses. */
 const after_ = (ms, ...events) => async function* ({ onUsage } = {}) {
@@ -80,7 +73,7 @@ test("every turn on a call writes a row with its heard latencies, tool names and
     // Two real turns: the second carries the first one's exchange, so it has more messages.
     const history = i === 0 ? undefined : [{ role: "user", content: "hey" }, { role: "assistant", content: "Sure." }, { role: "user", content: "and?" }];
     const out = await voice.llmRequest({
-      rawBody: bodyFor(call, history), headers: AUTH, firstWordDeadlineMs: 5_000,
+      rawBody: bodyFor(call, history), firstWordDeadlineMs: 5_000,
       screen: async () => ({ verdict: "safe" }),
       generate: after_(60, "Sure, it's done.", { tool: "end_call", input: { reason: "done" } }),
     });
@@ -106,7 +99,7 @@ test("every turn on a call writes a row with its heard latencies, tool names and
 test("a turn that needed the holding line is marked, with real words timed separately", async () => {
   const call = ownerCall();
   const out = await voice.llmRequest({
-    rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 80,
+    rawBody: bodyFor(call), firstWordDeadlineMs: 80,
     screen: async () => ({ verdict: "safe" }),
     generate: after_(600, "Here it is."),
   });
@@ -122,7 +115,7 @@ test("a turn that needed the holding line is marked, with real words timed separ
 test("a turn the platform stops reading is marked closed early", async () => {
   const call = ownerCall();
   const out = await voice.llmRequest({
-    rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 5_000, attachGraceMs: 0,
+    rawBody: bodyFor(call), firstWordDeadlineMs: 5_000, attachGraceMs: 0,
     screen: async () => ({ verdict: "safe" }),
     generate: after_(20, "One. ", "Two. ", "Three."),
   });
@@ -140,82 +133,40 @@ test("a turn the platform stops reading is marked closed early", async () => {
 
 // ---------- why each call ended, and what it cost ----------
 
-const provider = () => new ElevenLabsCallProvider();
-const sign = (raw, t = Math.floor(clock.now() / 1000)) =>
-  `t=${t},v0=${createHmac("sha256", "hook-test-secret").update(`${t}.${raw}`).digest("hex")}`;
-const deliver = async (data) => {
-  const raw = JSON.stringify({ type: "post_call_transcription", data });
-  return await postCallRequest({
-    rawBody: raw, headers: { "ElevenLabs-Signature": sign(raw) }, provider: provider(), settle: settleCall,
-    runtime: { mayInterrupt: () => false, event: async () => "" },
-    fetchImpl: async () => ({ ok: false, status: 404, headers: { get: () => null }, arrayBuffer: async () => Buffer.alloc(0), json: async () => ({}) }),
-  });
-};
-// The shape of a real ElevenLabs conversation (read-only GETs on calls 13, 20, 22, 32 and 35,
-// 2026-10-30): numbers and field names only, no transcript. cost_fiat is call 32's real 1.193; the
-// usage numbers inside `charging` are illustrative.
-const charging = (fiat, credits) => ({
-  tier: "creator", call_charge: credits, platform_price: fiat, llm_price: 0,
-  tts_usage: { total_audio_output_seconds: 312.4, total_characters: 4810 },
-  asr_usage: { total_audio_input_seconds: 540.2 },
-});
-const conversation = (over = {}) => ({
-  conversation_id: "conv_in", status: "done", transcript: [],
-  ...over,
-  metadata: { call_duration_secs: 9, termination_reason: "end_call tool was called.", error: null, ...(over.metadata ?? {}) },
+/** Settle one finished call the way GPT-Live does, with nobody to tell and no audio. */
+const finish = async (call, over = {}) => settleGptLive({
+  row: db.getCall(C, call.id), settle: settleCall,
+  runtime: { mayInterrupt: () => false, event: async () => "" },
+  live: {
+    state: "completed", outcome: "", summary: "", transcript: "Them: hey\nReason: Sure.", turns: [],
+    durationS: 9, costCents: 1, termination: "end_call (mutual goodbye)",
+    costRaw: JSON.stringify({ voice_seconds: 9, cents_per_minute: 5 }),
+    recording: null, recordingWhy: "the line carried less than a second of audio",
+    ...over,
+  },
 });
 
-test("the post-call termination reason becomes a normalised end_reason, raw words kept beside it", async () => {
+test("the call's ending becomes a normalised end_reason, raw words kept beside it", async () => {
   const call = ownerCall();
-  await deliver(conversation({ metadata: { termination_reason: "end_call tool was called." } }));
+  await finish(call, { termination: "end_call (mutual goodbye)" });
   const row = db.getCall(C, call.id);
   assert.equal(row.end_reason, "end_call");
-  assert.equal(row.end_detail, "end_call tool was called.");
+  assert.equal(row.end_detail, "end_call (mutual goodbye)");
 
-  // Calls 20 and 32: the platform does not say which side hung up, so neither does the row — an
-  // inbound call is not turned into "the caller hung up".
-  const hungUp = ownerCall({ externalId: "conv_in2" });
-  await deliver(conversation({ conversation_id: "conv_in2", metadata: { termination_reason: "Call ended by remote party" } }));
+  // The line does not say which side hung up, so neither does the row — an inbound call is not
+  // turned into "the caller hung up".
+  const hungUp = ownerCall({ externalId: "gptlive:CA_in2" });
+  await finish(hungUp, { termination: "hung up" });
   assert.equal(db.getCall(C, hungUp.id).end_reason, "remote_hung_up");
 });
 
-test("a 1002 custom_llm_error ending (calls 13, 22) is a platform error with its code and reason", async () => {
+test("the call's cost is stored as cents, with the raw numbers beside it and no credits", async () => {
   const call = ownerCall();
-  await deliver(conversation({
-    status: "failed",
-    metadata: {
-      termination_reason: "custom_llm generation failed",
-      error: { code: 1002, error_type: "llm_error", reason: "custom_llm_error: LLM Cascade Error: TimeoutError" },
-      cost: 15, cost_fiat: 0.0150, charging: charging(0.0150, 15),
-    },
-  }));
+  await finish(call, { durationS: 902, costCents: 75, costRaw: JSON.stringify({ voice_seconds: 902, cents_per_minute: 5 }) });
   const row = db.getCall(C, call.id);
-  assert.equal(row.state, "failed");
-  assert.equal(row.end_reason, "platform_error");
-  assert.match(row.end_detail, /custom_llm generation failed/);
-  assert.match(row.end_detail, /error 1002 llm_error: custom_llm_error: LLM Cascade Error/);
-});
-
-test("the platform's cost is stored from the real payload shape: cents from cost_fiat, credits, minimal raw", async () => {
-  const call = ownerCall();
-  await deliver(conversation({
-    metadata: { call_duration_secs: 902, termination_reason: "Call ended by remote party", cost: 5964, cost_fiat: 1.193, charging: charging(1.193, 5964) },
-  }));
-  const row = db.getCall(C, call.id);
-  assert.equal(row.cost_cents, 119, "$1.193 is 119 cents");
-  assert.equal(row.cost_credits, 5964);
-  assert.deepEqual(JSON.parse(row.cost_raw), {
-    cost: 5964, cost_fiat: 1.193, tier: "creator",
-    tts_audio_output_seconds: 312.4, tts_characters: 4810, asr_audio_input_seconds: 540.2,
-  });
-
-  // Call 35's figure, and call 13's tiny one: rounded on the decimal, never to nothing.
-  const b = ownerCall({ externalId: "conv_b" });
-  await deliver(conversation({ conversation_id: "conv_b", metadata: { cost: 4500, cost_fiat: 0.901, charging: charging(0.901, 4500) } }));
-  assert.equal(db.getCall(C, b.id).cost_cents, 90);
-  const c = ownerCall({ externalId: "conv_c" });
-  await deliver(conversation({ conversation_id: "conv_c", status: "failed", metadata: { cost: 15, cost_fiat: 0.0150, charging: charging(0.0150, 15) } }));
-  assert.equal(db.getCall(C, c.id).cost_cents, 2);
+  assert.equal(row.cost_cents, 75);
+  assert.equal(row.cost_credits, null, "no platform credits on a GPT-Live call");
+  assert.deepEqual(JSON.parse(row.cost_raw), { voice_seconds: 902, cents_per_minute: 5 });
 });
 
 test("a call the sweep closes, nobody having said how it ended, is lost", async () => {
@@ -234,18 +185,18 @@ test("the report prints per-call and total numbers from the database, and no wor
   const { buildCallReport, formatCallReport } = await import("../src/calls/report.js");
   const call = ownerCall();
   const out = await voice.llmRequest({
-    rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 80,
+    rawBody: bodyFor(call), firstWordDeadlineMs: 80,
     screen: async () => ({ verdict: "safe" }),
     generate: after_(300, "Here it is."),
   });
   await drain(out.stream);
-  await deliver(conversation({ metadata: { termination_reason: "end_call tool was called.", cost: 600, cost_fiat: 0.12, charging: charging(0.12, 600) } }));
+  await finish(call, { costCents: 12 });
 
   const report = buildCallReport(db.db);
   const r = report.calls.find(c => c.id === call.id);
   assert.equal(r.duration_s, 9);
   assert.equal(r.end_reason, "end_call");
-  assert.equal(r.cost_credits, 600);
+  assert.equal(r.cost_credits, null);
   assert.equal(r.cost_cents, 12);
   assert.equal(r.holding_lines, 1);
   assert.ok(Number.isFinite(r.heard_p50_ms) && Number.isFinite(r.heard_p95_ms));
@@ -262,7 +213,7 @@ test("the report prints per-call and total numbers from the database, and no wor
 test("a turn restarted for new words at the same message count replaces its row instead of adding one", async () => {
   const call = ownerCall();
   const first = await voice.llmRequest({
-    rawBody: bodyFor(call, [{ role: "user", content: "hey" }]), headers: AUTH, firstWordDeadlineMs: 5_000,
+    rawBody: bodyFor(call, [{ role: "user", content: "hey" }]), firstWordDeadlineMs: 5_000,
     screen: async () => ({ verdict: "safe" }),
     generate: after_(400, "Too late."),
   });
@@ -272,7 +223,7 @@ test("a turn restarted for new words at the same message count replaces its row 
   // The platform's transcript of what they said grew ("hey" became "hey there"): new words from
   // their side, so the earlier turn is cancelled and this one runs, at the same message count.
   const retry = await voice.llmRequest({
-    rawBody: bodyFor(call, [{ role: "user", content: "hey there" }]), headers: AUTH, firstWordDeadlineMs: 5_000,
+    rawBody: bodyFor(call, [{ role: "user", content: "hey there" }]), firstWordDeadlineMs: 5_000,
     screen: async () => ({ verdict: "safe" }),
     generate: after_(30, "Here."),
   });
@@ -290,7 +241,7 @@ test("a turn restarted for new words at the same message count replaces its row 
 test("nothing is written to the database before the first byte of a turn", async () => {
   const call = ownerCall();
   const out = await voice.llmRequest({
-    rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 5_000,
+    rawBody: bodyFor(call), firstWordDeadlineMs: 5_000,
     screen: async () => ({ verdict: "safe" }),
     generate: after_(10, "Hi."),
   });
@@ -302,14 +253,14 @@ test("nothing is written to the database before the first byte of a turn", async
 test("the disclosure on a third-party call is not counted as real content", async () => {
   const ANN = announcementFor({ ownerName: "Omari" });
   const row = db.createCall(C, {
-    provider: "elevenlabs", toNumber: "+12125559999", isOwner: false,
+    provider: "gptlive", toNumber: "+12125559999", isOwner: false,
     goal: "ask for a table for four at eight on Saturday", facts: ["the name is Omari"],
-    announcement: ANN, externalId: "conv_out", state: "in_progress",
+    announcement: ANN, externalId: "gptlive:CA_out", state: "in_progress",
   });
   db.updateCall(C, row.id, { opening_waits: 1 });
   const call = db.getCall(C, row.id);
   const out = await voice.llmRequest({
-    rawBody: bodyFor(call, [{ role: "user", content: "Hello, Luigi's?" }]), headers: AUTH, firstWordDeadlineMs: 5_000,
+    rawBody: bodyFor(call, [{ role: "user", content: "Hello, Luigi's?" }]), firstWordDeadlineMs: 5_000,
     generate: after_(30, "Hi, I'd like a table for four."),
   });
   await drain(out.stream);
@@ -326,29 +277,17 @@ test("a model piece of just '...' is not the code's filler", async () => {
   assert.equal(contentKind("One sec... ", voice.METER_KINDS), "filler");
 });
 
-test("a late post-call delivery replaces the sweep's 'lost' with the real reason", async () => {
-  const call = ownerCall();
-  clock.skip(callLostAfterMs("in_progress") + 60_000);
-  await settleLostCalls({ calls: null });
-  assert.equal(db.getCall(C, call.id).end_reason, "lost");
-  await deliver(conversation({ metadata: { termination_reason: "Call ended by remote party", cost: 5964, cost_fiat: 1.193, charging: charging(1.193, 5964) } }));
-  const row = db.getCall(C, call.id);
-  assert.equal(row.end_reason, "remote_hung_up");
-  assert.equal(row.cost_cents, 119);
-  assert.equal(row.state, "failed", "nothing else is settled twice");
-});
-
-test("timeouts, no answer and busy are their own endings, not platform errors", async () => {
+test("no answer, busy and the duration cap are their own endings, not platform errors", async () => {
+  // What Twilio's status callback settles a call that never connected with, and the call's own cap.
   const cases = [
-    [{ termination_reason: "Conversation ended due to inactivity timeout" }, "done", "inactivity"],
-    [{ termination_reason: "no_answer" }, "done", "no_answer"],
-    [{ termination_reason: "busy" }, "done", "no_answer"],
+    [{ state: "no_answer", termination: "no-answer", durationS: 0, transcript: "" }, "no_answer"],
+    [{ state: "busy", termination: "busy", durationS: 0, transcript: "" }, "no_answer"],
+    [{ termination: "duration_cap" }, "duration_cap"],
   ];
   let n = 0;
-  for (const [metadata, status, want] of cases) {
-    const id = `conv_t${n++}`;
-    const call = ownerCall({ externalId: id });
-    await deliver(conversation({ conversation_id: id, status, metadata }));
-    assert.equal(db.getCall(C, call.id).end_reason, want, metadata.termination_reason);
+  for (const [over, want] of cases) {
+    const call = ownerCall({ externalId: `gptlive:CA_t${n++}` });
+    await finish(call, over);
+    assert.equal(db.getCall(C, call.id).end_reason, want, over.termination);
   }
 });

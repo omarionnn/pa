@@ -45,7 +45,7 @@ const newNumber = () => `+1212555${String(1000 + (nth += 1)).slice(-4)}`;
 
 const makeCall = (over = {}) => {
   const row = db.createCall(C, {
-    provider: "elevenlabs", toNumber: over.to_number ?? newNumber(), isOwner: false,
+    provider: "gptlive", toNumber: over.to_number ?? newNumber(), isOwner: false,
     goal: "book a table", facts: [], announcement: "x",
   });
   if (Object.keys(over).length) db.updateCall(C, row.id, over);

@@ -10,7 +10,6 @@ const dir = mkdtempSync(join(tmpdir(), "reason-stranger-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_CONVERSATION = "dm:owner";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
 
 const sc = await import("../src/calls/stranger.js");
 const voice = await import("../src/calls/voice.js");
@@ -41,7 +40,7 @@ async function read(stream) {
   return { text, tools, finish };
 }
 
-const body = (messages) => ({ model: "reason", messages, elevenlabs_extra_body: { reason_kind: "stranger" } });
+const body = (messages) => ({ model: "reason", messages, extra_body: { reason_kind: "stranger" } });
 
 test("the pitch prompt: Reason, heyreason.com spoken, the maker, public facts only, no price, and nobody's data", () => {
   const p = sc.strangerPrompt();
@@ -79,7 +78,7 @@ test("a stranger turn through the real endpoint: the model gets only this call's
 test("the endpoint routes a stranger-marked turn to the pitch, without a call row", async () => {
   const res = await voice.llmRequest({
     rawBody: JSON.stringify(body([{ role: "user", content: "who made you?" }])),
-    headers: { authorization: "Bearer llm-test-secret" },
+    headers: {},
   });
   assert.equal(res.status, 200);
   assert.ok(res.stream, "an SSE stream, not a refusal");

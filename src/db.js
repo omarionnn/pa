@@ -1448,7 +1448,7 @@ addColumnIfMissing("calls", "recording_sent_at", "INTEGER");
 addColumnIfMissing("calls", "webhook_token", "TEXT");
 addColumnIfMissing("pending_inbound", "held_times", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("pending_inbound", "down_since", "INTEGER");
-// Which way the phone rang (2026-10-06, with ElevenLabs). Every call before this one was placed by
+// Which way the phone rang (2026-10-06). Every call before this one was placed by
 // Reason, so 'out' is what an older row should read as. It matters in three places that would
 // otherwise each be a guess: a call nobody placed has no goal and no approved facts, only an
 // outbound call can reach a voicemail that must not be filed as a conversation, and the cap on
@@ -1481,7 +1481,7 @@ addColumnIfMissing("accounts", "told_calls_recorded_at", "INTEGER");
 //
 // Waiting. `hold_since` is the hold in progress (null when not on hold) and `hold_total_s` the holds
 // already finished; `holdSeconds` in src/calls/hold.js adds them. The budget is per call because a
-// clinic at lunchtime is not a shop at 10am, and it is OUR clock because ElevenLabs has no hold
+// clinic at lunchtime is not a shop at 10am, and it is OUR clock because a voice has no hold
 // detection and their silence timer may never fire against hold music at all.
 addColumnIfMissing("calls", "hold_since", "INTEGER");
 addColumnIfMissing("calls", "hold_total_s", "INTEGER NOT NULL DEFAULT 0");
@@ -1834,7 +1834,7 @@ addColumnIfMissing("calls", "missed_told_at", "INTEGER");
 //
 //   end_reason        one of END_REASONS in src/calls/metrics.js, or NULL when nothing said why
 //   end_detail        the platform's own words for it (termination reason, error code and message)
-//   cost_credits      ElevenLabs' `metadata.cost` — CREDITS, not money (see costCentsOf in elevenlabs.js)
+//   cost_credits      a platform's own cost figure — CREDITS, not money (older calls)
 //   cost_raw          every cost-like field the payload's metadata carried, as JSON, unread, because
 //                     which of them the platform really sends has not been seen on a real payload
 addColumnIfMissing("calls", "end_reason", "TEXT");
@@ -1921,7 +1921,7 @@ export function recordCallTurn({ callId, conversationId, msgCount, kind = "", st
 
 // Which voice the caller heard a turn in, and what they heard: on a GPT-Live call (src/calls/gptlive.js)
 // the turn's own row times Reason's stream, which nobody hears directly, so the voice writes over the
-// heard fields with its own audio timings. Empty on an ElevenLabs turn, which is the provider on the call row.
+// heard fields with its own audio timings. Empty on a turn from another provider, which is the provider on the call row.
 addColumnIfMissing("call_turns", "voice", "TEXT NOT NULL DEFAULT ''");
 
 /**
@@ -4996,11 +4996,11 @@ export const CALL_WEBHOOK_TOKEN_LENGTH = 32;
 export function createCall(conversationId, {
   provider, toNumber, isOwner, goal, facts, confirmationId = null, announcement = "",
   // Outbound unless a caller says otherwise. The one caller that says otherwise is the inbound
-  // personalization webhook (src/calls/inbound.js), which makes the row while the phone is still
+  // voice webhook (`inboundTwiml` in src/calls/gptlive.js), which makes the row while the phone is still
   // ringing so that the turn behind the voice has something to be scoped by.
   direction = "out",
   // An inbound call has an id from the platform before Reason knows anything else about it, and
-  // that id is the only thing the custom-LLM endpoint can look the call up by.
+  // that id is what the call can be looked up by.
   externalId = null,
   // An inbound call reached the state it is in by being answered, not by being dialled.
   state = "placing",

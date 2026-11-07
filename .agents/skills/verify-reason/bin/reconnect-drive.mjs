@@ -32,7 +32,7 @@ process.env.SENDBLUE_API_BASE = "http://127.0.0.1:9";
   process.env.REASON_DATA_DIR ||= dirname(db) + "/data";
   process.env.REASON_RECORDING_ROOT ||= dirname(db) + "/recordings";
 }
-for (const k of ["ANTHROPIC_API_KEY", "LINQ_API_KEY", "ELEVENLABS_API_KEY", "BLAND_API_KEY", "AGENTCARD_CLIENT_SECRET"]) {
+for (const k of ["ANTHROPIC_API_KEY", "LINQ_API_KEY", "TWILIO_AUTH_TOKEN", "BLAND_API_KEY", "AGENTCARD_CLIENT_SECRET"]) {
   if (process.env[k]) { console.error(`refusing: ${k} is set — run under caged.sh env`); process.exit(2); }
 }
 if (process.env.REASON_BACKEND !== "claude-cli" || !process.env.REASON_TEST_NUMBERS || process.env.REASON_AUTO_ADMIT !== "1") {
@@ -121,7 +121,7 @@ async function inbound(content, from = OWNER) {
 // 1. The stranger's call as the line takes it: kept against the number, a pitch turn records what they asked. Placed "yesterday".
 const kept = strangerCalls.open({ phone: CALLER, externalId: "conv_drive" });
 const pitchTurn = stranger.strangerTurn({
-  body: { model: "reason", messages: [{ role: "assistant", content: stranger.introLine() }, { role: "user", content: "How do I sign up?" }, { role: "assistant", content: "Go to hey reason dot com." }, { role: "user", content: "Can it book a dentist for me?" }], elevenlabs_extra_body: { reason_kind: "stranger", reason_stranger_call: kept.id, reason_stranger_token: kept.token } },
+  body: { model: "reason", messages: [{ role: "assistant", content: stranger.introLine() }, { role: "user", content: "How do I sign up?" }, { role: "assistant", content: "Go to hey reason dot com." }, { role: "user", content: "Can it book a dentist for me?" }], extra_body: { reason_kind: "stranger", reason_stranger_call: kept.id, reason_stranger_token: kept.token } },
   generate: async function* () { yield { type: "text", text: "It can, once you've texted it from hey reason dot com." }; },
   sseChunk: voice.sseChunk, SSE_DONE: voice.SSE_DONE,
 });

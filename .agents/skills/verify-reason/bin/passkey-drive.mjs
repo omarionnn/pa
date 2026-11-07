@@ -38,7 +38,7 @@ delete process.env.REASON_SITE_PROXY_SECRET;
     process.exit(2);
   }
 }
-for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "ANTHROPIC_API_KEY", "AGENTCARD_CLIENT_SECRET", "ELEVENLABS_API_KEY"]) {
+for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "ANTHROPIC_API_KEY", "AGENTCARD_CLIENT_SECRET", "TWILIO_AUTH_TOKEN"]) {
   if (process.env[k]) { console.error(`refusing: ${k} is set — run under caged.sh env`); process.exit(2); }
 }
 // Crossmint: throwaway keys and an address that resolves nowhere; the fetch below answers for it.

@@ -1,8 +1,7 @@
-// Reason's own brain on the phone: the custom-LLM endpoint, with an injected generator.
+// Reason's own brain on the phone: the call turn GPT-Live hands every question to, with an injected generator.
 //
 // No model runs in here and no network is touched. What is being proven is the part that must be
-// right before anybody dials: the SSE framing ElevenLabs documents, that an unauthenticated request
-// gets nothing, that the two context builders really are two — one with the thread and the tools and
+// right before anybody dials: the SSE framing the voice relay reads, that the two context builders really are two — one with the thread and the tools and
 // one structurally unable to reach either — that a language switch leaves as a function call and
 // brings the recording disclosure with it, and that a web address is never spoken.
 //
@@ -22,22 +21,17 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_CALL_MAX_MINUTES = "10";
-process.env.ELEVENLABS_API_KEY = "eleven-test-key";
-process.env.ELEVENLABS_AGENT_ID = "agent_test";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
 process.env.REASON_UNDO_SECONDS = "0";
 
 const voice = await import("../src/calls/voice.js");
 const prompts = await import("../src/calls/voice-prompt.js");
 const {
-  llmRequest, verifyLlmBearer, identifyCall, contextFor, ownerContext, thirdPartyContext,
+  llmRequest, identifyCall, contextFor, ownerContext, thirdPartyContext,
   sseChunk, SSE_DONE, withoutSpokenLinks, sentenceSplitter, callLanguage, callBackendName,
-  SYSTEM_TOOL_NAMES, MAX_VOICE_TOOL_ROUNDS, LLM_PATH, latestSpoken,
+  SYSTEM_TOOL_NAMES, MAX_VOICE_TOOL_ROUNDS, latestSpoken,
   LINE_IS_QUIET, OWN_LINE_IS_QUIET, endOnTheirSide, CALL_TOOL_BUDGET_MS,
 } = voice;
-const { EXTRA_BODY_KEYS } = await import("../src/calls/elevenlabs.js");
+const { EXTRA_BODY_KEYS } = await import("../src/calls/voice.js");
 const harm = await import("../src/harm.js");
 const { announcementFor, callRulesFor } = await import("../src/calls/provider.js");
 const db = await import("../src/db.js");
@@ -59,11 +53,11 @@ beforeEach(async () => {
 
 /** One owner call and one third-party call, as rows the way each is really created. */
 const ownerCall = () => db.createCall(C, {
-  provider: "elevenlabs", toNumber: "+12025551234", isOwner: true,
+  provider: "gptlive", toNumber: "+12025551234", isOwner: true,
   goal: "Omari called Reason", facts: [], direction: "in", externalId: "conv_in", state: "in_progress",
 });
 const thirdPartyCall = (over = {}) => db.createCall(C, {
-  provider: "elevenlabs", toNumber: PLACE, isOwner: false,
+  provider: "gptlive", toNumber: PLACE, isOwner: false,
   goal: "ask for a table for four at eight on Saturday",
   facts: ["the name is Omari", "four people"],
   announcement: ANN, externalId: "conv_out", ...over,
@@ -96,38 +90,19 @@ async function drain(stream) {
 const bodyFor = (call, { messages = [{ role: "user", content: "hey" }], kind = null } = {}) => JSON.stringify({
   model: "reason", stream: true,
   messages: [{ role: "system", content: "you are a helpful agent configured in our dashboard" }, ...messages],
-  elevenlabs_extra_body: {
+  extra_body: {
     [EXTRA_BODY_KEYS.callId]: call.id,
     [EXTRA_BODY_KEYS.conversationId]: call.conversation_id,
     ...(kind ? { [EXTRA_BODY_KEYS.kind]: kind } : {}),
   },
 });
-const AUTH = { authorization: "Bearer llm-test-secret" };
+const AUTH = {};
 
-// ---------- who is allowed in ----------
-
-test("the bearer secret is the door, and there is no way past it", async () => {
-  assert.equal(verifyLlmBearer({ headers: AUTH }).ok, true);
-  assert.equal(verifyLlmBearer({ headers: { authorization: "Bearer wrong" } }).ok, false);
-  assert.equal(verifyLlmBearer({ headers: {} }).ok, false);
-  // Case of the header and of the scheme are both the sender's business.
-  assert.equal(verifyLlmBearer({ headers: { Authorization: "bearer llm-test-secret" } }).ok, true);
-  // No secret configured is a NO. An endpoint that answers anybody is an endpoint that will
-  // eventually answer somebody, and this one spends model credit and reads a private thread aloud.
-  const none = verifyLlmBearer({ headers: AUTH, secret: "" });
-  assert.equal(none.ok, false);
-  assert.match(none.why, /ELEVENLABS_LLM_SECRET/);
-
-  const call = ownerCall();
-  const out = await llmRequest({ rawBody: bodyFor(call), headers: { authorization: "Bearer nope" }, generate: scripted("should never run") });
-  assert.equal(out.status, 401);
-  assert.equal(out.stream, undefined);
-  assert.match(JSON.parse(out.body).error.message, /does not match/);
-});
+// ---------- a turn that cannot be served ----------
 
 test("a request Reason cannot place gets one honest line and a hang-up, not silence", async () => {
   // Somebody IS on a phone. Dead air is the worst answer, and pretending is worse than dead air.
-  const out = await llmRequest({ rawBody: JSON.stringify({ messages: [], elevenlabs_extra_body: {} }), headers: AUTH });
+  const out = await llmRequest({ rawBody: JSON.stringify({ messages: [], extra_body: {} }), headers: AUTH });
   assert.equal(out.status, 200);
   const r = await drain(out.stream);
   assert.match(r.said, /can't pick this one up/i);
@@ -143,13 +118,12 @@ test("a request Reason cannot place gets one honest line and a hang-up, not sile
 
 test("the call is found by Reason's own ids, and by the conversation id for an inbound one", () => {
   const out = thirdPartyCall();
-  const found = identifyCall({ elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: out.id, [EXTRA_BODY_KEYS.conversationId]: C } });
+  const found = identifyCall({ extra_body: { [EXTRA_BODY_KEYS.callId]: out.id, [EXTRA_BODY_KEYS.conversationId]: C } });
   assert.equal(found.ok, true);
   assert.equal(found.call.id, out.id);
   assert.equal(found.kind, "third_party");
 
-  // Inbound: nothing of Reason's was in the request, because Reason did not start the call. The row
-  // the personalization webhook wrote during the ring is found by the platform's own id.
+  // A turn with no ids of Reason's is found by the voice's own call id on the row.
   const inbound = ownerCall();
   const byConv = identifyCall({ conversation_id: "conv_in" });
   assert.equal(byConv.ok, true);
@@ -157,8 +131,8 @@ test("the call is found by Reason's own ids, and by the conversation id for an i
   assert.equal(byConv.kind, "owner");
 
   // A call id without its conversation is a number anybody could count up to.
-  assert.equal(identifyCall({ elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: out.id } }).ok, false);
-  assert.equal(identifyCall({ elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: 99999, [EXTRA_BODY_KEYS.conversationId]: C } }).ok, false);
+  assert.equal(identifyCall({ extra_body: { [EXTRA_BODY_KEYS.callId]: out.id } }).ok, false);
+  assert.equal(identifyCall({ extra_body: { [EXTRA_BODY_KEYS.callId]: 99999, [EXTRA_BODY_KEYS.conversationId]: C } }).ok, false);
   assert.equal(identifyCall({ conversation_id: "conv_nobody" }).ok, false);
   assert.match(identifyCall({}).why, /neither Reason's own call ids nor a conversation id/);
 });
@@ -167,19 +141,19 @@ test("a request that disagrees with the row about what kind of call this is gets
   // The two readings differ by exactly the thing that matters: a restaurant hearing a goal versus a
   // restaurant hearing somebody's calendar. So a disagreement is refused, not resolved.
   const out = thirdPartyCall();
-  const lying = identifyCall({ elevenlabs_extra_body: {
+  const lying = identifyCall({ extra_body: {
     [EXTRA_BODY_KEYS.callId]: out.id, [EXTRA_BODY_KEYS.conversationId]: C, [EXTRA_BODY_KEYS.kind]: "owner",
   } });
   assert.equal(lying.ok, false);
   assert.match(lying.why, /says this is a owner call and call #\d+ is a third_party call/);
 
   const mine = ownerCall();
-  assert.equal(identifyCall({ elevenlabs_extra_body: {
+  assert.equal(identifyCall({ extra_body: {
     [EXTRA_BODY_KEYS.callId]: mine.id, [EXTRA_BODY_KEYS.conversationId]: C, [EXTRA_BODY_KEYS.kind]: "third_party",
   } }).ok, false);
 
   // Agreeing is fine, and so is saying nothing.
-  assert.equal(identifyCall({ elevenlabs_extra_body: {
+  assert.equal(identifyCall({ extra_body: {
     [EXTRA_BODY_KEYS.callId]: out.id, [EXTRA_BODY_KEYS.conversationId]: C, [EXTRA_BODY_KEYS.kind]: "third_party",
   } }).ok, true);
 });
@@ -187,7 +161,7 @@ test("a request that disagrees with the row about what kind of call this is gets
 test("a call that has already ended gets no more turns", () => {
   const out = thirdPartyCall();
   db.updateCall(C, out.id, { state: "completed" });
-  const r = identifyCall({ elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: out.id, [EXTRA_BODY_KEYS.conversationId]: C } });
+  const r = identifyCall({ extra_body: { [EXTRA_BODY_KEYS.callId]: out.id, [EXTRA_BODY_KEYS.conversationId]: C } });
   assert.equal(r.ok, false);
   assert.match(r.why, /already completed/);
 });
@@ -412,7 +386,7 @@ test("end_call leaves as an OpenAI function call and ends the turn", async () =>
 test("the other side switches to Spanish: the function call goes, and the disclosure is re-spoken", async () => {
   const call = thirdPartyCall();
 
-  // Turn one: they answer in Spanish. The voice half is ElevenLabs' own tool, which it only acts on
+  // Turn one: they answer in Spanish. The voice half is the line's own tool, which it only acts on
   // if the model answers with a standard function call — so both halves have to happen together.
   const first = await llmRequest({
     rawBody: bodyFor(call, { messages: [{ role: "user", content: "¿Diga?" }] }), headers: AUTH,
@@ -895,7 +869,7 @@ test("enough strikes on calls pause that person, and the master is told the coun
   const them = "dm:sendblue:+12125551111";
   db.upsertAccount({ conversationId: them, channel: "sendblue", address: "+12125551111", name: "Kofi" });
   const call = db.createCall(them, {
-    provider: "elevenlabs", toNumber: "+12125551111", isOwner: true, goal: "Kofi called", facts: [],
+    provider: "gptlive", toNumber: "+12125551111", isOwner: true, goal: "Kofi called", facts: [],
     direction: "in", externalId: "conv_kofi", state: "in_progress",
   });
   const refuse = async () => ({ verdict: "harm", category: "weapons", note: "asked for a build" });
@@ -906,7 +880,7 @@ test("enough strikes on calls pause that person, and the master is told the coun
     for (let i = 0; i < 2; i++) {
       const body = JSON.stringify({
         model: "reason", messages: [{ role: "user", content: `try number ${i}` }],
-        elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: them },
+        extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: them },
       });
       await drain((await llmRequest({ rawBody: body, headers: AUTH, screen: refuse, generate: scripted("x") })).stream);
     }
@@ -1081,7 +1055,6 @@ test("the chunk helper is exactly the documented framing", () => {
     choices: [{ index: 0, delta: { content: "hi" }, finish_reason: null }],
   })}\n\n`);
   assert.equal(SSE_DONE, "data: [DONE]\n\n");
-  assert.equal(LLM_PATH, "/calls/elevenlabs/llm");
 });
 
 test("which backend answers a voice turn is one environment variable", () => {
@@ -1283,25 +1256,23 @@ test("every request is logged on arrival with its call id, and a body that will 
   assert.ok(seen.some(l => l.voice_llm_request === call.id && l.kind === "owner"), "arrival is logged with the call id");
 
   const bad = [];
-  const broken = `{"messages":[],"elevenlabs_extra_body":{"${EXTRA_BODY_KEYS.callId}":${call.id},`;
+  const broken = `{"messages":[],"extra_body":{"${EXTRA_BODY_KEYS.callId}":${call.id},`;
   const r = await llmRequest({ rawBody: broken, headers: AUTH, log: (l) => bad.push(l) });
   assert.equal(r.status, 400);
   assert.ok(bad.some(l => l.voice_llm_bad_json === call.id), "the 400 carries the call id it was for");
 });
 
-test("a reply the server ends without a stream still leaves a line", async () => {
+test("there is no HTTP route to a voice turn: the old custom-LLM path is a 404", async () => {
   const { createServer } = await import("../src/http.js");
-  const seen = [];
-  const server = createServer({ router: null, runtime: null, log: (l) => seen.push(l) });
+  const server = createServer({ router: null, runtime: null, log: () => {} });
   await new Promise(r => server.listen(0, "127.0.0.1", r));
   try {
-    const res = await fetch(`http://127.0.0.1:${server.address().port}${LLM_PATH}`, {
-      method: "POST", headers: { ...AUTH, "content-type": "application/json" }, body: "{",
+    const res = await fetch(`http://127.0.0.1:${server.address().port}/calls/elevenlabs/llm`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
     });
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 404);
     await res.text();
   } finally { server.close(); }
-  assert.ok(seen.some(l => l.call_llm_not_streamed === 400), "the non-stream end is in the journal");
 });
 
 test("the holding line and then nothing from the model: the turn still closes with a sentence", async () => {

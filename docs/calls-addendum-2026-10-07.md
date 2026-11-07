@@ -1,6 +1,10 @@
 # Calls addendum — 2026-10-07, from Omari's consolidated product prompt
 
-This is an **addition to `docs/calls-elevenlabs-plan.md`**, not a replacement. It comes from the
+> **History.** Written for the ElevenLabs provider, which was removed on 2026-11-07; every call is
+> GPT-Live over Twilio now (`src/calls/gptlive.js`). The passphrase, read-back, errand and
+> degraded-context parts still hold; the agent, TTS-model and ElevenLabs-setting parts no longer apply.
+
+This was an **addition to the ElevenLabs calls plan** (since deleted), not a replacement. It comes from the
 full product prompt Omari wrote for Reason (messaging-first personal assistant). Only the
 voice/call-relevant parts are here; the photo, image-generation, email and website sections of that
 prompt belong to other sessions and are deliberately left out.

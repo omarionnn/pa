@@ -18,7 +18,6 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_UNDO_SECONDS = "0";
 
@@ -43,7 +42,7 @@ beforeEach(() => {
   db.saveConversation(C, []);
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: OTHER, channel: "sendblue", address: "+13105550000", name: "Ama", isOperator: false });
-  Object.assign(config, { lineTalk: false, callIdentity: false, makerName: "Saafi Interactions Lab", callVoice: "gptlive", thirdPartyVoice: "owner", ...TWILIO, gptliveInboundFallbackUrl: "https://api.us.elevenlabs.io/twilio/inbound_call" });
+  Object.assign(config, { lineTalk: false, callIdentity: false, makerName: "Saafi Interactions Lab", callVoice: "gptlive", thirdPartyVoice: "owner", ...TWILIO });
 });
 
 const lineRow = (over = {}) => {
@@ -149,7 +148,7 @@ async function voiceSays(s, text) {
 
 test("the flag: owner = the operator's errands only, gptlive = everyone's, unset = nobody's; the routes are listened for", () => {
   assert.equal(gl.thirdPartyVoiceFor(C), true);
-  assert.equal(gl.thirdPartyVoiceFor(OTHER), false, "owner: another person's errands stay on ElevenLabs");
+  assert.equal(gl.thirdPartyVoiceFor(OTHER), false, "owner: another person's errands stay on the wrapped provider");
   config.thirdPartyVoice = "gptlive";
   assert.equal(gl.thirdPartyVoiceFor(OTHER), true);
   config.thirdPartyVoice = "";
@@ -166,7 +165,7 @@ test("place: an errand on GPT-Live dials with async AMD, opens silent and names 
   const posted = [];
   const fetchImpl = async (url, init) => { posted.push({ url, body: String(init.body) }); return { ok: true, status: 201, json: async () => ({ sid: "CA77" }) }; };
   const p = gl.withGptLive(inner, { fetchImpl });
-  const row = db.createCall(C, { provider: "elevenlabs", toNumber: "+13105559999", isOwner: false, goal: "a table", facts: [], announcement: ANN, state: "placing" });
+  const row = db.createCall(C, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "a table", facts: [], announcement: ANN, state: "placing" });
   const out = await p.place({ to: "+13105559999", kind: "third_party", conversationId: C, callId: row.id, announcement: ANN });
   assert.equal(out.provider, "gptlive");
   assert.equal(out.openingWaits, true);
@@ -178,8 +177,8 @@ test("place: an errand on GPT-Live dials with async AMD, opens silent and names 
   const ann = db.getCall(C, row.id).announcement;
   assert.equal(ann, "Hey, hi — this is Reason, an AI assistant calling for Omari. Just so you know, this call is recorded. If you'd rather not, just let me know.");
 
-  // Another user's errand on =owner, and every errand with the flag unset: ElevenLabs.
-  const theirs = db.createCall(OTHER, { provider: "elevenlabs", toNumber: "+13105559998", isOwner: false, goal: "x", facts: [], announcement: ANN, state: "placing" });
+  // Another user's errand on =owner, and every errand with the flag unset: the wrapped provider.
+  const theirs = db.createCall(OTHER, { provider: "gptlive", toNumber: "+13105559998", isOwner: false, goal: "x", facts: [], announcement: ANN, state: "placing" });
   await p.place({ to: "+13105559998", kind: "third_party", conversationId: OTHER, callId: theirs.id });
   config.thirdPartyVoice = "";
   await p.place({ to: "+13105559999", kind: "third_party", conversationId: C, callId: row.id });
@@ -531,9 +530,13 @@ test("a place ringing back about an errand: GPT-Live on =owner, the disclosure s
   const s = startLine({ row: back, brain: async () => ({ text: "", tools: [], calls: [] }) });
   const first = s.live.of("session.commentary.append")[0];
   assert.match(first.content, /this is Reason, an AI assistant calling for Omari\. Just so you know, this call is recorded\..*You're calling back about a table for two at 7 tonight/);
-  // Flag unset: ElevenLabs, as before.
+  // Flag unset: still the errand line on GPT-Live (there is no other voice to hand it to), never a Redirect.
   config.thirdPartyVoice = "";
-  assert.match(ring("+13105559999", "CA_back2").body, /<Redirect method="POST">https:\/\/api\.us\.elevenlabs\.io/);
+  const again = ring("+13105559999", "CA_back2").body;
+  assert.match(again, /<Stream url="wss:\/\/reason\.example\.test\/calls\/gptlive\/stream\//);
+  assert.doesNotMatch(again, /<Redirect|eleven/i);
+  const back2 = db.db.prepare("SELECT * FROM calls WHERE external_id = 'gptlive:CA_back2'").get();
+  assert.equal(back2.is_owner, 0, "a ring-back is the errand line, not an owner call");
 });
 
 // ---------- an owner call is untouched ----------
@@ -686,8 +689,8 @@ test("review 6: a machine verdict during a turn that spoke is read once those wo
   assert.match(notes[1], /answering-machine check/);
 });
 
-test("review 8: the first-person disclosure floor is GPT-Live's only; an ElevenLabs call is as before", () => {
-  const row = db.createCall(C, { provider: "elevenlabs", toNumber: "+13105559990", isOwner: false, goal: "x", facts: [], announcement: ANN, state: "in_progress" });
+test("review 8: the first-person disclosure floor is GPT-Live's only; another provider's call is as before", () => {
+  const row = db.createCall(C, { provider: "bland", toNumber: "+13105559990", isOwner: false, goal: "x", facts: [], announcement: ANN, state: "in_progress" });
   db.updateCall(C, row.id, { opening_waits: 1 });
   const r = hold.newParty(db.getCall(C, row.id), { who: "Sam" });
   assert.equal(r.party, 2);

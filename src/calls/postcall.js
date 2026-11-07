@@ -1,13 +1,7 @@
-// The call is over. This is what Reason does about it.
+// The call is over. This is what Reason does about it: the settle steps every finished call takes
+// (GPT-Live's `settleGptLive` in ./gptlive.js runs them in this order).
 //
-// ElevenLabs sends three post-call webhooks, HMAC-signed in `ElevenLabs-Signature`
-// ("Post-call webhooks", read 2026-10-05):
-//
-//   post_call_transcription    the conversation, with the transcript and the metadata
-//   post_call_audio            the audio, base64, for an account configured to get it that way
-//   call_initiation_failure    the call never happened at all
-//
-// Four things happen here and each is the answer to a way a call can quietly go wrong:
+// Four things happen and each is the answer to a way a call can quietly go wrong:
 //
 //   1. **The transcript becomes part of the conversation.** Written into the person's own thread as
 //      real turns, so a text ten minutes later continues what was said on the phone instead of
@@ -23,130 +17,20 @@
 //   4. **A job hears what its own call said.** A call placed as a step of a task is stamped with that
 //      task (`calls.task_id`), and the outcome goes onto the task's log — so the job knows, four
 //      hours and sixty trimmed messages later, what the call came back with.
-//
-// Nothing here has run against the real platform. The signature scheme, the event names and the
-// field names are from their docs; which of `metadata.termination_reason` and friends really carries
-// "voicemail" is the one that most needs proving on Friday, and it is in docs/unverified.md.
-import * as strangerCalls from "../strangercalls.js";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { config, clock, stamp } from "../config.js";
-import { LIVE_STATES, SPOKE_TO_SOMETHING } from "./provider.js";
-import { mimeFor } from "./recordings.js";
-import * as fromcall from "./fromcall.js";
+import { SPOKE_TO_SOMETHING } from "./provider.js";
 import * as verify from "./verify.js";
 import { UNVERIFIED_CALL_TAG } from "../trust.js";
 import * as callOutcome from "./outcome.js";
-import { endFieldsFor } from "./metrics.js";
-
-/** The route ElevenLabs is pointed at for post-call deliveries. Quoted in the setup checklist. */
-export const POST_CALL_PATH = "/calls/elevenlabs/post-call";
-
-/**
- * One post-call delivery.
- *
- * `settle` is `settleCall` from src/tools.js, injected rather than imported: this module is loaded by
- * http.js, by tests and by the rehearsal harness, and src/tools.js pulls in most of the codebase.
- * Same reason `storeAudio` is injectable.
- *
- * Returns `{ status, body }`. A rejected signature is a 401 and nothing is written — a delivery that
- * writes a transcript into somebody's own thread is not something to take on trust.
- */
-export async function postCallRequest({
-  rawBody, headers, provider = null, runtime = null, log = () => {},
-  settle = null, fetchImpl = null, now = clock.now(),
-}) {
-  const st = provider?.status?.();
-  if (!provider || typeof provider.receiveWebhook !== "function" || st?.name !== "elevenlabs") {
-    return { status: 404, body: { error: "not found" } };
-  }
-
-  const parsed = provider.receiveWebhook({ rawBody, headers, now });
-  if (!parsed.ok) {
-    log({ post_call_rejected: parsed.error });
-    return { status: parsed.status ?? 401, body: { error: parsed.error } };
-  }
-
-  // The call this is about, by the platform's own conversation id. Nothing else in the body is used
-  // to decide which row gets written to.
-  const row = parsed.externalId ? db.callByExternalId("elevenlabs", parsed.externalId) : null;
-  if (!row) {
-    // Acknowledged so they stop retrying — there is nothing wrong with the delivery, Reason simply
-    // has no call under that id, which is what a conversation started outside Reason looks like.
-    log({ post_call_unknown: parsed.externalId, type: parsed.type });
-    // An unknown caller's call has no row, only its stranger_calls entry: its real length and words.
-    if (parsed.type !== "post_call_audio" && parsed.live) {
-      try { if (strangerCalls.settleFromPostCall({ externalId: parsed.externalId, live: parsed.live, now })) log({ stranger_call_settled: parsed.externalId }); } catch { /* acknowledged anyway */ }
-    }
-    return { status: 200, body: { ok: true, known: false, type: parsed.type } };
-  }
-
-  if (parsed.type === "post_call_audio") {
-    const out = await fileAudioFromWebhook({ row, base64: parsed.audioBase64, log });
-    return { status: 200, body: { ok: out.ok, call_id: row.id, type: parsed.type, recording: out.state, ...(out.error ? { error: out.error } : {}) } };
-  }
-
-  const live = parsed.live;
-  if (!live) return { status: 200, body: { ok: true, call_id: row.id, type: parsed.type, nothing: true } };
-
-  // Nothing has finished. Acknowledged so they stop retrying, and nothing written: a call still going
-  // has no outcome to write.
-  if (LIVE_STATES.includes(live.state)) {
-    return { status: 200, body: { ok: true, call_id: row.id, state: live.state } };
-  }
-  // Already settled. Providers retry, and settling twice would count the same minutes twice and
-  // write the same transcript into the thread again.
-  if (!LIVE_STATES.includes(row.state) && row.recording_state !== "pending") {
-    // Except for the record of how it ended: the lost-calls sweep writes 'lost' when nobody has said,
-    // and a delivery that arrives after it is somebody saying. Only the end reason and the platform's
-    // cost are filled — nothing is settled twice.
-    if (row.end_reason === "lost") lateEnd({ row, live, log });
-    return { status: 200, body: { ok: true, call_id: row.id, state: row.state, already: true } };
-  }
-
-  // One place where a call's outcome is written down, whoever found out. Counts the minutes against
-  // the person's day and files the audio or reports its absence.
-  const settled = settle
-    ? await settle(row.conversation_id, row, live, fetchImpl ? { fetchImpl } : {})
-    : row;
-  // Stamped in the same tick as the steps up to the owner's turn, so a restart from here on finds a
-  // call with only that turn left (see resumeSettles).
-  db.updateCall(settled.conversation_id, settled.id, { settle_started_at: clock.now() });
-
-  const wrote = writeCallIntoThread({ row: settled, live, log });
-  noteThirdPartyTurns({ row: settled, live });
-  const noted = noteOnTask({ row: settled, live, log });
-  // A call he asked for BY VOICE, mid-call, closes its request here (2026-10-07 addendum, section 8:
-  // "one result back into the same conversation"). From the settled row, so what the request ends up
-  // saying is what the call record says and not what any model reported about it. A call nobody
-  // requested this way is not one of these, and `onCallEnded` says so and does nothing.
-  const request = fromcall.onCallEnded(settled, { log });
-  const told = await tellTheOwner({ row: settled, live, runtime, log });
-  db.updateCall(settled.conversation_id, settled.id, { settled_at: clock.now() });
-
-  log({
-    post_call: row.id, state: settled.state, recording: settled.recording_state,
-    turns_written: wrote.turns, told: told.sent, task: noted.taskId ?? null,
-    ...(request.ok ? { call_request: request.state } : {}),
-  });
-  return {
-    status: 200,
-    body: {
-      ok: true, call_id: row.id, type: parsed.type, state: settled.state,
-      recording: settled.recording_state, turns_written: wrote.turns, told_owner: told.sent,
-      // Only on a call he asked for by voice mid-call, and absent on every other call rather than
-      // reported as a request in no state.
-      ...(request.ok ? { call_request: request.state } : {}),
-    },
-  };
-}
 
 /**
  * At boot: the calls a restart cut off between the thread and the owner's turn, finished once.
  *
  * Call 57 (2026-10-31): end_call at 19:33:54, a deploy restarted the service at 19:34:06, and the
  * turn that sends the summary and the audio died with it. The row, the thread and the task note are
- * written in one tick with `settle_started_at` (both providers), so what is left is `tellTheOwner`
+ * written in one tick with `settle_started_at`, so what is left is `tellTheOwner`
  * alone; it runs once per call (`settle_resumes`), and not at all when the owner was already told.
  * The call's words come back off the row's own transcript. Run after the port is open: Sendblue
  * fetches the audio from this process.
@@ -173,21 +57,6 @@ export async function resumeSettles({ runtime, log = () => {}, now = clock.now()
   return resumed;
 }
 
-/** A late delivery's end reason and cost onto a row the sweep wrote off as lost. */
-function lateEnd({ row, live, log = () => {} }) {
-  let turns = [];
-  try { turns = db.callTurns(row.id); } catch { /* no turns is no evidence */ }
-  const end = endFieldsFor(row, live, turns);
-  if (!end.end_reason) return;
-  db.updateCall(row.conversation_id, row.id, {
-    end_reason: end.end_reason, end_detail: end.end_detail,
-    ...(row.cost_credits == null && end.cost_credits != null ? { cost_credits: end.cost_credits } : {}),
-    ...(!row.cost_raw && end.cost_raw ? { cost_raw: end.cost_raw } : {}),
-    ...(row.cost_cents == null && Number.isFinite(live.costCents) ? { cost_cents: live.costCents } : {}),
-  });
-  log({ call_end_corrected: row.id, from: "lost", to: end.end_reason });
-}
-
 /**
  * The call, written into the person's thread as turns.
  *
@@ -208,7 +77,7 @@ function lateEnd({ row, live, log = () => {} }) {
 /**
  * Third-party calls: the transcript doesn't go into conversations.messages but should feed memory.
  * Not when only a machine answered: a recording's opening hours are not something a person said.
- * Both voices (ElevenLabs' delivery here, GPT-Live's `settleGptLive`).
+ * Run from GPT-Live's `settleGptLive`.
  */
 export function noteThirdPartyTurns({ row, live }) {
   if (row.is_owner || !SPOKE_TO_SOMETHING.includes(row.state) || callOutcome.answeredByMachine(row)) return 0;
@@ -472,55 +341,6 @@ export function ownerEvent({ row, live = null }) {
       ? `\nSomething IS owed: they started saying something just as the call ended${cut.words ? ` (all that came through: "${String(cut.words).replace(/"/g, "'")}")` : ""}`
         + ` and it was cut off. Send one short, warm line saying it sounded like they were saying something as you hung up, and ask what it was.`
       : "");
-}
-
-/**
- * The audio off a `post_call_audio` delivery, filed as the file Reason owns.
- *
- * The base64 is written to a temp file and handed to the same `storeRecording` every other recording
- * goes through, which is what sniffs the bytes. The Bland lesson applies here with nothing changed:
- * a body that is not audio must not become `call-7.mp3` and be reported as saved, and the only thing
- * that can tell is the bytes.
- */
-export async function fileAudioFromWebhook({ row, base64, log = () => {} }) {
-  if (row.recording_state === "stored") return { ok: true, state: "stored", already: true };
-  if (!base64 || typeof base64 !== "string") {
-    return { ok: false, state: row.recording_state, error: "the delivery carried no audio" };
-  }
-  const { storeRecording } = await import("./recordings.js");
-  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-
-  let dir = null;
-  try {
-    const bytes = Buffer.from(base64, "base64");
-    if (!bytes.length) return { ok: false, state: row.recording_state, error: "the audio in the delivery was empty" };
-    dir = mkdtempSync(join(tmpdir(), "reason-call-audio-"));
-    // `.mp3` is a guess and is treated as one: `storeRecording` names the file for what the bytes
-    // really are and refuses anything that is not audio at all.
-    const tmp = join(dir, `call-${row.id}.mp3`);
-    writeFileSync(tmp, bytes);
-    const saved = await storeRecording(row.id, { path: tmp, format: "mp3", seconds: row.duration_s ?? undefined });
-    if (!saved.ok) {
-      db.updateCall(row.conversation_id, row.id, { recording_state: "missing", recording_why: saved.error });
-      log({ call_audio_webhook_refused: row.id, why: saved.error });
-      return { ok: false, state: "missing", error: saved.error };
-    }
-    db.updateCall(row.conversation_id, row.id, {
-      recording_state: "stored", recording_file: saved.file, recording_format: saved.format,
-      recording_seconds: saved.seconds ?? row.duration_s ?? null, recording_bytes: saved.bytes,
-      recording_sha256: saved.sha256, recording_why: "",
-    });
-    log({ call_audio_webhook_stored: row.id, bytes: saved.bytes, format: saved.format, mime: mimeFor(saved.format) });
-    return { ok: true, state: "stored", bytes: saved.bytes, format: saved.format };
-  } catch (e) {
-    const why = (e?.message ?? String(e)).split("\n")[0];
-    log({ call_audio_webhook_threw: row.id, why });
-    return { ok: false, state: row.recording_state, error: why };
-  } finally {
-    if (dir) { try { rmSync(dir, { recursive: true, force: true }); } catch { /* a temp dir is not worth failing over */ } }
-  }
 }
 
 /** Only here so a caller can log the install's owner name without importing config itself. */

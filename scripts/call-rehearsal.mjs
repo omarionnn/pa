@@ -8,16 +8,15 @@
 //
 // What is real here and what is not, exactly:
 //
-//   REAL — src/calls/voice.js, every line of it. The bearer check, the call lookup, the two context
+//   REAL — src/calls/voice.js, every line of it. The call lookup, the two context
 //   builders, the SSE framing, the sentence streaming, the URL rule, the language bookkeeping, the
 //   tool split. The database. The person's actual thread and their actual open jobs. And the WORDS:
 //   the model really answers, on the Claude subscription through the `claude` CLI, so what is printed
 //   is what Reason would say rather than what a fixture says it would say.
 //
-//   NOT REAL — the phone. There is no ElevenLabs, no Twilio, no audio and no barge-in. The other side
-//   of the call is a script in this file, and the platform is a loop that posts the OpenAI-shaped
-//   request their docs describe and reads the SSE back. Whether the real platform accepts that exact
-//   framing is the thing Friday proves; see docs/unverified.md.
+//   NOT REAL — the phone. There is no GPT-Live, no Twilio, no audio and no barge-in. The other side
+//   of the call is a script in this file, and the voice is a loop that hands Reason the OpenAI-shaped
+//   turn GPT-Live's relay hands it (`reasonTurn` in src/calls/gptlive.js) and reads the SSE back.
 //
 //   NOT REAL — the tools, on this backend. The subscription path has no tool loop (src/backends/cli.js
 //   explains why), so an owner call here can talk about what it would do and cannot do it. On the API
@@ -43,21 +42,14 @@ process.env.REASON_OWNER_NAME = process.env.REASON_OWNER_NAME || "Omari";
 process.env.REASON_TZ = process.env.REASON_TZ || "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = process.env.REASON_OWNER_NUMBER || "+12025551234";
-// The secret this rehearsal's own requests carry. Not a real one; there is no real one yet.
-process.env.ELEVENLABS_LLM_SECRET = "rehearsal-secret";
-process.env.ELEVENLABS_API_KEY = "rehearsal-key";
-process.env.ELEVENLABS_AGENT_ID = "rehearsal-agent";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "rehearsal-number";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "rehearsal-hook";
 // The words have to be real words, and this is the backend that costs nothing. A real call would run
 // on the API path — a phone turn cannot wait on a headless CLI start — which is one env var.
 process.env.REASON_CALL_BACKEND = process.env.REASON_CALL_BACKEND || "claude-cli";
 
 const voice = await import("../src/calls/voice.js");
-const { llmRequest, generatorFor, callBackendName, MAX_VOICE_TOOL_ROUNDS } = voice;
-const { EXTRA_BODY_KEYS } = await import("../src/calls/elevenlabs.js");
+const { llmRequest, generatorFor, callBackendName, MAX_VOICE_TOOL_ROUNDS, EXTRA_BODY_KEYS } = voice;
 const { announcementFor, callRulesFor } = await import("../src/calls/provider.js");
-const { inboundRequest } = await import("../src/calls/inbound.js");
+const { openingLineFor } = await import("../src/calls/inbound.js");
 const db = await import("../src/db.js");
 const { config, clock, stamp } = await import("../src/config.js");
 const speech = await import("../src/voice.js");
@@ -83,8 +75,8 @@ const rule = (t) => say(`\n${"─".repeat(78)}\n${t}\n${"─".repeat(78)}`);
 // ---------- the pretend phone platform ----------
 
 /**
- * One turn, exactly as ElevenLabs documents it: the OpenAI Chat Completions request with the call so
- * far in `messages` and our own fields in `elevenlabs_extra_body`, answered as SSE.
+ * One turn, as the voice relay hands it over: the OpenAI Chat Completions request with the call so
+ * far in `messages` and our own fields in `extra_body`, answered as SSE.
  *
  * Reads the stream the way the platform would — collecting the content deltas into what the voice
  * would speak, and the tool_calls into what the platform would act on.
@@ -99,7 +91,7 @@ async function oneTurn({ call, messages, extra = true }) {
       ...messages,
     ],
     ...(extra
-      ? { elevenlabs_extra_body: {
+      ? { extra_body: {
         [EXTRA_BODY_KEYS.callId]: call.id,
         [EXTRA_BODY_KEYS.conversationId]: call.conversation_id,
         [EXTRA_BODY_KEYS.kind]: call.is_owner ? "owner" : "third_party",
@@ -109,7 +101,6 @@ async function oneTurn({ call, messages, extra = true }) {
 
   const out = await llmRequest({
     rawBody: JSON.stringify(body),
-    headers: { authorization: `Bearer ${process.env.ELEVENLABS_LLM_SECRET}` },
     generate: generatorFor(),
     log: (entry) => {
       if (entry?.voice_turn_threw) faults.push({ what: "the turn threw", why: entry.why });
@@ -268,20 +259,12 @@ async function ownerInbound() {
     goal: "find a place with Friday availability for 4, near them, and get it booked",
   }, { conversationId: C, messages: [] });
 
-  // The ring itself, through the real personalization webhook — which is what builds the opening
-  // line out of what is actually open, and what creates the row the turns are then scoped by.
-  const router = { get: () => ({ status: () => ({ status: "live" }) }), statuses: () => [{ name: "sendblue", status: "live" }] };
-  const { ElevenLabsCallProvider } = await import("../src/calls/elevenlabs.js");
-  const ring = inboundRequest({
-    rawBody: JSON.stringify({
-      caller_id: OWNER, agent_id: "rehearsal-agent", called_number: "+16465550000",
-      call_sid: "CA-rehearsal", conversation_id: "conv_rehearsal_in",
-    }),
-    provider: new ElevenLabsCallProvider(), router,
+  // The ring itself: the row GPT-Live's inbound webhook writes for a known caller, and its opening line.
+  const call = db.createCall(C, {
+    provider: "gptlive", toNumber: OWNER, isOwner: true, goal: "Omari called Reason", facts: [],
+    direction: "in", externalId: "gptlive:CA-rehearsal", state: "in_progress", announcement: "",
   });
-  if (ring.status !== 200) throw new Error(`the ring was refused: ${JSON.stringify(ring.body)}`);
-  const opening = ring.body.conversation_config_override.agent.first_message;
-  const call = db.callByExternalId("elevenlabs", "conv_rehearsal_in");
+  const opening = openingLineFor({ person: { name: process.env.REASON_OWNER_NAME } });
 
   const transcript = await playCall({
     call, opening,
@@ -322,7 +305,7 @@ async function thirdPartyOutbound() {
   const outboxBefore = db.db.prepare("SELECT COUNT(*) n FROM outbox").get().n;
 
   const call = db.createCall(C, {
-    provider: "elevenlabs", toNumber: RESTAURANT, isOwner: false,
+    provider: "gptlive", toNumber: RESTAURANT, isOwner: false,
     goal: "ask whether they have a table for four at eight on Friday, and if not the nearest time they do have",
     facts: ["the booking is under the name Omari", "four people", "Friday"],
     announcement: ANN, externalId: "conv_rehearsal_out", direction: "out",
@@ -392,7 +375,7 @@ async function busyPlace() {
   });
 
   const call = db.createCall(C, {
-    provider: "elevenlabs", toNumber: CLEANERS, isOwner: false,
+    provider: "gptlive", toNumber: CLEANERS, isOwner: false,
     goal: b.goal, facts: b.facts, announcement: ANN, externalId: "conv_rehearsal_busy", direction: "out",
   });
   db.updateCall(C, call.id, { brief: JSON.stringify(b), hold_budget_s: b.maxHoldSeconds });
@@ -491,8 +474,8 @@ async function asVoiceNote(name, transcript) {
 try {
   rule("A REHEARSAL, NOT A CALL");
   say(`The words are real: the model answers through the ${callBackendName()} backend.`);
-  say(`The phone is not: there is no ElevenLabs and no Twilio here. The other side is a script in`);
-  say(`scripts/call-rehearsal.mjs, and the platform is a loop posting the request their docs describe.`);
+  say(`The phone is not: there is no GPT-Live and no Twilio here. The other side is a script in`);
+  say(`scripts/call-rehearsal.mjs, and the voice is a loop handing Reason each turn.`);
   say(`Database: ${process.env.REASON_DB_PATH} (thrown away${keep ? " — kept, --keep" : " at the end"})`);
   if (callBackendName() === "claude-cli") {
     say(`\nNote on tools: the subscription backend has no tool loop, so on an OWNER call here Reason can`);

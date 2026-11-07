@@ -981,8 +981,8 @@ the first time it speaks instead the hold is over, and when the budget runs out
 (`REASON_CALL_MAX_HOLD_SECONDS`, **5 minutes by default**, overridable per call) it rings off with a
 polite line. That is its own outcome — "nobody came to the phone in time" — and **not** a failure and
 **not** "could not reach them", because it did reach them and that changes what you do next. The clock
-is ours on purpose: ElevenLabs has no hold detection, and their silence timer measures silence, which
-hold music means never arrives.
+is ours on purpose: no voice has hold detection, and a silence timer measures silence, which hold
+music means never arrives.
 
 **Menus.** It listens to the whole menu before pressing anything, then sends DTMF. Their own docs say
 some phone systems miss in-band tones, so a key that gets no reaction is re-sent once; a third press is
@@ -1041,7 +1041,7 @@ exists for is the dangerous one: a call that dropped right after "you're booked"
 and two charges. It is a different goal, booking switched off: ring back and **ask whether it went
 through**.
 
-**Ringing back.** A call hands out `ELEVENLABS_PHONE_NUMBER` when a busy place offers to return the
+**Ringing back.** A call hands out `TWILIO_FROM_NUMBER` when a busy place offers to return the
 call. When they do, Reason recognises the number as that errand continuing and gives them the
 third-party context — the goal, the approved facts, the rules, the announcement — rather than the one
 polite line a stranger gets. Never an owner call, whatever the caller id says.
@@ -1087,7 +1087,7 @@ asked for. A call the window stops is **reported** to you, not silently dropped.
 
 Every number in this section is a **default I chose, not a finding** — max hold, how many calls at once,
 retries, quiet hours, languages. They are all one line in `.env`, and
-`docs/calls-elevenlabs-plan.md` has the reasoning and what each one trades off. Budget
+`src/config.js` has the reasoning beside each. Budget
 (`REASON_CALL_MAX_ERRAND_CENTS`) is deliberately unset: the existing daily caps are the only ceiling,
 and inventing a money number was not mine to do.
 
@@ -1130,30 +1130,26 @@ a real call can settle.
 
 #### Reason itself on the phone
 
-Bland has a voice of its own, handed a prompt once. The second provider does not: **ElevenLabs Agents
-with Reason as the custom LLM** (`src/calls/elevenlabs.js`, `src/calls/voice.js`), where the platform
-handles the line, the hearing, the speaking and the barge-in, and every word said is a Reason turn.
-Which means calls go **both ways**: people can ring the number and talk to their own Reason, with
-their memory, their open jobs and their tools.
+Bland has a voice of its own, handed a prompt once. The real provider does not: **GPT-Live over a
+Twilio number** (`src/calls/gptlive.js`), where GPT-Live is only the voice — it listens, speaks and
+hands every question and action to Reason (client delegation into `src/calls/voice.js`, in process),
+so every word that matters is a Reason turn. Which means calls go **both ways**: people can ring the
+number and talk to their own Reason, with their memory, their open jobs and their tools.
 
-`REASON_CALL_PROVIDER=elevenlabs` plus the keys is the whole of turning it on, and
-`docs/calls-elevenlabs-setup.md` is the half-hour of account setup that produces them. Until they are
-there, `capabilities` reports **each direction separately, by name** — an install that can ring a
-phone but not answer one says exactly that, because telling somebody they can call you when they
-cannot is the failure that tool exists to prevent.
+`REASON_CALL_PROVIDER=gptlive` plus `OPENAI_API_KEY`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`,
+`TWILIO_FROM_NUMBER` and `REASON_PUBLIC_URL` is the whole of turning it on; the number's Twilio voice
+webhook points at `/calls/gptlive/inbound`. Until they are there, `capabilities` reports calls not
+connected, by name, because telling somebody they can call you when they cannot is the failure that
+tool exists to prevent.
 
 ```
-POST /calls/elevenlabs/inbound     who is ringing, and what to open with — answered during the ring
-POST /calls/elevenlabs/llm         one spoken turn, as SSE: Reason's own brain
-POST /calls/elevenlabs/post-call   the transcript and the audio, HMAC-verified
+POST /calls/gptlive/inbound         the number's voice webhook: who is ringing, and the stream TwiML
+POST /calls/gptlive/status/{tok}    one call's Twilio status (/amd/{tok}: its machine verdict)
+WS   /calls/gptlive/stream/{tok}    Twilio Media Streams, relayed to the GPT-Live session
 ```
 
-Five things there are code rather than prompt:
+All Twilio-signed. Four things there are code rather than prompt:
 
-- **The custom-LLM endpoint is bearer-authenticated, and no secret means no answer.** Unprotected it
-  would be a way for anybody to spend the owner's model credit and have a private thread read out
-  loud. Constant-time compare, and with `ELEVENLABS_LLM_SECRET` unset every request is refused rather
-  than answered for free.
 - **Which call a turn belongs to is read off the database, and the kind of call off `is_owner`.** The
   request carries its own claim about which it is; that claim is read only to *disagree* with, and a
   disagreement is refused. The gap between the two readings is the gap between a restaurant hearing a
@@ -1189,9 +1185,8 @@ longer of the two rather than their sum. On a text nobody is waiting; on a phone
 handset. A third-party call is not screened — no thread, no memory, no tools, and Reason is the one
 asking.
 
-Reason **switches language when the other person does**: the voice half is ElevenLabs' own
-`language_detection` tool, which it only acts on if the model answers with a standard function call, so
-the two halves happen together. The recorded-call announcement is spoken again in the new language the
+Reason **switches language when the other person does**: the model answers with the line's
+`language_detection` tool as a standard function call, so the switch and the reply happen together. The recorded-call announcement is spoken again in the new language the
 first time it changes — the only language somebody has heard "this call is recorded" in must not be one
 they do not speak — and exactly once, with a switch to the language already in use dropped in code.
 
@@ -1235,18 +1230,12 @@ cannot read what it is allowed to do cannot book, send, agree or invent a commit
 call gets no degraded turn — its context *is* its brief, so with none loaded there is nothing safe to
 say to a stranger, and it gets one honest line and hangs up.
 
-Which **turn profile** and which **speech model** a call ran under are written on the call row. Both
-are agent-level settings on ElevenLabs' side rather than per-call ones, so Reason records them instead
-of claiming to set them: a latency or naturalness figure measured later has to say what it was
-measured under. `ELEVENLABS_TTS_MODEL` defaults to `eleven_v3_conversational`, and
-`ELEVENLABS_OWNER_AGENT_ID` is an optional second agent tuned for his own calls — faster turns, a
-shorter silence timeout — because turn settings cannot be overridden per conversation. Empty means one
-agent carries both kinds and the row says which profile the call was for.
+Which **voice** a call ran under (`gpt-live-1/marin` by default) is written on the call row, so a
+latency or naturalness figure measured later says what it was measured under.
 
-**No call has ever been placed or answered through it either.** 80 offline tests drive the provider with
-an injected `fetch` and the voice endpoint with a scripted generator. `npm run rehearse:calls` plays two
+Offline tests drive the provider with an injected `fetch` and the voice turn with a scripted generator. `npm run rehearse:calls` plays two
 scripted calls — somebody ringing their own Reason, and a restaurant that answers in Spanish — through
-the real endpoint with a real model, prints both transcripts, and writes Reason's half of each as a
+the real voice turn with a real model, prints both transcripts, and writes Reason's half of each as a
 voice note. The words there are real; the phone is a loop in a script. `docs/unverified.md` lists the
 nine things only Friday can settle, in the order they are most likely to bite.
 
@@ -3583,9 +3572,9 @@ src/channels/    Channel interface (send, send-with-an-attachment, typing, recei
                  inbound message belongs to
 src/pages/       what a page may contain (content.js), our HTML template (render.js), and who
                  gets to see one — codes, cookies, rate limit (access.js)
-src/calls/       CallProvider interface, two adapters — Bland (bland.js) and ElevenLabs with Reason
-                 itself as the voice (elevenlabs.js + voice.js, the custom-LLM endpoint, plus
-                 inbound.js for the ring and postcall.js for after) — a fake, which one this
+src/calls/       CallProvider interface, two adapters — Bland (bland.js) and GPT-Live over Twilio
+                 with Reason itself as the brain (gptlive.js + voice.js, the in-process turn, plus
+                 inbound.js for who is ringing and postcall.js for after) — a fake, which one this
                  install runs (choose.js), the recording store (audio Reason owns), and the
                  never-pay-by-phone guard. docs/call-providers.md compares the alternatives
 src/backends/    the owner's local claude-cli backend, the MCP server behind it, and the guard

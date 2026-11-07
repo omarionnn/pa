@@ -20,9 +20,9 @@ test("the child environment is an allowlist: no Reason secret reaches it", () =>
   const env = childEnvFor({
     PATH: "/usr/bin", HOME: "/home/reason", LANG: "en_US.UTF-8", LC_ALL: "C", CLAUDE_CODE_OAUTH_TOKEN: "tok",
     ANTHROPIC_API_KEY: "sk-ant-x", SENDBLUE_API_SECRET_KEY: "sb", STRIPE_SECRET_KEY: "sk_live", REASON_TOKEN_KEY: "k",
-    TWILIO_AUTH_TOKEN: "t", OPENAI_API_KEY: "o", GOOGLE_CLIENT_SECRET: "g", ELEVENLABS_API_KEY: "e", CLAUDE_CODE_USER_EMAIL: "x@y.z",
+    TWILIO_AUTH_TOKEN: "t", OPENAI_API_KEY: "o", GOOGLE_CLIENT_SECRET: "g", BLAND_API_KEY: "e", CLAUDE_CODE_USER_EMAIL: "x@y.z",
   });
-  for (const k of ["ANTHROPIC_API_KEY", "SENDBLUE_API_SECRET_KEY", "STRIPE_SECRET_KEY", "REASON_TOKEN_KEY", "TWILIO_AUTH_TOKEN", "OPENAI_API_KEY", "GOOGLE_CLIENT_SECRET", "ELEVENLABS_API_KEY", "CLAUDE_CODE_USER_EMAIL"]) {
+  for (const k of ["ANTHROPIC_API_KEY", "SENDBLUE_API_SECRET_KEY", "STRIPE_SECRET_KEY", "REASON_TOKEN_KEY", "TWILIO_AUTH_TOKEN", "OPENAI_API_KEY", "GOOGLE_CLIENT_SECRET", "BLAND_API_KEY", "CLAUDE_CODE_USER_EMAIL"]) {
     assert.equal(k in env, false, `${k} reached the CLI child`);
   }
   assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, "tok");

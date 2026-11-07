@@ -64,7 +64,7 @@ function photo() {
  */
 export function cardHash({ router = null, channel = null } = {}) {
   const number = (router && channel && lineNumber(router, channel)) || "+10000000000";
-  const card = vcard({ number, callNumber: config.elevenPhoneNumber }) ?? "";
+  const card = vcard({ number, callNumber: config.twilioFrom }) ?? "";
   return createHash("sha256").update(card).digest("hex").slice(0, 8);
 }
 

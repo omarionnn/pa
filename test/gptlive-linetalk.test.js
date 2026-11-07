@@ -23,7 +23,6 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_UNDO_SECONDS = "0";
 
@@ -48,7 +47,7 @@ beforeEach(() => {
   db.saveConversation(C, []);
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: OTHER, channel: "sendblue", address: "+13105550000", name: "Ama", isOperator: false });
-  Object.assign(config, { lineTalk: true, callIdentity: false, makerName: "Saafi Interactions Lab", callVoice: "gptlive", thirdPartyVoice: "owner", ...TWILIO, gptliveInboundFallbackUrl: "https://api.us.elevenlabs.io/twilio/inbound_call" });
+  Object.assign(config, { lineTalk: true, callIdentity: false, makerName: "Saafi Interactions Lab", callVoice: "gptlive", thirdPartyVoice: "owner", ...TWILIO });
 });
 
 const lineRow = (over = {}) => {

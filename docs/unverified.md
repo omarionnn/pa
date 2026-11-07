@@ -4056,6 +4056,9 @@ as normal with no verdict in its tools' context. One screen call took about 3–
 
 ## Commit: Reason itself on the phone, via ElevenLabs (2026-10-06, built ahead of Friday 10-09)
 
+> Superseded 2026-11-07: the ElevenLabs provider, its routes and its tests were removed; every call is
+> GPT-Live over Twilio (`src/calls/gptlive.js`). What follows is history.
+
 Six new files, 80 new offline tests, and **nothing that has touched the real platform**. There are no
 ElevenLabs or Twilio keys on this machine until 2026-10-09, so every request is shape-tested with an
 injected fetch and every spoken turn with an injected generator, exactly as Bland's adapter was. The

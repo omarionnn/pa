@@ -3094,7 +3094,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   // call line and the contact card carries both. The model needs to know so it can explain the
   // setup and resend the card when somebody is confused.
   const textNumber = live.length ? live[0].number : null;
-  const callNumber = config.elevenPhoneNumber || null;
+  const callNumber = config.twilioFrom || null;
   if (textNumber && callNumber && phone.status === "live") {
     out.push({
       name: "your_numbers",
@@ -8139,8 +8139,8 @@ export function queueMissedScheduledCall(conversationId, row, log = () => {}) {
  * it, by the state the row is in. The grace on top covers a webhook that was slow rather than absent.
  *
  * `in_progress` — somebody answered — waits on the PLATFORM's cap, not `callMaxMinutes`: since
- * b10b6ab no per-call ceiling is sent (ElevenLabs refuses the override), so a call runs until the
- * agent's own limit — an hour — and owner calls of 14–15 minutes have happened (calls 32, 35).
+ * b10b6ab no per-call ceiling is sent, so a call runs until the
+ * platform limit (`callPlatformCapSeconds`, an hour) — and owner calls of 14–15 minutes have happened (calls 32, 35).
  * Sweeping those at callMaxMinutes + grace (25 min) wrote a live 30-minute call down as lost. The
  * larger of the two is used, so an install that really does allow longer calls is covered too.
  *
@@ -11215,7 +11215,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         maxHoldSeconds: input.max_hold_minutes ? input.max_hold_minutes * 60 : config.callMaxHoldSeconds,
         // The number a busy place rings back on, so a callback comes home to Reason rather than to a
         // phone nobody answers. See the callback path in src/calls/inbound.js.
-        returnNumber: config.elevenPhoneNumber || "",
+        returnNumber: config.twilioFrom || "",
         language: "en",
       });
       const again = toOwner ? { ok: true, mode: "first" } : safeToRedial(c, { toNumber: to, errandId: input.errand_id ?? null, brief: freshBrief });
@@ -11283,7 +11283,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // A GPT-Live call takes the note into its voice now or when its session starts; a row still
         // "placing" may not have been relabelled gptlive by its place() yet, so it is handed too.
         // Only a person's own GPT-Live call takes words into its voice; an errand's voice says only
-        // what Reason's call turn hands it, and ElevenLabs has no way in.
+        // what Reason's call turn hands it.
         const handed = Number(already.is_owner) === 1 && (already.provider === gptliveProvider || (already.state === "placing" && gptliveForConversation(c)))
           && gptliveTell(already.id, gptliveToldNote({ goal: input.goal, facts: input.facts ?? [] }));
         (ctx.log ?? (() => {}))({ call_place_joined_live: already.id, state: already.state, handed });
@@ -11374,8 +11374,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // guessed at.
         ...(placed.profile ? { profile: placed.profile } : {}),
         ...(placed.ttsModel ? { tts_model: placed.ttsModel } : {}),
-        // The line opens silent and the disclosure is owed to the first person heard (see `place` in
-        // src/calls/elevenlabs.js). Written before anyone can have picked up: the platform has only
+        // The line opens silent and the disclosure is owed to the first person heard (see `dialGptLive` in
+        // src/calls/gptlive.js). Written before anyone can have picked up: the platform has only
         // just been asked to dial.
         ...(placed.openingWaits ? { opening_waits: 1 } : {}),
       });
