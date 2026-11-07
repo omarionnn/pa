@@ -66,6 +66,7 @@ export function recordApi({ feature, model = "", usage = null, error = null, at 
     });
   } catch { /* a counter is never worth an error */ }
   if (error) noteApiError(error, at);
+  try { error ? noteLimitError(error, at) : clearLimitHit(at); } catch { /* an alert is never worth a reply */ }
 }
 
 /** Count one subscription (CLI) run. Tokens kept when the CLI reported them; never a $. */
@@ -206,6 +207,9 @@ export function spendCheck({ now = clock.now(), cap = config.apiDailyCapUsd } = 
     `${usd(s.week.usd)} 7d${s.week.calls ? ` — ${feats(s.week.byFeature)}` : ""}`,
     `subscription: ${cli} run${cli === 1 ? "" : "s"} today${cli ? ` (${cliFeats})` : ""}`,
   ];
+  // The 80% heads-up already sent this day / month (capWarnings), so the page says he was told.
+  const warned = warnedWords(now);
+  if (warned) parts.push(warned);
   // Out of credit is said by its own row (fallbackCheck), so the owner gets that one text, not two.
   if (credit.n) parts.unshift(`${credit.n} paid call${credit.n === 1 ? "" : "s"} refused for credit in the last hour`);
   const monthHit = monthCap > 0 && spent.month >= monthCap;
@@ -248,6 +252,163 @@ export function fallbackCheck() {
     state: "ok", detail: "on the subscription, never the paid API",
     recovered: "The pre-reply checks are on the subscription now, never the paid API key.",
   };
+}
+
+// ---------- warnings before the wall (2026-11-07) ----------
+//
+// The incident (2026-11-05 22:05 UTC, 17:05 New York): the Anthropic workspace's own usage limit was
+// hit with no warning. Every paid call came back "400 … You have reached your specified workspace
+// API usage limits. You will regain access on 2026-12-01 at 00:00 UTC.", a taxi request waited 15
+// minutes, the harm screen failed open four times, and nobody was told. So:
+//
+//   - at 80% of the daily cap and of the monthly cap the owner gets one text, once per day / month
+//     (capWarnings, from the ops pass);
+//   - the provider's usage-limit refusal texts the owner the moment it is first seen, once per
+//     episode; the next successful paid call ends the episode (noteLimitError / clearLimitHit).
+//
+// Both say the system problem only, never who was talking or what about, and both show on /ops
+// (limitCheck, and the warning line in the "API spend" row). Neither goes through the five-minute
+// pass's texting (`quiet` rows), so each is said exactly once.
+//
+// No cheaper-model fallback: a workspace usage limit is on the key, so Haiku and Sonnet are refused
+// exactly like Opus. The short per-minute 429s are already taken by the API's own server-side
+// fallback (agent.js `fallbacks`).
+
+/** The share of a cap that earns the heads-up. */
+// A share of the cap between 0 and 1; anything else ("80", "0", garbage) falls back to 80%.
+const warnAtEnv = Number(process.env.REASON_API_WARN_AT);
+export const WARN_AT = warnAtEnv > 0 && warnAtEnv < 1 ? warnAtEnv : 0.8;
+
+const LIMIT_KEY = "api_limit:hit";
+let alertSend = null;
+
+/** Wire the texts: `send(text, idempotencyKey)` to the owner's thread (src/ops.js startOps). */
+export function startAlerts({ send = null } = {}) {
+  alertSend = send;
+  // A refusal seen before the wiring (during boot) is told now rather than lost.
+  const hit = limitHit();
+  if (send && hit && !hit.told) tellLimit(hit);
+}
+export function stopAlerts() { alertSend = null; }
+
+/**
+ * Is this the provider saying the account's usage limit is spent? The wording the API used on
+ * 11-05, and a 429 that names a usage limit. A plain per-minute rate limit (a 429 rate_limit_error
+ * that clears in seconds) is not one: that is a blip, not an outage.
+ */
+export function isUsageLimit(e) {
+  const msg = String(e?.message ?? e ?? "");
+  if (/reached your (?:specified )?(?:workspace )?(?:API )?usage limits?|workspace (?:API )?usage limits?|regain access on/i.test(msg)) return true;
+  return Number(e?.status) === 429 && /usage limit/i.test(msg);
+}
+
+/** "2026-12-01 at 00:00 UTC" out of the refusal, or "". */
+function regainWords(msg) {
+  const m = /regain access on ([0-9]{4}-[0-9]{2}-[0-9]{2}(?: at [0-9]{1,2}:[0-9]{2})?(?: UTC)?)/i.exec(String(msg ?? ""));
+  return m ? m[1] : "";
+}
+
+/** The open usage-limit episode, or null. */
+export function limitHit() {
+  const raw = db.opsGet(LIMIT_KEY);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+/** The owner's text for an episode. The system problem only. */
+export function limitText(hit) {
+  return `Reason alert: the Anthropic API workspace usage limit is reached, so every paid API call is being refused`
+    + `${hit?.regain ? ` until ${hit.regain} (the API's words)` : ""}. Raise the limit in the Anthropic Console, or move replies to the subscription.`;
+}
+
+function tellLimit(hit, at = clock.now()) {
+  const text = limitText(hit);
+  db.opsSet(LIMIT_KEY, JSON.stringify({ ...hit, told: at }));
+  try { Promise.resolve(alertSend(text, `ops:api-limit:${hit.at}`)).catch(() => {}); } catch { /* never worth a reply */ }
+  return text;
+}
+
+/** A failed paid call: the first usage-limit refusal of an episode texts the owner at once. */
+export function noteLimitError(e, at = clock.now()) {
+  if (!isUsageLimit(e)) return null;
+  const open = limitHit();
+  const hit = open
+    ? { ...open, last: at, count: (open.count ?? 1) + 1 }
+    : { at, last: at, count: 1, regain: regainWords(e?.message ?? e), told: 0 };
+  db.opsSet(LIMIT_KEY, JSON.stringify(hit));
+  // Seen during boot before anybody could be told: told on the next refusal, or by startAlerts.
+  return !hit.told && alertSend ? tellLimit(hit, at) : null;
+}
+
+/** A paid call went through: the limit is lifted, the episode is over (the next one texts again). */
+// A success within this long of the last refusal is most likely a call that started before the limit
+// (a long reply, a phone call); it does not end the episode, or the next refusal would text again.
+const LIFT_MARGIN_MS = 60_000;
+export function clearLimitHit(at = clock.now()) {
+  const open = limitHit();
+  if (!open) return false;
+  if (Number(at) - Number(open.last ?? open.at) < LIFT_MARGIN_MS) return false;
+  db.opsDelete(LIMIT_KEY);
+  db.opsSet("api_limit:last", JSON.stringify({ ...open, cleared: at }));
+  return true;
+}
+
+const utc = (ms) => `${new Date(Number(ms)).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+
+/** The "API usage limit" row on /ops. Shown, never texted by the pass: noteLimitError already did. */
+export function limitCheck() {
+  const open = limitHit();
+  if (open) return {
+    state: "bad", quiet: true,
+    detail: `the provider is refusing paid calls: workspace usage limit reached since ${utc(open.at)}`
+      + ` · ${open.count} refused${open.regain ? ` · access back ${open.regain} per the API` : ""}`
+      + ` · ${open.told ? `owner texted ${utc(open.told)}` : "owner not texted yet"}`,
+  };
+  let last = null;
+  try { last = JSON.parse(db.opsGet("api_limit:last") ?? "null"); } catch { /* none */ }
+  return {
+    state: "ok", quiet: true,
+    detail: last ? `not hit now · last hit ${utc(last.at)}, over ${utc(last.cleared)} (${last.count} refused)` : "never hit",
+  };
+}
+
+/** The 80% lines owed right now: `[{ which, key, text }]`, ones already sent this period left out. */
+export function capWarningsDue({ now = clock.now() } = {}) {
+  const s = apiSpent(now);
+  const out = [];
+  const one = (which, spent, cap, period, tail) => {
+    if (!(cap > 0) || spent < cap * WARN_AT) return;
+    // At or past the cap, the cap's own alert speaks (spendCheck); the heads-up would be late news.
+    if (spent >= cap) return;
+    const key = `api_warn:${which}:${period}`;
+    if (db.opsGet(key)) return;
+    out.push({ which, key, text: `Reason heads-up: API spend is at ${Math.floor(spent / cap * 100)}% of the ${which} cap, ${usd(spent)} of ${usd(cap)}${tail}.` });
+  };
+  one("daily", s.todayOther, config.apiDailyCapUsd, s.day, " today (phone calls not counted)");
+  one("monthly", s.month, config.apiMonthlyCapUsd, s.day.slice(0, 7), " this month");
+  return out;
+}
+
+/** Send each 80% line owed, once per day / month. Marked before it is sent: once, never twice. */
+export function capWarnings({ now = clock.now(), send = alertSend, log = () => {} } = {}) {
+  if (!send) return [];
+  const due = capWarningsDue({ now });
+  for (const w of due) {
+    db.opsSet(w.key, String(now));
+    try { Promise.resolve(send(w.text, `ops:${w.key}`)).catch(e => log({ api_warn_failed: firstLine(e) })); } catch (e) { log({ api_warn_failed: firstLine(e) }); }
+    log({ api_warn_sent: w.which });
+  }
+  return due;
+}
+
+/** "daily 80% warning sent 2026-11-07 14:05 UTC", for the API spend row; "" when none this period. */
+function warnedWords(now) {
+  const day = today(now);
+  return [["daily", day], ["monthly", day.slice(0, 7)]]
+    .map(([which, p]) => [which, db.opsGet(`api_warn:${which}:${p}`)])
+    .filter(([, at]) => at)
+    .map(([which, at]) => `${which} ${Math.round(WARN_AT * 100)}% warning sent ${utc(at)}`)
+    .join(" · ");
 }
 
 /** Drop usage rows past 35 days. Called from the retention sweep. */
