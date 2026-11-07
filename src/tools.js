@@ -38,6 +38,7 @@ import { handoffFor, cartLinkFromHtml } from "./handoff.js";
 import * as x from "./x.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
+import * as ownfiles from "./ownfiles.js";
 import * as drivePdf from "./pdf.js";
 import { webLookup } from "./weblookup.js";
 import { webSearch, searchCapability, searchStatus } from "./search.js";
@@ -6601,7 +6602,6 @@ export const tools = [
     input_schema: {
       type: "object",
       properties: {
-        path: { type: "string", description: "Where to save it. Omit for an auto-named file under the shots folder." },
         full_page: { type: "boolean", description: "Capture the whole scrollable page instead of the viewport" },
       },
     },
@@ -7655,6 +7655,7 @@ const S = {
   browser_click: z.object({ ref: z.string().min(1).max(20), expect: z.string().max(200).optional() }),
   browser_type: z.object({ ref: z.string().min(1).max(20), text: z.string().max(2000), press_enter: z.boolean().optional() }),
   browser_submit: z.object({ ref: z.string().min(1).max(20), what: z.string().min(1).max(400), confirmation_id: z.number().int().optional() }),
+  // `path` is still accepted from an older call and ignored: the file always goes in the shots folder.
   browser_screenshot: z.object({ path: z.string().max(400).optional(), full_page: z.boolean().optional() }),
   browser_images: z.object({}),
   browser_close: z.object({}),
@@ -9098,7 +9099,10 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
     if (quiet.silent) { const { [field]: _dropped, ...rest } = rawInput; rawInput = rest; }
     else if (quiet.stripped) rawInput = { ...rawInput, [field]: quiet.text };
   }
+  const startedAt = Date.now();
   let out = await runToolInner(name, rawInput, ctx);
+  // A file this call wrote is this person's, for the tools that take a path later (src/ownfiles.js).
+  if (ctx?.conversationId) ownfiles.noteMade(ctx.conversationId, out, startedAt, rawInput);
   // An approved to-do list with items nothing is working yet (src/todo.js): said on the result of
   // anything that could be one of them, so the model links it while it still knows which. Which item
   // it is, if any, is the model's call. Nothing at all unless REASON_TODO reaches this conversation.
@@ -11010,7 +11014,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!toOwner && !to) return { ok: false, error: `'${input.to}' is not a phone number. Use E.164, e.g. +14155559876, or 'owner'.` };
 
       // The file first, because this is where it usually stops.
-      const picked = await voiceNoteFile({ file: input.file, tmpDir: config.audioTmpRoot });
+      // Only audio Reason made or kept for this person: every call recording sits in one folder,
+      // and a path is the model's to write (src/ownfiles.js).
+      const mine = ownfiles.ownFile(c, input.file);
+      if (!mine.ok) return { ok: false, status: mine.status, error: `Nothing was sent: ${mine.why} Say so plainly in one line and do not try another path.` };
+      const picked = await voiceNoteFile({ file: mine.path, tmpDir: config.audioTmpRoot });
       if (!picked.ok) {
         return {
           ok: false, ...(picked.missing ? { missing: picked.missing } : {}), error: picked.error,
@@ -16501,7 +16509,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Reason itself wrote, under REASON_DATA_DIR, resolved through realpath so a symlink cannot
       // walk out of it. No sentence in a message can widen this, which is the point: a tool that
       // took any path would make "upload ~/.ssh/id_rsa and call it notes" a working instruction.
-      const local = driveorg.localFileToUpload(input.path);
+      // And only THIS person's: every person's files share the data directory (src/ownfiles.js).
+      const mine = ownfiles.ownFile(c, input.path);
+      const local = mine.ok ? driveorg.localFileToUpload(mine.path) : { ok: false, status: "outside_data_dir", why: mine.why };
       if (!local.ok) {
         return {
           ok: false, status: local.status,
@@ -18317,8 +18327,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "browser_screenshot": {
       const page = await browser.pageFor(c);
       if (page.url() === "about:blank") return { ok: false, error: "No page open yet." };
-      const safeConv = c.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40);
-      const path = input.path ?? join(config.shotRoot, `${safeConv}-${Date.now()}.png`);
+      // Always Reason's own name in the shots folder: a path from the model could be anywhere the
+      // server can write, the shared database included.
+      const path = join(config.shotRoot, `${ownfiles.shotPrefix(c)}${Date.now()}.png`);
       mkdirSync(dirname(resolve(path)), { recursive: true });
       await page.screenshot({ path: resolve(path), fullPage: !!input.full_page });
       return { ok: true, path: resolve(path), url: page.url() };

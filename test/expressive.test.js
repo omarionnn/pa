@@ -11,12 +11,13 @@
 //   does a dead line get asked every time?            (no — remembered, like read receipts)
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-expressive-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+process.env.REASON_DATA_DIR = dir;
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
@@ -40,6 +41,7 @@ const { SendblueChannel } = await import("../src/channels/sendblue.js");
 const expressive = await import("../src/expressive.js");
 const { runTool, capabilitiesNow } = await import("../src/tools.js");
 const db = await import("../src/db.js");
+const ownfiles = await import("../src/ownfiles.js");
 const { clock, config } = await import("../src/config.js");
 
 const OWNER = "+12025551234";
@@ -410,14 +412,38 @@ test("the voice_note_send tool refuses honestly and sends nothing", async () => 
   // A file that really is on disk, so what the refusal is about is the missing converter and
   // nothing else. Both converters are switched off at the top of this file, so this is a machine
   // with neither whatever the one running the tests happens to have installed.
-  const wav = join(dir, "call.wav");
+  // Audio Reason made for them (src/ownfiles.js): only that can go.
+  mkdirSync(config.audioTmpRoot, { recursive: true });
+  const wav = join(config.audioTmpRoot, "call.wav");
+  const before = Date.now();
   writeFileSync(wav, Buffer.alloc(64));
+  ownfiles.noteMade(CONV, { path: wav }, before);
   const out = await runTool("voice_note_send", { to: "owner", file: wav }, { conversationId: CONV, channels: router });
   assert.equal(out.ok, false);
   assert.deepEqual(out.missing, ["ffmpeg"], "and it names the thing that is missing");
   assert.match(out.error, /ffmpeg/);
   assert.match(out.note, /do not describe a voice note as sent/);
   assert.equal(fake.sent.length, 0);
+});
+
+test("voice_note_send will not send another person's call recording, or any file that is not theirs", async () => {
+  thread();
+  const { router, fake } = harness();
+  db.upsertAccount({ conversationId: "dm:fake:+15550000002", channel: "fake", address: "+15550000002", name: "B" });
+  const id = db.db.prepare("INSERT INTO calls (conversation_id, provider, to_number, goal, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run("dm:fake:+15550000002", "fake", "+15550000003", "x", Date.now(), Date.now()).lastInsertRowid;
+  db.db.prepare("UPDATE calls SET recording_state = 'stored' WHERE id = ?").run(id);
+  mkdirSync(config.recordingRoot, { recursive: true });
+  // A .caf needs no converter, so on main this went straight out.
+  const theirs = join(config.recordingRoot, `call-${id}.caf`);
+  writeFileSync(theirs, Buffer.alloc(64));
+  for (const file of [theirs, config.dbPath]) {
+    const out = await runTool("voice_note_send", { to: "owner", file }, { conversationId: CONV, channels: router });
+    assert.equal(out.ok, false, `${file} went out as a voice note`);
+    assert.match(out.error, /not a file Reason made for this person/);
+  }
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(fake.sent.length, 0, "another person's recording reached this person");
 });
 
 // ---------- what capabilities says ----------

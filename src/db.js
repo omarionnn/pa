@@ -547,6 +547,14 @@ db.exec(`
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
+  -- A file a tool call of this conversation wrote (src/ownfiles.js): the proof a path given later
+  -- (drive_upload, voice_note_send) is theirs and not somebody else's in the same folder.
+  CREATE TABLE IF NOT EXISTS conversation_files (
+    conversation_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, path)
+  );
   -- A real document Reason wrote and handed over: a Word document, a slide deck, a PDF. The row is
   -- the record and the path column is the file itself, on this machine under the data directory --
   -- which is what makes "the export carries it", "a delete removes it" and "send me that again" all

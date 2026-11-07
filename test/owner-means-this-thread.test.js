@@ -9,7 +9,7 @@
 // No API key, no network.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -31,6 +31,7 @@ const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const db = await import("../src/db.js");
+const ownfiles = await import("../src/ownfiles.js");
 const { clock, config } = await import("../src/config.js");
 
 const OPERATOR = "+12025551234";
@@ -103,8 +104,12 @@ test("send_picture with a NO_REPLY caption sends the picture and no marker", asy
 
 test("voice_note_send to:'owner' in a tester's thread goes to the tester", async (t) => {
   const { router, fake } = harness();
-  const file = join(dir, "note.caf");
+  // A voice note Reason made for this thread (src/ownfiles.js): only that can go.
+  mkdirSync(config.audioTmpRoot, { recursive: true });
+  const file = join(config.audioTmpRoot, "note.caf");
+  const before = Date.now();
   writeFileSync(file, Buffer.alloc(64, 1));
+  ownfiles.noteMade(YAW_C, { path: file }, before);
   const out = await runTool("voice_note_send", { to: "owner", file, text: "" }, { conversationId: YAW_C, channels: router, messages: [] });
   if (!out.ok && out.missing) return t.skip(`voice-note converter not on this machine: ${out.missing}`);
   assert.equal(out.ok, true, JSON.stringify(out));
