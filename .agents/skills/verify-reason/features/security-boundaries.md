@@ -26,6 +26,16 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
   carry no `conversation_id`, contact limits read `scope: "contact"`, `why` loses addresses; every
   key and count stays. Doctor reads it that way (SKILL.md Doctor).
 - **Delete takes everything (#353).** [data-delete.md](data-delete.md).
+- **Connect links finish only in the asker's browser (lead 1, #358).** Every `*_connect` link
+  (GitHub, Google, Spotify, X, Uber) is Reason's own start page `/connect/start?state=…`
+  (`src/connectgate.js` `startLink` `:37`, called from each provider's `authorizeUrl`); the provider's
+  address sits on the state row (`oauth_states.authorize_url`) and is only handed out with a 302 to a
+  browser whose `reason_page` session is the asker's. Any other browser gets "Text me the code"
+  (`connectStartRequest` `:91`): a GET never texts, the POST texts a six-digit code to the thread that
+  asked for the link, the right code sets the session cookie (`Path=/`) and 303s on to the provider.
+  Every callback route in `src/http.js` calls `refuseForeignBrowser` (`:58`) first: a browser not
+  signed in as the state's conversation → `400`, the state spent, no token exchange, nothing texted.
+  A provider `error=` still answers as before. Old links (straight to the provider) are refused.
 - **No payment details in anything a call is handed (lead 31).** `src/calls/payments.js`
   `checkCallForPaymentDetails` scans goal, facts, `ask`, `approved_terms` and every `requirements`
   key and value; `checkBriefForPaymentDetails` scans the final brief in `call_place` too (a redial
@@ -46,7 +56,9 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
 ## How to get to it (user POV)
 
 None directly — "send me that recording as a voice note", "put the report in my Drive" (their own
-file works, nobody else's does); ringing Reason's number; asking for everything to be deleted.
+file works, nobody else's does); ringing Reason's number; asking for everything to be deleted;
+"connect my GitHub" and opening the link (signed in to Reason Web → straight to GitHub; a new browser
+→ the code page; a link someone else forwarded → their Reason gets nothing).
 
 ## Driving it with the harness
 
@@ -72,13 +84,29 @@ kept; his own decline and his answer to a plain question still go. 12 ok on `sec
 2026-11-07; 11 FAIL on `ae913c7` (main before: event-turn start went through). Offline:
 `test/remote.test.js` (75).
 
+No model, no real provider: `bin/oauth-connect-drive.mjs` on a cage (fake GitHub from
+`test/fixture-github.js` + `bin/fake-sendblue.mjs`). Start the fakes first, then the cage with the
+same `GITHUB_*` values, then drive with `caged.sh env` exported (`set -a; eval …; set +a` — the env
+lines carry no `export`, and without it the drive writes the worktree's own `data/reason.db`):
+`node bin/oauth-connect-drive.mjs github $S/gh.url &` · `bin/fake-sendblue.mjs 8882 $S/sb.jsonl &` ·
+`REASON_VERIFY_FAKE_SENDBLUE=http://127.0.0.1:8882 GITHUB_BASE=$GH GITHUB_API_BASE=$GH
+GITHUB_OAUTH_CLIENT_ID=cage GITHUB_OAUTH_CLIENT_SECRET=cage REASON_PUBLIC_URL= caged.sh start` ·
+`node bin/oauth-connect-drive.mjs drive http://127.0.0.1:$P $S/sb.jsonl`. 10 ok on `sec/lead1-oauth-binding`
+2026-11-07 (port 8881): no-cookie start `401` + callback `400`, 0 tokens; someone else's session the
+same; Text me the code → 1 text to the asker's number; code → `303` + `Set-Cookie reason_page`;
+callback `200`, 1 token; next link same browser → `302` straight to GitHub. Offline:
+`test/oauth-binding.test.js` (10; 1 pass / 9 fail on main before the fix).
+
 On the cage (2026-11-07): `curl -s http://127.0.0.1:$P/health` → `owner: null`, `holding: []`, every
 monitoring key present; `POST /calls/elevenlabs/inbound` → `404` (the route is gone since #359).
 
 **End state:** a model-chosen path outside their own files → `not_theirs`, nothing sent or uploaded;
 the old ElevenLabs routes → 404; a signed-out `/health` → no number, name or
-conversation id in it.
+conversation id in it; a connect callback from any browser but the asker's → `400`, no token saved.
 
 ## Gotchas
 
+- The drive's asker needs a `threads` row, not just an account: deliver routes by the thread
+  (`src/deliver.js` `whereTo`), and without one the code goes to the cage's console, not the fake.
+- The fake GitHub only exchanges `code=good-code`; any other code is `token_exchange_failed`.
 - `/health` on the cage still shows Reason's own line numbers (`channels[].number`); that is by design.
