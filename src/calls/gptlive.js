@@ -1305,7 +1305,7 @@ export class GptLiveCall {
     else if (last && last.who === "them" && t - last.at < 4000) { last.text += delta; last.at = t; }
     else this.turns.push({ who: "them", text: delta.trimStart(), at: t, from: t });
     // Words while a goodbye hang-up waits: hold it, and read the end again with them in it.
-    if (this.line && !this.talking && delta.trim() && !pre) this.lineHeard();
+    if (this.line && !this.talking && delta.trim() && !pre && !this.openerAnswers()) this.lineHeard();
     if (this.ending && this.endWhy === "goodbye" && !this.done && delta.trim()) {
       this.endHeld = true;
       void this.readGoodbye();
@@ -1588,6 +1588,8 @@ export class GptLiveCall {
     this.pickup.state = "none";
     this.pickup.why = why;
     this.log({ gptlive_pickup_opener_skipped: this.call.id, why, ms: this.now() - (this.streamStartAt ?? this.startedAt) });
+    // Words that came while it waited were held back for it: the line reads them now (a menu's key).
+    if (this.line && !this.talking && this.theySpokeSince(0)) this.lineHeard();
   }
 
   /** Play the clip down the line now, and write it down as said. */
@@ -1668,6 +1670,19 @@ export class GptLiveCall {
     this.callerVoiceAt = this.now();
     this.log({ gptlive_pickup_opener_cut: this.call.id, played_ms: this.now() - p.startedAt });
     this.tellOpener();
+  }
+
+  /**
+   * Are their words, right now, ones the pickup opener answers (or is about to)? While it waits for
+   * their hello to end or plays, yes; after it, only speech that came once it had finished is new.
+   * Else a Reason line turn on their hello says a second opener over it (2026-11-07 greet drive:
+   * "I'm Reason, an AI assistant calling for Omari…" 8 s in, after the clip had already said why).
+   */
+  openerAnswers() {
+    const p = this.pickup;
+    if (!p || p.state === "none" || p.state === "cut") return false;
+    if (p.state === "waiting" || p.state === "playing") return p.state === "playing" || p.replayed || p.theirsFrom != null;
+    return !(this.callerSpeechAt > p.endsAt);
   }
 
   /** Their first words after the opener began, from speech before it: the hello it answered. */
