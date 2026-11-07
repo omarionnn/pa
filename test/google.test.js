@@ -317,7 +317,9 @@ test("the callback page says it worked, carries no token, and one text names the
   const link = await call("google_connect", {});
   const state = new URL(link.url).searchParams.get("state");
   const said = [];
-  const out = await googleCallbackRequest({ code: "good-code", state, runtime: { say: (c, text) => said.push({ c, text }) } });
+  // The asker's own browser (signed in to Reason as them); anyone else's is refused (test/oauth-binding.test.js).
+  db.startPageSession("web", "google-callback-browser", { conversationId: OMARI });
+  const out = await googleCallbackRequest({ code: "good-code", state, headers: { cookie: "reason_page=google-callback-browser" }, runtime: { say: (c, text) => said.push({ c, text }) } });
   assert.equal(out.status, 200);
   assert.match(out.body, /Google connected/);
   assert.match(out.body, /me@example\.com/);
