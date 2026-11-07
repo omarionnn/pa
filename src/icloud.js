@@ -228,8 +228,26 @@ function xmlResponses(text) {
  * The base URL and timeout are taken from config, and the auth credential is constructed from
  * the Apple ID email and app-specific password stored in the oauth_tokens row.
  */
+/**
+ * May the Apple ID credential go to this absolute URL? Only to the CalDAV server itself: the
+ * configured origin, or (on iCloud) one of its own https hosts, which is where Apple puts a person's
+ * calendars (p123-caldav.icloud.com). An event href is the model's to pass, and a credential sent
+ * wherever an href pointed would hand the person's app-specific password to any host (security
+ * audit 2026-11-06, lead 18).
+ */
+export function caldavUrlAllowed(url) {
+  let u, b;
+  try { u = new URL(url); b = new URL(base()); } catch { return false; }
+  if (u.origin === b.origin) return true;
+  const icloud = (h) => h === "icloud.com" || h.endsWith(".icloud.com");
+  return u.protocol === "https:" && !u.username && !u.password && icloud(b.hostname) && icloud(u.hostname);
+}
+
 export async function caldav(method, path, { body = null, headers = {}, email = "", password = "", depth, fetchImpl = fetch } = {}) {
-  const url = path.startsWith("http") ? path : `${base()}${path}`;
+  const url = /^https?:/i.test(path) ? path : `${base()}${path}`;
+  if (!caldavUrlAllowed(url)) {
+    return { ok: false, status: 0, error: "That link is not on the person's iCloud calendar server, so nothing was sent to it. Use an event_href from apple_calendar_events." };
+  }
   const auth = `Basic ${Buffer.from(`${email}:${password}`).toString("base64")}`;
   const ctl = new AbortController();
   const tm = timeout();

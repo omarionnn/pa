@@ -440,3 +440,33 @@ describe("blocksTime", () => {
     assert.ok(!icloud.blocksTime({ transp: "TRANSPARENT" }));
   });
 });
+
+// ---------- the credential only goes to iCloud (security audit 2026-11-06, lead 18) ----------
+
+describe("an event href the model passes cannot send the Apple ID password elsewhere", () => {
+  const creds = { email: "a@b.c", password: "dummy-pw", home: "/1/calendars/" };
+  for (const href of ["https://attacker.invalid/x.ics", "http://attacker.invalid/x.ics", "https://caldav.icloud.com.attacker.invalid/x.ics", "@attacker.invalid/x.ics", "https://user:pw@p01-caldav.icloud.com/x.ics"]) {
+    test(href, async () => {
+      const prior = config.icloudCalDAVBase;
+      config.icloudCalDAVBase = "https://caldav.icloud.com";
+      const sent = [];
+      const fetchImpl = async (url, init) => { sent.push({ url, auth: init?.headers?.Authorization }); return new Response("nope", { status: 404 }); };
+      try {
+        for (const fn of [(h) => icloud.getEvent(creds, h, { fetchImpl }), (h) => icloud.deleteEvent(creds, h, { fetchImpl })]) {
+          const out = await fn(href);
+          assert.equal(out.ok, false);
+        }
+        assert.deepEqual(sent, [], `the credential went to ${sent[0]?.url}`);
+      } finally { config.icloudCalDAVBase = prior; }
+    });
+  }
+  test("iCloud's own hosts still get it", async () => {
+    const prior = config.icloudCalDAVBase;
+    config.icloudCalDAVBase = "https://caldav.icloud.com";
+    try {
+      assert.equal(icloud.caldavUrlAllowed("https://p01-caldav.icloud.com/123/calendars/home/x.ics"), true);
+      assert.equal(icloud.caldavUrlAllowed("https://caldav.icloud.com/123/"), true);
+      assert.equal(icloud.caldavUrlAllowed("http://p01-caldav.icloud.com/x.ics"), false);
+    } finally { config.icloudCalDAVBase = prior; }
+  });
+});
