@@ -66,6 +66,8 @@ beforeEach(() => {
   for (const [c, a, n, op] of [[OWNER_C, OWNER, "Omari", true], [KOFI_C, KOFI, "Kofi", false], [AMA_C, AMA, "Ama", false]]) {
     db.upsertAccount({ conversationId: c, channel: "fake", address: a, name: n, isOperator: op });
     db.upsertThread({ conversationId: c, channel: "fake", address: a, isOwner: true, service: "iMessage" });
+  // Everybody here is past their first two days, so the Web line (decision 9) is theirs to get (src/deliver.js accountDay).
+  db.db.prepare("UPDATE accounts SET created_at = created_at - ?").run(3 * 24 * 60 * 60 * 1000);
   }
   // They have had Reason's contact card already (as every live account has), so the phone line stays quiet unless a test says otherwise.
   db.db.exec("UPDATE accounts SET contact_card_sent_at = 1");
@@ -291,6 +293,17 @@ test("decision 9: after their first switch from Web to texting, the next text ca
   clock.skip(13 * HOUR);
   await textIn(h, { id: "t4", body: "next day" });
   assert.equal(h.fake.sent.at(-1).text, "re: next day");
+});
+
+test("decision 9: never on a brand-new person's first days — the line waits for their third (owner, 2026-11-06)", async () => {
+  db.db.prepare("UPDATE accounts SET created_at = ? WHERE conversation_id = ?").run(clock.now(), KOFI_C);
+  const h = harness();
+  const kofi = { ...browser(KOFI_C), conv: KOFI_C };
+  await send(h, kofi, { id: "d9n-web-0001", text: "hi" });
+  await until(() => h.web.recent.length === 1);
+  await textIn(h, { id: "tn1", body: "hello from my phone" });
+  assert.equal(h.fake.sent.at(-1).text, "re: hello from my phone", "no Web line on day one");
+  assert.equal(db.getThread(KOFI_C).web_hint_told_at ?? null, null, "and it is not spent");
 });
 
 test("decision 9: the line never rides on a sign-in code, and the hint is not owed to anybody the switch doesn't cover", async () => {

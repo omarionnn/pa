@@ -55,6 +55,7 @@ import { sweep as sweepAlbums } from "./albums.js";
 import * as dailyEdition from "./daily.js";
 import * as webdraft from "./webdraft.js";
 import * as onboarding from "./onboarding.js";
+import * as opsDigest from "./opsdigest.js";
 
 const MIN = 60_000;
 // Sweep turns a held thing may be put to the model in before it is let go. See `notice` below.
@@ -933,13 +934,9 @@ export class Runtime extends EventEmitter {
       });
       this.log({ harm_paused: conversationId, strikes: strikes.count, kinds: strikes.kinds });
       const line = harm.pausedLine({ address: me.address, strikes });
-      const router = this.turnExtras?.channels;
-      if (router?.tellMaster) {
-        const r = await router.tellMaster(line, meta?.channel ?? null, { idempotencyKey: `ops:harm-pause:${conversationId}:${clock.now()}` }).catch(e => ({ ok: false, error: e?.message }));
-        if (!r?.ok) this.log({ could_not_tell_master: r?.error ?? "no route", about: "harm_pause" });
-      } else {
-        this.emit("outbound", { conversationId: config.ownerConversation, text: line, toMaster: true });
-      }
+      // The account is already paused, so nothing is waiting on him: the daily digest, not a text now
+      // (src/opsdigest.js, owner 2026-11-06).
+      try { opsDigest.hold({ text: line, key: `harm-pause:${conversationId}` }); } catch (e) { this.log({ could_not_hold_for_digest: e?.message, about: "harm_pause" }); }
     }
   }
 
@@ -1256,13 +1253,8 @@ export class Runtime extends EventEmitter {
     const line = `heads up — i can't reach ${who}: ${gone.why}. i've stopped running their scheduled check-ins`
       + (paused.length ? ` (${paused.length} ${gone.optedOut ? "ended" : "paused"})` : "") + ` so i'm not doing that work for nobody.`
       + (gone.optedOut ? ` they opted out, so nothing comes back on its own if they opt in again: they'd have to ask for it.` : ` if they come back, they can text me and i'll pick it up.`);
-    const router = this.turnExtras?.channels;
-    if (router?.tellMaster) {
-      const r = await router.tellMaster(line, null, { idempotencyKey: `ops:unreachable:${conversationId}:${clock.now()}` }).catch(e => ({ ok: false, error: e?.message }));
-      if (!r?.ok) this.log({ could_not_tell_master: r?.error ?? "no route", about: "unreachable" });
-    } else {
-      this.emit("outbound", { conversationId: config.ownerConversation, text: line, toMaster: true });
-    }
+    // Their check-ins are already stopped: the daily digest, not a text now (src/opsdigest.js).
+    try { opsDigest.hold({ text: line, key: `unreachable:${conversationId}` }); } catch (e) { this.log({ could_not_hold_for_digest: e?.message, about: "unreachable" }); }
   }
 
   /**

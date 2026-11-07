@@ -35,6 +35,7 @@
 // There is no regex over anything the person said anywhere in here. The Gmail queries are Gmail's
 // own search operators aimed at mail OTHER PEOPLE sent — which is gathering, not reading intent —
 // and every one of them only ever decides whether something is put in front of the model.
+import { RELATED as ASIDE_RELATED } from "./aside.js";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import * as google from "./google.js";
@@ -1307,7 +1308,7 @@ export function heldNote({ conversationId, held = [], now = clock.now() }) {
     + ` answered what they actually said — "btw, ${row.what.toLowerCase()}" is the shape. This is riding along on a reply`
     + ` they are already reading, so it is not an interruption and it costs them nothing.`
     + ` Call notice_send with key "${row.key}" in the same turn if you do say it, and nothing at all if you do not.`
-    + ` Skip it if the moment is wrong, if it has gone stale, or if it has nothing to do with anything.`;
+    + ` Skip it if the moment is wrong or it has gone stale. ${ASIDE_RELATED}`;
 }
 
 /**

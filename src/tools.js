@@ -12,6 +12,8 @@ import * as db from "./db.js";
 import { clock, stamp, config, RECORDING_RIDES_MS, weekdayMismatch, normalizeNumber, isOwnerNumber } from "./config.js";
 import * as trust from "./trust.js";
 import * as permissions from "./permissions.js";
+import * as askedCall from "./askedcall.js";
+import * as aside from "./aside.js";
 import * as represent from "./represent.js";
 import * as browser from "./browser.js";
 import * as sites from "./sites.js";
@@ -4076,7 +4078,7 @@ export const tools = [
   },
   {
     name: "call_place",
-    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person in this conversation, the one you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes. Every call to anyone but the owner opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. A call to the owner opens with a plain greeting instead: nothing is announced at the person who set this up, and they are told once by text that calls are recorded. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in the goal or the facts — the call is refused before it is dialled.",
+    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person in this conversation, the one you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes — EXCEPT a call they plainly asked for, to a business, that only asks (no may_book, no max_price_cents, no approved_terms): place that one straight away with no confirmation_id and do not ask them to confirm it; code checks it and refuses with needs_confirmation if it needs a yes after all. Every call to anyone but the owner opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. A call to the owner opens with a plain greeting instead: nothing is announced at the person who set this up, and they are told once by text that calls are recorded. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in the goal or the facts — the call is refused before it is dialled.",
     input_schema: {
       type: "object",
       properties: {
@@ -9354,6 +9356,13 @@ async function runToolInner(name, rawInput, ctx) {
         };
       }
       if (!underPermission && listGrant.why) gate = { ...gate, todo_list_does_not_cover: listGrant.why, error: `${gate.error} ${listGrant.why}` };
+      // A call they plainly asked for, in this turn, to a business, that only asks (src/askedcall.js):
+      // their request is the yes, so it is not asked for twice. Never a text, never a call that could
+      // agree to anything, never somebody they know, never a turn Reason started.
+      if (!underPermission && name === "call_place") {
+        const asked = await askedCall.covers({ conversationId: c, input, messages: ctx.messages ?? [], kind: ctx.kind ?? "event", ...(ctx.askedCallJudge ? { ask: ctx.askedCallJudge } : {}) });
+        if (asked.ok) underPermission = asked.permission;
+      }
     }
 
     if (!underPermission && !gate.ok) {
@@ -9408,6 +9417,9 @@ async function runToolInner(name, rawInput, ctx) {
       out: { ok: true, source: out.untrusted_source ?? null, flagged: out.flagged },
       target: out.untrusted_source ?? name,
     });
+  }
+  if (underPermission?.asked_for_call && out?.ok !== false) {
+    return { ...out, under_permission: underPermission, permission_note: `No separate yes was asked: they asked for this call themselves ("${underPermission.said}"), it only asks, and it is to a business. Do not ask them to confirm it. A placed call is ringing, not done.` };
   }
   return underPermission && out?.ok !== false
     ? { ...out, under_permission: underPermission, permission_note: `This went through without asking because they said: "${underPermission.said}". Tell them it is done and say that is why — never pretend you asked, and never widen what they said.` }
@@ -12053,6 +12065,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const miss = db.openMissesFor(c).find(m => m.id === input.id);
       if (!miss) return { ok: false, error: `No open miss #${input.id} on this conversation.` };
       db.resolveMiss(input.id);
+      // Said on the end of a reply of theirs: that is today's one aside (src/aside.js).
+      if ((ctx.kind ?? "event") === "user") aside.spend(c);
       return { ok: true, resolved: input.id };
     }
 
@@ -12080,6 +12094,23 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             note: `No need to ask: they approved the plan for their to-do list, which named ${listGrant.permission.business}. Nothing was asked and nothing was recorded.`
               + ` Call call_place with no confirmation_id. A call that could agree to spend money is still asked about — call_place will say so.`,
           };
+        }
+        // A call they asked for themselves, to a business, only to ask (src/askedcall.js): the request
+        // was the yes. The same read call_place makes, so the two cannot disagree.
+        const money = input.amount != null || ["money", "both"].includes(String(input.stakes ?? "").trim().toLowerCase());
+        if (!money) {
+          const askedFor = await askedCall.covers({
+            conversationId: c, input: { to: input.target, goal: input.summary ?? "" },
+            messages: ctx.messages ?? [], kind: ctx.kind ?? "event", ...(ctx.askedCallJudge ? { ask: ctx.askedCallJudge } : {}),
+          });
+          if (askedFor.ok) {
+            return {
+              ok: true, not_needed: true, asked_for_call: true,
+              note: `No need to ask: they asked for this call themselves ("${askedFor.permission.said}"), it only asks, and it is to a business.`
+                + ` Nothing was asked and nothing was recorded. Call call_place now with no confirmation_id, asking only — no may_book,`
+                + ` no max_price_cents, no approved_terms — and do not ask them to confirm it.`,
+            };
+          }
         }
       }
       const carries = checkAsk({
@@ -13463,6 +13494,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // A price drop that cleared the gate carries its offer: the reply check adds price, link and
       // when it was read if the line leaves them out (src/deals.js onNoticeCleared).
       if (verdict.ok && !verdict.schedule_for) deals.onNoticeCleared(c, db.getNotice(c, input.key));
+      // A catch said on the end of a reply of theirs is today's one aside (src/aside.js).
+      if (verdict.ok && !verdict.schedule_for && (ctx.kind ?? "event") === "user") aside.spend(c);
       if (!verdict.ok || !verdict.schedule_for) return verdict;
       // Not now. A one-off timer carries it to the moment it is actually useful, and that timer is
       // tied back to the row so the turn it fires is held to this same gate (see `tick`).

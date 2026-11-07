@@ -37,6 +37,7 @@ import { config, clock, callbackUrl } from "./config.js";
 import { flightProviders, LEDGER as FLIGHT_LEDGER, monthOf } from "./flightproviders.js";
 import * as subusage from "./subusage.js";
 import * as incidents from "./incidents.js";
+import * as digest from "./opsdigest.js";
 import { join } from "node:path";
 
 export const EVERY_MS = 5 * 60 * 1000;
@@ -771,21 +772,34 @@ export function settle({ report, runtime = null, log = () => {}, silent = new Se
       }
     } else if (told) {
       // `quietRecovery`: a cap lifting at midnight is expected, not news worth a late-night text.
-      if (!c.quietRecovery) changes.push({ kind: "fixed", check: c });
+      // The all-clear goes the way its alert went: live after a live one, in the digest otherwise.
+      if (!c.quietRecovery) changes.push({ kind: "fixed", check: c, live: db.opsGet(`alerted_live:${c.id}`) === "1" });
       db.opsDelete(`alerted:${c.id}`);
+      db.opsDelete(`alerted_live:${c.id}`);
     } else if (saved.previous === "bad" || saved.previous === "warn") {
       log({ ops_blip_cleared: c.id });
     }
   }
   db.opsSet("report", JSON.stringify(report));
-  const text = alertText(changes, report);
+  // Only an emergency is texted now (an outage, a service down, a spending cap near or at its
+  // limit); everything else waits for the one daily digest (src/opsdigest.js, owner 2026-11-06).
+  const live = changes.filter(ch => ch.kind === "wrong" ? digest.checkIsUrgent(ch.check) : ch.live);
+  const later = changes.filter(ch => !live.includes(ch));
+  for (const ch of live) if (ch.kind === "wrong") db.opsSet(`alerted_live:${ch.check.id}`, "1");
+  for (const ch of later) {
+    const line = ch.kind === "wrong"
+      ? (ch.check.alert ?? `${ch.check.label}: ${ch.check.detail}`)
+      : (ch.check.recovered ?? `${ch.check.label} is back to normal.`);
+    try { digest.hold({ text: line, key: `check:${ch.check.id}` }); } catch (e) { log({ ops_digest_hold_failed: short(e) }); }
+  }
+  const text = alertText(live, report);
   if (text && runtime?.say) {
     // Under an `ops:` key, so its history row is tagged an operator notice (db.OPS_KEY_PREFIXES) and
     // never shows as news on Web's Home.
     try { runtime.say(config.ownerConversation, text, { toMaster: true, idempotencyKey: `ops:check:${report.at ?? Date.now()}:${randomBytes(4).toString("hex")}` }); } catch (e) { log({ ops_alert_failed: short(e) }); }
   }
-  log({ ops: report.verdict, checks: report.checks.length, changed: changes.length, texted: !!text });
-  return { changes, text };
+  log({ ops: report.verdict, checks: report.checks.length, changed: changes.length, texted: !!text, held: later.length });
+  return { changes, text, held: later.length };
 }
 
 /** The text, or null when there is nothing new to say. Plain lines, worst first, the page's link last. */
@@ -889,7 +903,10 @@ export function startOps({ runtime = null, router = null, everyMs = EVERY_MS, fi
     link: (focus) => opsUrl(focus), log,
   });
   runtime?.on?.("error", (e) => noteError(e));
-  const run = () => runOnce({ runtime, router, log });
+  // The day's held notices, as one message, once it is past the digest hour (src/opsdigest.js).
+  const sendDigest = runtime?.say ? (text, idempotencyKey) => runtime.say(config.ownerConversation, text, { toMaster: true, idempotencyKey }) : null;
+  const run = () => runOnce({ runtime, router, log })
+    .finally(() => digest.flush({ send: sendDigest, link: opsUrl(), log }).catch(e => log({ ops_digest_failed: short(e) })));
   const first = setTimeout(run, firstAfterMs);
   const interval = setInterval(run, everyMs);
   first.unref?.();

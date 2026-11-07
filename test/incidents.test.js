@@ -44,7 +44,7 @@ after(() => { incidents.stop(); rmSync(dir, { recursive: true, force: true }); }
 beforeEach(() => {
   clock.reset();
   texts = [];
-  db.db.exec("DELETE FROM outbox; DELETE FROM incidents; DELETE FROM ops_checks; DELETE FROM ops_state;");
+  db.db.exec("DELETE FROM outbox; DELETE FROM incidents; DELETE FROM ops_checks; DELETE FROM ops_state; DELETE FROM ops_digest;");
   incidents.start({ send: (text, key) => { texts.push({ text, key }); return { ok: true }; }, link: (f) => `https://reason.example.test/ops?focus=${f}` });
 });
 
@@ -167,15 +167,18 @@ test("a person who opted out, or has not texted the line yet, is not Reason brok
   assert.equal(texts.length, 0);
 });
 
-test("a runtime error texts on its third repeat in a spell, not its first", () => {
+test("a runtime error goes to the daily digest on its third repeat in a spell, not its first — never a live text", async () => {
+  const digest = await import("../src/opsdigest.js");
   ops.noteError(new Error("cannot read row 41"));
   ops.noteError(new Error("cannot read row 42"));
-  assert.equal(texts.length, 0, "two is under the threshold");
+  assert.equal(digest.pending().length, 0, "two is under the threshold");
   assert.equal(incidents.checks()[0].state, "warn", "but it is on the page already");
   ops.noteError(new Error("cannot read row 43"));
-  assert.equal(texts.length, 1);
-  assert.match(texts[0].text, /Reason alert: Reason keeps hitting the same error/);
-  assert.match(texts[0].text, /\(3 times since/);
+  // Not an outage, a service down or a cap: the owner's chat stays quiet (owner, 2026-11-06).
+  assert.equal(texts.length, 0);
+  assert.equal(digest.pending().length, 1);
+  assert.match(digest.pending()[0].text, /Reason alert: Reason keeps hitting the same error/);
+  assert.match(digest.pending()[0].text, /\(3 times since/);
 });
 
 test("an unknown purchase outcome alerts at once", async () => {
@@ -225,12 +228,12 @@ test("the alert's own text, through the real outbox, never closes the alert it a
 
 test("an alert raised before the sender is wired (a restart's own recovery) is owed, then sent by start()", () => {
   incidents.stop();
-  incidents.raise({ key: "action:unknown", area: "actions", covers: "unknown", what: "a held action was cut off by a restart" });
+  incidents.raise({ key: "call:place:x", area: "calls", covers: "", what: "a phone call could not be placed after a restart" });
   assert.equal(texts.length, 0);
   assert.equal(incidents.open()[0].texted_at, null, "never marked told before it is");
   incidents.start({ send: (text, key) => { texts.push({ text, key }); } });
   assert.equal(texts.length, 1);
-  assert.match(texts[0].text, /cut off by a restart/);
+  assert.match(texts[0].text, /could not be placed after a restart/);
   incidents.start({ send: (text, key) => { texts.push({ text, key }); } });
   assert.equal(texts.length, 1, "owed once, sent once");
 });
@@ -247,9 +250,9 @@ test("one runtime error is on the page, and the five-minute pass does not text i
 });
 
 test("failing again after it went quiet is a fresh alert, without a 'resolved' in the same breath", () => {
-  incidents.raise({ key: "k1", area: "x", what: "thing broke" });
+  incidents.raise({ key: "k1", area: "messaging", what: "thing broke" });
   clock.skip(incidents.QUIET_MS + MIN);
-  incidents.raise({ key: "k1", area: "x", what: "thing broke" });
+  incidents.raise({ key: "k1", area: "messaging", what: "thing broke" });
   assert.deepEqual(texts.map(t => t.text.split("\n")[0]), ["Reason alert: thing broke.", "Reason alert: thing broke."]);
 });
 
@@ -320,4 +323,18 @@ test("watchdog: a dead process texts after two runs; a hung one too; it resolves
   } finally {
     for (const s of [sb, hung, healthy]) { s.closeAllConnections?.(); s.close(); }
   }
+});
+
+test("a non-urgent alert's whole episode is ONE digest line, ending where it ended — never a live text", async () => {
+  const digest = await import("../src/opsdigest.js");
+  // Repeats inside the quiet spell, long enough for a "still failing": one episode throughout.
+  for (let i = 0; i < 4; i++) {
+    incidents.raise({ key: "action:unknown", area: "actions", covers: "unknown", what: "a held action was cut off by a restart" });
+    clock.skip(20 * MIN);
+  }
+  incidents.resolve({ key: "action:unknown", how: "checked by hand" });
+  assert.equal(texts.length, 0);
+  const lines = digest.pending();
+  assert.equal(lines.length, 1);
+  assert.match(lines[0].text, /^Resolved: a held action was cut off by a restart — checked by hand/);
 });

@@ -186,7 +186,9 @@ test("three 'harm' messages in a day pause their Reason and tell the master the 
 
   assert.equal(db.getAccount(KOFI_ID).state, "paused");
   assert.equal(sentTo(h, KOFI).length, 3, "each one got the refusal line");
-  const toMaster = sentTo(h, MASTER);
+  // Already paused, so nothing waits on him: a line in his daily digest, not a text now (2026-11-06).
+  assert.equal(sentTo(h, MASTER).length, 0);
+  const toMaster = (await import("../src/opsdigest.js")).pending().filter(r => r.key === `harm-pause:${KOFI_ID}`);
   assert.equal(toMaster.length, 1);
   assert.match(toMaster[0].text, /ending 9876/);
   assert.match(toMaster[0].text, /3 times/);

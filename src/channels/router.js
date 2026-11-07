@@ -34,7 +34,6 @@ import { markRead } from "../receipts.js";
 import { servesOnThisBackend } from "../backends/guard.js";
 import { offerContactCard } from "../contact.js";
 import { tellNewLine, isReturning, LINE_CHANGE_CHANNEL } from "../linechange.js";
-import { readYesNo } from "../calls/verify.js";
 import { clock, config, normalizeNumber, stamp } from "../config.js";
 import { OutageError, downLine, leftWhileDownLine } from "../down.js";
 import * as onethought from "../onethought.js";
@@ -46,6 +45,7 @@ import * as choices from "../choicecards.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 import * as onboarding from "../onboarding.js";
 import * as plan from "../plan.js";
+import * as opsDigest from "../opsdigest.js";
 
 /** What somebody whose event code did not work is told, by why. */
 const EVENT_CLAIM_LINES = {
@@ -689,38 +689,8 @@ export class Router {
         } catch { /* best-effort */ }
       }
 
-      // A text that arrives while a call is waiting for a verification answer. The call sent
-      // "reply yes here and I'll [do the thing]" via the outbox, but the text handler has no call
-      // context — it would treat "Yes" as a reply to the last text. When there IS a pending
-      // verification and the single text IS a clear yes or no, handle it here instead of running a
-      // model turn that has no idea about the call.
-      // A call's check is texted to their phone and answered in the shared thread only, never from a Web-only chat.
-      const pendingCall = fold.webChat ? null : db.pendingCallVerification(conversationId);
-      if (pendingCall && said.length === 1) {
-        const answer = readYesNo(said[0]);
-        if (answer === "yes" || answer === "no") {
-          // The thread this was said in: a Web-only chat keeps its own (db.historyKeyFor).
-          const historyId = last.channel === web.WEB ? db.historyKeyFor(conversationId, last.chat_id) : conversationId;
-          const messages = db.loadConversation(historyId);
-          const who = accounts.ownerOf(conversationId);
-          const name = who?.name || "them";
-          messages.push({ role: "user", content: `[${stamp()}] ${name}: ${said[0]}` });
-          const ack = answer === "yes"
-            ? "Got it — carrying on with the call."
-            : "Understood — I won't do that.";
-          messages.push({ role: "assistant", content: ack });
-          db.saveConversation(historyId, messages);
-          if (answer === "yes") {
-            db.updateCall(conversationId, pendingCall.id, { verified_at: clock.now(), verified_how: "text" });
-          }
-          await this.send({
-            channel: last.channel, to: last.address, text: ack,
-            chatId: last.chat_id ?? null, conversationId, toOwner: true,
-          }).catch(() => {});
-          this.log({ call_verify_answered_by_text: pendingCall.id, answer, conversation: conversationId });
-          return { ok: true, conversationId, fromOwner: true, callVerification: answer };
-        }
-      }
+      // (A call no longer waits on a texted "yes" while it is live — src/calls/verify.js, 2026-11-06 —
+      // so there is no call verification for a text to answer here any more.)
 
       // Somebody mid-way through the first-chat onboarding (src/onboarding.js): its own bubbles answer
       // this step, before any request row is opened. Something real — a task, a picture, their to-do
@@ -1036,8 +1006,8 @@ export class Router {
     if (seen.action === "auto_admitted") {
       this.log({ inbound: inbound.externalId, auto_admitted: address, conversationId: seen.conversationId });
       const who = inbound.displayName ? `${inbound.displayName} (${address})` : address;
-      await this.tellMaster(`heads up — ${who} just texted me for the first time. i don't have them on your list yet.`, inbound.channel,
-        { idempotencyKey: `ops:new-contact:${seen.conversationId}:${Date.now()}` }).catch(() => {});
+      // Not an emergency: one line in the owner's daily digest, not a text now (src/opsdigest.js).
+      try { opsDigest.hold({ text: `${who} texted Reason for the first time and was let in; they are not on your list yet.`, key: `new-contact:${seen.conversationId}` }); } catch { /* never costs the admit */ }
       return { ok: true, autoAdmitted: true, conversationId: seen.conversationId };
     }
 

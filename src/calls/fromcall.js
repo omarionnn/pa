@@ -112,6 +112,19 @@ export function dialable(value) {
   return /^\+[1-9]\d{6,14}$/.test(n) ? n : "";
 }
 
+/** A request row's shape from a number and a brief, for `askingOnly` before the row exists. */
+const req0 = (to, brief) => ({ to_number: to, brief });
+
+/**
+ * Does this call only ASK, to somewhere that is not somebody they know? Then their asking for it is
+ * the yes. Read off the structured brief and the people lookups, never off anybody's words.
+ */
+export function askingOnly(conversationId, req) {
+  const a = req?.brief?.approved ?? {};
+  if (a.book === true || a.maxCents != null || (a.terms ?? []).length) return false;
+  return !db.knownPersonByNumber(conversationId, req?.to_number ?? "");
+}
+
 /** The hash a yes is tied to: the recipient and the brief as they were read back. Any change breaks it. */
 export function reviewHashOf({ to, goal, facts = [], book = false, maxCents = null, ask = [] }) {
   return createHash("sha256")
@@ -183,13 +196,21 @@ export function request({ call, input = {}, log = () => {} }) {
   // can ring the garage without asking" is a sentence he is entitled to have said — but not the
   // caller check, which is about who is holding the phone and not about what he once allowed.
   const standing = permissions.covering({ conversationId: c, action: "call_place", target: to, amountCents: brief.approved.maxCents ?? null });
+  // A call that only asks, to somewhere that is not somebody they know: they just asked for it out
+  // loud, so their asking is the yes (owner, 2026-11-06 — no "plain yes before I dial"). The number
+  // is still said back in the same breath, so a misheard digit can be stopped, but nothing waits on it.
+  const asking = !standing.ok && askingOnly(c, req0(to, brief));
   return {
     ok: true, request_id: row.id, state: "preparing",
     review,
     standing_permission: standing.ok ? standing.permission : null,
+    ...(asking ? { no_yes_needed: "asks only, to a business" } : {}),
     say: standing.ok
       ? `Written down, and they have a standing permission that covers this ("${standing.permission.said}"), so no yes is needed.`
         + ` Say what you are about to do in one line, then call make_a_call_for_me again with request_id ${row.id} and they_said_yes true.`
+      : asking
+      ? `Written down. It only asks, so their asking was the yes: do NOT ask "shall I?". In one line, say who you are ringing`
+        + ` and the number back ("ringing ${spokenPhone(to)} now to ask…"), then call make_a_call_for_me again with request_id ${row.id} right away.`
       : `Written down. Read this back to them, close to word for word, and WAIT for their answer: "${review}"`
         + ` When they say yes, call make_a_call_for_me again with request_id ${row.id} and they_said_yes true. If they change anything, start a new request.`,
   };
@@ -219,7 +240,8 @@ export async function go({ call, requestId, saidYes = false, dial, log = () => {
   }
 
   const standing = permissions.covering({ conversationId: c, action: "call_place", target: req.to_number, amountCents: req.brief?.approved?.maxCents ?? null });
-  if (!saidYes && !standing.ok) {
+  const asking = !saidYes && !standing.ok && askingOnly(c, req);
+  if (!saidYes && !standing.ok && !asking) {
     return { ok: false, request_id: req.id, state: "preparing", say: `Not without their yes to the read-back. Say it again if you need to: "${req.review}"` };
   }
 
@@ -261,7 +283,9 @@ export async function go({ call, requestId, saidYes = false, dial, log = () => {
 
   // The spoken yes becomes a confirmation row with the evidence on it, so `call_place` goes through
   // its ordinary gate on a real yes rather than around it, and the ledger says what the yes was.
-  const how = standing.ok && !saidYes ? `standing permission #${standing.permission.permission_id}` : `spoken yes on call #${call.id}, caller verified by ${call.verified_how}`;
+  const how = standing.ok && !saidYes ? `standing permission #${standing.permission.permission_id}`
+    : asking ? `asked for on call #${call.id}: asks only, to a business, caller verified by ${call.verified_how}`
+      : `spoken yes on call #${call.id}, caller verified by ${call.verified_how}`;
   const conf = db.askConfirmation({
     conversationId: c, action: "call_place", summary: req.review, stakes: b.approved?.book ? "may agree, within the ceiling" : "asking only",
     target: normalizeTarget(req.to_number), askedAfterMsgs: 0, taskId: req.task_id,

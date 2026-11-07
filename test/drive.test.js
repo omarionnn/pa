@@ -198,7 +198,7 @@ test("adding Drive to their one account offers THAT account, not the chooser", a
   // The in-product notice says what THIS link asks for, which Google's policy wants to match the
   // consent screen — so a Drive link does not promise a sentence about their mail.
   assert.match(link.say_with_link, /Drive/);
-  assert.ok(!/their mail/.test(link.say_with_link));
+  assert.ok(!/(their|your) mail/.test(link.say_with_link));
 });
 
 // 2026-10-06, Omari's own thread. He added Drive to an account that was already on and was told
@@ -241,6 +241,14 @@ test("the notice is in full the first time they give a kind of access, and the a
   // Mail and calendar they have also given before, so a link for those is short too.
   const mail = await call("google_connect", { scopes: MAIL_AND_CALENDAR });
   assert.equal(mail.say_with_link, `Privacy policy: ${mail.privacy_url}`);
+});
+
+test("the consent line speaks to them, second person: 'your mail', 'when you ask' (owner, 2026-11-06)", async () => {
+  const mail = await call("google_connect", { scopes: MAIL_AND_CALENDAR });
+  assert.match(mail.say_with_link, /^Reason only reads or changes your mail or reads or changes your calendar when you ask, keeps nothing beyond the conversation/);
+  assert.doesNotMatch(mail.say_with_link, /\b(their|they)\b/);
+  const drive = await call("google_connect", { scopes: google.DRIVE_SCOPES });
+  assert.match(drive.say_with_link, /opens a file in your Drive/);
 });
 
 test("with two accounts on, a Drive ask still shows the chooser and says which one to pick", async () => {

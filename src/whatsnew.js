@@ -46,6 +46,7 @@
 //      either one empty, so a half-filled record cannot ship.
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
+import * as aside from "./aside.js";
 import { clock } from "./config.js";
 
 /**
@@ -216,8 +217,8 @@ export function unheardFor({ conversationId, capabilities = [] }) {
 
 /** Has this person already been told something today? One a day, counted from the table. */
 function toldToday(conversationId, now) {
-  const last = db.lastWhatsNewTold(conversationId);
-  return !!last && accounts.today(last) === accounts.today(now);
+  // Any aside counts, not only a new feature: one "btw" a day in all (src/aside.js).
+  return aside.spentToday(conversationId, now);
 }
 
 /**
@@ -252,7 +253,7 @@ export function noteFor({ conversationId, kind = "user", capabilities = [], now 
     + ` If this moment suits, mention it in passing at the very end of your reply — one short line, your own words,`
     + ` the same lowercase texting voice as everything else you say. Never a list, never a pitch, never the point of the reply.`
     + ` Skip it entirely if the moment is wrong: they are upset, in a hurry, mid-errand, waiting on an answer from you,`
-    + ` or this reply is bad news. If you do say it, call whats_new_said with id "${entry.id}" in the same turn.`
+    + ` or this reply is bad news. ${aside.RELATED} If you do say it, call whats_new_said with id "${entry.id}" in the same turn.`
     + ` If you leave it out, do not call that tool and do not mention any of this — it will be offered to you again another time.`;
 }
 
@@ -295,7 +296,8 @@ export function resolvedMissFor({ conversationId, kind = "user", capabilities = 
 /**
  * Turn note for a resolved miss — tells the model to thread back to the original message.
  */
-export function resolvedMissNote({ conversationId, kind = "user", capabilities = [] }) {
+export function resolvedMissNote({ conversationId, kind = "user", capabilities = [], now = clock.now() }) {
+  if (aside.spentToday(conversationId, now)) return "";
   const miss = resolvedMissFor({ conversationId, kind, capabilities });
   if (!miss) return "";
   const threadPart = miss.message_handle
@@ -303,7 +305,7 @@ export function resolvedMissNote({ conversationId, kind = "user", capabilities =
     : "";
   return `this person once asked you about "${miss.summary}" and you told them you couldn't — that was ${miss.capability}, which is now live.`
     + ` Thread their original message with a casual one-liner: "oh btw" or "hey so" — your voice, not a pitch.${threadPart}`
-    + ` Then call cant_do_resolved with id ${miss.id}. If this moment is wrong (they are upset, busy, mid-errand), skip it — it will be offered again.`;
+    + ` ${aside.RELATED} Then call cant_do_resolved with id ${miss.id}. If this moment is wrong (they are upset, busy, mid-errand), skip it — it will be offered again.`;
 }
 
 export function claimSaid({ conversationId, id, capabilities = [], now = clock.now() }) {

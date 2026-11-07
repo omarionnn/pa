@@ -1303,6 +1303,9 @@ addColumnIfMissing("calls", "verified_how", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "verify_tries", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("calls", "verify_sent_at", "INTEGER");
 addColumnIfMissing("calls", "verify_sent_after_msgs", "INTEGER");
+// What an unverified caller asked for that waits for the call to end, picked up by text after it
+// (src/calls/verify.js; owner 2026-11-06: no "reply yes" during a live call).
+addColumnIfMissing("calls", "verify_deferred", "TEXT");
 addColumnIfMissing("calls", "profile", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "tts_model", "TEXT NOT NULL DEFAULT ''");
 // What Reason looked up on a call, one entry per tool run. The platform hands each turn back as
@@ -5328,7 +5331,7 @@ export function updateCall(conversationId, id, fields) {
     "outcome_kind", "confirmation_ref", "confirmation_strength", "readback", "brief",
     "errand_id", "voicemail_left", "attempt", "told_at",
     // The 2026-10-07 addendum: the second check on an owner call, and what the call ran under.
-    "verified_at", "verified_how", "verify_tries", "verify_sent_at", "verify_sent_after_msgs",
+    "verified_at", "verified_how", "verify_tries", "verify_sent_at", "verify_sent_after_msgs", "verify_deferred",
     "profile", "tts_model",
     "opening_waits", "machine_heard",
     // A GPT-Live third-party call names Reason in its disclosure (src/calls/gptlive.js lineAnnouncement).
@@ -11366,6 +11369,15 @@ db.exec(`
     reminded_at INTEGER,
     resolved_at INTEGER,
     resolved_how TEXT NOT NULL DEFAULT ''
+  );
+  -- Operator notices held for the one daily digest (src/opsdigest.js, owner 2026-11-06): everything
+  -- that is not an emergency waits here instead of landing in the owner's chat as it happens.
+  CREATE TABLE IF NOT EXISTS ops_digest (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    sent_at INTEGER
   );
   -- The same calls by the hour, for the status page's 24-hour trend lines (2026-10-24). The daily
   -- table cannot say when in the day; this one is pruned to two days by opsTrends.

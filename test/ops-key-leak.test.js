@@ -162,9 +162,12 @@ test("5. stripOpsKeys", () => {
 test("6. owner notices that are not questions go under an ops: key (harm pause, unreachable, first text)", async () => {
   const { readFileSync } = await import("node:fs");
   const src = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
-  assert.match(src("runtime.js"), /tellMaster\(line, meta\?\.channel \?\? null, \{ idempotencyKey: `ops:harm-pause:/);
-  assert.match(src("runtime.js"), /tellMaster\(line, null, \{ idempotencyKey: `ops:unreachable:/);
-  assert.match(src("channels/router.js"), /idempotencyKey: `ops:new-contact:/);
+  // Since 2026-11-06 these three are not texted at all: they wait for the daily digest, which goes
+  // out under its own ops: key (src/opsdigest.js).
+  assert.match(src("runtime.js"), /opsDigest\.hold\(\{ text: line, key: `harm-pause:/);
+  assert.match(src("runtime.js"), /opsDigest\.hold\(\{ text: line, key: `unreachable:/);
+  assert.match(src("channels/router.js"), /opsDigest\.hold\(\{ text: .*key: `new-contact:/);
+  assert.match(src("opsdigest.js"), /`ops:digest:\$\{day\}`/);
   for (const k of ["ops:harm-pause:x:1", "incident:calls:1", "event-created:e1", "ops:check:1:ab#2"]) assert.equal(db.opsSourceOf(k), "ops", k);
   for (const k of ["auto:fake:x:1", "timer:3", null]) assert.equal(db.opsSourceOf(k), null, String(k));
 });

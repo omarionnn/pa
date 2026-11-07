@@ -455,6 +455,11 @@ export function ownerEvent({ row, live = null }) {
       ? `\nIf on the call they said yes to something you offered to do later (a check before they leave, a reminder) and it is`
         + ` not set up yet, set it up now with your tools and say so in one line; if you can't, say that instead.`
       : "")
+    + (String(row.verify_deferred ?? "").trim()
+      ? `\nSomething IS owed: on the call they asked for something that could not be done by voice and waits for this text:`
+        + ` "${String(row.verify_deferred).replace(/"/g, "'")}". Pick it up now, in one short message: do it with your tools if it`
+        + ` needs no yes, or ask for their yes here if it does — this text goes to their own phone.`
+      : "")
     + (cut
       ? `\nSomething IS owed: they started saying something just as the call ended${cut.words ? ` (all that came through: "${String(cut.words).replace(/"/g, "'")}")` : ""}`
         + ` and it was cut off. Send one short, warm line saying it sounded like they were saying something as you hung up, and ask what it was.`

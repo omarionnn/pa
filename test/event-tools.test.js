@@ -90,10 +90,12 @@ test("creation: missing answers make nothing; the finished event hands back name
   assert.equal(out.share.link, `https://files.example.test/e/${ev.public_id}`);
   assert.equal(out.event.time_shown_to_guests, true);
   assert.equal(out.event.location_shown_to_guests, false);
-  const toOwner = rt.sent.filter(s => s.conversationId === OWNER_C);
+  // News, not an emergency: one line in the owner's daily digest, nothing in his chat now (2026-11-06).
+  assert.equal(rt.sent.filter(s => s.conversationId === OWNER_C).length, 0);
+  const toOwner = (await import("../src/opsdigest.js")).pending().filter(r => r.key === `event-created:${ev.id}`);
   assert.equal(toOwner.length, 1);
   assert.match(toOwner[0].text, /new event: "Halloween Party", made by Kofi/);
-  assert.match(toOwner[0].text, new RegExp(`its page: https://files.example.test/e/${ev.public_id}$`, "m"));
+  assert.match(toOwner[0].text, new RegExp(`its page: https://files.example.test/e/${ev.public_id}( |$)`));
   assert.ok(!toOwner[0].text.includes(ev.organizer_token), "never the organizer's own key");
   assert.ok(!/pumpkin/.test(toOwner[0].text), "never the password");
   assert.ok(!/pumpkin/.test(JSON.stringify(sealTravelers("event_create", { input: answers(), out }))), "sealed in every log line");
@@ -236,13 +238,13 @@ test("event_list: the organizer's view of their own, a guest's view of joined on
   assert.deepEqual(await tool("event_list", {}, YAW_C), { ok: true, organizing: [], going_to: [] });
 });
 
-test("the owner's creation text goes once and is marked told only when it went", async () => {
+test("the owner's creation line is held once for the digest and marked told when it is", async () => {
+  const digest = await import("../src/opsdigest.js");
   const rt = fakeRuntime();
   const { ev } = await made(KOFI_C, {}, rt);
   assert.ok(db.getEventRow(ev.id).owner_told_at);
-  const failing = { ...fakeRuntime(), async _tell() { return { ok: false, error: "down" }; } };
-  const second = await tool("event_create", answers({ name: "Dinner" }), KOFI_C, failing);
-  assert.equal(db.getEventRow(second.event.event_id).owner_told_at, null);
+  assert.equal(digest.pending().filter(r => r.key === `event-created:${ev.id}`).length, 1);
+  assert.equal(rt.sent.filter(s => s.conversationId === OWNER_C).length, 0, "nothing live");
 });
 
 test("while the operator has an event paused, updates and removals are held — then sent on resume to whoever is still owed them", async () => {
