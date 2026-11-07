@@ -88,7 +88,7 @@ function typedOnly(t) {
   return out.join("\n").trim();
 }
 const typed = (messages, last) => ownerTexts(messages).slice(-last).map(typedOnly).filter(Boolean);
-const NEGATION = /\b(never|don'?t|do not|doesn'?t|can'?t|cannot|won'?t|shouldn'?t|mustn'?t|no|no longer|stop|not)\b/;
+
 
 /**
  * Did the owner really say this? `said` must appear, give or take case, spacing and punctuation, in
@@ -96,17 +96,13 @@ const NEGATION = /\b(never|don'?t|do not|doesn'?t|can'?t|cannot|won'?t|shouldn'?
  * call). For a change to the gate itself (a standing permission, spending limits), whose words are
  * the whole of the authority: the model's paraphrase of what they wanted is not their saying it.
  */
-export function ownerSaid(messages, said, { last = 12 } = {}) {
+export function ownerSaidWhere(messages, said, { last = 12 } = {}) {
   const want = sayNorm(said);
   const words = contentWords(said);
   // A sentence that grants something says what: "ok" or "thanks" quoted back is not a permission.
-  if (words.length < 3) return false;
-  return typed(messages, last).some(t => {
+  if (words.length < 3) return null;
+  return typed(messages, last).reverse().find(t => {
     const theirs = sayNorm(t);
-    // "never text my mom without asking me" contains "text my mom without asking me": a no, quoted as a yes.
-    // And a sentence that opens on a no ("never …", "don't …") is a rule against, not a permission.
-    if (NEGATION.test(theirs) && !NEGATION.test(want)) return false;
-    if (/^(never|don'?t|do not|can'?t|cannot|won'?t|shouldn'?t|no|stop|not)\b/.test(want)) return false;
     if (theirs.includes(want)) return true;
     // A light retelling of one message of theirs (the model tidied the wording): nearly every word that
     // carries meaning is theirs. A sentence they never sent shares almost none.
@@ -114,6 +110,13 @@ export function ownerSaid(messages, said, { last = 12 } = {}) {
     return words.filter(w => have.has(w)).length / words.length >= 0.8;
   });
 }
+
+/**
+ * True when `said` is in one of their recent typed messages (see ownerSaidWhere). Finding the words is
+ * not knowing what they meant: "never text my mom without asking" holds "text my mom without asking".
+ * A caller that grants something on the strength of it has the message read for meaning as well.
+ */
+export function ownerSaid(messages, said, opts) { return ownerSaidWhere(messages, said, opts) != null; }
 
 /** Did one recent message of theirs name every one of these dollar amounts? ("$1,500", "1500", "1500.00") */
 export function ownerSaidAmounts(messages, amounts, { last = 12 } = {}) {
