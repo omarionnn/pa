@@ -602,6 +602,15 @@ export async function runVerify(c, input, { sidecar, db, today = null, now = () 
     db.recordFlightSearch(c, { kind: "flights", params: prev.params, outcome: "blocked", found: result.count, ms: now() - t0 });
     return { ...couldntCheck(new FliError("blocked", "part of the recheck was refused"), opt.link || askedLink(params)), price_then: opt.price, stale: true, note: `Couldn't re-check that one — Google refused part of the search. The ${opt.price} from earlier is NOT current; say it was the price when you looked.` };
   }
+  // A round trip first listed by one source and re-checked on the other (SerpApi lists only the way
+  // out, Duffel both ways) can never match key for key: that is "couldn't re-check", not "gone".
+  const roundTripShape = (k) => String(k).includes("|");
+  const firstBack = (result.itineraries || [])[0];
+  if (!exact && params.return_date && firstBack && roundTripShape(itineraryKey(firstBack)) !== roundTripShape(opt.key)) {
+    db.recordFlightSearch(c, { kind: "flights", params: prev.params, outcome: "unconfirmed", found: result.count, ms: now() - t0 });
+    const link = opt.link || askedLink(params);
+    return { ok: false, couldnt_check: true, kind: "unconfirmed", ...(link ? { link } : {}), price_then: opt.price, stale: true, note: `Couldn't re-check that exact trip. The ${opt.price} from earlier is NOT current; say it was the price when you looked, and point them to the link for the live price.` };
+  }
   const options = shortList(result, params, { show: prev.options.length || 5 });
   db.recordFlightSearch(c, {
     kind: "flights", params: prev.params, outcome: result.count ? "ok" : "empty",

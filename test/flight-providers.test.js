@@ -345,6 +345,30 @@ test("SerpApi refusing (bad key) falls to Duffel; both failing is the one honest
   assert.equal(out2.kind, "unavailable");
 });
 
+test("a round trip listed by Duffel and re-checked on SerpApi is 'couldn't re-check', never 'sold out'", async () => {
+  process.env.DUFFEL_ACCESS_TOKEN = "duffel_test_x";
+  process.env.SERPAPI_MONTHLY_LIMIT = "0";
+  const { src } = source({ [DUFFEL]: { status: 201, body: fixture("duffel-round-trip.json") }, [SERP]: { body: fixture("serpapi-round-trip.json") } });
+  const s = await search({ origin: "JFK", destination: "MIA", depart_date: "2026-12-10", return_date: "2026-12-15" }, src);
+  assert.equal(s.ok, true, JSON.stringify(s));
+  process.env.SERPAPI_API_KEY = "serp-test";
+  delete process.env.SERPAPI_MONTHLY_LIMIT;
+  const v = await runTool("flight_verify", { search_id: s.search_id, option: 1 }, { conversationId: C, fli: src });
+  assert.equal(v.still_there, undefined, JSON.stringify(v));
+  assert.equal(v.stale, true);
+  assert.equal(v.kind, "unconfirmed");
+  assert.equal(v.price_then, s.options[0].price);
+});
+
+test("a 400/422 is the search they asked for (kind invalid), so /ops keeps it quiet", async () => {
+  process.env.SERPAPI_API_KEY = "serp-test";
+  process.env.DUFFEL_ACCESS_TOKEN = "duffel_test_x";
+  const { src } = source({ [SERP]: { status: 400, body: { error: "Unsupported departure_id." } }, [DUFFEL]: { status: 422, body: { errors: [{ message: "invalid airport" }] } } });
+  const out = await search({ origin: "XQQ", destination: "MIA", depart_date: day(12) }, src);
+  assert.equal(out.kind, "unavailable");
+  assert.equal(src.lastOutcome().state, "invalid");
+});
+
 test("isoMinutes reads Duffel's durations", () => {
   assert.equal(fp.isoMinutes("PT2H26M"), 146);
   assert.equal(fp.isoMinutes("P1DT2H"), 1560);

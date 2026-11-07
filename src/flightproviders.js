@@ -154,7 +154,8 @@ export async function searchSerpapi(p, { key, fetchImpl = fetch, fresh = false, 
   // "Google hasn't returned any results for this query." is an answer: nothing matched.
   if (body?.error && /hasn'?t returned any results/i.test(body.error)) return { source: "serpapi", count: 0, itineraries: [] };
   if (!res.ok || !body || body.error) {
-    const kind = res.status === 429 ? "exhausted" : res.status === 401 ? "auth" : "provider";
+    // 400/422 is the search they asked for (a bad code, a past date), not the owner's to fix: "invalid", kept quiet on /ops.
+    const kind = res.status === 429 ? "exhausted" : res.status === 401 ? "auth" : res.status === 400 || res.status === 422 ? "invalid" : "provider";
     throw new FliError(kind, `SerpApi ${res.status}: ${String(body?.error || "no JSON").slice(0, 160)}`, { status: res.status });
   }
   return fromSerpapi(body, p);
@@ -287,7 +288,7 @@ export async function searchDuffel(p, { token, fetchImpl = fetch, timeoutMs = DU
   try { body = await res.json(); } catch { /* read below */ }
   if (!res.ok || !body?.data) {
     const why = body?.errors?.[0]?.message || body?.errors?.[0]?.title || "no JSON";
-    throw new FliError(res.status === 401 ? "auth" : res.status === 429 ? "exhausted" : "provider", `Duffel ${res.status}: ${String(why).slice(0, 160)}`, { status: res.status });
+    throw new FliError(res.status === 401 ? "auth" : res.status === 429 ? "exhausted" : res.status === 400 || res.status === 422 ? "invalid" : "provider", `Duffel ${res.status}: ${String(why).slice(0, 160)}`, { status: res.status });
   }
   return fromDuffel(body, p);
 }
