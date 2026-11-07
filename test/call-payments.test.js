@@ -130,6 +130,78 @@ test("an empty or missing call is fine, not an error", () => {
   assert.equal(checkCallForPaymentDetails({ goal: "x" }).ok, true);
 });
 
+// ---------- every field the call is handed, not just goal and facts (audit lead 31) ----------
+//
+// The brief carries more than goal and facts: requirements ("everything they are going to ask
+// for"), the questions in `ask`, and approved_terms all reach the voice prompt. A card number
+// in any of them is the same card number on a recording.
+
+test("a card number in the requirements is refused before it dials", async () => {
+  const calls = new FakeCallProvider();
+  const out = await runTool("call_place", {
+    to: OWNER, goal: "book a table for 2 at 8pm",
+    requirements: { name: "Omari", "card to hold it": `${CARD} exp 12/28 cvv 123` },
+  }, { conversationId: C, calls });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "payment_details_refused");
+  assert.doesNotMatch(JSON.stringify(out), /4242|cvv 123/i, "and the refusal does not echo it");
+  assert.equal(calls.placed.length, 0, "nothing was dialled");
+  assert.equal(db.listCalls(C).length, 0, "and no call row exists");
+});
+
+test("a requirements KEY is scanned as well as its value", async () => {
+  const calls = new FakeCallProvider();
+  const out = await runTool("call_place", {
+    to: OWNER, goal: "book a table for 2 at 8pm",
+    requirements: { [`card ${CARD}`]: "yes" },
+  }, { conversationId: C, calls });
+  assert.equal(out.status, "payment_details_refused");
+  assert.equal(calls.placed.length, 0);
+});
+
+test("the questions in ask are scanned", async () => {
+  const calls = new FakeCallProvider();
+  const out = await runTool("call_place", {
+    to: OWNER, goal: "book a table for 2 at 8pm", ask: ["is cvv 123 ok to hold it?"],
+  }, { conversationId: C, calls });
+  assert.equal(out.status, "payment_details_refused");
+  assert.equal(calls.placed.length, 0);
+});
+
+test("approved_terms are scanned", async () => {
+  const calls = new FakeCallProvider();
+  const out = await runTool("call_place", {
+    to: OWNER, goal: "book a table for 2 at 8pm",
+    approved_terms: [`a deposit on card number ${CARD}`],
+  }, { conversationId: C, calls });
+  assert.equal(out.status, "payment_details_refused");
+  assert.equal(calls.placed.length, 0);
+});
+
+test("ordinary requirements, questions and terms still go through", async () => {
+  const calls = new FakeCallProvider();
+  const out = await runTool("call_place", {
+    to: OWNER, goal: "book a table for 2 at 8pm",
+    requirements: { name: "Omari", people: "2", phone: "+12025551234" },
+    ask: ["do they take card or is it cash only?"],
+    approved_terms: ["we'll pay at the door"],
+  }, { conversationId: C, calls });
+  assert.equal(out.ok, true, out.error);
+  assert.equal(calls.placed.length, 1);
+});
+
+test("a whole brief is screened, including one carried forward into a redial", async () => {
+  const { buildBrief, askWhetherItWentThrough } = await import("../src/calls/brief.js");
+  const { checkBriefForPaymentDetails } = await import("../src/calls/payments.js");
+  const old = buildBrief({ goal: "book a table for 2 at 8pm", requirements: { "card to hold it": `${CARD}` } });
+  const redial = askWhetherItWentThrough(old);
+  assert.equal(redial.requirements["card to hold it"], CARD, "the redial carries the old requirements");
+  assert.equal(checkBriefForPaymentDetails(redial).ok, false, "so the final brief is screened, not only the input");
+  assert.equal(checkBriefForPaymentDetails(buildBrief({ goal: "x", questions: ["security code 123?"] })).ok, false);
+  assert.equal(checkBriefForPaymentDetails(buildBrief({ goal: "x", approved: { book: true, terms: [`${CARD}`] } })).ok, false);
+  assert.equal(checkBriefForPaymentDetails(buildBrief({ goal: "table for 2", requirements: { name: "Omari" } })).ok, true);
+});
+
 // ---------- the call carries the rule with it ----------
 
 test("every placed call carries the no-payment rule and what to do instead", async () => {
