@@ -8331,7 +8331,8 @@ export function recordUberQuote({
       currency = excluded.currency,
       fare_expires_at = excluded.fare_expires_at,
       surge_multiplier = excluded.surge_multiplier,
-      updated_at = excluded.updated_at`)
+      updated_at = excluded.updated_at
+    WHERE uber_rides.conversation_id = excluded.conversation_id`)
     .run(
       conversationId, quoteId, productId, productName,
       start.latitude ?? null, start.longitude ?? null, String(start.place_id ?? ""), String(start.label ?? ""),

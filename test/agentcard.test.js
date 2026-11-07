@@ -1890,3 +1890,17 @@ test("pinned: a refresh that answers with no user keeps the new pair, so the nex
   assert.equal(r.refreshToken, "rct_new");
 });
 
+
+test("the purchase_confirm gate does not describe another person's cart, even with both ids (audit lead 21)", async () => {
+  db.recordAgentcardPurchase({
+    conversationId: OMARI, buyConversationId: "conv_victim", status: "cart",
+    cartHash: "victimhash", amountCents: 2306, merchant: "Blue Bottle", what: "a bag of colombian coffee",
+  });
+  const out = await call("purchase_confirm", { conversation_id: "conv_victim", cart_hash: "victimhash" }, AMA);
+  assert.equal(out.ok, false);
+  const seen = JSON.stringify(out);
+  for (const secret of ["Blue Bottle", "colombian", "23.06"]) assert.ok(!seen.includes(secret), `leaked ${secret}: ${seen}`);
+  // The owner's own gate still names the cart, so their yes is pinned to the real merchant and amount.
+  const mine = await call("purchase_confirm", { conversation_id: "conv_victim", cart_hash: "victimhash" }, OMARI);
+  assert.match(mine.use_target, /Blue Bottle.*23\.06/);
+});
