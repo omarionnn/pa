@@ -476,6 +476,25 @@ const LINK_ALONE = "If you send a link, write your words first ending with a col
 /** Messages to guests stop while an event is paused from the status page. */
 const PAUSED = "This event is paused by Reason's operator right now, so nothing goes out to guests. Say so plainly; it isn't something they can undo themselves.";
 
+/**
+ * Why an organizer action cannot happen at all, or null when it can: not theirs, ambiguous, or the
+ * event is cancelled. The handler runs it first, and so does the confirm gate for event_blast
+ * (src/tools.js), because a refusal has to beat a request for permission: a stranger naming
+ * somebody's event must hear what a made-up id hears, never be sent to collect a yes.
+ */
+export function organizerRefusal(c, input, name = null) {
+  const ev = events.managed(c, input.event_id);
+  if (!ev) {
+    const r = events.roleIn(c, input.event_id);
+    return r?.role === "guest" ? GUEST_THERE(r.ev) : NOT_THEIRS(input.event_id);
+  }
+  const which = events.whichEvent(c, input.event_id, input.event_named, { forOrganizer: true });
+  if (!which.ok) return askWhich(which);
+  if (ev.status === "cancelled") return { ok: false, error: `${ev.name} is cancelled; nothing about it can be changed now.` };
+  if (name === "event_blast" && ev.status === "paused") return { ok: false, error: PAUSED };
+  return null;
+}
+
 export async function runEventTool(name, input, ctx) {
   const c = ctx.conversationId;
   if (!eventToolVisible(name, c)) return NOT_AVAILABLE;
@@ -676,14 +695,9 @@ export async function runEventTool(name, input, ctx) {
   }
 
   // Everything below is the organizer's alone, and `managed` is the only way in.
+  const refused = organizerRefusal(c, input);
+  if (refused) return refused;
   const ev = events.managed(c, input.event_id);
-  if (!ev) {
-    const r = events.roleIn(c, input.event_id);
-    return r?.role === "guest" ? GUEST_THERE(r.ev) : NOT_THEIRS(input.event_id);
-  }
-  const which = events.whichEvent(c, input.event_id, input.event_named, { forOrganizer: true });
-  if (!which.ok) return askWhich(which);
-  if (ev.status === "cancelled") return { ok: false, error: `${ev.name} is cancelled; nothing about it can be changed now.` };
 
   switch (name) {
     case "event_rides_setting": {

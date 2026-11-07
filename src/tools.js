@@ -63,7 +63,7 @@ import { endFieldsFor } from "./calls/metrics.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
-import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget } from "./eventtools.js";
+import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal } from "./eventtools.js";
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
@@ -9351,6 +9351,15 @@ async function runToolInner(name, rawInput, ctx) {
       if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: stuck, target: targetOf(name, input) });
       return stuck;
     }
+  }
+
+  // The same ordering for a blast (audit lead 28): somebody else's event, an ambiguous name, or an
+  // event that is cancelled or paused is refused as the handler would refuse it, before anybody is
+  // asked to approve a message that could never go out — and a stranger is told nothing new.
+  if (name === "event_blast") {
+    if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
+    const refusal = organizerRefusal(c, input, name);
+    if (refusal) return refusal;
   }
 
   // The same ordering, for the one Drive permission Reason does not ask for at connect time. A

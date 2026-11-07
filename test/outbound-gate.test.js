@@ -150,11 +150,16 @@ test("event_blast: a yes for one message cannot send another; a yes for this one
   assert.equal(rt.sent.length, 2);
 });
 
-test("event_blast on somebody else's event describes nothing about it", async () => {
+test("event_blast on somebody else's event is refused before the gate and describes nothing about it", async () => {
   const ev = await eventWithGuests();
-  const out = await runTool("event_blast", { event_id: ev.id, message: "hi" }, { conversationId: AMA_C, messages: [], events: fakeRuntime() });
+  // Omari is neither its organizer nor a guest: refused like a made-up id, never sent to collect a yes.
+  const out = await runTool("event_blast", { event_id: ev.id, message: "hi" }, { conversationId: OWNER_C, messages: [], events: fakeRuntime() });
   assert.equal(out.ok, false);
+  assert.notEqual(out.blocked, "needs_confirmation");
   assert.ok(!/Halloween/.test(JSON.stringify(out)), JSON.stringify(out));
+  // A guest is told they are a guest there, as before, and is not asked to approve anything either.
+  const guest = await runTool("event_blast", { event_id: ev.id, message: "hi" }, { conversationId: AMA_C, messages: [], events: fakeRuntime() });
+  assert.equal(guest.reason, "guest_there", JSON.stringify(guest));
 });
 
 // ---------- github writes ----------
