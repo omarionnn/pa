@@ -68,9 +68,16 @@ export function clientIp(headers = {}, socketAddress = "") {
   return String(socketAddress || "unknown").slice(0, 64);
 }
 
+/**
+ * The count a claimed address is kept under. Only address characters make a name of their own: a
+ * claimed "key", "every" or "src:<addr>" would otherwise land on the keyed link's, the overall or a
+ * signed address's count and let an unsigned stranger fill them. Anything else shares one count.
+ */
+const claimed = (ip) => `${ALL}:${/^[0-9A-Fa-f:.]{2,64}$/.test(String(ip)) ? ip : "other"}`;
+
 /** Null when this address may try, else how long until it may. */
 export function lockedOut(ip) {
-  const mine = db.failedPageAttempts(`${ALL}:${ip}`, WINDOW_MS);
+  const mine = db.failedPageAttempts(claimed(ip), WINDOW_MS);
   const all = db.failedPageAttempts(ALL, WINDOW_MS);
   if (mine >= MAX_PER_IP || all >= MAX_TOTAL) return { retry_after_s: Math.ceil(WINDOW_MS / 1000) };
   return null;
@@ -117,7 +124,7 @@ const locked = () => ({ ok: false, reason: "locked", retry_after_s: Math.ceil(WI
  */
 export async function tryPassword({ password, ip, keyed = false, source = "" }) {
   if (!passwordEnabled()) return { ok: false, reason: "off" };
-  const bucket = keyed ? KEYED : source ? `${SOURCE}:${source}` : `${ALL}:${ip}`;
+  const bucket = keyed ? KEYED : source ? `${SOURCE}:${source}` : claimed(ip);
   const failed = (k) => db.failedPageAttempts(k, WINDOW_MS);
   if (keyed) {
     if (failed(KEYED) >= MAX_PER_IP) return locked();

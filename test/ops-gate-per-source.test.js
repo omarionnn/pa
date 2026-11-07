@@ -128,6 +128,14 @@ test("a forged signature, or the Caddy marker on the Funnel, is not a verified a
   assert.equal(marker.status, 429);
 });
 
+test("a claimed address shaped like another count's name fills only an ordinary unsigned count", async () => {
+  for (const name of ["src:203.0.113.7", "key", "every"]) {
+    for (let i = 0; i < opspw.MAX_PER_IP; i++) await POST(pw("nope"), { headers: forged(name) });
+  }
+  assert.equal((await POST(pw(PASSWORD), { headers: signed("203.0.113.7") })).status, 303, "the signed address's own count is untouched");
+  assert.equal(db.failedPageAttempts("ops:pw:key", opspw.WINDOW_MS), 0, "nor the keyed link's");
+});
+
 test("unsigned requests are answered exactly as before", async () => {
   const first = await POST(pw("nope"), { headers: forged("8.8.4.4") });
   assert.equal(first.status, 401);
