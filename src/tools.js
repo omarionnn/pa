@@ -4544,7 +4544,7 @@ export const tools = [
         action: { type: "string", description: "The exact name of the tool you intend to call once they say yes" },
         summary: { type: "string", description: "Plainly what will happen, including any amount, place, name or time. This is what the receipt will quote, so be specific." },
         stakes: { type: "string", description: "money | third_party | both" },
-        target: { type: "string", description: "What this yes is tied to, and it is checked. For a text or a call: the exact phone number, E.164 — the yes then works for that number and nobody else. For browser_submit: the same one-line 'what' you will pass to it, word for word, so a yes cannot be carried over to a booking with a different time, place or price. It must match what you say to the owner too." },
+        target: { type: "string", description: "What this yes is tied to, and it is checked. For a text, a voice note or a call: the person AND what reaches them — call that tool first with no confirmation_id (nothing is sent or dialled) and pass the `use_target` it refuses with here verbatim; the yes then works for that number with those exact words or that exact brief, and nothing else. For browser_submit: the same one-line 'what' you will pass to it, word for word, so a yes cannot be carried over to a booking with a different time, place or price. It must match what you say to the owner too." },
         amount: { type: "number", description: "Dollars, as a number, and REQUIRED whenever stakes says money is involved. This is what they are agreeing to spend — 'shall I book it?' and 'shall I book it, $240?' are different questions, and only the second one is a yes to a number. If you do not know the figure yet, go and find it rather than asking without it." },
         task_id: { type: "integer", description: "The job this step belongs to, when it belongs to one. Name it: it is what lets that task refuse to close as 'done' while this step is still waiting on an answer, so 'done' can never mean 'started'." },
       },
@@ -8972,8 +8972,10 @@ function permissionYesTarget({ scope, tgt, numeric, who, untilAt, caps }) {
 
 function confirmTargetFor(name, input, c = null) {
   switch (name) {
+    // The person AND what reaches them (audit lead 26): a yes to "running late" is not a yes to any
+    // words to that number, and a yes to a call that asks is not a yes to one that books or says more.
     case "message_send": case "voice_note_send": case "call_place":
-      return normalizeNumber(input.to) || input.to;
+      return trust.personPin(name, input);
     // Both halves, because a yes to sending somebody the deck must not be spendable on sending them
     // a different document. The id is in it rather than the title: two documents can share a title,
     // and the thing that leaves is the file.
@@ -9404,8 +9406,11 @@ async function runToolInner(name, rawInput, ctx) {
     // The after-call pickup of something an UNVERIFIED caller asked for (src/calls/postcall.js): only a
     // yes in this thread counts — no standing permission or to-do grant stands in for it (review 11-06).
     if (!gate.ok && gate.blocked === "needs_confirmation" && !ctx.onlyAnExplicitYes) {
+      // A standing permission or a to-do plan names a person, never the words: "you can text my sister
+      // without asking" covers any text to her, so those are checked against the person half alone.
+      const forWhom = trust.PERSON_PINNED.has(name) ? (normalizeNumber(input.to) || String(input.to ?? "")) : (target ?? "");
       const standing = permissions.covering({
-        conversationId: c, action: name, target: target ?? "", amountCents: amountForAction(name, input),
+        conversationId: c, action: name, target: forWhom, amountCents: amountForAction(name, input),
       });
       // A fee turns a cancellation back into something that needs asking about, whatever was
       // granted. Checked here rather than inside `covers`, because it is a fact about the service
@@ -9414,7 +9419,7 @@ async function runToolInner(name, rawInput, ctx) {
       // An approved to-do list's plan (src/todo.js): a call to a business the plan named, and nothing
       // else — never somebody they know, never a call that could agree to spend. Checked only when no
       // standing permission covers it, and a miss leaves the refusal as it was, with the reason added.
-      const listGrant = !(standing.ok && !beyond) ? todoGrantCovering({ conversationId: c, action: name, input, target: target ?? "" }) : { ok: false };
+      const listGrant = !(standing.ok && !beyond) ? todoGrantCovering({ conversationId: c, action: name, input, target: forWhom }) : { ok: false };
       if (listGrant.ok) underPermission = listGrant.permission;
       else if (standing.ok && !beyond) underPermission = standing.permission;
       else if (beyond) {
@@ -12218,8 +12223,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const asked = trust.toolName(input.action);
       // A call the approved plan of their to-do list already covers (src/todo.js) is not asked again:
       // that was the point of approving the plan. The same check call_place makes, on the target.
+      // The person a text or a call reaches: the half of "<number>: <words>" before the words.
+      const askedWho = trust.PERSON_PINNED.has(asked) ? trust.personOfTarget(input.target) : String(input.target ?? "");
       if (asked === "call_place" && String(input.target ?? "").trim()) {
-        const listGrant = todoAskCovered({ conversationId: c, target: input.target, stakes: input.stakes ?? "", amount: input.amount ?? null });
+        const listGrant = todoAskCovered({ conversationId: c, target: askedWho, stakes: input.stakes ?? "", amount: input.amount ?? null });
         if (listGrant.ok) {
           return {
             ok: true, not_needed: true, covered_by_todo_list: listGrant.permission.todo_list_id, business: listGrant.permission.business,
@@ -12232,7 +12239,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const money = input.amount != null || ["money", "both"].includes(String(input.stakes ?? "").trim().toLowerCase());
         if (!money) {
           const askedFor = await askedCall.covers({
-            conversationId: c, input: { to: input.target, goal: input.summary ?? "" },
+            conversationId: c, input: { to: askedWho, goal: input.summary ?? "" },
             messages: ctx.messages ?? [], kind: ctx.kind ?? "event", ...(ctx.askedCallJudge ? { ask: ctx.askedCallJudge } : {}),
           });
           if (askedFor.ok) {
@@ -12259,6 +12266,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         canSpend: SPENDS_MONEY.has(asked),
       });
       if (!carries.ok) return carries;
+      // A text, a voice note or a call is asked about as "<number>: <what reaches them>", never the
+      // number alone (audit lead 26): a yes to a number would let any words ride it. Refused before
+      // anything is put in front of them, so this costs a tool call, never a second question.
+      if (trust.PERSON_PINNED.has(asked) && trust.normalizeTarget(askedWho) === trust.normalizeTarget(input.target)) {
+        return {
+          ok: false, blocked: "target_needs_the_words",
+          error: `For ${asked} the yes is pinned to the person AND exactly what reaches them, and '${input.target}' is only the person. Nothing was asked and nothing was recorded.`
+            + ` Call ${asked} first with no confirmation_id (nothing is sent or dialled), take the \`use_target\` string it refuses with, and pass that verbatim as target here.`
+            + ` Then send exactly that: different words, a different brief or a call that may book is a different target and needs its own yes.`,
+        };
+      }
 
       // They asked for the number to include fees, and this is a total with no fee line in it.
       // Checked HERE, before they are shown anything, because a yes covers the number they were
@@ -12285,7 +12303,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // the broker from the other errand being texted about this one. Same place, same reason:
         // before anything is put in front of them, with nothing recorded.
         if (REACHES_SOMEBODY.has(trust.toolName(input.action)) && String(input.target ?? "").trim()) {
-          const who = verifyRecipient({ sheet: onTask.sheet, to: input.target, task: onTask.id });
+          const who = verifyRecipient({ sheet: onTask.sheet, to: askedWho, task: onTask.id });
           if (!who.ok) return who;
         }
       }

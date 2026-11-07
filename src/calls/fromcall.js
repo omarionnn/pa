@@ -28,7 +28,7 @@
 import { createHash } from "node:crypto";
 import * as db from "../db.js";
 import * as permissions from "../permissions.js";
-import { normalizeTarget } from "../trust.js";
+import { normalizeTarget, personPin } from "../trust.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import { buildBrief } from "./brief.js";
 import { spokenPhone, spokenMoney } from "./readback.js";
@@ -286,20 +286,23 @@ export async function go({ call, requestId, saidYes = false, dial, log = () => {
   const how = standing.ok && !saidYes ? `standing permission #${standing.permission.permission_id}`
     : asking ? `asked for on call #${call.id}: asks only, to a business, caller verified by ${call.verified_how}`
       : `spoken yes on call #${call.id}, caller verified by ${call.verified_how}`;
+  // The yes is pinned to the number AND the brief read back (audit lead 26): built by the same
+  // trust.personPin call_place's gate uses, from the same fields handed to dial below.
+  const dialArgs = {
+    to: req.to_number, goal: req.goal, facts: b.facts ?? [],
+    may_book: b.approved?.book === true, max_price_cents: b.approved?.maxCents ?? undefined,
+    ask: b.questions ?? [], read_back: b.readBack ?? [], task_id: req.task_id ?? undefined,
+  };
   const conf = db.askConfirmation({
     conversationId: c, action: "call_place", summary: req.review, stakes: b.approved?.book ? "may agree, within the ceiling" : "asking only",
-    target: normalizeTarget(req.to_number), askedAfterMsgs: 0, taskId: req.task_id,
+    target: normalizeTarget(personPin("call_place", dialArgs)), askedAfterMsgs: 0, taskId: req.task_id,
   });
   db.grantConfirmation(conf.id, how);
   db.updateCallRequest(c, req.id, { state: "dialing", authorized_at: now, authorized_how: how, confirmation_id: conf.id });
 
   let placed;
   try {
-    placed = await dial({
-      to: req.to_number, goal: req.goal, facts: b.facts ?? [],
-      may_book: b.approved?.book === true, max_price_cents: b.approved?.maxCents ?? undefined,
-      ask: b.questions ?? [], read_back: b.readBack ?? [], confirmation_id: conf.id, task_id: req.task_id ?? undefined,
-    });
+    placed = await dial({ ...dialArgs, confirmation_id: conf.id });
   } catch (e) {
     placed = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
   }
