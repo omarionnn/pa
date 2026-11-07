@@ -10,10 +10,10 @@ results + `history`, the word fallback) is in [memory-graph.md](memory-graph.md)
 the 11-06/11-07 release on top of it: PR #354 (ranking, the "nothing saved" filter, `busy_timeout`)
 and PR #335's forget commit (`01a4e27`).
 
-Source: `src/recallindex.js` (`saidNothing` `:288`, `rankAndCut` `:308`, `searchHistory` `:328`,
-`keywordHistory` `:348`, `notForgotten` `:99`, `snippetFor` `:222`, the `recall_reindex` pass `:137`), `src/db.js` (`forgetPerson`
-`:2743`, `forgetFromRecall` `:2886`, tables `recall_forgotten` `:10569` and `recall_reindex` `:10579`, `BUSY_TIMEOUT_MS` `:21`),
-`src/tools.js` (`case "forget"` `:10315`, `case "memory_search"` `:10399`), `src/data.js:212,215`
+Source: `src/recallindex.js` (`saidNothing` `:306`, `rankAndCut` `:334`, `searchHistory` `:354`,
+`keywordHistory` `:374`, `notForgotten` `:99`, `snippetFor` `:222`, the `recall_reindex` pass `:137`), `src/db.js` (`forgetPerson`
+`:2752`, `forgetFromRecall` `:2895`, tables `recall_forgotten` `:10672` and `recall_reindex` `:10682`, `BUSY_TIMEOUT_MS` `:21`),
+`src/tools.js` (`case "forget"` `:10428`, `case "memory_search"` `:10512`), `src/data.js:212,215`
 (`recall_forgotten` and `recall_reindex` deleted with the person).
 Tests: `test/recall-history.test.js`, `test/db-busy-timeout.test.js` (3) — all pass at `36db733` (release head, branch `rel/unverified-fix`).
 
@@ -23,8 +23,16 @@ Tests: `test/recall-history.test.js`, `test/db-busy-timeout.test.js` (3) — all
   Reason's own "I don't have any spa place saved" first — a thread exchange repeats the words they
   use. Now up to `POOL` (60) candidates are read back, then a call / link / lookup / reminder that
   scores within `ACTION_REACH` (0.3) of the best match goes ahead of every thread exchange, and only
-  then is the list cut to `limit`. The word fallback (`keywordHistory`, no embeddings) has no reach:
-  any done thing that matched a word ranks first. Duplicates (same snippet text) take one slot.
+  then is the list cut to `limit`. Duplicates (same snippet text) take one slot.
+- **Acted-on before lookups (#376, 2026-11-07).** Live 11-07 "spa place" still put five web searches
+  above the call to the spa. Inside the same `ACTION_REACH`, a done thing that was ACTED on (a call, a
+  reminder, any ledger action not in `LOOKUP_ACTIONS` `src/recallindex.js:276` — sends, pages,
+  bookings, orders) goes ahead of a LOOKUP (`web_search`, `web_lookup`, `research`, `nearby_places`,
+  `flight_search`, `offer_check`, `shop_status` …). The kind comes from the record's action name,
+  never its words. The word fallback (`keywordHistory`) now has a reach too: a done thing needs at
+  least half the best match's word hits (`hits * 2 >= best`, `:390`) to rank above the thread. Not
+  checked against live embeddings: the test's call sits 0.28 below the searches; further apart than
+  0.3 and the call still ranks under them (`test/recall-history.test.js`).
 - **"Nothing saved" replies are never handed back.** A thread match whose LAST Reason line opens with
   one of its fixed "nothing on it" phrasings (`NOTHING_SAID`: "nothing saved", "I don't have … saved",
   "don't remember", "couldn't find anything", "no record of" …) is dropped. Only Reason's side and only
@@ -39,7 +47,7 @@ Tests: `test/recall-history.test.js`, `test/db-busy-timeout.test.js` (3) — all
   carries `recall_cleared: { calls, exchanges, actions, reminders }`. With no fact saved about them
   but recall hits, `ok: true, forgot: 0` and "Gone from recall: N …" — only for a specific subject: with nobody saved, a vague one ("that", "it", "work", "money": the `VAGUE` set, `specificSubject`) clears nothing and answers "… too general to clear from recall on its own — nothing was cleared"; two-letter names ("Jo") and non-Latin names count. With neither, still
   `Nothing is on record about '<name>'.` Sealed: one conversation only. `capabilitiesNow`'s
-  "your_data" line says forget reaches recall (`src/tools.js:2509`).
+  "your_data" line says forget reaches recall (`src/tools.js:2531`).
 - **`busy_timeout` 5000 ms on every connection** (`src/db.js:24`, `scripts/call-report.js:28`,
   `scripts/web-migrate-dry-run.mjs:47`): `scripts/recall-backfill.mjs` writing beside the server
   failed twice on live 11-06 with "database is locked".

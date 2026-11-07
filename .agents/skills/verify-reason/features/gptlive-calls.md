@@ -260,7 +260,7 @@ transcript lags ~2.7 s); the voice's own answer to a person is let through (`own
 `startTalking` → own-call style (voice talks, `delegate` runs Reason's turn, keys/transfer from it), no
 more line turns; a line turn overtaken by the voice is not said (its key/transfer/hang-up only if
 nothing was said since). Nobody speaks 3 s (`LINE_OPEN_AFTER_MS`) → "Hi there, hello?" then waits (not
-counted as a person). AMD non-beep ignored once they have spoken since the talk began; beep →
+counted as a person; since #379 only when no pickup opener clip played — see "Pickup opener" below). AMD non-beep ignored once they have spoken since the talk began; beep →
 `stopTalking`. Mailbox rows never talk. Opener style: "Oh hey, hi! I'm calling to find out…" — no AI /
 "calling for" unless asked; asked "is this a robot?" → "yes, I'm an AI assistant calling for <first>",
 never denied. Recording line only where `src/calls/consent.js` says (14 all-party states by area code
@@ -306,3 +306,59 @@ The goal is Reason's note from the owner's side ("ask Yaw whether he has heard�
 
 - Offline: `node --test test/call-speaks-to-callee.test.js` (4; reads both prompts). 4/4 on 2026-11-06 at `c6ce172`.
 - Real voice: `bin/gptlive-line-drive.mjs <clips> --scene hello --goal "Ask Yaw whether he has heard how United are doing" [--fact "…"]` on Hetzner (real GPT-Live + claude-cli, no phone); read Reason's first line for "you". Not runnable from the cage (no model there).
+
+## Pickup opener — first word ~0.6 s after pickup (#379, 2026-11-07) — `REASON_PICKUP_OPENER` (default on; `off` = the opening above exactly)
+
+Calls 59–74 to businesses/people: pickup → first word 4.0–10.1 s (stream start → GPT-Live
+`session.started` alone 1.2–1.9 s, and their early words were dropped), so receptionists said "hello?
+can you hear me?" or hung up. Own calls (1.7–2.8 s) are unchanged and keep their live greeting.
+
+- **The clip.** `dialGptLive` fires `opener.prepare(row)` and never waits (src/calls/gptlive.js:2510).
+  `src/calls/opener.js`: `openerFor` (:58 — `config.pickupOpener` + `config.lineTalk`, not own, not
+  inbound) → `openerText` (:48) = `Hi there! I'm calling <about>.`, or `Hi there!` alone (kind `hello`),
+  or `Hi there — just so you know, this call's recorded.` where `src/calls/consent.js` needs it; `about`
+  over 140 chars or with a URL/`@`/brackets is dropped. Never "I'm an AI" / "calling for X". `makeClip`
+  (:128, OpenAI TTS `REASON_OPENER_TTS_MODEL` default `gpt-4o-mini-tts` (src/config.js:654), same voice
+  name as the live voice) → `pcm24ToUlaw` (:114, 24 kHz PCM → 8 kHz μ-law, 3:1), cached by text under
+  `data/call-openers/`, swept after two days (`CLIP_KEEP_MS`, `sweepClips` :76). The hello-only clip is
+  made beside it as the fallback. `take(callId)` (:178) hands it to the stream once
+  (src/calls/gptlive.js:973); not ready at pickup → the old opening.
+- **`call_place.about`** (src/tools.js:4123): the model's few words finishing "I'm calling …", only when
+  ringing somebody else; stored as `calls.pickup_about` (src/tools.js:11421, ≤200 chars; column
+  src/db.js:2104).
+- **When it plays** (`pickupFrame`, src/calls/gptlive.js:1537; constants src/calls/opener.js:23–40):
+  `OPENER_AFTER_THEM_MS` 550 ms after their hello ends, or `OPENER_SILENT_MS` 600 ms into a silent line;
+  skipped if their greeting runs past `OPENER_MAX_THEIRS_MS` 3.5 s (recording/menu/mailbox) or the line
+  never pauses within `OPENER_GIVE_UP_MS` 5 s. They talk in the first `OPENER_REPLAY_WINDOW_MS` 1.5 s →
+  Twilio `clear`, replay once from the top after they finish; talked over `OPENER_TALKED_OVER_MS` 0.9 s
+  later → cut, and the voice is told they may not have heard. Sent ~`OPENER_OVERLAP_MS` 240 ms ahead of
+  its playing pace. After the clip, `OPENER_QUIET_AFTER_MS` 3 s of silence → one "Hello — can you hear
+  me okay?" instead of the quiet-line "Hi there, hello?".
+- **No double opener.** The voice gets `session.instructions.append` ("code just said … don't greet again")
+  before their early audio (≤5 s, now kept and replayed into the session) goes in; the voice's own audio
+  stays off the line until they speak after the clip (`ownOpener` :1761); their late hello transcript is
+  placed before the clip and starts no line turn (`openerAnswers` :1693, `beforeOpener` :1701).
+- **Logs:** `call_opener_ready`, `gptlive_pickup_opener` (`kind`, `ms`, `session_up`),
+  `gptlive_pickup_opener_again|_cut|_skipped`; `gptlive_first_voice` gains `opener`.
+- **Timing on the row + /ops.** At call end `calls.first_audio_ms` + `calls.pickup_opener` (`about`/`hello`/"")
+  (src/calls/gptlive.js:2390; columns src/db.js:2102–2103). /ops row **"Calls: pickup → first word"**
+  (`call_pickup`, money group, src/ops.js:633; `pickupCheck` src/ops.js:665): typical (median) and
+  slowest of the last 20 timed calls, the latest call, "opener clip on N/M errand calls"; amber when
+  typical > 2 s, "no calls timed yet" with none.
+- **Outcome + mailbox:** the after-call read's `how` labels ([call-goal-met.md](call-goal-met.md)); an
+  unset/full mailbox → one code-worded text ([call-machines.md](call-machines.md)).
+
+Tests: `test/call-pickup.test.js` (15: words, μ-law, silent pickup, hello first, long greeting skipped,
+replay, cut, no clip, /ops row, outcome mapping, calls 62/63). Real voice: `bin/gptlive-line-drive.mjs
+<clips> --scene greet|hello|quiet` on Hetzner (real GPT-Live + OpenAI TTS + claude-cli; needs a real
+`OPENAI_API_KEY`, so **not runnable offline or on the cage**). PR run: greet 4.74 s → 0.64 s, hello
+2.72 → 0.65 s, quiet 4.07 → 0.65 s; their greeting end → first word greet 0.39 s ×3. Known: one drive
+run leaked a stray fragment ("low back") of the voice's dropped reply after the clip.
+
+Driven offline 2026-11-07 (rel-1107 `8bbcb96`, throwaway `REASON_DB_PATH`, `env -i`, no key, no
+network): `openerText` about/hello/notice/URL-refused, `pcm24ToUlaw` 4,800 B → 800 B, `prepare` with a
+stub TTS (both texts asked for, kind `about`), `take` once, own call and `REASON_PICKUP_OPENER` off →
+no clip, `pickupCheck` on three timed rows → `warn · last 3: typical 2.1 s, slowest 4.7 s … opener clip
+on 1/2 errand calls`: all ok, rc 0. `node --test test/call-pickup.test.js test/call-goalmet.test.js
+test/call-machines.test.js` 42/42, rc 0. Not proven: a real business pickup (clip sounding like the
+live voice, a real receptionist's hello against the 0.55 s / replay timing).

@@ -15,14 +15,15 @@ What code does now, with no model in front of it:
 - **plain question** → `wake` (an event turn, key `shop:<run>:<request>`, once): `[checkout] Ulta's
   checkout for … (run …) is waiting on an answer. Ulta asks: "…". Fields (key: label): … Ulta holds
   the cart until <clock time>; say that as the time, never as a countdown …` (`inputEvent`,
-  `src/shopconnect.js:1280-1294`; the "It expires in N minutes" wording went with checkout-anticipate) — the model answers with `shop_answer` (values sealed out of the log by src/privacy.js) or
+  `src/shopconnect.js:1382-1396`; the "It expires in N minutes" wording went with checkout-anticipate) — the model answers with `shop_answer` (values sealed out of the log by src/privacy.js) or
   asks the person for exactly what is missing;
 - **protected form** → the sign-in link, as before; **payment** → the ask, itemized when Crossmint
   itemizes (`item $18.99, shipping $6.95, tax $2.30; $28.24 all in.` above `OK to pay …`), Face ID link
   where they have a passkey;
+- **the store's hold runs out while they still have time to approve** (#376) → `renewHold` asks the same checkout again (≤ `RENEW_MAX` 2), one "let go of the cart … asking again" text, no end text for the old run (its `result` reads `renewed: store hold ran out; asked again as <run>`); see [passkey-pay.md](passkey-pay.md);
 - **the end** → one text saying what happened: expired input (what was asked), blocked (summary),
   cancelled, placed (order ref if Crossmint gives one), ended after a payment (outcome unknown, check mail; since #357 that amount already counts against the day's cap);
-- **a stall** (`STALL_MS` 12 min without the revision moving; past Crossmint's 10-min input expiry so an
+- **a stall** (`STALL_MS` 12 min without the revision moving; never while `needs_approval` since #376 — the one approval reminder covers that, see [passkey-pay.md](passkey-pay.md) "Thirty minutes"; past Crossmint's 10-min input expiry so an
   expiring request reads as expired) → one text; Crossmint saying it does not know the run (a 404)
   for `LOST_MS` (60 s since #337) → failed ("lost"), cancelled at Crossmint, said once; Crossmint down
   or refusing (5xx, 429, no answer) for `OUTAGE_MS` (36 min) → given up but never cancelled; a follow

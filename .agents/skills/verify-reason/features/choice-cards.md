@@ -34,6 +34,17 @@ price, no size. Places are never checked. Offline: the "listing check" tests in 
 - Reply guard (src/offers.js): never a "(compared: …)" tail; a whole bracketed tool-note line is stripped
   (`tool_note_stripped`); "I'll find the cheapest" / "not a proven best deal" are not best-price claims.
 
+## Two cards that read the same are never drawn (#376, 2026-11-07)
+- Live 10-31 choice sets 2 and 3: three cards each read "CeraVe Foaming Facial Cleanser · Ulta" — the listing
+  check had dropped the sizes and prices that told them apart. `sameOnCard` (`src/choicecards.js:809`)
+  compares what a card shows: the name's first `NAME_SHOWN` (44) characters (the 2-line clamp), brand, price,
+  detail, why. Run on the input (`:830`) and again after the listing and photo checks (`:903`). Any pair →
+  nothing drawn; the model gets `Cards 1 and 2 ("CeraVe Foaming Facial Cleanser · Ulta") … would look the same
+  to them, so nothing was drawn. What told them apart was left off because the listing does not back it: …`
+  and redoes the set with each option visibly different.
+- Driven 2026-11-07 (rel-1107, in process, no model): two identical + one Hydrating → `[[1,2]]`;
+  `test/choice-cards-fallback-1031.test.js` (+2 duplicate-card tests) in a 70/70 run.
+
 ## Places: the room, not the cup (2026-10-30)
 `rankPlacePhotos`: candidates = the passed image_url + the place page's top 4 pictures (size copies
 collapsed; further down a directory page is the neighbours). Up to 6 fetched, then ONE claude-cli call

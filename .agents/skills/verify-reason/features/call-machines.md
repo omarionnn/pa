@@ -21,13 +21,30 @@ Source: `src/calls/gptlive.js` (`dialGptLive`: `openingWaits`, AMD; `GptLiveCall
 writes `opening_waits`; `settleCall` keeps a machine row's own outcome — `recording`),
 `src/calls/hold.js` (`MACHINE_TOOL`, `noteMachineLine`, `openingOwed`, `notePerson`, `WAITING_RULES`),
 `src/calls/voice.js` (`holdBack` / `QUIET_ON_A_MACHINE` / `openingIfOwed` in `voiceTurn`, `LINE_OPENED`,
-`case "machine_on_the_line"` in `runCallTool`, src/calls/voice.js:1008, acting on `noteMachineLine`'s `endNow`, src/calls/hold.js:190,208), `src/calls/voice-prompt.js`
+`case "machine_on_the_line"` in `runCallTool`, src/calls/voice.js:966, acting on `noteMachineLine`'s `endNow`, src/calls/hold.js:182,200), `src/calls/voice-prompt.js`
 (`thirdPartyFrame` `openingOwed`), `src/calls/outcome.js` (`machine_menu`, `machine_recording`,
 `machine_dead_end`, `voicemail_full`, `onAMachine`, `answeredByMachine`, `callSummary`),
 `src/calls/postcall.js` (`thirdPartyEvent` machine line; no memory extraction from a machine),
 `src/db.js` (`calls.opening_waits`, `calls.machine_heard`).
 
-Tests: `test/call-machines.test.js` (19 at `8113bcf`; 18 at `cc9538d`; 14 at first), `test/gptlive-thirdparty.test.js` (silent opening, AMD), `test/call-voice.test.js` (tool list).
+## Mailbox not set up or full → one text (#379, 2026-11-07)
+
+Calls 62/63 (2026-11-01): "…has not been set up yet. Goodbye", 6 s, and the owner heard nothing useful.
+Now the after-call read's `how: voicemail_not_set_up` moves the row to `voicemail_full`
+([call-goal-met.md](call-goal-met.md)), and `tellTheOwner` (src/calls/postcall.js:222) hands an errand
+row with that kind to `tellUnreached` (src/calls/postcall.js:269): code's words, not the model recap, so
+the daily proactive cap cannot swallow it; claimed on `calls.unreached_told_at` (src/db.js:2105) before
+anything is queued, outbox key `call:<id>:unreached`, `toOwner`. Body: "i rang (646) 858-0667 to ask
+about … but it went to a voicemail box that isn't set up or is full — so it didn't reach anyone and no
+message was left. want me to try again later, or text them instead?" (`about` = `calls.pickup_about`,
+see [gptlive-calls.md](gptlive-calls.md) "Pickup opener"). Log `call_unreached_told`. A second settle
+answers `already told`; no texting channel on the conversation → nothing.
+
+Driven 2026-11-07 (no model, no network, throwaway DB, rel-1107 `8bbcb96`): first `tellTheOwner` sent,
+the model recap stub (which throws if called) never ran, the second answered "already told", exactly
+one outbox row with the body above.
+
+Tests: `test/call-pickup.test.js` (calls 62/63 → one text), `test/call-machines.test.js` (19 at `8113bcf`; 18 at `cc9538d`; 14 at first), `test/gptlive-thirdparty.test.js` (silent opening, AMD), `test/call-voice.test.js` (tool list).
 
 Drive (real model, claude-cli, no phone; never on the cage, never the API): `bin/call-machines-drive.mjs` — five cases from the real
 call-45 words: the Strand's recording → silent `end_call`, `machine_dead_end`, email kept; a person →

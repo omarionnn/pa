@@ -49,7 +49,19 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
 - **Non-text parts.** Pictures arrive as pictures the model can see, are written down verbatim
   by a quiet pass alongside the turn (`src/looked.js`) and can be brought back with `photo_look`;
   audio is transcribed; video
-  (`.mov`, `.mp4`, `.m4v`, `.avi`, `.webm`, `.mkv`, `.3gp`) is uploaded to Gemini and watched; a
+  (`.mov`, `.mp4`, `.m4v`, `.avi`, `.webm`, `.mkv`, `.3gp`) is uploaded to Gemini and watched — on the
+  claude-cli backend too since #376 (`src/backends/claude-cli.js:209`, it never called `videosFor` before,
+  so screen recordings sat unwatched 15+ min behind "check again" timers, live 11-01), each under a hard
+  deadline (`videosFor` `src/media.js:532`, `REASON_VIDEO_WATCH_TIMEOUT_MS` 180000 `src/config.js:767`)
+  that aborts the download and the model request: the media row goes `processing` → `failed` and the turn
+  gets "watching it was stopped after N seconds … nothing in it has been seen. Tell them that plainly …";
+  a voice note of `REASON_VOICE_SHORT_SEC` (5, `src/config.js:551`) or less tells the turn its length and
+  that a phone can miss the first words (`heardLine` `src/voice.js:316`; live 11-01 a 3.3 s "around like
+  7:30 p.m." set a call-back timer for the wrong person) — whether to ask is the model's; an iMessage
+  `<id>_Audio_Message.m4a` is a voice note, not an audio file (`VOICE_MESSAGE_NAME`
+  `src/channels/sendblue.js:1220`). Driven 2026-11-07 (rel-1107, in process, no model): a stuck watch with
+  a 1 ms deadline → covers `processing` then `failed`, the honest line; `heardLine` at 3.3 s carries "it is
+  only 3.3s long", at 20 s nothing; `test/video-watch-timeout.test.js` (9) in a 70/70 run. A
   vCard is downloaded and parsed; a file nobody can open is *described* rather than arriving as an
   empty message. See `attachmentOf`, `cannotReadContactLine`, and [location-share.md](location-share.md).
 - **The burst window.** A message waits `REASON_BURST_QUIET_MS` (default **2500ms** since 2026-10-28,
