@@ -235,8 +235,10 @@ async function runTurnOnCli({
   // What they have really bought (src/purchasesnote.js) — the same block as the API path. No side
   // call: it rides whenever they have a purchase on record, and the model judges if it is relevant.
   const purchasesPending = startPurchasesNote(conversationId, { text, kind, log });
-  // A fresh source ledger for the reply check (src/offers.js), same as the API path.
-  beginOfferTurn(conversationId, text, kind);
+  // A fresh source ledger for the reply check (src/offers.js), same as the API path. Not for the said
+  // check's rewrite (continueSession): it is the same turn, and the figures its tools fetched still count —
+  // without this the rewrite marked a price read off the store's page "(unverified)" (drive 2026-11-06).
+  if (!continueSession) beginOfferTurn(conversationId, text, kind);
   const { blocks, notes, seen, viewedMediaIds } = await images(attachments, { log, cover: reviewed.cover });
   if (blocks.length) log({ cli_images: blocks.length });
   // Started now, alongside the turn, and awaited only once the reply is in hand — what each photo

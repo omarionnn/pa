@@ -472,14 +472,15 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   images = imagesFor, capture = captureViaApi,
   // The CLI backend's "continue the draft's session" (src/backends/claude-cli.js). The API path keeps
   // the message list in process and has nothing to continue; taken out so it never reaches a tool.
-  continueSession = false, // eslint-disable-line no-unused-vars
+  continueSession = false,
   ...toolCtx }) {
   // A Web-only chat reads and keeps its own thread (src/db.js historyKeyFor); tools still act for the person.
   const historyId = toolCtx.historyId ?? conversationId;
   let messages = trimHistory(loadConversation(historyId));
   // A fresh source ledger for the reply check (src/offers.js): what this turn's tools fetch, and
-  // their own message, are what a dollar figure in the reply can be checked against.
-  beginOfferTurn(conversationId, text, kind);
+  // their own message, are what a dollar figure in the reply can be checked against. The said check's
+  // rewrite (continueSession) is the same turn: its sources stand.
+  if (!continueSession) beginOfferTurn(conversationId, text, kind);
   // Whose Reason this is. Their name is in the prompt and on their own messages, so the model is
   // talking to the person in front of it rather than to whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
