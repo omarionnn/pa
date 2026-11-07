@@ -8,17 +8,35 @@
 // the process that owns both. One turn, one server, bound to 127.0.0.1 on an ephemeral port,
 // closed when the turn ends.
 import { createServer } from "node:http";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { mcpDispatch } from "./mcp-core.js";
 
 /**
- * Start the server for one turn. Resolves to { url, close }. Nothing outside this machine can
- * reach it: it binds the loopback interface on a port the OS picks, and it is shut the moment
+ * Start the server for one turn. Resolves to { url, headers, close }. Nothing outside this machine
+ * can reach it: it binds the loopback interface on a port the OS picks, and it is shut the moment
  * the turn is over.
+ *
+ * Loopback is not a caller check, though (security audit 2026-11-06, lead 3): any process on the
+ * machine, or a page open in Reason's own Chromium posting text/plain no-cors, could run a tool as
+ * this turn's person. So every request must carry this turn's secret (`headers`, handed to the CLI
+ * in its 0600 MCP config file), name this very host:port, come with no browser Origin, and be JSON.
  */
 export function startMcpHttp({ conversationId, channels = null, calls = null, onTool = () => {}, onToolStart = () => {}, toolCtx = {} } = {}) {
+  const secret = randomBytes(32).toString("hex");
+  const expected = Buffer.from(`Bearer ${secret}`);
+  let hostport = "";
+  const allowed = (req) => {
+    const got = Buffer.from(String(req.headers.authorization ?? ""));
+    if (got.length !== expected.length || !timingSafeEqual(got, expected)) return false;
+    if (req.headers.origin != null) return false;
+    if (String(req.headers.host ?? "") !== hostport) return false;
+    return true;
+  };
   const server = createServer(async (req, res) => {
+    if (!allowed(req)) { req.resume(); res.writeHead(401).end(); return; }
     if (req.method === "DELETE") { res.writeHead(204).end(); return; }       // session teardown
     if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    if (!/^application\/json\b/i.test(String(req.headers["content-type"] ?? ""))) { req.resume(); res.writeHead(415).end(); return; }
 
     let raw = "";
     for await (const chunk of req) raw += chunk;
@@ -52,8 +70,10 @@ export function startMcpHttp({ conversationId, channels = null, calls = null, on
 
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
+      hostport = `127.0.0.1:${server.address().port}`;
       resolve({
-        url: `http://127.0.0.1:${server.address().port}/mcp`,
+        url: `http://${hostport}/mcp`,
+        headers: { Authorization: `Bearer ${secret}` },
         close: () => new Promise(done => { server.closeAllConnections?.(); server.close(() => done()); }),
       });
     });
