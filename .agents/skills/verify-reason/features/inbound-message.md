@@ -83,6 +83,17 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   `REASON_TEST_NUMBERS` is ignored entirely when auto-admit is on (`servesOnThisBackend` in
   `src/backends/guard.js` returns early on `config.autoAdmit`; the `testNumbers` comment in
   `src/config.js` says so too), despite the startup banner still announcing the number list.
+- **The daily turn cap, and its one line (audit lead 33, 2026-11-07).** `REASON_MAX_TURNS_PER_DAY`
+  (default 120, 0 = uncapped; `accounts.withinCap` reads the `usage` table, day in `REASON_TZ`).
+  Past it, `Router.deliver` (src/channels/router.js, the `capped:` log line) runs no turn and sends
+  "that's me done for today — i've hit my limit of N messages…" through the outbox with
+  `idempotencyKey` `capped:<conversationId>:<day>:<limit>`: **once per person per day per limit**,
+  not once per text (before, every over-cap text minted a random key and sent the line again).
+  Every capped text still gets the read receipt and `{"capped":…}` in the log. Pinned in
+  `test/capped-notice.test.js`. Cage: fake Sendblue (`bin/fake-sendblue.mjs`) +
+  `REASON_MAX_TURNS_PER_DAY=1`, write a `usage` row with `turns=1` for the owner's conversation
+  (today in America/New_York), then `bin/inbound.sh text` five times → five `capped` log lines,
+  one `outbox` row with `done for today`, one send POST carrying it in the capture file.
 - **What the harm gate is shown.** `contextLines()` in `src/harm.js` drops anything that was not
   said: `[event …]` lines, `NO_REPLY`, and (since PR #70, 2026-10-23) the call record code writes into
   the thread after a call — the `[stamp] [on a phone call with …]` header, the `[your own record of
