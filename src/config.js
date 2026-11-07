@@ -1140,9 +1140,21 @@ export function callbackUrl(path) {
   return `http://127.0.0.1:${config.port}${p}`;
 }
 
-/** Digits with a leading +, so "+1 (415) 555-9876" and "+14155559876" are one address. */
+/**
+ * Digits with a leading +, so "+1 (415) 555-9876" and "+14155559876" are one address.
+ *
+ * Only for something that IS a phone number. An Apple ID email, a SIP URI or a Twilio client id
+ * can carry somebody else's digits ("12025551234@icloud.com", "sip:+1202…@host"), and keeping
+ * every digit of it made that handle the same person as the number: the operator, or an admitted
+ * user, by writing their digits into an address. Anything with an "@" or a URI scheme other than
+ * tel: is not a number and normalizes to nothing; callers keep it as its own literal address.
+ */
 export function normalizeNumber(n) {
-  const digits = String(n ?? "").replace(/\D/g, "");
+  let s = String(n ?? "").trim();
+  if (s.includes("@")) return "";
+  if (/^tel:/i.test(s)) s = s.slice(4);
+  else if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return "";
+  const digits = s.replace(/\D/g, "");
   return digits ? `+${digits}` : "";
 }
 
