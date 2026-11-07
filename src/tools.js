@@ -2509,7 +2509,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   // Retention, plus the three things somebody asks about their data that are not about a timer: what
   // forget really reaches, what a disconnect takes with it, and what is never written down at all.
   out.find(c => c.name === "your_data").what = `${retentionSays()}`
-    + ` "Forget about X" (forget) deletes every fact saved about them — under that name and any longer name containing it — and the copies of those facts in this conversation; it does not delete ${who}'s own messages, and the honest answer if they ask is that a full delete is what takes those.`
+    + ` "Forget about X" (forget) deletes every fact saved about them — under that name and any longer name containing it — and the copies of those facts in this conversation, and takes the calls, message exchanges and actions that mention them out of recall; it does not delete ${who}'s own messages, and the honest answer if they ask is that a full delete is what takes those.`
     + ` Disconnecting an account cuts the access off AND deletes what had been read out of it into this conversation; the receipts of what Reason did stay.`
     + ` A card number, a security code, a password or a PIN is never written down anywhere, and an attempt to save one is refused with nothing written.`;
   // Their own window, not the feature's. Somebody who switched it off must never be told they have

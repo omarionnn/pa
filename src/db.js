@@ -2744,7 +2744,19 @@ export function forgetPerson(conversationId, about) {
   const rows = db.prepare("SELECT * FROM people WHERE conversation_id = ? AND (key = ? OR key LIKE ?)")
     .all(conversationId, key, `%${key}%`)
     .filter(p => p.key === key || hasWords(p.key, needle));
-  if (!rows.length) return { ok: false, error: `Nothing is on record about '${about}'.` };
+  // Recall reaches the calls Reason made and the thread itself (src/recallindex.js), not only saved
+  // facts: a forget that left "called Yaw about the deposit" findable by "what do you remember about
+  // Yaw" would be no forget (review 11-05). Cleared whether or not any fact was saved about them.
+  const recall = forgetFromRecall(conversationId, [about, ...rows.map(p => p.name)]);
+  const recalled = recall.calls + recall.exchanges + recall.actions + recall.reminders;
+  if (!rows.length) {
+    if (!recalled) return { ok: false, error: `Nothing is on record about '${about}'.` };
+    return {
+      ok: true, about, forgot: 0, recall_cleared: recall,
+      covers: "nothing was saved about them as a fact; the calls, messages, actions and reminders that mention them are out of recall. It does NOT delete their own messages to you — that is their conversation.",
+      note: `Gone from recall: ${recalled} call(s), message exchange(s) and action(s) that mention ${about} will not come back in a search. Say it plainly in one line and never bring the subject up again on your own.`,
+    };
+  }
 
   const facts = [];
   const factIds = [];
@@ -2806,7 +2818,8 @@ export function forgetPerson(conversationId, about) {
     reasons_dropped: reasons.length,
     old_rows_removed: old.length,
     thread_lines_cleared: scrubbed,
-    covers: "every fact saved about them, under that name and any longer name containing it, plus the copies of those facts in this thread. It does NOT delete their own messages to you — that is their conversation, not something you worked out.",
+    recall_cleared: recall,
+    covers: "every fact saved about them, under that name and any longer name containing it, plus the copies of those facts in this thread, and the calls, message exchanges, actions and reminders that mention them are out of recall. It does NOT delete their own messages to you — that is their conversation, not something you worked out.",
     note: `Gone. ${facts.length} thing(s) about ${rows.map(p => p.name).join(" and ")} are deleted and are not coming back, and nothing in the thread carries them forward.`
       + ` Say it plainly in one line and never bring the subject up again on your own.`
       + ` If they ask whether their own messages are gone too, the honest answer is no — those are theirs, and a full delete (npm run data:delete) is what takes everything.`,
@@ -2847,6 +2860,50 @@ export function redactFromReplies(conversationId, facts) {
 }
 
 /** Do the words of `needle` appear as a run inside the words of `key`? */
+const wordsOf = (s) => String(s ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+
+/**
+ * Take a subject out of recall (src/recallindex.js): every call, message, action receipt and reminder
+ * of THIS conversation that names it by whole words is marked forgotten and its vector deleted. The
+ * rows stay — their messages are theirs, and the ledger is append-only — but no search, by meaning or
+ * by words, reads them again, and the indexer never embeds them again. Sealed: one conversation only.
+ */
+export function forgetFromRecall(conversationId, names = []) {
+  const out = { calls: 0, exchanges: 0, actions: 0, reminders: 0 };
+  const needles = [...new Map(names.map(n => wordsOf(n)).filter(w => w.length).map(w => [w.join(" "), w])).values()];
+  if (!conversationId || !needles.length) return out;
+  const names_ = (text) => { const k = wordsOf(text).join(" "); return needles.some(n => hasWords(k, n)); };
+  const mark = db.prepare("INSERT OR IGNORE INTO recall_forgotten (conversation_id, source_table, row_id, at) VALUES (?, ?, ?, ?)");
+  const at = clock.now();
+  const sweep = (table, cols, where = "") => {
+    const like = needles.map(n => `(${cols.map(c => `LOWER(COALESCE(${c}, '')) LIKE ?`).join(" OR ")})`).join(" OR ");
+    const args = needles.flatMap(n => cols.map(() => `%${n[0]}%`));
+    const hits = db.prepare(`SELECT id, ${cols.map(c => `COALESCE(${c}, '') AS "${c}"`).join(", ")} FROM ${table} WHERE conversation_id = ? ${where} AND (${like})`)
+      .all(conversationId, ...args)
+      .filter(r => names_(cols.map(c => r[c]).join(" \n ")))
+      .map(r => r.id);
+    for (const id of hits) mark.run(conversationId, table, id, at);
+    return hits;
+  };
+  {
+    const calls = sweep("calls", ["goal", "label", "summary"]);
+    const actions = sweep("action_ledger", ["receipt", "target"]);
+    const reminders = sweep("timers", ["note", "label", "call_goal"]);
+    const said = sweep("event_log", ["content"], "AND role IN ('user','assistant')");
+    const unembed = db.prepare("DELETE FROM fact_embeddings WHERE conversation_id = ? AND source_table = ? AND fact_id = ?");
+    for (const id of calls) unembed.run(conversationId, "calls", id);
+    for (const id of actions) unembed.run(conversationId, "action_ledger", id);
+    for (const id of reminders) unembed.run(conversationId, "timers", id);
+    // An exchange's vector covers the run span_from..fact_id: any run with a forgotten line in it goes.
+    const spans = db.prepare(`DELETE FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'event_log'
+      AND ? BETWEEN COALESCE(span_from, fact_id) AND fact_id`);
+    let runs = 0;
+    for (const id of said) runs += spans.run(conversationId, id).changes;
+    Object.assign(out, { calls: calls.length, actions: actions.length, reminders: reminders.length, exchanges: Math.max(runs, said.length ? 1 : 0) });
+  }
+  return out;
+}
+
 function hasWords(key, needle) {
   const words = String(key).split(" ").filter(Boolean);
   for (let i = 0; i + needle.length <= words.length; i++) {
@@ -10502,6 +10559,16 @@ db.exec(`
     UNIQUE(fact_id, source_table)
   );
   CREATE INDEX IF NOT EXISTS fact_embeddings_conv ON fact_embeddings (conversation_id);
+  -- What they asked Reason to forget, kept out of recall (src/recallindex.js) for good: the call,
+  -- message or action row itself stays (it is their conversation), its vector goes, and this says
+  -- never to index or show it again (src/db.js forgetFromRecall).
+  CREATE TABLE IF NOT EXISTS recall_forgotten (
+    conversation_id TEXT NOT NULL,
+    source_table TEXT NOT NULL,
+    row_id INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, source_table, row_id)
+  );
 
   -- episodes and thread_summaries used to be here. Neither was ever read; the first was written by
   -- the extractor every turn and the second by nothing. Dropped below, rows and all (audit 10-18).

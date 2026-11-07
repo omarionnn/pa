@@ -207,6 +207,9 @@ const TABLES = [
   // is shared with its guests: see KEPT_ON_DELETE.
   "event_attendees", "event_checkins", "event_deliveries", "event_photos", "album_consents", "event_claims",
   "ride_offers", "ride_asks", "ride_matches",
+  // Which of their calls, messages and actions they asked Reason to forget, so recall never reads
+  // them again (src/db.js forgetFromRecall). Row ids only, theirs.
+  "recall_forgotten",
 ];
 
 /**

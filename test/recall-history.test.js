@@ -347,3 +347,58 @@ function cos(vec, blob) {
   for (let i = 0; i < vec.length; i++) { dot += vec[i] * b[i]; na += vec[i] ** 2; nb += b[i] ** 2; }
   return dot / Math.sqrt(na * nb);
 }
+// Review 11-05: "forget Yaw" took the saved facts and left the calls and the thread findable — "what
+// do you remember about Yaw" still came back with the call to him. A forget clears recall too.
+test("forget takes the matching calls and exchanges out of recall — by meaning and by words — and only this person's", async () => {
+  const C = "dm:forget", OTHER = "dm:forget-other";
+  const yawCall = call(C, { to: "+15553330000", label: "Yaw", goal: "Ask Yaw about the spa deposit", summary: "notes: Yaw said the massage deposit is $40" });
+  const spaCall = call(C, { to: "+16462582221", label: "Spa", goal: "Ask Renew Body Spa about a massage" });
+  said(C, "user", "Yaw owes me for the spa massage", base);
+  said(C, "assistant", "noted, Yaw and the spa massage", base + 1000);
+  said(C, "user", "and the pizza place?", base + 2000);
+  said(C, "assistant", "Joe's Pizza, open late", base + 3000);
+  chatter(C, base + DAY);
+  // Somebody else's Reason knows a Yaw too. Their rows are theirs and stay.
+  const theirCall = call(OTHER, { to: "+15553330000", label: "Yaw", goal: "Ask Yaw about the spa massage" });
+  chatter(OTHER, base + DAY);
+  db.remember(C, "Yaw", "is my cousin");
+  await index(C);
+  await index(OTHER);
+  assert.match((await searchFor(C, "spa massage")).text, /Yaw/, "found before the forget");
+
+  const out = await runTool("forget", { about: "Yaw" }, { conversationId: C });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.recall_cleared.calls, 1);
+  assert.ok(out.recall_cleared.exchanges >= 1);
+
+  const vec = fakeVec("spa massage");
+  const hits = ri.searchHistory(C, vec, { minScore: 0, limit: 50 });
+  assert.ok(hits.every(h => !/Yaw/.test(h.text)), JSON.stringify(hits));
+  assert.ok(hits.some(h => /Renew Body Spa/.test(h.text)), "the rest of recall still works");
+  assert.equal(ri.keywordHistory(C, "Yaw spa deposit").filter(h => /Yaw/.test(h.text)).length, 0);
+  assert.doesNotMatch((await searchFor(C, "Yaw spa massage deposit")).text, /Yaw/);
+  assert.equal(ri.snippetFor(C, "calls", yawCall), null);
+  assert.ok(ri.snippetFor(C, "calls", spaCall));
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'calls' AND fact_id = ?").get(C, yawCall).n, 0, "its vector is gone");
+  // The indexer never puts them back.
+  await index(C);
+  assert.ok(ri.searchHistory(C, vec, { minScore: 0, limit: 50 }).every(h => !/Yaw/.test(h.text)));
+  // Their own messages are still theirs: the rows stay, only recall is cleared.
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM event_log WHERE conversation_id = ? AND content LIKE '%Yaw%'").get(C).n, 2);
+  // Sealed: the other person's call to their Yaw is untouched.
+  assert.ok(ri.snippetFor(OTHER, "calls", theirCall));
+  assert.match((await searchFor(OTHER, "spa massage")).text, /Yaw/);
+});
+
+test("forget with nothing saved as a fact still clears the calls that name them; nothing anywhere is still 'nothing on record'", async () => {
+  const C = "dm:forget2";
+  call(C, { to: "+15554440000", label: "Kofi", goal: "Ask Kofi about the dentist appointment" });
+  chatter(C, base + DAY);
+  await index(C);
+  const out = await runTool("forget", { about: "Kofi" }, { conversationId: C });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.recall_cleared.calls, 1);
+  assert.doesNotMatch((await searchFor(C, "dentist")).text, /Kofi/);
+  const none = await runTool("forget", { about: "Zanele" }, { conversationId: C });
+  assert.equal(none.ok, false);
+});
