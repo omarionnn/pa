@@ -21,8 +21,8 @@ import { config } from "../config.js";
 
 /** Silence on the line this long after the pickup, nobody speaking: the opener plays. */
 export const OPENER_SILENT_MS = 600;
-/** Their hello has ended (this long with no voice from them): the opener plays. */
-export const OPENER_AFTER_THEM_MS = 350;
+/** Their hello has ended (this long with no speech from them; a greeting's own pauses run ~0.4 s): the opener plays. */
+export const OPENER_AFTER_THEM_MS = 550;
 /** A greeting still going this long after it started is a recording, a menu or a mailbox: no opener. */
 export const OPENER_MAX_THEIRS_MS = 3500;
 /** Nothing has fitted by now (a line that never pauses): no opener, the live voice handles it. */
@@ -34,8 +34,10 @@ export const OPENER_GIVE_UP_MS = 5000;
  */
 export const OPENER_OVERLAP_MS = 240;
 export const OPENER_REPLAY_WINDOW_MS = 1500;
-/** They talk this long over the clip: it stops (a person cutting in, or a machine that kept going). */
-export const OPENER_TALKED_OVER_MS = 700;
+/** They talk this long (summed) over the clip: it stops (a person cutting in, or a machine that kept going). */
+export const OPENER_TALKED_OVER_MS = 900;
+/** The line quiet this long after the clip: one short "hello — can you hear me okay?". */
+export const OPENER_QUIET_AFTER_MS = 3000;
 
 const VOICE_STYLE = "A young woman with a light, natural British (London) accent — warm, quick, relaxed, like a friend on the phone. A casual phone opener, not a recording.";
 

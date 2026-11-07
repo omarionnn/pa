@@ -1057,7 +1057,9 @@ export class GptLiveCall {
       const buf = Buffer.from(m.media.payload, "base64");
       this.tape.them(buf);
       const voiced = this.line && hasVoice(m.media.payload);
-      if (this.pickup && (this.pickup.state === "waiting" || this.pickup.state === "playing")) this.pickupFrame(this.now(), voiced);
+      // Their side's sound for the opener's timing: any speech, not only a loud voice — a receptionist's
+      // "Hi … Chelsea Bodywork" is loud in short bursts (2026-11-07 greet drive).
+      if (this.pickup && (this.pickup.state === "waiting" || this.pickup.state === "playing")) this.pickupFrame(this.now(), this.line && hasSpeech(m.media.payload));
       if (voiced) {
         this.firstCallerVoiceAt ??= this.now();
         if (this.talk) this.theirVoiceAt = this.now();
@@ -1534,13 +1536,36 @@ export class GptLiveCall {
       return;
     }
     // Playing: done once its last frame has played; stopped if they talk over it for long.
-    if (t >= p.endsAt) { p.state = "played"; return; }
+    if (t >= p.endsAt) return this.openerPlayed(t);
     if (voiced) {
-      p.overFrom ??= t; p.overAt = t;
+      p.overMs = (p.overMs ?? 0) + 20;
+      p.overFrom ??= t;
       // Their hello a beat into the clip: stop, and say it again once they have finished.
-      if (!p.replayed && t - p.overFrom >= opener.OPENER_OVERLAP_MS && p.overFrom - p.startedAt <= opener.OPENER_REPLAY_WINDOW_MS) return this.replayOpener();
-      if (t - p.overFrom >= opener.OPENER_TALKED_OVER_MS) this.cutOpener();
-    } else if (p.overAt && t - p.overAt > 300) p.overFrom = null;
+      if (!p.replayed && p.overMs >= opener.OPENER_OVERLAP_MS && p.overFrom - p.startedAt <= opener.OPENER_REPLAY_WINDOW_MS) return this.replayOpener();
+      if (p.overMs >= opener.OPENER_TALKED_OVER_MS) this.cutOpener();
+    }
+  }
+
+  /**
+   * The clip has played. Anything they said over its tail is theirs to be answered (the voice heard it);
+   * a line that stays quiet after it gets one short "hello?" (the quiet-line opener, which waits for it).
+   */
+  openerPlayed(t) {
+    const p = this.pickup;
+    p.state = "played";
+    if (p.overMs && !this.talking) this.callerVoiceAt = t;
+    if (this.openTimer) this.timers.clearTimeout(this.openTimer);
+    this.openTimer = this.timers.setTimeout(() => this.quietAfterOpener(), opener.OPENER_QUIET_AFTER_MS);
+  }
+
+  quietAfterOpener() {
+    this.openTimer = null;
+    if (this.done || this.talking || this.gate || this.pendingSay || this.pending.size || this.rejoining || this.callerVoiceAt) return;
+    if (this.theirVoiceAt > (this.pickup?.endsAt ?? 0)) return;
+    this.log({ gptlive_opener_quiet_after: this.call.id });
+    this.speakLine("They have not said anything since your opening line. Say only this, then stop and wait for them: \"Hello — can you hear me okay?\"");
+    if (this.gate) this.gate.opener = true;
+    else if (this.pendingSay) this.pendingSay.opener = true;
   }
 
   /** They started their hello over the clip's first words: it stops, and waits for their pause. */
@@ -1553,7 +1578,7 @@ export class GptLiveCall {
     p.state = "waiting";
     p.theirsFrom = p.overFrom;
     p.theirsAt = t;
-    p.overFrom = null; p.overAt = 0;
+    p.overFrom = null; p.overMs = 0;
     p.turn = null;
     this.log({ gptlive_pickup_opener_again: this.call.id, played_ms: t - p.startedAt });
   }

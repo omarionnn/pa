@@ -142,9 +142,12 @@ test("a silent pickup: the opener plays ~0.6 s in, before the voice is even up; 
   const before = s.twilio.media().length;
   s.live.emit({ type: "session.output_audio.delta", delta: SPEECH });
   assert.equal(s.twilio.media().length, before);
-  // No quiet-line "Hi there, hello?" on top.
-  await line(s, 3500, QUIET);
+  // No quiet-line "Hi there, hello?" on top; 3 s of nothing after it gets one "can you hear me?".
+  await line(s, 4000, QUIET);
   assert.equal(pick(s, "gptlive_line_opened_quiet").length, 0);
+  assert.equal(pick(s, "gptlive_opener_quiet_after").length, 0);
+  await line(s, 2000, QUIET);
+  assert.equal(pick(s, "gptlive_opener_quiet_after").length, 1);
   // They answer it: the voice's reply goes through.
   await line(s, 600, SPEECH);
   await line(s, 700, QUIET);
@@ -153,13 +156,13 @@ test("a silent pickup: the opener plays ~0.6 s in, before the voice is even up; 
   assert.equal(s.call.turns.filter(t => t.who === "reason")[0].text, "Hi there! I'm calling to ask about a massage for low back pain.");
 });
 
-test("their hello first: the opener follows ~350 ms after it ends; its late transcript sits before the opener and starts no line turn", async () => {
+test("their hello first: the opener follows ~0.55 s after it ends; its late transcript sits before the opener and starts no line turn", async () => {
   const s = startCall();
   await line(s, 200, QUIET);
   await line(s, 1200, SPEECH);           // "Hi, Chelsea Bodywork, can I help you?"
-  await line(s, 400, QUIET);
+  await line(s, 600, QUIET);
   const first = pick(s, "gptlive_first_voice")[0];
-  assert.ok(first && first.ms >= 1740 && first.ms <= 1800, `first word ${first?.ms} ms (hello ended at 1400)`);
+  assert.ok(first && first.ms >= 1940 && first.ms <= 2000, `first word ${first?.ms} ms (hello ended at 1400)`);
   s.up();
   s.live.emit({ type: "session.input_transcript.delta", delta: "Hi, Chelsea Bodywork, can I help you?" });
   await s.timers.advance(gl.LINE_QUIET_MS + 50);
@@ -176,12 +179,12 @@ test("a long greeting (a recording or a menu) gets no opener, and the old quiet-
   assert.equal(s.twilio.media().length, 0);
 });
 
-test("talked over for 0.7 s later in the clip: the opener stops, the line is cleared, the voice is told they may have missed it", async () => {
+test("talked over for 0.9 s later in the clip: the opener stops, the line is cleared, the voice is told they may have missed it", async () => {
   const s = startCall({ clip: { text: "Hi there! I'm calling to ask about a massage for low back pain.", kind: "about", audio: Buffer.alloc(8000 * 4, 0x00) } });
   s.up();
   await line(s, 620, QUIET);
   await line(s, 1600, QUIET);
-  await line(s, 760, SPEECH);
+  await line(s, 960, SPEECH);
   assert.equal(pick(s, "gptlive_pickup_opener_cut").length, 1);
   assert.ok(s.twilio.sent.some(m => m.event === "clear"));
   assert.ok(s.live.of("session.instructions.append").some(e => /they talked over it/.test(e.content)));
@@ -254,7 +257,7 @@ test("their hello comes a beat into the silent-line opener: it stops at once and
   await line(s, 1400, SPEECH);           // "Hi, Chelsea Bodywork, can I help you?" over it
   assert.equal(pick(s, "gptlive_pickup_opener_again").length, 1);
   assert.ok(s.twilio.sent.some(m => m.event === "clear"));
-  await line(s, 400, QUIET);
+  await line(s, 600, QUIET);
   const plays = pick(s, "gptlive_pickup_opener");
   assert.equal(plays.length, 2, "played again after their hello");
   assert.equal(plays[1].why, "after their hello");
