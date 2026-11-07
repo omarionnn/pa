@@ -1,4 +1,6 @@
 // Calls from people who are not users yet, and the one moment they come back as one (src/strangercalls.js).
+// They ring the number's GPT-Live voice webhook (`inboundTwiml`); each of their turns goes through
+// `strangerReply` with their stranger_calls row id + token, exactly as the stranger's stream hands it.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -7,21 +9,16 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-strangercalls-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+process.env.REASON_RECORDING_ROOT = join(dir, "recordings");
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
-process.env.ELEVENLABS_API_KEY = "eleven-test-key";
-process.env.ELEVENLABS_AGENT_ID = "agent_test";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
+process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 
 const sc = await import("../src/strangercalls.js");
 const stranger = await import("../src/calls/stranger.js");
-const voice = await import("../src/calls/voice.js");
-const { inboundRequest } = await import("../src/calls/inbound.js");
-const { ElevenLabsCallProvider } = await import("../src/calls/elevenlabs.js");
+const gl = await import("../src/calls/gptlive.js");
 const { sweepRetention } = await import("../src/privacy.js");
 const onboarding = await import("../src/onboarding.js");
 const db = await import("../src/db.js");
@@ -30,24 +27,37 @@ const { config, clock } = await import("../src/config.js");
 const CALLER = "+13475559999";
 const OTHER = "+13475558888";
 const DAY = 86_400_000;
+const TWILIO = { callVoice: "gptlive", twilioSid: "AC_test", twilioToken: "twilio-test-token", twilioFrom: "+16465550000", openaiKey: "sk-test" };
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
+  stranger.resetTurns();
+  Object.assign(config, TWILIO);
   db.db.exec("DELETE FROM stranger_calls; DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM outbox; DELETE FROM person_facts; DELETE FROM people;");
   db.upsertAccount({ conversationId: config.ownerConversation, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
 });
 
 const noRouter = { get: () => null, statuses: () => [] };
-const ring = (caller, conv = "conv_1") => inboundRequest({
-  rawBody: JSON.stringify({ caller_id: caller, agent_id: "agent_test", called_number: "+16465550000", call_sid: "CA1", conversation_id: conv }),
-  provider: new ElevenLabsCallProvider(), router: noRouter,
-});
-async function drain(stream) { for await (const _ of stream) { /* read */ } }
+/** One Twilio-signed ring of the number. Returns the TwiML answer. */
+const ring = (caller, sid = "CA1") => {
+  const params = { CallSid: sid, From: caller, To: TWILIO.twilioFrom };
+  const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
+  return gl.inboundTwiml({
+    rawBody: new URLSearchParams(params).toString(),
+    headers: { "x-twilio-signature": gl.twilioSignature(url, params) },
+    router: noRouter,
+  });
+};
+/** What the stranger's stream hands each turn: their row's id and token. */
+const extraFor = (sid = "CA1") => {
+  const row = db.db.prepare("SELECT * FROM stranger_calls WHERE external_id = ?").get(`gptlive:${sid}`);
+  return { reason_stranger_call: row.id, reason_stranger_token: row.token };
+};
 async function pitchTurn(extra, theirs) {
-  await drain(stranger.strangerTurn({
-    body: { model: "reason", messages: [{ role: "assistant", content: stranger.introLine() }, ...theirs.map(c => ({ role: "user", content: c }))], extra_body: extra },
-    generate: async function* () { yield { type: "text", text: "Sure." }; }, sseChunk: voice.sseChunk, SSE_DONE: voice.SSE_DONE,
-  }));
+  await stranger.strangerReply({
+    messages: [{ role: "assistant", content: stranger.introLine() }, ...theirs.map(c => ({ role: "user", content: c }))],
+    generate: async function* () { yield { type: "text", text: "Sure." }; }, extra,
+  });
 }
 /** A reply to them that really went out, as the outbox marks it. */
 const sent = (conv, address, body = "hey!") => {
@@ -56,41 +66,43 @@ const sent = (conv, address, body = "hey!") => {
 };
 const signUp = (address, conv = `dm:sendblue:${address}`) => { db.upsertAccount({ conversationId: conv, channel: "sendblue", address, name: "" }); return conv; };
 
-test("an unknown caller's call is kept against the number it came from, with what they asked; withheld and blocked keep nothing", async () => {
+test("an unknown caller's call is kept against the number it came from, with what they asked; withheld keeps no number, blocked keeps nothing", async () => {
   const out = ring(CALLER);
-  const extra = out.body.custom_llm_extra_body;
-  assert.equal(extra.reason_kind, "stranger");
-  assert.ok(extra.reason_stranger_call && extra.reason_stranger_token);
-  await pitchTurn(extra, ["How do I sign up?", "Can it book a dentist for me?"]);
+  assert.match(out.body, /<Stream url="wss:\/\/reason\.example\.test\/calls\/gptlive\/stream\/[0-9a-f]{32}"/);
+  await pitchTurn(extraFor(), ["How do I sign up?", "Can it book a dentist for me?"]);
   const row = db.db.prepare("SELECT * FROM stranger_calls").get();
   assert.equal(row.phone, CALLER);
-  assert.equal(row.external_id, "conv_1");
+  assert.equal(row.external_id, "gptlive:CA1");
   assert.match(row.summary, /^They asked: How do I sign up; Can it book a dentist for me/);
   assert.doesNotMatch(JSON.stringify(row), /Omari|\+12025551234/, "nothing about any user in the row");
 
-  ring("", "conv_2");
+  ring("", "CA2");
   db.blockNumber(OTHER, "test");
-  ring(OTHER, "conv_3");
-  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls").get().n, 1);
+  ring(OTHER, "CA3");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls WHERE phone = ?").get(OTHER).n, 0, "blocked keeps nothing");
+  // A withheld call's row (its recording needs one) carries no number, so it is nobody's, ever.
+  const withheld = db.db.prepare("SELECT * FROM stranger_calls WHERE external_id = 'gptlive:CA2'").get();
+  assert.equal(withheld.phone, "");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls WHERE phone != ''").get().n, 1);
 });
 
 test("a forged or wrong token records nothing", async () => {
-  const extra = ring(CALLER).body.custom_llm_extra_body;
-  await pitchTurn({ ...extra, reason_stranger_token: "nope" }, ["leak this?"]);
+  ring(CALLER);
+  await pitchTurn({ ...extraFor(), reason_stranger_token: "nope" }, ["leak this?"]);
   assert.equal(db.db.prepare("SELECT said FROM stranger_calls").get().said, "[]");
 });
 
 test("the post-call delivery sets the real length and their words", () => {
-  ring(CALLER, "conv_pc");
-  assert.equal(sc.settleFromPostCall({ externalId: "conv_pc", live: { durationS: 74, turns: [{ who: "reason", text: "hi" }, { who: "them", text: "What does it cost?" }] } }), true);
+  ring(CALLER, "CA_pc");
+  assert.equal(sc.settleFromPostCall({ externalId: "gptlive:CA_pc", live: { durationS: 74, turns: [{ who: "reason", text: "hi" }, { who: "them", text: "What does it cost?" }] } }), true);
   const row = db.db.prepare("SELECT * FROM stranger_calls").get();
   assert.equal(row.duration_s, 74);
   assert.match(row.summary, /What does it cost/);
 });
 
 test("they sign up from the same number: the first turn says it's good to reconnect, once, and it goes into THEIR memory", async () => {
-  const extra = ring(CALLER).body.custom_llm_extra_body;
-  await pitchTurn(extra, ["Can it book a dentist for me?"]);
+  ring(CALLER);
+  await pitchTurn(extraFor(), ["Can it book a dentist for me?"]);
   db.db.prepare("UPDATE stranger_calls SET started_at = ?").run(clock.now() - DAY - 3600_000);
   const conv = signUp(CALLER);
   const note = sc.reconnectNote(conv);
@@ -179,7 +191,7 @@ test("retention: their words go with content, the row with records; an aged call
   const note = sc.reconnectNote(signUp(CALLER));
   assert.match(note, /good to reconnect/);
   assert.doesNotMatch(note, /They asked|they asked/);
-  ring(OTHER, "conv_old");
+  ring(OTHER, "CA_old");
   db.db.prepare("UPDATE stranger_calls SET started_at = ? WHERE phone = ?").run(clock.now() - (config.keepRecordsDays + 1) * DAY, OTHER);
   sweepRetention({});
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls WHERE phone = ?").get(OTHER).n, 0);

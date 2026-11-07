@@ -93,8 +93,9 @@ What the cage sets, beyond the blanks (all in `bin/caged.sh start`, and the same
   they raise can only be driven this way ([features/ops-alerts.md](features/ops-alerts.md)). Start
   the fake first and check its "fake sendblue on" line: if its port was taken, the cage would post
   to whatever owns it.
-- **Its own ElevenLabs inbound secrets** — `ELEVENLABS_LLM_SECRET` and `ELEVENLABS_WEBHOOK_SECRET`
-  are the cage's secret, never the real ones, so `bin/call-turn.sh` (Drive 5) can drive a call turn.
+- **No phone line** — `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` blanked, so
+  GPT-Live (the only call voice) reports not connected, nothing dials, and every Twilio-signed
+  GPT-Live webhook here refuses a signature made for the live install (403).
 
 The cage still reads every other key from `.env`, so some drives spend money or reach the network:
 a web search (whichever `REASON_SEARCH_PROVIDER` this Mac's `.env` names), `page_create`'s
@@ -377,26 +378,29 @@ agent.model.create = real;
 `src/agent.js` exports `model = { create }` for exactly this; `test/trustline-loop.test.js` is the
 worked example. Do not fake the tool loop itself — that proves nothing about the loop.
 
-**5 — A phone call, turn by turn, with no phone.** ElevenLabs reaches Reason through the custom-LLM
-endpoint (`POST /calls/elevenlabs/llm`, OpenAI chat-completions over SSE) and sends each turn as the
-call's spoken words only. `bin/call-turn.sh` posts exactly that to the cage, with the cage's own
-bearer, against an `in_progress` owner call row it creates — the real call model on the API, the
-harm screen, Reason's tools, the real database:
+**5 — A phone call, turn by turn, with no phone.** Every call is GPT-Live over Twilio
+(`src/calls/gptlive.js`); GPT-Live hands each turn to Reason in process (`reasonTurn` → `llmRequest`
+in `src/calls/voice.js`). There is **no HTTP route to a call turn** (the old `/calls/elevenlabs/*`
+routes are gone and 404), so call turns are driven in process, on a throwaway database, by the
+drives in `bin/` — never against the cage's API key:
 
 ```bash
-bin/call-turn.sh new                                         # a fresh owner call + empty history
-bin/call-turn.sh "can you check what the price of gold is?"  # → {"first_content_ms":…} and Reason: …
-bin/call-turn.sh "no, it's okay."                            # the history so far is sent each turn
-bin/call-turn.sh show                                        # the call row and its lookups record
+# no model at all: replays stored owner calls through the real turn with a scripted model seam
+node bin/call-filler-drive.mjs …            # header comment says which private inputs it reads
+# real model on claude-cli (never the API): who-are-you on an own call, another user's, a business
+D=$(mktemp -d) && REASON_DB_PATH=$D/id.db node bin/call-identity-drive.mjs
+# the cage's GPT-Live routes, no model: inbound TwiML (unsigned → 403) and the dead ElevenLabs paths (404)
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:$PORT/calls/elevenlabs/llm
 ```
 
-Read `voice_turn` / `call_tool` / `call_llm_first_content_ms` in `serve.log`. The cage cannot place
-or receive a real call (no ElevenLabs key), and its timings are this Mac to Anthropic with no
-ring-time cache warm-up — prove latency on Hetzner, not here. See
-[features/call-completeness.md](features/call-completeness.md).
+The cage cannot place or receive a real call (no Twilio keys), and the GPT-Live session drives
+(`gptlive-drive.mjs`, `gptlive-inbound-drive.mjs`, `gptlive-line-drive.mjs`) need a real
+`OPENAI_API_KEY` — they are owner-run, not part of a no-model pass. Prove latency on Hetzner, not
+here. See [features/call-completeness.md](features/call-completeness.md) and
+[features/gptlive-calls.md](features/gptlive-calls.md).
 
 Machines on a call Reason places (a recording, a menu, a mailbox, hold) are driven on the real model
-through claude-cli, not the cage and not the API — `call-turn.sh` would bill the API:
+through claude-cli, not the cage and not the API:
 
 ```bash
 D=$(mktemp -d) && env -i PATH=$PATH HOME=$HOME USER=$USER LOGNAME=$USER REASON_DB_PATH=$D/machines.db \
@@ -718,7 +722,7 @@ Three things to know before believing a red run:
 
 - **`main` at `e42894a` was red by two** — `2908618` (2026-10-12, "natural opening for outbound
   calls") changed the announcement to *"Hey, hi — this is an AI assistant calling for <owner>…"*
-  and left `test/accounts.test.js:167` and `test/elevenlabs.test.js:274` asserting the old
+  and left `test/accounts.test.js:167` and the old provider's test asserting the old
   wording. Both are fixed on `wt/catchup-guard`, along with `test/call-inbound.test.js:157`, which
   compared two random draws of the inbound-call lead-in for byte equality and failed about one run
   in two.
@@ -820,7 +824,6 @@ All executable, all run from `.agents/skills/verify-reason/`.
 | `bin/caged.sh start\|stop\|status\|env` | The caged instance. `env` prints the exports for driving tools in-process against its database. |
 | `bin/doctor.sh [live\|port]` | Read-only health verdict. Default `live` = Hetzner over ssh: service + pid start, every `src/` file checksummed, `data/` backups, `.env.bak*`, backup timer, `/health`, `reason-watchdog.timer` + `data/watchdog.json` age, `GET /alive`. A port = a local instance. |
 | `bin/inbound.sh text "…" \| file <p> \| -` | POST one webhook to the caged instance. Refuses 8787. |
-| `bin/call-turn.sh new \| "…" \| show` | One spoken call turn against the cage's custom-LLM endpoint; `show` prints the call's lookups record. |
 | `bin/peek.sh thread\|inbound\|outbox\|pages\|confirms\|ledger\|schema <t>\|sql "…"` | Read the caged database. `schema` first when a column name is in doubt. |
 | `bin/fake-sendblue.mjs <port> <capture.jsonl> [ok\|fail]` | A loopback stand-in for api.sendblue.com: logs every request, answers sends 200 or 400. For `REASON_VERIFY_FAKE_SENDBLUE` and `REASON_WATCHDOG_SEND_URL`. Background it under setsid like `caged.sh` (a bare `&` dies with the agent's command). |
 | `bin/cli-seal-probe.mjs [--unsealed]` | What a non-owner's CLI turn puts in front of the model, read off the wire: the real `claude` via `runClaudeCli`, `ANTHROPIC_BASE_URL` on a loopback stand-in (no model, no bill, no message). Must show 0 emails, no AGENTS.md, no repo path; `--unsealed` is the control. See [features/cli-sealed.md](features/cli-sealed.md). |
@@ -892,7 +895,7 @@ To-do list (`REASON_TODO` off/`owner`/on; the plan, the one yes, the list's call
   runs only if Sendblue has that message.
 - **No API credit means no model on the cage.** On 2026-10-25 both this Mac's and Hetzner's
   `ANTHROPIC_API_KEY` answered 400 "Your credit balance is too low". The cage runs turns on the API,
-  so every `bin/inbound.sh` / `bin/call-turn.sh` drive is unreachable until it is topped up — drive
+  so every `bin/inbound.sh` drive is unreachable until it is topped up — drive
   tools (Drive 2) and routes (Drive 3) instead, and do **not** switch the cage to the CLI except for
   the few text turns Launch B's subscription exception allows. Do not
   spend Reason's key to find out either (no "one Haiku call" check since 2026-10-25): read the live

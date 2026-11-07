@@ -83,8 +83,8 @@ used up`.
 
 **The cage's HTTP instance cannot place a call** (every call credential is blanked and the fake
 provider is registered switched off), so a model-driven "call me at 7" on the cage is refused at
-`timer_set` with `not_connected` — which is itself the set-time refusal above. Never set
-`REASON_CALL_PROVIDER=elevenlabs` on the cage to prove this.
+`timer_set` with `not_connected` — which is itself the set-time refusal above. Never put Twilio keys or
+`REASON_CALL_PROVIDER=gptlive` with real keys on the cage to prove this.
 
 **Live, read-only:**
 

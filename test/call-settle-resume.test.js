@@ -7,7 +7,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHmac } from "node:crypto";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-settle-resume-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
@@ -16,16 +15,10 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
-process.env.ELEVENLABS_API_KEY = "eleven-test-key";
-process.env.ELEVENLABS_AGENT_ID = "agent_test";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
 process.env.REASON_UNDO_SECONDS = "0";
 
-const { postCallRequest, resumeSettles } = await import("../src/calls/postcall.js");
+const { resumeSettles } = await import("../src/calls/postcall.js");
 const { settleGptLive } = await import("../src/calls/gptlive.js");
-const { ElevenLabsCallProvider } = await import("../src/calls/elevenlabs.js");
 const { settleCall } = await import("../src/tools.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
@@ -137,36 +130,3 @@ test("a call whose owner was already told is only marked finished", async () => 
   assert.ok(db.getCall(C, row.id).settled_at);
 });
 
-// ---------- ElevenLabs ----------
-
-const sign = (raw) => {
-  const t = Math.floor(Date.now() / 1000);
-  return `t=${t},v0=${createHmac("sha256", "hook-test-secret").update(`${t}.${raw}`).digest("hex")}`;
-};
-
-test("ElevenLabs: the same — killed at the owner's turn, finished once at boot", async () => {
-  const row = db.createCall(C, {
-    provider: "elevenlabs", toNumber: "+12025551234", isOwner: true,
-    goal: "Omari called Reason", facts: [], direction: "in", externalId: "conv_in", state: "in_progress",
-  });
-  const raw = JSON.stringify({
-    type: "post_call_transcription",
-    data: {
-      conversation_id: "conv_in", status: "done", has_audio: false,
-      metadata: { call_duration_secs: 9, termination_reason: "the caller hung up" },
-      analysis: { transcript_summary: "Trains." },
-      transcript: [{ role: "user", message: "check the trains before I go?" }, { role: "agent", message: "want me to check right before you leave?" }],
-    },
-  });
-  await assert.rejects(postCallRequest({
-    rawBody: raw, headers: { "ElevenLabs-Signature": sign(raw) },
-    provider: new ElevenLabsCallProvider(), runtime: runtime({ dies: true }), settle: settleCall,
-  }));
-  assert.equal(callWords(C), 2);
-  const rt = runtime();
-  assert.deepEqual(await resumeSettles({ runtime: rt }), [row.id]);
-  assert.equal(rt.events.length, 1);
-  assert.equal(callWords(C), 2, "not written twice");
-  assert.ok(db.getCall(C, row.id).settled_at);
-  assert.deepEqual(await resumeSettles({ runtime: runtime() }), []);
-});

@@ -40,7 +40,7 @@ $Y of $10.00 this month`) and the "Phone calls on the API" row, and gets one tex
   `db.saveOpsCheck` both rows `warn` 10 min back, and inserts a `page_sessions` row
   (`conversation_id` = `config.ownerConversation`). `POST /ops.json` with `Cookie: reason_page=<token>`
   and `action=check` twice → `serve.log` shows ONE "Reason check — 2 things need you" text, then
-  `texted:false`. `bin/call-turn.sh new` + one turn past both caps → `voice_turn_threw` with the SDK's
+  `texted:false`. (2026-10-27, via the since-removed `bin/call-turn.sh`) one call turn past both caps → `voice_turn_threw` with the SDK's
   "Could not resolve authentication method" (the key is blanked): the turn went to the API path, i.e.
   the call was not moved or stopped.
 

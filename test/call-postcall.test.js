@@ -1,17 +1,15 @@
 // The call is over: what gets written down, who gets told, and the things that must NOT happen.
 //
-// Three of these pin failures that have already cost something real. A post-call delivery writes
-// into somebody's own conversation, so an unsigned one is refused rather than taken on trust. A
-// recording endpoint's 200 is not audio — that one cost a real call, where 111 bytes of JSON were
-// filed as call-1.wav and the owner was told the audio was saved. And a call that reached an
-// answering machine is still "done" at the platform, so filing one as a conversation would tell the
-// owner their message was heard by a person.
+// Every call is GPT-Live over Twilio, and every finished one settles through `settleGptLive`. Two of
+// these pin failures that have already cost something real. A recording that is not audio — that one
+// cost a real call, where 111 bytes of JSON were filed as call-1.wav and the owner was told the audio
+// was saved. And a call that reached an answering machine still "completed" on the line, so filing one
+// as a conversation would tell the owner their message was heard by a person.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHmac } from "node:crypto";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-postcall-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
@@ -20,18 +18,14 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
-process.env.ELEVENLABS_API_KEY = "eleven-test-key";
-process.env.ELEVENLABS_AGENT_ID = "agent_test";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
 process.env.REASON_UNDO_SECONDS = "0";
 
 const {
-  postCallRequest, writeCallIntoThread, turnsFromTranscriptString, noteOnTask, tellTheOwner,
-  thirdPartyEvent, ownerEvent, POST_CALL_PATH,
+  writeCallIntoThread, turnsFromTranscriptString, noteOnTask, tellTheOwner,
+  thirdPartyEvent, ownerEvent,
 } = await import("../src/calls/postcall.js");
-const { ElevenLabsCallProvider } = await import("../src/calls/elevenlabs.js");
+const { settleGptLive } = await import("../src/calls/gptlive.js");
+const hold = await import("../src/calls/hold.js");
 const { settleCall } = await import("../src/tools.js");
 const { announcementFor } = await import("../src/calls/provider.js");
 const { FIXTURE_RECORDING } = await import("../src/calls/fake.js");
@@ -50,11 +44,6 @@ beforeEach(() => {
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
 });
 
-const provider = (over = {}) => new ElevenLabsCallProvider(over);
-
-const sign = (raw, { secret = "hook-test-secret", t = Math.floor(Date.now() / 1000) } = {}) =>
-  `t=${t},v0=${createHmac("sha256", secret).update(`${t}.${raw}`).digest("hex")}`;
-
 /** A runtime that records the event turns it was asked to run, and what it replied. */
 function fakeRuntime({ reply = "told them", interrupt = true } = {}) {
   const events = [];
@@ -66,92 +55,53 @@ function fakeRuntime({ reply = "told them", interrupt = true } = {}) {
 }
 
 const ownerCall = () => db.createCall(C, {
-  provider: "elevenlabs", toNumber: "+12025551234", isOwner: true,
-  goal: "Omari called Reason", facts: [], direction: "in", externalId: "conv_in", state: "in_progress",
+  provider: "gptlive", toNumber: "+12025551234", isOwner: true,
+  goal: "Omari called Reason", facts: [], direction: "in", externalId: "gptlive:CA_in", state: "in_progress",
 });
 const thirdPartyCall = (over = {}) => db.createCall(C, {
-  provider: "elevenlabs", toNumber: PLACE, isOwner: false,
+  provider: "gptlive", toNumber: PLACE, isOwner: false,
   goal: "ask for a table for four at eight on Saturday", facts: ["the name is Omari"],
-  announcement: ANN, externalId: "conv_out", ...over,
+  announcement: ANN, externalId: "gptlive:CA_out", ...over,
 });
 
-const transcript = [
-  { role: "agent", message: "hey Omari — you're in the middle of booking Carbone. what's up?" },
-  { role: "user", message: "yeah, make it Friday instead of Saturday" },
-  { role: "agent", message: "Friday it is. I'll text you the new link now." },
+const callTurns = [
+  { who: "reason", text: "hey Omari — you're in the middle of booking Carbone. what's up?" },
+  { who: "them", text: "yeah, make it Friday instead of Saturday" },
+  { who: "reason", text: "Friday it is. I'll text you the new link now." },
 ];
+const asTranscript = (turns) => turns.map(t => `${t.who === "them" ? "Them" : "Reason"}: ${t.text}`).join("\n");
+
+const fixtureAudio = () => ({ path: FIXTURE_RECORDING, format: "wav", seconds: 9 });
 
 // Nine seconds, because the fixture recording really is about a second of tone and
-// `storeRecording` refuses a file too small to be a call of the length it claims. A payload saying
+// `storeRecording` refuses a file too small to be a call of the length it claims. A call saying
 // 95 seconds with 4.8 KB of audio is not a thing to assert against; it is a thing that should fail,
 // and it does — see the test at the bottom of the audio section.
-const payload = (over = {}) => ({
-  type: "post_call_transcription",
-  data: {
-    conversation_id: over.conversation_id ?? "conv_in",
-    status: "done",
-    metadata: { call_duration_secs: 9, termination_reason: "the caller hung up", ...(over.metadata ?? {}) },
-    analysis: { transcript_summary: over.summary ?? "They moved it to Friday." },
-    transcript: over.transcript ?? transcript,
-    ...(over.has_audio === false ? { has_audio: false } : {}),
-  },
-});
-
-/** Deliver one payload, signed, with the audio fetch stubbed to whatever is handed in. */
-const deliver = async (body, { runtime = fakeRuntime(), bytes = null, contentType = "audio/mpeg", status = 200 } = {}) => {
-  const raw = JSON.stringify(body);
-  const fetchImpl = async () => ({
-    ok: status === 200, status,
-    headers: { get: (h) => (h.toLowerCase() === "content-type" ? contentType : null) },
-    arrayBuffer: async () => (bytes ?? Buffer.alloc(0)),
-    json: async () => ({}),
-  });
-  return await postCallRequest({
-    rawBody: raw, headers: { "ElevenLabs-Signature": sign(raw) },
-    provider: provider(), runtime, settle: settleCall, fetchImpl,
-  });
+/** What a finished GPT-Live call hands its settle (`finishCall` in src/calls/gptlive.js). */
+const liveOf = (over = {}) => {
+  const turns = over.turns ?? callTurns;
+  return {
+    state: "completed", outcome: "", summary: "",
+    transcript: asTranscript(turns), turns,
+    durationS: 9, costCents: 1, termination: "hung up", cutOff: null,
+    recording: fixtureAudio(), recordingWhy: "",
+    ...over,
+  };
 };
 
-const mp3 = readFileSync(FIXTURE_RECORDING); // a real WAV; the sniff names it for what it is
-
-// ---------- the door ----------
-
-test("an unsigned or wrongly signed delivery writes nothing at all", async () => {
-  ownerCall();
-  const raw = JSON.stringify(payload());
-
-  for (const headers of [{}, { "elevenlabs-signature": sign(raw, { secret: "nope" }) }, { "elevenlabs-signature": "garbage" }]) {
-    const out = await postCallRequest({ rawBody: raw, headers, provider: provider(), settle: settleCall });
-    assert.equal(out.status, 401);
-  }
-  // Nothing in the thread, and the call is untouched.
-  assert.equal(db.loadConversation(C).length, 0);
-  assert.equal(db.listCalls(C)[0].state, "in_progress");
-
-  assert.equal((await postCallRequest({ rawBody: raw, headers: {}, provider: null })).status, 404);
-  assert.equal(POST_CALL_PATH, "/calls/elevenlabs/post-call");
-});
-
-test("a delivery for a conversation Reason never made is acknowledged and nothing is written", async () => {
-  // Not an error: a conversation started outside Reason looks exactly like this, and 200 is what
-  // stops them retrying forever.
-  const out = await deliver(payload({ conversation_id: "conv_someone_elses" }));
-  assert.equal(out.status, 200);
-  assert.equal(out.body.known, false);
-  assert.equal(db.loadConversation(C).length, 0);
-});
+/** Settle one call the way a GPT-Live call that just ended does. */
+const settle = (row, live = liveOf(), { runtime = fakeRuntime() } = {}) =>
+  settleGptLive({ row: db.getCall(C, row.id), live, settle: settleCall, runtime });
 
 // ---------- the transcript becomes the conversation ----------
 
 test("an owner call lands in their thread as turns, so a text ten minutes later carries on", async () => {
   const call = ownerCall();
-  const out = await deliver(payload(), { bytes: mp3 });
-
-  assert.equal(out.status, 200);
-  assert.equal(out.body.state, "completed");
-  assert.equal(out.body.turns_written, 3);
+  const out = await settle(call);
+  assert.equal(out.state, "completed");
 
   const thread = db.loadConversation(C);
+  assert.equal(thread.length, 4);
   // One line saying these words were SPOKEN, so a model reading the thread back does not take
   // "Friday it is" for a text that was never sent.
   assert.match(String(thread[0].content), /on a phone call with Omari, they called/);
@@ -170,61 +120,59 @@ test("an owner call lands in their thread as turns, so a text ten minutes later 
   const row = db.getCall(C, call.id);
   assert.equal(row.duration_s, 9);
   assert.match(row.transcript, /Them: yeah, make it Friday instead of Saturday/);
+  assert.ok(row.settled_at, "the settle finished");
 });
 
 test("a third-party call is NOT written into the thread as though they had said it", async () => {
   // The restaurant is not in this conversation. Writing their half in as turns would make "you told
   // me Friday" a thing Reason could believe about the wrong person.
-  thirdPartyCall();
-  const out = await deliver(payload({ conversation_id: "conv_out" }), { bytes: mp3 });
-  assert.equal(out.body.turns_written, 0);
+  const call = thirdPartyCall();
+  await settle(call);
+  assert.equal(db.getCall(C, call.id).state, "completed");
   assert.equal(db.loadConversation(C).length, 0);
 });
 
 test("a voicemail is never filed as a conversation that happened", async () => {
-  // Bland's lesson, and the one that matters most here: an answering machine at the platform is
-  // still status 'done'. Filing it would tell the owner their message was heard by a person.
+  // Bland's lesson, and the one that matters most here: an answering machine on the line is still a
+  // call that completed. Filing it would tell the owner their message was heard by a person.
   const call = thirdPartyCall();
-  const out = await deliver(payload({
-    conversation_id: "conv_out",
-    metadata: { call_duration_secs: 6, termination_reason: "voicemail detected" },
-    transcript: [{ role: "user", message: "Hi, you've reached Carbone, please leave a message" }],
-  }), { bytes: mp3 });
+  hold.noteVoicemail(db.getCall(C, call.id), { message: "" });
+  await settle(call, liveOf({
+    durationS: 6, termination: "hung up",
+    turns: [{ who: "them", text: "Hi, you've reached Carbone, please leave a message" }],
+  }));
 
-  assert.equal(out.body.state, "voicemail");
-  assert.equal(out.body.turns_written, 0);
+  const row = db.getCall(C, call.id);
+  assert.equal(row.state, "voicemail");
   assert.equal(db.loadConversation(C).length, 0);
   // There IS audio of the greeting and the owner still gets it; what must not happen is the call
   // being treated as having reached somebody.
-  assert.equal(db.getCall(C, call.id).recording_state, "stored");
-  assert.match(db.getCall(C, call.id).outcome, /went to voicemail/);
+  assert.equal(row.recording_state, "stored");
+  assert.match(row.outcome, /a machine answered; no message was left/);
+  assert.equal(row.end_reason, "voicemail");
 });
 
-test("a voicemail Reason left itself ends as end_call at the platform, and is still filed as a voicemail", async () => {
-  // Since 2026-10-13 the message is left through end_call rather than by forwarding detection, so the
-  // platform's termination reason no longer says "voicemail". The row knew during the call.
+test("a voicemail Reason left itself ends as end_call on the line, and is still filed as a voicemail", async () => {
+  // The message is left through end_call, so the line's own ending does not say "voicemail". The row
+  // knew during the call.
   const call = thirdPartyCall();
-  db.updateCall(C, call.id, {
-    voicemail_left: 1, outcome_kind: "voicemail_left",
-    outcome: `a machine answered; one message was left: "Hi, this is an AI assistant calling for Omari..."`,
-  });
+  hold.noteVoicemail(db.getCall(C, call.id), { message: "Hi, this is an AI assistant calling for Omari..." });
   const runtime = fakeRuntime();
-  const out = await deliver(payload({
-    conversation_id: "conv_out",
-    metadata: { call_duration_secs: 9, termination_reason: "end_call tool was called" },
-    transcript: [
-      { role: "user", message: "Hi, you've reached Jeffrey, leave a message after the tone" },
-      { role: "agent", message: "Hi, this is an AI assistant calling for Omari..." },
+  await settle(call, liveOf({
+    termination: "end_call (mutual goodbye)",
+    turns: [
+      { who: "them", text: "Hi, you've reached Jeffrey, leave a message after the tone" },
+      { who: "reason", text: "Hi, this is an AI assistant calling for Omari..." },
     ],
-  }), { bytes: mp3, runtime });
+  }), { runtime });
 
-  assert.equal(out.body.state, "voicemail", "not 'completed': nobody was spoken to");
-  assert.equal(out.body.turns_written, 0);
   const row = db.getCall(C, call.id);
+  assert.equal(row.state, "voicemail", "not 'completed': nobody was spoken to");
+  assert.equal(db.loadConversation(C).length, 0);
   assert.equal(row.outcome_kind, "voicemail_left");
   assert.match(row.outcome, /one message was left/);
   assert.equal(row.recording_state, "stored");
-  // The owner is told what was left, in the row's words rather than the platform's "they answered".
+  // The owner is told what was left, in the row's words rather than "they answered".
   assert.equal(runtime.events.length, 1);
   assert.match(runtime.events[0].text, /one message was left/);
 });
@@ -253,25 +201,23 @@ test("a transcript that only came back as a string is still written as turns", (
 
 // ---------- the audio ----------
 
-test("the audio is saved as real bytes, and a body that is not audio is refused", async () => {
+test("the audio is saved as real bytes, and a file that is not audio is refused", async () => {
   const call = thirdPartyCall();
-  const out = await deliver(payload({ conversation_id: "conv_out" }), { bytes: mp3 });
+  await settle(call);
   const row = db.getCall(C, call.id);
   assert.equal(row.recording_state, "stored");
-  assert.equal(out.body.recording, "stored");
-  // Named for what the bytes ARE, not for what the provider said they would be.
+  // Named for what the bytes ARE, not for what the file said it would be.
   assert.equal(row.recording_format, "wav");
   assert.ok(row.recording_bytes > 1000);
   assert.ok(readFileSync(row.recording_file).length === row.recording_bytes);
 
-  // The failure that cost a real call: 111 bytes of JSON, 200 OK, filed as audio and reported as
-  // saved. The sniff is what makes that impossible.
+  // The failure that cost a real call: 111 bytes of JSON, filed as audio and reported as saved.
+  // The sniff is what makes that impossible.
   db.db.exec("DELETE FROM calls");
   const second = thirdPartyCall();
-  await deliver(payload({ conversation_id: "conv_out" }), {
-    bytes: Buffer.from(JSON.stringify({ code: 200, status: "success", url: "https://example/x" })),
-    contentType: "application/json",
-  });
+  const fake = join(dir, "not-audio.wav");
+  writeFileSync(fake, JSON.stringify({ code: 200, status: "success", url: "https://example/x" }));
+  await settle(second, liveOf({ recording: { path: fake, format: "wav", seconds: 9 } }));
   const bad = db.getCall(C, second.id);
   assert.equal(bad.recording_state, "missing");
   assert.match(bad.recording_why, /not audio/);
@@ -280,75 +226,57 @@ test("the audio is saved as real bytes, and a body that is not audio is refused"
   assert.equal(ledger.length, 1);
 });
 
-test("their audio-only webhook files the bytes, and refuses a body that is not audio", async () => {
-  const call = thirdPartyCall();
-  const good = await deliver({ type: "post_call_audio", data: { conversation_id: "conv_out", full_audio: mp3.toString("base64") } });
-  assert.equal(good.body.recording, "stored");
-  assert.equal(db.getCall(C, call.id).recording_format, "wav");
-
-  db.db.exec("DELETE FROM calls");
-  const second = thirdPartyCall();
-  const bad = await deliver({ type: "post_call_audio", data: { conversation_id: "conv_out", full_audio: Buffer.from("not audio at all, just words").toString("base64") } });
-  assert.equal(bad.body.ok, false);
-  assert.equal(db.getCall(C, second.id).recording_state, "missing");
-  assert.match(bad.body.error, /not audio/);
-
-  // And a delivery carrying no audio at all says so rather than claiming a file.
-  db.db.exec("DELETE FROM calls");
-  thirdPartyCall();
-  const empty = await deliver({ type: "post_call_audio", data: { conversation_id: "conv_out" } });
-  assert.equal(empty.body.ok, false);
-  assert.match(empty.body.error, /carried no audio/);
-});
-
 test("audio too small to be a call that long is refused, not filed as the recording", async () => {
-  // A truncated download and a stub both answer 200 with a valid header on the front. "A WAV
-  // arrived" is not the same as "the call's audio arrived", and the only thing that can tell is how
-  // many bytes there are for how many seconds the call ran.
+  // A truncated tape has a valid header on the front. "A WAV exists" is not the same as "the call's
+  // audio exists", and the only thing that can tell is how many bytes there are for how many seconds
+  // the call ran.
   const call = thirdPartyCall();
-  const out = await deliver(payload({ conversation_id: "conv_out", metadata: { call_duration_secs: 95 } }), { bytes: mp3 });
-  assert.equal(out.body.recording, "missing");
+  await settle(call, liveOf({ durationS: 95, recording: { path: FIXTURE_RECORDING, format: "wav", seconds: 95 } }));
   const row = db.getCall(C, call.id);
+  assert.equal(row.recording_state, "missing");
   assert.match(row.recording_why, /too small to be the recording/);
   assert.match(row.recording_why, /for a 95-second call/);
 });
 
 test("a call that was answered with no audio is a reported fault, not a shrug", async () => {
   const call = thirdPartyCall();
-  const out = await deliver(payload({ conversation_id: "conv_out", has_audio: false }));
-  assert.equal(out.body.recording, "missing");
-  assert.match(db.getCall(C, call.id).recording_why, /no audio/);
+  await settle(call, liveOf({ recording: null, recordingWhy: "the line carried less than a second of audio" }));
+  const row = db.getCall(C, call.id);
+  assert.equal(row.recording_state, "missing");
+  assert.match(row.recording_why, /less than a second of audio/);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM action_ledger WHERE action = 'call_recording'").get().n, 1);
 });
 
 // ---------- minutes, retries, and jobs ----------
 
-test("the minutes are counted once, whichever delivery arrives first and however often they retry", async () => {
+test("the minutes are counted once, however often the call is settled", async () => {
   const call = thirdPartyCall();
-  await deliver(payload({ conversation_id: "conv_out" }), { bytes: mp3 });
+  await settle(call);
   const day = new Date(clock.now()).toLocaleDateString("en-CA", { timeZone: config.tz });
   assert.equal(db.usageToday(C, day).call_seconds, 9);
 
-  // They retry. Settling twice would count the same minutes twice.
-  const again = await deliver(payload({ conversation_id: "conv_out" }), { bytes: mp3 });
-  assert.equal(again.body.already, true);
+  // The stream end and the status callback can both arrive. Settling twice would count the same
+  // minutes twice.
+  const runtime = fakeRuntime();
+  await settle(call, liveOf(), { runtime });
   assert.equal(db.usageToday(C, day).call_seconds, 9);
   assert.equal(db.getCall(C, call.id).state, "completed");
-});
-
-test("a call still going has nothing written for it", async () => {
-  const call = thirdPartyCall();
-  const out = await deliver({ type: "post_call_transcription", data: { conversation_id: "conv_out", status: "in-progress" } });
-  assert.equal(out.body.state, "in_progress");
-  assert.equal(db.getCall(C, call.id).state, "placing");
+  assert.equal(runtime.events.length, 0, "the owner is not told twice");
 });
 
 test("a call that never started is written down as that, with no audio fault", async () => {
+  // What Twilio's status callback hands the settle for a call that never connected.
   const call = thirdPartyCall();
-  const out = await deliver({ type: "call_initiation_failure", data: { conversation_id: "conv_out", reason: "the number is unreachable" } });
-  assert.equal(out.body.state, "failed");
+  await settle(call, {
+    state: "failed", outcome: "", summary: "", transcript: "", turns: [],
+    durationS: 0, costCents: 0, termination: "failed",
+    recording: null, recordingWhy: "the call never connected, so there was nothing to record",
+  });
   const row = db.getCall(C, call.id);
-  assert.match(row.outcome, /never started/);
+  assert.equal(row.state, "failed");
   assert.equal(row.recording_state, "not_applicable");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM action_ledger WHERE action = 'call_recording'").get().n, 0);
+  assert.equal(db.loadConversation(C).length, 0);
 });
 
 test("the job the call belonged to hears what the call said", async () => {
@@ -356,11 +284,17 @@ test("the job the call belonged to hears what the call said", async () => {
   const started = await runTool("task_start", { title: "book Carbone", goal: "a table for four" }, { conversationId: C, messages: [] });
   const call = thirdPartyCall({ taskId: started.task.id });
 
-  await deliver(payload({ conversation_id: "conv_out" }), { bytes: mp3 });
+  await settle(call);
   const logged = db.db.prepare("SELECT * FROM task_log WHERE task_id = ? AND kind = 'call'").all(started.task.id);
   assert.equal(logged.length, 1);
-  assert.match(logged[0].note, new RegExp(`called \\${PLACE}`));
-  assert.match(logged[0].note, /They moved it to Friday/);
+  // A GPT-Live call carries no outcome words or summary of its own, so the note is the state.
+  assert.equal(logged[0].note, `called ${PLACE}: completed`);
+
+  // An outcome the call wrote on its row is what the job hears.
+  db.updateCall(C, call.id, { outcome: "they have a table at eight on Friday" });
+  noteOnTask({ row: db.getCall(C, call.id), live: {} });
+  const again = db.db.prepare("SELECT * FROM task_log WHERE task_id = ? AND kind = 'call' ORDER BY id").all(started.task.id);
+  assert.match(again.at(-1).note, /they have a table at eight on Friday/);
 
   // A call that belonged to no job writes onto none.
   assert.equal(noteOnTask({ row: db.getCall(C, call.id), live: {} }).taskId, started.task.id);
@@ -372,9 +306,9 @@ test("the job the call belonged to hears what the call said", async () => {
 test("a third-party call becomes an event turn, with the whole transcript and the audio's real state", async () => {
   // Told as an event rather than a line this module writes, so the audio rides out attached by code
   // off the calls table and Reason reports it in its own words.
-  thirdPartyCall();
+  const call = thirdPartyCall();
   const runtime = fakeRuntime();
-  await deliver(payload({ conversation_id: "conv_out" }), { runtime, bytes: mp3 });
+  await settle(call, liveOf(), { runtime });
 
   assert.equal(runtime.events.length, 1);
   const said = runtime.events[0].text;
@@ -384,6 +318,7 @@ test("a third-party call becomes an event turn, with the whole transcript and th
   assert.match(said, /yeah, make it Friday instead of Saturday/);
   assert.match(said, /goes out attached to this message automatically/);
   assert.match(said, /If it did not get the answer it was for, say so rather than rounding it up/);
+  assert.ok(db.getCall(C, call.id).told_at);
 
   // It counts against their day, because it is Reason starting a conversation.
   const day = new Date(clock.now()).toLocaleDateString("en-CA", { timeZone: config.tz });
@@ -391,22 +326,19 @@ test("a third-party call becomes an event turn, with the whole transcript and th
 });
 
 test("a silent line is filed as nobody speaking, not as 'they answered', and the summary is ours", async () => {
-  // The 2026-10-27 call to the Strand: connected, Reason spoke three times, and every turn back was
-  // "..." — digital silence. The row said "they answered", and ElevenLabs' summary said "The AI agent
-  // called Omari", which Reason could later read back as a call to the owner.
+  // The 2026-10-27 call to the Strand: connected, Reason spoke twice, and every turn back was
+  // "..." — digital silence.
   const call = thirdPartyCall({ goal: "ask whether they have Thank God for Cats in stock" });
   const runtime = fakeRuntime();
-  await deliver(payload({
-    conversation_id: "conv_out",
-    metadata: { call_duration_secs: 9, termination_reason: "end_call tool was called" },
-    summary: "The AI agent called Omari to inquire about the stock. Despite repeated attempts, no audible response from the user.",
-    transcript: [
-      { role: "agent", message: "Hi, this is an AI assistant calling for Omari." },
-      { role: "user", message: "..." },
-      { role: "agent", message: "Are you still on the line?" },
-      { role: "user", message: "..." },
+  await settle(call, liveOf({
+    termination: "nobody said anything on the line",
+    turns: [
+      { who: "reason", text: "Hi, this is an AI assistant calling for Omari." },
+      { who: "them", text: "..." },
+      { who: "reason", text: "Are you still on the line?" },
+      { who: "them", text: "..." },
     ],
-  }), { bytes: mp3, runtime });
+  }), { runtime });
 
   const row = db.getCall(C, call.id);
   assert.equal(row.state, "completed");
@@ -421,7 +353,7 @@ test("a silent line is filed as nobody speaking, not as 'they answered', and the
   assert.match(runtime.events[0].text, /outcome: the line was silent — nobody spoke/);
   assert.doesNotMatch(runtime.events[0].text, /called Omari/);
 
-  // Settling the same call again (a poll after the webhook) keeps it silent.
+  // Settling the same call again keeps it silent.
   await settleCall(C, db.getCall(C, call.id), {
     state: "completed", outcome: "they answered", summary: "The AI agent called Omari.",
     transcript: "Reason: Hi?\nThem: ...", durationS: 9,
@@ -438,14 +370,13 @@ test("a silent line is filed as nobody speaking, not as 'they answered', and the
   assert.equal(db.getCall(C, call.id).outcome, "they answered");
 });
 
-test("a third-party call where they did speak keeps the service's notes, behind who was really called", async () => {
+test("a third-party call where they did speak is not filed as a silent line", async () => {
   const call = thirdPartyCall();
-  await deliver(payload({ conversation_id: "conv_out", summary: "The AI agent called Omari about a table." }), { bytes: mp3 });
+  await settle(call);
   const row = db.getCall(C, call.id);
   assert.notEqual(row.outcome_kind, "line_silent");
-  assert.equal(row.outcome, "they answered");
-  assert.match(row.summary, new RegExp(`^Reason called \\${PLACE} on Omari's behalf \\(Omari was not on the call\\), to: ask for a table`));
-  assert.match(row.summary, /The call service's notes: The AI agent called Omari about a table\./);
+  assert.doesNotMatch(row.outcome, /silent/);
+  assert.doesNotMatch(row.summary, /Nobody on their side spoke/);
 });
 
 test("a third-party call with no audio tells Reason to say so rather than imply a recording", () => {
@@ -457,19 +388,21 @@ test("a third-party call with no audio tells Reason to say so rather than imply 
 });
 
 test("their daily proactive limit holds for a call recap too", async () => {
-  thirdPartyCall();
+  const call = thirdPartyCall();
   const runtime = fakeRuntime({ interrupt: false });
-  await deliver(payload({ conversation_id: "conv_out" }), { runtime, bytes: mp3 });
+  await settle(call, liveOf(), { runtime });
   assert.equal(runtime.events.length, 0);
   // The call is still fully settled; only the interruption was held.
-  assert.equal(db.listCalls(C)[0].state, "completed");
-  assert.equal(db.listCalls(C)[0].recording_state, "stored");
+  const row = db.getCall(C, call.id);
+  assert.equal(row.state, "completed");
+  assert.equal(row.recording_state, "stored");
+  assert.ok(row.settled_at);
 });
 
 test("after their OWN call, silence is the expected answer", async () => {
-  ownerCall();
+  const call = ownerCall();
   const runtime = fakeRuntime({ reply: null });
-  await deliver(payload(), { runtime, bytes: mp3 });
+  await settle(call, liveOf(), { runtime });
 
   assert.equal(runtime.events.length, 1);
   const said = runtime.events[0].text;
