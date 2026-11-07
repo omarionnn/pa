@@ -187,6 +187,8 @@ const CHILD_ENV_KEEP = new Set([
   "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
   "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
   "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
+  // The login token is the one secret the child holds, and that is only safe because a tool turn has
+  // no built-in but ToolSearch (`--tools ToolSearch` in cliInvocation): never loosen one without the other.
   // The CLI's own login and endpoint (the verification probes point it at a loopback stand-in, and
   // force tool search on there, as it is against the real endpoint).
   "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "ENABLE_TOOL_SEARCH",
