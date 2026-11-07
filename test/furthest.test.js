@@ -17,6 +17,8 @@ import { startBookingSite } from "./fixture-booking.js";
 import { startSiteFixtures, COMMIT_LABELS } from "./fixture-sites.js";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-furthest-"));
+// This suite's fixtures live on 127.0.0.1; outside a test, nothing may fetch there (src/netguard.js).
+process.env.REASON_TEST_ALLOW_PRIVATE_FETCH = "1";
 process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_PROFILE_ROOT = join(dir, "profiles");
 process.env.REASON_SHOT_ROOT = join(dir, "shots");

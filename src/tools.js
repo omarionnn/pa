@@ -40,6 +40,7 @@ import * as x from "./x.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
 import * as ownfiles from "./ownfiles.js";
+import { publicUrl } from "./netguard.js";
 import * as drivePdf from "./pdf.js";
 import { webLookup } from "./weblookup.js";
 import { webSearch, searchCapability, searchStatus } from "./search.js";
@@ -18085,6 +18086,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       let url;
       try { url = new URL(input.url); } catch { return { ok: false, error: `'${input.url}' is not a URL.` }; }
       if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: `Only http and https.` };
+      // Never this machine's own network (src/netguard.js); every later request the page makes is
+      // checked by the browser's own guard (src/browser.js).
+      const pub = await publicUrl(url.href);
+      if (!pub.ok) return { ok: false, refused: true, error: `Not opened: ${pub.why}.` };
       try {
         const res = await page.goto(url.href, { waitUntil: "domcontentloaded" });
         const snap = await browser.snapshot(page, SNAPSHOT_CHARS);

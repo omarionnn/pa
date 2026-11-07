@@ -23,6 +23,7 @@
 //   audio   the same endpoint on an ordinary model, with the file as
 //           {"inline_data": {"mime_type": "audio/wav", "data": <base64>}} — inline is documented
 //           for requests under 20 MB, and a voice note is a few hundred KB.
+import { guardedFetch } from "./netguard.js";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join, extname } from "node:path";
 import { config, clock } from "./config.js";
@@ -212,7 +213,10 @@ export async function hear({
     const t = setTimeout(() => ac.abort(), timeoutMs);
     t?.unref?.();
     try {
-      const res = await fetchImpl(url, { signal: ac.signal });
+      // Every hop checked, never this machine's own network (src/netguard.js).
+      const got = await guardedFetch(url, { fetchImpl, signal: ac.signal, httpsOnly: true });
+      if (!got.ok) return { ok: false, error: `it could not be downloaded: ${got.why}` };
+      const res = got.res;
       if (!res.ok) return { ok: false, error: `the audio could not be downloaded (HTTP ${res.status})` };
       bytes = Buffer.from(await res.arrayBuffer());
     } finally { clearTimeout(t); }

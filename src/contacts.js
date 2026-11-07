@@ -9,6 +9,7 @@
 // The pattern mirrors src/voice.js: the adapter puts a placeholder line saying the card could not
 // be read, and readContactsInto() replaces it with what the card actually says — during the drain,
 // with the bubble already up. If the download fails, the placeholder stays and the model says so.
+import { guardedFetch } from "./netguard.js";
 import { checkUrl } from "./pictures.js";
 import { cannotReadContactLine } from "./channels/sendblue.js";
 import { config } from "./config.js";
@@ -127,7 +128,10 @@ export async function readContact({ url, filename = "", fetchImpl = globalThis.f
     const t = setTimeout(() => ac.abort(), timeoutMs);
     t?.unref?.();
     try {
-      const res = await fetchImpl(url, { signal: ac.signal });
+      // Every hop checked, never this machine's own network (src/netguard.js).
+      const got = await guardedFetch(url, { fetchImpl, signal: ac.signal, httpsOnly: true });
+      if (!got.ok) return { ok: false, error: `the contact card could not be downloaded: ${got.why}` };
+      const res = got.res;
       if (!res.ok) return { ok: false, error: `the contact card could not be downloaded (HTTP ${res.status})` };
       const buf = Buffer.from(await res.arrayBuffer());
       if (!buf.length) return { ok: false, error: "the contact card file was empty" };

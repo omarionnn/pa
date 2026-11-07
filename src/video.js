@@ -25,6 +25,7 @@
 //
 // Nothing here works around an age gate, a login, a paywall or a region block; those come back as
 // the reason the video could not be read.
+import { publicUrl } from "./netguard.js";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
@@ -529,6 +530,10 @@ export async function videoUnderstand(rawUrl, {
   if (!["http:", "https:"].includes(url.protocol)) {
     return { ok: false, tier: "none", error: `Only http and https. Got ${url.protocol}` };
   }
+  // Never this machine's own network (src/netguard.js). yt-dlp follows its own redirects, so this is
+  // the link as given; the downloads it makes are its own.
+  const pub = await publicUrl(url.href);
+  if (!pub.ok) return { ok: false, tier: "none", refused: true, error: `Not watched: ${pub.why}.` };
   const from = parseTime(rawFrom);
   const to = parseTime(rawTo);
   if (rawFrom && from === null) return { ok: false, tier: "none", error: `Could not read '${rawFrom}' as a time. Use M:SS, H:MM:SS, or seconds.` };
