@@ -2254,6 +2254,7 @@ export async function dialGptLive(args, { fetchImpl = null } = {}) {
   }
   return {
     ok: true, externalId: `${EXT}${out.json.sid}`, state: "placing", provider: PROVIDER, ttsModel: `${config.gptliveModel}/${config.gptliveVoice}`,
+    profile: thirdParty ? "third_party" : "owner",
     // The line opens silent and the disclosure is owed to the first person heard (#232).
     ...(thirdParty ? { openingWaits: true } : {}),
   };

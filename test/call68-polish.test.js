@@ -22,11 +22,6 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
-process.env.ELEVENLABS_API_KEY = "eleven-test-key";
-process.env.ELEVENLABS_AGENT_ID = "agent_test";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
 delete process.env.REASON_CALL_AMBIENCE;
 
 const gl = await import("../src/calls/gptlive.js");
@@ -233,7 +228,7 @@ test("the quiet line on their own call asks for the 'let me think' to be followe
   assert.match(own, /call skip_turn and wait — never write NO_REPLY/);
 });
 
-// The Reason call turn, end to end with a scripted model (ElevenLabs request shape, as in call-machines).
+// The Reason call turn, end to end with a scripted model (the OpenAI-style request shape, as in call-machines).
 const scripted = (...events) => async function* () {
   for (const e of events) {
     if (typeof e === "string") yield { type: "text", text: e };
@@ -248,12 +243,12 @@ async function drain(stream) {
 }
 const turn = async (row, generate, messages, seen = []) => drain((await voice.llmRequest({
   rawBody: JSON.stringify({ model: "reason", stream: true, messages, extra_body: { [EXTRA_BODY_KEYS.callId]: row.id, [EXTRA_BODY_KEYS.conversationId]: C } }),
-  headers: { authorization: "Bearer llm-test-secret" },
+  headers: {},
   generate: (req) => { seen.push(req); return generate(req); },
 })).stream);
 
 test("call 68: a skip on their own call is a pause in the conversation, never a hold", async () => {
-  const row = call({ provider: "elevenlabs", externalId: "conv_68" });
+  const row = call({ provider: "gptlive", externalId: "conv_68" });
   const messages = [{ role: "user", content: "what do you think" }, { role: "assistant", content: "Hmm. Lemme have a think." }];
   const seen = [];
   const r = await turn(row, scripted({ tool: "skip_turn", input: { reason: "waiting for Omari to answer the juggling vs calling question" } }), messages, seen);

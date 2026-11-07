@@ -19,11 +19,6 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_CALL_MAX_MINUTES = "10";
-process.env.ELEVENLABS_API_KEY = "eleven-test-key";
-process.env.ELEVENLABS_AGENT_ID = "agent_test";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
 process.env.REASON_UNDO_SECONDS = "0";
 
 const voice = await import("../src/calls/voice.js");
@@ -51,7 +46,7 @@ beforeEach(async () => {
 // Each test its own external id, so no call row (and no turn in flight) is shared between tests.
 let n = 0;
 const ownerCall = () => db.createCall(C, {
-  provider: "elevenlabs", toNumber: "+12025551234", isOwner: true,
+  provider: "gptlive", toNumber: "+12025551234", isOwner: true,
   goal: "Omari called Reason", facts: [], direction: "in", externalId: `conv_reask_${++n}`, state: "in_progress",
 });
 
@@ -60,7 +55,7 @@ const bodyFor = (call, messages = [{ role: "user", content: "what's on tomorrow?
   messages: [{ role: "system", content: "dashboard prompt" }, ...messages],
   extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: call.conversation_id },
 });
-const AUTH = { authorization: "Bearer llm-test-secret" };
+const AUTH = {};
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const safe = async () => ({ verdict: "safe" });
 const base = { headers: AUTH, screen: safe, firstWordDeadlineMs: 5_000, lateHoldingMs: 5_000, fillerAfterMs: 60_000 };
@@ -247,7 +242,7 @@ test("a holding line written while nobody was reading is still said to the reque
 
 test("a round that ends while nobody reads it writes nothing down: the disclosure is still owed after a barge-in", async () => {
   const row = db.createCall(C, {
-    provider: "elevenlabs", toNumber: "+12125559999", isOwner: false,
+    provider: "gptlive", toNumber: "+12125559999", isOwner: false,
     goal: "ask for a table for four at eight on Saturday", facts: ["the name is Omari"],
     announcement: announcementFor({ ownerName: "Omari" }), externalId: `conv_reask_${++n}`, state: "in_progress",
   });

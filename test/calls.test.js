@@ -420,7 +420,7 @@ test("the sweep settles lost calls without being asked, and reports what it did"
 });
 
 // ---------- the lost-call window is the platform's ceiling, not the 10-minute setting ----------
-// Since b10b6ab no per-call ceiling is sent to ElevenLabs (it refuses the override), so a call runs to
+// Since b10b6ab no per-call ceiling is sent to the voice platform (ElevenLabs refused the override), so a call runs to
 // the agent's own limit — an hour. Owner calls of 14–15 minutes have happened (calls 32, 35). Sweeping
 // at callMaxMinutes + 15 (25 minutes) wrote a live half-hour call down as lost.
 

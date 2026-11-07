@@ -14,7 +14,6 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_UNDO_SECONDS = "0";
 
@@ -37,7 +36,7 @@ beforeEach(() => {
   db.saveConversation(C, []);
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: OTHER, channel: "sendblue", address: "+13105550000", name: "Ama", isOperator: false });
-  Object.assign(config, { callIdentity: false, makerName: "Saafi Interactions Lab", callVoice: "", twilioSid: "", twilioToken: "", twilioFrom: "", openaiKey: "", gptliveInboundFallbackUrl: "" });
+  Object.assign(config, { callIdentity: false, makerName: "Saafi Interactions Lab", callVoice: "", twilioSid: "", twilioToken: "", twilioFrom: "", openaiKey: "" });
 });
 
 const on = (extra = {}) => Object.assign(config, { callVoice: "gptlive", ...TWILIO, ...extra });
@@ -50,7 +49,7 @@ const ownerCall = (over = {}) => db.createCall(over.conversationId ?? C, {
 // ---------- who gets it ----------
 
 test("unset flag: the provider is handed back untouched and nobody gets GPT-Live", () => {
-  const inner = { place: async () => ({ ok: true }), check: async () => ({}), status: () => ({ name: "elevenlabs" }) };
+  const inner = { place: async () => ({ ok: true }), check: async () => ({}), status: () => ({ name: "bland" }) };
   assert.equal(gl.withGptLive(inner), inner, "not even a wrapper in the path");
   assert.equal(gl.gptliveFor(C), false);
 });
@@ -65,9 +64,9 @@ test("the flag: gptlive is every account's own calls, owner is the operator's on
   assert.equal(gl.gptliveFor(OTHER), true);
   config.callVoice = "owner";
   assert.equal(gl.gptliveFor(C), true, "owner: the operator");
-  assert.equal(gl.gptliveFor(OTHER), false, "owner: another person's calls stay on ElevenLabs");
+  assert.equal(gl.gptliveFor(OTHER), false, "owner: another person's calls stay on the wrapped provider");
   assert.equal(gl.gptliveOn(), true);
-  config.callVoice = "elevenlabs";
+  config.callVoice = "bland";
   assert.equal(gl.gptliveFor(C), false, "any other value is off");
   assert.equal(gl.gptliveOn(), false);
 });
@@ -75,7 +74,7 @@ test("the flag: gptlive is every account's own calls, owner is the operator's on
 test("place: an operator owner call dials through Twilio with the stream as TwiML; everything else is the inner provider", async () => {
   on();
   const innerCalls = [];
-  const inner = { place: async (a) => { innerCalls.push(a); return { ok: true, externalId: "conv_x" }; }, check: async (id) => ({ ok: true, state: "x", id }), status: () => ({ name: "elevenlabs", status: "live" }) };
+  const inner = { place: async (a) => { innerCalls.push(a); return { ok: true, externalId: "conv_x" }; }, check: async (id) => ({ ok: true, state: "x", id }), status: () => ({ name: "bland", status: "live" }) };
   const posted = [];
   const fetchImpl = async (url, init) => { posted.push({ url, body: String(init.body), auth: init.headers.Authorization }); return { ok: true, status: 201, json: async () => ({ sid: "CA123" }) }; };
   const warmLive = fakeLive();
@@ -96,28 +95,69 @@ test("place: an operator owner call dials through Twilio with the stream as TwiM
   assert.equal(warmLive.of("session.start").length, 0, "no warm-up while it rings: the session opens on the stream, as on call 53");
 
   await p.place({ to: "+13105559999", kind: "third_party", conversationId: C, callId: row.id });
-  assert.equal(innerCalls.length, 1, "a business call stays on ElevenLabs");
+  assert.equal(innerCalls.length, 1, "a business call stays on the wrapped provider");
   const otherRow = ownerCall({ conversationId: OTHER });
   const theirs = await p.place({ to: "+13105550000", kind: "owner", conversationId: OTHER, callId: otherRow.id });
   assert.equal(theirs.provider, "gptlive", "another person's own call is GPT-Live, on their own row");
   assert.match(new URLSearchParams(posted[1].body).get("Twiml"), new RegExp(otherRow.webhook_token));
   config.callVoice = "owner";
   await p.place({ to: "+13105550000", kind: "owner", conversationId: OTHER, callId: otherRow.id });
-  assert.equal(innerCalls.length, 2, "on owner, another person's own call stays on ElevenLabs");
+  assert.equal(innerCalls.length, 2, "on owner, another person's own call stays on the wrapped provider");
   assert.equal(posted.length, 2);
 
-  assert.equal((await p.check("conv_x")).id, "conv_x", "an ElevenLabs id is checked by ElevenLabs");
-  assert.equal(p.status().name, "elevenlabs", "everything else is the wrapped provider's");
+  assert.equal((await p.check("conv_x")).id, "conv_x", "the wrapped provider's id is checked by it");
+  assert.equal(p.status().name, "bland", "everything else is the wrapped provider's");
 });
 
-test("place: without the Twilio keys an operator call quietly stays on ElevenLabs", async () => {
+test("place: without the Twilio keys an operator call is refused with the reason, never handed to the wrapped provider", async () => {
   on({ twilioToken: "" });
   let inner = 0;
   const p = gl.withGptLive({ place: async () => { inner++; return { ok: true }; }, check: async () => ({}), status: () => ({}) });
   const row = ownerCall();
-  await p.place({ to: "+12025551234", kind: "owner", conversationId: C, callId: row.id });
-  assert.equal(inner, 1);
+  const out = await p.place({ to: "+12025551234", kind: "owner", conversationId: C, callId: row.id });
+  assert.equal(inner, 0, "there is no second voice to hand it to");
+  assert.equal(out.ok, false);
+  assert.match(out.error, /not set up on this machine: no TWILIO_AUTH_TOKEN/);
   assert.deepEqual(gl.missingForGptlive(), ["TWILIO_AUTH_TOKEN"]);
+  // No row token either: refused, not handed on.
+  on();
+  const none = await p.place({ to: "+12025551234", kind: "owner", conversationId: C, callId: 999999 });
+  assert.equal(none.ok, false);
+  assert.equal(inner, 0);
+});
+
+test("missingForGptlive: OpenAI, the Twilio keys and number, and the public URL, named plainly", () => {
+  const url = config.publicUrl;
+  try {
+    Object.assign(config, { publicUrl: "" });
+    assert.deepEqual(gl.missingForGptlive(), ["OPENAI_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "REASON_PUBLIC_URL"]);
+    on();
+    config.publicUrl = url;
+    assert.deepEqual(gl.missingForGptlive(), []);
+  } finally { config.publicUrl = url; }
+});
+
+test("GPT-Live as the provider: chosen by name, never wrapped, and every account's calls are GPT-Live", async () => {
+  const { chooseCallProvider } = await import("../src/calls/choose.js");
+  const posted = [];
+  const fetchImpl = async (url, init) => { posted.push(String(init.body)); return { ok: true, status: 201, json: async () => ({ sid: "CA9" }) }; };
+  const p = chooseCallProvider({ provider: "gptlive", fetchImpl });
+  assert.ok(p instanceof gl.GptLiveCallProvider);
+  assert.equal(p.status().status, "not_connected", "no keys yet");
+  const was = config.callProvider;
+  try {
+    config.callProvider = "gptlive";
+    Object.assign(config, TWILIO);
+    assert.equal(gl.withGptLive(p), p, "handed back as it is");
+    assert.equal(p.status().status, "live");
+    assert.equal(gl.gptliveFor(OTHER), true, "everyone, with no REASON_CALL_VOICE");
+    assert.equal(gl.thirdPartyVoiceFor(OTHER), true);
+    const row = ownerCall({ conversationId: OTHER });
+    const out = await p.place({ to: "+13105550000", kind: "owner", conversationId: OTHER, callId: row.id });
+    assert.deepEqual([out.ok, out.provider, out.externalId], [true, "gptlive", "gptlive:CA9"]);
+    assert.ok(!out.openingWaits);
+    assert.equal(posted.length, 1);
+  } finally { config.callProvider = was; }
 });
 
 // ---------- the honesty guard's words ----------
@@ -531,7 +571,7 @@ test("after-call note: a cut-off asks what they were saying; an offered 'later' 
   const plain = ownerEvent({ row });
   assert.match(plain, /said yes to something you offered to do later .* set it up now with your tools/);
   assert.doesNotMatch(plain, /cut off/);
-  assert.doesNotMatch(ownerEvent({ row: { ...row, provider: "elevenlabs" } }), /offered to do later/, "ElevenLabs calls unchanged");
+  assert.doesNotMatch(ownerEvent({ row: { ...row, provider: "bland" } }), /offered to do later/, "another provider's calls unchanged");
   const cut = ownerEvent({ row, live: { cutOff: { words: 'Oh "actually" what' } } });
   assert.match(cut, /Something IS owed: they started saying something just as the call ended \(all that came through: "Oh 'actually' what"\)/);
   assert.match(cut, /sounded like they were saying something as you hung up, and ask what it was/);
@@ -714,7 +754,7 @@ test("a third-party call: 'I'm Reason, calling for Omari', and none of his profi
   assert.doesNotMatch(s, /2 and 5 trains|New York|peanuts/);
 });
 
-test("ElevenLabs path, isolation: user B's whole call context (system + messages) has none of user A's name or profile", () => {
+test("Reason's call turn (contextFor), isolation: user B's whole call context (system + messages) has none of user A's name or profile", () => {
   for (const flag of [false, "owner", true]) {
     on({ callIdentity: flag });
     profiles();
@@ -724,16 +764,16 @@ test("ElevenLabs path, isolation: user B's whole call context (system + messages
     assert.match(all, /peanuts/, `${flag}: her own profile`);
     assert.doesNotMatch(all, /\bOmari\b|2 and 5 trains/, `${flag}: none of user A's`);
     assert.equal(/You are Reason — Ama's own Reason/.test(ctx.system), flag === true, `${flag}: identity only when on for her`);
-    const tp = voice.contextFor({ call: db.createCall(OTHER, { provider: "elevenlabs", toNumber: "+13105559999", isOwner: false, goal: "book a table", facts: [], announcement: "", state: "in_progress" }), kind: "third_party" });
+    const tp = voice.contextFor({ call: db.createCall(OTHER, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "book a table", facts: [], announcement: "", state: "in_progress" }), kind: "third_party" });
     assert.doesNotMatch(JSON.stringify([tp.system, tp.messages]), /peanuts|\bOmari\b|2 and 5/, `${flag}: a business hears none of either`);
   }
 });
 
-test("ElevenLabs path, =owner: the operator's call carries the identity lines; unset, the frame is as it always was", () => {
+test("Reason's call turn (contextFor), =owner: the operator's call carries the identity lines; unset, the frame is as it always was", () => {
   on({ callIdentity: "owner" });
   const own = voice.contextFor({ call: db.getCall(C, ownerCall().id), kind: "owner" });
   assert.match(own.system, /You are Reason — Omari's own Reason/);
-  const tp = voice.contextFor({ call: db.createCall(C, { provider: "elevenlabs", toNumber: "+13105559999", isOwner: false, goal: "book a table", facts: [], announcement: "", state: "in_progress" }), kind: "third_party" });
+  const tp = voice.contextFor({ call: db.createCall(C, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "book a table", facts: [], announcement: "", state: "in_progress" }), kind: "third_party" });
   assert.match(tp.system, /you're Reason, an AI assistant calling for Omari/);
   assert.doesNotMatch(vp.ownerCallFrame({ name: "Ama" }), /own Reason/);
   assert.match(vp.ownerCallFrame({ name: "Ama" }), /^Ama is on the phone with you right now\. .* so do not introduce yourself, do not ask who is calling/);
@@ -821,8 +861,8 @@ test("status: a signed no-answer settles the call; an unsigned one is refused", 
   assert.equal(after.recording_state, "not_applicable");
 });
 
-test("inbound on owner: the operator's own number gets the stream; anyone else is redirected to ElevenLabs unchanged", () => {
-  on({ callVoice: "owner", gptliveInboundFallbackUrl: "https://api.us.elevenlabs.io/twilio/inbound_call" });
+test("inbound on owner: the operator's own number gets the stream; another user gets their own Reason, a stranger the pitch, nothing is redirected", () => {
+  on({ callVoice: "owner" });
   const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
   const ring = (from) => {
     const params = { CallSid: `CA_${from}`, From: from, To: "+16562167455" };
@@ -834,13 +874,39 @@ test("inbound on owner: the operator's own number gets the stream; anyone else i
   assert.equal(row.is_owner, 1);
   assert.equal(row.direction, "in");
   const theirs = ring("+13105550000");
-  assert.match(theirs.body, /<Redirect method="POST">https:\/\/api\.us\.elevenlabs\.io\/twilio\/inbound_call<\/Redirect>/);
-  const stranger = ring("+14155550199");
-  assert.match(stranger.body, /<Redirect/);
+  assert.match(theirs.body, /<Stream url="wss:\/\/reason\.example\.test\/calls\/gptlive\/stream\//);
+  const amaRow = db.db.prepare("SELECT * FROM calls WHERE provider = 'gptlive' AND conversation_id = ?").get(OTHER);
+  assert.ok(amaRow, "her own call, on her own conversation");
+  assert.equal(amaRow.is_owner, 1);
+  const before = db.db.prepare("SELECT COUNT(*) n FROM calls").get().n;
+  const stranger = ring("+14155550177");
+  assert.match(stranger.body, /<Stream url="wss:\/\/reason\.example\.test\/calls\/gptlive\/stream\/[0-9a-f]{32}"/);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls").get().n, before, "no call row for a stranger");
+  for (const out of [mine, theirs, stranger]) assert.doesNotMatch(out.body, /<Redirect|eleven/i);
+});
+
+test("inbound with GPT-Live not set up: rejected, never redirected", () => {
+  const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
+  const ring = (from) => {
+    const params = { CallSid: `CA_${from}`, From: from, To: "+16562167455" };
+    return gl.inboundTwiml({ rawBody: new URLSearchParams(params).toString(), headers: { "x-twilio-signature": gl.twilioSignature(url, params) } });
+  };
+  // Flag off: no route listened for.
+  Object.assign(config, { twilioToken: TWILIO.twilioToken });
+  assert.match(ring("+12025551234").body, /^<\?xml[^>]*\?><Response><Reject\/><\/Response>$/);
+  // Flag on, a key missing.
+  on({ openaiKey: "" });
+  for (const from of ["+12025551234", "+13105550000", "+14155550166"]) {
+    const out = ring(from);
+    assert.equal(out.status, 200);
+    assert.match(out.body, /<Reject\/>/);
+    assert.doesNotMatch(out.body, /<Redirect|<Stream/);
+  }
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls").get().n, 0, "no row for a call nobody can answer");
 });
 
 test("inbound everyone: each caller gets their own place — user, operator, blocked, paused, stranger, withheld, capped, ring-back", async () => {
-  on({ gptliveInboundFallbackUrl: "https://api.us.elevenlabs.io/twilio/inbound_call" });
+  on();
   const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
   const ring = (from, sid = `CA_${from}`) => {
     const params = { CallSid: sid, From: from, To: "+16562167455" };
@@ -883,20 +949,27 @@ test("inbound everyone: each caller gets their own place — user, operator, blo
     assert.match(capped.body, /<Say[^>]*>hey — that's \d+ calls today.*<\/Say><Hangup\/>/);
   } finally { config.maxCallsPerDay = 10; }
 
-  // owner mode: another user's call goes to ElevenLabs unchanged.
+  // owner mode: another user's call is still her own Reason on GPT-Live, never redirected.
   config.callVoice = "owner";
-  assert.match(ring("+13105550000").body, /<Redirect method="POST">https:\/\/api\.us\.elevenlabs\.io\/twilio\/inbound_call<\/Redirect>/);
+  const owned = ring("+13105550000", "CA_owner_mode");
+  assert.match(owned.body, /<Stream url="wss:\/\/reason\.example\.test\/calls\/gptlive\/stream\//);
+  assert.doesNotMatch(owned.body, /<Redirect/);
+  assert.equal(db.db.prepare("SELECT conversation_id FROM calls WHERE external_id = 'gptlive:CA_owner_mode'").get()?.conversation_id, OTHER);
   config.callVoice = "gptlive";
-  // Anything failing while it rings goes to ElevenLabs, never a dropped call.
+  // Anything failing while it rings is rejected at once (busy to the caller), never left hanging or redirected.
   const sig = (p) => ({ "x-twilio-signature": gl.twilioSignature(url, p) });
   const p2 = { CallSid: "CA_boom", From: "+13105550000", To: "+16562167455" };
   db.db.exec("ALTER TABLE blocked_numbers RENAME TO blocked_numbers_x");
   try {
-    assert.match(gl.inboundTwiml({ rawBody: new URLSearchParams(p2).toString(), headers: sig(p2) }).body, /<Redirect/);
+    const boom = gl.inboundTwiml({ rawBody: new URLSearchParams(p2).toString(), headers: sig(p2) }).body;
+    assert.match(boom, /<Reject\/>/);
+    assert.doesNotMatch(boom, /<Redirect/);
   } finally { db.db.exec("ALTER TABLE blocked_numbers_x RENAME TO blocked_numbers"); }
-  // Missing keys: everyone goes to ElevenLabs.
+  // Missing keys: rejected, not redirected.
   config.openaiKey = "";
-  assert.match(ring("+13105550000").body, /<Redirect/);
+  const away = ring("+13105550000").body;
+  assert.match(away, /<Reject\/>/);
+  assert.doesNotMatch(away, /<Redirect/);
 });
 
 test("a stranger's stream: the pitch persona, answers from the no-tools pitch turn, words kept, no row or audio", async () => {
@@ -950,12 +1023,12 @@ test("a stranger's stream: the pitch persona, answers from the no-tools pitch tu
 
 test("the call report splits its numbers by voice", async () => {
   const { buildCallReport, formatCallReport } = await import("../src/calls/report.js");
-  const a = db.createCall(C, { provider: "elevenlabs", toNumber: "+12025551234", isOwner: true, goal: "g", facts: [] });
+  const a = db.createCall(C, { provider: "bland", toNumber: "+12025551234", isOwner: true, goal: "g", facts: [] });
   const b = ownerCall();
   db.recordCallTurn({ callId: a.id, conversationId: C, msgCount: 1, startedAt: 1, firstContentMs: 1200, firstRealMs: 3000 });
   db.recordCallTurn({ callId: b.id, conversationId: C, msgCount: 1, startedAt: 1, firstContentMs: 400, firstRealMs: 2500 });
   const r = buildCallReport(db.db);
-  assert.equal(r.voices.elevenlabs.heard_p50_ms, 1200);
+  assert.equal(r.voices.bland.heard_p50_ms, 1200);
   assert.equal(r.voices.gptlive.heard_p50_ms, 400);
   assert.match(formatCallReport(r), /voice gptlive: calls 1 · turns 1/);
 });

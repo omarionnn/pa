@@ -153,7 +153,7 @@ test("call_place: a person's own phone on somebody else's call is busy — refus
   } else {
     assert.equal(out.ok, false, "refused one way or another (the confirm gate comes first)");
   }
-  call({ conversationId: OTHER, toNumber: "+12125550123", isOwner: false, state: "in_progress", provider: "elevenlabs", goal: "Ama's pharmacy errand" });
+  call({ conversationId: OTHER, toNumber: "+12125550123", isOwner: false, state: "in_progress", provider: "gptlive", goal: "Ama's pharmacy errand" });
   const shop = db.liveCallTo("+12125550123");
   assert.equal(shop.conversation_id, OTHER, "the row is there…");
 });

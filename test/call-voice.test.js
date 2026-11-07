@@ -1,8 +1,7 @@
-// Reason's own brain on the phone: the custom-LLM endpoint, with an injected generator.
+// Reason's own brain on the phone: the call turn GPT-Live hands every question to, with an injected generator.
 //
 // No model runs in here and no network is touched. What is being proven is the part that must be
-// right before anybody dials: the SSE framing ElevenLabs documents, that an unauthenticated request
-// gets nothing, that the two context builders really are two — one with the thread and the tools and
+// right before anybody dials: the SSE framing the voice relay reads, that the two context builders really are two — one with the thread and the tools and
 // one structurally unable to reach either — that a language switch leaves as a function call and
 // brings the recording disclosure with it, and that a web address is never spoken.
 //
@@ -387,7 +386,7 @@ test("end_call leaves as an OpenAI function call and ends the turn", async () =>
 test("the other side switches to Spanish: the function call goes, and the disclosure is re-spoken", async () => {
   const call = thirdPartyCall();
 
-  // Turn one: they answer in Spanish. The voice half is ElevenLabs' own tool, which it only acts on
+  // Turn one: they answer in Spanish. The voice half is the line's own tool, which it only acts on
   // if the model answers with a standard function call — so both halves have to happen together.
   const first = await llmRequest({
     rawBody: bodyFor(call, { messages: [{ role: "user", content: "¿Diga?" }] }), headers: AUTH,

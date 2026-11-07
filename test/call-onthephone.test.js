@@ -20,11 +20,6 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
-process.env.ELEVENLABS_API_KEY = "eleven-test-key";
-process.env.ELEVENLABS_AGENT_ID = "agent_test";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
 process.env.REASON_CALL_MAX_HOLD_SECONDS = "300";
 
 const voice = await import("../src/calls/voice.js");
@@ -45,7 +40,7 @@ const newNumber = () => `+1212555${String(3000 + (nth += 1)).slice(-4)}`;
 
 const callWith = (b, over = {}) => {
   const row = db.createCall(C, {
-    provider: "elevenlabs", toNumber: over.to_number ?? newNumber(), isOwner: false,
+    provider: "gptlive", toNumber: over.to_number ?? newNumber(), isOwner: false,
     goal: b?.goal ?? "ask about a deep clean", facts: b?.facts ?? [], announcement: ANN,
     externalId: `conv_${nth}`,
   });
@@ -81,7 +76,7 @@ const bodyFor = (call, messages = [{ role: "user", content: "hello" }]) => JSON.
   model: "reason", stream: true, messages,
   extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: C },
 });
-const AUTH = { authorization: "Bearer llm-test-secret" };
+const AUTH = {};
 const turn = (call, generate, messages) => llmRequest({ rawBody: bodyFor(call, messages), headers: AUTH, generate });
 
 beforeEach(() => { clock.reset(); });
@@ -109,7 +104,7 @@ test("an inquiry call is told it is asking, and a booking call is told its ceili
 });
 
 test("a call with no brief on the row gets the cautious one, not none", () => {
-  const row = db.createCall(C, { provider: "elevenlabs", toNumber: newNumber(), isOwner: false, goal: "ask a thing", facts: [], announcement: ANN });
+  const row = db.createCall(C, { provider: "gptlive", toNumber: newNumber(), isOwner: false, goal: "ask a thing", facts: [], announcement: ANN });
   const b = callBrief(db.getCall(C, row.id));
   assert.equal(b.approved.book, false, "a call whose permissions nobody can find may ask and may not agree");
   assert.equal(b.goal, "ask a thing");

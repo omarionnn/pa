@@ -22,11 +22,6 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
-process.env.ELEVENLABS_API_KEY = "eleven-test-key";
-process.env.ELEVENLABS_AGENT_ID = "agent_test";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
 
 const { writeCallIntoThread, worthExtracting } = await import("../src/calls/postcall.js");
 const db = await import("../src/db.js");
@@ -46,7 +41,7 @@ beforeEach(() => {
 function insertCall(conversationId, { state = "completed", isOwner = 1, direction = "out" } = {}) {
   const r = db.db.prepare(
     `INSERT INTO calls (conversation_id, provider, to_number, is_owner, goal, state, outcome, direction, created_at, updated_at)
-     VALUES (?, 'elevenlabs', '+15551234567', ?, 'test', ?, 'answered', ?, ?, ?)`
+     VALUES (?, 'gptlive', '+15551234567', ?, 'test', ?, 'answered', ?, ?, ?)`
   ).run(conversationId, isOwner, state, direction, clock.now(), clock.now());
   return db.db.prepare("SELECT * FROM calls WHERE id = ?").get(Number(r.lastInsertRowid));
 }
@@ -168,7 +163,7 @@ test("a call fact for one user is invisible to another", () => {
 
 // ---------- 7. re-delivered webhook does not double-write ----------
 
-test("second writeCallIntoThread for the same call doubles event_log entries (guard is in postCallRequest)", () => {
+test("second writeCallIntoThread for the same call doubles event_log entries (guard is in settleGptLive)", () => {
   const c5 = "dm:xchan-redelivery";
   db.upsertAccount({ conversationId: c5, channel: "test", address: "+15559990020", name: "Retest", isOperator: false });
   db.saveConversation(c5, []);
@@ -188,9 +183,9 @@ test("second writeCallIntoThread for the same call doubles event_log entries (gu
   ).get(c5).n;
   assert.ok(first >= 2, "first write produced entries");
 
-  // writeCallIntoThread itself appends unconditionally — the dedup guard is in postCallRequest,
+  // writeCallIntoThread itself appends unconditionally — the dedup guard is in settleGptLive,
   // which checks call state before invoking. This test documents that fact: the protection
-  // is at the webhook handler level, not the write function.
+  // is at the settle path, not the write function.
   writeCallIntoThread({ row: call, live });
   const second = db.db.prepare(
     "SELECT COUNT(*) as n FROM event_log WHERE conversation_id = ? AND channel = 'call'"

@@ -12,7 +12,6 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createHmac } from "node:crypto";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-addendum-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
@@ -22,19 +21,11 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_CALL_MAX_MINUTES = "10";
-process.env.ELEVENLABS_API_KEY = "eleven-test-key";
-process.env.ELEVENLABS_AGENT_ID = "agent_main";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
-process.env.ELEVENLABS_PHONE_NUMBER = "+12025559000";
 process.env.REASON_UNDO_SECONDS = "0";
 // Read once, at import, by src/config.js — so the settings under test here are set before it loads
 // rather than inside a test. Where a test needs the OTHER value of one of them, it passes it in:
-// `verify` and `agentIdFor` both take the setting as an argument that defaults to the config.
+// `verify` takes the setting as an argument that defaults to the config.
 process.env.REASON_CALL_PASSPHRASE = "blue heron 7";
-process.env.ELEVENLABS_OWNER_AGENT_ID = "agent_owner";
-process.env.ELEVENLABS_TTS_MODEL = "eleven_flash_v2_5";
 
 const voice = await import("../src/calls/voice.js");
 const verify = await import("../src/calls/verify.js");
@@ -45,7 +36,8 @@ const postcall = await import("../src/calls/postcall.js");
 const commit = await import("../src/calls/commit.js");
 const redial = await import("../src/calls/redial.js");
 const { VOICE_RULES } = await import("../src/calls/voice-prompt.js");
-const { EXTRA_BODY_KEYS, ElevenLabsCallProvider } = await import("../src/calls/elevenlabs.js");
+const { EXTRA_BODY_KEYS } = voice;
+const { GptLiveCallProvider, settleGptLive } = await import("../src/calls/gptlive.js");
 const { announcementFor, callRulesFor } = await import("../src/calls/provider.js");
 const { buildBrief } = await import("../src/calls/brief.js");
 const db = await import("../src/db.js");
@@ -69,12 +61,12 @@ beforeEach(async () => {
 });
 
 const ownerCall = (over = {}) => db.createCall(C, {
-  provider: "elevenlabs", toNumber: "+12025551234", isOwner: true,
+  provider: "gptlive", toNumber: "+12025551234", isOwner: true,
   goal: "Omari called Reason", facts: [], direction: "in",
   externalId: "conv_in", state: "in_progress", ...over,
 });
 const placedCall = (over = {}) => db.createCall(C, {
-  provider: "elevenlabs", toNumber: THEM, isOwner: false,
+  provider: "gptlive", toNumber: THEM, isOwner: false,
   goal: "book a table for four at eight", facts: ["the name is Omari"],
   announcement: ANN, externalId: "conv_out", state: "in_progress", ...over,
 });
@@ -120,16 +112,11 @@ const bodyFor = (call, messages = [{ role: "user", content: "hey" }]) => JSON.st
     [EXTRA_BODY_KEYS.conversationId]: call.conversation_id,
   },
 });
-const AUTH = { authorization: "Bearer llm-test-secret" };
+const AUTH = {};
 
 /** A `tell` that records instead of texting, and one that cannot send at all. */
 const recorder = () => { const sent = []; return { sent, tell: (t) => { sent.push(t); return true; } }; };
 const deaf = () => false;
-
-/** A delivery signed the way their post-call webhook signs one: `t=<unix>,v0=<hex>`. */
-const signedHeaders = (raw, { secret = "hook-test-secret", t = Math.floor(clock.now() / 1000) } = {}) => ({
-  "ElevenLabs-Signature": `t=${t},v0=${createHmac("sha256", secret).update(`${t}.${raw}`).digest("hex")}`,
-});
 
 /** The owner's thread as a turn sees it, with his texted answer last. */
 const thread = (...texts) => texts.map(t => ({ role: "user", content: t }));
@@ -243,7 +230,7 @@ test("with no passphrase set, nothing is texted during the call: the thing is pi
 });
 
 test("a call Reason placed to their own number needs no second check: the phone that answered is theirs", () => {
-  const out = db.createCall(C, { provider: "elevenlabs", toNumber: "+12025551234", isOwner: true, goal: "wake-up call", facts: [], state: "in_progress" });
+  const out = db.createCall(C, { provider: "gptlive", toNumber: "+12025551234", isOwner: true, goal: "wake-up call", facts: [], state: "in_progress" });
   assert.equal(verify.isVerified(out), true);
   assert.equal(verify.promptNote({ call: out }), "");
   // One that came IN from the number is still checked: caller ID is not proof.
@@ -374,69 +361,34 @@ test("hesitation is the owner profile's job, and it is in his prompt as a senten
   assert.ok(voice.thirdPartyContext({ call: them, callMessages: [] }).system.includes(theirs));
 });
 
-test("two profiles means two agents, and with one agent the row says so rather than claiming a tuning", () => {
-  // The honest shape of the platform's limit: turn settings are agent-level and their
-  // per-conversation override list does not reach them.
-  const one = profile.agentIdFor("owner", { ownerAgentId: "", agentId: "agent_main" });
-  assert.deepEqual(one, { agentId: "agent_main", profile: "owner", separate: false });
-  const two = profile.agentIdFor("owner", { ownerAgentId: "agent_owner", agentId: "agent_main" });
-  assert.deepEqual(two, { agentId: "agent_owner", profile: "owner", separate: true });
-  // A third-party call always goes through the main agent, even when an owner agent exists.
-  assert.deepEqual(
-    profile.agentIdFor("third_party", { ownerAgentId: "agent_owner", agentId: "agent_main" }),
-    { agentId: "agent_main", profile: "third_party", separate: false },
-  );
-});
-
-test("which speech model a call ran under is recorded, and the vendor's figures are not called ours", () => {
-  const def = profile.ttsModel({ model: "eleven_v3_conversational" });
-  assert.equal(def.known, true);
-  // The trial starts here because this is the model their expressive mode runs on.
-  assert.equal(def.expressive, true);
-  assert.equal(profile.ttsModel({ model: "eleven_flash_v2_5" }).expressive, false);
-  // Synthesis alone, from their docs — not end-to-end call latency, and the two must not be confused.
-  assert.equal(profile.TTS_MODELS.eleven_v3_conversational.synthesisMs, 280);
-  assert.equal(profile.TTS_MODELS.eleven_flash_v2_5.synthesisMs, 75);
-  // A model nobody has written down is reported as unknown rather than guessed at.
-  assert.equal(profile.ttsModel({ model: "eleven_turbo_v9" }).known, false);
-  assert.equal(profile.ttsModel({ model: "" }).known, false);
-});
-
 test("the call row carries the profile and the model, so a number measured later says what it measured", async () => {
-  process.env.ELEVENLABS_TTS_MODEL = "eleven_flash_v2_5";
+  Object.assign(config, {
+    openaiKey: "sk-test", twilioSid: "ACtest", twilioToken: "twilio-test", twilioFrom: "+12025559000", publicUrl: "https://reason.test",
+  });
   const bodies = [];
-  const p = new ElevenLabsCallProvider({
+  const p = new GptLiveCallProvider({
     fetchImpl: async (_url, opt) => {
-      bodies.push(JSON.parse(opt.body));
-      return { ok: true, json: async () => ({ conversation_id: "conv_x", callSid: "CA1" }) };
+      bodies.push(Object.fromEntries(new URLSearchParams(String(opt.body))));
+      return { ok: true, status: 201, json: async () => ({ sid: `CA${bodies.length}` }) };
     },
   });
+  const row0 = placedCall({ state: "placing", externalId: "conv_place" });
   const out = await p.place({
     to: THEM, goal: "book a table", facts: [], maxSeconds: 600, announcement: ANN, rules: RULES,
     onBehalfOf: "Omari", kind: "third_party", brief: buildBrief({ goal: "book a table" }),
+    conversationId: C, callId: row0.id,
   });
   assert.equal(out.ok, true);
-  assert.equal(out.profile, "third_party");
-  assert.equal(out.ttsModel, "eleven_flash_v2_5");
-  assert.equal(out.separateAgent, false);
-  assert.equal(bodies[0].agent_id, "agent_main");
-
-  // His own call, with a second agent configured, really goes through the other one.
-  process.env.ELEVENLABS_OWNER_AGENT_ID = "agent_owner";
-  const mine = await p.place({
-    to: "+12025551234", goal: "ring Omari", facts: [], maxSeconds: 600,
-    announcement: announcementFor({ ownerName: "Omari", toOwner: true }), rules: RULES,
-    onBehalfOf: "Omari", kind: "owner", brief: buildBrief({ goal: "ring Omari" }),
-  });
-  assert.equal(mine.profile, "owner");
-  assert.equal(mine.separateAgent, true);
-  assert.equal(bodies[1].agent_id, "agent_owner");
+  assert.equal(out.provider, "gptlive");
+  assert.equal(out.externalId, "gptlive:CA1");
+  assert.equal(out.ttsModel, `${config.gptliveModel}/${config.gptliveVoice}`);
+  assert.equal(bodies[0].To, THEM);
 
   // And the columns exist to hold it.
   const call = placedCall();
-  const row = db.updateCall(C, call.id, { profile: "third_party", tts_model: "eleven_flash_v2_5" });
+  const row = db.updateCall(C, call.id, { profile: "third_party", tts_model: out.ttsModel });
   assert.equal(row.profile, "third_party");
-  assert.equal(row.tts_model, "eleven_flash_v2_5");
+  assert.equal(row.tts_model, out.ttsModel);
 });
 
 // ======================================================================
@@ -767,22 +719,17 @@ test("the call ending writes the one result, from the row and not from anything 
 test("a call he asked for closes its request through the real post-call path", async () => {
   const call = ownerCall();
   const r = prepared(call);
-  const out = placedCall({ externalId: "conv_hook", state: "in_progress" });
+  const out = placedCall({ externalId: "gptlive:CAhook", state: "in_progress" });
   db.updateCallRequest(C, r.request_id, { state: "dialing", placed_call_id: out.id });
 
-  const body = JSON.stringify({
-    type: "post_call_transcription",
-    data: { conversation_id: "conv_hook", status: "done", transcript: [{ role: "agent", message: "thanks, see you Saturday" }] },
-  });
-  // The real provider, so the real signature check and the real parse run. Only `settle` is injected,
-  // because settling is the step that would fetch audio over the network.
-  const provider = new ElevenLabsCallProvider();
-  const res = await postcall.postCallRequest({
-    rawBody: body, headers: signedHeaders(body), provider,
+  // The real settle path every finished call takes. Only `settle` is injected, because settling is
+  // the step that would fetch audio over the network.
+  const settled = await settleGptLive({
+    row: out,
+    live: { state: "completed", outcome: "", summary: "", transcript: "Reason: thanks, see you Saturday", turns: [], durationS: 60, costCents: 0, termination: "hung up", recording: null },
     settle: async (_c, row) => db.updateCall(C, row.id, { state: "completed", outcome: "booked", summary: "table for four" }),
   });
-  assert.equal(res.status, 200);
-  assert.equal(res.body.call_request, "result");
+  assert.equal(settled.state, "completed");
   assert.equal(db.getCallRequest(C, r.request_id).state, "result");
 });
 
