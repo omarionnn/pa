@@ -465,6 +465,17 @@ test("a Linq group-chat message is acknowledged and dropped: no turn, no reply, 
     assert.equal(calls.filter(c => /chat-group-1/.test(c.url)).length, 0, "nothing is posted into the group");
     assert.notEqual(db.getThread(config.ownerConversation)?.chat_id, "chat-group-1", "the group never becomes the private route");
 
+    // The older 2025-01-01 shape carries the flag flat, at data.is_group.
+    const old = JSON.stringify({
+      api_version: "v3", webhook_version: "2025-01-01", event_type: "message.received", event_id: "evt-g2",
+      data: { chat_id: "chat-group-2", from: OWNER, is_group: true, parts: [{ type: "text", value: "and tomorrow?" }] },
+    });
+    const outOld = await router.webhook({ channel: "linq", rawBody: old, headers: signed(old, { id: "evt-g2" }) });
+    assert.equal(outOld.status, 200);
+    await new Promise(r => setTimeout(r, 50));
+    assert.deepEqual(turns, [], "no turn on the older group shape either");
+    assert.notEqual(db.getThread(config.ownerConversation)?.chat_id, "chat-group-2");
+
     // The 1:1 chat still works exactly as before.
     const direct = linqEvent({ eventId: "evt-d1", from: OWNER, text: "hi" });
     await router.webhook({ channel: "linq", rawBody: direct, headers: signed(direct, { id: "evt-d1" }) });
