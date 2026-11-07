@@ -29,7 +29,7 @@ import { statfsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as db from "./db.js";
-import { spendCheck, fallbackCheck, callCapCheck } from "./spend.js";
+import { spendCheck, fallbackCheck, callCapCheck, limitCheck, startAlerts as startSpendAlerts, capWarnings } from "./spend.js";
 import * as accounts from "./accounts.js";
 import { opsLabel as planLabel } from "./plan.js";
 import * as agentcard from "./agentcard.js";
@@ -614,6 +614,12 @@ function moneyChecks({ now, day }) {
     const cc = callCapCheck({ now });
     out.push({ ...check("api_call_cap", "money", "Phone calls on the API", cc.state, cc.detail), ...own(cc) });
   } catch (e) { out.push(check("api_call_cap", "money", "Phone calls on the API", "warn", `could not be read: ${short(e)}`)); }
+  // The provider's own workspace usage limit (2026-11-05: hit with no warning). Texted from
+  // src/spend.js the moment the refusal is seen; `quiet` here so this pass never texts it again.
+  try {
+    const lc = limitCheck();
+    out.push({ ...check("api_limit", "money", "API usage limit (provider)", lc.state, lc.detail, PROVIDERS.find(p => p.id === "anthropic").dashboard), quiet: true });
+  } catch (e) { out.push({ ...check("api_limit", "money", "API usage limit (provider)", "warn", `could not be read: ${short(e)}`), quiet: true }); }
   // The checks in front of every reply on the subscription because the key is dry or failing: one
   // text in the owner's words when it starts, one when it ends (alertText `alert` / `recovered`).
   try {
@@ -910,7 +916,13 @@ export function startOps({ runtime = null, router = null, everyMs = EVERY_MS, fi
   runtime?.on?.("error", (e) => noteError(e));
   // The day's held notices, as one message, once it is past the digest hour (src/opsdigest.js).
   const sendDigest = runtime?.say ? (text, idempotencyKey) => runtime.say(config.ownerConversation, text, { toMaster: true, idempotencyKey }) : null;
+  // The spend warnings (src/spend.js, 2026-11-07): the provider's usage-limit refusal, texted the
+  // moment it is seen, and the 80% heads-up on each cap, looked at every pass. Live, never the digest:
+  // a cap near its limit is one of the owner's emergencies.
+  const sendNow = runtime?.say ? (text, idempotencyKey) => runtime.say(config.ownerConversation, digest.scrub(text), { toMaster: true, idempotencyKey }) : null;
+  startSpendAlerts({ send: sendNow });
   const run = () => runOnce({ runtime, router, log })
+    .finally(() => { try { capWarnings({ send: sendNow, log }); } catch (e) { log({ api_warn_failed: short(e) }); } })
     .finally(() => digest.flush({ send: sendDigest, link: opsUrl(), log }).catch(e => log({ ops_digest_failed: short(e) })));
   const first = setTimeout(run, firstAfterMs);
   const interval = setInterval(run, everyMs);
