@@ -27,6 +27,11 @@ const FFMPEG = existsSync(join(homedir(), ".local/bin/ffmpeg"))
   ? join(homedir(), ".local/bin/ffmpeg") : "ffmpeg";
 
 const W = 1200, H = 630, FPS = 30;
+
+// Reason's avatar in the mock Messages header is its contact photo (assets/reason-contact.svg, the
+// bubble alone on paper since 11-06): no letter, because people save Reason under a name they pick.
+const CONTACT_SVG = readFileSync(new URL("../../assets/reason-contact.svg", import.meta.url), "utf8")
+  .replace(/ width="1024" height="1024"/, ' width="44" height="44"');
 const CHAR_MS = 38;
 const HOLD_MS = 2400;
 const FADE_MS = 400;
@@ -56,7 +61,7 @@ html,body{width:${W}px;height:${H}px;background:${ground};overflow:hidden}
 .frame{width:${W}px;height:${H}px;display:flex;align-items:center;justify-content:center}
 .pane{width:540px;background:#fff;border-radius:24px;padding:28px 32px 32px;box-shadow:0 2px 24px rgba(0,0,0,.08)}
 .top{display:flex;align-items:center;gap:12px;margin-bottom:20px}
-.avatar{width:44px;height:44px;border-radius:50%;background:${ink};color:${ground};display:flex;align-items:center;justify-content:center;font:600 20px/1 ui-sans-serif,system-ui,sans-serif}
+.avatar{width:44px;height:44px;border-radius:50%;overflow:hidden;flex:none}.avatar svg{display:block}
 .who{font:600 17px/1.2 ui-sans-serif,system-ui,sans-serif;color:${ink}}
 .sub{font:400 13px/1.2 ui-sans-serif,system-ui,sans-serif;color:${muted}}
 .thread{min-height:90px}
@@ -68,7 +73,7 @@ html,body{width:${W}px;height:${H}px;background:${ground};overflow:hidden}
 .badge{display:inline-block;font:500 11px/1 ui-sans-serif,system-ui,sans-serif;color:${muted};background:${ground};border-radius:6px;padding:3px 8px;margin-bottom:12px}
 </style></head><body>
 <div class="frame"><div class="pane">
-<div class="top"><div class="avatar">R</div><div><div class="who">Reason</div><div class="sub">iMessage</div></div></div>
+<div class="top"><div class="avatar">${CONTACT_SVG}</div><div><div class="who">Reason</div><div class="sub">iMessage</div></div></div>
 <div class="badge" id="badge"></div>
 <div class="thread">
 <div class="msg them" id="title" style="visibility:hidden"></div>

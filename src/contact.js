@@ -40,7 +40,7 @@ export function isContactPath(pathname) {
 }
 
 /** The card's REV: line. Bump it whenever the photo or the card's fields change. */
-export const CARD_REVISED = "2026-10-27T04:30:00Z";
+export const CARD_REVISED = "2026-11-06T12:00:00Z";
 
 /** How long after a failed try before the card is tried again. */
 export const RETRY_AFTER_MS = 6 * 60 * 60 * 1000;

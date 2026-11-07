@@ -61,7 +61,7 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   option, focus rings, /ops highlight) = the brand red; unstyled links take `--mark`; the
   remote sign-in field outline too. Only blue kept: the iMessage demo bubbles in
   `src/pages/preview.js`. Favicon = the site's bubble in brand red (`assets/favicon.svg`, fill #9c3b2e), apple-touch icon =
-  "r" + the red bubble (`assets/apple-touch-icon.png`); every icon link carries `?v=ICON_VERSION`
+  the contact photo, the red bubble alone (`assets/apple-touch-icon.png`, 180×180 from `assets/reason-contact.svg`; no "r" since 11-06); every icon link carries `?v=ICON_VERSION`
   (first 10 hex of a sha256 of both files, `src/pages/render.js`; `/favicon.svg?v=…` is served by
   `assetRequest`, which ignores the query), also on Spotify, remote sign-in and
   brandedPage. Pinned in `test/pages-no-blue.test.js` (source + rendered-page scan).
