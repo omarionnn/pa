@@ -127,10 +127,13 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   migration. Read-only check on live: `sqlite3 -readonly /opt/reason/data/reason.db "SELECT * FROM
   line_change_cards"`. Pinned in `test/linechange.test.js`; never driven against live — it would text
   a real person.
-- **The owner is told when a stranger turns up.** Added 2026-10-11: the `auto_admitted` branch
-  texts the master *"heads up — <who> just texted me for the first time. i don't have them on your
-  list yet."* (`#askForAccess` in `src/channels/router.js` — re-grep `heads up`). See the gotcha below — this one cannot be proved on
-  the caged instance and has no test.
+- **The owner is told when a stranger turns up — in the daily digest, not by text (7a1476d,
+  2026-11-06).** The `auto_admitted` branch of `#askForAccess` (src/channels/router.js:1006-1013)
+  no longer texts the master: it holds one line, naming nobody, for the ops digest —
+  `opsDigest.hold({ text: "A new number texted Reason for the first time and was let in (auto-admit
+  is on).", key: "new-contact:<conversationId>" })` (src/opsdigest.js `hold`, flushed once a day after
+  `REASON_OPS_DIGEST_HOUR`, default 9). Pinned in `test/access.test.js` ("auto-admit notifies the
+  master about the new number", "… never names who …") and `test/fewer-gates.test.js` (section 4).
 - **A restart does not eat a text — but only the install Sendblue delivers to may recover it.**
   Added `3c45286` (2026-10-12): once the port is open, `serve.js` calls `SendblueChannel.catchUp()`,
   which pulls the last 90 s of inbound from `GET /api/v2/messages` and feeds anything unseen through
@@ -208,7 +211,7 @@ proved offline, without a server, and that is where to assert on them:
 ```bash
 cd ~/Desktop/pa
 node --test test/channels.test.js test/sendblue.test.js test/burst.test.js test/parts.test.js test/harm.test.js
-# 40 + 59 + 20 + 14 + 51 = 184 at cc9538d (179 at f3669e8)
+# 40 + 59 + 20 + 14 + 51 = 184 at cc9538d and 8113bcf (179 at f3669e8)
 ```
 
 The catch-up on the cage is a **silence**: Sendblue is not connected there, so `catchUp()` returns
@@ -237,20 +240,12 @@ answering, and slash/case normalisation.
 - The reply is written to `outbox` only when the channel can take it. On the caged instance the
   send fails at dispatch, so an empty `outbox` after a turn is expected — the proof is in
   `conversations`, not `outbox`.
-- **The heads-up to the owner on auto-admit is unreachable on the cage — verified-unreachable, not
-  verified.** `Router.tellMaster` ends in `this.send(...)`, and `send` opens with
-  `#ready(channel)`, which returns not-connected *before* anything is attempted. So on a caged
-  instance the heads-up produces no `outbox` row, no adapter call, and **not even a `could not send`
-  line** — `#askForAccess` discards tellMaster's return value (`.catch(() => {})` on the
-  heads-up call; re-grep `heads up` in `router.js`), unlike the `ask_master` path a couple of
-  dozen lines down which does `if (!r.ok) this.log({ could_not_ask_master })`.
-  Driven 2026-10-11: the `auto_admitted` log line appears, the account row appears, the onboarding
-  reply appears, and the heads-up leaves nothing whatsoever behind. **The prerequisite is a live
-  texting channel** — which the fake Sendblue (Launch B, `REASON_VERIFY_FAKE_SENDBLUE`) now gives:
-  driven 2026-10-30 at `cc9538d`, the stranger curl above put an owner `outbox` row in state `sent`
-  and the fake captured "heads up — +12025550123 just texted me for the first time…". There is
-  still no test for it at all: `grep -rl 'tellMaster\|handleUnknown'
-  test/` is empty, so the whole access flow is unpinned.
+- **The auto-admit notice is a digest row, not a text, since 7a1476d.** Before it, the heads-up was
+  a `tellMaster` text whose result was discarded (unprovable on the cage without the fake Sendblue;
+  2026-10-30 the fake captured "heads up — +1… just texted me for the first time…"). Now nothing is
+  texted at admit time: read `opsDigest.pending()` (rows with `key` `new-contact:…`) in process, or
+  the digest the next morning. The access flow is pinned in `test/access.test.js` (it still has no
+  `tellMaster`/`handleUnknown` grep hit — it drives `Router.deliver`).
 - **Two installs with one set of Sendblue keys means somebody else answers your texts.** On
   2026-10-12 at 23:52 ET the idle Fly copy (`reason.fly.dev`, deployed by
   `.github/workflows/fly-deploy.yml` on every push to `main`) restarted, its catch-up read the

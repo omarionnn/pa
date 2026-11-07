@@ -49,7 +49,8 @@ B='{"five_pct":36,"week_pct":45,"turns_today":7}'
 sig=$(printf '%s' "$ts.$B" | openssl dgst -sha256 -hmac "$S" -hex | awk '{print $NF}')
 curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:$P/ops/usage \
   -H "x-reason-timestamp: $ts" -H "x-reason-signature: sha256=$sig" -d "$B"   # → 204
-# same again → 409; another secret → 401; ts 10 min old → 401 (each logged as usage_ingest_refused)
+# same again → 409; another secret → 401; ts 10 min old → 401; {"x":1} → 400; a 5 KB body → 413
+# (each logged as usage_ingest_refused; all six seen 2026-11-07 at 8113bcf)
 bin/peek.sh sql "SELECT source, five_pct, week_pct, turns_today FROM subscription_usage"
 ```
 

@@ -28,7 +28,7 @@ at New York midnight / on the 1st with nothing to reset.
 
 ## How to get to it (user POV)
 
-Nobody asks for it. The owner sees the /ops "API spend" row (`$X of $1.00 today · calls $Z of $2.00 ·
+Nobody asks for it. The owner sees the /ops "API spend today / 7d by feature" row (`api_spend`, src/ops.js:614) (`$X of $1.00 today · calls $Z of $2.00 ·
 $Y of $10.00 this month`) and the "Phone calls on the API" row, and gets one text the day a cap hits.
 
 ## Driving it with the harness

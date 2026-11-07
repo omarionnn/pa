@@ -21,6 +21,11 @@ Reason texts Crossmint's own amount, and `shop_pay` pays only on a yes to that e
 - `cardLink(owner)` → `GET /web/connect/<token>` 200, boot carries `apiKey`/`jwt`, CSP frames only Crossmint;
   a link minted for a non-owner conversation → the "expired" screen; a made-up token → "expired".
 - `GET /web/connect/jwks.json` → one RS256 key with the configured kid, no private parts (`d`,`p`,`q`).
+- `cardLink(c)` returns the bare 32-char token (a string, not a URL or object); the page is `/web/connect/<token>`.
+  The expired screens are HTTP 410. A throwaway key works for the cage:
+  `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out <tmp>/k.pem`.
+  Driven so 2026-11-07 (rel/verify-maint): owner 200 with `apiKey`/`jwt` and `frame-src https://www.crossmint.com
+  https://*.crossmint.com`; non-owner link and made-up token 410 "expired"; JWKS 1 key, kid as set, no private parts.
 
 ## Live (muted; owner only until 2026-10-31)
 The real proof is heyreason.com: open a fresh `cardLink(owner)` in headless Chromium and see Crossmint's
@@ -65,7 +70,7 @@ and a 30-minute `/web/connect/<token>` link only when asked or when none is save
 offer_check, shop_handoff, deal_watch_set and the shopping playbook (on both toolsFor and mcpToolsFor), the
 `buy_things` capability names store_checkout, and the purchases note calls old AgentCard rows "the old
 checkout", never to be confirmed or tracked again. Everybody else: tools and descriptions byte-identical.
-- Offline: `node --test test/crossmint-only-buys.test.js` (7).
+- Offline: `node --test test/crossmint-only-buys.test.js` (8 pass 2026-11-07).
 - Drive (cage, claude-cli, one turn, owner, card seeded in `shop_cards`, no Crossmint server key): "order me
   the CeraVe foaming cleanser 16 oz from walmart" → web_search, offer_check, **store_checkout** (fails on
   "CROSSMINT_SERVER_KEY is not set", as the cage intends), shop_handoff. No AgentCard tool in any turn.
@@ -90,7 +95,7 @@ lost / stopped) → "That sign-in didn't go through. Nothing was charged." + nex
 made-up link → 410 "This link has expired. Ask me for a new one." The sign-in and card forms show a
 "Sending to …, sealed." line while the tap is in flight; the card's saving step and the Face ID
 approve page's paying step (`payingLines`, src/pages/webapprove.js) carry the same block.
-- Offline: `node --test test/signin-progress.test.js` (9).
+- Offline: `node --test test/signin-progress.test.js` (10 pass 2026-11-07).
 - Drive (cage, muted, no Crossmint key, real Chromium): `bin/shop-connect-live-drive.mjs` under
   `caged.sh env` — 18 checks: boot/`/state` waited, the words at 95 s, clock ticks, sweep moves, pageshow
   polls at once, a new question and the run dying each redraw the open page, 410s. Shots in

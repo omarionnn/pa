@@ -5,7 +5,7 @@ five-minute ops pass — as one alert per kind of failure that updates instead o
 something outside the process says when Reason itself is down or hung. Code: `src/incidents.js`
 (raise / resolve / sweep), the hooks that call it (below), the `incident:<key>` and `watchdog` rows
 in `src/ops.js`, `GET /alive` in `src/http.js` (`ops.alive`), `scripts/watchdog.mjs`,
-`deploy/reason-watchdog.{service,timer}`. Offline: `test/incidents.test.js` (Test 17).
+`deploy/reason-watchdog.{service,timer}`. Offline: `test/incidents.test.js` (20 tests at `8113bcf`).
 
 ## Sub-features
 
@@ -16,8 +16,16 @@ in `src/ops.js`, `GET /alive` in `src/http.js` (`ops.alive`), `scripts/watchdog.
   (`src/tools.js`); a task that kept crashing / a reminder given up (`src/runtime.js`); a runtime
   error repeated 3x (`noteError`, `src/ops.js`, `threshold: 3`). A send the outbox will still retry
   is not raised.
+- **Only a service down or money texts live (7a1476d, 2026-11-06).** `deliver` in
+  src/incidents.js:80-91 texts an incident only when its `area` is in `URGENT_AREAS` —
+  `messaging`, `calls`, `purchases` (src/opsdigest.js:136); `actions`, `reminders`, `tasks` and
+  `runtime` are held as one line per episode for the once-a-day digest (`opsDigest.hold`, key
+  `incident:<key>@<first_at>`; `flush` after `REASON_OPS_DIGEST_HOUR`, default 9). The 5-minute
+  pass does the same for checks (`checkIsUrgent`, src/ops.js:792-800). Tests: `test/incidents.test.js`
+  ("a runtime error goes to the daily digest…", "a non-urgent alert's whole episode is ONE digest
+  line…"), `test/fewer-gates.test.js` section 4.
 - **One alert per failure key.** Key = kind of failure, e.g. `send:sendblue:<error_key>`. Repeats
-  bump `count` on the same `incidents` row. The owner gets the first text at once (idem key
+  bump `count` on the same `incidents` row. For an urgent area the owner gets the first text at once (idem key
   `incident:<key>@<first_at>:open`), at most one "Still failing … N times since 3:40pm" an hour,
   and one "Resolved: …". The link to `/ops?focus=incident:<key>` goes as its own bubble, so one
   alert is two outbox rows (`…:open#1`, `…:open#2`).
@@ -52,13 +60,13 @@ in `src/ops.js`, `GET /alive` in `src/http.js` (`ops.alive`), `scripts/watchdog.
 ## How to get to it (user POV)
 
 Nothing to do: when a text Reason owed somebody can't go, the owner's phone gets "Reason alert:
-texts over sendblue are failing." with who, the error, what was tried, what to check next and the
-`/ops` link. When Reason hangs or dies, the watchdog texts "running but not answering" / "not
+texts over sendblue are failing." with the error, what was tried, what to check next and the
+`/ops` link — never for whom (`openText`, src/incidents.js:207-215; scrubbed by `digest.scrub`). When Reason hangs or dies, the watchdog texts "running but not answering" / "not
 running", then "resolved".
 
 ## Driving it with the harness
 
-**Offline first:** `node --test test/incidents.test.js` (Test 17: immediate alert, one row per key,
+**Offline first:** `node --test test/incidents.test.js` (20 tests: immediate alert, one row per key,
 still/resolved, no loop, transient-then-retry never alerts, watchdog two-runs rule).
 
 **Forced send failure in the cage.** A plain cage cannot do this: with sendblue `not_connected` the

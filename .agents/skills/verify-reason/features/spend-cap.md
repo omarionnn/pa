@@ -14,7 +14,8 @@ person can change their own. Before this the cap was one number for the whole in
 - Monthly: the person's per-purchase / monthly numbers (`spend_caps`, `caps_set`) are asked only on the
   AgentCard path (`trust.checkCaps`); the Crossmint path everyone uses asks ONLY the daily cap. No
   monthly default was added — there is no monthly cap on that path to default.
-- Rules, all pinned in `test/spend-cap-1031.test.js` (11):
+- Rules, all pinned in `test/spend-cap-1031.test.js` (12; the texted yes read in code is pinned in
+  `test/consent-in-code.test.js`, 11):
   - lowering, or any number at or under the default, applies at once (`applied: true`);
   - a raise above the default is a money control: with a passkey it is a Face ID link
     (`pay_approvals.kind = 'cap'`, the challenge bound to the change's id/owner/from/to; the page

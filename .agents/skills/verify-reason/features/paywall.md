@@ -51,8 +51,13 @@ What a person sees:
 
 ```bash
 cd ~/Desktop/pa/.agents/skills/verify-reason
-REASON_DB_PATH=$(mktemp -d)/paywall.db node bin/paywall-drive.mjs    # 24 steps, "all ok"
+REASON_DB_PATH=$(mktemp -d)/paywall.db node bin/paywall-drive.mjs    # 23 "ok" lines, then "all ok"
 ```
+
+The drive prints 23 step lines (13 for Ama, 6 for Kofi, 3 for Efua, 1 for the operator; counted
+2026-11-07, unchanged since 19dbb9f) — the "24" below was a miscount. Evidence 2026-11-07
+(rel/verify-maint): 23 ok + "all ok"; `test/paywall-win.test.js` 11, `test/paywall.test.js` 23,
+`test/pricing-flag.test.js` 7, all pass; cage `GET /pay/done` → 302 `https://heyreason.com/`.
 
 Evidence 2026-11-06 (`c6ce172`): `paywall-drive.mjs` all ok; `test/paywall*.test.js` +
 `test/pricing-flag.test.js` green; `GET /pay/done` → 302 `https://heyreason.com/` on the cage and on live
@@ -73,7 +78,8 @@ asking Stripe for `cancel_at_period_end=true` and saying the date, the `/ops` ta
 
 ## Offline
 
-`test/paywall-win.test.js` (9; 8 fail on c67e5c9): what a win is, win → asked at 25, no win → runs on
+`test/paywall-win.test.js` (11 since 0410db9/a93431a, which added a store-checkout order as a win and a
+past-the-30th backlog label; 8 of the first 9 fail on c67e5c9): what a win is, win → asked at 25, no win → runs on
 (label, note, view, 26th and 27th quiet), win at 27 → asked on the next text and the 28th lapses, no win
 → asked at 30 with the softer line and the 31st lapses, a 40-session backlog asked at once, grandfather
 untouched at 30 and 31, `owner` mode follows the rule on his thread only, `plan-set.js --last-inbound

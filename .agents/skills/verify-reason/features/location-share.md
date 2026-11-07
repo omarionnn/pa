@@ -96,6 +96,10 @@ On a no-key cage (the default) no turn runs, so `bin/peek.sh thread` stays empty
 `describe` line from `bin/peek.sh sql "SELECT inbound_handle, text FROM requests ORDER BY id"` and
 the kept pin from `threads.last_location` instead (2026-10-30, `cc9538d`: all four branches as below;
 Nominatim answered only the first of four posts 5 s apart, so the rest got the bare line).
+With no model at all (2026-11-07, `rel/verify-maint`): the four payloads through `Router.webhook` →
+`SendblueChannel.receive` in process, `runTurn` stubbed, sends on a stub fetch, a throwaway
+`REASON_DB_PATH` — all four `requests.text` lines as below (geocoded every time, posts 2.5 s apart),
+the both-keys line with no app-card sentence, `db.lastSharedLocation` kept.
 
 **End state that proves it.** In `bin/peek.sh thread`, the `user` message for the location payload
 carries the parsed coordinates and the `assistant` reply places them. The run on 2026-10-10 against

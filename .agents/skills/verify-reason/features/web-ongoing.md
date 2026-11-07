@@ -119,8 +119,12 @@ From the chat: the approval card's "Review details →", or the pen "needs a yes
   + rules in the turn, lands in thread/chat, cross-account/forged refused, clean description.
 - `node .agents/skills/verify-reason/bin/web-talkdraft-preview.mjs` — detail → thread with Reason's first
   line (sample words; the live words are the model's) into reason-web-design-previews/v2.
-- `node .agents/skills/verify-reason/bin/web-ongoing-preview.mjs` — ongoing-<state>-<390|1280>-
-  <paper|night>.png + compare-ongoing-<state>.png into ~/Desktop/reason-web-design-previews.
+- `node .agents/skills/verify-reason/bin/web-ongoing-preview.mjs [outDir] [refDir]` — ongoing-<state>-<390|1280>-
+  <paper|night>.png + compare-ongoing-<state>.png into ~/Desktop/reason-web-design-previews. Pass
+  `refDir` = `"$HOME/Desktop/Project files/Reason/handoffs/reason-web-handoff-2026-10-26/reference"`: the
+  script's default `~/Desktop/reason-web-handoff-2026-10-26/reference` (bin/web-ongoing-preview.mjs:17) is
+  gone, and without it the run still prints `ok: 10 screens` but every compare's reference half is a 404
+  (bin/web-ongoing-preview.mjs:53; 2026-11-07). With it: `ok: 10 screens`, ten compares with the real sheets.
 - Live (Hetzner only, read-only): temporary owner `page_sessions` row (conversation `dm:owner`),
   `curl -b reason_page=<tok> https://heyreason.com/web?tab=ongoing` and each
   `/web/ongoing/<kind>/<id>` the owner really has, `/web/ongoing/hand` and `/web/ongoing/back` (?f=…); `/web/ongoing/state` → `{count, needs}`; another

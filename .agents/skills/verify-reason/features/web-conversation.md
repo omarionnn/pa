@@ -49,8 +49,9 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
   The top bar (wordmark, MEMORY, SETTINGS) is `position:sticky`, dashed rule once scrolled
   (`.top.stuck`); "↑ SHOW EARLIER MESSAGES" stays at the top of the thread. Row titles = `label` on
   tasks/timers/series (src/itemtitle.js): the model's `title` (timer_set) / `short_title` (task_start),
-  else ONE background summarise on the claude-cli subscription (`feature: "title"`; no API path —
-  without `REASON_BACKEND=claude-cli` nothing is asked), never the person's name (`normTitle` drops
+  else ONE background summarise through `askStructured` (`feature: "title"`, src/itemtitle.js:75-83;
+  src/backends/side.js:110 — the CLI on claude-cli, the API key on `REASON_BACKEND=api`, which live
+  runs since 2026-11-03; nothing is asked when `sideAskAllowed()` is false, e.g. no key), never the person's name (`normTitle` drops
   it); a series' title goes onto each firing. Until a row has one: `cleanTitle` strips Reason's note
   prefixes. Old rows: `scripts/backfill-item-titles.js` (dry run by default, `--write`; copy first).
   Drive: render with the preview script and follow `.og-more`, click `.og-hide`, `.og-back`; scroll → `.stuck`.
@@ -99,8 +100,10 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
 - **History API** (`GET /web/history?before=<id>` → `{messages, more, start}`; `?after=<id>` → new
   rows): the session's conversation only; an id from another conversation finds nothing.
 - **Decision 9** — a TEXT inbound whose thread `last_channel` was `web` within 12 h sets
-  `threads.web_hint_due`; the next text to them (`deliver`, not web/console, `toOwner`, not a
-  `pcode:`/`esign:`/`wsign:` key, `webAllowedFor`) takes it atomically and ends with
+  `threads.web_hint_due`; the next text to them (`deliver`, not web/console, `toOwner`, no media, not a
+  `pcode:`/`esign:`/`wsign:` key, `webAllowedFor`, and **only from their third day** — `accountDay(conv)
+  >= WEB_HINT_FROM_DAY` = 3, day 1 = the account's `created_at` date, src/deliver.js:113,119,197; since
+  `7a1476d`, 2026-11-06) takes it atomically and ends with
   `\n\nOur full conversation, the Web part included, is on Reason Web.` Once per PERSON, ever
   (owner 10-27): taking it sets `threads.web_hint_told_at`, and a told thread is never made due again.
   The column's migration marks anyone whose outbox already carries the line as told. Pinned by
@@ -131,10 +134,13 @@ branch: `out.stream(res, req)`), `src/db.js` (`historyBus` `row` events from `wr
 ```bash
 cd ~/Desktop/pa
 node --test test/web-design.test.js  # 34: the design states, cards/lists/media, /web/live CORS over real HTTP
-node --test test/web-convo.test.js   # 19: isolation (page/history/stream), forged ids, Web-only reply, same id = one turn (2 tabs), tab close, boundary once, decision 9 (x2), refusals, rate limit, safe rendering, stream (resume/typing/sign-out), paging, the page's form
+node --test test/web-convo.test.js   # 20 (2026-11-07): isolation (page/history/stream), forged ids, Web-only reply, same id = one turn (2 tabs), tab close, boundary once, decision 9 (x2), refusals, rate limit, safe rendering, stream (resume/typing/sign-out), paging, the page's form
 node --test test/web-w0.test.js test/web-signin.test.js test/domains.test.js   # W0/W1 still hold (W0's two text→web→text expectations now carry WEB_HINT)
 # over REAL HTTP on loopback, cage env, throwaway DB, real Router/Runtime/outbox/WebChannel + FakeChannel, scripted model:
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/web.db node .agents/skills/verify-reason/bin/web-convo-drive.mjs   # 18 steps
+# 2026-11-07: at 8113bcf 16 ok + both decision-9 steps FAIL (the drive made its accounts "today", so
+# accountDay was 1 and the day-3 rule held the line back — stale drive, not a product bug). The drive now
+# ages its accounts 3 days, as test/web-convo.test.js:70 does: 18 ok at 36db733.
 node .agents/skills/verify-reason/bin/web-preview.mjs   # every screen, 390/1280 × Paper/Night, + compare-*.png vs the handoff (see web-signin.md)
 ```
 

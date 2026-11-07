@@ -55,10 +55,10 @@ on), `src/tools.js` `runTool` (`ctx.turnTasks` from task_start / task_update / t
 - `node .agents/skills/verify-reason/bin/web-thread-preview.mjs [outDir] [refDir]` — seeds a throwaway
   DB shaped like ProtoS23, serves it on loopback, drives the page in Chromium (note, TODAY ↓, DONE,
   L1, L2, L10) printing ok/FAIL, and writes `thread-*-<390|1280>-<paper|night>.png` +
-  `compare-thread-<l1|l2|l10>.png` beside the reference boards. Nothing sent, no model. Pass
-  `refDir` = `"$HOME/Desktop/Project files/Reason/handoffs/reason-web-handoff-v2-2026-10-26/reason-web-handoff/reference"`:
-  the script's default (`~/Desktop/reason-web-handoff-v2-…`) no longer exists, and without it all 32 checks
-  pass and then the compare step dies `ERR_FILE_NOT_FOUND` (exit 1, 2026-10-30). With it: 32 ok, "all ok".
+  `compare-thread-<l1|l2|l10>.png` beside the reference boards. Nothing sent, no model. The script's
+  default `refDir` is now `~/Desktop/Project files/Reason/handoffs/reason-web-handoff-v2-2026-10-26/reason-web-handoff/reference`
+  (bin/web-thread-preview.mjs:17), so no `refDir` is needed: run with only `outDir` under `caged.sh env` and a
+  temp `REASON_DB_PATH` → 32 ok, "all ok", three compare PNGs (2026-11-07).
 
 ## Live proof
 

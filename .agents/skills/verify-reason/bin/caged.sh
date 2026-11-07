@@ -110,6 +110,8 @@ start)
     REASON_TOKEN_KEY="$(cat "$RUN/token-key" 2>/dev/null || (umask 077; openssl rand -hex 32 | tee "$RUN/token-key"))" \
     UBER_CLIENT_ID= \
     UBER_CLIENT_SECRET= \
+    SERPAPI_API_KEY= \
+    DUFFEL_ACCESS_TOKEN= \
     ${FAKE_SB[@]+"${FAKE_SB[@]}"} \
     ${MASTER[@]+"${MASTER[@]}"} \
     node --env-file-if-exists=.env src/serve.js --log < /dev/null > "$RUN/serve.log" 2>&1 &
@@ -185,7 +187,7 @@ env)
   [ -f "$RUN/token-key" ] && echo "REASON_TOKEN_KEY=$(cat "$RUN/token-key")"
   for v in SENDBLUE_API_KEY_ID SENDBLUE_API_SECRET_KEY SENDBLUE_FROM_NUMBER LINQ_API_KEY LINQ_WEBHOOK_SECRET \
            TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_FROM_NUMBER BLAND_API_KEY AGENTCARD_CLIENT_ID AGENTCARD_CLIENT_SECRET AGENTCARD_WEBHOOK_SECRET \
-           UBER_CLIENT_ID UBER_CLIENT_SECRET; do
+           UBER_CLIENT_ID UBER_CLIENT_SECRET SERPAPI_API_KEY DUFFEL_ACCESS_TOKEN; do
     echo "$v="
   done
   # Reason's paid API key, as the server above (#115): an in-process drive spends nothing either.

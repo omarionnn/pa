@@ -40,8 +40,9 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   (host from `webUrl()` = `REASON_SITE_URL/web`, i.e. `@heyreason.com` on live). Excluded from the
   per-message history by its key prefix.
 - **Wrong tries** — `events.tryKeyedCode` under `wsign:<conv>` (person) and `wsignb:<actor>`
-  (browser): 5 wrong per browser per 15 min — the only limit ever said ("Too many wrong codes from
-  this browser") — plus the silent 20 per person per 15 min and 40 per person per day. The actor is
+  (browser): 5 wrong per browser per 15 min — the only limit ever said (on Web: "let's pause a
+  minute." + `TRY AGAIN IN m:ss`, src/pages/websignin.js:367; "Too many wrong codes from this browser"
+  is the events page's wording, src/pages/event.js:463) — plus the silent 20 per person per 15 min and 40 per person per day. The actor is
   `eventActor`: with a valid website signature, Netlify's `x-nf-client-connection-ip` (Netlify
   overwrites a browser's own; `siteClientIp`); else Caddy's `X-Forwarded-For` only from loopback with
   `X-Files-Domain: true`; else the socket. A forged Netlify header without a valid signature counts
@@ -65,7 +66,10 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   else signed out, shown the sign-in page, not a 404).
 - **Where sign-in lands** (owner, 10-27) — the right code redirects to **`/web?home`**, and `?home` is
   always the arrival: it skips the 30-minute rule (`THREAD_RECENT_MS`) that makes plain `/web` open the
-  thread for someone mid-conversation. 5C still comes first, once; its "Got it" goes to `/web?home`
+  thread for someone mid-conversation. One exception (#327): a signed-out GET of `/web/saved…` (the
+  wordmark on Reason's pages links `/web/saved?kind=pages`) sets `reason_web_next` (`NEXT_COOKIE`,
+  Path=/web, 30 min; only a Saved path passes `safeNext`), and the right code then lands there instead
+  and clears it (src/pages/websignin.js:145-161, 523, 649-653). 5C still comes first, once; its "Got it" goes to `/web?home`
   too. `web-drive.mjs` checks the Location and a Web message 5 minutes old. **The wordmark (logo)
   always goes Home too** (#206): every Web top bar, the signed-out heads, 5C, 9B, E1/E5 and the loader
   link `/web?home`, never plain `/web` (`test/web-logo-home.test.js`).
@@ -131,7 +135,7 @@ node --test test/web-join-number.test.js # the live-line rule with the real Linq
 node --test test/no-command-phrases.test.js test/code-guards.test.js
 # in process, cage env, throwaway DB, real Runtime + Router + outbox + FakeChannel (no model):
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/web.db node .agents/skills/verify-reason/bin/web-drive.mjs
-node .agents/skills/verify-reason/bin/web-preview.mjs [outDir] [referenceDir]   # every Web screen at 390/1280 × Paper/Night + compare-<screen>.png beside the handoff's reference page; real CSP + /web/fonts (default ~/Desktop/reason-web-design-previews; pass referenceDir "$HOME/Desktop/Project files/Reason/handoffs/reason-web-handoff-2026-10-26/reference" — the script's default ~/Desktop/reason-web-handoff-2026-10-26 is gone)
+node .agents/skills/verify-reason/bin/web-preview.mjs [outDir] [referenceDir]   # every Web screen at 390/1280 × Paper/Night + compare-<screen>.png beside the handoff's reference page; real CSP + /web/fonts (default outDir ~/Desktop/reason-web-design-previews; the default referenceDir is now "$HOME/Desktop/Project files/Reason/handoffs/reason-web-handoff-2026-10-26/reference", bin/web-preview.mjs:20)
 ```
 
 Over HTTP on the cage: `REASON_WEB=on bin/caged.sh start`, then `curl -si 127.0.0.1:<port>/web` → 200,
