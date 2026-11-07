@@ -186,6 +186,10 @@ for (const backend of ["cli", "api"]) {
     assert.match(out.prompts[1], /\$4,250/);
     assert.doesNotMatch(out.prompts[1].split("The draft:")[0], /\$4,012|\$3,987|\$4,031|\$4k|\$48\.21/, "read figures and their rounding are not sent back");
     assert.equal(out.sent, "gold's at $4,012 this morning, up from $3,987 at yesterday's close. it touched $4,031 overnight and is sitting just over $4k. silver's $48.21.");
+    // Review 11-07 (10): a brief is not their turn, and the re-ask line still comes off the thread.
+    const thread = db.loadConversation(C).map(m => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)));
+    assert.ok(thread.some(t => /\$4,012/.test(t)), "the thread was kept");
+    assert.ok(!thread.some(t => /Your draft reply was NOT sent|\(code re-ask\)/.test(t)), `the rewrite instruction stays out of the thread: ${JSON.stringify(thread)}`);
   });
 
   test(`[${backend}] gate 11-05: a reply with no figure and no deal pays for nothing — one run, no history read`, async () => {
