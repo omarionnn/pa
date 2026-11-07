@@ -10,6 +10,7 @@
 //   ulta        "yes get the cerave from ulta": store_checkout runs and Crossmint refuses it.
 //   directions  "walk me from washington square park to joe's pizza on carmine st": the real tool,
 //               real geocoding (Nominatim) and routing (OSM), a real private link.
+//   chat        a plain question no tool acts on: the claim check must not run (the gate, "acting").
 //   --inject    the turn's own draft is replaced with the incident's words (10-31 "I've started the
 //               Ulta checkout…", 11-03 "I made you walking directions…" with no link), so the REAL check
 //               and the REAL rewrite are shown the exact line that went out then.
@@ -43,7 +44,7 @@ if (args.includes("--off")) process.env.REASON_CLAIM_CHECK = "0";
     console.error("refusing: set REASON_DB_PATH to a new file in a temp directory, e.g. $(mktemp -d)/nfd.db");
     process.exit(2);
   }
-  if (!["ulta", "directions"].includes(CASE)) { console.error("usage: no-false-done-drive.mjs <ulta|directions> [--inject] [--off]"); process.exit(2); }
+  if (!["ulta", "directions", "chat"].includes(CASE)) { console.error("usage: no-false-done-drive.mjs <ulta|directions|chat> [--inject] [--off]"); process.exit(2); }
   process.env.REASON_DATA_DIR ||= dirname(db) + "/data";
   process.env.CROSSMINT_JWT_PRIVATE_KEY = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" });
 }
@@ -68,7 +69,7 @@ db.upsertThread({ conversationId: CONV, channel: "fake", address: OWNER, isOwner
 // Crossmint, refusing every checkout (the 10-31 shape that matters: nothing is running).
 shop._setFetch(async () => ({ status: 500, ok: false, text: async () => JSON.stringify({ message: "Internal error starting agent checkout" }) }));
 
-const TEXT = CASE === "ulta"
+const TEXT = CASE === "chat" ? "what's a good name for a sourdough starter?" : CASE === "ulta"
   ? "yes get the cerave foaming cleanser 16oz from ulta, this one: https://www.ulta.com/p/foaming-facial-cleanser-xlsImpprod5140065?sku=2541605 — under $35, ship to home"
   : "walk me from washington square park to joe's pizza on carmine st";
 const INCIDENT = CASE === "ulta"
@@ -111,6 +112,7 @@ console.log(`Omari: ${TEXT}`);
 const inj = logs.find((l) => l.drive_injected);
 if (inj) console.log(`  [model's own first draft, replaced: ${JSON.stringify(inj.model_draft_was)}]`);
 console.log(`  [tools: ${tools.length ? tools.join(", ") : "none"}]`);
+if (!logs.some((l) => l.said_check)) console.log("  [check: did not run]");
 for (const l of logs.filter((l) => l.said_check)) console.log(`  [check: ${JSON.stringify({ unbacked: l.unbacked, acts: l.acts, changed: l.changed, reasked: l.reasked, ms: l.ms })}]`);
 for (const l of logs.filter((l) => l.said_check_failed)) console.log(`  [check failed: ${l.said_check_failed}]`);
 for (const l of logs.filter((l) => l.draft_rewritten)) console.log(`  [rewritten: ${l.why}]`);
