@@ -119,3 +119,15 @@ test("a wrong key is no key", async () => {
   for (let i = 0; i < MAX_FAILED_ATTEMPTS + 1; i++) await POST("code=000000", { key: "not-the-key" });
   assert.equal(db.failedPageAttempts("ops", opspw.WINDOW_MS), 0);
 });
+
+test("the keyed link still has a cap of its own: five wrong with the key locks the keyed password, not the keyless one", async () => {
+  for (let i = 0; i < opspw.MAX_PER_IP; i++) {
+    const out = await POST(pw("typo"), { key: ops.opsKey(), headers: { "x-forwarded-for": `7.7.7.${i}` } });
+    assert.equal(out.status, 401);
+  }
+  const locked = await POST(pw(PASSWORD), { key: ops.opsKey(), headers: { "x-forwarded-for": "7.7.8.1" } });
+  assert.equal(locked.status, 429, "forging the address does not get past the keyed count");
+  assert.equal(locked.headers["Set-Cookie"], undefined);
+  assert.equal(db.failedPageAttempts("ops:pw", opspw.WINDOW_MS), 0, "keyed guesses do not feed the shared total");
+  assert.equal((await POST(pw(PASSWORD), { headers: { "x-forwarded-for": "7.7.8.2" } })).status, 303);
+});

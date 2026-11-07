@@ -18,6 +18,8 @@ export const MAX_PER_IP = 5;
 /** Wrong passwords from everyone together in the window: past this nobody may try until it passes. */
 export const MAX_TOTAL = 30;
 const ALL = "ops:pw";
+/** Wrong passwords on the owner's keyed link: a count only a request carrying the ops key adds to. */
+const KEYED = "ops:pw:key";
 
 /** The stored hash, parsed, or null when there is none or it is malformed (then: no password). */
 export function parseHash(stored = config.opsPasswordHash) {
@@ -65,14 +67,21 @@ export function lockedOut(ip) {
  * One try. `{ ok: true }`, or `{ ok: false, reason: "wrong" | "locked" | "off", tries_left? }`.
  * The attempt is written down before the answer goes back, right or wrong.
  */
-export async function tryPassword({ password, ip }) {
+export async function tryPassword({ password, ip, keyed = false }) {
   if (!passwordEnabled()) return { ok: false, reason: "off" };
-  const locked = lockedOut(ip);
+  // `keyed`: the request carries the owner's ops key (audit lead 23). Both shared caps are keyed on
+  // things a stranger controls — the one total, a forgeable address — so a stranger's wrong guesses
+  // could lock the owner out. The keyed link has a count of its own instead, that only a request
+  // with the key can add to: five wrong in the window, as one address has.
+  const bucket = keyed ? KEYED : `${ALL}:${ip}`;
+  const locked = keyed
+    ? (db.failedPageAttempts(KEYED, WINDOW_MS) >= MAX_PER_IP ? { retry_after_s: Math.ceil(WINDOW_MS / 1000) } : null)
+    : lockedOut(ip);
   if (locked) return { ok: false, reason: "locked", ...locked };
   const right = await passwordMatches(password);
-  db.recordPageAttempt(`${ALL}:${ip}`, right);
+  db.recordPageAttempt(bucket, right);
   if (right) return { ok: true };
-  db.recordPageAttempt(ALL, false);
-  const used = db.failedPageAttempts(`${ALL}:${ip}`, WINDOW_MS);
+  if (!keyed) db.recordPageAttempt(ALL, false);
+  const used = db.failedPageAttempts(bucket, WINDOW_MS);
   return { ok: false, reason: "wrong", tries_left: Math.max(0, MAX_PER_IP - used) };
 }

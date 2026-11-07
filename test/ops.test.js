@@ -346,11 +346,11 @@ test("the right code opens the page, sets a cookie for the whole site, and that 
   await POST("send=1", {}, ops.opsKey());
   const code = /code is ([0-9]{6}),/.exec(sent[0].text)[1];
 
-  const wrong = await POST("code=ZZZZZZ");
+  const wrong = await POST("code=ZZZZZZ", {}, ops.opsKey());
   assert.equal(wrong.status, 401);
   assert.match(wrong.body, /not right/);
 
-  const opened = await POST(`code=${code}`);
+  const opened = await POST(`code=${code}`, {}, ops.opsKey());
   assert.equal(opened.status, 303, "signed in, then back to the page as a GET");
   assert.equal(opened.headers.Location, "/ops");
   assert.match(opened.headers["Set-Cookie"], /^reason_page=[A-Za-z0-9_-]+; Path=\/; /);
