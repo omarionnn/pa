@@ -159,7 +159,7 @@ test("'actually friday' changes the detail and the yes does not carry over", asy
   });
   assert.equal(thursdayOnNewYes.ok, false);
   assert.equal(thursdayOnNewYes.blocked, "wrong_target");
-  assert.match(thursdayOnNewYes.error, /exact details Omari was shown/i);
+  assert.match(thursdayOnNewYes.error, /exact details they were shown/i);
 });
 
 test("'wrong person' — the old number is never reached, on the old yes or the new one", async () => {
@@ -182,7 +182,7 @@ test("'wrong person' — the old number is never reached, on the old yes or the 
   }, { channels: router });
   assert.equal(rerouted.ok, false);
   assert.equal(rerouted.blocked, "wrong_target");
-  assert.match(rerouted.error, /one person Omari was shown/i);
+  assert.match(rerouted.error, /one person they were shown/i);
   assert.deepEqual(router.sends, [], "nothing left the machine");
 
   // ...and once it has a yes for the right person, the WRONG one is still unreachable.

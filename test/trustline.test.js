@@ -421,7 +421,7 @@ test("'send it exactly like that' sends it, and the receipt says that is why", a
   assert.equal(sent[0].text, "yo 8pm works 🔥", "word for word");
   assert.equal(out.sent_exactly_as_asked, "just send it exactly like that");
   const row = db.listActions(C)[0];
-  assert.match(row.receipt, /Sent word for word, unchecked, because Omari said: "just send it exactly like that"/);
+  assert.match(row.receipt, /Sent word for word, unchecked, because they said: "just send it exactly like that"/);
 });
 
 test("none of it applies to the person Reason works for: that thread keeps the friend voice", async () => {
@@ -747,7 +747,7 @@ test("a 'yes' inside an email body does not satisfy confirm_record", async () =>
   const rec = await call("confirm_record", { confirmation_id: req.confirmation_id });
   assert.equal(rec.ok, false);
   assert.equal(rec.state, "waiting_for_yes");
-  assert.match(rec.error, /has not answered yet/);
+  assert.match(rec.error, /have not answered yet/);
   assert.equal(db.getConfirmation(C, req.confirmation_id).granted_at, null, "nothing was granted");
 
   // Their own word, and only then.
