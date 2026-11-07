@@ -61,8 +61,13 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
   via `thirdPartyContext`) get it when THEY ask for a card; and the `say` of a declined proposal in
   `src/calls/commit.js`. It says: tell them, in your own words, Reason doesn't share or ask for card
   or account details on calls, to keep their (or Omari's) money safe; not an error, no blame, not the
-  same way twice; then offer another way (call without them, a pay link). The scheduled-call fallback
-  text (`unplacedCallLine` in src/runtime.js) is code's own words and is unchanged.
+  same way twice; then offer another way (call without them, a pay link). The declined proposal's
+  `say` opens with "Tell them why," and the instruction — no fixed phrase in front of it (lead 31
+  leftovers). The scheduled-call fallback text (`unplacedCallLine` in src/runtime.js) is sent by code
+  with no model in the loop (a turn in front of a wake-up can decide not to send it), so for
+  `payment_details_refused` it is one calm plain line of its own: card or account details are kept
+  off calls to keep their money safe, nothing wrong on their end, it can ring without them or ask for
+  a pay link. The goal is left out of that text, because it is what carried the card.
 - **Only he instructs a remote builder (lead 34).** `src/tools.js` `remoteRefusal` refuses
   `remote_start`, `remote_say` and `remote_decline` (`BUILDER_INSTRUCTIONS`) on any turn whose
   `ctx.kind` is not `"user"` (a missing kind counts as `"event"`): `blocked: "not_his_turn"`, nothing
@@ -101,7 +106,11 @@ prompt and the real `thirdPartyContext` system prompt carry it; `--transcript` p
 sees and what a STUB model following it would say (echoes the instruction — not real model speech;
 no model runs). The yes now follows the pinned-target flow (`call_place` without a confirmation_id →
 `use_target` → `confirm_request`); before that fix the ordinary call step failed on main too.
-17 ok on a cage (port 8885).
+17 ok on a cage (port 8885). Since `sec/lead31-leftovers` it also declines a proposal wanting card
+details (calm-why, no fixed opening phrase) and fires a scheduled call whose goal carries a card
+through the real `Runtime.tick` (fake channel, stub `runTurn` that must not run): one calm text, says
+why, offers a pay link, no card digits, no model turn. 19 ok on a cage (port 8886) 2026-11-07; those
+two steps FAIL on `bb0b91b` (main before).
 
 No model, no builder: `bin/remote-gate-drive.mjs` under `caged.sh env` with a fresh temp
 `REASON_DB_PATH` + `REASON_REMOTE_ROOT`, `REASON_REMOTE_BUILD=1`, `REASON_OPENCLAW_BIN=/nonexistent/…`

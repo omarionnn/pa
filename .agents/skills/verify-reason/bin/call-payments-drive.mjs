@@ -122,6 +122,39 @@ const turn = row ? thirdPartyContext({ call: row, callMessages: [{ role: "user",
 step("Reason's real third-party call-turn context carries it", calm(ruleOf(turn?.system)), row ? `call ${row.id}, ${turn.system.length} chars` : "no call row");
 step("no reasonTools on that turn (unchanged isolation)", Array.isArray(turn?.reasonTools) && turn.reasonTools.length === 0);
 
+// A booking proposed on the call that wants card details: declined with the same instruction, and no
+// fixed opening phrase in front of it (lead 31 leftovers).
+const commit = await imp("src/calls/commit.js");
+const brief = await imp("src/calls/brief.js");
+const declined = row ? commit.propose({ call: row, brief: brief.buildBrief({ goal: "book it", approved: { book: true, maxCents: 50000 }, readBack: ["date"] }),
+  what: "the booking", totalCents: 1000, terms: ["they need the card number to hold it"], tell: () => true }) : null;
+step("a proposal wanting card details is declined with the calm-why instruction, no fixed opening phrase",
+  declined?.reason === "payment_details" && calm(declined.say) && !/Tell them you cannot take or give/.test(declined.say));
+
+// A call Reason booked for a set time, refused at ring time: the one text the person gets (code-sent,
+// no model in the loop) is calm, says why, offers what it can do instead, and never texts the card back.
+const { Router } = await imp("src/channels/router.js");
+const { Runtime } = await imp("src/runtime.js");
+const { FakeChannel } = await imp("src/channels/fake.js");
+const { ConsoleChannel } = await imp("src/channels/console.js");
+const { makeDeliver } = await imp("src/deliver.js");
+const { clock } = await imp("src/config.js");
+const router = new Router({ log: () => {} });
+const consoleChannel = new ConsoleChannel({ write: () => {} });
+const turns = [];
+const runtime = new Runtime({ log: () => {}, runTurn: async (a) => { turns.push(a); return "NO_REPLY"; }, channels: router, calls, deliver: makeDeliver({ router, consoleChannel, log: () => {}, warn: () => {} }) });
+router.runtime = runtime;
+router.register(consoleChannel);
+const fakeText = router.register(new FakeChannel({ number: "+15122164639" }));
+const placedBefore = calls.placed.length;
+db.createTimer(CONV, { fireAt: clock.now() - 1000, note: "wake-up call", callGoal: `read them card ${CARD}` });
+await runtime.tick();
+const fallback = fakeText.sent.at(-1)?.text ?? "";
+step("scheduled call refused for a card: one calm text, says why, offers instead, no card, no model turn",
+  fakeText.sent.length === 1 && calls.placed.length === placedBefore && turns.length === 0
+  && /card or account details/i.test(fallback) && /money safe/i.test(fallback) && /pay link/i.test(fallback)
+  && !/4242/.test(fallback) && !/i don't say payment details/.test(fallback), fallback.slice(0, 60));
+
 if (TRANSCRIPT) {
   const ruleLine = ruleOf(turn?.system);
   console.log("\n--- transcript (STUB model: echoes the instruction; not real model speech) ---");
@@ -132,6 +165,9 @@ if (TRANSCRIPT) {
   console.log(`[business, on the call] ${asked}`);
   console.log(`[call-turn prompt rule] ${ruleLine}`);
   console.log(`[stub Reason → business] ${stubSays(ruleLine)}`);
+  console.log("");
+  console.log(`[declined proposal → model sees] ${declined?.say ?? ""}`);
+  console.log(`[scheduled call refused → text to owner, code-sent] ${fallback}`);
 }
 
 console.log(failed ? `${failed} FAIL` : "all ok");
