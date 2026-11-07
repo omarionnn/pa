@@ -195,13 +195,16 @@ const oneLine = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
  * "<number>: <what reaches them>" for a text, a voice note or a call. For a call that is the goal and
  * the facts it may give out (read as one run of words, so src/tools.js fitCallBrief moving a long goal
  * into facts does not change it), plus anything it may agree to or hand over: may_book and its
- * ceiling, the approved terms, the requirements. ask/read_back/max_minutes only shape how it asks.
+ * ceiling, the approved terms, the requirements, and the questions it asks out loud (ask).
+ * read_back (fixed choices) and max_minutes only shape how it asks.
  */
 export function personPin(name, input = {}) {
   const who = normalizeNumber(input.to) || String(input.to ?? "").trim();
   if (name === "message_send") return `${who}: ${oneLine(input.text)}`;
   if (name === "voice_note_send") return `${who}: voice note ${oneLine(input.file)}${oneLine(input.text) ? ` with "${oneLine(input.text)}"` : ""}`;
   const parts = [oneLine([input.goal, ...(Array.isArray(input.facts) ? input.facts : [])].join(" "))];
+  const asks = Array.isArray(input.ask) ? input.ask.map(oneLine).filter(Boolean) : [];
+  if (asks.length) parts.push(`asks: ${asks.join("; ")}`);
   if (input.may_book === true) parts.push("may book");
   if (input.max_price_cents != null) parts.push(`up to ${money(Number(input.max_price_cents))}`);
   if (Array.isArray(input.approved_terms) && input.approved_terms.length) parts.push(`terms: ${input.approved_terms.map(oneLine).join("; ")}`);

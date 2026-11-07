@@ -64,7 +64,7 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   another, and a yes for an 8:00 booking cannot be carried to a 9:00 one.
 - **A text, voice note or call is pinned to the person AND what reaches them** (audit lead 26,
   sec/lead26, 2026-11-07). `trust.personPin` builds `"<number>: <words>"` for `message_send`, `"<number>:
-  voice note <file> with "<text>""` for `voice_note_send`, and `"<number>: <goal + facts> | may book |
+  voice note <file> with "<text>""` for `voice_note_send`, and `"<number>: <goal + facts> | asks: <questions, the errand's when no ask> | may book |
   up to $X | terms: … | gives: …"` for `call_place` (goal and facts read as one run of words, so
   `fitCallBrief` moving a long goal into facts does not change it). Flow: call the tool with no
   `confirmation_id` → `needs_confirmation` + `use_target` → `confirm_request` with that `target` →
@@ -77,10 +77,10 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   the target was the number alone, so a yes to "running late" could carry any words to that number.
   `account_connect` is pinned the same way to `connect <name> (<scopes>)`, and its ask must carry a
   target, so a yes to one provider cannot connect another.
-  Drive: `node --test test/person-pin.test.js` (6; all fail on main ae913c7), then Drive 2 on the cage:
+  Drive: `node --test test/person-pin.test.js` (7; all fail on main ae913c7), then Drive 2 on the cage:
   `bin/person-pin-drive.mjs` under `caged.sh env` with `REASON_UNDO_SECONDS=0` (`runTool` with a
   `FakeChannel` router and `FakeCallProvider` in ctx, stub judge):
-  probe → `use_target`, bare-number ask → `target_needs_the_words`, other words / `may_book` added →
+  probe → `use_target`, bare-number ask → `target_needs_the_words`, other words / other `ask` questions / `may_book` added →
   `wrong_target` with nothing sent or placed, the agreed text / brief → sent 1 / placed 1 (2026-11-07).
 - **A yes is spent once.** `consumed_at`.
 - **One reply is a yes to one ask (audit lead 27, 2026-11-07).** Two asks opened in the same turn

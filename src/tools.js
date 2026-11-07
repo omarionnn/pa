@@ -8974,8 +8974,14 @@ function confirmTargetFor(name, input, c = null) {
   switch (name) {
     // The person AND what reaches them (audit lead 26): a yes to "running late" is not a yes to any
     // words to that number, and a yes to a call that asks is not a yes to one that books or says more.
-    case "message_send": case "voice_note_send": case "call_place":
+    case "message_send": case "voice_note_send":
       return trust.personPin(name, input);
+    // The questions said out loud are words that reach them too: an errand leg with no `ask` of its
+    // own asks the errand's, so those are what the yes covers.
+    case "call_place": {
+      const errand = !Array.isArray(input.ask) && input.errand_id && c ? db.getErrand(c, input.errand_id) : null;
+      return trust.personPin(name, errand ? { ...input, ask: errand.questions } : input);
+    }
     // Both halves, because a yes to sending somebody the deck must not be spendable on sending them
     // a different document. The id is in it rather than the title: two documents can share a title,
     // and the thing that leaves is the file.

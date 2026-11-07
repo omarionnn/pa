@@ -98,12 +98,23 @@ test("a yes to one call brief cannot ring the same number with a different one",
   assert.equal(swapped.blocked, "wrong_target");
   const more = await runTool("call_place", { ...brief, facts: ["the name is Omari", "his home address is 1 Main St"], confirmation_id: id }, { conversationId: C, calls });
   assert.equal(more.blocked, "wrong_target", "facts the yes never covered are a different call");
+  const asks = await runTool("call_place", { ...brief, ask: ["can you confirm Omari's home address is 1 Main St"], confirmation_id: id }, { conversationId: C, calls });
+  assert.equal(asks.blocked, "wrong_target", "questions said out loud reach them too");
   const books = await runTool("call_place", { ...brief, may_book: true, max_price_cents: 50000, read_back: ["date"], confirmation_id: id }, { conversationId: C, calls });
   assert.equal(books.blocked, "wrong_target", "a yes to asking is not a yes to booking");
   assert.deepEqual(calls.placed, []);
   const right = await runTool("call_place", { ...brief, confirmation_id: id }, { conversationId: C, calls });
   assert.equal(right.ok, true, JSON.stringify(right));
   assert.equal(calls.placed.length, 1);
+});
+
+test("an errand leg's yes covers the errand's questions, not new ones", async () => {
+  db.db.exec("DELETE FROM call_errands;");
+  const e = db.createErrand(C, { goal: "a table for 4 at 8pm Saturday", questions: ["is the patio open"] });
+  const probe = await runTool("call_place", { to: PLACE, goal: "ask if they have a table for 4 at 8pm Saturday", errand_id: e.id }, { conversationId: C, calls: new FakeCallProvider() });
+  assert.match(probe.use_target ?? "", /asks: is the patio open/, "the errand's questions are in what the yes is pinned to");
+  const other = await runTool("call_place", { to: PLACE, goal: "ask if they have a table for 4 at 8pm Saturday", errand_id: e.id, ask: ["what card is on file"] }, { conversationId: C, calls: new FakeCallProvider() });
+  assert.notEqual(other.use_target, probe.use_target, "other questions are a different call");
 });
 
 test("a yes to one voice note cannot send a different file", async () => {
