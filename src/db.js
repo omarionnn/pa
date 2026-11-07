@@ -2755,7 +2755,7 @@ export function forgetPerson(conversationId, about) {
   // With nobody saved under it, the subject alone decides what recall loses — and a vague one ("that",
   // "it", "work", "money") would hide every exchange that says the word, for good (review 11-07). Only
   // a real name or topic clears recall then.
-  if (!rows.length && !specificSubject(key)) return { ok: false, error: `'${about}' is too general to forget on its own — nothing was cleared. Ask which person or thing they mean.` };
+  if (!rows.length && !specificSubject(key)) return { ok: false, error: `Nothing is on record about '${about}', and it is too general to clear from recall on its own — nothing was cleared. Ask which person or thing they mean.` };
   const recall = forgetFromRecall(conversationId, [about, ...rows.map(p => p.name)]);
   const recalled = recall.calls + recall.exchanges + recall.actions + recall.reminders;
   if (!rows.length) {
