@@ -47,6 +47,9 @@ process.env.REASON_UNDO_SECONDS = "0";
 
 const { startAirlineSite } = await import("./fixture-airline.js");
 const { runTool, capabilitiesNow, clickCommits, tools } = await import("../src/tools.js");
+const { grantsViaYes } = await import("./fixture-grant.js");
+// Saving a permission waits for their yes now (src/tools.js permission_grant): granted through the real flow.
+const viaYes = grantsViaYes(runTool);
 const db = await import("../src/db.js");
 const flights = await import("../src/flights.js");
 const airlines = await import("../src/airlines.js");
@@ -69,7 +72,7 @@ const readsYes = async () => ({ verdict: "yes" });
 const owner = (text) => ({ role: "user", content: `[Tue, Oct 6, 2026, 9:00 AM] Omari: ${text}` });
 
 const call = (name, input, { conversationId = C, messages = [], ...extra } = {}) =>
-  runTool(name, input, { conversationId, messages, judge: readsYes, airlines: reg, ...extra });
+  viaYes(name, input, { conversationId, messages, judge: readsYes, airlines: reg, ...extra });
 
 const ref = (snap, pred) => (snap.elements ?? []).find(pred)?.ref;
 

@@ -35,6 +35,9 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_UNDO_SECONDS = "0";
 
 const { runTool, ALWAYS_NEEDS_CONFIRMATION, tools, capabilitiesNow } = await import("../src/tools.js");
+const { grantsViaYes } = await import("./fixture-grant.js");
+// Saving a permission waits for their yes now (src/tools.js permission_grant): granted through the real flow.
+const viaYes = grantsViaYes(runTool);
 const permissions = await import("../src/permissions.js");
 const trust = await import("../src/trust.js");
 const represent = await import("../src/represent.js");
@@ -66,7 +69,7 @@ let router;
 // is taken to have just typed the sentence the tool is given, which is what these tests are about.
 const saidIt = (name, input, messages) => (name === "permission_grant" || name === "caps_set") && input?.text
   ? [...messages, { role: "user", content: `[Wed, Sep 30, 2026, 2:59 PM] Omari: ${input.text}` }] : messages;
-const call = (name, input, extra = {}) => runTool(name, input, {
+const call = (name, input, extra = {}) => viaYes(name, input, {
   conversationId: C, messages: saidIt(name, input, messages), judge: readsYes, channels: router, ...extra,
 });
 

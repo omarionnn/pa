@@ -23,3 +23,7 @@ export async function grantWithYes(runTool, input, ctx, { yes = "yes, save that"
   if (rec?.state !== "granted") return rec;
   return runTool("permission_grant", { ...input, confirmation_id: req.confirmation_id }, here);
 }
+
+/** runTool, with every first permission_grant (no confirmation_id yet) taken through grantWithYes. */
+export const grantsViaYes = (runTool, opts) => (name, input, ctx) =>
+  name === "permission_grant" && input?.confirmation_id == null ? grantWithYes(runTool, input, ctx, opts) : runTool(name, input, ctx);
