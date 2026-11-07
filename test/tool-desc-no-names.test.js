@@ -29,3 +29,18 @@ test("the standing prompt and alert rules name nobody", () => {
   assert.doesNotMatch(systemFor({ name: "Pat", isOperator: false }), NAMES);
   assert.doesNotMatch(ALERT_RULES, NAMES);
 });
+
+// Side prompts (daily greeting, fact extraction, chat naming, memory recall, the call voice) are
+// built from string literals; any line of code (comments aside) naming a person is an example the
+// model reads.
+test("side prompts name nobody", async () => {
+  const { readFileSync } = await import("node:fs");
+  const hits = [];
+  for (const f of ["daily.js", "extract.js", "webchats.js", "memory.js", "calls/voice-prompt.js", "agent.js", "alerts.js"]) {
+    readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8").split("\n").forEach((line, i) => {
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
+      if (NAMES.test(line.replace(/\/\/.*$/, ""))) hits.push(`${f}:${i + 1}`);
+    });
+  }
+  assert.deepEqual(hits, []);
+});

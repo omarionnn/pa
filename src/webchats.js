@@ -26,7 +26,7 @@ export function fallbackTitle(first) {
 
 const SYSTEM = `You name one chat in a person's chat list. You are given how the chat opened: their first message and the assistant's first reply.
 Reply with a title for the person to read in their own list: 2 to 5 words, plain, the thing itself, the way they would name it.
-Examples: "Saturday plans", "Lease questions", "Gift for Ama", "Flights to Accra".
+Examples: "Saturday plans", "Lease questions", "Gift for my sister", "Flights to Accra".
 Never use their name. No quotes, no dates, no punctuation at the end.`;
 const SCHEMA = { type: "object", properties: { title: { type: "string" } }, required: ["title"], additionalProperties: false };
 
