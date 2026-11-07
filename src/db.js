@@ -6153,8 +6153,15 @@ export function usePageCode(id) {
   db.prepare("UPDATE page_codes SET used_at = ? WHERE id = ?").run(clock.now(), id);
 }
 
+/** Returns the row's id, for forgetPageAttempts. */
 export function recordPageAttempt(pageId_, ok) {
-  db.prepare("INSERT INTO page_attempts (page_id, at, ok) VALUES (?, ?, ?)").run(pageId_, clock.now(), ok ? 1 : 0);
+  return Number(db.prepare("INSERT INTO page_attempts (page_id, at, ok) VALUES (?, ?, ?)").run(pageId_, clock.now(), ok ? 1 : 0).lastInsertRowid);
+}
+
+/** Take back attempts written down ahead of the answer (src/opspassword.js, when it was right). */
+export function forgetPageAttempts(ids) {
+  const del = db.prepare("DELETE FROM page_attempts WHERE rowid = ?");
+  for (const id of ids) del.run(id);
 }
 
 /** How many wrong codes this page has had in the window. The rate limit reads this, not memory. */

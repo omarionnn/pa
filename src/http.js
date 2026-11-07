@@ -1739,6 +1739,13 @@ function gateFor(access, page, { real, status = 401, sent = false, error = "" })
  * Pulled out of the server for the same reason pageRequest is: the whole dance is drivable in a
  * test without a socket.
  */
+/** `headers` without the website's signature. */
+const unsigned = (headers) => {
+  if (!headers || !("x-nf-sign" in headers)) return headers;
+  const { "x-nf-sign": _sig, ...rest } = headers;
+  return rest;
+};
+
 export async function opsRequest({ json = false, key = null, focus = null, via = null, method, headers, remoteAddress = "", readBody, runtime, router = null, log = () => {} }) {
   const page = { ...ops.PAGE, conversation_id: config.ownerConversation };
   const cookie = readCookie(headers?.cookie);
@@ -1769,9 +1776,11 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
   const signIn = (token) => ({
     // 303 back to the page: a refresh afterwards is a GET, not the password posted again. Path "/"
     // rather than the pages' "/p/": this cookie has to come back on /ops, and a session is valid
-    // for every page of the owner's anyway.
+    // for every page of the owner's anyway. Host-only, as it has always been here: the website's
+    // signature (which /ops may carry for its sign-in limits, audit lead 23) is not taken as asking
+    // for the shared heyreason.com cookie.
     status: 303,
-    headers: { ...HTML(), Location: focusId ? `/ops?focus=${encodeURIComponent(focusId)}` : "/ops", "Set-Cookie": cookieHeader(token, { path: "/", headers }) },
+    headers: { ...HTML(), Location: focusId ? `/ops?focus=${encodeURIComponent(focusId)}` : "/ops", "Set-Cookie": cookieHeader(token, { path: "/", headers: unsigned(headers) }) },
     body: "",
   });
 
@@ -1837,9 +1846,10 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
     // ---- the password ----
     if (form.has("password") && opspw.passwordEnabled()) {
       const ip = opspw.clientIp(headers ?? {}, remoteAddress);
-      // The keyed link is counted apart from everyone else, so a stranger's wrong guesses cannot
-      // lock the owner out of it (audit lead 23).
-      const tried = await opspw.tryPassword({ password: form.get("password"), ip, keyed: via_key });
+      // The keyed link, and an address the website signed for, are each counted apart from
+      // everyone else, so a stranger's wrong guesses cannot lock the owner out (audit lead 23).
+      const source = opspw.verifiedSource(headers ?? {});
+      const tried = await opspw.tryPassword({ password: form.get("password"), ip, keyed: via_key, source });
       if (tried.ok) {
         const token = randomBytes(32).toString("base64url");
         db.startPageSession(page.id, token, { conversationId: page.conversation_id ?? null });
