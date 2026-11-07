@@ -310,7 +310,8 @@ test("the uber_request gate does not show another person's quote: route and fare
   assert.equal(out.ok, false);
   const seen = JSON.stringify(out);
   for (const secret of ["Victim Home", "Clinic", "$14.32", "UberX"]) assert.ok(!seen.includes(secret), `leaked ${secret}: ${seen}`);
-  if (out.use_target !== undefined) assert.equal(out.use_target, "unknown uber quote q_1_abcdefgh");
+  assert.equal(out.blocked, "needs_confirmation");
+  assert.equal(out.use_target, "unknown uber quote q_1_abcdefgh");
   // The owner's own gate still describes the ride, so their yes is pinned to the real route and fare.
   const mine = await call("uber_request", { quote_id: "q_1_abcdefgh" }, OMARI);
   assert.match(mine.use_target, /Victim Home.*Clinic.*\$14\.32/);
