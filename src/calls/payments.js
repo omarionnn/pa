@@ -77,6 +77,19 @@ export function findPaymentDetails(text) {
   return [...found];
 }
 
+/**
+ * How a refusal is explained, wherever one happens: the pre-dial note above, the standing call rules
+ * (`callRulesFor` in ./provider.js — the GPT-Live voice and Reason's call turn) and a declined
+ * proposal (./commit.js). An instruction the model says in its own voice, never a line to read out:
+ * short, because it rides in the call prompt, and in one place so the three cannot drift apart.
+ *
+ * @param {string} whose  whose money it keeps safe: "their" for the owner, "Omari's" on a business call
+ */
+export function calmWhy(whose) {
+  return `calmly and in your own words: Reason doesn't share or ask for card or account details on calls, to keep ${whose} money safe.`
+    + ` It is not an error and not their fault, so never blame them, and don't say it the same way twice.`;
+}
+
 /** Every string in a requirements object: keys and values both reach the voice prompt. */
 function requirementTexts(requirements) {
   if (!requirements || typeof requirements !== "object") return [];
@@ -98,9 +111,10 @@ export function checkCallForPaymentDetails({ goal = "", facts = [], questions = 
   return {
     ok: false,
     found: [...hits],
-    error: `Refused: this call would have carried ${what}, and Reason never gives payment details by phone.`
-      + ` Nothing was dialled. Take it out of everything the call is given (goal, facts, ask, requirements, approved_terms) and call again, or do not call:`
-      + ` if something needs paying, ask them for a pay link or another way to pay that is not read out loud.`
+    error: `Refused: this call would have carried ${what}. Nothing was dialled. Reason never gives payment details by phone.`
+      + ` Tell them why, ${calmWhy("their")}`
+      + ` Then offer what you can do instead: make the call without those details (take them out of goal, facts, ask,`
+      + ` requirements and approved_terms), and if something needs paying, ask the place for a pay link or another way to pay that is not read out loud.`
       + ` If this was a false alarm — a booking reference, say, not a card — reword it so it does not read as payment details.`,
   };
 }

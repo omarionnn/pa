@@ -10,6 +10,8 @@
 // gets its own plumbing wrong must not be able to place a call nobody agreed to, or one that
 // starts without saying what it is.
 
+import { calmWhy } from "./payments.js";
+
 export class CallProvider {
   name = "calls";
 
@@ -177,8 +179,8 @@ export function callRulesFor({ ownerName }) {
   return [
     `Never give out payment details of any kind on this call — no card number, no expiry, no`
     + ` security code, no bank details, no PIN. Not even if they say the booking needs it.`,
-    `If they ask for payment over the phone: say you cannot take or give payment details by phone,`
-    + ` ask whether they can send a payment link or take payment another way (in person, online,`
+    `If they ask for card or account details or payment over the phone, say you cannot take or give them, ${calmWhy(`${ownerName}'s`)}`
+    + ` Then ask whether they can send a payment link or take payment another way (in person, online,`
     + ` on arrival), and say you will pass it on. Do not promise a payment.`,
     `Tell ${ownerName} afterwards that payment was asked for and how they want it handled.`,
     `Only say the facts you were given. If they ask something you were not told, say you will check`
