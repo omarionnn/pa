@@ -45,6 +45,7 @@ const events = await imp("src/events.js");
 const db = await imp("src/db.js");
 const { config, clock } = await imp("src/config.js");
 const { eventRequestFor, opsRequest } = await imp("src/http.js");
+const { withYes } = await imp("test/fixture-yes.js");
 
 const OWNER = process.env.REASON_MASTER_NUMBER || "+12025551234";
 const KOFI = "+14155550001", AMA = "+14155550002", YAW = "+14155550003";
@@ -63,6 +64,7 @@ for (const [c, addr, name, op] of [[C.owner, OWNER, "Omari", true], [C.kofi, KOF
   db.upsertThread({ conversationId: c, channel: "fake", address: addr, isOwner: true });
 }
 const tool = (name, input, c) => runTool(name, input, { conversationId: c, messages: [], events: runtime });
+const blastYes = (input, c) => withYes(runTool, "event_blast", input, { conversationId: c, messages: [], events: runtime });
 const toNum = (n) => fake.sent.filter(m => m.to === n).map(m => m.text);
 
 // ---- creation (flag at owner: only the owner creates) ----
@@ -151,11 +153,14 @@ step("sign out of this browser: the next visit is gated again", gone.status === 
 step("who's going: no token, no page", (await web({ sub: "who" })).status === 404);
 
 // ---- organizer actions and delivery tracking ----
-const blast = await tool("event_blast", { event_id: ev.id, message: "bring snacks" }, C.owner);
+// Every blast needs the organizer's yes to the exact words (audit lead 28): with none, nobody is texted.
+const unasked = await tool("event_blast", { event_id: ev.id, message: "bring snacks" }, C.owner);
+step("a blast with no yes texts nobody and hands back the target", unasked.blocked === "needs_confirmation" && /bring snacks/.test(unasked.use_target ?? "") && !fake.sent.some(m => /bring snacks/.test(m.text ?? "")), JSON.stringify(unasked).slice(0, 200));
+const blast = await blastYes({ event_id: ev.id, message: "bring snacks" }, C.owner);
 step("blast tracked per guest: all but Yaw sent, Yaw failed", blast.sent?.failed === 1 && blast.sent?.sent === blast.sent?.guests - 1, JSON.stringify(blast.sent));
 const before = fake.sent.length;
-await tool("event_blast", { event_id: ev.id, message: "bring snacks" }, C.owner);
-step("the same blast again sends nothing new", fake.sent.length === before);
+await blastYes({ event_id: ev.id, message: "bring snacks" }, C.owner);
+step("the same blast again (on a fresh yes) sends nothing new", fake.sent.length === before);
 const rel = await tool("event_release", { event_id: ev.id, detail: "location" }, C.owner);
 step("release texts the address", rel.ok && toNum(AMA).some(t => /where: 12 Elm St/.test(t)));
 const iso = await tool("event_blast", { event_id: ev.id, message: "hijack" }, C.ama);

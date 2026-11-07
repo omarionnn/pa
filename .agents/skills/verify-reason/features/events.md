@@ -103,7 +103,8 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
 - **Organizer actions** — `event_guests` (names + directory choices + Instagram, no phone),
   `event_update` (guests told about a change only to what they can see; a change to a still-hidden
   time/location is saved quietly; a zone on its own keeps the wall-clock time), `event_release` (one detail per call, every guest texted it),
-  `event_blast` (unmuted guests; refused while paused; while paused, an update's or removal's
+  `event_blast` (unmuted guests; needs the organizer's yes to the exact words, pinned by hash —
+  see [confirm-gate.md](confirm-gate.md), audit lead 28; refused while paused; while paused, an update's or removal's
   messages are HELD — `deliveryState` `held` — and `releaseHeld` sends them on resume to whoever is
   still owed them; a cancellation always goes out, as the bare fact on a paused event), `event_password_rotate` (joined stay, old
   password and half-finished web claims die), `event_guest_remove` (told, directory token dead,
