@@ -112,6 +112,15 @@ Real features with no file here. Add one when you touch them.
   (`src/pause.js`; `grep -n 'name: "pause_everything"\|case "pause_everything"' src/tools.js`),
   shipped 2026-10-11 in `eeb760d`. Covered by `test/pause.test.js`. A real user-facing control with
   no feature file.
+- **The master pausing or removing a person** — `admin_pause` / `admin_resume` / `admin_remove`
+  (`case "admin_pause"` in `src/tools.js`). Since #351 (`d0b7f79`, 2026-11-07) a stop belongs to the
+  number, not one texting line: `db.stoppedStateOf(address)` ("removed" outranks "paused") is read by
+  `accounts.accountState`, inbound calls, invite redemption and every background sweep, so a number
+  stopped on Sendblue is stopped on Linq too. A pause never softens a removal on another line; a
+  resume clears pauses on every line but never brings back a removed one — it answers
+  `ok: false, state: "removed"` until the master explicitly says to undo it, then
+  `admin_resume { number, undo_removal: true }`. Covered by `test/state-per-person.test.js`. No
+  feature file.
 - Finding places near somebody — `nearby_places` (`src/places.js`;
   `grep -n 'name: "nearby_places"\|case "nearby_places"' src/tools.js`), the other half of
   [location-share.md](location-share.md). **No test of its own, and it calls Overpass over the
