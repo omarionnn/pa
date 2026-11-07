@@ -210,6 +210,9 @@ const TABLES = [
   // Which of their calls, messages and actions they asked Reason to forget, so recall never reads
   // them again (src/db.js forgetFromRecall). Row ids only, theirs.
   "recall_forgotten",
+  // Exchanges a forget asked recall to index again without the forgotten line (src/recallindex.js).
+  // Row ids only, theirs.
+  "recall_reindex",
 ];
 
 /**
