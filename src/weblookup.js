@@ -1,6 +1,7 @@
 // Fetch a page and return readable text. Parallel Extract or Context.dev scrape when there is a key
 // (REASON_LOOKUP_PROVIDER names which goes first), plain fetch as the fallback. When a page needs
 // clicking, that is the browser's job.
+import { guardedFetch } from "./netguard.js";
 import { config } from "./config.js";
 import { parallelClient } from "./parallel.js";
 
@@ -114,24 +115,27 @@ export async function plainFetch(href, { maxChars, timeoutMs }) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const res = await fetch(href, {
+    // Never this machine's own network, on any hop (src/netguard.js).
+    const got = await guardedFetch(href, {
       signal: ac.signal,
-      redirect: "follow",
       headers: { "user-agent": "Reason/0.1 (+https://github.com/omarionnn)", accept: "text/html,text/plain,*/*" },
     });
+    if (!got.ok) return { ok: false, refused: true, error: `Not read: ${got.why}.` };
+    const res = got.res;
+    const finalUrl = got.url;
     const type = res.headers.get("content-type") ?? "";
-    if (!res.ok) return { ok: false, status: res.status, url: res.url, error: `${res.status} ${res.statusText} from ${res.url}` };
+    if (!res.ok) return { ok: false, status: res.status, url: finalUrl, error: `${res.status} ${res.statusText} from ${finalUrl}` };
     if (!/text\/html|text\/plain|application\/(json|xhtml)/i.test(type)) {
-      return { ok: false, status: res.status, url: res.url, content_type: type, error: `That URL is ${type}, not a readable page.` };
+      return { ok: false, status: res.status, url: finalUrl, content_type: type, error: `That URL is ${type}, not a readable page.` };
     }
     const body = await res.text();
     const json = /json/i.test(type);
     const { title, text, truncated } = json
       ? { title: "", text: body.slice(0, maxChars), truncated: body.length > maxChars }
       : readableText(body, maxChars);
-    const images = json ? [] : imageUrls(body, res.url);
+    const images = json ? [] : imageUrls(body, finalUrl);
     return {
-      ok: true, status: res.status, url: res.url, title, text, text_truncated: truncated,
+      ok: true, status: res.status, url: finalUrl, title, text, text_truncated: truncated,
       images,
       ...(images.length ? { images_note: "These are the real image addresses on that page. A picture may only go on a Reason page if it came from a list like this one." } : {}),
     };

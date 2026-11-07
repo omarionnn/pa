@@ -174,6 +174,8 @@ export function watchFetch({ record = db.recordProviderCall, day = accounts.toda
       throw e;
     }
   };
+  // Only counts, never answers: src/netguard.js reads this as the platform's own fetch.
+  globalThis.fetch.passesThrough = true;
 }
 
 /** For a test that replaced `globalThis.fetch` after the watcher took it. */

@@ -19,6 +19,7 @@
 //   - a purchase ask (confirm_request for purchase_confirm) has to carry the offer record: if the
 //     reply does not show AgentCard's total and the source, the code-composed ask line is added.
 // Nothing here decides what the person meant. Intent is the model's; this checks figures.
+import { guardedFetch } from "./netguard.js";
 import { clock } from "./config.js";
 import * as shop from "./shopconnect.js";
 import { choiceWording } from "./choicecards.js";
@@ -315,19 +316,22 @@ const BLOCK_STATUSES = new Set([401, 403, 429, 451]);
  * Fetch one product page. { ok, html, url } or { ok: false, status?, blocked, error }. `blocked` is
  * true only for an answer that means "no robots": the statuses above, or a 503 a bot wall labelled.
  */
-export async function fetchOfferPage(url, { fetchImpl = fetch, timeoutMs = 15_000 } = {}) {
+export async function fetchOfferPage(url, { fetchImpl = null, timeoutMs = 15_000 } = {}) {
   let parsed;
   try { parsed = new URL(String(url ?? "").trim()); } catch { return { ok: false, blocked: false, invalid: true, error: `'${url}' is not a link.` }; }
   if (!["http:", "https:"].includes(parsed.protocol)) return { ok: false, blocked: false, invalid: true, error: "Only http and https pages can be read." };
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
-    const res = await fetchImpl(parsed.href, { signal: ctl.signal, redirect: "follow", headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml" } });
+    // Never this machine's own network, on any hop (src/netguard.js).
+    const got = await guardedFetch(parsed.href, { fetchImpl, signal: ctl.signal, headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml" } });
+    if (!got.ok) return { ok: false, blocked: false, invalid: true, error: `That page was not read: ${got.why}.` };
+    const res = got.res;
     if (!res.ok) {
       const walled = res.status === 503 && !!res.headers?.get?.("cf-mitigated");
       return { ok: false, status: res.status, blocked: BLOCK_STATUSES.has(res.status) || walled, error: `the shop answered ${res.status}` };
     }
-    return { ok: true, html: (await res.text()).slice(0, 3_000_000), url: res.url || parsed.href };
+    return { ok: true, html: (await res.text()).slice(0, 3_000_000), url: got.url || parsed.href };
   } catch (e) {
     return { ok: false, blocked: false, error: e?.name === "AbortError" ? `it did not answer within ${Math.round(timeoutMs / 1000)}s` : (e?.message ?? String(e)).split("\n")[0] };
   } finally { clearTimeout(timer); }

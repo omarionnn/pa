@@ -20,6 +20,8 @@ import { join } from "node:path";
 import { startSourceSite } from "./fixture-sources.js";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-niche-"));
+// This suite's fixtures live on 127.0.0.1; outside a test, nothing may fetch there (src/netguard.js).
+process.env.REASON_TEST_ALLOW_PRIVATE_FETCH = "1";
 process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";

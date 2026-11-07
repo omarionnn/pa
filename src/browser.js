@@ -4,6 +4,8 @@
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { config } from "./config.js";
+import { isPrivateHost } from "./pictures.js";
+import { publicUrl, allowPrivate } from "./netguard.js";
 
 const sessions = new Map(); // conversationId -> { context, page }
 let playwright = null;
@@ -72,6 +74,18 @@ export async function pageFor(conversationId) {
     }
     throw e;
   }
+  // No request this browser makes reaches this machine's own network: a page (or a redirect, or a
+  // script on it) pointing at 127.0.0.1, 169.254.169.254 or a name that resolves there is refused.
+  // Every request by name; a page load also by its resolved addresses (security audit 2026-11-06).
+  await context.route("**/*", async (route) => {
+    const req = route.request();
+    let u;
+    try { u = new URL(req.url()); } catch { return route.continue(); }
+    if (allowPrivate() || !/^(https?|wss?):$/.test(u.protocol)) return route.continue();
+    if (isPrivateHost(u.hostname)) return route.abort("blockedbyclient");
+    if (req.isNavigationRequest() && !(await publicUrl(u.href)).ok) return route.abort("blockedbyclient");
+    return route.continue();
+  });
   const page = context.pages()[0] ?? await context.newPage();
   page.setDefaultTimeout(config.browserTimeoutMs);
   sessions.set(conversationId, { context, page });

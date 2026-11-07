@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { startBookingSite } from "./fixture-booking.js";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-browser-"));
+// This suite's fixtures live on 127.0.0.1; outside a test, nothing may fetch there (src/netguard.js).
+process.env.REASON_TEST_ALLOW_PRIVATE_FETCH = "1";
 process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_PROFILE_ROOT = join(dir, "profiles");
 process.env.REASON_SHOT_ROOT = join(dir, "shots");
@@ -225,6 +227,20 @@ test("screenshot never writes where the model says: always Reason's own name in 
   assert.notEqual(out.path, target);
   assert.ok(out.path.startsWith(config.shotRoot), out.path);
   assert.equal(readFileSync(target, "utf8"), "DATABASE", "the model's path was overwritten");
+});
+
+test("outside a test's own opt-in, the browser reaches nothing on this machine: not by browser_open, not from a page", async () => {
+  await call("browser_open", { url: site.url });
+  const page = await browser.pageFor(C);
+  delete process.env.REASON_TEST_ALLOW_PRIVATE_FETCH;
+  try {
+    const out = await call("browser_open", { url: site.url });
+    assert.equal(out.ok, false, "a loopback page was opened");
+    assert.match(out.error, /own network/);
+    // A script on an already-open page asking for a loopback address is refused at the request.
+    const got = await page.evaluate(async (u) => { try { const r = await fetch(u); return `status ${r.status}`; } catch (e) { return "blocked"; } }, site.url);
+    assert.equal(got, "blocked");
+  } finally { process.env.REASON_TEST_ALLOW_PRIVATE_FETCH = "1"; }
 });
 
 test("browser_close closes it and says so", async () => {

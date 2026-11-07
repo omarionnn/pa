@@ -40,6 +40,7 @@
 // `sb-api-secret-key` on a request to a third party would hand over a credential to find out
 // whether it was needed. If a real inbound photo ever comes back 403, the fix is to check the host
 // first and then wire this, not to send the secret and hope. See docs/unverified.md.
+import { guardedFetch } from "./netguard.js";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "./config.js";
@@ -338,7 +339,10 @@ export async function fetchPdf({
     const t = setTimeout(() => ac.abort(), timeoutMs);
     t?.unref?.();
     try {
-      res = await fetchImpl(first.url, { redirect: "follow", signal: ac.signal });
+      // Every hop checked, never this machine's own network (src/netguard.js).
+      const got = await guardedFetch(first.url, { fetchImpl, signal: ac.signal, httpsOnly: true });
+      if (!got.ok) return { ok: false, why: `they sent a PDF (${name}) and it could not be downloaded (${got.why})` };
+      res = got.res;
     } finally {
       clearTimeout(t);
     }
@@ -453,7 +457,9 @@ export async function fetchVideo({
     const t = setTimeout(() => ac.abort(), timeoutMs);
     t?.unref?.();
     try {
-      res = await fetchImpl(first.url, { redirect: "follow", signal: ac.signal });
+      const got = await guardedFetch(first.url, { fetchImpl, signal: ac.signal, httpsOnly: true });
+      if (!got.ok) return { ok: false, why: `they sent a video (${name}) and it could not be downloaded (${got.why})` };
+      res = got.res;
     } finally {
       clearTimeout(t);
     }
