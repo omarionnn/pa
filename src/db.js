@@ -8901,6 +8901,35 @@ export function lastFlightSearch(conversationId, kind = "flights") {
   return flightSearchRow(db.prepare("SELECT * FROM flight_searches WHERE conversation_id = ? AND kind = ? ORDER BY id DESC LIMIT 1").get(conversationId, kind)) ?? null;
 }
 
+/** When this conversation was last told flight prices weren't available (outcome 'unavailable'), or null. */
+export function lastFlightsUnavailableAt(conversationId) {
+  return db.prepare("SELECT MAX(created_at) AS at FROM flight_searches WHERE conversation_id = ? AND outcome = 'unavailable'").get(conversationId)?.at ?? null;
+}
+
+// ---------- flight source searches per month (src/flightproviders.js) ----------
+//
+// Added 2026-11-06. One row per provider per calendar month (UTC), counted BEFORE each search is
+// sent, so SerpApi's free 250 a month is never crossed and nothing is billed. Not anybody's data.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS flight_provider_usage (
+    provider TEXT NOT NULL,                    -- 'serpapi' | 'duffel'
+    month TEXT NOT NULL,                       -- 'YYYY-MM', UTC
+    searches INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider, month)
+  );
+`);
+
+/** Take one search from this month's allowance. False — and nothing counted — once `limit` is reached. */
+export function reserveFlightProviderSearch(provider, month, limit) {
+  if (!(limit > 0)) return false;
+  db.prepare("INSERT OR IGNORE INTO flight_provider_usage (provider, month, searches) VALUES (?, ?, 0)").run(provider, month);
+  const r = db.prepare("UPDATE flight_provider_usage SET searches = searches + 1 WHERE provider = ? AND month = ? AND searches < ?").run(provider, month, limit);
+  return r.changes === 1;
+}
+export function flightProviderSearches(provider, month) {
+  return db.prepare("SELECT searches FROM flight_provider_usage WHERE provider = ? AND month = ?").get(provider, month)?.searches ?? 0;
+}
+
 // ---------- the people Reason writes to but does not send to ----------
 //
 // Added 2026-10-06. One row per person, with however many ways of reaching them have been saved as
