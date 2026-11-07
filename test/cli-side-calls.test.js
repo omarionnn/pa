@@ -29,12 +29,12 @@ test("a run with no MCP server is given no tools at all", () => {
   assert.equal(plain.args[plain.args.indexOf("--max-turns") + 1], "1");
 });
 
-test("a turn with Reason's tools is never given --tools: that would undo tool deferral", () => {
+test("a turn with Reason's tools keeps ToolSearch and no other built-in: never --tools \"\", which would undo tool deferral", () => {
   const turn = cliInvocation({ prompt: "what's on today", system: "s", mcpUrl: "http://127.0.0.1:9/mcp" });
-  assert.equal(toolsFlag(turn.args), null);
+  assert.equal(toolsFlag(turn.args), "ToolSearch");
   assert.ok(turn.args.includes("--mcp-config"));
   const drafted = cliInvocation({ prompt: "hi", system: "s", mcpUrl: "http://127.0.0.1:9/mcp", partial: true });
-  assert.equal(toolsFlag(drafted.args), null);
+  assert.equal(toolsFlag(drafted.args), "ToolSearch");
 });
 
 test("every CLI child runs with non-essential traffic off and no empty API key", () => {

@@ -382,7 +382,7 @@ async function runTurnOnCli({
       // handed back, or any streamed delta is the model at work. The CLI's own `system` init line
       // is not, and a resume the CLI refuses prints nothing of the model's at all.
       const heard = draft ? (e) => { if (e?.type === "assistant" || e?.type === "user" || e?.type === "stream_event") tookPart = true; draft.feed(e); } : null;
-      const common = { system, mcpUrl: mcp.url, images: blocks, log, feature, ...(heard ? { onEvent: heard } : {}) };
+      const common = { system, mcpUrl: mcp.url, mcpHeaders: mcp.headers ?? null, images: blocks, log, feature, ...(heard ? { onEvent: heard } : {}) };
       if (resuming) {
         sessions.delete(historyId);
         // Under the system prompt the session was started with, anchor and all: the same bytes, so

@@ -8,7 +8,8 @@
 //
 // Owner-local only. See the README section on REASON_BACKEND.
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -55,7 +56,7 @@ const BUILT_INS = [
  * pictures prints one JSON event per line and the envelope is the last `result` event rather than
  * the whole of stdout — see `envelopeFrom`. A run without pictures is exactly what it always was.
  */
-export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], model = cliConfig.model, partial = false, streamIn = false, effort = null, sessionId = null, resume = null }) {
+export function cliInvocation({ prompt, system, mcpUrl = null, mcpHeaders = null, mcpConfigPath = null, jsonSchema = null, images = [], model = cliConfig.model, partial = false, streamIn = false, effort = null, sessionId = null, resume = null }) {
   // `streamIn` (startWarm, below): the message goes down stdin later, the way pictures already do.
   const withImages = images.length > 0 || streamIn;
   // `partial` (REASON_WEB_DRAFTS, src/webdraft.js): the same run, printed one event per line with the
@@ -79,7 +80,13 @@ export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null
     // tokens of schema on a 100-token question, measured 2026-10-27 (540 with `--tools ""`), and a
     // slower boot. NEVER on a turn with tools: `--tools ""` also removes `ToolSearch`, and with it
     // the deferral that keeps ~107k tokens of Reason's own schemas out of every call.
-    ...(mcpUrl ? [] : ["--tools", ""]),
+    //
+    // A turn WITH tools gets an allowlist instead (security audit 2026-11-06, lead 2): `ToolSearch`
+    // and nothing else of the CLI's own, so a built-in the denylist above has never heard of
+    // (Workflow, ScheduleWakeup, ListAgents, … on 2.1.318) is not in front of the model with
+    // permissions bypassed. Reason's MCP tools are not built-ins and stay. Read off the wire against
+    // the real CLI with a loopback stand-in (bin/cli-tools-probe.mjs): built-ins = ToolSearch only.
+    ...(mcpUrl ? ["--tools", "ToolSearch"] : ["--tools", ""]),
     // A turn runs under a session id Reason chose (`sessionId`), so that a rewrite of its draft can
     // continue that very session (`resume`) with the prefix cached and the tool results in hand,
     // instead of running the whole turn again — src/backends/claude-cli.js `continueSession`. Both
@@ -92,7 +99,10 @@ export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null
   // browser, the database connection and the ledger stay where the turn is rather than in a
   // child that dies with it.
   if (mcpUrl) {
-    args.push("--mcp-config", JSON.stringify({ mcpServers: { reason: { type: "http", url: mcpUrl } } }));
+    // The bridge answers only a request carrying this turn's own secret (mcp-http.js). With a secret
+    // the config goes in a 0600 file (`mcpConfigPath`, written by runOnce) rather than on the command
+    // line, where any process on the machine can read it.
+    args.push("--mcp-config", mcpConfigPath ?? JSON.stringify(mcpConfigFor(mcpUrl, mcpHeaders)));
   }
   if (jsonSchema) args.push("--json-schema", JSON.stringify(jsonSchema));
 
@@ -103,6 +113,8 @@ export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null
     : null;
   return { args, stdin, streamed: streamOut };
 }
+
+export const mcpConfigFor = (url, headers = null) => ({ mcpServers: { reason: { type: "http", url, ...(headers ? { headers } : {}) } } });
 
 /**
  * The result envelope out of what the CLI printed. One JSON document normally; with pictures, one
@@ -164,10 +176,29 @@ export function runClaudeCli({ feature = "other", ...args }) {
  * CLIs booting at once at the start of a turn) it halved the boot: 1.46 s → 0.70 s wall, 1.31 s →
  * 0.71 s CPU, four paired measurements on 2026-10-27. The model call itself is untouched.
  */
+/**
+ * What of the server's environment a CLI child may see: what the CLI itself needs to start, find its
+ * login and reach the network, and nothing of Reason's. Reason reads every provider, webhook and
+ * OAuth secret it has from the environment, and the child is a model with permissions bypassed: it
+ * gets an allowlist, never the whole thing minus a few names (security audit 2026-11-06, lead 2).
+ */
+const CHILD_ENV_KEEP = new Set([
+  "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TMP", "TEMP", "TERM",
+  "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+  "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+  "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
+  // The CLI's own login and endpoint (the verification probes point it at a loopback stand-in, and
+  // force tool search on there, as it is against the real endpoint).
+  "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "ENABLE_TOOL_SEARCH",
+]);
+const CHILD_ENV_KEEP_PREFIX = ["LC_"];
+export const childEnvKept = (k) => CHILD_ENV_KEEP.has(k) || CHILD_ENV_KEEP_PREFIX.some(p => k.startsWith(p));
+
 export function childEnvFor(env = process.env) {
   const sealed = sealedCliHome(env);
+  const kept = Object.fromEntries(Object.entries(env).filter(([k, v]) => v != null && childEnvKept(k)));
   const childEnv = {
-    ...env,
+    ...kept,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     // SEALED (prompt audit 2026-10-31, privacy): see sealedCliHome. No CLAUDE.md / AGENTS.md from
     // anywhere, and a config dir of Reason's own, so the CLI's login profile (the operator's
@@ -230,8 +261,21 @@ export function prepareSealedCli(env = process.env) {
   return sealed;
 }
 
-function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, onEvent = null, input = null, effort = null, sessionId = null, resume = null }) {
-  const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, jsonSchema, images, model, partial: typeof onEvent === "function", streamIn: !!input, effort, sessionId, resume });
+/**
+ * One run. A turn with tools carries its bridge secret in a 0600 config file of its own, removed
+ * when the run is over however it ends; never on the command line.
+ */
+function runOnce(opts) {
+  if (!opts.mcpUrl || !opts.mcpHeaders) return runOnceWith(opts, null);
+  const { cwd } = prepareSealedCli(process.env);
+  const file = join(cwd, `mcp-${randomUUID()}.json`);
+  try { writeFileSync(file, JSON.stringify(mcpConfigFor(opts.mcpUrl, opts.mcpHeaders)), { mode: 0o600 }); }
+  catch (e) { return Promise.resolve({ ok: false, error: `could not write the tool bridge's config: ${e.message}` }); }
+  return runOnceWith(opts, file).finally(() => { try { unlinkSync(file); } catch {} });
+}
+
+function runOnceWith({ prompt, system, mcpUrl = null, mcpHeaders = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, onEvent = null, input = null, effort = null, sessionId = null, resume = null }, mcpConfigPath) {
+  const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, mcpHeaders, mcpConfigPath, jsonSchema, images, model, partial: typeof onEvent === "function", streamIn: !!input, effort, sessionId, resume });
 
   return new Promise((resolve) => {
     const childEnv = childEnvFor(process.env);
