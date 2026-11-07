@@ -190,6 +190,12 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    echo "copy finished $COPIED"
    ```
 
+   **A per-file deploy goes through the same staging.** On 2026-11-07 (#385) `rsync -av --files-from`
+   straight from the Mac into `/opt/reason` carried uid 502:staff onto every directory on the path
+   (`src/`, `assets/`, …, mode 0700), so the `reason` user could not open `src/serve.js`: "Cannot find
+   module", restart loop for ~35 s until `chown reason:reason` on those paths. After any copy:
+   `cd /opt/reason && find src assets scripts test web-island .agents -not -user reason` → empty.
+
    No `--delete` on the second rsync: `/opt/reason` holds `data/`, `.env` and `node_modules/`,
    which are the server's own. If `package-lock.json` changed, run `npm ci --omit=dev` in
    `/opt/reason` as `reason` before the restart. A schema change is tried first on a copy of the
@@ -465,6 +471,16 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 ```
 
 See [features/onboarding.md](features/onboarding.md).
+
+### Baseline — #385 bubble-only contact photo LIVE + the paywall ON (2026-11-07)
+
+origin/main `cf415f7` (#385 on `b047383`): 5,610 tests, 5,478 passing, 131 skipped, 1 failing (web-ongoing
+"the desktop margin", date-dependent, fails on main too). Live, read-only, nothing sent:
+`bin/contact-card.mjs --live https://reason.tail3753c7.ts.net --files https://files.heyreason.com` ok
+(PHOTO sha256 `a703eb17…` = `assets/reason-contact.jpg`, the files domain serves the same
+`/reason-f5964369.vcf`); `/apple-touch-icon.png?v=<ICON_VERSION>` = `94b4a094…` 180×180; `/pay/done` and
+`/pay/back` 200 (the paywall is on); `/p/<id>` 401 signed out; `ops_state.paywall_on_since`
+1794094636519, 14 accounts before it. `bin/paywall-drive.mjs` 23 ok + all ok (offline).
 
 ### Baseline — release 11-07b (spend-alert + shop-small + call-pickup)
 

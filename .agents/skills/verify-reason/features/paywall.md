@@ -1,7 +1,13 @@
 # The free trial and the subscription (src/plan.js, src/stripe.js — REASON_PAYWALL)
 
-Shipped 2026-10-31 (PR #323). **2026-11-05 owner decision: Reason is FREE for everyone; the switch stays
-OFF.** Off = nothing counted (no `plan` row), nothing said, no plan tool or price in the model's tools /
+Shipped 2026-10-31 (PR #323). **ON on live since 2026-11-07 23:37 UTC (`REASON_PAYWALL=on`, owner's
+go; `paywall_on_since` = 1794094636519 = the flip is the cut-off).** In one line, what a person gets:
+everybody who had an account before the flip (14 on live), anybody who joined through an invite or a
+member's event, the operator and test numbers = free forever, never counted toward an ask; anybody new
+= 25 free sessions, asked at the 25th only with a win on the record, otherwise the trial runs on to the
+30th (`trial 25/30 (no win yet)` on /ops), then the pay link (a Stripe Checkout Session, success →
+`/pay/done` "You're all set", cancel → `/pay/back` "No charge"). (2026-11-05 to 11-07 the switch was
+OFF — Reason free for everyone.) Off = nothing counted (no `plan` row), nothing said, no plan tool or price in the model's tools /
 capabilities / note, `/pay/done` + `/pay/back` 302 to the site home, Stripe's webhook acts on nothing. With it on, a Stripe event for
 somebody the paywall does not reach (everyone but the operator under `owner`) or somebody grandfathered
 changes nothing and texts nothing (e875fbb) — an old test subscription cannot lapse or hold them.
@@ -93,10 +99,18 @@ payment-link override, no-Stripe hold, `scripts/plan-set.js`.
 
 ## Live, read-only
 
-- `sqlite3 -readonly /opt/reason/data/reason.db "SELECT conversation_id, sessions_used, status FROM plan"`
-  — no rows appear while the switch is off (nothing is counted).
-- `/ops` shows a plan tag per person only when `REASON_PAYWALL` is not off.
-- `grep -c REASON_PAYWALL /opt/reason/.env` → 1 (`REASON_PAYWALL=off`, appended at deploy).
+- `grep -E '^REASON_PAYWALL=' /opt/reason/.env` → `REASON_PAYWALL=on` (one line; `.env.bak-paywallon-20261107-233644`
+  is the copy from before the flip). Never edit .env during a verify pass.
+- The cut-off: `sqlite3 -readonly data/reason.db "SELECT v FROM ops_state WHERE k='paywall_on_since'"`
+  (the table is `ops_state(k, v)`, not key/value) → 1794094636519. Who is free forever by it:
+  `SELECT count(*) FROM accounts WHERE created_at < <that>` (14 on 11-07); invite / event joiners:
+  `accounts.invited_by` / `joined_via_event` non-empty.
+- `SELECT status, sessions_used, ask_due, asked_at IS NOT NULL FROM plan` — rows appear as people text
+  (a `free` row is written on the first grandfather read). The `status` column is not the answer for a
+  grandfathered person still showing `trial`; `plan.status()` reads the account too.
+- `curl -s <base>/pay/done` → 200, a branded "You're all set" page (`/pay/back` → "No charge"); while
+  the switch is off both 302 to `https://heyreason.com/`.
+- `/ops` shows a plan tag per person (e.g. `trial 25/30 (no win yet)`) only when `REASON_PAYWALL` is not off.
 - Journal lines: `paywall_asked`, `paywall_refused`, `paywall_held`, `paywall_released`,
   `stripe_webhook`, `stripe_webhook_rejected`, `paywall_no_link`, `paywall_checkout_failed`.
 

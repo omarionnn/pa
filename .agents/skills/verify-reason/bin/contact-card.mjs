@@ -5,6 +5,9 @@
 //
 //   node bin/contact-card.mjs                     # in-process, under `caged.sh env` (fake channel)
 //   node bin/contact-card.mjs --live <base-url>   # read-only GETs against a running install
+//   node bin/contact-card.mjs --live <base-url> --files <files-url>
+//     # also: the files domain (what people are texted) serves the same /reason-<sha8>.vcf; it has
+//     # no /reason.vcf alias, so never point --live at it
 //
 // Checks: the sent URL's hash = sha8 of the served bytes; the hashed path and the alias serve the
 // same card; PHOTO is the pinned BRAND photo (sha pinned in test/contact-card-brand.test.js); a REV:
@@ -37,6 +40,14 @@ if (live > 0) {
   check(r.status === 200, `GET ${hashed} → ${r.status}`);
   check(r.body === alias.body, "hashed path and alias serve the same card");
   checkCard(r.body, r.cache, hashed);
+  const files = process.argv.indexOf("--files");
+  if (files > 0) {
+    const fbase = (process.argv[files + 1] ?? "").replace(/\/+$/, "");
+    const f = await fetch(fbase + hashed);
+    const fbody = await f.text();
+    check(f.status === 200, `GET ${fbase}${hashed} → ${f.status}`);
+    check(fbody === alias.body, "files domain serves the same card");
+  }
 } else {
   for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY"]) {
     if (process.env[k]) { console.error(`refusing: ${k} is set — run under caged.sh env`); process.exit(2); }
