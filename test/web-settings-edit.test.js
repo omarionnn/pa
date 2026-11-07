@@ -255,7 +255,7 @@ test("delivery under 'only what needs a yes', end to end: the turn that asks is 
 test("operator lines Reason says with no key (status-page alerts, a Spotify join, an invite request) are marked toMaster, so they are always texted", async () => {
   const { readFileSync } = await import("node:fs");
   const src = (f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
-  assert.match(src("ops.js"), /runtime\.say\(config\.ownerConversation, text, \{ toMaster: true, idempotencyKey: `ops:/);
+  assert.match(src("ops.js"), /runtime\.say\(config\.ownerConversation, digest\.scrub\(text\), \{ toMaster: true, idempotencyKey: `ops:/);
   assert.match(src("http.js"), /then tell me and I will send them the link\.`, \{ toMaster: true \}\)/);
   assert.match(src("tools.js"), /ctx\.events\?\.say\(config\.ownerConversation, out\.toMaster, \{ toMaster: true \}\)/);
   assert.match(src("serve.js"), /toMaster: !!toMaster/);
