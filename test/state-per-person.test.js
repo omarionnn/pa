@@ -167,3 +167,25 @@ test("a pause does not soften a removal already on the number's other line", asy
   assert.equal(accounts.accountState("fake", KOFI), "removed");
   assert.equal(accounts.accountState("other", KOFI), "removed");
 });
+
+test("a resume never brings back a line that was removed: paused on one line, removed on the other", async () => {
+  db.upsertAccount({ conversationId: `dm:other:${KOFI}`, channel: "other", address: KOFI, name: "Kofi" });
+  db.setAccountState(`dm:other:${KOFI}`, "paused");   // paused on Linq
+  db.setAccountState(`dm:fake:${KOFI}`, "removed");   // removed on Sendblue
+  const out = await runTool("admin_resume", { number: KOFI }, { conversationId: config.ownerConversation });
+  assert.equal(out.ok, false, "the master is told the number is still removed, not 'answering again'");
+  assert.equal(db.getAccount(`dm:fake:${KOFI}`).state, "removed", "the removed line stays removed");
+  assert.equal(db.getAccount(`dm:other:${KOFI}`).state, "active", "only the paused line was resumed");
+  assert.equal(accounts.admit({ channel: "fake", address: KOFI }).allow, false);
+  assert.equal(accounts.admit({ channel: "fake", address: KOFI }).reason, "removed");
+  assert.equal(accounts.admit({ channel: "other", address: KOFI }).reason, "removed", "a removal covers the number");
+});
+
+test("a removal comes back only when the master explicitly undoes it", async () => {
+  await runTool("admin_remove", { number: KOFI }, { conversationId: config.ownerConversation });
+  assert.equal((await runTool("admin_resume", { number: KOFI }, { conversationId: config.ownerConversation })).ok, false);
+  assert.equal(accounts.admit({ channel: "fake", address: KOFI }).reason, "removed");
+  const out = await runTool("admin_resume", { number: KOFI, undo_removal: true }, { conversationId: config.ownerConversation });
+  assert.equal(out.ok, true);
+  assert.equal(accounts.admit({ channel: "fake", address: KOFI }).allow, true);
+});
