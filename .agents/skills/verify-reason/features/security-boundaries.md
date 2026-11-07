@@ -1,4 +1,4 @@
-# Security boundaries — your files, your calls, your health line, your delete
+# Security boundaries — your files, your calls, your health line, your delete, your card
 
 Four things a person never sees working and would only notice broken: another person's file
 reaching them, a stranger pretending to be their phone ringing in, the public `/health` naming them,
@@ -26,6 +26,13 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
   carry no `conversation_id`, contact limits read `scope: "contact"`, `why` loses addresses; every
   key and count stays. Doctor reads it that way (SKILL.md Doctor).
 - **Delete takes everything (#353).** [data-delete.md](data-delete.md).
+- **No payment details in anything a call is handed (lead 31).** `src/calls/payments.js`
+  `checkCallForPaymentDetails` scans goal, facts, `ask`, `approved_terms` and every `requirements`
+  key and value; `checkBriefForPaymentDetails` scans the final brief in `call_place` too (a redial
+  from `askWhetherItWentThrough` carries the old brief's requirements forward, an errand leg takes
+  its questions from the errand row). A hit → `status: "payment_details_refused"`, nothing dialled,
+  no call row, the value never echoed. Before this only goal and facts were scanned, and a card in
+  `requirements` was dialled and rendered into the voice prompt.
 
 ## How to get to it (user POV)
 
@@ -41,6 +48,12 @@ Offline (`env -i HOME=$HOME PATH=$PATH node --import ./test/paid-key-guard.js --
 
 No model: `bin/recall-figures-drive.mjs` ([recall.md](recall.md)) steps "ownFile(database) →
 not_theirs" and "voice_note_send of the database → refused, nothing sent".
+
+No model, no phone: `bin/call-payments-drive.mjs` under `caged.sh env` with a fresh temp
+`REASON_DB_PATH` (third-party number, a yes recorded with a stand-in judge, fake provider) — a card
+in a requirements value/key, cvv in `ask`, a card number in `approved_terms` or facts → refused,
+nothing placed; an ordinary ask-only call with requirements and a "do they take card" question still
+goes. 8 ok on `sec/lead31` 2026-11-07; on `c55094b` (main before) the requirements card was placed.
 
 On the cage (2026-11-07): `curl -s http://127.0.0.1:$P/health` → `owner: null`, `holding: []`, every
 monitoring key present; `POST /calls/elevenlabs/inbound` → `404` (the route is gone since #359).
