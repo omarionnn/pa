@@ -584,9 +584,13 @@ test("a contact who opted out gets no more turns: their check-ins END (a stop, n
   // Ended, not paused: texting START later lets texts through, and brings back nothing they stopped.
   assert.deepEqual(db.listSeries(OTHER, { includeEnded: true }).map(s => s.state), ["ended", "ended"]);
   assert.ok(db.listSeries(OTHER, { includeEnded: true }).every(s => /opted out/.test(s.ended_why)));
-  assert.equal(told.length, 1);
-  assert.match(told[0], /can't reach Agu/);
-  assert.match(told[0], /opted out/);
+  // Their check-ins are already stopped, so this is a line in the master's daily digest, not a text now.
+  assert.equal(told.length, 0);
+  const held = (await import("../src/opsdigest.js")).pending().filter(r => r.key === `unreachable:${OTHER}`);
+  assert.equal(held.length, 1);
+  assert.match(held[0].text, /can't be reached/);
+  assert.match(held[0].text, /opted out/);
+  assert.doesNotMatch(held[0].text, /Agu|5550001111/, "never who (owner, 2026-11-06)");
   assert.ok(logs.some(l => l.unreachable === OTHER));
 });
 

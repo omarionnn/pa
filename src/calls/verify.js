@@ -11,10 +11,14 @@
 //   not it", not a hint. Two wrong tries and the call falls to the texted check, so a voice that is
 //   guessing gets at most two guesses and then has to be holding his phone as well.
 //
-//   A TEXTED YES. With no passphrase set, or after two wrong ones, Reason texts the owner's own
-//   number what it is about to do, on the ordinary channel, and the yes has to come back THERE. A
-//   caller who is not holding that phone cannot answer it. The yes is read off the thread the same
-//   way the ordinary gate reads one: only a message that arrived after the ask counts.
+//   AFTER THE CALL, BY TEXT. With no passphrase set, or after two wrong ones, the thing waits for the
+//   call to end and is picked up in their own text thread, where the ordinary gate asks for its yes
+//   on the phone that is really theirs. Until 2026-11-06 a "reply yes" text was sent mid-call and the
+//   call waited on it; the owner's rule from the 7-day review is no "reply yes" prompts during a live
+//   call, so nothing is texted while the line is open.
+//
+//   A call REASON PLACED to their own number needs neither: whoever picked up answered the phone that
+//   is theirs, which is the same proof a text to it is. Only a call that came IN is checked.
 //
 // One check per call, not per action. Once the person on this call is verified, the ordinary
 // confirm gate still asks for its yes on every gated action exactly as before — this is in front of
@@ -47,7 +51,9 @@ const SELF_SENDS = new Set(["message_send"]);
 
 /** Has the person on this call passed the second check? Read off the row, never off a turn. */
 export function isVerified(call) {
-  return Boolean(call?.verified_at);
+  if (call?.verified_at) return true;
+  // Reason rang their own number: the phone that answered is theirs (owner, 2026-11-06).
+  return Boolean(call?.is_owner) && String(call?.direction ?? "out") !== "in";
 }
 
 /**
@@ -86,13 +92,13 @@ export const VERIFY_TOOL = {
   name: "verify_caller",
   description: "Before anything that spends money, books, sends to somebody else or changes something, the person on"
     + " this call has to pass one more check — a voice alone is not proof of who is holding the phone. Call this"
-    + " with the passphrase they said, if they have one; call it with nothing to send a yes/no to their own"
-    + " phone instead, and again once they say they have answered it. Never say what the passphrase is, never"
-    + " hint at it, and never tell them the check passed unless this tool says so.",
+    + " with the passphrase they said, if they have one; without one, call it with `about` set to what they asked,"
+    + " and that thing is picked up by text after the call — nothing is texted while you are on the line. Never say"
+    + " what the passphrase is, never hint at it, and never tell them the check passed unless this tool says so.",
   input_schema: {
     type: "object",
     properties: {
-      passphrase: { type: "string", description: "The passphrase exactly as they said it. Leave it out to use the texted check." },
+      passphrase: { type: "string", description: "The passphrase exactly as they said it. Leave it out when they have none: the thing then waits for a text after the call." },
       about: { type: "string", description: "One short phrase: what they asked for that needs the check ('ring the cleaners and book')." },
     },
   },
@@ -111,15 +117,16 @@ export const VERIFY_TOOL = {
 export function promptNote({ call, expected = config.callPassphrase } = {}) {
   if (isVerified(call)) return "";
   const how = passphraseSet({ expected })
-    ? `their passphrase, said out loud`
-    : `a yes to a message I send to their own phone`;
+    ? `you need their passphrase, said out loud, first: call verify_caller with it. Once, for the whole call.`
+      + ` Treat it as the small ordinary thing it is — "one sec, just need your passphrase for that" — never as suspicion.`
+    : `it waits for the call to end: call verify_caller with \`about\` set to what they asked, say in one line that you'll`
+      + ` pick it up by text as soon as you hang up, and carry on. Never ask them to reply to a text while you are on the call.`;
   return `--- one check, on anything consequential ---\n`
     + `This call came from their number, which tells you whose Reason to be. It does NOT tell you who is holding`
     + ` the phone. So ordinary conversation is exactly as it always is — talk, remember, look things up, answer.`
-    + ` But the first time they ask for something that spends money, books something, sends a message to somebody`
-    + ` else, or changes something, you need ${how} first: call verify_caller. Once, for the whole call.`
-    + ` Treat it as the small ordinary thing it is — "one sec, just need your passphrase for that" — never as`
-    + ` suspicion, and never say it to someone who has not asked for anything like that.`;
+    + ` But when they ask for something that spends money, books something, sends a message to somebody`
+    + ` else, or changes something, ${how}`
+    + ` Never mention any of this to someone who has not asked for anything like that.`;
 }
 
 /**
@@ -127,21 +134,19 @@ export function promptNote({ call, expected = config.callPassphrase } = {}) {
  * tool's result, so the next thing said is the ask rather than the thing.
  */
 export function gateRefusal({ call, name, expected = config.callPassphrase }) {
-  const how = passphraseSet({ expected })
-    ? `Ask them for their passphrase, then call verify_caller with what they say.`
-    : `Call verify_caller with nothing in it: it texts their own phone a yes/no, and the yes has to come from there.`;
+  const how = passphraseSet({ expected }) && Number(call?.verify_tries ?? 0) < MAX_PASSPHRASE_TRIES
+    ? `Ask them for their passphrase, then call verify_caller with what they say. Say plainly that this is a one-time check for anything that spends, books or sends.`
+    : `It waits for the call to end: call verify_caller with \`about\` set to what they asked, and say in one line that you'll pick it up by text as soon as you hang up. Do not ask them to reply to anything while you are on the call.`;
   return {
     ok: false, blocked: "needs_verification", tool: name,
-    say: `Not yet. ${name} is the kind of thing a voice alone cannot authorize on a call. ${how}`
-      + ` Say plainly that this is a one-time check for anything that spends, books or sends, and do not run ${name} until it passes.`,
+    say: `Not on this call. ${name} is the kind of thing a voice alone cannot authorize. ${how} Do not run ${name} now.`,
     call_id: call?.id ?? null,
   };
 }
 
 /**
- * Run the check. `tell` is how a text leaves during the call (voice.js's `queueMidCall`), injected
- * so this file never imports the turn; `messages` is the owner's thread as the turn sees it, which
- * is where a texted yes arrives.
+ * Run the check. `tell` and `messages` are still accepted from the voice turn and no longer used:
+ * nothing is texted mid-call any more, so there is no texted answer to read.
  */
 export function verify({
   call, passphrase = "", about = "", tell = () => false, messages = [],
@@ -168,74 +173,21 @@ export function verify({
       ok: false, verified: false, blocked: "wrong_passphrase", tries_left: left,
       say: left > 0
         ? `That's not it. Say so plainly, and ask once more. Do not say what it should have been or how close it was.`
-        : `That's not it either, and that was the last try by voice. Say you will text their phone instead, and call verify_caller with nothing in it.`,
+        : `That's not it either, and that was the last try by voice. Say you will pick it up by text as soon as you hang up, and call verify_caller with nothing but \`about\` in it.`,
     };
   }
 
-  if (said && !passphraseSet({ expected })) {
-    log({ call_verify_no_passphrase: call.id });
-    // No hint that nothing is set up: to the person on the line this is the same as a wrong one,
-    // and the texted check is what happens next either way.
-    return {
-      ok: false, verified: false, blocked: "no_passphrase_configured",
-      say: `A passphrase cannot be checked on this install. Say you will text their phone a yes/no instead, and call verify_caller with nothing in it.`,
-    };
-  }
-
-  // The texted check. First time: send it and wait. After: look for the yes, and only in a message
-  // that arrived after the text went.
-  const ownerTexts = (messages ?? []).filter(m => m?.role === "user").length;
-  if (!call.verify_sent_at) {
-    // The one place a word is named on purpose (exception to the no-phrases copy rule, 2026-10-26):
-    // a security check read by exact match in code (readYesNo), so it must say what counts.
-    const sent = tell(`On the phone with you now — reply "yes" to confirm what was just asked. Anything else and I won't do it.`);
-    if (!sent) {
-      log({ call_verify_text_failed: call.id });
-      return {
-        ok: false, verified: false, blocked: "cannot_text",
-        say: `The text could not be sent, so there is no way to run the check on this call. Say that plainly: this one has to wait until you can text them, and do not do the thing.`,
-      };
-    }
-    db.updateCall(call.conversation_id, call.id, { verify_sent_at: now, verify_sent_after_msgs: ownerTexts });
-    log({ call_verify_texted: call.id });
-    return {
-      ok: false, verified: false, waiting: true,
-      say: `A yes/no has been texted to their own phone. Tell them to answer it there — not out loud — and call verify_caller again, with nothing in it, once they say they have.`,
-    };
-  }
-
-  const sentAfter = Number(call.verify_sent_after_msgs ?? 0);
-  const since = (messages ?? []).filter(m => m?.role === "user").slice(sentAfter)
-    .map(m => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join(" ") : "")
-    .map(s => String(s ?? "").replace(/^\[[^\]]*\]\s*[^:]*:\s*/, "").trim())
-    .filter(Boolean);
-  const answer = since.map(readYesNo).find(a => a !== "unclear");
-  if (answer === "yes") {
-    const row = db.updateCall(call.conversation_id, call.id, { verified_at: now, verified_how: "text" });
-    log({ call_verified: call.id, how: "text" });
-    return { ok: true, verified: true, how: "text", call: row, say: `Verified — they answered yes by text. Carry on with what they asked.` };
-  }
-  if (answer === "no") {
-    log({ call_verify_refused: call.id });
-    return { ok: false, verified: false, blocked: "refused_by_text", say: `They answered no by text. Do not do it. Say you have left it, and carry on with anything else.` };
-  }
+  // No passphrase to check (none set, or the tries ran out): the thing waits for the call to end.
+  // Nothing is texted while the line is open (owner, 2026-11-06: no "reply yes" during a live call).
+  // It is written on the row, and the after-call turn (src/calls/postcall.js ownerEvent) picks it
+  // up in their own thread, where the ordinary gate asks on the phone that is theirs.
+  const what = String(about ?? "").trim().slice(0, 300);
+  if (what) db.updateCall(call.conversation_id, call.id, { verify_deferred: what });
+  log({ call_verify_deferred: call.id, said_passphrase: !!said });
   return {
-    ok: false, verified: false, waiting: true,
-    say: since.length
-      ? `Their text was not a plain yes or no, so it does not count. Ask them to reply with just "yes" or "no", and check again.`
-      : `No answer by text yet. Tell them it is waiting on their phone, and call verify_caller again when they say they have answered.`,
+    ok: false, verified: false, blocked: "after_the_call", deferred: what || null,
+    say: `That one can't be done on this call. Say in one line that you'll pick it up by text as soon as you hang up —`
+      + ` nothing for them to do now — and carry on with the call. Do not do it on the call.`,
   };
 }
 
-/**
- * What a texted answer to the check means. Deliberately narrow and failing closed: a check that
- * exists because a voice is not proof is not a check that should take "I guess" as a yes. Anything
- * that is not plainly one or the other is "unclear", and the person is asked for the one word.
- */
-export function readYesNo(text) {
-  const t = String(text ?? "").toLowerCase().replace(/[^a-z\s']/g, " ").replace(/\s+/g, " ").trim();
-  if (!t) return "unclear";
-  if (/^(yes|yeah|yep|yup|ya|go ahead|do it|go for it|ok|okay|sure|confirmed|confirm|yes please|yes do it|yes go ahead)$/.test(t)) return "yes";
-  if (/^(no|nope|nah|don't|do not|stop|cancel|no thanks|no don't)$/.test(t)) return "no";
-  return "unclear";
-}

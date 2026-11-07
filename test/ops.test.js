@@ -53,7 +53,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
   sent.length = 0;
-  db.db.exec(`DELETE FROM ops_checks; DELETE FROM ops_state; DELETE FROM provider_calls; DELETE FROM provider_state;
+  db.db.exec(`DELETE FROM ops_digest; DELETE FROM ops_checks; DELETE FROM ops_state; DELETE FROM provider_calls; DELETE FROM provider_state;
     DELETE FROM outbox; DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM unknown_outcomes;
     DELETE FROM page_sessions; DELETE FROM page_codes; DELETE FROM page_attempts; DELETE FROM usage;`);
   runtime.lastSweepAt = clock.now();
@@ -284,11 +284,16 @@ test("a real failure that stays texts on the next pass, any hour, once; its all-
   assert.match(sent[1].text, /back to normal: OpenAI/);
 });
 
-test("the first pass after install texts about anything already wrong — there is no prior state to compare, and wrong is wrong", async () => {
+test("the first pass after install reports anything already wrong — there is no prior state to compare, and wrong is wrong", async () => {
   db.createAccessRequest({ channel: "sendblue", address: "+15550002222", displayName: "Kofi", firstMessage: "yo" });
   await twoPasses();
-  assert.equal(sent.length, 1);
-  assert.match(sent[0].text, /Waiting for a yes: 1 person asked for access and has no answer: Kofi/);
+  // Not an outage, a service down or a cap: it waits for the daily digest instead of a live text
+  // (owner, 2026-11-06). The access question itself still went to him live when Kofi asked.
+  assert.equal(sent.length, 0);
+  const digest = await import("../src/opsdigest.js");
+  const held = digest.pending().map(r => r.text).join("\n");
+  assert.match(held, /Waiting for a yes: 1 person asked for access and has no answer — see the status page/);
+  assert.doesNotMatch(held, /Kofi|5550002222/, "never who (owner, 2026-11-06); the page has the name");
 });
 
 test("a check's 'since' is when it entered its current state, not when it was last checked", async () => {

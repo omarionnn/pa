@@ -53,7 +53,7 @@ const DAY = 24 * 60 * 60 * 1000;
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM blocked_numbers; DELETE FROM turned_away; DELETE FROM usage; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM plans; DELETE FROM people; DELETE FROM person_facts; DELETE FROM conversations; DELETE FROM threads; DELETE FROM inbound_messages;");
+  db.db.exec("DELETE FROM ops_digest; DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM blocked_numbers; DELETE FROM turned_away; DELETE FROM usage; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM plans; DELETE FROM people; DELETE FROM person_facts; DELETE FROM conversations; DELETE FROM threads; DELETE FROM inbound_messages;");
   db.upsertAccount({ conversationId: config.ownerConversation, channel: "fake", address: MASTER, name: "Omari", isOperator: true });
 });
 
@@ -525,22 +525,24 @@ test("auto-admit notifies the master about the new number", async () => {
   try {
     const h = harness();
     await h.router.deliver(texts(KOFI, "hello", "a"));
-    const toMaster = sentTo(h.channel, MASTER);
-    assert.equal(toMaster.length, 1, "the master gets exactly one notification");
+    // Not a question and not an emergency: one line in his daily digest, nothing texted now (2026-11-06).
+    assert.equal(sentTo(h.channel, MASTER).length, 0, "nothing lands in the master's chat now");
+    const toMaster = (await import("../src/opsdigest.js")).pending().filter(r => r.key.startsWith("new-contact:"));
+    assert.equal(toMaster.length, 1, "the master gets exactly one line");
     assert.match(toMaster[0].text, /first time/i, "it says this is a new number");
-    assert.ok(toMaster[0].text.includes(KOFI), "the number is in the notification");
+    assert.ok(!toMaster[0].text.includes(KOFI.slice(2)), "and never which number (owner, 2026-11-06)");
   } finally { config.autoAdmit = kept; }
 });
 
-test("auto-admit notification includes the display name when the channel provides one", async () => {
+test("auto-admit notification never names who, even when the channel provides a display name", async () => {
   const kept = config.autoAdmit;
   config.autoAdmit = true;
   try {
     const h = harness();
     await h.router.deliver({ ...texts(KOFI, "hey", "a"), displayName: "Kofi Mensah" });
-    const toMaster = sentTo(h.channel, MASTER);
-    assert.ok(toMaster[0].text.includes("Kofi Mensah"), "the display name is shown");
-    assert.ok(toMaster[0].text.includes(KOFI), "the number is still shown too");
+    const toMaster = (await import("../src/opsdigest.js")).pending().filter(r => r.key.startsWith("new-contact:")).slice(-1);
+    assert.ok(!toMaster[0].text.includes("Kofi"), "never the name");
+    assert.ok(!toMaster[0].text.includes(KOFI.slice(2)), "never the number");
   } finally { config.autoAdmit = kept; }
 });
 

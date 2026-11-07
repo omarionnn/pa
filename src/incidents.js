@@ -24,9 +24,13 @@
 //   - **Never about itself.** An alert text that fails to send is not raised again, or a dead
 //     channel would be a loop of alerts about failing to send alerts.
 //
-// Whatever the hour, like the rest of ops: "your assistant is broken" is not a nudge.
+// Whatever the hour, like the rest of ops: "your assistant is broken" is not a nudge. But only the
+// alerts that ARE that — texts failing over a channel, calls that cannot be placed, a purchase whose
+// outcome is unknown — are texted as they happen; every other area goes into the one daily digest
+// (src/opsdigest.js, owner 2026-11-06).
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
+import * as digest from "./opsdigest.js";
 
 const MIN = 60_000;
 /** A repeat this long after the last one is a new episode, and an open one this quiet is over. */
@@ -54,7 +58,7 @@ export function start({ send = null, link = null, log = null } = {}) {
   // was starting — is texted now rather than lost.
   for (const r of db.db.prepare("SELECT * FROM incidents WHERE owed = 1 AND resolved_at IS NULL").all()) {
     db.db.prepare("UPDATE incidents SET owed = 0, texted_at = ? WHERE key = ?").run(clock.now(), r.key);
-    deliver(openText(r), `${r.key}@${r.first_at}:open`);
+    deliver(openText(r), `${r.key}@${r.first_at}:open`, r);
   }
 }
 export function stop() { sender = null; }
@@ -74,10 +78,16 @@ export function clockWords(ms, now = clock.now()) {
 
 const get = (key) => db.db.prepare("SELECT * FROM incidents WHERE key = ?").get(key) ?? null;
 
-function deliver(text, idem) {
+function deliver(text, idem, row = null) {
   if (!sender) return;
+  // Only a service down or money that may have moved is texted as it happens; the rest is one line
+  // in the daily digest, the latest word on this episode replacing the earlier one (src/opsdigest.js).
+  if (row && !digest.incidentIsUrgent(row.area)) {
+    try { digest.hold({ text, key: `incident:${row.key}@${row.first_at}` }); } catch (e) { logger({ incident_hold_failed: one(e?.message ?? e, 120) }); }
+    return;
+  }
   try {
-    Promise.resolve(sender(text, `${KEY_PREFIX}${idem}`)).catch((e) => logger({ incident_text_failed: one(e?.message ?? e, 120) }));
+    Promise.resolve(sender(digest.scrub(text), `${KEY_PREFIX}${idem}`)).catch((e) => logger({ incident_text_failed: one(e?.message ?? e, 120) }));
   } catch (e) { logger({ incident_text_failed: one(e?.message ?? e, 120) }); }
 }
 
@@ -116,12 +126,12 @@ export function raise({ key, area, what, who = "", addr = "", error = "", tried 
     } else {
       db.db.prepare("UPDATE incidents SET texted_at = ?, owed = 0 WHERE key = ?").run(at, key);
       texted = openText(row);
-      deliver(texted, `${key}@${row.first_at}:open`);
+      deliver(texted, `${key}@${row.first_at}:open`, row);
     }
   } else if (row.texted_at != null && at - (row.reminded_at ?? row.texted_at) >= REMIND_MS) {
     db.db.prepare("UPDATE incidents SET reminded_at = ? WHERE key = ?").run(at, key);
     texted = stillText(row, at);
-    deliver(texted, `${key}@${row.first_at}:still:${row.count}`);
+    deliver(texted, `${key}@${row.first_at}:still:${row.count}`, row);
   }
   logger({ incident: key, count: row.count, texted: !!texted });
   return { ...get(key), texted };
@@ -145,7 +155,7 @@ export function resolve({ key = null, prefix = null, addr = null, how = "it is w
   for (const r of rows) {
     db.db.prepare("UPDATE incidents SET resolved_at = ?, resolved_how = ? WHERE key = ?").run(at, one(how, 120), r.key);
     if (r.texted_at != null) {
-      deliver(`Resolved: ${r.what} — ${how}. It failed ${times(r.count)}, ${clockWords(r.first_at, at)}–${clockWords(r.last_at, at)}.`, `${r.key}@${r.first_at}:resolved`);
+      deliver(`Resolved: ${r.what} — ${how}. It failed ${times(r.count)}, ${clockWords(r.first_at, at)}–${clockWords(r.last_at, at)}.`, `${r.key}@${r.first_at}:resolved`, r);
     }
     logger({ incident_resolved: r.key, how });
   }
@@ -183,7 +193,7 @@ export function checks(now = clock.now()) {
     const live = r.resolved_at == null;
     const body = live
       ? `${r.count > 1 ? `still failing, ${times(r.count)} since ${clockWords(r.first_at, now)}` : `failed at ${clockWords(r.first_at, now)}`}`
-        + `${r.who ? ` · ${r.who}` : ""}${r.error ? ` — ${r.error}` : ""}${r.tried ? ` · tried: ${r.tried}` : ""}${r.next ? ` · check next: ${r.next}` : ""}`
+        + `${r.error ? ` — ${digest.scrub(r.error)}` : ""}${r.tried ? ` · tried: ${r.tried}` : ""}${r.next ? ` · check next: ${r.next}` : ""}`
         + `${r.texted_at == null ? " · not texted yet (under its threshold)" : ""}`
       : `resolved ${clockWords(r.resolved_at, now)} (${r.resolved_how}) · failed ${times(r.count)} from ${clockWords(r.first_at, now)}`;
     return {
@@ -197,7 +207,6 @@ export function checks(now = clock.now()) {
 function openText(r) {
   return [
     `Reason alert: ${r.what}.`,
-    r.who ? `Who: ${r.who}` : null,
     r.error ? `Error: ${r.error}` : null,
     r.tried ? `Already tried: ${r.tried}` : null,
     r.next ? `Check next: ${r.next}` : null,

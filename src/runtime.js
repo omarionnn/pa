@@ -55,6 +55,7 @@ import { sweep as sweepAlbums } from "./albums.js";
 import * as dailyEdition from "./daily.js";
 import * as webdraft from "./webdraft.js";
 import * as onboarding from "./onboarding.js";
+import * as opsDigest from "./opsdigest.js";
 
 const MIN = 60_000;
 // Sweep turns a held thing may be put to the model in before it is let go. See `notice` below.
@@ -932,14 +933,11 @@ export class Runtime extends EventEmitter {
         target: me.address || conversationId,
       });
       this.log({ harm_paused: conversationId, strikes: strikes.count, kinds: strikes.kinds });
-      const line = harm.pausedLine({ address: me.address, strikes });
-      const router = this.turnExtras?.channels;
-      if (router?.tellMaster) {
-        const r = await router.tellMaster(line, meta?.channel ?? null, { idempotencyKey: `ops:harm-pause:${conversationId}:${clock.now()}` }).catch(e => ({ ok: false, error: e?.message }));
-        if (!r?.ok) this.log({ could_not_tell_master: r?.error ?? "no route", about: "harm_pause" });
-      } else {
-        this.emit("outbound", { conversationId: config.ownerConversation, text: line, toMaster: true });
-      }
+      // The system fact only, never who (owner, 2026-11-06): the account is on the status page.
+      const line = `A Reason was paused after ${strikes.count} refused messages in ${strikes.windowHours}h${strikes.kinds.length ? ` (${strikes.kinds.join(", ")})` : ""}. Nothing was deleted; the account is on the status page.`;
+      // The account is already paused, so nothing is waiting on him: the daily digest, not a text now
+      // (src/opsdigest.js, owner 2026-11-06).
+      try { opsDigest.hold({ text: line, key: `harm-pause:${conversationId}` }); } catch (e) { this.log({ could_not_hold_for_digest: e?.message, about: "harm_pause" }); }
     }
   }
 
@@ -1054,8 +1052,8 @@ export class Runtime extends EventEmitter {
   }
 
   /** An event turn: Reason is told something happened and decides whether to say anything. */
-  event(conversationId, text, meta = {}) {
-    return this._turn({ conversationId, text, kind: "event", meta });
+  event(conversationId, text, meta = {}, ctx = null) {
+    return this._turn({ conversationId, text, kind: "event", meta, ...(ctx ? { ctx } : {}) });
   }
 
   /**
@@ -1253,16 +1251,12 @@ export class Runtime extends EventEmitter {
     db.opsSet(key, String(gone.outboxId));
     const me = accounts.ownerOf(conversationId);
     const who = me.name && me.name !== "the person I work for" ? `${me.name} (${me.address})` : me.address;
-    const line = `heads up — i can't reach ${who}: ${gone.why}. i've stopped running their scheduled check-ins`
-      + (paused.length ? ` (${paused.length} ${gone.optedOut ? "ended" : "paused"})` : "") + ` so i'm not doing that work for nobody.`
-      + (gone.optedOut ? ` they opted out, so nothing comes back on its own if they opt in again: they'd have to ask for it.` : ` if they come back, they can text me and i'll pick it up.`);
-    const router = this.turnExtras?.channels;
-    if (router?.tellMaster) {
-      const r = await router.tellMaster(line, null, { idempotencyKey: `ops:unreachable:${conversationId}:${clock.now()}` }).catch(e => ({ ok: false, error: e?.message }));
-      if (!r?.ok) this.log({ could_not_tell_master: r?.error ?? "no route", about: "unreachable" });
-    } else {
-      this.emit("outbound", { conversationId: config.ownerConversation, text: line, toMaster: true });
-    }
+    // The system fact only, never who (owner, 2026-11-06).
+    void who;
+    const line = `A person can't be reached (${gone.why}), so their scheduled check-ins are ${gone.optedOut ? "ended" : "paused"}`
+      + (paused.length ? ` (${paused.length})` : "") + (gone.optedOut ? `. They opted out: nothing comes back on its own if they opt in again.` : `. They pick up again if they text.`);
+    // Their check-ins are already stopped: the daily digest, not a text now (src/opsdigest.js).
+    try { opsDigest.hold({ text: line, key: `unreachable:${conversationId}` }); } catch (e) { this.log({ could_not_hold_for_digest: e?.message, about: "unreachable" }); }
   }
 
   /**
@@ -1872,8 +1866,16 @@ export class Runtime extends EventEmitter {
       // top of the owner's next turn as a lost reply. There is no step here that can drop it.
       if (!db.markOwnerTold(row.id)) continue;
       const line = outboxLib.ownerFailureLine(row);
-      const r = await router.tellMaster(line, row.channel);
-      if (r?.ok) out.owner_told++;
+      // Whose message it was decides who hears. Until 2026-11-06 every failure went to the operator
+      // (tellMaster), so another person's text to a third party reached his phone with their
+      // recipient's number in it. Now the operator hears only about his own; anybody else's is told
+      // to that person, in their own thread, and the operator sees only the count and the error on
+      // the status page (the "Texts out" check, src/ops.js) — never who or what (owner, 2026-11-06).
+      const operators = row.conversation_id === config.ownerConversation || accounts.ownerOf(row.conversation_id).isOperator;
+      const r = operators
+        ? await router.tellMaster(line, row.channel)
+        : await this._tell(row.conversation_id, line, { idempotencyKey: `outbox-failed:${row.id}` });
+      if (r?.ok || r?.queued) out.owner_told++;
       else this.log({ outbox: row.id, could_not_tell_owner: r?.error ?? "no reason given" });
     }
     return out;

@@ -186,13 +186,15 @@ test("three 'harm' messages in a day pause their Reason and tell the master the 
 
   assert.equal(db.getAccount(KOFI_ID).state, "paused");
   assert.equal(sentTo(h, KOFI).length, 3, "each one got the refusal line");
-  const toMaster = sentTo(h, MASTER);
+  // Already paused, so nothing waits on him: a line in his daily digest, not a text now (2026-11-06).
+  assert.equal(sentTo(h, MASTER).length, 0);
+  const toMaster = (await import("../src/opsdigest.js")).pending().filter(r => r.key === `harm-pause:${KOFI_ID}`);
   assert.equal(toMaster.length, 1);
-  assert.match(toMaster[0].text, /ending 9876/);
-  assert.match(toMaster[0].text, /3 times/);
+  // The system fact, never who (owner, 2026-11-06): no number, not even its last digits.
+  assert.doesNotMatch(toMaster[0].text, /9876/);
+  assert.match(toMaster[0].text, /3 refused messages/);
   assert.match(toMaster[0].text, /poison/);
   assert.match(toMaster[0].text, /paused/);
-  assert.match(toMaster[0].text, /resume/);
   for (const word of ["untraceable", "how much", "buy"]) assert.doesNotMatch(toMaster[0].text, new RegExp(word, "i"), "never the words");
 
   const pause = db.db.prepare("SELECT * FROM action_ledger WHERE conversation_id = ? AND action = 'harm_pause'").get(KOFI_ID);

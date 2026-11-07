@@ -59,6 +59,8 @@ beforeEach(() => {
   db.upsertAccount({ conversationId: CONV, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: THEIRS, channel: "fake", address: FRIEND, name: "Kofi", isOperator: false });
   db.upsertAccount({ conversationId: OTHERS, channel: "fake", address: OTHER, name: "Ama", isOperator: false });
+  // Everybody here is past their first two days, so the Web line (decision 9) is theirs to get (src/deliver.js accountDay).
+  db.db.prepare("UPDATE accounts SET created_at = created_at - ?").run(3 * 24 * 60 * 60 * 1000);
 });
 
 /** The server's own wiring, as serve.js builds it: a web channel is registered only while the switch is on. */

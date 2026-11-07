@@ -37,6 +37,7 @@ import { config, clock, callbackUrl } from "./config.js";
 import { flightProviders, LEDGER as FLIGHT_LEDGER, monthOf } from "./flightproviders.js";
 import * as subusage from "./subusage.js";
 import * as incidents from "./incidents.js";
+import * as digest from "./opsdigest.js";
 import { join } from "node:path";
 
 export const EVERY_MS = 5 * 60 * 1000;
@@ -326,12 +327,15 @@ function aliveChecks({ runtime, router, now }) {
   const ob = db.db.prepare(`SELECT
       COALESCE(SUM(CASE WHEN state = 'sent' AND sent_at >= ? THEN 1 ELSE 0 END), 0) AS sent,
       COALESCE(SUM(CASE WHEN state = 'failed' AND failed_at >= ? THEN 1 ELSE 0 END), 0) AS failed,
+      COALESCE(SUM(CASE WHEN state = 'failed' AND failed_at >= ? AND (last_error_key IS NULL OR (last_error_key NOT IN ('OPTED_OUT','unverified_contact_inferred') AND last_error_key NOT LIKE 'PRE_REPLY_%')) THEN 1 ELSE 0 END), 0) AS ours,
       COALESCE(SUM(CASE WHEN state IN ('queued','unknown') AND attempts > 0 THEN 1 ELSE 0 END), 0) AS retrying,
       COALESCE(SUM(CASE WHEN state IN ('queued','unknown') THEN 1 ELSE 0 END), 0) AS waiting
-    FROM outbox`).get(now - DAY, wo.since);
+    FROM outbox`).get(now - DAY, wo.since, wo.since);
   const lastFail = db.db.prepare("SELECT last_error FROM outbox WHERE state = 'failed' AND failed_at >= ? ORDER BY failed_at DESC LIMIT 1").get(wo.since);
-  out.push(check("outbox", "alive", "Texts out", ob.failed ? "bad" : ob.retrying ? "warn" : "ok",
-    ob.failed ? `${n(ob.failed, "text")} failed ${wo.words ?? "in the last day"}${lastFail?.last_error ? ` — ${trim(lastFail.last_error, 90)}` : ""}`
+  // Red only for a failure that is Reason's: a person who opted out or never texted the line is on
+  // the page as amber — never a live text to the owner about somebody else (review 11-06).
+  out.push(check("outbox", "alive", "Texts out", ob.ours ? "bad" : ob.failed || ob.retrying ? "warn" : "ok",
+    ob.failed ? `${n(ob.failed, "text")} failed ${wo.words ?? "in the last day"}${lastFail?.last_error ? ` — ${trim(digest.scrub(lastFail.last_error), 90)}` : ""}`
       : ob.retrying ? `${n(ob.retrying, "text")} retrying`
         : `${ob.sent} sent in the last day${ob.waiting ? ` · ${ob.waiting} waiting` : ""}`));
 
@@ -472,9 +476,11 @@ function peopleChecks({ now, day }) {
   const out = [check("people", "people", "People", "ok",
     `${n(people.length, "person", "people")} on the line · ${seen24} texted in the last day · ${seen7} this week · ${n(turns, "turn")} today`)];
   const pending = db.listAccessRequests({ state: "pending" });
-  out.push(check("access", "people", "Waiting for a yes", pending.length ? "warn" : "ok",
+  out.push({ ...check("access", "people", "Waiting for a yes", pending.length ? "warn" : "ok",
     pending.length ? `${n(pending.length, "person", "people")} asked for access and ${pending.length === 1 ? "has" : "have"} no answer: ${pending.slice(0, 4).map(r => r.display_name || r.address).join(", ")}`
-      : "nobody waiting"));
+      : "nobody waiting"),
+    // What reaches his phone says how many, never who: the names are on the page (owner, 2026-11-06).
+    ...(pending.length ? { alert: `Waiting for a yes: ${n(pending.length, "person", "people")} asked for access and ${pending.length === 1 ? "has" : "have"} no answer — see the status page.` } : {}) });
   return out;
 }
 
@@ -771,21 +777,35 @@ export function settle({ report, runtime = null, log = () => {}, silent = new Se
       }
     } else if (told) {
       // `quietRecovery`: a cap lifting at midnight is expected, not news worth a late-night text.
-      if (!c.quietRecovery) changes.push({ kind: "fixed", check: c });
+      // The all-clear goes the way its alert went: live after a live one, in the digest otherwise.
+      if (!c.quietRecovery) changes.push({ kind: "fixed", check: c, live: db.opsGet(`alerted_live:${c.id}`) === "1" });
       db.opsDelete(`alerted:${c.id}`);
+      db.opsDelete(`alerted_live:${c.id}`);
     } else if (saved.previous === "bad" || saved.previous === "warn") {
       log({ ops_blip_cleared: c.id });
     }
   }
   db.opsSet("report", JSON.stringify(report));
-  const text = alertText(changes, report);
+  // Only an emergency is texted now (an outage, a service down, a spending cap near or at its
+  // limit); everything else waits for the one daily digest (src/opsdigest.js, owner 2026-11-06).
+  const live = changes.filter(ch => ch.kind === "wrong" ? digest.checkIsUrgent(ch.check) : ch.live);
+  const later = changes.filter(ch => !live.includes(ch));
+  for (const ch of live) if (ch.kind === "wrong") db.opsSet(`alerted_live:${ch.check.id}`, "1");
+  for (const ch of later) {
+    const line = ch.kind === "wrong"
+      ? (ch.check.alert ?? `${ch.check.label}: ${ch.check.detail}`)
+      : (ch.check.recovered ?? `${ch.check.label} is back to normal.`);
+    try { digest.hold({ text: line, key: `check:${ch.check.id}` }); } catch (e) { log({ ops_digest_hold_failed: short(e) }); }
+  }
+  const text = alertText(live, report);
+  // Never who or what — the system problem only (owner, 2026-11-06); digest.hold scrubs its own.
   if (text && runtime?.say) {
     // Under an `ops:` key, so its history row is tagged an operator notice (db.OPS_KEY_PREFIXES) and
     // never shows as news on Web's Home.
-    try { runtime.say(config.ownerConversation, text, { toMaster: true, idempotencyKey: `ops:check:${report.at ?? Date.now()}:${randomBytes(4).toString("hex")}` }); } catch (e) { log({ ops_alert_failed: short(e) }); }
+    try { runtime.say(config.ownerConversation, digest.scrub(text), { toMaster: true, idempotencyKey: `ops:check:${report.at ?? Date.now()}:${randomBytes(4).toString("hex")}` }); } catch (e) { log({ ops_alert_failed: short(e) }); }
   }
-  log({ ops: report.verdict, checks: report.checks.length, changed: changes.length, texted: !!text });
-  return { changes, text };
+  log({ ops: report.verdict, checks: report.checks.length, changed: changes.length, texted: !!text, held: later.length });
+  return { changes, text, held: later.length };
 }
 
 /** The text, or null when there is nothing new to say. Plain lines, worst first, the page's link last. */
@@ -889,7 +909,10 @@ export function startOps({ runtime = null, router = null, everyMs = EVERY_MS, fi
     link: (focus) => opsUrl(focus), log,
   });
   runtime?.on?.("error", (e) => noteError(e));
-  const run = () => runOnce({ runtime, router, log });
+  // The day's held notices, as one message, once it is past the digest hour (src/opsdigest.js).
+  const sendDigest = runtime?.say ? (text, idempotencyKey) => runtime.say(config.ownerConversation, text, { toMaster: true, idempotencyKey }) : null;
+  const run = () => runOnce({ runtime, router, log })
+    .finally(() => digest.flush({ send: sendDigest, link: opsUrl(), log }).catch(e => log({ ops_digest_failed: short(e) })));
   const first = setTimeout(run, firstAfterMs);
   const interval = setInterval(run, everyMs);
   first.unref?.();

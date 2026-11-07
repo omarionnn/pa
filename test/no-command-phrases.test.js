@@ -43,8 +43,8 @@ test("the specific lines rewritten read as plain intent", async () => {
   assert.equal(undo.holdLine({ doing: "texting Marta", seconds: 30 }), "texting Marta in 30s — just tell me if you want to stop it");
   const src = (p) => readFileSync(join(root, p), "utf8");
   assert.ok(!/say "my invites"|say "approve/.test(src("invites.js")));
-  // Exception, kept on purpose: the call security check is matched by exact word in code.
-  assert.match(src("calls/verify.js"), /reply "yes" to confirm/);
+  // The call security check no longer texts anything mid-call (2026-11-06), so the one exception is gone.
+  assert.doesNotMatch(src("calls/verify.js"), /reply "yes"/);
   assert.ok(!/\(yes or no;/.test(src("eventrides.js")));
   assert.ok(!/text "undo"/.test(src("activity.js")));
   assert.ok(!/"Forget #12"|"make leg day 8"|"stop texting me unless I ask"/.test(src("memory.js")));

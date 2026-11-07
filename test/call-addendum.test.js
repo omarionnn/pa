@@ -190,7 +190,7 @@ test("the right passphrase verifies the call once, and the row is where that is 
   assert.doesNotMatch(JSON.stringify(ok) + JSON.stringify(again), /blue heron/i);
 });
 
-test("two wrong passphrases and the call falls to the texted check — a guesser gets two guesses", () => {
+test("two wrong passphrases and the thing waits for after the call — a guesser gets two guesses, and nothing is texted mid-call", () => {
   const call = ownerCall();
 
   const one = verify.verify({ call, passphrase: "red heron 7" });
@@ -205,77 +205,49 @@ test("two wrong passphrases and the call falls to the texted check — a guesser
   const two = verify.verify({ call: db.getCall(C, call.id), passphrase: "blue egret 7" });
   assert.equal(two.ok, false);
   assert.equal(two.tries_left, 0);
-  assert.match(two.say, /text their phone/i);
+  assert.match(two.say, /by text as soon as you hang up/i);
 
-  // A third guess is not a guess: the passphrase branch is closed and it goes to the text.
+  // A third guess is not a guess: the passphrase branch is closed, and NOTHING is texted while the
+  // line is open (owner, 2026-11-06). It waits for the call to end instead.
   const r = recorder();
-  const three = verify.verify({ call: db.getCall(C, call.id), passphrase: "blue heron 7", tell: r.tell });
+  const three = verify.verify({ call: db.getCall(C, call.id), passphrase: "blue heron 7", about: "text Kofi", tell: r.tell });
   assert.notEqual(three.verified, true);
-  assert.equal(three.waiting, true);
-  assert.equal(r.sent.length, 1);
+  assert.equal(three.blocked, "after_the_call");
+  assert.equal(r.sent.length, 0, "no text goes out during the call");
   // Even the RIGHT one, offered after the tries ran out, does not verify the call by voice.
   assert.equal(db.getCall(C, call.id).verified_at, null);
+  assert.equal(db.getCall(C, call.id).verify_deferred, "text Kofi");
 });
 
-test("with no passphrase set, the check is a text to his own phone and the yes has to come from there", () => {
-  const call = ownerCall();
-  const r = recorder();
-  // This install has no passphrase, which is the default and the shape most people will run.
-  const none = { expected: "" };
-
-  // First call: the text goes, and nothing is verified yet.
-  const sent = verify.verify({ call, about: "ring the cleaners and book it", tell: r.tell, messages: thread("hey"), ...none });
-  assert.equal(sent.waiting, true);
-  assert.equal(r.sent.length, 1);
-  assert.match(r.sent[0], /yes/i);
-  assert.ok(!/ring the cleaners/.test(r.sent[0]), "action detail is NOT in the text (detail-hiding)");
-  assert.ok(db.getCall(C, call.id).verify_sent_at > 0);
-
-  // His thread as it was WHEN THE TEXT WENT had one message in it. A yes already sitting there is
-  // not an answer to a question that had not been asked yet.
-  const stale = verify.verify({ call: db.getCall(C, call.id), tell: r.tell, messages: thread("hey"), ...none });
-  assert.equal(stale.waiting, true);
-  assert.equal(db.getCall(C, call.id).verified_at, null);
-
-  // The yes that arrives after it does count.
-  const ok = verify.verify({ call: db.getCall(C, call.id), tell: r.tell, messages: thread("hey", "yes"), ...none });
-  assert.equal(ok.verified, true);
-  assert.equal(ok.how, "text");
-  assert.equal(db.getCall(C, call.id).verified_how, "text");
-  // One text, not one per attempt.
-  assert.equal(r.sent.length, 1);
-});
-
-test("a texted no stops it, and anything that is not plainly yes or no is not an answer", () => {
+test("with no passphrase set, nothing is texted during the call: the thing is picked up by text after it", () => {
   const call = ownerCall();
   const r = recorder();
   const none = { expected: "" };
-  verify.verify({ call, tell: r.tell, messages: thread("hey"), ...none });
 
-  const no = verify.verify({ call: db.getCall(C, call.id), tell: r.tell, messages: thread("hey", "no"), ...none });
-  assert.equal(no.ok, false);
-  assert.equal(no.blocked, "refused_by_text");
-  assert.match(no.say, /Do not do it/i);
-  assert.equal(db.getCall(C, call.id).verified_at, null);
-
-  // Fails closed. A check that exists because a voice is not proof does not take "i guess" as a yes.
-  for (const maybe of ["i guess", "probably fine", "if you think so", "yes but check the price first", "ok sure why not"]) {
-    assert.equal(verify.readYesNo(maybe), "unclear", `"${maybe}" must not read as an answer`);
-  }
-  assert.equal(verify.readYesNo("yes"), "yes");
-  assert.equal(verify.readYesNo("Yeah!"), "yes");
-  assert.equal(verify.readYesNo("nope"), "no");
-});
-
-test("a text that cannot be sent is said out loud, not worked around", () => {
-  const call = ownerCall();
-  const out = verify.verify({ call, tell: deaf, expected: "" });
+  const out = verify.verify({ call, about: "ring the cleaners and book it", tell: r.tell, messages: thread("hey"), ...none });
   assert.equal(out.ok, false);
-  assert.equal(out.blocked, "cannot_text");
-  assert.match(out.say, /do not do the thing/i);
-  // Nothing recorded as sent, so a later turn tries again rather than waiting on a text that is not
-  // coming.
-  assert.equal(db.getCall(C, call.id).verify_sent_at, null);
+  assert.equal(out.blocked, "after_the_call");
+  assert.equal(r.sent.length, 0, "no \"reply yes\" text mid-call");
+  assert.doesNotMatch(out.say, /reply/i);
+  assert.match(out.say, /as soon as you hang up/);
+  const row = db.getCall(C, call.id);
+  assert.equal(row.verify_sent_at, null);
+  assert.equal(row.verified_at, null);
+  assert.equal(row.verify_deferred, "ring the cleaners and book it");
+  // The after-call turn is told it is owed, in their own thread, where the ordinary gate asks.
+  const note = postcall.ownerEvent({ row: { ...row, state: "completed" } });
+  assert.match(note, /ring the cleaners and book it/);
+  assert.match(note, /Something IS owed/);
+  // No note when nothing waited.
+  assert.doesNotMatch(postcall.ownerEvent({ row: { ...db.getCall(C, ownerCall({ externalId: "conv_in2" }).id), state: "completed" } }), /could not be done by voice/);
+});
+
+test("a call Reason placed to their own number needs no second check: the phone that answered is theirs", () => {
+  const out = db.createCall(C, { provider: "elevenlabs", toNumber: "+12025551234", isOwner: true, goal: "wake-up call", facts: [], state: "in_progress" });
+  assert.equal(verify.isVerified(out), true);
+  assert.equal(verify.promptNote({ call: out }), "");
+  // One that came IN from the number is still checked: caller ID is not proof.
+  assert.equal(verify.isVerified(ownerCall()), false);
 });
 
 test("on his own call, the first thing that spends or sends is refused until the check passes", async () => {
@@ -547,8 +519,12 @@ test("the recipient and the brief are read back before anything dials, in the nu
   // No booking approved, so the read-back says so out loud rather than leaving it open.
   assert.match(r.review, /only ask — I won't book or agree to anything/);
   assert.match(r.review, /Shall I\?$/);
-  // And the model is told to wait rather than to carry on.
-  assert.match(r.say, /WAIT for their answer/);
+  // It only asks, to a number that is nobody they know: their asking WAS the yes (owner, 2026-11-06,
+  // no "plain yes before I dial"). The number is still said back in the same breath, nothing waits.
+  assert.equal(r.no_yes_needed, "asks only, to a business");
+  assert.doesNotMatch(r.say, /WAIT for their answer/);
+  assert.match(r.say, /do NOT ask "shall I\?"/);
+  assert.match(r.say, /plus one, two one two, five five five, nine nine nine nine/);
 
   // One persisted row carrying the brief and the authorization state, plus the job it belongs to.
   const row = db.getCallRequest(C, r.request_id);
@@ -573,9 +549,42 @@ test("a ceiling he gave is in the read-back, and no ceiling is said as the limit
   assert.match(open.review, /check with you on any price/i);
 });
 
-test("nothing dials without a yes to the read-back — and the yes is worth nothing unverified", async () => {
+test("a call that could book still waits for a yes to the read-back", () => {
+  const call = ownerCall();
+  const r = prepared(call, { may_book: true, max_price_cents: 5000 });
+  assert.match(r.say, /WAIT for their answer/);
+  assert.equal(r.no_yes_needed, undefined);
+});
+
+test("a call to somebody they know still waits for a yes, even when it only asks", () => {
+  const call = ownerCall();
+  db.addImportantPerson(C, { who: "Mum", contact: THEM });
+  try {
+    assert.ok(db.knownPersonByNumber(C, THEM));
+    const r = prepared(call);
+    assert.match(r.say, /WAIT for their answer/);
+  } finally { db.db.exec("DELETE FROM important_people"); }
+});
+
+test("an ask-only call dials on their asking, once the caller is verified, with what it went on written down", async () => {
   const call = ownerCall();
   const r = prepared(call);
+  const d = dialer({ callId: 78 });
+  // Unverified (a call that came IN): still refused, before anything else.
+  const unverified = await fromcall.go({ call, requestId: r.request_id, saidYes: false, dial: d.dial });
+  assert.equal(unverified.blocked, "needs_verification");
+  assert.deepEqual(d.asked, []);
+  db.updateCall(C, call.id, { verified_at: clock.now(), verified_how: "passphrase" });
+  const go = await fromcall.go({ call: db.getCall(C, call.id), requestId: r.request_id, saidYes: false, dial: d.dial });
+  assert.equal(go.ok, true);
+  assert.equal(d.asked.length, 1);
+  assert.equal(d.asked[0].may_book, false);
+  assert.match(db.getCallRequest(C, r.request_id).authorized_how, /asks only, to a business/);
+});
+
+test("nothing dials without a yes to the read-back — and the yes is worth nothing unverified", async () => {
+  const call = ownerCall();
+  const r = prepared(call, { may_book: true, max_price_cents: 5000 });
   const d = dialer();
 
   // The order matters. Who is on the phone is settled BEFORE whether they said yes, because a yes

@@ -12,6 +12,7 @@ import { config, clock } from "./config.js";
 import { fromOutside } from "./outside.js";
 import * as rides from "./eventrides.js";
 import * as cover from "./eventcover.js";
+import * as opsDigest from "./opsdigest.js";
 
 /** Is this one of Reason's own event links (on the events domain, the pages domain where older links live, or this server's address)? */
 export function isOwnEventLink(url) {
@@ -484,8 +485,9 @@ export async function runEventTool(name, input, ctx) {
     if (c !== config.ownerConversation && !accounts.ownerOf(c).isOperator && runtime?._tell) {
       let opsLink = null;
       try { opsLink = `${(await import("./ops.js")).opsUrl("events")}#events`; } catch { /* the text still goes without it */ }
-      const r = await runtime._tell(config.ownerConversation, events.ownerCreationLine(ev, { opsLink }), { idempotencyKey: `event-created:${ev.id}` });
-      if (r?.ok || r?.queued) db.updateEventRow(ev.id, { owner_told_at: clock.now() });
+      // News, not an emergency: one line in the owner's daily digest (src/opsdigest.js, 2026-11-06).
+      // Never who or what: that an event was made, and where the page shows the rest (owner, 2026-11-06).
+      if (opsDigest.hold({ text: `A new event was made on Reason.${opsLink ? ` On the status page: ${opsLink}` : ""}`, key: `event-created:${ev.id}` })) db.updateEventRow(ev.id, { owner_told_at: clock.now() });
     }
     // The organizer on their own list, by the same rules as a guest: the note after this turn's reply.
     events.scheduleListNote({ runtime, ev, att: events.afterCreate(ev) });

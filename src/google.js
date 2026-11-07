@@ -515,7 +515,8 @@ export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account 
     // asked for — not only on the policy page. This is the line to send with the link.
     privacy_url: privacyUrl(),
     // Said off the scopes really being asked for, so a Drive link does not promise a notice about
-    // mail and a mail link does not mention their documents.
+    // mail and a mail link does not mention their documents. Second person: it is sent to them as
+    // it stands ("your mail", owner 2026-11-06 — it said "their mail" to the person it was about).
     //
     // In full the FIRST time this person gives a kind of access, and the policy address alone after
     // that (Omari, 2026-10-06, reading his own thread: the same paragraph twice in four minutes, for
@@ -524,7 +525,7 @@ export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account 
     // be claimed before it has gone out.
     say_with_link: noticeSeen
       ? `Privacy policy: ${privacyUrl()}`
-      : `Reason only ${whatItAsksFor(want)} when they ask, keeps nothing beyond the conversation, and never sells or shares it. Privacy policy: ${privacyUrl()}`,
+      : `Reason only ${whatItAsksFor(want)} when you ask, keeps nothing beyond the conversation, and never sells or shares it. Privacy policy: ${privacyUrl()}`,
     ...(noticeSeen
       ? { notice_already_shown: `They have already given this kind of access on ${noticeSeen.join(" and ")}, and were shown how it is used then. Send only the short say_with_link line with this link; do not repeat the full notice.` }
       : {}),
@@ -564,11 +565,11 @@ export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account 
  */
 function whatItAsksFor(want) {
   const parts = [
-    ...(want.includes(GMAIL_SCOPE) ? ["reads or changes their mail"] : []),
-    ...(want.some(s => CALENDAR_SCOPES.includes(s)) ? ["reads or changes their calendar"] : []),
-    ...(want.some(s => DRIVE_SCOPES.includes(s)) ? ["opens a file in their Drive, or puts a new document in it"] : []),
+    ...(want.includes(GMAIL_SCOPE) ? ["reads or changes your mail"] : []),
+    ...(want.some(s => CALENDAR_SCOPES.includes(s)) ? ["reads or changes your calendar"] : []),
+    ...(want.some(s => DRIVE_SCOPES.includes(s)) ? ["opens a file in your Drive, or puts a new document in it"] : []),
   ];
-  if (!parts.length) return "uses what they grant";
+  if (!parts.length) return "uses what you grant";
   if (parts.length === 1) return parts[0];
   return `${parts.slice(0, -1).join(", ")} or ${parts[parts.length - 1]}`;
 }

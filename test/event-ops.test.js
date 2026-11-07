@@ -141,7 +141,11 @@ test("the owner's creation text links the status page", async () => {
   const said = [];
   const rt = { ...fakeRuntime(), async _tell(c, text) { said.push({ c, text }); return { ok: true }; } };
   await runTool("event_create", { name: "Dinner", description: "d", starts_at: "2026-11-01T19:00", location: "x", password: "pumpkin", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }, { conversationId: AMA_C, messages: [], events: rt });
-  assert.match(said[0].text, /on the status page: .*\/ops\?k=.*focus=events#events/);
+  // In the owner's daily digest now, not his chat (2026-11-06) — and still with the link.
+  assert.equal(said.length, 0);
+  const line = (await import("../src/opsdigest.js")).pending().filter(r => r.key.startsWith("event-created:")).at(-1);
+  assert.match(line.text, /On the status page: .*\/ops\?k=.*focus=events#events/);
+  assert.doesNotMatch(line.text, /Dinner|Ama/, "never what or who");
 });
 
 test("retry is offered only for what a retry could still send, and not while paused; cancelled-while-paused can't be resumed", async () => {

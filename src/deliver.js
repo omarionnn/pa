@@ -109,6 +109,20 @@ export function keptOnWeb({ router, conversationId, route, fromTask = null, medi
   return false;
 }
 
+/** The first day of theirs the Web line may ride on: their third (owner, 2026-11-06 — never on a first hello). */
+export const WEB_HINT_FROM_DAY = 3;
+
+/**
+ * Which day of theirs this is, counting the day their account was made as day 1, by calendar date
+ * in the install's zone. No account row (the console on a fresh install) is treated as long-standing.
+ */
+export function accountDay(conversationId, now = clock.now()) {
+  const made = db.getAccount(conversationId)?.created_at;
+  if (!made) return Infinity;
+  const day = (ms) => Date.parse(new Date(ms).toLocaleDateString("en-CA", { timeZone: config.installTz }));
+  return Math.round((day(now) - day(made)) / 86_400_000) + 1;
+}
+
 /** The one line a text carries after their first switch from Web (decision 9), once per person ever: intent, not instructions. */
 export const WEB_HINT = "Our full conversation, the Web part included, is on Reason Web.";
 
@@ -175,11 +189,12 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
     }
 
     // Decision 9 (docs/plans/reason-web-phase1.md §7): the first text to them after they moved from
-    // Web to texting mid-task says that the whole conversation is on Web — once per person, ever (db.takeWebHint). Their own texts
+    // Web to texting mid-task says that the whole conversation is on Web — once per person, ever (db.takeWebHint), and
+    // never before their third day (accountDay): a brand-new person's first hello is not the moment. Their own texts
     // only (never a code, never a third party), and taken atomically so a second send cannot repeat it.
     if (name !== WEB && name !== "console" && durable.toOwner && !media
       && !db.HISTORY_EXCLUDED_KEYS.some(p => String(idempotencyKey ?? "").startsWith(p))
-      && webAllowedFor(conversationId) && db.takeWebHint(conversationId)) {
+      && webAllowedFor(conversationId) && accountDay(conversationId) >= WEB_HINT_FROM_DAY && db.takeWebHint(conversationId)) {
       text = `${String(text ?? "").trimEnd()}\n\n${WEB_HINT}`;
       log({ web_hint: conversationId });
     }

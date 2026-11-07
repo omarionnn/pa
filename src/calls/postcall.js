@@ -366,7 +366,9 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
   if (!SPOKE_TO_SOMETHING.includes(row.state) || row.state === "voicemail") return { sent: false, why: "nobody was on it" };
   // Not counted against their day. They were on the phone with it thirty seconds ago; a line that
   // finishes that conversation is not Reason starting one.
-  const reply = await runtime.event(row.conversation_id, ownerEvent({ row, live }), { forCall: row.id });
+  // An unverified caller's ask waits for a yes typed on their own phone: nothing standing covers it.
+  const reply = await runtime.event(row.conversation_id, ownerEvent({ row, live }), { forCall: row.id },
+    String(row.verify_deferred ?? "").trim() ? { onlyAnExplicitYes: true } : null);
   if (reply) {
     db.updateCall(row.conversation_id, row.id, { told_at: clock.now() });
   } else if (row.recording_state === "stored" && runtime.flushRecording) {
@@ -454,6 +456,12 @@ export function ownerEvent({ row, live = null }) {
     + (row.provider === "gptlive"
       ? `\nIf on the call they said yes to something you offered to do later (a check before they leave, a reminder) and it is`
         + ` not set up yet, set it up now with your tools and say so in one line; if you can't, say that instead.`
+      : "")
+    + (String(row.verify_deferred ?? "").trim()
+      ? `\nSomething IS owed: on the call they asked for something that could not be done by voice and waits for this text:`
+        + ` "${String(row.verify_deferred).replace(/"/g, "'")}". Pick it up now, in one short message: the caller was not verified,`
+        + ` so ask for their yes here before doing anything with it (this text goes to their own phone) — a lookup that changes nothing and reaches nobody may be done and said;`
+        + ` anything that texts, calls, books, buys or changes something waits for that yes, even if they gave you a standing permission.`
       : "")
     + (cut
       ? `\nSomething IS owed: they started saying something just as the call ended${cut.words ? ` (all that came through: "${String(cut.words).replace(/"/g, "'")}")` : ""}`
