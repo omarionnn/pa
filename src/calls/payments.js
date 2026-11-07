@@ -8,8 +8,10 @@
 //
 // So there are two halves, and neither one is a prompt:
 //
-//   1. The call request **cannot carry** payment details. Everything a call is allowed to say goes
-//      through `facts`, and `facts` is scanned here before the dial. A hit refuses the call.
+//   1. The call request **cannot carry** payment details. Every piece of model-written text the
+//      call is handed — goal, facts, the questions it asks, the requirements it has ready, the terms
+//      it may agree to — is scanned here before the dial, and so is the final brief (a redial can
+//      carry an older brief forward). A hit refuses the call.
 //   2. The call **carries a standing instruction** to decline if the other side asks for payment
 //      by phone, ask for a pay link or another way, and report back. See `callRulesFor` in
 //      provider.js — it is passed to the provider as its own argument, like the announcement.
@@ -75,15 +77,21 @@ export function findPaymentDetails(text) {
   return [...found];
 }
 
+/** Every string in a requirements object: keys and values both reach the voice prompt. */
+function requirementTexts(requirements) {
+  if (!requirements || typeof requirements !== "object") return [];
+  return Object.entries(requirements).flatMap(([k, v]) => [k, v]);
+}
+
 /**
  * Check everything a call is allowed to say. `ok: false` means do not dial.
  *
- * @param {{goal?: string, facts?: string[]}} _
+ * @param {{goal?: string, facts?: string[], questions?: string[], terms?: string[], requirements?: object}} _
  */
-export function checkCallForPaymentDetails({ goal = "", facts = [] } = {}) {
+export function checkCallForPaymentDetails({ goal = "", facts = [], questions = [], terms = [], requirements = {} } = {}) {
   const hits = new Set();
-  for (const d of findPaymentDetails(goal)) hits.add(d);
-  for (const f of facts ?? []) for (const d of findPaymentDetails(f)) hits.add(d);
+  const texts = [goal, ...(facts ?? []), ...(questions ?? []), ...(terms ?? []), ...requirementTexts(requirements)];
+  for (const t of texts) for (const d of findPaymentDetails(t)) hits.add(d);
   if (!hits.size) return { ok: true };
 
   const what = [...hits].join(", ");
@@ -91,8 +99,23 @@ export function checkCallForPaymentDetails({ goal = "", facts = [] } = {}) {
     ok: false,
     found: [...hits],
     error: `Refused: this call would have carried ${what}, and Reason never gives payment details by phone.`
-      + ` Nothing was dialled. Take it out of the goal and the facts and call again, or do not call:`
+      + ` Nothing was dialled. Take it out of everything the call is given (goal, facts, ask, requirements, approved_terms) and call again, or do not call:`
       + ` if something needs paying, ask them for a pay link or another way to pay that is not read out loud.`
       + ` If this was a false alarm — a booking reference, say, not a card — reword it so it does not read as payment details.`,
   };
+}
+
+/**
+ * The same check over a built brief (src/calls/brief.js), which is what the voice prompt is
+ * rendered from — so a brief carried forward from an earlier call is screened too.
+ */
+export function checkBriefForPaymentDetails(brief) {
+  const b = brief ?? {};
+  return checkCallForPaymentDetails({
+    goal: b.goal ?? "",
+    facts: b.facts ?? [],
+    questions: b.questions ?? [],
+    terms: b.approved?.terms ?? [],
+    requirements: b.requirements ?? {},
+  });
 }

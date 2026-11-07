@@ -53,7 +53,7 @@ import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
 import { recordingNoteFor } from "./calls/inbound.js";
 import { PROVIDER as gptliveProvider, tellLive as gptliveTell, toldNote as gptliveToldNote, notePlace as gptliveNotePlace, isRunning as gptliveRunning, gptliveFor as gptliveForConversation } from "./calls/gptlive.js";
-import { checkCallForPaymentDetails } from "./calls/payments.js";
+import { checkCallForPaymentDetails, checkBriefForPaymentDetails } from "./calls/payments.js";
 import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./calls/brief.js";
 import * as callErrand from "./calls/errand.js";
 import { safeToRedial, stillOpen } from "./calls/redial.js";
@@ -4089,7 +4089,7 @@ export const tools = [
   },
   {
     name: "call_place",
-    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person in this conversation, the one you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes — EXCEPT a call they plainly asked for, to a business, that only asks (no may_book, no max_price_cents, no approved_terms): place that one straight away with no confirmation_id and do not ask them to confirm it; code checks it and refuses with needs_confirmation if it needs a yes after all. Every call to anyone but the owner opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. A call to the owner opens with a plain greeting instead: nothing is announced at the person who set this up, and they are told once by text that calls are recorded. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in the goal or the facts — the call is refused before it is dialled.",
+    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person in this conversation, the one you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes — EXCEPT a call they plainly asked for, to a business, that only asks (no may_book, no max_price_cents, no approved_terms): place that one straight away with no confirmation_id and do not ask them to confirm it; code checks it and refuses with needs_confirmation if it needs a yes after all. Every call to anyone but the owner opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. A call to the owner opens with a plain greeting instead: nothing is announced at the person who set this up, and they are told once by text that calls are recorded. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in anything the call is given (goal, facts, ask, requirements, approved_terms) — the call is refused before it is dialled.",
     input_schema: {
       type: "object",
       properties: {
@@ -4132,7 +4132,8 @@ export const tools = [
           type: "object",
           description: "Everything they are going to ask for, so the call never has to come back to the owner mid-conversation:"
             + " {\"name\": \"<the name it goes under>\", \"people\": \"4\", \"phone\": \"+1...\"}. After eight minutes on hold, the moment somebody"
-            + " finally answers is the worst possible time to discover nobody knows what name to put it under.",
+            + " finally answers is the worst possible time to discover nobody knows what name to put it under."
+            + " NEVER payment details here either (no card number, expiry, security code, bank details or PIN): a call carrying them is refused before it is dialled.",
         },
         max_hold_minutes: { type: "integer", description: "How long this call may wait on hold. Default from config. A busy place at lunchtime may need more." },
         errand_id: { type: "integer", description: "The errand this call is one leg of, from call_errand_start. Set it whenever you are ringing several places about one thing — it is what makes the answers comparable and stops two of them being booked." },
@@ -11145,7 +11146,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Reason never gives payment details by phone. Checked here, on everything the call is
       // allowed to say, before anything is dialled or written down — a card number read onto a
       // recording cannot be taken back, so this fails closed and errs towards refusing.
-      const pay = checkCallForPaymentDetails({ goal: input.goal, facts: input.facts ?? [] });
+      const pay = checkCallForPaymentDetails({
+        goal: input.goal,
+        facts: input.facts ?? [],
+        questions: input.ask ?? [],
+        terms: input.approved_terms ?? [],
+        requirements: input.requirements ?? {},
+      });
       if (!pay.ok) {
         return { ok: false, status: "payment_details_refused", found: pay.found, error: pay.error };
       }
@@ -11249,6 +11256,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // An inquiry errand's legs can never book, whatever was asked for: the errand's kind is the
       // ceiling, so `may_book` arriving on a leg of an ask-everywhere errand does not quietly raise it.
       if (errandRow && errandRow.kind !== "booking") brief.approved.book = false;
+      // And the brief that will actually be rendered into the voice prompt, which is not always the
+      // one built from this input: a redial carries the earlier brief's requirements forward, and an
+      // errand leg takes its questions from the errand row.
+      const briefPay = checkBriefForPaymentDetails(brief);
+      if (!briefPay.ok) {
+        return { ok: false, status: "payment_details_refused", found: briefPay.found, error: briefPay.error };
+      }
       const briefOk = requireBrief({ brief });
       if (!briefOk.ok) return { ok: false, status: "brief_refused", error: briefOk.error };
 
