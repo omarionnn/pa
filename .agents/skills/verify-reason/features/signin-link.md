@@ -43,7 +43,7 @@ Tests: `test/signin-remote.test.js` (53).
 
 ```bash
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')"
-node .agents/skills/verify-reason/bin/signin-link-drive.mjs   # → ALL 9 PASS
+node .agents/skills/verify-reason/bin/signin-link-drive.mjs   # → ALL 10 PASS
 ```
 
 Real `signin_link` tool + real HTTP server on the caged DB; only the browser is a stand-in (no
