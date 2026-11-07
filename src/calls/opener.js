@@ -15,7 +15,7 @@
 // recording line only where the law wants it (./consent.js). What it is calling about is the model's
 // own few words (call_place `about`), never parsed out of the goal by code.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
 
@@ -70,8 +70,24 @@ export function cached(text) {
   } catch { return null; }
 }
 
+// A clip of a call's "about" words can be personal (a medical errand), so nothing is kept long: every
+// clip older than this is deleted whenever a new one is kept. The hello-only clip is simply made again.
+export const CLIP_KEEP_MS = 2 * 24 * 3600_000;
+export function sweepClips(now = Date.now()) {
+  let gone = 0;
+  try {
+    for (const f of readdirSync(cacheDir())) {
+      if (!f.endsWith(".ulaw")) continue;
+      const p = join(cacheDir(), f);
+      try { if (now - statSync(p).mtimeMs > CLIP_KEEP_MS) { unlinkSync(p); gone++; } } catch { /* raced */ }
+    }
+  } catch { /* no cache dir yet */ }
+  return gone;
+}
+
 function keep(text, audio) {
   try {
+    sweepClips();
     mkdirSync(cacheDir(), { recursive: true, mode: 0o700 });
     writeFileSync(join(cacheDir(), `${keyOf(text)}.ulaw`), audio, { mode: 0o600 });
   } catch { /* a clip not kept is made again next time */ }

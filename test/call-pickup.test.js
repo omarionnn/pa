@@ -306,3 +306,30 @@ test("a pause inside that stale reply, while they are still answering, does not 
   await both(40, SPEECH, QUIET);
   assert.ok(s.twilio.media().length > atEnd, "the reply to them is heard");
 });
+
+test("REASON_PICKUP_OPENER=off: no clip and their early audio is not held for the voice (the old opening)", async () => {
+  const was = config.pickupOpener;
+  config.pickupOpener = false;
+  try {
+    const s = startCall();
+    await line(s, 640, SPEECH);
+    assert.equal(s.call.pickup, null);
+    assert.equal(s.call.preStart.length, 0);
+    s.up();
+    assert.equal(s.live.sent.filter(e => e.type === "session.input_audio.append").length, 0);
+    assert.equal(pick(s, "gptlive_pickup_opener").length, 0);
+  } finally { config.pickupOpener = was; }
+});
+
+test("opener clips are never kept past two days (an errand's words can be personal)", async () => {
+  const { writeFileSync, mkdirSync, utimesSync, existsSync } = await import("node:fs");
+  const d = join(config.dataDir, "call-openers");
+  mkdirSync(d, { recursive: true });
+  const old = join(d, "old.ulaw"), fresh = join(d, "fresh.ulaw");
+  writeFileSync(old, "x"); writeFileSync(fresh, "x");
+  const t = (Date.now() - op.CLIP_KEEP_MS - 60_000) / 1000;
+  utimesSync(old, t, t);
+  assert.equal(op.sweepClips(), 1);
+  assert.equal(existsSync(old), false);
+  assert.equal(existsSync(fresh), true);
+});

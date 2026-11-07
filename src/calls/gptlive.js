@@ -1074,7 +1074,7 @@ export class GptLiveCall {
         this.callerSpeechAt = t;
       }
       if (this.started) this.live.send({ type: "session.input_audio.append", audio: m.media.payload });
-      else if (this.talk && this.preStart.length < 250) this.preStart.push(m.media.payload);
+      else if (this.talk && this.pickup && this.preStart.length < 250) this.preStart.push(m.media.payload);
     } else if (m.event === "stop") {
       if (!this.rejoining) this.end("caller hung up").catch(() => {});
     }
@@ -2427,7 +2427,11 @@ export async function settleGptLive({ row, live, settle, runtime = null, log = (
   // How the call went is the model's read (./goalmet.js, started by the settle): waited for, briefly,
   // so the owner is told what really happened — a mailbox that isn't set up is one text of its own.
   const judging = goalPending(settled.id);
-  if (judging) await Promise.race([judging, new Promise(r => setTimeout(r, GOAL_WAIT_MS))]);
+  if (judging) {
+    let wait;
+    try { await Promise.race([judging, new Promise(r => { wait = setTimeout(r, GOAL_WAIT_MS); })]); }
+    finally { clearTimeout(wait); }
+  }
   const read = db.getCall(settled.conversation_id, settled.id) ?? settled;
   const told = await tellTheOwner({ row: read, live, runtime, log });
   db.updateCall(settled.conversation_id, settled.id, { settled_at: clock.now() });
