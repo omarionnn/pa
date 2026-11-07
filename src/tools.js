@@ -9182,7 +9182,7 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
   }
   // A soft text field over its cap (a note, a summary, why) is shortened rather than refused, and the
   // result says so (src/fitlong.js). Anything else that is wrong is still refused as before.
-  const fit = fitLongText(S[name], rawInput);
+  const fit = fitLongText(S[name], rawInput, name);
   rawInput = fit.input;
   const startedAt = Date.now();
   let out = await runToolInner(name, rawInput, ctx);

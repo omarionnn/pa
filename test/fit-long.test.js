@@ -106,3 +106,13 @@ test("a checkout's instruction and a card's detail are never cut: they say what 
   assert.equal(SOFT_TEXT.has("what"), false);
   assert.equal(SOFT_TEXT.has("detail"), false);
 });
+
+test("an event title and a confirm summary are never cut: one goes to the invitees, the other is what the yes is held to", () => {
+  const schema = z.object({ summary: z.string().max(10) });
+  const raw = { summary: "a summary well past ten characters" };
+  for (const tool of ["calendar_create", "apple_calendar_change", "confirm_request"]) {
+    const fit = fitLongText(schema, raw, tool);
+    assert.equal(fit.input, raw); assert.equal(fit.shortened.length, 0);
+  }
+  assert.equal(fitLongText(schema, raw, "cant_do").shortened.length, 1);
+});

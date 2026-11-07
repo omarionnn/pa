@@ -20,6 +20,13 @@ export const SOFT_TEXT = new Set([
 // Never `what` or `detail`: store_checkout's `what` is the instruction the store's agent buys from, and
 // a card's `detail` is what tells two options apart (src/choicecards.js). A cut one is a different order.
 
+// Tools where even those field names go out or are what a yes is held to: an event's `summary` is its
+// title on the calendar and the invitees' copy; confirm_request's `summary` is what the yes is recorded
+// against. A refusal is the honest answer there.
+export const NEVER_CUT_TOOLS = new Set([
+  "calendar_create", "calendar_change", "apple_calendar_create", "apple_calendar_change", "confirm_request",
+]);
+
 /** `text` cut to at most `max` characters, at a word boundary, ending in an ellipsis. */
 export function shortenAt(text, max) {
   const s = String(text ?? "");
@@ -37,8 +44,8 @@ export function shortenAt(text, max) {
  * something other than a too-long soft field is wrong — the normal refusal then says so), and
  * `shortened` lists `{ field, from, to }` for every cut made.
  */
-export function fitLongText(schema, raw) {
-  if (!schema || !raw || typeof raw !== "object") return { input: raw, shortened: [] };
+export function fitLongText(schema, raw, tool = "") {
+  if (!schema || !raw || typeof raw !== "object" || NEVER_CUT_TOOLS.has(tool)) return { input: raw, shortened: [] };
   const first = schema.safeParse(raw);
   if (first.success) return { input: raw, shortened: [] };
   const issues = first.error.issues;

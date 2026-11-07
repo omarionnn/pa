@@ -1838,7 +1838,8 @@ async function renewHold(run, ask, result, say) {
   if (!run || !holdExpired(result)) return null;
   const since = run.ask_since ?? run.created_at;
   if ((run.renewals ?? 0) >= RENEW_MAX || clock.now() >= since + passkey.APPROVAL_TTL_MS - REMIND_BEFORE_MS) return null;
-  if (q("SELECT 1 AS x FROM shop_payments WHERE run_id = ? AND status = 'declined' LIMIT 1").get(run.run_id)) return null;
+  // Declined, or Face ID already tapped and the payment still in flight: never a second ask for the same thing.
+  if (q("SELECT 1 AS x FROM shop_payments WHERE run_id = ? AND status IN ('declined', 'paying') LIMIT 1").get(run.run_id)) return null;
   const again = await startCheckout({ conversationId: run.conversation_id, store: run.store, startUrl: ask.start_url, what: ask.what, item: run.item, maxUsd: ask.max_usd, signIn: run.mode === "sign_in" });
   if (!again.ok) return null;
   tellOnce(run.run_id, "end");

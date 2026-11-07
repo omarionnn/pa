@@ -145,6 +145,17 @@ test("a declined payment is never asked again", async () => {
   assert.equal(out.renewed, undefined);
 });
 
+test("a payment still in flight (Face ID tapped) when the hold runs out is not asked again", async () => {
+  const a = await start();
+  runs[a.runId].requiredAction = PAY("req_1");
+  await shop.step(a.runId);
+  q("UPDATE shop_payments SET status = 'paying'").run();
+  runs[a.runId] = { ...EXPIRED };
+  const out = await shop.step(a.runId);
+  assert.equal(out.renewed, undefined);
+  assert.equal(calls.filter((c) => c.path === "/api/unstable/agent-checkouts" && c.method === "POST").length, 1);
+});
+
 // ---------------------------------------------------------------- 2. one reminder
 test("one reminder before the approval runs out: amount, store, the clock time; once across a store asked again", async () => {
   withPasskey();
