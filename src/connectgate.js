@@ -24,7 +24,6 @@ import { createHash } from "node:crypto";
 import * as db from "./db.js";
 import { readCookie, readCookies, cookieHeader, trySubmittedCode, issueCode, codeHost, boundTo, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT, MAX_FAILED_ATTEMPTS, CODE_TTL_MS } from "./pages/access.js";
 import { renderConnectGate, renderConnected } from "./pages/render.js";
-import { sameOrigin } from "./pages/websignin.js";
 
 export const START_PATH = "/connect/start";
 
@@ -124,6 +123,9 @@ export async function connectStartRequest({ state, method, headers, readBody, ru
     // Only from this page itself. Without it, a page anywhere could post the asker's own code from
     // a victim's browser (login CSRF): the victim's browser would be signed in as the asker and
     // sent on to the provider, and its callback would pass, without the victim typing anything.
+    // Loaded here, not at the top: websignin's own imports reach back to modules that load this one
+    // (notice.js ← alerts.js), and a static import put KINDS in its temporal dead zone.
+    const { sameOrigin } = await import("./pages/websignin.js");
     if (!sameOrigin(headers)) {
       log({ connect_cross_site_post: row.provider });
       return gate({ status: 403, error: "This page has to be used directly. Open the link Reason texted again." });
