@@ -2052,7 +2052,6 @@ export function health({ router, runtime, full = false }) {
     // that cannot send tapbacks. Permanent refusals only, so this is a short list that explains why
     // a feature is quietly absent rather than leaving somebody to wonder.
     // A line is Reason's own number (already under `channels`); a contact is somebody, so a
-    // stranger is told only that it is one.
     // stranger is told only that it is one. `why` carries the provider's own words, which can quote
     // the recipient, so a stranger's copy has any address in it taken out.
     channel_limits: db.listChannelLimits().map(l => {
