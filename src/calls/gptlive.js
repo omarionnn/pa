@@ -858,6 +858,8 @@ export function dropWarm(callId, why) {
 // LINE_QUIET_MS (a line that never pauses, LINE_MAX_WAIT_MS after it started). The gate lets the
 // voice's audio out until its speech has been quiet LINE_GATE_QUIET_MS.
 export const LINE_QUIET_MS = 1000;
+/** The voice's speech stops this long: the next speech is a new run (a new reply, not the old one's tail). */
+export const VOICE_RUN_GAP_MS = 350;
 /** Talk mode: nobody has spoken this long after the pickup, so Reason opens ("hi, is this …?"). */
 export const LINE_OPEN_AFTER_MS = 3000;
 export const LINE_OPEN_MIN_MS = 500;
@@ -1218,6 +1220,12 @@ export class GptLiveCall {
       }
     }
     // A line call: only the words Reason handed over reach the line; the voice's own are dropped.
+    // Runs of the voice's speech, as they arrive (a gap of VOICE_RUN_GAP_MS starts a new one): a run
+    // begun before they answered the pickup opener is the voice's reply to their hello, never a reply.
+    if (hasSpeech(b64)) {
+      if (t - (this.voiceSpeechAt ?? -Infinity) > VOICE_RUN_GAP_MS) this.voiceRunFrom = t;
+      this.voiceSpeechAt = t;
+    }
     if (this.line && !this.talking) {
       const open = this.gateOpen(t, b64) || this.ownOpener(t, b64);
       // Only speech that never reached the line is "its own" (`speakLine`). Counting the words it was
@@ -1750,7 +1758,16 @@ export class GptLiveCall {
     if (!this.talk || this.rejoining || this.heldVoicemail || !hasSpeech(b64)) return false;
     // Somebody has spoken (their voice, before its transcript arrives, or the transcript). After the
     // pickup opener only their voice since it counts: the transcript of the hello it answered lands late.
-    if (this.pickup?.startedAt) { if (!this.callerVoiceAt) return false; }
+    // And the voice's speech must be a NEW run, begun after they started answering the opener: the tail
+    // of the reply it made to their hello while the clip played (dropped) is still streaming when they
+    // answer, and let through it reached them as "…low back" (2026-11-07 greet drive).
+    if (this.pickup?.startedAt) {
+      if (!this.callerVoiceAt) return false;
+      if ((this.voiceRunFrom ?? 0) < this.callerVoiceAt) {
+        if (!this.staleRun || this.staleRun !== this.voiceRunFrom) { this.staleRun = this.voiceRunFrom; this.staleRuns = (this.staleRuns ?? 0) + 1; this.log({ gptlive_stale_voice_dropped: this.call.id }); }
+        return false;
+      }
+    }
     else if (!this.callerVoiceAt && !this.theySpokeSince(this.talkCutoff ?? 0)) return false;
     // A mailbox stays silent (Reason's turn leaves the message, after the beep). A menu or hold does
     // not: the voice is silent through those itself (drives), and the person who comes on after them
@@ -2369,7 +2386,7 @@ export class GptLiveCall {
         });
       } catch { /* a number never breaks a call */ }
     }
-    this.log({ gptlive_call_ended: this.call.id, why: this.endWhy, seconds, ...(this.pickup ? { opener: this.pickup.startedAt ? `${this.pickup.clip.kind}:${this.pickup.state}` : `none:${this.pickup.why ?? ""}` } : {}), delegations: this.delegations, guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted, closed: this.closedReason ?? "", ...(this.line ? { line: true, dropped_frames: this.dropped, sounds_dropped: this.soundsDropped, amd: this.amdVerdict ?? "" } : {}) });
+    this.log({ gptlive_call_ended: this.call.id, why: this.endWhy, seconds, ...(this.pickup ? { opener: this.pickup.startedAt ? `${this.pickup.clip.kind}:${this.pickup.state}` : `none:${this.pickup.why ?? ""}` } : {}), delegations: this.delegations, guard_trips: this.guardTrips, first_voice_ms: this.firstVoiceMs ?? null, warm: !!this.adopted, closed: this.closedReason ?? "", ...(this.line ? { line: true, dropped_frames: this.dropped, sounds_dropped: this.soundsDropped, stale_runs: this.staleRuns ?? 0, amd: this.amdVerdict ?? "" } : {}) });
     try { await this.finishCall(live); } catch (e) { this.log({ gptlive_settle_failed: this.call.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
   }
 }

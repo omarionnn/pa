@@ -266,3 +266,25 @@ test("their hello comes a beat into the silent-line opener: it stops at once and
   assert.equal(s.call.turns.filter(t => t.opener).length, 1, "said once in the transcript");
   assert.equal(s.live.of("session.instructions.append").filter(e => /code just said/.test(e.content)).length, 1, "the voice is told once");
 });
+
+test("the voice's reply to their hello, made while the opener played, never leaks — not even its tail once they answer", async () => {
+  const s = startCall();
+  s.up();
+  await line(s, 200, QUIET);
+  await line(s, 1200, SPEECH);           // their hello
+  await line(s, 600, QUIET);             // the opener plays from ~2.0 s, 2 s long
+  assert.equal(pick(s, "gptlive_pickup_opener").length, 1);
+  const voice = async (ms) => { for (let i = 0; i < ms / 20; i++) { s.live.emit({ type: "session.output_audio.delta", delta: SPEECH }); s.twilio.say({ event: "media", media: { track: "inbound", payload: QUIET } }); await s.timers.advance(20); } };
+  // The voice answers their hello anyway, over the clip and on past its end…
+  await voice(2400);
+  const atEnd = s.twilio.media().length;
+  // …and is still going (the same run) when they answer the opener.
+  for (let i = 0; i < 30; i++) { s.live.emit({ type: "session.output_audio.delta", delta: SPEECH }); s.twilio.say({ event: "media", media: { track: "inbound", payload: SPEECH } }); await s.timers.advance(20); }
+  await voice(600);
+  assert.equal(s.twilio.media().length, atEnd, "no frame of the stale reply reached them");
+  assert.equal(pick(s, "gptlive_stale_voice_dropped").length, 1);
+  // A gap, then the voice's real reply to them: through.
+  for (let i = 0; i < 25; i++) { s.live.emit({ type: "session.output_audio.delta", delta: QUIET }); await s.timers.advance(20); }
+  for (let i = 0; i < 40; i++) { s.live.emit({ type: "session.output_audio.delta", delta: SPEECH }); await s.timers.advance(20); }
+  assert.ok(s.twilio.media().length > atEnd, "the fresh reply is heard");
+});

@@ -140,10 +140,10 @@ const plans = {
   hold: { first: [silence(1000), clip("hold-recording"), mark("music"), music(70_000), silence(10_000)] },
   voicemail: { first: [silence(800), mark("greeting"), clip("voicemail-greeting"), mark("beep"), beep(), mark("after_beep"), { amd: "machine_end_beep" }, silence(30_000)] },
   human: { first: [silence(1200), mark("person"), clip("receptionist"), { amd: "human" }, silence(30_000)] },
-  greet: { first: [silence(700), mark("person"), tts("greet"), mark("greet_end"), afterReason(), tts("recommend"), mark("r2"), afterReason(), tts("price"), mark("r3"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
-  hello: { first: [silence(900), mark("person"), tts("hello"), mark("greet_end"), silence(1400), ifSilent(tts("hello")), afterReason(), tts("recommend"), mark("r2"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
+  greet: { first: [silence(700), mark("person"), tts("greet"), mark("greet_end"), afterReason(), mark("reply_start"), tts("recommend"), mark("r2"), afterReason(), tts("price"), mark("r3"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
+  hello: { first: [silence(900), mark("person"), tts("hello"), mark("greet_end"), silence(1400), ifSilent(tts("hello")), afterReason(), mark("reply_start"), tts("recommend"), mark("r2"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
   noisy: { first: [silence(800), mark("person"), tts("greet"), mark("greet_end"), afterReason(), tts("recommend"), mark("r2"), afterReason(), tts("price"), mark("r3"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
-  quiet: { first: [mark("person"), silence(4000), mark("quiet_end"), afterReason(700, 4000), tts("yes"), mark("greet_end"), afterReason(), tts("recommend"), mark("r2"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
+  quiet: { first: [mark("person"), silence(4000), mark("quiet_end"), afterReason(700, 4000), mark("reply_start"), tts("yes"), mark("greet_end"), afterReason(), tts("recommend"), mark("r2"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
   interrupt: { first: [silence(700), mark("person"), tts("greet"), mark("greet_end"), whileReason(800), mark("holdon_at"), tts("holdon"), mark("hold_start"), silence(6000), mark("hold_end"), tts("back"), mark("r2"), afterReason(), tts("okay"), mark("r3"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
   robot: { first: [silence(700), mark("person"), tts("greet"), mark("greet_end"), afterReason(), tts("robot"), mark("robot_end"), afterReason(), tts("okay"), mark("r3"), afterReason(), tts("bye"), afterReason(1500, 8000)] },
 };
@@ -316,6 +316,13 @@ if (biz) {
   if (marks.hold_start != null) out.spoke_during_hold = heard.some(([at, sp]) => sp && at > marks.hold_start + 1500 && at < marks.hold_end);
   if (marks.r2 != null) out.r2_to_word_ms = firstAfter(marks.r2) != null ? firstAfter(marks.r2) - marks.r2 : null;
   out.notice = pick("gptlive_notice");
+  // A leak (2026-11-07): Reason's audio on the line while they are answering the opener — the tail of
+  // the voice's dropped reply to their hello. A fresh reply starts after they stop, never during.
+  const replyEnd = scene === "quiet" ? marks.greet_end : marks.r2;
+  if (marks.reply_start != null && replyEnd != null) {
+    out.leak_frames = heard.filter(([at, sp]) => sp && at > marks.reply_start + 250 && at < replyEnd).length;
+  }
+  out.stale_runs = pick("gptlive_call_ended")[0]?.stale_runs ?? null;
 }
 const firstLine = said[0] ?? "";
 const fillers = /no rush|take your time/i.test(all);
