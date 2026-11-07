@@ -75,6 +75,7 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Reason Web reply to one message (`REASON_WEB_REPLY` off/`owner`/on: hover → REPLY, composer "replying to" + Esc, sent as an inline reply via Router.deliver `replyTo`/`threadRoot`; quote line over replies from Web, iMessage threads and Reason's pinned answers; Web turns pinned by answerTarget; touch tap/long press) | [web-reply.md](web-reply.md) | `node --test test/web-reply.test.js`; `bin/web-reply-drive.mjs [shots]` under `caged.sh env` (real HTTP + Chromium light/dark + touch, scripted model) |
 | Reason Web notes as tags, files as chips (#267: shared location / inline reply / contact card / voice / file / burst shown as tags, Reason-sent files as chips; stored text unchanged) | [web-notes.md](web-notes.md) | `node --test test/web-notes.test.js`; `bin/web-notes-drive.mjs` (in process, no model) |
 | Reason Web audio chips (voice notes in/out and call recordings play inline; owner-only route, .caf → .m4a, Range) | [web-audio.md](web-audio.md) | `node --test test/web-audio-chip.test.js`; `bin/web-audio-drive.mjs [--shots=DIR]` (in process, no model; WebKit + Chrome) |
+| Deleting a person's data (`src/data.js` `deleteData({ conversation })`, `npm run data:delete`: every table keyed by their conversation, every table in exactly one list — `COVERAGE`; what a scoped delete keeps and why is `KEPT_ON_DELETE`) | [data-delete.md](data-delete.md) | `node --test test/data-coverage.test.js`; `bin/delete-coverage-drive.mjs` under `caged.sh env` (every table seeded, delete, scan; no model) |
 | Reason Web wax-seal book (`REASON_STAMPS_WAX`/`EVERYDAY`/`TIERS`/`ALL`) | [web-stamps-wax.md](web-stamps-wax.md) | `node --test test/stamps-wax.test.js test/stamps-all.test.js`; `bin/web-seals-drive.mjs` |
 
 ## Each file has four sections
@@ -139,7 +140,16 @@ Real features with no file here. Add one when you touch them.
   `test/x.test.js`. Shipped `73db165`.
 - **GitHub connected account** — OAuth flow, 11 tools — `src/github.js`, `test/github.test.js`.
   Shipped `e22a85b`.
-- **Apple Calendar** — CalDAV read/write — `src/caldav.js` or similar. Shipped `437b051`.
+- **Apple Calendar** — CalDAV read/write — `src/icloud.js`. Shipped `437b051`. Since #347 the Apple ID
+  credential goes only to `caldav.icloud.com` / `pNN-caldav.icloud.com` over https.
+- **No false "done"** (#337) — the claim check in `src/said.js` (`REASON_CLAIM_CHECK`, default
+  `acting`): a reply saying done/sent/started with no successful tool behind it is rewritten once.
+  Drive: `bin/no-false-done-drive.mjs`.
+- **Own files only** (#345) — `src/ownfiles.js`: `drive_upload` and `voice_note_send` refuse a path
+  Reason did not make or keep for this conversation (`not_theirs`).
+- **Private-network guard** (#348) — `src/netguard.js`: a URL somebody else chose never reaches a
+  private or loopback host (web_lookup, offers, inbound media, video, browser); inbound media is
+  https-only. Only bypass: `REASON_TEST_ALLOW_PRIVATE_FETCH=1` under `node --test`.
 - **Ops alerts that wait for a second wrong pass** (#85) — `src/ops.js`, `test/ops.test.js`: a check is
   texted to the owner only once it is still wrong on the next pass. Live: `/ops`, `/ops.json`.
   Failures known when they happen skip that wait — see [ops-alerts.md](ops-alerts.md).
