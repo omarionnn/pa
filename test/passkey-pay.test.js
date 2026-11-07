@@ -365,6 +365,13 @@ test("once the card may have reached the store (unknown outcome) the link stays 
     assert.equal(res.status, 400);
     assert.match(res.body, /unknown_outcome/);
     assert.equal(shop.paymentRow(row.id).status, "unknown");
+    // Counted against the day's cap as if it went through, and on record for the owner, the same as the
+    // texted-yes path (security lead 5, 2026-11-07).
+    const unk = db.listSpend(OMARI, (await import("../src/trust.js")).spendDay()).filter((l) => /\(OUTCOME UNKNOWN\)$/.test(l.what));
+    assert.deepEqual(unk.map((l) => l.cents), [979]);
+    const open = db.listUnknownOutcomes(OMARI).filter((u) => u.action === "shop_pay");
+    assert.equal(open.length, 1);
+    assert.equal(open[0].target, (await import("../src/trust.js")).normalizeTarget(shop.payTarget(shop.paymentRow(row.id))));
     assert.match((await page(token)).body, /Already approved/);
     assert.equal(passkey.approvalLog(OMARI).filter((l) => l.event === "link_reopened").length, 0);
   } finally { shop._setFetch(fakeFetch); }
