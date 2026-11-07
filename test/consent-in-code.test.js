@@ -146,3 +146,13 @@ test("words found are not enough: the judge reads what their message meant, and 
   const ok = await runTool("permission_grant", { text: "don't ask me before texting my sister", scope: { action: "texts" } }, { conversationId: AMA, messages: [said("don't ask me before texting my sister")], judge: readsYes });
   assert.equal(ok.ok, true, JSON.stringify(ok));
 });
+
+test("limits riding on a permission follow the limits' rule, and the judge sees who a number is", async () => {
+  const msgs = [said("you can order groceries without asking up to $40")];
+  const out = await runTool("permission_grant", { text: "you can order groceries without asking up to $40", scope: { action: "purchases", target: "groceries", max_amount: 40 }, caps: { per_purchase: 10000, monthly: 100000 } }, { conversationId: AMA, messages: msgs, judge: readsYes });
+  assert.equal(out.ok, false, "limits nobody named rode in on a permission");
+  let summary = "";
+  await runTool("permission_grant", { text: "you can text kofi whenever you like", scope: { action: "texts", target: "+14155550999" } }, { conversationId: AMA, messages: [said("you can text kofi whenever you like")], judge: async (j) => { summary = j.summary; return { verdict: "no" }; } });
+  assert.match(summary, /\+14155550999, which is not on record as anyone they know/);
+  assert.doesNotMatch(summary, /kofi whenever/, "the model's sentence is not in what the judge is told");
+});

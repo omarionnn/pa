@@ -12306,13 +12306,26 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Their words are found in code; what they MEANT is read by the same judge that reads a yes, never a
       // pattern: "never text my mom without asking" holds the words of a permission and means the opposite.
       const theirMessage = trust.ownerSaidWhere(ctx.messages ?? [], said);
+      // What would be saved, built from the scope only (never from the model's `said`): the judge reads
+      // their own message against it. A number is shown with who it is on record as, so "text Kofi
+      // whenever" is not read as covering somebody else's number.
+      const tgt = String(scope.target ?? "").slice(0, 120);
+      const numeric = tgt && /^[+\d\s().-]+$/.test(tgt);
+      const who = numeric ? db.knownPersonByNumber(c, tgt)?.who : null;
+      const capsAsk = input.caps ? `, and set their spending limits to $${input.caps.per_purchase} on one thing and $${input.caps.monthly} a month` : "";
       const grants = [
         `From now on, Reason may do this without asking first: ${String(scope.action).replace(/_/g, " ")}`,
-        // A number means nothing to the judge reading "text kofi whenever"; a word target ("groceries") does.
-        scope.target && !/^[+\d\s().-]+$/.test(String(scope.target)) ? ` (only for: ${scope.target})` : "",
+        tgt ? ` (only for ${numeric ? `the number ${tgt}, ${who ? `on record as ${String(who).slice(0, 60)}` : "which is not on record as anyone they know"}` : `"${tgt}"`})` : " (for anyone and anything of that kind)",
         scope.max_amount ? `, up to $${scope.max_amount} each time` : "",
-        `. Reason will save it as a standing permission in their words: "${said}".`,
+        capsAsk, ".",
       ].join("");
+      if (input.caps) {
+        const prior = db.getSpendCaps(c);
+        const loosens = !prior || Math.round(input.caps.per_purchase * 100) > prior.per_purchase_cents || Math.round(input.caps.monthly * 100) > prior.monthly_cents;
+        if (loosens && !trust.ownerSaidAmounts(ctx.messages ?? [], [input.caps.per_purchase, input.caps.monthly])) {
+          return { ok: false, blocked: "not_their_words", error: `Nothing was saved: the spending limits have to be numbers from one of ${me.name}'s own messages, and none of them names $${input.caps.per_purchase} and $${input.caps.monthly}. Ask them in one line.` };
+        }
+      }
       const meant = theirMessage ? await (ctx.judge ?? judgeReply)({ summary: grants, reply: theirMessage }) : null;
       if (!theirMessage || meant?.verdict !== "yes") {
         return theirMessage
