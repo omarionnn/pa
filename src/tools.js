@@ -3695,7 +3695,7 @@ export const tools = [
   {
     name: "remember",
     description: "Save a durable fact about a person or a thing: a preference, an allergy, a usual spot, who someone is, how they like things. Facts pile up under the same subject, so use the person's name as they say it and one fact per call. Not for plan details — those belong in the plan, which changes; this is for what stays true. Only for what somebody actually TOLD you: a thing you worked out, or read off a picture, is not a fact about them and this will refuse it. Ask them instead and save what they answer."
-      + " When they correct how YOU behave — when you text, your tone, what you put first, something to stop doing — save it with kind 'how_to_treat_me': the rule in 'fact', what it came from in 'why'. It rides on every later turn.",
+      + " When they correct how YOU behave — when you text, your tone, what you put first, something to stop doing — follow it from that reply on and save it with kind 'how_to_treat_me': the rule in 'fact', what it came from in 'why'. It rides on every later turn. Otherwise, save what is clearly worth remembering; you judge what that is.",
     input_schema: {
       type: "object",
       properties: {
