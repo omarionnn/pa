@@ -26,7 +26,7 @@
 // data/documents/ would leave Reason's own files of somebody's writing on a disk they thought they
 // had cleared.
 import { existsSync, readdirSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { db, recordingFiles, documentFiles } from "./db.js";
 import { config } from "./config.js";
 // Creates stranger_calls if this runs before anything else has (npm run data:*).
@@ -172,7 +172,87 @@ const TABLES = [
   // The walks Reason made for them (src/trips.js): where from, where to, and the streets between.
   // Where somebody walks from is as personal as anything here, so exported and deleted.
   "trips",
+  // Everything below was missing until the delete audit of 2026-11-07 (lead 14): tables made in
+  // later parts of src/db.js and in modules that make their own. A delete left all of it behind
+  // under a conversation id that is deterministic (dm:<channel>:<addr>), so re-admitting the same
+  // number handed it straight back. test/data-coverage.test.js now fails the suite when any table
+  // is in none of the lists in this file, so this cannot drift again.
+  //
+  // Reason Web's thread and its chats, the message log the memory graph is built from, the queue of
+  // turns still to extract, the graph itself and the profile blocks summarising it.
+  "messages", "web_chats", "event_log", "extraction_queue", "profile_blocks",
+  "graph_entities", "graph_edges", "graph_mentions", "graph_merge_candidates",
+  // Places they saved and the things they pinned on their Saved page.
+  "saved_places", "saved_marks",
+  // Paying: the AgentCard link (tokens sealed out of an export, see SECRET_COLUMNS), the saved card
+  // and shopping profile, the stores they connected, the checkout runs and links, what each payment
+  // asked, the shipping address, the Face ID passkeys and their approvals, and the daily cap with
+  // every change to it. A card or a passkey left behind would let a later holder of the same
+  // conversation id pay with it.
+  "agentcard_users", "shop_profiles", "shop_cards", "shop_stores", "shop_runs", "shop_run_asks", "shop_links",
+  "shop_payments", "shop_shipping", "pay_passkeys", "pay_approvals", "pay_approval_log",
+  "daily_caps", "cap_changes", "offers", "uber_rides", "spotify_join_requests",
+  // The daily edition and their stamps (src/daily.js, src/stamps.js).
+  "daily_editions", "daily_looks", "daily_questions", "stamps", "stamp_shares", "stamp_jobs", "stamp_step_times",
+  // Calls made on their behalf: the errands, quotes, commitments and requests to call somebody.
+  "call_errands", "call_quotes", "call_commitments", "call_requests",
+  // What they asked, what Reason claimed back, and the bookkeeping around it.
+  "requests", "request_messages", "open_questions", "sent_claims", "choice_sets", "held_actions",
+  "capability_misses", "parallel_runs", "pattern_asks", "line_change_cards",
+  // Their own lists: what they spent, what they ate, what they need from the shop.
+  "expenses", "meal_entries", "grocery_items",
+  // Their side of an event: attendance, check-in, deliveries, the photos they added (the files go
+  // too, in deleteData), the album note they agreed to, the claim a join page made for them, and
+  // their ride offers, asks and the matches made of them. The event itself, when they organised it,
+  // is shared with its guests: see KEPT_ON_DELETE.
+  "event_attendees", "event_checkins", "event_deliveries", "event_photos", "album_consents", "event_claims",
+  "ride_offers", "ride_asks", "ride_matches",
 ];
+
+/**
+ * Tables holding a conversation id that a scoped delete deliberately leaves, and why. Each is a
+ * product decision rather than an oversight, raised as a question on the PR that made this list
+ * (lead 14). A delete of the whole install takes them too.
+ */
+export const KEPT_ON_DELETE = {
+  // Stripe customer and subscription ids, paid-until, and the trial's session count. Deleting it
+  // would let anybody delete their data and start a fresh free trial on the same number.
+  plan: "billing and trial record (Stripe ids, sessions used); deleting it restarts the free trial",
+  harm_events: "abuse record: what the harm screen stopped; deleting it resets the screen's history",
+  // Keyed by actor, which is not always a conversation: the password rate limit itself.
+  event_join_attempts: "rate limit on event passwords; deleting it resets the guess counter",
+  // A block protects the OTHER person in the pair, so it outlives this one's data.
+  ride_blocks: "safety record that protects the other person in the pair",
+  // An event they organised is shared with every guest, and so are its album and its messages.
+  events: "shared with the event's guests; an organiser's delete would remove it for everyone",
+  event_albums: "one per event, shared with every guest who contributed",
+  event_messages: "an event's blasts, shared with every guest",
+};
+
+/**
+ * Install-wide tables: no person's key on them, the operator's own records and caches. Listed so the
+ * coverage test can tell "nobody's" from "forgotten". A whole-install delete leaves them, as before.
+ */
+export const INSTALL_WIDE = {
+  agentcard_events: "AgentCard webhook log: order ids and statuses, no person",
+  channel_limits: "what each channel refused, learned once for everyone",
+  flight_provider_usage: "monthly search counts per flight provider",
+  // `last_addr` is the number the last failure was about, so a fix can tell which one cleared.
+  incidents: "the operator's failure log; last_addr names the number it was about",
+  model_usage: "token and cost counts per feature, no person",
+  ops_checks: "health checks",
+  ops_digest: "the operator's digest lines",
+  ops_state: "operator state; the one per-person key in it is removed by deleteData",
+  place_photos: "photo cache by place",
+  provider_calls: "per-provider call counts",
+  provider_calls_hourly: "per-provider call counts",
+  provider_state: "per-provider health",
+  schema_meta: "schema version",
+  shop_sites: "store directory",
+  sqlite_sequence: "SQLite's own",
+  stripe_events: "Stripe webhook dedupe log",
+  subscription_usage: "Reason's own model-plan usage",
+};
 
 /**
  * Tables whose rows ARE credentials rather than content.
@@ -188,14 +268,22 @@ const TABLES = [
  * never the cookies that make them work.
  */
 // agentcard_users added 2026-10-23: its tokens let a purchase run as the person, sealed or not.
-const SECRET_COLUMNS = { oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token"], flight_travelers: ["details"] };
+// The rest (2026-11-07) are links and handshakes that open something: a checkout link, a Face ID
+// approval, a guest's directory key, a join claim's code, a public stamp page, the saved card's
+// and shopping profile's handles at Crossmint.
+const SECRET_COLUMNS = {
+  oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token", "session_url", "vault_session_id", "exchanged_session"], flight_travelers: ["details"],
+  shop_cards: ["payment_method_id"], shop_profiles: ["profile_id"], shop_links: ["id"],
+  pay_approvals: ["id", "nonce", "challenge"], event_attendees: ["token"], event_claims: ["code"], stamp_shares: ["share_id"],
+};
 // What a redacted column says instead, when it is not a credential.
 const REDACTED_AS = { "flight_travelers.details": "[not exported: passenger details stay sealed on this machine; ask Reason for flight_travelers to read them]" };
 // A handshake in flight belongs to nobody once it is spent, and a live one is a credential. Not
 // redacted — dropped, because there is nothing in it worth having.
 // fact_embeddings: vectors made from their facts, calls, actions and messages (src/recallindex.js).
 // Nothing readable to export, but made from their words, so a delete takes them.
-const DROP_FROM_EXPORT = ["oauth_states", "fact_embeddings"];
+// pay_passkey_regs: a Face ID registration's challenge while it is under way, nothing else.
+const DROP_FROM_EXPORT = ["oauth_states", "fact_embeddings", "pay_passkey_regs"];
 const REDACTED = "[not exported: this is a live credential]";
 
 function redactSecrets(table, rows) {
@@ -246,7 +334,29 @@ const CHILD_SCOPE = {
     + " UNION SELECT url FROM seen_urls WHERE conversation_id = ?)", 2],
   remote_events: ["job_id IN (SELECT id FROM remote_jobs WHERE conversation_id = ?)", 1],
   stranger_calls: ["matched_conversation_id = ?", 1],
+  shop_run_asks: ["run_id IN (SELECT run_id FROM shop_runs WHERE conversation_id = ?)", 1],
+  // A match is both people's; it goes when either side's offer does, contacts and all.
+  ride_matches: ["driver_offer_id IN (SELECT id FROM ride_offers WHERE conversation_id = ?)"
+    + " OR rider_offer_id IN (SELECT id FROM ride_offers WHERE conversation_id = ?)", 2],
+  // A join claim is theirs once their own text spent it; an unspent one ages out with the event.
+  event_claims: ["used_by = ?", 1],
 };
+
+/**
+ * Every table this file knows about, by what an export and a delete do with it. The coverage test
+ * (test/data-coverage.test.js) holds every table in the database to being in exactly one of these.
+ */
+export const COVERAGE = {
+  deleted: [...TABLES, ...DROP_FROM_EXPORT, ...PAGE_CHILD_TABLES],
+  global: GLOBAL_TABLES,
+  kept: KEPT_ON_DELETE,
+  installWide: INSTALL_WIDE,
+};
+
+// Tables are made by the module that owns them (src/shopconnect.js, src/passkey.js and the rest),
+// and `npm run data:*` loads none of those. A table that does not exist yet has no rows to export
+// or delete, so it is skipped rather than allowed to throw half way through a delete.
+const present = (t) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t);
 
 // Which column ties a row to a conversation, or null for anything in CHILD_SCOPE.
 function keyColumn(table) {
@@ -340,6 +450,7 @@ export function exportData({ conversation = null, audio = true, files = true } =
   };
 
   for (const t of TABLES) {
+    if (!present(t)) { out.tables[t] = []; continue; }
     const key = keyColumn(t);
     let rows;
     if (!conversation) rows = db.prepare(`SELECT * FROM ${t}`).all();
@@ -455,6 +566,13 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     ? db.prepare("SELECT run_dir FROM remote_jobs WHERE conversation_id = ?").all(conversation)
     : db.prepare("SELECT run_dir FROM remote_jobs").all()).map(r => r.run_dir).filter(Boolean);
 
+  // The photos they added to event albums are files under data/event-albums/<event>/, named on
+  // their rows: listed now, unlinked once the rows are gone, exactly as the recordings are.
+  const photos = present("event_photos") && present("events")
+    ? db.prepare(`SELECT p.file, e.public_id FROM event_photos p JOIN events e ON e.id = p.event_id${conversation ? " WHERE p.conversation_id = ?" : ""}`)
+      .all(...(conversation ? [conversation] : []))
+    : [];
+
   const rows = {};
   const childIds = [...pageIds, ...(conversation ? [`esign:${conversation}`] : [])];
   for (const t of PAGE_CHILD_TABLES) {
@@ -466,7 +584,11 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   // Children before parents, so a row is never orphaned by its parent going first: task_log needs
   // tasks, research_queries and research_sources need research, person_facts needs people.
   const CHILDREN_FIRST = [...Object.keys(CHILD_SCOPE), ...TABLES.filter(t => !CHILD_SCOPE[t]), ...DROP_FROM_EXPORT];
+  // A delete of the whole install takes what a scoped one deliberately keeps (KEPT_ON_DELETE): there
+  // is nobody left for a billing record or a shared event to be kept for.
+  if (!conversation) CHILDREN_FIRST.push(...Object.keys(KEPT_ON_DELETE));
   for (const t of CHILDREN_FIRST) {
+    if (!present(t)) continue;
     const key = keyColumn(t);
     let r;
     if (!conversation) r = db.prepare(`DELETE FROM ${t}`).run();
@@ -489,6 +611,17 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   // still able to act as that person on every site they had signed in to. The rows would say
   // nothing was connected while the browser went on being logged in, which is the worst of both.
   const profiles = deleteProfiles(conversation);
+
+  const albumRoot = resolve(config.dataDir, "event-albums");
+  const eventPhotos = { listed: photos.length, files_deleted: 0, failed: [] };
+  for (const p of photos) {
+    const f = join(albumRoot, basename(String(p.public_id)), basename(String(p.file)));
+    try {
+      if (existsSync(f)) { rmSync(f, { force: true }); eventPhotos.files_deleted++; }
+    } catch (e) {
+      eventPhotos.failed.push({ file: f, error: (e?.message ?? String(e)).split("\n")[0] });
+    }
+  }
 
   // The run directories. Same reasoning as the profiles: the row is not the whole of it. A job's
   // directory holds the brief it was handed — which quotes the master's own words — along with
@@ -515,7 +648,7 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   }
 
   return {
-    deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, documents, profiles, builds,
+    deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, documents, profiles, builds, event_photos: eventPhotos,
     google: {
       ...googleGrants,
       // Said out loud rather than quietly dropped: whoever runs a delete is entitled to know whether
