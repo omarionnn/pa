@@ -859,6 +859,7 @@ test("a browser not yet proved gets a code texted to the person's own thread, an
   await new Promise(r => setImmediate(r));
   assert.equal(told.length, 1);
   assert.equal(told[0].c, CONV, "the code goes to the person whose profile it is, never to whoever asked");
+  assert.ok(db.HISTORY_EXCLUDED_KEYS.some(p => told[0].meta.idempotencyKey.startsWith(p)), "keyed so the code is never a line in their history");
   const code = /code is (\d{6})/.exec(told[0].text)[1];
   assert.match(told[0].text, /Amazon sign-in link/);
   assert.match(told[0].text, /@reason\.example #\d{6}$/, "bound to the site, so the phone offers it above the keyboard");

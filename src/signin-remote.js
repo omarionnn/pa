@@ -453,6 +453,8 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       // code texted to their own thread, the same rule private pages and trips keep.
       if (!provedOwner(s, headers)) {
         const form = new URLSearchParams(String((await readBody()) ?? ""));
+        // Another tap may have claimed or ended it while the body was read.
+        if (s.secret || s.ended) return gone();
         const typed = form.get("code");
         if (typed === null || form.has("send")) return sendCode(s, tell);
         const tried = tryCode(s, typed);
