@@ -254,7 +254,12 @@ work"); `GET /health`; whether `sweeping` is true (false means timers, tasks and
 will never fire, so half of Reason is dead and any drive that waits on one will hang); each
 channel's status and what it is missing; outbox sent/failed; held inbound with any overdue; task,
 timer and thread counts. It exits non-zero and says so when the instance is not worth driving.
-That includes **`STALE`** (since 2026-11-06): a local process serving another checkout than this one,
+Since #352 (2026-11-07) `/health` without the operator's signed-in `reason_page` session names
+nobody: `owner` is null (doctor drops the "· owner" part), `holding` rows have no
+`conversation_id`, a contact's `channel_limits.scope` reads `contact` and `why` has addresses
+taken out; Reason's own line numbers (`channels[].number`, `line:` scopes) stay. Every count is
+where it was. To see whose message is held, read `pending_inbound` over ssh, not `/health`.
+The non-zero exits include **`STALE`** (since 2026-11-06): a local process serving another checkout than this one,
 or started before `HEAD` was committed. Before that the cwd and the two times were only printed, and a
 cage left running from `~/Desktop/pa-speed6` for eight days read all clear against a newer worktree.
 `caged.sh start` answers `already running` for any cage in the default run dir, whoever started it —
@@ -822,6 +827,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 | Script | What it does |
 |---|---|
 | `bin/caged.sh start\|stop\|status\|env` | The caged instance. `env` prints the exports for driving tools in-process against its database. |
+| `bin/delete-coverage-drive.mjs` | Under `caged.sh env`, from the repo root: seeds every table for a test + control person, runs `deleteData`, scans for anything of theirs left. Exit 0 = nothing unexplained, control untouched. See [features/data-delete.md](features/data-delete.md). |
 | `bin/doctor.sh [live\|port]` | Read-only health verdict. Default `live` = Hetzner over ssh: service + pid start, every `src/` file checksummed, `data/` backups, `.env.bak*`, backup timer, `/health`, `reason-watchdog.timer` + `data/watchdog.json` age, `GET /alive`. A port = a local instance. |
 | `bin/inbound.sh text "…" \| file <p> \| -` | POST one webhook to the caged instance. Refuses 8787. |
 | `bin/peek.sh thread\|inbound\|outbox\|pages\|confirms\|ledger\|schema <t>\|sql "…"` | Read the caged database. `schema` first when a column name is in doubt. |

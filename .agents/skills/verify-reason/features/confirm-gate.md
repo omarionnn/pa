@@ -53,7 +53,11 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   instead of asking twice and landing their yes on nothing.
 - **Standing permissions.** `permission_grant` saves "you can reorder groceries without asking" with
   the owner's sentence verbatim and a narrow `scope` the gate actually checks. Money needs
-  `max_amount`; a permission with no amount cannot authorise a charge.
+  `max_amount`; a permission with no amount cannot authorise a charge. Since #349 the sentence has to
+  be found in one of the owner's own recent typed messages (code, not the model's `said`) and a judge
+  must read it as meaning the grant, else `blocked: "not_their_words"` / `"not_what_they_said"`;
+  `caps_set` needs both numbers in one message of theirs (`not_their_words`). An unverified caller's
+  speech on a call is never the owner's text (`src/trust.js`, `src/calls/postcall.js`).
 - **Caps.** Per-purchase and monthly (`checkCaps` in `src/trust.js`), with what is already
   committed summed from the `spend` table (`db.spentThisMonth`) so a restart does not reset them.
   With no caps set at all, anything that would spend answers `blocked: "needs_caps"` and asks once

@@ -52,8 +52,16 @@ workspace file. `systemFor` for a non-owner carries no operator name or email.
    ```bash
    cd <checkout> && export REASON_CLI_HOME=$(mktemp -d)/rc
    node .agents/skills/verify-reason/bin/cli-seal-probe.mjs --unsealed          # control: operator_email true
-   ANTHROPIC_AUTH_TOKEN=probe-not-a-key node .agents/skills/verify-reason/bin/cli-seal-probe.mjs
+   CLAUDE_CODE_OAUTH_TOKEN=probe-not-a-key node .agents/skills/verify-reason/bin/cli-seal-probe.mjs
    ```
+
+   The dummy login has to be `CLAUDE_CODE_OAUTH_TOKEN`: since #346 the child's env is an allowlist
+   (`CHILD_ENV_KEEP` in `src/backends/cli.js`), and `ANTHROPIC_AUTH_TOKEN` is not on it. With the old
+   `ANTHROPIC_AUTH_TOKEN=…` the sealed run gives `run_ok: false`, `requests: 0`, "no request reached
+   the stand-in" (2026-11-07 at `8a1fe18`); with `CLAUDE_CODE_OAUTH_TOKEN` it is `run_ok: true`,
+   1 request, every field false. #346 also gives a tool turn `--tools ToolSearch` only and makes the
+   tool bridge answer only this turn's Bearer secret (`src/backends/mcp-http.js`);
+   `bin/cli-tools-probe.mjs` is its wire probe.
 
    2026-11-06 at `c6ce172` (worktree, no AGENTS.md in it): control → `any_email: 1`,
    `operator_email`, `user_email_block`, `git_repository_true`, `repo_path` all true; sealed →

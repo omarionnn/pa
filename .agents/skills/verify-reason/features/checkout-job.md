@@ -22,8 +22,11 @@ What code does now, with no model in front of it:
 - **the end** → one text saying what happened: expired input (what was asked), blocked (summary),
   cancelled, placed (order ref if Crossmint gives one), ended after a payment (outcome unknown, check mail);
 - **a stall** (`STALL_MS` 12 min without the revision moving; past Crossmint's 10-min input expiry so an
-  expiring request reads as expired) → one text; Crossmint not answering about the run for `LOST_MS`
-  (36 min) → the run is marked failed ("lost") and said once;
+  expiring request reads as expired) → one text; Crossmint saying it does not know the run (a 404)
+  for `LOST_MS` (60 s since #337) → failed ("lost"), cancelled at Crossmint, said once; Crossmint down
+  or refusing (5xx, 429, no answer) for `OUTAGE_MS` (36 min) → given up but never cancelled; a follow
+  loop that throws on Reason's own bug only logs `checkout_follow_broken` (`src/shopconnect.js`
+  `LOST_MS` / `OUTAGE_MS`);
 - **a payment Reason can't approve** (not a card, no readable amount) → said once, never the model's;
   `shop_answer` refuses anything but a plain form (`not_a_form`, `needs_signin_link`);
 - **a wake that failed** (the runtime threw) is raised again on the next look (`told` carries `woke:<request>`);

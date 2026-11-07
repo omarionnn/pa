@@ -43,9 +43,20 @@ export function isOperatorAddress(address) {
   return config.operatorNumbers.some(n => normalizeNumber(n) === addr);
 }
 
-/** Does this number already have a Reason, and is it answering? */
+/**
+ * Does this number already have a Reason, and is it answering?
+ *
+ * Which Reason is per line (the row for this channel), but whether it answers is per person: a
+ * number paused or removed on one line is paused or removed on every line, the way a block is.
+ * Otherwise a stopped number texting the other line would look like a stranger and could be
+ * auto-admitted into a fresh Reason, or put in front of the master as if new.
+ */
 export function accountState(channel, address) {
   const addr = normalizeNumber(address) || String(address ?? "").trim();
+  if (!isOperatorAddress(addr)) {
+    const stopped = db.stoppedStateOf(addr);
+    if (stopped) return stopped;
+  }
   const row = db.accountByAddress(channel, addr) ?? db.getAccount(conversationIdFor({ channel, address: addr }));
   return row ? (row.state ?? "active") : null;
 }

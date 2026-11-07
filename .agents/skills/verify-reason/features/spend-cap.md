@@ -22,7 +22,10 @@ person can change their own. Before this the cap was one number for the whole in
     says so); without one it is a plain yes — `spend_limit_confirm` in the chat, or the yes/keep pair on
     Settings — that runs out after `config.askTtlMoneyH` (24h) like every ask about money. With a passkey
     on file the code itself refuses a texted yes or the Settings button (`confirmChange` →
-    `needs_face_id`) and hands back a fresh link; the prompt is not the only guard (review fix, 12th test);
+    `needs_face_id`) and hands back a fresh link; the prompt is not the only guard (review fix, 12th test).
+    Since #349 the texted yes is read in code, never from the model's `answer`: their own typed message
+    after the ask (`asked_after_msgs`), judged as a yes to that raise — none yet → `waiting_for_yes`,
+    unclear → `not_a_yes`, a no declines the change (`src/shoptools.js` `spend_limit_confirm`);
   - the ceiling for self-set numbers is `SELF_MAX_CENTS` ($1,000 a day), the owner included; above it
     only the operator can go, by raising the default in `.env`. The refusal names the ceiling and never
     who could go higher or how;
