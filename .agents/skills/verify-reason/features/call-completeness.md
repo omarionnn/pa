@@ -121,6 +121,18 @@ files but not mapped here.
   (`ownerLanguageRule`). Both pinned in `test/call-voice.test.js`.
 - **Once-only post-call write.** A second `writeCallIntoThread` for the same call would double the
   rows; the guard is in `postCallRequest`, not in the function.
+- **"Call X again" carries the NEW purpose (#332, 2026-11-05, call 63 → call 74).** `call_place`
+  builds this call's brief first (`freshBrief`) and hands it to `safeToRedial` (`src/calls/redial.js`);
+  only the "did it go through?" rewrite of a dropped call that could have booked something replaces it,
+  with booking off and this call's purpose carried after the check. A retry, an ask-only call that
+  dropped (a plain retry now, not a check) or a friend rung with a new message goes with what it was
+  asked to carry now — call 74 went to Yaw with the old Man U script. Attempts and voicemails count
+  over the last 24 h, not forever. `call_status` with no id = the five most recent calls in full plus
+  `earlier_calls`, one line per older call (60 days, 40 rows: `call_id`, `to` — "them (their own
+  phone)" for an owner call — `placed`, `goal`, `ended`), so "call Yaw again" finds Sunday's call.
+  Offline: `node --test test/call-again-new-purpose.test.js` (5). In process under `caged.sh env`,
+  no model: insert a `calls` row on a throwaway `REASON_DB_PATH`, `runTool("call_status", {}, { conversationId, messages: [] })`
+  → that call in `calls` with goal and outcome (2026-11-06, `c6ce172`).
 
 ## How to get to it (user POV)
 

@@ -253,6 +253,12 @@ work"); `GET /health`; whether `sweeping` is true (false means timers, tasks and
 will never fire, so half of Reason is dead and any drive that waits on one will hang); each
 channel's status and what it is missing; outbox sent/failed; held inbound with any overdue; task,
 timer and thread counts. It exits non-zero and says so when the instance is not worth driving.
+That includes **`STALE`** (since 2026-11-06): a local process serving another checkout than this one,
+or started before `HEAD` was committed. Before that the cwd and the two times were only printed, and a
+cage left running from `~/Desktop/pa-speed6` for eight days read all clear against a newer worktree.
+`caged.sh start` answers `already running` for any cage in the default run dir, whoever started it —
+leave somebody else's alone and start your own beside it: `export REASON_VERIFY_RUN=$TMPDIR/reason-verify-<name>
+REASON_VERIFY_PORT=<free port>` for `caged.sh start|env|stop` and `doctor.sh caged` alike.
 On live it also reports the outside watchdog (`reason-watchdog.timer` state + last run,
 `data/watchdog.json`'s age) and the server's own `GET /alive` on its `REASON_PORT` (8788);
 `ActiveState=inactive` with no last run, or `/alive` → `not found`, means that code is not deployed.
@@ -935,8 +941,14 @@ To-do list (`REASON_TODO` off/`owner`/on; the plan, the one yes, the list's call
   failed outright trips `sideCallsOut()` (`src/backends/cli.js`): every side call fails fast for
   `SIDE_OUT_MS` (30 s). The only paid calls left are **phone calls** and their screen
   (`call_harm`, `REASON_CALL_BACKEND=api`) and the API backend itself, which live does not run.
-  So a `model_usage` row with `via='api'` and a text feature (`harm`, `said_check`, `onethought`,
-  `extraction`) is a regression. The cap and fallback text below are from 2026-10-25 and now
+  So on a `claude-cli` install a `model_usage` row with `via='api'` and a text feature (`harm`,
+  `said_check`, `onethought`, `extraction`) is a regression. **Since #329 (2026-11-02, `src/backends/side.js`)
+  an install on `REASON_BACKEND=api` runs every side lane — titles, greeting, onboarding read, mid-turn
+  read, said ledger, a call's goal, extraction, profile, fact filing, photo looks — on the API key
+  with the same prompts and schema** (`sideModelOn()`: CLI always; API only with a key, never under
+  the test runner without `setSideApiClient`). Live is still `claude-cli` (read 2026-11-06), so the
+  paragraph above is what live does; the cage (`api`, key blanked) has `sideModelOn() === false` and
+  runs none of them. The cap and fallback text below are from 2026-10-25 and now
   only bite calls; the "Pre-reply checks" row always reads `ok`, "on the subscription, never the
   paid API". Every call is counted in `model_usage` by
   feature (`$` estimated off `config.apiPrices`; CLI runs counted without `$`); the /ops row

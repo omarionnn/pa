@@ -64,8 +64,24 @@ Tests (pass counts at time of writing): `memory.test.js` 33, `memory-page.test.j
   and the memory_page line of `SYSTEM` (`src/agent.js`); pinned in `test/memory-page.test.js`.
   Driven on the cage 2026-10-23 at `226ff17`: three asks, no number in any reply (one of the three
   came back as the API-path empty-turn fallback, "something broke on my end" — a separate gap).
+- **Recall reaches what Reason DID and SAID (#334, 2026-11-05, "the spa place").** Until then
+  `memory_search` searched only `person_facts`, and it had no schema, so the model's every call was
+  refused "Unknown tool". `src/recallindex.js` indexes, into `fact_embeddings` under their own
+  `source_table`, `action_ledger` actions (bookkeeping kinds and `call_place`/`call_recording`
+  skipped), `calls` once settled (3 min), one-off `timers`, and `event_log` exchanges (their message +
+  the reply, 10 min wait, 1,200 chars). Only the vector is stored; words are read back from the source
+  row, so a deleted row cannot come back. Indexed by the runtime sweep (`indexPending`, never awaited,
+  once a minute); history backfill `scripts/recall-backfill.mjs` (dry run by default). `memory_search`
+  returns `results` (facts) + `history` (`kind`, `at`, `text`); no OpenAI key or the embeddings API
+  down → `keywordHistory` by words, `searched: "by words only — meaning search is down"`, and the note
+  says never "nothing saved". `recall` with no fact points at `memory_search`. #334's review: emptied
+  exchanges (retention sweep) are skipped past, their vectors dropped with their words and on
+  `data:delete`. Offline `node --test test/recall-history.test.js` (12). In process under
+  `caged.sh env` with `OPENAI_API_KEY=` (no spend): two `calls` rows on two conversations, a spa goal
+  each, `runTool("memory_search", { query: "spa massage" }, { conversationId: "dm:owner", messages: [] })`
+  → `count: 1`, the owner's call only, by words (2026-11-06, `c6ce172`).
 - **Isolation.** Nothing crosses conversations: graph, facts, embeddings are all keyed on
-  `conversation_id`.
+  `conversation_id`. The recall index filters every store query AND each source-row read on it.
 
 ## How to get to it (user POV)
 

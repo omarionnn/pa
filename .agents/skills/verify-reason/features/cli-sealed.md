@@ -14,7 +14,11 @@ Found by the 2026-10-31 prompt audit; confirmed on a non-owner transcript.
 - has `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` (no CLAUDE.md / AGENTS.md from anywhere);
 - has `CLAUDE_CONFIG_DIR=~/.reason-cli/config`, a config with no login profile in it (an
   `oauthAccount` that ever turns up there is removed before the next run), and no
-  `CLAUDE_CODE_USER_EMAIL`. It signs in with `CLAUDE_CODE_OAUTH_TOKEN` (the server's `.env`).
+  `CLAUDE_CODE_USER_EMAIL`. It signs in with `CLAUDE_CODE_OAUTH_TOKEN` (the server's `.env`);
+  with no token and a `~/.claude/.credentials.json`, that file is symlinked into the sealed config
+  (`prepareSealedCli`). A profile stripped out of the sealed `.claude.json` is written aside and
+  renamed over (72df026), so a child never reads half a file. `REASON_CLI_HOME` moves the whole
+  sealed root (default `~/.reason-cli`).
 
 The API backend never had either leak: `src/agent.js` builds the whole request and loads no
 workspace file. `systemFor` for a non-owner carries no operator name or email.
@@ -39,6 +43,22 @@ workspace file. `systemFor` for a non-owner carries no operator name or email.
    `--unsealed` is the control and must show `operator_email: true`, `agents_or_claude_md: true`
    (exit 0 = leak reproduced). The sealed run must show every field false, `any_email: 0`, and
    `working_dir: /home/reason/.reason-cli/cwd` (exit 0 = clean).
+
+3. **On this Mac** (no server, no subscription spent): the Mac's login is in the Keychain, not a
+   credentials file, so a sealed child here has no auth and the probe says `no request reached the
+   stand-in: nothing proven`. Give it a dummy bearer — it only ever reaches the loopback stand-in —
+   and a throwaway sealed root:
+
+   ```bash
+   cd <checkout> && export REASON_CLI_HOME=$(mktemp -d)/rc
+   node .agents/skills/verify-reason/bin/cli-seal-probe.mjs --unsealed          # control: operator_email true
+   ANTHROPIC_AUTH_TOKEN=probe-not-a-key node .agents/skills/verify-reason/bin/cli-seal-probe.mjs
+   ```
+
+   2026-11-06 at `c6ce172` (worktree, no AGENTS.md in it): control → `any_email: 1`,
+   `operator_email`, `user_email_block`, `git_repository_true`, `repo_path` all true; sealed →
+   `run_ok: true`, 1 request, every field false, `working_dir` = `$REASON_CLI_HOME/cwd`.
+   `node --test test/cli-sealed.test.js` 4/4.
 
 Evidence 2026-11-06 (branch code on the box, CLI 2.1.296): control → 1 email (the operator's),
 userEmail block, AGENTS.md, repo path; sealed → 0 emails, none of the rest, run ok.
