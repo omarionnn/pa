@@ -30,7 +30,9 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
   (GitHub, Google, Spotify, X, Uber) is Reason's own start page `/connect/start?state=…`
   (`src/connectgate.js` `startLink` `:37`, called from each provider's `authorizeUrl`); the provider's
   address sits on the state row (`oauth_states.authorize_url`) and is only handed out with a 302 to a
-  browser whose `reason_page` session is the asker's. Any other browser gets "Text me the code"
+  browser whose `reason_page` session is the asker's and came from a trusted sign-in: Reason Web
+  (`wsign:`) or this gate (`connect:`) only (`TRUSTED_SIGNIN`). An event, album, directions,
+  private-page or /ops session, even the asker's own, gets the code step. Any other browser gets "Text me the code"
   (`connectStartRequest` `:91`): a GET never texts, the POST texts a six-digit code to the thread that
   asked for the link, POSTs must be same-origin (`sameOrigin`, else `403`, so a page elsewhere cannot sign a victim's browser in as the asker), the right code sets the session cookie (`Path=/`) and 303s on to the provider.
   Every callback route in `src/http.js` calls `refuseForeignBrowser` (`:58`) first: a browser not

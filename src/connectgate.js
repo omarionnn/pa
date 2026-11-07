@@ -22,7 +22,7 @@
 // origin), so the cookie the gate sets is the cookie the callback reads.
 import { createHash } from "node:crypto";
 import * as db from "./db.js";
-import { readCookie, cookieHeader, trySubmittedCode, issueCode, codeHost, boundTo, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT, MAX_FAILED_ATTEMPTS, CODE_TTL_MS } from "./pages/access.js";
+import { readCookie, readCookies, cookieHeader, trySubmittedCode, issueCode, codeHost, boundTo, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_CODES_SENT, MAX_FAILED_ATTEMPTS, CODE_TTL_MS } from "./pages/access.js";
 import { renderConnectGate, renderConnected } from "./pages/render.js";
 import { sameOrigin } from "./pages/websignin.js";
 
@@ -42,9 +42,21 @@ export function startLink(state, providerUrl, redirectUri) {
   return `${origin}${START_PATH}?state=${encodeURIComponent(state)}`;
 }
 
-/** The conversation this browser is signed in as, or null. */
+// The sign-ins a connect trusts: Reason Web's (`wsign:`, a same-origin form with a form token) and
+// this gate's own (`connect:`, same-origin only). Every other gate that leaves a `reason_page`
+// session (events, albums, directions, private pages, /ops) is not counted: a callback that took any
+// session would be only as safe as the weakest of them, and one of those planted in a victim's
+// browser by a cross-site post would carry the asker's identity to the provider's callback.
+const TRUSTED_SIGNIN = /^(wsign|connect):/;
+
+/** The conversation this browser is signed in as through a trusted sign-in, or null. */
 function browserConversation(headers) {
-  return db.pageSessionOwner(readCookie(headers?.cookie), SESSION_TTL_MS);
+  for (const token of new Set([readCookie(headers?.cookie), ...readCookies(headers?.cookie)].filter(Boolean))) {
+    if (!TRUSTED_SIGNIN.test(db.pageSessionSource(token) ?? "")) continue;
+    const owner = db.pageSessionOwner(token, SESSION_TTL_MS);
+    if (owner) return owner;
+  }
+  return null;
 }
 
 /**

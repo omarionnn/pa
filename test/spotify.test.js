@@ -560,7 +560,7 @@ test("Spotify's redirect connects the account and shows a page with no token on 
     const state = new URL(link.url).searchParams.get("state");
 
     // The asker's own browser (signed in to Reason as them); anyone else's is refused (test/oauth-binding.test.js).
-    db.startPageSession("web", "spotify-callback-browser", { conversationId: OMARI });
+    db.startPageSession(`wsign:${OMARI}`, "spotify-callback-browser", { conversationId: OMARI });
     const res = await fetch(`${base}/spotify/callback?code=good-code&state=${encodeURIComponent(state)}`, { headers: { cookie: "reason_page=spotify-callback-browser" } });
     assert.equal(res.status, 200);
     const html = await res.text();

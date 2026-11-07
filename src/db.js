@@ -6234,6 +6234,11 @@ export function pageSessionExists(token) {
   return !!token && !!db.prepare("SELECT 1 FROM page_sessions WHERE token = ?").get(String(token));
 }
 
+/** Which sign-in made this session (its page_id: a page id, `wsign:…`, `esign:…`, `connect:…`), or null. A read only. */
+export function pageSessionSource(token) {
+  return token ? db.prepare("SELECT page_id FROM page_sessions WHERE token = ?").get(String(token))?.page_id ?? null : null;
+}
+
 /** Whose session row this is (its conversation), or null. A read only. */
 export function pageSessionConversation(token) {
   return token ? db.prepare("SELECT conversation_id FROM page_sessions WHERE token = ?").get(String(token))?.conversation_id ?? null : null;

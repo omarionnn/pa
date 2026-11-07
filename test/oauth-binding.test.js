@@ -111,7 +111,7 @@ const sessionCookie = (res) => [].concat(res.headers["set-cookie"] ?? []).map(c 
 /** A browser that is already signed in to Reason as `conversationId` (a page / Web sign-in earlier). */
 function signedInAs(conversationId) {
   const token = `tok-${conversationId}-${Math.random().toString(36).slice(2)}`;
-  db.startPageSession("web", token, { conversationId });
+  db.startPageSession(`wsign:${conversationId}`, token, { conversationId });
   return `reason_page=${token}`;
 }
 
@@ -220,6 +220,26 @@ test("the gate's form only works from the gate itself: a page elsewhere cannot p
   const ok = await hit(path, { method: "POST", body: `code=${code}`, extra: { origin: base, "sec-fetch-site": "same-origin" } });
   assert.equal(ok.status, 303, ok.text.slice(0, 200));
   assert.ok(sessionCookie(ok));
+});
+
+test("only a Reason Web or connect sign-in counts: a session from another gate, even the asker's own, gets the code step", async () => {
+  // An event, album, directions, private-page or /ops session may have been planted in a victim's
+  // browser by a cross-site post of the asker's own code; the connect never takes one of those.
+  for (const source of [`esign:${ASKER}`, "trip:abc", "pg-123", "ops"]) {
+    const token = `other-gate-${source}`;
+    db.startPageSession(source, token, { conversationId: ASKER });
+    const link = github.authorizeUrl(ASKER);
+    const start = await hit(pathOf(link.url), { cookie: `reason_page=${token}` });
+    assert.equal(start.status, 401, source);
+    assert.equal(start.headers.location, undefined);
+    const back = await hit(`${github.REDIRECT_PATH}?code=good-code&state=${encodeURIComponent(stateOf(link.url))}`, { cookie: `reason_page=${token}` });
+    assert.equal(back.status, 400, source);
+  }
+  assert.equal(db.listOauthTokens(ASKER, "github").length, 0);
+  // Reason Web's own sign-in still goes straight through.
+  const link = github.authorizeUrl(ASKER);
+  const start = await hit(pathOf(link.url), { cookie: signedInAs(ASKER) });
+  assert.equal(start.status, 302);
 });
 
 test("a browser signed in as someone else is not let through, and gets the gate rather than the provider", async () => {
