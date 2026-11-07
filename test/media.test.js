@@ -416,13 +416,14 @@ test("a picture that could not be read puts its one sentence in the message itse
   assert.equal(/blank/i.test(forModel.content), false);
 });
 
-test("a delivery failure notice still comes first, ahead of everything about pictures", () => {
+test("a delivery failure notice comes right after their line, ahead of everything about pictures", () => {
   const { forModel } = userMessageFor({
     notice: "[delivery failure] your last reply never arrived.\n",
     prefix: "[stamp] Omari:", text: "?",
     notes: ["they sent a photo (a.heic) and you cannot open it"],
   });
-  assert.match(forModel.content, /^\[delivery failure\]/);
+  // Their line opens the message (src/trust.js ownerTexts reads provenance from it: lead 29), the notice next.
+  assert.match(forModel.content, /^\[stamp\] Omari: \?\n\[delivery failure\][^\n]*\n\[they sent a photo/);
 });
 
 // ---------- end to end: a webhook with a photo on it ----------

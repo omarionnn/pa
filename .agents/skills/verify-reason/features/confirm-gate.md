@@ -26,6 +26,19 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   (A fifth, `spent`, comes back when the yes was already used — the `consumed_at` check at the top of
   `recordConfirmation` in `src/trust.js`. It is a refusal, not a go.)
 - **The model cannot grant it for them.** It calls `confirm_record`; the guard decides.
+- **Only the owner's own line is a reply; an event turn never is.** `ownerTexts` (`src/trust.js`)
+  tells them apart by the line's opening: `[event …]` is a timer/sweep, `[<stamp>] <Name>:` is them.
+  So `userMessageFor` (`src/agent.js`) always puts that prefix first and a `[delivery failure]`
+  notice on its own lines right after (lead 29, 2026-11-07). Before, the API path put the notice in
+  front, so a timer turn that also reported a failed text counted as a new owner message and the
+  notice/timer text went to the judge as their yes (and on owner turns the failed body read as their
+  words). Pinned in `test/trust-event-notice.test.js` (4; 3 fail on the old code). Drive, no model,
+  cage env: enqueue a `toOwner` outbox row, `markOutboundFailed(row.id, …)`, claim it with
+  `undeliveredFor` + `markUndeliveredTold`, build the turn with `userMessageFor({ notice:
+  undeliveredNotice(rows), prefix: "[event …]", text })`, push `forModel`, `confirm_record` with
+  `ctx.judge` stubbed yes. End state: `waiting_for_yes`, `granted_at` null; the same with an owner
+  prefix and "yes send it" → `granted`, `quote` first line `yes send it`. On the old code the event
+  turn came back `granted`.
 - **The guard reads the reply with a model of its own.** `recordConfirmation` calls `judgeReply`
   (`src/judge.js`) — the `claude-cli` backend or the Anthropic API. A flat no is honoured in code
   before the judge is ever asked (`isBareRefusal`, defined near the top of `src/trust.js` and
