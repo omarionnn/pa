@@ -66,12 +66,6 @@ export function ownerTexts(messages = []) {
     .map(m => m.content.replace(/^\[[^\]]*\]\s*/, "").replace(/^[^:]{0,40}:\s*/, "").trim());
 }
 
-/**
- * Did the owner really say this? `said` must appear, give or take case, spacing and punctuation, in
- * one of their own recent messages (`ownerTexts`, so never a tool result, an event or an unverified
- * call). For a change to the gate itself (a standing permission, spending limits), whose words are
- * the whole of the authority: the model's paraphrase of what they wanted is not their saying it.
- */
 const sayNorm = (t) => String(t ?? "").toLowerCase().normalize("NFKC").replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}$%.'\s]/gu, " ").replace(/\s+/g, " ").trim();
 const LITTLE = new Set(["the", "and", "you", "can", "for", "with", "that", "this", "your", "my", "me", "to", "of", "a", "an", "it", "on", "in", "at", "up", "any", "just", "from", "now"]);
 const contentWords = (t) => sayNorm(t).split(" ").map(w => w.replace(/^[$.']+|[.']+$/g, "")).filter(w => w.length >= 3 && !LITTLE.has(w));
@@ -82,19 +76,26 @@ const contentWords = (t) => sayNorm(t).split(" ").map(w => w.replace(/^[$.']+|[.
  * picks), and none of that is their saying anything.
  */
 function typedOnly(t) {
-  // A note opens with "[" at the start of a line and runs to its matching "]", across as many lines as
-  // the text inside it has (a PDF's whole body is one note): the whole span goes, not just its first line.
+  // Notes come in two places: one-line ones in front of what they typed (the message an inline reply is
+  // under, which card a number picks) and the rest after it (a PDF's whole text, what a photo was). So:
+  // the one-line notes in front are skipped, and from the first note after their words on, nothing is
+  // theirs. A note's own text can hold a "]" (a document says anything), so its end is never trusted.
+  const lines = String(t).split("\n");
+  let i = 0;
+  while (i < lines.length && /^\s*\[[^\n]*\]\s*$/.test(lines[i])) i++;
   const out = [];
-  let depth = 0;
-  for (const line of String(t).split("\n")) {
-    if (depth === 0 && !/^\s*\[/.test(line)) { out.push(line); continue; }
-    for (const ch of line) { if (ch === "[") depth++; else if (ch === "]") depth = Math.max(0, depth - 1); }
-  }
+  for (; i < lines.length; i++) { if (/^\s*\[/.test(lines[i])) break; out.push(lines[i]); }
   return out.join("\n").trim();
 }
 const typed = (messages, last) => ownerTexts(messages).slice(-last).map(typedOnly).filter(Boolean);
-const NEGATION = /\b(never|don'?t|do not|doesn'?t|no longer|stop|not)\b/;
+const NEGATION = /\b(never|don'?t|do not|doesn'?t|can'?t|cannot|won'?t|shouldn'?t|mustn'?t|no|no longer|stop|not)\b/;
 
+/**
+ * Did the owner really say this? `said` must appear, give or take case, spacing and punctuation, in
+ * one of their own recent messages (`ownerTexts`, so never a tool result, an event or an unverified
+ * call). For a change to the gate itself (a standing permission, spending limits), whose words are
+ * the whole of the authority: the model's paraphrase of what they wanted is not their saying it.
+ */
 export function ownerSaid(messages, said, { last = 12 } = {}) {
   const want = sayNorm(said);
   const words = contentWords(said);
@@ -103,7 +104,9 @@ export function ownerSaid(messages, said, { last = 12 } = {}) {
   return typed(messages, last).some(t => {
     const theirs = sayNorm(t);
     // "never text my mom without asking me" contains "text my mom without asking me": a no, quoted as a yes.
+    // And a sentence that opens on a no ("never …", "don't …") is a rule against, not a permission.
     if (NEGATION.test(theirs) && !NEGATION.test(want)) return false;
+    if (/^(never|don'?t|do not|can'?t|cannot|won'?t|shouldn'?t|no|stop|not)\b/.test(want)) return false;
     if (theirs.includes(want)) return true;
     // A light retelling of one message of theirs (the model tidied the wording): nearly every word that
     // carries meaning is theirs. A sentence they never sent shares almost none.
