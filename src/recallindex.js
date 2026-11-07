@@ -226,7 +226,77 @@ export function snippetFor(conversationId, table, id, spanFrom = null, { chars =
   return null;
 }
 
-/** The stored rows of THIS conversation closest in meaning to `vector`. */
+// ---------- ranking ----------
+//
+// Live proof of 2026-11-06: "spa place" put the real spa call 9th, and the top hit was Reason's own
+// earlier "I don't have any spa place saved" reply. A thread exchange repeats the very words they
+// use when they point back, so it out-scores the thing it was about; and a "nothing saved" reply,
+// handed back as what you said, teaches the model to say it again. So:
+//   1. an exchange whose reply says Reason had nothing on it / didn't know is never handed back;
+//   2. what Reason DID (a call, a link or page sent, a place looked up, a reminder) ranks above what
+//      it SAID, as long as it is a real match (within ACTION_REACH of the best candidate);
+//   3. the cut to `limit` comes after that reordering, over up to POOL candidates — not the top
+//      few by raw score.
+
+/** How far below the best match a done thing may score and still rank above the thread. */
+const ACTION_REACH = 0.3;
+/** Candidates read back and ranked before the cut. */
+const POOL = 60;
+
+const NEG = "(?:don['’]?t|do not|didn['’]?t|did not|haven['’]?t|have not|can['’]?t|cannot|couldn['’]?t|could not)";
+/**
+ * Reason's own fixed phrasings for "I have nothing on that". Only the "you:" side of an exchange
+ * is read — their words are never matched, and this decides nothing about what they meant.
+ */
+const NOTHING_SAID = [
+  /\bnothing (?:saved|noted|stored|on (?:file|record)|in my notes)\b/i,
+  /\bnothing (?:on|about) (?:that|it|this)\b/i,
+  new RegExp(`\\b${NEG} (?:have|see|find|spot)\\b[^.!?\\n]{0,50}\\b(?:saved|noted|stored|on file|on record|in my notes|a record)\\b`, "i"),
+  new RegExp(`\\b${NEG} (?:remember|recall)\\b`, "i"),
+  new RegExp(`\\b${NEG} find (?:any|anything)\\b`, "i"),
+  /\bno (?:record|memory|note|notes) (?:of|on|about)\b/i,
+  /\bI (?:don['’]?t|do not) know (?:which|what|where|who)\b/i,
+];
+
+/** True when Reason's side of an exchange (`you: …` lines, or the reply text itself) says it had nothing on it. */
+export function saidNothing(reply) {
+  const t = String(reply ?? "");
+  const mine = t.includes("\n") || /^(them|you):/.test(t) ? t.split("\n").filter(l => l.startsWith("you:")).join("\n") : t;
+  return !!mine && NOTHING_SAID.some(re => re.test(mine));
+}
+
+/** Reason's own words in the exchange behind an event_log match — whole, not the clipped snippet. */
+function replyOf(conversationId, id, spanFrom) {
+  return db.prepare("SELECT content FROM event_log WHERE conversation_id = ? AND id BETWEEN ? AND ? AND role = 'assistant' ORDER BY id")
+    .all(conversationId, spanFrom ?? id, id).map(r => `you: ${ownWords(r.content).replace(/\s+/g, " ")}`).join("\n");
+}
+
+const isThread = (table) => table === "event_log";
+
+/**
+ * Candidates ({table, id, spanFrom, score}, best first) → the `limit` handed over: Reason's
+ * "nothing saved" exchanges out, done things (that `reach` keeps) first, then the rest in order.
+ */
+function rankAndCut(conversationId, candidates, { limit, chars, reach = () => true }) {
+  const pool = [];
+  const seen = new Set();
+  for (const s of candidates) {
+    if (pool.length >= POOL) break;
+    const snip = snippetFor(conversationId, s.table, s.id, s.spanFrom, { chars });
+    // The same lookup run twice reads the same; one slot for it.
+    if (!snip || seen.has(snip.text)) continue;
+    if (isThread(s.table) && saidNothing(replyOf(conversationId, s.id, s.spanFrom))) continue;
+    seen.add(snip.text);
+    pool.push({ s, snip });
+  }
+  const best = pool.length ? pool[0].s.score : 0;
+  const tier = (p) => (!isThread(p.s.table) && reach(p.s.score, best) ? 0 : 1);
+  // Stable sort: inside a tier the incoming order holds.
+  pool.sort((a, b) => tier(a) - tier(b));
+  return pool.slice(0, limit);
+}
+
+/** The stored rows of THIS conversation closest in meaning to `vector`, done things first. */
 export function searchHistory(conversationId, vector, { limit = 4, minScore = 0.35, chars = 220 } = {}) {
   if (!vector || !conversationId) return [];
   const rows = db.prepare(`SELECT fact_id, source_table, span_from, embedding FROM fact_embeddings
@@ -237,17 +307,8 @@ export function searchHistory(conversationId, vector, { limit = 4, minScore = 0.
     if (score >= minScore) scored.push({ table: r.source_table, id: r.fact_id, spanFrom: r.span_from, score });
   }
   scored.sort((a, b) => b.score - a.score);
-  const out = [];
-  const seen = new Set();
-  for (const s of scored) {
-    if (out.length >= limit) break;
-    const snip = snippetFor(conversationId, s.table, s.id, s.spanFrom, { chars });
-    // The same lookup run twice reads the same; one slot for it.
-    if (!snip || seen.has(snip.text)) continue;
-    seen.add(snip.text);
-    out.push({ ...snip, source: s.table, id: s.id, score: Math.round(s.score * 100) / 100, date: dayOf(snip.at) });
-  }
-  return out;
+  return rankAndCut(conversationId, scored, { limit, chars, reach: (score, best) => score >= best - ACTION_REACH })
+    .map(({ s, snip }) => ({ ...snip, source: s.table, id: s.id, score: Math.round(s.score * 100) / 100, date: dayOf(snip.at) }));
 }
 
 /**
@@ -264,21 +325,14 @@ export function keywordHistory(conversationId, query, { limit = 5, chars = 220 }
   const found = [];
   const q = (table, cols, extraWhere = "") => db.prepare(`SELECT id, ${like(cols)} AS hits, ${table === "event_log" ? "at" : "created_at"} AS at FROM ${table}
       WHERE conversation_id = ? ${extraWhere} AND ${like(cols)} > 0 ORDER BY hits DESC, id DESC LIMIT ?`)
-    .all(...args(cols), conversationId, ...args(cols), limit).map(r => ({ table, ...r }));
+    .all(...args(cols), conversationId, ...args(cols), Math.max(limit, 20)).map(r => ({ table, ...r }));
   found.push(...q("calls", ["goal", "COALESCE(label,'')", "summary", "to_number"]));
   found.push(...q("action_ledger", ["receipt", "target"], `AND action NOT IN (${SKIP_ACTIONS.map(a => `'${a}'`).join(",")})`));
   found.push(...q("timers", ["COALESCE(note,'')", "COALESCE(label,'')", "COALESCE(call_goal,'')"]));
   found.push(...q("event_log", ["content"], "AND role IN ('user','assistant')"));
   found.sort((a, b) => b.hits - a.hits || b.at - a.at);
-  const out = [];
-  const seen = new Set();
-  for (const f of found) {
-    if (out.length >= limit) break;
-    const snip = snippetFor(conversationId, f.table, f.id, null, { chars });
-    if (!snip || seen.has(snip.text)) continue;
-    seen.add(snip.text);
-    out.push({ ...snip, source: f.table, id: f.id, date: dayOf(snip.at) });
-  }
-  return out;
+  // Word hits have no "reach": a done thing that matched any of the words ranks above the thread.
+  return rankAndCut(conversationId, found.map(f => ({ table: f.table, id: f.id, spanFrom: null, score: f.hits })), { limit, chars })
+    .map(({ s, snip }) => ({ ...snip, source: s.table, id: s.id, date: dayOf(snip.at) }));
 }
 

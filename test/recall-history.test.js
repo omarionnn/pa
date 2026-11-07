@@ -44,7 +44,7 @@ const { runTool } = await import("../src/tools.js");
 
 const CONCEPTS = [
   ["spa", "massage"], ["link", "page", "brunch"], ["pizza"], ["dentist"], ["flight", "flights"],
-  ["remind", "reminder", "rent"], ["weather"],
+  ["remind", "reminder", "rent"], ["weather"], ["place", "places"],
 ];
 /** A fake embedding: one axis per concept the text mentions, plus a small shared axis. */
 function fakeVec(text) {
@@ -254,3 +254,89 @@ test("the retention sweep drops an exchange's vector with its words, and a delet
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = ?").get(D).n, 0);
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = 'dm:spa'").get().n, keepA, "another person's vectors are left alone");
 });
+
+// ---------- ranking (live proof 2026-11-06) ----------
+// "spa place" on live put the real spa call 9th, under the top 5 that were handed over, and the top
+// hit was Reason's own earlier "I don't have any spa place saved" reply. Here the thread rows say
+// "spa place" word for word, so by raw score they all beat the call, as on live.
+const SPA_ASK = "Do you remember the spa place you came last time?";
+function spaThread(C) {
+  const call52 = call(C, { to: "+16462582221", label: "Massage price check", goal: "Ask what a 60 minute massage costs at Renew Body Spa. Price only.", summary: "notes: they quoted $90 for an hour." });
+  let t = base + DAY;
+  said(C, "user", SPA_ASK, t);
+  said(C, "assistant", "I don't have any spa place saved. It's not in my notes or in anything I've looked up for you lately.", t + 1000);
+  said(C, "user", "the spa place, you know it", t + 60_000);
+  said(C, "assistant", "I don’t remember which spa place you mean. Can you tell me the name?", t + 61_000);
+  for (let i = 0; i < 8; i++) {
+    t += 3_600_000;
+    said(C, "user", `any spa place ideas ${i}? good places nearby`, t);
+    said(C, "assistant", `Sure, spa place idea ${i}: try the one on 23rd, places like that are usually walk-in`, t + 1000);
+  }
+  chatter(C, t + DAY);
+  return call52;
+}
+
+test("ranking: the real spa call is #1 for 'spa place' and for the longer wording, over Reason's own replies", async () => {
+  const C = "dm:rank-spa";
+  const call52 = spaThread(C);
+  await index(C);
+  // By raw score alone the call would not make the cut: every "spa place" exchange beats it.
+  const vec = fakeVec("spa place");
+  const raw = db.db.prepare("SELECT fact_id, source_table, embedding FROM fact_embeddings WHERE conversation_id = ?").all(C)
+    .map(r => ({ id: r.fact_id, t: r.source_table, s: (cos(vec, r.embedding)) }))
+    .sort((a, b) => b.s - a.s);
+  assert.ok(raw.findIndex(r => r.t === "calls" && r.id === call52) >= 5, "the case reproduces: the call is outside the raw top 5");
+
+  for (const q of ["spa place", SPA_ASK]) {
+    const { out, text } = await searchFor(C, q);
+    assert.equal(out.history[0].kind, "call", `${q}: ${text}`);
+    assert.equal(out.history[0].id, call52);
+    assert.match(out.history[0].text, /Renew Body Spa/);
+    assert.doesNotMatch(text, /don't have any spa place saved|don’t remember which/, `${q}: Reason's own "nothing saved" replies are never handed back`);
+  }
+});
+
+test("ranking: the word fallback (embeddings down) puts the call first and drops the 'nothing saved' reply too", async () => {
+  const C = "dm:rank-spa-words";
+  const call52 = spaThread(C);
+  const hits = ri.keywordHistory(C, "spa place");
+  assert.equal(hits[0].source, "calls");
+  assert.equal(hits[0].id, call52);
+  assert.ok(hits.every(h => !/saved|remember which/.test(h.text)), JSON.stringify(hits));
+});
+
+test("ranking: a done thing far below the best match does not jump the thread", async () => {
+  const C = "dm:rank-far";
+  // The call shares only the weak common axis with "pizza"; the thread is a direct match.
+  call(C, { to: "+15550002222", label: "Dentist", goal: "Book a dentist cleaning" });
+  said(C, "user", "where should we get pizza", base);
+  said(C, "assistant", "Joe's Pizza on Carmine St", base + 1000);
+  chatter(C, base + DAY);
+  await index(C);
+  const hits = ri.searchHistory(C, fakeVec("pizza"), { minScore: 0 });
+  assert.equal(hits[0].kind, "thread", JSON.stringify(hits));
+});
+
+test("saidNothing reads only Reason's side, and only its 'nothing on it' phrasings", () => {
+  for (const yes of [
+    "them: spa?\nyou: I don't have any spa place saved.",
+    "them: x\nyou: Nothing saved on that yet.",
+    "them: x\nyou: I don’t remember that one.",
+    "them: x\nyou: I couldn't find anything about a spa.",
+    "them: x\nyou: I don't know which place you mean.",
+    "them: x\nyou: I have no record of that call.",
+  ]) assert.equal(ri.saidNothing(yes), true, yes);
+  for (const no of [
+    "them: I don't remember the name, do you?\nyou: Renew Body Spa, I called them Oct 29.",
+    "them: x\nyou: It's saved, I can see it in your notes.",
+    "them: x\nyou: Nothing to worry about, it's booked.",
+    "them: I couldn't find anything\nyou: Here are three spas.",
+  ]) assert.equal(ri.saidNothing(no), false, no);
+});
+
+function cos(vec, blob) {
+  const b = new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < vec.length; i++) { dot += vec[i] * b[i]; na += vec[i] ** 2; nb += b[i] ** 2; }
+  return dot / Math.sqrt(na * nb);
+}
