@@ -317,6 +317,54 @@ test("ranking: a done thing far below the best match does not jump the thread", 
   assert.equal(hits[0].kind, "thread", JSON.stringify(hits));
 });
 
+// Live 2026-11-07: "spa place" still ranked five plain web searches above the call to the spa. A
+// search "for spa places near me" says "spa place" word for word, so by raw score every one beats the
+// call; the call is still the thing that happened, and it comes first.
+function spaSearches(C, n = 5) {
+  for (let i = 0; i < n; i++) {
+    db.recordAction({ conversationId: C, action: "web_search", target: "spa place", attempted: { query: `spa place near me ${i}` }, outcome: "ok", result: {}, receipt: `searched the web for spa places nearby (${i})` });
+  }
+}
+
+test("ranking: 'spa place' with 5 web searches and 1 spa call — the call is first", async () => {
+  const C = "dm:rank-spa-searches";
+  const spaCall = call(C, { to: "+16462582221", label: "Massage price check", goal: "Ask what a 60 minute massage costs at Renew Body Spa. Price only.", summary: "notes: they quoted $90 for an hour." });
+  spaSearches(C);
+  chatter(C, base + DAY);
+  await index(C);
+  // The case reproduces: by raw score all five searches beat the call.
+  const vec = fakeVec("spa place");
+  const raw = db.db.prepare("SELECT fact_id, source_table, embedding FROM fact_embeddings WHERE conversation_id = ? AND source_table <> 'event_log'").all(C)
+    .map(r => ({ id: r.fact_id, t: r.source_table, s: cos(vec, r.embedding) })).sort((a, b) => b.s - a.s);
+  assert.equal(raw.findIndex(r => r.t === "calls" && r.id === spaCall), 5, JSON.stringify(raw));
+
+  for (const q of ["spa place", "the spa place"]) {
+    const { out, text } = await searchFor(C, q);
+    assert.equal(out.history[0].kind, "call", `${q}: ${text}`);
+    assert.equal(out.history[0].id, spaCall);
+    assert.ok(out.history.slice(1).some(h => h.source === "action_ledger"), "the searches are still handed over, after it");
+  }
+  // The word fallback agrees.
+  const hits = ri.keywordHistory(C, "spa place");
+  assert.equal(hits[0].source, "calls");
+  assert.equal(hits[0].id, spaCall);
+});
+
+test("ranking: a message sent (acted on) ranks above a web search; a call far below the best match does not jump a lookup", async () => {
+  const C = "dm:rank-acted";
+  db.recordAction({ conversationId: C, action: "web_search", target: "pizza", attempted: { query: "pizza places" }, outcome: "ok", result: {}, receipt: "searched the web for pizza places" });
+  const sent = db.recordAction({ conversationId: C, action: "message_send", target: "Kofi", attempted: { to: "Kofi" }, outcome: "ok", result: {}, receipt: "texted Kofi the pizza place: Joe's Pizza on Carmine" }).id;
+  // Shares only the weak common axis with "pizza place".
+  call(C, { to: "+15550002222", label: "Dentist", goal: "Book a dentist cleaning" });
+  chatter(C, base + DAY);
+  await index(C);
+  const hits = ri.searchHistory(C, fakeVec("pizza place"), { minScore: 0, limit: 10 });
+  assert.equal(hits[0].source, "action_ledger");
+  assert.equal(hits[0].id, sent, JSON.stringify(hits));
+  assert.equal(hits[1].source, "action_ledger", "the search next");
+  assert.ok(hits.findIndex(h => h.kind === "call") > 1, "the far-off dentist call stays below both");
+});
+
 test("saidNothing reads only Reason's side, and only its 'nothing on it' phrasings", () => {
   for (const yes of [
     "them: spa?\nyou: I don't have any spa place saved.",

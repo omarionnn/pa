@@ -258,9 +258,27 @@ export function snippetFor(conversationId, table, id, spanFrom = null, { chars =
 //      it SAID, as long as it is a real match (within ACTION_REACH of the best candidate);
 //   3. the cut to `limit` comes after that reordering, over up to POOL candidates — not the top
 //      few by raw score.
+//
+// Live again 2026-11-07: "spa place" still put five plain web searches above the call to the spa.
+// A search for "spa places near me" says "spa place" too, and it is only Reason reading the web; the
+// call is the thing that happened. So among done things, what was ACTED on (a call, a message or
+// link sent, a page made, a booking or order, a reminder) ranks above a LOOKUP (a search, a page
+// read, a places or flights search) — under the same reach, so a call far below the best match does
+// not jump anything. Which kind a row is comes from its record (calls / timers / the ledger action
+// name), never from its words.
 
 /** How far below the best match a done thing may score and still rank above the thread. */
 const ACTION_REACH = 0.3;
+/**
+ * Ledger actions that only read the outside world: they find things, they do not do them. Any action
+ * not named here (and every call and reminder) counts as acted on.
+ */
+const LOOKUP_ACTIONS = new Set([
+  "web_search", "web_lookup", "research", "browser_open", "browser_click", "nearby_places", "directions",
+  "flight_search", "flight_dates", "flight_verify", "offer_check", "video_understand", "image_search",
+  "subscriptions_scan", "shop_status", "event_list", "event_guests", "purchase_track",
+]);
+
 /** Candidates read back and ranked before the cut. */
 const POOL = 60;
 
@@ -301,9 +319,17 @@ function replyOf(conversationId, id, spanFrom) {
 
 const isThread = (table) => table === "event_log";
 
+/** True when this action_ledger row only looked something up. */
+function isLookup(conversationId, table, id) {
+  if (table !== "action_ledger") return false;
+  const r = db.prepare("SELECT action FROM action_ledger WHERE id = ? AND conversation_id = ?").get(id, conversationId);
+  return !!r && LOOKUP_ACTIONS.has(r.action);
+}
+
 /**
  * Candidates ({table, id, spanFrom, score}, best first) → the `limit` handed over: Reason's
- * "nothing saved" exchanges out, done things (that `reach` keeps) first, then the rest in order.
+ * "nothing saved" exchanges out; then things acted on, then lookups (each only while `reach` keeps
+ * it), then the rest in order.
  */
 function rankAndCut(conversationId, candidates, { limit, chars, reach = () => true }) {
   const pool = [];
@@ -315,10 +341,10 @@ function rankAndCut(conversationId, candidates, { limit, chars, reach = () => tr
     if (!snip || seen.has(snip.text)) continue;
     if (isThread(s.table) && saidNothing(replyOf(conversationId, s.id, s.spanFrom))) continue;
     seen.add(snip.text);
-    pool.push({ s, snip });
+    pool.push({ s, snip, lookup: isLookup(conversationId, s.table, s.id) });
   }
   const best = pool.length ? pool[0].s.score : 0;
-  const tier = (p) => (!isThread(p.s.table) && reach(p.s.score, best) ? 0 : 1);
+  const tier = (p) => (isThread(p.s.table) || !reach(p.s.score, best) ? 2 : p.lookup ? 1 : 0);
   // Stable sort: inside a tier the incoming order holds.
   pool.sort((a, b) => tier(a) - tier(b));
   return pool.slice(0, limit);
@@ -359,8 +385,9 @@ export function keywordHistory(conversationId, query, { limit = 5, chars = 220 }
   found.push(...q("timers", ["COALESCE(note,'')", "COALESCE(label,'')", "COALESCE(call_goal,'')"]));
   found.push(...q("event_log", ["content"], "AND role IN ('user','assistant')"));
   found.sort((a, b) => b.hits - a.hits || b.at - a.at);
-  // Word hits have no "reach": a done thing that matched any of the words ranks above the thread.
-  return rankAndCut(conversationId, found.map(f => ({ table: f.table, id: f.id, spanFrom: null, score: f.hits })), { limit, chars })
+  // Word hits have a looser "reach": a done thing that matched at least half as many of the words as
+  // the best match ranks above the thread, acted-on before lookups.
+  return rankAndCut(conversationId, found.map(f => ({ table: f.table, id: f.id, spanFrom: null, score: f.hits })), { limit, chars, reach: (hits, best) => hits * 2 >= best })
     .map(({ s, snip }) => ({ ...snip, source: s.table, id: s.id, date: dayOf(snip.at) }));
 }
 
