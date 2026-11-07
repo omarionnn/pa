@@ -10668,7 +10668,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // The photos they sent this turn count here too (review 11-07): a text quoting a figure off
         // their screenshot was refused every time.
         const photos = await offers.photoWords(c);
-        const g = offers.guardReply(c, input.text, { asks: false, extraSources: [exactly ?? "", input.exactly_as_asked ?? "", ...photos.texts], records: [purchasesNoteMod.purchaseRecordSource(c)], unread: photos.unread });
+        const g = offers.guardReply(c, input.text, { asks: false, extraSources: [exactly ?? "", input.exactly_as_asked ?? "", ...photos.texts], records: [purchasesNoteMod.purchaseRecordSource(c)] });
+        // No `unread` here (review): the turn's photo reader outlives the turn, so a failed read from an
+        // earlier turn would wave an unchecked figure through a send that cannot be taken back.
         const back = g.recompose ? offers.sendBack(c, g.fixes) : null;
         if (back || (g.changed && !toOwner)) {
           return {

@@ -418,6 +418,18 @@ test("review 11-07: 'forget that' / 'forget work' with nobody saved under it cle
   assert.match((await searchFor(C, "spa massage")).text, /spa massage/, "still findable");
 });
 
+// Review of the fixes: a two-letter name is a name ("forget Jo"), with nobody saved under it too.
+test("review 11-07: 'forget Jo' with nobody saved still clears Jo's exchange from recall", async () => {
+  const C = "dm:forget-jo";
+  said(C, "user", "Jo said the spa massage was great", base);
+  said(C, "assistant", "noted, Jo liked the spa massage", base + 1000);
+  chatter(C, base + DAY);
+  await index(C);
+  const out = await runTool("forget", { about: "Jo" }, { conversationId: C });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.ok(db.db.prepare("SELECT COUNT(*) AS n FROM recall_forgotten WHERE conversation_id = ?").get(C).n > 0);
+});
+
 // Review 11-07 (6): an action row that names them only in what it attempted (a query, a title) leaves recall too.
 test("review 11-07: forget reaches an action row that names them only in `attempted`", async () => {
   const C = "dm:forget-attempted";

@@ -363,8 +363,10 @@ test("review 11-07: message_send may quote a figure off the photo they sent this
   assert.equal(out.ok, true, JSON.stringify(out));
   offers.beginTurn(C, "text me my balance so i have it");
   offers.notePhotos(C, async () => ({ texts: [], unread: true }));
-  assert.equal((await call({ to: "owner", text: "balance: $97.12" })).ok, true, "a photo still being read: its figure is not refused");
-  assert.deepEqual(sent.map(m => m.text), ["balance: $812.40", "balance: $97.12"]);
+  // Review 11-07 (fixes): a send never waves a figure through on an unread photo — the reader outlives
+  // the turn, and a text cannot be taken back.
+  assert.equal((await call({ to: "owner", text: "balance: $97.12" })).blocked, "unchecked_figures", "an unread photo backs nothing in a send");
+  assert.deepEqual(sent.map(m => m.text), ["balance: $812.40"]);
 });
 
 // Review 11-07 (3): the "worked out" sums are built from the reply's own known figures and their

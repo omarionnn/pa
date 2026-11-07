@@ -2868,11 +2868,12 @@ export function redactFromReplies(conversationId, facts) {
   return n;
 }
 
-/** Do the words of `needle` appear as a run inside the words of `key`? */
 // Words too common to forget by on their own (forgetPerson with nobody saved under them).
-const VAGUE = new Set("a an the this that these those it its it's they them their there here he him his she her hers you your me my mine we us our i about all any anything everything something nothing stuff thing things one ones what which who that's said say says talk talked conversation chat message messages last earlier before today yesterday tomorrow work job money time day week month year home life people person someone somebody everyone everybody plan plans thing idea and or of to for with on in at".split(" "));
+const VAGUE = new Set("is be do go no so up ok hi as if by am are was were a an the this that these those it its it's they them their there here he him his she her hers you your me my mine we us our i about all any anything everything something nothing stuff thing things one ones what which who that's said say says talk talked conversation chat message messages last earlier before today yesterday tomorrow work job money time day week month year home life people person someone somebody everyone everybody plan plans thing idea and or of to for with on in at".split(" "));
+// Two letters is a name too ("Jo", "Al", 李明 — review): any length counts, the VAGUE list is the bar,
+// and a lone one-letter Latin word is never a subject.
 function specificSubject(key) {
-  return wordsOf(key).some(w => w.length >= 3 && !VAGUE.has(w));
+  return wordsOf(key).some(w => !VAGUE.has(w) && (w.length >= 2 || /[^\x00-\x7f]/.test(w)));
 }
 const wordsOf = (s) => String(s ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 
@@ -2921,6 +2922,7 @@ export function forgetFromRecall(conversationId, names = []) {
   return out;
 }
 
+/** Do the words of `needle` appear as a run inside the words of `key`? */
 function hasWords(key, needle) {
   const words = String(key).split(" ").filter(Boolean);
   for (let i = 0; i + needle.length <= words.length; i++) {
