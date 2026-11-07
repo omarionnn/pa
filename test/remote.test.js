@@ -1269,7 +1269,7 @@ test("a hand-over with no spawn passed is refused in a test run, and no builder 
   }
 
   // And through the tool, which is the way it actually leaked.
-  const out = await runTool("remote_start", { title: "The feed", asked: "build the anime feed", brief: "x" }, { conversationId: C });
+  const out = await runTool("remote_start", { title: "The feed", asked: "build the anime feed", brief: "x" }, { conversationId: C, kind: "user" });
   assert.equal(out.ok, false, JSON.stringify(out));
   assert.match(out.error, /this is a test run/);
 });
@@ -1284,7 +1284,7 @@ test("nor is anything said to a job that exists, nor a real assistant asked what
   const direct = remote.sayToJob(job.id, "macros");
   assert.equal(direct.ok, false, JSON.stringify(direct));
   assert.match(direct.error, /this is a test run/);
-  const viaTool = await runTool("remote_say", { message: "macros" }, { conversationId: C });
+  const viaTool = await runTool("remote_say", { message: "macros" }, { conversationId: C, kind: "user" });
   assert.equal(viaTool.ok, false, JSON.stringify(viaTool));
   assert.match(viaTool.error, /this is a test run/);
   // Refused means nothing changed: it is still waiting on him and was told nothing.
