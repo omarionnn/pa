@@ -3347,17 +3347,22 @@ export function grantConfirmation(id, quote) {
  * The check and the write are one statement, so two confirm_record calls at once cannot both win.
  */
 export function grantConfirmationByReply(id, quote, byMsg) {
-  return db.prepare(`UPDATE confirmations SET granted_at = ?, granted_quote = ?, granted_by_msg = ?
+  return db.prepare(`UPDATE confirmations SET granted_at = ?, granted_quote = ?, granted_by_msg = ?,
+      granted_upto_id = (SELECT MAX(id) FROM confirmations)
     WHERE id = ? AND granted_at IS NULL AND NOT EXISTS (
       SELECT 1 FROM confirmations o WHERE o.id <> confirmations.id AND o.conversation_id = confirmations.conversation_id
-        AND COALESCE(o.thread_key, '') = COALESCE(confirmations.thread_key, '') AND o.granted_by_msg = ?)`)
+        AND COALESCE(o.thread_key, '') = COALESCE(confirmations.thread_key, '') AND o.granted_by_msg = ?
+        AND confirmations.id <= COALESCE(o.granted_upto_id, 0))`)
     .run(clock.now(), quote, byMsg, id, byMsg).changes > 0;
 }
-/** The ask in this ask's thread that the `byMsg`-th owner reply already granted, if any. */
+/**
+ * The ask in this ask's thread that the `byMsg`-th owner reply already granted while this one was
+ * already open (so both were waiting on that one reply), if any.
+ */
 export function grantedByReply(c, byMsg) {
   return db.prepare(`SELECT * FROM confirmations WHERE id <> ? AND conversation_id = ?
-    AND COALESCE(thread_key, '') = COALESCE(?, '') AND granted_by_msg = ? LIMIT 1`)
-    .get(c.id, c.conversation_id, c.thread_key ?? null, byMsg) ?? null;
+    AND COALESCE(thread_key, '') = COALESCE(?, '') AND granted_by_msg = ? AND ? <= COALESCE(granted_upto_id, 0) LIMIT 1`)
+    .get(c.id, c.conversation_id, c.thread_key ?? null, byMsg, c.id) ?? null;
 }
 export function refuseConfirmation(id) {
   db.prepare("UPDATE confirmations SET refused_at = ? WHERE id = ?").run(clock.now(), id);
@@ -10719,6 +10724,9 @@ addColumnIfMissing("confirmations", "thread_key", "TEXT");
 // …and which of the owner's texts in that thread said the yes (its 1-based place among them, the same
 // count asked_after_msgs keeps), so one reply is a yes to one ask only (security audit 2026-11-06, lead 27).
 addColumnIfMissing("confirmations", "granted_by_msg", "INTEGER");
+// …and the newest ask that existed at that moment: only an ask already open then was waiting on that
+// same reply. One opened later (a new chat, a test's fresh ask) never shared it.
+addColumnIfMissing("confirmations", "granted_upto_id", "INTEGER");
 // …and each Web chat's short title (src/webchats.js), written once when its first reply lands.
 addColumnIfMissing("web_chats", "title", "TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS messages_chat_at ON messages (conversation_id, chat_id, at, id) WHERE chat_id IS NOT NULL");

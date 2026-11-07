@@ -84,3 +84,16 @@ test("a reply that was used survives the thread being trimmed: its mark moves wi
   db.shiftThreadMarks(C, { ownerTexts: 2 });
   assert.notEqual((await runTool("confirm_record", { confirmation_id: b }, { conversationId: C, messages: trimmed, judge: readsYes })).state, "granted");
 });
+
+test("an ask opened after an old yes was given is not blocked by it, even at the same count", async () => {
+  // A thread that started over (or a fresh chat) counts from the start again: the old yes was a reply
+  // to asks open back then, never to one opened since.
+  const first = [owner("call the dentist")];
+  const [a] = await twoAsks(first);
+  first.push(owner("yes"));
+  assert.equal((await runTool("confirm_record", { confirmation_id: a }, { conversationId: C, messages: first, judge: readsYes })).state, "granted");
+  const fresh = [owner("text Sam the code")];
+  const c = await runTool("confirm_request", { action: "message_send", target: "+15550000003", summary: "Text +15550000003 the code" }, { conversationId: C, messages: fresh });
+  fresh.push(owner("yes"));
+  assert.equal((await runTool("confirm_record", { confirmation_id: c.confirmation_id }, { conversationId: C, messages: fresh, judge: readsYes })).state, "granted");
+});
