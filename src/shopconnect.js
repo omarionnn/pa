@@ -920,7 +920,11 @@ export async function payApproved({ conversationId, paymentId, confirmationId })
 async function capRefusal(row) {
   const cents = Math.round(Number(row.amount) * 100);
   if (!Number.isFinite(cents) || cents <= 0) { logFn({ shop_pay_bad_amount: true, payment_id: row.id }); return { ok: false, error: "bad_amount", say: "The payment's amount could not be read, so nothing was paid. Tell them plainly and that you will look into it." }; }
-  const cap = (await import("./trust.js")).checkSpendCap(row.conversation_id, cents);
+  const trust = await import("./trust.js");
+  let cap = trust.checkSpendCap(row.conversation_id, cents);
+  // Over the limit with an unknown payment counted in it: Crossmint is asked about that payment first.
+  // Only its definite "never charged" takes it off the day (settleUnknownPayments); anything else leaves it.
+  if (!cap.ok && cap.blocked === "over_daily_cap" && (await settleUnknownPayments({ conversationId: row.conversation_id }))) cap = trust.checkSpendCap(row.conversation_id, cents);
   if (cap.ok) return null;
   logFn({ shop_pay_over_cap: true, payment_id: row.id, cap: cap.cap, spent_today: cap.spent_today, amount: cap.amount });
   return { ok: false, error: "over_daily_cap", blocked: "over_daily_cap", cap: cap.cap, spent_today: cap.spent_today, left: cap.left, amount: cap.amount, own: cap.own, say: cap.say, note: cap.error };
@@ -1039,6 +1043,62 @@ export async function backfillSpend() {
       n++;
     }
   } catch (e) { logFn({ spend_backfill_failed: true, why: short(e?.message ?? e, 80) }); }
+  return n;
+}
+/**
+ * Crossmint's order intent (GET /api/unstable/order-intents/{id}), read as "this payment definitely
+ * never charged": the record is the same intent, it can no longer pay (`cancelled` or `expired`, the
+ * only non-active states Crossmint has), and nothing was ever drawn on it (`amount.spent` and
+ * `amount.reserved` both exactly zero). Every credential the checkout gets for the store takes its
+ * amount from the intent, so zero there means the card was never handed to the store, and an intent
+ * that is no longer active cannot hand it over later. Anything else — `active`, a rail `error` on an
+ * intent still active, any amount drawn, a field missing or not a plain decimal, another id — is not
+ * a definite answer, and the payment stays counted (fail closed).
+ */
+const DECIMAL = /^\d+(\.\d{1,4})?$/;
+export function intentNeverCharged(json, orderIntentId) {
+  if (!json || typeof json !== "object" || !orderIntentId || String(json.orderIntentId ?? "") !== String(orderIntentId)) return false;
+  if (json.status !== "cancelled" && json.status !== "expired") return false;
+  const a = json.amount;
+  if (!a || typeof a !== "object") return false;
+  const zero = (v) => DECIMAL.test(String(v ?? "")) && Number(v) === 0;
+  return zero(a.spent) && zero(a.reserved);
+}
+/** The ledger line an unknown payment's line becomes once Crossmint confirmed it never charged ($0, kept as the note). */
+export const releasedLineOf = (row) => `${spendLineOf({ ...row, status: "paid" })} (CROSSMINT CONFIRMED NOT CHARGED, not counted)`;
+/**
+ * Unknown Crossmint payments (paid in the dark: see payRow's `unknown`) Crossmint has since answered
+ * for. Each one is asked about once per call, by its order intent; only a definite never-charged
+ * answer (intentNeverCharged) releases it: the payment row moves unknown → failed (compare-and-set, so
+ * two callers release it once), and its "(OUTCOME UNKNOWN)" ledger line is rewritten in place to $0
+ * with a note saying why — the day's and the month's totals stop counting it, the line stays to read.
+ * A timeout, an error, a 404 or any other answer leaves it counted. Mirrors AgentCard's release
+ * (src/tools.js: only a definite decline takes the unknown amount back off the day).
+ * Returns how many were released.
+ */
+export async function settleUnknownPayments({ conversationId = null, sinceMs = 7 * 86_400_000 } = {}) {
+  let n = 0;
+  const since = clock.now() - sinceMs;
+  const rows = conversationId
+    ? q("SELECT * FROM shop_payments WHERE conversation_id = ? AND status = 'unknown' AND order_intent_id != '' AND answered_at > ? ORDER BY id").all(conversationId, since)
+    : q("SELECT * FROM shop_payments WHERE status = 'unknown' AND order_intent_id != '' AND answered_at > ? ORDER BY id").all(since);
+  for (const row of rows) {
+    let r;
+    try { r = await asUser(row.conversation_id, `/api/unstable/order-intents/${encodeURIComponent(row.order_intent_id)}`); } catch { continue; }
+    if (!r.ok || !intentNeverCharged(r.json, row.order_intent_id)) continue;
+    const site = row.merchant_name || storeName(runRow(row.run_id)?.store) || "";
+    const cents = Math.round(Number(row.amount) * 100);
+    const released = db.atomically(() => {
+      if (q("UPDATE shop_payments SET status = 'failed' WHERE id = ? AND status = 'unknown'").run(row.id).changes !== 1) return false;
+      const line = q("SELECT id FROM spend WHERE conversation_id = ? AND what = ? AND site = ? AND cents = ? AND confirmation_id IS ? ORDER BY id LIMIT 1")
+        .get(row.conversation_id, spendLineOf({ ...row, status: "unknown" }), site, cents, row.confirmation_id ?? null);
+      if (line) q("UPDATE spend SET cents = 0, what = ? WHERE id = ?").run(releasedLineOf(row), line.id);
+      return true;
+    });
+    if (!released) continue;
+    n++;
+    logFn({ unknown_payment_released: true, payment_id: row.id, cents, intent_status: r.json.status });
+  }
   return n;
 }
 // ---------------------------------------------------------------- approval by passkey
@@ -2024,6 +2084,7 @@ export function resumeFollowing() {
   // Cards saved before the registration was recorded: read back once, never waited on.
   setTimeout(() => { sweepCards().catch(() => {}); }, 0).unref?.();
   // Payments the ledger never counted: counted now, by the day they were paid.
-  setTimeout(() => { backfillSpend().then((n) => { if (n) logFn({ spend_backfilled: n }); }).catch(() => {}); }, 0).unref?.();
+  // …then unknown payments Crossmint has since confirmed never charged stop counting (once each).
+  setTimeout(() => { backfillSpend().then((n) => { if (n) logFn({ spend_backfilled: n }); }).then(() => settleUnknownPayments()).catch(() => {}); }, 0).unref?.();
   return { runs, mail };
 }

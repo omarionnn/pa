@@ -7075,7 +7075,7 @@ export function markSpotifyJoinSent(id) {
 
 // ---------- spend ----------
 export function spentToday(conversationId, day) {
-  const row = db.prepare("SELECT COALESCE(SUM(cents), 0) AS cents, COUNT(*) AS n FROM spend WHERE conversation_id = ? AND day = ?")
+  const row = db.prepare("SELECT COALESCE(SUM(cents), 0) AS cents, COUNT(CASE WHEN cents > 0 THEN 1 END) AS n FROM spend WHERE conversation_id = ? AND day = ?")
     .get(conversationId, day);
   return { cents: Number(row?.cents ?? 0), count: Number(row?.n ?? 0) };
 }
@@ -7503,7 +7503,7 @@ export function setSpendCaps(conversationId, { perPurchaseCents, monthlyCents, s
 
 /** What has been committed this calendar month. `month` is the first seven characters of a day. */
 export function spentThisMonth(conversationId, month) {
-  const row = db.prepare("SELECT COALESCE(SUM(cents), 0) AS cents, COUNT(*) AS n FROM spend WHERE conversation_id = ? AND substr(day, 1, 7) = ?")
+  const row = db.prepare("SELECT COALESCE(SUM(cents), 0) AS cents, COUNT(CASE WHEN cents > 0 THEN 1 END) AS n FROM spend WHERE conversation_id = ? AND substr(day, 1, 7) = ?")
     .get(conversationId, month);
   return { cents: Number(row?.cents ?? 0), count: Number(row?.n ?? 0) };
 }
