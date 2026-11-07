@@ -63,7 +63,7 @@ import { endFieldsFor } from "./calls/metrics.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
-import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink } from "./eventtools.js";
+import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget } from "./eventtools.js";
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
@@ -305,7 +305,11 @@ export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_su
   "todo_approve",
   // Every X write is a draft: the person sees exactly what goes out before it does. A bad tweet is
   // public and hard to undo, a DM reaches a real person, and deleting a tweet is irreversible.
-  "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete"]);
+  "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete",
+  // Model-written words in front of other people (audit lead 28): a blast texts every guest of an
+  // event, and an issue or a comment is published under their GitHub name. The draft-then-yes rule
+  // used to live only in the tool descriptions; something the model read could talk it past that.
+  "event_blast", "github_issue_create", "github_issue_comment"]);
 
 // The actions that put words in front of a person who is not the owner. What they have in common is
 // the failure in src/verify.js: an errand that collected three people's numbers sending one of them
@@ -5417,7 +5421,7 @@ export const tools = [
   },
   {
     name: "github_issue_create",
-    description: "Create an issue on a repo. Returns the issue number and link. This is a visible action on their repo — it will appear in their GitHub.",
+    description: "Create an issue on a repo. Returns the issue number and link. This is a visible act under their GitHub name, so it needs their yes to the exact title and body: call this first with no confirmation_id (nothing is created), show them the repo, title and body, then confirm_request with action github_issue_create and target set to the `use_target` it refused with, wait for their answer, confirm_record, then this again with the same input and the confirmation_id.",
     input_schema: {
       type: "object",
       properties: {
@@ -5426,19 +5430,21 @@ export const tools = [
         body: { type: "string", description: "Issue body, in Markdown" },
         labels: { type: "array", items: { type: "string" }, description: "Labels to apply" },
         assignees: { type: "array", items: { type: "string" }, description: "GitHub usernames to assign" },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, for exactly this issue." },
       },
       required: ["repo", "title"],
     },
   },
   {
     name: "github_issue_comment",
-    description: "Comment on an issue or pull request. The comment appears publicly on the issue under the connected GitHub account.",
+    description: "Comment on an issue or pull request. The comment appears publicly on the issue under the connected GitHub account, so it needs their yes to the exact words: call this first with no confirmation_id (nothing is posted), show them the comment and where it goes, then confirm_request with action github_issue_comment and target set to the `use_target` it refused with, wait for their answer, confirm_record, then this again with the same input and the confirmation_id.",
     input_schema: {
       type: "object",
       properties: {
         repo: { type: "string", description: "owner/repo" },
         issue_number: { type: "integer", description: "Issue or PR number" },
         body: { type: "string", description: "Comment body, in Markdown" },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, for exactly this comment." },
       },
       required: ["repo", "issue_number", "body"],
     },
@@ -7418,11 +7424,13 @@ const S = {
     body: z.string().max(65_000).optional(),
     labels: z.array(z.string().max(100)).max(20).optional(),
     assignees: z.array(z.string().max(100)).max(20).optional(),
+    confirmation_id: z.number().int().optional(),
   }),
   github_issue_comment: z.object({
     repo: z.string().min(3).max(200),
     issue_number: z.number().int().positive(),
     body: z.string().min(1).max(65_000),
+    confirmation_id: z.number().int().optional(),
   }),
   github_pulls: z.object({
     repo: z.string().min(3).max(200),
@@ -9059,6 +9067,10 @@ function confirmTargetFor(name, input, c = null) {
     // The whole plan of a to-do list, by its stored fingerprint: a plan changed since the ask is a
     // different target, so it needs a fresh yes.
     case "todo_approve": return todoApprovalTarget(c, input.list_id);
+    // The event and the exact words, or the repo, the issue and the exact words (audit lead 28).
+    case "event_blast": return blastTarget(c, input);
+    case "github_issue_create": return github.issueTarget(input);
+    case "github_issue_comment": return github.commentTarget(input);
     default: return null;
   }
 }
@@ -14728,8 +14740,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     // ---------- github ----------
-    // None of these go through the confirm gate except github_pr_merge: reads and creates touch
-    // only this person's own repos, and the one irreversible act — merging — is gated.
+    // Reads need no yes. Writes do: an issue or a comment is published under their name, often on
+    // a public repo (audit lead 28), and merging is irreversible. All three are in
+    // ALWAYS_NEEDS_CONFIRMATION, so by the time a case below runs the yes has been checked.
     case "github_connect": {
       const out = github.authorizeUrl(c, input.scopes?.length ? { scopes: input.scopes } : {});
       if (!out.ok) return out;

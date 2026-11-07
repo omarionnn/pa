@@ -150,6 +150,13 @@ test("event_blast: a yes for one message cannot send another; a yes for this one
   assert.equal(rt.sent.length, 2);
 });
 
+test("event_blast on somebody else's event describes nothing about it", async () => {
+  const ev = await eventWithGuests();
+  const out = await runTool("event_blast", { event_id: ev.id, message: "hi" }, { conversationId: AMA_C, messages: [], events: fakeRuntime() });
+  assert.equal(out.ok, false);
+  assert.ok(!/Halloween/.test(JSON.stringify(out)), JSON.stringify(out));
+});
+
 // ---------- github writes ----------
 
 test("github_issue_comment with no yes posts nothing", async () => {
