@@ -60,7 +60,7 @@ beforeEach(() => {
     DELETE FROM open_questions; DELETE FROM sent_claims; DELETE FROM shop_runs;`);
   db.upsertAccount({ conversationId: C, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   config.saidLedger = true;
-  config.claimCheck = true;
+  config.claimCheck = "acting";
   config.burstQuietMs = 20;
   config.burstMaxMs = 200;
   said.setRecorder(() => ({ claims: [], supersedes: [], questions: [], closes: [], declined: [] }));
@@ -120,6 +120,7 @@ test("Ulta, 10-31: 'I've started the Ulta checkout' when the checkout did not st
 });
 
 test("Ulta: a checkout that really is running backs 'it's running' — the record is shown, and a clean read sends the draft as written", async () => {
+  config.claimCheck = "all"; // no acting tool this turn: only "all" reads it
   // A run on record, started a moment ago in an earlier turn.
   db.db.prepare("INSERT INTO shop_runs (run_id, conversation_id, store, item, mode, status, created_at, updated_at, stage, stage_at, progress_at) VALUES ('run_live', ?, 'ulta', 'CeraVe 16 oz', 'guest', 'running', ?, ?, 'in_progress', ?, ?)")
     .run(C, clock.now(), clock.now(), clock.now(), clock.now());
@@ -154,7 +155,7 @@ test("directions, 11-03: 'I made you walking directions' when the route failed i
 
 test("directions: made, but the link left out of the text — the rewrite is handed the link the tool returned", async () => {
   const acts = [];
-  said.noteAct(acts, "directions", { ok: true, url: "https://pages.heyreason.test/d/abc123?k=key", walk: "6 MIN WALK · 450 M", say: "Send the link with one short line." });
+  said.noteAct(acts, "directions", { ok: true, url: "https://pages.heyreason.test/d/abc123?k=key", walk: "6 MIN WALK · 450 M", say: "Send the link with one short line." }, { acting: true });
   said.setChecker(() => ({ changed_silently: [], asks_closed: [], unbacked: [{ quote: "I made you walking directions", problem: "no_artifact", fact: "the directions link is not in the text" }] }));
   const out = await said.checkDraft({ conversationId: C, draft: "I made you walking directions, 6 minutes.", acts, userText: "walk me to joe's" });
   assert.equal(out.ok, false);
@@ -164,7 +165,9 @@ test("directions: made, but the link left out of the text — the rewrite is han
 
 test("the reader cannot invent a claim: a quote that is not in the draft is ignored", async () => {
   said.setChecker(() => ({ changed_silently: [], asks_closed: [], unbacked: [{ quote: "I booked the table", problem: "not_done", fact: "nothing booked" }] }));
-  assert.deepEqual(await said.checkDraft({ conversationId: C, draft: "want me to book the table for 8?", acts: [], userText: "dinner?" }), { ok: true });
+  const acts = [];
+  said.noteAct(acts, "web_search", { ok: true, results: [] }, { acting: true });
+  assert.deepEqual(await said.checkDraft({ conversationId: C, draft: "want me to book the table for 8?", acts, userText: "dinner?" }), { ok: true });
 });
 
 test("a call with no record of the turn's tools (an older caller) checks only what it always did", async () => {
@@ -221,4 +224,29 @@ test("Ulta: a checkout Crossmint stops answering about is told within about a mi
   assert.ok(crossmint.some(c => c.method === "POST" && c.path.endsWith("/run_9/cancel")), "cancelled at Crossmint so nothing is left running unwatched");
   assert.equal((await shop.step("run_9")).done, true);
   assert.equal(told.length, 1, "once");
+});
+
+test("the gate: a reply whose turn called no tool that acts or makes something is not held for the claim check", async () => {
+  let asked = 0;
+  said.setChecker(() => { asked++; return { changed_silently: [], asks_closed: [], unbacked: [] }; });
+  const reads = [];
+  said.noteAct(reads, "recall", { people: [], count: 0 }, { acting: false });
+  assert.deepEqual(await said.checkDraft({ conversationId: C, draft: "sunny, 61 till tonight.", acts: [], userText: "weather?" }), { ok: true });
+  assert.deepEqual(await said.checkDraft({ conversationId: C, draft: "you told me tuesday.", acts: reads, userText: "when's the dentist?" }), { ok: true });
+  assert.equal(asked, 0, "no tool that acts: no check, no wait");
+  const acting = [];
+  said.noteAct(acting, "timer_set", { ok: true, id: 4 }, { acting: true });
+  await said.checkDraft({ conversationId: C, draft: "set for 5pm.", acts: acting, userText: "remind me at 5" });
+  assert.equal(asked, 1, "a turn that acted is read");
+  config.claimCheck = "all";
+  await said.checkDraft({ conversationId: C, draft: "sunny, 61 till tonight.", acts: [], userText: "weather?" });
+  assert.equal(asked, 2, "REASON_CLAIM_CHECK=all reads every reply");
+});
+
+test("runTool marks which calls act: store_checkout and directions do, recall does not", async () => {
+  const { lapsedBlocked } = await import("../src/tools.js");
+  assert.equal(lapsedBlocked("store_checkout"), true);
+  assert.equal(lapsedBlocked("directions"), true);
+  assert.equal(lapsedBlocked("timer_set"), true);
+  assert.equal(lapsedBlocked("recall"), false);
 });

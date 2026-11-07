@@ -194,14 +194,14 @@ const MAX_ACTS = 30;
 const URL_RE = /https?:\/\/[^\s"'<>\\)]+/g;
 
 /** One tool call, as the check reads it: its name, whether it worked, its result cut short, and every link it handed back whole. */
-export function noteAct(acts, name, out) {
+export function noteAct(acts, name, out, { acting = false } = {}) {
   try {
     if (!Array.isArray(acts)) return;
     const failed = out == null || (typeof out === "object" && (out.ok === false || !!out.error || !!out.blocked || !!out.not_sent));
     let body;
     try { body = typeof out === "string" ? out : JSON.stringify(out, (k, v) => (k === "_image" ? undefined : v)); } catch { body = String(out); }
     const links = [...new Set(String(body ?? "").match(URL_RE) ?? [])].slice(0, 4);
-    acts.push({ name: String(name), ok: !failed, result: one(body, 360), links });
+    acts.push({ name: String(name), ok: !failed, result: one(body, 360), links, acting: !!acting });
     if (acts.length > MAX_ACTS) acts.shift();
   } catch { /* the record is best-effort */ }
 }
@@ -282,8 +282,10 @@ export async function checkDraft({ conversationId, draft, log = () => {}, now = 
     const claims = db.standingClaims(conversationId, { since, limit: 8 });
     // Something they turned down is checked whenever the check runs anyway — it never starts one.
     const closed = db.closedQuestions(conversationId, { since, limit: 5 });
-    // The claim check reads every reply of a turn whose tools were recorded (`acts`, even empty).
-    const claimCheck = config.claimCheck && Array.isArray(acts);
+    // The claim check reads the reply of a turn that called a tool which acts or makes something
+    // ("acting", the default: measured 2026-11-06, the check sits ~2 s in front of the send, so a chat
+    // reply with no such tool does not pay it), or every reply ("all"). `acts` null: not recorded.
+    const claimCheck = !!config.claimCheck && Array.isArray(acts) && (config.claimCheck === "all" || acts.some(a => a.acting));
     if (!claims.length && !closed.length && !claimCheck) return { ok: true };
     closed.push(...db.declinedQuestions(conversationId, { since: now - DECLINED_WINDOW_MS, limit: 5 }));
     if (!checker && !sideModelOn()) return { ok: true, skipped: "no_model" };
