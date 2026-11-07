@@ -122,3 +122,14 @@ test("a yes to connect one account is not a yes to connect another", async () =>
     { conversationId: C, messages: [owner("connect it")] });
   assert.equal(none.blocked, "ask_says_nothing", "an ask that names no account is not asked");
 });
+
+test("how the number is written in the ask is not a different person", async () => {
+  const { r, fake } = router();
+  const text = "Running late, there by 8. This is Omari's assistant, Reason.";
+  const asked = await runTool("confirm_request", { action: "message_send", summary: `text Kofi: ${text}`, target: `+1 (415) 555-9876: ${text}`, stakes: "third_party" },
+    { conversationId: C, messages: [owner("go on")] });
+  await runTool("confirm_record", { confirmation_id: asked.confirmation_id }, { conversationId: C, messages: [owner("go on"), owner("yes")], judge: YES });
+  const out = await runTool("message_send", { to: KOFI, text, confirmation_id: asked.confirmation_id }, { conversationId: C, channels: r });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(fake.sent.length, 1);
+});

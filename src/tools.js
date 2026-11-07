@@ -12228,6 +12228,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // that was the point of approving the plan. The same check call_place makes, on the target.
       // The person a text or a call reaches: the half of "<number>: <words>" before the words.
       const askedWho = trust.PERSON_PINNED.has(asked) ? trust.personOfTarget(input.target) : String(input.target ?? "");
+      // The number half written the way personPin writes it, so "+1 (212) 555-9999: …" is the same
+      // person as "+12125559999: …". Only the person half: the words are compared as they are.
+      if (trust.PERSON_PINNED.has(asked) && normalizeNumber(askedWho) && askedWho !== String(input.target ?? "").trim()) {
+        const said = String(input.target).trim();
+        input = { ...input, target: `${normalizeNumber(askedWho)}${said.slice(said.indexOf(": "))}` };
+      }
       if (asked === "call_place" && String(input.target ?? "").trim()) {
         const listGrant = todoAskCovered({ conversationId: c, target: askedWho, stakes: input.stakes ?? "", amount: input.amount ?? null });
         if (listGrant.ok) {

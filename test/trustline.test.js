@@ -82,6 +82,9 @@ beforeEach(() => {
   config.maxSpendPerDay = 300;
 });
 
+/** A text's yes is pinned to the person AND the words (audit lead 26). */
+const textPin = (to, text) => trust.personPin("message_send", { to, text });
+
 /** Ask and get a yes for exactly these details. */
 async function approve(action, target, summary = `about to ${action}`) {
   const req = await call("confirm_request", { action, summary, stakes: "both", target });
@@ -271,7 +274,7 @@ test("a permission does not paper over a yes that was spent, refused or has gone
 
   // Spent: the model carries a confirmation_id that has already been used. That is a question about
   // that yes, and the standing permission must not quietly answer it.
-  const id = await approve("message_send", FRIEND, `text ${FRIEND}: hi`);
+  const id = await approve("message_send", textPin(FRIEND, "Hello. This is Omari's assistant, Reason."), `text ${FRIEND}: hi`);
   const first = await call("message_send", { to: FRIEND, text: "Hello. This is Omari's assistant, Reason.", confirmation_id: id });
   assert.equal(first.ok, true);
   assert.equal(first.under_permission, undefined, "it went through on the yes, not on the permission");
@@ -284,7 +287,7 @@ test("a permission does not paper over a yes that was spent, refused or has gone
 
 test("a yes for one person is not turned into a yes for another by a permission about texting", async () => {
   await call("permission_grant", { text: "you can text kofi for me whenever", scope: { action: "texts", target: FRIEND } });
-  const id = await approve("message_send", FRIEND, `text ${FRIEND}: hi`);
+  const id = await approve("message_send", textPin(FRIEND, "Hello. This is Omari's assistant, Reason."), `text ${FRIEND}: hi`);
   const out = await call("message_send", { to: OTHER, text: "Hello. This is Omari's assistant, Reason.", confirmation_id: id });
   assert.equal(out.blocked, "wrong_target");
   assert.equal(sent.length, 0);
@@ -395,7 +398,7 @@ test("the two checks are about characters in a string, not about tone", () => {
 });
 
 test("a text to somebody else with an emoji in it does not go", async () => {
-  const out = await call("message_send", { to: FRIEND, text: "yo 8pm works 🔥", confirmation_id: await approve("message_send", FRIEND, `text ${FRIEND}`) });
+  const out = await call("message_send", { to: FRIEND, text: "yo 8pm works 🔥", confirmation_id: await approve("message_send", textPin(FRIEND, "yo 8pm works 🔥"), `text ${FRIEND}`) });
   assert.equal(out.blocked, "emoji_in_an_outside_message");
   assert.deepEqual(out.found, ["🔥"]);
   assert.equal(sent.length, 0, "nothing left the machine");
@@ -404,14 +407,14 @@ test("a text to somebody else with an emoji in it does not go", async () => {
 });
 
 test("a text to somebody else that does not say who is writing it does not go", async () => {
-  const out = await call("message_send", { to: FRIEND, text: "Hello, 8pm works.", confirmation_id: await approve("message_send", FRIEND, `text ${FRIEND}`) });
+  const out = await call("message_send", { to: FRIEND, text: "Hello, 8pm works.", confirmation_id: await approve("message_send", textPin(FRIEND, "Hello, 8pm works."), `text ${FRIEND}`) });
   assert.equal(out.blocked, "no_assistant_line");
   assert.equal(sent.length, 0);
   assert.match(out.error, /"Omari's assistant, Reason"/);
 });
 
 test("'send it exactly like that' sends it, and the receipt says that is why", async () => {
-  const id = await approve("message_send", FRIEND, `text ${FRIEND}`);
+  const id = await approve("message_send", textPin(FRIEND, "yo 8pm works 🔥"), `text ${FRIEND}`);
   const out = await call("message_send", {
     to: FRIEND, text: "yo 8pm works 🔥", confirmation_id: id,
     exactly_as_asked: "just send it exactly like that",
@@ -441,7 +444,7 @@ test("somebody on the draft-only list gets a draft handed over, never a message"
 
   const out = await call("message_send", {
     to: FRIEND, text: "Hello, Omari will be late on Sunday. Omari's assistant, Reason.",
-    confirmation_id: await approve("message_send", FRIEND, `text ${FRIEND}`),
+    confirmation_id: await approve("message_send", textPin(FRIEND, "Hello, Omari will be late on Sunday. Omari's assistant, Reason."), `text ${FRIEND}`),
   });
   assert.equal(out.blocked, "draft_only");
   assert.equal(sent.length, 0, "nothing was sent to her");
@@ -462,7 +465,7 @@ test("an entry with no number or address says plainly that it cannot stop anythi
   assert.match(list.note, /my boss has no number or address saved/);
 
   // And it really does not stop one, which is the honest half of saying so.
-  const id = await approve("message_send", FRIEND, `text ${FRIEND}`);
+  const id = await approve("message_send", textPin(FRIEND, "Hello. Omari's assistant, Reason."), `text ${FRIEND}`);
   const sentAnyway = await call("message_send", { to: FRIEND, text: "Hello. Omari's assistant, Reason.", confirmation_id: id });
   assert.equal(sentAnyway.ok, true);
 });
@@ -485,7 +488,7 @@ test("a name is matched against an address only when it IS the address", () => {
 
 test("taking somebody off the list lets Reason send to them again", async () => {
   await call("important_add", { who: "Mum", contact: FRIEND });
-  const id = await approve("message_send", FRIEND, `text ${FRIEND}`);
+  const id = await approve("message_send", textPin(FRIEND, "Hello. Omari's assistant, Reason."), `text ${FRIEND}`);
   assert.equal((await call("message_send", { to: FRIEND, text: "Hello. Omari's assistant, Reason.", confirmation_id: id })).blocked, "draft_only");
 
   assert.equal((await call("important_remove", { who: "mum" })).ok, true);

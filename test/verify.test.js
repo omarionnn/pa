@@ -24,6 +24,9 @@ process.env.REASON_TZ = "America/New_York";
 
 const { runTool } = await import("../src/tools.js");
 const db = await import("../src/db.js");
+const trust = await import("../src/trust.js");
+// A text's yes is pinned to the person AND the words (audit lead 26), never the bare number.
+const pin = (to, text) => trust.personPin("message_send", { to, text });
 const { clock } = await import("../src/config.js");
 const { verifyLink, verifyFeesShown, verifyRecipient, verifyPage, linksIn, checkFinish } = await import("../src/verify.js");
 
@@ -163,7 +166,7 @@ test("done is refused while a step it asked about has never gone through, and th
     sheet: { constraints: { agent: { value: "Kofi (+13475550222)", source: "them", said: "Kofi, 347 555 0222" } } },
   });
   const ask = await call("confirm_request", {
-    action: "message_send", summary: "text Kofi that saturday 2pm works", target: "+13475550222", task_id: t.task.id,
+    action: "message_send", summary: "text Kofi that saturday 2pm works", target: pin("+13475550222", "saturday 2pm works"), task_id: t.task.id,
   });
   assert.equal(ask.ok, true);
   const done = await call("task_finish", { task_id: t.task.id, state: "done", outcome: "viewing booked for saturday" });
@@ -179,7 +182,7 @@ test("the same job closes as failed with the gate still open: an honest close is
     title: "book the viewing", goal: "a viewing booked for saturday",
     sheet: { constraints: { agent: { value: "Kofi (+13475550222)", source: "them", said: "Kofi, 347 555 0222" } } },
   });
-  await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", target: "+13475550222", task_id: t.task.id });
+  await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", target: pin("+13475550222", "about saturday"), task_id: t.task.id });
   const failed = await call("task_finish", { task_id: t.task.id, state: "failed", outcome: "never heard back from Kofi" });
   assert.equal(failed.ok, true);
   assert.equal(db.getTask(C, t.task.id).state, "failed");
@@ -190,7 +193,7 @@ test("a refused ask does not hold a job open: a no is a real answer", async () =
     title: "book the viewing", goal: "a viewing booked",
     sheet: { constraints: { agent: { value: "Kofi (+13475550222)", source: "them", said: "Kofi, 347 555 0222" } } },
   });
-  const ask = await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", target: "+13475550222", task_id: t.task.id });
+  const ask = await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", target: pin("+13475550222", "about saturday"), task_id: t.task.id });
   db.refuseConfirmation(ask.confirmation_id);
   const done = await call("task_finish", { task_id: t.task.id, state: "done", outcome: "went in person instead, viewing is saturday" });
   assert.equal(done.ok, true);
@@ -253,12 +256,12 @@ test("the fee check runs before they are shown anything, and nothing is recorded
 test("an ask aimed at somebody from a different errand is refused before it is asked", async () => {
   const t = await withFeesAndKofi();
   const r = await call("confirm_request", {
-    action: "message_send", summary: "text them that saturday works, all in $1,970 including fees", target: "+19175550000", task_id: t.task.id,
+    action: "message_send", summary: "text them that saturday works, all in $1,970 including fees", target: pin("+19175550000", "saturday works, all in $1,970 including fees"), task_id: t.task.id,
   });
   assert.equal(r.ok, false);
   assert.equal(r.blocked, "wrong_recipient");
   const right = await call("confirm_request", {
-    action: "message_send", summary: "text Kofi that saturday works, $1,970 all in including fees", target: "+13475550222", task_id: t.task.id,
+    action: "message_send", summary: "text Kofi that saturday works, $1,970 all in including fees", target: pin("+13475550222", "saturday works, $1,970 all in including fees"), task_id: t.task.id,
   });
   assert.equal(right.ok, true);
 });
@@ -271,7 +274,7 @@ test("an ask that reaches nobody — a browser click — is not checked against 
 
 test("an ask pinned to a task that is not this conversation's is refused, and nothing is recorded", async () => {
   const before = db.db.prepare("SELECT COUNT(*) n FROM confirmations").get().n;
-  const r = await call("confirm_request", { action: "message_send", summary: "text somebody", target: "+13475550222", task_id: 9999 });
+  const r = await call("confirm_request", { action: "message_send", summary: "text somebody", target: pin("+13475550222", "hello"), task_id: 9999 });
   assert.equal(r.ok, false);
   assert.match(r.error, /No task #9999/);
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM confirmations").get().n, before);
@@ -288,14 +291,14 @@ test("the task a turn was woken for is known without the model naming it", async
 
 test("an ask with no task on it still holds that task's done back: forgetting to name one is not an escape", async () => {
   const t = await call("task_start", { title: "book the viewing", goal: "a viewing booked" });
-  await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", target: "+13475550222" });
+  await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", target: pin("+13475550222", "about saturday") });
   const done = await call("task_finish", { task_id: t.task.id, state: "done", outcome: "booked" });
   assert.equal(done.ok, false);
   assert.equal(done.blocked, "asked_but_never_done");
 });
 
 test("an ask older than the task does not hold it back", async () => {
-  await call("confirm_request", { action: "message_send", summary: "something from before", target: "+13475550222" });
+  await call("confirm_request", { action: "message_send", summary: "something from before", target: pin("+13475550222", "something from before") });
   clock.skip(60_000);
   const t = await call("task_start", { title: "a new job", goal: "something else" });
   const done = await call("task_finish", { task_id: t.task.id, state: "done", outcome: "that one is done" });
@@ -330,7 +333,7 @@ test("an ask that reaches somebody has to say who, and one that commits has to s
   const noWhat = await call("confirm_request", { action: "browser_submit", summary: "book it" });
   assert.equal(noWhat.blocked, "ask_says_nothing", "a commit with nothing pinned to it is the same hole");
 
-  const fine = await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", target: "+13475550222" });
+  const fine = await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", target: pin("+13475550222", "about saturday") });
   assert.equal(fine.ok, true);
 });
 
@@ -357,19 +360,19 @@ test("an ask that says money is involved has to say how much", async () => {
 test("the amount is only demanded of the one tool that can actually spend", async () => {
   // Plenty of asks say "both" out of caution about something that spends nothing. Refusing those
   // would teach the model to stop being cautious, which is the opposite of what the field is for.
-  const text = await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", stakes: "both", target: "+13475550222" });
+  const text = await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", stakes: "both", target: pin("+13475550222", "about saturday") });
   assert.equal(text.ok, true, "a text cannot spend money, whatever the ask called it");
 });
 
 test("how hard it is to take back comes from code, not from what the model claimed", async () => {
-  const text = await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", target: "+13475550222" });
+  const text = await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", target: pin("+13475550222", "about saturday") });
   assert.equal(text.undo, "no", "a text that has landed cannot be unsent");
   assert.match(text.say_this_too, /nothing takes this back/);
 
   const book = await call("confirm_request", { action: "browser_submit", summary: "book Carbone, $240", stakes: "both", target: "Carbone, Fri, $240" });
   assert.equal(book.undo, "hard");
 
-  const connect = await call("confirm_request", { action: "account_connect", summary: "connect the google account", target: "me@example.com" });
+  const connect = await call("confirm_request", { action: "account_connect", summary: "connect the google account", target: "connect google" });
   assert.equal(connect.undo, "easy");
   assert.match(connect.say_this_too, /do not make it sound heavier/);
 });

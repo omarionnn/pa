@@ -75,8 +75,12 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   `verifyRecipient` still match on the person half (`trust.personOfTarget`); a call placed from a call
   (`src/calls/fromcall.js`) pins its own confirmation with `personPin` on the same dial args. Before,
   the target was the number alone, so a yes to "running late" could carry any words to that number.
-  Drive: `node --test test/person-pin.test.js` (4; all fail on main dc3b781), then Drive 2 on the cage
-  with a `FakeChannel` router and `FakeCallProvider` in ctx.
+  `account_connect` is pinned the same way to `connect <name> (<scopes>)`, and its ask must carry a
+  target, so a yes to one provider cannot connect another.
+  Drive: `node --test test/person-pin.test.js` (5; all fail on main dc3b781), then Drive 2 on the cage
+  (eval `caged.sh env`, then `runTool` with a `FakeChannel` router and `FakeCallProvider` in ctx):
+  probe → `use_target`, bare-number ask → `target_needs_the_words`, other words / `may_book` added →
+  `wrong_target` with nothing sent or placed, the agreed text / brief → sent 1 / placed 1 (2026-11-07).
 - **A yes is spent once.** `consumed_at`.
 - **One reply is a yes to one ask (audit lead 27, 2026-11-07).** Two asks opened in the same turn
   share one `asked_after_msgs` mark, so before this the owner's "yes" to the one they were shown also

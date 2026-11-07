@@ -132,7 +132,7 @@ test("a yes in one person's Reason cannot open a gate in another's", async () =>
 
   const msgs = [owner("text kofi for me")];
   const req = await runTool("confirm_request",
-    { action: "message_send", summary: "text +14155559876 'hi'", target: STRANGER },
+    { action: "message_send", summary: "text +14155559876 'hi'", target: trust.personPin("message_send", { to: STRANGER, text: "hi" }) },
     { conversationId: mine.conversationId, messages: msgs });
   msgs.push(owner("yeah go"));
   const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id },
@@ -223,7 +223,7 @@ test("a real yes sends to a third party exactly once, and the yes is spent", asy
   const { router, fake } = harness();
   const C = config.ownerConversation;
   const asked = await runTool("confirm_request",
-    { action: "message_send", summary: `text ${STRANGER}: "omari says 8pm works"`, target: STRANGER },
+    { action: "message_send", summary: `text ${STRANGER}: "omari says 8pm works"`, target: trust.personPin("message_send", { to: STRANGER, text: "Hello, 8pm works for Omari. This is Omari's assistant, Reason." }) },
     { conversationId: C, messages: [owner("text kofi for me")] });
 
   const granted = await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
@@ -235,7 +235,7 @@ test("a real yes sends to a third party exactly once, and the yes is spent", asy
   assert.equal(sent.ok, true);
   assert.equal(fake.sent.length, 1);
 
-  const twice = await runTool("message_send", { to: STRANGER, text: "Hello again, from Omari's assistant, Reason.", confirmation_id: asked.confirmation_id },
+  const twice = await runTool("message_send", { to: STRANGER, text: "Hello, 8pm works for Omari. This is Omari's assistant, Reason.", confirmation_id: asked.confirmation_id },
     { conversationId: C, channels: router });
   assert.equal(twice.ok, false);
   assert.equal(twice.blocked, "already_spent");
@@ -246,7 +246,7 @@ test("a yes for one person does not text a different one", async () => {
   const { router, fake } = harness();
   const C = config.ownerConversation;
   const asked = await runTool("confirm_request",
-    { action: "message_send", summary: `text ${STRANGER}: "8pm works"`, target: STRANGER },
+    { action: "message_send", summary: `text ${STRANGER}: "8pm works"`, target: trust.personPin("message_send", { to: STRANGER, text: "Hello, 8pm works. This is Omari's assistant, Reason." }) },
     { conversationId: C, messages: [owner("text kofi")] });
   await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
     { conversationId: C, messages: [owner("text kofi"), owner("yep")], judge: async () => ({ verdict: "yes" }) });

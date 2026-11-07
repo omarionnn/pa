@@ -22,6 +22,7 @@ const { SYSTEM } = await import("../src/agent.js");
 const { runTool } = await import("../src/tools.js");
 const notice = await import("../src/notice.js");
 const db = await import("../src/db.js");
+const trust = await import("../src/trust.js");
 const { clock, config } = await import("../src/config.js");
 
 const MIN = 60_000;
@@ -261,7 +262,7 @@ test("the gated kind IS refused in code: a yes that was asked for and never carr
 
   const asked = await call("confirm_request", {
     task_id: id, action: "message_send", summary: "text the broker to hold friday 6pm",
-    target: "+12025550199", stakes: "third_party",
+    target: trust.personPin("message_send", { to: "+12025550199", text: "can you hold friday 6pm for us?" }), stakes: "third_party",
   });
   assert.equal(asked.ok, true, JSON.stringify(asked));
 

@@ -31,6 +31,7 @@ const { runTool, toolsFor } = await import("../src/tools.js");
 const { FakeCallProvider } = await import("../src/calls/fake.js");
 const todo = await import("../src/todo.js");
 const db = await import("../src/db.js");
+const trust = await import("../src/trust.js");
 const { clock, config } = await import("../src/config.js");
 
 const C = config.ownerConversation;
@@ -218,7 +219,7 @@ test("a business the plan did not name is asked about as usual", async () => {
   assert.equal(out.ok, false);
   assert.equal(out.blocked, "needs_confirmation");
   assert.match(out.todo_list_does_not_cover, /does not name a business/);
-  const asked = await runTool("confirm_request", { action: "call_place", target: UNNAMED, summary: "call Spotless" }, ctx());
+  const asked = await runTool("confirm_request", { action: "call_place", target: trust.personPin("call_place", { to: UNNAMED, goal: "ask about dry cleaning" }), summary: "call Spotless" }, ctx());
   assert.ok(asked.confirmation_id, "the normal ask happens");
   assert.equal(asked.not_needed, undefined);
 });
@@ -264,7 +265,7 @@ test("a money call refused under the list can still be asked about and approved 
   const calls = new FakeCallProvider();
   const book = await runTool("call_place", { to: SALON, goal: "book a cut saturday", may_book: true, read_back: ["date", "time"] }, ctx({ calls }));
   assert.equal(book.blocked, "needs_confirmation");
-  const asked = await runTool("confirm_request", { action: "call_place", target: SALON, summary: "book a cut at Fade Masters saturday, about $40" }, ctx());
+  const asked = await runTool("confirm_request", { action: "call_place", target: trust.personPin("call_place", { to: SALON, goal: "book a cut saturday", may_book: true, read_back: ["date", "time"] }), summary: "book a cut at Fade Masters saturday, about $40" }, ctx());
   assert.ok(asked.confirmation_id, JSON.stringify(asked));
   assert.equal(asked.not_needed, undefined);
   await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
@@ -272,7 +273,7 @@ test("a money call refused under the list can still be asked about and approved 
   const ok = await runTool("call_place", { to: SALON, goal: "book a cut saturday", may_book: true, read_back: ["date", "time"], confirmation_id: asked.confirmation_id }, ctx({ calls }));
   assert.equal(ok.ok, true, JSON.stringify(ok));
   // And an ask that says money is never short-circuited.
-  const m = await runTool("confirm_request", { action: "call_place", target: PLUMBER, stakes: "money", summary: "book the plumber, $150" }, ctx());
+  const m = await runTool("confirm_request", { action: "call_place", target: trust.personPin("call_place", { to: PLUMBER, goal: "book the plumber", may_book: true }), stakes: "money", summary: "book the plumber, $150" }, ctx());
   assert.ok(m.confirmation_id);
 });
 
@@ -467,7 +468,7 @@ test("with REASON_TODO off nothing changes for anybody", async () => {
   assert.equal(out.blocked, "needs_confirmation");
   assert.equal(out.todo_list_does_not_cover, undefined, "the refusal reads exactly as it always did");
   assert.deepEqual(calls.placed, []);
-  const asked = await runTool("confirm_request", { action: "call_place", target: PLUMBER, summary: "call" }, ctx());
+  const asked = await runTool("confirm_request", { action: "call_place", target: trust.personPin("call_place", { to: PLUMBER, goal: "x" }), summary: "call" }, ctx());
   assert.ok(asked.confirmation_id);
 
   // A task changing does not redraw anything, and the sweep says nothing.

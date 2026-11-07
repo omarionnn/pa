@@ -169,7 +169,7 @@ test("'wrong person' — the old number is never reached, on the old yes or the 
 
   // Reason asks about the wrong person and gets a real yes for THAT number.
   const asked = await call("confirm_request", {
-    action: "message_send", target: WRONG, summary: `text ${WRONG}: "hey, still ok for friday?"`,
+    action: "message_send", target: trust.personPin("message_send", { to: WRONG, text: "Hello, is Friday still ok? This is Omari's assistant, Reason." }), summary: `text ${WRONG}: "hey, still ok for friday?"`,
   }, { messages: [owner("tell him friday works")] });
   const granted = await call("confirm_record", { confirmation_id: asked.confirmation_id }, {
     messages: [owner("tell him friday works"), owner("go on then")], judge: fakeJudge({ verdict: "yes" }),
@@ -182,12 +182,12 @@ test("'wrong person' — the old number is never reached, on the old yes or the 
   }, { channels: router });
   assert.equal(rerouted.ok, false);
   assert.equal(rerouted.blocked, "wrong_target");
-  assert.match(rerouted.error, /one person they were shown/i);
+  assert.match(rerouted.error, /one person and the exact words they were shown/i);
   assert.deepEqual(router.sends, [], "nothing left the machine");
 
   // ...and once it has a yes for the right person, the WRONG one is still unreachable.
   const reasked = await call("confirm_request", {
-    action: "message_send", target: RIGHT, summary: `text ${RIGHT} instead: "hey, still ok for friday?"`,
+    action: "message_send", target: trust.personPin("message_send", { to: RIGHT, text: "Hello, is Friday still ok? This is Omari's assistant, Reason." }), summary: `text ${RIGHT} instead: "hey, still ok for friday?"`,
   }, { messages: [owner("tell him friday works"), owner("wrong person, it's kofi on 347 555 0222")] });
   await call("confirm_record", { confirmation_id: reasked.confirmation_id }, {
     messages: [owner("tell him friday works"), owner("wrong person, it's kofi on 347 555 0222"), owner("yeah that one")],
@@ -223,7 +223,7 @@ test("'leave that alone' cancels one job, says what went out, and touches nothin
 
   // Something really did go out while the apartment job was open.
   const asked = await call("confirm_request", {
-    action: "message_send", target: "+13475550222", summary: `text +13475550222: "are you still showing 441 graham?"`,
+    action: "message_send", target: trust.personPin("message_send", { to: "+13475550222", text: "Hello, are you still showing 441 Graham? This is Omari's assistant, Reason." }), summary: `text +13475550222: "are you still showing 441 graham?"`,
   }, { messages: [owner("ask the broker")] });
   await call("confirm_record", { confirmation_id: asked.confirmation_id }, {
     messages: [owner("ask the broker"), owner("yeah")], judge: fakeJudge({ verdict: "yes" }),

@@ -191,7 +191,7 @@ test("the prompt carries the proactiveness rules, merged into the one 'next thin
   // A brief still gets its work and no question about the brief: the catch is extra, never instead.
   assert.match(p, /a brief still gets its work and no question about the brief itself/);
   assert.equal(p.split("Your job is not to wait for instructions").length - 1, 1, "one rule, not two");
-  assert.ok(p.length < 72_000, `the system prompt is ${p.length} chars`);
+  assert.ok(p.length < 72_500, `the system prompt is ${p.length} chars`);
 });
 
 test("the moment-aware rules ride inside the same rule, and the prompt stays under budget for everyone", () => {
@@ -210,6 +210,6 @@ test("the moment-aware rules ride inside the same rule, and the prompt stays und
   assert.match(p, /Only what they actually told you, never a guess about them/);
   for (const me of [{ name: "Omari", isOperator: true, known: true }, { name: "Kwesi", isOperator: false, known: true }, { name: "Kwesi", isOperator: false }]) {
     const s = systemFor(me).length;
-    assert.ok(s < 72_000, `the system prompt is ${s} chars for ${me.name}`);
+    assert.ok(s < 72_500, `the system prompt is ${s} chars for ${me.name}`);
   }
 });

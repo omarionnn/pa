@@ -24,6 +24,7 @@ process.env.REASON_TZ = "America/New_York";
 
 const { runTool } = await import("../src/tools.js");
 const db = await import("../src/db.js");
+const trust = await import("../src/trust.js");
 const { clock } = await import("../src/config.js");
 const { termsOn } = await import("../src/letgo.js");
 
@@ -52,7 +53,7 @@ async function theTrip() {
   });
   await call("timer_set", { fire_at: hourFromNow(), note: "check flight prices again", task_id: t.task.id });
   await call("watch_set", { url: "https://example.com/fares", looking_for: "under $180", task_id: t.task.id });
-  await call("confirm_request", { action: "message_send", summary: "text Kofi the dates", target: "+13475550222", task_id: t.task.id });
+  await call("confirm_request", { action: "message_send", summary: "text Kofi the dates", target: trust.personPin("message_send", { to: "+13475550222", text: "the dates are the 12th to the 15th" }), task_id: t.task.id });
   return t.task.id;
 }
 

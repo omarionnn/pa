@@ -27,6 +27,7 @@ process.env.REASON_UNDO_SECONDS = "0";
 const { runTool } = await import("../src/tools.js");
 const { FakeCallProvider } = await import("../src/calls/fake.js");
 const db = await import("../src/db.js");
+const trust = await import("../src/trust.js");
 const { clock, config } = await import("../src/config.js");
 const errandMod = await import("../src/calls/errand.js");
 const brief = await import("../src/calls/brief.js");
@@ -47,15 +48,28 @@ beforeEach(() => {
 
 const owner = (t) => ({ role: "user", content: `[Wed, Oct 7, 2026, 12:00 PM] Omari: ${t}` });
 
-async function yesFor(summary, target) {
-  const asked = await runTool("confirm_request", { action: "call_place", summary, target },
+// A call's yes is pinned to the person AND the brief (audit lead 26), so the ask can only be made
+// once the brief is known: yesFor marks the call as one he said yes to, and place asks about exactly
+// the call_place input it is about to send (trust.personPin of it), records the yes, then places it.
+async function yesFor(summary) {
+  return { yesFor: summary };
+}
+
+async function askAndRecord(summary, input) {
+  const asked = await runTool("confirm_request", { action: "call_place", summary, target: trust.personPin("call_place", input) },
     { conversationId: C, messages: [owner("do it")] });
   await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
     { conversationId: C, messages: [owner("do it"), owner("yeah go")], judge: async () => ({ verdict: "yes" }) });
   return asked.confirmation_id;
 }
 
-const place = (args, calls) => runTool("call_place", args, { conversationId: C, calls });
+const place = async (args, calls) => {
+  if (args.confirmation_id?.yesFor) {
+    const { confirmation_id, ...input } = args;
+    args = { ...input, confirmation_id: await askAndRecord(confirmation_id.yesFor, input) };
+  }
+  return runTool("call_place", args, { conversationId: C, calls });
+};
 
 // ---------- the brief, built from what he approved ----------
 

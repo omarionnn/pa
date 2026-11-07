@@ -65,7 +65,7 @@ test("a bare refusal is the whole message, never a word inside one", () => {
 test("a flat no is refused without asking the judge at all", async () => {
   const judge = readsYes(); // it would say yes; it must never be reached
   const msgs = [owner("connect payments")];
-  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect payments" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "account_connect", target: "connect payments", summary: "connect payments" }, { conversationId: C, messages: msgs });
   msgs.push(owner("no"));
   const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge });
   assert.equal(rec.state, "refused");
@@ -107,7 +107,7 @@ test("a judge that fails authorizes nothing", async () => {
     db.db.exec("DELETE FROM confirmations;");
     const judge = fakeJudge(broken);
     const msgs = [owner("connect payments")];
-    const req = await runTool("confirm_request", { action: "account_connect", summary: "connect payments" }, { conversationId: C, messages: msgs });
+    const req = await runTool("confirm_request", { action: "account_connect", target: "connect payments", summary: "connect payments" }, { conversationId: C, messages: msgs });
     msgs.push(owner("yeah go for it"));
     const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge });
     assert.equal(rec.ok, false, `${JSON.stringify(broken)} must not grant`);
@@ -158,7 +158,7 @@ test("a guarded tool refuses with no confirmation at all", async () => {
 
 test("the model cannot grant its own confirmation in the same turn", async () => {
   const msgs = [owner("connect payments")];
-  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect the payments account", stakes: "money" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "account_connect", target: "connect payments", summary: "connect the payments account", stakes: "money" }, { conversationId: C, messages: msgs });
   assert.equal(req.ok, true);
   // No new owner message has arrived, so the guard will not grant — and will not even ask.
   const judge = readsYes();
@@ -172,7 +172,7 @@ test("the model cannot grant its own confirmation in the same turn", async () =>
 
 test("an unclear reply authorizes nothing", async () => {
   const msgs = [owner("connect payments")];
-  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect payments" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "account_connect", target: "connect payments", summary: "connect payments" }, { conversationId: C, messages: msgs });
   msgs.push(owner("what would that let you do"));
   const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: fakeJudge({ verdict: "unclear" }) });
   assert.equal(rec.ok, false);
@@ -182,7 +182,7 @@ test("an unclear reply authorizes nothing", async () => {
 
 test("a no refuses the confirmation for good", async () => {
   const msgs = [owner("connect payments")];
-  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect payments" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "account_connect", target: "connect payments", summary: "connect payments" }, { conversationId: C, messages: msgs });
   msgs.push(owner("nah forget it"));
   const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: fakeJudge({ verdict: "no" }) });
   assert.equal(rec.state, "refused");
@@ -198,7 +198,7 @@ test("a no refuses the confirmation for good", async () => {
 test("a real yes is granted, quoted, spent once, and never reusable", async () => {
   process.env.REASON_PAYMENTS_KEY = "test-key";
   const msgs = [owner("connect payments")];
-  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect the payments account with pay_link and refund" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "account_connect", target: "connect payments", summary: "connect the payments account with pay_link and refund" }, { conversationId: C, messages: msgs });
   msgs.push(owner("yeah go for it"));
   const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
   assert.equal(rec.state, "granted");
@@ -227,7 +227,7 @@ test("a real yes is granted, quoted, spent once, and never reusable", async () =
 test("a yes goes stale after the window", async () => {
   process.env.REASON_PAYMENTS_KEY = "test-key";
   const msgs = [owner("connect payments")];
-  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect payments" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "account_connect", target: "connect payments", summary: "connect payments" }, { conversationId: C, messages: msgs });
   msgs.push(owner("yes"));
   await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
   clock.skip(11 * 60_000);
@@ -248,7 +248,7 @@ test("a yes for one action does not authorize another", async () => {
 
 test("a provider with no credentials is not_connected and says what is missing", async () => {
   const msgs = [owner("read my email")];
-  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect gmail" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "account_connect", target: "connect gmail", summary: "connect gmail" }, { conversationId: C, messages: msgs });
   msgs.push(owner("yes please"));
   await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
   const out = await runTool("account_connect", { name: "gmail", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
@@ -406,7 +406,7 @@ test("a site needs no env var, needs a signed-in browser, and says which sites r
 
 test("a site cannot be connected by a tool, even with a granted yes — the person signs in themselves", async () => {
   const msgs = [owner("connect opentable")];
-  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect the opentable account" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "account_connect", target: "connect opentable", summary: "connect the opentable account" }, { conversationId: C, messages: msgs });
   msgs.push(owner("yeah do it"));
   const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
   assert.equal(rec.state, "granted");
@@ -423,7 +423,7 @@ test("a site cannot be connected by a tool, even with a granted yes — the pers
 
 test("an unbuilt app still cannot be connected, even with a granted yes", async () => {
   const msgs = [owner("connect that thing you were going to build")];
-  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect the unwritten one" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "account_connect", target: "connect not_written_yet", summary: "connect the unwritten one" }, { conversationId: C, messages: msgs });
   msgs.push(owner("yeah do it"));
   await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
 
@@ -447,7 +447,7 @@ test("an unbuilt app still cannot be connected, even with a granted yes", async 
 
 test("spotify cannot be connected by account_connect either: the person agrees on Spotify's own page", async () => {
   const msgs = [owner("connect spotify")];
-  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect spotify" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "account_connect", target: "connect spotify", summary: "connect spotify" }, { conversationId: C, messages: msgs });
   msgs.push(owner("go on"));
   await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
 

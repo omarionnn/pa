@@ -45,6 +45,7 @@ const { announcementFor, callRulesFor } = await import("../src/calls/provider.js
 const { runTool, capabilitiesNow } = await import("../src/tools.js");
 const { callWebhookRequest } = await import("../src/http.js");
 const db = await import("../src/db.js");
+const trust = await import("../src/trust.js");
 const { config, clock } = await import("../src/config.js");
 
 const C = config.ownerConversation;
@@ -124,8 +125,10 @@ const PLACE_ARGS = {
   maxSeconds: 600, announcement: ANN, rules: RULES, onBehalfOf: "Omari",
 };
 
-/** Ask, answer yes — the confirm gate's happy path, so call_place can get as far as the provider. */
-async function yesFor(summary, { target } = {}) {
+/** Ask, answer yes — the confirm gate's happy path, so call_place can get as far as the provider.
+ *  `input` is the call_place input: a call's yes is pinned to the person AND the brief (audit lead 26). */
+async function yesFor(summary, { input } = {}) {
+  const target = input ? trust.personPin("call_place", input) : undefined;
   const asked = await runTool("confirm_request", { action: "call_place", summary, ...(target ? { target } : {}) },
     { conversationId: C, messages: [owner("do it")] });
   await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
@@ -498,7 +501,7 @@ test("a body that is not JSON is a 400, not a crash", () => {
 test("a webhook settles the call: state, cost, and the audio filed", async () => {
   config.publicUrl = "https://reason.example";
   const calls = new BlandCallProvider({ key: "k", fetchImpl: stubFetch({ json: { status: "success", call_id: "bland-1" } }) });
-  const id = await yesFor(`ring ${PLACE} to ask about a table`, { target: PLACE });
+  const id = await yesFor(`ring ${PLACE} to ask about a table`, { input: { to: PLACE, goal: "ask about a table", facts: [] } });
   const placed = await runTool("call_place", { to: PLACE, goal: "ask about a table", facts: [], confirmation_id: id }, { conversationId: C, calls });
   assert.equal(placed.ok, true);
 
@@ -530,7 +533,7 @@ test("a webhook settles the call: state, cost, and the audio filed", async () =>
 async function placedCall(externalId) {
   config.publicUrl = "https://reason.example";
   const calls = new BlandCallProvider({ key: "secret-key", fetchImpl: stubFetch({ json: { status: "success", call_id: externalId } }) });
-  const id = await yesFor(`ring ${PLACE} to ask about a table`, { target: PLACE });
+  const id = await yesFor(`ring ${PLACE} to ask about a table`, { input: { to: PLACE, goal: "ask about a table", facts: [] } });
   const placed = await runTool("call_place", { to: PLACE, goal: "ask about a table", facts: [], confirmation_id: id }, { conversationId: C, calls });
   assert.equal(placed.ok, true);
   return { calls, row: db.getCall(C, placed.call_id) };
@@ -703,7 +706,7 @@ test("a webhook for a token nobody was issued is the same dull 404 as a made-up 
 test("a webhook that arrives twice does not settle the call twice", async () => {
   config.publicUrl = "https://reason.example";
   const calls = new BlandCallProvider({ key: "k", fetchImpl: stubFetch({ json: { status: "success", call_id: "bland-2" } }) });
-  const id = await yesFor(`ring ${PLACE} to ask about a table`, { target: PLACE });
+  const id = await yesFor(`ring ${PLACE} to ask about a table`, { input: { to: PLACE, goal: "ask about a table", facts: [] } });
   const placed = await runTool("call_place", { to: PLACE, goal: "ask about a table", facts: [], confirmation_id: id }, { conversationId: C, calls });
   const row = db.getCall(C, placed.call_id);
 
@@ -721,7 +724,7 @@ test("a webhook that arrives twice does not settle the call twice", async () => 
 test("a webhook whose payload is about a different call is refused, not written down", async () => {
   config.publicUrl = "https://reason.example";
   const calls = new BlandCallProvider({ key: "k", fetchImpl: stubFetch({ json: { status: "success", call_id: "bland-mine" } }) });
-  const id = await yesFor(`ring ${PLACE} to ask about a table`, { target: PLACE });
+  const id = await yesFor(`ring ${PLACE} to ask about a table`, { input: { to: PLACE, goal: "ask about a table", facts: [] } });
   const placed = await runTool("call_place", { to: PLACE, goal: "ask about a table", facts: [], confirmation_id: id }, { conversationId: C, calls });
   const row = db.getCall(C, placed.call_id);
 
@@ -736,7 +739,7 @@ test("a webhook whose payload is about a different call is refused, not written 
 test("a webhook about a call that has not finished writes nothing", async () => {
   config.publicUrl = "https://reason.example";
   const calls = new BlandCallProvider({ key: "k", fetchImpl: stubFetch({ json: { status: "success", call_id: "bland-3" } }) });
-  const id = await yesFor(`ring ${PLACE} to ask about a table`, { target: PLACE });
+  const id = await yesFor(`ring ${PLACE} to ask about a table`, { input: { to: PLACE, goal: "ask about a table", facts: [] } });
   const placed = await runTool("call_place", { to: PLACE, goal: "ask about a table", facts: [], confirmation_id: id }, { conversationId: C, calls });
   const row = db.getCall(C, placed.call_id);
 
@@ -755,7 +758,7 @@ test("call_place sends the per-call webhook URL built from REASON_PUBLIC_URL", a
   const fetchImpl = stubFetch({ json: { status: "success", call_id: "bland-4" } });
   const calls = new BlandCallProvider({ key: "k", fetchImpl });
 
-  const id = await yesFor(`ring ${PLACE} to ask about a table`, { target: PLACE });
+  const id = await yesFor(`ring ${PLACE} to ask about a table`, { input: { to: PLACE, goal: "ask about a table", facts: [] } });
   const out = await runTool("call_place", { to: PLACE, goal: "ask about a table", facts: [], confirmation_id: id }, { conversationId: C, calls });
   assert.equal(out.ok, true);
 
@@ -772,7 +775,7 @@ test("with no REASON_PUBLIC_URL the call still goes, and the outcome is polled i
   ]);
   const calls = new BlandCallProvider({ key: "k", fetchImpl });
 
-  const id = await yesFor(`ring ${PLACE} to ask about a table`, { target: PLACE });
+  const id = await yesFor(`ring ${PLACE} to ask about a table`, { input: { to: PLACE, goal: "ask about a table", facts: [] } });
   const placed = await runTool("call_place", { to: PLACE, goal: "ask about a table", facts: [], confirmation_id: id }, { conversationId: C, calls });
   assert.equal("webhook" in fetchImpl.seen[0].body, false);
 
