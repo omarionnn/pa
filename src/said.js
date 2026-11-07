@@ -322,7 +322,7 @@ export async function checkDraft({ conversationId, draft, log = () => {}, now = 
     const lines = [
       ...unbacked.map(u => u.problem === "no_artifact"
         ? `It says "${one(u.quote, 120)}" but what it names is not in the text (${one(u.fact, 120)}).${links.length ? ` Links your tools returned this turn: ${links.join(" ")} — put the right one in, on its own line.` : " No tool made it this turn: make it now with the tool and put it in, or say plainly you haven't made it."}`
-        : `It says "${one(u.quote, 120)}", but nothing you ran this turn did that and nothing on record shows it (${one(u.fact, 120)}). Never say a thing is done, started or sent when it isn't: do it now with the tool and then say so, or say plainly it hasn't happened (or that you can't see it from here) and what is next.`),
+        : `It says "${one(u.quote, 120)}", but nothing you ran this turn did that and nothing on record shows it (${one(u.fact, 120)}). Never say a thing is done, started or sent when it isn't. Say plainly what did and didn't happen (or that you can't see it from here) and what is next; run a tool again only if its own result this turn shows it failed or never ran — never repeat a send, a call or a purchase that went through.`),
       ...changed.map(c => `It changes what you told them earlier — ${one(c.subject, 80)} was ${one(c.value, 60)} — without saying so. Say it outright: "earlier I said ${one(c.value, 40)}, that was before …; it's …".`),
       ...reasked.map(q => q.closed_reason === "declined"
         ? `It raises "${one(q.question, 100)}" again, which they already turned down. Leave it out entirely.`

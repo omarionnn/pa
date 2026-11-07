@@ -207,7 +207,7 @@ test("Ulta: a checkout Crossmint stops answering about is told within about a mi
     const m = /agent-checkouts\/([^/]+)(\/cancel)?$/.exec(p);
     if (m?.[2]) return { status: 202, ok: true, text: async () => "{}" };
     if (m && runs[m[1]]) return { status: 200, ok: true, text: async () => JSON.stringify({ runId: m[1], ...runs[m[1]] }) };
-    return { status: 503, ok: false, text: async () => "" };
+    return { status: 404, ok: false, text: async () => "" };
   });
   db.db.prepare("INSERT INTO shop_runs (run_id, conversation_id, store, item, mode, status, created_at, updated_at, stage, stage_at, progress_at) VALUES ('run_9', ?, 'ulta', 'CeraVe 16 oz', 'guest', 'running', ?, ?, 'started', ?, ?)")
     .run(C, clock.now(), clock.now(), clock.now(), clock.now());
@@ -224,6 +224,13 @@ test("Ulta: a checkout Crossmint stops answering about is told within about a mi
   assert.ok(crossmint.some(c => c.method === "POST" && c.path.endsWith("/run_9/cancel")), "cancelled at Crossmint so nothing is left running unwatched");
   assert.equal((await shop.step("run_9")).done, true);
   assert.equal(told.length, 1, "once");
+});
+
+test("review 11-06: a search or lookup is not an acting tool, so its reply never waits for the claim check", async () => {
+  const acts = [];
+  await runTool("web_search", { query: "weather boston" }, { conversationId: C, turnActs: acts });
+  assert.equal(acts.length, 1);
+  assert.equal(acts[0].acting, false);
 });
 
 test("the gate: a reply whose turn called no tool that acts or makes something is not held for the claim check", async () => {
