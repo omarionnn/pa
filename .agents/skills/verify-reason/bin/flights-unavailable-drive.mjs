@@ -97,7 +97,7 @@ for (let i = 0; i < 6; i++) {
 
 console.log("");
 const first = sent.slice(0, before).map(m => m.text).join("\n");
-step("the first reply says prices aren't available (or couldn't check), never 'no flights'", /not available|aren'?t available|couldn'?t (check|pull|get)|can'?t (check|pull|get)/i.test(first) && !/\bno flights\b(?! exist)/i.test(first.replace(/(doesn'?t|does not|not) mean (that )?there (are|were) no flights/gi, "")), first.slice(0, 160));
+step("the first reply says prices aren't available (or couldn't check), never 'no flights'", /not available|aren['’]?t available|couldn['’]?t (check|pull|get)|can['’]?t (check|pull|get)/i.test(first) && !/\bno flights\b(?! exist)/i.test(first.replace(/(doesn['’]?t|does not|not) mean (that )?there (are|were) no flights/gi, "")), first.slice(0, 160));
 step("the first reply hands over Google Flights", /google\.com\/travel\/flights/.test(first));
 step("no price is made up", !/\$\d/.test(sent.map(m => m.text).join("\n")));
 step("no 'still trying' anywhere", !/still (trying|working|on it|checking)|keep (trying|checking)/i.test(sent.map(m => m.text).join("\n")));
