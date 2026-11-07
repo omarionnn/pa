@@ -370,7 +370,9 @@ export function authorizeConfirmation({ conversationId, action, confirmationId, 
         ? `does not say what ${action} was for, so it cannot authorize committing anything. Call confirm_request again with target set to the same one-line details you will submit, show them those details, and ask again.`
         : PERSON_PINNED.has(toolName(action))
           ? `does not say who ${action} was for or what it says, so it cannot authorize reaching anyone. Call confirm_request again with target set to the use_target string this refusal hands back, show them that person and those exact words, and ask again.`
-          : `does not say who ${action} was for, so it cannot authorize reaching anyone. Call confirm_request again with target set to the exact number, show them that number, and ask again.`;
+          : toolName(action) === "account_connect"
+            ? `does not say which account ${action} was for, so it cannot connect anything. Call confirm_request again with target set to the use_target string this refusal hands back, name that provider to them, and ask again.`
+            : `does not say who ${action} was for, so it cannot authorize reaching anyone. Call confirm_request again with target set to the exact number, show them that number, and ask again.`;
       return { ok: false, blocked: "no_target_on_record", error: `Confirmation #${confirmationId} ${what}` };
     }
     if (c.target !== want) {
@@ -378,7 +380,9 @@ export function authorizeConfirmation({ conversationId, action, confirmationId, 
         ? `A yes covers the exact details they were shown, and these are not them. Say what has changed, then confirm_request again with the new details and ask.`
         : PERSON_PINNED.has(toolName(action))
           ? `A yes covers the one person and the exact words they were shown, and this is not both of them. Send exactly what they agreed to, or confirm_request again with target set to use_target and ask about this one.`
-          : `A yes covers the one person they were shown. Ask again for this one.`;
+          : toolName(action) === "account_connect"
+            ? `A yes covers connecting the one account they were told about. Ask again for this one.`
+            : `A yes covers the one person they were shown. Ask again for this one.`;
       return { ok: false, blocked: "wrong_target", error: `Confirmation #${confirmationId} was for '${c.target}', not '${want}'. ${what}` };
     }
   }

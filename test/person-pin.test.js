@@ -112,3 +112,13 @@ test("a yes to one voice note cannot send a different file", async () => {
   const other = await runTool("voice_note_send", { to: KOFI, file: "/tmp/b.caf", text: "hey", confirmation_id: id }, { conversationId: C, channels: r });
   assert.equal(other.blocked, "wrong_target");
 });
+
+test("a yes to connect one account is not a yes to connect another", async () => {
+  const id = await yesFor("account_connect", { name: "phone_out" });
+  const other = await runTool("account_connect", { name: "github", confirmation_id: id }, { conversationId: C });
+  assert.equal(other.ok, false);
+  assert.equal(other.blocked, "wrong_target", "the yes named one provider");
+  const none = await runTool("confirm_request", { action: "account_connect", summary: "connect it", stakes: "third_party" },
+    { conversationId: C, messages: [owner("connect it")] });
+  assert.equal(none.blocked, "ask_says_nothing", "an ask that names no account is not asked");
+});

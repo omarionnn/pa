@@ -5139,7 +5139,7 @@ export const tools = [
   },
   {
     name: "account_connect",
-    description: "Connect one provider so Reason can act on it. Needs the confirm gate first: call confirm_request, wait for a real yes, confirm_record, then this with the confirmation_id. Fails honestly with not_connected when the provider's credentials are not set up on this machine.",
+    description: "Connect one provider so Reason can act on it. Needs the confirm gate first, and the yes is pinned to the provider: call this with no confirmation_id (nothing connects), pass the `use_target` it refuses with verbatim as confirm_request's target, wait for a real yes, confirm_record, then this with the confirmation_id. Fails honestly with not_connected when the provider's credentials are not set up on this machine.",
     input_schema: {
       type: "object",
       properties: {
@@ -8991,6 +8991,9 @@ function confirmTargetFor(name, input, c = null) {
     // 7:15 to Atlanta must not be spendable on the 6am to Lagos.
     case "flight_checkin_commit": return `flight #${input.flight_id}: ${input.what}`;
     case "admin_delete": return input.number;
+    // Which provider, and which of its scopes: a yes to connecting one is not a yes to another one
+    // with credentials on this server (audit lead 26).
+    case "account_connect": return `connect ${String(input.name ?? "").trim()}${input.scopes?.length ? ` (${[...input.scopes].sort().join(", ")})` : ""}`;
     // Every part of an email a person would care about: who it reaches, what it says, and which
     // thread it lands in. A yes to one email is then never a yes to a different one.
     // Which account it happens on is in every one of these, because by the time this runs it has been
@@ -12262,7 +12265,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         details: `${input.summary ?? ""} ${input.target ?? ""}`,
         gated: ALWAYS_NEEDS_CONFIRMATION.has(asked) || CONDITIONALLY_GATED.has(asked),
         // A permission's yes is pinned to what would be saved (permission_grant hands back use_target).
-        needsTarget: REACHES_SOMEBODY.has(asked) || SPENDS_MONEY.has(asked) || asked === "permission_grant",
+        needsTarget: REACHES_SOMEBODY.has(asked) || SPENDS_MONEY.has(asked) || asked === "permission_grant" || asked === "account_connect",
         canSpend: SPENDS_MONEY.has(asked),
       });
       if (!carries.ok) return carries;
