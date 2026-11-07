@@ -21,7 +21,7 @@ Find lines: `grep -n 'case "uber_' src/tools.js`.
 Tests: the link in `test/sites.test.js` (46 in the file; the Uber link from ~line 425, "the uber deep link"), `test/rides.test.js`
 (5: the NYC geofence and the two verified numbers), `test/ridelinks.test.js` (5: coordinates, the
 outbox rebuild, and a log with no link text), `test/uber.test.js` (17) against `test/fixture-uber.js`; the sign-in plumbing in
-`test/signin.test.js` (29 on 2026-11-07), `test/signin-window.test.js` (11), `test/signin-remote.test.js` (44).
+`test/signin.test.js` (29 on 2026-11-07), `test/signin-window.test.js` (11), `test/signin-remote.test.js` (50; the link itself: [signin-link.md](signin-link.md)).
 `test/flow-resend-link.test.js` (#79, needs a model) pins that a link they tap to act on is sent
 again, never pointed at. (There is no `uber_status` tool: status is `uber.uberStatus()` and the
 `/health` block; ride state is `uber_ride`.)
