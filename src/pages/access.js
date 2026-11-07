@@ -67,9 +67,9 @@ function sameKey(a, b) {
   return x.length === y.length && x.length > 0 && timingSafeEqual(x, y);
 }
 
-/** Mint a code for one page and return it, for Reason to send to the owner. */
-export function issueCode(pageId) {
-  return db.createPageCode(pageId, { code: newCode(), ttlMs: CODE_TTL_MS });
+/** Mint a code for one page and return it, for Reason to send to the owner. `bound`: the sign-in browser it is for (src/events.js). */
+export function issueCode(pageId, { bound = null } = {}) {
+  return db.createPageCode(pageId, { code: newCode(), ttlMs: CODE_TTL_MS, bound });
 }
 
 /**
@@ -77,11 +77,11 @@ export function issueCode(pageId) {
  * key gets here (http.js checks), so the one thing left to bound is how often a held link can make
  * the owner's phone buzz: MAX_CODES_SENT in the attempt window, counted from the table.
  */
-export function requestCode(page, { host } = {}) {
+export function requestCode(page, { host, bound = null } = {}) {
   if (db.pageCodesIssued(page.id, ATTEMPT_WINDOW_MS) >= MAX_CODES_SENT) {
     return { ok: false, reason: "too_many_sent", retry_after_s: Math.ceil(ATTEMPT_WINDOW_MS / 1000) };
   }
-  const { id, code } = issueCode(page.id);
+  const { id, code } = issueCode(page.id, { bound });
   return { ok: true, id, code, line: codeLine(page, code, { host }) };
 }
 

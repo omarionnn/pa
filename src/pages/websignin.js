@@ -418,8 +418,8 @@ export function greeting(name) {
  * made-up one would say which numbers use Reason. Keyed on the code's own row (`wsign:<conv>:<id>`),
  * which src/db.js keeps out of the per-message history.
  */
-function sendCode({ conversationId, runtime, log }) {
-  const asked = requestCode({ id: signinKey(conversationId), title: "Reason" }, { host: "" });
+function sendCode({ conversationId, runtime, log, bound }) {
+  const asked = requestCode({ id: signinKey(conversationId), title: "Reason" }, { host: "", bound });
   if (!asked.ok) { log({ web_signin_code_refused: asked.reason }); return asked; }
   if (!runtime?._tell) return asked;
   Promise.resolve(runtime._tell(conversationId, codeLine(asked.code), { idempotencyKey: `wsign:${conversationId}:${asked.id}` }))
@@ -622,6 +622,9 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
   }
   const number = String(form.get("number") ?? "").slice(0, 24);
   const actor = eventActor(headers, remoteAddress);
+  // The code a browser asks for is that browser's: bound to its form secret (checked equal just
+  // above), so a stranger typing this number neither kills nor reaches it (events.tryKeyedCode).
+  const bound = events.signinBinding(`wform:${formToken}`);
   // Only an account Reason serves and the switch allows gets a text; everybody else gets the same
   // page. `who` is null for a number with no account, a paused one, or — in owner-only mode — anyone
   // but the owner, and nothing below can tell those apart from the outside.
@@ -630,7 +633,7 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
   if (sub === "code") {
     // One answer for every miss — no account, not allowed, wrong, expired, used — and the only
     // limit ever said is this browser's own, so codes teach nothing about whose number it was.
-    const tried = events.tryKeyedCode({ conversationId: who?.conversation_id ?? null, code: form.get("code"), personKey: who ? signinKey(who.conversation_id) : null, browserKey: `wsignb:${actor}` });
+    const tried = events.tryKeyedCode({ conversationId: who?.conversation_id ?? null, code: form.get("code"), personKey: who ? signinKey(who.conversation_id) : null, browserKey: `wsignb:${actor}`, bound });
     if (!tried.ok) {
       log({ web_signin_failed: tried.reason });
       const askedAt = /^\d{10,15}$/.test(String(form.get("t") ?? "")) ? Number(form.get("t")) : clock.now();
@@ -666,6 +669,6 @@ async function routeWeb({ sub = null, method, query = {}, headers = {}, remoteAd
     return page(200, renderCode({ number, joinNumber, formToken, askedAt: last, error: { kind: "resend", leftMs: last + CODE_TTL_MS - clock.now() } }));
   }
   events.noteSigninRequest(actor);
-  if (who) sendCode({ conversationId: who.conversation_id, runtime, log });
+  if (who) sendCode({ conversationId: who.conversation_id, runtime, log, bound });
   return page(200, renderCode({ number, joinNumber, formToken, askedAt: clock.now() }));
 }
