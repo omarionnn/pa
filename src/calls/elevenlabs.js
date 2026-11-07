@@ -100,7 +100,7 @@ export class ElevenLabsCallProvider extends CallProvider {
    */
   constructor({
     fetchImpl = null, key = null, base = null, agentId = null, phoneNumberId = null,
-    voiceId = null, webhookSecret = null, llmSecret = null, timeoutMs = null,
+    voiceId = null, webhookSecret = null, llmSecret = null, inboundSecret = null, timeoutMs = null,
   } = {}) {
     super();
     this.fetchImpl = fetchImpl;
@@ -111,6 +111,7 @@ export class ElevenLabsCallProvider extends CallProvider {
     this._voiceId = voiceId;
     this._webhookSecret = webhookSecret;
     this._llmSecret = llmSecret;
+    this._inboundSecret = inboundSecret;
     this._timeoutMs = timeoutMs;
   }
 
@@ -123,6 +124,7 @@ export class ElevenLabsCallProvider extends CallProvider {
   get voiceId() { return this._voiceId ?? config.elevenVoiceId; }
   get webhookSecret() { return this._webhookSecret ?? config.elevenWebhookSecret; }
   get llmSecret() { return this._llmSecret ?? config.elevenLlmSecret; }
+  get inboundSecret() { return this._inboundSecret ?? config.elevenInboundSecret; }
   get timeoutMs() { return this._timeoutMs ?? config.elevenTimeoutMs; }
 
   get fetch() { return this.fetchImpl ?? globalThis.fetch; }
