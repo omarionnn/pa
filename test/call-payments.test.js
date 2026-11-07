@@ -246,6 +246,78 @@ test("requireCallRules accepts the real rules and nothing less", () => {
   assert.equal(requireCallRules({ rules: "not an array" }).ok, false);
 });
 
+// ---------- the refusal is explained calmly, in the model's own words (lead 31 follow-up) ----------
+//
+// The guard refusing is right; a bare "Refused" read out is not. Whoever hears it — the owner who
+// asked for the call, or the business that asked for a card — is told why (no card or account details
+// on calls, to keep the money safe) and what can happen instead. That is an INSTRUCTION the model says
+// in its own voice, never a script: no exact-wording asserts on speech, and no quoted line to read out.
+
+/** The calm-explanation instruction: the reason, own words, no blame, not robotic. */
+function assertCalmWhy(text, label) {
+  assert.match(text, /card or account details/i, `${label}: names what is not shared`);
+  assert.match(text, /money safe/i, `${label}: says why`);
+  assert.match(text, /own words/i, `${label}: in the model's own words, not a script`);
+  assert.match(text, /blame/i, `${label}: never blames them`);
+  assert.match(text, /same way twice|word for word/i, `${label}: never repeated robotically`);
+}
+/** No pre-written line for the voice to read out: nothing quoted at length, no say/reply field. */
+function assertNoScript(out, text, label) {
+  assert.doesNotMatch(text, /"[^"]{25,}"/, `${label}: no quoted script line`);
+  for (const k of ["say", "reply", "speak", "script", "line"]) assert.equal(out?.[k], undefined, `${label}: no ${k} field`);
+}
+
+test("a pre-dial refusal tells the model to explain why calmly and offer what it can do instead", async () => {
+  const calls = new FakeCallProvider();
+  const out = await runTool("call_place", { to: OWNER, goal: "hold the table for 4 at 8", facts: [`card ${CARD}`] },
+    { conversationId: C, calls });
+  assert.equal(out.status, "payment_details_refused");
+  assertCalmWhy(out.error, "call_place refusal");
+  assert.match(out.error, /instead/i, "then what it can do instead");
+  assert.match(out.error, /pay link|payment link|another way/i);
+  assertNoScript(out, out.error, "call_place refusal");
+  assert.doesNotMatch(JSON.stringify(out), /4242/);
+});
+
+test("a call asked for at a time (then_call) is refused with the same calm note", async () => {
+  const out = checkCallForPaymentDetails({ goal: "read them card 4111 1111 1111 1111" });
+  assert.equal(out.ok, false);
+  assertCalmWhy(out.error, "then_call refusal");
+  assertNoScript(out, out.error, "then_call refusal");
+});
+
+test("the call rules tell the voice and the call turn to explain calmly when THEY ask for card details", async () => {
+  const rules = callRulesFor({ ownerName: "Omari" });
+  const all = rules.join(" ");
+  assertCalmWhy(all, "call rules");
+  assert.match(all, /Omari's money safe/, "on a third-party call it is the owner's money");
+  assertNoScript(null, all, "call rules");
+  assert.equal(requireCallRules({ rules }).ok, true, "the payment rule is still recognised");
+
+  // The GPT-Live talking voice and Reason's third-party call turn both carry it.
+  const { lineTalkInstructions } = await import("../src/calls/gptlive.js");
+  const { thirdPartyFrame } = await import("../src/calls/voice-prompt.js");
+  assertCalmWhy(lineTalkInstructions({ name: "Omari Test", goal: "ask about a table" }), "GPT-Live line voice");
+  assertCalmWhy(thirdPartyFrame({ ownerName: "Omari", goal: "ask about a table", rules }), "third-party call turn");
+
+  // And a placed call hands the same rules to the provider.
+  const calls = new FakeCallProvider();
+  const placed = await runTool("call_place", { to: OWNER, goal: "ask about a table", facts: ["Omari"] }, { conversationId: C, calls });
+  assert.equal(placed.ok, true);
+  assertCalmWhy(calls.placed[0].rules.join(" "), "placed call rules");
+});
+
+test("a proposal on the call that wants card details is declined with the calm-why instruction, not a script", async () => {
+  const commit = await import("../src/calls/commit.js");
+  const brief = await import("../src/calls/brief.js");
+  const b = brief.buildBrief({ goal: "book it", approved: { book: true, maxCents: 50000 }, readBack: ["date"] });
+  const row = db.createCall(C, { provider: "gptlive", toNumber: "+12125550123", isOwner: false, goal: "book it", facts: [], announcement: "x" });
+  const call = db.getCall(C, row.id);
+  const r = commit.propose({ call, brief: b, what: "the booking", totalCents: 1000, terms: ["they need the card number to hold it"], tell: () => true });
+  assert.equal(r.reason, "payment_details");
+  assertCalmWhy(r.say, "commit refusal");
+});
+
 // ---------- what Reason says it will not do ----------
 
 test("capabilities answers what Reason will not do, separately from what is not connected", async () => {
