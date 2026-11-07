@@ -48,6 +48,9 @@ const trust = await import("../src/trust.js");
 const permissions = await import("../src/permissions.js");
 const undo = await import("../src/undo.js");
 const db = await import("../src/db.js");
+// The connect link is Reason's start page (src/connectgate.js); the provider's own address, what
+// these assertions are about, is kept on the state row it names.
+const providerUrl = (u) => db.db.prepare("SELECT authorize_url FROM oauth_states WHERE state = ?").get(new URL(u).searchParams.get("state"))?.authorize_url ?? u;
 const { exportData, deleteData } = await import("../src/data.js");
 const { config, clock } = await import("../src/config.js");
 
@@ -162,9 +165,9 @@ test("one more tap adds organising and does not cost them mail, calendar or Driv
   // The top-up link: asking for organising pulls the two Drive scopes with it, and
   // include_granted_scopes is what stops the new token being Drive-only.
   const link = await call("google_connect", { scopes: [google.DRIVE_METADATA_SCOPE] });
-  const asked = new URL(link.url).searchParams.get("scope").split(" ");
+  const asked = new URL(providerUrl(link.url)).searchParams.get("scope").split(" ");
   for (const s of google.DRIVE_ORGANISE_SCOPES) assert.ok(asked.includes(s), `${s} is not on the link`);
-  assert.equal(new URL(link.url).searchParams.get("include_granted_scopes"), "true");
+  assert.equal(new URL(providerUrl(link.url)).searchParams.get("include_granted_scopes"), "true");
 
   await connect({ grants: ORGANISE, scopes: [google.DRIVE_METADATA_SCOPE] });
   const st = trust.accountStatus(OMARI, "google_drive");

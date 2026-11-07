@@ -93,6 +93,7 @@
 import { config, clock, callbackUrl, stamp } from "./config.js";
 import { renderConnected } from "./pages/render.js";
 import * as db from "./db.js";
+import { startLink } from "./connectgate.js";
 
 export const PROVIDER = "uber";
 export const REDIRECT_PATH = "/uber/callback";
@@ -207,7 +208,9 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST } = {}) {
   });
   return {
     ok: true,
-    url: `${config.uberAuthBase}/oauth/v2/authorize?${q}`,
+    // What is texted is Reason's start page: it only sends the asker's own browser on to this
+    // address (src/connectgate.js).
+    url: startLink(state, `${config.uberAuthBase}/oauth/v2/authorize?${q}`, redirectUri),
     scopes: want.map(s => ({ scope: s, so_that: SCOPES[s], privileged: PRIVILEGED.has(s) })),
     redirect_uri: redirectUri,
     reachable: config.publicUrl

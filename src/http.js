@@ -83,6 +83,7 @@ import * as uber from "./uber.js";
 import * as agentcard from "./agentcard.js";
 import * as parallel from "./parallel.js";
 import * as x from "./x.js";
+import { connectStartRequest, refuseForeignBrowser, START_PATH as CONNECT_START_PATH } from "./connectgate.js";
 import { renderNotice, renderConnected, dark, THEME, iconLinks } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
@@ -95,7 +96,7 @@ import { isContactPath, vcard, lineNumber, liveLineNumber } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
-import { webRequest, webFont, webSignedIn, SECURITY_HEADERS as WEB_SECURITY_HEADERS } from "./pages/websignin.js";
+import { webRequest, webFont, webSignedIn, sameOrigin, SECURITY_HEADERS as WEB_SECURITY_HEADERS } from "./pages/websignin.js";
 // Web chats' titles are written as their first reply lands (src/webchats.js installs that listener on import).
 import "./webchats.js";
 import { webOn, joinNumber, siteOrigin } from "./web.js";
@@ -581,11 +582,13 @@ export function createServer({ router, runtime, log = () => {} }) {
       // that is opened twice connects nothing the second time. Nothing about the tokens is ever on
       // the page that comes back.
       if (req.method === "GET" && url.pathname === spotify.REDIRECT_PATH) {
-        const out = await spotify.completeConnect({
-          code: url.searchParams.get("code") ?? "",
-          state: url.searchParams.get("state") ?? "",
-          error: url.searchParams.get("error") ?? "",
-        });
+        // Only the asker's own browser finishes (src/connectgate.js); anyone else's connects nothing.
+        const out = refuseForeignBrowser({ provider: "spotify", state: url.searchParams.get("state") ?? "", error: url.searchParams.get("error") ?? "", headers: req.headers })
+          ?? await spotify.completeConnect({
+            code: url.searchParams.get("code") ?? "",
+            state: url.searchParams.get("state") ?? "",
+            error: url.searchParams.get("error") ?? "",
+          });
         log({ spotify_callback: out.ok ? "connected" : out.reason, conversation: out.conversationId ?? null });
         // No turn is fired from here. The person is looking at a browser, not at their messages,
         // and a proactive text saying "you just did the thing you are watching succeed" is noise.
@@ -597,6 +600,16 @@ export function createServer({ router, runtime, log = () => {} }) {
             ? `Spotify is connected. Reason can ${out.scopes.length} thing(s) with it now: ${out.scopes.join(", ")}.`
             : out.error,
         }));
+      }
+
+      // ---------- the link Reason texts for a connect: proves the browser is the asker's first ----------
+      if (url.pathname === CONNECT_START_PATH) {
+        const out = await connectStartRequest({
+          state: url.searchParams.get("state") ?? "",
+          method: req.method, headers: req.headers, readBody: () => readBody(req), runtime, log,
+        });
+        res.writeHead(out.status, out.headers);
+        return res.end(out.body);
       }
 
       // ---------- Spotify join: a non-owner enters their Spotify email so the operator can whitelist them ----------
@@ -638,11 +651,13 @@ export function createServer({ router, runtime, log = () => {} }) {
       // looking at a browser, not their messages. The next thing they ask reads the connection off
       // the tokens table.
       if (req.method === "GET" && url.pathname === github.REDIRECT_PATH) {
-        const out = await github.completeConnect({
-          code: url.searchParams.get("code") ?? "",
-          state: url.searchParams.get("state") ?? "",
-          error: url.searchParams.get("error") ?? "",
-        });
+        // Only the asker's own browser finishes (src/connectgate.js); anyone else's connects nothing.
+        const out = refuseForeignBrowser({ provider: "github", state: url.searchParams.get("state") ?? "", error: url.searchParams.get("error") ?? "", headers: req.headers })
+          ?? await github.completeConnect({
+            code: url.searchParams.get("code") ?? "",
+            state: url.searchParams.get("state") ?? "",
+            error: url.searchParams.get("error") ?? "",
+          });
         log({ github_callback: out.ok ? "connected" : out.reason, conversation: out.conversationId ?? null });
         res.writeHead(out.ok ? 200 : 400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
         return res.end(github.callbackPage({
@@ -663,11 +678,13 @@ export function createServer({ router, runtime, log = () => {} }) {
       // Limited Access covers has a working connection that cannot book, and finding that out when
       // they next ask for a car would be the worst moment to find it out.
       if (req.method === "GET" && url.pathname === uber.REDIRECT_PATH) {
-        const out = await uber.completeConnect({
-          code: url.searchParams.get("code") ?? "",
-          state: url.searchParams.get("state") ?? "",
-          error: url.searchParams.get("error") ?? "",
-        });
+        // Only the asker's own browser finishes (src/connectgate.js); anyone else's connects nothing.
+        const out = refuseForeignBrowser({ provider: "uber", state: url.searchParams.get("state") ?? "", error: url.searchParams.get("error") ?? "", headers: req.headers })
+          ?? await uber.completeConnect({
+            code: url.searchParams.get("code") ?? "",
+            state: url.searchParams.get("state") ?? "",
+            error: url.searchParams.get("error") ?? "",
+          });
         log({ uber_callback: out.ok ? (out.can_book ? "ride_access" : "identity_only") : out.reason, conversation: out.conversationId ?? null });
         res.writeHead(out.ok ? 200 : 400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
         return res.end(uber.callbackPage({
@@ -684,11 +701,13 @@ export function createServer({ router, runtime, log = () => {} }) {
       // Same shape as GitHub's: nothing is said in the thread from here. The next thing they ask
       // reads the connection off the tokens table.
       if (req.method === "GET" && url.pathname === x.REDIRECT_PATH) {
-        const out = await x.completeConnect({
-          code: url.searchParams.get("code") ?? "",
-          state: url.searchParams.get("state") ?? "",
-          error: url.searchParams.get("error") ?? "",
-        });
+        // Only the asker's own browser finishes (src/connectgate.js); anyone else's connects nothing.
+        const out = refuseForeignBrowser({ provider: "x", state: url.searchParams.get("state") ?? "", error: url.searchParams.get("error") ?? "", headers: req.headers })
+          ?? await x.completeConnect({
+            code: url.searchParams.get("code") ?? "",
+            state: url.searchParams.get("state") ?? "",
+            error: url.searchParams.get("error") ?? "",
+          });
         log({ x_callback: out.ok ? "connected" : out.reason, conversation: out.conversationId ?? null });
         res.writeHead(out.ok ? 200 : 400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
         return res.end(x.callbackPage({
@@ -710,6 +729,7 @@ export function createServer({ router, runtime, log = () => {} }) {
           code: url.searchParams.get("code") ?? "",
           state: url.searchParams.get("state") ?? "",
           error: url.searchParams.get("error") ?? "",
+          headers: req.headers,
           runtime,
           log,
         });
@@ -1498,8 +1518,11 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
  * thing they ask will use it — so a failed text is logged and the page still says yes, rather than
  * the browser being shown an error about something that worked.
  */
-export async function googleCallbackRequest({ code, state, error = "", runtime = null, log = () => {}, fetchImpl = null } = {}) {
-  const out = await google.completeConnect({ code, state, error, ...(fetchImpl ? { fetchImpl } : {}) });
+export async function googleCallbackRequest({ code, state, error = "", headers = {}, runtime = null, log = () => {}, fetchImpl = null } = {}) {
+  // Only the asker's own browser finishes (src/connectgate.js): nothing is exchanged, saved or texted
+  // for anyone else's.
+  const out = refuseForeignBrowser({ provider: "google", state, error, headers })
+    ?? await google.completeConnect({ code, state, error, ...(fetchImpl ? { fetchImpl } : {}) });
   log({ google_callback: out.ok ? "connected" : out.reason, conversation: out.conversationId ?? null });
 
   if (out.ok && runtime?.say) {
@@ -1614,6 +1637,10 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
 
   // ---- the code for a private page ----
   if (method === "POST") {
+    // Only from the gate itself. On the files domain the session is set at Path=/ under the shared
+    // cookie domain, where a connect callback reads it too (src/connectgate.js): a page elsewhere
+    // posting the owner's code from someone else's browser must not sign that browser in.
+    if (!sameOrigin(headers)) return gateFor(access, page, { real, status: 403 });
     let code = "";
     let send = false;
     const raw = (await readBody()) ?? "";

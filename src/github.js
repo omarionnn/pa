@@ -25,6 +25,7 @@ import { config, clock, callbackUrl, stamp } from "./config.js";
 import { renderConnected } from "./pages/render.js";
 import * as db from "./db.js";
 import { createHash } from "node:crypto";
+import { startLink } from "./connectgate.js";
 
 export const PROVIDER = "github";
 export const REDIRECT_PATH = "/github/callback";
@@ -108,7 +109,9 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST } = {}) {
   });
   return {
     ok: true,
-    url: `${config.githubBase}/login/oauth/authorize?${q}`,
+    // What is texted is Reason's start page: it only sends the asker's own browser on to this
+    // address (src/connectgate.js).
+    url: startLink(state, `${config.githubBase}/login/oauth/authorize?${q}`, redirectUri),
     scopes: want.map(s => ({ scope: s, so_that: SCOPES[s] })),
     redirect_uri: redirectUri,
     reachable: config.publicUrl

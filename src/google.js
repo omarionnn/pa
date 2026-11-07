@@ -182,6 +182,7 @@
 import { config, clock, callbackUrl, stamp } from "./config.js";
 import { cut } from "./cut.js";
 import * as db from "./db.js";
+import { startLink } from "./connectgate.js";
 import { fromOutside } from "./outside.js";
 import { pdfRefusal, pdfText } from "./pdf.js";
 import { readableText } from "./weblookup.js";
@@ -415,12 +416,12 @@ export function notConnected(extra = {}) {
  * not an action; the action is the person reading what they are granting and agreeing to it on
  * Google's page.
  *
- * The `state` is the whole of the binding between that page and this conversation: random,
- * single-use, short-lived, and stored against the conversation that asked. A link forwarded to
- * somebody else still carries this conversation's state, so the worst it can do is attach the
- * forwarder's own inbox to the thread that asked for the link — it can never attach a stranger's
- * inbox to a stranger's thread, because no state of theirs exists. Tighter than Spotify's in one
- * way: that one never expires, and this one does.
+ * The `state` is random, single-use, short-lived, and stored against the conversation that asked.
+ * It is not the whole binding: a link forwarded to somebody else would carry this conversation's
+ * state and attach the opener's inbox to the sender's thread. So the link texted is Reason's own
+ * start page (src/connectgate.js), and the callback only finishes in a browser signed in as this
+ * conversation: the cookie a Web or private-page sign-in already left, or a code texted to this
+ * thread.
  */
 export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account = "" } = {}) {
   const st = googleStatus();
@@ -508,7 +509,9 @@ export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account 
   });
   return {
     ok: true,
-    url: `${config.googleAccountsBase}/o/oauth2/v2/auth?${q}`,
+    // What is texted is Reason's start page: it only sends the asker's own browser on to this
+    // address (src/connectgate.js).
+    url: startLink(state, `${config.googleAccountsBase}/o/oauth2/v2/auth?${q}`, redirectUri),
     scopes: want.map(s => ({ scope: s, so_that: SCOPES[s] })),
     redirect_uri: redirectUri,
     // Google's policy wants an in-product notice of how their data is used, shown where the grant is

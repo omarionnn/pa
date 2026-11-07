@@ -217,6 +217,28 @@ test("a held link can have a code texted three times in the window, then has to 
   assert.equal(said.length, 4, "the window passes and a code can be sent again");
 });
 
+test("the code only works posted from the gate itself: a page elsewhere posting it signs no browser in", async () => {
+  // On the files domain the session is set at Path=/ under the shared cookie domain, where a connect
+  // callback reads it too (src/connectgate.js), so a cross-site post of the code must not plant it.
+  const made = await makePage();
+  for (const extra of [{ origin: "https://evil.example", "sec-fetch-site": "cross-site" }, { "sec-fetch-site": "cross-site" }, { origin: "https://evil.example" }]) {
+    const { code } = issueCode(made.page_id);
+    const res = await pageRequest({
+      id: made.page_id, method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", "x-files-domain": "true", ...extra },
+      readBody: async () => `code=${code}`,
+    });
+    assert.equal(res.status, 403, JSON.stringify(extra));
+    assert.equal(res.headers["Set-Cookie"], undefined);
+  }
+  const { code } = issueCode(made.page_id);
+  const ok = await pageRequest({
+    id: made.page_id, method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", "sec-fetch-site": "same-origin" },
+    readBody: async () => `code=${code}`,
+  });
+  assert.equal(ok.status, 200);
+  assert.match(ok.headers["Set-Cookie"], /reason_page=/);
+});
+
 test("a wrong key opens nothing, and neither does one page's key on another", async () => {
   const one = await makePage();
   const two = await makePage(SIMPLE, "Another");

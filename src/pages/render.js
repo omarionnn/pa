@@ -1125,6 +1125,33 @@ export function renderCodeGate({ title = "Private page", error = "", ownerName =
 }
 
 /**
+ * The step before a provider's consent page (src/connectgate.js), for a browser that has not yet
+ * proved it is the person whose thread asked for the connect link. Same gate as a private page: a
+ * code texted to that thread, typed here once, and this browser stays signed in. The last line is
+ * the warning that matters most here — a forwarded connect link attaches the opener's account to
+ * the sender's Reason.
+ */
+export function renderConnectGate({ provider = "your account", error = "", sent = false, canSend = true } = {}) {
+  const offer = canSend && !sent;
+  const words = sent
+    ? `<p>Reason texted you a six-digit code in the thread that asked for this link. Type it here to go on to ${esc(provider)}.</p>`
+    : `<p>Before ${esc(provider)} opens, Reason checks this browser is yours.</p>`
+      + `<p>Reason will text a six-digit code to the thread that asked for this link. Type it here once and this browser stays signed in.</p>`;
+  const body = `<div class="gate"><div class="lock" aria-hidden="true">🔒</div><h1>Connect ${esc(provider)}</h1>`
+    + (sent && !error ? sentLine("Code sent — check your texts.") : "")
+    + `<div class="t">${words}</div>`
+    + `<form method="POST" action="">`
+    + (offer ? `<button class="go" type="submit" name="send" value="1" data-busy="Sending code…">Text me the code</button>` : "")
+    + `<input ${codeInputAttrs({ autofocus: !offer })} placeholder="123456" aria-label="Six-digit code">`
+    + `<button class="go${offer ? " alt" : ""}" type="submit" data-busy="Checking…">Continue</button>`
+    + (sent ? `<button class="go alt" type="submit" name="send" value="1" data-busy="Sending code…">Text it again</button>` : "")
+    + (error ? `<div class="bad">${esc(error)}</div>` : "")
+    + `</form>`
+    + `<p class="meta">If someone else sent you this link, close the tab. Finishing it would connect your ${esc(provider)} account to their Reason.</p></div>`;
+  return shell({ title: `Connect ${provider}`, body, pill: "Private" });
+}
+
+/**
  * The status page's password gate (src/opspassword.js). A plain form a password manager knows:
  * a username it can file the entry under, and `current-password`. `codeHref` is the way back to
  * the texted code, offered only when the request carries the owner's key (only then can a code be

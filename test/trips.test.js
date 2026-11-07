@@ -286,6 +286,26 @@ test("the code: texted only from the owner's link, then typed once; the browser 
   assert.equal((await get(`/d/${row.id}`, { cookie })).status, 200);
 });
 
+test("the code gate's form only works from the gate: a page elsewhere posting the code signs no browser in", async () => {
+  // The site-wide session it sets is also what a connect callback checks (src/connectgate.js), so a
+  // cross-site post of the owner's code must not plant it in somebody else's browser.
+  const out = await tool({ to: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng });
+  const row = tripOf(out.link);
+  const told = [];
+  const runtime = { _tell: async (c, text) => { told.push({ c, text }); return { ok: true }; } };
+  const post = (body, headers) => directionsRequest({ method: "POST", pathname: `/d/${row.id}`, req: Readable.from([Buffer.from(body)]), config, key: row.owner_key, headers, runtime });
+  await post("send=1", {});
+  const code = told[0].text.match(/\b(\d{6})\b/)[1];
+  for (const headers of [{ origin: "https://evil.example", "sec-fetch-site": "cross-site" }, { "sec-fetch-site": "cross-site" }, { origin: "https://evil.example" }]) {
+    const r = await post(`code=${code}`, headers);
+    assert.equal(r.status, 403, JSON.stringify(headers));
+    assert.equal(r.headers["Set-Cookie"], undefined);
+  }
+  const right = await post(`code=${code}`, { "sec-fetch-site": "same-origin" });
+  assert.equal(right.status, 303);
+  assert.match(right.headers["Set-Cookie"], /reason_page=/);
+});
+
 test("reroute: only the owner's browser may ask; the answer names the new way's steps; no position is stored", async () => {
   const out = await tool({ to: "Joe Coffee", from_latitude: START.lat, from_longitude: START.lng });
   const row = tripOf(out.link);

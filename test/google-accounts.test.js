@@ -47,6 +47,9 @@ const { runTool, capabilitiesNow } = await import("../src/tools.js");
 const google = await import("../src/google.js");
 const trust = await import("../src/trust.js");
 const db = await import("../src/db.js");
+// The connect link is Reason's start page (src/connectgate.js); the provider's own address, what
+// these assertions are about, is kept on the state row it names.
+const providerUrl = (u) => db.db.prepare("SELECT authorize_url FROM oauth_states WHERE state = ?").get(new URL(u).searchParams.get("state"))?.authorize_url ?? u;
 const { config, clock } = await import("../src/config.js");
 
 const OMARI = "dm:owner";
@@ -162,21 +165,21 @@ test("two accounts connect, both are kept, and both are listed by address", asyn
 
 test("the link for a second account asks Google for the chooser; the first one does not", async () => {
   const first = await call("google_connect", {});
-  assert.equal(new URL(first.url).searchParams.get("prompt"), "consent", "nothing to choose between yet");
-  assert.equal(new URL(first.url).searchParams.has("login_hint"), false);
+  assert.equal(new URL(providerUrl(first.url)).searchParams.get("prompt"), "consent", "nothing to choose between yet");
+  assert.equal(new URL(providerUrl(first.url)).searchParams.has("login_hint"), false);
 
   await connect(ME);
   const second = await call("google_connect", {});
   // Documented: prompt is "a space-delimited, case-sensitive list", and only `none` may not be combined.
-  assert.equal(new URL(second.url).searchParams.get("prompt"), "select_account consent");
-  assert.equal(new URL(second.url).searchParams.get("access_type"), "offline", "still asking for a refresh token");
+  assert.equal(new URL(providerUrl(second.url)).searchParams.get("prompt"), "select_account consent");
+  assert.equal(new URL(providerUrl(second.url)).searchParams.get("access_type"), "offline", "still asking for a refresh token");
   assert.deepEqual(second.already_connected, [ME]);
   assert.match(second.adding_another, /chooser/);
 
   // Reconnecting a NAMED one is the opposite: hint that account, no chooser.
   const back = await call("google_connect", { account: ME });
-  assert.equal(new URL(back.url).searchParams.get("login_hint"), ME);
-  assert.equal(new URL(back.url).searchParams.get("prompt"), "consent", "a hint and a chooser would contradict each other");
+  assert.equal(new URL(providerUrl(back.url)).searchParams.get("login_hint"), ME);
+  assert.equal(new URL(providerUrl(back.url)).searchParams.get("prompt"), "consent", "a hint and a chooser would contradict each other");
   assert.equal(back.reconnecting, ME);
 });
 

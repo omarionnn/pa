@@ -36,6 +36,7 @@ import { renderConnected, backToReason, dark, THEME, iconLinks } from "./pages/r
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_PEN, BRAND_PEN_DARK, PAPER, PAPER_GRAIN } from "./pages/brand.js";
 import * as db from "./db.js";
+import { startLink } from "./connectgate.js";
 
 export const REDIRECT_PATH = "/spotify/callback";
 export const JOIN_PATH = "/spotify/join";
@@ -128,7 +129,9 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST, showDialog =
   });
   return {
     ok: true,
-    url: `${config.spotifyAccountsBase}/authorize?${q}`,
+    // What is texted is Reason's start page: it only sends the asker's own browser on to this
+    // address (src/connectgate.js).
+    url: startLink(state, `${config.spotifyAccountsBase}/authorize?${q}`, redirectUri),
     scopes: want.map(s => ({ scope: s, so_that: SCOPES[s] })),
     redirect_uri: redirectUri,
     reachable: config.publicUrl

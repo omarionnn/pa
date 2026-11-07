@@ -34,6 +34,9 @@ process.env.REASON_CONVERSATION = "dm:owner";
 const { runTool } = await import("../src/tools.js");
 const spotify = await import("../src/spotify.js");
 const db = await import("../src/db.js");
+// The connect link is Reason's start page (src/connectgate.js); the provider's own address, what
+// these assertions are about, is kept on the state row it names.
+const providerUrl = (u) => db.db.prepare("SELECT authorize_url FROM oauth_states WHERE state = ?").get(new URL(u).searchParams.get("state"))?.authorize_url ?? u;
 const { config, clock } = await import("../src/config.js");
 
 const OMARI = "dm:owner";
@@ -104,7 +107,7 @@ test("with no client id, everything says not_connected and nothing is invented",
 test("the authorize link is the one Spotify documents, with the scopes spelled out in words", async () => {
   const out = await call("spotify_connect", {});
   assert.equal(out.ok, true);
-  const u = new URL(out.url);
+  const u = new URL(providerUrl(out.url));
   assert.equal(u.origin + u.pathname, `${fake.url}/authorize`);
   assert.equal(u.searchParams.get("response_type"), "code");
   assert.equal(u.searchParams.get("client_id"), "client-abc");
@@ -556,7 +559,9 @@ test("Spotify's redirect connects the account and shows a page with no token on 
     const link = await call("spotify_connect", {});
     const state = new URL(link.url).searchParams.get("state");
 
-    const res = await fetch(`${base}/spotify/callback?code=good-code&state=${encodeURIComponent(state)}`);
+    // The asker's own browser (signed in to Reason as them); anyone else's is refused (test/oauth-binding.test.js).
+    db.startPageSession(`wsign:${OMARI}`, "spotify-callback-browser", { conversationId: OMARI });
+    const res = await fetch(`${base}/spotify/callback?code=good-code&state=${encodeURIComponent(state)}`, { headers: { cookie: "reason_page=spotify-callback-browser" } });
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.match(html, /Spotify connected/);
