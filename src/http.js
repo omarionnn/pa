@@ -159,7 +159,9 @@ export function createServer({ router, runtime, log = () => {} }) {
 
     try {
       if (req.method === "GET" && url.pathname === "/health") {
-        return send(200, health({ router, runtime }));
+        // Anybody can ask, so a stranger gets counts and kinds, never a person (security lead 17).
+        // The rows themselves are for the operator's signed-in browser: the status page's session.
+        return send(200, health({ router, runtime, full: operatorSignedIn(req.headers) }));
       }
       // What the watchdog asks every minute (scripts/watchdog.mjs): answering at all says the event
       // loop is turning; the body says how late it is and whether the sweep is still finishing.
@@ -2006,25 +2008,58 @@ function eventsOps() {
 }
 
 /** What is really running, read from the database and the adapters rather than from uptime. */
-export function health({ router, runtime }) {
+/** Text with any phone number or email address in it (and `known`, if given) replaced by "…". */
+function noAddresses(text, known = null) {
+  let s = String(text ?? "");
+  if (known) s = s.split(known).join("…");
+  return s.replace(/[^\s@()<>"',;]+@[^\s@()<>"',;]+\.[A-Za-z]{2,}/g, "…").replace(/\+?\d[\d\s().-]{6,}\d/g, "…");
+}
+
+/** Is this request the operator's own signed-in browser? The same session /ops takes (opsRequest). */
+function operatorSignedIn(headers) {
+  const owner = db.pageSessionOwner(readCookie(headers?.cookie), SESSION_TTL_MS);
+  return !!owner && accounts.isOperatorConversation(owner);
+}
+
+/**
+ * Is it up, and what is it running. `full` is the operator only: by default this is what a stranger
+ * may see — GET /health is answered to anybody who can reach the listener, and through the Funnel
+ * that is the internet (whose requests arrive from the local tailscaled, so the remote address
+ * proves nothing). Nobody's number, email or name is in that answer: a held conversation keeps its
+ * channel, count and times but not its id (`dm:<channel>:<address>`), a contact's channel limit
+ * keeps its kind but not the address, and the operator's name is null. Every key and count the
+ * doctor and monitoring read is where it was.
+ */
+export function health({ router, runtime, full = false }) {
+  const name = config.ownerName;
+  const unnamed = (s) => (typeof s === "string" && name ? s.split(name).join("the operator") : s);
+  const channels = router?.statuses?.() ?? [];
   return {
     ok: true,
     now: stamp(),
     now_ms: clock.now(),
-    owner: config.ownerName,
+    owner: full ? name : null,
     sweeping: !!runtime?.interval,
-    channels: router?.statuses?.() ?? [],
+    channels: full ? channels : channels.map(c => ("what" in c ? { ...c, what: unnamed(c.what) } : c)),
     // What is still owed to somebody. `failed` here means a message that is never arriving and
     // whose bad news may not have been delivered yet, which is worth seeing at a glance.
     outbox: db.outboxCounts(),
     // Messages that have arrived and are waiting out their quiet window to see whether more of the
     // same thought is coming. A row here with `due: true` and nothing happening means the sweep is
     // not running — which is the one way a held message could sit unanswered.
-    holding: db.pendingInboundSummary(),
+    holding: db.pendingInboundSummary().map(({ conversation_id, ...r }) => (full ? { conversation_id, ...r } : r)),
     // What this install has learned a provider will not do — a line with no read receipts, a number
     // that cannot send tapbacks. Permanent refusals only, so this is a short list that explains why
     // a feature is quietly absent rather than leaving somebody to wonder.
-    channel_limits: db.listChannelLimits().map(l => ({ channel: l.channel, feature: l.feature, scope: l.scope, why: l.why })),
+    // A line is Reason's own number (already under `channels`); a contact is somebody, so a
+    // stranger is told only that it is one.
+    // stranger is told only that it is one. `why` carries the provider's own words, which can quote
+    // the recipient, so a stranger's copy has any address in it taken out.
+    channel_limits: db.listChannelLimits().map(l => {
+      const contact = String(l.scope).startsWith("contact:");
+      if (full) return { channel: l.channel, feature: l.feature, scope: l.scope, why: l.why };
+      return { channel: l.channel, feature: l.feature, scope: contact ? "contact" : l.scope, why: noAddresses(l.why, contact ? String(l.scope).slice(8) : null) };
+    }),
     // Whether a Spotify developer app is set up, and the exact address that has to be in its
     // Redirect URIs. Here because a redirect URI that does not match is the failure this will
     // actually hit, and it fails on Spotify's side with nothing useful said about why.

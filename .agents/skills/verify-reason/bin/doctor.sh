@@ -25,7 +25,8 @@ read_health() {
   node -e '
 const h = JSON.parse(process.argv[1]);
 const say = (k, v) => console.log(k.padEnd(22) + v);
-say("GET /health", "ok · " + h.now + " · owner " + h.owner);
+// owner is null unless the operator is signed in: /health names nobody to a stranger (lead 17).
+say("GET /health", "ok · " + h.now + (h.owner ? " · owner " + h.owner : ""));
 say("sweeping", h.sweeping ? "yes" : "NO — timers, tasks and held messages will never fire");
 for (const c of h.channels ?? []) say("channel " + c.name, c.status + (c.missing?.length ? " (missing " + c.missing.join(", ") + ")" : "") + (c.number ? " · " + c.number : ""));
 say("outbox", "sent " + (h.outbox?.sent ?? 0) + " · failed " + (h.outbox?.failed ?? 0));

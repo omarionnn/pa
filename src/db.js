@@ -4572,7 +4572,7 @@ export function takePendingInbound(conversationId) {
 
 /** What is waiting right now, for /health. */
 export function pendingInboundSummary(now = clock.now()) {
-  return db.prepare(`SELECT conversation_id, COUNT(*) AS messages, MIN(ready_at) AS ready_at, MIN(deadline_at) AS deadline_at
+  return db.prepare(`SELECT conversation_id, MIN(channel) AS channel, COUNT(*) AS messages, MIN(ready_at) AS ready_at, MIN(deadline_at) AS deadline_at
     FROM pending_inbound GROUP BY conversation_id ORDER BY ready_at`).all()
     .map(r => ({ ...r, due: r.ready_at <= now }));
 }
