@@ -1572,6 +1572,7 @@ export class GptLiveCall {
   replayOpener() {
     const p = this.pickup;
     const t = this.now();
+    if (p.pumpTimer) this.timers.clearTimeout(p.pumpTimer);
     this.clearPlayback("opener: their hello came over it");
     this.turns = this.turns.filter(x => x !== p.turn);
     p.replayed = true;
@@ -1600,11 +1601,12 @@ export class GptLiveCall {
     p.afterThem = p.theirsFrom != null;
     // Their hello, if its words are already written down, is placed already; else it is placed when they land.
     p.preDone = !p.afterThem || this.turns.some(x => x.who === "them" && x.text.trim());
-    for (let i = 0; i < buf.length; i += 160) this.toTwilio({ event: "media", media: { payload: buf.subarray(i, i + 160).toString("base64") } });
-    this.tape.reason(buf);
-    this.playheadAt = Math.max(this.playheadAt, t) + buf.length / 8;
-    p.endsAt = this.playheadAt;
-    this.lastOutAt = t; this.lastVoiceAt = t; this.voiceEndsAt = this.playheadAt;
+    // Sent at the pace it plays (a little ahead), as the live voice's audio comes: a stop is then
+    // exact, and nothing sits queued at Twilio past the moment it was cut.
+    p.sent = 0;
+    p.endsAt = Math.max(this.playheadAt, t) + buf.length / 8;
+    this.voiceEndsAt = p.endsAt;
+    this.pumpOpener();
     if (this.firstVoiceMs == null && this.streamStartAt != null) {
       this.firstVoiceMs = t - this.streamStartAt;
       this.log({ gptlive_first_voice: this.call.id, ms: this.firstVoiceMs, warm: false, opener: p.clip.kind });
@@ -1619,6 +1621,23 @@ export class GptLiveCall {
     // A hello-only clip after they spoke: the voice says why straight on, so the call talks from here.
     if (p.clip.kind === "hello" && p.afterThem) this.startTalking("pickup opener");
     this.tellOpener();
+  }
+
+  /** The clip's next frames, keeping ~240 ms queued ahead of what is playing. */
+  pumpOpener() {
+    const p = this.pickup;
+    if (!p || p.state !== "playing" || this.done) return;
+    const buf = p.clip.audio;
+    const t = this.now();
+    while (p.sent < buf.length && this.playheadAt - t < 240) {
+      const frame = buf.subarray(p.sent, p.sent + 160);
+      p.sent += frame.length;
+      this.toTwilio({ event: "media", media: { payload: frame.toString("base64") } });
+      this.tape.reason(frame);
+      this.playheadAt = Math.max(this.playheadAt, t) + frame.length / 8;
+      this.lastOutAt = t; this.lastVoiceAt = t;
+    }
+    if (p.sent < buf.length) p.pumpTimer = this.timers.setTimeout(() => this.pumpOpener(), 100);
   }
 
   /** Tell the voice what the opener said for it — at once, or the moment its session is up. */
@@ -1644,6 +1663,7 @@ export class GptLiveCall {
   cutOpener() {
     const p = this.pickup;
     p.state = "cut";
+    if (p.pumpTimer) this.timers.clearTimeout(p.pumpTimer);
     this.clearPlayback("opener talked over");
     this.callerVoiceAt = this.now();
     this.log({ gptlive_pickup_opener_cut: this.call.id, played_ms: this.now() - p.startedAt });
@@ -2277,6 +2297,7 @@ export class GptLiveCall {
     if (this.capTimer) this.timers.clearTimeout(this.capTimer);
     if (this.byeTimer) this.timers.clearTimeout(this.byeTimer);
     for (const k of ["lineTimer", "holdTimer", "rejoinTimer", "vmTimer", "openTimer", "noticeTimer", "roomTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
+    if (this.pickup?.pumpTimer) this.timers.clearTimeout(this.pickup.pumpTimer);
     // Reason's turn wrote the voicemail down as left when it wrote the words; if the line went before
     // a word of it played (held for the beep, or never started), nothing was left (hold.noteVoicemail).
     if (this.line && (this.heldVoicemail || (this.voicemailGate && !this.voicemailGate.heard))) {

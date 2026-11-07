@@ -132,7 +132,8 @@ test("a silent pickup: the opener plays ~0.6 s in, before the voice is even up; 
   const first = pick(s, "gptlive_first_voice")[0];
   assert.ok(first.ms >= 600 && first.ms <= 640, `first word at ${first.ms} ms`);
   assert.equal(first.opener, "about");
-  assert.equal(s.twilio.media().length, CLIP.length / 160, "the whole clip went down the line");
+  await line(s, 2100, QUIET);
+  assert.equal(s.twilio.media().length, CLIP.length / 160, "the whole clip went down the line, at its own pace");
   // The session comes up late: told what was said first, then their early audio.
   s.up();
   const told = s.live.sent.findIndex(e => e.type === "session.instructions.append" && /code just said this to them for you/.test(e.content));
@@ -143,7 +144,7 @@ test("a silent pickup: the opener plays ~0.6 s in, before the voice is even up; 
   s.live.emit({ type: "session.output_audio.delta", delta: SPEECH });
   assert.equal(s.twilio.media().length, before);
   // No quiet-line "Hi there, hello?" on top; 3 s of nothing after it gets one "can you hear me?".
-  await line(s, 4000, QUIET);
+  await line(s, 1500, QUIET);
   assert.equal(pick(s, "gptlive_line_opened_quiet").length, 0);
   assert.equal(pick(s, "gptlive_opener_quiet_after").length, 0);
   await line(s, 2000, QUIET);
