@@ -3247,6 +3247,7 @@ export const tools = [
         title: { type: "string", description: TITLE_HINT },
         then_call: { type: "string", description: "Only when they asked for a CALL at this time. Why you are ringing, as the first words of the call, said to them: 'you asked me to call at 7 to get you up', 'you wanted a nudge to leave for the airport'. The call opens with exactly this after their name, and the rest of the call is you as usual. Nothing is texted first; if the call cannot be placed or they do not pick up, one text says so. Never a third party: this always rings the person you are talking to." },
         relative: { type: "boolean", description: "True when they gave a stretch of time from NOW rather than a clock time or a day — \"in 10 minutes\", \"in 2 hours\", \"in half an hour\". Those need no time zone, so they are never held for one. Leave it out for \"at 9\", \"tomorrow\", \"tonight\", \"friday\"." },
+        continues_check: { type: "boolean", description: "Only when a timer is firing and this timer is the NEXT RUN of that same repeating check you keep going yourself (\"scan again in an hour\"). Leave it out for a one-off reminder you set for them from a firing (\"dentist at 2\")." },
         their_time: { type: "boolean", description: "For a one-off `then_call`: false ONLY when you picked the time yourself. Then a time in their night (23:00-08:00) is moved to 8am. When they named it — a 6:30 wake-up — leave this out or pass true: it rings at 6:30." },
         plan_id: { type: "integer", description: "Plan this timer belongs to, if any" },
         task_id: { type: "integer", description: "The job this belongs to, if it belongs to one. Name it: it is how \"never mind, forget the trip\" finds this and stops it, instead of leaving it running after the job is called off." },
@@ -6648,7 +6649,7 @@ const S = {
   timer_set: z.object({
     fire_at: z.string().optional(), note: z.string().min(1).max(500),
     plan_id: z.number().int().optional(), task_id: z.number().int().optional(),
-    then_call: z.string().max(300).optional(), their_time: z.boolean().optional(), relative: z.boolean().optional(),
+    then_call: z.string().max(300).optional(), their_time: z.boolean().optional(), relative: z.boolean().optional(), continues_check: z.boolean().optional(),
     repeat: z.object({
       kind: z.string().max(40),
       hour: z.number(),
@@ -9548,7 +9549,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // ("scan again in an hour", every hour). Counted toward the same cap a series is, so a chain is
       // not a way round it (2026-11, the model "found a way round the cap" this way). One link per
       // firing: a retry of the same firing replaces the link it left rather than starting a second chain.
-      const chainedFrom = Number.isInteger(Number(ctx.fromTimer)) && ctx.fromTimer != null && !callGoal ? Number(ctx.fromTimer) : null;
+      // Only the NEXT RUN of the same check is a link — flagged `continues_check`, or carrying the firing
+      // timer's own note. Anything else set from a firing (a one-off "dentist at 2" a morning brief
+      // sets for them) is an ordinary reminder: not capped, not gated, not replaced (review, 11-06).
+      const firingId = Number.isInteger(Number(ctx.fromTimer)) && ctx.fromTimer != null && !callGoal ? Number(ctx.fromTimer) : null;
+      const sameNote = (x, y) => String(x ?? "").trim().toLowerCase() === String(y ?? "").trim().toLowerCase();
+      const chainedFrom = firingId != null && (input.continues_check === true || sameNote(db.getTimer(c, firingId)?.note, input.note)) ? firingId : null;
       let replaced = null;
       if (chainedFrom != null) {
         const earlier = db.pendingChainedTimers(c).find(x => x.chained_from === chainedFrom);

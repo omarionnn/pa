@@ -148,7 +148,7 @@ test("the mark never reaches a person, and only a leading mark counts", () => {
 
 test("a timer set from a firing is a chain link, and chains count toward the cap with series", async () => {
   const firing = scanTimer();
-  const out = await runTool("timer_set", { fire_at: new Date(clock.now() + HOUR).toISOString(), note: "scan again" }, { conversationId: C, fromTimer: firing.id });
+  const out = await runTool("timer_set", { fire_at: new Date(clock.now() + HOUR).toISOString(), note: "scan again", continues_check: true }, { conversationId: C, fromTimer: firing.id });
   assert.equal(out.ok, true);
   assert.equal(out.repeating, true);
   assert.equal(db.getTimer(C, out.timer.id).chained_from, firing.id);
@@ -160,7 +160,7 @@ test("a timer set from a firing is a chain link, and chains count toward the cap
   }
   // A different firing trying to start another chain: refused, in code.
   const other = scanTimer({ note: "another scan" });
-  const refused = await runTool("timer_set", { fire_at: new Date(clock.now() + HOUR).toISOString(), note: "scan more" }, { conversationId: C, fromTimer: other.id });
+  const refused = await runTool("timer_set", { fire_at: new Date(clock.now() + HOUR).toISOString(), note: "scan more", continues_check: true }, { conversationId: C, fromTimer: other.id });
   assert.equal(refused.ok, false);
   assert.equal(refused.status, "recurring_cap");
   // And a fourth series is refused too, because the chain is counted.
@@ -173,16 +173,32 @@ test("a timer set from a firing is a chain link, and chains count toward the cap
   assert.equal(db.getTimer(C, theirs.timer.id).chained_from, null);
 });
 
+test("a one-off reminder a firing sets for them is not a chain: not capped, not replaced, not gated (review 11-06)", async () => {
+  for (const what of ["a", "b", "c"]) series.start({ conversationId: C, what, repeat: { kind: "daily", hour: 9, their_time: true } });
+  const firing = scanTimer({ note: "morning brief" });
+  const dentist = await runTool("timer_set", { fire_at: new Date(clock.now() + HOUR).toISOString(), note: "dentist at 2pm" }, { conversationId: C, fromTimer: firing.id });
+  const leave = await runTool("timer_set", { fire_at: new Date(clock.now() + 2 * HOUR).toISOString(), note: "leave at 5:30" }, { conversationId: C, fromTimer: firing.id });
+  assert.equal(dentist.ok, true, JSON.stringify(dentist));
+  assert.equal(leave.ok, true, JSON.stringify(leave));
+  assert.equal(db.getTimer(C, dentist.timer.id).chained_from, null);
+  assert.equal(db.getTimer(C, dentist.timer.id).cancelled_at ?? null, null, "the second reminder did not cancel the first");
+  assert.equal(dentist.repeating, undefined);
+  // The same note as the firing is the check continuing itself, even unflagged.
+  const same = await runTool("timer_set", { fire_at: new Date(clock.now() + HOUR).toISOString(), note: "morning brief" }, { conversationId: C, fromTimer: firing.id });
+  assert.equal(same.ok, false);
+  assert.equal(same.status, "recurring_cap");
+});
+
 test("a chain at the cap may still continue itself: the firing's own link is replaced, not added", async () => {
   for (const what of ["a", "b"]) series.start({ conversationId: C, what, repeat: { kind: "daily", hour: 9, their_time: true } });
   const root = scanTimer({ note: "first" });
   db.markTimerFired(root.id);
   const link = scanTimer({ chainedFrom: root.id });
   assert.equal(db.countRecurring(C), 3, "at the cap");
-  const next = await runTool("timer_set", { fire_at: new Date(clock.now() + HOUR).toISOString(), note: "scan again" }, { conversationId: C, fromTimer: link.id });
+  const next = await runTool("timer_set", { fire_at: new Date(clock.now() + HOUR).toISOString(), note: "scan again", continues_check: true }, { conversationId: C, fromTimer: link.id });
   assert.equal(next.ok, true, "the firing being replaced is not counted against its own next link");
   // A retry of the same firing does not start a second chain.
-  const again = await runTool("timer_set", { fire_at: new Date(clock.now() + HOUR + 5 * MIN).toISOString(), note: "scan again" }, { conversationId: C, fromTimer: link.id });
+  const again = await runTool("timer_set", { fire_at: new Date(clock.now() + HOUR + 5 * MIN).toISOString(), note: "scan again", continues_check: true }, { conversationId: C, fromTimer: link.id });
   assert.equal(again.ok, true);
   assert.equal(again.replaced_timer, next.timer.id);
   assert.equal(db.pendingChainedTimers(C, { except: link.id }).length, 1);
@@ -192,7 +208,7 @@ test("end to end: the model setting the next scan from a firing makes a chain li
   scanTimer();
   const { runtime } = harness({
     reply: async (call) => {
-      await runTool("timer_set", { fire_at: new Date(clock.now() + HOUR).toISOString(), note: "scan again" }, { ...call, conversationId: C });
+      await runTool("timer_set", { fire_at: new Date(clock.now() + HOUR).toISOString(), note: "scan again", continues_check: true }, { ...call, conversationId: C });
       return "NO_REPLY";
     },
   });

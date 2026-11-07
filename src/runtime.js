@@ -1362,7 +1362,7 @@ export class Runtime extends EventEmitter {
       // second one reads as a second reminder rather than the first one arriving late.
       (t.attempts > 1 ? ` This is try ${t.attempts} at the same timer: an earlier try broke before anything reached them, so they have not had this yet. It is one reminder, late — not a second one.` : "") +
       (chained ? ` You set this timer yourself from an earlier firing, so it is a repeating check you are keeping going.`
-        + ` Set the next one only if they still want it; it counts toward their limit on repeating things, and stopping it is cancelling the pending one.` : "") +
+        + ` Set the next one (timer_set with continues_check: true) only if they still want it; it counts toward their limit on repeating things, and stopping it is cancelling the pending one.` : "") +
       (standing ? "" : ` Decide whether to say something. If nothing is worth sending, reply NO_REPLY.`) +
       (repeating ? series.quietRule({ checkIn: !!standing && !forGoal }) : "");
     await turn({

@@ -218,7 +218,7 @@ export const config = {
   // time (seen live, 2026-11) tells them about a moment that has gone. A person's own reminder that
   // is skipped gets one line saying it was missed; a check or a chain Reason set is dropped quietly.
   // A timer set to fire at once (code's own "do this now" events) is exempt: it was always "now".
-  timerLateMs: Number(process.env.REASON_TIMER_LATE_MIN || 120) * 60_000,
+  timerLateMs: ((m) => (Number.isFinite(m) && m > 0 ? m : 120))(Number(process.env.REASON_TIMER_LATE_MIN)) * 60_000,
   // How many standing check-ins one person can have running at once — counting the repeating checks
   // Reason keeps going itself by setting a timer from a timer (db.countRecurring), so a chain is not
   // a way round it. Ten, because the failure this

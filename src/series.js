@@ -79,9 +79,9 @@ export { takeSendMark, withoutSendMark };
 /** The rule every repeating firing is handed, in the model's words. One place, so both say the same. */
 export function quietRule({ checkIn = false } = {}) {
   return ` QUIET UNLESS NEW: your reply is texted ONLY if it starts with ${SEND_MARK}. Start with ${SEND_MARK} when`
-    + (checkIn ? ` this is the check-in question they asked you to ask, or when` : "")
+    + (checkIn ? ` this is the reminder or check-in question they asked you to send (that ALWAYS goes, even when it is the same as last time), or when` : "")
     + ` you found something genuinely NEW since the last one you sent, or this is a summary they explicitly asked to get every time.`
-    + ` Nothing new, same as last time, "no setup this hour", "still nothing" → reply exactly NO_REPLY. Code drops any reply without ${SEND_MARK}, so a "nothing new" text never reaches them.`;
+    + ` Otherwise: nothing new, same as last time, "no setup this hour", "still nothing" → reply exactly NO_REPLY. Code drops any reply without ${SEND_MARK}, so a "nothing new" text never reaches them.`;
 }
 
 const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
