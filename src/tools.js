@@ -121,6 +121,7 @@ import { resultFor } from "./ongoing.js";
 import * as zone from "./zone.js";
 import * as zonescope from "./zonescope.js";
 import { readSilence } from "./plain.js";
+import { fitLongText, shortenedNote } from "./fitlong.js";
 const confirmedZoneOf = (c) => { try { return zone.confirmedZone(c); } catch { return ""; } };
 
 /**
@@ -6684,7 +6685,7 @@ const S = {
   // give: the rule decides when the first one lands. The shape of `repeat` is checked by
   // series.normalizeRule, which refuses in words naming the fix rather than as a schema error.
   timer_set: z.object({
-    fire_at: z.string().optional(), note: z.string().min(1).max(500),
+    fire_at: z.string().optional(), note: z.string().min(1).max(2000),
     plan_id: z.number().int().optional(), task_id: z.number().int().optional(),
     then_call: z.string().max(300).optional(), their_time: z.boolean().optional(), relative: z.boolean().optional(), continues_check: z.boolean().optional(),
     repeat: z.object({
@@ -9179,8 +9180,13 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
     if (quiet.silent) { const { [field]: _dropped, ...rest } = rawInput; rawInput = rest; }
     else if (quiet.stripped) rawInput = { ...rawInput, [field]: quiet.text };
   }
+  // A soft text field over its cap (a note, a summary, why) is shortened rather than refused, and the
+  // result says so (src/fitlong.js). Anything else that is wrong is still refused as before.
+  const fit = fitLongText(S[name], rawInput);
+  rawInput = fit.input;
   const startedAt = Date.now();
   let out = await runToolInner(name, rawInput, ctx);
+  if (fit.shortened.length && out && typeof out === "object" && !Array.isArray(out)) out = { ...out, input_shortened: shortenedNote(fit.shortened) };
   // A file this call wrote is this person's, for the tools that take a path later (src/ownfiles.js).
   if (ctx?.conversationId) ownfiles.noteMade(ctx.conversationId, out, startedAt, rawInput);
   // An approved to-do list with items nothing is working yet (src/todo.js): said on the result of
