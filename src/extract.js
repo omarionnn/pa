@@ -72,7 +72,7 @@ Facts are things worth remembering across sessions: personal details, preference
 DO NOT extract: transient states ("they are typing"), task instructions ("look up X"), pleasantries, or things the assistant said about itself.
 Each fact should be atomic — one piece of information, not a compound sentence.
 
-Never extract somebody's own name as a fact about them. "Her name is Irene", "The user's name is Irene" and "Irene's name is Irene" are not facts: the name is already on record, and restating it is not new information. Put the name in "about" and extract what was said BESIDES the name.
+Never extract somebody's own name as a fact about them. "Her name is <her name>", "The user's name is <their name>" and "<name>'s name is <name>" are not facts: the name is already on record, and restating it is not new information. Put the name in "about" and extract what was said BESIDES the name.
 
 "about" is the person's name whenever you know it. Never "user", "the user" or "me" once a name has been said anywhere in the conversation — those file the same person twice and split what is known about them in half.
 "about" is never an email address or a phone number either, and never an account's label with the domain left off ("jdoe20", or a pair of them like "jdoe25 and jdoe16"). An identifier is how you reach somebody, not who they are: a fact filed under "jdoe20@gmail.com" cannot be found by looking up their name. Use the person's name — and if an account rather than a person is really the subject, there is no personal fact here to extract.

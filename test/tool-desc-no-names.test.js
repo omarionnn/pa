@@ -7,7 +7,7 @@ import { tools } from "../src/tools.js";
 import { systemFor } from "../src/agent.js";
 import { ALERT_RULES } from "../src/alerts.js";
 
-const NAMES = /\b(kofi|ama|omari|omarion|nyarko|yaw|esi|kwame)\b/i;
+const NAMES = /\b(kofi|ama|omari|omarion|nyarko|yaw|esi|kwame|irene|omariij\d*)\b/i;
 
 test("task_finish result example names nobody", () => {
   const d = tools.find(x => x.name === "task_finish").input_schema.properties.result.description;
