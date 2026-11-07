@@ -9,8 +9,8 @@
  * The normalised reasons a call ended. One of these goes in `calls.end_reason`; the platform's own
  * words go in `calls.end_detail` beside it, so a mapping that turns out wrong can be redone.
  *
- *   caller_hung_up    the caller hung up — only from a platform that says which side did; ElevenLabs
- *                     does not ("Call ended by remote party" either way), so it is never set from it
+ *   caller_hung_up    the caller hung up — only from a platform that says which side did; Twilio's
+ *                     wording does not ("Call ended by remote party" either way), so it is never set from it
  *   remote_hung_up    the line was hung up from the far end ("Call ended by remote party")
  *   end_call          Reason hung up itself, through the end_call tool
  *   voicemail         it reached a voicemail or answering machine
@@ -94,7 +94,7 @@ export function endReasonOf({ live = {}, row = {}, turns = [] } = {}) {
   if (/inactiv|silence|silent|timeout|timed[\s_-]?out/i.test(why)) return say("inactivity");
   // "Call ended by remote party" is their word for a hang-up on an outbound OR an inbound call (seen
   // on 32 and 20): it does not say which side, so neither does this. `caller_hung_up` stays in
-  // END_REASONS for a platform that does say; ElevenLabs never produces it.
+  // END_REASONS for a platform that does say.
   if (/remote party|hung[\s_-]?up|hang[\s_-]?up|hangup|disconnect/i.test(why)) return say("remote_hung_up");
   // Nothing in their words, but our own turns asked to hang up as the last thing they did.
   const last = turns.length ? turns[turns.length - 1] : null;

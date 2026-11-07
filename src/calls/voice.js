@@ -1,48 +1,36 @@
-// Reason's own brain, speaking. The endpoint ElevenLabs asks for every turn of every call.
+// Reason's own brain, speaking: one spoken turn of a phone call. GPT-Live (src/calls/gptlive.js) is
+// the voice on the line; every time it hands the turn to Reason (client delegation, `reasonTurn`
+// there), this runs it in process — OpenAI Chat Completions shaped messages in, SSE-framed chunks
+// (`data: {json}\n\n`, ending `data: [DONE]\n\n`) out, the same Reason that answers their texts.
+// There is no HTTP route to it: only the voice's own relay calls it.
 //
-// ElevenLabs Agents let an agent's LLM be an endpoint of yours implementing OpenAI **Chat
-// Completions** over **SSE** — `data: {json}\n\n` chunks, ending `data: [DONE]\n\n`. That is what
-// this is. The platform owns the phone line, the hearing, the speaking, the barge-in and the
-// turn-taking; every word said is generated here, by the same Reason that answers their texts.
-// ("Integrate your own model", read 2026-10-05/06.)
-//
-// Four things in this file are structural rather than instructions to a model, and each is here
+// Three things in this file are structural rather than instructions to a model, and each is here
 // because asking nicely is not a guarantee:
 //
-//   1. **The bearer secret.** Without it this route is an unauthenticated way to spend the owner's
-//      model credit and to have a stranger's questions answered out of somebody's private thread.
-//      Compared in constant time, and with ELEVENLABS_LLM_SECRET unset every request is refused
-//      rather than answered for free.
-//   2. **Which call this is, read from the database and not from the body.** The request says which
+//   1. **Which call this is, read from the database and not from the body.** The request says which
 //      call it belongs to; the row says whose Reason that is and what kind of call it is. If the two
 //      disagree the turn is refused, because the difference between them is the difference between a
 //      restaurant hearing a goal and a restaurant hearing somebody's calendar.
-//   3. **Two context builders, and the third-party one has no way to reach a thread.** It is not a
+//   2. **Two context builders, and the third-party one has no way to reach a thread.** It is not a
 //      prompt that says "do not mention their messages" — `thirdPartyContext` never loads a
 //      conversation, never loads memory, and returns an empty tool list. The isolation is what is
 //      *built*, which is why the test for it asserts on the context rather than on a model's answer.
-//   4. **A URL is never spoken.** Not a rule in the prompt (though it is there too): any web address
+//   3. **A URL is never spoken.** Not a rule in the prompt (though it is there too): any web address
 //      in what the model wrote is taken OUT of the spoken words and queued as a text, during the
 //      call, so it has landed by the time they hang up. "h t t p s colon slash slash" is not a link
 //      anybody can use, and a model that forgets that once has read a URL down a phone.
 //
 // On streaming. Text is emitted as it arrives, but held back to the end of a sentence before it goes
-// — which is what makes rule 4 above possible at all, since a web address split across two deltas
+// — which is what makes rule 3 above possible at all, since a web address split across two deltas
 // could not be found in either. A sentence is also the unit a speech engine wants, so the cost is
 // nothing: the first chunk goes as soon as the first sentence is done rather than when the whole
 // reply is.
-//
-// NOTHING here has run against the real platform. There are no keys until 2026-10-09. The SSE shape,
-// the bearer rejection, both context builders, the language switch and the URL rule are all pinned by
-// tests with an injected generator; what is NOT proved is that ElevenLabs accepts this exact framing
-// and sends these exact fields, and that is in docs/unverified.md rather than assumed here.
-import { timingSafeEqual, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import * as harm from "../harm.js";
 import { ledgerWrite } from "../trust.js";
 import { config, clock, stamp } from "../config.js";
-import { EXTRA_BODY_KEYS, CALL_KINDS } from "./elevenlabs.js";
 import { callRulesFor } from "./provider.js";
 import {
   VOICE_RULES, LANGUAGE_RULE, ownerLanguageRule, announcementAgainIn, ownerCallFrame, thirdPartyFrame, callIdentityFor,
@@ -63,20 +51,18 @@ import * as callMetrics from "./metrics.js";
 import * as stranger from "./stranger.js";
 import * as reviewed from "../reviewed.js";
 
-/** The route ElevenLabs is pointed at. One place, because the setup doc quotes it. */
-export const LLM_PATH = "/calls/elevenlabs/llm";
+/** The names Reason's own ids travel under in a turn's `extra_body`, so every turn knows which call it is. */
+export const EXTRA_BODY_KEYS = { callId: "reason_call_id", conversationId: "reason_conversation_id", kind: "reason_kind" };
+
+/** The two kinds of call. Which one a turn is comes off the call row, never off the request. */
+export const CALL_KINDS = ["owner", "third_party"];
 
 /**
- * The platform's own tools, which Reason triggers by answering with a standard OpenAI function call
- * and which the platform — not this process — carries out.
+ * The line's own tools, which Reason triggers by answering with a standard OpenAI function call
+ * and which the voice relay (src/calls/gptlive.js `readTurn`) — not the turn — carries out.
  *
- * They are the reason a tool call has to be able to leave this endpoint at all rather than being
+ * They are the reason a tool call has to be able to leave the turn at all rather than being
  * executed here like Reason's own.
- *
- * Every one of these has to be switched on on the agent in ElevenLabs, and the failure mode when one
- * is not is the quiet kind: the platform ignores a function call for a tool it does not have, so hold,
- * menus and voicemail all stop working while the call still sounds completely fine. They are in the
- * setup checklist as things the owner ticks, and `docs/calls-elevenlabs-setup.md` says why.
  *
  * `transfer_to_agent` is deliberately absent: there is one Reason, and there is nobody to transfer to.
  */
@@ -379,51 +365,23 @@ export function withCallRecord(messages = [], lookups = []) {
   return [...messages.slice(0, -1), { role: "user", content: [{ type: "text", text: record }, ...theirs] }];
 }
 
-// ---------- who is allowed in ----------
-
-/**
- * Is this really ElevenLabs, carrying the secret this install configured?
- *
- * Constant time, because a byte-by-byte comparison of a secret is a way to learn the secret. No
- * secret configured is a no, not a yes: an endpoint that answers anybody is an endpoint that will
- * eventually answer somebody.
- */
-export function verifyLlmBearer({ headers, secret = null }) {
-  const want = String(secret ?? config.elevenLlmSecret ?? "");
-  if (!want) {
-    return { ok: false, why: "this machine has no ELEVENLABS_LLM_SECRET, so there is nothing to check a caller against and nothing is answered" };
-  }
-  const h = Object.fromEntries(Object.entries(headers ?? {}).map(([k, v]) => [String(k).toLowerCase(), v]));
-  const raw = String(h.authorization ?? h["x-api-key"] ?? "").trim();
-  const given = raw.replace(/^bearer\s+/i, "").trim();
-  if (!given) return { ok: false, why: "no bearer token on the request" };
-  const a = Buffer.from(want);
-  const b = Buffer.from(given);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return { ok: false, why: "the bearer token does not match ELEVENLABS_LLM_SECRET" };
-  return { ok: true };
-}
-
 // ---------- which call is this ----------
 
 /**
  * The call row this turn belongs to.
  *
- * Two routes in, because the two directions know different things about themselves:
- *
- *   - **Outbound.** Reason placed it, so it put its own ids into `custom_llm_extra_body` and they
- *     come back on every turn as `elevenlabs_extra_body`. Both ids are required and the row has to
- *     match both — an id without its conversation would be a call id anybody could count up to.
- *   - **Inbound.** Nothing of Reason's was in the request, because Reason did not start the call. The
- *     personalization webhook (./inbound.js) wrote a row with the platform's own conversation id on
- *     it while the phone was still ringing, and that id is what this looks up.
+ * The voice relay puts Reason's own ids into every turn's `extra_body` (`reasonTurn` in ./gptlive.js),
+ * both directions: the row is written before the stream opens. Both ids are required and the row has
+ * to match both — an id without its conversation would be a call id anybody could count up to. A
+ * turn carrying only the voice's external call id is looked up by that instead.
  *
  * `kind` comes off the ROW (`is_owner`), never off the body. The body's `reason_kind` is read only to
  * disagree with: a request that says third-party about a row that is an owner call, or the other way
  * round, is refused. One of those two is somebody's private thread read out to a stranger and the
  * other is Reason going mute on its own person, and neither should be reachable by editing a field.
  */
-export function identifyCall(body, { provider = "elevenlabs" } = {}) {
-  const extra = (body?.elevenlabs_extra_body ?? body?.extra_body ?? body?.custom_llm_extra_body ?? {}) || {};
+export function identifyCall(body, { provider = "gptlive" } = {}) {
+  const extra = (body?.extra_body ?? {}) || {};
   const callId = Number(extra[EXTRA_BODY_KEYS.callId]);
   const conversationId = String(extra[EXTRA_BODY_KEYS.conversationId] ?? "").trim();
   const saidKind = String(extra[EXTRA_BODY_KEYS.kind] ?? "").trim();
@@ -433,10 +391,9 @@ export function identifyCall(body, { provider = "elevenlabs" } = {}) {
     call = db.getCall(conversationId, callId);
     if (!call) return { ok: false, why: `there is no call #${callId} on ${conversationId}` };
   } else {
-    // Inbound. Every name the platform might carry its own conversation id under, in the order they
-    // are documented; `user_id` last, because it is the one their docs describe loosest.
+    // No ids of Reason's: the voice's own call id, if the turn carries one.
     const external = [
-      body?.conversation_id, body?.conversationId, body?.elevenlabs_conversation_id, body?.user_id,
+      body?.conversation_id, body?.conversationId,
     ].map(v => (v == null ? "" : String(v).trim())).find(Boolean);
     if (!external) return { ok: false, why: "the request carries neither Reason's own call ids nor a conversation id to look one up by" };
     call = db.callByExternalId(provider, external);
@@ -641,7 +598,7 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
   // placed an hour ago is still held to the brief it was placed under rather than to a default.
   const brief = callBrief(call);
   // Nobody has been told who is calling yet, because the line opened silent (see `place` in
-  // ./elevenlabs.js). Read once here so the prompt and `voiceTurn` agree on it for this turn.
+  // ./gptlive.js). Read once here so the prompt and `voiceTurn` agree on it for this turn.
   const openingOwed = hold.openingOwed(call);
 
   const parts = [
@@ -842,11 +799,10 @@ export function threadMessages(conversationId, { limit = config.callHistoryTurns
 }
 
 /**
- * The call so far, as ElevenLabs sends it, turned into model messages.
+ * The call so far, as the voice relay hands it over, turned into model messages.
  *
- * Their request carries OpenAI-shaped `messages`. The system message in it is dropped on purpose:
- * the system prompt for this turn is Reason's, built above, and an agent-level prompt configured in
- * their dashboard is not a thing that gets to edit it.
+ * The turn carries OpenAI-shaped `messages`. A system message in it is dropped on purpose: the
+ * system prompt for this turn is Reason's, built above, and nothing on the line gets to edit it.
  */
 export function fromOpenAI(messages = []) {
   const out = [];
@@ -1234,8 +1190,8 @@ function feedBack(messages, { text = "", name, input = {}, result }) {
  * other person expecting him when he is unavailable." So the order is fixed and it is code that fixes
  * it — he is texted, and the transfer only goes through once he has actually said he is there.
  *
- * Two things from ElevenLabs' own docs shape this ("Transfer to number", read 2026-10-06). A conference
- * transfer **removes the agent from the call**, so after this Reason is not on the line to apologise or
+ * Two things shape this. A transfer **removes the voice from the call** (the line is redirected to the
+ * owner, `GptLiveCall#transfer` in ./gptlive.js), so after this Reason is not on the line to apologise or
  * to put anything right: there is no second chance at it. And `agent_message` is the only thing the
  * person receiving the transfer is told — nothing documents the conversation history going with it — so
  * it is written here to carry the state in one breath rather than left to a model that may assume the
@@ -1965,7 +1921,7 @@ export async function* voiceTurn({
 
       // A tool the PLATFORM owns. It leaves as an OpenAI function call and the turn is over: ending
       // the call, switching language, waiting, pressing keys and hanging up on a machine are all
-      // things only ElevenLabs can do.
+      // things only the line (the voice relay) can do.
       let system = toolUses.find(t => SYSTEM_TOOL_NAMES.includes(t.name));
       // end_call's `message` and transfer_to_number's `client_message` are spoken by the platform,
       // so they never passed the sentence filter in `emit`: one carrying "NO_REPLY" would have been
@@ -2330,16 +2286,15 @@ function offeredTools(context) {
 }
 
 /**
- * The whole request: verify, identify, build, stream.
+ * The whole turn: identify, build, stream.
  *
  * Returns `{ status, headers, stream }` where `stream` is an async iterable of strings, or
  * `{ status, headers, body }` for a refusal. A refusal is still valid SSE when it is one the PHONE
  * will hear — a call Reason cannot place is told one line and hung up on, rather than left listening
- * to nothing — while a request that failed the bearer check gets a plain 401 and no words at all,
- * because whoever sent it is not on a phone.
+ * to nothing; a body that is not JSON is a plain 400.
  */
 export async function llmRequest({
-  rawBody, headers, generate = null, log = () => {}, secret = null, now = clock.now(),
+  rawBody, headers = {}, generate = null, log = () => {}, now = clock.now(),
   // The harm screen, injected so a test can state a verdict rather than needing a model for one.
   screen = undefined,
   // The runtime's channels and call provider, handed through to every tool a turn runs.
@@ -2357,12 +2312,6 @@ export async function llmRequest({
   // The moment the platform's request arrived — the person has stopped talking — which is where the
   // caller's wait starts. Every turn timing in call_turns is measured from here.
   const t0 = Date.now();
-  const auth = verifyLlmBearer({ headers, secret });
-  if (!auth.ok) {
-    log({ voice_llm_rejected: auth.why });
-    return { status: 401, headers: JSONH, body: JSON.stringify({ error: { message: `rejected: ${auth.why}`, type: "unauthorized" } }) };
-  }
-
   let body;
   try { body = JSON.parse(rawBody); } catch { body = null; }
   if (!body || typeof body !== "object") {
@@ -2375,7 +2324,7 @@ export async function llmRequest({
 
   // Somebody Reason does not know rang the number (src/calls/stranger.js): the pitch, with no call
   // row, no account, nobody's data and no tools. Marked by inbound.js on the call's extra body.
-  const extra = (body?.elevenlabs_extra_body ?? body?.extra_body ?? body?.custom_llm_extra_body ?? {}) || {};
+  const extra = (body?.extra_body ?? {}) || {};
   if (extra[EXTRA_BODY_KEYS.kind] === stranger.KIND) {
     log({ voice_llm_stranger: Array.isArray(body.messages) ? body.messages.length : 0 });
     return { status: 200, headers: SSEH, stream: stranger.strangerTurn({ body, generate: generatorFor(), sseChunk, SSE_DONE, log, now }) };
@@ -2740,7 +2689,7 @@ function apiRequestFor({ system, tools, messages, maxTokens = 1024 }) {
  * What a voice turn sends ahead of the person's words — every tool they have and the system prompt —
  * is about 120k tokens, and the first turn of a call paid to read all of it cold: measured on the
  * live install 2026-10-12, ~1.3s to the first token cold against ~0.75s once cached. The ring is the
- * time to pay it. The personalization webhook has just written the row and the phone has not been
+ * time to pay it. The row has just been written and the phone has not been
  * picked up; a request now, one token out, means the first real turn reads the prefix warm and the
  * screen becomes the only thing in front of the first word.
  *

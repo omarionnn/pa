@@ -1,250 +1,18 @@
-// Somebody rings the number. This answers while it is still ringing.
-//
-// ElevenLabs' inbound personalization webhook: before the audio connects, they POST
-// `{caller_id, agent_id, called_number, call_sid, conversation_id}` and take back
-// `dynamic_variables` + `conversation_config_override` — the opening line, the prompt, the voice.
-// It is fetched in parallel with the ring, so it is free in latency terms only as long as it really
-// is fast. ("Twilio personalization", read 2026-10-05.)
-//
-// Which is why there is NO MODEL CALL in this file. Everything it answers with is built from data
-// already on hand: the account row for the number, their open jobs, their last call. A model turn
-// here would be a second or two of ringing, and the first words of a call are the thing that decides
-// whether it feels alive.
+// Somebody rings the number: whose Reason it is, and the pieces of the answer every inbound call
+// shares (src/calls/gptlive.js routes the ring itself, `inboundTwiml`).
 //
 // The policy is the same one a TEXT from a stranger gets, for the same reason:
 //
-//   - **A number Reason knows** reaches their own Reason. Their name goes in as a dynamic variable,
-//     and the opening line is built from what is actually going on in their thread, so the call opens
-//     with the thing rather than with "how can I help".
-//   - **A number nobody approved** gets one fixed line and the call ends. No model turn is spent on
-//     them — an agent that answers any number that dials it is an agent anybody can run a bill up on
-//     — and the master is asked about them exactly as they are asked about a first text.
-//   - **A number over its day's limit** gets one honest line and the call ends. The cap exists
-//     because a call bills by the minute, and a cap that only applies to calls Reason places is a cap
-//     somebody can get round by dialling in.
-//
-// The row is created HERE rather than when the call ends. That is what makes the custom-LLM endpoint
-// able to find the call at all (there is nothing of Reason's in an inbound turn's body to go on), and
-// it means a call that crashes the process mid-way is still on the record.
+//   - **A number Reason knows** reaches their own Reason (`whoseCallIsThis`).
+//   - **A number nobody approved** gets the stranger pitch, and the master is asked about them
+//     exactly as they are asked about a first text (`strangerIntake`).
+//   - **A number over its day's limit** gets one honest line and the call ends (`overCallCap`). The
+//     cap exists because a call bills by the minute, and a cap that only applies to calls Reason
+//     places is a cap somebody can get round by dialling in.
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import * as access from "../access.js";
-import { config, clock, normalizeNumber } from "../config.js";
-import * as strangerCall from "./stranger.js";
-import * as strangerCalls from "../strangercalls.js";
-import { warmCallCache, verifyLlmBearer } from "./voice.js";
-import { announcementFor } from "./provider.js";
-
-/** The route ElevenLabs is pointed at for personalization. Quoted in the setup checklist. */
-export const INBOUND_PATH = "/calls/elevenlabs/inbound";
-
-/** Reason's channel name for a call, so an access request from one is distinguishable from a text. */
-export const CALL_CHANNEL = "elevenlabs";
-
-/**
- * One inbound personalization request.
- *
- * Returns `{ status, body }` — `body` already in the shape their docs give for this webhook. Never
- * throws: a webhook that errors during the ring is a call that connects with default settings, which
- * for a stranger would mean a full Reason answering them.
- *
- * `provider` is passed in rather than imported so this is testable without a key, and because the
- * same handler is what http.js calls with whatever provider is really running.
- */
-export function inboundRequest({
-  rawBody, headers = {}, provider = null, router = null, log = () => {}, now = clock.now(),
-  // Loads the call's prompt into the model's cache while the phone is still ringing. Injected so the
-  // suite can watch it being asked for without a model; never awaited here, never allowed to throw.
-  warm = warmCallCache,
-}) {
-  // The provider that is actually running has to be this one. A personalization request arriving for
-  // a provider nobody configured is not a late webhook, it is somebody poking the listener.
-  const st = provider?.status?.();
-  if (!st || st.name !== "elevenlabs") return { status: 404, body: { error: "not found" } };
-  // Answering a phone needs its own settings, and the honest answer when they are missing is that
-  // this route is not set up — not a call answered by half a Reason.
-  if (st.directions?.in !== true) {
-    log({ call_inbound_not_ready: st.directions?.missingIn ?? [] });
-    return { status: 503, body: { error: `inbound calls are not set up on this machine: no ${(st.directions?.missingIn ?? []).join(", ") || "ELEVENLABS settings"}` } };
-  }
-
-  // Is this really ElevenLabs? Their personalization webhook is not signed; it is authenticated by
-  // the header secret configured next to its URL in Agents settings. Checked before the body is even
-  // parsed, because everything below trusts `caller_id`: it answers with that number's name and
-  // conversation id, writes a call row, counts a call against the day's cap and warms the model —
-  // none of which a stranger guessing the URL gets to do. Same constant-time bearer / x-api-key
-  // check as the custom-LLM route, against its own secret.
-  const secret = String(provider?.inboundSecret ?? "");
-  if (secret) {
-    const auth = verifyLlmBearer({ headers, secret });
-    if (!auth.ok) {
-      log({ call_inbound_refused: auth.why.replace("ELEVENLABS_LLM_SECRET", "ELEVENLABS_INBOUND_SECRET") });
-      return { status: 401, body: { error: "unauthorized" } };
-    }
-  } else {
-    log({ call_inbound_unauthenticated: "no ELEVENLABS_INBOUND_SECRET on this machine; the ring is answered on caller_id alone" });
-  }
-
-  let body;
-  try { body = JSON.parse(rawBody); } catch { body = null; }
-  if (!body || typeof body !== "object") return { status: 400, body: { error: "bad json" } };
-
-  const callerId = String(body.caller_id ?? body.callerId ?? "").trim();
-  const conversationId = String(body.conversation_id ?? body.conversationId ?? "").trim();
-  const calledNumber = String(body.called_number ?? body.calledNumber ?? "").trim();
-  const callSid = String(body.call_sid ?? body.callSid ?? "").trim();
-  if (!conversationId) return { status: 400, body: { error: "no conversation_id on the request" } };
-
-  const address = normalizeNumber(callerId) || callerId;
-  log({ call_inbound: conversationId, from: address || "(no caller id)", to: calledNumber, sid: callSid });
-
-  // No caller id at all — a withheld number. Treated exactly as an unknown one: there is nobody to
-  // look up, so there is nobody to be.
-  if (!address) return { ...stranger({ address: "", router, log, reason: "withheld" }), conversationId };
-
-  const who = whoseCallIsThis(address);
-  if (!who.allow) {
-    if (who.reason === "blocked") {
-      log({ call_inbound_blocked: address });
-      return { status: 200, body: endItHere({ line: strangerCall.neutralLine(), reason: "blocked" }), conversationId };
-    }
-    if (who.reason === "paused" || who.reason === "removed") {
-      // Told once, in their own words, and then left alone — the same rule as a text.
-      // A short neutral line naming nobody (2026-10-31). The texted stoppedLine names the operator.
-      return { status: 200, body: endItHere({ line: strangerCall.neutralLine(), reason: who.reason }), conversationId };
-    }
-    return { ...stranger({ address, router, log, reason: who.reason, externalId: conversationId }), conversationId };
-  }
-
-  const person = accounts.ownerOf(who.conversationId);
-  const seen = { conversationId: who.conversationId };
-
-  // A place ringing back about a call Reason made. NOT an owner call, and the difference is the whole
-  // point: this is a business, so it gets the third-party context — the goal, the approved facts, the
-  // standing rules, no thread, no memory, no tools — and it gets the announcement, because it is a
-  // person who has not been told what they are talking to.
-  //
-  // Handled before the owner path below so the `isOwner: true` row that path creates can never be
-  // written for a restaurant. A caller id is not proof of identity (see docs/unverified.md), and the
-  // one place that matters most is here, where the alternative would be a stranger reaching somebody's
-  // own Reason by spoofing a number Reason happened to have called.
-  if (who.callingBack) {
-    const about = who.aboutCall;
-    const ann = announcementFor({ ownerName: person.name });
-    const row = db.createCall(seen.conversationId, {
-      provider: "elevenlabs",
-      toNumber: address,
-      isOwner: false,
-      goal: `They are ringing back about: ${about.goal}`,
-      facts: Array.isArray(about.facts) ? about.facts : [],
-      direction: "in",
-      externalId: conversationId,
-      state: "in_progress",
-      announcement: ann,
-    });
-    // The same brief, the same errand, the same budget — so the call that comes back is the same
-    // errand continuing rather than a new conversation that has to be explained from scratch. Booking
-    // is left exactly as it was: if the original call was only asking, this one is only asking too.
-    db.updateCall(seen.conversationId, row.id, {
-      brief: about.brief || "{}",
-      errand_id: about.errand_id ?? null,
-      hold_budget_s: about.hold_budget_s ?? null,
-    });
-    accounts.countUse(seen.conversationId, "call");
-    log({ call_inbound_callback: seen.conversationId, call: row.id, about: about.id, errand: about.errand_id ?? null });
-    warm({ call: db.getCall(seen.conversationId, row.id) ?? row, log, now });
-    return {
-      status: 200,
-      conversationId,
-      body: {
-        type: "conversation_initiation_client_data",
-        dynamic_variables: {
-          owner_name: person.name,
-          [`reason_call_id`]: row.id,
-          [`reason_conversation_id`]: seen.conversationId,
-          [`reason_kind`]: "third_party",
-        },
-        conversation_config_override: {
-          // The announcement, word for word, exactly as on an outbound call. They are a new person on a
-          // recorded call and they are told so before anything else.
-          agent: { first_message: `${ann} You're calling back about ${about.goal} — thanks for ringing back.` },
-          ...(config.elevenVoiceId ? { tts: { voice_id: config.elevenVoiceId } } : {}),
-        },
-        custom_llm_extra_body: {
-          reason_call_id: row.id,
-          reason_conversation_id: seen.conversationId,
-          reason_kind: "third_party",
-        },
-      },
-    };
-  }
-
-  // The day's limits, counted in the database and therefore surviving a restart. Checked before any
-  // turn is possible, because the whole reason a call has its own caps is that it bills by the minute
-  // for as long as somebody keeps talking.
-  const capped = overCallCap(seen.conversationId, { log });
-  if (capped) {
-    return { status: 200, conversationId, body: endItHere(capped) };
-  }
-
-  // On the record before a word is said. The goal is what it is — nobody handed this call one — and
-  // saying so plainly is better than inventing one; `facts` is empty because an inbound call shares
-  // nothing with anybody, it is somebody talking to their own Reason.
-  const row = db.createCall(seen.conversationId, {
-    provider: "elevenlabs",
-    toNumber: address,
-    isOwner: true,
-    goal: `${person.name} called Reason`,
-    facts: [],
-    direction: "in",
-    externalId: conversationId,
-    // It is not placing and it is not ringing: somebody is about to be on it.
-    state: "in_progress",
-    // Nothing is recited at the person who set this up. They are told once, by text, the first time
-    // their number ever calls — see `recordingNoteFor`.
-    announcement: "",
-  });
-  accounts.countUse(seen.conversationId, "call");
-
-  // The one text an owner call does produce: the first time this person's number ever rings, they are
-  // told afterwards that calls are recorded and that they get the audio. Queued rather than sent, so
-  // it costs the ring nothing, and once ever, so it is a disclosure rather than a nag.
-  const note = recordingNoteFor({ conversationId: seen.conversationId, row, log });
-
-  log({ call_inbound_known: seen.conversationId, call: row.id, told_recording: note.queued });
-  // While it is still ringing, the model's cache is loaded with this call's prompt so the first turn
-  // reads it warm (see `warmCallCache`). Not awaited: the ring owes this nothing.
-  warm({ call: db.getCall(seen.conversationId, row.id) ?? row, log, now });
-  return {
-    status: 200,
-    conversationId,
-    body: {
-      type: "conversation_initiation_client_data",
-      dynamic_variables: {
-        // Their name, for an agent whose greeting template interpolates one. Reason's own opening is
-        // the override below; this is for the platform's own copy of the same fact.
-        owner_name: person.name,
-        user_name: person.name,
-        [`reason_call_id`]: row.id,
-        [`reason_conversation_id`]: seen.conversationId,
-        [`reason_kind`]: "owner",
-      },
-      conversation_config_override: {
-        agent: {
-          // What it says first, built from what is actually open rather than from a greeting. This is
-          // the difference between their own Reason answering and a phone tree.
-          first_message: openingLineFor({ person, conversationId: seen.conversationId, now }),
-        },
-        ...(config.elevenVoiceId ? { tts: { voice_id: config.elevenVoiceId } } : {}),
-      },
-      custom_llm_extra_body: {
-        reason_call_id: row.id,
-        reason_conversation_id: seen.conversationId,
-        reason_kind: "owner",
-      },
-    },
-  };
-}
+import { config, clock } from "../config.js";
 
 /**
  * Over today's call limits? `{ line, reason }` to say and hang up on, or null. Both voices use it, so
@@ -269,7 +37,7 @@ export function overCallCap(conversationId, { log = () => {} } = {}) {
  *
  * The thing this gets right that a straight `admit` would not: a call has no channel of its own, so
  * the conversation is found by the NUMBER (`accountByNumber`) and the call joins the Reason that
- * number already texts. Admitting a caller on a channel called "elevenlabs" would hand them a second,
+ * number already texts. Admitting a caller on a channel named after the call provider would hand them a second,
  * empty Reason — no memory, no open jobs — and send the text they get ten minutes later somewhere
  * else.
  *
@@ -284,7 +52,7 @@ export function whoseCallIsThis(address) {
   if (accounts.isOperatorAddress(address)) {
     const conversationId = config.ownerConversation;
     // A call is not a channel change. Keep the text channel the owner already texts on;
-    // overwriting it to "elevenlabs" would route every subsequent text (recording notes,
+    // overwriting it to the call provider's name would route every subsequent text (recording notes,
     // replies) to a channel that cannot send, and the disclosure text would fail.
     const existing = db.getAccount(conversationId);
     const channel = existing?.channel && existing.channel !== "console" ? existing.channel : "";
@@ -406,32 +174,13 @@ export function recordingNoteFor({ conversationId, row, log = () => {} }) {
 }
 
 /**
- * A number with no account: one line, hang up, and the master is asked.
- *
- * Identical in policy to `handleUnknown` for a text, because it IS `handleUnknown` — the request
- * joins the same queue, the master is asked the same question with the same cooling-off rules, and
- * a yes there means their next call reaches their own Reason.
- *
- * The master's text is QUEUED, not sent. This is running while a phone rings; a channel that takes
- * two seconds would be two seconds of ringing, and the outbox pass picks it up well inside the call.
- */
-function stranger({ address, router = null, log = () => {}, reason = "no_account_yet", externalId = "" }) {
-  if (!address) {
-    log({ call_inbound_withheld: true });
-    return { status: 200, body: pitch({ reason: "withheld" }) };
-  }
-  const why = strangerIntake({ address, router, log, reason });
-  return { status: 200, body: pitch({ reason: why, address, externalId, log }) };
-}
-
-/**
  * The master is asked about an unknown number that rang, exactly as about a first text. Returns why
- * they are a stranger. Shared by both voices (ElevenLabs here, GPT-Live in src/calls/gptlive.js).
+ * they are a stranger. Used by GPT-Live's inbound route (src/calls/gptlive.js).
  */
 export function strangerIntake({ address, router = null, log = () => {}, reason = "no_account_yet" }) {
   // The request goes in on the TEXTING channel, not on the call provider's name. If the master says
   // yes, that is the channel their new Reason is set up on and the channel they are told yes over —
-  // approving somebody onto "elevenlabs" would set up an account Reason cannot send a text to.
+  // approving somebody onto the call provider's name would set up an account Reason cannot send a text to.
   const channel = liveTextingChannel(router);
   if (!channel) {
     // Nowhere to ask the master and nowhere to answer this person if the answer were yes. They still
@@ -465,38 +214,6 @@ export function strangerIntake({ address, router = null, log = () => {}, reason 
   return seen.reason ?? reason;
 }
 
-/**
- * An unknown caller: Reason introduces itself and talks about trying it (src/calls/stranger.js). The
- * turns come to Reason's own endpoint marked `stranger`, where they get the pitch prompt, no tools and
- * nobody's data; `end_call` is the only tool the platform may run. Nothing here names anybody.
- */
-function pitch({ reason, address = "", externalId = "", log = () => {} }) {
-  // The call is kept against the number it came from (src/strangercalls.js), so that if this person
-  // later gets their own Reason, it can say it's good to reconnect. A withheld number keeps nothing.
-  let kept = null;
-  try { kept = address ? strangerCalls.open({ phone: address, externalId }) : null; } catch (e) {
-    log({ stranger_call_not_kept: (e?.message ?? String(e)).split("\n")[0] });
-  }
-  return {
-    type: "conversation_initiation_client_data",
-    dynamic_variables: { reason_kind: strangerCall.KIND, reason_why: reason },
-    conversation_config_override: {
-      agent: {
-        first_message: strangerCall.introLine(),
-        prompt: {
-          prompt: "You are Reason, introducing yourself to somebody who rang. You know nothing about anybody.",
-          tools: [{ type: "system", name: "end_call" }],
-        },
-      },
-      ...(config.elevenVoiceId ? { tts: { voice_id: config.elevenVoiceId } } : {}),
-    },
-    custom_llm_extra_body: {
-      reason_kind: strangerCall.KIND,
-      ...(kept ? { reason_stranger_call: kept.id, reason_stranger_token: kept.token } : {}),
-    },
-  };
-}
-
 /** A channel that can really send a text right now, preferring the master's own. */
 function liveTextingChannel(router) {
   const live = (name) => name && name !== "console" && router?.get?.(name)?.status?.().status === "live";
@@ -525,31 +242,4 @@ function queueToMaster({ text, router = null, idemKey, log = () => {} }) {
     body: text, toOwner: true, maxAttempts: config.outboxMaxAttempts,
   });
   return { queued: true, outbox_id: row.id };
-}
-
-/**
- * The answer that says: speak this one line, allow nothing else, and hang up.
- *
- * `end_call` is in the allowed tool list so the agent CAN hang up; `prompt` is replaced so there is
- * no model turn worth running behind it. Both together are what makes a stranger's call one line
- * rather than a conversation — and the prompt override is the half that matters, because an allowed
- * `end_call` on a full Reason would be a stranger talking to a full Reason that is also able to hang
- * up.
- */
-function endItHere({ line, reason }) {
-  return {
-    type: "conversation_initiation_client_data",
-    dynamic_variables: { reason_kind: "stranger", reason_why: reason },
-    conversation_config_override: {
-      agent: {
-        first_message: line,
-        prompt: {
-          prompt: `Say nothing beyond the line you have already said. Whatever they say next, do not answer it:`
-            + ` call the end_call tool immediately. You have no other tools and no information about anybody.`,
-          tools: [{ type: "system", name: "end_call" }],
-        },
-      },
-      ...(config.elevenVoiceId ? { tts: { voice_id: config.elevenVoiceId } } : {}),
-    },
-  };
 }

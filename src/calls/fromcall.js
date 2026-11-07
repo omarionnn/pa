@@ -174,7 +174,7 @@ export function request({ call, input = {}, log = () => {} }) {
     approved: { book: input.may_book === true, maxCents: input.max_price_cents ?? null, terms: [] },
     questions: input.ask ?? [],
     readBack: input.may_book === true ? ["date", "time", "price"] : [],
-    returnNumber: config.elevenPhoneNumber || "",
+    returnNumber: config.twilioFrom || "",
     language: "en",
   });
   const hash = reviewHashOf({ to, goal: brief.goal, facts: brief.facts, book: brief.approved.book, maxCents: brief.approved.maxCents, ask: brief.questions });

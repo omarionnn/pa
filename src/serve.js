@@ -56,12 +56,12 @@ try { requireTokenKey(); } catch (e) {
 }
 
 const router = new Router({ log });
-// Whichever call provider REASON_CALL_PROVIDER names. `bland` is the real one and is live only
-// with a BLAND_API_KEY; the default `fake` dials nothing and is registered switched OFF, because a
+// Whichever call provider REASON_CALL_PROVIDER names. `gptlive` is Reason's own voice over Twilio
+// (src/calls/gptlive.js); `bland` is live only with a BLAND_API_KEY; the default `fake` dials nothing and is registered switched OFF, because a
 // provider that reported itself live would make `capabilities` tell people Reason can ring a
 // restaurant, which it cannot. Tests switch it on themselves.
-// With REASON_CALL_VOICE=gptlive every account's own calls go out on GPT-Live instead (=owner: the operator's)
-// (src/calls/gptlive.js); unset, this is the chosen provider itself, untouched.
+// With REASON_CALL_VOICE=gptlive in front of another provider, every account's own calls go out on GPT-Live
+// instead (=owner: the operator's); unset, or with gptlive as the provider, this is the provider itself.
 const calls = withGptLive(chooseCallProvider());
 
 // How a message leaves — a reply back the way it came, and anything Reason starts itself (a

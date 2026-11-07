@@ -4,18 +4,15 @@
 // he listed what matters: "reliable hold handling". So it is worth being exact about what is ours and
 // what is theirs, because the temptation is to assume a feature exists.
 //
-// THEIRS, read from ElevenLabs' docs 2026-10-06:
-//   `skip_turn`                — the agent stays silent and waits, without speaking. ("Skip turn")
-//   `play_keypad_touch_tone`   — DTMF for a phone menu. ("Play keypad touch tone")
-//   `voicemail_detection`      — a machine picked up. ("Voicemail detection")
-//   `turn_timeout` 1–30 s      — how long SILENCE runs before the agent speaks again. ("Conversation flow")
+// THE LINE'S (carried out by the voice relay, src/calls/gptlive.js):
+//   `skip_turn`                — stay silent and wait, without speaking.
+//   `play_keypad_touch_tone`   — DTMF for a phone menu (Twilio <Play digits>).
+//   `voicemail_detection`      — a machine picked up (with Twilio's answering-machine verdict).
 //
-// NOT THEIRS, and this is the important half:
-//   There is no hold detection and no "they're back" signal. ElevenLabs' *hold audio* and *call
-//   queueing* are the opposite direction — audio played to people queued for OUR agent at its
-//   concurrency limit — and conflating the two would produce a hold feature that does nothing.
-//   Worse: hold music is AUDIO, and `turn_timeout` measures silence, so the platform's own timer may
-//   never fire during a hold at all and may keep handing us turns as though somebody were talking.
+// NOT THE LINE'S, and this is the important half:
+//   There is no hold detection and no "they're back" signal. Hold music is AUDIO, so a silence timer
+//   may never fire during a hold at all, and the voice may keep handing us turns as though somebody
+//   were talking.
 //
 // So the division of labour is: **Reason judges, code measures.** Reason decides from what it hears
 // that this is hold music rather than a person, and says so the only way it can — by answering with
@@ -40,12 +37,7 @@ function ownerNameFor(call) {
   catch { return config.ownerName; }
 }
 
-/**
- * The platform tools this file is the reason for enabling. Each one has to be switched on on the
- * agent in ElevenLabs or the function call is silently ignored — and silently is the problem: hold,
- * menus and voicemail all stop working while the call still *sounds* completely fine. That is why
- * these are listed in the setup checklist as things he has to tick, not as things we configure.
- */
+/** The line tools this file is the reason for: waiting, menus and machines. */
 export const WAITING_TOOLS = [
   {
     name: "skip_turn",
@@ -364,7 +356,7 @@ export function newParty(call, { who = "", same = false, now = clock.now(), owne
   // not a second party: nobody has heard the disclosure, so code still says it word for word in front
   // of the reply (`openingOwed`) rather than leaving it to the model. 2026-10-31 drive: menu → press 1 →
   // hold → "Hi, this is Sam", the model called this, and its reply to Sam skipped the disclosure.
-  // GPT-Live calls only (REASON_THIRD_PARTY_VOICE): ElevenLabs calls stay exactly as they were.
+  // GPT-Live calls only (an older provider's row is left as it was).
   if (call?.provider === "gptlive" && openingOwed(call)) {
     noteSpeaking(call, { now, log });
     log({ call_first_person: call.id, who: String(who).slice(0, 60) });
@@ -488,8 +480,8 @@ export function notePress(call, { tones = "", log = () => {} } = {}) {
  * told how to leave the one message.
  *
  * The 2026-10-13 call to Jeffrey is why this is Reason's step rather than the platform's. Forwarding
- * `voicemail_detection` to ElevenLabs ends the call, speaking the agent's `voicemail_message` first if
- * one is set; the agent has none and Reason's message is different on every call, so the call ended at
+ * `voicemail_detection` to the voice platform ended the call, speaking the agent's `voicemail_message` first if
+ * one was set; the agent had none and Reason's message is different on every call, so the call ended at
  * the beep with nothing said — and the row said "one message was left", which then locked the number
  * out of a retry under the never-a-second-voicemail rule. So the tool is not forwarded. The row gets
  * `voicemail_no_message` now, and `voicemail_left` only when `noteVoicemail` has the words.

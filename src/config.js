@@ -598,14 +598,14 @@ export const config = {
   linqWebhookSecret: process.env.LINQ_WEBHOOK_SECRET || "",
   linqFrom: process.env.LINQ_FROM_NUMBER || "",
   linqBase: process.env.LINQ_API_BASE || "https://api.linqapp.com/api/partner",
-  // Phone calls. `fake` dials nothing and is the default; `bland` is the real one
-  // (src/calls/bland.js), and it is only live with a BLAND_API_KEY on this machine.
+  // Phone calls. `gptlive` is Reason's own voice on a Twilio number (src/calls/gptlive.js), live with
+  // the TWILIO_* keys, OPENAI_API_KEY and REASON_PUBLIC_URL; `bland` (src/calls/bland.js) needs a
+  // BLAND_API_KEY; `fake` dials nothing and is the default.
   callProvider: process.env.REASON_CALL_PROVIDER || "fake",
   callMaxMinutes: Number(process.env.REASON_CALL_MAX_MINUTES || 10),
-  // The longest a call can really run on the platform, in seconds: the ElevenLabs agent's own
-  // configured ceiling (3600 on the live agent). Reason cannot lower it per call — the override is
-  // refused ("Override for field max_duration_seconds is not allowed by config", see b10b6ab) — so
-  // `callMaxMinutes` is not a promise about when a call ends, and the lost-call sweep waits on this.
+  // The longest a call can really run, in seconds: a GPT-Live call is ended at this (`connect` in
+  // src/calls/gptlive.js), so `callMaxMinutes` is not a promise about when a call ends, and the
+  // lost-call sweep waits on this.
   callPlatformCapSeconds: Number(process.env.REASON_CALL_PLATFORM_CAP_SECONDS || 3600),
   // Bland. One key, sent as `authorization: Bearer <key>` on every request
   // (docs.bland.ai/api-v1/post/calls, read 2026-10-05).
@@ -620,48 +620,13 @@ export const config = {
   // of the unguessable per-call token in its URL alone, and docs/unverified.md says so out loud.
   blandWebhookSecret: process.env.BLAND_WEBHOOK_SECRET || "",
   blandTimeoutMs: Number(process.env.BLAND_TIMEOUT_MS || 20_000),
-  // ElevenLabs Agents, with Reason itself as the custom LLM behind the voice
-  // (src/calls/elevenlabs.js, src/calls/voice.js). The provider is only live with every setting a
-  // call cannot happen without — see `status()` there, and docs/calls-elevenlabs-setup.md for where
-  // each one is found.
-  elevenKey: process.env.ELEVENLABS_API_KEY || "",
-  elevenBase: (process.env.ELEVENLABS_API_BASE || "https://api.elevenlabs.io").replace(/\/+$/, ""),
-  // The agent that holds the voice, the languages and the Custom LLM URL.
-  elevenAgentId: process.env.ELEVENLABS_AGENT_ID || "",
-  // The Twilio number imported on ElevenLabs' Phone Numbers page. Inbound AND outbound; a verified
-  // caller ID would be outbound-only, which is half of what this is for.
-  elevenPhoneNumberId: process.env.ELEVENLABS_PHONE_NUMBER_ID || "",
-  // The same number in E.164, which is a different thing from ElevenLabs' id for it and is needed for a
-  // different reason: it is what a call GIVES OUT when a busy place offers to ring back. Without it a
-  // call has no usable return number, so "can I take a number?" has no good answer and the callback is
-  // lost. See the callback path in src/calls/inbound.js, which matches an unknown caller against the
-  // open calls on that number before treating them as a stranger.
-  elevenPhoneNumber: process.env.ELEVENLABS_PHONE_NUMBER || "",
-  // The bearer secret ElevenLabs is configured to send to Reason's own custom-LLM endpoint. Without
-  // it that endpoint would be an unauthenticated way to spend the owner's model credit and to have
-  // their thread read out loud, so with this empty the endpoint refuses every request rather than
-  // answering one for free.
-  elevenLlmSecret: process.env.ELEVENLABS_LLM_SECRET || "",
-  // The secret post-call webhooks are HMAC-signed with, in `ElevenLabs-Signature`. Unlike Bland's
-  // this one is not optional: a post-call delivery writes a transcript into somebody's thread and
-  // carries the audio, so an unsigned one is refused.
-  elevenWebhookSecret: process.env.ELEVENLABS_WEBHOOK_SECRET || "",
-  // The header secret on the inbound personalization webhook (Agents settings -> webhook "secrets",
-  // sent as `Authorization: Bearer <it>` or `x-api-key`). That webhook has no signature, and it
-  // answers with the caller's name, writes a call row, counts a call and warms the model cache, so
-  // with this set a request not carrying it is refused before any of that. Empty = not enforced
-  // (logged on every ring) until the same value is added in the ElevenLabs dashboard.
-  elevenInboundSecret: process.env.ELEVENLABS_INBOUND_SECRET || "",
-  // One pinned voice, picked by the owner by listening. Never varies per call.
-  elevenVoiceId: process.env.ELEVENLABS_VOICE_ID || "",
-  // GPT-Live as the voice instead (src/calls/gptlive.js): REASON_CALL_VOICE=gptlive (or on) for every
-  // account's own calls, =owner for the operator's only. Unset, every call is ElevenLabs exactly as before.
-  // The line is Twilio Media Streams, so it needs the number's Twilio keys, which live in ElevenLabs
-  // and must be copied here by the owner; without them an owner call quietly stays on ElevenLabs.
+  // GPT-Live in front of another provider (src/calls/gptlive.js `withGptLive`): REASON_CALL_VOICE=gptlive
+  // (or on) for every account's own calls, =owner for the operator's only. With REASON_CALL_PROVIDER=gptlive
+  // every call is GPT-Live already and this changes nothing.
   callVoice: String(process.env.REASON_CALL_VOICE ?? "").trim().toLowerCase(),
   // Calls Reason makes to businesses and other people, and places ringing back about them, on GPT-Live
   // too (phase 3, 2026-10-31): =gptlive (or on) for everyone's errands, =owner for the operator's only.
-  // Unset, those calls are ElevenLabs exactly as before.
+  // Unset, those calls are the provider's.
   thirdPartyVoice: String(process.env.REASON_THIRD_PARTY_VOICE ?? "").trim().toLowerCase(),
   // A quiet café (own calls) or office (errands) under Reason's GPT-Live voice: owner | on | off (unset = off).
   callAmbience: String(process.env.REASON_CALL_AMBIENCE ?? "").trim().toLowerCase(),
@@ -672,35 +637,23 @@ export const config = {
   // older puppet line, where every reply waits on a Reason turn (4–8 s a reply on call 59).
   lineTalk: String(process.env.REASON_LINE_TALK ?? "on").trim().toLowerCase() !== "off",
   gptliveModel: process.env.REASON_GPTLIVE_MODEL || "gpt-live-1",
-  // The closest built-in to the ElevenLabs pick (a young adult British woman): Marin, with the accent
+  // The voice (a young adult British woman was the owner's pick): Marin, with the accent
   // asked for in the live prompt. There is no British built-in voice.
   gptliveVoice: process.env.REASON_GPTLIVE_VOICE || "marin",
   twilioSid: process.env.TWILIO_ACCOUNT_SID || "",
   twilioToken: process.env.TWILIO_AUTH_TOKEN || "",
-  twilioFrom: process.env.TWILIO_FROM_NUMBER || process.env.ELEVENLABS_PHONE_NUMBER || "",
-  // Where everybody who is not the operator is sent if the number's voice webhook is ever pointed at
-  // /calls/gptlive/inbound: the voice URL ElevenLabs set on the number, copied as it was.
-  gptliveInboundFallbackUrl: process.env.REASON_GPTLIVE_INBOUND_FALLBACK_URL || "",
+  // Reason's own number, E.164: what every GPT-Live call dials from, the number on Reason's contact
+  // card, and what a call GIVES OUT when a busy place offers to ring back (the callback path in
+  // src/calls/inbound.js matches an unknown caller against the open calls on that number first).
+  twilioFrom: process.env.TWILIO_FROM_NUMBER || "",
   // The voice Twilio itself uses for the one-line refusals on /calls/gptlive/inbound (a blocked
   // number, a day's cap): said and hung up on, no model behind it.
   gptliveSayVoice: process.env.REASON_GPTLIVE_SAY_VOICE || "Polly.Amy-Neural",
-  // Which speech model the agent is set to (2026-10-07 addendum, section 2). The model is an
-  // AGENT-level setting on their side — their per-conversation overrides cover the voice id, the
-  // prompt, the language and the speed, not the model — so this does not change a call; it is what
-  // Reason writes on each call row, so a latency or naturalness number measured later says which
-  // model it was measured under. The trial starts on the conversational v3 model because that is
-  // the one their expressive mode runs on; src/calls/profile.js has the other candidate.
-  elevenTtsModel: process.env.ELEVENLABS_TTS_MODEL || "eleven_v3_conversational",
-  // A second agent, tuned for the owner's own calls (section 4): faster turn-taking, a shorter
-  // silence timeout. Turn settings are agent-level and not overridable per conversation, so two
-  // profiles means two agents. Empty means one agent carries both, which is how it starts.
-  elevenOwnerAgentId: process.env.ELEVENLABS_OWNER_AGENT_ID || "",
   // The spoken second check on an owner call (section 6). Caller ID says WHOSE Reason to answer as;
   // it does not prove who is holding the phone, so anything that spends, books, sends or changes
   // state asks for this first — or, with it empty, texts the owner's own number a yes/no instead.
   // Never put in a prompt, never read back; compared and nothing else.
   callPassphrase: process.env.REASON_CALL_PASSPHRASE || "",
-  elevenTimeoutMs: Number(process.env.ELEVENLABS_TIMEOUT_MS || 20_000),
   // Which backend answers a VOICE turn. Empty means the same one every other turn uses, so an
   // install that sets nothing behaves exactly as it does now; REASON_CALL_BACKEND=api pins the API
   // path for calls alone, which is the switch Friday needs — a phone turn cannot wait on a headless
@@ -722,16 +675,15 @@ export const config = {
   // Every value in this block is a DEFAULT, and the owner said so explicitly on 2026-10-06: max hold
   // time, how many inquiry calls may run at once, retry limits, quiet hours, which languages, and
   // budget were all listed as open decisions he has not made. So none of them is presented as a
-  // finding, each is one line in .env, and docs/calls-elevenlabs-plan.md carries the table of what I
-  // picked and why it is only a default. If one of these numbers turns out to be wrong it is a
+  // finding, each is one line in .env, and none is presented as more than a default. If one of these numbers turns out to be wrong it is a
   // setting someone changed their mind about, not a bug.
 
   // How long a call may sit on hold before it rings off politely. Five minutes: long enough for an
   // ordinary queue, short enough that a wrong number does not burn ten minutes of per-minute billing.
   // A brief may override it per call, because a clinic at lunchtime is not a shop at 10am.
   //
-  // This is OUR clock, deliberately. ElevenLabs has no hold detection, and their `turn_timeout`
-  // measures SILENCE — hold music is audio, so a silence timer may never fire during it at all.
+  // This is OUR clock, deliberately. A voice has no hold detection, and a silence timer may never
+  // fire during hold music at all, because hold music is audio.
   callMaxHoldSeconds: Number(process.env.REASON_CALL_MAX_HOLD_SECONDS || 300),
 
   // How many calls may be live at once for one errand. Three: concurrency bills per minute on every
@@ -751,9 +703,7 @@ export const config = {
   // they hear.
   callQuietHours: process.env.REASON_CALL_QUIET_HOURS ?? "21:00-08:00",
 
-  // The languages a call may switch into. What the owner's spec named, and no more. Adding one here
-  // is NOT enough on its own: the agent in ElevenLabs has to list it too, or the language_detection
-  // call is a function call the platform ignores.
+  // The languages a call may switch into. What the owner's spec named, and no more. 
   callLanguages: (process.env.REASON_CALL_LANGUAGES || "en,es").split(",").map(s => s.trim().toLowerCase()).filter(Boolean),
 
   // A spend ceiling for one errand, in cents. Deliberately UNSET: the owner listed budget as an open
