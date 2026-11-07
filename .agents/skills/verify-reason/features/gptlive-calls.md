@@ -210,6 +210,13 @@ untouched (`line` is false on `is_owner` rows; covered by a test with the flag o
 - Settle: `settleGptLive` + `noteThirdPartyTurns` (call events into memory, as ElevenLabs' delivery).
 - Ring-back: `routeInbound` → `ringBackRow` (not owner; errand goal/facts/brief/errand/hold budget),
   greeting `ringBackLine` = disclosure + "You're calling back about …" spoken at once.
+  Who counts as ringing back (`callingBack`, src/calls/inbound.js): only a call Reason PLACED to that
+  number (direction out) in the last 24 h, not settled `confirmed`/`refused_by_them`; ring-back rows
+  never reopen the window. At most `MAX_RING_BACKS` (3) ring-backs per placed call, then the number
+  gets the stranger line (the operator's daily call caps are exempt, so this is the bound; audit lead
+  30). Test: `node --test test/call-inbound.test.js` ("a few ring-backs", "does not slide the window").
+  Drive in a cage: seed an outbound call row to a number, POST four Twilio-signed rings from it to
+  `/calls/gptlive/inbound`: 1-3 answer `<Stream>` + an `in`/is_owner 0 row, the 4th the stranger stream.
 
 Stranger recordings (item 6, the consistent option): the intro says "this call is recorded", so the
 GPT-Live stranger stream now KEEPS the audio at `recordings/stranger-<row id>.wav`,

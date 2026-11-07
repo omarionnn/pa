@@ -102,19 +102,34 @@ export function whoseCallIsThis(address) {
  * on calls where it was offered, and a receptionist who says "let me check and call you straight back"
  * does not always say it in a way anything recorded.
  */
-export function callingBack(address, { within = CALLBACK_WINDOW_MS, now = clock.now() } = {}) {
+export function callingBack(address, { within = CALLBACK_WINDOW_MS, now = clock.now(), limit = MAX_RING_BACKS } = {}) {
   const number = String(address ?? "").trim();
   if (!number) return null;
-  for (const call of db.callsToNumber(config.ownerConversation, { toNumber: number }).reverse()) {
+  const calls = db.callsToNumber(config.ownerConversation, { toNumber: number });
+  // Only a call Reason PLACED opens the window. A ring-back is written as a call row to the same
+  // number, and letting it count would let every ring-back reopen the day for the next one, so a
+  // caller who never settles the errand could keep the line open for ever (security audit lead 30).
+  const placed = calls.filter(c => c.direction !== "in").reverse();
+  for (const call of placed) {
     const when = Number(call.ended_at || call.updated_at || call.created_at || 0);
     if (when && now - when > within) continue;
     // A call that was already settled as "they said no" is not an open question. One that ran out of
     // hold, got voicemail, or dropped before it was confirmed is exactly the kind they ring back about.
     if (["refused_by_them", "confirmed"].includes(call.outcome_kind)) continue;
+    // A ring-back runs on the operator's conversation, which the daily call caps exempt by default, so
+    // this is the bound: a few return calls per call Reason made, then they are a stranger again.
+    const rungBack = calls.filter(c => c.direction === "in" && !c.is_owner && c.id > call.id).length;
+    if (rungBack >= limit) return null;
     return { call };
   }
   return null;
 }
+
+/**
+ * How many times a place can ring back about one call Reason made. "Let me check and call you back"
+ * is one return call, two if the line dropped; past three it is not an errand continuing.
+ */
+export const MAX_RING_BACKS = 3;
 
 /**
  * How long after a call a return call is treated as being about it. A day: long enough for "I'll check

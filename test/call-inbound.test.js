@@ -27,7 +27,7 @@ process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_UNDO_SECONDS = "0";
 
-const { whoseCallIsThis, openingLineFor, recordingNoteFor } = await import("../src/calls/inbound.js");
+const { whoseCallIsThis, openingLineFor, recordingNoteFor, MAX_RING_BACKS = 3 } = await import("../src/calls/inbound.js");
 const gl = await import("../src/calls/gptlive.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
@@ -376,6 +376,34 @@ test("a ring back about something from last month is not that errand continuing"
   assert.equal(whoseCallIsThis(RESTAURANT).allow, false, "a day later it is somebody ringing about something else");
   ring(RESTAURANT);
   assert.equal(lastInbound(), undefined, "a stranger, not the old errand");
+});
+
+// Security audit lead 30: a ring-back runs on the operator's conversation, whose daily call caps are
+// exempt by default, so the number of ring-backs one call of Reason's opens has to be bounded here.
+test("one call of Reason's opens a few ring-backs, not an unlimited line on the operator's bill", () => {
+  calledThem({ outcome_kind: "hold_gave_up" });
+  for (let i = 0; i < MAX_RING_BACKS; i++) {
+    assert.equal(whoseCallIsThis(RESTAURANT).callingBack, true, `ring-back ${i + 1} is the errand`);
+    ring(RESTAURANT);
+  }
+  const inbound = () => db.db.prepare("SELECT COUNT(*) n FROM calls WHERE direction = 'in'").get().n;
+  assert.equal(inbound(), MAX_RING_BACKS);
+  // The next one is a stranger: no third-party call opened on the operator's conversation.
+  assert.equal(whoseCallIsThis(RESTAURANT).allow, false);
+  for (let i = 0; i < 5; i++) ring(RESTAURANT);
+  assert.equal(inbound(), MAX_RING_BACKS, "no more errand calls past the budget");
+  // A fresh call from Reason opens a fresh budget.
+  calledThem({ outcome_kind: "hold_gave_up" });
+  assert.equal(whoseCallIsThis(RESTAURANT).callingBack, true);
+});
+
+test("a ring-back does not slide the window: it stays a day from Reason's own call", () => {
+  calledThem({ outcome_kind: "hold_gave_up" });
+  clock.skip(23 * 60 * 60 * 1000);
+  ring(RESTAURANT);
+  assert.equal(lastInbound()?.is_owner, 0, "inside the day: the errand");
+  clock.skip(2 * 60 * 60 * 1000);
+  assert.equal(whoseCallIsThis(RESTAURANT).allow, false, "25 h after Reason rang, the ring-back row does not keep it open");
 });
 
 test("the number a call gives out to be rung back on is the install's own", async () => {
