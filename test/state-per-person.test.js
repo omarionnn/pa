@@ -147,3 +147,13 @@ test("a call from the number is refused when a non-newest row is paused", () => 
   assert.equal(who.allow, false);
   assert.equal(who.reason, "paused");
 });
+
+test("background sweeps skip a number paused on its other line", async () => {
+  db.db.exec("DELETE FROM commitments;");
+  db.saveCommitment(`dm:fake:${KOFI}`, { what: "morning run", days: [0, 1, 2, 3, 4, 5, 6], atMin: 420, timeZone: "America/New_York", said: "morning run" });
+  const runtime = new Runtime({ runTurn: async () => "ok" });
+  assert.equal((await runtime.commitments()).people, 1, "active everywhere: the sweep looks at them");
+  db.upsertAccount({ conversationId: `dm:other:${KOFI}`, channel: "other", address: KOFI, name: "Kofi" });
+  db.setAccountState(`dm:other:${KOFI}`, "paused");
+  assert.equal((await runtime.commitments()).people, 0, "paused on the other line: nothing unprompted on this one");
+});
