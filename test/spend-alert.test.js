@@ -156,6 +156,16 @@ test("usage limit: a call that goes through ends the episode; the next refusal t
   assert.equal(sent.length, 2);
 });
 
+test("usage limit: a success seconds after a refusal (a call begun before it) does not end the episode or text twice", () => {
+  spend.startAlerts({ send });
+  const now = at("2026-11-05T22:05:03Z");
+  spend.recordApi({ feature: "reply", model: "claude-opus-5-5", error: LIMIT, at: now });
+  spendUsd(0.1, "voice", now + 5000);
+  assert.ok(spend.limitHit());
+  spend.recordApi({ feature: "reply", model: "claude-opus-5-5", error: LIMIT, at: now + 9000 });
+  assert.equal(sent.length, 1);
+});
+
 test("usage limit seen before the texts are wired (boot): told once the wiring is up, not lost, not twice", () => {
   const now = at("2026-11-05T22:05:03Z");
   spend.recordApi({ feature: "harm", model: "claude-haiku-5-5", error: LIMIT, at: now });

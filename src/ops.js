@@ -29,7 +29,7 @@ import { statfsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as db from "./db.js";
-import { spendCheck, fallbackCheck, callCapCheck, limitCheck, startAlerts as startSpendAlerts, capWarnings } from "./spend.js";
+import { spendCheck, fallbackCheck, callCapCheck, limitCheck, startAlerts as startSpendAlerts, stopAlerts as stopSpendAlerts, capWarnings } from "./spend.js";
 import * as accounts from "./accounts.js";
 import { opsLabel as planLabel } from "./plan.js";
 import * as agentcard from "./agentcard.js";
@@ -928,7 +928,7 @@ export function startOps({ runtime = null, router = null, everyMs = EVERY_MS, fi
   const interval = setInterval(run, everyMs);
   first.unref?.();
   interval.unref?.();
-  return { run, stop: () => { clearTimeout(first); clearInterval(interval); } };
+  return { run, stop: () => { clearTimeout(first); clearInterval(interval); stopSpendAlerts(); } };
 }
 
 // ---------- words ----------

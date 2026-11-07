@@ -275,7 +275,9 @@ export function fallbackCheck() {
 // fallback (agent.js `fallbacks`).
 
 /** The share of a cap that earns the heads-up. */
-export const WARN_AT = Number(process.env.REASON_API_WARN_AT || 0.8);
+// A share of the cap between 0 and 1; anything else ("80", "0", garbage) falls back to 80%.
+const warnAtEnv = Number(process.env.REASON_API_WARN_AT);
+export const WARN_AT = warnAtEnv > 0 && warnAtEnv < 1 ? warnAtEnv : 0.8;
 
 const LIMIT_KEY = "api_limit:hit";
 let alertSend = null;
@@ -339,9 +341,13 @@ export function noteLimitError(e, at = clock.now()) {
 }
 
 /** A paid call went through: the limit is lifted, the episode is over (the next one texts again). */
+// A success within this long of the last refusal is most likely a call that started before the limit
+// (a long reply, a phone call); it does not end the episode, or the next refusal would text again.
+const LIFT_MARGIN_MS = 60_000;
 export function clearLimitHit(at = clock.now()) {
   const open = limitHit();
   if (!open) return false;
+  if (Number(at) - Number(open.last ?? open.at) < LIFT_MARGIN_MS) return false;
   db.opsDelete(LIMIT_KEY);
   db.opsSet("api_limit:last", JSON.stringify({ ...open, cleared: at }));
   return true;
