@@ -2,7 +2,7 @@
 // the gate holds at the last click. No API key needed. Nothing live is ever touched.
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBookingSite } from "./fixture-booking.js";
@@ -17,7 +17,7 @@ process.env.REASON_TZ = "America/New_York";
 const { runTool } = await import("../src/tools.js");
 const db = await import("../src/db.js");
 const browser = await import("../src/browser.js");
-const { clock } = await import("../src/config.js");
+const { clock, config } = await import("../src/config.js");
 const { readableText } = await import("../src/weblookup.js");
 
 const C = "dm:browser";
@@ -214,6 +214,17 @@ test("screenshot writes a real file", async () => {
   const out = await call("browser_screenshot", {});
   assert.equal(out.ok, true);
   assert.ok(existsSync(out.path), "the PNG is on disk");
+});
+
+test("screenshot never writes where the model says: always Reason's own name in the shots folder", async () => {
+  await call("browser_open", { url: site.url });
+  const target = join(dir, "pretend-shared.db");
+  writeFileSync(target, "DATABASE");
+  const out = await call("browser_screenshot", { path: target });
+  assert.equal(out.ok, true);
+  assert.notEqual(out.path, target);
+  assert.ok(out.path.startsWith(config.shotRoot), out.path);
+  assert.equal(readFileSync(target, "utf8"), "DATABASE", "the model's path was overwritten");
 });
 
 test("browser_close closes it and says so", async () => {

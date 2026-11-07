@@ -51,6 +51,8 @@ const TABLES = [
   // from, which is their own writing; the files themselves are carried separately, below, the same
   // way the recordings are.
   "documents",
+  // Which files on disk were made for them (src/ownfiles.js): paths only, no bytes.
+  "conversation_files",
   // Which new features this person has been told about. Theirs like anything else keyed by
   // conversation, and a delete has to take it: leaving it behind would mean a person who wiped
   // their Reason and came back got told nothing was new.

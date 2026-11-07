@@ -42,6 +42,7 @@ const { runTool, runReleasedAction } = await import("../src/tools.js");
 const { systemFor } = await import("../src/agent.js");
 const google = await import("../src/google.js");
 const driveorg = await import("../src/driveorg.js");
+const ownfiles = await import("../src/ownfiles.js");
 const drive = await import("../src/drive.js");
 const trust = await import("../src/trust.js");
 const permissions = await import("../src/permissions.js");
@@ -543,8 +544,12 @@ test("a file Reason wrote goes up byte for byte, with no yes, and the bytes surv
   // Real PDF bytes, including a byte sequence that is not valid UTF-8. A string round trip would
   // turn it into U+FFFD and Drive would store a file that is no longer a PDF.
   const bytes = Buffer.concat([Buffer.from("%PDF-1.4\n"), Buffer.from([0xff, 0xfe, 0x00, 0x80]), Buffer.from("\n%%EOF")]);
-  const path = join(dir, "offer-letter.pdf");
+  // Where Reason writes what it makes, during a tool call of theirs (src/ownfiles.js).
+  mkdirSync(config.documentRoot, { recursive: true });
+  const path = join(config.documentRoot, "offer-letter.pdf");
+  const before = Date.now();
   writeFileSync(path, bytes);
+  ownfiles.noteMade(OMARI, { ok: true, path }, before);
 
   const out = await call("drive_upload", { path, name: "Offer letter.pdf", mime_type: "application/pdf", into: "fol-taxes" });
   assert.equal(out.ok, true, JSON.stringify(out));
@@ -555,6 +560,27 @@ test("a file Reason wrote goes up byte for byte, with no yes, and the bytes surv
   assert.deepEqual(up.file.parents, ["fol-taxes"], "it did not land in the folder it was asked for");
   assert.deepEqual([...up.file.bytes], [...bytes], "the file arrived at Google corrupted");
   assert.match(ledger().find(r => r.action === "drive_upload").receipt, /Put "Offer letter\.pdf"/);
+});
+
+test("another person's call recording, or the shared database, is refused: inside the data directory is not theirs", async () => {
+  await connect();
+  // Somebody else's call, kept in the one recordings folder every call shares.
+  db.upsertAccount({ conversationId: "dm:fake:+15550000002", channel: "fake", address: "+15550000002", name: "B" });
+  const call7 = db.db.prepare("INSERT INTO calls (conversation_id, provider, to_number, goal, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run("dm:fake:+15550000002", "fake", "+15550000003", "x", Date.now(), Date.now()).lastInsertRowid;
+  db.db.prepare("UPDATE calls SET recording_state = 'stored' WHERE id = ?").run(call7);
+  mkdirSync(config.recordingRoot, { recursive: true });
+  const rec = join(config.recordingRoot, `call-${call7}.mp3`);
+  writeFileSync(rec, "ID3 their call");
+  for (const path of [rec, config.dbPath]) {
+    const out = await call("drive_upload", { path, name: "notes" });
+    assert.equal(out.ok, false, `${path} was uploaded for somebody it is not theirs`);
+    assert.match(out.error, /Nothing was uploaded/);
+  }
+  assert.equal(fake.state.driveCreated.length, 0, "another person's file reached this person's Drive");
+  // The person whose call it was can still put it in their own Drive.
+  assert.equal(ownfiles.ownFile("dm:fake:+15550000002", rec).ok, true);
+  assert.equal(ownfiles.ownFile(OMARI, rec).ok, false);
 });
 
 test("a path outside Reason's own data directory is refused, and nothing is read", async () => {
