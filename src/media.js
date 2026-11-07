@@ -438,6 +438,8 @@ export async function fetchVideo({
   maxBytes = MAX_VIDEO_BYTES,
   provider = videoModelFor(),
   tmpDir = config.imageTmpRoot,
+  // The whole watch's deadline (videosFor): aborts the download and the model's request with it.
+  signal = null,
 } = {}) {
   const name = filename || String(url ?? "").split("?")[0].split("/").pop() || "the video";
   if (!provider) {
@@ -457,7 +459,9 @@ export async function fetchVideo({
     const t = setTimeout(() => ac.abort(), timeoutMs);
     t?.unref?.();
     try {
-      const got = await guardedFetch(first.url, { fetchImpl, signal: ac.signal, httpsOnly: true });
+      // The deadline rides on the request, so the body read below stops with it as well.
+      const both = signal ? AbortSignal.any([ac.signal, signal]) : ac.signal;
+      const got = await guardedFetch(first.url, { fetchImpl, signal: both, httpsOnly: true });
       if (!got.ok) return { ok: false, why: `they sent a video (${name}) and it could not be downloaded (${got.why})` };
       res = got.res;
     } finally {
@@ -487,13 +491,14 @@ export async function fetchVideo({
   }
   if (!bytes.length) return { ok: false, why: `they sent a video (${name}) and the download came back empty` };
   if (bytes.length > maxBytes) return { ok: false, why: `they sent a video (${name}) that is ${mb(bytes.length)}, too large to watch (limit is ${mb(maxBytes)})` };
+  if (signal?.aborted) return { ok: false, timed_out: true, why: `they sent a video (${name}) and the time for watching it ran out` };
 
   mkdirSync(tmpDir, { recursive: true });
   const ext = name.match(/(\.[a-z0-9]+)$/i)?.[1] || ".mp4";
   const tmp = join(tmpDir, `vid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
   try {
     writeFileSync(tmp, bytes);
-    const result = await provider.watchFile(tmp, { mime });
+    const result = await provider.watchFile(tmp, { mime, ...(signal ? { signal } : {}) });
     if (!result.ok) {
       return { ok: false, why: `they sent a video (${name}) and watching it failed: ${result.error}` };
     }
@@ -503,17 +508,67 @@ export async function fetchVideo({
   }
 }
 
+const minutesOf = (ms) => {
+  if (ms < 120_000) return `${Math.round(ms / 1000)} seconds`;
+  return `${Math.round(ms / 60_000)} minutes`;
+};
+
+/**
+ * What the turn reads when a video ran past its deadline. Plain about what happened (nothing in it
+ * was seen) and about what can still be done, and it gives them no words to say back.
+ */
+export function videoTimedOutLine(a, timeoutMs = config.videoWatchTimeoutMs) {
+  return `they sent a video (${a.filename}) and watching it was stopped after ${minutesOf(timeoutMs)}, because the video model had still not answered — so nothing in it has been seen. `
+    + "Tell them that plainly in one short line, and never describe or guess at what is in it. "
+    + "Then say what you can still do: look at a screenshot of the part that matters, open a link to the video if it is online, or go on from what they tell you is in it. "
+    + "Do not promise to watch this one later; it will not be retried on its own.";
+}
+
 /**
  * Every video on one inbound turn, watched and described as text for the model.
  *
  * Returns `notes` (lines the model reads this turn) and `seen` (what the history keeps).
  */
-export async function videosFor(attachments = [], { fetchImpl, log = () => {}, cover = () => {} } = {}) {
+export async function videosFor(attachments = [], {
+  fetchImpl, log = () => {}, cover = () => {},
+  // Injectable so a test can watch with a stub and a fake clock — no network, no real wait.
+  watch = fetchVideo,
+  // One video's hard deadline, download to description. Past it the turn goes on without it and
+  // says so (2026-11-01: two screen recordings sat unwatched for 15+ minutes with no word).
+  timeoutMs = config.videoWatchTimeoutMs,
+  timers = { setTimeout, clearTimeout },
+} = {}) {
   const notes = [];
   const seen = [];
   for (const a of attachments) {
     if (a?.kind !== "video") continue;
-    const got = await fetchVideo({ url: a.url, filename: a.filename, ...(fetchImpl ? { fetchImpl } : {}) });
+    // A row left in `processing` is a crash rather than a shrug — the same rule as a voice note.
+    cover(a.media_id, { coverage: "processing" });
+    const ac = new AbortController();
+    let timer;
+    const deadline = new Promise((resolve) => {
+      timer = timers.setTimeout(() => { ac.abort(); resolve({ ok: false, timed_out: true }); }, timeoutMs);
+      timer?.unref?.();
+    });
+    let got;
+    try {
+      got = await Promise.race([
+        watch({ url: a.url, filename: a.filename, signal: ac.signal, ...(fetchImpl ? { fetchImpl } : {}) }),
+        deadline,
+      ]);
+    } catch (e) {
+      got = { ok: false, why: `they sent a video (${a.filename}) and watching it failed (${(e?.message ?? String(e)).split("\n")[0]})` };
+    } finally {
+      timers.clearTimeout(timer);
+    }
+    if (got?.timed_out) {
+      const line = videoTimedOutLine(a, timeoutMs);
+      notes.push(line);
+      seen.push(`they sent a video (${a.filename}); watching it was stopped after ${minutesOf(timeoutMs)} and nothing in it was seen`);
+      cover(a.media_id, { coverage: "failed", detail: `watching it was stopped after ${minutesOf(timeoutMs)} with no answer` });
+      log({ video: a.filename, timed_out: true, ms: timeoutMs });
+      continue;
+    }
     if (got.ok) {
       notes.push(`they sent a video (${a.filename}) — here is what is in it:\n${got.text}`);
       seen.push(`they sent a video (${a.filename}); you watched it when it arrived and cannot watch it again`);

@@ -119,10 +119,11 @@ export function geminiProvider({
 } = {}) {
   const headers = { "x-goog-api-key": apiKey };
 
-  async function withTimeout(fn) {
+  // `outer` is a caller's own deadline (src/media.js videosFor); whichever comes first stops it.
+  async function withTimeout(fn, outer = null) {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), timeoutMs);
-    try { return await fn(ac.signal); } finally { clearTimeout(timer); }
+    try { return await fn(outer ? AbortSignal.any([ac.signal, outer]) : ac.signal); } finally { clearTimeout(timer); }
   }
 
   /** One generateContent call, and the text it came back with. */
@@ -239,7 +240,7 @@ export function geminiProvider({
      * Same resumable upload as transcribeFile; the difference is the MIME type, the prompt (watch, not
      * listen), and what is claimed: "watched", because the model sees the frames.
      */
-    async watchFile(file, { question = "", mime = null } = {}) {
+    async watchFile(file, { question = "", mime = null, signal: outerSignal = null } = {}) {
       if (!apiKey) return { ok: false, ...geminiStatus({ apiKey, model }) };
       const type = mime ?? videoMimeFor(file);
       if (!type) {
@@ -278,7 +279,7 @@ export function geminiProvider({
           if (!uploaded?.uri) return { ok: false, error: "The video uploaded but Gemini returned no file uri for it." };
 
           let state = uploaded.state;
-          for (let i = 0; state === "PROCESSING" && i < maxPolls; i++) {
+          for (let i = 0; state === "PROCESSING" && i < maxPolls && !signal.aborted; i++) {
             await new Promise(r => setTimeout(r, pollMs));
             const look = await fetchImpl(`${base}/v1beta/${uploaded.name}`, { headers, signal });
             if (!look.ok) break;
@@ -289,7 +290,7 @@ export function geminiProvider({
 
           const out = await generate([{ text: watchPrompt(question) }, { file_data: { mime_type: type, file_uri: uploaded.uri } }], { signal });
           return out.ok ? { ...out, model, saw: "video", uploaded_bytes: bytes } : out;
-        });
+        }, outerSignal);
       } catch (e) {
         return { ok: false, error: reachError(e, timeoutMs) };
       }
