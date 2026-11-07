@@ -55,12 +55,15 @@ db.upsertAccount({ conversationId: AMA, channel: "fake", address: "+12025550123"
 const q = (sql) => db.db.prepare(sql);
 q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', 0, 1)").run(AMA);
 
-let calls = [], messages = "500";
+let calls = [], messages = "500", intent = null;
 const reply = (status, body) => ({ status, ok: status < 300, text: async () => JSON.stringify(body ?? {}) });
 shop._setFetch(async (url, init = {}) => {
   const p = new URL(url).pathname;
   calls.push(p);
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}` });
+  const oi = /^\/api\/unstable\/order-intents\/([^/]+)$/.exec(p);
+  if (oi) return intent ? reply(200, { orderIntentId: decodeURIComponent(oi[1]), status: intent.status, paymentMethodId: "pm_1", description: "x", expiresAt: new Date().toISOString(), rails: [],
+    amount: { total: "90.00", spent: intent.spent, reserved: "0.00", available: "0.00", currency: "USD" } }) : reply(404, {});
   if (/^\/api\/unstable\/agent-checkouts\/[^/]+\/messages$/.test(p)) return messages === "500" ? reply(500, { message: "internal" }) : reply(202, { ok: true });
   const m = /^\/api\/unstable\/agent-checkouts\/([^/]+)$/.exec(p);
   if (m) return reply(200, { runId: m[1], status: "running" });
@@ -98,6 +101,22 @@ const again = await shop.payApproved({ conversationId: AMA, paymentId: second.id
 step("second $90 → over_daily_cap", again.error === "over_daily_cap", JSON.stringify({ error: again.error, say: again.say }));
 step("second payment never reached Crossmint", calls.filter(p => p === "/api/unstable/order-intents").length === before && shop.paymentRow(second.id).status === "asked", `status ${shop.paymentRow(second.id).status}`);
 step("spend still $90", spent() === 9000, `spent ${spent()}c`);
+
+// Lead 5b: Crossmint asked about the unknown payment's order intent. Not definite → still counted.
+intent = { status: "active", spent: "0.00" };
+const third = asked("90.00");
+const still = await shop.payApproved({ conversationId: AMA, paymentId: third.id, confirmationId: 3 });
+step("intent still active (not definite) → unknown $90 stays counted, second $90 refused", still.error === "over_daily_cap" && shop.paymentRow(first.id).status === "unknown" && spent() === 9000 && calls.some(p => p.startsWith("/api/unstable/order-intents/")), `${still.error}, ${shop.paymentRow(first.id).status}, ${spent()}c`);
+// Definite: expired, nothing spent or reserved → released once, the second $90 goes through.
+intent = { status: "expired", spent: "0.00" };
+const fourth = asked("90.00");
+const paid = await shop.payApproved({ conversationId: AMA, paymentId: fourth.id, confirmationId: 4 });
+const lines = db.listSpend(AMA, trust.spendDay());
+const note = lines.find(l => l.cents === 0);
+step("Crossmint: expired, $0 spent → second $90 under the $100 cap is paid", paid.ok === true && shop.paymentRow(first.id).status === "failed" && spent() === 9000, `${JSON.stringify({ ok: paid.ok, error: paid.error })}, first ${shop.paymentRow(first.id).status}, ${spent()}c`);
+step("ledger keeps a $0 note for the released line", /\(CROSSMINT CONFIRMED NOT CHARGED, not counted\)$/.test(note?.what ?? ""), note?.what);
+const r2 = await shop.settleUnknownPayments();
+step("released once: a second settle releases nothing", r2 === 0 && spent() === 9000 && db.listSpend(AMA, trust.spendDay()).filter(l => l.cents === 0).length === 1, `released ${r2}, ${spent()}c`);
 
 // Before #357: an unknown row the ledger never counted. Boot's backfillSpend counts it once.
 const BEN = "dm:drive:ben";
