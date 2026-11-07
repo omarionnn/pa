@@ -52,7 +52,7 @@ const theTotal = (v) => paper({ stamp: v.stampText || "", label: v.store.toUpper
 const WHAT_IT_COVERS = (v) => label("FACE ID APPROVES") + para(v.kind === "cap"
   ? `This one change: your daily limit to <b>${esc(v.to)}</b>. Not a payment, not another number.`
   : `This one payment: <b>${esc(v.amount)}</b> at ${esc(v.store)}. Not another amount, not another store.`)
-  + label("THE LINK", { sp: true }) + para("Works once, and runs out in five minutes.")
+  + label("THE LINK", { sp: true }) + para(v.kind === "cap" ? "Works once, and runs out in thirty minutes." : "Works once, and runs out in thirty minutes. I text you once before it does.")
   + label("I NEVER SEE", { pen: true, sp: true }) + para("Your face or fingerprint. It stays on your phone.");
 
 /**
@@ -166,12 +166,13 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
 export function renderApproveEnded({ v = null, state = "expired", staging = false }) {
   const cap = v?.kind === "cap";
   const none = cap ? "Your limit hasn't changed." : "Nothing was charged.";
-  const was = { used: ["Already approved.", cap ? "This link is used up." : "This link can't pay again."], declined: [cap ? "Left as it was." : "Declined.", none] }[state]
+  const was = { used: ["Already approved.", cap ? "This link is used up." : "This link can't pay again."], declined: [cap ? "Left as it was." : "Declined.", none], renewed: ["The store let go of the cart.", none] }[state]
     ?? ["This link has run out.", none];
   const main = headline(was[0], was[1], "pk-h")
     + lede(state === "used" ? (cap ? "Each link works once. Settings shows your limit as it is now." : "Each approval link pays once. Check the chat for how it went.")
       : state === "declined" ? (cap ? "Tell me if you want a different number." : "Text me if you want something else.")
-      : `Approval links last five minutes and work once. If you still want it, ${cap ? "set the number again in Settings or tell me" : "tell me and I'll send a fresh one"}.`)
+      : state === "renewed" ? "Stores hold a payment for ten minutes. I asked again for the same thing, and a fresh link comes by text with the total."
+      : `Approval links last thirty minutes and work once. If you still want it, ${cap ? "set the number again in Settings or tell me" : "tell me and I'll send a fresh one"}.`)
     + (v ? (cap ? paper({ label: "DAILY LIMIT", big: v.to, extra: `<p class="pk-item">From ${esc(v.from)} a day</p>` }) : theTotal(v)) : "") + `<div class="pk-note">${actions(go(cap ? "Back to Settings" : "Back to Reason", { href: cap ? "/web/settings#shopping" : BACK }))}</div>`;
   const margin = label("WHY") + para("A link that runs out can't be used by anyone who sees it later.");
   return page("Reason — approve", shell(frame({ main, margin })), { staging, status: state === "used" || state === "declined" ? 200 : 410 });

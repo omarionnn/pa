@@ -16,9 +16,11 @@
 //   from the row when the assertion comes back, so an assertion made for one payment can't pay another
 //   amount, another store or another request, and a row that changed since the link was made pays
 //   nothing (`details_changed`).
-//   **One link, one use, five minutes.** The link's token is kept only as a hash; it is claimed with
-//   one UPDATE … WHERE state = 'open', so two taps can't both pay; it runs out at five minutes or at
-//   Crossmint's own deadline, whichever comes first.
+//   **One link, one use, thirty minutes.** The link's token is kept only as a hash; it is claimed with
+//   one UPDATE … WHERE state = 'open', so two taps can't both pay; it runs out at thirty minutes (it was
+//   five, cut further by Crossmint's ten-minute hold, until 2026-11-07: one face wash took 20 hours, and
+//   the CVS link died before he reached it). The store's own hold still decides whether a tap can pay:
+//   when it lets go first, src/shopconnect.js asks the store again and texts a fresh link.
 //   **heyreason.com only.** The origin and RP ID are fixed server-side. A passkey made for heyreason.com
 //   can't be used by a lookalike site at all (the browser refuses), and a response signed anywhere
 //   else fails the origin check.
@@ -62,7 +64,7 @@ export function ORIGINS() {
   const bare = o.hostname.replace(/^\[|\]$/g, "");
   return o.hostname === "localhost" || isIP(bare) ? [o.origin] : [o.origin, `${o.protocol}//${alt}${o.port ? `:${o.port}` : ""}`];
 }
-export const APPROVAL_TTL_MS = 5 * 60_000;
+export const APPROVAL_TTL_MS = 30 * 60_000;
 export const COOL_MS = 24 * 3600_000;
 const REG_TTL_MS = 5 * 60_000;
 
@@ -201,13 +203,20 @@ export function bindingChallenge(row, nonce) {
   return sha(JSON.stringify(fields)).toString("base64url");
 }
 
-/** A fresh link for an asked payment. The token is returned once; only its hash is kept. Older open links for it close. */
-export function createApproval(row) {
+/**
+ * A fresh link for an asked payment. The token is returned once; only its hash is kept. Older open links
+ * for it close. It lasts APPROVAL_TTL_MS, or to `until` when sooner (a checkout asked again after the
+ * store let go keeps the first ask's half hour, not a new one). Crossmint's hold on the row (expires_at)
+ * no longer cuts the link: a tap past it pays nothing (payRow refuses an expired row), and the store is
+ * asked again by code instead of the link dying at minute ten.
+ */
+export function createApproval(row, { until = null } = {}) {
   const token = randomBytes(24).toString("base64url");
   const nonce = randomBytes(16).toString("base64url");
   const now = clock.now();
-  const deadline = row.expires_at ? Date.parse(row.expires_at) : NaN;
-  const expiresAt = Math.min(now + APPROVAL_TTL_MS, Number.isFinite(deadline) ? deadline : now + APPROVAL_TTL_MS);
+  // A raise of the daily limit keeps its own question's deadline (src/spendcap.js changeTtlMs).
+  const own = kindOf(row) === "cap" && row.expires_at ? Date.parse(row.expires_at) : NaN;
+  const expiresAt = Math.min(now + APPROVAL_TTL_MS, Number.isFinite(until) && until > now ? until : Infinity, Number.isFinite(own) ? own : Infinity);
   q("UPDATE pay_approvals SET state = 'replaced' WHERE payment_id = ? AND kind = ? AND state = 'open'").run(row.id, kindOf(row));
   q(`INSERT INTO pay_approvals (id, conversation_id, payment_id, kind, nonce, challenge, state, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)`)
     .run(hashToken(token), row.conversation_id, row.id, kindOf(row), nonce, bindingChallenge(row, nonce), now, expiresAt);
@@ -223,7 +232,7 @@ export function approvalFor(token) {
   }
   return a;
 }
-/** The link still open for a payment, if one is (and still in its five minutes); else null. */
+/** The link still open for a payment, if one is (and still in its time); else null. */
 export function openApprovalFor(paymentId, kind = "pay") {
   const a = q("SELECT * FROM pay_approvals WHERE payment_id = ? AND kind = ? AND state = 'open' ORDER BY created_at DESC").get(paymentId, kind) ?? null;
   return a && a.expires_at >= clock.now() ? a : null;

@@ -386,7 +386,9 @@ test("shop_status after the link was used up without paying: a fresh link to res
   let view = shop.statusView(OMARI);
   assert.match(view.runs[0].approval, /still works for \d+ more minutes/);
   assert.equal(view.runs[0].approve_url, undefined);
-  // Used up by a tap whose payment did not start... then run out before another tap.
+  // Used up by a tap whose payment did not start... then run out before another tap (the link's half
+  // hour is longer than Crossmint's usual hold since 2026-11-07, so this store's hold is longer still).
+  q("UPDATE shop_payments SET expires_at = ? WHERE id = ?").run(new Date(clock.now() + 2 * passkey.APPROVAL_TTL_MS).toISOString(), row.id);
   clock.skip(passkey.APPROVAL_TTL_MS + 1000);
   view = shop.statusView(OMARI);
   assert.match(view.runs[0].approval, /used up without paying or ran out/);

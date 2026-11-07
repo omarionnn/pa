@@ -290,6 +290,8 @@ test("review: an expired payment approval reads as that; a wake that failed is r
   await shop.step(a.runId);
   clock.skip(11 * 60_000);
   runs[a.runId] = { ...EXPIRED };
+  // Asked again as often as it may be (test/shop-small-1107.test.js has the asking again): now it ends.
+  q("UPDATE shop_runs SET renewals = ? WHERE run_id = ?").run(shop.RENEW_MAX, a.runId);
   await shop.step(a.runId);
   assert.match(said.at(-1).t, /Ulta was waiting for your approval of the payment and didn't get it in time/);
   // The wake fails once (the runtime threw), and the same request is put to the model on the next look.
