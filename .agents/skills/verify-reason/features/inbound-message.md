@@ -4,7 +4,7 @@ Somebody texts Reason and gets an answer. Everything else in the product sits on
 message does not arrive, is answered twice, or is answered on behalf of the wrong person, nothing
 else matters.
 
-Source: `src/channels/sendblue.js` (`verify`, `receive`, `describe`), `src/channels/router.js`,
+Source: `src/channels/sendblue.js` (`verify`, `receive`, `describe`), `src/channels/linq.js` (`receive`), `src/channels/router.js`,
 `src/runtime.js` (`Runtime.inbound`), `src/agent.js` (`runTurn`), `src/harm.js`.
 Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `test/parts.test.js`,
 `test/harm.test.js`.
@@ -31,7 +31,18 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   with `content` = a link + the card as `media_url` → the reply is about the link, no "file"; then
   the card alone on `<handle>_1` via `inbound.sh -` → `ignored`, `delivered:0`, no thread line.
 - **Groups are never treated as one person's DM.** A non-empty `group_id` → 200, logged as ignored.
-  Every account, ledger row and confirmation in Reason belongs to one person.
+  Every account, ledger row and confirmation in Reason belongs to one person. Linq too (lead 32,
+  `isGroupChat` in `src/channels/linq.js`): a `message.received` whose `data.chat.is_group` is true
+  → `200 {"ok":true,"ignored":"group"}`, no `inbound_messages` row, no turn, and the group's chat id
+  never lands in `threads.chat_id` (before it, an admitted sender's group message ran their private
+  turn, the answer went to the group, and later private sends followed). Offline: `test/channels.test.js`
+  ("a Linq group-chat message is acknowledged and dropped…"). Cage: start with
+  `REASON_VERIFY_LINQ_WEBHOOK=1` (a throwaway `whsec_` in `$RUN/linq-secret`; `LINQ_API_KEY` stays
+  blank so Linq is still `not_connected`), then `node bin/linq-inbound.mjs group "hi"` →
+  `ignored:"group"`, `delivered:0`, `threads` empty; `node bin/linq-inbound.mjs dm "hi"` →
+  `delivered:1`, an `inbound_messages` row `linq|dm:owner`, `threads.chat_id = cage-dm-chat`
+  (driven 2026-11-07). Both documented spellings are caught: `data.chat.is_group` (2026-02-03)
+  and `data.is_group` (2025-01-01).
 - **Deduplication.** A retried webhook with a `message_handle` already seen is answered once.
 - **Who is the sender.** The `number` field, which the docs define as the end user — not
   `from_number`, even when they match. Normalised to E.164.

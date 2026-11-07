@@ -435,6 +435,55 @@ test("events that are not an inbound message are acknowledged and ignored", asyn
   } finally { config.linqWebhookSecret = ""; }
 });
 
+// A group chat is several people, not one person's Reason (the same rule as Sendblue's group_id
+// drop). Linq's 2026-02-03 payload says so in data.chat.is_group. Without this, an admitted
+// person's message in a group ran a turn with their private memory, the answer went into the
+// group, and the group's chat id became the route every later private message took.
+test("a Linq group-chat message is acknowledged and dropped: no turn, no reply, no stored route", async () => {
+  config.linqKey = "test-key";
+  config.linqWebhookSecret = SECRET;
+  try {
+    const calls = [];
+    const turns = [];
+    const runtime = new Runtime({ runTurn: async ({ text }) => { turns.push(text); return "private answer"; } });
+    const router = new Router({ runtime });
+    router.register(new LinqChannel({
+      fetchImpl: async (url, init) => { calls.push({ url, body: init?.body }); return { ok: true, status: 200, text: async () => "{}" }; },
+    }));
+
+    const group = JSON.stringify({
+      api_version: "v3", webhook_version: "2026-02-03", event_type: "message.received", event_id: "evt-g1",
+      created_at: "2026-02-05T19:31:13.736Z",
+      data: { chat: { id: "chat-group-1", is_group: true }, id: "mg1", direction: "inbound",
+        sender_handle: { handle: OWNER, is_me: false }, parts: [{ type: "text", value: "what's on my calendar?" }],
+        sent_at: "2026-02-05T19:31:13.074Z" },
+    });
+    const out = await router.webhook({ channel: "linq", rawBody: group, headers: signed(group, { id: "evt-g1" }) });
+    assert.equal(out.status, 200, "the provider is told we have it, so it stops retrying");
+    await new Promise(r => setTimeout(r, 50));
+    assert.deepEqual(turns, [], "no turn runs on a group message");
+    assert.equal(calls.filter(c => /chat-group-1/.test(c.url)).length, 0, "nothing is posted into the group");
+    assert.notEqual(db.getThread(config.ownerConversation)?.chat_id, "chat-group-1", "the group never becomes the private route");
+
+    // The older 2025-01-01 shape carries the flag flat, at data.is_group.
+    const old = JSON.stringify({
+      api_version: "v3", webhook_version: "2025-01-01", event_type: "message.received", event_id: "evt-g2",
+      data: { chat_id: "chat-group-2", from: OWNER, is_group: true, parts: [{ type: "text", value: "and tomorrow?" }] },
+    });
+    const outOld = await router.webhook({ channel: "linq", rawBody: old, headers: signed(old, { id: "evt-g2" }) });
+    assert.equal(outOld.status, 200);
+    await new Promise(r => setTimeout(r, 50));
+    assert.deepEqual(turns, [], "no turn on the older group shape either");
+    assert.notEqual(db.getThread(config.ownerConversation)?.chat_id, "chat-group-2");
+
+    // The 1:1 chat still works exactly as before.
+    const direct = linqEvent({ eventId: "evt-d1", from: OWNER, text: "hi" });
+    await router.webhook({ channel: "linq", rawBody: direct, headers: signed(direct, { id: "evt-d1" }) });
+    await new Promise(r => setTimeout(r, 50));
+    assert.deepEqual(turns, ["hi"]);
+  } finally { config.linqKey = ""; config.linqWebhookSecret = ""; }
+});
+
 test("Linq sends to the documented endpoint, with the documented body", async () => {
   config.linqKey = "test-key";
   config.linqWebhookSecret = SECRET;

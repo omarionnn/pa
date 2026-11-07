@@ -273,6 +273,13 @@ export class LinqChannel extends Channel {
     }
 
     const d = event.data ?? {};
+    // Several people, not one person's Reason (the same rule as Sendblue's group_id drop). A
+    // group message admitted by its sender would run a turn with that person's private memory and
+    // tools, post the answer into the group, and store the group's chat id as the route every
+    // later private message takes. Linq marks it with is_group (see isGroupChat).
+    if (isGroupChat(d)) {
+      return { status: 200, body: { ok: true, ignored: "group" }, inbound: [] };
+    }
     const from = d.sender_handle?.handle ?? d.from ?? d.from_handle?.handle ?? "";
     const chatId = d.chat?.id ?? d.chat_id ?? null;
     // iMessage's link card is not something anybody sent (src/linkpreview.js): left out of the
@@ -304,6 +311,14 @@ function lowerKeys(h = {}) {
   const out = {};
   for (const [k, v] of Object.entries(h)) out[String(k).toLowerCase()] = Array.isArray(v) ? v[0] : v;
   return out;
+}
+
+/**
+ * Whether a message.received came from a group chat. Linq documents the flag as data.chat.is_group
+ * (webhook 2026-02-03) and data.is_group (2025-01-01); data.message.is_group covers a nested copy.
+ */
+function isGroupChat(d) {
+  return d.chat?.is_group === true || d.is_group === true || d.message?.is_group === true;
 }
 
 /** A media part that is iMessage's link card, by its filename or its type. */
