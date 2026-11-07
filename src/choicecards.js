@@ -797,12 +797,38 @@ let productLookImpl = lookAtProductPhotos;
 /** Tests: the product look, injected (never a real model in the suite). */
 export function _setProductLook(fn) { const was = productLookImpl; productLookImpl = fn ?? lookAtProductPhotos; return was; }
 
+/** About what a card's two-line name shows before it is cut off (h1, 26–29px serif, 330pt wide). */
+const NAME_SHOWN = 44;
+/** What a card shows, as a person reads it: the name as far as it fits, the eyebrow, price, detail, the hand note. */
+const onCard = (o) => [String(o.name ?? "").slice(0, NAME_SHOWN), o.brand, o.price, o.detail, o.why].map((x) => String(x ?? "").toLowerCase().replace(/[^a-z0-9$.]+/g, " ").trim()).join("|");
+/**
+ * Cards that would read the same (2026-10-31, twice: three "CeraVe Foaming Facial Cleanser · Ulta" cards,
+ * the sizes and prices that told them apart left off because the listing did not back them): the pairs,
+ * numbered as asked. A set that looks like one thing three times is not a choice.
+ */
+export function sameOnCard(options) {
+  const seen = new Map(), pairs = [];
+  options.forEach((o, i) => {
+    const k = onCard(o);
+    if (seen.has(k)) pairs.push([seen.get(k) + 1, i + 1]);
+    else seen.set(k, i);
+  });
+  return pairs;
+}
+const sameError = (pairs, options, dropped = []) => {
+  const which = pairs.map(([a, b]) => `${a} and ${b} ("${[options[a - 1].name, options[a - 1].brand].filter(Boolean).join(" · ")}")`).join("; ");
+  return `Cards ${which} would look the same to them, so nothing was drawn.${dropped.length ? ` What told them apart was left off because the listing does not back it: ${dropped.join("; ")}.` : ""}`
+    + " Call show_choices again with each option visibly different — the size, variant, skin type, scent or store in its name or detail, as its own listing says it — or leave out the repeats and, with one left, just answer.";
+};
+
 export async function runChoiceTool(name, input, ctx) {
   const c = ctx.conversationId;
   if (name !== "show_choices" || !choiceCardsOn(c)) return { ok: false, error: "Choice cards are not available here. Write the options as a short numbered list." };
   if (ctx.historyId && ctx.historyId !== c) return { ok: false, error: "This is a Web-only chat. Write the options as a short numbered list." };
   const asked = (input.options ?? []).slice(0, 4);
   if (asked.length < 2) return { ok: false, error: "Cards are for 2 to 4 real options. With one, just answer." };
+  const twins = sameOnCard(asked);
+  if (twins.length) return { ok: false, error: sameError(twins, asked) };
   const theme = themeFor(c);
   const log = ctx.log ?? (() => {});
 
@@ -873,6 +899,12 @@ export async function runChoiceTool(name, input, ctx) {
   const shots = kept.map(i => photos[i]);
   const all = options;
   options = kept.map(i => all[i]);
+  // What the listing check took off can leave two cards the same (sizes and prices): asked again, never drawn alike.
+  const alike = sameOnCard(options);
+  if (alike.length) {
+    log({ choice_cards_alike: c, pairs: alike });
+    return { ok: false, error: sameError(alike, options, kept.flatMap((i, k) => checks[i].dropped.map(d => `option ${k + 1}: ${d}`))) };
+  }
   if (!why) {
     try {
       cards = [];

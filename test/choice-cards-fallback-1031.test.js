@@ -235,3 +235,28 @@ test("review: listing pictures are looked at too; a listing for another product 
   assert.match(r.note, /2\. Hydrating Facial Cleanser — \$17\.99\n|2\. Hydrating Facial Cleanser — \$17\.99 Left/);
   assert.match(r.note, /option 2: size 16 fl oz \(the photo is the 12 fl oz\)/);
 });
+
+// 2026-10-31 13:53 and 14:55 (choice sets 2 and 3 on live): three cards read "CeraVe Foaming Facial
+// Cleanser · Ulta" — the sizes and prices that told them apart came off because no listing backed them.
+test("cards that would read the same are never drawn: the model is told which, and what was left off", async () => {
+  const set = { kind: "shopping", options: asked().options.map((o) => ({ ...o, name: "CeraVe Foaming Facial Cleanser", why: undefined })) };
+  const r = await cc.runChoiceTool("show_choices", set, ctx());
+  assert.equal(r.ok, false);
+  assert.match(r.error, /^Cards 1 and 2 \("CeraVe Foaming Facial Cleanser · Ulta"\); 1 and 3 .* would look the same/);
+  assert.match(r.error, /left off because the listing does not back it: option 1: /);
+  assert.match(r.error, /visibly different/);
+  assert.equal(cc.takeQueued(C), null);
+});
+
+test("the same option twice as asked is refused before any listing is read; distinct names pass", async () => {
+  let looked = 0;
+  const twice = { kind: "shopping", options: [asked().options[0], { ...asked().options[0] }] };
+  const r = await cc.runChoiceTool("show_choices", twice, ctx({ lookup: async () => { looked++; return { ok: false }; } }));
+  assert.equal(r.ok, false);
+  assert.match(r.error, /Cards 1 and 2/);
+  assert.equal(looked, 0);
+  assert.deepEqual(cc.sameOnCard([{ name: "CeraVe Hydrating Facial Cleanser", brand: "Amazon" }, { name: "CeraVe Foaming Facial Cleanser", brand: "Amazon" }]), []);
+  // Past what the card's two lines show, a difference doesn't count.
+  const long = "CeraVe Hydrating Cream-to-Foam Facial Cleanser Makeup Remover";
+  assert.deepEqual(cc.sameOnCard([{ name: `${long} 16 oz` }, { name: `${long} 12 oz` }]), [[1, 2]]);
+});
