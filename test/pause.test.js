@@ -111,14 +111,76 @@ test("resume restores prior notice mode", () => {
   assert.equal(notice.settingsFor(CONV, { now: NOW + 3600000 }).mode, "digest");
 });
 
-test("resume resumes paused series", () => {
+// Stop means stopped (2026-11): "Stop" then "Start" brought back a scan somebody had stopped. A
+// resume lifts the pause; the check-ins come back only when their words ask for them.
+test("resume leaves paused check-ins stopped unless they ask for them back", () => {
   setup();
-  db.createSeries(CONV, { what: "workout", rule: {}, tz: "America/New_York", nextAt: NOW + 86400000 });
+  const rule = { kind: "daily", hour: 9, minute: 0, their_time: true };
+  db.createSeries(CONV, { what: "workout", rule, tz: "America/New_York", nextAt: NOW + 86400000 });
   pauseAll({ conversationId: CONV, said: "pause everything", now: NOW });
   assert.equal(db.listSeries(CONV)[0].state, "paused");
 
-  resumeAll({ conversationId: CONV, now: NOW + 3600000 });
+  const r = resumeAll({ conversationId: CONV, now: NOW + 3600000 });
+  assert.equal(r.ok, true);
+  assert.equal(db.listSeries(CONV)[0].state, "paused", "a bare resume / START brings back nothing they stopped");
+  assert.deepEqual(r.still_paused.map(x => x.what), ["workout"], "and the model is shown what is still stopped, to ask once");
+  assert.match(r.say, /STILL STOPPED/);
+});
+
+test("resume with checkins 'all' brings the check-ins back, from the next occurrence", () => {
+  setup();
+  const rule = { kind: "daily", hour: 9, minute: 0, their_time: true };
+  db.createSeries(CONV, { what: "workout", rule, tz: "America/New_York", nextAt: NOW + 86400000 });
+  pauseAll({ conversationId: CONV, said: "pause everything", now: NOW });
+  const r = resumeAll({ conversationId: CONV, now: NOW + 3600000, checkins: "all" });
   assert.equal(db.listSeries(CONV)[0].state, "active");
+  assert.equal(r.restored.length, 1);
+  const armed = db.pendingSeriesTimer(db.listSeries(CONV)[0].id);
+  assert.ok(armed && armed.fire_at > NOW + 3600000, "armed for the future, never a firing it missed while paused");
+});
+
+test("resume with series_ids brings back only the one they named", () => {
+  setup();
+  const rule = { kind: "daily", hour: 9, minute: 0, their_time: true };
+  const a = db.createSeries(CONV, { what: "workout", rule, tz: "America/New_York", nextAt: NOW + 86400000 });
+  db.createSeries(CONV, { what: "market scan", rule, tz: "America/New_York", nextAt: NOW + 86400000 });
+  pauseAll({ conversationId: CONV, said: "pause everything", now: NOW });
+  resumeAll({ conversationId: CONV, now: NOW + 3600000, checkins: [a.id] });
+  const byWhat = Object.fromEntries(db.listSeries(CONV).map(x => [x.what, x.state]));
+  assert.deepEqual(byWhat, { workout: "active", "market scan": "paused" });
+});
+
+test("a pause calls off a series' armed firing, so nothing goes out the moment it lifts", () => {
+  setup();
+  const rule = { kind: "daily", hour: 9, minute: 0, their_time: true };
+  const s = db.createSeries(CONV, { what: "workout", rule, tz: "America/New_York", nextAt: NOW + 86400000 });
+  const t = db.createTimer(CONV, { fireAt: NOW + 1800000, note: "standing check-in: workout", seriesId: s.id });
+  pauseAll({ conversationId: CONV, said: "pause everything", now: NOW });
+  assert.ok(db.getTimer(CONV, t.id).cancelled_at, "the armed firing is called off, not held");
+});
+
+test("a pause stops a self-repeating chain for good; resume does not restart it", () => {
+  setup();
+  const first = db.createTimer(CONV, { fireAt: NOW - 1000, note: "scan for setups" });
+  const link = db.createTimer(CONV, { fireAt: NOW + 3600000, note: "scan for setups", chainedFrom: first.id });
+  const r = pauseAll({ conversationId: CONV, said: "stop", now: NOW });
+  assert.ok(db.getTimer(CONV, link.id).cancelled_at);
+  assert.ok(r.stopped.some(x => /repeating check/.test(x.kind)));
+  resumeAll({ conversationId: CONV, now: NOW + 7200000, checkins: "all" });
+  assert.equal(db.pendingChainedTimers(CONV).length, 0);
+});
+
+test("reminders that came due during the pause are reported missed, never fired late", () => {
+  setup();
+  clock.skip(NOW - Date.now());
+  const t = db.createTimer(CONV, { fireAt: clock.now() + 3600000, note: "call the dentist" });
+  pauseAll({ conversationId: CONV, said: "pause everything" });
+  clock.skip(20 * 3600000);
+  const r = resumeAll({ conversationId: CONV });
+  assert.ok(db.getTimer(CONV, t.id).fired_at, "finished with");
+  assert.equal(db.getTimer(CONV, t.id).skipped_why, "missed while paused");
+  assert.deepEqual(r.missed_while_paused.map(x => x.what), ["call the dentist"]);
+  assert.equal(db.dueTimers().length, 0, "nothing is left due to fire late");
 });
 
 test("resume resumes paused commitments", () => {

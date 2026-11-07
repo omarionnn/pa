@@ -13,7 +13,7 @@
 // console is only for a conversation that has no thread at all, which is the terminal itself.
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
-import { outgoingParts, withoutNoReply } from "./plain.js";
+import { outgoingParts, withoutNoReply, withoutSendMark } from "./plain.js";
 import { WEB, webAllowedFor } from "./web.js";
 
 // A page link goes out BARE, on purpose. On 2026-10-06 the link's own bubble briefly carried the
@@ -117,6 +117,9 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
     // The silence marker never reaches a person, wherever in the reply it sits (src/plain.js
     // withoutNoReply). Nothing left once it is off: nothing is sent, and `silent` tells the caller
     // that was the decision rather than a failure to deliver.
+    // A repeating check's send mark (src/series.js) is code's, never theirs: taken off here too, so a
+    // reply that copied it from the thread cannot put "[send]" in front of a person.
+    if (typeof text === "string") text = withoutSendMark(text);
     const quiet = withoutNoReply(text, { path: "reply", log });
     if (quiet.stripped) {
       text = quiet.text;

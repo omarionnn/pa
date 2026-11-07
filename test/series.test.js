@@ -343,7 +343,7 @@ test("the sweep never arms a second firing for a series that already has one", (
   assert.equal(db.listTimers(C).length, 1);
 });
 
-test("three Mondays passing with the laptop shut produce ONE check-in, for the newest", () => {
+test("three Mondays passing with the process stopped produce NO late check-in: the next one is next Monday", () => {
   at("2026-10-07T20:00:00Z");
   const out = series.start({ conversationId: C, what: "the job search", repeat: { kind: "weekly", hour: 9, weekdays: ["monday"], their_time: true } });
   const id = out.series.series_id;
@@ -361,11 +361,14 @@ test("three Mondays passing with the laptop shut produce ONE check-in, for the n
 
   const made = series.schedule();
   assert.equal(made.length, 1, "one firing, not three");
-  assert.equal(made[0].missed, 2, "and it says out loud that two older ones were dropped");
+  assert.equal(made[0].missed, 3, "and it says out loud that all three missed ones were dropped");
   const now = db.listTimers(C)[0];
   assert.equal(localAt(now.fire_at), "Mon 09:00");
-  assert.ok(now.fire_at <= clock.now(), "the newest missed one, so it goes out immediately");
-  assert.ok(now.fire_at > firstMonday + 13 * DAY, "the newest, not the oldest");
+  // Never late (2026-11: check-ins fired 17-26 hours after their time). The newest missed Monday
+  // is days old, so it is gone too, and the next one is the coming Monday.
+  assert.ok(now.fire_at > clock.now(), "the next real occurrence, not one days late");
+  assert.ok(now.fire_at - clock.now() <= 7 * DAY);
+  assert.ok(now.fire_at > firstMonday + 27 * DAY);
   // Nothing else is queued behind it.
   assert.equal(db.listTimers(C).length, 1);
   assert.deepEqual(series.schedule(), []);
@@ -382,7 +385,8 @@ test("a series whose armed firing is still pending is left alone however late th
 // ---------- the chain: a firing, then the next one ----------
 
 /** The server's wiring with the model replaced: a real Runtime, router, outbox and deliver. */
-function harness({ reply = "how's the search going? 👀" } = {}) {
+// A firing's reply carries series.SEND_MARK when the model means it to go out (quiet unless new).
+function harness({ reply = "[send] how's the search going? 👀" } = {}) {
   const logs = [];
   const router = new Router({ log: (e) => logs.push(e) });
   const consoleChannel = new ConsoleChannel({ write: () => {} });
@@ -441,8 +445,8 @@ test("a firing goes out, the next one is armed, and what they said back reaches 
   assert.equal(reported.awaiting_since, null, "the wait is settled");
 
   // Next Monday: the frame carries what he said, with the instruction to pick it up rather than
-  // repeat itself.
-  clock.skip(7 * DAY);
+  // repeat itself. (Mid-morning again: a firing hours past its time is skipped, never sent late.)
+  clock.skip(7 * DAY - 3 * HOUR);
   await runtime.sweep();
   const fired = turns.filter(t => t.kind === "event");
   assert.equal(fired.length, 2);
@@ -507,7 +511,7 @@ test("only the series that just asked takes the answer", async () => {
 
 test("a check-in is a message of its own, even mid-conversation", async () => {
   at("2026-10-07T20:00:00Z");
-  const { runtime, fake } = harness({ reply: (call) => call.kind === "event" ? "how's the search going?" : "yeah the game was good" });
+  const { runtime, fake } = harness({ reply: (call) => call.kind === "event" ? "[send] how's the search going?" : "yeah the game was good" });
   series.start({ conversationId: C, what: "the job search", repeat: { kind: "weekly", hour: 9, weekdays: ["monday"], their_time: true } });
   clock.skip(4 * DAY + 18 * HOUR);
   await says(runtime, "did u see the game last night");
@@ -560,7 +564,7 @@ function failedTo(conversationId, address, { key = "OPTED_OUT", error = "they've
   db.markOutboundFailed(row.row.id, { error, errorKey: key });
 }
 
-test("a contact who opted out gets no more turns: their check-ins pause and the master is told once", async () => {
+test("a contact who opted out gets no more turns: their check-ins END (a stop, not a pause) and the master is told once", async () => {
   at("2026-10-22T15:00:00Z");
   const AGU = "+15550001111";
   db.upsertAccount({ conversationId: OTHER, channel: "fake", address: AGU, name: "Agu", isOperator: false });
@@ -577,7 +581,9 @@ test("a contact who opted out gets no more turns: their check-ins pause and the 
   clock.skip(2 * HOUR);
   await runtime.tick();
   assert.equal(turns.length, 0, "no research run for somebody who cannot get it");
-  assert.deepEqual(db.listSeries(OTHER).map(s => s.state), ["paused", "paused"]);
+  // Ended, not paused: texting START later lets texts through, and brings back nothing they stopped.
+  assert.deepEqual(db.listSeries(OTHER, { includeEnded: true }).map(s => s.state), ["ended", "ended"]);
+  assert.ok(db.listSeries(OTHER, { includeEnded: true }).every(s => /opted out/.test(s.ended_why)));
   assert.equal(told.length, 1);
   assert.match(told[0], /can't reach Agu/);
   assert.match(told[0], /opted out/);

@@ -3247,6 +3247,7 @@ export const tools = [
         title: { type: "string", description: TITLE_HINT },
         then_call: { type: "string", description: "Only when they asked for a CALL at this time. Why you are ringing, as the first words of the call, said to them: 'you asked me to call at 7 to get you up', 'you wanted a nudge to leave for the airport'. The call opens with exactly this after their name, and the rest of the call is you as usual. Nothing is texted first; if the call cannot be placed or they do not pick up, one text says so. Never a third party: this always rings the person you are talking to." },
         relative: { type: "boolean", description: "True when they gave a stretch of time from NOW rather than a clock time or a day — \"in 10 minutes\", \"in 2 hours\", \"in half an hour\". Those need no time zone, so they are never held for one. Leave it out for \"at 9\", \"tomorrow\", \"tonight\", \"friday\"." },
+        continues_check: { type: "boolean", description: "Only when a timer is firing and this timer is the NEXT RUN of that same repeating check you keep going yourself (\"scan again in an hour\"). Leave it out for a one-off reminder you set for them from a firing (\"dentist at 2\")." },
         their_time: { type: "boolean", description: "For a one-off `then_call`: false ONLY when you picked the time yourself. Then a time in their night (23:00-08:00) is moved to 8am. When they named it — a 6:30 wake-up — leave this out or pass true: it rings at 6:30." },
         plan_id: { type: "integer", description: "Plan this timer belongs to, if any" },
         task_id: { type: "integer", description: "The job this belongs to, if it belongs to one. Name it: it is how \"never mind, forget the trip\" finds this and stops it, instead of leaving it running after the job is called off." },
@@ -4928,12 +4929,16 @@ export const tools = [
   {
     name: "resume_everything",
     description: "'Resume', 'unpause', 'start again', 'turn it all back on'."
-      + " Lifts the global pause: restores initiative to what it was before the pause, resumes paused check-ins and habits,"
-      + " and lets timers fire again. Does not flood them with missed reminders — expired items are reported, future ones"
-      + " pick up normally. Time-sensitive work that expired during the pause is mentioned, not silently restarted.",
+      + " Lifts the global pause: restores initiative to what it was before the pause, resumes habits, and lets future timers fire."
+      + " Their standing check-ins and scans stay STOPPED unless their words ask for them back: checkins 'all' only when they said"
+      + " to turn everything back on including those, or series_ids for the ones they named. A bare 'start', 'START' or 'i'm back' lets"
+      + " texts through again and nothing more. Reminders that came due during the pause are never fired late — they are reported as missed.",
     input_schema: {
       type: "object",
-      properties: {},
+      properties: {
+        checkins: { type: "string", enum: ["all", "none"], description: "'all' ONLY when their words ask for the check-ins/scans back too ('turn everything back on', 'resume the check-ins'). Default none." },
+        series_ids: { type: "array", items: { type: "integer" }, description: "Just the check-ins they named, from series_list." },
+      },
     },
   },
   {
@@ -6644,7 +6649,7 @@ const S = {
   timer_set: z.object({
     fire_at: z.string().optional(), note: z.string().min(1).max(500),
     plan_id: z.number().int().optional(), task_id: z.number().int().optional(),
-    then_call: z.string().max(300).optional(), their_time: z.boolean().optional(), relative: z.boolean().optional(),
+    then_call: z.string().max(300).optional(), their_time: z.boolean().optional(), relative: z.boolean().optional(), continues_check: z.boolean().optional(),
     repeat: z.object({
       kind: z.string().max(40),
       hour: z.number(),
@@ -7068,7 +7073,7 @@ const S = {
   pause_everything: z.object({
     said: z.string().min(1).max(500),
   }),
-  resume_everything: z.object({}),
+  resume_everything: z.object({ checkins: z.enum(["all", "none"]).optional(), series_ids: z.array(z.number().int()).max(50).optional() }),
   notice_window: z.object({
     time_zone: z.string().max(60).optional(),
     awake_from: z.number().int().min(0).max(23).optional(),
@@ -7663,6 +7668,8 @@ function timerView(t) {
     // Which standing check-in this firing is one of, when it is one. Said here so "cancel that
     // reminder" on a series timer can be answered as what it is: one occurrence, not the whole thing.
     ...(t.series_id ? { series_id: t.series_id, standing: true } : {}),
+    // A link in a chain Reason keeps going itself (set from a firing). Cancelling it stops the chain.
+    ...(t.chained_from != null ? { repeating: true, stop: "cancelling this timer stops the repeating check" } : {}),
   };
 }
 
@@ -9171,6 +9178,17 @@ async function runToolInner(name, rawInput, ctx) {
     return refusal;
   }
 
+  // A repeating check's firing (a series, or a chain Reason keeps going) says what it has to say in
+  // its reply, which code sends only when it carries series.SEND_MARK. A text to the owner from a
+  // tool would go round that, so here it is refused and pointed back at the reply.
+  if (ctx.repeatingCheck && (name === "message_send" || name === "voice_note_send")
+    && String(rawInput?.to ?? "owner").trim().toLowerCase() === "owner") {
+    return {
+      ok: false, status: "repeating_check",
+      error: `This is a repeating check firing: your reply IS the message. Start it with ${series.SEND_MARK} if there is something new for them; otherwise reply exactly NO_REPLY.`,
+    };
+  }
+
   // A call's brief is never refused for being long (call 66/67, 2026-11-01: a 700-character goal
   // failed "at most 600", the turn retried, and the retry raced a second turn into a second call).
   // The overflow moves into facts, where the call still has every word of it.
@@ -9527,11 +9545,32 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // later by looking rather than by remembering. See src/letgo.js.
       const onTask = taskFromInput(c, input, ctx);
       if (onTask.error) return onTask;
+      // Set from a timer's own firing: the next link in a repeating check Reason keeps going itself
+      // ("scan again in an hour", every hour). Counted toward the same cap a series is, so a chain is
+      // not a way round it (2026-11, the model "found a way round the cap" this way). One link per
+      // firing: a retry of the same firing replaces the link it left rather than starting a second chain.
+      // Only the NEXT RUN of the same check is a link — flagged `continues_check`, or carrying the firing
+      // timer's own note. Anything else set from a firing (a one-off "dentist at 2" a morning brief
+      // sets for them) is an ordinary reminder: not capped, not gated, not replaced (review, 11-06).
+      const firingId = Number.isInteger(Number(ctx.fromTimer)) && ctx.fromTimer != null && !callGoal ? Number(ctx.fromTimer) : null;
+      const sameNote = (x, y) => String(x ?? "").trim().toLowerCase() === String(y ?? "").trim().toLowerCase();
+      const chainedFrom = firingId != null && (input.continues_check === true || sameNote(db.getTimer(c, firingId)?.note, input.note)) ? firingId : null;
+      let replaced = null;
+      if (chainedFrom != null) {
+        const earlier = db.pendingChainedTimers(c).find(x => x.chained_from === chainedFrom);
+        const capped = series.overCap(c, { exceptTimer: chainedFrom });
+        if (capped && !earlier) return capped;
+        if (earlier) { db.cancelTimer(c, earlier.id); replaced = earlier.id; }
+      }
       const label = normTitle(input.title, { name: me.name });
-      const made = db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null, taskId: onTask.id, callGoal, label });
+      const made = db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null, taskId: onTask.id, callGoal, label, chainedFrom });
       if (!label) queueTitle("timer", c, made.id, input.note, { name: me.name });
       return {
         ok: true, timer: timerView(made),
+        ...(chainedFrom != null ? {
+          repeating: true, ...(replaced ? { replaced_timer: replaced } : {}),
+          note: `Set from a firing, so this is a repeating check you keep going yourself. It counts toward their limit on repeating things, its firings are quiet unless something is new, and cancelling it stops it. Say nothing about setting it.`,
+        } : {}),
         ...(callGoal ? { say_back: `Say back in ONE line that you'll ring them at ${stamp(fireAt)}. Nothing about how it works.` } : {}),
         ...(moved ? { moved, note: `That hour was in their night and you picked it, so it was moved to ${moved.to}. Say the time you will actually ring.` } : {}),
       };
@@ -9543,6 +9582,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // One firing of a standing check-in, skipped. The series is untouched and comes round again,
       // and saying so here is what stops "cancel the monday one" being reported as stopping the lot.
       const standing = r.timer.series_id ? db.seriesById(r.timer.series_id) : null;
+      if (r.timer.chained_from != null) {
+        return { ok: true, timer: timerView(r.timer), note: "That was the next run of a repeating check you were keeping going yourself, so it has stopped for good. Confirm in one line." };
+      }
       return {
         ok: true, timer: timerView(r.timer),
         ...(standing ? {
@@ -9553,9 +9595,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
     case "series_list": {
       const rows = db.listSeries(c, { includeEnded: !!input.include_ended }).map(series.view);
+      // The repeating checks set from a firing are running too, and "stop the hourly one" has to be
+      // able to find them here, where it looks first.
+      const chains = db.pendingChainedTimers(c).map(series.chainView);
       return {
         series: rows,
-        ...(rows.length > 1 ? { note: "More than one is running, so a bare \"stop\" does not say which. Ask in one short line." } : {}),
+        ...(chains.length ? { repeating_timers: chains } : {}),
+        ...(rows.length + chains.length > 1 ? { note: "More than one is running, so a bare \"stop\" does not say which. Ask in one short line; when they name one (\"the hourly one\"), stop only that one: series_end for a series, timer_cancel for a repeating timer." } : {}),
       };
     }
     case "series_pause": {
@@ -13508,7 +13554,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return pause.pauseAll({ conversationId: c, said: input.said, now: clock.now() });
     }
     case "resume_everything": {
-      return pause.resumeAll({ conversationId: c, now: clock.now() });
+      return pause.resumeAll({ conversationId: c, now: clock.now(), checkins: input.checkins === "all" ? "all" : (input.series_ids ?? null) });
     }
     case "notice_window": {
       if (!input.time_zone && input.awake_from === undefined && input.awake_until === undefined) {

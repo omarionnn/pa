@@ -213,7 +213,15 @@ export const config = {
   // late with nobody knowing why.
   timerMaxAttempts: Number(process.env.REASON_TIMER_MAX_ATTEMPTS || 3),
   timerRetryBackoffMs: Number(process.env.REASON_TIMER_RETRY_BACKOFF_MS || 60_000),
-  // How many standing check-ins one person can have running at once. Ten, because the failure this
+  // How late a timer may still fire. Past this it is skipped rather than sent: a reminder, a scan or
+  // a check-in held by a pause, a lapse or a stopped process and then fired 17-26 hours after its
+  // time (seen live, 2026-11) tells them about a moment that has gone. A person's own reminder that
+  // is skipped gets one line saying it was missed; a check or a chain Reason set is dropped quietly.
+  // A timer set to fire at once (code's own "do this now" events) is exempt: it was always "now".
+  timerLateMs: ((m) => (Number.isFinite(m) && m > 0 ? m : 120))(Number(process.env.REASON_TIMER_LATE_MIN)) * 60_000,
+  // How many standing check-ins one person can have running at once — counting the repeating checks
+  // Reason keeps going itself by setting a timer from a timer (db.countRecurring), so a chain is not
+  // a way round it. Ten, because the failure this
   // guards against is not somebody wanting eleven: it is a model that sets a new series every time a
   // subject comes up, and a phone that then buzzes at nine every morning about four things nobody
   // asked about twice. Counted in SQL on every attempt (src/series.js), never held in memory, so a

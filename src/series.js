@@ -21,10 +21,15 @@
 //                                    and the scheduling loses nothing, and two overlapping sweeps
 //                                    cannot both make the same occurrence, because `next_at` moves
 //                                    when a timer is MADE.
-//   ONE LATE, NEVER A BACKLOG.       Three Mondays passed with the laptop shut: they get one
-//                                    check-in, for the newest, and the two older ones are gone. A
-//                                    person coming back to their phone wants to be asked how the
-//                                    search is going, not told three times.
+//   NEVER LATE, NEVER A BACKLOG.     Three Mondays passed with the process stopped: none of them
+//                                    is sent late, and the next one is the next Monday. The newest
+//                                    missed one still goes if it is inside config.timerLateMs (a
+//                                    restart at 9:40 still asks at 9:40); past that it is gone. A
+//                                    check-in 26 hours late is about a moment that has passed.
+//   QUIET WHEN NOTHING IS NEW.       A firing's reply goes out only when it starts with SEND_MARK
+//                                    (see quietRule). Without it — "no new setup this hour" — code
+//                                    holds it back. The model decides what is new; code decides
+//                                    that only a claimed-new result costs them a text.
 //
 // What the check-in SAYS is not here. It is written by the model at fire time, with the series'
 // subject and what they said last time in front of it (`frameFor`), exactly like the day-of and
@@ -32,6 +37,7 @@
 import * as db from "./db.js";
 import * as notice from "./notice.js";
 import { clock, config, stamp } from "./config.js";
+import { SEND_MARK as SEND_MARK_TOKEN, takeSendMark, withoutSendMark } from "./plain.js";
 
 export const KINDS = ["daily", "weekdays", "weekly", "every_n_days", "monthly"];
 
@@ -54,6 +60,29 @@ export const QUIET_END = 8;
  * worse than an old one, because the next check-in would reference something they never said.
  */
 export const REPORT_WINDOW_MS = 24 * 3600_000;
+
+/**
+ * What a repeating check's reply has to start with to be sent at all.
+ *
+ * A scan that runs every hour and texts "no new setup this hour" six times a day is the failure
+ * (2026-11, 10-24 texts a day for one person). Asking the model to reply NO_REPLY was already in
+ * the frame and was not enough, so the default is flipped: a firing of a series or of a chain
+ * Reason set itself is SILENT unless the model positively claims, with this mark, that the message
+ * is worth a text. It is a token, not a reading of what the reply means: the model decides what is
+ * new, code only refuses to send what was not claimed. The mark is taken off before anything is
+ * sent (src/runtime.js) and off any outgoing text that carries it (src/deliver.js).
+ */
+export const SEND_MARK = SEND_MARK_TOKEN;
+
+export { takeSendMark, withoutSendMark };
+
+/** The rule every repeating firing is handed, in the model's words. One place, so both say the same. */
+export function quietRule({ checkIn = false } = {}) {
+  return ` QUIET UNLESS NEW: your reply is texted ONLY if it starts with ${SEND_MARK}. Start with ${SEND_MARK} when`
+    + (checkIn ? ` this is the reminder or check-in question they asked you to send (that ALWAYS goes, even when it is the same as last time), or when` : "")
+    + ` you found something genuinely NEW since the last one you sent, or this is a summary they explicitly asked to get every time.`
+    + ` Otherwise: nothing new, same as last time, "no setup this hour", "still nothing" → reply exactly NO_REPLY. Code drops any reply without ${SEND_MARK}, so a "nothing new" text never reaches them.`;
+}
 
 const DAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 const SHORT_TO_INDEX = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
@@ -349,6 +378,27 @@ export function tzFor(conversationId) {
   try { return notice.settingsFor(conversationId).timeZone || config.tz; } catch { return config.tz; }
 }
 
+// ---------- the cap ----------
+
+/**
+ * The refusal when this person already has as many repeating things as they may, or null.
+ *
+ * Series and self-set chains are counted together (db.countRecurring): a model that cannot start
+ * an eleventh series must not be able to start one by setting a timer from a timer instead.
+ * `exceptTimer` is the firing whose turn is asking — the link a chain is replacing, not a new one.
+ */
+export function overCap(conversationId, { exceptTimer = null } = {}) {
+  const cap = Number(config.maxSeries);
+  if (!(cap > 0)) return null;
+  const running = db.countRecurring(conversationId, { exceptTimer });
+  if (running < cap) return null;
+  return {
+    ok: false, status: "recurring_cap",
+    error: `They already have ${running} repeating things running (standing check-ins plus timers you keep setting from a timer), which is the limit (REASON_MAX_SERIES=${cap}).`
+      + ` Do not set another, and do not get round it another way: show them what is running (series_list) and ask which one to stop.`,
+  };
+}
+
 // ---------- making one ----------
 
 /** The note the timer carries: the series' own words, in Reason's voice, like any other reminder. */
@@ -373,17 +423,8 @@ export function start({ conversationId, what, repeat, now = clock.now(), tz = nu
   const parsed = normalizeRule(ringing && repeat && repeat.their_time === undefined ? { ...repeat, their_time: true } : repeat);
   if (!parsed.ok) return parsed;
 
-  const cap = Number(config.maxSeries);
-  if (cap > 0) {
-    const running = db.countActiveSeries(conversationId);
-    if (running >= cap) {
-      return {
-        ok: false,
-        error: `They already have ${running} check-ins running, which is the limit (REASON_MAX_SERIES=${cap}).`
-          + ` Do not set another quietly: show them what is running (series_list) and ask which one to stop.`,
-      };
-    }
-  }
+  const capped = overCap(conversationId);
+  if (capped) return capped;
 
   const zone = tz || tzFor(conversationId);
   const rule = { ...parsed.rule };
@@ -423,6 +464,14 @@ export function scheduleOne(s, { now = clock.now() } = {}) {
       const after = nextOccurrence(rule, at, zone);
       if (!after || after > now) break;
       at = after;
+      collapsed++;
+    }
+    // The newest missed one too, once it is past the late window: it is not sent hours late, and
+    // the next one is the next real occurrence.
+    if (now - at > config.timerLateMs) {
+      const upcoming = nextOccurrence(rule, now, zone);
+      if (!upcoming) return null;
+      at = upcoming;
       collapsed++;
     }
   }
@@ -509,6 +558,26 @@ export function frameFor(s) {
   }
   parts.push(` One short message, this one thing, nothing else attached. If it genuinely is not worth sending — they are mid-conversation about something else entirely and it would land wrong — reply NO_REPLY; the series carries on and comes round again.`);
   return parts.join("");
+}
+
+// ---------- chains: repeating checks Reason keeps going itself ----------
+
+/**
+ * Every pending link of every chain for one person, called off. A stop, a pause and an opt-out all
+ * end chains outright: there is nothing to resume — a chain is only ever its next timer — and a scan
+ * that someone stopped must not come back when they text START or "resume". Returns the ids.
+ */
+export function stopChains(conversationId) {
+  const stopped = [];
+  for (const t of db.pendingChainedTimers(conversationId)) {
+    if (db.cancelTimer(conversationId, t.id).ok) stopped.push(t.id);
+  }
+  return stopped;
+}
+
+/** One pending link as series_list shows it: something that repeats, with how to stop it. */
+export function chainView(t) {
+  return { timer_id: t.id, what: t.label || t.note, next: stamp(t.fire_at), repeats: "you set it again from each firing", stop_with: `timer_cancel ${t.id}` };
 }
 
 // ---------- pause, resume, end ----------
