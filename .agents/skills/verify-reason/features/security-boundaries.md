@@ -32,10 +32,13 @@ audit leads): #345, #350, #352, #353. Their neighbours: the private-network guar
   address sits on the state row (`oauth_states.authorize_url`) and is only handed out with a 302 to a
   browser whose `reason_page` session is the asker's. Any other browser gets "Text me the code"
   (`connectStartRequest` `:91`): a GET never texts, the POST texts a six-digit code to the thread that
-  asked for the link, the right code sets the session cookie (`Path=/`) and 303s on to the provider.
+  asked for the link, POSTs must be same-origin (`sameOrigin`, else `403`, so a page elsewhere cannot sign a victim's browser in as the asker), the right code sets the session cookie (`Path=/`) and 303s on to the provider.
   Every callback route in `src/http.js` calls `refuseForeignBrowser` (`:58`) first: a browser not
   signed in as the state's conversation → `400`, the state spent, no token exchange, nothing texted.
   A provider `error=` still answers as before. Old links (straight to the provider) are refused.
+  The other gates that set the shared session at `Path=/` refuse a cross-site POST too (`403`): the
+  walking-directions gate (`src/pages/directions.js`) and the private-page gate on the files domain
+  (`src/http.js` `pageRequest`), so no page elsewhere can sign a victim's browser in as the asker.
 - **No payment details in anything a call is handed (lead 31).** `src/calls/payments.js`
   `checkCallForPaymentDetails` scans goal, facts, `ask`, `approved_terms` and every `requirements`
   key and value; `checkBriefForPaymentDetails` scans the final brief in `call_place` too (a redial
@@ -91,11 +94,11 @@ lines carry no `export`, and without it the drive writes the worktree's own `dat
 `node bin/oauth-connect-drive.mjs github $S/gh.url &` · `bin/fake-sendblue.mjs 8882 $S/sb.jsonl &` ·
 `REASON_VERIFY_FAKE_SENDBLUE=http://127.0.0.1:8882 GITHUB_BASE=$GH GITHUB_API_BASE=$GH
 GITHUB_OAUTH_CLIENT_ID=cage GITHUB_OAUTH_CLIENT_SECRET=cage REASON_PUBLIC_URL= caged.sh start` ·
-`node bin/oauth-connect-drive.mjs drive http://127.0.0.1:$P $S/sb.jsonl`. 10 ok on `sec/lead1-oauth-binding`
+`node bin/oauth-connect-drive.mjs drive http://127.0.0.1:$P $S/sb.jsonl`. 11 ok on `sec/lead1-oauth-binding`
 2026-11-07 (port 8881): no-cookie start `401` + callback `400`, 0 tokens; someone else's session the
-same; Text me the code → 1 text to the asker's number; code → `303` + `Set-Cookie reason_page`;
+same; Text me the code → 1 text to the asker's number; the right code posted cross-site (`Origin` elsewhere) → `403`, no cookie; code from the page → `303` + `Set-Cookie reason_page`;
 callback `200`, 1 token; next link same browser → `302` straight to GitHub. Offline:
-`test/oauth-binding.test.js` (10; 1 pass / 9 fail on main before the fix).
+`test/oauth-binding.test.js` (11; 1 pass / 9 fail of the first 10 on main before the fix).
 
 On the cage (2026-11-07): `curl -s http://127.0.0.1:$P/health` → `owner: null`, `holding: []`, every
 monitoring key present; `POST /calls/elevenlabs/inbound` → `404` (the route is gone since #359).

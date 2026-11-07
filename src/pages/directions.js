@@ -21,8 +21,8 @@ import { walkRoute } from "../walk.js";
 // A real trip needs the database, the code gate and the pages' look; the sample and the static staging
 // build need none of it, so it is loaded on the first real trip's request.
 let REAL = null;
-const real = () => (REAL ??= Promise.all([import("../db.js"), import("../trips.js"), import("./access.js"), import("./render.js"), import("./madedata.js")])
-  .then(([db, trips, access, render, made]) => ({ db, ...trips, ...access, renderCodeGate: render.renderCodeGate, privateHead: made.privateHead, PRIVATE_OG_VERSION: made.PRIVATE_OG_VERSION })));
+const real = () => (REAL ??= Promise.all([import("../db.js"), import("../trips.js"), import("./access.js"), import("./render.js"), import("./madedata.js"), import("./websignin.js")])
+  .then(([db, trips, access, render, made, websignin]) => ({ db, ...trips, ...access, renderCodeGate: render.renderCodeGate, privateHead: made.privateHead, PRIVATE_OG_VERSION: made.PRIVATE_OG_VERSION, sameOrigin: websignin.sameOrigin })));
 
 const CSS = readFileSync(new URL("./directions.css", import.meta.url), "utf8");
 const SCRIPT = readFileSync(new URL("./directionsclient.js", import.meta.url), "utf8");
@@ -338,6 +338,10 @@ async function tripRequest({ id, reroutePath, endPath, method, req, config, fetc
   }
 
   if (method === "POST") {
+    // Only from the gate itself. The cookie it sets is the site-wide `reason_page` session, which a
+    // connect callback also reads (src/connectgate.js): a page elsewhere posting the owner's code from
+    // someone else's browser would sign that browser in as the owner (login CSRF).
+    if (!R.sameOrigin(headers)) return tripGate(R, access, row, { status: 403, config });
     let raw = "";
     try { raw = await readSmallBody(req, 2048); } catch { return tripGate(R, access, row, { status: 400, config }); }
     const form = new URLSearchParams(raw);

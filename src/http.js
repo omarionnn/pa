@@ -96,7 +96,7 @@ import { isContactPath, vcard, lineNumber, liveLineNumber } from "./contact.js";
 import { inviteRequest, inviteCardName } from "./invites.js";
 import { inviteCard } from "./invitecard.js";
 import { eventPageRequest } from "./pages/event.js";
-import { webRequest, webFont, webSignedIn, SECURITY_HEADERS as WEB_SECURITY_HEADERS } from "./pages/websignin.js";
+import { webRequest, webFont, webSignedIn, sameOrigin, SECURITY_HEADERS as WEB_SECURITY_HEADERS } from "./pages/websignin.js";
 // Web chats' titles are written as their first reply lands (src/webchats.js installs that listener on import).
 import "./webchats.js";
 import { webOn, joinNumber, siteOrigin } from "./web.js";
@@ -1637,6 +1637,10 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
 
   // ---- the code for a private page ----
   if (method === "POST") {
+    // Only from the gate itself. On the files domain the session is set at Path=/ under the shared
+    // cookie domain, where a connect callback reads it too (src/connectgate.js): a page elsewhere
+    // posting the owner's code from someone else's browser must not sign that browser in.
+    if (!sameOrigin(headers)) return gateFor(access, page, { real, status: 403 });
     let code = "";
     let send = false;
     const raw = (await readBody()) ?? "";

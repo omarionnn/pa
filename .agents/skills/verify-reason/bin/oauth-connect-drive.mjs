@@ -40,9 +40,9 @@ db.upsertThread({ conversationId: OTHER, channel: "sendblue", address: "+1212555
 let failed = 0;
 const step = (ok, what) => { console.log(`${ok ? "ok  " : "FAIL"} ${what}`); if (!ok) failed++; };
 
-function hit(pathAndQuery, { method = "GET", cookie = "", body = null } = {}) {
+function hit(pathAndQuery, { method = "GET", cookie = "", body = null, extra = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const headers = { ...(cookie ? { cookie } : {}), ...(body != null ? { "content-type": "application/x-www-form-urlencoded" } : {}) };
+    const headers = { ...extra, ...(cookie ? { cookie } : {}), ...(body != null ? { "content-type": "application/x-www-form-urlencoded" } : {}) };
     const r = request(`${base}${pathAndQuery}`, { method, headers }, (res) => {
       let text = "";
       res.on("data", (c) => { text += c; });
@@ -94,7 +94,10 @@ const sent = texts().slice(before);
 const body = JSON.stringify(sent.at(-1)?.body ?? "");
 const code = /\b(\d{6})\b/.exec(body)?.[1];
 step(res.status === 200 && sent.length === 1 && body.includes("+12125550171") && !!code, `Text me the code: ${res.status}, ${sent.length} text to the asker's number, code ${code ? "found" : "missing"}`);
-res = await hit(pathOf(link), { method: "POST", body: `code=${code}` });
+// The same code posted from a page elsewhere (login CSRF from a victim's browser): refused, no cookie.
+res = await hit(pathOf(link), { method: "POST", body: `code=${code}`, extra: { origin: "https://evil.example", "sec-fetch-site": "cross-site" } });
+step(res.status === 403 && ![].concat(res.headers["set-cookie"] ?? []).some(c => c.startsWith("reason_page=")), `cross-site POST of the right code: ${res.status}, no session cookie`);
+res = await hit(pathOf(link), { method: "POST", body: `code=${code}`, extra: { origin: base, "sec-fetch-site": "same-origin" } });
 const cookie = [].concat(res.headers["set-cookie"] ?? []).map(c => /^reason_page=([^;]+)/.exec(c)?.[1]).find(Boolean);
 step(res.status === 303 && /login\/oauth\/authorize/.test(res.headers.location ?? "") && !!cookie, `code accepted: ${res.status} → ${String(res.headers.location ?? "").split("?")[0]}, Set-Cookie ${cookie ? "reason_page" : "none"}`);
 res = await hit(`/github/callback?code=good-code&state=${stateOf(link)}`, { cookie: `reason_page=${cookie}` });
