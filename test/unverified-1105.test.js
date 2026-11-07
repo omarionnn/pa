@@ -97,8 +97,8 @@ for (const backend of ["cli", "api"]) {
   });
 
   test(`[${backend}] a balance off the screenshot they sent is theirs — no tag, no rewrite`, async () => {
-    db.db.prepare(`INSERT INTO media_items (conversation_id, channel, external_id, ordinal, kind, coverage, description, at)
-      VALUES (?, 'test', 'img-1', 0, 'image', 'looked', ?, ?)`).run(C, "A Chase app screenshot. Words in it, verbatim:\nTotal Checking ...4417\nAvailable balance\n$2,341.17", clock.now() - 3 * 60_000);
+    db.db.prepare(`INSERT INTO media_items (conversation_id, channel, external_id, ordinal, kind, coverage, description, description_from, at)
+      VALUES (?, 'test', 'img-1', 0, 'image', 'looked', ?, 'photo', ?)`).run(C, "A Chase app screenshot. Words in it, verbatim:\nTotal Checking ...4417\nAvailable balance\n$2,341.17", clock.now() - 3 * 60_000);
     const reply = "you've got $2,341.17 available, so the $1,850 rent clears with about $491 to spare.";
     const out = await exchange(backend, { text: "can i cover rent on the 1st? rent is 1850", drafts: [reply] });
     assert.equal(out.sent, reply);
@@ -304,4 +304,23 @@ test("review 11-07: a plain number they did use as money still counts — budget
     offers.beginTurn(C, said);
     assert.equal(offers.guardReply(C, reply).recompose, null, `${said} -> ${reply}`);
   }
+});
+
+// Review 11-07 (1): a photo whose read failed is remembered by Reason's own reply. That note is not
+// theirs: a price the reply invented must not vouch for itself, this turn or for the next 45 days.
+test("review 11-07: a photo note kept from Reason's own reply is not their words; one the photo read wrote is", async () => {
+  const { recordLooked } = await import("../src/looked.js");
+  const photo = (ext) => Number(db.db.prepare(`INSERT INTO media_items (conversation_id, channel, external_id, ordinal, kind, coverage, at)
+    VALUES (?, 'test', ?, 0, 'image', 'looked', ?)`).run(C, ext, clock.now() - 60_000).lastInsertRowid);
+  const failed = photo("img-failed");
+  await recordLooked({ viewedMediaIds: [failed], reply: "that jacket's $212.40 at nordstrom", captured: [{ mediaId: failed, ok: false, error: "x" }] });
+  assert.match(db.db.prepare("SELECT description FROM media_items WHERE id = ?").get(failed).description, /\$212\.40/, "the reply is still kept as the note");
+  offers.beginTurn(C, "how much was it again?");
+  const g = offers.guardReply(C, "it was $212.40", { turnReply: true });
+  assert.deepEqual(g.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$212.40"], "Reason's own words vouch for nothing");
+  offers.takeRecompose(C);
+  const read = photo("img-read");
+  await recordLooked({ viewedMediaIds: [read], reply: "nice", captured: [{ mediaId: read, ok: true, description: "A receipt.", text: "Total $58.13" }] });
+  offers.beginTurn(C, "what was the total?");
+  assert.equal(offers.guardReply(C, "it was $58.13", { turnReply: true }).recompose, null, "the photo read's words are theirs");
 });

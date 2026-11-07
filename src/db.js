@@ -1673,6 +1673,11 @@ addColumnIfMissing("media_items", "transcript_dropped_at", "INTEGER");
 // SEEN — "two bottles of supplements: whey protein and creatine" — and is what a later turn reads
 // when it needs to know what a picture contained. Written by runtime after the model responds.
 addColumnIfMissing("media_items", "description", "TEXT NOT NULL DEFAULT ''");
+// Where that note came from: 'photo' when the quiet pass read the photo itself (src/looked.js), 'reply'
+// when that pass failed and Reason's own reply was kept instead. Only a 'photo' note is the person's
+// own words for the figures check (theirOwnWords): a reply-based note is Reason's words, and a price
+// it invented would vouch for itself for weeks (review 11-07). '' is a row from before this column.
+addColumnIfMissing("media_items", "description_from", "TEXT NOT NULL DEFAULT ''");
 // The outcome sheet (2026-10-06): everything one task is carrying — the budget, the dates, the
 // people, the options already turned down and why. On the task rather than in the model's context,
 // because the context is trimmed to the last sixty messages and a task outlives that. A task from
@@ -4535,8 +4540,8 @@ export function mediaOfMessage(conversationId, baseHandle) {
 }
 
 /** Store what the model described in a photo, after the turn. */
-export function describeMedia(id, description) {
-  db.prepare("UPDATE media_items SET description = ? WHERE id = ?").run(String(description ?? ""), id);
+export function describeMedia(id, description, { from = "" } = {}) {
+  db.prepare("UPDATE media_items SET description = ?, description_from = ? WHERE id = ?").run(String(description ?? ""), String(from ?? ""), id);
 }
 
 /** Recently-viewed photos with descriptions, for turn context. */
@@ -10947,8 +10952,10 @@ export function recentEvents(conversationId, { limit = 20 } = {}) {
 export function theirOwnWords(conversationId, { since = 0, limit = 400 } = {}) {
   const said = db.prepare(`SELECT content AS text, at, 'them' AS kind FROM event_log
     WHERE conversation_id = ? AND role = 'user' AND at >= ? ORDER BY at DESC LIMIT ?`).all(conversationId, since, limit);
-  const sent = db.prepare(`SELECT TRIM(COALESCE(description, '') || ' ' || COALESCE(transcript, '')) AS text, at, 'sent' AS kind FROM media_items
-    WHERE conversation_id = ? AND at >= ? AND (COALESCE(description, '') != '' OR COALESCE(transcript, '') != '')
+  // A photo's note counts only when the photo read wrote it (description_from = 'photo'): the fallback
+  // note is Reason's own reply, never theirs (review 11-07).
+  const sent = db.prepare(`SELECT TRIM(CASE WHEN description_from = 'photo' THEN COALESCE(description, '') ELSE '' END || ' ' || COALESCE(transcript, '')) AS text, at, 'sent' AS kind FROM media_items
+    WHERE conversation_id = ? AND at >= ? AND ((description_from = 'photo' AND COALESCE(description, '') != '') OR COALESCE(transcript, '') != '')
     ORDER BY id DESC LIMIT ?`).all(conversationId, since, limit);
   return [...said, ...sent];
 }

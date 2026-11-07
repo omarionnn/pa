@@ -134,7 +134,7 @@ export async function recordLooked({ viewedMediaIds = [], reply = "", captured =
     const r = byId.get(mid);
     const note = r?.ok ? noteFrom(r) : noteFromReply(reply);
     if (!note) continue;
-    describeMedia(mid, note);
+    describeMedia(mid, note, { from: r?.ok ? "photo" : "reply" });
     stored[mid] = note;
   }
   return stored;
