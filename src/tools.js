@@ -12379,7 +12379,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           : "";
         return {
           ...gate, ...(gate.blocked !== "already_spent" ? { use_target: yesTarget } : {}),
-          error: `${gate.error} Nothing was saved. Read it back to them plainly, in their terms, as one short question: what you would stop asking them about,`
+          error: `${gate.blocked === "needs_confirmation" ? `A standing permission skips later yeses, so saving one needs ${me.name}'s yes first.` : gate.error} Nothing was saved. Read it back to them plainly, in their terms, as one short question: what you would stop asking them about,`
             + ` for whom or what, and any amount, end date or limits on it.${named} Never give them words to type; ask for a plain yes or no.`
             + ` Then confirm_request with action permission_grant and target set to use_target exactly, and once confirm_record says granted,`
             + ` call permission_grant again with the same text, scope and caps and that confirmation_id.`,
