@@ -93,9 +93,9 @@ beforeEach(() => {
 });
 
 /** One request to the real server; node:http so nothing follows a redirect for us. */
-function hit(pathAndQuery, { method = "GET", cookie = "", body = null } = {}) {
+function hit(pathAndQuery, { method = "GET", cookie = "", body = null, extra = {} } = {}) {
   return new Promise((resolve, reject) => {
-    const headers = { ...(cookie ? { cookie } : {}), ...(body != null ? { "content-type": "application/x-www-form-urlencoded" } : {}) };
+    const headers = { ...extra, ...(cookie ? { cookie } : {}), ...(body != null ? { "content-type": "application/x-www-form-urlencoded" } : {}) };
     const r = request(`${base}${pathAndQuery}`, { method, headers }, (res) => {
       let text = "";
       res.on("data", (c) => { text += c; });
@@ -193,6 +193,33 @@ test("github: a new browser gets the code gate; the code goes to the asker's thr
   const back = await hit(`${github.REDIRECT_PATH}?code=good-code&state=${encodeURIComponent(stateOf(link.url))}`, { cookie: `reason_page=${token}` });
   assert.equal(back.status, 200, back.text.slice(0, 300));
   assert.equal(db.listOauthTokens(ASKER, "github").length, 1);
+});
+
+test("the gate's form only works from the gate itself: a page elsewhere cannot post the asker's code from a victim's browser", async () => {
+  // The asker asks for a link, has the code texted to themselves, and plants an auto-submitting
+  // form on their own site. The victim's browser posting it must not be signed in as the asker.
+  const link = github.authorizeUrl(ASKER);
+  const path = pathOf(link.url);
+  await hit(path, { method: "POST", body: "send=1" });
+  const code = /\b(\d{6})\b/.exec(texted[0].text)[1];
+  texted.length = 0;
+  for (const extra of [
+    { origin: "https://evil.example", "sec-fetch-site": "cross-site" },
+    { origin: "https://evil.example" },
+    { "sec-fetch-site": "cross-site" },
+  ]) {
+    const r = await hit(path, { method: "POST", body: `code=${code}`, extra });
+    assert.equal(r.status, 403, JSON.stringify(extra));
+    assert.equal(r.headers.location, undefined);
+    assert.equal(sessionCookie(r), null, "no session handed to a cross-site post");
+    const s = await hit(path, { method: "POST", body: "send=1", extra });
+    assert.equal(s.status, 403);
+  }
+  assert.equal(texted.length, 0, "a cross-site post texts nothing either");
+  // The same code from the gate's own page still opens it.
+  const ok = await hit(path, { method: "POST", body: `code=${code}`, extra: { origin: base, "sec-fetch-site": "same-origin" } });
+  assert.equal(ok.status, 303, ok.text.slice(0, 200));
+  assert.ok(sessionCookie(ok));
 });
 
 test("a browser signed in as someone else is not let through, and gets the gate rather than the provider", async () => {
