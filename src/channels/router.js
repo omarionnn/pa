@@ -378,10 +378,14 @@ export class Router {
     if (!cap.ok) {
       this.log({ inbound: inbound.externalId, capped: conversationId, used: cap.used, limit: cap.limit });
       // Durable: this is the one message that explains Reason's silence for the rest of the day, so
-      // losing it means looking broken rather than capped.
+      // losing it means looking broken rather than capped. And said ONCE per day per limit: keyed
+      // to the conversation, the day and the limit, so every further text past the cap finds the
+      // same outbox row and nothing goes out again — otherwise N texts in are N paid lines out on
+      // the shared line. A new day, or a raised limit used up, is a new key and is told.
       await this.send({
         channel: inbound.channel, to: address, chatId: inbound.chatId ?? null,
         conversationId, toOwner: true,
+        idempotencyKey: `capped:${conversationId}:${accounts.today()}:${cap.limit}`,
         text: `that's me done for today — i've hit my limit of ${cap.limit} messages. i'll pick this back up tomorrow.`,
       }).catch(() => {});
       return { ok: true, conversationId, capped: true, replied: false };
