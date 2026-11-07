@@ -10,6 +10,7 @@ Source: `src/trust.js` (the guard, the caps, `amountsIn`), `src/tools.js` (`conf
 `confirm_record`, `confirm_pending`, `permission_grant`), `src/receipts.js`, `src/db.js`
 (`confirmations`, `action_ledger`, `permissions`).
 Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.js`,
+`test/permission-readback.test.js`,
 `test/trustline-loop.test.js`, `test/receipts.test.js`, `test/undo-window.test.js`,
 `test/flow-gate.test.js` and `test/flow-trust.test.js` (real model reading real sentences).
 
@@ -54,6 +55,18 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
 - **Standing permissions.** `permission_grant` saves "you can reorder groceries without asking" with
   the owner's sentence verbatim and a narrow `scope` the gate actually checks. Money needs
   `max_amount`; a permission with no amount cannot authorise a charge.
+- **Saving a standing permission is itself asked about (#356, 2026-11-07).** `permission_grant` is in
+  `CONDITIONALLY_GATED`, and its handler asks the gate *last*, after every refusal of its own (not
+  their words, never standing, no amount). The first call saves nothing: it answers
+  `blocked: "needs_confirmation"` with `use_target`, built by `permissionYesTarget` from the scope,
+  e.g. `standing permission: texts for +14155559876 (Kofi)` (action, who it is on record as, amount,
+  end date, caps). Reason reads that back as one plain question naming the person, never the number,
+  then `confirm_request` with `action: "permission_grant"` and `target` = `use_target` exactly (a
+  target is required for this action), `confirm_record` on their reply, and `permission_grant` again
+  with the same text/scope/caps plus `confirmation_id`. Only then is the row saved, and the yes is
+  spent: a second save on it is `already_spent`; a different person or "anyone" on it is
+  `wrong_target`; a no saves nothing. Undo class `easy` (`permission_revoke`). Other tests grant
+  through `test/fixture-grant.js` (`grantWithYes`).
 - **Caps.** Per-purchase and monthly (`checkCaps` in `src/trust.js`), with what is already
   committed summed from the `spend` table (`db.spentThisMonth`) so a restart does not reset them.
   With no caps set at all, anything that would spend answers `blocked: "needs_caps"` and asks once
@@ -143,6 +156,37 @@ not one.
 `refused_at` set, `granted_at` null. `"ok but make it 9 instead"` → `changed`, **both**
 `granted_at` and `refused_at` null — the 8:00 he just rejected is not authorised, and he did not
 say no either. Every state visible in `bin/peek.sh confirms`, not just in the tool result.
+
+**Saving a standing permission, no model.** Same cage env, `dm:owner`. `ctx.judge` here reads both
+their original sentence (inside `permission_grant`) and their yes, so one stub answering `yes` covers
+both:
+
+```bash
+node --env-file-if-exists=.env -e '
+  const { runTool } = await import("./src/tools.js");
+  const db = await import("./src/db.js");
+  const C = "dm:owner", KOFI = "+14155559876";
+  db.addImportantPerson(C, { who: "Kofi", contact: KOFI });
+  const owner = (t) => ({ role: "user", content: `[Sat, Nov 7, 2026, 3:00 PM] Omari: ${t}` });
+  const messages = [owner("you can text kofi without asking me")];
+  const ctx = { conversationId: C, messages, judge: async () => ({ verdict: "yes" }) };
+  const G = { text: "you can text kofi without asking me", scope: { action: "texts", target: KOFI } };
+  const first = await runTool("permission_grant", G, ctx);          // blocked: needs_confirmation, nothing saved
+  const req = await runTool("confirm_request", { action: "permission_grant", stakes: "both",
+    summary: "save that: I can text Kofi without asking?", target: first.use_target }, ctx);
+  messages.push(owner("yes, save that"));
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, ctx);
+  const out = await runTool("permission_grant", { ...G, confirmation_id: req.confirmation_id }, ctx);
+  const again = await runTool("permission_grant", { ...G, confirmation_id: req.confirmation_id }, ctx);
+  console.log(first.blocked, first.use_target, rec.state, out.ok, db.listPermissions(C).length, again.blocked);
+  process.exit(0);
+'
+```
+
+**End state (2026-11-07, cage on #356 `3a72671`):** `needs_confirmation`,
+`standing permission: texts for +14155559876 (Kofi)`, 0 rows; `granted`; `true`, 1 row with `said`
+verbatim, `action: texts`, `target: +14155559876`; reuse `already_spent`, still 1 row.
+`bin/peek.sh confirms` shows the `permission_grant` row with `granted_quote` and `consumed_at` set.
 
 A real-sentence pass with the real model, which is what `flow-gate` is for:
 
