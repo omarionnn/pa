@@ -58,7 +58,9 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   "already taken as the yes to confirmation #N": nothing granted, nothing refused; its own later
   reply grants it. The check is in the grant's UPDATE (`db.grantConfirmationByReply`), so two calls
   at once cannot both win. `shiftThreadMarks` moves the mark with a trimmed thread;
-  `adoptWebChatAsks` clears it. Drive: `test/one-reply-one-yes.test.js` (4), or the cage drive
+  `adoptWebChatAsks` clears it. Only asks already open at that grant share the reply
+  (`granted_upto_id`, the newest ask id then), so a fresh ask in a thread that counts from the start
+  again is not blocked by an old yes at the same count. Drive: `test/one-reply-one-yes.test.js` (5), or the cage drive
   below with two `confirm_request`s before one owner reply and `judge: async () => ({ verdict: "yes" })`:
   end state A `granted`, B `waiting_for_yes`, `authorizeConfirmation` on B `not_granted`, then B
   `granted` after a reply of its own (cage, 2026-11-07, `granted_by_msg` 2 and 3).
