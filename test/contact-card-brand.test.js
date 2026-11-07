@@ -25,12 +25,13 @@ const { vcard } = await import("../src/contact.js");
 const S = await import("../scripts/card-to-owner.js");
 
 const PHOTO = new URL("../assets/reason-contact.jpg", import.meta.url);
-// sha256 of assets/reason-contact.jpg. BRAND = the Web handoff's contact mark (owner, 2026-10-27):
-// Instrument Serif italic "r" + the pen #9c3b2e speech-bubble outline on paper #f2ebe0, rendered
-// from the handoff's reason-contact.svg in headless Chromium with assets/fonts. If the photo is
-// redrawn on purpose, update BRAND; BLUE, ORANGE (10-25), RED1 (first brick red) and RED2 (the
-// filled-ring #9c3b2e photo of 10-26 ~23:45) must never come back.
-const BRAND = "dbefb618a1bc62752c1a1ac2da9a56d217e3cadf5f727765f473778a4ddbaf20";
+// sha256 of assets/reason-contact.jpg. BRAND = the pen #9c3b2e speech-bubble outline alone on paper
+// #f2ebe0 (owner, 2026-11-06: the italic "r" removed), rendered from assets/reason-contact.svg in
+// headless Chromium by scripts/draw-contact.mjs. If the photo is redrawn on purpose, update BRAND;
+// BLUE, ORANGE (10-25), RED1 (first brick red), RED2 (the filled-ring #9c3b2e photo of 10-26
+// ~23:45) and RMARK (the italic "r" + bubble of 10-27) must never come back.
+const BRAND = "a703eb1735f7acdd4c4b5958806b540163f06d10fbbbdfc253b6260fb6bf64e6";
+const RMARK = "dbefb618a1bc62752c1a1ac2da9a56d217e3cadf5f727765f473778a4ddbaf20";
 const RED2 = "bbee1c8d4362a008e75834c6911dc38f83c2a5843b64b8de15c9d71c2b49151d";
 const RED1 = "5b965ff3b76f9b228f37727f6c2a9dcc605af2373a1deb751d4153e81fcc3ca5";
 const ORANGE = "5213b3e9877e863725dc9ac7c84074d1f283f4964bb42974351ff307fad30bc9";
@@ -58,6 +59,7 @@ test("the card's photo is the handoff mark, never an older photo", () => {
   assert.notEqual(sha, ORANGE, "the orange-bubble photo is back");
   assert.notEqual(sha, RED1, "the first brick-red photo is back");
   assert.notEqual(sha, RED2, "the filled-ring photo is back");
+  assert.notEqual(sha, RMARK, "the italic r photo is back");
   assert.equal(sha, BRAND);
   assert.equal(bytes[0], 0xff); assert.equal(bytes[1], 0xd8, "still a JPEG (iOS saves JPEG card photos reliably)");
   assert.ok(vcard({ number: "+16562167455" }).replace(/\r\n /g, "").includes(bytes.toString("base64")), "the vCard carries this photo");
