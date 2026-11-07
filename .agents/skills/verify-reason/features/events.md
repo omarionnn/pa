@@ -150,7 +150,10 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
     `X-NF-Client-Connection-IP` ONLY alongside a valid website signature (`x-nf-sign`,
     src/pages/siteproxy.js — event pages are not proxied by the website today, so in practice never);
     else Caddy's `X-Forwarded-For` only when the request is from loopback AND carries `X-Files-Domain:
-    true` (Caddy 2.6 replaces a browser's own XFF); otherwise the socket address. Form actions and links are absolute (`/e/<id>/join`,
+    true` AND Caddy's secret `X-Reason-Caddy` = `REASON_CADDY_SECRET` (`caddyClientIp`; the Funnel
+    shares Caddy's port and passes browser headers through, so the marker alone is forgeable);
+    otherwise the socket address — one `ip:127.0.0.1` count for every unvouched browser, and for
+    every Caddy visitor while the secret is unset. Pinned: `test/caddy-marker.test.js`. Form actions and links are absolute (`/e/<id>/join`,
     `/e/<id>/who?t=`): the public link has no trailing slash, so a relative `join` would post to
     `/e/join` and 404 — pinned by a test that resolves them against the real link.
   - A page session only joins an account `accounts.admit` still allows (not paused/removed/blocked).

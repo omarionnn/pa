@@ -52,7 +52,8 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   "a stranger asking for a code…". The actor is
   `eventActor`: with a valid website signature, Netlify's `x-nf-client-connection-ip` (Netlify
   overwrites a browser's own; `siteClientIp`); else Caddy's `X-Forwarded-For` only from loopback with
-  `X-Files-Domain: true`; else the socket. A forged Netlify header without a valid signature counts
+  `X-Files-Domain: true` AND the secret `X-Reason-Caddy` = `REASON_CADDY_SECRET` (`caddyClientIp`;
+  the marker alone is forgeable through the Funnel, `test/caddy-marker.test.js`); else the socket. A forged Netlify header without a valid signature counts
   for nothing (pinned, `test/domains.test.js`). 10 code requests per browser per hour (`events.signinGate`, shared with event sign-in).
 - **Enumeration** — a known and an unknown number get byte-identical pages (only the echoed number
   differs); the join block is on every page; no account is ever created by typing a number.
@@ -167,7 +168,7 @@ connected); a stranger's number mints nothing and answers the same bytes.
   too, and an idle-expired Web session (30 days) deletes the row other pages were using. Intended.
 - **Live since 2026-10-26 17:30 UTC with `REASON_WEB=owner`; at `https://heyreason.com/web` since
   the domain move (10-26).** Path: Netlify rewrite (signed) → Caddy `files.heyreason.com` `@web` handle
-  (→ 8788, `X-Files-Domain true`) → the app. `files.heyreason.com/web` direct → 301. The Funnel still
+  (→ 8788, `X-Files-Domain true`, plus `X-Reason-Caddy <secret>` once REASON_CADDY_SECRET is set) → the app. `files.heyreason.com/web` direct → 301. The Funnel still
   answers /web (one `127.0.0.1` rate bucket; debugging only). Drive it live only with a fictional 555
   number (same page, no text, no `wsign:` outbox row); never request the owner's code.
 - **Two `reason_page` cookies.** A browser signed in before the move holds a host-only copy (files.
