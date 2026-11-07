@@ -205,6 +205,16 @@ export function isPrivateHost(hostname) {
     if (h === "::" || h === "::1") return true;
     if (/^f[cd][0-9a-f]{2}:/.test(h)) return true;             // fc00::/7 unique-local
     if (/^fe[89ab][0-9a-f]:/.test(h)) return true;             // fe80::/10 link-local
+    if (/^fe[c-f][0-9a-f]:/.test(h)) return true;              // fec0::/10 old site-local
+    // An IPv4 address carried in v6 (v4-compatible ::a.b.c.d, NAT64 64:ff9b::/96, SIIT ::ffff:0:a.b.c.d):
+    // the v4 part is what it reaches, so it is judged as that.
+    const embedded = /^(?:::|64:ff9b::|::ffff:0:)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
+    if (embedded) {
+      const [hi, lo] = embedded.slice(1).map(w => parseInt(w, 16));
+      return isPrivateHost(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+    }
+    const embeddedDotted = /^(?:::|64:ff9b::|::ffff:0:)(\d+\.\d+\.\d+\.\d+)$/.exec(h);
+    if (embeddedDotted) return isPrivateHost(embeddedDotted[1]);
     // ::ffff:127.0.0.1 and friends: the v4 part is what it really reaches. `new URL` normalises
     // the dotted form into two hex groups (`::ffff:7f00:1`), so both shapes are unpacked.
     const mapped = /^::ffff:(.+)$/.exec(h);

@@ -91,3 +91,9 @@ test("a public name that resolves to a private address is refused, and the conne
   const pin = pinnedLookup([{ address: "93.184.215.14", family: 4 }]);
   await new Promise((done) => pin("anything.example", {}, (err, addr) => { assert.equal(addr, "93.184.215.14"); done(); }));
 });
+
+test("IPv4 carried inside IPv6 is judged by the IPv4 it reaches", async () => {
+  const { isPrivateHost } = await import("../src/pictures.js");
+  for (const h of ["[::7f00:1]", "64:ff9b::7f00:1", "::ffff:0:7f00:1", "fec0::1", "::ffff:127.0.0.1"]) assert.equal(isPrivateHost(h), true, h);
+  for (const h of ["2606:4700:4700::1111", "::ffff:8.8.8.8", "64:ff9b::808:808"]) assert.equal(isPrivateHost(h), false, h);
+});

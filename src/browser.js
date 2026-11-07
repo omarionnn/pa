@@ -65,6 +65,8 @@ export async function pageFor(conversationId) {
     context = await launcher.launchPersistentContext(profileDir(conversationId), {
       headless: !config.browserHeaded,
       viewport: { width: 1280, height: 900 },
+      // A service worker's requests do not pass the request guard below, so pages get none.
+      serviceWorkers: "block",
       // No launch flag that hides automation from the site (removed 2026-10-23). A site that blocks
       // an automated browser gets a hand-back, never a workaround — the no-stealth rule in agent.js.
     });

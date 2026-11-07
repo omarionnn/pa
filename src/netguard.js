@@ -26,6 +26,7 @@ import { isPrivateHost } from "./pictures.js";
 
 const NATIVE_FETCH = globalThis.fetch;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+let warnedFake = false;
 
 /** The test-only way past all of it, for a suite whose fixture lives on 127.0.0.1. Never in production. */
 export const allowPrivate = () => !!process.env.NODE_TEST_CONTEXT && process.env.REASON_TEST_ALLOW_PRIVATE_FETCH === "1";
@@ -72,7 +73,8 @@ export async function publicUrl(url, { httpsOnly = false, lookup = null } = {}) 
 function pinnedGet(u, { headers = {}, signal, addresses }) {
   return new Promise((resolve, reject) => {
     const req = (u.protocol === "https:" ? httpsRequest : httpRequest)(u, {
-      method: "GET", headers, signal, lookup: pinnedLookup(addresses), ...(u.protocol === "https:" ? { servername: u.hostname } : {}),
+      // SNI is a name, never an address literal (an IPv6 one keeps its brackets in URL.hostname).
+      method: "GET", headers, signal, lookup: pinnedLookup(addresses), ...(u.protocol === "https:" && !isIP(u.hostname.replace(/^\[|\]$/g, "")) ? { servername: u.hostname } : {}),
     }, (res) => {
       const h = new Headers();
       for (const [k, v] of Object.entries(res.headers)) { if (v != null) h.set(k, Array.isArray(v) ? v.join(", ") : String(v)); }
@@ -98,6 +100,9 @@ export async function guardedFetch(url, { headers = {}, signal, fetchImpl = null
   const fake = (f) => typeof f === "function" && f !== NATIVE_FETCH && !f.passesThrough;
   const given = fake(fetchImpl) ? fetchImpl : null;
   const injected = given ?? (process.env.NODE_TEST_CONTEXT || fake(globalThis.fetch) ? globalThis.fetch : null);
+  // Outside a test, a fetch that is not the platform's means someone wrapped it without saying it only
+  // passes calls on: the DNS check and the pinning are skipped for it, and that is worth a line.
+  if (!given && injected && !process.env.NODE_TEST_CONTEXT && !warnedFake) { warnedFake = true; console.warn("netguard: a replaced fetch is in use, so links are checked by name only (no DNS check, no pinning)"); }
   let target = String(url ?? "");
   for (let hop = 0; ; hop++) {
     let u;
