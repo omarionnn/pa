@@ -28,6 +28,7 @@ process.env.CROSSMINT_JWT_PRIVATE_KEY = generateKeyPairSync("rsa", { modulusLeng
 const shop = await import("../src/shopconnect.js");
 const passkey = await import("../src/passkey.js");
 const { approveRequest } = await import("../src/pages/webapprove.js");
+const shoptools = await import("../src/shoptools.js");
 const db = await import("../src/db.js");
 const { clock } = await import("../src/config.js");
 
@@ -204,4 +205,46 @@ test("a structured breakdown is shown too; a store that gave one number is said 
   assert.match(body, /<th scope="row">Total<\/th><td>\$26\.65<\/td>/);
   assert.match(body, /CVS gave one number, with shipping and tax in it\./);
   assert.doesNotMatch(body, /\$0\.00/);
+});
+
+// ---------------------------------------------------------------- 4. the right variant
+// 10-31: three runs bought toward the Foaming cleanser (normal to oily skin) before the Hydrating one
+// (normal to dry). Whether the item fits what they said is the model's read, never a keyword list.
+const FOAMING = { store: "CVS", start_url: "https://www.cvs.com/shop/cerave-foaming-16oz", what: "One CeraVe Foaming Facial Cleanser, 16 oz, shipped to home.", item: "CeraVe Foaming Facial Cleanser 16 oz", max_usd: 35, their_need: "for my dry skin" };
+const said11 = [{ role: "user", content: "Buy me the CeraVe face wash, the one for dry skin" }, { role: "assistant", content: "On it." }];
+const posts = () => calls.filter((c) => c.path === "/api/unstable/agent-checkouts" && c.method === "POST").length;
+
+test("a variant that doesn't fit what they said is not started: the model hears what they said and how this differs", async () => {
+  let asked = null;
+  shoptools._setFitCheck(async (args) => { asked = args; return { value: { verdict: "mismatch", need: "dry skin", why: "is the Foaming one, made for normal to oily skin" } }; });
+  try {
+    const out = await shoptools.runShopTool("store_checkout", FOAMING, { conversationId: OMARI, messages: said11 });
+    assert.equal(out.ok, false);
+    assert.equal(out.blocked, "variant_mismatch");
+    assert.match(out.say, /^Not started: they said dry skin, and CeraVe Foaming Facial Cleanser 16 oz is the Foaming one, made for normal to oily skin\./);
+    assert.match(out.say, /variant_confirmed: true/);
+    assert.equal(posts(), 0, "nothing reached the store");
+    // Their own words and the noted need went to the model; its own lines did not.
+    assert.match(asked.prompt, /- Buy me the CeraVe face wash, the one for dry skin/);
+    assert.doesNotMatch(asked.prompt, /On it\./);
+    assert.match(asked.prompt, /The need the assistant noted: for my dry skin/);
+    assert.match(asked.prompt, /The checkout will buy: CeraVe Foaming Facial Cleanser 16 oz/);
+    // They said they want this one anyway: started, and the check is not asked again.
+    asked = null;
+    const again = await shoptools.runShopTool("store_checkout", { ...FOAMING, variant_confirmed: true }, { conversationId: OMARI, messages: said11 });
+    assert.equal(again.ok, true);
+    assert.equal(asked, null);
+    assert.equal(posts(), 1);
+  } finally { shoptools._setFitCheck(null); }
+});
+
+test("a fit, an unclear read, or a side call that fails all start the checkout (it fails open; nothing is charged by starting)", async () => {
+  for (const ask of [async () => ({ value: { verdict: "fits", need: "dry skin", why: "" } }), async () => ({ value: { verdict: "unclear", need: "", why: "" } }), async () => { throw new Error("cli down"); }, async () => ({ error: "timeout" })]) {
+    shoptools._setFitCheck(ask);
+    try {
+      const out = await shoptools.runShopTool("store_checkout", { ...FOAMING, item: "CeraVe Hydrating Facial Cleanser 16 oz" }, { conversationId: OMARI, messages: said11 });
+      assert.equal(out.ok, true);
+    } finally { shoptools._setFitCheck(null); }
+  }
+  assert.equal(posts(), 4);
 });
