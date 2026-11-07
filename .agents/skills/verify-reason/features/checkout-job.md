@@ -20,7 +20,7 @@ What code does now, with no model in front of it:
   itemizes (`item $18.99, shipping $6.95, tax $2.30; $28.24 all in.` above `OK to pay …`), Face ID link
   where they have a passkey;
 - **the end** → one text saying what happened: expired input (what was asked), blocked (summary),
-  cancelled, placed (order ref if Crossmint gives one), ended after a payment (outcome unknown, check mail);
+  cancelled, placed (order ref if Crossmint gives one), ended after a payment (outcome unknown, check mail; since #357 that amount already counts against the day's cap);
 - **a stall** (`STALL_MS` 12 min without the revision moving; past Crossmint's 10-min input expiry so an
   expiring request reads as expired) → one text; Crossmint saying it does not know the run (a 404)
   for `LOST_MS` (60 s since #337) → failed ("lost"), cancelled at Crossmint, said once; Crossmint down
