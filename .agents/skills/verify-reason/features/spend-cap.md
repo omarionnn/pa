@@ -14,7 +14,8 @@ person can change their own. Before this the cap was one number for the whole in
 - Monthly: the person's per-purchase / monthly numbers (`spend_caps`, `caps_set`) are asked only on the
   AgentCard path (`trust.checkCaps`); the Crossmint path everyone uses asks ONLY the daily cap. No
   monthly default was added — there is no monthly cap on that path to default.
-- Rules, all pinned in `test/spend-cap-1031.test.js` (11):
+- Rules, all pinned in `test/spend-cap-1031.test.js` (12; the texted yes read in code is pinned in
+  `test/consent-in-code.test.js`, 11):
   - lowering, or any number at or under the default, applies at once (`applied: true`);
   - a raise above the default is a money control: with a passkey it is a Face ID link
     (`pay_approvals.kind = 'cap'`, the challenge bound to the change's id/owner/from/to; the page
@@ -35,6 +36,18 @@ person can change their own. Before this the cap was one number for the whole in
     type. The approve page's `WHY.over_daily_cap` says the same;
   - `shop_status.spending`, `spend_today`, `caps_show.today` carry the real figures: spent today, the
     limit, what is left, who set it, the ceiling, any raise waiting.
+  - **A payment with an unknown outcome counts (#357, security lead 5, 2026-11-07).** Once Crossmint's
+    order intent exists, a checkout message that throws or answers non-2xx leaves the row `unknown`
+    (the card may have reached the store), and `payRow`'s `unknown` now calls `countSpend(…, { unknown:
+    true })`: the full amount goes on today's ledger as if it went through, the line ending
+    "(OUTCOME UNKNOWN)" (`spendLineOf`), like AgentCard's `purchase_confirm` / `browser_submit` unknown
+    lines. Fail closed: a second, different payment that would not fit is `over_daily_cap` and never
+    reaches Crossmint. The run later succeeding does not count it twice. Before #357 an unknown
+    Crossmint payment counted $0. At boot `backfillSpend` (`src/shopconnect.js`, from
+    `resumeFollowing`) also counts `unknown` rows the ledger never had, once each (same `what`/`site`
+    dedupe as paid rows; `spend_backfilled: n` in the log). The Face ID path (`payByPasskey`) now writes
+    the same `trust.noteUnknownOutcome` record the texted-yes `shop_pay` writes. Pinned in
+    `test/shop-unknown-spend.test.js` (4) and `test/passkey-pay.test.js` (the unknown-outcome test).
 - Tools (`src/shoptools.js`, shown where Shop Connect is): `spend_limit_set { daily, text }` and
   `spend_limit_confirm { change_id, answer }`. The spending playbook (`src/playbooks.js`) and the
   `spending_cap` capability line point at them.
@@ -50,8 +63,21 @@ person can change their own. Before this the cap was one number for the whole in
 ## Offline
 
 ```bash
-cd ~/Desktop/pa && node --test test/spend-cap-1031.test.js test/shopping-everyone-1031.test.js test/sites.test.js test/passkey-pay.test.js test/web-settings.test.js
+cd ~/Desktop/pa && node --test test/spend-cap-1031.test.js test/shop-unknown-spend.test.js test/shopping-everyone-1031.test.js test/sites.test.js test/passkey-pay.test.js test/web-settings.test.js
 ```
+
+## Caged, tool level (fake Crossmint, no network, no model)
+
+```bash
+cd ~/Desktop/pa && eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" \
+  && D=$(mktemp -d) && REASON_DATA_DIR=$D REASON_DB_PATH=$D/su.db node .agents/skills/verify-reason/bin/spend-unknown-drive.mjs
+```
+
+$100 cap → a $90 payment whose checkout message answers 500 → `unknown_outcome`, $90 counted, line
+"Best Buy: USB-C cable ($90.00) (OUTCOME UNKNOWN)", `spend_today` $90 spent / $10 left → a second $90
+is `over_daily_cap` ("…would take you to $180…"), no second order intent, row stays `asked` → an old
+uncounted `unknown` row counted once by `backfillSpend`, a second run adds 0. 10 steps, all ok on
+7e38e15 (2026-11-07, cage on port 8839 doctor-clean first).
 
 ## Live (muted; read-only)
 

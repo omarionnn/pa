@@ -12,7 +12,7 @@ import { undeliveredNotice } from "./outbox.js";
 import { imagesFor, pdfsFor, videosFor } from "./media.js";
 import { docsFor } from "./docread.js";
 import * as doing from "./doing.js";
-import { startCapture, recordLooked, captureViaApi } from "./looked.js";
+import { startCapture, recordLooked, captureViaApi, capturedWords } from "./looked.js";
 import { splitImage } from "./backends/mcp-core.js";
 import * as reviewed from "./reviewed.js";
 import { forLog, sealTravelers } from "./privacy.js";
@@ -29,7 +29,7 @@ import { memoryNotes } from "./memorynote.js";
 import { startPurchasesNote, purchaseRecordSource } from "./purchasesnote.js";
 import { checkoutNote as shopCheckoutNote } from "./shopconnect.js";
 import { withoutSelfNote, readSilence } from "./plain.js";
-import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "./offers.js";
+import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource, notePhotos as noteOfferPhotos, photoWords as offerPhotoWords } from "./offers.js";
 import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
 import { REFUSAL_LINE } from "./harm.js";
 
@@ -226,7 +226,7 @@ How you work:
 - You can send your own voice with voice_note_say when they ask to hear it or hearing it is the whole point; its description says how to write it.
 - A voice note they send you arrives as the words in it, in a bracketed note. That is what they said: answer it like any other message, and do not make a thing of it having been a voice note. A transcript can mishear a name, a number or a place, so if something real hangs on one of those, say it back to check. When the note says it could not be listened to, say that in one short line with the reason and ask them to type it — never guess at what it said. A note with nothing said in it is its own thing and gets its own line ("that one came through silent") — not "couldn't hear it", which is a different problem, and not silence.
 - When a transcript has [inaudible] in it, that is a stretch nobody could make out, and you NEVER put a word there that would fit. If what is missing is something your answer turns on — a name, a time, a number, a place — ask about that bit and only that bit ("couldn't catch what came after the address, say that part again?"). If it is not, answer around it and let it go. Their own words from a note are kept, so "what did i say in that voice note" is media_reviewed with that item's id, never your memory of it.
-- A message you send can fail to arrive, and you will be told when one did — a turn that opens with "[delivery failure]" means that text never got there. Believe it over your own memory of having sent it: say so in one short line, do not repeat the message as though it is new, and if it was to somebody else say they never got it rather than that you told them. When message_send comes back "queued", it has NOT gone yet; say you are still trying, never that you sent it.
+- A message you send can fail to arrive, and you will be told when one did — a "[delivery failure]" note on a turn means that text never got there. Believe it over your own memory of having sent it: say so in one short line, do not repeat the message as though it is new, and if it was to somebody else say they never got it rather than that you told them. When message_send comes back "queued", it has NOT gone yet; say you are still trying, never that you sent it.
 - You never take a password. Not in a message, not read out, not "just this once". If someone offers one, say you do not take them and why, and tell them how signing in works instead: a sign-in link from signin_link opens that site's real sign-in page in your own browser, on their phone; they sign in there themselves and you keep that session. If they say they are sitting at the machine you run on, signin_open opens the same thing as a window on its screen instead. Never send them off to type a command. You hear back what the site says when they finish, and until then you do not know whether it worked. If they ask whether the link is safe, be exact: what they type is passed to the site through you and is not saved, logged or shown to you. signin_status says which sites are signed in.
 - You never keep a card number, a security code, a password or a PIN. Not in a memory, not in a note, not "just so you have it". If one turns up in something you were about to save, it is refused and nothing is written — say in one short line that you don't keep those, do not read the number back at them, do not ask for part of it, and do not offer to keep it somewhere else.
 - "Forget about X", "delete what you know about her" → forget, and it means it: every fact about them under that name or any longer name containing it, and the copies in this thread, gone and never brought up again on your own. Be honest about one thing if they ask: it does not delete their own messages to you, because that is their conversation rather than something you worked out. A full delete does, and they run that themselves.
@@ -251,7 +251,7 @@ How you work:
 - Putting something on their calendar is a workflow, not one action: check, create, confirm it is really there, and change that same event when they correct it. calendar_create's description is the rule, and nothing is "added" before the tool says so.
 - Before anything that spends money or acts on someone else (connecting an account, submitting a booking, paying): confirm_request first, then say back in one plain line exactly what you're about to do, then stop and wait. When they answer, confirm_record, and only then do the thing. The guard reads their real reply itself, so there is no point calling confirm_record before they've said anything, and no point arguing with what it returns.
 - When the thing you are about to do reaches a person — a text, a call — confirm_request needs target set to that exact number, and that same number has to be in what you say to ${who}. The yes then works for that person and nobody else; pointing it at a different number is refused.
-- They can tell you to stop asking about a kind of thing: "you can reorder groceries without asking", "reply to scheduling emails yourself", "spend up to $40 on lunch without checking". When they do, save it with permission_grant the moment they say it — their sentence word for word, never tidied and never widened — and say it back once, naming what it does NOT cover, so there is no surprise later. From then on the gate lets exactly that through and still stops everything else, and every one of those actions tells them it happened and that this is why. Never stretch one: a bigger amount, a different person, a different kind of thing is outside it and needs a yes like anything else, and when you are refused you say what they HAD told you and why this is not it. "What can you do without asking me" is permission_list, never memory. When they take it back, permission_revoke.
+- They can tell you to stop asking about a kind of thing: "you can reorder groceries without asking", "reply to scheduling emails yourself", "spend up to $40 on lunch without checking". When they do, read it back as one plain question naming what it does NOT cover (a person by name), and once they say yes save it with permission_grant: their sentence word for word, never tidied or widened. From then on the gate lets exactly that through and still stops everything else, and every one of those actions tells them it happened and that this is why. Never stretch one: a bigger amount, a different person, a different kind of thing is outside it and needs a yes like anything else, and when you are refused you say what they HAD told you and why this is not it. "What can you do without asking me" is permission_list, never memory. When they take it back, permission_revoke.
 - Before asking for a yes, check confirm_pending. If you already have an open question about this, their reply answers THAT one: confirm_record its id. Asking again makes a second question their yes was never aimed at, and the first one sits there forever.
 - A yes only ever covers the details you recorded. If confirm_record comes back 'changed', they want it with something different: say what you now have, change it, confirm_request again with the corrected summary, and ask again. Never carry an old yes over to new details.
 - "What did you do today", "did you actually do it", "what happened with that" → ledger_list. That is the record. Never answer from memory.
@@ -305,8 +305,15 @@ export const SYSTEM = systemFor();
  * saying the look happened and how much was in front of it.
  */
 export function userMessageFor({ notice = "", prefix, text, blocks = [], notes = [], seen = [], turnNote = "", keep = null }) {
-  const said = [`${notice}${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
-  const kept = keep == null ? said : [`${notice}${prefix} ${keep}`, ...notes.map(n => `[${n}]`)].join("\n");
+  // The line always opens with `prefix`: "[event …]" or "[stamp] Name:" is how src/trust.js ownerTexts
+  // tells a timer or sweep from something the owner said, so nothing may come in front of it. A
+  // delivery-failure notice goes on its own lines right after (it opens with "[", so typedOnly never
+  // reads it as their words either). Security audit 2026-11-06, lead 29: with the notice first, an
+  // event turn counted as a new owner reply and its text went to the confirmation judge as their yes.
+  const lost = String(notice ?? "").trim();
+  const line = (body) => [`${prefix} ${body}`, ...(lost ? [lost] : []), ...notes.map(n => `[${n}]`)].join("\n");
+  const said = line(text);
+  const kept = keep == null ? said : line(keep);
   // One note or several: "what's new" and the open-work sheets are both true of this turn only.
   const turnNotes = (Array.isArray(turnNote) ? turnNote : [turnNote]).filter(Boolean);
   const shown = turnNotes.length ? `${said}\n${turnNotes.map(n => `[${n}]`).join("\n")}` : said;
@@ -473,14 +480,17 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // The CLI backend's "continue the draft's session" (src/backends/claude-cli.js). The API path keeps
   // the message list in process and has nothing to continue; taken out so it never reaches a tool.
   continueSession = false,
+  // The one rewrite of a draft the reply check sent back (Runtime._turn): the same turn going on, so
+  // the figures its tools already read still count (src/offers.js beginTurn `carry`).
+  recompose = false,
   ...toolCtx }) {
   // A Web-only chat reads and keeps its own thread (src/db.js historyKeyFor); tools still act for the person.
   const historyId = toolCtx.historyId ?? conversationId;
   let messages = trimHistory(loadConversation(historyId));
   // A fresh source ledger for the reply check (src/offers.js): what this turn's tools fetch, and
   // their own message, are what a dollar figure in the reply can be checked against. The said check's
-  // rewrite (continueSession) is the same turn: its sources stand.
-  if (!continueSession) beginOfferTurn(conversationId, text, kind);
+  // rewrite (continueSession / recompose) is the same turn: its sources stand.
+  beginOfferTurn(conversationId, text, kind, { carry: recompose || continueSession });
   // Whose Reason this is. Their name is in the prompt and on their own messages, so the model is
   // talking to the person in front of it rather than to whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
@@ -508,6 +518,9 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // Started now, alongside the turn, and awaited only once the reply is in hand — what each photo
   // shows and every word in it, so the next turn can answer a form it can no longer see.
   const captured = startCapture({ blocks, viewedMediaIds, attachments, capture, log });
+  // Every figures check of this turn reads those words — a message_send mid-turn, and the rewrite,
+  // which looks at no photo of its own (src/offers.js notePhotos).
+  if (viewedMediaIds.length) noteOfferPhotos(conversationId, () => capturedWords(captured, viewedMediaIds));
 
   // A PDF — a receipt, a ticket, a lease — read on this machine and handed to the model as text.
   const reading = doing.counter(conversationId, attachments);
@@ -752,12 +765,15 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
       for (const b of lastAssistant.content) if (b.type === "text" && typeof b.text === "string" && readSilence(b.text).stripped) b.text = readSilence(b.text).text;
     }
   }
-  // The figures check (src/offers.js), on the text that would be sent: a dollar figure not in a
-  // source this turn is labelled unverified, an unsourced discount or best-deal claim gets one plain
-  // line, and a purchase ask carries AgentCard's total and the source. The thread keeps what is sent.
+  // The figures check (src/offers.js), on the text that would be sent: a dollar figure nothing backs,
+  // an unsourced discount or best-deal claim is handed back for one rewrite (Runtime._turn takes it),
+  // never labelled here; a purchase ask carries AgentCard's total and the source. The thread keeps what is sent.
   if (!quiet.silent) {
     // Their own purchase record counts as a source too (src/purchasesnote.js purchaseRecordSource).
-    const g = guardReply(conversationId, reply, { extraSources: [purchaseRecordSource(conversationId)] });
+    // So do the words on the photos they sent this turn (src/looked.js capturedWords).
+    const photos = await offerPhotoWords(conversationId);
+    const g = guardReply(conversationId, reply, { records: [purchaseRecordSource(conversationId)], extraSources: photos.texts, unread: photos.unread, turnReply: true });
+    if (g.recompose) log({ reply_guard: g.flags, recompose: true, conversation: conversationId });
     if (g.changed) {
       log({ reply_guard: g.flags, conversation: conversationId });
       const lastAssistant = [...messages].reverse().find(m => m.role === "assistant" && Array.isArray(m.content));

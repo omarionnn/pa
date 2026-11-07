@@ -19,8 +19,10 @@ Source: `src/daily.js` (window, facts, question, greeting, `writeEdition`, `swee
   draw before today's is written shows count+1), H1 the full date in their zone, Caveat greeting, double rule.
 - **Greeting.** Fixed: first edition (`first edition. it'll fill up as I do things for you.`), away >1 day
   (`welcome back. here's what happened since <Weekday>.`), quiet (`quiet night. nothing needed you.`).
-  Otherwise written once overnight by `askStructuredViaCli` (feature `daily_edition`, claude-cli only,
-  background lane) and cleaned (lowercase, ≤90 chars, no `!`/emoji/streak words), else the plain
+  Otherwise written once overnight by `askStructured` (src/daily.js:408-417 → src/backends/side.js:110:
+  the CLI on claude-cli, the API key on `REASON_BACKEND=api` — live since 2026-11-03; feature
+  `daily_edition`, model `REASON_DAILY_CLI_MODEL` else `sonnet`; skipped when `sideAskAllowed()` is false
+  or `REASON_DAILY_WRITE=0`) and cleaned (lowercase, ≤90 chars, no `!`/emoji/streak words), else the plain
   `morning, Ama. two things moved while you slept[, and one needs you].` Never a model on a request.
 - **Window.** since = later of their last thread message and their last look at this page on an earlier day
   (`daily_looks`), floored at 14 days; never looked → the day before.
@@ -53,5 +55,6 @@ node scripts/web-staging.mjs --out=/tmp/x/web-staging   # daily-full, -first, -q
 
 Live, from Hetzner, flag `owner`: the journal shows `daily_edition` for the owner's conversation with
 `greeting_by` `claude-cli` (or `fixed`/`plain` on a fixed moment) and the spend log `daily_edition`
-feature; a temporary owner `page_sessions` row fetches `https://heyreason.com/web?home` → `THE … EDITION`,
+feature — `greeting_by` reads `claude-cli` for any model-written greeting, the API one included
+(src/daily.js:515), so read the backend from the spend log, not that field; a temporary owner `page_sessions` row fetches `https://heyreason.com/web?home` → `THE … EDITION`,
 no composer; the session row deleted. Never tap decision/question buttons on the owner's live data.

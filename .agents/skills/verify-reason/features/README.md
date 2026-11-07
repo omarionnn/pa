@@ -11,7 +11,7 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Feature | File | Primary drive |
 |---|---|---|
 | Inbound message handling | [inbound-message.md](inbound-message.md) | `bin/inbound.sh` → caged webhook |
-| Sealed CLI turns (no operator email, no AGENTS.md / CLAUDE.md, no repo path in any person's turn on the claude-cli backend) | [cli-sealed.md](cli-sealed.md) | `node --test test/cli-sealed.test.js`; real CLI on the wire, no model: `bin/cli-seal-probe.mjs` (+ `--unsealed` control) on Hetzner as `reason` |
+| Sealed CLI turns (no operator email, no AGENTS.md / CLAUDE.md, no repo path in any person's turn on the claude-cli backend; the operator's city only in the operator's `capabilities` result) | [cli-sealed.md](cli-sealed.md) | `node --test test/cli-sealed.test.js test/capabilities-city.test.js`; real CLI on the wire, no model: `bin/cli-seal-probe.mjs` (+ `--unsealed` control) on Hetzner as `reason` |
 | Pages (answers you can open and keep) | [pages.md](pages.md) | `node --test test/pages.test.js`, then `GET /p/<id>` |
 | Location share handling | [location-share.md](location-share.md) | `bin/inbound.sh file payloads/location.json` |
 | Generated images on pages | [page-images.md](page-images.md) | `node --test test/imagen.test.js`, then `GET /img/<f>` |
@@ -29,7 +29,7 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Memory and knowledge graph | [memory-graph.md](memory-graph.md) | `node --test test/memory*.test.js test/graph-*.test.js` + queue tables via `bin/peek.sh` |
 | Call goal met (a message passed on / question answered → `goal_met`, a success; model-read, claude-cli; stamps count it) | [call-goal-met.md](call-goal-met.md) | `node --test test/call-goalmet.test.js`; `REASON_BACKEND=claude-cli node bin/call-goal-drive.mjs calls.json` |
 | To-do list (`REASON_TODO` off/owner/on: one plan in three groups, one yes, a grant for the businesses the plan named — never people or money — a self-updating checklist page, one wrap-up) | [todo-list.md](todo-list.md) | `node --test test/todo.test.js`; cage plan step on claude-cli; `bin/todo-drive.mjs` (whole road, fake call provider, claude-cli) |
-| Call completeness (one memory across call and text; lookups remembered; no thinking before the first word) | [call-completeness.md](call-completeness.md) | `node --test test/call-*.test.js`, then `bin/call-turn.sh` on the cage |
+| Call completeness (one memory across call and text; lookups remembered; no thinking before the first word) | [call-completeness.md](call-completeness.md) | `node --test test/call-*.test.js test/no-elevenlabs.test.js`, then `bin/call-filler-drive.mjs` (no model) |
 | Reason Web drafts (replies appear as written, `REASON_WEB_DRAFTS`; only what passed the said check, no tool narration, self-note, NO_REPLY or marked figure; saved reply replaces it) | [web-drafts.md](web-drafts.md) | `node --test test/web-stream.test.js` (14); real CLI turn: `bin/web-drafts-drive.mjs` on a scratch instance |
 | Scheduled calls ("call me at 7", a wake-up call; the timer carries the call, firing rings their own number with the goal as the first words; refusals and no-answer become one text; "remind me" stays a text; named times honoured; series) | [scheduled-calls.md](scheduled-calls.md) | `node --test test/timer-call.test.js`; `bin/timer-call-drive.mjs` under `caged.sh env` (fake provider, no model) |
 | Per-person time zone (`REASON_TZ_ASK`; best guess + reason asked once before the first clock-time action, held action finished by the answer, "in 10 minutes" never asks, travel asked once per zone, their clock in every stamp/parse/day inside their turn and Web pages) | [time-zone.md](time-zone.md) | `node --test test/time-zone.test.js`; cage over the subscription (3 turns, see the file) |
@@ -42,15 +42,15 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Checkout anticipates the form (`shop_shipping` record; a form Reason can answer is answered by code + one confirm line, only an unknown field asked; dropdown option values; rides on `REASON_SHOP_CONNECT`) | [checkout-anticipate.md](checkout-anticipate.md) | `node --test test/checkout-anticipate.test.js` |
 | Purchase approval by passkey (`REASON_PASSKEY_PAY`, `on` live since 10-31; with a passkey saved a texted yes never pays — a Face ID link for that payment's amount and store, once, 5 min) | [passkey-pay.md](passkey-pay.md) | `node --test test/passkey-pay.test.js`; `bin/passkey-drive.mjs [--shots=DIR]` (HTTP + Chromium virtual authenticator, muted) |
 | The free trial and the subscription (`REASON_PAYWALL`, OFF on live — Reason is free for everyone since the owner's 2026-11-05 call; off = nothing counted/said/shown, `/pay/*` 302 home, Stripe ignored) | [paywall.md](paywall.md) | `node --test test/paywall.test.js test/paywall-win.test.js test/pricing-flag.test.js`; `bin/paywall-drive.mjs` (in process, fake Stripe, no model); live: GET `/pay/done` → 302 `https://heyreason.com/` |
-| Daily spending limit per person (default `REASON_MAX_SPEND_PER_DAY`=100 on live; own cap by text `spend_limit_set` or Settings → Shopping; raise above default = Face ID / yes that expires; $1,000 ceiling; over-cap line names Settings → Shopping) | [spend-cap.md](spend-cap.md) | `node --test test/spend-cap-1031.test.js` |
+| Daily spending limit per person (default `REASON_MAX_SPEND_PER_DAY`=100 on live; own cap by text `spend_limit_set` or Settings → Shopping; raise above default = Face ID / yes that expires; $1,000 ceiling; over-cap line names Settings → Shopping; a Crossmint payment with an unknown outcome counts, old ones backfilled at boot) | [spend-cap.md](spend-cap.md) | `node --test test/spend-cap-1031.test.js test/shop-unknown-spend.test.js`; `bin/spend-unknown-drive.mjs` (fake Crossmint, muted) |
 | Research room (every planned query searched with a fair page share, bigger caps for big questions, one background follow-up when a cap still cuts it, 2/day per person, owner 5) | [research-room.md](research-room.md) | `node --test test/research-room.test.js test/research.test.js`; `bin/research-room-drive.mjs` over the subscription (3 turns, fake search) |
 | Photo look (photo written down verbatim, `photo_look`) | [photo-look.md](photo-look.md) | `node --test test/looked.test.js`; real model: `test/flow-form.test.js` |
 | Claude subscription usage on /ops (Reason's 5-hour/weekly %, one text at 80%; the Mac's coding subscription pushed to `/ops/usage`) | [ops-subscriptions.md](ops-subscriptions.md) | `node --test test/subusage.test.js`; cage: signed `curl` to `/ops/usage` with the cage secret |
-| Paid-API hard caps (daily $1 for everything but calls, $10/month for all but calls; one owner text; calls are never stopped — their $2/day cap only texts) | [api-caps.md](api-caps.md) | `node --test test/api-hard-cap.test.js test/api-spend.test.js`; cage: seed `model_usage` past the caps, `POST /ops.json action=check` twice, `bin/call-turn.sh` |
+| Paid-API hard caps (daily $1 for everything but calls, $10/month for all but calls; one owner text; calls are never stopped — their $2/day cap only texts) | [api-caps.md](api-caps.md) | `node --test test/api-hard-cap.test.js test/api-spend.test.js`; cage: seed `model_usage` past the caps, `POST /ops.json action=check` twice |
 | Events (organize by text; guests join by text, pasted link or the page, with name + password; a role per event and "which event?"; private pages only on a recognized browser — a texted code; rides between guests behind `REASON_EVENT_RIDES`; the link's preview card + organizer cover with the flyer guardrail; all behind `REASON_EVENTS`) | [events.md](events.md) | `node --test test/event*.test.js`; `bin/events-drive.mjs` under `caged.sh env` (no model); `bin/event-card.mjs` (og tags, JS off); cage: `runTool("event_create")`, then curl `/e/<id>`, `/e/<id>/join`, `/e/<id>/signin` |
 | Event albums (one private photo album per event: photos texted "for <event>" after a one-time note; organizer's check-in list, highlights, "End event and release album" = one text per checked-in guest; single-photo save + whole-album ZIP; one shared expiry, files deleted at it; behind `REASON_EVENT_ALBUMS`, dark on live) | [event-albums.md](event-albums.md) | `node --test test/event-album.test.js`; `bin/album-drive.mjs` under `caged.sh env` (no model); `bin/album-preview.mjs` (three PNGs); cage: `REASON_EVENTS=on REASON_EVENT_ALBUMS=on caged.sh start`, then curl `/e/<id>/album/manage` with and without a `reason_page` cookie |
-| Flight search (live fares via Fli; search only, never books; date sweeps; re-check before recommending; /ops row) | [flight-search.md](flight-search.md) | `node --test test/flight-search.test.js test/flights.test.js`; cage: `FLI_PYTHON=<throwaway venv>` + `runTool("flight_search")` |
-| Ops alerts at the point of failure (one updating alert per failure key, auto-resolve, `incident:<key>` + `watchdog` rows on /ops, `GET /alive`) and the watchdog outside the process (`scripts/watchdog.mjs`, systemd timer) | [ops-alerts.md](ops-alerts.md) | `node --test test/incidents.test.js`; cage: `REASON_VERIFY_FAKE_SENDBLUE` + `bin/fake-sendblue.mjs fail`, `bin/inbound.sh`, read `incidents`; watchdog with `REASON_WATCHDOG_SEND_URL` at a second fake + `kill -STOP` |
+| Flight search (SerpApi, then Duffel, each counted monthly; no source → one honest answer with a Google Flights link; search only, never books; date sweeps unavailable; /ops row) | [flight-search.md](flight-search.md) | `node --test test/flight-search.test.js test/flights.test.js test/flight-providers.test.js`; cage: `SERPAPI_API_KEY= DUFFEL_ACCESS_TOKEN=` + `runTool("flight_search")` → `unavailable` |
+| Ops alerts at the point of failure (one updating alert per failure key, auto-resolve, `incident:<key>` + `watchdog` rows on /ops, `GET /alive`; only messaging/calls/purchases incidents are texted live, the rest held for the daily digest since `7a1476d`) and the watchdog outside the process (`scripts/watchdog.mjs`, systemd timer) | [ops-alerts.md](ops-alerts.md) | `node --test test/incidents.test.js`; cage: `REASON_VERIFY_FAKE_SENDBLUE` + `bin/fake-sendblue.mjs fail`, `bin/inbound.sh`, read `incidents`; watchdog with `REASON_WATCHDOG_SEND_URL` at a second fake + `kill -STOP` |
 | Owner announcements (one text to everyone active in 30 days, dry run by default; opted-out, quiet hours, once per number) | [announce.md](announce.md) | `node --test test/announce.test.js`; cage: seeded DB + `bin/fake-sendblue.mjs`; live: dry run only |
 | Reason Web sign-in (W1: `/web` by number + texted code, the shared `reason_page` cookie with a 30-day idle limit, CSRF/origin/CSP, sign-out, the join block with the LIVE line's sms: link (`body=hey`) + QR, no number written; behind `REASON_WEB`, `on` (everyone) on live since 2026-10-27 05:04 UTC) | [web-signin.md](web-signin.md) | `node --test test/web-signin.test.js test/web-join-number.test.js test/web-design.test.js`; `bin/web-drive.mjs` under `caged.sh env` (no model); `bin/web-preview.mjs` (every Web screen × 390/1280 × Paper/Night + compare-*.png vs the design handoff); cage: `REASON_WEB=on caged.sh start`, then curl `/web` |
 | Reason Web conversation (W2: signed-in `/web` = the one conversation, iMessage/Web labels, paging, composer → web channel, SSE `/web/stream` + poll fallback, one id = one turn, boundary note once, decision-9 line after a Web→text switch; Ongoing top 3 + See all, HIDE →, sticky bar, short row titles; Web-only chats, their titles and `GET /web/chats/recent`; behind `REASON_WEB`) | [web-conversation.md](web-conversation.md) | `node --test test/web-convo.test.js test/web-design.test.js test/web-ongoing2.test.js`; `bin/web-convo-drive.mjs` under `caged.sh env` (real HTTP, no model); `bin/web-preview.mjs` (all screens) |
@@ -67,7 +67,7 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Reason Web thread scrolling (v2: opens at the bottom with L1 ghost lines; "where you are" note = day + device; TODAY ↓ in the composer line; done tasks settle into DONE lines from `task_messages`; L2 finding earlier; L10 long work; labels who · where · when) | [web-thread.md](web-thread.md) | `node --test test/web-thread.test.js test/web-thread-browser.test.js`; `bin/web-thread-preview.mjs` (drives + draws + compare vs reference); live: temporary owner session, `/web?thread` + `/web/history` |
 | Reason Web §4h plumbing (while you were out under TODAY once per return; take it back = cancellable until the turn takes the held row, never a held send; working line counts only from a real multi-file loop, label throttled 3 s) | [web-small-details-plumbing.md](web-small-details-plumbing.md) | `node --test test/web-4h-plumbing.test.js`; staging take-it-back / taken-back / while-you-were-out / working-counts; live: throwaway account + temporary session |
 | Reason Web daily edition Home (`/web?home` behind REASON_WEB_DAILY: NO. n masthead, Caveat greeting, Overnight decision/update/done, Lines out, One question → Memory, New in your book, pick up = how they chat; one shared thread, no new-chat entry) | [web-daily.md](web-daily.md) | `node --test test/web-daily.test.js`; staging `daily-*` rows; live: journal `daily_edition` + owner session GET |
-| Reason Web Stamps + shared stamps (`REASON_WEB_DAILY`: awarded at task done / call outcome / order placed, told once only at `on`; the book `/web/stamps`; share + revoke; public `/s/<12 base62>` + og.png, revoked → the same 404 page as an unknown id; redaction) | [web-stamps.md](web-stamps.md) | `node --test test/stamps.test.js test/stamps-web.test.js`; `bin/web-stamps-drive.mjs`; live: owner session → `/web/stamps`; throwaway account share → `/s/<id>`, og.png, revoke → 410 |
+| Reason Web Stamps + shared stamps (`REASON_WEB_DAILY`: awarded at task done / call outcome / order placed, told once only at `on`; the book `/web/stamps`; share + revoke; public `/s/<12 base62>` + og.png, revoked → the same 404 page as an unknown id; redaction) | [web-stamps.md](web-stamps.md) | `node --test test/stamps.test.js test/stamps-web.test.js`; `bin/web-stamps-drive.mjs`; live: owner session → `/web/stamps`; throwaway account share → `/s/<id>`, og.png, revoke → the same 404 as an unknown id |
 | Reason Web shell (the wordmark reads "reason" and never wraps; the logo always goes Home `/web?home`; link cards for signed-out `/web`, `/privacy`, `/terms`, none when signed in) | [web-shell.md](web-shell.md) | `node --test test/wordmark-text.test.js test/wordmark-one-line.test.js test/web-logo-home.test.js`; `bin/wordmark.mjs`; live: GET the three pages with a crawler UA, og tags + `og-*.png` 1200×630 |
 | Walking directions, Route + Escort, and real trips (`REASON_DIRECTIONS` off/`owner`/on; the `directions` tool makes a stored trip at `/d/<id>` behind the code gate; `/d/sample` with `REASON_DIRECTIONS_SAMPLE`; MapLibre with no tiles or key, shapes from Overpass; Night after local sunset via suncalc; reroute through Reason's server) | [directions.md](directions.md) | `node --test test/directions.test.js test/trips.test.js`; `bin/directions-drive.mjs <out> --reference ~/Downloads/reason-directions-handoff/screens` (48 screens + fake-GPS walk + reroute + arrival + a real trip through the gate; `DIRECTIONS_DRIVE_ONLY=real` for that alone) |
 | Reason Web v2 edge (every Text Reason → `body=hey` + typed hint; wrong/expired code digits stay in pen; L6 Texting you a code… / L7 CHECKING…; L3–L5 loading drawn at once then the real page fetched, STILL LOOKING… after 8 s, 9B on failure; E1 404 on unknown /web; E5 maintenance switch from /ops or `scripts/web-maintenance.mjs`; keyboard focus ring, skip link) | [web-edge.md](web-edge.md) | `node --test test/web-edge.test.js test/web-edge-browser.test.js`; live: temporary owner session, GET `/web/nope`, maintenance on for one fetch then off |
@@ -76,6 +76,9 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Reason Web notes as tags, files as chips (#267: shared location / inline reply / contact card / voice / file / burst shown as tags, Reason-sent files as chips; stored text unchanged) | [web-notes.md](web-notes.md) | `node --test test/web-notes.test.js`; `bin/web-notes-drive.mjs` (in process, no model) |
 | Reason Web audio chips (voice notes in/out and call recordings play inline; owner-only route, .caf → .m4a, Range) | [web-audio.md](web-audio.md) | `node --test test/web-audio-chip.test.js`; `bin/web-audio-drive.mjs [--shots=DIR]` (in process, no model; WebKit + Chrome) |
 | Deleting a person's data (`src/data.js` `deleteData({ conversation })`, `npm run data:delete`: every table keyed by their conversation, every table in exactly one list — `COVERAGE`; what a scoped delete keeps and why is `KEPT_ON_DELETE`) | [data-delete.md](data-delete.md) | `node --test test/data-coverage.test.js`; `bin/delete-coverage-drive.mjs` under `caged.sh env` (every table seeded, delete, scan; no model) |
+| Recall ("the spa place you called": done things rank above the thread, Reason's own "nothing saved" replies never handed back; "forget about X" takes the calls, exchanges, actions and reminders naming them out of recall; `busy_timeout` 5 s) | [recall.md](recall.md) | `node --test test/recall-history.test.js test/db-busy-timeout.test.js`; `bin/recall-figures-drive.mjs` under `caged.sh env` (19 steps, no model, no network) |
+| No false "done" (#337 claim check, `REASON_CLAIM_CHECK` default `acting`: a reply saying started/sent/made that no tool this turn did is rewritten once) | [no-false-done.md](no-false-done.md) | `node --test test/no-false-done.test.js`; `bin/no-false-done-drive.mjs ulta\|directions\|chat [--inject] [--off]` (real claude-cli turn on the test token) |
+| Security boundaries (own files only #345, ElevenLabs inbound webhook #350 — removed with ElevenLabs in #359, `/health` names nobody #352; delete #353 is data-delete.md; no payment details in any call field, lead 31) | [security-boundaries.md](security-boundaries.md) | `node --test test/driveorg.test.js test/no-elevenlabs.test.js test/health-redact.test.js test/call-payments.test.js`; `bin/recall-figures-drive.mjs` own-file steps; `bin/call-payments-drive.mjs` under `caged.sh env`; cage `GET /health` |
 | Reason Web wax-seal book (`REASON_STAMPS_WAX`/`EVERYDAY`/`TIERS`/`ALL`) | [web-stamps-wax.md](web-stamps-wax.md) | `node --test test/stamps-wax.test.js test/stamps-all.test.js`; `bin/web-seals-drive.mjs` |
 
 ## Each file has four sections
@@ -98,20 +101,29 @@ drives each one live, and ships proven corrections.
 
 Real features with no file here. Add one when you touch them.
 
-- Phone calls beyond [call-completeness.md](call-completeness.md) — the opening line, voicemail, language switch, holds, third-party errands (`src/calls/`, `test/call-*.test.js`). `bin/call-turn.sh` can drive any owner-call turn on the cage now.
+- Phone calls beyond [call-completeness.md](call-completeness.md) — the opening line, voicemail, language switch, holds, third-party errands (`src/calls/`, `test/call-*.test.js`). Call turns are driven in process (`bin/call-identity-drive.mjs`, claude-cli; `bin/call-filler-drive.mjs`, no model) — there is no HTTP call-turn route.
 - Voice notes — `src/voice.js`, `test/voice.test.js`
 - Email, calendar and Drive, per Google account — `src/google.js`, `src/drive.js`, `src/driveorg.js`
 - Documents: `.docx`, `.pptx`, `.pdf` — `src/documents/`, `test/documents.test.js`
 - The browser Reason drives itself, and sign-in windows — `src/browser.js`, `src/signin*.js`
 - Timers, tasks, watches and the 15s sweep — `src/runtime.js`, `test/tasks.test.js`
 - Tapbacks and iMessage screen effects — `src/tapbacks.js`, `src/expressive.js`
-- The harm gate (every message screened before a turn) — `src/harm.js`, `test/harm.test.js`; what it is shown, and the 2026-10-23 outage, are in [inbound-message.md](inbound-message.md)
+- The harm gate (every message screened beside the turn, #227) — `src/harm.js`, `test/harm.test.js`; what it is shown, and the 2026-10-23 outage, are in [inbound-message.md](inbound-message.md)
 - Flight records and check-in — `src/flights.js` (`flight_list`, `flight_checkin_start`; a sign-in probe that cannot read the account page twice is `blocked: "could_not_check_signin"`, never "not signed in" — `test/flights.test.js`, `test/signin.test.js`). Flight *search* is mapped in [flight-search.md](flight-search.md)
 - Receipts, the undo window, the furthest point
 - **Stopping Reason dead, and starting it again** — `pause_everything` / `resume_everything`
   (`src/pause.js`; `grep -n 'name: "pause_everything"\|case "pause_everything"' src/tools.js`),
   shipped 2026-10-11 in `eeb760d`. Covered by `test/pause.test.js`. A real user-facing control with
   no feature file.
+- **The master pausing or removing a person** — `admin_pause` / `admin_resume` / `admin_remove`
+  (`case "admin_pause"` in `src/tools.js`). Since #351 (`d0b7f79`, 2026-11-07) a stop belongs to the
+  number, not one texting line: `db.stoppedStateOf(address)` ("removed" outranks "paused") is read by
+  `accounts.accountState`, inbound calls, invite redemption and every background sweep, so a number
+  stopped on Sendblue is stopped on Linq too. A pause never softens a removal on another line; a
+  resume clears pauses on every line but never brings back a removed one — it answers
+  `ok: false, state: "removed"` until the master explicitly says to undo it, then
+  `admin_resume { number, undo_removal: true }`. Covered by `test/state-per-person.test.js`. No
+  feature file.
 - Finding places near somebody — `nearby_places` (`src/places.js`;
   `grep -n 'name: "nearby_places"\|case "nearby_places"' src/tools.js`), the other half of
   [location-share.md](location-share.md). **No test of its own, and it calls Overpass over the
@@ -124,7 +136,7 @@ Real features with no file here. Add one when you touch them.
   hi — this is an AI assistant calling for <owner>…"* since `2908618` (2026-10-12), and an owner
   with no name on file is *"the person I work for"*. Two tests still asserting the old *"Hi — this
   is…"* / *"on behalf of"* wording were red on `main` until `wt/catchup-guard` fixed them
-  (`test/accounts.test.js:167`, `test/elevenlabs.test.js:274`).
+  (`test/accounts.test.js:167` and the old provider's test, since removed).
 - **A restart does not eat a text** — the startup catch-up (`3c45286`) and its owner guard
   (`wt/catchup-guard`); mapped in [inbound-message.md](inbound-message.md).
 - **The morning brief** — `src/brief.js`, `test/brief.test.js`, `test/flow-brief.test.js`, shipped
@@ -142,11 +154,6 @@ Real features with no file here. Add one when you touch them.
   Shipped `e22a85b`.
 - **Apple Calendar** — CalDAV read/write — `src/icloud.js`. Shipped `437b051`. Since #347 the Apple ID
   credential goes only to `caldav.icloud.com` / `pNN-caldav.icloud.com` over https.
-- **No false "done"** (#337) — the claim check in `src/said.js` (`REASON_CLAIM_CHECK`, default
-  `acting`): a reply saying done/sent/started with no successful tool behind it is rewritten once.
-  Drive: `bin/no-false-done-drive.mjs`.
-- **Own files only** (#345) — `src/ownfiles.js`: `drive_upload` and `voice_note_send` refuse a path
-  Reason did not make or keep for this conversation (`not_theirs`).
 - **Private-network guard** (#348) — `src/netguard.js`: a URL somebody else chose never reaches a
   private or loopback host (web_lookup, offers, inbound media, video, browser); inbound media is
   https-only. Only bypass: `REASON_TEST_ALLOW_PRIVATE_FETCH=1` under `node --test`.
@@ -156,8 +163,17 @@ Real features with no file here. Add one when you touch them.
 - **The /ops status page** (#106) — `src/pages/ops.js`, `src/opspassword.js`, `opsRequest` in
   `src/http.js`; `test/ops-gate.test.js`. Password gate (`REASON_OPS_PASSWORD_HASH`, sign-in 303),
   instant Check again / Clear (202 as JSON), `running` in `/ops.json`; public at
-  `heyreason.com/ops` via Netlify. On the cage both routes answer 401 (this Mac's `.env`
-  sets the hash).
+  `heyreason.com/ops` via Netlify. On the cage both routes answer 401 without a sign-in; this
+  Mac's `.env` has no hash (checked 2026-11-07), so the cage shows the code gate unless started
+  with a throwaway `REASON_OPS_PASSWORD_HASH=… bin/caged.sh start` (the shell env passes through;
+  `start` begins on a fresh database, so read the ops key again after each start). Lockout rules (audit lead 23, `test/ops-gate-lockout.test.js`): a code is only
+  sent **and only taken** with the ops key (`?k=`, `ops_state` row `key`); a keyless `code=` POST
+  answers the gate (401) and adds nothing to `page_attempts` page `ops`. Keyless wrong passwords
+  count under `ops:pw:<ip>` (5) and the shared `ops:pw` (30); keyed ones only under `ops:pw:key`
+  (5), so strangers' guesses never 429 the keyed link. Cage drive (2026-11-07, 8863): 7 keyless `code=`
+  POSTs → 401 and no `ops` rows; 30 keyless `password=` POSTs with varied `x-forwarded-for`, then
+  the right one keyless → 429, keyed wrong → 401 "4 tries left", keyed right → 303 + cookie; key
+  = `SELECT v FROM ops_state WHERE k='key'`; `peek.sh sql "SELECT page_id, ok, count(*) FROM page_attempts GROUP BY 1,2"`.
 - **Invites, dark** (#104) — `src/invites.js`, `GET /i/{token}`, claim by text in
   `src/channels/router.js`, owner-only tools behind `REASON_INVITES_OPEN` (off on live);
   `test/invites*.test.js`, `test/flow-invites.test.js`; tagline "Your personal concierge" on page + og:description → `bin/tagline.mjs`.

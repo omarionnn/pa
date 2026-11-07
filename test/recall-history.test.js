@@ -44,7 +44,7 @@ const { runTool } = await import("../src/tools.js");
 
 const CONCEPTS = [
   ["spa", "massage"], ["link", "page", "brunch"], ["pizza"], ["dentist"], ["flight", "flights"],
-  ["remind", "reminder", "rent"], ["weather"],
+  ["remind", "reminder", "rent"], ["weather"], ["place", "places"],
 ];
 /** A fake embedding: one axis per concept the text mentions, plus a small shared axis. */
 function fakeVec(text) {
@@ -253,4 +253,214 @@ test("the retention sweep drops an exchange's vector with its words, and a delet
   await deleteData({ conversation: D });
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = ?").get(D).n, 0);
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = 'dm:spa'").get().n, keepA, "another person's vectors are left alone");
+});
+
+// ---------- ranking (live proof 2026-11-06) ----------
+// "spa place" on live put the real spa call 9th, under the top 5 that were handed over, and the top
+// hit was Reason's own earlier "I don't have any spa place saved" reply. Here the thread rows say
+// "spa place" word for word, so by raw score they all beat the call, as on live.
+const SPA_ASK = "Do you remember the spa place you came last time?";
+function spaThread(C) {
+  const call52 = call(C, { to: "+16462582221", label: "Massage price check", goal: "Ask what a 60 minute massage costs at Renew Body Spa. Price only.", summary: "notes: they quoted $90 for an hour." });
+  let t = base + DAY;
+  said(C, "user", SPA_ASK, t);
+  said(C, "assistant", "I don't have any spa place saved. It's not in my notes or in anything I've looked up for you lately.", t + 1000);
+  said(C, "user", "the spa place, you know it", t + 60_000);
+  said(C, "assistant", "I don’t remember which spa place you mean. Can you tell me the name?", t + 61_000);
+  for (let i = 0; i < 8; i++) {
+    t += 3_600_000;
+    said(C, "user", `any spa place ideas ${i}? good places nearby`, t);
+    said(C, "assistant", `Sure, spa place idea ${i}: try the one on 23rd, places like that are usually walk-in`, t + 1000);
+  }
+  chatter(C, t + DAY);
+  return call52;
+}
+
+test("ranking: the real spa call is #1 for 'spa place' and for the longer wording, over Reason's own replies", async () => {
+  const C = "dm:rank-spa";
+  const call52 = spaThread(C);
+  await index(C);
+  // By raw score alone the call would not make the cut: every "spa place" exchange beats it.
+  const vec = fakeVec("spa place");
+  const raw = db.db.prepare("SELECT fact_id, source_table, embedding FROM fact_embeddings WHERE conversation_id = ?").all(C)
+    .map(r => ({ id: r.fact_id, t: r.source_table, s: (cos(vec, r.embedding)) }))
+    .sort((a, b) => b.s - a.s);
+  assert.ok(raw.findIndex(r => r.t === "calls" && r.id === call52) >= 5, "the case reproduces: the call is outside the raw top 5");
+
+  for (const q of ["spa place", SPA_ASK]) {
+    const { out, text } = await searchFor(C, q);
+    assert.equal(out.history[0].kind, "call", `${q}: ${text}`);
+    assert.equal(out.history[0].id, call52);
+    assert.match(out.history[0].text, /Renew Body Spa/);
+    assert.doesNotMatch(text, /don't have any spa place saved|don’t remember which/, `${q}: Reason's own "nothing saved" replies are never handed back`);
+  }
+});
+
+test("ranking: the word fallback (embeddings down) puts the call first and drops the 'nothing saved' reply too", async () => {
+  const C = "dm:rank-spa-words";
+  const call52 = spaThread(C);
+  const hits = ri.keywordHistory(C, "spa place");
+  assert.equal(hits[0].source, "calls");
+  assert.equal(hits[0].id, call52);
+  assert.ok(hits.every(h => !/saved|remember which/.test(h.text)), JSON.stringify(hits));
+});
+
+test("ranking: a done thing far below the best match does not jump the thread", async () => {
+  const C = "dm:rank-far";
+  // The call shares only the weak common axis with "pizza"; the thread is a direct match.
+  call(C, { to: "+15550002222", label: "Dentist", goal: "Book a dentist cleaning" });
+  said(C, "user", "where should we get pizza", base);
+  said(C, "assistant", "Joe's Pizza on Carmine St", base + 1000);
+  chatter(C, base + DAY);
+  await index(C);
+  const hits = ri.searchHistory(C, fakeVec("pizza"), { minScore: 0 });
+  assert.equal(hits[0].kind, "thread", JSON.stringify(hits));
+});
+
+test("saidNothing reads only Reason's side, and only its 'nothing on it' phrasings", () => {
+  for (const yes of [
+    "them: spa?\nyou: I don't have any spa place saved.",
+    "them: x\nyou: Nothing saved on that yet.",
+    "them: x\nyou: I don’t remember that one.",
+    "them: x\nyou: I couldn't find anything about a spa.",
+    "them: x\nyou: I don't know which place you mean.",
+    "them: x\nyou: I have no record of that call.",
+  ]) assert.equal(ri.saidNothing(yes), true, yes);
+  for (const no of [
+    "them: I don't remember the name, do you?\nyou: Renew Body Spa, I called them Oct 29.",
+    "them: x\nyou: It's saved, I can see it in your notes.",
+    "them: x\nyou: Nothing to worry about, it's booked.",
+    "them: I couldn't find anything\nyou: Here are three spas.",
+    // review: a denial that goes on to give an answer is not a "nothing"
+    "them: x\nyou: I couldn't find anything cheaper than $90 at Renew Body Spa.",
+    "them: x\nyou: I don't know what time they close, but it's Renew Body Spa on 23rd.",
+    "them: x\nyou: I can't find any slots before 5, want 6pm?",
+    "them: x\nyou: I don't have your card saved, but the spa is Renew Body Spa.",
+    // review: only the last reply of a multi-message exchange decides
+    "them: spa?\nyou: I don't remember that one.\nyou: Found it: Renew Body Spa, called Oct 29.",
+  ]) assert.equal(ri.saidNothing(no), false, no);
+});
+
+function cos(vec, blob) {
+  const b = new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < vec.length; i++) { dot += vec[i] * b[i]; na += vec[i] ** 2; nb += b[i] ** 2; }
+  return dot / Math.sqrt(na * nb);
+}
+// Review 11-05: "forget Yaw" took the saved facts and left the calls and the thread findable — "what
+// do you remember about Yaw" still came back with the call to him. A forget clears recall too.
+test("forget takes the matching calls and exchanges out of recall — by meaning and by words — and only this person's", async () => {
+  const C = "dm:forget", OTHER = "dm:forget-other";
+  const yawCall = call(C, { to: "+15553330000", label: "Yaw", goal: "Ask Yaw about the spa deposit", summary: "notes: Yaw said the massage deposit is $40" });
+  const spaCall = call(C, { to: "+16462582221", label: "Spa", goal: "Ask Renew Body Spa about a massage" });
+  said(C, "user", "Yaw owes me for the spa massage", base);
+  said(C, "assistant", "noted, Yaw and the spa massage", base + 1000);
+  said(C, "user", "and the pizza place?", base + 2000);
+  said(C, "assistant", "Joe's Pizza, open late", base + 3000);
+  chatter(C, base + DAY);
+  // Somebody else's Reason knows a Yaw too. Their rows are theirs and stay.
+  const theirCall = call(OTHER, { to: "+15553330000", label: "Yaw", goal: "Ask Yaw about the spa massage" });
+  chatter(OTHER, base + DAY);
+  db.remember(C, "Yaw", "is my cousin");
+  await index(C);
+  await index(OTHER);
+  assert.match((await searchFor(C, "spa massage")).text, /Yaw/, "found before the forget");
+
+  const out = await runTool("forget", { about: "Yaw" }, { conversationId: C });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.recall_cleared.calls, 1);
+  assert.ok(out.recall_cleared.exchanges >= 1);
+
+  const vec = fakeVec("spa massage");
+  const hits = ri.searchHistory(C, vec, { minScore: 0, limit: 50 });
+  assert.ok(hits.every(h => !/Yaw/.test(h.text)), JSON.stringify(hits));
+  assert.ok(hits.some(h => /Renew Body Spa/.test(h.text)), "the rest of recall still works");
+  assert.equal(ri.keywordHistory(C, "Yaw spa deposit").filter(h => /Yaw/.test(h.text)).length, 0);
+  assert.doesNotMatch((await searchFor(C, "Yaw spa massage deposit")).text, /Yaw/);
+  assert.equal(ri.snippetFor(C, "calls", yawCall), null);
+  assert.ok(ri.snippetFor(C, "calls", spaCall));
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'calls' AND fact_id = ?").get(C, yawCall).n, 0, "its vector is gone");
+  // The indexer never puts them back.
+  await index(C);
+  assert.ok(ri.searchHistory(C, vec, { minScore: 0, limit: 50 }).every(h => !/Yaw/.test(h.text)));
+  // Their own messages are still theirs: the rows stay, only recall is cleared.
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM event_log WHERE conversation_id = ? AND content LIKE '%Yaw%'").get(C).n, 2);
+  // Sealed: the other person's call to their Yaw is untouched.
+  assert.ok(ri.snippetFor(OTHER, "calls", theirCall));
+  assert.match((await searchFor(OTHER, "spa massage")).text, /Yaw/);
+});
+
+test("forget with nothing saved as a fact still clears the calls that name them; nothing anywhere is still 'nothing on record'", async () => {
+  const C = "dm:forget2";
+  call(C, { to: "+15554440000", label: "Kofi", goal: "Ask Kofi about the dentist appointment" });
+  chatter(C, base + DAY);
+  await index(C);
+  const out = await runTool("forget", { about: "Kofi" }, { conversationId: C });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.recall_cleared.calls, 1);
+  assert.doesNotMatch((await searchFor(C, "dentist")).text, /Kofi/);
+  const none = await runTool("forget", { about: "Zanele" }, { conversationId: C });
+  assert.equal(none.ok, false);
+});
+
+// Review 11-07 (5): with nobody saved under it, a vague subject clears nothing from recall.
+test("review 11-07: 'forget that' / 'forget work' with nobody saved under it clears nothing from recall", async () => {
+  const C = "dm:forget-vague";
+  said(C, "user", "work was rough, the spa massage after helped", base);
+  said(C, "assistant", "glad the spa massage helped after work", base + 1000);
+  chatter(C, base + DAY);
+  await index(C);
+  for (const about of ["that", "work", "it", "money"]) {
+    const out = await runTool("forget", { about }, { conversationId: C });
+    assert.equal(out.ok, false, `${about}: ${JSON.stringify(out)}`);
+  }
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM recall_forgotten WHERE conversation_id = ?").get(C).n, 0);
+  assert.match((await searchFor(C, "spa massage")).text, /spa massage/, "still findable");
+});
+
+// Review of the fixes: a two-letter name is a name ("forget Jo"), with nobody saved under it too.
+test("review 11-07: 'forget Jo' with nobody saved still clears Jo's exchange from recall", async () => {
+  const C = "dm:forget-jo";
+  said(C, "user", "Jo said the spa massage was great", base);
+  said(C, "assistant", "noted, Jo liked the spa massage", base + 1000);
+  chatter(C, base + DAY);
+  await index(C);
+  const out = await runTool("forget", { about: "Jo" }, { conversationId: C });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.ok(db.db.prepare("SELECT COUNT(*) AS n FROM recall_forgotten WHERE conversation_id = ?").get(C).n > 0);
+});
+
+// Review 11-07 (6): an action row that names them only in what it attempted (a query, a title) leaves recall too.
+test("review 11-07: forget reaches an action row that names them only in `attempted`", async () => {
+  const C = "dm:forget-attempted";
+  const { id } = db.recordAction({ conversationId: C, action: "web_search", target: "spa", attempted: { query: "massage spa near Ama's office" }, outcome: "ok", result: {}, receipt: "looked up spa places" });
+  chatter(C, base + DAY);
+  await index(C);
+  assert.ok(ri.snippetFor(C, "action_ledger", id));
+  const out = await runTool("forget", { about: "Ama" }, { conversationId: C });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.recall_cleared.actions, 1);
+  assert.equal(ri.snippetFor(C, "action_ledger", id), null);
+});
+
+// Review 11-07 (7): the exchange a forgotten line sat in is indexed again without it — the lines
+// around it stay findable.
+test("review 11-07: forget re-indexes the rest of the exchange a forgotten line was in", async () => {
+  const C = "dm:forget-span";
+  said(C, "user", "Kwesi says hi. also book me the dentist for friday", base);
+  said(C, "assistant", "booked the dentist for friday at 10", base + 1000);
+  said(C, "user", "and the pizza place?", base + 2000);
+  said(C, "assistant", "Joe's Pizza, open late", base + 3000);
+  chatter(C, base + DAY);
+  await index(C);
+  assert.match((await searchFor(C, "dentist")).text, /booked the dentist/);
+  const out = await runTool("forget", { about: "Kwesi" }, { conversationId: C });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  await index(C);
+  const found = (await searchFor(C, "dentist")).text;
+  assert.match(found, /booked the dentist/, "Reason's own line in that exchange is findable again");
+  assert.doesNotMatch(found, /Kwesi/);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM recall_reindex WHERE conversation_id = ?").get(C).n, 0, "the queue is drained");
+  await index(C);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'event_log' AND fact_id = (SELECT MIN(id) + 1 FROM event_log WHERE conversation_id = ?)").get(C, C).n, 1, "indexed once");
 });

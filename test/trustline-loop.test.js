@@ -101,20 +101,44 @@ const turn = (text) => agent.runTurn({
 });
 
 test("they said to reorder groceries without asking, so the next one goes through and says why", async () => {
-  // Turn one: they say it, and Reason writes it down in their own words.
+  // Turn one: they say it, and Reason reads it back and asks. Nothing is saved yet.
+  const grant = {
+    text: "you can reorder groceries without asking, up to $80",
+    scope: { action: "purchases", target: "groceries", max_amount: 80 },
+  };
+  let yesId = null;
+  const ask = script([
+    () => use("permission_grant", grant),
+    (refused) => {
+      assert.equal(refused.blocked, "needs_confirmation", JSON.stringify(refused));
+      return use("confirm_request", { action: "permission_grant", summary: "save that: I can reorder groceries up to $80 without asking?", target: refused.use_target });
+    },
+    (asked) => {
+      assert.ok(asked.confirmation_id, JSON.stringify(asked));
+      yesId = asked.confirmation_id;
+      return say("save that: i can reorder groceries up to $80 without asking? anything over that or anything else, i'll still check");
+    },
+  ]);
+  const asked = await turn("you can reorder groceries without asking, up to $80");
+  assert.equal(ask.rounds(), 3);
+  assert.match(asked, /groceries/i);
+  assert.equal(db.listPermissions(C).length, 0, "nothing is saved before their yes");
+
+  // Turn one and a half: their yes, and Reason writes it down in their own words.
   const first = script([
-    () => use("permission_grant", {
-      text: "you can reorder groceries without asking, up to $80",
-      scope: { action: "purchases", target: "groceries", max_amount: 80 },
-    }),
+    () => use("confirm_record", { confirmation_id: yesId }),
+    (rec) => {
+      assert.equal(rec.state, "granted", JSON.stringify(rec));
+      return use("permission_grant", { ...grant, confirmation_id: yesId });
+    },
     (saved) => {
       assert.equal(saved.ok, true, JSON.stringify(saved));
       assert.equal(saved.permission.said, "you can reorder groceries without asking, up to $80");
-      return say("got it — groceries under $80, i'll just do it. anything over that or anything else, i'll check");
+      return say("saved — groceries under $80, i'll just do it");
     },
   ]);
-  const said = await turn("you can reorder groceries without asking, up to $80");
-  assert.equal(first.rounds(), 2);
+  const said = await turn("yes");
+  assert.equal(first.rounds(), 3);
   assert.match(said, /groceries/i);
   assert.equal(db.listPermissions(C).length, 1);
 

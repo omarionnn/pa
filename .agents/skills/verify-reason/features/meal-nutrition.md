@@ -40,9 +40,11 @@ validation, `meal_query`, `meal_correct` and the duplicate check are untested.
   numbers". The latest answer wins for each setting.
 - **Querying logged meals.** "What have I eaten today / this week" → exact SQL over the user's own
   `meal_entries`, ranges added up honestly.
-- **Deleting meal log — not built.** Nothing in `src/` deletes from `meal_entries`: there is no
-  delete function in `src/db.js` and no meal-delete tool. "Delete my meal log" has no code path;
-  treat any claim that it worked as a false success.
+- **Deleting meal log — not built.** There is no meal-only delete: no delete function in
+  `src/db.js` and no meal-delete tool, so "delete my meal log" has no code path; treat any claim
+  that it worked as a false success. The only thing that erases `meal_entries` is the whole-person
+  data delete (`src/data.js:203` lists it in `TABLES`, `deleteData` at `src/data.js:552`), which
+  takes everything else of theirs with it.
 - **Allergen safety.** Never states or implies an allergen is absent because it is not visible. For
   allergen questions about a plate photo, points to the package.
 - **No diet regimen by default.** No calorie goals, targets, "good/bad" labels, weight advice unless

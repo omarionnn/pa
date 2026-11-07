@@ -31,7 +31,7 @@ delete process.env.REASON_SITE_PROXY_SECRET;
     process.exit(2);
   }
 }
-for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "ANTHROPIC_API_KEY", "AGENTCARD_CLIENT_SECRET", "ELEVENLABS_API_KEY"]) {
+for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "ANTHROPIC_API_KEY", "AGENTCARD_CLIENT_SECRET", "TWILIO_AUTH_TOKEN"]) {
   if (process.env[k]) { console.error(`refusing: ${k} is set — run under caged.sh env`); process.exit(2); }
 }
 process.env.REASON_PUBLIC_URL ||= "https://reason.example.test";
@@ -174,7 +174,7 @@ try {
   }
   const odd = await Promise.all([`/web/media/m/${callRow}/1`, `/web/media/m/${callRow + 9999}/0`, m(linkRow), m(climbRow), m(foreignCallRow)].map(p => get(kofi, p).then(x => x.status)));
   step("wrong index, guessed row, symlink out, ../ climb, another conversation's call → 404", odd.every(s => s === 404), odd.join(","));
-  step("no provider or CDN address reaches the browser", ![v, c, i1].some(x => /cdn\.drive|elevenlabs|https?:/i.test(String(x.headers.get("content-disposition")))));
+  step("no provider or CDN address reaches the browser", ![v, c, i1].some(x => /cdn\.drive|twilio|https?:/i.test(String(x.headers.get("content-disposition")))));
   db.db.prepare(`DELETE FROM messages WHERE id IN (${linkRow}, ${climbRow}, ${foreignCallRow})`).run();
 
   const page = await get(kofi, "/web?thread");

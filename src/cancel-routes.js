@@ -764,7 +764,7 @@ function playbookFrom(r) {
  *
  * Returned by the tool rather than left for the model to improvise, because these are the four
  * places where the temptation is to offer a workaround and there is not one. The phone line names
- * the build that would change it (the ElevenLabs calls work, 2026-10-09) and promises nothing
+ * the build that would change it (the calls work, 2026-10-09) and promises nothing
  * before then.
  */
 export function cannotDo(kind, label) {

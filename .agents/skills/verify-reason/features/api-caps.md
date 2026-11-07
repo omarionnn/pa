@@ -28,7 +28,7 @@ at New York midnight / on the 1st with nothing to reset.
 
 ## How to get to it (user POV)
 
-Nobody asks for it. The owner sees the /ops "API spend" row (`$X of $1.00 today · calls $Z of $2.00 ·
+Nobody asks for it. The owner sees the /ops "API spend today / 7d by feature" row (`api_spend`, src/ops.js:614) (`$X of $1.00 today · calls $Z of $2.00 ·
 $Y of $10.00 this month`) and the "Phone calls on the API" row, and gets one text the day a cap hits.
 
 ## Driving it with the harness
@@ -40,7 +40,7 @@ $Y of $10.00 this month`) and the "Phone calls on the API" row, and gets one tex
   `db.saveOpsCheck` both rows `warn` 10 min back, and inserts a `page_sessions` row
   (`conversation_id` = `config.ownerConversation`). `POST /ops.json` with `Cookie: reason_page=<token>`
   and `action=check` twice → `serve.log` shows ONE "Reason check — 2 things need you" text, then
-  `texted:false`. `bin/call-turn.sh new` + one turn past both caps → `voice_turn_threw` with the SDK's
+  `texted:false`. (2026-10-27, via the since-removed `bin/call-turn.sh`) one call turn past both caps → `voice_turn_threw` with the SDK's
   "Could not resolve authentication method" (the key is blanked): the turn went to the API path, i.e.
   the call was not moved or stopped.
 

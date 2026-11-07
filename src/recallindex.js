@@ -95,10 +95,15 @@ function exchangeText(rows) {
 
 // ---------- what is not indexed yet ----------
 
+/** Not a row they asked Reason to forget (src/db.js forgetFromRecall). `alias` is the source row's. */
+const notForgotten = (alias, table) => `NOT EXISTS (SELECT 1 FROM recall_forgotten f WHERE f.conversation_id = ${alias}.conversation_id AND f.source_table = '${table}' AND f.row_id = ${alias}.id)`;
+const forgotten = (conversationId, table, id) => !!db.prepare("SELECT 1 FROM recall_forgotten WHERE conversation_id = ? AND source_table = ? AND row_id = ?").get(conversationId, table, id);
+
 function pendingLedger(conversationId, limit) {
   return db.prepare(`SELECT l.* FROM action_ledger l
     WHERE ${conversationId ? "l.conversation_id = ? AND" : ""} l.action NOT IN (${SKIP_ACTIONS.map(() => "?").join(",")})
       AND NOT EXISTS (SELECT 1 FROM fact_embeddings e WHERE e.fact_id = l.id AND e.source_table = 'action_ledger')
+      AND ${notForgotten("l", "action_ledger")}
     ORDER BY l.id LIMIT ?`).all(...(conversationId ? [conversationId] : []), ...SKIP_ACTIONS, limit);
 }
 
@@ -107,6 +112,7 @@ function pendingCalls(conversationId, limit, now) {
     WHERE ${conversationId ? "c.conversation_id = ? AND" : ""} (c.ended_at IS NOT NULL OR c.state IN ('completed','failed','no_answer','voicemail','busy','canceled','cancelled'))
       AND COALESCE(c.updated_at, c.created_at) <= ?
       AND NOT EXISTS (SELECT 1 FROM fact_embeddings e WHERE e.fact_id = c.id AND e.source_table = 'calls')
+      AND ${notForgotten("c", "calls")}
     ORDER BY c.id LIMIT ?`).all(...(conversationId ? [conversationId] : []), now - CALL_SETTLE_MS, limit);
 }
 
@@ -115,6 +121,7 @@ function pendingTimers(conversationId, limit) {
   return db.prepare(`SELECT t.* FROM timers t
     WHERE ${conversationId ? "t.conversation_id = ? AND" : ""} t.series_id IS NULL
       AND NOT EXISTS (SELECT 1 FROM fact_embeddings e WHERE e.fact_id = t.id AND e.source_table = 'timers')
+      AND ${notForgotten("t", "timers")}
     ORDER BY t.id LIMIT ?`).all(...(conversationId ? [conversationId] : []), limit);
 }
 
@@ -125,11 +132,21 @@ function pendingExchanges(conversationId, limit, now) {
   const out = [];
   for (const c of convs) {
     if (out.length >= limit) break;
+    // First the runs a forget took the vector off (src/db.js forgetFromRecall): what is left of each
+    // is indexed again, so the lines around a forgotten one are not lost from recall for good.
+    for (const q of db.prepare("SELECT span_from, span_to FROM recall_reindex WHERE conversation_id = ? ORDER BY span_from").all(c)) {
+      const left = db.prepare(`SELECT id, conversation_id, role, content, at FROM event_log e WHERE conversation_id = ? AND id BETWEEN ? AND ? AND role IN ('user','assistant') AND content <> ''
+        AND ${notForgotten("e", "event_log")} ORDER BY id`).all(c, q.span_from, q.span_to);
+      if (left.length && exchangeText(left)) out.push({ conversation_id: c, from: left[0].id, to: left.at(-1).id, rows: left, reindex: q.span_from });
+      else db.prepare("DELETE FROM recall_reindex WHERE conversation_id = ? AND span_from = ?").run(c, q.span_from);
+    }
     const after = db.prepare("SELECT MAX(fact_id) AS m FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'event_log'").get(c)?.m ?? 0;
     // Rows the retention sweep has emptied (src/privacy.js) are skipped in the query, not after it:
     // a window of 400 emptied rows makes no exchange, so `after` would never move past them and
     // nothing said since would ever be indexed.
-    const rows = db.prepare("SELECT id, conversation_id, role, content, at FROM event_log WHERE conversation_id = ? AND id > ? AND role IN ('user','assistant') AND content <> '' ORDER BY id LIMIT 400").all(c, after);
+    // A line they asked Reason to forget is left out of every exchange made from here on.
+    const rows = db.prepare(`SELECT id, conversation_id, role, content, at FROM event_log e WHERE conversation_id = ? AND id > ? AND role IN ('user','assistant') AND content <> ''
+      AND ${notForgotten("e", "event_log")} ORDER BY id LIMIT 400`).all(c, after);
     let run = [];
     const close = () => {
       if (run.length && exchangeText(run)) out.push({ conversation_id: c, from: run[0].id, to: run.at(-1).id, rows: run });
@@ -167,7 +184,7 @@ export async function indexPending({ conversationId = null, limit = 200, embedFn
       for (const r of pendingCalls(conversationId, limit, now)) items.push({ c: r.conversation_id, id: r.id, table: "calls", text: callText(r), at: r.created_at });
       for (const r of pendingLedger(conversationId, limit)) items.push({ c: r.conversation_id, id: r.id, table: "action_ledger", text: ledgerText(r), at: r.created_at });
       for (const r of pendingTimers(conversationId, limit)) items.push({ c: r.conversation_id, id: r.id, table: "timers", text: timerText(r), at: r.created_at });
-      for (const x of pendingExchanges(conversationId, limit, now)) items.push({ c: x.conversation_id, id: x.to, from: x.from, table: "event_log", text: exchangeText(x.rows) });
+      for (const x of pendingExchanges(conversationId, limit, now)) items.push({ c: x.conversation_id, id: x.to, from: x.from, table: "event_log", text: exchangeText(x.rows), reindex: x.reindex });
       const todo = items.slice(0, limit);
       for (let i = 0; i < todo.length; i += BATCH) {
         const batch = todo.slice(i, i + BATCH);
@@ -177,6 +194,7 @@ export async function indexPending({ conversationId = null, limit = 200, embedFn
         for (const [j, b] of batch.entries()) {
           if (!vectors[j]) continue;
           put.run(b.c, b.id, b.table, float32ToBlob(vectors[j]), MODEL, now, b.from ?? null);
+          if (b.reindex != null) db.prepare("DELETE FROM recall_reindex WHERE conversation_id = ? AND span_from = ?").run(b.c, b.reindex);
           done++;
         }
       }
@@ -202,6 +220,8 @@ const dayOf = (at) => at ? new Date(at).toLocaleDateString("en-US", { timeZone: 
  * that has gone (deleted, or never this conversation's) gives null and the match is dropped.
  */
 export function snippetFor(conversationId, table, id, spanFrom = null, { chars = 220 } = {}) {
+  // A row they asked Reason to forget is never read back, by meaning or by words.
+  if (table !== "event_log" && forgotten(conversationId, table, id)) return null;
   if (table === "action_ledger") {
     const r = db.prepare("SELECT * FROM action_ledger WHERE id = ? AND conversation_id = ?").get(id, conversationId);
     return !r ? null : { kind: "did", at: r.created_at, text: clip(`${r.receipt}${r.outcome && r.outcome !== "ok" ? ` [${r.outcome}]` : ""}`, chars) };
@@ -216,8 +236,9 @@ export function snippetFor(conversationId, table, id, spanFrom = null, { chars =
     return !r ? null : { kind: "reminder", at: r.created_at, text: clip(`reminder for ${dayOf(r.fire_at)} (${state}): ${r.call_goal || r.note || r.label}`, chars) };
   }
   if (table === "event_log") {
-    const rows = db.prepare("SELECT role, content, at FROM event_log WHERE conversation_id = ? AND id BETWEEN ? AND ? AND role IN ('user','assistant') ORDER BY id")
-      .all(conversationId, spanFrom ?? id, id);
+    const rows = db.prepare(`SELECT role, content, at FROM event_log e WHERE conversation_id = ? AND id BETWEEN ? AND ? AND role IN ('user','assistant')
+      AND ${notForgotten("e", "event_log")} ORDER BY id`).all(conversationId, spanFrom ?? id, id);
+    if (!rows.length) return null;
     const text = clip(exchangeText(rows), chars);
     // Emptied by the retention sweep: there are no words left to show, so no match.
     if (!text) return null;
@@ -226,7 +247,84 @@ export function snippetFor(conversationId, table, id, spanFrom = null, { chars =
   return null;
 }
 
-/** The stored rows of THIS conversation closest in meaning to `vector`. */
+// ---------- ranking ----------
+//
+// Live proof of 2026-11-06: "spa place" put the real spa call 9th, and the top hit was Reason's own
+// earlier "I don't have any spa place saved" reply. A thread exchange repeats the very words they
+// use when they point back, so it out-scores the thing it was about; and a "nothing saved" reply,
+// handed back as what you said, teaches the model to say it again. So:
+//   1. an exchange whose reply says Reason had nothing on it / didn't know is never handed back;
+//   2. what Reason DID (a call, a link or page sent, a place looked up, a reminder) ranks above what
+//      it SAID, as long as it is a real match (within ACTION_REACH of the best candidate);
+//   3. the cut to `limit` comes after that reordering, over up to POOL candidates — not the top
+//      few by raw score.
+
+/** How far below the best match a done thing may score and still rank above the thread. */
+const ACTION_REACH = 0.3;
+/** Candidates read back and ranked before the cut. */
+const POOL = 60;
+
+const NEG = "(?:don['’]?t|do not|didn['’]?t|did not|haven['’]?t|have not|can['’]?t|cannot|couldn['’]?t|could not)";
+/**
+ * Reason's own fixed phrasings for "I have nothing on that". Only the "you:" side of an exchange
+ * is read — their words are never matched, and this decides nothing about what they meant.
+ */
+const NOTHING_SAID = [
+  /\bnothing (?:saved|noted|stored|on (?:file|record)|in my notes)\b/i,
+  /\bnothing (?:on|about) (?:that|it|this)\b/i,
+  new RegExp(`\\b${NEG} (?:have|see|find|spot)\\b[^.!?\\n]{0,50}\\b(?:saved|noted|stored|on file|on record|in my notes|a record)\\b`, "i"),
+  new RegExp(`\\b${NEG} (?:remember|recall)\\b`, "i"),
+  new RegExp(`\\b${NEG} find (?:any|anything)\\b`, "i"),
+  /\bno (?:record|memory|note|notes) (?:of|on|about)\b/i,
+  /\bI (?:don['’]?t|do not) know (?:which|what|where|who)\b/i,
+];
+
+/**
+ * True when Reason's LAST reply in an exchange (its last `you: …` line, or the reply text itself)
+ * opens by saying it had nothing on it. Only that opening sentence is read, and a sentence that goes
+ * on to give something ("couldn't find anything cheaper than $90", "don't know what time, but it's
+ * on 23rd") is not a "nothing": a figure or a "but" there means the reply carried an answer.
+ */
+export function saidNothing(reply) {
+  const t = String(reply ?? "");
+  const mine = t.includes("\n") || /^(them|you):/.test(t) ? (t.split("\n").filter(l => l.startsWith("you:")).at(-1) ?? "") : t;
+  const first = mine.replace(/^you:\s*/, "").trim().split(/(?<=[.!?])\s+|\n/)[0] ?? "";
+  if (!first || /\d|\b(?:but|though|however|although)\b/i.test(first)) return false;
+  return NOTHING_SAID.some(re => re.test(first));
+}
+
+/** Reason's own words in the exchange behind an event_log match — whole, not the clipped snippet. */
+function replyOf(conversationId, id, spanFrom) {
+  return db.prepare("SELECT content FROM event_log WHERE conversation_id = ? AND id BETWEEN ? AND ? AND role = 'assistant' ORDER BY id")
+    .all(conversationId, spanFrom ?? id, id).map(r => `you: ${ownWords(r.content).replace(/\s+/g, " ")}`).join("\n");
+}
+
+const isThread = (table) => table === "event_log";
+
+/**
+ * Candidates ({table, id, spanFrom, score}, best first) → the `limit` handed over: Reason's
+ * "nothing saved" exchanges out, done things (that `reach` keeps) first, then the rest in order.
+ */
+function rankAndCut(conversationId, candidates, { limit, chars, reach = () => true }) {
+  const pool = [];
+  const seen = new Set();
+  for (const s of candidates) {
+    if (pool.length >= POOL) break;
+    const snip = snippetFor(conversationId, s.table, s.id, s.spanFrom, { chars });
+    // The same lookup run twice reads the same; one slot for it.
+    if (!snip || seen.has(snip.text)) continue;
+    if (isThread(s.table) && saidNothing(replyOf(conversationId, s.id, s.spanFrom))) continue;
+    seen.add(snip.text);
+    pool.push({ s, snip });
+  }
+  const best = pool.length ? pool[0].s.score : 0;
+  const tier = (p) => (!isThread(p.s.table) && reach(p.s.score, best) ? 0 : 1);
+  // Stable sort: inside a tier the incoming order holds.
+  pool.sort((a, b) => tier(a) - tier(b));
+  return pool.slice(0, limit);
+}
+
+/** The stored rows of THIS conversation closest in meaning to `vector`, done things first. */
 export function searchHistory(conversationId, vector, { limit = 4, minScore = 0.35, chars = 220 } = {}) {
   if (!vector || !conversationId) return [];
   const rows = db.prepare(`SELECT fact_id, source_table, span_from, embedding FROM fact_embeddings
@@ -237,17 +335,8 @@ export function searchHistory(conversationId, vector, { limit = 4, minScore = 0.
     if (score >= minScore) scored.push({ table: r.source_table, id: r.fact_id, spanFrom: r.span_from, score });
   }
   scored.sort((a, b) => b.score - a.score);
-  const out = [];
-  const seen = new Set();
-  for (const s of scored) {
-    if (out.length >= limit) break;
-    const snip = snippetFor(conversationId, s.table, s.id, s.spanFrom, { chars });
-    // The same lookup run twice reads the same; one slot for it.
-    if (!snip || seen.has(snip.text)) continue;
-    seen.add(snip.text);
-    out.push({ ...snip, source: s.table, id: s.id, score: Math.round(s.score * 100) / 100, date: dayOf(snip.at) });
-  }
-  return out;
+  return rankAndCut(conversationId, scored, { limit, chars, reach: (score, best) => score >= best - ACTION_REACH })
+    .map(({ s, snip }) => ({ ...snip, source: s.table, id: s.id, score: Math.round(s.score * 100) / 100, date: dayOf(snip.at) }));
 }
 
 /**
@@ -264,21 +353,14 @@ export function keywordHistory(conversationId, query, { limit = 5, chars = 220 }
   const found = [];
   const q = (table, cols, extraWhere = "") => db.prepare(`SELECT id, ${like(cols)} AS hits, ${table === "event_log" ? "at" : "created_at"} AS at FROM ${table}
       WHERE conversation_id = ? ${extraWhere} AND ${like(cols)} > 0 ORDER BY hits DESC, id DESC LIMIT ?`)
-    .all(...args(cols), conversationId, ...args(cols), limit).map(r => ({ table, ...r }));
+    .all(...args(cols), conversationId, ...args(cols), Math.max(limit, 20)).map(r => ({ table, ...r }));
   found.push(...q("calls", ["goal", "COALESCE(label,'')", "summary", "to_number"]));
   found.push(...q("action_ledger", ["receipt", "target"], `AND action NOT IN (${SKIP_ACTIONS.map(a => `'${a}'`).join(",")})`));
   found.push(...q("timers", ["COALESCE(note,'')", "COALESCE(label,'')", "COALESCE(call_goal,'')"]));
   found.push(...q("event_log", ["content"], "AND role IN ('user','assistant')"));
   found.sort((a, b) => b.hits - a.hits || b.at - a.at);
-  const out = [];
-  const seen = new Set();
-  for (const f of found) {
-    if (out.length >= limit) break;
-    const snip = snippetFor(conversationId, f.table, f.id, null, { chars });
-    if (!snip || seen.has(snip.text)) continue;
-    seen.add(snip.text);
-    out.push({ ...snip, source: f.table, id: f.id, date: dayOf(snip.at) });
-  }
-  return out;
+  // Word hits have no "reach": a done thing that matched any of the words ranks above the thread.
+  return rankAndCut(conversationId, found.map(f => ({ table: f.table, id: f.id, spanFrom: null, score: f.hits })), { limit, chars })
+    .map(({ s, snip }) => ({ ...snip, source: s.table, id: s.id, date: dayOf(snip.at) }));
 }
 

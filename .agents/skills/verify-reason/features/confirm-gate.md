@@ -9,7 +9,8 @@ connected account in one tap."*
 Source: `src/trust.js` (the guard, the caps, `amountsIn`), `src/tools.js` (`confirm_request`,
 `confirm_record`, `confirm_pending`, `permission_grant`), `src/receipts.js`, `src/db.js`
 (`confirmations`, `action_ledger`, `permissions`).
-Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.js`,
+Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.js`, `test/one-reply-one-yes.test.js`,
+`test/permission-readback.test.js`,
 `test/trustline-loop.test.js`, `test/receipts.test.js`, `test/undo-window.test.js`,
 `test/flow-gate.test.js` and `test/flow-trust.test.js` (real model reading real sentences).
 
@@ -25,6 +26,19 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   (A fifth, `spent`, comes back when the yes was already used — the `consumed_at` check at the top of
   `recordConfirmation` in `src/trust.js`. It is a refusal, not a go.)
 - **The model cannot grant it for them.** It calls `confirm_record`; the guard decides.
+- **Only the owner's own line is a reply; an event turn never is.** `ownerTexts` (`src/trust.js`)
+  tells them apart by the line's opening: `[event …]` is a timer/sweep, `[<stamp>] <Name>:` is them.
+  So `userMessageFor` (`src/agent.js`) always puts that prefix first and a `[delivery failure]`
+  notice on its own lines right after (lead 29, 2026-11-07). Before, the API path put the notice in
+  front, so a timer turn that also reported a failed text counted as a new owner message and the
+  notice/timer text went to the judge as their yes (and on owner turns the failed body read as their
+  words). Pinned in `test/trust-event-notice.test.js` (4; 3 fail on the old code). Drive, no model,
+  cage env: enqueue a `toOwner` outbox row, `markOutboundFailed(row.id, …)`, claim it with
+  `undeliveredFor` + `markUndeliveredTold`, build the turn with `userMessageFor({ notice:
+  undeliveredNotice(rows), prefix: "[event …]", text })`, push `forModel`, `confirm_record` with
+  `ctx.judge` stubbed yes. End state: `waiting_for_yes`, `granted_at` null; the same with an owner
+  prefix and "yes send it" → `granted`, `quote` first line `yes send it`. On the old code the event
+  turn came back `granted`.
 - **The guard reads the reply with a model of its own.** `recordConfirmation` calls `judgeReply`
   (`src/judge.js`) — the `claude-cli` backend or the Anthropic API. A flat no is honoured in code
   before the judge is ever asked (`isBareRefusal`, defined near the top of `src/trust.js` and
@@ -49,6 +63,20 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
 - **A yes is pinned.** `target` is checked, so a yes for one phone number cannot be spent on
   another, and a yes for an 8:00 booking cannot be carried to a 9:00 one.
 - **A yes is spent once.** `consumed_at`.
+- **One reply is a yes to one ask (audit lead 27, 2026-11-07).** Two asks opened in the same turn
+  share one `asked_after_msgs` mark, so before this the owner's "yes" to the one they were shown also
+  granted any other open ask, including one never mentioned to them. Now a grant stores
+  `granted_by_msg` (which of their texts in that thread said it, same count as `asked_after_msgs`),
+  and `confirm_record` on a second ask answered by that same reply returns `waiting_for_yes` with
+  "already taken as the yes to confirmation #N": nothing granted, nothing refused; its own later
+  reply grants it. The check is in the grant's UPDATE (`db.grantConfirmationByReply`), so two calls
+  at once cannot both win. `shiftThreadMarks` moves the mark with a trimmed thread;
+  `adoptWebChatAsks` clears it. Only asks already open at that grant share the reply
+  (`granted_upto_id`, the newest ask id then), so a fresh ask in a thread that counts from the start
+  again is not blocked by an old yes at the same count. Drive: `test/one-reply-one-yes.test.js` (5), or the cage drive
+  below with two `confirm_request`s before one owner reply and `judge: async () => ({ verdict: "yes" })`:
+  end state A `granted`, B `waiting_for_yes`, `authorizeConfirmation` on B `not_granted`, then B
+  `granted` after a reply of its own (cage, 2026-11-07, `granted_by_msg` 2 and 3).
 - **Open asks are findable.** `confirm_pending`, so Reason records against the id it already has
   instead of asking twice and landing their yes on nothing.
 - **Standing permissions.** `permission_grant` saves "you can reorder groceries without asking" with
@@ -58,12 +86,46 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   must read it as meaning the grant, else `blocked: "not_their_words"` / `"not_what_they_said"`;
   `caps_set` needs both numbers in one message of theirs (`not_their_words`). An unverified caller's
   speech on a call is never the owner's text (`src/trust.js`, `src/calls/postcall.js`).
+- **Saving a standing permission is itself asked about (#356, 2026-11-07).** `permission_grant` is in
+  `CONDITIONALLY_GATED`, and its handler asks the gate *last*, after every refusal of its own (not
+  their words, never standing, no amount). The first call saves nothing: it answers
+  `blocked: "needs_confirmation"` with `use_target`, built by `permissionYesTarget` from the scope,
+  e.g. `standing permission: texts for +14155559876 (Kofi)` (action, who it is on record as, amount,
+  end date, caps). Reason reads that back as one plain question naming the person, never the number,
+  then `confirm_request` with `action: "permission_grant"` and `target` = `use_target` exactly (a
+  target is required for this action), `confirm_record` on their reply, and `permission_grant` again
+  with the same text/scope/caps plus `confirmation_id`. Only then is the row saved, and the yes is
+  spent: a second save on it is `already_spent`; a different person or "anyone" on it is
+  `wrong_target`; a no saves nothing. Undo class `easy` (`permission_revoke`). Other tests grant
+  through `test/fixture-grant.js` (`grantWithYes`).
+- **Broadcasts and GitHub writes need a yes in code (audit lead 28, 2026-11-07).** `event_blast`,
+  `github_issue_create` and `github_issue_comment` are in `ALWAYS_NEEDS_CONFIRMATION` (and
+  `GATED_ACTIONS`, so a standing permission can name them). Before, the draft-then-yes rule for a
+  blast lived only in its description, and issues/comments posted under the owner's GitHub name with
+  no gate. The first call reaches nobody and answers `blocked: "needs_confirmation"` with
+  `use_target`: `blast to <event> (event #<id>): "<preview>" [<sha256 16>]` (`blastTarget`,
+  `src/eventtools.js`), `issue on <repo>: "<title>" [<hash of title+body+labels+assignees>]` or
+  `comment on <repo>#<n>: "<preview>" [<hash>]` (`issueTarget`/`commentTarget`, `src/github.js`).
+  The hash pins the exact words (targets are ≤400 chars and compared case-folded), so a yes for one
+  message cannot send another. A blast on somebody else's event, an ambiguous name, or a
+  cancelled/paused event is refused BEFORE the gate (`organizerRefusal`), exactly as the handler
+  would, and names nothing about the event. Drive: `node --test test/outbound-gate.test.js` (6);
+  other tests go through a yes via `test/fixture-yes.js` (`withYes`); `bin/events-drive.mjs` step
+  "a blast with no yes texts nobody".
 - **Caps.** Per-purchase and monthly (`checkCaps` in `src/trust.js`), with what is already
   committed summed from the `spend` table (`db.spentThisMonth`) so a restart does not reset them.
   With no caps set at all, anything that would spend answers `blocked: "needs_caps"` and asks once
   for both numbers (saved with `caps_set`) before doing anything that costs money.
 - **A receipt for everything.** A row in `action_ledger` with the outcome, linked to its
-  `confirmation_id`.
+  `confirmation_id`. **Receipts and the confirm flow never name the operator** (PR #335, 11-07):
+  `receiptFor` (`src/trust.js:985`) and the `requestConfirmation` / `recordConfirmation` /
+  `authorizeConfirmation` / `retryBlocked` lines say "them"/"they" — "Sent them the recording of
+  call #73", "Told them, unprompted: …", "they already have a Visa stored with AgentCard", access
+  grants "In their words: …" (`src/trust.js:156,245,293,948,1188,1260,1264,1302`). Before, every
+  line read `config.ownerName`, so "Sent Omari the recording of call #73" landed in another person's
+  own ledger. Pinned in `test/receipts-no-owner-name-1107.test.js` (3); driven by
+  `bin/recall-figures-drive.mjs` step "receipts never name the operator" (command in
+  [recall.md](recall.md)).
 
 ## How to get to it (user POV)
 
@@ -147,6 +209,37 @@ not one.
 `refused_at` set, `granted_at` null. `"ok but make it 9 instead"` → `changed`, **both**
 `granted_at` and `refused_at` null — the 8:00 he just rejected is not authorised, and he did not
 say no either. Every state visible in `bin/peek.sh confirms`, not just in the tool result.
+
+**Saving a standing permission, no model.** Same cage env, `dm:owner`. `ctx.judge` here reads both
+their original sentence (inside `permission_grant`) and their yes, so one stub answering `yes` covers
+both:
+
+```bash
+node --env-file-if-exists=.env -e '
+  const { runTool } = await import("./src/tools.js");
+  const db = await import("./src/db.js");
+  const C = "dm:owner", KOFI = "+14155559876";
+  db.addImportantPerson(C, { who: "Kofi", contact: KOFI });
+  const owner = (t) => ({ role: "user", content: `[Sat, Nov 7, 2026, 3:00 PM] Omari: ${t}` });
+  const messages = [owner("you can text kofi without asking me")];
+  const ctx = { conversationId: C, messages, judge: async () => ({ verdict: "yes" }) };
+  const G = { text: "you can text kofi without asking me", scope: { action: "texts", target: KOFI } };
+  const first = await runTool("permission_grant", G, ctx);          // blocked: needs_confirmation, nothing saved
+  const req = await runTool("confirm_request", { action: "permission_grant", stakes: "both",
+    summary: "save that: I can text Kofi without asking?", target: first.use_target }, ctx);
+  messages.push(owner("yes, save that"));
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, ctx);
+  const out = await runTool("permission_grant", { ...G, confirmation_id: req.confirmation_id }, ctx);
+  const again = await runTool("permission_grant", { ...G, confirmation_id: req.confirmation_id }, ctx);
+  console.log(first.blocked, first.use_target, rec.state, out.ok, db.listPermissions(C).length, again.blocked);
+  process.exit(0);
+'
+```
+
+**End state (2026-11-07, cage on #356 `3a72671`):** `needs_confirmation`,
+`standing permission: texts for +14155559876 (Kofi)`, 0 rows; `granted`; `true`, 1 row with `said`
+verbatim, `action: texts`, `target: +14155559876`; reuse `already_spent`, still 1 row.
+`bin/peek.sh confirms` shows the `permission_grant` row with `granted_quote` and `consumed_at` set.
 
 A real-sentence pass with the real model, which is what `flow-gate` is for:
 

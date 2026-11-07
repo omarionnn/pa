@@ -12,7 +12,16 @@ import { parseSheet, applyPatch, addSteer, emptySheet } from "./sheet.js";
 mkdirSync(dirname(config.dbPath), { recursive: true });
 export const db = new DatabaseSync(config.dbPath);
 
+/**
+ * How long a write waits for another connection's lock before SQLite gives up with "database is
+ * locked". SQLite's default is 0: the recall backfill (scripts/recall-backfill.mjs, its own process)
+ * writing beside the running server failed twice on live on 11-06 with no wait at all. Every
+ * connection Reason opens sets it (scripts/call-report.js, scripts/web-migrate-dry-run.mjs too).
+ */
+export const BUSY_TIMEOUT_MS = 5000;
+
 db.exec(`
+  PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};
   PRAGMA journal_mode = WAL;
   CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
@@ -1288,6 +1297,8 @@ function addColumnIfMissing(table, column, decl) {
   if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
 }
 addColumnIfMissing("confirmations", "target", "TEXT NOT NULL DEFAULT ''");
+// Which browser asked for a sign-in code (a hash; null for a page's own code gate): see createPageCode.
+addColumnIfMissing("page_codes", "bound", "TEXT");
 // A timer used to be marked fired BEFORE its turn ran, so a turn that died took the reminder with
 // it (2026-10-06, see Runtime.tick). Now it is fired only once its message is in the outbox, and
 // these are what a timer that has not got there yet carries: how many tries it has had, when the
@@ -1448,7 +1459,7 @@ addColumnIfMissing("calls", "recording_sent_at", "INTEGER");
 addColumnIfMissing("calls", "webhook_token", "TEXT");
 addColumnIfMissing("pending_inbound", "held_times", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("pending_inbound", "down_since", "INTEGER");
-// Which way the phone rang (2026-10-06, with ElevenLabs). Every call before this one was placed by
+// Which way the phone rang (2026-10-06). Every call before this one was placed by
 // Reason, so 'out' is what an older row should read as. It matters in three places that would
 // otherwise each be a guess: a call nobody placed has no goal and no approved facts, only an
 // outbound call can reach a voicemail that must not be filed as a conversation, and the cap on
@@ -1481,7 +1492,7 @@ addColumnIfMissing("accounts", "told_calls_recorded_at", "INTEGER");
 //
 // Waiting. `hold_since` is the hold in progress (null when not on hold) and `hold_total_s` the holds
 // already finished; `holdSeconds` in src/calls/hold.js adds them. The budget is per call because a
-// clinic at lunchtime is not a shop at 10am, and it is OUR clock because ElevenLabs has no hold
+// clinic at lunchtime is not a shop at 10am, and it is OUR clock because a voice has no hold
 // detection and their silence timer may never fire against hold music at all.
 addColumnIfMissing("calls", "hold_since", "INTEGER");
 addColumnIfMissing("calls", "hold_total_s", "INTEGER NOT NULL DEFAULT 0");
@@ -1664,6 +1675,11 @@ addColumnIfMissing("media_items", "transcript_dropped_at", "INTEGER");
 // SEEN — "two bottles of supplements: whey protein and creatine" — and is what a later turn reads
 // when it needs to know what a picture contained. Written by runtime after the model responds.
 addColumnIfMissing("media_items", "description", "TEXT NOT NULL DEFAULT ''");
+// Where that note came from: 'photo' when the quiet pass read the photo itself (src/looked.js), 'reply'
+// when that pass failed and Reason's own reply was kept instead. Only a 'photo' note is the person's
+// own words for the figures check (theirOwnWords): a reply-based note is Reason's words, and a price
+// it invented would vouch for itself for weeks (review 11-07). '' is a row from before this column.
+addColumnIfMissing("media_items", "description_from", "TEXT NOT NULL DEFAULT ''");
 // The outcome sheet (2026-10-06): everything one task is carrying — the budget, the dates, the
 // people, the options already turned down and why. On the task rather than in the model's context,
 // because the context is trimmed to the last sixty messages and a task outlives that. A task from
@@ -1834,7 +1850,7 @@ addColumnIfMissing("calls", "missed_told_at", "INTEGER");
 //
 //   end_reason        one of END_REASONS in src/calls/metrics.js, or NULL when nothing said why
 //   end_detail        the platform's own words for it (termination reason, error code and message)
-//   cost_credits      ElevenLabs' `metadata.cost` — CREDITS, not money (see costCentsOf in elevenlabs.js)
+//   cost_credits      a platform's own cost figure — CREDITS, not money (older calls)
 //   cost_raw          every cost-like field the payload's metadata carried, as JSON, unread, because
 //                     which of them the platform really sends has not been seen on a real payload
 addColumnIfMissing("calls", "end_reason", "TEXT");
@@ -1921,7 +1937,7 @@ export function recordCallTurn({ callId, conversationId, msgCount, kind = "", st
 
 // Which voice the caller heard a turn in, and what they heard: on a GPT-Live call (src/calls/gptlive.js)
 // the turn's own row times Reason's stream, which nobody hears directly, so the voice writes over the
-// heard fields with its own audio timings. Empty on an ElevenLabs turn, which is the provider on the call row.
+// heard fields with its own audio timings. Empty on a turn from another provider, which is the provider on the call row.
 addColumnIfMissing("call_turns", "voice", "TEXT NOT NULL DEFAULT ''");
 
 /**
@@ -2735,7 +2751,23 @@ export function forgetPerson(conversationId, about) {
   const rows = db.prepare("SELECT * FROM people WHERE conversation_id = ? AND (key = ? OR key LIKE ?)")
     .all(conversationId, key, `%${key}%`)
     .filter(p => p.key === key || hasWords(p.key, needle));
-  if (!rows.length) return { ok: false, error: `Nothing is on record about '${about}'.` };
+  // Recall reaches the calls Reason made and the thread itself (src/recallindex.js), not only saved
+  // facts: a forget that left "called Yaw about the deposit" findable by "what do you remember about
+  // Yaw" would be no forget (review 11-05). Cleared whether or not any fact was saved about them.
+  // With nobody saved under it, the subject alone decides what recall loses — and a vague one ("that",
+  // "it", "work", "money") would hide every exchange that says the word, for good (review 11-07). Only
+  // a real name or topic clears recall then.
+  if (!rows.length && !specificSubject(key)) return { ok: false, error: `Nothing is on record about '${about}', and it is too general to clear from recall on its own — nothing was cleared. Ask which person or thing they mean.` };
+  const recall = forgetFromRecall(conversationId, [about, ...rows.map(p => p.name)]);
+  const recalled = recall.calls + recall.exchanges + recall.actions + recall.reminders;
+  if (!rows.length) {
+    if (!recalled) return { ok: false, error: `Nothing is on record about '${about}'.` };
+    return {
+      ok: true, about, forgot: 0, recall_cleared: recall,
+      covers: "nothing was saved about them as a fact; the calls, messages, actions and reminders that mention them are out of recall. It does NOT delete their own messages to you — that is their conversation.",
+      note: `Gone from recall: ${recalled} call(s), message exchange(s) and action(s) that mention ${about} will not come back in a search. Say it plainly in one line and never bring the subject up again on your own.`,
+    };
+  }
 
   const facts = [];
   const factIds = [];
@@ -2797,7 +2829,8 @@ export function forgetPerson(conversationId, about) {
     reasons_dropped: reasons.length,
     old_rows_removed: old.length,
     thread_lines_cleared: scrubbed,
-    covers: "every fact saved about them, under that name and any longer name containing it, plus the copies of those facts in this thread. It does NOT delete their own messages to you — that is their conversation, not something you worked out.",
+    recall_cleared: recall,
+    covers: "every fact saved about them, under that name and any longer name containing it, plus the copies of those facts in this thread, and the calls, message exchanges, actions and reminders that mention them are out of recall. It does NOT delete their own messages to you — that is their conversation, not something you worked out.",
     note: `Gone. ${facts.length} thing(s) about ${rows.map(p => p.name).join(" and ")} are deleted and are not coming back, and nothing in the thread carries them forward.`
       + ` Say it plainly in one line and never bring the subject up again on your own.`
       + ` If they ask whether their own messages are gone too, the honest answer is no — those are theirs, and a full delete (npm run data:delete) is what takes everything.`,
@@ -2835,6 +2868,60 @@ export function redactFromReplies(conversationId, facts) {
   }
   if (n) saveConversation(conversationId, messages);
   return n;
+}
+
+// Words too common to forget by on their own (forgetPerson with nobody saved under them).
+const VAGUE = new Set("is be do go no so up ok hi as if by am are was were a an the this that these those it its it's they them their there here he him his she her hers you your me my mine we us our i about all any anything everything something nothing stuff thing things one ones what which who that's said say says talk talked conversation chat message messages last earlier before today yesterday tomorrow work job money time day week month year home life people person someone somebody everyone everybody plan plans thing idea and or of to for with on in at".split(" "));
+// Two letters is a name too ("Jo", "Al", 李明 — review): any length counts, the VAGUE list is the bar,
+// and a lone one-letter Latin word is never a subject.
+function specificSubject(key) {
+  return wordsOf(key).some(w => !VAGUE.has(w) && (w.length >= 2 || /[^\x00-\x7f]/.test(w)));
+}
+const wordsOf = (s) => String(s ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+
+/**
+ * Take a subject out of recall (src/recallindex.js): every call, message, action receipt and reminder
+ * of THIS conversation that names it by whole words is marked forgotten and its vector deleted. The
+ * rows stay — their messages are theirs, and the ledger is append-only — but no search, by meaning or
+ * by words, reads them again, and the indexer never embeds them again. Sealed: one conversation only.
+ */
+export function forgetFromRecall(conversationId, names = []) {
+  const out = { calls: 0, exchanges: 0, actions: 0, reminders: 0 };
+  const needles = [...new Map(names.map(n => wordsOf(n)).filter(w => w.length).map(w => [w.join(" "), w])).values()];
+  if (!conversationId || !needles.length) return out;
+  const names_ = (text) => { const k = wordsOf(text).join(" "); return needles.some(n => hasWords(k, n)); };
+  const mark = db.prepare("INSERT OR IGNORE INTO recall_forgotten (conversation_id, source_table, row_id, at) VALUES (?, ?, ?, ?)");
+  const at = clock.now();
+  const sweep = (table, cols, where = "") => {
+    const like = needles.map(n => `(${cols.map(c => `LOWER(COALESCE(${c}, '')) LIKE ?`).join(" OR ")})`).join(" OR ");
+    const args = needles.flatMap(n => cols.map(() => `%${n[0]}%`));
+    const hits = db.prepare(`SELECT id, ${cols.map(c => `COALESCE(${c}, '') AS "${c}"`).join(", ")} FROM ${table} WHERE conversation_id = ? ${where} AND (${like})`)
+      .all(conversationId, ...args)
+      .filter(r => names_(cols.map(c => r[c]).join(" \n ")))
+      .map(r => r.id);
+    for (const id of hits) mark.run(conversationId, table, id, at);
+    return hits;
+  };
+  {
+    const calls = sweep("calls", ["goal", "label", "summary"]);
+    // `attempted` too (the query, title, summary, ask): recall indexes it (src/recallindex.js ledgerText).
+    const actions = sweep("action_ledger", ["receipt", "target", "attempted"]);
+    const reminders = sweep("timers", ["note", "label", "call_goal"]);
+    const said = sweep("event_log", ["content"], "AND role IN ('user','assistant')");
+    const unembed = db.prepare("DELETE FROM fact_embeddings WHERE conversation_id = ? AND source_table = ? AND fact_id = ?");
+    for (const id of calls) unembed.run(conversationId, "calls", id);
+    for (const id of actions) unembed.run(conversationId, "action_ledger", id);
+    for (const id of reminders) unembed.run(conversationId, "timers", id);
+    // An exchange's vector covers the run span_from..fact_id: any run with a forgotten line in it goes.
+    const spans = db.prepare(`DELETE FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'event_log'
+      AND ? BETWEEN COALESCE(span_from, fact_id) AND fact_id RETURNING COALESCE(span_from, fact_id) AS from_id, fact_id AS to_id`);
+    // ...and the rest of that run is indexed again without the forgotten lines (recall_reindex).
+    const requeue = db.prepare("INSERT OR IGNORE INTO recall_reindex (conversation_id, span_from, span_to, at) VALUES (?, ?, ?, ?)");
+    let runs = 0;
+    for (const id of said) for (const r of spans.all(conversationId, id)) { requeue.run(conversationId, r.from_id, r.to_id, at); runs++; }
+    Object.assign(out, { calls: calls.length, actions: actions.length, reminders: reminders.length, exchanges: Math.max(runs, said.length ? 1 : 0) });
+  }
+  return out;
 }
 
 /** Do the words of `needle` appear as a run inside the words of `key`? */
@@ -3119,6 +3206,11 @@ export function shiftThreadMarks(historyId, { ownerTexts = 0, userLines = 0 } = 
     db.prepare(`UPDATE confirmations SET asked_after_msgs = MAX(0, asked_after_msgs - ?)
       WHERE conversation_id = ? AND COALESCE(thread_key, '') = ? AND refused_at IS NULL AND consumed_at IS NULL AND granted_at IS NULL`)
       .run(ownerTexts, conversationId, cut ? String(historyId) : "");
+    // Which reply said each yes moves the same way. One cut away is gone from the thread, so it can
+    // never be the latest reply again: null.
+    db.prepare(`UPDATE confirmations SET granted_by_msg = CASE WHEN granted_by_msg - ? >= 1 THEN granted_by_msg - ? ELSE NULL END
+      WHERE conversation_id = ? AND COALESCE(thread_key, '') = ? AND granted_by_msg IS NOT NULL`)
+      .run(ownerTexts, ownerTexts, conversationId, cut ? String(historyId) : "");
   }
   // A call's check is texted to their phone: it lives in the shared thread only.
   if (cut) return;
@@ -3249,6 +3341,31 @@ export function getConfirmation(conversationId, id) {
 export function grantConfirmation(id, quote) {
   db.prepare("UPDATE confirmations SET granted_at = ?, granted_quote = ? WHERE id = ?").run(clock.now(), quote, id);
 }
+/**
+ * Grant an ask on the strength of one owner reply: the `byMsg`-th of their texts in this ask's thread.
+ * One reply is a yes to one ask. If another ask in the same thread was already granted by that same
+ * reply, nothing is granted and this returns false: two asks opened together share one mark, and a
+ * "yes" aimed at the one they were shown must not also cover one they never saw (audit lead 27).
+ * The check and the write are one statement, so two confirm_record calls at once cannot both win.
+ */
+export function grantConfirmationByReply(id, quote, byMsg) {
+  return db.prepare(`UPDATE confirmations SET granted_at = ?, granted_quote = ?, granted_by_msg = ?,
+      granted_upto_id = (SELECT MAX(id) FROM confirmations)
+    WHERE id = ? AND granted_at IS NULL AND NOT EXISTS (
+      SELECT 1 FROM confirmations o WHERE o.id <> confirmations.id AND o.conversation_id = confirmations.conversation_id
+        AND COALESCE(o.thread_key, '') = COALESCE(confirmations.thread_key, '') AND o.granted_by_msg = ?
+        AND confirmations.id <= COALESCE(o.granted_upto_id, 0))`)
+    .run(clock.now(), quote, byMsg, id, byMsg).changes > 0;
+}
+/**
+ * The ask in this ask's thread that the `byMsg`-th owner reply already granted while this one was
+ * already open (so both were waiting on that one reply), if any.
+ */
+export function grantedByReply(c, byMsg) {
+  return db.prepare(`SELECT * FROM confirmations WHERE id <> ? AND conversation_id = ?
+    AND COALESCE(thread_key, '') = COALESCE(?, '') AND granted_by_msg = ? AND ? <= COALESCE(granted_upto_id, 0) LIMIT 1`)
+    .get(c.id, c.conversation_id, c.thread_key ?? null, byMsg, c.id) ?? null;
+}
 export function refuseConfirmation(id) {
   db.prepare("UPDATE confirmations SET refused_at = ? WHERE id = ?").run(clock.now(), id);
 }
@@ -3268,7 +3385,8 @@ export function pendingConfirmations(conversationId) {
  * only a reply from here on can be its yes. A yes already given keeps its count. Returns how many moved.
  */
 export function adoptWebChatAsks(conversationId, ownerTexts) {
-  return db.prepare(`UPDATE confirmations SET thread_key = NULL,
+  // A yes already given there was a reply in that chat, not in this thread: its place there means nothing here.
+  return db.prepare(`UPDATE confirmations SET thread_key = NULL, granted_by_msg = NULL,
       asked_after_msgs = CASE WHEN granted_at IS NULL THEN ? ELSE asked_after_msgs END
     WHERE conversation_id = ? AND thread_key LIKE '%#web:%' AND refused_at IS NULL AND consumed_at IS NULL AND expired_at IS NULL`)
     .run(Math.max(0, Number(ownerTexts) || 0), conversationId).changes;
@@ -4469,8 +4587,8 @@ export function mediaOfMessage(conversationId, baseHandle) {
 }
 
 /** Store what the model described in a photo, after the turn. */
-export function describeMedia(id, description) {
-  db.prepare("UPDATE media_items SET description = ? WHERE id = ?").run(String(description ?? ""), id);
+export function describeMedia(id, description, { from = "" } = {}) {
+  db.prepare("UPDATE media_items SET description = ?, description_from = ? WHERE id = ?").run(String(description ?? ""), String(from ?? ""), id);
 }
 
 /** Recently-viewed photos with descriptions, for turn context. */
@@ -4996,11 +5114,11 @@ export const CALL_WEBHOOK_TOKEN_LENGTH = 32;
 export function createCall(conversationId, {
   provider, toNumber, isOwner, goal, facts, confirmationId = null, announcement = "",
   // Outbound unless a caller says otherwise. The one caller that says otherwise is the inbound
-  // personalization webhook (src/calls/inbound.js), which makes the row while the phone is still
+  // voice webhook (`inboundTwiml` in src/calls/gptlive.js), which makes the row while the phone is still
   // ringing so that the turn behind the voice has something to be scoped by.
   direction = "out",
   // An inbound call has an id from the platform before Reason knows anything else about it, and
-  // that id is the only thing the custom-LLM endpoint can look the call up by.
+  // that id is what the call can be looked up by.
   externalId = null,
   // An inbound call reached the state it is in by being answered, not by being dialled.
   state = "placing",
@@ -5995,14 +6113,24 @@ export function pageCodeIs(stored, typed) {
   return a.length === b.length && a.length > 0 && timingSafeEqual(a, b);
 }
 
-export function createPageCode(pageId_, { code, ttlMs }) {
+/**
+ * `bound` ties a sign-in code to the browser that asked for it (a hash, src/events.js
+ * `signinBinding`; null for a page's own code gate). One live code per browser: asking again
+ * kills that browser's old code, never the one somebody else's browser asked for — so a stranger
+ * typing a person's number cannot kill the code the person is about to type (audit lead 25).
+ */
+export function createPageCode(pageId_, { code, ttlMs, bound = null }) {
   const now = clock.now();
-  // One live code at a time: asking for a new one should not leave the old one usable.
-  db.prepare("UPDATE page_codes SET expires_at = ? WHERE page_id = ? AND used_at IS NULL AND expires_at > ?")
-    .run(now, pageId_, now);
-  const r = db.prepare("INSERT INTO page_codes (page_id, code, created_at, expires_at) VALUES (?, ?, ?, ?)")
-    .run(pageId_, pageCodeHash(code), now, now + ttlMs);
+  db.prepare("UPDATE page_codes SET expires_at = ? WHERE page_id = ? AND bound IS ? AND used_at IS NULL AND expires_at > ?")
+    .run(now, pageId_, bound, now);
+  const r = db.prepare("INSERT INTO page_codes (page_id, code, created_at, expires_at, bound) VALUES (?, ?, ?, ?, ?)")
+    .run(pageId_, pageCodeHash(code), now, now + ttlMs, bound);
   return { id: Number(r.lastInsertRowid), code, expires_at: now + ttlMs };
+}
+
+/** End one code now, unused: a sign-in code that had its one try past the per-person ceiling. */
+export function expirePageCode(id) {
+  db.prepare("UPDATE page_codes SET expires_at = ? WHERE id = ? AND expires_at > ?").run(clock.now(), id, clock.now());
 }
 
 /** How many codes this page has had texted out in the window, so a held link cannot make a phone buzz all night. */
@@ -6011,7 +6139,12 @@ export function pageCodesIssued(pageId_, windowMs) {
     .get(pageId_, clock.now() - windowMs).n;
 }
 
-export function livePageCode(pageId_) {
+/** The newest live code for this page — or, with `bound`, the newest one that browser asked for. */
+export function livePageCode(pageId_, { bound } = {}) {
+  if (bound !== undefined) {
+    return db.prepare("SELECT * FROM page_codes WHERE page_id = ? AND bound IS ? AND used_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1")
+      .get(pageId_, bound, clock.now()) ?? null;
+  }
   return db.prepare("SELECT * FROM page_codes WHERE page_id = ? AND used_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1")
     .get(pageId_, clock.now()) ?? null;
 }
@@ -8246,7 +8379,8 @@ export function recordUberQuote({
       currency = excluded.currency,
       fare_expires_at = excluded.fare_expires_at,
       surge_multiplier = excluded.surge_multiplier,
-      updated_at = excluded.updated_at`)
+      updated_at = excluded.updated_at
+    WHERE uber_rides.conversation_id = excluded.conversation_id`)
     .run(
       conversationId, quoteId, productId, productName,
       start.latitude ?? null, start.longitude ?? null, String(start.place_id ?? ""), String(start.label ?? ""),
@@ -10493,6 +10627,26 @@ db.exec(`
     UNIQUE(fact_id, source_table)
   );
   CREATE INDEX IF NOT EXISTS fact_embeddings_conv ON fact_embeddings (conversation_id);
+  -- What they asked Reason to forget, kept out of recall (src/recallindex.js) for good: the call,
+  -- message or action row itself stays (it is their conversation), its vector goes, and this says
+  -- never to index or show it again (src/db.js forgetFromRecall).
+  CREATE TABLE IF NOT EXISTS recall_forgotten (
+    conversation_id TEXT NOT NULL,
+    source_table TEXT NOT NULL,
+    row_id INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, source_table, row_id)
+  );
+  -- An exchange whose vector a forget deleted (one of its lines named them): the lines left in it are
+  -- indexed again by src/recallindex.js, without the forgotten ones, so the rest of what was said
+  -- stays findable — the indexer otherwise only moves forward (review 11-07).
+  CREATE TABLE IF NOT EXISTS recall_reindex (
+    conversation_id TEXT NOT NULL,
+    span_from INTEGER NOT NULL,
+    span_to INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, span_from)
+  );
 
   -- episodes and thread_summaries used to be here. Neither was ever read; the first was written by
   -- the extractor every turn and the second by nothing. Dropped below, rows and all (audit 10-18).
@@ -10584,6 +10738,12 @@ addColumnIfMissing("messages", "chat_id", "TEXT");
 // …and the thread an approval was asked in (its history key; null = the shared thread), so only an
 // answer in that same thread can grant it (src/trust.js recordConfirmation).
 addColumnIfMissing("confirmations", "thread_key", "TEXT");
+// …and which of the owner's texts in that thread said the yes (its 1-based place among them, the same
+// count asked_after_msgs keeps), so one reply is a yes to one ask only (security audit 2026-11-06, lead 27).
+addColumnIfMissing("confirmations", "granted_by_msg", "INTEGER");
+// …and the newest ask that existed at that moment: only an ask already open then was waiting on that
+// same reply. One opened later (a new chat, a test's fresh ask) never shared it.
+addColumnIfMissing("confirmations", "granted_upto_id", "INTEGER");
 // …and each Web chat's short title (src/webchats.js), written once when its first reply lands.
 addColumnIfMissing("web_chats", "title", "TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS messages_chat_at ON messages (conversation_id, chat_id, at, id) WHERE chat_id IS NOT NULL");
@@ -10860,6 +11020,23 @@ export function eventsSince(conversationId, sinceAt, { limit = 100 } = {}) {
 export function recentEvents(conversationId, { limit = 20 } = {}) {
   return db.prepare("SELECT * FROM event_log WHERE conversation_id = ? ORDER BY at DESC LIMIT ?")
     .all(conversationId, limit);
+}
+
+/**
+ * What the person themselves put in front of Reason since `since`, as text: their own messages
+ * (voice notes arrive transcribed), and what was read off the photos and recordings they sent — the
+ * photo note's words, a recording's transcript. The reply check (src/offers.js guardReply) counts a
+ * figure in any of these as theirs, never something to hedge. Scoped by conversation.
+ */
+export function theirOwnWords(conversationId, { since = 0, limit = 400 } = {}) {
+  const said = db.prepare(`SELECT content AS text, at, 'them' AS kind FROM event_log
+    WHERE conversation_id = ? AND role = 'user' AND at >= ? ORDER BY at DESC LIMIT ?`).all(conversationId, since, limit);
+  // A photo's note counts only when the photo read wrote it (description_from = 'photo'): the fallback
+  // note is Reason's own reply, never theirs (review 11-07).
+  const sent = db.prepare(`SELECT TRIM(CASE WHEN description_from = 'photo' THEN COALESCE(description, '') ELSE '' END || ' ' || COALESCE(transcript, '')) AS text, at, 'sent' AS kind FROM media_items
+    WHERE conversation_id = ? AND at >= ? AND ((description_from = 'photo' AND COALESCE(description, '') != '') OR COALESCE(transcript, '') != '')
+    ORDER BY id DESC LIMIT ?`).all(conversationId, since, limit);
+  return [...said, ...sent];
 }
 
 // -- profile_blocks queries --

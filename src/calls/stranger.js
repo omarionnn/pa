@@ -149,7 +149,7 @@ export async function* strangerTurn({ body, generate, sseChunk, SSE_DONE, log = 
     tool_calls: [{ index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function", function: { name: "end_call", arguments: JSON.stringify({ reason: why }) } }],
   });
   yield chunk({ role: "assistant" });
-  const extra = (body?.elevenlabs_extra_body ?? body?.extra_body ?? body?.custom_llm_extra_body ?? {}) || {};
+  const extra = (body?.extra_body ?? {}) || {};
   const { text, ends, why } = await strangerReply({ messages: body?.messages, generate, extra, log, now });
   if (text) yield chunk({ content: text });
   if (ends) {

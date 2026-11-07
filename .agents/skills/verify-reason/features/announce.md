@@ -2,14 +2,16 @@
 
 A CLI the owner runs on the Hetzner box to tell active people about something new. No tool, page or
 text reaches it. Dry run by default: it prints the recipient count, the counts left out by reason,
-and the bubbles, never a number or a name, and writes nothing. The one announcement shipped is
-`events-1025` (two bubbles: the Events pitch, then `heyreason.com/updates`). It must
-never be sent without the owner's explicit go.
+and the bubbles, never a number or a name, and writes nothing. Two announcements ship
+(`ANNOUNCEMENTS`, scripts/announce.js:35-49): `events-1025`, the default (two bubbles: the Events
+pitch, then `heyreason.com/updates`), and `calls-unlimited-1031` (one bubble, `ownerOnly`:
+`parseArgs` refuses it without `--to-owner`, scripts/announce.js:238). Neither may be sent without
+the owner's explicit go.
 
 Source: `scripts/announce.js` (`ANNOUNCEMENTS`, `audience`, `sendAll`, `renderDryRun`,
 `parseArgs`, `theirSettings`/`inTheirNight`), reusing `src/outbox.js` `attempt` and
 `src/db.js` `enqueueOutbound` (the outbox's unique `idem_key` is the ledger:
-`announce:<id>:<digits>#1` / `#2`, the number alone across channels). Tests: `test/announce.test.js` (14/14).
+`announce:<id>:<digits>#1` / `#2`, the number alone across channels). Tests: `test/announce.test.js` (15/15 at `8113bcf`).
 
 ## Sub-features
 
@@ -69,7 +71,11 @@ the link per person, 3 s apart; a rerun sent nothing and the dry run then read `
 Re-driven 2026-10-27 at `00f3300` with the same five people, identical counts and 4 posts. Quiet
 hours are the real clock: at 08:00 UTC everybody on the default New York zone is in their night, so
 seed the "should get it" people with `db.setNoticeWindow(c, { tz: "Asia/Tokyo" })` (or whatever
-zone is daytime) and the night one with a zone that is not.
+zone is daytime) and the night one with a zone that is not. Re-driven 2026-11-07 at `8113bcf` in
+process (throwaway `REASON_DB_PATH`, fake on loopback, 14:15 UTC so New York was daytime and Tokyo
+night): `recipients: 2`, `opted-out 1, quiet-hours 1`; send → 4 posts; rerun `already-sent 2`; `--send`
+without `--confirm` exit 2. Under zsh, split a `caged.sh env` string with `${=VAR}` — zsh does not
+word-split `$VAR`, so every assignment lands in the first variable.
 
 Live: the dry run only, read-only. Check it wrote nothing: the script prints a `warning: this
 process changed N rows` line on stderr if anything did.

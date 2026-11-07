@@ -19,16 +19,11 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
-process.env.ELEVENLABS_API_KEY = "eleven-test-key";
-process.env.ELEVENLABS_AGENT_ID = "agent_test";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
 process.env.REASON_CALL_MAX_HOLD_SECONDS = "300";
 
 const voice = await import("../src/calls/voice.js");
-const { llmRequest, thirdPartyContext, LINE_OPENED } = voice;
-const { EXTRA_BODY_KEYS, ElevenLabsCallProvider } = await import("../src/calls/elevenlabs.js");
+const { llmRequest, thirdPartyContext, LINE_OPENED, EXTRA_BODY_KEYS } = voice;
+const { GptLiveCallProvider } = await import("../src/calls/gptlive.js");
 const { announcementFor, callRulesFor } = await import("../src/calls/provider.js");
 const brief = await import("../src/calls/brief.js");
 const outcome = await import("../src/calls/outcome.js");
@@ -46,7 +41,7 @@ let nth = 0;
 const strandCall = (over = {}) => {
   nth += 1;
   const row = db.createCall(C, {
-    provider: "elevenlabs", toNumber: STRAND, isOwner: false, goal: STRAND_GOAL,
+    provider: "gptlive", toNumber: STRAND, isOwner: false, goal: STRAND_GOAL,
     facts: ["The hold, if offered, would be under the name Omari"], announcement: ANN, externalId: `conv_m${nth}`,
   });
   db.updateCall(C, row.id, { brief: JSON.stringify(brief.buildBrief({ goal: STRAND_GOAL })), opening_waits: 1, ...over });
@@ -76,9 +71,9 @@ async function drain(stream) {
 
 const bodyFor = (call, messages) => JSON.stringify({
   model: "reason", stream: true, messages,
-  elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: C },
+  extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: C },
 });
-const AUTH = { authorization: "Bearer llm-test-secret" };
+const AUTH = {};
 const turn = async (call, generate, messages) => drain(
   (await llmRequest({ rawBody: bodyFor(call, messages), headers: AUTH, generate })).stream,
 );
@@ -90,29 +85,37 @@ after(() => { rmSync(dir, { recursive: true, force: true }); });
 // ---------- the line opens silent ----------
 
 test("a third-party call is placed with no spoken opener; the owner's own call keeps his", async () => {
+  Object.assign(config, {
+    openaiKey: "sk-test", twilioSid: "ACtest", twilioToken: "twilio-test", twilioFrom: "+16562167455", publicUrl: "https://reason.test",
+  });
   const bodies = [];
-  const p = new ElevenLabsCallProvider({
+  const p = new GptLiveCallProvider({
     fetchImpl: async (_url, opt) => {
-      bodies.push(JSON.parse(opt.body));
-      return { ok: true, json: async () => ({ conversation_id: "conv_open", callSid: "CA1" }) };
+      bodies.push(Object.fromEntries(new URLSearchParams(String(opt.body))));
+      return { ok: true, status: 201, json: async () => ({ sid: `CA${bodies.length}` }) };
     },
   });
   const rules = callRulesFor({ ownerName: "Omari" });
+  const theirs = db.createCall(C, { provider: "gptlive", toNumber: STRAND, isOwner: false, goal: STRAND_GOAL, facts: [], announcement: ANN });
   const out = await p.place({
     to: STRAND, goal: STRAND_GOAL, maxSeconds: 600, announcement: ANN, rules, onBehalfOf: "Omari",
-    kind: "third_party", brief: brief.buildBrief({ goal: STRAND_GOAL }),
+    kind: "third_party", brief: brief.buildBrief({ goal: STRAND_GOAL }), conversationId: C, callId: theirs.id,
   });
   assert.equal(out.ok, true);
   assert.equal(out.openingWaits, true);
-  // Their docs: an empty first message means the agent waits for the other side to speak first.
-  assert.equal(bodies[0].conversation_initiation_client_data.conversation_config_override.agent.first_message, "");
+  // The TwiML only opens the stream: nothing is said at pick-up; the disclosure waits for a voice.
+  assert.doesNotMatch(bodies[0].Twiml, /<Say|<Play/);
+  assert.equal(bodies[0].MachineDetection, "DetectMessageEnd");
 
+  const own = db.createCall(C, { provider: "gptlive", toNumber: "+12025551234", isOwner: true, goal: "ring Omari", facts: [], announcement: "" });
   const mine = await p.place({
     to: "+12025551234", goal: "ring Omari", maxSeconds: 600, rules, onBehalfOf: "Omari", kind: "owner",
     announcement: announcementFor({ ownerName: "Omari", toOwner: true }), brief: brief.buildBrief({ goal: "ring Omari" }),
+    conversationId: C, callId: own.id,
   });
-  assert.equal(mine.openingWaits, false);
-  assert.notEqual(bodies[1].conversation_initiation_client_data.conversation_config_override.agent.first_message, "");
+  assert.equal(mine.ok, true);
+  assert.ok(!mine.openingWaits, "his own call opens with his line");
+  assert.equal(bodies[1].MachineDetection, undefined);
 });
 
 test("the prompt says nothing has been said yet, and how to tell a person from a machine", () => {

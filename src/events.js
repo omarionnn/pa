@@ -21,7 +21,7 @@
 // Who may make an event is REASON_EVENTS (off | owner | on), like REASON_FLIGHT_BOOKING. Joining is
 // open to anybody whenever events are not off — `owner` is "only the owner creates", not "only the
 // owner's friends join".
-import { scrypt as scryptCb, scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
+import { scrypt as scryptCb, scryptSync, randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { promisify } from "node:util";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
@@ -430,32 +430,54 @@ export function accountForNumber(number) {
 /**
  * Try a sign-in code: the page code gate's code (`page_codes` under `signinKey`, hashed, once, 15
  * minutes) with the wrong tries counted twice. Per BROWSER, 5 per 15 minutes — the only count whose
- * limit is ever said out loud, so the answer never depends on whose number it was and a stranger
- * cannot lock somebody out by typing their number. And per PERSON, a quiet ceiling of 20 across all
- * browsers, past which their code simply stops working until the window rolls on (a distributed guess
- * at a six-digit code), and a second quiet ceiling of 40 a day, because a code anybody can have sent
- * by typing a number is a million to one only if the guessing cannot just keep going. `conversationId` null — a number with no account — is the same path with
- * nothing to match. `{ ok: true, token }` or `{ ok: false, reason: "wrong" | "rate_limited" }`.
+ * limit is ever said out loud, so the answer never depends on whose number it was. And per PERSON, a
+ * quiet ceiling of 20 across all browsers in 15 minutes and 40 a day (a distributed guess at a
+ * six-digit code that anybody can have texted by typing a number).
+ *
+ * The ceiling bounds the GUESSING, never the person (audit lead 25): a stranger who only knows a
+ * number used to be able to fill it and so make the person's own right code "wrong" for a day.
+ * Past it, a code opens only on the browser that asked for it (`bound`, see `signinBinding`), and
+ * gets one try there — a wrong one ends it. A stranger's guesses then reach only codes their own
+ * browser asked for, one guess per code texted to the person, and the person's own fresh code still
+ * works on the browser they asked from. Under the ceiling nothing changes: the newest code works in
+ * any browser, as does the one this browser asked for. `conversationId` null — a number with no
+ * account — is the same path with nothing to match. `{ ok: true, token }` or `{ ok: false, reason:
+ * "wrong" | "rate_limited" }`.
  */
 export const SIGNIN_WRONG = { perBrowser: 5, perPerson: 20, windowMs: 15 * 60_000, perPersonDay: 40, dayMs: 24 * 60 * 60_000 };
 export function trySigninCode({ conversationId, code, actor }) {
-  return tryKeyedCode({ conversationId, code, personKey: conversationId ? signinKey(conversationId) : null, browserKey: `esignb:${actor}` });
+  return tryKeyedCode({ conversationId, code, personKey: conversationId ? signinKey(conversationId) : null, browserKey: `esignb:${actor}`, bound: signinBinding(actor) });
+}
+
+/**
+ * What a sign-in code is bound to: a hash of what identifies the asking browser (its address for an
+ * event page, its sign-in form secret for Web), so the table holds neither. Never null: a sign-in
+ * code always belongs to some browser.
+ */
+export function signinBinding(what) {
+  return createHash("sha256").update(`signin-bound:${String(what ?? "")}`).digest("base64url").slice(0, 32);
 }
 
 /**
  * The same check under other keys: Reason Web signs in with `wsign:<conversation>` codes and counts
  * its browsers under `wsignb:<actor>` (src/pages/websignin.js), with exactly these ceilings. One
  * function, so a limit tightened here is tightened everywhere a texted code opens something.
+ * `bound` is the asking browser's `signinBinding`, the same one its code was minted with.
  */
-export function tryKeyedCode({ conversationId, code, personKey, browserKey }) {
+export function tryKeyedCode({ conversationId, code, personKey, browserKey, bound }) {
   if (db.failedPageAttempts(browserKey, SIGNIN_WRONG.windowMs) >= SIGNIN_WRONG.perBrowser) return { ok: false, reason: "rate_limited" };
-  const live = personKey
-    && db.failedPageAttempts(personKey, SIGNIN_WRONG.windowMs) < SIGNIN_WRONG.perPerson
-    && db.failedPageAttempts(personKey, SIGNIN_WRONG.dayMs) < SIGNIN_WRONG.perPersonDay
-    ? db.livePageCode(personKey) : null;
-  if (!live || !db.pageCodeIs(live.code, typedCode(code))) {
+  const typed = typedCode(code);
+  const mine = personKey ? db.livePageCode(personKey, { bound: bound ?? "" }) : null;
+  const crowded = !!personKey
+    && (db.failedPageAttempts(personKey, SIGNIN_WRONG.windowMs) >= SIGNIN_WRONG.perPerson
+      || db.failedPageAttempts(personKey, SIGNIN_WRONG.dayMs) >= SIGNIN_WRONG.perPersonDay);
+  const newest = personKey && !crowded ? db.livePageCode(personKey) : null;
+  const live = [mine, newest].find(c => c && db.pageCodeIs(c.code, typed)) ?? null;
+  if (!live) {
     db.recordPageAttempt(browserKey, false);
     if (personKey) db.recordPageAttempt(personKey, false);
+    // Past the ceiling a code has one try: a wrong one, from its own browser, ends it.
+    if (crowded && mine) db.expirePageCode(mine.id);
     return { ok: false, reason: "wrong" };
   }
   db.recordPageAttempt(personKey, true);

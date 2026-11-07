@@ -1,16 +1,16 @@
 // Somebody rings the number: who gets answered, who gets one line, and what is said first.
 //
-// This is the webhook that runs DURING THE RING, so what it must not do is as important as what it
-// does: no model turn anywhere in it, and nothing that waits on a channel. Everything it sends —
-// the master's question, the once-ever recording note — is queued as a database row and picked up by
-// the outbox pass well inside the call.
+// This is the number's voice webhook (Twilio → /calls/gptlive/inbound, `inboundTwiml`), and it runs
+// DURING THE RING, so what it must not do is as important as what it does: no model turn anywhere in
+// it, and nothing that waits on a channel. Everything it sends — the master's question, the once-ever
+// recording note — is queued as a database row and picked up by the outbox pass well inside the call.
 //
 // The policy being pinned is the one a TEXT from a stranger already gets, because it is the same
 // policy and mostly the same code: a number nobody approved costs the operator nothing, and ringing
 // the number instead of texting it does not grant anybody an invitation.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,16 +24,11 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
-process.env.ELEVENLABS_API_KEY = "eleven-test-key";
-process.env.ELEVENLABS_AGENT_ID = "agent_test";
-process.env.ELEVENLABS_PHONE_NUMBER_ID = "phnum_test";
-process.env.ELEVENLABS_LLM_SECRET = "llm-test-secret";
-process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
-process.env.ELEVENLABS_VOICE_ID = "voice_test";
+process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_UNDO_SECONDS = "0";
 
-const { inboundRequest, whoseCallIsThis, openingLineFor, recordingNoteFor, INBOUND_PATH } = await import("../src/calls/inbound.js");
-const { ElevenLabsCallProvider } = await import("../src/calls/elevenlabs.js");
+const { whoseCallIsThis, openingLineFor, recordingNoteFor, MAX_RING_BACKS = 3 } = await import("../src/calls/inbound.js");
+const gl = await import("../src/calls/gptlive.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
 
@@ -41,6 +36,9 @@ const C = config.ownerConversation;
 const OWNER = "+12025551234";
 const FRIEND = "+12125551111";
 const STRANGER = "+13475559999";
+const NUMBER = "+16465550000";
+const TWILIO = { callVoice: "gptlive", twilioSid: "AC_test", twilioToken: "twilio-test-token", twilioFrom: NUMBER, openaiKey: "sk-test" };
+const NEUTRAL = "Hi, you've reached Reason. I can't take calls from this number right now. Thanks, bye.";
 
 /** A router with one live texting channel, so the master can be reached. */
 const router = {
@@ -49,118 +47,79 @@ const router = {
 };
 const noRouter = { get: () => null, statuses: () => [] };
 
-const provider = () => new ElevenLabsCallProvider();
-
-const ring = (over = {}, opts = {}) => inboundRequest({
-  rawBody: JSON.stringify({
-    caller_id: OWNER, agent_id: "agent_test", called_number: "+16465550000",
-    call_sid: "CA1", conversation_id: "conv_ring", ...over,
-  }),
-  provider: provider(), router, ...opts,
-});
+let sids = 0;
+/** One ring of the number, Twilio-signed, as Twilio posts it. Returns the TwiML answer. */
+const ring = (from = OWNER, { sid = `CA${++sids}`, via = router } = {}) => {
+  const params = { CallSid: sid, From: from, To: NUMBER };
+  const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
+  return gl.inboundTwiml({
+    rawBody: new URLSearchParams(params).toString(),
+    headers: { "x-twilio-signature": gl.twilioSignature(url, params) },
+    router: via,
+  });
+};
+const STREAM = /<Connect><Stream url="wss:\/\/reason\.example\.test\/calls\/gptlive\/stream\/([A-Za-z0-9_-]+)"\/><\/Connect>/;
+const streamToken = (out) => out.body.match(STREAM)?.[1] ?? null;
 
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM calls; DELETE FROM usage; DELETE FROM outbox; DELETE FROM threads; DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM blocked_numbers; DELETE FROM tasks; DELETE FROM task_log; DELETE FROM turned_away;");
+  Object.assign(config, TWILIO);
+  db.db.exec("DELETE FROM calls; DELETE FROM usage; DELETE FROM outbox; DELETE FROM threads; DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM blocked_numbers; DELETE FROM tasks; DELETE FROM task_log; DELETE FROM turned_away; DELETE FROM stranger_calls;");
   db.saveConversation(C, []);
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: OWNER, name: "Omari", isOperator: true });
 });
 
 const outbox = () => db.db.prepare("SELECT * FROM outbox ORDER BY id").all();
+const callCount = () => db.db.prepare("SELECT COUNT(*) n FROM calls").get().n;
 
 /** The newest INBOUND call row. Picked by direction and id, because the outbound call it is a reply to
  *  was created in the same millisecond and `listCalls` orders by time. */
 const lastInbound = () => db.db.prepare("SELECT * FROM calls WHERE direction = 'in' ORDER BY id DESC LIMIT 1").get();
 
-// ---------- the route only exists when it really works ----------
-
-test("a provider that is not this one, or cannot answer a phone, has no route here", () => {
-  assert.equal(inboundRequest({ rawBody: "{}", provider: null }).status, 404);
-  assert.equal(inboundRequest({ rawBody: "{}", provider: { status: () => ({ name: "bland", status: "live" }) } }).status, 404);
-
-  // Set up to RING a phone but not to answer one. The honest answer is that this is not set up,
-  // which is better than a call answered by half a Reason.
-  const half = inboundRequest({ rawBody: "{}", provider: new ElevenLabsCallProvider({ webhookSecret: "" }), router });
-  assert.equal(half.status, 503);
-  assert.match(half.body.error, /ELEVENLABS_WEBHOOK_SECRET/);
-
-  assert.equal(ring({ conversation_id: "" }).status, 400);
-  assert.equal(inboundRequest({ rawBody: "{", provider: provider(), router }).status, 400);
-  assert.equal(INBOUND_PATH, "/calls/elevenlabs/inbound");
-});
-
 // ---------- a number Reason knows ----------
 
-test("while the phone is still ringing, the call's prompt is sent ahead to warm the model's cache", () => {
-  // The first turn of a call used to pay a cold read of ~120k tokens of prefix (every tool plus the
-  // system prompt) before its first word. The ring is the time to pay it, and this is the hook that
-  // does: asked for with the row that was just written, and never awaited — a webhook that runs
-  // during the ring must answer at once.
-  const asked = [];
-  const out = ring({}, { warm: (args) => { asked.push(args); return Promise.resolve({ warmed: true }); } });
-  assert.equal(out.status, 200);
-  assert.equal(asked.length, 1, "asked for exactly once");
-  const row = db.listCalls(C)[0];
-  assert.equal(asked[0].call.id, row.id, "with the call that was just created");
-  assert.equal(asked[0].call.is_owner, 1);
-
-  // Nobody Reason knows gets one line and a hang-up, and no model is spent on them — including this.
-  asked.length = 0;
-  assert.equal(ring({ caller_id: STRANGER }, { warm: (args) => { asked.push(args); return Promise.resolve({ warmed: true }); } }).status, 200);
-  assert.equal(asked.length, 0, "a stranger's call warms nothing");
-});
-
 test("the operator's own number reaches their own Reason, whatever they ring from", () => {
-  const out = ring();
+  const out = ring(OWNER, { sid: "CA_own" });
   assert.equal(out.status, 200);
-  assert.equal(out.body.type, "conversation_initiation_client_data");
-  assert.equal(out.body.dynamic_variables.owner_name, "Omari");
-  assert.equal(out.body.dynamic_variables.reason_kind, "owner");
-  assert.equal(out.body.dynamic_variables.reason_conversation_id, C);
-  // One pinned voice.
-  assert.equal(out.body.conversation_config_override.tts.voice_id, "voice_test");
-
-  // On the record before a word is said, with the platform's id on it so the custom-LLM endpoint
-  // can find the call at all — there is nothing of Reason's in an inbound turn's body to go on.
+  assert.equal(out.type, "text/xml");
+  // On the record before a word is said, and the stream Twilio opens is that row's own.
   const row = db.listCalls(C)[0];
+  assert.ok(row, "a call row on the operator's conversation");
+  assert.equal(streamToken(out), row.webhook_token);
   assert.equal(row.direction, "in");
-  assert.equal(row.external_id, "conv_ring");
+  assert.equal(row.external_id, "gptlive:CA_own");
   assert.equal(row.is_owner, 1);
   assert.equal(row.state, "in_progress");
-  assert.equal(row.provider, "elevenlabs");
+  assert.equal(row.provider, "gptlive");
   assert.deepEqual(row.facts, [], "an inbound call shares nothing with anybody");
   // The disclosure is NOT recited at the person who set this up.
   assert.equal(row.announcement, "");
-  assert.equal(out.body.dynamic_variables.reason_call_id, row.id);
 });
 
 test("a call joins the conversation that number already texts, not a second empty one", () => {
   // The bug this exists to prevent: a conversation id has the channel in it, so admitting a caller
-  // on a channel called "elevenlabs" would hand them a second Reason with no memory and no open
-  // jobs, and the text ten minutes later would land somewhere else.
+  // on a channel named after the call provider would hand them a second Reason with no memory and
+  // no open jobs, and the text ten minutes later would land somewhere else.
   db.upsertAccount({ conversationId: "dm:sendblue:+12125551111", channel: "sendblue", address: FRIEND, name: "Kofi" });
   const who = whoseCallIsThis(FRIEND);
   assert.equal(who.allow, true);
   assert.equal(who.conversationId, "dm:sendblue:+12125551111");
 
-  const out = ring({ caller_id: FRIEND });
-  assert.equal(out.body.dynamic_variables.reason_conversation_id, "dm:sendblue:+12125551111");
-  assert.equal(out.body.dynamic_variables.owner_name, "Kofi");
-  assert.equal(db.listCalls("dm:sendblue:+12125551111").length, 1);
-  assert.equal(db.listCalls("dm:elevenlabs:+12125551111").length, 0);
+  const out = ring(FRIEND);
+  const rows = db.listCalls("dm:sendblue:+12125551111");
+  assert.equal(rows.length, 1);
+  assert.equal(streamToken(out), rows[0].webhook_token);
+  assert.equal(callCount(), 1, "no second conversation anywhere");
+  assert.equal(db.listCalls(C).length, 0, "nothing on the operator's");
 });
 
 test("the opening line is a clean greeting, never a context dump", async () => {
   const { runTool } = await import("../src/tools.js");
   await runTool("task_start", { title: "book Carbone for Saturday", goal: "a table for four" }, { conversationId: C, messages: [] });
 
-  const line = openingLineFor({ person: { name: "Omari" }, conversationId: C });
-  assert.match(line, /hey Omari — what's up\?$/);
-  // The lead-in ("ah," / "hey —" …) is drawn at random on every call, so the ring's own opener is
-  // the same greeting, not the same bytes as a second draw.
-  assert.match(ring().body.conversation_config_override.agent.first_message, /hey Omari — what's up\?$/);
-
+  // The lead-in ("ah," / "hey —" …) is drawn at random on every call.
+  assert.match(openingLineFor({ person: { name: "Omari" }, conversationId: C }), /hey Omari — what's up\?$/);
   db.db.exec("DELETE FROM tasks");
   assert.match(openingLineFor({ person: { name: "Omari" }, conversationId: C }), /hey Omari — what's up\?$/);
 });
@@ -173,7 +132,7 @@ test("the greeting never mentions open tasks, no matter how fresh", async () => 
 
 test("the recording note goes out once, ever, and never recites itself on the call", () => {
   const first = ring();
-  assert.equal(first.body.conversation_config_override.agent.first_message.includes("recorded"), false);
+  assert.doesNotMatch(first.body, /recorded/, "nothing said on the line about it");
   const queued = outbox();
   assert.equal(queued.length, 1);
   assert.match(queued[0].body, /every call is recorded/);
@@ -182,7 +141,7 @@ test("the recording note goes out once, ever, and never recites itself on the ca
 
   // Rings again: nothing more is said about it. A disclosure said once is a disclosure; said on
   // every call it is a nag.
-  ring({ conversation_id: "conv_ring_2" });
+  ring();
   assert.equal(outbox().length, 1);
   assert.ok(db.getAccount(C).told_calls_recorded_at > 0);
 });
@@ -190,7 +149,7 @@ test("the recording note goes out once, ever, and never recites itself on the ca
 test("with nowhere to text, the note is not marked as told — so the next call still tells them", () => {
   db.db.exec("DELETE FROM accounts");
   db.upsertAccount({ conversationId: C, channel: "console", address: "console", name: "Omari", isOperator: true });
-  const row = db.createCall(C, { provider: "elevenlabs", toNumber: OWNER, isOwner: true, goal: "x", facts: [], direction: "in" });
+  const row = db.createCall(C, { provider: "gptlive", toNumber: OWNER, isOwner: true, goal: "x", facts: [], direction: "in" });
   const r = recordingNoteFor({ conversationId: C, row });
   assert.equal(r.queued, false);
   assert.match(r.why, /no texting channel/);
@@ -205,37 +164,34 @@ test("the neutral line (blocked, paused, removed) names nobody, whatever the ope
   try {
     for (const n of ["Omari", "Ama"]) {
       config.ownerName = n;
-      assert.equal(sc.neutralLine(), "Hi, you've reached Reason. I can't take calls from this number right now. Thanks, bye.");
+      assert.equal(sc.neutralLine(), NEUTRAL);
     }
   } finally { config.ownerName = saved; }
 });
 
-test("an unknown caller gets Reason introducing itself, a tool-less pitch turn, and nobody's data", () => {
-  const out = ring({ caller_id: STRANGER });
+test("an unknown caller gets the stranger's stream, kept against their number, and nobody's data", () => {
+  const out = ring(STRANGER, { sid: "CA_cold" });
   assert.equal(out.status, 200);
-  const agent = out.body.conversation_config_override.agent;
-  assert.match(agent.first_message, /^Hi, this is Reason, a personal AI assistant/);
-  assert.match(agent.first_message, /this call is recorded/);
-  assert.doesNotMatch(JSON.stringify(out.body), /Omari|\+12025551234|dm:owner/, "nothing about any user in what the platform is handed");
-  assert.deepEqual(agent.prompt.tools, [{ type: "system", name: "end_call" }], "end_call is the only tool");
-  assert.equal(out.body.dynamic_variables.reason_kind, "stranger");
-  const extra = out.body.custom_llm_extra_body;
-  assert.equal(extra.reason_kind, "stranger", "its turns come to the pitch");
-  assert.deepEqual(Object.keys(extra).sort(), ["reason_kind", "reason_stranger_call", "reason_stranger_token"], "no call row, no conversation id: only its own stranger_calls entry");
+  const token = streamToken(out);
+  assert.match(token ?? "", /^[0-9a-f]{32}$/, "a stream of its own, not a call row's");
+  assert.doesNotMatch(out.body, /Omari|\+12025551234|dm:owner/, "nothing about any user in what Twilio is handed");
 
-  // Nothing of theirs exists: no account, no call row, no conversation.
+  // Nothing of theirs exists: no account, no call row, no conversation. Only their stranger_calls entry.
   assert.equal(db.accountByNumber(STRANGER), null);
-  assert.equal(db.listCalls("dm:elevenlabs:+13475559999").length, 0);
-  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls").get().n, 0);
+  assert.equal(callCount(), 0);
+  const kept = db.db.prepare("SELECT * FROM stranger_calls").all();
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].phone, STRANGER);
+  assert.equal(kept[0].external_id, "gptlive:CA_cold");
 });
 
 test("the master is asked about them, queued rather than sent, on the texting channel", () => {
-  ring({ caller_id: STRANGER });
+  ring(STRANGER);
   const queued = outbox();
   assert.equal(queued.length, 1);
   assert.equal(queued[0].conversation_id, C);
-  // The channel their new Reason would be set up on, not "elevenlabs" — approving somebody onto the
-  // call provider's name would set up an account Reason cannot send a text to.
+  // The channel their new Reason would be set up on, not the call provider's name — approving
+  // somebody onto that would set up an account Reason cannot send a text to.
   assert.equal(queued[0].channel, "sendblue");
   assert.match(queued[0].body, /\+13475559999/);
   const request = db.db.prepare("SELECT * FROM access_requests WHERE address = ?").get(STRANGER);
@@ -246,42 +202,45 @@ test("the master is asked about them, queued rather than sent, on the texting ch
 });
 
 test("the same stranger ringing six times troubles the master once", () => {
-  ring({ caller_id: STRANGER });
-  ring({ caller_id: STRANGER, conversation_id: "c2" });
-  ring({ caller_id: STRANGER, conversation_id: "c3" });
+  for (let i = 0; i < 6; i++) assert.ok(streamToken(ring(STRANGER)));
   assert.equal(outbox().length, 1);
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM access_requests").get().n, 1);
 });
 
 test("a withheld number is a stranger, and nothing is written down about nobody", () => {
-  const out = ring({ caller_id: "" });
+  for (const from of ["", "anonymous"]) {
+    const out = ring(from);
+    assert.equal(out.status, 200);
+    assert.ok(streamToken(out), "the stranger's stream");
+  }
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM access_requests").get().n, 0);
+  assert.equal(outbox().length, 0);
+  assert.equal(callCount(), 0);
+  // Their row (for the recording they are told about) carries no number, so it matches nobody, ever.
+  assert.deepEqual(db.db.prepare("SELECT DISTINCT phone FROM stranger_calls").all().map(r => r.phone), [""]);
+});
+
+test("with no line to text on, the stranger still gets their stream and no request is written", () => {
+  // Nowhere to ask the master and nowhere to answer this person if the answer were yes. A request
+  // nobody can act on is worse than none.
+  const out = ring(STRANGER, { via: noRouter });
   assert.equal(out.status, 200);
-  assert.match(out.body.conversation_config_override.agent.first_message, /^Hi, this is Reason/);
+  assert.ok(streamToken(out));
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM access_requests").get().n, 0);
   assert.equal(outbox().length, 0);
 });
 
-test("with no line to text on, the stranger still gets their line and no request is written", () => {
-  // Nowhere to ask the master and nowhere to answer this person if the answer were yes. A request
-  // nobody can act on is worse than none.
-  const out = inboundRequest({
-    rawBody: JSON.stringify({ caller_id: STRANGER, conversation_id: "conv_x" }),
-    provider: provider(), router: noRouter,
-  });
-  assert.equal(out.status, 200);
-  assert.match(out.body.conversation_config_override.agent.first_message, /^Hi, this is Reason/);
-  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM access_requests").get().n, 0);
-});
+const saysNeutral = (body) => body.includes(`>${NEUTRAL}</Say><Hangup/>`);
 
 test("a blocked number gets the neutral line, no pitch, and nothing else at all", () => {
   db.blockNumber(STRANGER, "they kept ringing");
-  const out = ring({ caller_id: STRANGER });
-  const agent = out.body.conversation_config_override.agent;
-  assert.equal(agent.first_message, "Hi, you've reached Reason. I can't take calls from this number right now. Thanks, bye.");
-  assert.match(agent.prompt.prompt, /call the end_call tool immediately/);
-  assert.equal(out.body.custom_llm_extra_body, undefined, "no pitch turns");
+  const out = ring(STRANGER);
+  assert.equal(out.status, 200);
+  assert.ok(saysNeutral(out.body), out.body);
+  assert.doesNotMatch(out.body, /<Stream/, "no pitch: Twilio says it and hangs up");
   assert.equal(db.db.prepare("SELECT COUNT(*) n FROM access_requests").get().n, 0);
   assert.equal(outbox().length, 0);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls").get().n, 0);
   assert.equal(whoseCallIsThis(STRANGER).reason, "blocked");
 });
 
@@ -290,13 +249,14 @@ test("a paused or removed account gets the neutral line every time: no pitch, no
   for (const state of ["paused", "removed"]) {
     db.setAccountState("dm:sendblue:+12125551111", state);
     assert.equal(whoseCallIsThis(FRIEND).reason, state);
-    for (const c of ["c1", "c2"]) {
-      const agent = ring({ caller_id: FRIEND, conversation_id: `${state}-${c}` }).body.conversation_config_override.agent;
-      assert.equal(agent.first_message, "Hi, you've reached Reason. I can't take calls from this number right now. Thanks, bye.");
-      assert.doesNotMatch(agent.first_message, /Omari/);
+    for (let i = 0; i < 2; i++) {
+      const out = ring(FRIEND);
+      assert.ok(saysNeutral(out.body), out.body);
+      assert.doesNotMatch(out.body, /Omari|Kofi|<Stream/);
     }
   }
-  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls").get().n, 0);
+  assert.equal(callCount(), 0);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls").get().n, 0);
 });
 
 // ---------- what it costs ----------
@@ -306,16 +266,17 @@ test("the day's call cap counts a call that came IN, and refuses past it", () =>
   const was = config.maxCallsPerDay;
   try {
     config.maxCallsPerDay = 2;
-    assert.equal(ring().status, 200);
-    assert.equal(ring({ conversation_id: "c2" }).status, 200);
-    const third = ring({ conversation_id: "c3" });
+    assert.ok(streamToken(ring()));
+    assert.ok(streamToken(ring()));
+    const third = ring();
     assert.equal(third.status, 200);
-    assert.match(third.body.conversation_config_override.agent.first_message, /that's 2 calls today/);
-    assert.match(third.body.conversation_config_override.agent.first_message, /text me instead/);
-    assert.equal(third.body.dynamic_variables.reason_why, "daily_call_cap");
+    assert.match(third.body, /that's 2 calls today/);
+    assert.match(third.body, /text me instead/);
+    assert.match(third.body, /<Hangup\/>/);
+    assert.equal(streamToken(third), null, "no stream past the cap");
     // The refused one is not written down as a call and does not use up another of their day.
-    assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls").get().n, 2);
-    assert.equal(db.usageToday(C, require_today()).calls, 2);
+    assert.equal(callCount(), 2);
+    assert.equal(db.usageToday(C, today()).calls, 2);
   } finally {
     config.maxCallsPerDay = was;
   }
@@ -325,18 +286,18 @@ test("the minutes cap counts a call that came in too", () => {
   const was = config.maxCallMinutesPerDay;
   try {
     config.maxCallMinutesPerDay = 5;
-    db.bumpUsage(C, require_today(), "call_seconds", 6 * 60);
+    db.bumpUsage(C, today(), "call_seconds", 6 * 60);
     const out = ring();
-    assert.match(out.body.conversation_config_override.agent.first_message, /6 minutes of calls today/);
-    assert.equal(out.body.dynamic_variables.reason_why, "daily_call_minutes_cap");
-    assert.equal(db.db.prepare("SELECT COUNT(*) n FROM calls").get().n, 0);
+    assert.match(out.body, /6 minutes of calls today/);
+    assert.match(out.body, /<Hangup\/>/);
+    assert.equal(callCount(), 0);
   } finally {
     config.maxCallMinutesPerDay = was;
   }
 });
 
 /** The day a cap is counted against, in the operator's timezone — same as src/accounts.js. */
-function require_today() {
+function today() {
   return new Date(clock.now()).toLocaleDateString("en-CA", { timeZone: config.tz });
 }
 
@@ -347,9 +308,9 @@ const RESTAURANT = "+12125558888";
 /** A call Reason made to a place, left in the state the given outcome describes. */
 const calledThem = (over = {}) => {
   const row = db.createCall(C, {
-    provider: "elevenlabs", toNumber: RESTAURANT, isOwner: false,
+    provider: "gptlive", toNumber: RESTAURANT, isOwner: false,
     goal: "ask if they can do a table for eight on Saturday",
-    facts: ["the name is Omari", "eight people"], announcement: "x", externalId: "conv_out_1",
+    facts: ["the name is Omari", "eight people"], announcement: "x", externalId: "gptlive:CA_out_1",
   });
   db.updateCall(C, row.id, { state: "completed", outcome_kind: "answered", ...over });
   return db.getCall(C, row.id);
@@ -365,32 +326,36 @@ test("a place Reason called is not a stranger when it rings back — it rejoins 
   assert.equal(who.errandId, e.id);
   assert.equal(who.aboutCall.id, out.id);
 
-  const r = ring({ caller_id: RESTAURANT, conversation_id: "conv_back" });
+  const r = ring(RESTAURANT);
   assert.equal(r.status, 200);
   // A THIRD-PARTY call, never an owner one. The row the owner path would have written says
   // `isOwner: true`, and a restaurant must never get one.
-  assert.equal(r.body.dynamic_variables.reason_kind, "third_party");
   const row = lastInbound();
+  assert.equal(streamToken(r), row.webhook_token);
   assert.equal(row.is_owner, 0);
   assert.equal(row.direction, "in");
   assert.equal(row.errand_id, e.id);
+  assert.match(row.goal, /ringing back about: ask if they can do a table for eight/);
+  assert.deepEqual(JSON.parse(row.facts), ["the name is Omari", "eight people"]);
   // And they are told what they are talking to, because they are a person who has not been told.
-  assert.match(r.body.conversation_config_override.agent.first_message, /AI assistant/);
-  assert.match(r.body.conversation_config_override.agent.first_message, /recorded/);
-  assert.match(r.body.conversation_config_override.agent.first_message, /calling back about/);
+  assert.match(row.announcement, /AI assistant/);
+  assert.match(row.announcement, /recorded/);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM stranger_calls").get().n, 0, "not kept as a stranger");
+  assert.equal(outbox().length, 0, "the master is not asked about a place Reason rang");
 });
 
 test("the returning call inherits the brief, so a call that was only asking still only asks", () => {
   calledThem({ brief: JSON.stringify({ goal: "ask about a table", approved: { book: false }, readBack: [] }) });
-  ring({ caller_id: RESTAURANT, conversation_id: "conv_back" });
+  ring(RESTAURANT);
   assert.equal(JSON.parse(lastInbound().brief).approved.book, false);
 });
 
 test("a number nobody called is still a stranger, and the master still hears about it", () => {
-  const r = ring({ caller_id: STRANGER, conversation_id: "conv_cold" });
+  const r = ring(STRANGER);
   assert.equal(r.status, 200);
-  assert.match(r.body.conversation_config_override.agent.first_message, /^Hi, this is Reason/);
+  assert.ok(streamToken(r));
   assert.equal(db.listCalls(C).length, 0);
+  assert.equal(outbox().length, 1);
 });
 
 test("a call that was already settled is not reopened by a ring back", () => {
@@ -398,6 +363,10 @@ test("a call that was already settled is not reopened by a ring back", () => {
   assert.equal(whoseCallIsThis(RESTAURANT).allow, false, "there is no open question to continue");
   calledThem({ outcome_kind: "refused_by_them" });
   assert.equal(whoseCallIsThis(RESTAURANT).allow, false);
+  // Rung anyway: a stranger, with no call row opened on the operator's conversation.
+  ring(RESTAURANT);
+  assert.equal(lastInbound(), undefined);
+  assert.equal(db.db.prepare("SELECT phone FROM stranger_calls").get()?.phone, RESTAURANT);
 });
 
 test("a ring back about something from last month is not that errand continuing", () => {
@@ -405,12 +374,44 @@ test("a ring back about something from last month is not that errand continuing"
   assert.equal(whoseCallIsThis(RESTAURANT).allow, true);
   clock.skip(25 * 60 * 60 * 1000);
   assert.equal(whoseCallIsThis(RESTAURANT).allow, false, "a day later it is somebody ringing about something else");
+  ring(RESTAURANT);
+  assert.equal(lastInbound(), undefined, "a stranger, not the old errand");
+});
+
+// Security audit lead 30: a ring-back runs on the operator's conversation, whose daily call caps are
+// exempt by default, so the number of ring-backs one call of Reason's opens has to be bounded here.
+test("one call of Reason's opens a few ring-backs, not an unlimited line on the operator's bill", () => {
+  calledThem({ outcome_kind: "hold_gave_up" });
+  for (let i = 0; i < MAX_RING_BACKS; i++) {
+    assert.equal(whoseCallIsThis(RESTAURANT).callingBack, true, `ring-back ${i + 1} is the errand`);
+    ring(RESTAURANT);
+  }
+  const inbound = () => db.db.prepare("SELECT COUNT(*) n FROM calls WHERE direction = 'in'").get().n;
+  assert.equal(inbound(), MAX_RING_BACKS);
+  // The next one is a stranger: no third-party call opened on the operator's conversation.
+  assert.equal(whoseCallIsThis(RESTAURANT).allow, false);
+  for (let i = 0; i < 5; i++) ring(RESTAURANT);
+  assert.equal(inbound(), MAX_RING_BACKS, "no more errand calls past the budget");
+  // A fresh call from Reason opens a fresh budget.
+  calledThem({ outcome_kind: "hold_gave_up" });
+  assert.equal(whoseCallIsThis(RESTAURANT).callingBack, true);
+});
+
+test("a ring-back does not slide the window: it stays a day from Reason's own call", () => {
+  calledThem({ outcome_kind: "hold_gave_up" });
+  clock.skip(23 * 60 * 60 * 1000);
+  ring(RESTAURANT);
+  assert.equal(lastInbound()?.is_owner, 0, "inside the day: the errand");
+  clock.skip(2 * 60 * 60 * 1000);
+  assert.equal(whoseCallIsThis(RESTAURANT).allow, false, "25 h after Reason rang, the ring-back row does not keep it open");
 });
 
 test("the number a call gives out to be rung back on is the install's own", async () => {
-  // Without ELEVENLABS_PHONE_NUMBER there is no usable return number, and a call that invents one
-  // sends a busy place to a phone nobody answers.
+  // Without the install's Twilio number there is no usable return number, and a call that invents
+  // one sends a busy place to a phone nobody answers.
   const { buildBrief } = await import("../src/calls/brief.js");
   assert.equal(buildBrief({ goal: "x" }).returnNumber, "");
-  assert.equal(buildBrief({ goal: "x", returnNumber: "+16465550000" }).returnNumber, "+16465550000");
+  assert.equal(buildBrief({ goal: "x", returnNumber: NUMBER }).returnNumber, NUMBER);
+  // The call a user asks for from inside a call hands out the number this install rings from.
+  assert.match(readFileSync(new URL("../src/calls/fromcall.js", import.meta.url), "utf8"), /returnNumber: config\.twilioFrom \|\| ""/);
 });

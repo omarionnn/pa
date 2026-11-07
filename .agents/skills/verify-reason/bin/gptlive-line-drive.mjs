@@ -62,7 +62,7 @@ Object.assign(process.env, {
   REASON_OWNER_NAME: "Omari", REASON_TZ: "America/New_York", REASON_CONVERSATION: "dm:owner",
   REASON_OWNER_NUMBER: "+12025550100", ANTHROPIC_API_KEY: "", REASON_CALL_BACKEND: "claude-cli", REASON_BACKEND: "claude-cli",
   REASON_CALL_VOICE: "gptlive", REASON_THIRD_PARTY_VOICE: "owner", REASON_CALL_IDENTITY: "on",
-  ELEVENLABS_LLM_SECRET: "drive-secret", REASON_PUBLIC_URL: "http://127.0.0.1",
+  REASON_PUBLIC_URL: "http://127.0.0.1",
   TWILIO_ACCOUNT_SID: "AC_drive", TWILIO_AUTH_TOKEN: "drive-token", TWILIO_FROM_NUMBER: "+16562167455",
 });
 const REPO = resolve(dirname(new URL(import.meta.url).pathname), "../../../..");

@@ -11,18 +11,18 @@
 import { CallProvider } from "./provider.js";
 import { FakeCallProvider } from "./fake.js";
 import { BlandCallProvider } from "./bland.js";
-import { ElevenLabsCallProvider } from "./elevenlabs.js";
+import { GptLiveCallProvider } from "./gptlive.js";
 import { config } from "../config.js";
 
-export const CALL_PROVIDERS = ["elevenlabs", "bland", "fake"];
+export const CALL_PROVIDERS = ["gptlive", "bland", "fake"];
 
 export function chooseCallProvider({ provider = null, fetchImpl = null } = {}) {
   const name = String(provider ?? config.callProvider ?? "fake").trim().toLowerCase();
 
-  // Reason itself on the phone, both directions. Dormant on an install that has not named it:
-  // choosing it is `REASON_CALL_PROVIDER=elevenlabs`, and even then its own `status()` reports not
-  // connected until every key a call needs is really there.
-  if (name === "elevenlabs" || name === "11labs") return new ElevenLabsCallProvider({ fetchImpl });
+  // Reason itself on the phone, both directions, with GPT-Live as the voice over Twilio
+  // (src/calls/gptlive.js). Its own `status()` reports not connected until every key a call needs is
+  // really there.
+  if (name === "gptlive") return new GptLiveCallProvider({ fetchImpl });
 
   if (name === "bland") return new BlandCallProvider({ fetchImpl });
 

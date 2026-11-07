@@ -720,7 +720,7 @@ test("a sent catch leaves a receipt, so 'what have you been up to' includes it",
     const row = ledger.actions.find(a => a.action === "notice_send");
     assert.ok(row, `the catch is in the ledger; got ${JSON.stringify(ledger.actions.map(a => a.action))}`);
     assert.equal(row.outcome, "ok");
-    assert.match(row.receipt, /Told Omari, unprompted/);
+    assert.match(row.receipt, /Told them, unprompted/);
     assert.match(row.receipt, /moved to 3/);
     assert.match(row.receipt, /why then: it is in four hours/);
   } finally { await rt.shutdown(); }

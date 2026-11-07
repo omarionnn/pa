@@ -27,7 +27,7 @@ import { undeliveredNotice } from "../outbox.js";
 import { imagesFor, pdfsFor } from "../media.js";
 import { docsFor } from "../docread.js";
 import * as doing from "../doing.js";
-import { startCapture, recordLooked, captureViaCli } from "../looked.js";
+import { startCapture, recordLooked, captureViaCli, capturedWords } from "../looked.js";
 import * as reviewed from "../reviewed.js";
 import { capabilitiesNow } from "../tools.js";
 import * as whatsnew from "../whatsnew.js";
@@ -38,7 +38,7 @@ import { reconnectNote } from "../strangercalls.js";
 import { memoryNotes } from "../memorynote.js";
 import { startPurchasesNote, purchaseRecordSource } from "../purchasesnote.js";
 import { withoutSelfNote, readSilence } from "../plain.js";
-import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "../offers.js";
+import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource, notePhotos as noteOfferPhotos, photoWords as offerPhotoWords } from "../offers.js";
 import { saveThread } from "../thread.js";
 import { runClaudeCli } from "./cli.js";
 import { adoptWebChatAsks, expiredAsksNote } from "../trust.js";
@@ -201,6 +201,9 @@ async function runTurnOnCli({
   // prefix is a cache hit; a rewrite cost a second full turn (8–15 s) before 2026-10-28. With no
   // fresh session (a restart in between) the turn runs the long way, as it always did.
   continueSession = false,
+  // The one rewrite of a draft the reply check sent back (Runtime._turn): the same turn going on, so
+  // the figures its tools already read still count (src/offers.js beginTurn `carry`).
+  recompose = false,
   // Injectable so the whole turn is testable with no CLI, no network and no port: what the model
   // is handed, what the history keeps and what the record says are all decided in this function.
   run = runClaudeCli, images = imagesFor, pdfs = pdfsFor, startMcp = startMcpHttp,
@@ -238,12 +241,15 @@ async function runTurnOnCli({
   // A fresh source ledger for the reply check (src/offers.js), same as the API path. Not for the said
   // check's rewrite (continueSession): it is the same turn, and the figures its tools fetched still count —
   // without this the rewrite marked a price read off the store's page "(unverified)" (drive 2026-11-06).
-  if (!continueSession) beginOfferTurn(conversationId, text, kind);
+  beginOfferTurn(conversationId, text, kind, { carry: recompose || continueSession });
   const { blocks, notes, seen, viewedMediaIds } = await images(attachments, { log, cover: reviewed.cover });
   if (blocks.length) log({ cli_images: blocks.length });
   // Started now, alongside the turn, and awaited only once the reply is in hand — what each photo
   // shows and every word in it, so the next turn can answer a form it can no longer see.
   const captured = startCapture({ blocks, viewedMediaIds, attachments, capture, log });
+  // Every figures check of this turn reads those words — a message_send mid-turn, and the rewrite,
+  // which looks at no photo of its own (src/offers.js notePhotos).
+  if (viewedMediaIds.length) noteOfferPhotos(conversationId, () => capturedWords(captured, viewedMediaIds));
   // A PDF — a receipt, a ticket, a lease — read on this machine and handed over as text, the same
   // call the API path makes (src/agent.js). Until 10-26 this backend, the live one, never read one.
   // §4h: the open Web tab's working line counts the files as they are read ("… 2 of 3 files", src/doing.js).
@@ -437,7 +443,10 @@ async function runTurnOnCli({
     // The figures check (src/offers.js), same floor as the API path, before anything is kept or sent.
     if (!quiet.silent) {
       // Their own purchase record counts as a source too (src/purchasesnote.js purchaseRecordSource).
-      const g = guardReply(conversationId, reply, { extraSources: [purchaseRecordSource(conversationId)] });
+      // So do the words on the photos they sent this turn (src/looked.js capturedWords).
+      const photos = await offerPhotoWords(conversationId);
+      const g = guardReply(conversationId, reply, { records: [purchaseRecordSource(conversationId)], extraSources: photos.texts, unread: photos.unread, turnReply: true });
+      if (g.recompose) log({ reply_guard: g.flags, recompose: true, conversation: conversationId });
       if (g.changed) { log({ reply_guard: g.flags, conversation: conversationId }); reply = g.text; }
     }
 

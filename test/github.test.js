@@ -10,6 +10,7 @@
 // No key, no network: the base URLs point at the fixture.
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { withYes } from "./fixture-yes.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -154,7 +155,7 @@ test("github_issues lists issues on a repo", async () => {
 
 test("github_issue_create creates an issue", async () => {
   await connect();
-  const out = await call("github_issue_create", { repo: "omari/reason", title: "New feature", body: "Please add this", labels: ["enhancement"] });
+  const out = await withYes(runTool, "github_issue_create", { repo: "omari/reason", title: "New feature", body: "Please add this", labels: ["enhancement"] }, { conversationId: OMARI, messages: [] });
   assert.equal(out.ok, true);
   assert.ok(out.number >= 100);
   assert.equal(out.title, "New feature");
@@ -165,7 +166,7 @@ test("github_issue_create creates an issue", async () => {
 
 test("github_issue_comment posts a comment", async () => {
   await connect();
-  const out = await call("github_issue_comment", { repo: "omari/reason", issue_number: 1, body: "Looks good to me" });
+  const out = await withYes(runTool, "github_issue_comment", { repo: "omari/reason", issue_number: 1, body: "Looks good to me" }, { conversationId: OMARI, messages: [] });
   assert.equal(out.ok, true);
   assert.ok(out.url.includes("issuecomment"));
   assert.equal(fake.state.commentsPosted.length, 1);

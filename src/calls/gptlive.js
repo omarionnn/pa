@@ -1,24 +1,22 @@
-// GPT-Live (OpenAI `gpt-live-1`) as a second voice for Reason's phone calls — a trial, beside
-// ElevenLabs, so the owner can compare the two on real calls (2026-10-31).
+// GPT-Live (OpenAI `gpt-live-1`): the voice of every Reason phone call, over Twilio. It is the only
+// voice Reason has.
 //
 // The split is the whole design: GPT-Live is only the VOICE. It listens, speaks and decides when to
-// ask for help; every question and every action goes to Reason through CLIENT delegation — the same
-// `llmRequest` turn ElevenLabs' custom-LLM requests run (src/calls/voice.js), with the same context,
-// tools, memory, harm screen, confirm gate and NO_REPLY / spoken-args filtering. No OpenAI model does
-// Reason's thinking.
+// ask for help; every question and every action goes to Reason through CLIENT delegation — the
+// `llmRequest` turn in src/calls/voice.js, with its context, tools, memory, harm screen, confirm gate
+// and NO_REPLY / spoken-args filtering. No OpenAI model does Reason's thinking.
 //
-// Who gets it (`gptliveFor`): REASON_CALL_VOICE=gptlive (or on) — every account's OWN calls, the ones
-// Reason places to its own person (Omari, 2026-10-31: "make this available for everyone that has
-// Reason"); REASON_CALL_VOICE=owner — the operator's own calls only, the trial. Third-party and
-// business calls, and every call with the flag unset, are ElevenLabs exactly as before.
+// Who gets it: REASON_CALL_PROVIDER=gptlive makes it the call provider (`GptLiveCallProvider`), so
+// every call — own, business, ring-back, inbound — is GPT-Live. REASON_CALL_VOICE /
+// REASON_THIRD_PARTY_VOICE (gptlive, or owner for the operator only) put it in front of another
+// provider instead (`withGptLive`); with REASON_CALL_PROVIDER=gptlive they change nothing.
 //
 // The phone line: Twilio Media Streams. Twilio carries the call and streams 8 kHz μ-law both ways over
 // a WebSocket to /calls/gptlive/stream/{token}; this file relays it to a GPT-Live WebSocket session,
 // which takes μ-law natively (audio/pcmu), so audio is forwarded byte for byte. Outbound, Reason asks
-// Twilio to dial with that stream as the call's TwiML. Inbound, the number's voice webhook would have
-// to point at /calls/gptlive/inbound, which sends the owner here and redirects everyone else to
-// ElevenLabs' own Twilio URL unchanged. Both need TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN, which only
-// the owner can supply: the number lives in ElevenLabs, and its Twilio keys were never on this machine.
+// Twilio to dial with that stream as the call's TwiML. Inbound, the number's voice webhook points at
+// /calls/gptlive/inbound (`inboundTwiml`). Both need TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN /
+// TWILIO_FROM_NUMBER and OPENAI_API_KEY.
 //
 // Docs read 2026-10-31: developers.openai.com/api/docs/guides/live, live-delegation (client mode),
 // voice-websockets (pcmu 8k), voice-server-controls (playback control), live-conversations (greeting,
@@ -36,7 +34,7 @@ import { thirdPartyIdentity, callIdentityFor, NO_NAME, speakToThem } from "./voi
 import * as hold from "./hold.js";
 import * as callOutcome from "./outcome.js";
 import { makerLine } from "../maker.js";
-import { announcementFor, callRulesFor } from "./provider.js";
+import { CallProvider, announcementFor, callRulesFor } from "./provider.js";
 import { briefLines } from "./brief.js";
 import { recordingNoticeFor } from "./consent.js";
 import * as ambience from "./ambience.js";
@@ -52,7 +50,7 @@ export const AMD_PATH = "/calls/gptlive/amd/";
 const LIVE_URL = "wss://api.openai.com/v1/live/sessions";
 /** $0.05 a minute for the voice layer (developers.openai.com/api/docs/models/gpt-live-1, 2026-10-31). */
 export const CENTS_PER_MINUTE = 5;
-/** The external id prefix, so a check() can tell a GPT-Live call from an ElevenLabs conversation id. */
+/** The external id prefix, so a check() can tell a GPT-Live call from another provider's id. */
 const EXT = "gptlive:";
 
 // ---------- who gets it ----------
@@ -68,7 +66,10 @@ export function gptliveMode(v = config.callVoice) {
 export const thirdPartyMode = (v = config.thirdPartyVoice) => gptliveMode(v);
 
 /** Is any GPT-Live route listened for at all? */
-export const gptliveOn = () => gptliveMode() !== "" || thirdPartyMode() !== "";
+export const gptliveOn = () => gptliveIsProvider() || gptliveMode() !== "" || thirdPartyMode() !== "";
+
+/** Is GPT-Live the call provider itself (REASON_CALL_PROVIDER=gptlive)? Then it is every call's voice. */
+export const gptliveIsProvider = () => String(config.callProvider ?? "").trim().toLowerCase() === PROVIDER;
 
 /**
  * Is GPT-Live the voice for the calls this account's Reason makes to OTHER people — a business, a
@@ -76,7 +77,7 @@ export const gptliveOn = () => gptliveMode() !== "" || thirdPartyMode() !== "";
  * operator's only on "owner", so his errands prove it first.
  */
 export function thirdPartyVoiceFor(conversationId) {
-  const mode = thirdPartyMode();
+  const mode = gptliveIsProvider() ? "everyone" : thirdPartyMode();
   if (!mode || !conversationId) return false;
   try {
     const me = accounts.ownerOf(conversationId);
@@ -89,7 +90,7 @@ export function thirdPartyVoiceFor(conversationId) {
  * operator on "owner". Keyed on the call's own conversation, so it is that person's Reason either way.
  */
 export function gptliveFor(conversationId) {
-  const mode = gptliveMode();
+  const mode = gptliveIsProvider() ? "everyone" : gptliveMode();
   if (!mode || !conversationId) return false;
   try {
     const me = accounts.ownerOf(conversationId);
@@ -101,8 +102,7 @@ export function gptliveFor(conversationId) {
 export function missingForGptlive() {
   const need = {
     OPENAI_API_KEY: config.openaiKey, TWILIO_ACCOUNT_SID: config.twilioSid, TWILIO_AUTH_TOKEN: config.twilioToken,
-    "TWILIO_FROM_NUMBER (or ELEVENLABS_PHONE_NUMBER)": config.twilioFrom, REASON_PUBLIC_URL: config.publicUrl,
-    ELEVENLABS_LLM_SECRET: config.elevenLlmSecret,
+    TWILIO_FROM_NUMBER: config.twilioFrom, REASON_PUBLIC_URL: config.publicUrl,
   };
   return Object.entries(need).filter(([, v]) => !v).map(([k]) => k);
 }
@@ -363,7 +363,7 @@ function briefOf(call) {
 }
 
 /**
- * The disclosure a GPT-Live third-party call opens with: the ElevenLabs path's own line
+ * The disclosure a GPT-Live third-party call opens with: the provider's own line
  * (`announcementFor` in ./provider.js), naming Reason and the person by first name — "this is Reason,
  * an AI assistant calling for Omari. Just so you know, this call is recorded."
  */
@@ -481,8 +481,8 @@ const SPOKEN_FILLERS = new Set([...METER_KINDS.holdingLines, ...METER_KINDS.fill
 /**
  * What one Reason turn (the SSE stream `llmRequest` answers with) says, for the voice to say.
  *
- * The code's own holding lines and "one sec" fillers are dropped — they exist to keep ElevenLabs from
- * hanging up on a silent custom LLM, and GPT-Live holds the line itself. The NO_REPLY marker is taken
+ * The code's own holding lines and "one sec" fillers are dropped — they exist to keep a voice platform
+ * from hanging up on a silent turn, and GPT-Live holds the line itself. The NO_REPLY marker is taken
  * out again here as a second net. Platform tools come back as their names: `end_call` (with its
  * optional spoken message) is honoured; `skip_turn` means nothing to say.
  */
@@ -1088,7 +1088,7 @@ export class GptLiveCall {
   // --- GPT-Live side ---
 
   connect() {
-    // The same ceiling an ElevenLabs call has (the agent's own, `callPlatformCapSeconds`), so a call
+    // The platform ceiling (`callPlatformCapSeconds`), so a call
     // never outlives the lost-call sweep's window and is written off while it is still going.
     this.capTimer = this.timers.setTimeout(() => { this.endWhy = "duration_cap"; this.end("duration_cap").catch(() => {}); }, config.callPlatformCapSeconds * 1000);
     const w = this.warm;
@@ -1761,7 +1761,7 @@ export class GptLiveCall {
   }
 
   /**
-   * One Reason call turn for the line, the same turn ElevenLabs' custom-LLM requests run (third-party
+   * One Reason call turn for the line, the `llmRequest` turn (third-party
    * context, brief, commit gate, hold, menus, machines — all written onto the row by that turn), and
    * then what it asked for carried out here: words said, a key pressed, a wait, a hang-up.
    *
@@ -1952,7 +1952,7 @@ export class GptLiveCall {
     }
     // A phone menu or a recording also reads as "a machine" to Twilio, so the verdict is a fact for
     // Reason's own turn, not a decision: its rules tell a mailbox from a menu (machine_on_the_line),
-    // and a mailbox gets the message (or none) as on ElevenLabs. Already a voicemail: just the cue.
+    // and a mailbox gets the message (or none). Already a voicemail: just the cue.
     const note = callOutcome.reachedMachine(this.freshRow()) ? AMD_BEEP_NOTE : AMD_NOTE;
     if (this.pending.size) { this.amdNote = note; return; }
     this.runLine("amd", { note: `[${note}]` });
@@ -2023,7 +2023,7 @@ export class GptLiveCall {
    * On hold, nothing is said and nothing is asked: Reason's `skip_turn` started the clock (hold_since)
    * and its budget is the call's (hold_budget_s). Hold music may never produce a word, so code checks
    * the clock; once the budget is gone, Reason's turn is asked once more, and its own wait rule
-   * (`hold.noteWaiting`) says the polite line and rings off — outcome `hold_gave_up`, as on ElevenLabs.
+   * (`hold.noteWaiting`) says the polite line and rings off — outcome `hold_gave_up`.
    * A person coming back is just words on the line, and the next turn takes the call off hold.
    */
   holdTick() {
@@ -2137,26 +2137,25 @@ export class GptLiveCall {
   }
 }
 
-/** One Reason turn for the call, run exactly as an ElevenLabs custom-LLM request is. */
+/** One Reason turn for the call, run in process (`llmRequest` in ./voice.js). */
 export async function reasonTurn({ call, messages, log = () => {}, extras = {} }) {
   const out = await llmRequest({
     rawBody: JSON.stringify({
       model: "reason", messages,
-      elevenlabs_extra_body: { reason_call_id: call.id, reason_conversation_id: call.conversation_id, reason_kind: call.is_owner ? "owner" : "third_party" },
+      extra_body: { reason_call_id: call.id, reason_conversation_id: call.conversation_id, reason_kind: call.is_owner ? "owner" : "third_party" },
     }),
-    headers: { authorization: `Bearer ${config.elevenLlmSecret}` },
     log, extras,
   });
   if (!out.stream) return { text: "", tools: [], endCall: null, skip: true, error: `turn refused (${out.status})` };
   return readTurn(out.stream);
 }
 
-/** The settle path every finished call takes, the same steps as an ElevenLabs post-call delivery. */
+/** The settle path every finished call takes (the steps in ./postcall.js). */
 export async function settleGptLive({ row, live, settle, runtime = null, log = () => {} }) {
   const fresh = db.getCall(row.conversation_id, row.id) ?? row;
   if (!["placing", "ringing", "in_progress"].includes(fresh.state) && fresh.recording_state !== "pending") return fresh;
   const settled = settle ? await settle(fresh.conversation_id, fresh, live, { log }) : fresh;
-  // The same marks as the ElevenLabs path: begun with the thread, finished once the owner was told.
+  // Begun with the thread, finished once the owner was told (`resumeSettles` reads both).
   db.updateCall(settled.conversation_id, settled.id, { settle_started_at: clock.now() });
   const wrote = writeCallIntoThread({ row: settled, live, log });
   noteThirdPartyTurns({ row: settled, live });
@@ -2217,61 +2216,115 @@ export function stateFromTwilio(s) {
   })[String(s ?? "")] ?? "placing";
 }
 
-// ---------- the provider, wrapped ----------
+// ---------- the provider ----------
 
 /**
- * The call provider the runtime is handed, with GPT-Live in front of it for own calls (`gptliveFor`).
- *
- * Everything else — `status()`, webhooks, every third-party call, every call with the flag off — is
- * the wrapped provider (ElevenLabs) untouched. `place` routes an owner call on a conversation
- * `gptliveFor` says yes to here; `check` routes ids this file issued. With the flag unset this returns the inner
- * provider itself, so not even the wrapper is in the path.
+ * Dial one call on GPT-Live: Twilio rings `args.to` with the media stream as the call's TwiML.
+ * `{ ok: false, error }` when this machine cannot (`missingForGptlive`) or the row has no token.
+ */
+export async function dialGptLive(args, { fetchImpl = null } = {}) {
+  const missing = missingForGptlive();
+  if (missing.length) return { ok: false, error: `GPT-Live calls are not set up on this machine: no ${missing.join(", ")}` };
+  const row = db.getCall(args?.conversationId, args?.callId);
+  if (!row?.webhook_token) return { ok: false, error: "there is no call row to place" };
+  const thirdParty = args?.kind !== "owner";
+  if (thirdParty) {
+    // The disclosure it will open with, naming Reason (the turn says it verbatim off the row).
+    const ann = lineAnnouncement(row.announcement || args.announcement);
+    if (ann && ann !== row.announcement) db.updateCall(row.conversation_id, row.id, { announcement: ann });
+  }
+  // No warm-up while it rings (2026-10-31): calls 54–55 with it were "confused and incoherent".
+  // The session opens when Twilio's stream starts, as on call 53. `prewarm` stays for a proven rework.
+  const out = await twilioPost("/Calls.json", {
+    To: args.to, From: config.twilioFrom, Twiml: streamTwiml(row),
+    StatusCallback: `${config.publicUrl}${STATUS_PATH}${row.webhook_token}`,
+    StatusCallbackEvent: ["initiated", "ringing", "answered", "completed"], StatusCallbackMethod: "POST",
+    Timeout: 30,
+    // Twilio's answering-machine detection, in the background: the call connects at once (a person
+    // is never kept waiting) and the verdict arrives on its own webhook once a machine's greeting
+    // has ended at the beep (`amdRequest`).
+    ...(thirdParty ? {
+      MachineDetection: "DetectMessageEnd", AsyncAmd: "true",
+      AsyncAmdStatusCallback: `${config.publicUrl}${AMD_PATH}${row.webhook_token}`, AsyncAmdStatusCallbackMethod: "POST",
+    } : {}),
+  }, fetchImpl ? { fetchImpl } : {});
+  if (!out.ok || !out.json?.sid) {
+    dropWarm(row.id, "Twilio refused the call");
+    return { ok: false, error: `Twilio refused the call (${out.status}${out.json?.message ? `: ${out.json.message}` : ""})` };
+  }
+  return {
+    ok: true, externalId: `${EXT}${out.json.sid}`, state: "placing", provider: PROVIDER, ttsModel: `${config.gptliveModel}/${config.gptliveVoice}`,
+    profile: thirdParty ? "third_party" : "owner",
+    // The line opens silent and the disclosure is owed to the first person heard (#232).
+    ...(thirdParty ? { openingWaits: true } : {}),
+  };
+}
+
+/**
+ * A GPT-Live call's state, off its own row: Twilio's status callback and the stream keep it current.
+ * A row still saying placing/ringing/in_progress with no voice session running in this process is not
+ * something this can vouch for (a restart mid-call, a lost status callback): `{ ok: false }`, so the
+ * lost-call sweep (`settleLostCalls`) writes it off instead of believing it is live forever.
+ */
+function checkGptLive(externalId) {
+  const row = db.callByExternalId(PROVIDER, externalId);
+  if (!row) return { ok: false, error: "no GPT-Live call under that id" };
+  if (["placing", "ringing", "in_progress"].includes(row.state) && !running.has(row.id)) {
+    return { ok: false, error: "no GPT-Live session is running for this call" };
+  }
+  return { ok: true, state: row.state };
+}
+
+/**
+ * GPT-Live as the call provider (REASON_CALL_PROVIDER=gptlive): every call, both directions, on one
+ * voice. Live once `missingForGptlive` is empty; `directions` is what `capabilities` reads, and both
+ * directions need the same keys (inbound is the number's voice webhook, `inboundTwiml`).
+ */
+export class GptLiveCallProvider extends CallProvider {
+  name = PROVIDER;
+
+  constructor({ fetchImpl = null } = {}) {
+    super();
+    this.fetchImpl = fetchImpl;
+  }
+
+  status() {
+    const missing = missingForGptlive();
+    return {
+      name: this.name,
+      status: missing.length ? "not_connected" : "live",
+      missing,
+      what: "be Reason itself on a real phone call, both directions, with GPT-Live as the voice on a Twilio number — recorded, with the audio afterwards",
+      records: true,
+      directions: { out: !missing.length, in: !missing.length, missingIn: missing },
+    };
+  }
+
+  async place(args) {
+    return dialGptLive(args, this.fetchImpl ? { fetchImpl: this.fetchImpl } : {});
+  }
+
+  async check(externalId) {
+    return checkGptLive(externalId);
+  }
+}
+
+/**
+ * GPT-Live in front of another provider (REASON_CALL_VOICE / REASON_THIRD_PARTY_VOICE), for the
+ * calls `gptliveFor` / `thirdPartyVoiceFor` say yes to; everything else is the wrapped provider. With
+ * no flag set this is the inner provider itself, and GPT-Live as the provider is handed back as it is.
  */
 export function withGptLive(inner, { fetchImpl = null } = {}) {
-  if (!gptliveOn() || !inner) return inner;
-  const live = new Map();
+  if (!gptliveOn() || !inner || inner instanceof GptLiveCallProvider) return inner;
   const place = async (args) => {
     const own = args?.kind === "owner" && gptliveFor(args?.conversationId);
-    // Phase 3: a call to a business or another person, behind REASON_THIRD_PARTY_VOICE.
     const thirdParty = args?.kind === "third_party" && thirdPartyVoiceFor(args?.conversationId);
     if (!own && !thirdParty) return inner.place(args);
-    const missing = missingForGptlive();
-    if (missing.length) return inner.place(args);
-    const row = db.getCall(args.conversationId, args.callId);
-    if (!row?.webhook_token) return inner.place(args);
-    if (thirdParty) {
-      // The disclosure it will open with, naming Reason (the turn says it verbatim off the row).
-      const ann = lineAnnouncement(row.announcement || args.announcement);
-      if (ann && ann !== row.announcement) db.updateCall(row.conversation_id, row.id, { announcement: ann });
-    }
-    // No warm-up while it rings (2026-10-31): calls 54–55 with it were "confused and incoherent".
-    // The session opens when Twilio's stream starts, as on call 53. `prewarm` stays for a proven rework.
-    const out = await twilioPost("/Calls.json", {
-      To: args.to, From: config.twilioFrom, Twiml: streamTwiml(row),
-      StatusCallback: `${config.publicUrl}${STATUS_PATH}${row.webhook_token}`,
-      StatusCallbackEvent: ["initiated", "ringing", "answered", "completed"], StatusCallbackMethod: "POST",
-      Timeout: 30,
-      // Twilio's answering-machine detection, in the background: the call connects at once (a person
-      // is never kept waiting) and the verdict arrives on its own webhook once a machine's greeting
-      // has ended at the beep (`amdRequest`).
-      ...(thirdParty ? {
-        MachineDetection: "DetectMessageEnd", AsyncAmd: "true",
-        AsyncAmdStatusCallback: `${config.publicUrl}${AMD_PATH}${row.webhook_token}`, AsyncAmdStatusCallbackMethod: "POST",
-      } : {}),
-    }, fetchImpl ? { fetchImpl } : {});
-    if (!out.ok || !out.json?.sid) dropWarm(row.id, "Twilio refused the call");
-    if (!out.ok || !out.json?.sid) return { ok: false, error: `Twilio refused the call (${out.status}${out.json?.message ? `: ${out.json.message}` : ""})` };
-    live.set(out.json.sid, "placing");
-    return {
-      ok: true, externalId: `${EXT}${out.json.sid}`, state: "placing", provider: PROVIDER, ttsModel: `${config.gptliveModel}/${config.gptliveVoice}`,
-      // The line opens silent and the disclosure is owed to the first person heard (#232).
-      ...(thirdParty ? { openingWaits: true } : {}),
-    };
+    return dialGptLive(args, fetchImpl ? { fetchImpl } : {});
   };
   const check = async (externalId) => {
     if (!String(externalId ?? "").startsWith(EXT)) return inner.check(externalId);
-    const row = db.callByExternalId(PROVIDER, externalId);
-    return { ok: true, state: row?.state ?? "placing" };
+    return checkGptLive(externalId);
   };
   return new Proxy(inner, {
     get(target, prop) {
@@ -2337,7 +2390,7 @@ export function strangerStream({ address = "", callSid = "", kept = null, now = 
 }
 
 /**
- * The number's voice webhook (Twilio → /calls/gptlive/inbound), REASON_CALL_VOICE on (Omari 2026-10-31).
+ * The number's voice webhook (Twilio → /calls/gptlive/inbound). Every caller is answered on GPT-Live:
  *
  *   - somebody with an account whose own calls are GPT-Live (`gptliveFor`): their own Reason, their
  *     identity, a call row on THEIR conversation — over today's call cap, one line and goodbye;
@@ -2345,8 +2398,10 @@ export function strangerStream({ address = "", callSid = "", kept = null, now = 
  *     call ends — nothing kept, nothing of anybody's;
  *   - an unknown or withheld number: the stranger pitch (src/calls/stranger.js) on GPT-Live, the master
  *     asked as for a first text, the call kept against the number (src/strangercalls.js);
- *   - everything GPT-Live does not serve (a place ringing back about an errand, an account on
- *     ElevenLabs, missing keys): redirected to ElevenLabs' own Twilio URL, unchanged.
+ *   - a place ringing back about an errand: the third-party line, for the errand it is returning;
+ *   - GPT-Live not set up here (no OPENAI_API_KEY / Twilio keys / REASON_PUBLIC_URL), or anything
+ *     throwing while it rings: Twilio rejects the call (`<Reject/>`, the caller hears it as busy).
+ *     There is no second voice to hand a call to, and no URL anywhere that names one.
  *
  * No greeting is made before the call is connected: the TwiML only opens the stream, and the session
  * is started when Twilio's stream starts (calls 54–55: a greeting made while ringing went unheard).
@@ -2354,10 +2409,8 @@ export function strangerStream({ address = "", callSid = "", kept = null, now = 
 export function inboundTwiml({ rawBody, headers, router = null, log = () => {} }) {
   const params = formOf(rawBody);
   if (!verifyTwilio({ url: `${config.publicUrl}${INBOUND_PATH}`, params, headers })) return { status: 403, body: "" };
-  const away = config.gptliveInboundFallbackUrl
-    ? `<?xml version="1.0" encoding="UTF-8"?><Response><Redirect method="POST">${xml(config.gptliveInboundFallbackUrl)}</Redirect></Response>`
-    : `<?xml version="1.0" encoding="UTF-8"?><Response><Reject/></Response>`;
-  // Nothing thrown here may drop a ringing call: anything that fails goes to ElevenLabs, as before.
+  const away = `<?xml version="1.0" encoding="UTF-8"?><Response><Reject/></Response>`;
+  // Nothing thrown here may leave a ringing call hanging: anything that fails is rejected at once.
   try {
     return routeInbound({ params, router, log, away });
   } catch (e) {
@@ -2370,19 +2423,11 @@ function routeInbound({ params, router, log, away }) {
   const twiml = (body) => ({ status: 200, body, type: "text/xml" });
   if (!gptliveOn() || missingForGptlive().length) return twiml(away);
   const callSid = String(params.CallSid ?? "");
-  // A place ringing back about an errand (phase 3, REASON_THIRD_PARTY_VOICE): the third-party line
-  // on GPT-Live, for the errand it is returning. Otherwise ElevenLabs, as before.
+  // A place ringing back about an errand: the third-party line on GPT-Live, for the errand it is returning.
   const from = normalizeNumber(params.From) || "";
   const back = from && /^\+\d{8,15}$/.test(from) ? whoseCallIsThis(from) : null;
   if (back?.allow && back.callingBack) {
-    return twiml(thirdPartyVoiceFor(back.conversationId) ? streamTwiml(ringBackRow({ who: back, address: from, callSid, log })) : away);
-  }
-  if (!gptliveMode()) return twiml(away);
-  // The operator-only trial (REASON_CALL_VOICE=owner): the operator's own calls, everyone else unchanged.
-  if (gptliveMode() !== "everyone") {
-    const address = normalizeNumber(params.From) || "";
-    const who = address ? whoseCallIsThis(address) : { allow: false };
-    if (!who.allow || who.callingBack || !gptliveFor(who.conversationId)) return twiml(away);
+    return twiml(streamTwiml(ringBackRow({ who: back, address: from, callSid, log })));
   }
   const address = normalizeNumber(params.From) || "";
   // A withheld or unusable caller id: a stranger with nothing to keep.
@@ -2408,8 +2453,6 @@ function routeInbound({ params, router, log, away }) {
     log({ gptlive_inbound_stranger: why, kept: kept?.id ?? null });
     return twiml(streamTwimlFor(strangerStream({ address, callSid, kept })));
   }
-  // A place ringing back about an errand, or an account whose calls are not GPT-Live: ElevenLabs.
-  if (who.callingBack || !gptliveFor(who.conversationId)) return twiml(away);
   const capped = overCallCap(who.conversationId, { log });
   if (capped) return twiml(sayAndHangUp(capped.line));
   const row = db.createCall(who.conversationId, {
@@ -2424,8 +2467,7 @@ function routeInbound({ params, router, log, away }) {
 }
 
 /**
- * The call row for a place ringing back: the same as ElevenLabs' (`inboundRequest` in ./inbound.js) —
- * NOT an owner call; the errand's goal, facts, brief, errand and hold budget; the disclosure said first.
+ * The call row for a place ringing back: NOT an owner call; the errand's goal, facts, brief, errand and hold budget; the disclosure said first.
  */
 function ringBackRow({ who, address, callSid, log }) {
   const about = who.aboutCall;

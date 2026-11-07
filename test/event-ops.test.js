@@ -4,6 +4,7 @@
 // once), retry (never a second copy) — only for the signed-in owner. Never a password or a hash.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
+import { withYes } from "./fixture-yes.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,7 +70,7 @@ async function setup(rt) {
 test("the events section: counts, delivery per message, buttons — never a password, hash or phone number", async () => {
   const rt = fakeRuntime({ fail: new Set([YAW_C]) });
   const ev = await setup(rt);
-  await runTool("event_blast", { event_id: ev.id, message: "snacks" }, { conversationId: OWNER_C, messages: [], events: rt });
+  await withYes(runTool, "event_blast", { event_id: ev.id, message: "snacks" }, { conversationId: OWNER_C, messages: [], events: rt });
   const s = events.opsSummary();
   assert.equal(s.created_7d, 1);
   assert.equal(s.joins_7d, 2);
@@ -99,7 +100,7 @@ test("pause from the status page: joining and blasts stop and the page says so; 
   assert.equal(p.status, 303);
   assert.equal(db.getEventRow(ev.id).status, "paused");
   assert.equal((await events.joinExisting({ conversationId: "dm:fake:+15550002222", name: "Halloween Party", password: "pumpkin", displayName: "Z" })).reason, "paused");
-  const blast = await runTool("event_blast", { event_id: ev.id, message: "x" }, { conversationId: OWNER_C, messages: [], events: rt });
+  const blast = await withYes(runTool, "event_blast", { event_id: ev.id, message: "x" }, { conversationId: OWNER_C, messages: [], events: rt });
   assert.equal(blast.ok, false);
   const page = await eventRequestFor({ publicId: ev.public_id, method: "GET", headers: {}, readBody: async () => null, router: null });
   assert.match(page.body, /Joining is paused/);
@@ -116,7 +117,7 @@ test("pause from the status page: joining and blasts stop and the page says so; 
 test("retry from the status page reaches the failed guest once; pressing again sends nothing", async () => {
   const failing = fakeRuntime({ fail: new Set([YAW_C]) });
   const ev = await setup(failing);
-  await runTool("event_blast", { event_id: ev.id, message: "snacks" }, { conversationId: OWNER_C, messages: [], events: failing });
+  await withYes(runTool, "event_blast", { event_id: ev.id, message: "snacks" }, { conversationId: OWNER_C, messages: [], events: failing });
   const ok = fakeRuntime();
   await press("event_retry", ev.id, ok);
   assert.equal(ok.sent.filter(s => s.conversationId === YAW_C).length, 2, "the welcome and the blast");

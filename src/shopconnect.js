@@ -990,13 +990,17 @@ async function payRow(row, { confirmationId = null } = {}) {
   if (!oi.ok || !orderIntentId) return failed(oi.status, crossmintError(oi.json));
   const part = { type: "input_response", requestId: row.request_id, action: "submit", response: { kind: "payment", orderIntentId } };
   // From here the card may have been offered to the store: any failure is an unknown outcome, never a retry.
-  const unknown = (status = null) => {
+  // It is counted against the day's cap as if it went through ("(OUTCOME UNKNOWN)", the same line
+  // AgentCard's purchase_confirm and browser_submit write): fail closed on money, so a second, different
+  // payment cannot spend the same allowance again (security lead 5, 2026-11-07).
+  const unknown = async (status = null) => {
     q("UPDATE shop_payments SET status = 'unknown', confirmation_id = ?, order_intent_id = ?, answered_at = ? WHERE id = ?").run(confirmationId ?? null, orderIntentId, clock.now(), row.id);
+    await countSpend(row, confirmationId, { unknown: true });
     return { ok: false, error: "crossmint_refused", unknown_outcome: true, status };
   };
   let r;
-  try { r = await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(row.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } }); } catch { return unknown(); }
-  if (!r.ok) return unknown(r.status);
+  try { r = await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(row.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } }); } catch { return await unknown(); }
+  if (!r.ok) return await unknown(r.status);
   q("UPDATE shop_payments SET status = 'paid', confirmation_id = ?, order_intent_id = ?, answered_at = ? WHERE id = ?").run(confirmationId ?? null, orderIntentId, clock.now(), row.id);
   // Counted against the day's and the month's caps the moment it is paid, by the real amount (owner
   // 2026-10-31: spend_today read $0.00 after the $25 Walmart payment). Never costs the payment.
@@ -1007,25 +1011,26 @@ async function payRow(row, { confirmationId = null } = {}) {
   watchMail(row.run_id);
   return { ok: true, amount: amountText(row), merchant: row.merchant_name, ...(receipts ? { receipts_email: receipts } : {}) };
 }
-/** The ledger line for a paid row (src/trust.js noteSpend): the store, the item, the amount. */
-export const spendLineOf = (row) => `${row.merchant_name || storeName(runRow(row.run_id)?.store) || "Store"}: ${row.item || "order"} (${amountText(row)})`;
-async function countSpend(row, confirmationId = null) {
+/** The ledger line for a paid row (src/trust.js noteSpend): the store, the item, the amount. An unknown row's line ends "(OUTCOME UNKNOWN)". */
+export const spendLineOf = (row) => `${row.merchant_name || storeName(runRow(row.run_id)?.store) || "Store"}: ${row.item || "order"} (${amountText(row)})${row.status === "unknown" ? " (OUTCOME UNKNOWN)" : ""}`;
+async function countSpend(row, confirmationId = null, { unknown = false } = {}) {
   try {
     const trust = await import("./trust.js");
     const cents = Math.round(Number(row.amount) * 100);
     if (!Number.isFinite(cents) || cents <= 0) return null;
-    return trust.noteSpend({ conversationId: row.conversation_id, cents, what: spendLineOf(row), site: row.merchant_name || storeName(runRow(row.run_id)?.store) || "", confirmationId: confirmationId ?? null });
+    return trust.noteSpend({ conversationId: row.conversation_id, cents, what: spendLineOf({ ...row, status: unknown ? "unknown" : "paid" }), site: row.merchant_name || storeName(runRow(row.run_id)?.store) || "", confirmationId: confirmationId ?? null });
   } catch (e) { logFn({ spend_count_failed: true, payment_id: row.id, why: short(e?.message ?? e, 80) }); return null; }
 }
 /**
  * Paid rows the ledger never counted (the ones paid before this existed): counted now, once each, by
- * the day they were paid. Run at boot; returns how many were added.
+ * the day they were paid. Unknown rows too (the card may have reached the store; uncounted before
+ * 2026-11-07), by the day the payment went out. Run at boot; returns how many were added.
  */
 export async function backfillSpend() {
   let n = 0;
   try {
     const trust = await import("./trust.js");
-    for (const row of q("SELECT * FROM shop_payments WHERE status = 'paid' AND answered_at IS NOT NULL").all()) {
+    for (const row of q("SELECT * FROM shop_payments WHERE status IN ('paid', 'unknown') AND answered_at IS NOT NULL").all()) {
       const what = spendLineOf(row);
       if (db.db.prepare("SELECT 1 AS x FROM spend WHERE conversation_id = ? AND what = ? AND site = ? LIMIT 1").get(row.conversation_id, what, row.merchant_name || storeName(runRow(row.run_id)?.store) || "")) continue;
       const cents = Math.round(Number(row.amount) * 100);
@@ -1093,6 +1098,14 @@ export async function payByPasskey(token, response) {
   if (!ok.ok) return ok;
   const out = await payRow(v.row);
   passkey.logEvent(v.row.conversation_id, v.row, out.ok ? "paid" : out.unknown_outcome ? "unknown_outcome" : "pay_failed", out.ok ? "" : [out.error, out.status, out.detail].filter(Boolean).join(" "));
+  // The same record and owner alert the texted-yes path writes (src/tools.js shop_pay): this path runs
+  // no tool, so it is written here (security lead 5, 2026-11-07).
+  if (out.unknown_outcome) {
+    try {
+      const trust = await import("./trust.js");
+      trust.noteUnknownOutcome({ conversationId: v.row.conversation_id, action: "shop_pay", target: payTarget(v.row), why: `Crossmint ${out.status ?? "no answer"} after the order intent (Face ID)`, cents: Math.round(Number(v.row.amount) * 100) || null });
+    } catch (e) { logFn({ unknown_note_failed: true, payment_id: v.row.id, why: short(e?.message ?? e, 80) }); }
+  }
   if (out.ok) await notify(v.row.conversation_id, `Approved with Face ID. Paid ${out.amount} at ${out.merchant}; the store still has to place it, and I'll tell you when it's through.${out.receipts_email ? ` Receipts go to ${out.receipts_email}.` : ""}`);
   // No model turn runs here, so the one thing they can fix is said in plain words — what is on record
   // and why — once at this moment (a save-time ask was worded for that moment); the link opens again below.

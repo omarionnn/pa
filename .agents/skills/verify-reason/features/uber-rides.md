@@ -20,8 +20,8 @@ that logs `ride_link_rebuilt`), `src/rides.js` (the NYC boxes and the verified c
 Find lines: `grep -n 'case "uber_' src/tools.js`.
 Tests: the link in `test/sites.test.js` (46 in the file; the Uber link from ~line 425, "the uber deep link"), `test/rides.test.js`
 (5: the NYC geofence and the two verified numbers), `test/ridelinks.test.js` (5: coordinates, the
-outbox rebuild, and a log with no link text), `test/uber.test.js` (14) against `test/fixture-uber.js`; the sign-in plumbing in
-`test/signin.test.js` (21), `test/signin-window.test.js` (11), `test/signin-remote.test.js` (44).
+outbox rebuild, and a log with no link text), `test/uber.test.js` (17) against `test/fixture-uber.js`; the sign-in plumbing in
+`test/signin.test.js` (29 on 2026-11-07), `test/signin-window.test.js` (11), `test/signin-remote.test.js` (44).
 `test/flow-resend-link.test.js` (#79, needs a model) pins that a link they tap to act on is sent
 again, never pointed at. (There is no `uber_status` tool: status is `uber.uberStatus()` and the
 `/health` block; ride state is `uber_ride`.)
@@ -55,7 +55,12 @@ again, never pointed at. (There is no `uber_status` tool: status is `uber.uberSt
   is missing, instead of a raw 403.
 - **Options with upfront fare.** `uber_options` returns products and a `quote_id`.
 - **Confirm gate.** `uber_request` requires a spent yes; it re-prices (the fare id is almost always
-  expired) and shows a moved price again before booking. A quote from another conversation is refused.
+  expired) and shows a moved price again before booking. A quote from another conversation is refused,
+  and the gate never describes it: its `use_target` reads `unknown uber quote <id>` (no product,
+  pickup, destination or fare), because that refusal goes back to the caller before the handler's
+  ownership check runs (audit lead 21, `confirmTargetFor` in `src/tools.js`). Quote ids are
+  `q_<randomUUID>` (were `q_<Date.now()>_<product prefix>`, guessable), and `recordUberQuote` never
+  updates a row owned by another conversation (`WHERE uber_rides.conversation_id = excluded.conversation_id`).
 - **Status, cancel, receipt.** `uber_ride`, `uber_cancel`, `uber_receipt`. `uber_cancel` is
   **ledgered, not gated** — it stops a ride rather than spending money (the comment above the ledger list near the top of `src/tools.js`, and its
   schema says so); the fee is said before cancelling.
@@ -75,9 +80,13 @@ Uber's consent screen, a "connected" page, then fares in the thread.
 
 ```bash
 cd ~/Desktop/pa
-node --test test/sites.test.js test/rides.test.js test/ridelinks.test.js test/uber.test.js   # 69 at 226ff17
-node --test test/signin*.test.js              # 21 + 11 + 44
+node --test test/sites.test.js test/rides.test.js test/ridelinks.test.js test/uber.test.js   # 69 at 226ff17; 46 + 5 + 5 + 17 = 73 after lead 21
+node --test test/signin*.test.js              # 29 + 11 + 44, plus signin-progress (10), which the glob also takes
 ```
+
+Driven 2026-11-07 (rel/verify-maint, cage :8832, `caged.sh env`): `uber_link` → `/go/looking` url,
+`has_pickup`/`has_coordinates` true; `uber_connect` → `not_for_rides`; `uber_options` → `not_connected`
+with both `missing`; `/uber/callback?state=nope` → 400; `/health` `uber` block `app_configured:false`.
 
 **The link, on the cage, in-process** (`caged.sh env` exported; pass coordinates so nothing is
 geocoded over the network):

@@ -51,6 +51,9 @@ process.env.REASON_UNDO_SECONDS = "0";
 const { startGoogle, fakeMessage } = await import("./fixture-google.js");
 const { startServiceSite } = await import("./fixture-service.js");
 const { runTool, capabilitiesNow, clickCommits, tools } = await import("../src/tools.js");
+const { grantsViaYes } = await import("./fixture-grant.js");
+// Saving a permission waits for their yes now (src/tools.js permission_grant): granted through the real flow.
+const viaYes = grantsViaYes(runTool);
 const db = await import("../src/db.js");
 const trust = await import("../src/trust.js");
 const subs = await import("../src/subscriptions.js");
@@ -78,7 +81,7 @@ const owner = (text) => ({ role: "user", content: `[Tue, Oct 6, 2026, 9:00 AM] O
 const saidIt = (name, input, messages) => (name === "permission_grant" || name === "caps_set") && input?.text
   ? [...messages, { role: "user", content: `[Wed, Sep 30, 2026, 2:59 PM] Omari: ${input.text}` }] : messages;
 const call = (name, input, { conversationId = C, messages = [], ...extra } = {}) =>
-  runTool(name, input, { conversationId, messages: saidIt(name, input, messages), judge: readsYes, cancelRoutes: routes, ...extra });
+  viaYes(name, input, { conversationId, messages: saidIt(name, input, messages), judge: readsYes, cancelRoutes: routes, ...extra });
 
 const ref = (snap, pred) => (snap.elements ?? []).find(pred)?.ref;
 

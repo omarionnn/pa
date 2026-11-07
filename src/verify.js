@@ -141,6 +141,8 @@ export const UNDO = {
   browser_submit: "hard", subscription_cancel_commit: "hard", gmail_trash: "hard",
   account_connect: "easy", gmail_archive: "easy", gmail_mark: "easy", gmail_label: "easy",
   calendar_create: "easy", account_revoke: "easy", access_grant: "easy",
+  // Taken back with permission_revoke, in one line, with nothing lost.
+  permission_grant: "easy",
 };
 
 export const UNDO_SAYS = {

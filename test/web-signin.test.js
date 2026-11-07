@@ -378,6 +378,58 @@ test("a flood of wrong codes locks the browser out, says only that, and the pers
   assert.equal((await typeCode(h, mine, KOFI, code, { ip: "203.0.113.50" })).status, 303);
 });
 
+// ---------- a stranger cannot lock a person out (audit lead 25) ----------
+
+/** 40 wrong codes for `number` in a day from strangers' browsers, never 5 from one address or 20 in a quarter hour. */
+async function strangersGuess(h, number) {
+  const stranger = await fresh(h);
+  for (let i = 0; i < 40; i++) {
+    const out = await typeCode(h, stranger, number, "000000", { ip: `198.51.100.${10 + i}` });
+    assert.equal(out.status, 200, "each try is answered as a wrong code, never the browser's limit");
+    clock.skip(30 * MIN);
+  }
+  return stranger;
+}
+
+test("40 wrong codes from strangers who only know Kofi's number never stop his own fresh code from signing him in", async () => {
+  const h = harness();
+  await strangersGuess(h, KOFI);
+  const mine = await fresh(h);
+  await ask(h, mine, KOFI, { ip: "203.0.113.60" });
+  const out = await typeCode(h, mine, KOFI, codesTo(h, KOFI).at(-1), { ip: "203.0.113.60" });
+  assert.equal(out.status, 303, "his own code, on the browser that asked for it, signs him in");
+  assert.ok(cookieValue(out, "reason_page"), "and the session cookie is set");
+});
+
+test("past the ceiling the guessing stays bounded: a code works only in the browser that asked, and gets one try", async () => {
+  const h = harness();
+  const stranger = await strangersGuess(h, KOFI);
+  // Kofi asks; a stranger's further guesses never reach his code, and his code typed in another browser does nothing.
+  const mine = await fresh(h);
+  await ask(h, mine, KOFI, { ip: "203.0.113.61" });
+  const kofisCode = codesTo(h, KOFI).at(-1);
+  const elsewhere = await fresh(h);
+  assert.equal((await typeCode(h, elsewhere, KOFI, kofisCode, { ip: "198.51.100.200" })).status, 200, "his code in a stranger's browser is just wrong");
+  assert.equal((await typeCode(h, stranger, KOFI, "123456", { ip: "198.51.100.201" })).status, 200);
+  assert.equal((await typeCode(h, mine, KOFI, kofisCode, { ip: "203.0.113.61" })).status, 303, "still his, in his browser");
+  // A code the stranger had texted to Kofi gets one try from the stranger's browser, then it is gone.
+  await ask(h, stranger, KOFI, { ip: "198.51.100.202" });
+  const theirs = codesTo(h, KOFI).at(-1);
+  assert.equal((await typeCode(h, stranger, KOFI, theirs === "999999" ? "999998" : "999999", { ip: "198.51.100.202" })).status, 200);
+  assert.equal((await typeCode(h, stranger, KOFI, theirs, { ip: "198.51.100.203" })).status, 200, "one wrong try past the ceiling ends that code");
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions WHERE conversation_id = ?").get(KOFI_C).n, 1, "only Kofi's own sign-in opened anything");
+});
+
+test("a stranger asking for a code for Kofi's number does not kill the code Kofi asked for", async () => {
+  const h = harness();
+  const mine = await fresh(h);
+  await ask(h, mine, KOFI, { ip: "203.0.113.62" });
+  const kofisCode = codesTo(h, KOFI).at(-1);
+  const stranger = await fresh(h);
+  await ask(h, stranger, KOFI, { ip: "198.51.100.210" });
+  assert.equal((await typeCode(h, mine, KOFI, kofisCode, { ip: "203.0.113.62" })).status, 303);
+});
+
 // ---------- two people ----------
 
 test("two people never cross: a session is one person's, and one's code never opens the other's number", async () => {

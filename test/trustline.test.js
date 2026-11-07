@@ -35,6 +35,9 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_UNDO_SECONDS = "0";
 
 const { runTool, ALWAYS_NEEDS_CONFIRMATION, tools, capabilitiesNow } = await import("../src/tools.js");
+const { grantsViaYes } = await import("./fixture-grant.js");
+// Saving a permission waits for their yes now (src/tools.js permission_grant): granted through the real flow.
+const viaYes = grantsViaYes(runTool);
 const permissions = await import("../src/permissions.js");
 const trust = await import("../src/trust.js");
 const represent = await import("../src/represent.js");
@@ -66,7 +69,7 @@ let router;
 // is taken to have just typed the sentence the tool is given, which is what these tests are about.
 const saidIt = (name, input, messages) => (name === "permission_grant" || name === "caps_set") && input?.text
   ? [...messages, { role: "user", content: `[Wed, Sep 30, 2026, 2:59 PM] Omari: ${input.text}` }] : messages;
-const call = (name, input, extra = {}) => runTool(name, input, {
+const call = (name, input, extra = {}) => viaYes(name, input, {
   conversationId: C, messages: saidIt(name, input, messages), judge: readsYes, channels: router, ...extra,
 });
 
@@ -418,7 +421,7 @@ test("'send it exactly like that' sends it, and the receipt says that is why", a
   assert.equal(sent[0].text, "yo 8pm works 🔥", "word for word");
   assert.equal(out.sent_exactly_as_asked, "just send it exactly like that");
   const row = db.listActions(C)[0];
-  assert.match(row.receipt, /Sent word for word, unchecked, because Omari said: "just send it exactly like that"/);
+  assert.match(row.receipt, /Sent word for word, unchecked, because they said: "just send it exactly like that"/);
 });
 
 test("none of it applies to the person Reason works for: that thread keeps the friend voice", async () => {
@@ -744,7 +747,7 @@ test("a 'yes' inside an email body does not satisfy confirm_record", async () =>
   const rec = await call("confirm_record", { confirmation_id: req.confirmation_id });
   assert.equal(rec.ok, false);
   assert.equal(rec.state, "waiting_for_yes");
-  assert.match(rec.error, /has not answered yet/);
+  assert.match(rec.error, /have not answered yet/);
   assert.equal(db.getConfirmation(C, req.confirmation_id).granted_at, null, "nothing was granted");
 
   // Their own word, and only then.

@@ -14,6 +14,9 @@ process.env.REASON_MASTER_NUMBER ||= process.env.REASON_OWNER_NUMBER;
 process.env.REASON_OWNER_NAME ||= "Omari";
 process.env.REASON_TZ ||= "America/New_York";
 process.env.REASON_MAX_CALLS_PER_DAY = "2";
+// The operator has no daily call cap since 10-31 (REASON_CALL_CAPS_EXEMPT=operator by default), and this drive
+// rings the operator: cap him like everyone else so step 5 still proves the over-cap text.
+process.env.REASON_CALL_CAPS_EXEMPT = "none";
 process.env.REASON_UNDO_SECONDS = "0";
 {
   const { resolve, dirname } = await import("node:path");
@@ -29,7 +32,7 @@ process.env.REASON_UNDO_SECONDS = "0";
   process.env.REASON_DATA_DIR ||= dirname(db) + "/data";
   process.env.REASON_RECORDING_ROOT ||= dirname(db) + "/recordings";
 }
-for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "ANTHROPIC_API_KEY", "ELEVENLABS_API_KEY", "BLAND_API_KEY", "AGENTCARD_CLIENT_SECRET"]) {
+for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "ANTHROPIC_API_KEY", "TWILIO_AUTH_TOKEN", "BLAND_API_KEY", "AGENTCARD_CLIENT_SECRET"]) {
   if (process.env[k]) { console.error(`refusing: ${k} is set — run under caged.sh env`); process.exit(2); }
 }
 
@@ -96,6 +99,10 @@ clock.skip(5 * MIN + 1000);
 step("never mind the call: cancelled, nothing rings", cancelled.ok && (await runtime.tick()) === 0 && calls.placed.length === 1);
 
 // 4. nobody picks up → one text when the call settles
+// The first call was answered (script[0]); end it the way the provider's status callback would. Since
+// #326 ("one phone, one call") a call to a number with a live call joins it instead of ringing again,
+// so with call 1 still `placing` this timer joined it (`call_place_joined_live`) and every step below failed.
+db.db.prepare("UPDATE calls SET state = 'completed', outcome = 'they answered', ended_at = ?, updated_at = ? WHERE conversation_id = ? AND state = 'placing'").run(clock.now(), clock.now(), CONV);
 const na = await runTool("timer_set", { fire_at: iso(clock.now() + 5 * MIN), note: "wake-up", then_call: "you asked me to wake you at 6:30" }, ctx);
 clock.skip(5 * MIN + 1000);
 await runtime.tick();
@@ -104,8 +111,8 @@ clock.skip(callLostAfterMs() + 1000);
 const settled = await runtime.lostCalls();
 await runtime.outbox();
 const missed = fake.sent.at(-1);
-// Both outbound calls are still "placing" to the sweep (nothing settled the answered one either), so two settle; only the unanswered one texts.
-step("no answer → one text saying it tried", settled.settled === 2 && fake.sent.length === 2 && /tried calling u/.test(missed?.text ?? "") && /didn't pick up/.test(missed?.text ?? ""), missed?.text);
+// Only the unanswered call is still "placing" to the sweep (the answered one was ended above), so one settles and texts.
+step("no answer → one text saying it tried", settled.settled === 1 && fake.sent.length === 2 && /tried calling u/.test(missed?.text ?? "") && /didn't pick up/.test(missed?.text ?? ""), missed?.text);
 await runtime.lostCalls(); await runtime.outbox();
 step("and never a second", fake.sent.length === 2);
 step("that was timer-keyed", !!db.db.prepare("SELECT id FROM outbox WHERE idem_key = ?").get(`timer:${na.timer.id}:call_missed`));

@@ -460,34 +460,31 @@ test("pinned 2026-10-24: an amount from purchases_recent this turn is not flagge
 });
 
 test("pinned 2026-10-24: an invented price is still flagged, with the record in play", async () => {
+  // Since 2026-11-05 the figure is not tagged in code: the reply goes back once for a rewrite
+  // (Runtime._turn takes it), naming only the figure nothing backs — never the record's.
   theMorning();
   const sent = await apiReply("is target cheaper", "target has it for $12.49, cheaper than the walmart one at $16.76");
-  assert.equal(sent, "target has it for $12.49 (unverified), cheaper than the walmart one at $16.76");
+  assert.equal(sent, "target has it for $12.49, cheaper than the walmart one at $16.76");
+  const back = offers.takeRecompose(C);
+  assert.match(back, /\$12\.49/);
+  assert.doesNotMatch(back, /16\.76/);
   theMorning();
   const cli = await cliReply("is target cheaper", "target has it for $12.49");
-  assert.equal(cli, "target has it for $12.49 (unverified)");
+  assert.equal(cli, "target has it for $12.49");
+  assert.match(offers.takeRecompose(C), /\$12\.49/);
   offers.beginTurn(C, "");
   const g = offers.guardReply(C, "shipping would be $5.99", { extraSources: [purchaseRecordSource(C)] });
   assert.deepEqual(g.flags, [{ rule: "dollar_unsourced", figures: ["$5.99"] }]);
 });
 
-test("pinned 2026-10-24: no nested '(unverified)' parentheses, whatever the figure sits in", () => {
+test("pinned 2026-11-05: code never writes '(unverified)' into a reply, whatever the figure sits in", () => {
   offers.beginTurn("c-paren", "");
-  const cases = [
-    ["the lamp ($18.99) is placed", "the lamp ($18.99, unverified) is placed"],
-    ["about ($5–$7) for shipping", "about ($5, unverified–$7, unverified) for shipping"],
-    ["(was $3, now $4)", "(was $3, unverified, now $4, unverified)"],
-    ["it's $9.99 :) and the other ($2)", "it's $9.99 (unverified) :) and the other ($2, unverified)"],
-    ["(see above)\nshipping is $5.99", "(see above)\nshipping is $5.99 (unverified)"],
-    ["$4 (ish)", "$4 (unverified) (ish)"],
-  ];
-  for (const [reply, want] of cases) {
+  for (const reply of ["the lamp ($18.99) is placed", "about ($5–$7) for shipping", "(was $3, now $4)", "it's $9.99 :) and the other ($2)", "(see above)\nshipping is $5.99", "$4 (ish)"]) {
     const g = offers.guardReply("c-paren", reply);
-    assert.equal(g.text, want, reply);
-    assert.equal(nested(g.text), false, g.text);
-    assert.doesNotMatch(g.text, /\(unverified\)\)/);
+    assert.equal(g.text, reply);
+    assert.doesNotMatch(g.text, /unverified/);
+    assert.ok(g.recompose, reply);
   }
-  assert.doesNotMatch(offers.guardReply("c-paren", "($18.99)").text, /\(\$18\.99 \(unverified\)\)/);
 });
 
 test("pinned 2026-10-24: a vault_enroll that did nothing (AgentCard not set up) does not turn the block on", async () => {

@@ -62,8 +62,8 @@ export function buildCallReport(sqlite, { since = 0 } = {}) {
   const priced = rows.filter(r => Number.isFinite(r.cost_cents));
   const credited = rows.filter(r => Number.isFinite(r.cost_credits));
 
-  // The same numbers per voice (calls.provider: "elevenlabs", "gptlive"), so the GPT-Live trial
-  // (src/calls/gptlive.js) can be read against ElevenLabs on the same measures.
+  // The same numbers per voice (calls.provider), so older calls on other providers can be read
+  // against GPT-Live (src/calls/gptlive.js) on the same measures.
   const voices = {};
   for (const p of [...new Set(rows.map(r => r.provider))]) {
     const ids = new Set(rows.filter(r => r.provider === p).map(r => r.id));

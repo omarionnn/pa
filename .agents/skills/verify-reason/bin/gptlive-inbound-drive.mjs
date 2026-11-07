@@ -35,9 +35,8 @@ Object.assign(process.env, {
   REASON_DATA_DIR: dirname(dbPath) + "/data", REASON_RECORDING_ROOT: dirname(dbPath) + "/recordings",
   REASON_OWNER_NAME: "Omari", REASON_TZ: "America/New_York", REASON_CONVERSATION: "dm:owner",
   REASON_OWNER_NUMBER: "+12025550100", ANTHROPIC_API_KEY: "", REASON_CALL_BACKEND: "claude-cli", REASON_BACKEND: "claude-cli",
-  REASON_CALL_VOICE: "gptlive", REASON_CALL_IDENTITY: "on", ELEVENLABS_LLM_SECRET: "drive-secret",
+  REASON_CALL_VOICE: "gptlive", REASON_CALL_IDENTITY: "on",
   TWILIO_ACCOUNT_SID: "AC_drive", TWILIO_AUTH_TOKEN: "drive-twilio-token", TWILIO_FROM_NUMBER: "+16562167455",
-  REASON_GPTLIVE_INBOUND_FALLBACK_URL: "https://api.us.elevenlabs.io/twilio/inbound_call",
 });
 const REPO = resolve(dirname(new URL(import.meta.url).pathname), "../../../..");
 const gl = await import(`${REPO}/src/calls/gptlive.js`);

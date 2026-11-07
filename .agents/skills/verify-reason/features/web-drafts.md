@@ -8,7 +8,9 @@ arrive animation. iMessage is unchanged.
 **Switch.** `REASON_WEB_DRAFTS`: unset / `0` / `off` → never (prod default); `on` / `1` / `all` →
 everyone; otherwise a comma list of conversation ids. (Not `REASON_WEB_STREAM`: that one names the
 live stream's origin.) Only a user turn from Web, cleared by the harm screen, on the claude-cli
-backend, with no `shouldSend` hold. Never the said-check rewrite.
+backend, with no `shouldSend` hold. Never the said-check rewrite. The backend test is
+`this.runTurn !== realRunTurn` (src/runtime.js:235,548), so on `REASON_BACKEND=api` (live since
+2026-11-03) no draft streams whatever the flag says.
 
 **What can never reach the tab** (`src/webdraft.js`, pinned in `test/web-stream.test.js`, 14 tests):
 - anything before the said check (`src/said.js checkDraft`) passed THAT text — each piece is checked

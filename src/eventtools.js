@@ -5,6 +5,7 @@
 // Every event intent is read by the model, off these descriptions — wanting to organize something,
 // pasting a link to join, asking who is going. Nothing here reads a message's meaning.
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import * as events from "./events.js";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
@@ -80,6 +81,24 @@ export function eventToolVisible(name, conversationId) {
   }
   if (EVENT_RIDE_GUEST_TOOLS.has(name)) return rides.ridesOn() && db.eventsAttendedBy(conversationId).some(rides.active);
   return true;
+}
+
+/**
+ * What an organizer's yes to a blast covers: this event and these exact words (audit lead 28).
+ *
+ * A blast texts every guest, so it is gated like a text to somebody else. The words are pinned by a
+ * hash of the exact message rather than spelled out, because a confirmation target is short and the
+ * gate compares it case-folded; the preview is there so the record reads. Somebody else's event (or
+ * one that does not exist) is named by its id alone, so the refusal describes nothing that is not
+ * theirs, and a yes collected for it cannot match a real blast.
+ */
+export function blastTarget(conversationId, input) {
+  const words = String(input.message ?? "").trim();
+  const ev = events.managed(conversationId, input.event_id);
+  const where = ev ? `${String(ev.name).slice(0, 120)} (event #${ev.id})` : `event #${input.event_id}`;
+  const preview = words.length > 120 ? `${words.slice(0, 120)}…` : words;
+  const hash = createHash("sha256").update(words).digest("hex").slice(0, 16);
+  return `blast to ${where}: "${preview}" [${hash}]`;
 }
 
 export const EVENT_TOOL_DEFS = [
@@ -230,8 +249,8 @@ export const EVENT_TOOL_DEFS = [
   },
   {
     name: "event_blast",
-    description: "Organizer only: text one message to every guest of their event (guests who muted it are skipped). Keep it about the event. Send exactly what they asked to send; if you wrote it for them, show them the draft and send it once they say yes. Each guest's delivery is tracked; say how many it reached.",
-    input_schema: { type: "object", properties: { event_id: EVENT_ID, event_named: EVENT_NAMED, message: { type: "string" } }, required: ["event_id", "message"] },
+    description: "Organizer only: text one message to every guest of their event (guests who muted it are skipped). Keep it about the event. Every blast needs their yes to the exact words, checked in code: call this first with no confirmation_id (nobody is texted), show them the message and how many guests it reaches, then confirm_request with action event_blast and target set to the `use_target` it refused with, wait for their answer, confirm_record, then this again with the same message and the confirmation_id. Changing a word after the yes means asking again. Each guest's delivery is tracked; say how many it reached.",
+    input_schema: { type: "object", properties: { event_id: EVENT_ID, event_named: EVENT_NAMED, message: { type: "string" }, confirmation_id: { type: "integer", description: "From confirm_record, granted, for exactly this message." } }, required: ["event_id", "message"] },
   },
   {
     name: "event_password_rotate",
@@ -308,7 +327,7 @@ export const EVENT_SCHEMAS = {
   event_guests: z.object({ event_id: id, event_named: text(500).optional() }),
   event_update: z.object({ event_id: id, event_named: text(500).optional(), name: text(120).optional(), description: text(2000).optional(), starts_at: text(40).optional(), timezone: text(64).optional(), location: text(500).optional(), welcome_message: text(1000).optional() }),
   event_release: z.object({ event_id: id, event_named: text(500).optional(), detail: z.enum(["time", "location"]) }),
-  event_blast: z.object({ event_id: id, event_named: text(500).optional(), message: z.string().min(1).max(1500) }),
+  event_blast: z.object({ event_id: id, event_named: text(500).optional(), message: z.string().min(1).max(1500), confirmation_id: z.number().int().optional() }),
   event_password_rotate: z.object({ event_id: id, event_named: text(500).optional(), new_password: text(200) }),
   event_guest_remove: z.object({ event_id: id, event_named: text(500).optional(), guest_id: id }),
   event_cancel: z.object({ event_id: id, event_named: text(500).optional(), message: text(500).optional() }),
@@ -456,6 +475,25 @@ const LINK_ALONE = "If you send a link, write your words first ending with a col
 
 /** Messages to guests stop while an event is paused from the status page. */
 const PAUSED = "This event is paused by Reason's operator right now, so nothing goes out to guests. Say so plainly; it isn't something they can undo themselves.";
+
+/**
+ * Why an organizer action cannot happen at all, or null when it can: not theirs, ambiguous, or the
+ * event is cancelled. The handler runs it first, and so does the confirm gate for event_blast
+ * (src/tools.js), because a refusal has to beat a request for permission: a stranger naming
+ * somebody's event must hear what a made-up id hears, never be sent to collect a yes.
+ */
+export function organizerRefusal(c, input, name = null) {
+  const ev = events.managed(c, input.event_id);
+  if (!ev) {
+    const r = events.roleIn(c, input.event_id);
+    return r?.role === "guest" ? GUEST_THERE(r.ev) : NOT_THEIRS(input.event_id);
+  }
+  const which = events.whichEvent(c, input.event_id, input.event_named, { forOrganizer: true });
+  if (!which.ok) return askWhich(which);
+  if (ev.status === "cancelled") return { ok: false, error: `${ev.name} is cancelled; nothing about it can be changed now.` };
+  if (name === "event_blast" && ev.status === "paused") return { ok: false, error: PAUSED };
+  return null;
+}
 
 export async function runEventTool(name, input, ctx) {
   const c = ctx.conversationId;
@@ -657,14 +695,9 @@ export async function runEventTool(name, input, ctx) {
   }
 
   // Everything below is the organizer's alone, and `managed` is the only way in.
+  const refused = organizerRefusal(c, input);
+  if (refused) return refused;
   const ev = events.managed(c, input.event_id);
-  if (!ev) {
-    const r = events.roleIn(c, input.event_id);
-    return r?.role === "guest" ? GUEST_THERE(r.ev) : NOT_THEIRS(input.event_id);
-  }
-  const which = events.whichEvent(c, input.event_id, input.event_named, { forOrganizer: true });
-  if (!which.ok) return askWhich(which);
-  if (ev.status === "cancelled") return { ok: false, error: `${ev.name} is cancelled; nothing about it can be changed now.` };
 
   switch (name) {
     case "event_rides_setting": {

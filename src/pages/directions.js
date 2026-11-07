@@ -214,12 +214,17 @@ function sameKey(a, b) {
  * (Web, a page, an event) opens it. Anybody else, the owner's link on a new browser included, gets the
  * code gate, and only a request carrying the owner's key may ask for a code to be texted.
  */
+/** A trip's id in page_attempts / page_codes: its own namespace, never a page's. */
+const attemptId = (id) => `trip:${id}`;
+
 function tripAccess(R, id, row, cookie, key) {
   const via_key = sameKey(key, row?.owner_key);
   const owner = cookie ? R.db.pageSessionOwner(cookie, R.SESSION_TTL_MS) : null;
   if (row && owner && owner === row.conversation_id) return { allow: true, via_key };
   // Counted on the id, real or not, so a guessed id locks and answers exactly as a real one does.
-  const failed = R.db.failedPageAttempts(id, R.ATTEMPT_WINDOW_MS);
+  // Under `trip:` (audit lead 23): `/d/<id>` takes any 1–40 characters, so a bare id would share
+  // its count and its codes with a page of the same name — `/d/ops` was the status page's.
+  const failed = R.db.failedPageAttempts(attemptId(id), R.ATTEMPT_WINDOW_MS);
   if (failed >= R.MAX_FAILED_ATTEMPTS) return { allow: false, reason: "rate_limited", via_key };
   return { allow: false, reason: "code_needed", via_key };
 }
@@ -338,7 +343,7 @@ async function tripRequest({ id, reroutePath, endPath, method, req, config, fetc
     const form = new URLSearchParams(raw);
     // An id that is no trip is tried as a page with nobody behind it, as pageRequest does: the same
     // attempt counted, the same answer, the same lock.
-    const pagelike = row ? { id: row.id, conversation_id: row.conversation_id, title: tripTitle(row) } : { id, conversation_id: null, title: "" };
+    const pagelike = row ? { id: attemptId(row.id), conversation_id: row.conversation_id, title: tripTitle(row) } : { id: attemptId(id), conversation_id: null, title: "" };
     if (form.has("send")) {
       // "Text me the code": only the owner's own link, on a real trip, ever makes their phone buzz.
       if (!access.via_key || !row || access.reason === "rate_limited") return tripGate(R, access, row, { config });

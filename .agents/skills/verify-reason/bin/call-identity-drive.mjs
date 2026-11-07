@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// The ElevenLabs call path, every user's today: one real call turn (llmRequest, the custom-LLM request
-// ElevenLabs makes, on claude-cli — never the API) asking "who are you, do you know who I am?" on three
+// The call turn every GPT-Live call runs: one real call turn (llmRequest, in process, on claude-cli —
+// never the API) asking "who are you, do you know who I am?" on three
 // calls: the operator's own, ANOTHER user's own (Ama), and a call Reason makes for the operator to a
 // business. Throwaway database; nothing rings, nothing is texted.
 //
@@ -23,7 +23,7 @@ Object.assign(process.env, {
   REASON_DATA_DIR: dirname(dbPath) + "/data", REASON_RECORDING_ROOT: dirname(dbPath) + "/recordings",
   REASON_OWNER_NAME: "Omari", REASON_TZ: "America/New_York", REASON_CONVERSATION: "dm:owner",
   REASON_OWNER_NUMBER: "+12025550100", ANTHROPIC_API_KEY: "", REASON_CALL_BACKEND: "claude-cli",
-  REASON_CALL_IDENTITY: process.env.REASON_CALL_IDENTITY ?? "owner", ELEVENLABS_LLM_SECRET: "drive-secret", REASON_PUBLIC_URL: "http://127.0.0.1",
+  REASON_CALL_IDENTITY: process.env.REASON_CALL_IDENTITY ?? "owner", REASON_PUBLIC_URL: "http://127.0.0.1",
 });
 const REPO = resolve(dirname(new URL(import.meta.url).pathname), "../../../..");
 const gl = await import(`${REPO}/src/calls/gptlive.js`);
@@ -57,7 +57,7 @@ const cases = [
 ];
 let ok = true;
 for (const k of cases) {
-  const row = db.createCall(k.conv, { provider: "elevenlabs", toNumber: "+13105559999", isOwner: k.isOwner, goal: k.goal ?? "a test call from the verify drive", facts: [], announcement: k.ann, state: "in_progress" });
+  const row = db.createCall(k.conv, { provider: "gptlive", toNumber: "+13105559999", isOwner: k.isOwner, goal: k.goal ?? "a test call from the verify drive", facts: [], announcement: k.ann, state: "in_progress" });
   const messages = [...(k.ann ? [{ role: "assistant", content: k.ann }] : []), { role: "user", content: k.ask }];
   const t0 = Date.now();
   const r = await gl.reasonTurn({ call: row, messages });

@@ -10,6 +10,11 @@ every line of it is written from the docs — see `docs/unverified.md` for exact
 Without a key, or with `REASON_CALL_PROVIDER=fake` (the default), the only provider that runs is
 the fake one, which dials nothing.
 
+> **Now (2026-11-07): GPT-Live over Twilio is the only voice** (`REASON_CALL_PROVIDER=gptlive`,
+> `src/calls/gptlive.js`): GPT-Live speaks, Reason thinks every turn through client delegation. The
+> ElevenLabs provider described next was removed from the code on 2026-11-07; the note is kept as the
+> history of how the choice was made.
+>
 > **Decided 2026-10-05, built 2026-10-06: ElevenLabs, which is a third shape this page did not have.**
 > The question below that turned out to matter was not price. It was the one in "The two shapes of
 > provider": whose model is on the phone. ElevenLabs Agents take a **custom LLM** — an endpoint of

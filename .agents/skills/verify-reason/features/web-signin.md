@@ -31,7 +31,9 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   signs in to the most recently used; the other is never mentioned. Null = stranger, paused,
   removed, blocked, or (in `owner` mode) anybody but the owner — all indistinguishable from outside.
 - **The code** — `requestCode({ id: "wsign:<conv>", title: "Reason" })`: six digits, hashed in
-  `page_codes`, 15 minutes, one live at a time (a new one kills the old), single use, **3 per person
+  `page_codes`, 15 minutes, bound to the asking browser (`page_codes.bound` = `events.signinBinding`
+  of its `reason_web_form` secret; lead 25), one live per browser (a new one kills that browser's old
+  one, never another browser's), single use, **3 per person
   per 15 minutes** (the fourth request answers the same page and logs
   `web_signin_code_refused: too_many_sent`). Texted through `runtime._tell` with outbox key
   `wsign:<conv>:<code row id>`, NOT awaited (timing says nothing about whose number it was). The
@@ -40,8 +42,14 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   (host from `webUrl()` = `REASON_SITE_URL/web`, i.e. `@heyreason.com` on live). Excluded from the
   per-message history by its key prefix.
 - **Wrong tries** — `events.tryKeyedCode` under `wsign:<conv>` (person) and `wsignb:<actor>`
-  (browser): 5 wrong per browser per 15 min — the only limit ever said ("Too many wrong codes from
-  this browser") — plus the silent 20 per person per 15 min and 40 per person per day. The actor is
+  (browser): 5 wrong per browser per 15 min — the only limit ever said (on Web: "let's pause a
+  minute." + `TRY AGAIN IN m:ss`, src/pages/websignin.js:367; "Too many wrong codes from this browser"
+  is the events page's wording, src/pages/event.js:463) — plus the silent 20 per person per 15 min and 40 per person per day. The ceiling
+  bounds guessing, never the person (lead 25): under it the newest code (or this browser's own)
+  works in any browser; past it a code opens only in the browser that asked for it and gets one try
+  there (a wrong one ends it), so strangers typing the number never stop the person's own fresh
+  code. Pinned: `test/web-signin.test.js` "40 wrong codes from strangers…", "past the ceiling…",
+  "a stranger asking for a code…". The actor is
   `eventActor`: with a valid website signature, Netlify's `x-nf-client-connection-ip` (Netlify
   overwrites a browser's own; `siteClientIp`); else Caddy's `X-Forwarded-For` only from loopback with
   `X-Files-Domain: true`; else the socket. A forged Netlify header without a valid signature counts
@@ -65,7 +73,10 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   else signed out, shown the sign-in page, not a 404).
 - **Where sign-in lands** (owner, 10-27) — the right code redirects to **`/web?home`**, and `?home` is
   always the arrival: it skips the 30-minute rule (`THREAD_RECENT_MS`) that makes plain `/web` open the
-  thread for someone mid-conversation. 5C still comes first, once; its "Got it" goes to `/web?home`
+  thread for someone mid-conversation. One exception (#327): a signed-out GET of `/web/saved…` (the
+  wordmark on Reason's pages links `/web/saved?kind=pages`) sets `reason_web_next` (`NEXT_COOKIE`,
+  Path=/web, 30 min; only a Saved path passes `safeNext`), and the right code then lands there instead
+  and clears it (src/pages/websignin.js:145-161, 523, 649-653). 5C still comes first, once; its "Got it" goes to `/web?home`
   too. `web-drive.mjs` checks the Location and a Web message 5 minutes old. **The wordmark (logo)
   always goes Home too** (#206): every Web top bar, the signed-out heads, 5C, 9B, E1/E5 and the loader
   link `/web?home`, never plain `/web` (`test/web-logo-home.test.js`).
@@ -125,13 +136,13 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 ```bash
 cd ~/Desktop/pa
 node --test test/web-design.test.js     # 34: tokens, motion, focus, every screen state's copy + roles, a11y, no-phrase scan, cards/lists/media, /web/live CORS
-node --test test/web-signin.test.js      # 25: off=404 identical, owner mode, enumeration, QR, no-live/linq, happy path, wrong/reused/expired/flood/4th request, two users, decision 4, sign-out, idle/old, paused, CSRF/origin, headers, copy, the look + /web/fonts, lands on /web?home
+node --test test/web-signin.test.js      # 28 (3 lead-25 lockout pins): off=404 identical, owner mode, enumeration, QR, no-live/linq, happy path, wrong/reused/expired/flood/4th request, two users, decision 4, sign-out, idle/old, paused, CSRF/origin, headers, copy, the look + /web/fonts, lands on /web?home
 node --test test/web-logo-home.test.js test/wordmark-one-line.test.js test/wordmark-text.test.js   # 3 + 3 + 3: logo → /web?home, wordmark one line + reads "reason"
 node --test test/web-join-number.test.js # the live-line rule with the real Linq + Sendblue classes
 node --test test/no-command-phrases.test.js test/code-guards.test.js
 # in process, cage env, throwaway DB, real Runtime + Router + outbox + FakeChannel (no model):
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/web.db node .agents/skills/verify-reason/bin/web-drive.mjs
-node .agents/skills/verify-reason/bin/web-preview.mjs [outDir] [referenceDir]   # every Web screen at 390/1280 × Paper/Night + compare-<screen>.png beside the handoff's reference page; real CSP + /web/fonts (default ~/Desktop/reason-web-design-previews; pass referenceDir "$HOME/Desktop/Project files/Reason/handoffs/reason-web-handoff-2026-10-26/reference" — the script's default ~/Desktop/reason-web-handoff-2026-10-26 is gone)
+node .agents/skills/verify-reason/bin/web-preview.mjs [outDir] [referenceDir]   # every Web screen at 390/1280 × Paper/Night + compare-<screen>.png beside the handoff's reference page; real CSP + /web/fonts (default outDir ~/Desktop/reason-web-design-previews; the default referenceDir is now "$HOME/Desktop/Project files/Reason/handoffs/reason-web-handoff-2026-10-26/reference", bin/web-preview.mjs:20)
 ```
 
 Over HTTP on the cage: `REASON_WEB=on bin/caged.sh start`, then `curl -si 127.0.0.1:<port>/web` → 200,

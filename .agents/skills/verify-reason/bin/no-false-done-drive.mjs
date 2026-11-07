@@ -48,7 +48,7 @@ if (args.includes("--off")) process.env.REASON_CLAIM_CHECK = "0";
   process.env.REASON_DATA_DIR ||= dirname(db) + "/data";
   process.env.CROSSMINT_JWT_PRIVATE_KEY = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" });
 }
-for (const k of ["ANTHROPIC_API_KEY", "SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "ELEVENLABS_API_KEY", "AGENTCARD_CLIENT_SECRET"]) {
+for (const k of ["ANTHROPIC_API_KEY", "SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "TWILIO_AUTH_TOKEN", "AGENTCARD_CLIENT_SECRET"]) {
   if (process.env[k]) { console.error(`refusing: ${k} is set — run under env -i`); process.exit(2); }
 }
 

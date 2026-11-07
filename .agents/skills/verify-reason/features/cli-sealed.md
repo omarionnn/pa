@@ -66,7 +66,26 @@ workspace file. `systemFor` for a non-owner carries no operator name or email.
    2026-11-06 at `c6ce172` (worktree, no AGENTS.md in it): control → `any_email: 1`,
    `operator_email`, `user_email_block`, `git_repository_true`, `repo_path` all true; sealed →
    `run_ok: true`, 1 request, every field false, `working_dir` = `$REASON_CLI_HOME/cwd`.
-   `node --test test/cli-sealed.test.js` 4/4.
+   `node --test test/cli-sealed.test.js` 4/4. Re-run 2026-11-07 at `8113bcf` (sealed run only,
+   `env -i HOME PATH REASON_CLI_HOME=$(mktemp -d)/rc CLAUDE_CODE_OAUTH_TOKEN=probe-not-a-key`):
+   `run_ok: true`, 1 request, every field false; test 4/4.
 
 Evidence 2026-11-06 (branch code on the box, CLI 2.1.296): control → 1 email (the operator's),
 userEmail block, AGENTS.md, repo path; sealed → 0 emails, none of the rest, run ok.
+
+## The operator's city stays in the operator's turn (`capabilities`)
+
+The same seal on the tool side. `whoLine` (`src/agent.js`) names `config.ownerCity`
+(`REASON_OWNER_CITY`, default "New York") only for the operator; everyone else's prompt says never
+assume a city. Until audit lead 24 (2026-11-07) the `capabilities` result (`src/tools.js`, case
+`"capabilities"`) returned `city: config.ownerCity` in every conversation, labelled beside the
+caller's own `owner` name, and non-operator onboarding is told to call capabilities. Now `city` is
+only in the result when `accounts.ownerOf(c).isOperator`; a non-operator (or a conversation with no
+account row) gets no `city` key at all.
+
+Prove it: `node --test test/capabilities-city.test.js` (2 of its 3 tests fail on the code before
+the fix). Drive 2 against the cage, `REASON_OWNER_CITY=Testville`: upsert a non-operator account,
+`runTool("capabilities", {}, { conversationId, messages: [] })` for it and for
+`config.ownerConversation`. 2026-11-07 at `2874b92` (cage on 8864): non-operator →
+`owner: "Kofi"`, no `city`, "Testville" nowhere in the result; operator → `owner: "Omari"`,
+`city: "Testville"`.

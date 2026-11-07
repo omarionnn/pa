@@ -19,7 +19,11 @@ notice kinds `deal_drop` / `deal_watch_stopped`), `src/runtime.js` (`checkWatche
 `deal_watch_set`; `guardReply` on every `message_send`). The turn's reply is checked in
 `src/agent.js` (`guardReply(conversationId, reply)`).
 Tests: `test/shopping-offers.test.js` (26), `test/shopping-loop.test.js` (2),
-`test/deal-watch.test.js` (10), `test/shopping-sandbox-fixes.test.js` (5) — 43/43 at `587f67a`.
+`test/deal-watch.test.js` (10), `test/shopping-sandbox-fixes.test.js` (5) — 43/43 at `587f67a`;
+the figures gate since #335: `test/unverified-1105.test.js` (33 incl. subtests) — 26 + all pass at
+`36db733`. No-model drive of the gate on the reply and on `message_send`:
+`bin/recall-figures-drive.mjs` (steps "unchecked price …" to "message_send …", see
+[recall.md](recall.md) for the command).
 
 ## Sub-features
 
@@ -30,13 +34,28 @@ Tests: `test/shopping-offers.test.js` (26), `test/shopping-loop.test.js` (2),
   `agentcard_catalog`, `agentcard_cart`.
 - **Offers → carts.** `purchase` with an `offer_id` checks the AgentCard cart against that exact
   product (`matchCartToOffer`); a cart for something else is a mismatch, not a purchase.
-- **The figures check on everything Reason sends.** `guardReply` reads the outgoing text against
-  what was fetched this turn: a dollar figure not in a source gets "unverified" next to it
-  (log `{"reply_guard":[{"rule":"dollar_unsourced",…}]}`) — ", unverified" when the figure already
-  sits in brackets, so "($18.99 (unverified))" cannot happen; a coupon/sale claim with no source gets a
-  "(i didn't find a live source for any coupon or discount this time, so don't count on one.)" line
-  (`src/offers.js`); "best deal"/"cheapest" needs two verified offers; a purchase ask must
-  carry AgentCard's total. Runs on the turn's reply and on every `message_send` mid-turn.
+- **The figures check on everything Reason sends — no "(unverified)" tag, ever (PR #335, 11-05/11-07).**
+  `guardReply` (`src/offers.js:606`) never writes a hedge into the text. A money figure (`$`/`£`/`€`,
+  `USD`, "95 dollars/bucks", `REPLY_MONEY` `:451`) is known when a tool read it this turn, when it is
+  **theirs** (their message, minus the line code puts over an inline reply — a quote of Reason's own
+  words is not theirs, `QUOTED_LINE` `:456`; what they sent: a photo note only when the photo read wrote it (`media_items.description_from = 'photo'`, never Reason's fallback reply) and transcripts, `db.theirOwnWords` (`src/db.js:10961`); this turn's photo words ride on the turn (`offers.notePhotos`/`photoWords`), so the rewrite and `message_send` read them too;
+  their thread history), when Reason remembers it about them (older than 14 days → "as of <date>",
+  `STALE_MEMORY_MS` `:539`), or when it is arithmetic on known figures (sums, ×/÷ 2–10, a percent
+  of theirs — "18% tip on $84 is $15.12"). A bare number of theirs counts only when they used it as
+  money (`MONEY_BEFORE`/`MONEY_AFTER`, `NOT_MONEY_UNIT` `:491-494`, a money word within `NEAR_WORDS` (4) words of it, never after a label like zip/room/flight — `NOT_MONEY_LABEL`; "I'm 30, 2 kids" and "my zip is 10001, rent's high" back nothing; "ran a 5k" is no $5,000). Their purchase record backs its own amounts but is never a base for sums (`records`).
+  Anything else is `dollar_unsourced`: the turn's reply goes back to the model **once**
+  (`recompose`, taken by `Runtime._turn` via `takeRecompose`, `src/runtime.js:582`) to check it or
+  leave it out; on the rewrite (`beginTurn(..., { carry: true })`) a price still unchecked is
+  **dropped** sentence by sentence — the sentence holding that whole figure (`dollar_dropped`), and a reply left empty becomes `PRICE_LEFT_OUT`
+  "I couldn't confirm the price, so I've left it out rather than guess. Want me to look it up?"
+  (`:590`). Coupons/deals the same (`discount_unsourced` → `discount_dropped`; a concrete code/
+  amount must match a source; BOGO/free shipping/"$N off" are deals). "best"/"cheapest" needs two
+  priced offers (or a flight search's fares). A purchase ask must carry AgentCard's total. The
+  history read happens only when the reply has a figure or a deal. `message_send`
+  (`src/tools.js:10651`): an unchecked price or deal is refused **every** try
+  (`blocked: "unchecked_figures"`, `offers.sendBack` `:776`, "never a bracketed tag like
+  "(unverified)""), to their own person too; other fixes are sent back once. `offer_check`'s note
+  says a field the page lacks is "doesn't say" in plain words, never a tag (`src/tools.js:13521`).
 - **The handoff.** `shop_handoff` (and every failed purchase) gives one link with plain words for
   what it opens, what was verified (field, value, where, when), what was not, one next step, and
   `cart_transferred: false` always. A Shopify cart permalink only when the page pins one variant;
@@ -116,5 +135,10 @@ owner's own Walmart rows, wrongly flagged; fixed in the PR after #98).
   row (`read_from: "local_record"`, `live_check: "not_configured"`); only with no row is it
   `not_configured`. A `not_configured` AgentCard call writes no ledger row, so it never switches
   the purchases block on.
+- **A model that already obeys the rule never trips the gate.** Real claude-cli turn on the cage,
+  2026-11-07 at `8113bcf` ("roughly how much is a 60 min massage there? just ballpark from memory"):
+  `web_search` → `not_connected`, the reply said it had no price and offered to call — no figure, no
+  "(unverified)", no `reply_guard` line. The gate's own paths (recompose, drop, `message_send`
+  refusal) are proved by the no-model drive and `test/unverified-1105.test.js`, not by a live turn.
 - **The handoff never moves a cart.** If a reply says "it's in your cart" after a handoff, that is
   the model, and `cart_transferred: false` is the proof it is wrong.

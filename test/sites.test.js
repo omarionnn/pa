@@ -36,6 +36,9 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 
 const { runTool, clickCommits } = await import("../src/tools.js");
+const { grantsViaYes } = await import("./fixture-grant.js");
+// Saving a permission waits for their yes now (src/tools.js permission_grant): granted through the real flow.
+const viaYes = grantsViaYes(runTool);
 const sites = await import("../src/sites.js");
 const trust = await import("../src/trust.js");
 const browser = await import("../src/browser.js");
@@ -62,7 +65,7 @@ const geocode = async (q) => GEO[q] ?? null;
 // is taken to have just typed the sentence the tool is given, which is what these tests are about.
 const saidIt = (name, input, messages) => (name === "permission_grant" || name === "caps_set") && input?.text
   ? [...messages, { role: "user", content: `[Wed, Sep 30, 2026, 2:59 PM] Omari: ${input.text}` }] : messages;
-const call = (name, input, site = null) => runTool(name, input, {
+const call = (name, input, site = null) => viaYes(name, input, {
   conversationId: C, messages: saidIt(name, input, messages), judge: readsYes, geocode,
   ...(site ? { siteHosts: { [fx.host]: site } } : {}),
 });

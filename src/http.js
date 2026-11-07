@@ -6,9 +6,8 @@
 //   GET  /alive                       the watchdog's cheap liveness read (loop lag, sweep age)
 //   POST /channels/{name}/webhook     one provider delivery, verified and parsed by that adapter
 //   POST /calls/{name}/webhook/{tok}  one call ended, pushed back by the call provider
-//   POST /calls/elevenlabs/inbound    somebody is ringing: who are they, and what do we open with
-//   POST /calls/elevenlabs/llm        one spoken turn, as SSE — Reason's own brain on the phone
-//   POST /calls/elevenlabs/post-call  one call ended, with the transcript and the audio
+//   POST /calls/gptlive/inbound       somebody is ringing: the number's Twilio voice webhook (GPT-Live)
+//   POST /calls/gptlive/status/{tok}  one GPT-Live call's Twilio status (and /amd/{tok}, its machine verdict)
 //   GET  /p/{id}                      one page the owner opens from a link
 //   POST /p/{id}                      the one-time code for a private page
 //   POST /p/{id}/choice               the owner tapped an answer on their own page
@@ -75,9 +74,6 @@ import * as subusage from "./subusage.js";
 import { renderOps } from "./pages/ops.js";
 import { settleCall, fillLateDetails, reconcileOrder } from "./tools.js";
 import { LIVE_STATES } from "./calls/provider.js";
-import { inboundRequest, INBOUND_PATH } from "./calls/inbound.js";
-import { llmRequest, LLM_PATH } from "./calls/voice.js";
-import { postCallRequest, POST_CALL_PATH } from "./calls/postcall.js";
 import * as gptlive from "./calls/gptlive.js";
 import { acceptUpgrade } from "./calls/wsserver.js";
 import * as spotify from "./spotify.js";
@@ -550,74 +546,9 @@ export function createServer({ router, runtime, log = () => {} }) {
         return send(out.status, out.body);
       }
 
-      // ---------- Reason itself on the phone ----------
-      // Three routes, all ElevenLabs': the personalization webhook that answers during the ring, the
-      // custom-LLM endpoint that generates every word said, and the post-call delivery. None of them
-      // exists in any useful sense unless this install runs that provider AND has its keys — each
-      // handler checks the provider that is really running and 404s otherwise, so on an install that
-      // runs bland these are the same not-found as any address nobody was issued.
-      if (req.method === "POST" && url.pathname === INBOUND_PATH) {
-        const rawBody = await readBody(req);
-        if (rawBody === null) return send(413, { error: "body too large" });
-        const out = inboundRequest({
-          rawBody, headers: req.headers,
-          provider: runtime?.turnExtras?.calls ?? null,
-          router, log,
-        });
-        log({ call_inbound_webhook: out.status, conversation: out.conversationId ?? null });
-        return send(out.status, out.body);
-      }
-
-      // The custom-LLM endpoint. Answers SSE rather than JSON, and streams as it goes: the first
-      // sentence leaves while the rest of the reply is still being written, which is the difference
-      // between a call that feels alive and one with a gap at the top of every turn.
-      if (req.method === "POST" && url.pathname.startsWith(LLM_PATH)) {
-        const rawBody = await readBody(req);
-        if (rawBody === null) return send(413, { error: "body too large" });
-        const t0 = Date.now();
-        const out = await llmRequest({ rawBody, headers: req.headers, log, extras: runtime?.turnExtras ?? {} });
-        res.writeHead(out.status, out.headers);
-        if (!out.stream) {
-          // A refusal (401, bad JSON) answered without a stream used to end here without a line, so a
-          // call that died on it (calls 13 and 22) left nothing in the journal to say why.
-          log({ call_llm_not_streamed: out.status, ms: Date.now() - t0 });
-          return res.end(out.body);
-        }
-        // The platform closing the socket — it gave up waiting, the person spoke over this turn, or
-        // the call ended — lets go of the turn behind it. A retry of the same turn joins it within a
-        // few seconds; otherwise it is cancelled, so its tools and model rounds stop too rather than
-        // running on for a stream nobody is reading (`ATTACH_GRACE_MS` in calls/voice.js).
-        res.on("close", () => out.abort?.());
-        // The platform gives the custom LLM a fixed number of seconds to start talking and closes
-        // the socket when it runs out — and a `break` below ends the turn's generator at its
-        // current yield, so a turn the platform gave up on used to leave no line at all. The first
-        // spoken content and any early close are logged with their timing, because "it went
-        // silent" has to be answerable from the journal.
-        let firstContentMs = null;
-        let bytes = 0;
-        try {
-          for await (const chunk of out.stream) {
-            // Somebody hung up mid-sentence. Stop writing into a socket that is gone rather than
-            // throwing out of the middle of a model loop.
-            if (res.writableEnded || res.destroyed) {
-              log({ call_llm_closed_by_platform: true, ms: Date.now() - t0, first_content_ms: firstContentMs, bytes });
-              break;
-            }
-            if (firstContentMs === null && String(chunk).includes('"content":')) {
-              firstContentMs = Date.now() - t0;
-              log({ call_llm_first_content_ms: firstContentMs });
-            }
-            bytes += Buffer.byteLength(String(chunk));
-            res.write(chunk);
-          }
-        } catch (e) {
-          log({ call_llm_stream_broke: (e?.message ?? String(e)).split("\n")[0], ms: Date.now() - t0 });
-        }
-        return res.end();
-      }
-
-      // The GPT-Live trial's two Twilio webhooks (src/calls/gptlive.js): a call's status, and the
-      // number's voice webhook if it is ever pointed here. Both Twilio-signed; both absent without the flag.
+      // ---------- Reason itself on the phone: GPT-Live's Twilio webhooks (src/calls/gptlive.js) ----------
+      // A call's status, its machine verdict, and the number's voice webhook. All Twilio-signed; all
+      // absent unless GPT-Live is the provider or one of its flags is on.
       if (gptlive.gptliveOn() && req.method === "POST" && url.pathname.startsWith(gptlive.STATUS_PATH)) {
         const rawBody = await readBody(req);
         if (rawBody === null) return send(413, { error: "body too large" });
@@ -642,18 +573,6 @@ export function createServer({ router, runtime, log = () => {} }) {
         const out = gptlive.inboundTwiml({ rawBody, headers: req.headers, router, log });
         res.writeHead(out.status, out.type ? { "Content-Type": out.type } : {});
         return res.end(out.body);
-      }
-
-      if (req.method === "POST" && url.pathname === POST_CALL_PATH) {
-        const rawBody = await readBody(req);
-        if (rawBody === null) return send(413, { error: "body too large" });
-        const out = await postCallRequest({
-          rawBody, headers: req.headers,
-          provider: runtime?.turnExtras?.calls ?? null,
-          runtime, log, settle: settleCall,
-        });
-        log({ call_post_call: out.status, call: out.body?.call_id ?? null });
-        return send(out.status, out.body);
       }
 
       // ---------- a provider redirecting back after the person authorized ----------
@@ -947,7 +866,7 @@ export function assetRequest({ pathname, router = null }) {
     // With two live lines, the card whose hash is in the address (a Linq person's card carries the
     // Linq number); an old hash or /reason.vcf gets the first live line's.
     const cards = (router?.list?.() ?? []).filter(ch => ch.name !== "console" && ch.status?.().status === "live")
-      .map(ch => vcard({ number: lineNumber(router, ch.name), callNumber: config.elevenPhoneNumber })).filter(Boolean);
+      .map(ch => vcard({ number: lineNumber(router, ch.name), callNumber: config.twilioFrom })).filter(Boolean);
     const want = /^\/reason-([0-9a-f]{8})\.vcf$/.exec(pathname)?.[1];
     const card = cards.find(c => createHash("sha256").update(c).digest("hex").slice(0, 8) === want) ?? cards[0] ?? null;
     if (!card) return { status: 404, headers: HTML(), body: renderNotFound() };
@@ -1918,7 +1837,9 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
     // ---- the password ----
     if (form.has("password") && opspw.passwordEnabled()) {
       const ip = opspw.clientIp(headers ?? {}, remoteAddress);
-      const tried = await opspw.tryPassword({ password: form.get("password"), ip });
+      // The keyed link is counted apart from everyone else, so a stranger's wrong guesses cannot
+      // lock the owner out of it (audit lead 23).
+      const tried = await opspw.tryPassword({ password: form.get("password"), ip, keyed: via_key });
       if (tried.ok) {
         const token = randomBytes(32).toString("base64url");
         db.startPageSession(page.id, token, { conversationId: page.conversation_id ?? null });
@@ -1950,6 +1871,10 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
       log({ ops_code_sent: true });
       return gate({ sent: true });
     }
+    // A code is only taken with the key, as one is only sent with it (audit lead 23). The form
+    // posts back to the keyed address, so the owner's browser always carries it. Without the key
+    // nothing is compared or counted: the five tries on "ops" are the owner's, not a stranger's.
+    if (!via_key) return gate();
     const tried = trySubmittedCode({ page, code: form.get("code") ?? "" });
     if (tried.ok) {
       log({ ops_opened: "code" });

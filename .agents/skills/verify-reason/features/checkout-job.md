@@ -13,14 +13,15 @@ the model, with no record to read, said the checkout "never actually started" (f
 
 What code does now, with no model in front of it:
 - **plain question** → `wake` (an event turn, key `shop:<run>:<request>`, once): `[checkout] Ulta's
-  checkout for … (run …) is waiting on an answer. It expires in N minutes. Ulta asks: "…". Fields (key:
-  label): …` — the model answers with `shop_answer` (values sealed out of the log by src/privacy.js) or
+  checkout for … (run …) is waiting on an answer. Ulta asks: "…". Fields (key: label): … Ulta holds
+  the cart until <clock time>; say that as the time, never as a countdown …` (`inputEvent`,
+  `src/shopconnect.js:1280-1294`; the "It expires in N minutes" wording went with checkout-anticipate) — the model answers with `shop_answer` (values sealed out of the log by src/privacy.js) or
   asks the person for exactly what is missing;
 - **protected form** → the sign-in link, as before; **payment** → the ask, itemized when Crossmint
   itemizes (`item $18.99, shipping $6.95, tax $2.30; $28.24 all in.` above `OK to pay …`), Face ID link
   where they have a passkey;
 - **the end** → one text saying what happened: expired input (what was asked), blocked (summary),
-  cancelled, placed (order ref if Crossmint gives one), ended after a payment (outcome unknown, check mail);
+  cancelled, placed (order ref if Crossmint gives one), ended after a payment (outcome unknown, check mail; since #357 that amount already counts against the day's cap);
 - **a stall** (`STALL_MS` 12 min without the revision moving; past Crossmint's 10-min input expiry so an
   expiring request reads as expired) → one text; Crossmint saying it does not know the run (a 404)
   for `LOST_MS` (60 s since #337) → failed ("lost"), cancelled at Crossmint, said once; Crossmint down
@@ -42,11 +43,13 @@ each, "overrides anything the chat says"); `shop_status` on demand. The reply gu
 checkout" line with no run of theirs (started ≤15 min ago or still open) is dropped with its promises
 and replaced by `I haven't actually started a checkout: nothing is running and nothing has been charged.
 Want me to start it now?`; a "never actually started" line with a run of the last 30 min on record gets
-`Correction, from my record: …` built from `stageLine`.
+`Actually, checking my record: the <store> checkout for <item> did start N min ago; now: <stageLine>.`
+in front (`src/offers.js:95`), and only on a turn where they asked about the checkout (`aboutCheckout`).
 
 ## Offline
-- `node --test test/checkout-job.test.js` (15; the three "review:" ones cover non-card payment, expired
-  approval wording + wake retry, lost run + a pre-change row with stage ''): the exact 10:58 line refused without a run and untouched
+- `node --test test/checkout-job.test.js` (16 pass 2026-11-07; the four "review" ones cover non-card payment, expired
+  approval wording + wake retry, lost run + a pre-change row with stage '', and "review 11-06" Crossmint
+  503 for minutes is not a lost run): the exact 10:58 line refused without a run and untouched
   with one; the 11:17 line corrected; the shipping form → wake → `shop_answer` → in_progress, sealed;
   sign-in form never through `shop_answer`; expiry/blocked/cancelled/after-payment texts, once; stall once
   at 10 min; `shop_status` + note from the row; itemized ask; placed + mail watch + 24h bound; resume.

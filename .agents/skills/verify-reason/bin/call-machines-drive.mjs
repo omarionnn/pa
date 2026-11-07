@@ -54,7 +54,7 @@ const cases = [
 
 let failed = 0;
 for (const [name, theirs, check] of cases) {
-  const row = db.createCall(C, { provider: "elevenlabs", toNumber: fx.STRAND, isOwner: false, goal: fx.STRAND_GOAL, facts: [], announcement: ANN, externalId: `conv_drive_${Date.now()}` });
+  const row = db.createCall(C, { provider: "gptlive", toNumber: fx.STRAND, isOwner: false, goal: fx.STRAND_GOAL, facts: [], announcement: ANN, externalId: `conv_drive_${Date.now()}` });
   db.updateCall(C, row.id, { brief: JSON.stringify(brief.buildBrief({ goal: fx.STRAND_GOAL })), opening_waits: 1, state: "in_progress" });
   let last = null;
   for (let i = 0; i < theirs.length; i++) {

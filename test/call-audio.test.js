@@ -453,7 +453,7 @@ test("the ledger says what was announced, and gets a row when the audio goes out
   const rec = db.listActions(C).find(a => a.action === "call_recording");
   assert.ok(rec, "sending the audio leaves its own receipt");
   assert.equal(rec.target, `call:${PLACE}`);
-  assert.match(rec.receipt, /Sent Omari the recording of call #\d+/);
+  assert.match(rec.receipt, /Sent them the recording of call #\d+/);
   assert.match(rec.receipt, /KB wav/);
 });
 

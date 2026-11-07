@@ -3,7 +3,7 @@
 // page follows. Run from the worktree under `caged.sh env`:
 //   cd /private/tmp/pa-signinprog && eval "$(REASON_VERIFY_RUN=/tmp/reason-verify-signinprog REASON_VERIFY_PORT=8809 .agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && node .agents/skills/verify-reason/bin/shop-connect-live-drive.mjs
 import { createRequire } from "node:module";
-for (const k of ["SENDBLUE_API_KEY_ID", "LINQ_API_KEY", "ELEVENLABS_API_KEY", "CROSSMINT_SERVER_KEY"]) if (process.env[k]) { console.error(`refusing: ${k} is set`); process.exit(2); }
+for (const k of ["SENDBLUE_API_KEY_ID", "LINQ_API_KEY", "TWILIO_AUTH_TOKEN", "CROSSMINT_SERVER_KEY"]) if (process.env[k]) { console.error(`refusing: ${k} is set`); process.exit(2); }
 process.env.REASON_WEB = "on"; process.env.REASON_CONVERSATION = "dm:owner"; process.env.REASON_SHOP_CONNECT = "owner";
 process.env.REASON_MASTER_NUMBER ||= "+12025551234"; process.env.REASON_OWNER_NAME ||= "Omari"; process.env.REASON_TZ ||= "America/New_York";
 process.env.CROSSMINT_JWT_KEY_FILE ||= `${process.env.HOME}/.openclaw/secrets/crossmint-jwt-private.pem`; process.env.CROSSMINT_JWT_KID ||= "reason-1";

@@ -1,5 +1,6 @@
 // Every tool: a JSON schema the model sees, a zod check on what it sends, and a run() that touches the DB.
 // Guards live here, never in routing. The result is the only thing the model may treat as true.
+import { randomUUID } from "node:crypto";
 import * as onethought from "./onethought.js";
 import { taskOfCall } from "./settle.js";
 import { carServicesAt } from "./rides.js";
@@ -52,7 +53,7 @@ import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, requireAnnouncement, callRulesFor } from "./calls/provider.js";
 import { recordingNoteFor } from "./calls/inbound.js";
 import { PROVIDER as gptliveProvider, tellLive as gptliveTell, toldNote as gptliveToldNote, notePlace as gptliveNotePlace, isRunning as gptliveRunning, gptliveFor as gptliveForConversation } from "./calls/gptlive.js";
-import { checkCallForPaymentDetails } from "./calls/payments.js";
+import { checkCallForPaymentDetails, checkBriefForPaymentDetails } from "./calls/payments.js";
 import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./calls/brief.js";
 import * as callErrand from "./calls/errand.js";
 import { safeToRedial, stillOpen } from "./calls/redial.js";
@@ -62,7 +63,7 @@ import { endFieldsFor } from "./calls/metrics.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
-import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink } from "./eventtools.js";
+import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal } from "./eventtools.js";
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
@@ -304,7 +305,11 @@ export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_su
   "todo_approve",
   // Every X write is a draft: the person sees exactly what goes out before it does. A bad tweet is
   // public and hard to undo, a DM reaches a real person, and deleting a tweet is irreversible.
-  "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete"]);
+  "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete",
+  // Model-written words in front of other people (audit lead 28): a blast texts every guest of an
+  // event, and an issue or a comment is published under their GitHub name. The draft-then-yes rule
+  // used to live only in the tool descriptions; something the model read could talk it past that.
+  "event_blast", "github_issue_create", "github_issue_comment"]);
 
 // The actions that put words in front of a person who is not the owner. What they have in common is
 // the failure in src/verify.js: an errand that collected three people's numbers sending one of them
@@ -340,6 +345,9 @@ export const CONDITIONALLY_GATED = new Set([
   // file is free, and giving another person access is not. Decided in `needsConfirmation` off
   // `with_email`, so a yes is never collected for a link they already had.
   "drive_share",
+  // Saving a standing permission: always asked about, from inside its own handler once every refusal
+  // it can make has been made (see permission_grant). Named here so confirm_request takes the ask.
+  "permission_grant",
 ]);
 
 // Every tool that exists only because the master switched remote building on. Named once, here, and
@@ -1040,7 +1048,7 @@ async function reconcilePurchase(c, buyConversationId, userToken, orderId = "", 
   const r = agentcard.reconcileLine(got, orderId || row?.order_id || "");
   if (r.placed && r.order && row && row.status !== "placed" && row.status !== "partially_placed" && row.status !== "cancelled") {
     db.markAgentcardPurchase(buyConversationId, { status: "placed", orderId: r.order.order_id || undefined });
-    trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
+    trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }, row.conversation_id), confirmationId: row.confirmation_id ?? null });
   }
   if (r.order && row) {
     const applied = applyOrderRecord(db.getAgentcardPurchase(buyConversationId), r.order, { say });
@@ -1061,7 +1069,7 @@ async function reconcilePurchase(c, buyConversationId, userToken, orderId = "", 
   // itself said it did not know whether money moved, and that is ambiguity.
   if (r.declined && row && row.status === "outcome_unknown" && row.charge_status !== "unknown") {
     db.markAgentcardPurchase(buyConversationId, { status: "declined", declineCode: r.decline_code, chargeStatus: r.charge_status || undefined });
-    trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
+    trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }, row.conversation_id), confirmationId: row.confirmation_id ?? null });
     db.removeUnknownOutcomeSpend({ conversationId: c, confirmationId: row.confirmation_id ?? null, site: row.merchant, cents: row.amount_cents });
     return { ...r, settled: "declined" };
   }
@@ -1095,7 +1103,7 @@ function applyOrderRecord(row, order, { say = null } = {}) {
   });
   if (!cancelled) return { cancelled: false, told: false };
   // Whatever was unknown about this confirm is known now: an order existed, and it was called off.
-  trust.settleUnknownOutcome({ conversationId: row.conversation_id, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: row.buy_conversation_id, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
+  trust.settleUnknownOutcome({ conversationId: row.conversation_id, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: row.buy_conversation_id, cart_hash: row.cart_hash }, row.conversation_id), confirmationId: row.confirmation_id ?? null });
   let told = false;
   if (db.claimAgentcardCancelNotice(row.buy_conversation_id) && say) {
     say(row.conversation_id, cancelledLine(db.getAgentcardPurchase(row.buy_conversation_id) ?? row));
@@ -2506,7 +2514,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   // Retention, plus the three things somebody asks about their data that are not about a timer: what
   // forget really reaches, what a disconnect takes with it, and what is never written down at all.
   out.find(c => c.name === "your_data").what = `${retentionSays()}`
-    + ` "Forget about X" (forget) deletes every fact saved about them — under that name and any longer name containing it — and the copies of those facts in this conversation; it does not delete ${who}'s own messages, and the honest answer if they ask is that a full delete is what takes those.`
+    + ` "Forget about X" (forget) deletes every fact saved about them — under that name and any longer name containing it — and the copies of those facts in this conversation, and takes the calls, message exchanges and actions that mention them out of recall; it does not delete ${who}'s own messages, and the honest answer if they ask is that a full delete is what takes those.`
     + ` Disconnecting an account cuts the access off AND deletes what had been read out of it into this conversation; the receipts of what Reason did stay.`
     + ` A card number, a security code, a password or a PIN is never written down anywhere, and an attempt to save one is refused with nothing written.`;
   // Their own window, not the feature's. Somebody who switched it off must never be told they have
@@ -3000,7 +3008,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
       ? `${who} has said these may happen without asking: ${rows.map(r => `"${r.said}"`).join("; ")}.`
         + ` Each one is bounded by what was read out of it — permission_list is the truth of them, and anything outside one still stops for a yes.`
       : `${who} can tell you to do something without asking from then on ("you can reorder groceries without asking", "reply to scheduling emails yourself", "spend up to $40 on lunch without checking")`
-        + ` and it is saved in their own words with permission_grant. They have not said any of that yet, so everything that spends money or reaches somebody else still stops for a yes`;
+        + ` and, once you have read it back and they have said yes, it is saved in their own words with permission_grant. They have not said any of that yet, so everything that spends money or reaches somebody else still stops for a yes`;
   }
 
   const rep = out.find(c => c.name === "representing_you");
@@ -3091,7 +3099,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   // call line and the contact card carries both. The model needs to know so it can explain the
   // setup and resend the card when somebody is confused.
   const textNumber = live.length ? live[0].number : null;
-  const callNumber = config.elevenPhoneNumber || null;
+  const callNumber = config.twilioFrom || null;
   if (textNumber && callNumber && phone.status === "live") {
     out.push({
       name: "your_numbers",
@@ -4089,7 +4097,7 @@ export const tools = [
   },
   {
     name: "call_place",
-    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person in this conversation, the one you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes — EXCEPT a call they plainly asked for, to a business, that only asks (no may_book, no max_price_cents, no approved_terms): place that one straight away with no confirmation_id and do not ask them to confirm it; code checks it and refuses with needs_confirmation if it needs a yes after all. Every call to anyone but the owner opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. A call to the owner opens with a plain greeting instead: nothing is announced at the person who set this up, and they are told once by text that calls are recorded. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in the goal or the facts — the call is refused before it is dialled.",
+    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person in this conversation, the one you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes — EXCEPT a call they plainly asked for, to a business, that only asks (no may_book, no max_price_cents, no approved_terms): place that one straight away with no confirmation_id and do not ask them to confirm it; code checks it and refuses with needs_confirmation if it needs a yes after all. Every call to anyone but the owner opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. A call to the owner opens with a plain greeting instead: nothing is announced at the person who set this up, and they are told once by text that calls are recorded. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in anything the call is given (goal, facts, ask, requirements, approved_terms) — the call is refused before it is dialled.",
     input_schema: {
       type: "object",
       properties: {
@@ -4132,7 +4140,8 @@ export const tools = [
           type: "object",
           description: "Everything they are going to ask for, so the call never has to come back to the owner mid-conversation:"
             + " {\"name\": \"<the name it goes under>\", \"people\": \"4\", \"phone\": \"+1...\"}. After eight minutes on hold, the moment somebody"
-            + " finally answers is the worst possible time to discover nobody knows what name to put it under.",
+            + " finally answers is the worst possible time to discover nobody knows what name to put it under."
+            + " NEVER payment details here either (no card number, expiry, security code, bank details or PIN): a call carrying them is refused before it is dialled.",
         },
         max_hold_minutes: { type: "integer", description: "How long this call may wait on hold. Default from config. A busy place at lunchtime may need more." },
         errand_id: { type: "integer", description: "The errand this call is one leg of, from call_errand_start. Set it whenever you are ringing several places about one thing — it is what makes the answers comparable and stops two of them being booked." },
@@ -4554,7 +4563,7 @@ export const tools = [
   },
   {
     name: "permission_grant",
-    description: "Save a standing permission: a thing they have told you to do WITHOUT asking first, from now on. 'You can reorder groceries without asking', 'reply to scheduling emails yourself', 'you can spend up to $40 on lunch without asking'. Call it the moment they say something like that, and say it back to them once in their own words. `text` is their sentence exactly as they said it, word for word — never tidied, never widened, never your summary of it. `scope` is your reading of it, narrow: which gated action it covers, who or what for, up to how much, and until when if they put a date on it. The scope is what the gate actually checks, so anything you leave out is not covered and anything you widen is a permission they never gave. When they only half said it — 'just order it yourself next time' with no amount on something that costs money — ask for the missing half rather than guessing a number.",
+    description: "Save a standing permission: a thing they have told you to do WITHOUT asking first, from now on. 'You can reorder groceries without asking', 'reply to scheduling emails yourself', 'you can spend up to $40 on lunch without asking'. Saving one is asked about like anything else the gate stops. Call it the moment they say something like that: the first call saves nothing and hands back `use_target`. Then read it back to them as one short plain question in their terms, e.g. save that: I can text your sister without asking? — what you would stop asking about, for whom (a contact by their NAME, never their number), and any amount, end date or limits — and wait for their answer. Never give them words to type. Call confirm_request with action permission_grant and target set to `use_target` exactly, confirm_record on their reply, and once it is granted call permission_grant again with the same text, scope and caps plus that `confirmation_id`. The yes covers exactly what was read back: anything changed has to be asked again. `text` is their sentence exactly as they said it, word for word — never tidied, never widened, never your summary of it. `scope` is your reading of it, narrow: which gated action it covers, who or what for, up to how much, and until when if they put a date on it. The scope is what the gate actually checks, so anything you leave out is not covered and anything you widen is a permission they never gave. When they only half said it — 'just order it yourself next time' with no amount on something that costs money — ask for the missing half rather than guessing a number.",
     input_schema: {
       type: "object",
       properties: {
@@ -4579,6 +4588,7 @@ export const tools = [
           },
           required: ["per_purchase", "monthly"],
         },
+        confirmation_id: { type: "integer", description: "From confirm_request, once confirm_record says granted. Leave it out the first time: that call saves nothing and tells you what to read back." },
       },
       required: ["text", "scope"],
     },
@@ -5416,7 +5426,7 @@ export const tools = [
   },
   {
     name: "github_issue_create",
-    description: "Create an issue on a repo. Returns the issue number and link. This is a visible action on their repo — it will appear in their GitHub.",
+    description: "Create an issue on a repo. Returns the issue number and link. This is a visible act under their GitHub name, so it needs their yes to the exact title and body: call this first with no confirmation_id (nothing is created), show them the repo, title and body, then confirm_request with action github_issue_create and target set to the `use_target` it refused with, wait for their answer, confirm_record, then this again with the same input and the confirmation_id.",
     input_schema: {
       type: "object",
       properties: {
@@ -5425,19 +5435,21 @@ export const tools = [
         body: { type: "string", description: "Issue body, in Markdown" },
         labels: { type: "array", items: { type: "string" }, description: "Labels to apply" },
         assignees: { type: "array", items: { type: "string" }, description: "GitHub usernames to assign" },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, for exactly this issue." },
       },
       required: ["repo", "title"],
     },
   },
   {
     name: "github_issue_comment",
-    description: "Comment on an issue or pull request. The comment appears publicly on the issue under the connected GitHub account.",
+    description: "Comment on an issue or pull request. The comment appears publicly on the issue under the connected GitHub account, so it needs their yes to the exact words: call this first with no confirmation_id (nothing is posted), show them the comment and where it goes, then confirm_request with action github_issue_comment and target set to the `use_target` it refused with, wait for their answer, confirm_record, then this again with the same input and the confirmation_id.",
     input_schema: {
       type: "object",
       properties: {
         repo: { type: "string", description: "owner/repo" },
         issue_number: { type: "integer", description: "Issue or PR number" },
         body: { type: "string", description: "Comment body, in Markdown" },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, for exactly this comment." },
       },
       required: ["repo", "issue_number", "body"],
     },
@@ -6942,7 +6954,7 @@ const S = {
   // and a phone number — and email does not fit in them: a yes for a send has to be shown the whole
   // body, not a precis of it, so a 600-character summary would mean either a truncated email or a
   // gate nobody could use. Still bounded, because both end up in a database row.
-  confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(4_000), stakes: z.string().max(40).optional(), target: z.string().max(300).optional(), amount: z.number().nonnegative().max(1_000_000).optional(), task_id: z.number().int().optional() }),
+  confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(4_000), stakes: z.string().max(40).optional(), target: z.string().max(400).optional(), amount: z.number().nonnegative().max(1_000_000).optional(), task_id: z.number().int().optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
   confirm_pending: z.object({}),
   permission_grant: z.object({
@@ -6957,6 +6969,7 @@ const S = {
       per_purchase: z.number().positive().max(1_000_000),
       monthly: z.number().positive().max(10_000_000),
     }).optional(),
+    confirmation_id: z.number().int().optional(),
   }),
   important_add: z.object({ who: z.string().min(1).max(80), why: z.string().max(300).optional(), contact: z.string().max(200).optional() }),
   important_list: z.object({}),
@@ -7418,11 +7431,13 @@ const S = {
     body: z.string().max(65_000).optional(),
     labels: z.array(z.string().max(100)).max(20).optional(),
     assignees: z.array(z.string().max(100)).max(20).optional(),
+    confirmation_id: z.number().int().optional(),
   }),
   github_issue_comment: z.object({
     repo: z.string().min(3).max(200),
     issue_number: z.number().int().positive(),
     body: z.string().min(1).max(65_000),
+    confirmation_id: z.number().int().optional(),
   }),
   github_pulls: z.object({
     repo: z.string().min(3).max(200),
@@ -8140,8 +8155,8 @@ export function queueMissedScheduledCall(conversationId, row, log = () => {}) {
  * it, by the state the row is in. The grace on top covers a webhook that was slow rather than absent.
  *
  * `in_progress` — somebody answered — waits on the PLATFORM's cap, not `callMaxMinutes`: since
- * b10b6ab no per-call ceiling is sent (ElevenLabs refuses the override), so a call runs until the
- * agent's own limit — an hour — and owner calls of 14–15 minutes have happened (calls 32, 35).
+ * b10b6ab no per-call ceiling is sent, so a call runs until the
+ * platform limit (`callPlatformCapSeconds`, an hour) — and owner calls of 14–15 minutes have happened (calls 32, 35).
  * Sweeping those at callMaxMinutes + grace (25 min) wrote a live 30-minute call down as lost. The
  * larger of the two is used, so an install that really does allow longer calls is covered too.
  *
@@ -8937,6 +8952,24 @@ function uberRideLine(ride) {
  * never from the summary the model wrote, which is what makes "they agreed to this one" a fact about
  * the action rather than a fact about the description.
  */
+/**
+ * What a yes to saving a standing permission is pinned to (permission_grant): everything that would be
+ * saved and nothing the model words for itself. Built from the scope, never from the sentence: the
+ * sentence is checked against their own messages on its own, and what the gate later compares is this.
+ * A number carries who it is on record as, so the read-back can name the person.
+ */
+function permissionYesTarget({ scope, tgt, numeric, who, untilAt, caps }) {
+  const action = trust.toolName(scope.action).trim();
+  const forWhom = !tgt ? "anyone and anything of that kind"
+    : numeric ? `${normalizeNumber(tgt) || tgt} (${who ? String(who).slice(0, 60) : "not on record"})` : `"${tgt}"`;
+  return [
+    `standing permission: ${action} for ${forWhom}`,
+    scope.max_amount ? `, up to $${scope.max_amount} each` : "",
+    untilAt ? `, until ${new Date(untilAt).toISOString()}` : "",
+    caps ? `, limits $${caps.per_purchase} one thing and $${caps.monthly} a month` : "",
+  ].join("");
+}
+
 function confirmTargetFor(name, input, c = null) {
   switch (name) {
     case "message_send": case "voice_note_send": case "call_place":
@@ -8996,7 +9029,9 @@ function confirmTargetFor(name, input, c = null) {
     case "shop_pay": return shopPayTarget(input, c);
     case "purchase_confirm": {
       const row = db.getAgentcardPurchase(input.conversation_id);
-      if (!row || row.cart_hash !== input.cart_hash) return `unknown cart ${input.cart_hash} in ${input.conversation_id}`;
+      // Someone else's cart reads as unknown, the same as shop_pay: its merchant, items and amount
+      // never reach this model, whatever ids it guessed (audit lead 21).
+      if (!row || row.conversation_id !== c || row.cart_hash !== input.cart_hash) return `unknown cart ${input.cart_hash} in ${input.conversation_id}`;
       const base = `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(Math.round(row.amount_cents))}) [${input.cart_hash}] in ${input.conversation_id}`;
       // A flight's yes is also pinned to exactly who flies: AgentCard's cart hash does not change when
       // the passenger does (sandbox, 2026-10-25), so a corrected name must not ride the old yes.
@@ -9019,11 +9054,13 @@ function confirmTargetFor(name, input, c = null) {
      *
      * A quote_id with no row produces a target naming the id and nothing else: it cannot match a
      * yes collected against a real quote, so the gate refuses rather than authorizing a ride
-     * nobody can describe.
+     * nobody can describe. Another thread's quote reads exactly the same way: the gate hands this
+     * target back to the caller before the handler checks ownership, so describing it would show
+     * somebody else's pickup, destination and fare (audit lead 21).
      */
     case "uber_request": {
       const ride = db.getUberRide(input.quote_id);
-      return ride ? uberRideLine(ride) : `unknown uber quote ${input.quote_id}`;
+      return ride && ride.conversation_id === c ? uberRideLine(ride) : `unknown uber quote ${input.quote_id}`;
     }
     case "x_post": return `post: ${input.text}`;
     case "x_reply": return `reply to ${input.tweet_id}: ${input.text}`;
@@ -9037,6 +9074,10 @@ function confirmTargetFor(name, input, c = null) {
     // The whole plan of a to-do list, by its stored fingerprint: a plan changed since the ask is a
     // different target, so it needs a fresh yes.
     case "todo_approve": return todoApprovalTarget(c, input.list_id);
+    // The event and the exact words, or the repo, the issue and the exact words (audit lead 28).
+    case "event_blast": return blastTarget(c, input);
+    case "github_issue_create": return github.issueTarget(input);
+    case "github_issue_comment": return github.commentTarget(input);
     default: return null;
   }
 }
@@ -9317,6 +9358,15 @@ async function runToolInner(name, rawInput, ctx) {
       if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: stuck, target: targetOf(name, input) });
       return stuck;
     }
+  }
+
+  // The same ordering for a blast (audit lead 28): somebody else's event, an ambiguous name, or an
+  // event that is cancelled or paused is refused as the handler would refuse it, before anybody is
+  // asked to approve a message that could never go out — and a stranger is told nothing new.
+  if (name === "event_blast") {
+    if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
+    const refusal = organizerRefusal(c, input, name);
+    if (refusal) return refusal;
   }
 
   // The same ordering, for the one Drive permission Reason does not ask for at connect time. A
@@ -10661,25 +10711,29 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       // The figures check the reply gets (src/offers.js guardReply), on this message too: before
       // 2026-10-23 a price texted mid-turn skipped it, so a remembered shipping fee could go out as
-      // fact as long as it went by message_send. To their own person it is labelled in place, the
-      // same as the reply. To anybody else nothing is altered in their name: it is refused, and
-      // nothing is sent, until the figure is checked or said to be unverified. A release from the
-      // undo window was checked when it was parked and is not checked again against a later turn.
+      // fact as long as it went by message_send. Nothing is labelled in code (2026-11-05): a figure
+      // nothing backs — not read this turn, not theirs, not remembered — is sent back, unsent, every
+      // time until it is checked or left out (2026-11-07: an unchecked price never goes, hedged or
+      // not), and so is an unchecked coupon or deal. To anybody else, anything the check would change
+      // is refused, never altered in their name. A release from the undo window was checked when it
+      // was parked and is not checked again against a later turn.
       let text = input.text;
-      let figures = null;
       if (!ctx.heldIdemKey) {
-        const g = offers.guardReply(c, input.text, { asks: false, extraSources: [exactly ?? "", input.exactly_as_asked ?? "", purchasesNoteMod.purchaseRecordSource(c)] });
-        if (g.changed) {
-          figures = g.flags;
-          if (!toOwner) {
-            return {
-              ok: false, blocked: "unchecked_figures", flags: g.flags,
-              error: `Not sent — nothing went to ${input.to}. It states figures or deal claims no source this turn backs (${g.flags.map(f => f.figures ? `${f.rule}: ${f.figures.join(", ")}` : f.rule).join("; ")}).`
-                + ` Check them first (offer_check, or the tool that read them), or drop them, or say plainly in the message that they are unverified — then send again.`,
-            };
-          }
-          text = g.text;
+        // The photos they sent this turn count here too (review 11-07): a text quoting a figure off
+        // their screenshot was refused every time.
+        const photos = await offers.photoWords(c);
+        const g = offers.guardReply(c, input.text, { asks: false, extraSources: [exactly ?? "", input.exactly_as_asked ?? "", ...photos.texts], records: [purchasesNoteMod.purchaseRecordSource(c)] });
+        // No `unread` here (review): the turn's photo reader outlives the turn, so a failed read from an
+        // earlier turn would wave an unchecked figure through a send that cannot be taken back.
+        const back = g.recompose ? offers.sendBack(c, g.fixes) : null;
+        if (back || (g.changed && !toOwner)) {
+          return {
+            ok: false, blocked: "unchecked_figures", flags: g.flags,
+            error: `Not sent — nothing went to ${toOwner ? "them" : input.to}. ${back ?? "It carries a line the figures check would change."}`
+              + " Fix that in the message itself, in your own words (never a bracketed tag like \"(unverified)\"), then send again.",
+          };
         }
+        if (g.changed) text = g.text;
       }
 
       const chatId = toOwner || normalizeNumber(thread?.address) === to ? (thread?.chat_id ?? null) : null;
@@ -10739,7 +10793,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!r.ok) return { ...r, note: "Nothing was sent, and nothing more will be. Tell them exactly that, and what it said." };
       return {
         ok: true, sent_to: to, text, delivered: r.delivered,
-        ...(figures ? { figures_labelled: figures, note_on_text: "Figures no source this turn backed went out marked unverified — that is what they read, so do not restate them as checked." } : {}),
         ...(style ? { style } : {}), ...(styleNote ? { style_dropped: styleNote } : {}),
         ...(exactly ? { sent_exactly_as_asked: exactly } : {}),
         note: "This actually went out. You may say you sent it.",
@@ -11141,7 +11194,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Reason never gives payment details by phone. Checked here, on everything the call is
       // allowed to say, before anything is dialled or written down — a card number read onto a
       // recording cannot be taken back, so this fails closed and errs towards refusing.
-      const pay = checkCallForPaymentDetails({ goal: input.goal, facts: input.facts ?? [] });
+      const pay = checkCallForPaymentDetails({
+        goal: input.goal,
+        facts: input.facts ?? [],
+        questions: input.ask ?? [],
+        terms: input.approved_terms ?? [],
+        requirements: input.requirements ?? {},
+      });
       if (!pay.ok) {
         return { ok: false, status: "payment_details_refused", found: pay.found, error: pay.error };
       }
@@ -11219,7 +11278,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         maxHoldSeconds: input.max_hold_minutes ? input.max_hold_minutes * 60 : config.callMaxHoldSeconds,
         // The number a busy place rings back on, so a callback comes home to Reason rather than to a
         // phone nobody answers. See the callback path in src/calls/inbound.js.
-        returnNumber: config.elevenPhoneNumber || "",
+        returnNumber: config.twilioFrom || "",
         language: "en",
       });
       const again = toOwner ? { ok: true, mode: "first" } : safeToRedial(c, { toNumber: to, errandId: input.errand_id ?? null, brief: freshBrief });
@@ -11245,6 +11304,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // An inquiry errand's legs can never book, whatever was asked for: the errand's kind is the
       // ceiling, so `may_book` arriving on a leg of an ask-everywhere errand does not quietly raise it.
       if (errandRow && errandRow.kind !== "booking") brief.approved.book = false;
+      // And the brief that will actually be rendered into the voice prompt, which is not always the
+      // one built from this input: a redial carries the earlier brief's requirements forward, and an
+      // errand leg takes its questions from the errand row.
+      const briefPay = checkBriefForPaymentDetails(brief);
+      if (!briefPay.ok) {
+        return { ok: false, status: "payment_details_refused", found: briefPay.found, error: briefPay.error };
+      }
       const briefOk = requireBrief({ brief });
       if (!briefOk.ok) return { ok: false, status: "brief_refused", error: briefOk.error };
 
@@ -11287,7 +11353,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // A GPT-Live call takes the note into its voice now or when its session starts; a row still
         // "placing" may not have been relabelled gptlive by its place() yet, so it is handed too.
         // Only a person's own GPT-Live call takes words into its voice; an errand's voice says only
-        // what Reason's call turn hands it, and ElevenLabs has no way in.
+        // what Reason's call turn hands it.
         const handed = Number(already.is_owner) === 1 && (already.provider === gptliveProvider || (already.state === "placing" && gptliveForConversation(c)))
           && gptliveTell(already.id, gptliveToldNote({ goal: input.goal, facts: input.facts ?? [] }));
         (ctx.log ?? (() => {}))({ call_place_joined_live: already.id, state: already.state, handed });
@@ -11378,8 +11444,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // guessed at.
         ...(placed.profile ? { profile: placed.profile } : {}),
         ...(placed.ttsModel ? { tts_model: placed.ttsModel } : {}),
-        // The line opens silent and the disclosure is owed to the first person heard (see `place` in
-        // src/calls/elevenlabs.js). Written before anyone can have picked up: the platform has only
+        // The line opens silent and the disclosure is owed to the first person heard (see `dialGptLive` in
+        // src/calls/gptlive.js). Written before anyone can have picked up: the platform has only
         // just been asked to dial.
         ...(placed.openingWaits ? { opening_waits: 1 } : {}),
       });
@@ -12088,7 +12154,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // Everything in here has been used end to end on the live Reason by a person, which is why
         // it can be offered at all, and it is filtered to what works in THIS conversation.
         whats_new: whatsnew.liveFor({ conversationId: c, capabilities }),
-        owner: me.name, city: config.ownerCity,
+        owner: me.name,
+        // The configured city is the operator's, and only the operator's turn may hold it (the
+        // same rule as whoLine in src/agent.js). Anyone else's turn handed it labelled `city` next
+        // to their own name would learn where the operator lives and may take it as their own.
+        ...(me.isOperator ? { city: config.ownerCity } : {}),
         // The thing somebody asking "what can you do" most needs to hear, and the one answer that is
         // not a list of features: HOW to hand work over. It is here because this is the result the
         // model is holding when it writes that reply, and a feature list with no line about messy
@@ -12184,7 +12254,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // whether a figure is in it, and both halves are Reason's own composed text.
         details: `${input.summary ?? ""} ${input.target ?? ""}`,
         gated: ALWAYS_NEEDS_CONFIRMATION.has(asked) || CONDITIONALLY_GATED.has(asked),
-        needsTarget: REACHES_SOMEBODY.has(asked) || SPENDS_MONEY.has(asked),
+        // A permission's yes is pinned to what would be saved (permission_grant hands back use_target).
+        needsTarget: REACHES_SOMEBODY.has(asked) || SPENDS_MONEY.has(asked) || asked === "permission_grant",
         canSpend: SPENDS_MONEY.has(asked),
       });
       if (!carries.ok) return carries;
@@ -12384,6 +12455,29 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
               + ` If they really said it, pass their sentence exactly as they typed it. If they did not, do not save one; ask them in one line whether they want you to stop asking about this.`,
           };
       }
+      // Their yes, last. A standing permission skips every later yes it covers, so saving one is itself
+      // asked about, through the same gate as an email or a text to somebody else (owner 11-07): Reason
+      // reads back what it is about to save and nothing is saved until they say yes. Here rather than
+      // up in needsConfirmation for the reason calendar_change's gate is in its handler: everything
+      // above refuses on its own, and asking somebody to agree to a permission that could never be
+      // saved is a question asked in the wrong order. The yes is pinned to what is saved — the action,
+      // who or what for, the amount, the end date, the limits — so a yes to one is never another.
+      const yesTarget = permissionYesTarget({ scope, tgt, numeric, who, untilAt, caps: input.caps });
+      const gate = trust.authorizeConfirmation({ conversationId: c, action: "permission_grant", confirmationId: input.confirmation_id, target: yesTarget });
+      if (!gate.ok) {
+        const named = numeric
+          ? (who ? ` Name the person as ${String(who).slice(0, 60)}, never the number.` : ` That number is not on record as anyone they know, so say the number and that you do not know whose it is.`)
+          : "";
+        return {
+          ...gate, ...(gate.blocked !== "already_spent" ? { use_target: yesTarget } : {}),
+          error: `${gate.blocked === "needs_confirmation" ? `A standing permission skips later yeses, so saving one needs ${me.name}'s yes first.` : gate.error} Nothing was saved. Read it back to them plainly, in their terms, as one short question: what you would stop asking them about,`
+            + ` for whom or what, and any amount, end date or limits on it.${named} Never give them words to type; ask for a plain yes or no.`
+            + ` Then confirm_request with action permission_grant and target set to use_target exactly, and once confirm_record says granted,`
+            + ` call permission_grant again with the same text, scope and caps and that confirmation_id.`,
+        };
+      }
+      // Spent at the attempt, so one yes saves one permission.
+      trust.spendConfirmation(c, gate.confirmation.id);
       const row = db.grantPermission(c, {
         said,
         action: trust.toolName(scope.action).trim(),
@@ -12932,7 +13026,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ctx.spend?.();
         db.markAgentcardPurchase(input.conversation_id, { status: "outcome_unknown", confirmationId: ctx.confirmationId ?? null });
         trust.noteSpend({ conversationId: c, cents, what: `${line} (OUTCOME UNKNOWN)`, site: row.merchant, confirmationId: ctx.confirmationId ?? null });
-        trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), why: out.error, cents });
+        trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input, c), why: out.error, cents });
         // Read, never resend: GET /buy/conversations/{id}. An order it lists is recorded so the cart
         // cannot be bought again; anything it cannot see stays unknown and is said to be.
         const known = await reconcilePurchase(c, input.conversation_id, userToken, "");
@@ -13103,7 +13197,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (out.status === "declined" && out.charge_status === "unknown") {
         ctx.spend?.();
         db.markAgentcardPurchase(input.conversation_id, { status: "outcome_unknown", declineCode: out.decline_code, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null });
-        trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), why: `declined with charge_status unknown (${out.decline_code || "no code"})`, cents });
+        trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input, c), why: `declined with charge_status unknown (${out.decline_code || "no code"})`, cents });
         const known = await reconcilePurchase(c, input.conversation_id, userToken, out.order_id || "");
         return {
           ok: false, blocked: "charge_unknown", decline_code: out.decline_code || undefined, cart_line: line, reconcile: known.line,
@@ -13115,7 +13209,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (out.status === "declined") {
         ctx.spend?.();
         db.markAgentcardPurchase(input.conversation_id, { status: "declined", declineCode: out.decline_code, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null });
-        trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), confirmationId: ctx.confirmationId ?? null });
+        trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input, c), confirmationId: ctx.confirmationId ?? null });
         const handoff = handoffOf(c, { buyConversationId: input.conversation_id, why: agentcard.declineLine(out.decline_code) });
         return {
           ok: false, blocked: "declined", decline_code: out.decline_code, cart_line: line,
@@ -13153,7 +13247,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Placed. Past here somebody's money has moved, so the yes is spent, the spend is counted
       // against their caps, and any earlier unknown outcome on this action has its answer.
       ctx.spend?.();
-      trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), confirmationId: ctx.confirmationId ?? null });
+      trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input, c), confirmationId: ctx.confirmationId ?? null });
       db.markAgentcardPurchase(input.conversation_id, {
         status: out.status === "partially_placed" ? "partially_placed" : "placed",
         orderId: out.order_id, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null,
@@ -13559,7 +13653,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: (row.price_cents == null
           ? `The page carries no machine-readable price, so the price is UNVERIFIED — do not quote one from it as checked.`
           : `Verified from the page just now: ${view.price}.`)
-          + (view.unverified.length ? ` Not stated on the page, so say "unverified" (never guess): ${view.unverified.join(", ")}.` : "")
+          + (view.unverified.length ? ` Not stated on the page, so never guess them; if one matters, say once in plain words that the page doesn't say (never a "(unverified)" tag): ${view.unverified.join(", ")}.` : "")
           + ` If they want it, purchase with offer_id ${row.id} — the cart that comes back is checked against this exact product.`,
       }, { source: url, text: `${rec.product} ${rec.seller} ${rec.stock} ${rec.shipping_time} ${rec.return_terms}` });
     }
@@ -14392,7 +14486,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (!est.ok) { options.push({ product, error: est.error }); continue; }
         const quote = uber.quoteView(est.body);
         if (!quote) { options.push({ product, error: "Uber quoted nothing for this product." }); continue; }
-        const quoteId = `q_${Date.now()}_${p.product_id.slice(0, 8)}`;
+        // Random, not clock + product prefix: quote ids are one namespace across every thread, and a
+        // guessable one is a way to aim at somebody else's row (audit lead 21).
+        const quoteId = `q_${randomUUID()}`;
         db.recordUberQuote({
           conversationId: c, quoteId,
           productId: p.product_id, productName: product.name,
@@ -14694,8 +14790,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     // ---------- github ----------
-    // None of these go through the confirm gate except github_pr_merge: reads and creates touch
-    // only this person's own repos, and the one irreversible act — merging — is gated.
+    // Reads need no yes. Writes do: an issue or a comment is published under their name, often on
+    // a public repo (audit lead 28), and merging is irreversible. All three are in
+    // ALWAYS_NEEDS_CONFIRMATION, so by the time a case below runs the yes has been checked.
     case "github_connect": {
       const out = github.authorizeUrl(c, input.scopes?.length ? { scopes: input.scopes } : {});
       if (!out.ok) return out;

@@ -24,6 +24,7 @@
 import { config, clock, callbackUrl, stamp } from "./config.js";
 import { renderConnected } from "./pages/render.js";
 import * as db from "./db.js";
+import { createHash } from "node:crypto";
 
 export const PROVIDER = "github";
 export const REDIRECT_PATH = "/github/callback";
@@ -33,6 +34,23 @@ export const SCOPES = {
   "read:user": "see which GitHub account this is",
 };
 export const SCOPE_LIST = Object.keys(SCOPES);
+
+/**
+ * What a yes to a GitHub write covers (audit lead 28): the repo, the issue, and the exact words.
+ *
+ * An issue or a comment goes out under their name, often on a public repo, so it is gated like an
+ * email. The words are pinned by a hash rather than spelled out — a body can be 65,000 characters,
+ * a confirmation target is short and compared case-folded — with a preview so the record reads.
+ * Labels and assignees are in the hash too: assigning somebody notifies them.
+ */
+const short = (t) => { const s = String(t ?? "").trim(); return s.length > 120 ? `${s.slice(0, 120)}…` : s; };
+const fp = (...parts) => createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 16);
+export function issueTarget(input) {
+  return `issue on ${input.repo}: "${short(input.title)}" [${fp(input.title, input.body ?? "", input.labels ?? [], input.assignees ?? [])}]`;
+}
+export function commentTarget(input) {
+  return `comment on ${input.repo}#${input.issue_number}: "${short(input.body)}" [${fp(input.body)}]`;
+}
 
 export const TOOL_SCOPES = {
   github_repos: [],
