@@ -196,11 +196,19 @@ test("4. a non-urgent incident is held for the digest; an outage-shaped one is s
   incidents.stop();
 });
 
+test("4. somebody opting out turns Texts out amber, not red — never a live text about another person (review 11-06)", async () => {
+  const now = clock.now();
+  db.db.prepare(`INSERT INTO outbox (idem_key, conversation_id, channel, address, body, state, attempts, last_error, last_error_key, created_at, updated_at, failed_at)
+    VALUES ('fg-optout', 'dm:+15550109999', 'sendblue', '+15550109999', 'hi', 'failed', 1, 'opted out', 'OPTED_OUT', ?, ?, ?)`).run(now, now, now);
+  const row = (await ops.runChecks({ probe: async () => ({ ok: true }) })).checks.find(c => c.id === "outbox");
+  assert.equal(row.state, "warn");
+  assert.equal(digest.checkIsUrgent(row), false);
+  db.db.exec("DELETE FROM outbox WHERE idem_key = 'fg-optout'");
+});
+
 test("4. which status checks are emergencies: Reason down, a provider down, a spending cap — nothing else", () => {
   assert.equal(digest.checkIsUrgent({ id: "process", group: "alive", state: "bad" }), true);
   assert.equal(digest.checkIsUrgent({ id: "outbox", group: "alive", state: "warn" }), false);
-  // Red too: an opted-out person's text failing turns it bad, and that is never a live text (review 11-06).
-  assert.equal(digest.checkIsUrgent({ id: "outbox", group: "alive", state: "bad" }), false);
   assert.equal(digest.checkIsUrgent({ id: "provider:openai", group: "services", state: "warn" }), true);
   assert.equal(digest.checkIsUrgent({ id: "spend", group: "money", state: "warn" }), true);
   assert.equal(digest.checkIsUrgent({ id: "api_spend", group: "money", state: "warn" }), true);

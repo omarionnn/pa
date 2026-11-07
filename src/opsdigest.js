@@ -122,9 +122,6 @@ const CAP_CHECKS = new Set(["spend", "api_spend", "api_call_cap", "api_fallback"
 export function checkIsUrgent(check) {
   if (!check) return false;
   if (CAP_CHECKS.has(check.id)) return true;
-  // Texts out going red is somebody's text failing — /ops and the digest, never a live text. A
-  // channel that is down is the "messaging" incident (src/outbox.js raiseSendFailure).
-  if (check.id === "outbox") return false;
   // The owner's own card link dead: buying is down for him (somebody else's is never texted at all).
   if (check.id === "card_connection") return check.state === "bad";
   // A provider Reason runs on that has kept failing past the alert delay is a service down.

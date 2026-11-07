@@ -327,11 +327,14 @@ function aliveChecks({ runtime, router, now }) {
   const ob = db.db.prepare(`SELECT
       COALESCE(SUM(CASE WHEN state = 'sent' AND sent_at >= ? THEN 1 ELSE 0 END), 0) AS sent,
       COALESCE(SUM(CASE WHEN state = 'failed' AND failed_at >= ? THEN 1 ELSE 0 END), 0) AS failed,
+      COALESCE(SUM(CASE WHEN state = 'failed' AND failed_at >= ? AND (last_error_key IS NULL OR (last_error_key NOT IN ('OPTED_OUT','unverified_contact_inferred') AND last_error_key NOT LIKE 'PRE_REPLY_%')) THEN 1 ELSE 0 END), 0) AS ours,
       COALESCE(SUM(CASE WHEN state IN ('queued','unknown') AND attempts > 0 THEN 1 ELSE 0 END), 0) AS retrying,
       COALESCE(SUM(CASE WHEN state IN ('queued','unknown') THEN 1 ELSE 0 END), 0) AS waiting
-    FROM outbox`).get(now - DAY, wo.since);
+    FROM outbox`).get(now - DAY, wo.since, wo.since);
   const lastFail = db.db.prepare("SELECT last_error FROM outbox WHERE state = 'failed' AND failed_at >= ? ORDER BY failed_at DESC LIMIT 1").get(wo.since);
-  out.push(check("outbox", "alive", "Texts out", ob.failed ? "bad" : ob.retrying ? "warn" : "ok",
+  // Red only for a failure that is Reason's: a person who opted out or never texted the line is on
+  // the page as amber — never a live text to the owner about somebody else (review 11-06).
+  out.push(check("outbox", "alive", "Texts out", ob.ours ? "bad" : ob.failed || ob.retrying ? "warn" : "ok",
     ob.failed ? `${n(ob.failed, "text")} failed ${wo.words ?? "in the last day"}${lastFail?.last_error ? ` — ${trim(digest.scrub(lastFail.last_error), 90)}` : ""}`
       : ob.retrying ? `${n(ob.retrying, "text")} retrying`
         : `${ob.sent} sent in the last day${ob.waiting ? ` · ${ob.waiting} waiting` : ""}`));
