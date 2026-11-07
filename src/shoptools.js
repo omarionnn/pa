@@ -171,7 +171,7 @@ const FIT_SCHEMA = {
   properties: {
     verdict: { type: "string", enum: ["fits", "mismatch", "unclear"] },
     need: { type: "string", description: "What they said it has to be, in a few words (empty if nothing)." },
-    why: { type: "string", description: "For a mismatch: how the item differs from that, in a few plain words." },
+    why: { type: "string", description: "For a mismatch: one short sentence on how the item differs from that." },
   },
   required: ["verdict", "need", "why"],
   additionalProperties: false,
@@ -195,7 +195,7 @@ export async function checkFit({ texts = [], need = "", item = "", what = "" }, 
   } catch { return { verdict: "unclear", error: true }; }
   const v = out?.value;
   if (!v || !["fits", "mismatch", "unclear"].includes(v.verdict)) return { verdict: "unclear", error: true };
-  const clip = (x) => String(x ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
+  const clip = (x) => String(x ?? "").replace(/\s+/g, " ").trim().slice(0, 240);
   return { verdict: v.verdict, need: clip(v.need), why: clip(v.why) };
 }
 
@@ -209,7 +209,7 @@ export async function runShopTool(name, input, { conversationId: c, confirmation
       log({ shop_fit: fit.verdict, ...(fit.skipped ? { skipped: true } : {}), ...(fit.error ? { error: true } : {}) });
       if (fit.verdict === "mismatch") {
         return { ok: false, blocked: "variant_mismatch", need: fit.need, why: fit.why,
-          say: `Not started: they said ${fit.need || "what they need"}, and ${input.item} ${fit.why || "is a different variant"}. Find the variant that matches and start that one instead; if you can't tell which they want, ask them in one line. Only if they then say they want this exact one, call store_checkout again with variant_confirmed: true. Nothing was charged.` };
+          say: `Not started: they said ${fit.need || "what they need"}. ${fit.why || `${input.item} is a different variant.`} Find the variant that matches and start that one instead; if you can't tell which they want, ask them in one line. Only if they then say they want this exact one, call store_checkout again with variant_confirmed: true. Nothing was charged.` };
       }
     }
     shop.noteStore({ store, name: input.store, url: input.start_url });

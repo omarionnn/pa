@@ -216,12 +216,12 @@ const posts = () => calls.filter((c) => c.path === "/api/unstable/agent-checkout
 
 test("a variant that doesn't fit what they said is not started: the model hears what they said and how this differs", async () => {
   let asked = null;
-  shoptools._setFitCheck(async (args) => { asked = args; return { value: { verdict: "mismatch", need: "dry skin", why: "is the Foaming one, made for normal to oily skin" } }; });
+  shoptools._setFitCheck(async (args) => { asked = args; return { value: { verdict: "mismatch", need: "dry skin", why: "The Foaming cleanser is made for normal to oily skin." } }; });
   try {
     const out = await shoptools.runShopTool("store_checkout", FOAMING, { conversationId: OMARI, messages: said11 });
     assert.equal(out.ok, false);
     assert.equal(out.blocked, "variant_mismatch");
-    assert.match(out.say, /^Not started: they said dry skin, and CeraVe Foaming Facial Cleanser 16 oz is the Foaming one, made for normal to oily skin\./);
+    assert.match(out.say, /^Not started: they said dry skin\. The Foaming cleanser is made for normal to oily skin\. Find the variant/);
     assert.match(out.say, /variant_confirmed: true/);
     assert.equal(posts(), 0, "nothing reached the store");
     // Their own words and the noted need went to the model; its own lines did not.
