@@ -11865,12 +11865,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       // The rest act on an existing account.
-      const row = db.listAccountsOfPeople().find(a => normalizeNumber(a.address) === number && !a.is_operator);
+      const rows = db.listAccountsOfPeople().filter(a => normalizeNumber(a.address) === number && !a.is_operator);
+      const row = rows[0];
       if (!row) return { ok: false, error: `${number} does not have a Reason, so there is nothing to change. admin_requests shows who is waiting.` };
 
       if (name === "admin_pause" || name === "admin_resume" || name === "admin_remove") {
         const state = name === "admin_pause" ? "paused" : name === "admin_resume" ? "active" : "removed";
-        db.setAccountState(row.conversation_id, state);
+        // Every line this number has a Reason on: the note says Reason stopped answering the NUMBER,
+        // and a resume has to clear a stop on any of them (accounts.accountState reads them all).
+        for (const r of rows) db.setAccountState(r.conversation_id, state);
         return {
           ok: true, number, state,
           note: state === "active"

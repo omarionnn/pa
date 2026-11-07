@@ -59,6 +59,9 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
 
   // Blocked is blocked: no line, no request, no announcement, nothing.
   if (db.isBlocked(addr)) return { action: "ignore", reason: "blocked" };
+  // Paused or removed on another line is not unknown: the master already decided about this number.
+  const stopped = db.stoppedStateOf(addr);
+  if (stopped) return { action: "ignore", reason: stopped };
 
   // Auto-admit: anyone who has this number was given it by the owner. They get their own
   // Reason immediately — no waiting room, no approval queue. The model's onboarding prompt

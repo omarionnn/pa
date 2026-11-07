@@ -3645,6 +3645,21 @@ export function listBlocked() {
 }
 
 // ---------- an account's state ----------
+/**
+ * Is this NUMBER stopped, on any line? "removed" outranks "paused"; null when no row is either.
+ *
+ * A pause or a removal is the master's word about a person, and a person is a number: Reason can
+ * have two texting lines (Sendblue and Linq), and a stop written on one (channel, number) row must
+ * not be walked round by texting the other line. The same reach as the block list (isBlocked).
+ */
+export function stoppedStateOf(address) {
+  const addr = String(address ?? "").trim();
+  if (!addr) return null;
+  const rows = db.prepare("SELECT state FROM accounts WHERE address = ? AND is_operator = 0 AND state IN ('paused', 'removed')").all(addr);
+  if (rows.some(r => r.state === "removed")) return "removed";
+  return rows.length ? "paused" : null;
+}
+
 export function setAccountState(conversationId, state) {
   db.prepare("UPDATE accounts SET state = ? WHERE conversation_id = ?").run(state, conversationId);
   return getAccount(conversationId);
@@ -11808,6 +11823,9 @@ export function redeemInvite({ claimCode, channel, address, name = "" }) {
     if (!inv) return fail("not_found");
     if (inv.state !== "unused") return fail(inv.state);
     if (getAccount(conversationId) || accountByAddress(channel, address)) return fail("already_member");
+    // Paused or removed on another line is still somebody Reason has an account for: an invite is
+    // not a way back in round the master's stop (stoppedStateOf).
+    if (stoppedStateOf(address)) return fail("already_member");
     const now = clock.now();
     const won = db.prepare("UPDATE invites SET state = 'redeemed', redeemed_by = ?, redeemed_at = ? WHERE id = ? AND state = 'unused'")
       .run(conversationId, now, inv.id);
