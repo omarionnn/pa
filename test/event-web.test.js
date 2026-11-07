@@ -19,6 +19,7 @@ process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_BURST_QUIET_MS = "0";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
 process.env.REASON_PAGES_URL = "https://files.example.test";
+process.env.REASON_CADDY_SECRET = "caddy-test"; // what Caddy adds beside its marker (src/pages/siteproxy.js caddyClientIp)
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_EVENTS = "owner";
 delete process.env.REASON_AUTO_ADMIT;
@@ -77,7 +78,7 @@ function ownerEvent(over = {}) {
 const form = (o) => new URLSearchParams(o).toString();
 async function req(h, ev, { sub = null, method = "GET", body = null, query = {}, cookie = "", ip = "203.0.113.9" } = {}) {
   return await eventRequestFor({
-    publicId: ev.public_id, sub, method, query, headers: { cookie, "x-forwarded-for": ip, "x-files-domain": "true" }, remoteAddress: "127.0.0.1",
+    publicId: ev.public_id, sub, method, query, headers: { cookie, "x-forwarded-for": ip, "x-files-domain": "true", "x-reason-caddy": "caddy-test" }, remoteAddress: "127.0.0.1",
     readBody: async () => body, runtime: h.runtime, router: h.router,
   });
 }
@@ -324,8 +325,8 @@ test("a forged forwarding header never buys a fresh count: only Caddy's X-Forwar
   const h = harness();
   const ev = ownerEvent();
   const guess = (headers, pw) => eventRequestFor({ publicId: ev.public_id, sub: "join", method: "POST", headers, remoteAddress: "127.0.0.1", readBody: async () => form({ password: pw, display_name: "x" }), router: h.router });
-  for (let i = 0; i < 4; i++) await guess({ "x-files-domain": "true", "x-forwarded-for": "203.0.113.77", "x-nf-client-connection-ip": `10.0.0.${i}` }, `bad${i}xx`);
-  const held = await guess({ "x-files-domain": "true", "x-forwarded-for": "203.0.113.77", "x-nf-client-connection-ip": "10.9.9.9" }, "pumpkin");
+  for (let i = 0; i < 4; i++) await guess({ "x-files-domain": "true", "x-reason-caddy": "caddy-test", "x-forwarded-for": "203.0.113.77", "x-nf-client-connection-ip": `10.0.0.${i}` }, `bad${i}xx`);
+  const held = await guess({ "x-files-domain": "true", "x-reason-caddy": "caddy-test", "x-forwarded-for": "203.0.113.77", "x-nf-client-connection-ip": "10.9.9.9" }, "pumpkin");
   assert.equal(held.status, 429, "the Netlify header is ignored on the files domain");
   const actors = db.db.prepare("SELECT DISTINCT actor FROM event_join_attempts WHERE actor LIKE 'ip:%'").all().map(r => r.actor);
   assert.deepEqual(actors, ["ip:203.0.113.77"]);
@@ -347,7 +348,7 @@ test("past an event's ceiling every browser waits, whatever address it claims; a
   const h = harness();
   const ev = ownerEvent();
   for (let i = 0; i < events.JOIN_LIMITS.perEventHour; i++) db.recordJoinAttempt({ eventId: ev.id, actor: `event:${ev.id}`, route: "web", ok: false });
-  const fresh = await eventRequestFor({ publicId: ev.public_id, sub: "join", method: "POST", headers: { "x-files-domain": "true", "x-forwarded-for": "198.18.0.99" }, remoteAddress: "127.0.0.1", readBody: async () => form({ password: "pumpkin", display_name: "x" }), router: h.router });
+  const fresh = await eventRequestFor({ publicId: ev.public_id, sub: "join", method: "POST", headers: { "x-files-domain": "true", "x-reason-caddy": "caddy-test", "x-forwarded-for": "198.18.0.99" }, remoteAddress: "127.0.0.1", readBody: async () => form({ password: "pumpkin", display_name: "x" }), router: h.router });
   assert.equal(fresh.status, 429, "a never-seen address is held too");
   assert.equal((await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" })).ok, true, "by text, a real guest still gets in");
 });

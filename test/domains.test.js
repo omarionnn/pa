@@ -29,6 +29,7 @@ process.env.REASON_BURST_QUIET_MS = "0";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
 process.env.REASON_PAGES_URL = "https://files.heyreason.test";
+process.env.REASON_CADDY_SECRET = "caddy-test"; // what Caddy adds beside its marker (src/pages/siteproxy.js caddyClientIp)
 process.env.REASON_EVENTS_URL = "https://events.heyreason.test/";
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_SITE_URL = "https://heyreason.test";
@@ -81,9 +82,9 @@ function sign({ secret = SECRET, exp = Math.floor(clock.now() / 1000) + 60, iss 
   return `${h}.${p}.${createHmac("sha256", secret).update(`${h}.${p}`).digest("base64url")}`;
 }
 /** A request as Caddy hands it on from Netlify: socket 127.0.0.1, XFF = Netlify's egress, marked by Caddy. */
-const viaNetlify = (visitor, extra = {}) => ({ host: "files.heyreason.test", "x-files-domain": "true", "x-forwarded-for": NETLIFY, "x-nf-sign": sign(), "x-nf-client-connection-ip": visitor, ...extra });
+const viaNetlify = (visitor, extra = {}) => ({ host: "files.heyreason.test", "x-files-domain": "true", "x-reason-caddy": "caddy-test", "x-forwarded-for": NETLIFY, "x-nf-sign": sign(), "x-nf-client-connection-ip": visitor, ...extra });
 /** A browser hitting files.heyreason.test directly (Caddy's XFF = its real address), forging Netlify's header. */
-const direct = (real, forged, extra = {}) => ({ host: "files.heyreason.test", "x-files-domain": "true", "x-forwarded-for": real, "x-nf-client-connection-ip": forged, ...extra });
+const direct = (real, forged, extra = {}) => ({ host: "files.heyreason.test", "x-files-domain": "true", "x-reason-caddy": "caddy-test", "x-forwarded-for": real, "x-nf-client-connection-ip": forged, ...extra });
 
 // ---------- the signature ----------
 

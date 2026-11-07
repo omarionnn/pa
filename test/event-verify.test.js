@@ -18,6 +18,7 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
 process.env.REASON_PAGES_URL = "https://files.example.test";
+process.env.REASON_CADDY_SECRET = "caddy-test"; // what Caddy adds beside its marker (src/pages/siteproxy.js caddyClientIp)
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_EVENTS = "on";
 
@@ -50,7 +51,7 @@ function rig() {
   const logs = [];
   const runtime = { async _tell(conversationId, text) { texts.push({ conversationId, text }); return { ok: true }; } };
   const call = (ev, { sub = null, method = "GET", body = null, query = {}, cookie = "", ip = "203.0.113.7" } = {}) => eventPageRequest({
-    publicId: ev.public_id, sub, method, query, headers: { cookie, "x-files-domain": "true", "x-forwarded-for": ip }, remoteAddress: "127.0.0.1",
+    publicId: ev.public_id, sub, method, query, headers: { cookie, "x-files-domain": "true", "x-reason-caddy": "caddy-test", "x-forwarded-for": ip }, remoteAddress: "127.0.0.1",
     readBody: async () => body, runtime, log: (e) => logs.push(e),
   });
   const codeFor = (c) => /code is ([0-9]{6}),/.exec([...texts].reverse().find(t => t.conversationId === c)?.text ?? "")?.[1] ?? null;
@@ -343,7 +344,7 @@ test("two taps on \"Text me a code\" in the same millisecond: the code that arri
     seen.add(idempotencyKey); texts.push({ conversationId, text }); return { ok: true };
   } };
   const call = (ev, o) => eventPageRequest({
-    publicId: ev.public_id, sub: "signin", method: "POST", query: {}, headers: { "x-files-domain": "true", "x-forwarded-for": "203.0.113.7" },
+    publicId: ev.public_id, sub: "signin", method: "POST", query: {}, headers: { "x-files-domain": "true", "x-reason-caddy": "caddy-test", "x-forwarded-for": "203.0.113.7" },
     remoteAddress: "127.0.0.1", readBody: async () => o.body, runtime, log: () => {},
   });
   const ev = party();

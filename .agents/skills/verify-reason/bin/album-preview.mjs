@@ -21,6 +21,7 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
 process.env.REASON_PAGES_URL = "https://files.example.test";
+process.env.REASON_CADDY_SECRET = process.env.REASON_CADDY_SECRET || "verify-caddy"; // what Caddy adds beside its marker
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_EVENTS = "on";
 process.env.REASON_EVENT_ALBUMS = "on";
@@ -89,7 +90,7 @@ async function serve(route, cookie) {
   if (m[2] === "cover.jpg") return route.fulfill({ status: 200, contentType: "image/jpeg", body: cover });
   const out = await eventRequestFor({
     publicId: m[1], sub: m[2] || null, method: "GET", query: Object.fromEntries(url.searchParams),
-    headers: { cookie, "x-forwarded-for": "203.0.113.9", "x-files-domain": "true" }, remoteAddress: "127.0.0.1", readBody: async () => null, runtime: null, router: null,
+    headers: { cookie, "x-forwarded-for": "203.0.113.9", "x-files-domain": "true", "x-reason-caddy": process.env.REASON_CADDY_SECRET }, remoteAddress: "127.0.0.1", readBody: async () => null, runtime: null, router: null,
   });
   const headers = Object.fromEntries(Object.entries(out.headers).map(([k, v]) => [k, String(v)]));
   return route.fulfill({ status: out.status, headers, body: Buffer.isBuffer(out.body) ? out.body : Buffer.from(String(out.body)) });

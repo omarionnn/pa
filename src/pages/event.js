@@ -24,7 +24,7 @@
 // If outbound texting ever becomes possible, `finishStep` is the one place to swap for a code sent
 // to them.
 import { readFileSync } from "node:fs";
-import { siteClientIp } from "./siteproxy.js";
+import { siteClientIp, caddyClientIp } from "./siteproxy.js";
 import * as db from "../db.js";
 import * as events from "../events.js";
 import * as accounts from "../accounts.js";
@@ -71,22 +71,22 @@ export function sessionAccount(headers) {
 }
 
 /**
- * The address a browser's wrong passwords are counted against. The forwarded address only when the
- * request came through the proxy on this machine (Caddy sets it, and replaces whatever the browser
- * sent); otherwise the socket's own, so nobody can pick a fresh address per guess by writing a header.
+ * The address a browser's wrong passwords and code requests are counted against. A visitor's own
+ * address only when something that cannot be forged vouches for it; otherwise the socket's own, one
+ * count every unvouched browser shares, so nobody can pick a fresh address per guess — or fill
+ * somebody else's — by writing a header.
  */
 export function eventActor(headers = {}, remoteAddress = "") {
   // Through the website's proxy (heyreason.com/web): the visitor's address Netlify signed for, and
   // only with a valid signature (src/pages/siteproxy.js). A forged header without one counts for nothing.
   const site = siteClientIp(headers);
   if (site) return `ip:${site.slice(0, 64)}`;
-  // Through Caddy on the files domain (it marks those requests, and replaces any X-Forwarded-For a
-  // browser sent with the real address): the forwarded address, and only that header — never the
-  // Netlify one, which nothing on that path strips. Anything else: the socket's own address.
-  const local = /^(127\.|::1$|::ffff:127\.)/.test(String(remoteAddress));
-  const viaCaddy = local && String(headers["x-files-domain"] ?? "") === "true";
-  const xff = viaCaddy ? String(headers["x-forwarded-for"] ?? "").split(",")[0].trim() : "";
-  return `ip:${(xff || String(remoteAddress || "unknown")).slice(0, 64)}`;
+  // Through Caddy (events., files.): Caddy's X-Forwarded-For, only with the secret Caddy adds — the
+  // X-Files-Domain marker alone is writable by anyone on the Funnel, which lands on the same port
+  // from the same loopback address. Never the Netlify header, which nothing on that path strips.
+  const caddy = caddyClientIp(headers, remoteAddress);
+  if (caddy) return `ip:${caddy.slice(0, 64)}`;
+  return `ip:${String(remoteAddress || "unknown").slice(0, 64)}`;
 }
 
 /**

@@ -11,6 +11,7 @@
 // step is a request a browser would make, or the text a phone would receive.
 process.env.REASON_WEB = process.env.REASON_WEB || "on";
 process.env.REASON_PAGES_URL = process.env.REASON_PAGES_URL || "https://files.example.test";
+process.env.REASON_CADDY_SECRET = process.env.REASON_CADDY_SECRET || "verify-caddy"; // what Caddy adds beside its marker
 process.env.REASON_SITE_URL = process.env.REASON_SITE_URL || "https://heyreason.example.test";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_BURST_QUIET_MS = "0";
@@ -66,7 +67,7 @@ let fails = 0;
 const step = (name, ok, detail = "") => { if (!ok) fails++; console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`); };
 const form = (o) => new URLSearchParams(o).toString();
 const req = ({ sub = null, method = "GET", query = {}, body = null, cookie = "", origin = "https://heyreason.example.test" } = {}) =>
-  webRequestFor({ sub, method, query, headers: { host: "heyreason.example.test", cookie, origin, "x-forwarded-for": "203.0.113.9", "x-files-domain": "true" }, remoteAddress: "127.0.0.1", readBody: async () => body, runtime, router });
+  webRequestFor({ sub, method, query, headers: { host: "heyreason.example.test", cookie, origin, "x-forwarded-for": "203.0.113.9", "x-files-domain": "true", "x-reason-caddy": process.env.REASON_CADDY_SECRET }, remoteAddress: "127.0.0.1", readBody: async () => body, runtime, router });
 const cookies = (out) => [].concat(out.headers["Set-Cookie"] ?? []);
 const cookieValue = (out, name) => cookies(out).map(c => new RegExp(`^${name}=([^;]*)`).exec(c)?.[1]).find(Boolean) ?? null;
 const until = async (pred, ms = 2000) => { const end = Date.now() + ms; while (!pred() && Date.now() < end) await new Promise(r => setTimeout(r, 10)); return pred(); };

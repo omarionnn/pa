@@ -38,6 +38,26 @@ export function siteClientIp(headers = {}) {
   return /^[0-9A-Fa-f:.]{2,45}$/.test(ip) ? ip : "";
 }
 
+/**
+ * The visitor's address as Caddy on this machine saw it, or "" when the request cannot prove it came
+ * through Caddy. Caddy marks the hosts it proxies here (`X-Files-Domain: true`) and replaces any
+ * X-Forwarded-For a browser sent; but the Tailscale Funnel reaches the same port from the same
+ * loopback address and passes a browser's headers through, so anyone can write the marker. Only the
+ * secret Caddy adds (`X-Reason-Caddy`, config.caddySecret) says the request is Caddy's — as only
+ * Netlify's signature says a request is the website's.
+ */
+export function caddyClientIp(headers = {}, remoteAddress = "") {
+  const secret = config.caddySecret;
+  if (!secret) return "";
+  if (!/^(127\.|::1$|::ffff:127\.)/.test(String(remoteAddress))) return "";
+  if (String(headers["x-files-domain"] ?? "") !== "true") return "";
+  // Both sides hashed to one length, so the comparison takes the same time whatever was sent.
+  const digest = (s) => createHmac("sha256", "reason-caddy").update(String(s)).digest();
+  if (!timingSafeEqual(digest(headers["x-reason-caddy"] ?? ""), digest(secret))) return "";
+  const ip = String(headers["x-forwarded-for"] ?? "").split(",")[0].trim();
+  return /^[0-9A-Fa-f:.]{2,45}$/.test(ip) ? ip : "";
+}
+
 const hostname = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ""; } };
 const requestHost = (headers) => String(headers.host ?? "").toLowerCase().replace(/:\d+$/, "");
 

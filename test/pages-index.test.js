@@ -27,6 +27,7 @@ process.env.REASON_BURST_QUIET_MS = "0";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
 process.env.REASON_PAGES_URL = "https://files.heyreason.test";
+process.env.REASON_CADDY_SECRET = "caddy-test"; // what Caddy adds beside its marker (src/pages/siteproxy.js caddyClientIp)
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_SITE_URL = "https://heyreason.test";
 process.env.REASON_WEB = "on";
@@ -81,7 +82,7 @@ function harness() {
 }
 const form = (o) => new URLSearchParams(o).toString();
 async function req(h, { sub = null, method = "GET", query = {}, body = null, cookie = "" } = {}) {
-  const headers = { host: "heyreason.test", cookie, origin: "https://heyreason.test", "x-forwarded-for": "203.0.113.9", "x-files-domain": "true" };
+  const headers = { host: "heyreason.test", cookie, origin: "https://heyreason.test", "x-forwarded-for": "203.0.113.9", "x-files-domain": "true", "x-reason-caddy": "caddy-test" };
   return await webRequestFor({ sub, method, query, headers, remoteAddress: "127.0.0.1", readBody: async () => body, runtime: h.runtime, router: h.router, log: (e) => h.logs.push(e) });
 }
 const setCookies = (out) => [].concat(out.headers["Set-Cookie"] ?? []);
