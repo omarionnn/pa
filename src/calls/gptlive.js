@@ -38,6 +38,7 @@ import { CallProvider, announcementFor, callRulesFor } from "./provider.js";
 import { briefLines } from "./brief.js";
 import { recordingNoticeFor } from "./consent.js";
 import * as ambience from "./ambience.js";
+import * as opener from "./opener.js";
 import { openingLineFor, recordingNoteFor, whoseCallIsThis, strangerIntake, overCallCap } from "./inbound.js";
 import * as strangerCall from "./stranger.js";
 import * as strangerCalls from "../strangercalls.js";
@@ -2232,6 +2233,10 @@ export async function dialGptLive(args, { fetchImpl = null } = {}) {
     // The disclosure it will open with, naming Reason (the turn says it verbatim off the row).
     const ann = lineAnnouncement(row.announcement || args.announcement);
     if (ann && ann !== row.announcement) db.updateCall(row.conversation_id, row.id, { announcement: ann });
+  }
+  // The pickup opener, made while it rings (./opener.js): never waited on here.
+  if (thirdParty && opener.openerFor(row)) {
+    try { void opener.prepare(row, { notice: recordingNoticeFor(row.to_number).notice, log: args?.log ?? (() => {}) }); } catch { /* the call opens the old way */ }
   }
   // No warm-up while it rings (2026-10-31): calls 54–55 with it were "confused and incoherent".
   // The session opens when Twilio's stream starts, as on call 53. `prewarm` stays for a proven rework.
