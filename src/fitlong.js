@@ -14,9 +14,11 @@
 
 /** Field names whose content is Reason's own description, safe to shorten. */
 export const SOFT_TEXT = new Set([
-  "note", "notes", "said", "summary", "detail", "help", "why", "why_now", "urgent_why", "what",
+  "note", "notes", "said", "summary", "help", "why", "why_now", "urgent_why",
   "their_words", "route_description", "inference", "tradeoff", "turned_down", "source_note",
 ]);
+// Never `what` or `detail`: store_checkout's `what` is the instruction the store's agent buys from, and
+// a card's `detail` is what tells two options apart (src/choicecards.js). A cut one is a different order.
 
 /** `text` cut to at most `max` characters, at a word boundary, ending in an ellipsis. */
 export function shortenAt(text, max) {

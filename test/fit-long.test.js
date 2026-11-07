@@ -100,3 +100,9 @@ test("the kept line on every turn shows each reminder's first 300 characters", a
   assert.ok(shown.length <= 300 && shown.endsWith("…"));
   assert.equal(db.listTimers(CONV)[0].note, note, "the row keeps every word");
 });
+
+test("a checkout's instruction and a card's detail are never cut: they say what is bought and which one", async () => {
+  const { SOFT_TEXT } = await import("../src/fitlong.js");
+  assert.equal(SOFT_TEXT.has("what"), false);
+  assert.equal(SOFT_TEXT.has("detail"), false);
+});
