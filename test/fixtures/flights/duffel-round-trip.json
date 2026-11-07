@@ -1,0 +1,53 @@
+{
+  "data": {
+    "id": "orq_0000AdSxXtR0nX4oJ2nV3E",
+    "live_mode": false,
+    "cabin_class": "economy",
+    "slices": [
+      { "origin": { "iata_code": "JFK" }, "destination": { "iata_code": "MIA" }, "departure_date": "2026-12-10" },
+      { "origin": { "iata_code": "MIA" }, "destination": { "iata_code": "JFK" }, "departure_date": "2026-12-15" }
+    ],
+    "passengers": [ { "type": "adult", "id": "pas_0000AdSxXtR0nX4oJ2nV3F" } ],
+    "offers": [
+      {
+        "id": "off_0000AdSxXu1", "total_amount": "286.40", "total_currency": "USD", "base_amount": "238.00", "tax_amount": "48.40",
+        "owner": { "iata_code": "AA", "name": "American Airlines" },
+        "slices": [
+          { "duration": "PT3H19M", "fare_brand_name": "Main Cabin",
+            "segments": [
+              { "origin": { "iata_code": "JFK" }, "destination": { "iata_code": "MIA" }, "departing_at": "2026-12-10T08:59:00", "arriving_at": "2026-12-10T12:18:00", "duration": "PT3H19M",
+                "marketing_carrier": { "iata_code": "AA", "name": "American Airlines" }, "marketing_carrier_flight_number": "1001",
+                "operating_carrier": { "iata_code": "AA", "name": "American Airlines" }, "operating_carrier_flight_number": "1001" } ] },
+          { "duration": "PT3H05M",
+            "segments": [
+              { "origin": { "iata_code": "MIA" }, "destination": { "iata_code": "JFK" }, "departing_at": "2026-12-15T17:40:00", "arriving_at": "2026-12-15T20:45:00", "duration": "PT3H05M",
+                "marketing_carrier": { "iata_code": "AA", "name": "American Airlines" }, "marketing_carrier_flight_number": "2242" } ] }
+        ]
+      },
+      {
+        "id": "off_0000AdSxXu2", "total_amount": "231.10", "total_currency": "USD",
+        "owner": { "iata_code": "DL", "name": "Delta Air Lines" },
+        "slices": [
+          { "duration": "PT6H40M",
+            "segments": [
+              { "origin": { "iata_code": "JFK" }, "destination": { "iata_code": "ATL" }, "departing_at": "2026-12-10T06:00:00", "arriving_at": "2026-12-10T08:40:00", "duration": "PT2H40M",
+                "marketing_carrier": { "iata_code": "DL", "name": "Delta Air Lines" }, "marketing_carrier_flight_number": "1180" },
+              { "origin": { "iata_code": "ATL" }, "destination": { "iata_code": "MIA" }, "departing_at": "2026-12-10T10:50:00", "arriving_at": "2026-12-10T12:40:00", "duration": "PT1H50M",
+                "marketing_carrier": { "iata_code": "DL", "name": "Delta Air Lines" }, "marketing_carrier_flight_number": "2311" } ] },
+          { "duration": "PT3H",
+            "segments": [
+              { "origin": { "iata_code": "MIA" }, "destination": { "iata_code": "JFK" }, "departing_at": "2026-12-15T09:15:00", "arriving_at": "2026-12-15T12:15:00", "duration": "PT3H",
+                "marketing_carrier": { "iata_code": "DL", "name": "Delta Air Lines" }, "marketing_carrier_flight_number": "1534" } ] }
+        ]
+      },
+      {
+        "id": "off_0000AdSxXu3", "total_amount": "199.00", "total_currency": "USD",
+        "owner": { "iata_code": "NK", "name": "Spirit Airlines" },
+        "slices": [
+          { "duration": "PT3H10M", "segments": [ { "origin": { "iata_code": "JFK" }, "destination": { "iata_code": "MIA" }, "departing_at": "2026-12-10T21:00:00", "arriving_at": "2026-12-11T00:10:00", "duration": "PT3H10M", "marketing_carrier": { "iata_code": "NK", "name": "Spirit Airlines" }, "marketing_carrier_flight_number": "311" } ] },
+          { "duration": "PT3H", "segments": [ { "origin": { "iata_code": "MIA" }, "destination": { "iata_code": "JFK" }, "departing_at": "2026-12-15T06:00:00", "arriving_at": "2026-12-15T09:00:00", "duration": "PT3H", "marketing_carrier": { "iata_code": "NK", "name": "Spirit Airlines" }, "marketing_carrier_flight_number": "312" } ] }
+        ]
+      }
+    ]
+  }
+}

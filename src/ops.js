@@ -34,7 +34,7 @@ import * as accounts from "./accounts.js";
 import { opsLabel as planLabel } from "./plan.js";
 import * as agentcard from "./agentcard.js";
 import { config, clock, callbackUrl } from "./config.js";
-import { fli, LEDGER_ID as FLI_LEDGER_ID } from "./fli.js";
+import { flightProviders, LEDGER as FLIGHT_LEDGER, monthOf } from "./flightproviders.js";
 import * as subusage from "./subusage.js";
 import * as incidents from "./incidents.js";
 import { join } from "node:path";
@@ -517,30 +517,43 @@ async function serviceChecks({ now, day, probe, emit = (r) => r }) {
 }
 
 /**
- * Flight search (the Fli sidecar, src/fli.js): healthy, down or blocked, read off the LAST REAL
- * SEARCH in the call ledger. Never probed — a status page that asked Google Flights every five
- * minutes would be the very traffic that gets a server blocked.
+ * Flight search (SerpApi, then Duffel — src/flightproviders.js): which sources have a key, how much
+ * of this month's free allowance is used, and how the LAST REAL search went, read off the call
+ * ledger. Never probed: a probe would spend the free searches it is here to protect. With no key it
+ * is "off" — every search then answers with a Google Flights link, which is the designed fallback.
  */
-export function flightSearchCheck({ now = clock.now(), day = accounts.today(now), sidecar = fli() } = {}) {
-  const label = "Flight search · Fli";
-  if (!sidecar.installed()) return check("flights", "services", label, "off", "not installed on this machine");
-  const calls = db.providerCalls(FLI_LEDGER_ID, day);
-  const tail = `${n(calls.calls, "search", "searches")} today${calls.failures ? `, ${calls.failures} failed` : ""}`;
-  const last = db.providerState(FLI_LEDGER_ID);
-  if (!last || (!last.last_ok_at && !last.last_fail_at)) return check("flights", "services", label, "ok", "ready · no searches yet");
-  const failedLast = last.last_fail_at && (!last.last_ok_at || last.last_fail_at > last.last_ok_at);
-  if (!failedLast) return check("flights", "services", label, "ok", `healthy · last search ${ago(now - last.last_ok_at)} ago · ${tail}`);
-  const kind = String(last.last_error || "").split(":")[0];
-  const when = ago(now - last.last_fail_at);
-  // Searches are rare, so the last one can stay the last one for hours. A refusal from Google, an
-  // unreachable Google or a slow answer is nothing the owner can fix — the sidecar backs off by
-  // itself — so it is shown here and never texted (`quiet`, as in settle). A sidecar that won't
-  // start, or a Google page Fli no longer reads, is his to fix, and is texted like any other row.
-  const quiet = (row) => ({ ...row, quiet: true });
-  if (kind === "blocked") return quiet(check("flights", "services", label, "bad", `blocked by Google ${when} ago — backing off, no workaround · ${tail}`));
-  if (kind === "down") return check("flights", "services", label, "bad", `sidecar down ${when} ago: ${trim(last.last_error, 80)} · ${tail}`);
-  const row = check("flights", "services", label, "warn", `last search failed ${when} ago: ${trim(last.last_error, 80)} · ${tail}`);
-  return kind === "network" || kind === "timeout" ? quiet(row) : row;
+export function flightSearchCheck({ now = clock.now(), day = accounts.today(now), source = flightProviders() } = {}) {
+  const label = "Flight search";
+  const keys = source.keys();
+  if (!keys.serpapi && !keys.duffel) return check("flights", "services", label, "off", "no SERPAPI_API_KEY or DUFFEL_ACCESS_TOKEN — searches answer with a Google Flights link");
+  const month = monthOf(now);
+  const limits = source.limits();
+  const parts = [];
+  let worst = "ok";
+  let quiet = true;
+  for (const name of ["serpapi", "duffel"]) {
+    if (!keys[name]) continue;
+    const used = db.flightProviderSearches(name, month);
+    const id = FLIGHT_LEDGER[name];
+    const calls = db.providerCalls(id, day);
+    const last = db.providerState(id);
+    let words = `${name} ${used}/${limits[name]} this month, ${n(calls.calls, "search", "searches")} today${calls.failures ? ` (${calls.failures} failed)` : ""}`;
+    if (used >= limits[name]) {
+      words += " · month's allowance used, skipped until the 1st";
+      if (worst === "ok") worst = "warn";
+    }
+    const failedLast = last?.last_fail_at && (!last.last_ok_at || last.last_fail_at > last.last_ok_at);
+    if (failedLast) {
+      const kind = String(last.last_error || "").split(":")[0];
+      words += ` · last failed ${ago(now - last.last_fail_at)} ago: ${trim(last.last_error, 60)}`;
+      worst = "warn";
+      // A bad key is the owner's to fix; a slow or unreachable API is not.
+      if (kind === "auth" || kind === "provider") quiet = false;
+    }
+    parts.push(words);
+  }
+  const row = check("flights", "services", label, worst, parts.join(" · "));
+  return quiet ? { ...row, quiet: true } : row;
 }
 
 async function memoryChecks({ now, probe, emit = (r) => r }) {
