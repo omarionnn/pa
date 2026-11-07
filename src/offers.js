@@ -467,7 +467,8 @@ function sourceAmounts(text, { bare = false } = {}) {
   for (const m of t.matchAll(/(?:_cents|Cents)\\?"?\s*:\s*(\d+)/g)) add(m[1], 1);
   for (const m of t.matchAll(/(\d[\d,]*(?:\.\d{1,2})?)\s?(?:dollars|bucks|USD)\b/gi)) add(m[1]);
   for (const m of t.matchAll(/(?:USD|price\\?"?\s*:\s*\\?"?)\s?(\d[\d,]*(?:\.\d{1,2})?)/gi)) add(m[1]);
-  for (const m of t.matchAll(/(\d+(?:\.\d+)?)\s?k\b/gi)) add(m[1], 100_000);
+  // "4k" — in their words only when used as money ("budget is 5k"), never "ran a 5k" (review 11-07).
+  for (const m of t.matchAll(/(\d+(?:\.\d+)?)\s?k\b/gi)) if (!bare || usedAsMoney(t, m.index, m.index + m[0].length)) add(m[1], 100_000);
   // What THEY wrote, sent or are remembered by: a plain number in it counts too — but only one they
   // used as money ("keep it under 100", "rent is 1850", "dinner was 84, what's the tip"), never every
   // number they typed: a zip, a room, an age or "45 minutes" vouched for any invented $10001 or $45
@@ -487,17 +488,27 @@ function sourceAmounts(text, { bare = false } = {}) {
 // around it, the same kind of parse as "$" itself. A unit after it ("45 minutes", "300 miles",
 // "20 of us") says it is not; a money word before it ("under", "budget", "rent is") or in the same
 // sentence ("dinner was 84, what's the tip") says it is. Neither: it is not theirs as a price.
-const NOT_MONEY_UNIT = /^\s?(?:%|percent|people|ppl|persons?|guests?|of us|of them|kids?|min(?:ute)?s?|hours?|hrs?|h\b|days?|nights?|weeks?|wks?|months?|mos?\b|years?|yrs?|y\/?o\b|miles?|mi\b|km|kms|meters?|m\b|ft|feet|foot|inch(?:es)?|in\b|lbs?|kg|kgs|oz|g\b|grams?|cal(?:orie)?s?|degrees?|°|mph|gb|mb|tb|am\b|pm\b|st\b|nd\b|rd\b|th\b|floor|times?|x\b|pages?|steps?|items?|pieces?|pcs|units?|boxes?|bottles?|tickets? left|reps?|sets?|points?|pts|followers?|likes?|views?)/i;
+const NOT_MONEY_UNIT = /^\s?(?:%|percent|people|ppl|persons?|guests?|of us|of them|kids?|min(?:ute)?s?|hours?|hrs?|h\b|days?|nights?|weeks?|wks?|months?|mos?\b|years?|yrs?|y\/?o\b|miles?|mi\b|km|kms|meters?|ft|feet|foot|inch(?:es)?|lbs?|kg|kgs|oz|g\b|grams?|cal(?:orie)?s?|degrees?|°|mph|gb|mb|tb|am\b|pm\b|st\b|nd\b|rd\b|th\b|floor|times?|x\b|pages?|steps?|items?|pieces?|pcs|units?|boxes?|bottles?|tickets? left|reps?|sets?|points?|pts|followers?|likes?|views?)/i;
 const MONEY_BEFORE = /\b(?:under|below|over|above|less than|more than|no more than|up to|max(?:imum)?|at most|tops|around|about|roughly|budget(?:ed)?(?: is| of)?|spend(?:ing)?|spent|pay(?:ing)?|paid|costs?|costing|cost me|price[ds]?|priced at|charged?|owe[ds]?|tip|bill|rent|total|salary|income|balance|afford|worth|sold (?:it )?for|bought (?:it )?for|offered|asking|deposit|fee|fare)\b[^\d.!?\n]{0,12}$/i;
 const MONEY_AFTER = /^\s?(?:a (?:month|mo|year|yr|week|night|day|head|person)|\/\s?(?:mo|month|yr|year|wk|night)|per\b|each\b|total\b|tops\b|or (?:less|under|so)|max\b|budget\b|all in\b|bucks|dollars|usd)/i;
-const MONEY_WORD = /\b(?:tip|tips|bill|owe[ds]?|pay(?:ing)?|paid|costs?|costing|price[ds]?|budget|spend|spent|rent|charged?|split|afford|cheap(?:er)?|expensive|refund|deposit|fee|fare|salary|balance|total)\b|[$£€]/i;
+const MONEY_WORD = /\b(?:tip|tips|bill|owe[ds]?|pay(?:ing)?|paid|costs?|costing|price[ds]?|budget|spend|spent|rent|charged?|split|afford|cheap(?:er)?|expensive|refund|deposit|fee|fare|salary|balance|total|cash)\b|[$£€]/i;
+// A label right before the number says what it is: "zip is 10001", "room 304", "flight 1850".
+const NOT_MONEY_LABEL = /\b(?:zip(?: ?code)?|postal(?: code)?|room|rm|apt|apartment|unit|suite|floor|flight|gate|seat|platform|age|aged|number|no\.?|code|pin|id|order|ref|route|bus|train|exit|highway|hwy|street|ext(?:ension)?|phone|model|version|ran|run|running)\b(?:\s(?:a|an|the|is|was|of|#))?\s?#?\s?$/i;
+/** How many words either side of the number a money word may sit and still be about it. */
+const NEAR_WORDS = 4;
 function usedAsMoney(text, start, end) {
   const after = text.slice(end, end + 24);
   if (NOT_MONEY_UNIT.test(after)) return false;
-  if (MONEY_AFTER.test(after) || MONEY_BEFORE.test(text.slice(Math.max(0, start - 40), start))) return true;
+  const before = text.slice(Math.max(0, start - 40), start);
+  if (NOT_MONEY_LABEL.test(before)) return false;
+  if (MONEY_AFTER.test(after) || MONEY_BEFORE.test(before)) return true;
+  // A money word next to it, in the same sentence ("dinner was 84, what's the tip") — not anywhere in
+  // the sentence: "my zip is 10001, rent's high" vouched $10,001 (review 11-07).
   const from = Math.max(text.lastIndexOf("\n", start), ...[".", "!", "?"].map(c => text.lastIndexOf(c + " ", start))) + 1;
   const stops = ["\n", ". ", "! ", "? "].map(c => text.indexOf(c, end)).filter(i => i >= 0);
-  return MONEY_WORD.test(text.slice(from, stops.length ? Math.min(...stops) : text.length));
+  const words = (x) => x.split(/\s+/).filter(w => /[\p{L}$£€]/u.test(w));
+  const near = [...words(text.slice(from, start)).slice(-NEAR_WORDS), ...words(text.slice(end, stops.length ? Math.min(...stops) : text.length)).slice(0, NEAR_WORDS)];
+  return near.some(w => MONEY_WORD.test(w));
 }
 
 /**
@@ -622,7 +633,8 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     // `records` (their purchase record, src/purchasesnote.js) is known like a tool read: a figure on
     // it stands, but it is no base for the arithmetic below — fifty carts of amounts summed and
     // multiplied vouched for nearly any whole-dollar price (review 11-07).
-    if (figures.length) for (const s of [...t.sources.map(s => (s === t.own ? ownWords(s) : s)), record, ...records.filter(Boolean).map(String)]) for (const c of sourceAmounts(s)) known.add(c);
+    // Their own message is read as their words (a "5k" they ran is no $5,000), every other source leniently.
+    if (figures.length) for (const s of [...t.sources, record, ...records.filter(Boolean).map(String)]) for (const c of (s === t.own ? sourceAmounts(ownWords(s), { bare: true }) : sourceAmounts(s))) known.add(c);
     // Their own words this turn and what they sent with them are theirs: read like their history.
     const extra = extraSources.filter(Boolean).map(String);
     const theirs = weighs ? [...[t.kind === "user" ? ownWords(t.own) : "", ...extra].filter(Boolean).map(text => ({ kind: "them", at: now, text, amounts: sourceAmounts(text, { bare: true }) })), ...(t.theirs ??= theirSources(conversationId, now))] : [];

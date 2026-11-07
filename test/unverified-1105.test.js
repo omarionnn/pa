@@ -372,3 +372,30 @@ test("review 11-07: the purchase record vouches for its own amounts, not for sum
   const g = offers.guardReply(C, "they're $349 at best buy", { records: [record] });
   assert.deepEqual(g.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$349"], JSON.stringify(g.flags));
 });
+
+// Review 11-07 (8): a money word has to be next to the number, not just in the sentence; "in" is not
+// inches when it is "in cash"; a 5k they ran is not $5,000.
+test("review 11-07: a money word far off in the sentence vouches for nothing; 'in cash', 'in total' and a budget in k still count", () => {
+  for (const [said, reply] of [
+    ["my zip is 10001, rent's high", "that's $10,001"],
+    ["i ran a 5k this morning and then grabbed lunch with the team at noon, the bill was fine", "that's $5,000"],
+    ["we got to the hotel at 9 and checked in, i stayed in room 412 and the price of the upgrade was steep", "it was $412"],
+  ]) {
+    offers.beginTurn(C, said);
+    assert.ok(offers.guardReply(C, reply).recompose, `${said} -> ${reply} should not be theirs`);
+  }
+  for (const [said, reply] of [
+    ["i have 25 in cash", "so $25 in cash"],
+    ["it came to 100 in total", "the $100 total"],
+    ["my budget is 5k", "under your $5,000"],
+    ["dinner was 84, what's the tip", "on $84 that's"],
+    ["keep it under 100", "found one at $100"],
+    ["rent is 1850", "rent's $1,850"],
+    ["the family plan is 25 a month for me", "the family plan at $25"],
+    ["my budget is 40", "under your $40"],
+    ["i paid 250 for it", "you paid $250"],
+  ]) {
+    offers.beginTurn(C, said);
+    assert.equal(offers.guardReply(C, reply).recompose, null, `${said} -> ${reply}`);
+  }
+});
