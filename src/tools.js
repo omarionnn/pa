@@ -3587,7 +3587,7 @@ export const tools = [
         outcome: { type: "string", description: "One line: what actually came of it." },
         result: {
           type: "object",
-          description: "What they see under BACK TO YOU on their Ongoing list on Reason Web. For 'done': the result itself — headline (the thing, e.g. the restaurant's name), facts (up to 4 short lines of the details that matter: 'SAT · 7:30 PM', '4 PEOPLE · UNDER YOUR NAME'), note (one plain line, e.g. 'They'll hold the table 15 minutes.'). For 'failed': why (ONE short line in your own voice, lowercase, said to them: 'sold out before i got in. sorry.') and next (what happens next, plainly, or leave it out if nothing does). Only what is true; nothing for 'cancelled'.",
+          description: "What they see under BACK TO YOU on their Ongoing list on Reason Web. For 'done': the result itself — headline (the thing, e.g. the restaurant's name), facts (up to 4 short lines of the details that matter: 'SAT · 7:30 PM', '4 PEOPLE · UNDER <THEIR NAME>'), note (one plain line, e.g. 'They'll hold the table 15 minutes.'). For 'failed': why (ONE short line in your own voice, lowercase, said to them: 'sold out before i got in. sorry.') and next (what happens next, plainly, or leave it out if nothing does). Only what is true; nothing for 'cancelled'.",
           properties: {
             headline: { type: "string" }, facts: { type: "array", items: { type: "string" } }, note: { type: "string" },
             why: { type: "string" }, next: { type: "string" },
@@ -3651,11 +3651,11 @@ export const tools = [
   },
   {
     name: "my_name",
-    description: "Save what the person you work for wants to be called, and the language they want the top line of their pages in. Call it as soon as they tell you their name, or correct it. It is THEIR name only, never anyone else's, and never a guess: only what they said. It goes on their account, so pages and greetings use it. For the language, only Twi is written so far ('twi'): the top line reads 'Kofi dea' with the English a tap away. Anything else gets English and this says so.",
+    description: "Save what the person you work for wants to be called, and the language they want the top line of their pages in. Call it as soon as they tell you their name, or correct it. It is THEIR name only, never anyone else's, and never a guess: only what they said. It goes on their account, so pages and greetings use it. For the language, only Twi is written so far ('twi'): the top line reads '<name> dea' with the English a tap away. Anything else gets English and this says so.",
     input_schema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "The name exactly as they gave it, e.g. 'Kofi'." },
+        name: { type: "string", description: "The name exactly as they gave it, in their spelling." },
         language: { type: "string", description: "Only when they asked for their pages in a language: 'twi', or 'english' to go back." },
       },
     },
@@ -3688,7 +3688,7 @@ export const tools = [
     input_schema: {
       type: "object",
       properties: {
-        about: { type: "string", description: "Who or what this is about, as they say it, e.g. 'Kofi', 'Ama', 'sushi spots'. Spelling and case do not create a second subject." },
+        about: { type: "string", description: "Who or what this is about, as they say it, e.g. a friend's name, 'my landlord', 'sushi spots'. Spelling and case do not create a second subject." },
         fact: { type: "string", description: "One thing, in a short line, in their terms. 'allergic to shellfish', not 'user mentioned a shellfish allergy'." },
         source: {
           type: "string",
@@ -4117,7 +4117,7 @@ export const tools = [
         requirements: {
           type: "object",
           description: "Everything they are going to ask for, so the call never has to come back to the owner mid-conversation:"
-            + " {\"name\": \"Ama\", \"people\": \"4\", \"phone\": \"+1...\"}. After eight minutes on hold, the moment somebody"
+            + " {\"name\": \"<the name it goes under>\", \"people\": \"4\", \"phone\": \"+1...\"}. After eight minutes on hold, the moment somebody"
             + " finally answers is the worst possible time to discover nobody knows what name to put it under.",
         },
         max_hold_minutes: { type: "integer", description: "How long this call may wait on hold. Default from config. A busy place at lunchtime may need more." },
@@ -15667,7 +15667,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             event_id: twin.event_id, event: twin.event,
             error: `"${input.summary}" is already on ${cal.account || "their"} calendar that day — Reason put it there, and its id is ${twin.event_id}`
               + ` (${twin.event.start}${twin.event.end ? ` – ${twin.event.end}` : ""}). Nothing was created, so there is still exactly one.`
-              + ` If they are CORRECTING it ("make it 4 instead", "move it to the Thursday", "call it dinner with Kofi"), that is calendar_change on event_id ${twin.event_id} — pass only what is different.`
+              + ` If they are CORRECTING it ("make it 4 instead", "move it to the Thursday", "call it dinner with my sister"), that is calendar_change on event_id ${twin.event_id} — pass only what is different.`
               + ` Only if they really want a SECOND one of these on the same day, call this again with allow_duplicate: true.`,
           };
         }

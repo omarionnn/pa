@@ -75,8 +75,8 @@ export const ALERT_RULES =
   + ` "the meeting moved to 3, your calendar still says 2 — want me to update it?" — the old time, the new time, and`
   + ` the offer. Then it is calendar_change on their yes and never without one. If the thread is about something else`
   + ` entirely, that is the common case: say nothing at all.`
-  + `\n  - A reply they are waiting on: say who and how long, and offer the one thing that helps ("kofi never came back`
-  + ` on the lease — want me to chase him?"). A chase is an email to somebody else, so it goes through the gate with`
+  + `\n  - A reply they are waiting on: say who and how long, and offer the one thing that helps ("your landlord never came back`
+  + ` on the lease — want me to chase them?"). A chase is an email to somebody else, so it goes through the gate with`
   + ` the whole body said back first, and it is written as their assistant and never as them.`
   + `\n  - A dated thing coming up: the date is on the candidate, off their own calendar. Say the thing and the day and`
   + ` offer the next step. Never invent an amount, a late fee or a consequence — none of that is on a calendar entry.`
