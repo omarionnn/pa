@@ -58,7 +58,7 @@ async function fakeFetch(url, init = {}) {
   const m = /^\/api\/unstable\/agent-checkouts\/([^/]+)(\/messages|\/cancel)?$/.exec(p);
   if (m && m[2] === "/cancel") return runs[m[1]] ? reply(202, { ok: true }) : reply(409, { message: "over" });
   if (m && m[2]) return reply(202, { ok: true });
-  if (m) return runs[m[1]] ? reply(200, { runId: m[1], ...runs[m[1]] }) : reply(404, { error: true, message: `Checkout '${m[1]}' not found` });
+  if (m) return runs[m[1]]?.__status ? reply(runs[m[1]].__status, { message: "unavailable" }) : runs[m[1]] ? reply(200, { runId: m[1], ...runs[m[1]] }) : reply(404, { error: true, message: `Checkout '${m[1]}' not found` });
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}`, status: "active" });
   return reply(404, { message: "no route" });
 }
@@ -309,18 +309,21 @@ test("review: an expired payment approval reads as that; a wake that failed is r
   assert.equal(woke.length, 1, "raised once it got through");
 });
 
-test("review: a run Crossmint stops answering about ends after LOST_MS, said once; a run already on live with no stage still moves", async () => {
+test("review: a run Crossmint stops answering about ends after LOST_MS (about a minute), said once; a run already on live with no stage still moves", async () => {
+  assert.ok(shop.LOST_MS <= 60_000, "a dead run is told within about a minute (it was 36, and reached them 45 minutes late)");
   const out = await start();
   await shop.step(out.runId);
   delete runs[out.runId]; // Crossmint forgot it: 404 from here on
-  clock.skip(shop.LOST_MS - 60_000);
+  assert.equal((await shop.step(out.runId)).done, false, "one failed look is not the end");
+  clock.skip(shop.LOST_MS - 5_000);
   assert.equal((await shop.step(out.runId)).done, false);
-  clock.skip(2 * 60_000);
+  assert.equal(said.length, 0, "nothing said while it is only a few failed looks");
+  clock.skip(10_000);
   const s = await shop.step(out.runId);
   assert.equal(s.lost, true);
   assert.equal(row(out.runId).status, "failed");
   assert.equal(said.at(-1).t, "I lost track of the Ulta checkout for CeraVe Foaming Facial Cleanser 16 oz: the checkout service stopped answering about it. Nothing was charged that I can see. Want me to start it again?");
-  assert.match(said.at(-2).t, /^Still at Ulta's checkout/, "the stall was said first, at twelve minutes");
+  assert.equal(said.length, 1, "the end only: no stall line about a run nobody can see");
   const n = said.length;
   assert.equal((await shop.step(out.runId)).done, true);
   assert.equal(said.length, n, "once");
@@ -329,6 +332,17 @@ test("review: a run Crossmint stops answering about ends after LOST_MS, said onc
   q("UPDATE shop_runs SET stage = '' WHERE run_id = ?").run(old.runId);
   await shop.step(old.runId);
   assert.equal(row(old.runId).stage, "in_progress");
+});
+
+test("review 11-06: Crossmint down (503) for minutes is not a lost run — nothing cancelled, nothing said 'lost'", async () => {
+  const out = await start();
+  await shop.step(out.runId);
+  const real = runs[out.runId];
+  runs[out.runId] = { __status: 503 };
+  for (let i = 0; i < 5; i++) { clock.skip(60_000); const s = await shop.step(out.runId); assert.equal(s.done, false); assert.notEqual(s.lost, true); }
+  assert.equal(row(out.runId).status, "running");
+  assert.ok(!said.some(x => /lost track/.test(x.t)));
+  runs[out.runId] = real;
 });
 
 test("a stall — nothing moved for ten minutes — is texted once, and progress is Crossmint's revision", async () => {

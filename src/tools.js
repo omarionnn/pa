@@ -33,6 +33,7 @@ import * as google from "./google.js";
 import * as icloud from "./icloud.js";
 import * as agentcard from "./agentcard.js";
 import * as offers from "./offers.js";
+import * as said from "./said.js";
 import * as deals from "./deals.js";
 import { handoffFor, cartLinkFromHtml } from "./handoff.js";
 import * as x from "./x.js";
@@ -392,6 +393,9 @@ const LAPSED_EXTRA = new Set(["timer_set", "series_pause", "series_resume", "res
   "page_create", "document_create", "notice_send", "commitment_set", "uber_request", "store_checkout", "shop_handoff", "purchase", "purchase_confirm",
   "flight_book", "flight_checkin_start", "research", "gmail_draft", "calendar_create", "calendar_change", "apple_calendar_create", "apple_calendar_change",
   "x_post", "x_reply", "x_dm", "drive_create", "drive_upload", "drive_share", "github_issue_create", "github_issue_comment", "spotify_playlist_create", "spotify_send_link", "important_add"]);
+// Leave the machine but change nothing and make nothing: a reply after only these does not wait for
+// the claim check (src/said.js; review 11-06 — a search reply should not pay ~2 s for it).
+const CLAIM_CHECK_READS = new Set(["web_search", "web_lookup", "nearby_places", "get_location", "offer_check", "video_understand", "flight_search", "flight_dates", "flight_verify", "shop_status", "event_list", "event_guests"]);
 const LAPSED_READS = new Set(["event_list", "event_guests", "shop_status", "browser_close"]);
 export function lapsedBlocked(name) {
   const n = String(name);
@@ -9119,6 +9123,8 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
   }
   // The task this call worked on, for the turn to write its messages down under (src/settle.js).
   if (ctx?.turnTasks) { const t = taskOfCall(name, rawInput, out); if (t) ctx.turnTasks.add(t); }
+  // What this call came to, for the check in front of the reply (src/said.js): no "done" without it.
+  if (ctx?.turnActs) said.noteAct(ctx.turnActs, name, out, { acting: lapsedBlocked(name) && !CLAIM_CHECK_READS.has(String(name)) });
   if (ctx?.conversationId && !ECHOES_MODEL.test(String(name))) offers.noteSource(ctx.conversationId, out);
   // Anything they texted since the last tool call rides on this result, first, so the turn has it
   // while it can still change the work.

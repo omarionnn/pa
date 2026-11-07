@@ -20,9 +20,9 @@
 //                  against what was standing, and writes both records. Off the reply's path.
 //   standingNote() the block each turn is shown: what is standing, what is open, what just closed —
 //                  so the model corrects out loud and never re-asks.
-//   checkDraft()   right before a reply goes: does it change a standing value without saying so, or
-//                  ask a closed question? API only and only when there is something standing,
-//                  because it sits in front of the send. The runtime recomposes once on a hit.
+//   checkDraft()   right before a reply goes: does it change a standing value without saying so, ask
+//                  a closed question, or say a thing is done that no tool did this turn (the claim
+//                  check, REASON_CLAIM_CHECK, every reply)? The runtime recomposes once on a hit.
 //
 // Every read and write is scoped by conversation_id. Nothing here ever throws into a turn.
 import * as db from "./db.js";
@@ -31,6 +31,9 @@ import { startWarm } from "./backends/cli.js";
 import { sideModelOn } from "./backends/side.js";
 import * as background from "./background.js";
 import { config, clock } from "./config.js";
+import * as shop from "./shopconnect.js";
+import { openWorkNote } from "./openwork.js";
+import { keptNote } from "./kept.js";
 
 const HOUR = 3_600_000;
 /** How far back a claim or question counts as part of the conversation now. */
@@ -177,19 +180,68 @@ export function applyRecord(conversationId, { requestId = null, value: v, claims
   return { counts: { claims: added.length, superseded, closed, declined, questions }, silent };
 }
 
+// ---------- what this turn really did ----------
+//
+// The incidents (2026-10-31, 2026-11-03): "I've started the Ulta checkout" with no run behind it, the
+// failure reaching them 45 minutes later; "I made you walking directions" with no link in the text. And
+// ~20 "earlier I said…" corrections in a week, most of them owning up to a thing said done that wasn't.
+// So every tool call of a turn is written down here as it returns (src/tools.js runTool, `turnActs` in
+// the turn's context, both backends), and the check in front of the reply is shown them: a reply may say
+// a thing is done, started, sent, made, booked or set only when a tool did it this turn or the record
+// holds it. Whether a sentence claims that is the model's read (checkDraft), never a word list.
+
+const MAX_ACTS = 30;
+const URL_RE = /https?:\/\/[^\s"'<>\\)]+/g;
+
+/** One tool call, as the check reads it: its name, whether it worked, its result cut short, and every link it handed back whole. */
+export function noteAct(acts, name, out, { acting = false } = {}) {
+  try {
+    if (!Array.isArray(acts)) return;
+    const failed = out == null || (typeof out === "object" && (out.ok === false || !!out.error || !!out.blocked || !!out.not_sent));
+    let body;
+    try { body = typeof out === "string" ? out : JSON.stringify(out, (k, v) => (k === "_image" ? undefined : v)); } catch { body = String(out); }
+    const links = [...new Set(String(body ?? "").match(URL_RE) ?? [])].slice(0, 4);
+    acts.push({ name: String(name), ok: !failed, result: one(body, 360), links, acting: !!acting });
+    if (acts.length > MAX_ACTS) acts.shift();
+  } catch { /* the record is best-effort */ }
+}
+
+const actLine = (a) => `  ${a.name}: ${a.ok ? "WORKED" : "DID NOT WORK"} → ${a.result}${a.links?.length ? `\n    links it returned: ${a.links.join(" ")}` : ""}`;
+
+/**
+ * What is on record for them, from code's own rows: checkouts (each in one line), and the same open-work
+ * and made-and-kept notes their turns carry (tasks, pages, reminders). So "your 5pm reminder is set" in
+ * answer to "is it set?" reads as backed, not as a claim with nothing behind it. "" when none.
+ */
+function jobsOnRecord(conversationId) {
+  const parts = [];
+  try {
+    if (shop.connectAllowedFor(conversationId)) {
+      parts.push(...shop.runsOf(conversationId, { sinceMs: 6 * HOUR, limit: 5 })
+        .map((r) => `  checkout at ${shop.storeName(r.store) || r.store || "a store"}${r.item ? ` for ${one(r.item, 60)}` : ""}: ${shop.stageLine(r)}`));
+    }
+  } catch { /* the rest still counts */ }
+  for (const note of [openWorkNote, keptNote]) {
+    try { const t = String(note(conversationId) ?? "").trim(); if (t) parts.push(t.length > 1_500 ? `${t.slice(0, 1_499)}…` : t); } catch { /* best-effort */ }
+  }
+  return parts.join("\n");
+}
+
 // ---------- right before a reply goes ----------
 
-export const CHECK_INSTRUCTIONS = `You check a draft text from a personal assistant before it is sent. You are shown values the assistant already told the person that still stand, questions it asked that are closed, and the draft. Report:
+export const CHECK_INSTRUCTIONS = `You check a draft text from a personal assistant before it is sent. You are shown values the assistant already told the person that still stand, questions it asked that are closed, what the person just said, every tool the assistant ran this turn with its result, what is on record (background jobs, open work, things made), and the draft. Report:
 - changed_silently: ids of standing claims whose value the draft changes, WITHOUT the draft saying out loud that the earlier value changed or was wrong. A draft that says "earlier I said X, it's actually Y" is fine and is not listed. A draft about something else is fine.
-- asks_closed: ids of closed questions the draft asks again, and ids of declined things the draft raises or offers again.`;
+- asks_closed: ids of closed questions the draft asks again, and ids of declined things the draft raises or offers again.
+- unbacked: each place the draft tells the person the assistant HAS done or started something — sent, made, booked, set, started, ordered, called, scheduled, saved, cancelled, "it's running", "here are your directions" — that no tool in this turn did successfully and nothing on record shows. A tool that DID NOT WORK does not back a claim. Something the record shows as made, set or running backs a line about it; a line about an earlier turn's work that the record says nothing about either way is left out. Also each place the draft says it made or is giving them a link, page, directions or file that is not actually in the draft: problem "no_artifact". Not claims: offers, plans and questions ("want me to…", "I'll…", "I can…"), things the person did, and plain facts or answers. When unsure, leave it out. quote is the draft's own words; problem is "not_done" or "no_artifact"; fact says in a few words what the record shows instead.`;
 
 const CHECK_SCHEMA = {
   type: "object",
   properties: {
     changed_silently: { type: "array", items: { type: "integer" } },
     asks_closed: { type: "array", items: { type: "integer" } },
+    unbacked: { type: "array", items: { type: "object", properties: { quote: { type: "string" }, problem: { type: "string", enum: ["not_done", "no_artifact"] }, fact: { type: "string" } }, required: ["quote", "problem", "fact"], additionalProperties: false } },
   },
-  required: ["changed_silently", "asks_closed"],
+  required: ["changed_silently", "asks_closed", "unbacked"],
   additionalProperties: false,
 };
 
@@ -211,7 +263,8 @@ const somethingStanding = (conversationId, since) =>
 export function warmCheck(conversationId, { now = clock.now() } = {}) {
   try {
     if (checker || !config.saidLedger || process.env.REASON_BACKEND !== "claude-cli") return null;
-    if (!somethingStanding(conversationId, now - CHECK_WINDOW_MS)) return null;
+    // The claim check reads every reply, so with it on the CLI is always warmed.
+    if (!config.claimCheck && !somethingStanding(conversationId, now - CHECK_WINDOW_MS)) return null;
     return startWarm({ system: CHECK_INSTRUCTIONS, schema: CHECK_SCHEMA, model: config.saidCheckCliModel, timeoutMs: config.saidCheckCliTimeoutMs, feature: "said_check", effort: "low" });
   } catch { return null; }
 }
@@ -222,22 +275,31 @@ export function warmCheck(conversationId, { now = clock.now() } = {}) {
  * last few hours, on the subscription (the turn's `warm` CLI when it has one). Any failure is ok —
  * this is a backstop, the turn's own block is the main rule.
  */
-export async function checkDraft({ conversationId, draft, log = () => {}, now = clock.now(), warm = null }) {
+export async function checkDraft({ conversationId, draft, log = () => {}, now = clock.now(), warm = null, acts = null, userText = "" }) {
   try {
     if (!config.saidLedger || !String(draft ?? "").trim()) return { ok: true };
     const since = now - CHECK_WINDOW_MS;
     const claims = db.standingClaims(conversationId, { since, limit: 8 });
     // Something they turned down is checked whenever the check runs anyway — it never starts one.
     const closed = db.closedQuestions(conversationId, { since, limit: 5 });
-    if (!claims.length && !closed.length) return { ok: true };
+    // The claim check reads the reply of a turn that called a tool which acts or makes something
+    // ("acting", the default: measured 2026-11-06, the check sits ~2 s in front of the send, so a chat
+    // reply with no such tool does not pay it), or every reply ("all"). `acts` null: not recorded.
+    const claimCheck = !!config.claimCheck && Array.isArray(acts) && (config.claimCheck === "all" || acts.some(a => a.acting));
+    if (!claims.length && !closed.length && !claimCheck) return { ok: true };
     closed.push(...db.declinedQuestions(conversationId, { since: now - DECLINED_WINDOW_MS, limit: 5 }));
     if (!checker && !sideModelOn()) return { ok: true, skipped: "no_model" };
     const started = Date.now();
-    const prompt = `Standing claims:\n${claims.length ? claims.map(claimLine).join("\n") : "  (none)"}\n\nClosed questions:\n${closed.length ? closed.map(questionLine).join("\n") : "  (none)"}\n\nThe draft:\n${String(draft).slice(0, 3_000)}`;
+    const jobs = claimCheck ? jobsOnRecord(conversationId) : "";
+    const prompt = `Standing claims:\n${claims.length ? claims.map(claimLine).join("\n") : "  (none)"}\n\nClosed questions:\n${closed.length ? closed.map(questionLine).join("\n") : "  (none)"}`
+      + (claimCheck
+        ? `\n\nWhat the person just said:\n${one(userText, 600) || "(nothing: not their turn)"}\n\nTools run this turn, in order:\n${acts.length ? acts.map(actLine).join("\n") : "  (none: no tool ran this turn)"}\n\nOn record:\n${jobs || "  (none)"}`
+        : "")
+      + `\n\nThe draft:\n${String(draft).slice(0, 3_000)}`;
     let v;
     try {
       v = checker
-        ? await checker({ draft, claims, closed })
+        ? await checker({ draft, claims, closed, acts: claimCheck ? acts : null, jobs, userText, prompt })
         // The subscription, never the API (2026-10-27): the turn's warm CLI when it has one, so
         // the cold start was paid while the turn ran.
         : (await askJson({ system: CHECK_INSTRUCTIONS, prompt, schema: CHECK_SCHEMA, feature: "said_check", cliModel: config.saidCheckCliModel, cliTimeoutMs: config.saidCheckCliTimeoutMs, warm, effort: warm ? null : "low" })).value;
@@ -249,15 +311,24 @@ export async function checkDraft({ conversationId, draft, log = () => {}, now = 
     const qById = new Map(closed.map(q => [q.id, q]));
     const changed = (v?.changed_silently ?? []).map(Number).map(id => byId.get(id)).filter(Boolean);
     const reasked = (v?.asks_closed ?? []).map(Number).map(id => qById.get(id)).filter(Boolean);
-    log({ said_check: conversationId, changed: changed.map(c => c.id), reasked: reasked.map(q => q.id), ms: Date.now() - started });
-    if (!changed.length && !reasked.length) return { ok: true };
+    // Only a quote that really is in the draft counts: the reader cannot invent a claim to rewrite.
+    const text = String(draft);
+    const unbacked = claimCheck
+      ? (Array.isArray(v?.unbacked) ? v.unbacked : []).filter(u => u && String(u.quote ?? "").trim() && text.includes(String(u.quote).trim())).slice(0, 3)
+      : [];
+    log({ said_check: conversationId, changed: changed.map(c => c.id), reasked: reasked.map(q => q.id), ...(claimCheck ? { unbacked: unbacked.map(u => u.problem), acts: acts.length } : {}), ms: Date.now() - started });
+    if (!changed.length && !reasked.length && !unbacked.length) return { ok: true };
+    const links = claimCheck ? [...new Set(acts.filter(a => a.ok).flatMap(a => a.links ?? []))] : [];
     const lines = [
+      ...unbacked.map(u => u.problem === "no_artifact"
+        ? `It says "${one(u.quote, 120)}" but what it names is not in the text (${one(u.fact, 120)}).${links.length ? ` Links your tools returned this turn: ${links.join(" ")} — put the right one in, on its own line.` : " No tool made it this turn: make it now with the tool and put it in, or say plainly you haven't made it."}`
+        : `It says "${one(u.quote, 120)}", but nothing you ran this turn did that and nothing on record shows it (${one(u.fact, 120)}). Never say a thing is done, started or sent when it isn't. Say plainly what did and didn't happen (or that you can't see it from here) and what is next; run a tool again only if its own result this turn shows it failed or never ran — never repeat a send, a call or a purchase that went through.`),
       ...changed.map(c => `It changes what you told them earlier — ${one(c.subject, 80)} was ${one(c.value, 60)} — without saying so. Say it outright: "earlier I said ${one(c.value, 40)}, that was before …; it's …".`),
       ...reasked.map(q => q.closed_reason === "declined"
         ? `It raises "${one(q.question, 100)}" again, which they already turned down. Leave it out entirely.`
         : `It asks "${one(q.question, 100)}" again, which is already settled (${String(q.closed_reason ?? "closed").replace(/_/g, " ")}). Do not ask it; give what you found.`),
     ];
-    return { ok: false, note: lines.join(" "), changed, reasked };
+    return { ok: false, note: lines.join(" "), changed, reasked, unbacked };
   } catch {
     return { ok: true };
   }

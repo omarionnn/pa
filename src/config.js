@@ -513,6 +513,11 @@ export const config = {
   // runs past this is skipped, never waited out.
   saidCheckCliModel: process.env.REASON_SAID_CHECK_CLI_MODEL || "haiku",
   saidCheckCliTimeoutMs: Number(process.env.REASON_SAID_CHECK_CLI_TIMEOUT_MS || 8_000),
+  // The same check also reads whether the reply says something is done, started, sent or made that no
+  // tool did this turn, or names a link it does not carry (src/said.js). "acting" (the default): only a
+  // reply of a turn that called a tool which acts on the world or makes something (src/tools.js
+  // lapsedBlocked) — a plain chat reply never waits ~2 s for it. "all": every reply. "0": off.
+  claimCheck: (v => ["0", "off", "false", "no"].includes(v) ? false : v === "all" ? "all" : "acting")(String(process.env.REASON_CLAIM_CHECK ?? "").trim().toLowerCase()),
   // A picture somebody sends is fetched and handed to the model as a picture (src/media.js).
   //
   // The ceiling is Anthropic's, converted: "the maximum size per image is 10 MB (base64-encoded)"

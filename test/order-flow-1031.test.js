@@ -441,8 +441,10 @@ test("an order placed earns the First order seal, silently; the backfill finds o
 
 // ---------------------------------------------------------------- 9. the line over the cards
 test("pinned 13:56: 'i couldn't confirm the prices live' never goes out; a card without a price gets 'the exact total comes before anything is bought', once", () => {
-  cards([{ n: 1, name: "CeraVe Foaming Facial Cleanser", price: "", url: AMAZON }, { n: 2, name: "CeraVe Foaming Facial Cleanser", price: "$17.99", url: WALMART }]);
+  // The turn starts, then draws the cards (in that order, as a real turn does: drawn the other way round,
+  // a clock tick between the two made the set read as an earlier turn's and the test flaky).
   offers.beginTurn(OMARI, "Wanna get Cerave face wash. Give me options");
+  cards([{ n: 1, name: "CeraVe Foaming Facial Cleanser", price: "", url: AMAZON }, { n: 2, name: "CeraVe Foaming Facial Cleanser", price: "$17.99", url: WALMART }]);
   const wrote = "3 cerave cleansers, take your pick. the foaming one's the one made for oily skin, so i'd go with that. i couldn't confirm the prices live, so i'll check the real total before anything gets bought";
   const g = offers.guardReply(OMARI, wrote);
   assert.equal(g.text, "3 cerave cleansers, take your pick. the foaming one's the one made for oily skin, so i'd go with that.\nThe exact total comes to you before anything is bought.");

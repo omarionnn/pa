@@ -1156,8 +1156,24 @@ const TERMINAL = new Set(["succeeded", "failed", "blocked", "cancelled", "expire
 export const STAGES = ["started", "in_progress", "needs_input", "needs_approval", "approved", "paid", "placed", "failed", "cancelled"];
 // Past Crossmint's own 10-minute input expiry, so an expiring request is reported as expired, not as stalled.
 export const STALL_MS = 12 * 60_000;
-// Crossmint not answering about a run for this long (it forgot it, or the key no longer sees it): the run is over.
-export const LOST_MS = 3 * STALL_MS;
+// Crossmint not answering about a run for this long, every look in a row failing (it forgot it, the key no
+// longer sees it, or it is down): the run is over, it is cancelled there, and they are told — within about a
+// minute, once. It was 36 minutes until 2026-11-06, and a dead run reached them 45 minutes late.
+export const LOST_MS = 60_000;
+// Crossmint itself down or refusing (5xx, 429, no answer) is not "it forgot the run": the run may be
+// mid-placement there, so it is only given up after this long, and never cancelled (review 11-06).
+export const OUTAGE_MS = 3 * STALL_MS;
+/** When each run's looks started failing, in a row (in-process: a restart gives a run a fresh minute). */
+const failingSince = new Map();
+/** A run nobody can follow any more: failed on the row, cancelled at Crossmint (best effort), said once. */
+async function lose(run, say, why, { cancel = true } = {}) {
+  const now = clock.now();
+  failingSince.delete(run.run_id);
+  q("UPDATE shop_runs SET status = 'failed', result = ?, stage = 'failed', stage_at = ?, updated_at = ? WHERE run_id = ? AND status = 'running'").run(`lost: ${why}`.slice(0, 300), now, now, run.run_id);
+  q("UPDATE shop_payments SET status = 'expired' WHERE run_id = ? AND status = 'asked'").run(run.run_id);
+  if (cancel) await cancelAtCrossmint(run);
+  if (tellOnce(run.run_id, "end")) await say(`I lost track of the ${storeOf(run)} checkout${itemOf(run)}: the checkout service stopped answering about it. Nothing was charged that I can see. Want me to start it again?`);
+}
 export const MAIL_WATCH_MS = 24 * 3600_000;
 export const MAIL_EVERY_MS = 10 * 60_000;
 let sayFn = null;
@@ -1527,15 +1543,25 @@ export async function step(runId) {
   let r;
   try { r = await server(run.conversation_id, `${CHECKOUTS}/${encodeURIComponent(runId)}`); } catch { r = { ok: false, json: null }; }
   if (!r.ok || !r.json) {
-    // Crossmint not answering about it at all, for LOST_MS: the run is over as far as anyone can tell.
-    if (clock.now() - (run.last_ok_at ?? run.created_at) > LOST_MS) {
-      q("UPDATE shop_runs SET status = 'failed', result = 'lost: Crossmint stopped answering about this run', stage = 'failed', stage_at = ?, updated_at = ? WHERE run_id = ?").run(clock.now(), clock.now(), runId);
-      q("UPDATE shop_payments SET status = 'expired' WHERE run_id = ? AND status = 'asked'").run(runId);
-      if (tellOnce(runId, "end")) await say(`I lost track of the ${storeOf(run)} checkout${itemOf(run)}: the checkout service stopped answering about it. Nothing was charged that I can see. Want me to start it again?`);
+    // Crossmint saying it does not know the run (404), every look for LOST_MS: the run is over there.
+    if (r.status === 404) {
+      if (!failingSince.has(runId)) failingSince.set(runId, clock.now());
+      if (clock.now() - failingSince.get(runId) >= LOST_MS) {
+        await lose(run, say, "Crossmint stopped answering about this run");
+        return { done: true, status: "failed", said, lost: true };
+      }
+      // Nothing known about it this minute, so no "still working" either: the next answer, or the end, is said.
+      return { done: false, said };
+    }
+    // Crossmint down or refusing: the run may still be going there. Given up only after OUTAGE_MS, not cancelled.
+    failingSince.delete(runId);
+    if (clock.now() - (run.last_ok_at ?? run.created_at) > OUTAGE_MS) {
+      await lose(run, say, "Crossmint stopped answering about this run", { cancel: false });
       return { done: true, status: "failed", said, lost: true };
     }
     return { done: false, said, ...(await stalled(run, say)) };
   }
+  failingSince.delete(runId);
   const cur = r.json;
   const status = String(cur.status ?? "");
   const now = clock.now();
@@ -1943,9 +1969,15 @@ export function watchMail(runId, { everyMs = MAIL_EVERY_MS } = {}) {
 
 /** Follows a run every few seconds until it ends. In-process; resumeFollowing picks runs up after a restart. */
 export function follow(runId, { everyMs = 3000 } = {}) {
+  let brokenSince = null;
   const tick = async () => {
     let out = { done: false };
-    try { out = await step(runId); } catch { /* next tick */ }
+    try { out = await step(runId); brokenSince = null; } catch (e) {
+      // A look that breaks HERE (Reason's bug, not Crossmint) says nothing about the run: logged once per
+      // stretch and tried again — never cancelled at Crossmint on our own error (review 11-06).
+      if (brokenSince == null) logFn({ checkout_follow_broken: runId, why: String(e?.message ?? e).split("\n")[0].slice(0, 160) });
+      brokenSince ??= clock.now();
+    }
     if (!out.done) setTimeout(tick, everyMs).unref?.();
   };
   setTimeout(tick, 0).unref?.();
