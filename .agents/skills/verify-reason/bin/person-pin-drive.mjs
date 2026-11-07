@@ -42,6 +42,8 @@ const cid = await yesFor("call_place", brief);
 const placed = () => (calls.placed ?? calls.calls ?? []).length;
 const m = await runTool("call_place", { ...brief, may_book: true, confirmation_id: cid }, ctx);
 line("call: now may book", `${m.blocked ?? m.ok}, placed ${placed()}`);
+const q = await runTool("call_place", { ...brief, ask: ["Can you confirm Omari's home address on file?"], confirmation_id: cid }, ctx);
+line("call: other questions", `${q.blocked ?? q.ok}, placed ${placed()}`);
 const c = await runTool("call_place", { ...brief, confirmation_id: cid }, ctx);
 line("call: agreed brief", `${c.ok ? "ok" : c.blocked ?? c.error}, placed ${placed()}`);
 process.exit(0);
