@@ -62,7 +62,7 @@ person can change their own. Before this the cap was one number for the whole in
     amount spent/reserved, a missing/odd field, another id, 404/500/timeout — leaves it counted. Asked
     when a Crossmint payment would be refused `over_daily_cap` (`capRefusal`, then the cap is re-read)
     and at boot after `backfillSpend`. The run's own `failed`/`cancelled` status is NOT a release (a run
-    can fail after the card was used). Pinned in `test/shop-unknown-spend.test.js` (17).
+    can fail after the card was used). Pinned in `test/shop-unknown-spend.test.js` (18; the line released is the one on the day the payment went out).
 - Tools (`src/shoptools.js`, shown where Shop Connect is): `spend_limit_set { daily, text }` and
   `spend_limit_confirm { change_id, answer }`. The spending playbook (`src/playbooks.js`) and the
   `spending_cap` capability line point at them.

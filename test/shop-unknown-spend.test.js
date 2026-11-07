@@ -202,3 +202,13 @@ test("a release happens once: two settles at once, again later, and the boot bac
   assert.equal(lines.filter((l) => l.cents === 0).length, 1, "one note");
   assert.equal(lines.filter((l) => /OUTCOME UNKNOWN/.test(l.what)).length, 1, "the other line untouched");
 });
+
+test("a release takes back only its own day's line: an identical older line stays counted", async () => {
+  const yesterday = db.recordSpend({ conversationId: AMA, day: "2000-01-01", cents: 9000, what: "Best Buy: USB-C cable ($90.00) (OUTCOME UNKNOWN)", site: "Best Buy", confirmationId: 7 });
+  const first = await unknown90();
+  intent = neverCharged("expired");
+  assert.equal(await shop.settleUnknownPayments({ conversationId: AMA }), 1);
+  assert.equal(spentToday(), 0);
+  assert.equal(q("SELECT cents FROM spend WHERE id = ?").get(yesterday).cents, 9000, "the other day's line is untouched");
+  assert.equal(shop.paymentRow(first.id).status, "failed");
+});

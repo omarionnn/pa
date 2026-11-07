@@ -1078,6 +1078,7 @@ export const releasedLineOf = (row) => `${spendLineOf({ ...row, status: "paid" }
  */
 export async function settleUnknownPayments({ conversationId = null, sinceMs = 7 * 86_400_000 } = {}) {
   let n = 0;
+  const trust = await import("./trust.js");
   const since = clock.now() - sinceMs;
   const rows = conversationId
     ? q("SELECT * FROM shop_payments WHERE conversation_id = ? AND status = 'unknown' AND order_intent_id != '' AND answered_at > ? ORDER BY id").all(conversationId, since)
@@ -1090,8 +1091,9 @@ export async function settleUnknownPayments({ conversationId = null, sinceMs = 7
     const cents = Math.round(Number(row.amount) * 100);
     const released = db.atomically(() => {
       if (q("UPDATE shop_payments SET status = 'failed' WHERE id = ? AND status = 'unknown'").run(row.id).changes !== 1) return false;
-      const line = q("SELECT id FROM spend WHERE conversation_id = ? AND what = ? AND site = ? AND cents = ? AND confirmation_id IS ? ORDER BY id LIMIT 1")
-        .get(row.conversation_id, spendLineOf({ ...row, status: "unknown" }), site, cents, row.confirmation_id ?? null);
+      // The line this payment wrote: same person, day it went out, store, words, amount and yes.
+      const line = q("SELECT id FROM spend WHERE conversation_id = ? AND day = ? AND what = ? AND site = ? AND cents = ? AND confirmation_id IS ? ORDER BY id LIMIT 1")
+        .get(row.conversation_id, trust.spendDay(row.answered_at), spendLineOf({ ...row, status: "unknown" }), site, cents, row.confirmation_id ?? null);
       if (line) q("UPDATE spend SET cents = 0, what = ? WHERE id = ?").run(releasedLineOf(row), line.id);
       return true;
     });
