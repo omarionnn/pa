@@ -12268,16 +12268,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // card number in it, and the card number would outlive the permission.
       const inThere = looksLikeACredential(said);
       if (inThere) return refuseCredential(inThere, { what: "that permission", ownerName: me.name });
-      // A standing permission skips every later yes it covers, so its authority is their own sentence and
-      // nothing else: it must be in one of their recent messages, checked in code (security audit
-      // 2026-11-06, lead 4). A page, an email or a call transcript the model read is not them saying it.
-      if (!trust.ownerSaid(ctx.messages ?? [], said)) {
-        return {
-          ok: false, blocked: "not_their_words",
-          error: `Nothing was saved: a standing permission has to be ${me.name}'s own sentence, word for word from one of their messages, and this is not in any of them.`
-            + ` If they really said it, pass their sentence exactly as they typed it. If they did not, do not save one; ask them in one line whether they want you to stop asking about this.`,
-        };
-      }
       const scope = input.scope ?? {};
       const covered = permissions.actionsFor(scope.action);
       if (!covered) {
@@ -12308,6 +12298,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         untilAt = Date.parse(scope.until);
         if (Number.isNaN(untilAt)) return { ok: false, error: `Could not read '${scope.until}' as a date. Use ISO 8601, or leave it out if they did not put an end on it.` };
         if (untilAt <= clock.now()) return { ok: false, error: `${stamp(untilAt)} is already past, so that permission would cover nothing. Check which day they meant.` };
+      }
+      // A standing permission skips every later yes it covers, so its authority is their own sentence and
+      // nothing else: it must be in one of their recent messages, checked in code (security audit
+      // 2026-11-06, lead 4). A page, an email or a call transcript the model read is not them saying it.
+      if (!trust.ownerSaid(ctx.messages ?? [], said)) {
+        return {
+          ok: false, blocked: "not_their_words",
+          error: `Nothing was saved: a standing permission has to be ${me.name}'s own sentence, word for word from one of their messages, and this is not in any of them.`
+            + ` If they really said it, pass their sentence exactly as they typed it. If they did not, do not save one; ask them in one line whether they want you to stop asking about this.`,
+        };
       }
       const row = db.grantPermission(c, {
         said,
