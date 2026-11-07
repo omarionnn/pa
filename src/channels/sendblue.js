@@ -1213,6 +1213,12 @@ const VOICE_EXTS = [".caf", ".amr"];
 /** Everything else that is obviously sound rather than a document (api-v2/media's audio row). */
 const AUDIO_EXTS = [".m4a", ".mp3", ".aac", ".wav", ".aiff"];
 /**
+ * The file name iMessage gives a recorded voice message, whatever its container: "Audio Message",
+ * which Sendblue serves as `<id>_Audio_Message.m4a` as well as `.caf` (live 2026-11-01 02:31, a
+ * 49 s note filed as "an audio file" instead of a voice note). A file name, not a reading of words.
+ */
+const VOICE_MESSAGE_NAME = /(^|[_\s-])audio[_\s]?message\.[a-z0-9]+$/i;
+/**
  * Extensions that mean "this is a picture somebody took or screenshotted".
  *
  * Wider than the set a model can actually read: .heic is what an iPhone shoots by default and
@@ -1271,7 +1277,7 @@ export function attachmentOf(mediaUrl) {
   if (isLinkPreviewAttachment({ filename })) return null;
   const lower = filename.toLowerCase();
   const kind = VOICE_EXTS.some(e => lower.endsWith(e)) ? "voice"
-    : AUDIO_EXTS.some(e => lower.endsWith(e)) ? "audio"
+    : AUDIO_EXTS.some(e => lower.endsWith(e)) ? (VOICE_MESSAGE_NAME.test(filename) ? "voice" : "audio")
       : IMAGE_EXTS.some(e => lower.endsWith(e)) ? "image"
         : PDF_EXTS.some(e => lower.endsWith(e)) ? "pdf"
           : VIDEO_EXTS.some(e => lower.endsWith(e)) ? "video"
