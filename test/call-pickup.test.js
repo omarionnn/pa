@@ -176,10 +176,11 @@ test("a long greeting (a recording or a menu) gets no opener, and the old quiet-
   assert.equal(s.twilio.media().length, 0);
 });
 
-test("talked over for 0.7 s: the opener stops, the line is cleared, the voice is told they may have missed it", async () => {
-  const s = startCall();
+test("talked over for 0.7 s later in the clip: the opener stops, the line is cleared, the voice is told they may have missed it", async () => {
+  const s = startCall({ clip: { text: "Hi there! I'm calling to ask about a massage for low back pain.", kind: "about", audio: Buffer.alloc(8000 * 4, 0x00) } });
   s.up();
   await line(s, 620, QUIET);
+  await line(s, 1600, QUIET);
   await line(s, 760, SPEECH);
   assert.equal(pick(s, "gptlive_pickup_opener_cut").length, 1);
   assert.ok(s.twilio.sent.some(m => m.event === "clear"));
@@ -244,4 +245,20 @@ test("calls 62/63: a mailbox that isn't set up → the read says so → one text
   assert.equal(out.length, 1);
   assert.match(out[0].body, /^i rang \(646\) 858-0667 to ask about a massage for low back pain but it went to a voicemail box that isn't set up or is full — so it didn't reach anyone/);
   assert.ok(db.getCall(C, row.id).told_at);
+});
+
+test("their hello comes a beat into the silent-line opener: it stops at once and plays again from the top when they finish", async () => {
+  const s = startCall();
+  s.up();
+  await line(s, 620, QUIET);             // the opener starts at ~0.6 s
+  await line(s, 1400, SPEECH);           // "Hi, Chelsea Bodywork, can I help you?" over it
+  assert.equal(pick(s, "gptlive_pickup_opener_again").length, 1);
+  assert.ok(s.twilio.sent.some(m => m.event === "clear"));
+  await line(s, 400, QUIET);
+  const plays = pick(s, "gptlive_pickup_opener");
+  assert.equal(plays.length, 2, "played again after their hello");
+  assert.equal(plays[1].why, "after their hello");
+  assert.equal(pick(s, "gptlive_pickup_opener_cut").length, 0);
+  assert.equal(s.call.turns.filter(t => t.opener).length, 1, "said once in the transcript");
+  assert.equal(s.live.of("session.instructions.append").filter(e => /code just said/.test(e.content)).length, 1, "the voice is told once");
 });

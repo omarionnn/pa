@@ -1537,8 +1537,25 @@ export class GptLiveCall {
     if (t >= p.endsAt) { p.state = "played"; return; }
     if (voiced) {
       p.overFrom ??= t; p.overAt = t;
+      // Their hello a beat into the clip: stop, and say it again once they have finished.
+      if (!p.replayed && t - p.overFrom >= opener.OPENER_OVERLAP_MS && p.overFrom - p.startedAt <= opener.OPENER_REPLAY_WINDOW_MS) return this.replayOpener();
       if (t - p.overFrom >= opener.OPENER_TALKED_OVER_MS) this.cutOpener();
     } else if (p.overAt && t - p.overAt > 300) p.overFrom = null;
+  }
+
+  /** They started their hello over the clip's first words: it stops, and waits for their pause. */
+  replayOpener() {
+    const p = this.pickup;
+    const t = this.now();
+    this.clearPlayback("opener: their hello came over it");
+    this.turns = this.turns.filter(x => x !== p.turn);
+    p.replayed = true;
+    p.state = "waiting";
+    p.theirsFrom = p.overFrom;
+    p.theirsAt = t;
+    p.overFrom = null; p.overAt = 0;
+    p.turn = null;
+    this.log({ gptlive_pickup_opener_again: this.call.id, played_ms: t - p.startedAt });
   }
 
   skipOpener(why) {
@@ -1583,6 +1600,8 @@ export class GptLiveCall {
   tellOpener() {
     const p = this.pickup;
     if (!this.started) { p.tellOnStart = true; return; }
+    if (p.state !== "cut" && p.told) return;
+    p.told = true;
     const said = p.clip.text.replace(/"/g, "'");
     const id = `opener_${this.call.id}`;
     if (p.state === "cut") {

@@ -27,6 +27,13 @@ export const OPENER_AFTER_THEM_MS = 350;
 export const OPENER_MAX_THEIRS_MS = 3500;
 /** Nothing has fitted by now (a line that never pauses): no opener, the live voice handles it. */
 export const OPENER_GIVE_UP_MS = 5000;
+/**
+ * They start talking this early in the clip (a "hello?" a beat after the silent-line opener began —
+ * the 2026-11-07 greet drive: the receptionist started at 0.76 s, the clip at 0.61 s): it stops at once
+ * and plays again from the top once their hello ends. Once only.
+ */
+export const OPENER_OVERLAP_MS = 240;
+export const OPENER_REPLAY_WINDOW_MS = 1500;
 /** They talk this long over the clip: it stops (a person cutting in, or a machine that kept going). */
 export const OPENER_TALKED_OVER_MS = 700;
 
