@@ -340,6 +340,9 @@ export const CONDITIONALLY_GATED = new Set([
   // file is free, and giving another person access is not. Decided in `needsConfirmation` off
   // `with_email`, so a yes is never collected for a link they already had.
   "drive_share",
+  // Saving a standing permission: always asked about, from inside its own handler once every refusal
+  // it can make has been made (see permission_grant). Named here so confirm_request takes the ask.
+  "permission_grant",
 ]);
 
 // Every tool that exists only because the master switched remote building on. Named once, here, and
@@ -4550,7 +4553,7 @@ export const tools = [
   },
   {
     name: "permission_grant",
-    description: "Save a standing permission: a thing they have told you to do WITHOUT asking first, from now on. 'You can reorder groceries without asking', 'reply to scheduling emails yourself', 'you can spend up to $40 on lunch without asking'. Call it the moment they say something like that, and say it back to them once in their own words. `text` is their sentence exactly as they said it, word for word — never tidied, never widened, never your summary of it. `scope` is your reading of it, narrow: which gated action it covers, who or what for, up to how much, and until when if they put a date on it. The scope is what the gate actually checks, so anything you leave out is not covered and anything you widen is a permission they never gave. When they only half said it — 'just order it yourself next time' with no amount on something that costs money — ask for the missing half rather than guessing a number.",
+    description: "Save a standing permission: a thing they have told you to do WITHOUT asking first, from now on. 'You can reorder groceries without asking', 'reply to scheduling emails yourself', 'you can spend up to $40 on lunch without asking'. Saving one is asked about like anything else the gate stops. Call it the moment they say something like that: the first call saves nothing and hands back `use_target`. Then read it back to them as one short plain question in their terms, e.g. save that: I can text Kofi without asking? — what you would stop asking about, for whom (a contact by their NAME, never their number), and any amount, end date or limits — and wait for their answer. Never give them words to type. Call confirm_request with action permission_grant and target set to `use_target` exactly, confirm_record on their reply, and once it is granted call permission_grant again with the same text, scope and caps plus that `confirmation_id`. The yes covers exactly what was read back: anything changed has to be asked again. `text` is their sentence exactly as they said it, word for word — never tidied, never widened, never your summary of it. `scope` is your reading of it, narrow: which gated action it covers, who or what for, up to how much, and until when if they put a date on it. The scope is what the gate actually checks, so anything you leave out is not covered and anything you widen is a permission they never gave. When they only half said it — 'just order it yourself next time' with no amount on something that costs money — ask for the missing half rather than guessing a number.",
     input_schema: {
       type: "object",
       properties: {
@@ -4575,6 +4578,7 @@ export const tools = [
           },
           required: ["per_purchase", "monthly"],
         },
+        confirmation_id: { type: "integer", description: "From confirm_request, once confirm_record says granted. Leave it out the first time: that call saves nothing and tells you what to read back." },
       },
       required: ["text", "scope"],
     },
@@ -6936,7 +6940,7 @@ const S = {
   // and a phone number — and email does not fit in them: a yes for a send has to be shown the whole
   // body, not a precis of it, so a 600-character summary would mean either a truncated email or a
   // gate nobody could use. Still bounded, because both end up in a database row.
-  confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(4_000), stakes: z.string().max(40).optional(), target: z.string().max(300).optional(), amount: z.number().nonnegative().max(1_000_000).optional(), task_id: z.number().int().optional() }),
+  confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(4_000), stakes: z.string().max(40).optional(), target: z.string().max(400).optional(), amount: z.number().nonnegative().max(1_000_000).optional(), task_id: z.number().int().optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
   confirm_pending: z.object({}),
   permission_grant: z.object({
@@ -6951,6 +6955,7 @@ const S = {
       per_purchase: z.number().positive().max(1_000_000),
       monthly: z.number().positive().max(10_000_000),
     }).optional(),
+    confirmation_id: z.number().int().optional(),
   }),
   important_add: z.object({ who: z.string().min(1).max(80), why: z.string().max(300).optional(), contact: z.string().max(200).optional() }),
   important_list: z.object({}),
@@ -8931,6 +8936,24 @@ function uberRideLine(ride) {
  * never from the summary the model wrote, which is what makes "they agreed to this one" a fact about
  * the action rather than a fact about the description.
  */
+/**
+ * What a yes to saving a standing permission is pinned to (permission_grant): everything that would be
+ * saved and nothing the model words for itself. Built from the scope, never from the sentence: the
+ * sentence is checked against their own messages on its own, and what the gate later compares is this.
+ * A number carries who it is on record as, so the read-back can name the person.
+ */
+function permissionYesTarget({ scope, tgt, numeric, who, untilAt, caps }) {
+  const action = trust.toolName(scope.action).trim();
+  const forWhom = !tgt ? "anyone and anything of that kind"
+    : numeric ? `${normalizeNumber(tgt) || tgt} (${who ? String(who).slice(0, 60) : "not on record"})` : `"${tgt}"`;
+  return [
+    `standing permission: ${action} for ${forWhom}`,
+    scope.max_amount ? `, up to $${scope.max_amount} each` : "",
+    untilAt ? `, until ${new Date(untilAt).toISOString()}` : "",
+    caps ? `, limits $${caps.per_purchase} one thing and $${caps.monthly} a month` : "",
+  ].join("");
+}
+
 function confirmTargetFor(name, input, c = null) {
   switch (name) {
     case "message_send": case "voice_note_send": case "call_place":
@@ -12140,7 +12163,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // whether a figure is in it, and both halves are Reason's own composed text.
         details: `${input.summary ?? ""} ${input.target ?? ""}`,
         gated: ALWAYS_NEEDS_CONFIRMATION.has(asked) || CONDITIONALLY_GATED.has(asked),
-        needsTarget: REACHES_SOMEBODY.has(asked) || SPENDS_MONEY.has(asked),
+        // A permission's yes is pinned to what would be saved (permission_grant hands back use_target).
+        needsTarget: REACHES_SOMEBODY.has(asked) || SPENDS_MONEY.has(asked) || asked === "permission_grant",
         canSpend: SPENDS_MONEY.has(asked),
       });
       if (!carries.ok) return carries;
@@ -12340,6 +12364,29 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
               + ` If they really said it, pass their sentence exactly as they typed it. If they did not, do not save one; ask them in one line whether they want you to stop asking about this.`,
           };
       }
+      // Their yes, last. A standing permission skips every later yes it covers, so saving one is itself
+      // asked about, through the same gate as an email or a text to somebody else (owner 11-07): Reason
+      // reads back what it is about to save and nothing is saved until they say yes. Here rather than
+      // up in needsConfirmation for the reason calendar_change's gate is in its handler: everything
+      // above refuses on its own, and asking somebody to agree to a permission that could never be
+      // saved is a question asked in the wrong order. The yes is pinned to what is saved — the action,
+      // who or what for, the amount, the end date, the limits — so a yes to one is never another.
+      const yesTarget = permissionYesTarget({ scope, tgt, numeric, who, untilAt, caps: input.caps });
+      const gate = trust.authorizeConfirmation({ conversationId: c, action: "permission_grant", confirmationId: input.confirmation_id, target: yesTarget });
+      if (!gate.ok) {
+        const named = numeric
+          ? (who ? ` Name the person as ${String(who).slice(0, 60)}, never the number.` : ` That number is not on record as anyone they know, so say the number and that you do not know whose it is.`)
+          : "";
+        return {
+          ...gate, ...(gate.blocked !== "already_spent" ? { use_target: yesTarget } : {}),
+          error: `${gate.error} Nothing was saved. Read it back to them plainly, in their terms, as one short question: what you would stop asking them about,`
+            + ` for whom or what, and any amount, end date or limits on it.${named} Never give them words to type; ask for a plain yes or no.`
+            + ` Then confirm_request with action permission_grant and target set to use_target exactly, and once confirm_record says granted,`
+            + ` call permission_grant again with the same text, scope and caps and that confirmation_id.`,
+        };
+      }
+      // Spent at the attempt, so one yes saves one permission.
+      trust.spendConfirmation(c, gate.confirmation.id);
       const row = db.grantPermission(c, {
         said,
         action: trust.toolName(scope.action).trim(),
