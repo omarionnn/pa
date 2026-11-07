@@ -6954,7 +6954,9 @@ const S = {
   // and a phone number — and email does not fit in them: a yes for a send has to be shown the whole
   // body, not a precis of it, so a 600-character summary would mean either a truncated email or a
   // gate nobody could use. Still bounded, because both end up in a database row.
-  confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(4_000), stakes: z.string().max(40).optional(), target: z.string().max(400).optional(), amount: z.number().nonnegative().max(1_000_000).optional(), task_id: z.number().int().optional() }),
+  // target holds a whole pinned text (up to 1,500 chars) or call brief (goal, 20 facts, the questions)
+  // since audit lead 26, so the old 400 refused real asks.
+  confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(4_000), stakes: z.string().max(40).optional(), target: z.string().max(8_000).optional(), amount: z.number().nonnegative().max(1_000_000).optional(), task_id: z.number().int().optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
   confirm_pending: z.object({}),
   permission_grant: z.object({

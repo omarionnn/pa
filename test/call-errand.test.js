@@ -56,7 +56,9 @@ async function yesFor(summary) {
 }
 
 async function askAndRecord(summary, input) {
-  const asked = await runTool("confirm_request", { action: "call_place", summary, target: trust.personPin("call_place", input) },
+  // An errand leg with no ask of its own asks the errand's questions, and those are in the pin too.
+  const errand = input.errand_id && !Array.isArray(input.ask) ? db.getErrand(C, input.errand_id) : null;
+  const asked = await runTool("confirm_request", { action: "call_place", summary, target: trust.personPin("call_place", errand ? { ...input, ask: errand.questions } : input) },
     { conversationId: C, messages: [owner("do it")] });
   await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
     { conversationId: C, messages: [owner("do it"), owner("yeah go")], judge: async () => ({ verdict: "yes" }) });
@@ -234,7 +236,7 @@ test("an errand hands every leg the same questions, and no leg of an inquiry can
       may_book: true, max_price_cents: 99999, read_back: ["price"],
       confirmation_id: await yesFor(`ring ${to}`, to),
     }, calls);
-    assert.equal(out.ok, true);
+    assert.equal(out.ok, true, JSON.stringify(out));
     assert.equal(out.may_agree, false, "an inquiry errand's leg can never book");
     assert.deepEqual(out.asking, brief.CORE_QUESTIONS);
     legs.push(out);

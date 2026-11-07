@@ -81,7 +81,7 @@ test("call Yaw again four days later with a new message: the call carries the NE
   await sundayCall(calls);
   clock.skip(4 * DAY + 8 * 60 * 60 * 1000);
 
-  const id = await yesFor(`Call Yaw and tell him Omari needs him to text his Reason and ask it to call him, then let Omari know how it goes.`, { to: YAW, goal: GOAL_B, facts: FACTS_B });
+  const id = await yesFor(`Call Yaw and tell him Omari needs him to text his Reason and ask it to call him, then let Omari know how it goes.`, { to: YAW, goal: GOAL_B, facts: FACTS_B, ask: ["Will he text his Reason?"] });
   const out = await runTool("call_place", { to: YAW, goal: GOAL_B, facts: FACTS_B, ask: ["Will he text his Reason?"], confirmation_id: id },
     { conversationId: C, calls });
   assert.equal(out.ok, true, JSON.stringify(out));
@@ -130,7 +130,7 @@ test("a dropped call that COULD have booked still comes back to check first — 
   clock.skip(60 * 60 * 1000);
 
   const NEW = "Ask whether they have a vegetarian tasting menu.";
-  const id = await yesFor(`Call them again and ask whether they have a vegetarian tasting menu.`, { to: YAW, goal: NEW });
+  const id = await yesFor(`Call them again and ask whether they have a vegetarian tasting menu.`, { to: YAW, goal: NEW, ask: ["Is there a vegetarian tasting menu?"] });
   const out = await runTool("call_place", { to: YAW, goal: NEW, ask: ["Is there a vegetarian tasting menu?"], confirmation_id: id },
     { conversationId: C, calls });
   assert.equal(out.ok, true, JSON.stringify(out));

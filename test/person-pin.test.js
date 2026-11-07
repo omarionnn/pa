@@ -117,6 +117,16 @@ test("an errand leg's yes covers the errand's questions, not new ones", async ()
   assert.notEqual(other.use_target, probe.use_target, "other questions are a different call");
 });
 
+test("a long text can still be asked about and sent on its yes", async () => {
+  const { r, fake } = router();
+  const text = `${"Here is the full plan for Saturday, step by step. ".repeat(14)}This is Omari's assistant, Reason.`;
+  assert.ok(text.length > 400);
+  const id = await yesFor("message_send", { to: KOFI, text }, { channels: r });
+  const out = await runTool("message_send", { to: KOFI, text, confirmation_id: id }, { conversationId: C, channels: r });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(fake.sent.length, 1);
+});
+
 test("a yes to one voice note cannot send a different file", async () => {
   const { r } = router();
   const id = await yesFor("voice_note_send", { to: KOFI, file: "/tmp/a.caf", text: "hey" }, { channels: r });
