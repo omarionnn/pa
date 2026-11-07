@@ -39,6 +39,7 @@ import { briefLines } from "./brief.js";
 import { recordingNoticeFor } from "./consent.js";
 import * as ambience from "./ambience.js";
 import * as opener from "./opener.js";
+import { goalPending } from "./goalmet.js";
 import { openingLineFor, recordingNoteFor, whoseCallIsThis, strangerIntake, overCallCap } from "./inbound.js";
 import * as strangerCall from "./stranger.js";
 import * as strangerCalls from "../strangercalls.js";
@@ -2306,6 +2307,9 @@ export async function reasonTurn({ call, messages, log = () => {}, extras = {} }
   return readTurn(out.stream);
 }
 
+/** How long the after-call text waits on the model's read of how the call went. */
+export const GOAL_WAIT_MS = 30_000;
+
 /** The settle path every finished call takes (the steps in ./postcall.js). */
 export async function settleGptLive({ row, live, settle, runtime = null, log = () => {} }) {
   const fresh = db.getCall(row.conversation_id, row.id) ?? row;
@@ -2317,7 +2321,12 @@ export async function settleGptLive({ row, live, settle, runtime = null, log = (
   noteThirdPartyTurns({ row: settled, live });
   const noted = noteOnTask({ row: settled, live, log });
   fromcall.onCallEnded(settled, { log });
-  const told = await tellTheOwner({ row: settled, live, runtime, log });
+  // How the call went is the model's read (./goalmet.js, started by the settle): waited for, briefly,
+  // so the owner is told what really happened — a mailbox that isn't set up is one text of its own.
+  const judging = goalPending(settled.id);
+  if (judging) await Promise.race([judging, new Promise(r => setTimeout(r, GOAL_WAIT_MS))]);
+  const read = db.getCall(settled.conversation_id, settled.id) ?? settled;
+  const told = await tellTheOwner({ row: read, live, runtime, log });
   db.updateCall(settled.conversation_id, settled.id, { settled_at: clock.now() });
   log({ post_call: settled.id, provider: PROVIDER, state: settled.state, recording: settled.recording_state, turns_written: wrote.turns, told: told.sent, task: noted.taskId ?? null });
   return settled;

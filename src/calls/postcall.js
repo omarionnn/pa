@@ -219,6 +219,7 @@ export function noteOnTask({ row, live, log = () => {} }) {
 export async function tellTheOwner({ row, live, runtime = null, log = () => {} }) {
   if (!runtime?.event) return { sent: false, why: "nothing to say it through" };
 
+  if (!row.is_owner && row.outcome_kind === "voicemail_full") return tellUnreached({ row, log });
   if (!row.is_owner) {
     // Work Reason did out of their sight. An interruption on the operator's bill, so it is held to
     // the same daily ceiling as anything else Reason starts.
@@ -257,6 +258,32 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
   }
   log({ call_after_note: row.id, said: !!reply });
   return { sent: !!reply };
+}
+
+/**
+ * A call that reached a mailbox that isn't set up or is full (calls 62/63, 2026-11-01: "the mailbox has
+ * not been set up yet… goodbye", six seconds, and the owner heard nothing useful). Nobody heard Reason
+ * and nothing was left, so they are told so — once, in code's words, not counted as Reason starting a
+ * conversation, and not left to a model recap that may be capped for the day.
+ */
+export function tellUnreached({ row, log = () => {} }) {
+  const who = db.getAccount(row.conversation_id);
+  const address = who?.address && who.address !== "console" ? who.address : "";
+  const channel = who?.channel && who.channel !== "console" ? who.channel : "";
+  if (!address || !channel) return { sent: false, why: "no texting channel on this conversation" };
+  // Once: the column is claimed before anything is queued, and the outbox key is the call's own.
+  const claimed = db.db.prepare("UPDATE calls SET unreached_told_at = ? WHERE id = ? AND unreached_told_at IS NULL").run(clock.now(), row.id).changes === 1;
+  if (!claimed) return { sent: false, why: "already told" };
+  const name = String(row.label ?? "").trim();
+  const them = name || String(row.to_number ?? "").trim() || "them";
+  const { row: queued } = db.enqueueOutbound({
+    idemKey: `call:${row.id}:unreached`, conversationId: row.conversation_id, channel, address,
+    body: `i rang ${them} but it went to a voicemail box that isn't set up or is full — so it didn't reach anyone and no message was left. want me to try again later, or text them instead?`,
+    toOwner: true, maxAttempts: config.outboxMaxAttempts,
+  });
+  db.updateCall(row.conversation_id, row.id, { told_at: clock.now() });
+  log({ call_unreached_told: row.id, outbox: queued.id });
+  return { sent: true, outbox: queued.id };
 }
 
 /**
