@@ -207,7 +207,11 @@ test("a person's own cap overrides the default for them alone; lowering is immed
 
 // ---------------------------------------------------------------- 3. a raise above the default, without a passkey: a yes that expires
 test("without a passkey a raise above the default waits for a yes; yes applies it, no keeps it, and the question runs out after a day", async () => {
-  const ask = await runTool("spend_limit_set", { daily: 250, text: "raise my shopping limit to 250" }, { conversationId: AMA });
+  // Their own messages, as the turn has them: a yes is read off a message of theirs after the ask.
+  const amaSaid = (t) => ({ role: "user", content: `[Sat, Oct 31, 2026, 1:00 PM] Ama: ${t}` });
+  const asked = [amaSaid("raise my shopping limit to 250")];
+  const answered = [...asked, amaSaid("yes, raise it")];
+  const ask = await runTool("spend_limit_set", { daily: 250, text: "raise my shopping limit to 250" }, { conversationId: AMA, messages: asked });
   assert.equal(ask.ok, false);
   assert.equal(ask.needs, "yes");
   assert.ok(ask.change_id > 0);
@@ -224,17 +228,19 @@ test("without a passkey a raise above the default waits for a yes; yes applies i
   assert.equal(spendcap.capFor(AMA).cents, 10000);
   assert.equal(spendcap.changeRow(ask.change_id).status, "declined");
   // Asked again and answered yes: applied, with their words on the row.
-  const ask2 = await runTool("spend_limit_set", { daily: 250, text: "raise my shopping limit to 250" }, { conversationId: AMA });
-  const yes = await runTool("spend_limit_confirm", { change_id: ask2.change_id, answer: "yes" }, { conversationId: AMA });
+  const ask2 = await runTool("spend_limit_set", { daily: 250, text: "raise my shopping limit to 250" }, { conversationId: AMA, messages: asked });
+  // The model's "yes" with nothing from them since the ask changes nothing (security audit 2026-11-06).
+  assert.equal((await runTool("spend_limit_confirm", { change_id: ask2.change_id, answer: "yes" }, { conversationId: AMA, messages: asked, judge: async () => ({ verdict: "yes" }) })).ok, false);
+  const yes = await runTool("spend_limit_confirm", { change_id: ask2.change_id, answer: "yes" }, { conversationId: AMA, messages: answered, judge: async () => ({ verdict: "yes" }) });
   assert.equal(yes.ok, true, JSON.stringify(yes));
   assert.deepEqual([yes.from, yes.to], ["$100", "$250"]);
   assert.equal(spendcap.capFor(AMA).cents, 25000);
   assert.equal(spendcap.ownCap(AMA).said, "raise my shopping limit to 250");
-  assert.equal((await runTool("spend_limit_confirm", { change_id: ask2.change_id, answer: "yes" }, { conversationId: AMA })).ok, false, "a yes is spent once");
+  assert.equal((await runTool("spend_limit_confirm", { change_id: ask2.change_id, answer: "yes" }, { conversationId: AMA, messages: answered, judge: async () => ({ verdict: "yes" }) })).ok, false, "a yes is spent once");
   // A raise asked and left for a day runs out, like any ask about money.
-  const ask3 = await runTool("spend_limit_set", { daily: 400 }, { conversationId: AMA });
+  const ask3 = await runTool("spend_limit_set", { daily: 400 }, { conversationId: AMA, messages: asked });
   clock.skip(24 * HOUR + 1000);
-  const late = await runTool("spend_limit_confirm", { change_id: ask3.change_id, answer: "yes" }, { conversationId: AMA });
+  const late = await runTool("spend_limit_confirm", { change_id: ask3.change_id, answer: "yes" }, { conversationId: AMA, messages: answered, judge: async () => ({ verdict: "yes" }) });
   assert.equal(late.ok, false);
   assert.equal(late.error, "change_expired");
   assert.equal(spendcap.capFor(AMA).cents, 25000);
@@ -315,9 +321,9 @@ test("nobody sets more than $1,000 a day for themselves â€” the owner included â
     assert.equal(q("SELECT COUNT(*) AS n FROM cap_changes WHERE conversation_id = ?").get(c).n, 0, "nothing parked either");
   }
   // Exactly the ceiling is allowed (with the yes).
-  const ask = await runTool("spend_limit_set", { daily: 1000 }, { conversationId: AMA });
+  const ask = await runTool("spend_limit_set", { daily: 1000 }, { conversationId: AMA, messages: [{ role: "user", content: "[Sat, Oct 31, 2026, 1:00 PM] Ama: make it 1000 a day" }] });
   assert.equal(ask.needs, "yes");
-  assert.equal((await runTool("spend_limit_confirm", { change_id: ask.change_id, answer: "yes" }, { conversationId: AMA })).ok, true);
+  assert.equal((await runTool("spend_limit_confirm", { change_id: ask.change_id, answer: "yes" }, { conversationId: AMA, judge: async () => ({ verdict: "yes" }), messages: [{ role: "user", content: "[Sat, Oct 31, 2026, 1:00 PM] Ama: make it 1000 a day" }, { role: "user", content: "[Sat, Oct 31, 2026, 1:01 PM] Ama: yes" }] })).ok, true);
   assert.equal(spendcap.capFor(AMA).cents, 100000);
   assert.equal(spendcap.SELF_MAX_CENTS, 100000);
 });

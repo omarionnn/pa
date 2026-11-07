@@ -69,11 +69,29 @@ export function ownerTexts(messages = []) {
  * call). For a change to the gate itself (a standing permission, spending limits), whose words are
  * the whole of the authority: the model's paraphrase of what they wanted is not their saying it.
  */
+const sayNorm = (t) => String(t ?? "").toLowerCase().normalize("NFKC").replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}$%.'\s]/gu, " ").replace(/\s+/g, " ").trim();
+const LITTLE = new Set(["the", "and", "you", "can", "for", "with", "that", "this", "your", "my", "me", "to", "of", "a", "an", "it", "on", "in", "at", "up", "any", "just", "from", "now"]);
+const contentWords = (t) => sayNorm(t).split(" ").map(w => w.replace(/^[$.']+|[.']+$/g, "")).filter(w => w.length >= 3 && !LITTLE.has(w));
+
 export function ownerSaid(messages, said, { last = 12 } = {}) {
-  const norm = (t) => String(t ?? "").toLowerCase().normalize("NFKC").replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}$%.'\s]/gu, " ").replace(/\s+/g, " ").trim();
-  const want = norm(said);
+  const want = sayNorm(said);
   if (want.length < 4) return false;
-  return ownerTexts(messages).slice(-last).some(t => norm(t).includes(want));
+  const words = contentWords(said);
+  return ownerTexts(messages).slice(-last).some(t => {
+    const theirs = sayNorm(t);
+    if (theirs.includes(want)) return true;
+    // A light retelling of one message of theirs (the model tidied the wording): nearly every word that
+    // carries meaning is theirs. A sentence they never sent shares almost none.
+    if (words.length < 3) return false;
+    const have = new Set(contentWords(t));
+    return words.filter(w => have.has(w)).length / words.length >= 0.8;
+  });
+}
+
+/** Did one recent message of theirs name every one of these dollar amounts? ("$1,500", "1500", "1500.00") */
+export function ownerSaidAmounts(messages, amounts, { last = 12 } = {}) {
+  const nums = (t) => new Set((String(t ?? "").replace(/(\d),(?=\d{3}\b)/g, "$1").match(/\d+(?:\.\d+)?/g) ?? []).map(Number));
+  return ownerTexts(messages).slice(-last).some(t => { const have = nums(t); return amounts.every(a => have.has(Number(a))); });
 }
 
 /**

@@ -58,8 +58,12 @@ const GEO = {
 const geocode = async (q) => GEO[q] ?? null;
 
 /** `siteHosts` is the documented test hook: treat the fixture's host as this real site. */
+// permission_grant and caps_set rest on the owner's own words (src/trust.js ownerSaid): here the owner
+// is taken to have just typed the sentence the tool is given, which is what these tests are about.
+const saidIt = (name, input, messages) => (name === "permission_grant" || name === "caps_set") && input?.text
+  ? [...messages, { role: "user", content: `[Wed, Sep 30, 2026, 2:59 PM] Omari: ${input.text}` }] : messages;
 const call = (name, input, site = null) => runTool(name, input, {
-  conversationId: C, messages, judge: readsYes, geocode,
+  conversationId: C, messages: saidIt(name, input, messages), judge: readsYes, geocode,
   ...(site ? { siteHosts: { [fx.host]: site } } : {}),
 });
 const ref = (snap, pred) => snap.elements.find(pred)?.ref;
@@ -799,14 +803,14 @@ test("caps_show reads off the table, and says plainly when they have set none", 
   assert.doesNotMatch(none.note, /\$\d/, "it must not name a number nobody set");
   assert.ok(none.today?.cap, "the daily limit, which is real, rides along");
 
-  await call("caps_set", { per_purchase: 200, monthly: 1500, text: "raise my limit to $200" });
+  await call("caps_set", { per_purchase: 200, monthly: 1500, text: "raise my limit to $200 a thing, $1500 a month" });
   trust.noteSpend({ conversationId: C, cents: 5840, what: "a chair", site: "amazon" });
   const shown = await call("caps_show", {});
   assert.equal(shown.per_purchase, "$200.00");
   assert.equal(shown.monthly, "$1500.00");
   assert.equal(shown.spent_this_month, "$58.40");
   assert.equal(shown.left_this_month, "$1441.60");
-  assert.equal(shown.they_said, "raise my limit to $200", "their own words are on the record");
+  assert.equal(shown.they_said, "raise my limit to $200 a thing, $1500 a month", "their own words are on the record");
 });
 
 test("limits the wrong way round are not saved", async () => {

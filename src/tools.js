@@ -12464,11 +12464,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // rests on their own sentence, checked in code (security audit 2026-11-06, lead 7).
       const prior = db.getSpendCaps(c);
       const loosens = !prior || perPurchase > prior.per_purchase_cents || monthly > prior.monthly_cents;
-      if (loosens && !trust.ownerSaid(ctx.messages ?? [], said)) {
+      if (loosens && !trust.ownerSaidAmounts(ctx.messages ?? [], [input.per_purchase, input.monthly])) {
         return {
           ok: false, blocked: "not_their_words",
-          error: `Nothing was changed: setting or raising their spending limits needs ${me.name}'s own sentence with the numbers, word for word from one of their messages, as \`text\`.`
-            + ` If they said it, pass it exactly. If not, ask them in one line what the limits should be.`,
+          error: `Nothing was changed: setting or raising their spending limits needs both numbers from one of ${me.name}'s own messages, and no message of theirs names ${trust.money(perPurchase)} and ${trust.money(monthly)}.`
+            + ` Ask them in one line what the most on one thing and the most in a month should be.`,
         };
       }
       db.setSpendCaps(c, { perPurchaseCents: perPurchase, monthlyCents: monthly, said });
