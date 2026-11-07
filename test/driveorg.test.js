@@ -721,3 +721,18 @@ test("every organising tool exists, carries an account parameter, and is gated a
   }
   assert.equal(drive.FOLDER_MIME, FOLDER);
 });
+
+test("a path handed to a tool call is never adopted as theirs, even when that file changes during the call", async () => {
+  mkdirSync(config.documentRoot, { recursive: true });
+  const theirs = join(config.documentRoot, "someone-elses.pdf");
+  const before = Date.now();
+  writeFileSync(theirs, "%PDF-1.4 not yours");
+  // The result echoes the input (voice_note_say's `said`, an error repeating its path): not made here.
+  ownfiles.noteMade("dm:fake:+15550000009", { ok: true, said: theirs }, before, { text: theirs });
+  assert.equal(ownfiles.ownFile("dm:fake:+15550000009", theirs).ok, false);
+  ownfiles.noteMade("dm:fake:+15550000009", { ok: true, said: theirs }, before, { text: "someone-elses.pdf" });
+  assert.equal(ownfiles.ownFile("dm:fake:+15550000009", theirs).ok, false);
+  // The same file, made by the call and not named in what it was given, is theirs.
+  ownfiles.noteMade("dm:fake:+15550000009", { ok: true, path: theirs }, before, { title: "Offer" });
+  assert.equal(ownfiles.ownFile("dm:fake:+15550000009", theirs).ok, true);
+});

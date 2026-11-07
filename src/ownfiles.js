@@ -36,9 +36,14 @@ export const shotPrefix = (conversationId) => `${String(conversationId).replace(
  * result that is a file inside Reason's roots and appeared during the call is this conversation's.
  * Never throws.
  */
-export function noteMade(conversationId, out, since) {
+export function noteMade(conversationId, out, since, input = null) {
   if (!conversationId || !out || typeof out !== "object") return;
   try {
+    // A path the call was GIVEN is never adopted, even when the file changed meanwhile: a voice
+    // note whose text is somebody else's next recording path must not make that recording theirs.
+    const asked = (() => { try { return JSON.stringify(input ?? null); } catch { return ""; } })();
+    // Recordings are made by the call runtime, never by a tool call: theirs by the calls table only.
+    const rec = realOf(config.recordingRoot);
     const seen = new Set();
     const walk = (v, depth) => {
       if (depth > 4 || seen.size > 50) return;
@@ -47,6 +52,8 @@ export function noteMade(conversationId, out, since) {
         seen.add(v);
         const real = realOf(v);
         if (!real || !insideRoots(real)) return;
+        if (rec && real.startsWith(rec + sep)) return;
+        if (asked && (asked.includes(JSON.stringify(v).slice(1, -1)) || asked.includes(JSON.stringify(real).slice(1, -1)) || asked.includes(basename(real)))) return;
         const st = statSync(real);
         // A second of slack for filesystems that keep coarse times; a file older than that was not
         // made by this call.

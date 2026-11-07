@@ -9093,7 +9093,7 @@ async function runToolOnTheirClock(name, rawInput, ctx) {
   const startedAt = Date.now();
   let out = await runToolInner(name, rawInput, ctx);
   // A file this call wrote is this person's, for the tools that take a path later (src/ownfiles.js).
-  if (ctx?.conversationId) ownfiles.noteMade(ctx.conversationId, out, startedAt);
+  if (ctx?.conversationId) ownfiles.noteMade(ctx.conversationId, out, startedAt, rawInput);
   // An approved to-do list with items nothing is working yet (src/todo.js): said on the result of
   // anything that could be one of them, so the model links it while it still knows which. Which item
   // it is, if any, is the model's call. Nothing at all unless REASON_TODO reaches this conversation.
