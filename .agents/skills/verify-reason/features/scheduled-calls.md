@@ -24,7 +24,7 @@ ceiling and the never-twice check reads `db.callByTimer`; `_runTimer` → `_plac
 `src/calls/voice.js` (`scheduledCallNote` in `ownerContext`), `src/kept.js` (`by_phone`),
 `src/agent.js` (the timers line: asked to be called, woken or rung → `then_call`; "remind me" is a
 text).
-Tests: `test/timer-call.test.js` (20 pass at this PR).
+Tests: `test/timer-call.test.js` (21 pass at `sec/lead31-leftovers`).
 
 ## Sub-features
 
@@ -42,7 +42,9 @@ Tests: `test/timer-call.test.js` (20 pass at this PR).
 - **Refusals become one text.** Every refusal `call_place` already makes (no provider, cannot
   record, payment details, daily call count, daily call minutes) comes back as one text under the
   timer's own key, worded for the person (`today's call limit is used up`), never the
-  model-facing instruction or the env var name. API spend caps never stop a call (owner's rule,
+  model-facing instruction or the env var name. A `payment_details_refused` refusal is its own calm
+  line — why (card or account details stay off calls, to keep their money safe), not their fault,
+  ring without them or ask for a pay link — and leaves the goal out, since the goal held the card. API spend caps never stop a call (owner's rule,
   `src/spend.js`); their heads-up text is the ops row's.
 - **Nobody picked up → one text.** `settleCall` queues it (`timer:<id>:call_missed`) once,
   claimed by `markMissedCallTold`, whichever path settled the call: webhook, `call_status`, or

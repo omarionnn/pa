@@ -206,7 +206,6 @@ function unplacedCallLine(t, { status = "", error = "" } = {}) {
     daily_call_minutes_cap: "today's call minutes are used up",
     not_connected: "no phone line is set up on my end",
     cannot_record: "the phone line can't record, and every call has to be",
-    payment_details_refused: "i don't say payment details on a call",
     quiet_hours: "it's the middle of the night",
   }[String(status ?? "")];
   const raw = String(error ?? "");
@@ -215,6 +214,15 @@ function unplacedCallLine(t, { status = "", error = "" } = {}) {
   const provider = /^The call did not go through:\s*/i.test(raw)
     ? raw.split("\n")[0].replace(/^The call did not go through:\s*/i, "").replace(/\s*(Say exactly that|Nobody's phone rang)\b.*$/s, "").trim().replace(/[.:]+$/, "")
     : "";
+  // A call whose goal carries card or account details. Sent by code with no model in the loop, like
+  // every line here (a model turn in front of a wake-up can decide not to send it), so it is one calm
+  // plain line instead of an instruction: why (their money), not their fault, and what can happen
+  // instead. The goal is left out, because it is the thing carrying the card.
+  if (status === "payment_details_refused") {
+    return `tried to call u just now, but i held off: the call would have meant saying card or account details out loud,`
+      + ` and i never say those on a call, to keep ur money safe. nothing wrong on ur end. i can still ring u without them,`
+      + ` or ask the place for a pay link instead. just say which.`;
+  }
   const reason = plain ?? (/no number on file/i.test(raw) ? "there's no number on file for u" : provider);
   return `tried to call u just now — ${t.call_goal} — but the call couldn't be placed${reason ? ` (${reason})` : ""}. so this is the text instead.`;
 }
