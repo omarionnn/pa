@@ -45,11 +45,83 @@ export function isBareRefusal(text) {
   return BARE_REFUSALS.has(t);
 }
 
+/**
+ * What a caller said on a call that was matched to them by caller ID alone, and never passed the
+ * second check (src/calls/verify.js), is written into the thread with this tag (src/calls/postcall.js).
+ * A spoofed number can say anything; those words are kept for the record but are never the owner's
+ * own reply to anything (security audit 2026-11-06, leads 10-12).
+ */
+export const UNVERIFIED_CALL_TAG = "(on the call, caller not verified)";
+const unverifiedSpeech = (content) => /^\[[^\]]*\]\s*[^:]{0,80}\(on the call, caller not verified\):/.test(content)
+  // …and the line postcall.js writes to say a call happened is a note, not anything they said.
+  || /^\[[^\]]*\]\s*\[on a phone call with /.test(content)
+  // …and a line that says Reason wrote first and nothing came from them (events.js, eventrides.js) is
+  // not from them either: an event's name, which somebody else chose, is in it.
+  || /^\[[^\]]*\]\s*\(nothing from them\b/.test(content);
+
 /** The owner's own messages in this conversation, oldest first, with the timestamp prefix stripped. */
 export function ownerTexts(messages = []) {
   return messages
-    .filter(m => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[event "))
+    .filter(m => m.role === "user" && typeof m.content === "string" && !m.content.startsWith("[event ") && !unverifiedSpeech(m.content))
     .map(m => m.content.replace(/^\[[^\]]*\]\s*/, "").replace(/^[^:]{0,40}:\s*/, "").trim());
+}
+
+const sayNorm = (t) => String(t ?? "").toLowerCase().normalize("NFKC").replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}$%.'\s]/gu, " ").replace(/\s+/g, " ").trim();
+const LITTLE = new Set(["the", "and", "you", "can", "for", "with", "that", "this", "your", "my", "me", "to", "of", "a", "an", "it", "on", "in", "at", "up", "any", "just", "from", "now"]);
+const contentWords = (t) => sayNorm(t).split(" ").map(w => w.replace(/^[$.']+|[.']+$/g, "")).filter(w => w.length >= 3 && !LITTLE.has(w));
+
+/**
+ * Only what they typed: a stored message of theirs also carries Reason's own notes on later lines in
+ * [brackets] (the text of a PDF they sent, the message an inline reply was under, which card a number
+ * picks), and none of that is their saying anything.
+ */
+export function typedOnly(t) {
+  // Notes come in two places: one-line ones in front of what they typed (the message an inline reply is
+  // under, which card a number picks) and the rest after it (a PDF's whole text, what a photo was). So:
+  // the one-line notes in front are skipped, and from the first note after their words on, nothing is
+  // theirs. A note's own text can hold a "]" (a document says anything), so its end is never trusted.
+  const lines = String(t).split("\n");
+  let i = 0;
+  while (i < lines.length && /^\s*\[[^\n]*\]\s*$/.test(lines[i])) i++;
+  const out = [];
+  for (; i < lines.length; i++) { if (/^\s*\[/.test(lines[i])) break; out.push(lines[i]); }
+  return out.join("\n").trim();
+}
+const typed = (messages, last) => ownerTexts(messages).slice(-last).map(typedOnly).filter(Boolean);
+
+
+/**
+ * Did the owner really say this? `said` must appear, give or take case, spacing and punctuation, in
+ * one of their own recent messages (`ownerTexts`, so never a tool result, an event or an unverified
+ * call). For a change to the gate itself (a standing permission, spending limits), whose words are
+ * the whole of the authority: the model's paraphrase of what they wanted is not their saying it.
+ */
+export function ownerSaidWhere(messages, said, { last = 12 } = {}) {
+  const want = sayNorm(said);
+  const words = contentWords(said);
+  // A sentence that grants something says what: "ok" or "thanks" quoted back is not a permission.
+  if (words.length < 3) return null;
+  return typed(messages, last).reverse().find(t => {
+    const theirs = sayNorm(t);
+    if (theirs.includes(want)) return true;
+    // A light retelling of one message of theirs (the model tidied the wording): nearly every word that
+    // carries meaning is theirs. A sentence they never sent shares almost none.
+    const have = new Set(contentWords(t));
+    return words.filter(w => have.has(w)).length / words.length >= 0.8;
+  });
+}
+
+/**
+ * True when `said` is in one of their recent typed messages (see ownerSaidWhere). Finding the words is
+ * not knowing what they meant: "never text my mom without asking" holds "text my mom without asking".
+ * A caller that grants something on the strength of it has the message read for meaning as well.
+ */
+export function ownerSaid(messages, said, opts) { return ownerSaidWhere(messages, said, opts) != null; }
+
+/** Did one recent message of theirs name every one of these dollar amounts? ("$1,500", "1500", "1500.00") */
+export function ownerSaidAmounts(messages, amounts, { last = 12 } = {}) {
+  const nums = (t) => new Set((String(t ?? "").replace(/(\d),(?=\d{3}\b)/g, "$1").match(/\d+(?:\.\d+)?/g) ?? []).map(Number));
+  return typed(messages, last).some(t => { const have = nums(t); return amounts.every(a => have.has(Number(a))); });
 }
 
 /**

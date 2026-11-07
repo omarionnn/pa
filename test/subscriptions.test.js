@@ -73,8 +73,12 @@ let routes;
 const readsYes = async () => ({ verdict: "yes" });
 const owner = (text) => ({ role: "user", content: `[Tue, Oct 6, 2026, 9:00 AM] Omari: ${text}` });
 
+// permission_grant and caps_set rest on the owner's own words (src/trust.js ownerSaid): here the owner
+// is taken to have just typed the sentence the tool is given, which is what these tests are about.
+const saidIt = (name, input, messages) => (name === "permission_grant" || name === "caps_set") && input?.text
+  ? [...messages, { role: "user", content: `[Wed, Sep 30, 2026, 2:59 PM] Omari: ${input.text}` }] : messages;
 const call = (name, input, { conversationId = C, messages = [], ...extra } = {}) =>
-  runTool(name, input, { conversationId, messages, judge: readsYes, cancelRoutes: routes, ...extra });
+  runTool(name, input, { conversationId, messages: saidIt(name, input, messages), judge: readsYes, cancelRoutes: routes, ...extra });
 
 const ref = (snap, pred) => (snap.elements ?? []).find(pred)?.ref;
 

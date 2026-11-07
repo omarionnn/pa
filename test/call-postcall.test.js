@@ -158,7 +158,8 @@ test("an owner call lands in their thread as turns, so a text ten minutes later 
   assert.match(String(thread[0].content), /9s/);
   // Their words are theirs, and Reason's are Reason's.
   assert.equal(thread[1].role, "assistant");
-  assert.match(String(thread[2].content), /Omari \(on the call\): yeah, make it Friday instead of Saturday/);
+  // An inbound call matched by caller ID alone is tagged: the words are kept, but are never the owner's yes.
+  assert.match(String(thread[2].content), /Omari \(on the call, caller not verified\): yeah, make it Friday instead of Saturday/);
   assert.equal(thread[3].role, "assistant");
   assert.match(String(thread[3].content), /Friday it is/);
   // A thread must not end on a user turn nothing answered, or the next real message reads as a

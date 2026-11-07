@@ -34,6 +34,8 @@ import { config, clock, stamp } from "../config.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING } from "./provider.js";
 import { mimeFor } from "./recordings.js";
 import * as fromcall from "./fromcall.js";
+import * as verify from "./verify.js";
+import { UNVERIFIED_CALL_TAG } from "../trust.js";
 import * as callOutcome from "./outcome.js";
 import { endFieldsFor } from "./metrics.js";
 
@@ -252,8 +254,11 @@ export function writeCallIntoThread({ row, live, log = () => {} }) {
     role: "user",
     content: `[${stamp(at)}] [on a phone call with ${who.name}, ${row.direction === "in" ? "they called" : "you rang them"}${row.duration_s ? `, ${Math.round(row.duration_s)}s` : ""}]`,
   });
+  // A caller matched by caller ID alone, never verified, is kept for the record but tagged, so none of
+  // it can ever count as the owner's own yes (src/trust.js ownerTexts): caller ID can be spoofed.
+  const heard = verify.isVerified(row) ? "(on the call)" : UNVERIFIED_CALL_TAG;
   for (const t of all) {
-    if (t.who === "them") messages.push({ role: "user", content: `[${stamp(at)}] ${who.name} (on the call): ${t.text}` });
+    if (t.who === "them") messages.push({ role: "user", content: `[${stamp(at)}] ${who.name} ${heard}: ${t.text}` });
     else messages.push({ role: "assistant", content: t.text });
   }
   // What was really looked up on the call, so the texts after it do not "correct" an answer that was

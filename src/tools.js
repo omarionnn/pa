@@ -40,6 +40,7 @@ import * as x from "./x.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
 import * as ownfiles from "./ownfiles.js";
+import { judgeReply } from "./judge.js";
 import { publicUrl } from "./netguard.js";
 import * as drivePdf from "./pdf.js";
 import { webLookup } from "./weblookup.js";
@@ -12299,6 +12300,46 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (Number.isNaN(untilAt)) return { ok: false, error: `Could not read '${scope.until}' as a date. Use ISO 8601, or leave it out if they did not put an end on it.` };
         if (untilAt <= clock.now()) return { ok: false, error: `${stamp(untilAt)} is already past, so that permission would cover nothing. Check which day they meant.` };
       }
+      // A standing permission skips every later yes it covers, so its authority is their own sentence and
+      // nothing else: it must be in one of their recent messages, checked in code (security audit
+      // 2026-11-06, lead 4). A page, an email or a call transcript the model read is not them saying it.
+      // Their words are found in code; what they MEANT is read by the same judge that reads a yes, never a
+      // pattern: "never text my mom without asking" holds the words of a permission and means the opposite.
+      const theirMessage = trust.ownerSaidWhere(ctx.messages ?? [], said);
+      // What would be saved, built from the scope only (never from the model's `said`): the judge reads
+      // their own message against it. A number is shown with who it is on record as, so "text Kofi
+      // whenever" is not read as covering somebody else's number.
+      const tgt = String(scope.target ?? "").trim().slice(0, 200);
+      const numeric = tgt && /^[+\d\s().-]+$/.test(tgt);
+      const who = numeric ? db.knownPersonByNumber(c, tgt)?.who : null;
+      const capsAsk = input.caps ? `, and set their spending limits to $${input.caps.per_purchase} on one thing and $${input.caps.monthly} a month` : "";
+      const grants = [
+        `From now on, Reason may do this without asking first: ${String(scope.action).replace(/_/g, " ")}`,
+        tgt ? ` (only for ${numeric ? `the number ${tgt}, ${who ? `on record as ${String(who).slice(0, 60)}` : "which is not on record as anyone they know"}` : `"${tgt}"`})` : " (for anyone and anything of that kind)",
+        scope.max_amount ? `, up to $${scope.max_amount} each time` : "",
+        capsAsk, ".",
+      ].join("");
+      if (input.caps) {
+        const prior = db.getSpendCaps(c);
+        const loosens = !prior || Math.round(input.caps.per_purchase * 100) > prior.per_purchase_cents || Math.round(input.caps.monthly * 100) > prior.monthly_cents;
+        if (loosens && !trust.ownerSaidAmounts(ctx.messages ?? [], [input.caps.per_purchase, input.caps.monthly])) {
+          return { ok: false, blocked: "not_their_words", error: `Nothing was saved: the spending limits have to be numbers from one of ${me.name}'s own messages, and none of them names $${input.caps.per_purchase} and $${input.caps.monthly}. Ask them in one line.` };
+        }
+      }
+      const meant = theirMessage ? await (ctx.judge ?? judgeReply)({ summary: grants, reply: theirMessage }) : null;
+      if (!theirMessage || meant?.verdict !== "yes") {
+        return theirMessage
+          ? {
+            ok: false, blocked: "not_what_they_said",
+            error: `Nothing was saved: their message ("${theirMessage.slice(0, 200)}") does not read as letting you do that without asking.`
+              + ` Do not save one; if it is unclear, ask them in one line whether they want you to stop asking about this.`,
+          }
+          : {
+            ok: false, blocked: "not_their_words",
+            error: `Nothing was saved: a standing permission has to be ${me.name}'s own sentence, word for word from one of their messages, and this is not in any of them.`
+              + ` If they really said it, pass their sentence exactly as they typed it. If they did not, do not save one; ask them in one line whether they want you to stop asking about this.`,
+          };
+      }
       const row = db.grantPermission(c, {
         said,
         action: trust.toolName(scope.action).trim(),
@@ -12450,6 +12491,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const hasSecret = looksLikeACredential(said);
       if (hasSecret) return refuseCredential(hasSecret, { what: "that, so the limits were not changed either", ownerName: me.name });
       const before = trust.capsView(c);
+      // Lowering is always fine. Setting or raising one decides what can be bought without asking, so it
+      // rests on their own sentence, checked in code (security audit 2026-11-06, lead 7).
+      const prior = db.getSpendCaps(c);
+      const loosens = !prior || perPurchase > prior.per_purchase_cents || monthly > prior.monthly_cents;
+      if (loosens && !trust.ownerSaidAmounts(ctx.messages ?? [], [input.per_purchase, input.monthly])) {
+        return {
+          ok: false, blocked: "not_their_words",
+          error: `Nothing was changed: setting or raising their spending limits needs both numbers from one of ${me.name}'s own messages, and no message of theirs names ${trust.money(perPurchase)} and ${trust.money(monthly)}.`
+            + ` Ask them in one line what the most on one thing and the most in a month should be.`,
+        };
+      }
       db.setSpendCaps(c, { perPurchaseCents: perPurchase, monthlyCents: monthly, said });
       const now = trust.capsView(c);
       return {

@@ -43,8 +43,15 @@ export function isConsequential(name, input = null, { toSelf = () => false } = {
   // options" on his own call was held for a check that texted the same phone). Whoever is holding
   // this phone, the words land with the owner, so there is nothing for a voice to authorize.
   if (SELF_SENDS.has(name) && input && toSelf(input.to)) return false;
-  return GATED_ACTIONS.has(name) || name === "confirm_record";
+  return GATED_ACTIONS.has(name) || name === "confirm_record" || CHANGES_THE_GATE.has(name);
 }
+
+/**
+ * What changes the gate itself rather than passing through it: a standing permission skips later yeses,
+ * and a spending limit decides what needs one. A voice on a caller-ID-only call must never set either
+ * (security audit 2026-11-06, lead 11), so these wait for the check like anything consequential.
+ */
+const CHANGES_THE_GATE = new Set(["permission_grant", "caps_set", "spend_limit_set", "spend_limit_confirm"]);
 
 /** Sends whose `to` may be the owner themself: those are not gated when it is. */
 const SELF_SENDS = new Set(["message_send"]);

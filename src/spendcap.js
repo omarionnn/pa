@@ -49,6 +49,9 @@ db.db.exec(`
   );
   CREATE INDEX IF NOT EXISTS cap_changes_open ON cap_changes (conversation_id, status);
 `);
+// How many of their own messages there were when a raise was asked about by text: a yes has to be a
+// message of theirs that came AFTER it (src/shoptools.js spend_limit_confirm), the same rule as the gate.
+try { db.db.exec("ALTER TABLE cap_changes ADD COLUMN asked_after_msgs INTEGER"); } catch { /* there already */ }
 const q = (sql) => db.db.prepare(sql);
 
 /** "$100", "$1,000", "$82.50": whole when whole, thousands marked, as a person writes money. */
@@ -128,7 +131,7 @@ export const changeRow = (id) => q("SELECT * FROM cap_changes WHERE id = ?").get
  * refused above the ceiling; otherwise parked as an open change and the caller is told what it needs —
  * `face_id` with a link, or `yes` to a question. Any older open change is replaced.
  */
-export function requestChange(conversationId, cents, { said = "", via = "text" } = {}) {
+export function requestChange(conversationId, cents, { said = "", via = "text", askedAfterMsgs = null } = {}) {
   const now = capFor(conversationId);
   if (!Number.isInteger(cents) || cents <= 0) return { ok: false, error: "bad_amount", cap: money(now.cents) };
   if (cents > SELF_MAX_CENTS) return { ok: false, error: "over_ceiling", ceiling: money(SELF_MAX_CENTS), ceiling_cents: SELF_MAX_CENTS, cap: money(now.cents) };
@@ -143,6 +146,7 @@ export function requestChange(conversationId, cents, { said = "", via = "text" }
   const r = q("INSERT INTO cap_changes (conversation_id, from_cents, to_cents, said, via, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, 'asked', ?, ?)")
     .run(conversationId, now.cents, cents, String(said ?? "").slice(0, 300), via, clock.now(), clock.now() + changeTtlMs());
   const id = Number(r.lastInsertRowid);
+  if (askedAfterMsgs != null) q("UPDATE cap_changes SET asked_after_msgs = ? WHERE id = ?").run(Number(askedAfterMsgs), id);
   const base = { ok: false, pending: true, change_id: id, from: money(now.cents), to: money(cents), from_cents: now.cents, to_cents: cents, expires_at: clock.now() + changeTtlMs() };
   if (passkey.requiredFor(conversationId)) {
     const token = passkey.createApproval(approvalRow(id));
