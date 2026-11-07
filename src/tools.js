@@ -12302,7 +12302,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // A standing permission skips every later yes it covers, so its authority is their own sentence and
       // nothing else: it must be in one of their recent messages, checked in code (security audit
       // 2026-11-06, lead 4). A page, an email or a call transcript the model read is not them saying it.
-      if (!trust.ownerSaid(ctx.messages ?? [], said)) {
+      // And their sentence has to be about the thing being given away: a quote of "order the usual
+      // groceries" is not a sentence about texting anyone (the category is the model's to pick).
+      const ABOUT = {
+        purchases: /\b(buy|bought|order|reorder|purchas|spend|pay|checkout|shop)/i, email: /\b(e-?mail|mail|inbox|reply|replies)\b/i,
+        mail_tidying: /\b(e-?mail|mail|inbox|archive|label|trash|delete|tidy|clean)/i, texts: /\b(text|message|msg|sms|imessage|voice note)/i,
+        calls: /\b(call|ring|phone|dial)/i, calendar_invites: /\b(calendar|invite|event|meeting|schedule)/i, accounts: /\b(account|connect|sign|log ?in)/i,
+        subscriptions: /\b(subscri|cancel|membership)/i, drive_tidying: /\b(drive|file|folder|tidy|clean|trash|move|organi[sz])/i,
+        tweets: /\b(tweet|post|x\b|twitter|retweet|like|repl)/i, x_bookmarks: /\b(bookmark)/i, x_dms: /\b(dm|direct message|message)/i,
+      };
+      const aboutIt = ABOUT[String(scope.action ?? "")];
+      if (!trust.ownerSaid(ctx.messages ?? [], said) || (aboutIt && !aboutIt.test(said))) {
         return {
           ok: false, blocked: "not_their_words",
           error: `Nothing was saved: a standing permission has to be ${me.name}'s own sentence, word for word from one of their messages, and this is not in any of them.`

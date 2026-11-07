@@ -55,7 +55,10 @@ export function isBareRefusal(text) {
 export const UNVERIFIED_CALL_TAG = "(on the call, caller not verified)";
 const unverifiedSpeech = (content) => /^\[[^\]]*\]\s*[^:]{0,80}\(on the call, caller not verified\):/.test(content)
   // …and the line postcall.js writes to say a call happened is a note, not anything they said.
-  || /^\[[^\]]*\]\s*\[on a phone call with /.test(content);
+  || /^\[[^\]]*\]\s*\[on a phone call with /.test(content)
+  // …and a line that says Reason wrote first and nothing came from them (events.js, eventrides.js) is
+  // not from them either: an event's name, which somebody else chose, is in it.
+  || /^\[[^\]]*\]\s*\(nothing from them\b/.test(content);
 
 export function ownerTexts(messages = []) {
   return messages
@@ -73,16 +76,24 @@ const sayNorm = (t) => String(t ?? "").toLowerCase().normalize("NFKC").replace(/
 const LITTLE = new Set(["the", "and", "you", "can", "for", "with", "that", "this", "your", "my", "me", "to", "of", "a", "an", "it", "on", "in", "at", "up", "any", "just", "from", "now"]);
 const contentWords = (t) => sayNorm(t).split(" ").map(w => w.replace(/^[$.']+|[.']+$/g, "")).filter(w => w.length >= 3 && !LITTLE.has(w));
 
+/**
+ * Only what they typed: a stored message of theirs also carries Reason's own notes on later lines in
+ * [brackets] (the text of a PDF they sent, the message an inline reply was under, which card a number
+ * picks), and none of that is their saying anything.
+ */
+const typed = (messages, last) => ownerTexts(messages).slice(-last)
+  .map(t => t.split("\n").filter(l => !/^\s*\[/.test(l)).join("\n").trim()).filter(Boolean);
+
 export function ownerSaid(messages, said, { last = 12 } = {}) {
   const want = sayNorm(said);
-  if (want.length < 4) return false;
   const words = contentWords(said);
-  return ownerTexts(messages).slice(-last).some(t => {
+  // A sentence that grants something says what: "ok" or "thanks" quoted back is not a permission.
+  if (words.length < 3) return false;
+  return typed(messages, last).some(t => {
     const theirs = sayNorm(t);
     if (theirs.includes(want)) return true;
     // A light retelling of one message of theirs (the model tidied the wording): nearly every word that
     // carries meaning is theirs. A sentence they never sent shares almost none.
-    if (words.length < 3) return false;
     const have = new Set(contentWords(t));
     return words.filter(w => have.has(w)).length / words.length >= 0.8;
   });
@@ -91,7 +102,7 @@ export function ownerSaid(messages, said, { last = 12 } = {}) {
 /** Did one recent message of theirs name every one of these dollar amounts? ("$1,500", "1500", "1500.00") */
 export function ownerSaidAmounts(messages, amounts, { last = 12 } = {}) {
   const nums = (t) => new Set((String(t ?? "").replace(/(\d),(?=\d{3}\b)/g, "$1").match(/\d+(?:\.\d+)?/g) ?? []).map(Number));
-  return ownerTexts(messages).slice(-last).some(t => { const have = nums(t); return amounts.every(a => have.has(Number(a))); });
+  return typed(messages, last).some(t => { const have = nums(t); return amounts.every(a => have.has(Number(a))); });
 }
 
 /**
