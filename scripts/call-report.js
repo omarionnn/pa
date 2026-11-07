@@ -24,6 +24,8 @@ if (at > -1 && !Number.isFinite(since)) {
 }
 
 const sqlite = new DatabaseSync(path, { readOnly: true });
+// Wait out a writer's lock instead of failing at once (src/db.js BUSY_TIMEOUT_MS).
+sqlite.exec("PRAGMA busy_timeout = 5000");
 const report = buildCallReport(sqlite, { since });
 sqlite.close();
 console.log(process.argv.includes("--json") ? JSON.stringify(report, null, 2) : formatCallReport(report));

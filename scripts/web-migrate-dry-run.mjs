@@ -43,6 +43,8 @@ for (const ext of ["-wal", "-shm"]) if (existsSync(abs + ext)) copyFileSync(abs 
 
 function snapshot(path) {
   const d = new DatabaseSync(path);
+  // Wait out a writer's lock instead of failing at once (src/db.js BUSY_TIMEOUT_MS).
+  d.exec("PRAGMA busy_timeout = 5000");
   try {
     const integrity = d.prepare("PRAGMA integrity_check").all().map(r => Object.values(r)[0]);
     const tables = d.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(r => r.name);

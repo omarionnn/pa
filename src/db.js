@@ -12,7 +12,16 @@ import { parseSheet, applyPatch, addSteer, emptySheet } from "./sheet.js";
 mkdirSync(dirname(config.dbPath), { recursive: true });
 export const db = new DatabaseSync(config.dbPath);
 
+/**
+ * How long a write waits for another connection's lock before SQLite gives up with "database is
+ * locked". SQLite's default is 0: the recall backfill (scripts/recall-backfill.mjs, its own process)
+ * writing beside the running server failed twice on live on 11-06 with no wait at all. Every
+ * connection Reason opens sets it (scripts/call-report.js, scripts/web-migrate-dry-run.mjs too).
+ */
+export const BUSY_TIMEOUT_MS = 5000;
+
 db.exec(`
+  PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};
   PRAGMA journal_mode = WAL;
   CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
