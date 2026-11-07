@@ -87,11 +87,13 @@ export async function covers({ conversationId: c, input = {}, messages = [], kin
     const prompt = `The user's latest messages, newest last:\n${words.map(w => `- ${w}`).join("\n")}`
       + `\n\nThe call about to be placed:\nnumber: ${number}\nfor: ${String(input.goal ?? "").trim()}`
       + `\nmay say about them: ${(input.facts ?? []).map(String).join("; ") || "nothing"}`;
-    let value = null;
+    let value = null, error = null;
     try {
-      const r = await ask({ prompt, system: INSTRUCTIONS, schema: SCHEMA, model: "haiku", feature: "call_gate", timeoutMs: 20_000 });
+      const r = await ask({ prompt, system: INSTRUCTIONS, schema: SCHEMA, model: "haiku", feature: "call_gate", timeoutMs: 45_000 });
       value = r?.value ?? null;
-    } catch { value = null; }
+      error = r?.error ?? null;
+    } catch (e) { value = null; error = e?.message ?? String(e); }
+    if (process.env.REASON_CALL_GATE_TRACE) console.error("[call_gate]", JSON.stringify({ value, error, words }));
     hit = { at: now, value };
     seen.set(key, hit);
   }

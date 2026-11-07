@@ -48,7 +48,7 @@ db.upsertAccount({ conversationId: C, channel: "console", address: process.env.R
 
 const SCENARIOS = {
   hours: { say: "call joe's pizza at (212) 555-0188 and ask what time they close tonight", wantPlaced: true },
-  book: { say: "call joe's pizza at (212) 555-0188 and book a table for 4 at 8 tonight", wantPlaced: false },
+  book: { say: "call joe's pizza at (212) 555-0188 and book a table for 4 at 8pm tomorrow, saturday", wantPlaced: false },
 };
 const pick = process.argv.slice(2).filter(a => SCENARIOS[a]);
 let failed = 0;
