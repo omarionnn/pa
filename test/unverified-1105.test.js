@@ -122,17 +122,28 @@ for (const backend of ["cli", "api"]) {
     assert.equal(old.sent, `it was $1,850 as of ${asOf}, when you told me.`);
   });
 
-  test(`[${backend}] a price nothing backs goes back once, and goes out with ONE plain hedge in Reason's words`, async () => {
+  test(`[${backend}] a price nothing backs goes back once; if the rewrite still keeps it, hedged or not, it is dropped, not sent`, async () => {
     const draft = "the ferry's $4.50 each way and the bus is $2.90, so the ferry's worth it for the view.";
-    const fixed = "the ferry's $4.50 each way and the bus is $2.90 — haven't confirmed those fares yet, but the ferry's worth it for the view.";
+    const fixed = "the ferry's $4.50 each way and the bus is $2.90 — haven't confirmed those fares yet. either way the ferry's worth it for the view.";
     const out = await exchange(backend, { text: "ferry or bus to red hook?", drafts: [draft, fixed] });
     assert.equal(out.runs, 2, "one rewrite");
     assert.match(out.prompts[1], /Your draft reply was NOT sent/);
     assert.match(out.prompts[1], /\$4\.50, \$2\.90/);
-    assert.match(out.prompts[1], /say ONCE, in your own words/);
-    assert.equal(out.sent, fixed);
-    assert.equal(hedges(out.sent), 1);
-    assert.doesNotMatch(out.sent, /\(unverified\)/);
+    assert.match(out.prompts[1], /leave the figure out/);
+    assert.equal(out.sent, "either way the ferry's worth it for the view.");
+    assert.doesNotMatch(out.sent, /\$4\.50|\$2\.90|\(unverified\)/);
+  });
+
+  test(`[${backend}] a rewrite that is nothing but the unchecked price: one plain line goes instead`, async () => {
+    const out = await exchange(backend, { text: "how much is the ferry?", drafts: ["it's $4.50.", "it's $4.50, i think."] });
+    assert.equal(out.runs, 2);
+    assert.equal(out.sent, offers.PRICE_LEFT_OUT);
+  });
+
+  test(`[${backend}] a rewrite that leaves the price out goes as written`, async () => {
+    const out = await exchange(backend, { text: "ferry or bus to red hook?", drafts: ["the ferry's $4.50.", "the ferry, for the view. want me to check the fare?"] });
+    assert.equal(out.runs, 2);
+    assert.equal(out.sent, "the ferry, for the view. want me to check the fare?");
   });
 
   test(`[${backend}] the rewrite may check instead: a figure read on the rewrite goes out plain`, async () => {
@@ -156,7 +167,7 @@ for (const backend of ["cli", "api"]) {
     assert.doesNotMatch(out.sent, /SAVE20|20% off|coupon/i);
   });
 
-  test(`[${backend}] a gold brief: read figures and their rounding go plain; one unchecked target means one rewrite and at most one hedge`, async () => {
+  test(`[${backend}] a gold brief: read figures and their rounding go plain; one unchecked target means one rewrite, and the target's sentence is dropped if kept`, async () => {
     const quote = { symbol: "XAUUSD", last: 4012.35, previous_close: 3987.1, day_high: 4031.8, silver: { last: 48.213 } };
     const draft = "gold's at $4,012 this morning, up from $3,987 at yesterday's close. it touched $4,031 overnight and is sitting just over $4k. silver's $48.21. analysts are calling for $4,250 by year end.";
     const fixed = "gold's at $4,012 this morning, up from $3,987 at yesterday's close. it touched $4,031 overnight and is sitting just over $4k. silver's $48.21. some analysts are calling for $4,250 by year end — that one i haven't confirmed.";
@@ -167,8 +178,7 @@ for (const backend of ["cli", "api"]) {
     assert.equal(out.runs, 2);
     assert.match(out.prompts[1], /\$4,250/);
     assert.doesNotMatch(out.prompts[1].split("The draft:")[0], /\$4,012|\$3,987|\$4,031|\$4k|\$48\.21/, "read figures and their rounding are not sent back");
-    assert.equal(out.sent, fixed);
-    assert.ok(hedges(out.sent) <= 1, out.sent);
+    assert.equal(out.sent, "gold's at $4,012 this morning, up from $3,987 at yesterday's close. it touched $4,031 overnight and is sitting just over $4k. silver's $48.21.");
   });
 
   test(`[${backend}] gate 11-05: a reply with no figure and no deal pays for nothing — one run, no history read`, async () => {
@@ -211,7 +221,7 @@ test("gate 11-05: BOGO, free shipping and $10 off are deals: unsourced, sent bac
   assert.equal(offers.guardReply(C, "vitamins are buy one get one, with free shipping.").flags.some(f => f.rule === "discount_unsourced"), false);
 });
 
-test("message_send: an unchecked deal is refused every time; an unchecked figure once", async () => {
+test("message_send: an unchecked deal or price is refused every time, hedged or not", async () => {
   const sent = [];
   const channels = { list: () => [{ name: "test" }], send: async (m) => { sent.push(m); return { ok: true, delivered: true }; } };
   const call = (input) => runTool("message_send", input, { conversationId: C, messages: [], channels });
@@ -224,8 +234,10 @@ test("message_send: an unchecked deal is refused every time; an unchecked figure
   const fare = await call({ to: "owner", text: "the ferry's $4.50" });
   assert.equal(fare.blocked, "unchecked_figures");
   const again = await call({ to: "owner", text: "the ferry's $4.50, haven't confirmed it" });
-  assert.equal(again.ok, true, JSON.stringify(again));
-  assert.deepEqual(sent.map(m => m.text), ["the ferry's $4.50, haven't confirmed it"]);
+  assert.equal(again.blocked, "unchecked_figures", "hedged or not, an unchecked price does not go");
+  const plain = await call({ to: "owner", text: "the ferry's the nicer ride — want me to check the fare?" });
+  assert.equal(plain.ok, true, JSON.stringify(plain));
+  assert.deepEqual(sent.map(m => m.text), ["the ferry's the nicer ride — want me to check the fare?"]);
 });
 
 test("a photo looked at this turn whose words are not in hand yet: its figures are not sent back", () => {
@@ -271,4 +283,25 @@ test("pinned real run 11-05: the tip's percent is in THEIR message, not the repl
   offers.beginTurn(C, "dinner was 84, what's an 18% tip and what do the 3 of us each owe?");
   const g = offers.guardReply(C, "The tip is $15.12, which makes the total $99.12.\n\nSplit 3 ways, you each owe $33.04.");
   assert.equal(g.recompose, null, JSON.stringify(g.flags));
+});
+
+test("review 11-07: only a number they used as money is theirs — a zip, a room, an age, minutes or a count vouch for no price", () => {
+  theySaid("my zip is 10001, i'm in room 304, i'm 25 and it took 45 minutes. there were 30 people", DAY);
+  offers.beginTurn(C, "what does the hotel charge?");
+  const g = offers.guardReply(C, "it's $304 a night, $45 for parking, $25 resort fee, $30 breakfast, $10001 all in");
+  assert.deepEqual(g.flags.find(f => f.rule === "dollar_unsourced")?.figures, ["$304", "$45", "$25", "$30", "$10001"]);
+});
+
+test("review 11-07: a plain number they did use as money still counts — budget, rent, a bill, a per-month", () => {
+  for (const [said, reply] of [
+    ["keep it under 100", "found one at $100"],
+    ["rent is 1850", "rent's $1,850"],
+    ["dinner was 84, what's the tip", "on $84 that's"],
+    ["the family plan is 25 a month for me", "the family plan at $25"],
+    ["my budget is 40", "under your $40"],
+    ["i paid 250 for it", "you paid $250"],
+  ]) {
+    offers.beginTurn(C, said);
+    assert.equal(offers.guardReply(C, reply).recompose, null, `${said} -> ${reply}`);
+  }
 });

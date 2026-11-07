@@ -10658,9 +10658,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // The figures check the reply gets (src/offers.js guardReply), on this message too: before
       // 2026-10-23 a price texted mid-turn skipped it, so a remembered shipping fee could go out as
       // fact as long as it went by message_send. Nothing is labelled in code (2026-11-05): a figure
-      // nothing backs — not read this turn, not theirs, not remembered — is sent back once, unsent,
-      // to be checked or said once in plain words to be unconfirmed; the next try goes. An unchecked
-      // coupon or deal is sent back every time. To anybody else, anything the check would change
+      // nothing backs — not read this turn, not theirs, not remembered — is sent back, unsent, every
+      // time until it is checked or left out (2026-11-07: an unchecked price never goes, hedged or
+      // not), and so is an unchecked coupon or deal. To anybody else, anything the check would change
       // is refused, never altered in their name. A release from the undo window was checked when it
       // was parked and is not checked again against a later turn.
       let text = input.text;

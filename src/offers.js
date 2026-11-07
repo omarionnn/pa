@@ -455,16 +455,36 @@ function sourceAmounts(text, { bare = false } = {}) {
   for (const m of t.matchAll(/(\d[\d,]*(?:\.\d{1,2})?)\s?(?:dollars|bucks|USD)\b/gi)) add(m[1]);
   for (const m of t.matchAll(/(?:USD|price\\?"?\s*:\s*\\?"?)\s?(\d[\d,]*(?:\.\d{1,2})?)/gi)) add(m[1]);
   for (const m of t.matchAll(/(\d+(?:\.\d+)?)\s?k\b/gi)) add(m[1], 100_000);
-  // What THEY wrote, sent or are remembered by: a plain number in it counts too ("keep it under 100").
-  // Not a small one — "3 of us", "at 4" would vouch for any invented $3 or $4 — nor a year. A tool's
-  // JSON is never read this way: its ids and timestamps are not prices.
+  // What THEY wrote, sent or are remembered by: a plain number in it counts too — but only one they
+  // used as money ("keep it under 100", "rent is 1850", "dinner was 84, what's the tip"), never every
+  // number they typed: a zip, a room, an age or "45 minutes" vouched for any invented $10001 or $45
+  // (review 11-05). Not a small one — "3 of us", "at 4" — nor a year. A tool's JSON is never read
+  // this way: its ids and timestamps are not prices.
   if (bare) {
     for (const m of t.matchAll(/(?<![\d.,:\/-])(\d[\d,]*)(?![\d.,:\/]?\d)/g)) {
       const n = Number(m[1].replace(/,/g, ""));
-      if (n >= 20 && !(n >= 1900 && n <= 2100 && !m[1].includes(","))) add(m[1]);
+      if (n < 20 || (n >= 1900 && n <= 2100 && !m[1].includes(","))) continue;
+      if (usedAsMoney(t, m.index, m.index + m[0].length)) add(m[1]);
     }
   }
   return out;
+}
+
+// Whether a plain number in their words is a sum of money: a structured-token read of the words
+// around it, the same kind of parse as "$" itself. A unit after it ("45 minutes", "300 miles",
+// "20 of us") says it is not; a money word before it ("under", "budget", "rent is") or in the same
+// sentence ("dinner was 84, what's the tip") says it is. Neither: it is not theirs as a price.
+const NOT_MONEY_UNIT = /^\s?(?:%|percent|people|ppl|persons?|guests?|of us|of them|kids?|min(?:ute)?s?|hours?|hrs?|h\b|days?|nights?|weeks?|wks?|months?|mos?\b|years?|yrs?|y\/?o\b|miles?|mi\b|km|kms|meters?|m\b|ft|feet|foot|inch(?:es)?|in\b|lbs?|kg|kgs|oz|g\b|grams?|cal(?:orie)?s?|degrees?|°|mph|gb|mb|tb|am\b|pm\b|st\b|nd\b|rd\b|th\b|floor|times?|x\b|pages?|steps?|items?|pieces?|pcs|units?|boxes?|bottles?|tickets? left|reps?|sets?|points?|pts|followers?|likes?|views?)/i;
+const MONEY_BEFORE = /\b(?:under|below|over|above|less than|more than|no more than|up to|max(?:imum)?|at most|tops|around|about|roughly|budget(?:ed)?(?: is| of)?|spend(?:ing)?|spent|pay(?:ing)?|paid|costs?|costing|cost me|price[ds]?|priced at|charged?|owe[ds]?|tip|bill|rent|total|salary|income|balance|afford|worth|sold (?:it )?for|bought (?:it )?for|offered|asking|deposit|fee|fare)\b[^\d.!?\n]{0,12}$/i;
+const MONEY_AFTER = /^\s?(?:a (?:month|mo|year|yr|week|night|day|head|person)|\/\s?(?:mo|month|yr|year|wk|night)|per\b|each\b|total\b|tops\b|or (?:less|under|so)|max\b|budget\b|all in\b|bucks|dollars|usd)/i;
+const MONEY_WORD = /\b(?:tip|tips|bill|owe[ds]?|pay(?:ing)?|paid|costs?|costing|price[ds]?|budget|spend|spent|rent|charged?|split|afford|cheap(?:er)?|expensive|refund|deposit|fee|fare|salary|balance|total)\b|[$£€]/i;
+function usedAsMoney(text, start, end) {
+  const after = text.slice(end, end + 24);
+  if (NOT_MONEY_UNIT.test(after)) return false;
+  if (MONEY_AFTER.test(after) || MONEY_BEFORE.test(text.slice(Math.max(0, start - 40), start))) return true;
+  const from = Math.max(text.lastIndexOf("\n", start), ...[".", "!", "?"].map(c => text.lastIndexOf(c + " ", start))) + 1;
+  const stops = ["\n", ". ", "! ", "? "].map(c => text.indexOf(c, end)).filter(i => i >= 0);
+  return MONEY_WORD.test(text.slice(from, stops.length ? Math.min(...stops) : text.length));
 }
 
 /**
@@ -542,6 +562,9 @@ export function claimsBest(text) {
   return false;
 }
 
+/** What goes out when every sentence of a rewrite stated a price nothing backs. */
+export const PRICE_LEFT_OUT = "I couldn't confirm the price, so I've left it out rather than guess. Want me to look it up?";
+
 /**
  * The check, on the text about to be sent — the turn's reply, and every message_send mid-turn
  * (src/tools.js). `asks: false` leaves rule 4 to the reply; `extraSources` adds text that counts as
@@ -617,7 +640,7 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     for (const f of loose) if (!figureKnown(f.fig, f.cents, worked, { approx: false })) unchecked.push(f.fig);
     if (unchecked.length) {
       flags.push({ rule: "dollar_unsourced", figures: unchecked });
-      if (!unread) fixes.push({ key: "dollar:" + unchecked.join(","), line: `It states ${unchecked.length > 1 ? "figures" : "a figure"} nothing backs — ${unchecked.join(", ")}: no tool read ${unchecked.length > 1 ? "them" : "it"} this turn, and ${unchecked.length > 1 ? "they are" : "it is"} not something they said or sent or something you remember about them. If a quick tool can check it (web_search, offer_check, a quote), check it now and use what it says. Otherwise keep it only if it matters, and say ONCE, in your own words, that you haven't confirmed it ("haven't confirmed that price yet") — one such line in the whole message at most, never a tag after each number.` });
+      if (!unread) fixes.push({ key: "dollar:" + unchecked.join(","), hard: true, line: `It states ${unchecked.length > 1 ? "figures" : "a figure"} nothing backs — ${unchecked.join(", ")}: no tool read ${unchecked.length > 1 ? "them" : "it"} this turn, and ${unchecked.length > 1 ? "they are" : "it is"} not something they said or sent or something you remember about them. If a quick tool can check it (web_search, offer_check, a quote), check it now and use what it says. Otherwise leave the figure out: a price nothing backs is taken out of this rewrite before it is sent, hedged or not. Say plainly, once and in your own words, that you'll check it if they want.` });
     }
     const staleNow = stale.filter(x => !new RegExp(`as of|${x.as_of.split(" ")[0]}`, "i").test(reply));
     if (staleNow.length) {
@@ -657,13 +680,18 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
         flags.push({ rule: "best_compared_listed", compared: priced.length });
       }
     }
-    // The rewrite's own check is the last: what it still says unchecked is logged and left, except an
-    // unchecked deal, whose sentences come out — an invented coupon is the one that costs somebody money.
+    // The rewrite's own check is the last. What it still says unchecked does not go out: the
+    // sentences carrying an unchecked price, and an unchecked deal's, come out (review 11-05: a price
+    // nothing backs that survived its one rewrite was sent anyway). A stale remembered figure is only
+    // missing its date, so it is logged and left. If nothing is left, one plain line says why.
     if (t.recomposed && turnReply) {
-      if (discountClaimed) {
+      const drop = (x) => (discountClaimed && DISCOUNT.test(x)) || unchecked.some(fig => x.includes(fig));
+      if (discountClaimed || unchecked.length) {
         const parts = sentencesOf(text);
-        const left = joinBack(parts.map(p => (typeof p === "string" ? p : p.filter(x => !DISCOUNT.test(x)))));
-        if (left) { text = left; flags.push({ rule: "discount_dropped" }); }
+        const left = joinBack(parts.map(p => (typeof p === "string" ? p : p.filter(x => !drop(x)))));
+        text = left || PRICE_LEFT_OUT;
+        if (discountClaimed) flags.push({ rule: "discount_dropped" });
+        if (unchecked.length) flags.push({ rule: "dollar_dropped", figures: unchecked });
       }
       fixes.length = 0;
     }
@@ -712,8 +740,8 @@ export function takeRecompose(conversationId) {
 
 /**
  * A message_send that needs fixing (src/tools.js): the first time a thing is pointed out this turn it
- * is sent back; the model has then had its chance, and the same figures go on the next try. An
- * unchecked deal (`hard`) is sent back every time.
+ * is sent back; the model has then had its chance, and the same thing goes on the next try. An
+ * unchecked price or deal (`hard`) is sent back every time: it never goes out unchecked.
  */
 export function sendBack(conversationId, fixes = []) {
   const t = turnOf(conversationId);

@@ -126,7 +126,7 @@ test("guardReply sends an unsourced dollar figure back for a rewrite, never tags
   assert.equal(g.text, reply, "nothing is written into the text");
   assert.deepEqual(g.flags, [{ rule: "dollar_unsourced", figures: ["$5.99"] }]);
   assert.match(g.recompose, /\$5\.99/);
-  assert.match(g.recompose, /say ONCE, in your own words/);
+  assert.match(g.recompose, /leave the figure out/);
   assert.doesNotMatch(g.recompose, /\$40|\$23\.06/);
 });
 
@@ -367,8 +367,8 @@ test("purchase_track with a conversation_id reads AgentCard's record and says pl
 // ---------- 2c gap: a message sent mid-turn passes the same figures check as the reply ----------
 
 // Pinned: message_send went out without guardReply, so a remembered figure texted mid-turn was sent
-// as fact. Since 2026-11-05 it is sent back once, unsent, never tagged; the model's next try goes.
-test("pinned: message_send to their own person with an unsourced dollar figure is sent back once, never tagged", async () => {
+// as fact. Since 2026-11-05 it is sent back unsent, never tagged; since 2026-11-07 every time, until checked or left out.
+test("pinned: message_send to their own person with an unsourced dollar figure is sent back until it is left out, never tagged", async () => {
   const sent = [];
   const channels = { list: () => [{ name: "test" }], send: async (m) => { sent.push(m); return { ok: true, delivered: true }; } };
   offers.noteSource(OMARI, { cart: { total: "$23.06" } });
@@ -378,7 +378,9 @@ test("pinned: message_send to their own person with an unsourced dollar figure i
   assert.match(first.error, /\$5\.99/);
   assert.doesNotMatch(first.error, /\$23\.06/, "a sourced figure is left alone");
   assert.equal(sent.length, 0);
-  const text = "found it — $23.06 all in; shipping is usually $5.99 but i haven't confirmed that part";
+  const hedged = await call("message_send", { to: "owner", text: "found it — $23.06 all in; shipping is usually $5.99 but i haven't confirmed that part" }, { channels });
+  assert.equal(hedged.blocked, "unchecked_figures", "an unchecked price never goes, hedged or not (2026-11-07)");
+  const text = "found it — $23.06 all in; i'll check shipping before anything is bought";
   const out = await call("message_send", { to: "owner", text }, { channels });
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(sent[0].text, text, "what was sent is the model's own words, nothing added");
