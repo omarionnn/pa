@@ -294,7 +294,9 @@ export function whoseCallIsThis(address) {
 
   const row = db.accountByNumber(address);
   if (row) {
-    const state = row.state ?? "active";
+    // A stop is per number, not per row: paused or removed on any line refuses the call too
+    // (accounts.accountState), whichever row happens to be newest.
+    const state = db.stoppedStateOf(address) ?? row.state ?? "active";
     if (state !== "active") return { allow: false, reason: state };
     return { allow: true, conversationId: row.conversation_id, isOperator: !!row.is_operator };
   }

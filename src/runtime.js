@@ -2003,7 +2003,8 @@ export class Runtime extends EventEmitter {
   async rhythms({ gatherWith = rhythmsLib.evidenceFor, now = clock.now() } = {}) {
     const out = { people: 0, looked: 0, turns: 0, asked: 0, expired: 0, deleted: 0, skipped: [] };
     for (const acct of db.listAccountsOfPeople()) {
-      if ((acct.state ?? "active") !== "active") continue;
+      // A stop is per number (db.stoppedStateOf): a pause on another line holds this row too.
+      if ((acct.state ?? "active") !== "active" || (!acct.is_operator && db.stoppedStateOf(acct.address))) continue;
       const c = acct.conversation_id;
       out.people++;
       const s = notice.settingsFor(c, { now });
@@ -2154,7 +2155,8 @@ export class Runtime extends EventEmitter {
   async notice({ gatherWith = notice.gather, readWith = null, now = clock.now() } = {}) {
     const out = { people: 0, looked: 0, candidates: 0, turns: 0, told: 0, held: 0, dropped: 0, skipped: [], not_connected: 0, handled: 0, asked: 0, bridged: 0 };
     for (const acct of db.listAccountsOfPeople()) {
-      if ((acct.state ?? "active") !== "active") continue;
+      // A stop is per number (db.stoppedStateOf): a pause on another line holds this row too.
+      if ((acct.state ?? "active") !== "active" || (!acct.is_operator && db.stoppedStateOf(acct.address))) continue;
       const c = acct.conversation_id;
       out.people++;
       const settings = notice.settingsFor(c, { now });
@@ -2357,7 +2359,8 @@ export class Runtime extends EventEmitter {
   async digest({ now = clock.now(), readWith = null } = {}) {
     const out = { people: 0, due: 0, turns: 0, sent: 0, handled: 0, skipped: [] };
     for (const acct of db.listAccountsOfPeople()) {
-      if ((acct.state ?? "active") !== "active") continue;
+      // A stop is per number (db.stoppedStateOf): a pause on another line holds this row too.
+      if ((acct.state ?? "active") !== "active" || (!acct.is_operator && db.stoppedStateOf(acct.address))) continue;
       const c = acct.conversation_id;
       const s = notice.settingsFor(c, { now });
       if (s.mode !== "digest") continue;
@@ -2426,7 +2429,8 @@ export class Runtime extends EventEmitter {
   async commitments({ now = clock.now() } = {}) {
     const out = { people: 0, standing: 0, due: 0, turns: 0, nudged: 0, asked: 0, skipped: [] };
     for (const acct of db.listAccountsOfPeople()) {
-      if ((acct.state ?? "active") !== "active") continue;
+      // A stop is per number (db.stoppedStateOf): a pause on another line holds this row too.
+      if ((acct.state ?? "active") !== "active" || (!acct.is_operator && db.stoppedStateOf(acct.address))) continue;
       const c = acct.conversation_id;
       const mine = db.listCommitments(c, { state: "active" });
       if (!mine.length) continue;
@@ -2505,7 +2509,8 @@ export class Runtime extends EventEmitter {
   async followOn({ now = clock.now() } = {}) {
     const out = { things: 0, turns: 0, offered: 0, skipped: [] };
     for (const acct of db.listAccountsOfPeople()) {
-      if ((acct.state ?? "active") !== "active") continue;
+      // A stop is per number (db.stoppedStateOf): a pause on another line holds this row too.
+      if ((acct.state ?? "active") !== "active" || (!acct.is_operator && db.stoppedStateOf(acct.address))) continue;
       const c = acct.conversation_id;
       const sweep = db.noticeSweep(c);
       const since = sweep?.last_follow_on_at ?? null;
@@ -2575,7 +2580,8 @@ export class Runtime extends EventEmitter {
     const DAY = 24 * 60 * 60_000;
     const out = { people: 0, checked: 0, backfilled: 0, renewals: 0, stale: 0, turns: 0, sent: 0, skipped: [] };
     for (const acct of db.listAccountsOfPeople()) {
-      if ((acct.state ?? "active") !== "active") continue;
+      // A stop is per number (db.stoppedStateOf): a pause on another line holds this row too.
+      if ((acct.state ?? "active") !== "active" || (!acct.is_operator && db.stoppedStateOf(acct.address))) continue;
       const c = acct.conversation_id;
       const state = db.subscriptionSweepState(c);
       if (state.lastCheckAt && (now - state.lastCheckAt) < config.subscriptionCheckEveryMs) continue;

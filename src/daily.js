@@ -533,7 +533,8 @@ const writing = new Set();
 export function sweepDaily({ now = clock.now(), log = () => {} } = {}) {
   const queued = [];
   for (const acct of db.listAccountsOfPeople()) {
-    if ((acct.state ?? "active") !== "active") continue;
+    // A stop is per number (db.stoppedStateOf): a pause on another line holds this row too.
+    if ((acct.state ?? "active") !== "active" || (!acct.is_operator && db.stoppedStateOf(acct.address))) continue;
     const c = acct.conversation_id;
     if (!dailyAllowedFor(c) || !webAllowedFor(c) || !usesWeb(c)) continue;
     const tz = tzOf(c, now);

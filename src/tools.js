@@ -4289,8 +4289,8 @@ export const tools = [
   },
   {
     name: "admin_resume",
-    description: "Master only. Start answering someone again after a pause.",
-    input_schema: { type: "object", properties: { number: { type: "string" } }, required: ["number"] },
+    description: "Master only. Start answering someone again after a pause. A removal is not undone by this: only when the master explicitly says to undo a removal, pass undo_removal: true.",
+    input_schema: { type: "object", properties: { number: { type: "string" }, undo_removal: { type: "boolean" } }, required: ["number"] },
   },
   {
     name: "admin_remove",
@@ -6909,7 +6909,7 @@ const S = {
   admin_requests: z.object({}),
   admin_usage: z.object({ days: z.number().int().min(1).max(90).optional() }),
   admin_pause: z.object({ number: z.string().min(3).max(40) }),
-  admin_resume: z.object({ number: z.string().min(3).max(40) }),
+  admin_resume: z.object({ number: z.string().min(3).max(40), undo_removal: z.boolean().optional() }),
   admin_remove: z.object({ number: z.string().min(3).max(40) }),
   admin_block: z.object({ number: z.string().min(3).max(40), note: z.string().max(200).optional() }),
   admin_delete: z.object({ number: z.string().min(3).max(40), confirmation_id: z.number().int().optional() }),
@@ -11865,14 +11865,31 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       // The rest act on an existing account.
-      const row = db.listAccountsOfPeople().find(a => normalizeNumber(a.address) === number && !a.is_operator);
+      const rows = db.listAccountsOfPeople().filter(a => normalizeNumber(a.address) === number && !a.is_operator);
+      const row = rows[0];
       if (!row) return { ok: false, error: `${number} does not have a Reason, so there is nothing to change. admin_requests shows who is waiting.` };
 
       if (name === "admin_pause" || name === "admin_resume" || name === "admin_remove") {
         const state = name === "admin_pause" ? "paused" : name === "admin_resume" ? "active" : "removed";
-        db.setAccountState(row.conversation_id, state);
+        // Every line this number has a Reason on: the note says Reason stopped answering the NUMBER,
+        // and a resume has to clear a stop on any of them (accounts.accountState reads them all).
+        // A pause never softens a removal already on one of them: removed stays removed.
+        // A resume is for pauses: it never brings back a line that was REMOVED. A removal stays a
+        // removal until the master explicitly undoes it (undo_removal), and while any line is removed
+        // the number stays refused everywhere (db.stoppedStateOf).
+        const undoRemoval = name === "admin_resume" && input.undo_removal === true;
+        for (const r of rows) {
+          if (r.state === "removed" && state !== "removed" && !undoRemoval) continue;
+          db.setAccountState(r.conversation_id, state);
+        }
+        if (state === "active" && db.stoppedStateOf(row.address) === "removed") {
+          return {
+            ok: false, number, state: "removed",
+            error: `${number} was removed, not paused, so a resume does not bring them back and Reason is still not answering them${rows.some(r => r.state !== "removed") ? " (any paused line was resumed, but a removal on one line covers the number)" : ""}. Only if ${config.ownerName} explicitly says to undo the removal, call admin_resume again with undo_removal: true.`,
+          };
+        }
         return {
-          ok: true, number, state,
+          ok: true, number, state: state === "active" ? state : (db.stoppedStateOf(row.address) ?? state),
           note: state === "active"
             ? `Answering ${number} again.`
             : `Reason has stopped answering ${number}. Everything of theirs is KEPT — say that plainly, because ${state === "removed" ? "'removed'" : "'paused'"} sounds like deletion and is not. ${config.ownerName} has to ask separately to delete it.`,
