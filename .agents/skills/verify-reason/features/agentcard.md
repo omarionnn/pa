@@ -70,7 +70,7 @@ real hashes, real declines, and the gate, caps, ledger and webhook handler all r
 
 ```bash
 cd ~/Desktop/pa
-node --test test/agentcard.test.js        # 55/55 at 00f3300 (52 at 587f67a, 35 at ef7040a)
+node --test test/agentcard.test.js        # 56/56 at sec/lead21 (55 at 00f3300, 52 at 587f67a, 35 at ef7040a)
 node --test test/purchasesnote.test.js test/agentcard-token-seal.test.js test/oauth-token-seal.test.js \
   test/shopping-sandbox-fixes.test.js     # 22 + 5 + 5 + 5 at 587f67a; agentcard + purchasesnote 82 at b04eb74; purchasesnote 30 at f3669e8 (#108), 28 at cc9538d (after #223)
 ```
@@ -203,7 +203,8 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
 - Line numbers in `src/tools.js` move daily: `grep -n 'case "vault_enroll"\|case "purchase' src/tools.js`.
   The first hits are one-line `targetOf` cases (`case "vault_enroll": return "agentcard:vault";`)
   and an earlier `case "purchase_confirm": {` that builds the gate's pinned target from the cart
-  hash; the tool handlers are the **last** hit for each name — `vault_enroll`'s starts
+  hash (and from the row only when the row's `conversation_id` is the caller's: another person's
+  cart reads `unknown cart <hash> in <id>` even with both ids right, audit lead 21); the tool handlers are the **last** hit for each name — `vault_enroll`'s starts
   `if (!agentcard.isConfigured()) return agentcard.notConfigured();`.
 
 
