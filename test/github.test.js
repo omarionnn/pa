@@ -27,6 +27,9 @@ process.env.REASON_CONVERSATION = "dm:owner";
 const { runTool } = await import("../src/tools.js");
 const github = await import("../src/github.js");
 const db = await import("../src/db.js");
+// The connect link is Reason's start page (src/connectgate.js); the provider's own address, what
+// these assertions are about, is kept on the state row it names.
+const providerUrl = (u) => db.db.prepare("SELECT authorize_url FROM oauth_states WHERE state = ?").get(new URL(u).searchParams.get("state"))?.authorize_url ?? u;
 const { config, clock } = await import("../src/config.js");
 
 const OMARI = "dm:owner";
@@ -89,8 +92,8 @@ test("with no client id, everything says not_connected and nothing is invented",
 
 test("connect flow produces a link, code exchange gives a token, and the account row exists", async () => {
   const { link, done } = await connect();
-  assert.ok(link.url.includes("/login/oauth/authorize"), "should point at GitHub's authorize");
-  assert.ok(link.url.includes("client_id=gh-client-abc"), "should carry the client id");
+  assert.ok(providerUrl(link.url).includes("/login/oauth/authorize"), "should point at GitHub's authorize");
+  assert.ok(providerUrl(link.url).includes("client_id=gh-client-abc"), "should carry the client id");
   assert.equal(done.username, "omari");
   const row = db.getOauthTokens(OMARI, "github");
   assert.ok(row, "token row should exist");

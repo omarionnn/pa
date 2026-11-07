@@ -28,6 +28,9 @@ process.env.REASON_CONVERSATION = "dm:owner";
 const { runTool } = await import("../src/tools.js");
 const x = await import("../src/x.js");
 const db = await import("../src/db.js");
+// The connect link is Reason's start page (src/connectgate.js); the provider's own address, what
+// these assertions are about, is kept on the state row it names.
+const providerUrl = (u) => db.db.prepare("SELECT authorize_url FROM oauth_states WHERE state = ?").get(new URL(u).searchParams.get("state"))?.authorize_url ?? u;
 const { config, clock } = await import("../src/config.js");
 
 const OMARI = "dm:owner";
@@ -71,7 +74,7 @@ beforeEach(() => {
 async function connect(conversationId = OMARI, { code = "good-code" } = {}) {
   const link = await call("x_connect", {}, conversationId);
   assert.equal(link.ok, true, JSON.stringify(link));
-  const url = new URL(link.url);
+  const url = new URL(providerUrl(link.url));
   const state = url.searchParams.get("state");
   assert.ok(url.searchParams.get("code_challenge"), "PKCE code_challenge should be in the authorize URL");
   assert.equal(url.searchParams.get("code_challenge_method"), "S256");
@@ -99,8 +102,8 @@ test("with no client id, everything says not_connected and nothing is invented",
 
 test("connect flow produces a PKCE link, code exchange gives a token, and the account row exists", async () => {
   const { link, done } = await connect();
-  assert.ok(link.url.includes("/i/oauth2/authorize"), "should point at X's authorize");
-  assert.ok(link.url.includes("client_id=x-client-abc"), "should carry the client id");
+  assert.ok(providerUrl(link.url).includes("/i/oauth2/authorize"), "should point at X's authorize");
+  assert.ok(providerUrl(link.url).includes("client_id=x-client-abc"), "should carry the client id");
   assert.equal(done.username, "omari");
   const row = db.getOauthTokens(OMARI, "x");
   assert.ok(row, "token row should exist");

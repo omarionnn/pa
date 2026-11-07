@@ -6774,6 +6774,9 @@ addColumnIfMissing("oauth_tokens", "is_default", "INTEGER NOT NULL DEFAULT 0");
 // callback sends it to the token endpoint. Only X needs this today — GitHub and Spotify do not use
 // PKCE — but it is on the table rather than on the provider so a future provider gets it for free.
 addColumnIfMissing("oauth_states", "code_verifier", "TEXT NOT NULL DEFAULT ''");
+// The provider's own authorize address for this state. The link Reason texts is its own start page
+// (src/connectgate.js), which only sends a browser here once it is proved to be the asker's.
+addColumnIfMissing("oauth_states", "authorize_url", "TEXT NOT NULL DEFAULT ''");
 export const oauthPerAccountMigration = migrateOauthTokensPerAccount();
 
 // oauth_tokens.access_token / refresh_token are sealed at rest (src/secretbox.js, AES-256-GCM under
@@ -7054,6 +7057,17 @@ export function spendOauthState(state, { maxAgeMs = null } = {}) {
   db.prepare("UPDATE oauth_states SET used_at = ? WHERE state = ?").run(clock.now(), row.state);
   if (maxAgeMs !== null && clock.now() - row.created_at > maxAgeMs) return null;
   return row;
+}
+
+/** Where a state's start page sends a proved browser (src/connectgate.js). */
+export function setOauthStateAuthorizeUrl(state, url) {
+  db.prepare("UPDATE oauth_states SET authorize_url = ? WHERE state = ?").run(String(url ?? ""), String(state ?? ""));
+}
+
+/** A state that has not been spent, without spending it: what the start page and the browser check read. */
+export function peekOauthState(state) {
+  const row = db.prepare("SELECT * FROM oauth_states WHERE state = ?").get(String(state ?? ""));
+  return row && !row.used_at ? row : null;
 }
 
 export function clearOauthStates(conversationId, provider) {

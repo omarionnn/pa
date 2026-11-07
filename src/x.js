@@ -31,6 +31,7 @@
 import { config, clock, callbackUrl, stamp } from "./config.js";
 import { renderConnected } from "./pages/render.js";
 import * as db from "./db.js";
+import { startLink } from "./connectgate.js";
 import { createHash, randomBytes } from "node:crypto";
 
 export const PROVIDER = "x";
@@ -129,7 +130,9 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST } = {}) {
   });
   return {
     ok: true,
-    url: `${config.xAuthBase}/i/oauth2/authorize?${q}`,
+    // What is texted is Reason's start page: it only sends the asker's own browser on to this
+    // address (src/connectgate.js).
+    url: startLink(state, `${config.xAuthBase}/i/oauth2/authorize?${q}`, redirectUri),
     scopes: want.map(s => ({ scope: s, so_that: SCOPES[s] ?? s })),
     redirect_uri: redirectUri,
     reachable: config.publicUrl

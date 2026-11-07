@@ -44,6 +44,9 @@ const google = await import("../src/google.js");
 const drive = await import("../src/drive.js");
 const trust = await import("../src/trust.js");
 const db = await import("../src/db.js");
+// The connect link is Reason's start page (src/connectgate.js); the provider's own address, what
+// these assertions are about, is kept on the state row it names.
+const providerUrl = (u) => db.db.prepare("SELECT authorize_url FROM oauth_states WHERE state = ?").get(new URL(u).searchParams.get("state"))?.authorize_url ?? u;
 const { exportData, deleteData } = await import("../src/data.js");
 const { config, clock } = await import("../src/config.js");
 
@@ -154,7 +157,7 @@ test("a mail-and-calendar grant reads as Drive NOT connected, and asking produce
 
   // And the link that fixes it is the ordinary one, asking for BOTH halves of Drive.
   const link = await call("google_connect", { scopes: out.missing_scope });
-  const asked = new URL(link.url).searchParams.get("scope").split(" ").sort();
+  const asked = new URL(providerUrl(link.url)).searchParams.get("scope").split(" ").sort();
   assert.deepEqual(asked, [...google.DRIVE_SCOPES].sort(), "naming one Drive scope asks for both");
   assert.ok(link.say_with_link, "with the in-product notice Google's policy wants");
   assert.ok(link.scopes.every(s => s.so_that), "each one said in plain words");
@@ -163,7 +166,7 @@ test("a mail-and-calendar grant reads as Drive NOT connected, and asking produce
 test("asking for Drive does not cost them their mail: include_granted_scopes is on the link", async () => {
   await connect({ scopes: MAIL_AND_CALENDAR, grants: MAIL_AND_CALENDAR });
   const link = await call("google_connect", { scopes: google.DRIVE_SCOPES });
-  const q = new URL(link.url).searchParams;
+  const q = new URL(providerUrl(link.url)).searchParams;
   assert.equal(q.get("include_granted_scopes"), "true",
     "without this, a Drive-only ask comes back carrying only Drive and the mail grant is overwritten");
   assert.equal(q.get("access_type"), "offline");
@@ -186,7 +189,7 @@ test("asking for Drive does not cost them their mail: include_granted_scopes is 
 test("adding Drive to their one account offers THAT account, not the chooser", async () => {
   await connect({ scopes: MAIL_AND_CALENDAR, grants: MAIL_AND_CALENDAR });
   const link = await call("google_connect", { scopes: google.DRIVE_SCOPES });
-  const q = new URL(link.url).searchParams;
+  const q = new URL(providerUrl(link.url)).searchParams;
   // The chooser is for picking a DIFFERENT account. Here there is one account and one more permission
   // to put on it, so showing a chooser is just a chance to tap the wrong Google and wonder why Drive
   // still is not on. login_hint is what Google documents for "the app knows which user this is".
@@ -257,7 +260,7 @@ test("with two accounts on, a Drive ask still shows the chooser and says which o
   await connect({ account: "work@example.com", scopes: MAIL_AND_CALENDAR, grants: MAIL_AND_CALENDAR });
 
   const link = await call("google_connect", { scopes: google.DRIVE_SCOPES });
-  const q = new URL(link.url).searchParams;
+  const q = new URL(providerUrl(link.url)).searchParams;
   assert.equal(q.get("prompt"), "select_account consent", "two accounts, so which one gets Drive is theirs to say");
   assert.equal(q.get("login_hint"), null, "and a hint would pick for them");
   assert.match(link.adding_permission, /more than one account/);
@@ -266,7 +269,7 @@ test("with two accounts on, a Drive ask still shows the chooser and says which o
 test("asking for a Google account they already fully granted is a SECOND account, with the chooser", async () => {
   await connect();
   const link = await call("google_connect", {});
-  assert.equal(new URL(link.url).searchParams.get("prompt"), "select_account consent");
+  assert.equal(new URL(providerUrl(link.url)).searchParams.get("prompt"), "select_account consent");
   assert.ok(link.adding_another, "nothing to add to this grant, so the only reason to be here is another account");
   assert.equal(link.adding_permission, undefined);
 });

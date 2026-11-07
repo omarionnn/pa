@@ -182,6 +182,7 @@
 import { config, clock, callbackUrl, stamp } from "./config.js";
 import { cut } from "./cut.js";
 import * as db from "./db.js";
+import { startLink } from "./connectgate.js";
 import { fromOutside } from "./outside.js";
 import { pdfRefusal, pdfText } from "./pdf.js";
 import { readableText } from "./weblookup.js";
@@ -508,7 +509,9 @@ export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account 
   });
   return {
     ok: true,
-    url: `${config.googleAccountsBase}/o/oauth2/v2/auth?${q}`,
+    // What is texted is Reason's start page: it only sends the asker's own browser on to this
+    // address (src/connectgate.js).
+    url: startLink(state, `${config.googleAccountsBase}/o/oauth2/v2/auth?${q}`, redirectUri),
     scopes: want.map(s => ({ scope: s, so_that: SCOPES[s] })),
     redirect_uri: redirectUri,
     // Google's policy wants an in-product notice of how their data is used, shown where the grant is
