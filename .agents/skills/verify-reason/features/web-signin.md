@@ -31,7 +31,9 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
   signs in to the most recently used; the other is never mentioned. Null = stranger, paused,
   removed, blocked, or (in `owner` mode) anybody but the owner — all indistinguishable from outside.
 - **The code** — `requestCode({ id: "wsign:<conv>", title: "Reason" })`: six digits, hashed in
-  `page_codes`, 15 minutes, one live at a time (a new one kills the old), single use, **3 per person
+  `page_codes`, 15 minutes, bound to the asking browser (`page_codes.bound` = `events.signinBinding`
+  of its `reason_web_form` secret; lead 25), one live per browser (a new one kills that browser's old
+  one, never another browser's), single use, **3 per person
   per 15 minutes** (the fourth request answers the same page and logs
   `web_signin_code_refused: too_many_sent`). Texted through `runtime._tell` with outbox key
   `wsign:<conv>:<code row id>`, NOT awaited (timing says nothing about whose number it was). The
@@ -42,7 +44,12 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 - **Wrong tries** — `events.tryKeyedCode` under `wsign:<conv>` (person) and `wsignb:<actor>`
   (browser): 5 wrong per browser per 15 min — the only limit ever said (on Web: "let's pause a
   minute." + `TRY AGAIN IN m:ss`, src/pages/websignin.js:367; "Too many wrong codes from this browser"
-  is the events page's wording, src/pages/event.js:463) — plus the silent 20 per person per 15 min and 40 per person per day. The actor is
+  is the events page's wording, src/pages/event.js:463) — plus the silent 20 per person per 15 min and 40 per person per day. The ceiling
+  bounds guessing, never the person (lead 25): under it the newest code (or this browser's own)
+  works in any browser; past it a code opens only in the browser that asked for it and gets one try
+  there (a wrong one ends it), so strangers typing the number never stop the person's own fresh
+  code. Pinned: `test/web-signin.test.js` "40 wrong codes from strangers…", "past the ceiling…",
+  "a stranger asking for a code…". The actor is
   `eventActor`: with a valid website signature, Netlify's `x-nf-client-connection-ip` (Netlify
   overwrites a browser's own; `siteClientIp`); else Caddy's `X-Forwarded-For` only from loopback with
   `X-Files-Domain: true`; else the socket. A forged Netlify header without a valid signature counts
@@ -129,7 +136,7 @@ Plan: `docs/plans/reason-web-phase1.md` §4.1–4.2, §7 decisions 1–4 and 10,
 ```bash
 cd ~/Desktop/pa
 node --test test/web-design.test.js     # 34: tokens, motion, focus, every screen state's copy + roles, a11y, no-phrase scan, cards/lists/media, /web/live CORS
-node --test test/web-signin.test.js      # 25: off=404 identical, owner mode, enumeration, QR, no-live/linq, happy path, wrong/reused/expired/flood/4th request, two users, decision 4, sign-out, idle/old, paused, CSRF/origin, headers, copy, the look + /web/fonts, lands on /web?home
+node --test test/web-signin.test.js      # 28 (3 lead-25 lockout pins): off=404 identical, owner mode, enumeration, QR, no-live/linq, happy path, wrong/reused/expired/flood/4th request, two users, decision 4, sign-out, idle/old, paused, CSRF/origin, headers, copy, the look + /web/fonts, lands on /web?home
 node --test test/web-logo-home.test.js test/wordmark-one-line.test.js test/wordmark-text.test.js   # 3 + 3 + 3: logo → /web?home, wordmark one line + reads "reason"
 node --test test/web-join-number.test.js # the live-line rule with the real Linq + Sendblue classes
 node --test test/no-command-phrases.test.js test/code-guards.test.js
