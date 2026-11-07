@@ -502,32 +502,7 @@ print(json.dumps([inspect_body(refused), inspect_body(ok), inspect_body("", "htt
 
 // ---------- /ops ----------
 
-test("/ops: off when not installed; healthy, blocked or down from the LAST REAL search; never a probe", () => {
-  const installed = { installed: () => true };
-  assert.equal(ops.flightSearchCheck({ sidecar: { installed: () => false } }).state, "off");
-  assert.match(ops.flightSearchCheck({ sidecar: installed }).detail, /no searches yet/);
-  const now = clock.now();
-  db.recordProviderCall({ provider: LEDGER_ID, day: accounts.today(now), ok: true, ms: 900, at: now - 60_000 });
-  const ok = ops.flightSearchCheck({ now, sidecar: installed });
-  assert.equal(ok.state, "ok");
-  assert.match(ok.detail, /^healthy · last search/);
-  db.recordProviderCall({ provider: LEDGER_ID, day: accounts.today(now), ok: false, error: "blocked: Google returned an RPC error [13] with no data", at: now - 30_000 });
-  const blocked = ops.flightSearchCheck({ now, sidecar: installed });
-  assert.equal(blocked.state, "bad");
-  assert.match(blocked.detail, /blocked by Google .* no workaround/);
-  assert.match(blocked.detail, / searches today, 1 failed$/);
-  assert.equal(blocked.quiet, true, "a Google refusal is shown, never texted");
-  db.recordProviderCall({ provider: LEDGER_ID, day: accounts.today(now), ok: false, error: "down: sidecar crashed", at: now - 10_000 });
-  const down = ops.flightSearchCheck({ now, sidecar: installed });
-  assert.match(down.detail, /^sidecar down/);
-  assert.equal(down.quiet, undefined, "a sidecar that won't run is the owner's to fix");
-  db.recordProviderCall({ provider: LEDGER_ID, day: accounts.today(now), ok: false, error: "timeout: took too long", at: now - 5_000 });
-  const slow = ops.flightSearchCheck({ now, sidecar: installed });
-  assert.equal(slow.state, "warn");
-  assert.equal(slow.quiet, true);
-  db.recordProviderCall({ provider: LEDGER_ID, day: accounts.today(now), ok: false, error: "parse: unexpected shape", at: now - 1_000 });
-  assert.equal(ops.flightSearchCheck({ now, sidecar: installed }).quiet, undefined, "Fli no longer reading Google is texted");
-});
+// The /ops row now reads the flight sources (SerpApi, Duffel) — test/flight-providers.test.js.
 
 test("/ops: a Google refusal that stays the last search never texts the owner; a dead sidecar does", () => {
   const said = [];
