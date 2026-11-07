@@ -184,7 +184,7 @@ async function replay(stored) {
       rawBody: JSON.stringify({
         model: "reason", stream: true,
         messages: [{ role: "system", content: "replay" }, ...history],
-        elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: call.conversation_id },
+        extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: call.conversation_id },
       }),
       headers: { authorization: `Bearer ${SECRET}` }, secret: SECRET,
       screen: async () => ({ verdict: "safe" }),

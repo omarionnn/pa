@@ -45,7 +45,7 @@ const ring = (caller, conv = "conv_1") => inboundRequest({
 async function drain(stream) { for await (const _ of stream) { /* read */ } }
 async function pitchTurn(extra, theirs) {
   await drain(stranger.strangerTurn({
-    body: { model: "reason", messages: [{ role: "assistant", content: stranger.introLine() }, ...theirs.map(c => ({ role: "user", content: c }))], elevenlabs_extra_body: extra },
+    body: { model: "reason", messages: [{ role: "assistant", content: stranger.introLine() }, ...theirs.map(c => ({ role: "user", content: c }))], extra_body: extra },
     generate: async function* () { yield { type: "text", text: "Sure." }; }, sseChunk: voice.sseChunk, SSE_DONE: voice.SSE_DONE,
   }));
 }

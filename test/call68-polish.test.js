@@ -32,7 +32,7 @@ delete process.env.REASON_CALL_AMBIENCE;
 const gl = await import("../src/calls/gptlive.js");
 const voice = await import("../src/calls/voice.js");
 const prompt = await import("../src/calls/voice-prompt.js");
-const { EXTRA_BODY_KEYS } = await import("../src/calls/elevenlabs.js");
+const { EXTRA_BODY_KEYS } = await import("../src/calls/voice.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
 
@@ -247,7 +247,7 @@ async function drain(stream) {
   return { said: chunks.map(c => c.choices[0].delta.content ?? "").join(""), toolCalls: chunks.flatMap(c => c.choices[0].delta.tool_calls ?? []) };
 }
 const turn = async (row, generate, messages, seen = []) => drain((await voice.llmRequest({
-  rawBody: JSON.stringify({ model: "reason", stream: true, messages, elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: row.id, [EXTRA_BODY_KEYS.conversationId]: C } }),
+  rawBody: JSON.stringify({ model: "reason", stream: true, messages, extra_body: { [EXTRA_BODY_KEYS.callId]: row.id, [EXTRA_BODY_KEYS.conversationId]: C } }),
   headers: { authorization: "Bearer llm-test-secret" },
   generate: (req) => { seen.push(req); return generate(req); },
 })).stream);

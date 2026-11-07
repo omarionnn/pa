@@ -29,7 +29,7 @@ process.env.REASON_CALL_MAX_HOLD_SECONDS = "300";
 
 const voice = await import("../src/calls/voice.js");
 const { llmRequest, runCallTool, handOver, thirdPartyContext, callBrief, SSE_DONE } = voice;
-const { EXTRA_BODY_KEYS } = await import("../src/calls/elevenlabs.js");
+const { EXTRA_BODY_KEYS } = await import("../src/calls/voice.js");
 const { announcementFor } = await import("../src/calls/provider.js");
 const brief = await import("../src/calls/brief.js");
 const hold = await import("../src/calls/hold.js");
@@ -79,7 +79,7 @@ async function drain(stream) {
 
 const bodyFor = (call, messages = [{ role: "user", content: "hello" }]) => JSON.stringify({
   model: "reason", stream: true, messages,
-  elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: C },
+  extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: C },
 });
 const AUTH = { authorization: "Bearer llm-test-secret" };
 const turn = (call, generate, messages) => llmRequest({ rawBody: bodyFor(call, messages), headers: AUTH, generate });

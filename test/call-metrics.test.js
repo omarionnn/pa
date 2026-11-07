@@ -54,7 +54,7 @@ const ownerCall = (over = {}) => db.createCall(C, {
 const bodyFor = (call, messages = [{ role: "user", content: "hey" }]) => JSON.stringify({
   model: "reason", stream: true,
   messages: [{ role: "system", content: "dashboard prompt" }, ...messages],
-  elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: call.conversation_id },
+  extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: call.conversation_id },
 });
 const AUTH = { authorization: "Bearer llm-test-secret" };
 

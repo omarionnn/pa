@@ -28,7 +28,7 @@ process.env.REASON_UNDO_SECONDS = "0";
 
 const voice = await import("../src/calls/voice.js");
 const { llmRequest, SSE_DONE, HOLDING_LINE, LATE_LINES } = voice;
-const { EXTRA_BODY_KEYS } = await import("../src/calls/elevenlabs.js");
+const { EXTRA_BODY_KEYS } = await import("../src/calls/voice.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
 const hold = await import("../src/calls/hold.js");
@@ -58,7 +58,7 @@ const ownerCall = () => db.createCall(C, {
 const bodyFor = (call, messages = [{ role: "user", content: "what's on tomorrow?" }]) => JSON.stringify({
   model: "reason", stream: true,
   messages: [{ role: "system", content: "dashboard prompt" }, ...messages],
-  elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: call.conversation_id },
+  extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: call.conversation_id },
 });
 const AUTH = { authorization: "Bearer llm-test-secret" };
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));

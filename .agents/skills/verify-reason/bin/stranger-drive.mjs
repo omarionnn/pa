@@ -50,7 +50,7 @@ const blocked = ring("+13475558888").body?.conversation_config_override?.agent?.
 check("blocked caller → neutral line", blocked === sc.neutralLine() && !LEAK.test(blocked), blocked);
 
 async function turn(messages) {
-  const res = await voice.llmRequest({ rawBody: JSON.stringify({ model: "reason", messages, elevenlabs_extra_body: { reason_kind: "stranger" } }), headers: { authorization: "Bearer drive-secret" } });
+  const res = await voice.llmRequest({ rawBody: JSON.stringify({ model: "reason", messages, extra_body: { reason_kind: "stranger" } }), headers: { authorization: "Bearer drive-secret" } });
   let text = ""; const tools = [];
   for await (const c of res.stream) for (const line of String(c).split("\n")) {
     const m = /^data:\s*(.*)$/.exec(line.trim());

@@ -76,7 +76,7 @@ async function drain(stream) {
 
 const bodyFor = (call, messages) => JSON.stringify({
   model: "reason", stream: true, messages,
-  elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: C },
+  extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: C },
 });
 const AUTH = { authorization: "Bearer llm-test-secret" };
 const turn = async (call, generate, messages) => drain(

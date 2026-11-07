@@ -72,7 +72,7 @@ show)
       body: JSON.stringify({
         model: "reason", stream: true,
         messages: [{ role: "system", content: "dashboard prompt (ignored by Reason)" }, ...history],
-        elevenlabs_extra_body: { reason_call_id: call, reason_conversation_id: conversation },
+        extra_body: { reason_call_id: call, reason_conversation_id: conversation },
       }),
     });
     if (!res.ok) { console.log(`HTTP ${res.status}: ${await res.text()}`); process.exit(1); }

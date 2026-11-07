@@ -84,7 +84,7 @@ const rule = (t) => say(`\n${"─".repeat(78)}\n${t}\n${"─".repeat(78)}`);
 
 /**
  * One turn, exactly as ElevenLabs documents it: the OpenAI Chat Completions request with the call so
- * far in `messages` and our own fields in `elevenlabs_extra_body`, answered as SSE.
+ * far in `messages` and our own fields in `extra_body`, answered as SSE.
  *
  * Reads the stream the way the platform would — collecting the content deltas into what the voice
  * would speak, and the tool_calls into what the platform would act on.
@@ -99,7 +99,7 @@ async function oneTurn({ call, messages, extra = true }) {
       ...messages,
     ],
     ...(extra
-      ? { elevenlabs_extra_body: {
+      ? { extra_body: {
         [EXTRA_BODY_KEYS.callId]: call.id,
         [EXTRA_BODY_KEYS.conversationId]: call.conversation_id,
         [EXTRA_BODY_KEYS.kind]: call.is_owner ? "owner" : "third_party",

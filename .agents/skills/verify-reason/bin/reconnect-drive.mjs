@@ -121,7 +121,7 @@ async function inbound(content, from = OWNER) {
 // 1. The stranger's call as the line takes it: kept against the number, a pitch turn records what they asked. Placed "yesterday".
 const kept = strangerCalls.open({ phone: CALLER, externalId: "conv_drive" });
 const pitchTurn = stranger.strangerTurn({
-  body: { model: "reason", messages: [{ role: "assistant", content: stranger.introLine() }, { role: "user", content: "How do I sign up?" }, { role: "assistant", content: "Go to hey reason dot com." }, { role: "user", content: "Can it book a dentist for me?" }], elevenlabs_extra_body: { reason_kind: "stranger", reason_stranger_call: kept.id, reason_stranger_token: kept.token } },
+  body: { model: "reason", messages: [{ role: "assistant", content: stranger.introLine() }, { role: "user", content: "How do I sign up?" }, { role: "assistant", content: "Go to hey reason dot com." }, { role: "user", content: "Can it book a dentist for me?" }], extra_body: { reason_kind: "stranger", reason_stranger_call: kept.id, reason_stranger_token: kept.token } },
   generate: async function* () { yield { type: "text", text: "It can, once you've texted it from hey reason dot com." }; },
   sseChunk: voice.sseChunk, SSE_DONE: voice.SSE_DONE,
 });

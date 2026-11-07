@@ -41,7 +41,7 @@ async function read(stream) {
   return { text, tools, finish };
 }
 
-const body = (messages) => ({ model: "reason", messages, elevenlabs_extra_body: { reason_kind: "stranger" } });
+const body = (messages) => ({ model: "reason", messages, extra_body: { reason_kind: "stranger" } });
 
 test("the pitch prompt: Reason, heyreason.com spoken, the maker, public facts only, no price, and nobody's data", () => {
   const p = sc.strangerPrompt();

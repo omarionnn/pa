@@ -115,7 +115,7 @@ async function drain(stream) {
 
 const bodyFor = (call, messages = [{ role: "user", content: "hey" }]) => JSON.stringify({
   model: "reason", stream: true, messages,
-  elevenlabs_extra_body: {
+  extra_body: {
     [EXTRA_BODY_KEYS.callId]: call.id,
     [EXTRA_BODY_KEYS.conversationId]: call.conversation_id,
   },
@@ -1009,7 +1009,7 @@ test("a third-party call with no context gets one line and a hang-up, never a gu
   const out = await voice.llmRequest({
     rawBody: JSON.stringify({
       model: "reason", stream: true, messages: [{ role: "user", content: "hello?" }],
-      elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: 999999, [EXTRA_BODY_KEYS.conversationId]: C },
+      extra_body: { [EXTRA_BODY_KEYS.callId]: 999999, [EXTRA_BODY_KEYS.conversationId]: C },
     }),
     headers: AUTH,
   });
