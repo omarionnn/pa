@@ -10,7 +10,7 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 
 | Feature | File | Primary drive |
 |---|---|---|
-| Inbound message handling | [inbound-message.md](inbound-message.md) | `bin/inbound.sh` → caged webhook |
+| Inbound message handling | [inbound-message.md](inbound-message.md) | `bin/inbound.sh` → caged webhook; Linq: `bin/linq-inbound.mjs` (cage with `REASON_VERIFY_LINQ_WEBHOOK=1`) |
 | Sealed CLI turns (no operator email, no AGENTS.md / CLAUDE.md, no repo path in any person's turn on the claude-cli backend; the operator's city only in the operator's `capabilities` result) | [cli-sealed.md](cli-sealed.md) | `node --test test/cli-sealed.test.js test/capabilities-city.test.js`; real CLI on the wire, no model: `bin/cli-seal-probe.mjs` (+ `--unsealed` control) on Hetzner as `reason` |
 | Pages (answers you can open and keep) | [pages.md](pages.md) | `node --test test/pages.test.js`, then `GET /p/<id>` |
 | Location share handling | [location-share.md](location-share.md) | `bin/inbound.sh file payloads/location.json` |

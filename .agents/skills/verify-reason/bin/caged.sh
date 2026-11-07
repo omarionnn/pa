@@ -77,6 +77,13 @@ start)
     FAKE_SB=(SENDBLUE_API_KEY_ID=cage-fake SENDBLUE_API_SECRET_KEY=cage-fake SENDBLUE_FROM_NUMBER=+12025550101
              SENDBLUE_API_BASE="$REASON_VERIFY_FAKE_SENDBLUE")
   fi
+  # REASON_VERIFY_LINQ_WEBHOOK=1: Linq's webhook verifies with a throwaway whsec_ derived from the
+  # cage secret (written to $RUN/linq-secret for bin/linq-inbound.mjs), so a signed Linq delivery can
+  # be driven. LINQ_API_KEY stays blank: Linq still reads not_connected and every send refuses.
+  LQ=()
+  if [ "${REASON_VERIFY_LINQ_WEBHOOK:-}" = 1 ]; then
+    LQ=(LINQ_WEBHOOK_SECRET="whsec_$(printf '%s' "cage-linq-$SECRET" | base64)")
+  fi
   # A checkout with no REASON_MASTER_NUMBER in .env (a fresh worktree has no .env at all) has no owner,
   # so bin/inbound.sh's text — sent as REASON_VERIFY_OWNER — landed as a stranger and became an access
   # request (`asked_master_about`, 2026-11-06). The cage's owner is then the documentation number
@@ -113,6 +120,7 @@ start)
     SERPAPI_API_KEY= \
     DUFFEL_ACCESS_TOKEN= \
     ${FAKE_SB[@]+"${FAKE_SB[@]}"} \
+    ${LQ[@]+"${LQ[@]}"} \
     ${MASTER[@]+"${MASTER[@]}"} \
     node --env-file-if-exists=.env src/serve.js --log < /dev/null > "$RUN/serve.log" 2>&1 &
   echo $! > "$RUN/pid"
@@ -120,6 +128,7 @@ start)
   # Where this cage's Sendblue really goes, so doctor can tell the loopback fake from real keys.
   if [ -n "${REASON_VERIFY_FAKE_SENDBLUE:-}" ]; then echo "$REASON_VERIFY_FAKE_SENDBLUE" > "$RUN/fake-sendblue"; else rm -f "$RUN/fake-sendblue"; fi
   echo "$SECRET" > "$RUN/secret"
+  if [ ${#LQ[@]} -gt 0 ]; then (umask 077; printf '%s\n' "${LQ[0]#LINQ_WEBHOOK_SECRET=}" > "$RUN/linq-secret"); else rm -f "$RUN/linq-secret"; fi
   owner_number > "$RUN/owner"
 
   # Ready is the log line, not a sleep.
