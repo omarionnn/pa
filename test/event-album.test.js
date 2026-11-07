@@ -19,6 +19,7 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
 process.env.REASON_PAGES_URL = "https://files.example.test";
+process.env.REASON_CADDY_SECRET = "caddy-test"; // what Caddy adds beside its marker (src/pages/siteproxy.js caddyClientIp)
 process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 process.env.REASON_EVENTS = "on";
 process.env.REASON_EVENT_ALBUMS = "on";
@@ -112,7 +113,7 @@ const files = (ev) => albums.filesLeft(ev);
 
 async function req(ev, { sub = "album", method = "GET", body = null, query = {}, cookie = "", rt = fakeRuntime() } = {}) {
   const out = await eventRequestFor({
-    publicId: ev.public_id, sub, method, query, headers: { cookie, "x-forwarded-for": "203.0.113.9", "x-files-domain": "true" }, remoteAddress: "127.0.0.1",
+    publicId: ev.public_id, sub, method, query, headers: { cookie, "x-forwarded-for": "203.0.113.9", "x-files-domain": "true", "x-reason-caddy": "caddy-test" }, remoteAddress: "127.0.0.1",
     readBody: async () => body, runtime: rt, router: null,
   });
   // The page's words, for matching: the part after the stylesheet, with entities read back.

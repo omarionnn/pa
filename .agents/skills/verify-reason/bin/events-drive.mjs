@@ -10,6 +10,7 @@
 // step is a tool call or a request a person's phone or browser would make.
 process.env.REASON_EVENTS = process.env.REASON_EVENTS || "owner";
 process.env.REASON_PAGES_URL = process.env.REASON_PAGES_URL || "https://files.example.test";
+process.env.REASON_CADDY_SECRET = process.env.REASON_CADDY_SECRET || "verify-caddy"; // what Caddy adds beside its marker
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_BURST_QUIET_MS = "0";
 // A throwaway database only: a new file in a temp directory. Never a real one.
@@ -92,7 +93,7 @@ const NEW = "+14155550009", KWAME = "+14155550010";
 db.upsertAccount({ conversationId: `dm:fake:${KWAME}`, channel: "fake", address: KWAME, name: "Kwame" });
 db.upsertThread({ conversationId: `dm:fake:${KWAME}`, channel: "fake", address: KWAME, isOwner: true });
 db.db.prepare("UPDATE accounts SET contact_card_sent_at = 1 WHERE address IN (?, ?, ?, ?)").run(KWAME, AMA, YAW, KOFI);
-const web = (o) => eventRequestFor({ publicId: ev.public_id, method: "GET", query: {}, headers: { "x-files-domain": "true", "x-forwarded-for": "203.0.113.1", ...(o.headers ?? {}) }, remoteAddress: "127.0.0.1", readBody: async () => o.body ?? null, runtime, router, ...o });
+const web = (o) => eventRequestFor({ publicId: ev.public_id, method: "GET", query: {}, headers: { "x-files-domain": "true", "x-reason-caddy": process.env.REASON_CADDY_SECRET, "x-forwarded-for": "203.0.113.1", ...(o.headers ?? {}) }, remoteAddress: "127.0.0.1", readBody: async () => o.body ?? null, runtime, router, ...o });
 const cold = await web({});
 step("join page before the password: name + description only", /costumes mandatory/.test(cold.body) && !/Elm|Oct 31|Ama|\+1\d{10}/.test(cold.body) && /Joining gives you access to Reason/.test(cold.body) && /starts a text conversation between you and Reason/.test(cold.body) && !/signs you up/.test(cold.body));
 const claimPage = await web({ sub: "join", method: "POST", body: new URLSearchParams({ password: "pumpkin", display_name: "Esi", in_directory: "1" }).toString() });
