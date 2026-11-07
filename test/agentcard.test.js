@@ -225,7 +225,7 @@ test("somebody who already has a card is not sent through enrolling twice", asyn
   assert.equal(again.card, "Visa ••••4832");
   assert.equal(again.url, undefined, "no link is handed out");
   assert.equal(fake.state.vaultSessions.length, 0, "no session was minted");
-  assert.match(db.listActions(OMARI)[0].receipt, /already has/i);
+  assert.match(db.listActions(OMARI)[0].receipt, /already have/i);
 });
 
 // 2026-10-12, the night the live install moved from sandbox to production credentials: the tool

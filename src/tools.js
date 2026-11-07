@@ -2509,7 +2509,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   // Retention, plus the three things somebody asks about their data that are not about a timer: what
   // forget really reaches, what a disconnect takes with it, and what is never written down at all.
   out.find(c => c.name === "your_data").what = `${retentionSays()}`
-    + ` "Forget about X" (forget) deletes every fact saved about them — under that name and any longer name containing it — and the copies of those facts in this conversation; it does not delete ${who}'s own messages, and the honest answer if they ask is that a full delete is what takes those.`
+    + ` "Forget about X" (forget) deletes every fact saved about them — under that name and any longer name containing it — and the copies of those facts in this conversation, and takes the calls, message exchanges and actions that mention them out of recall; it does not delete ${who}'s own messages, and the honest answer if they ask is that a full delete is what takes those.`
     + ` Disconnecting an account cuts the access off AND deletes what had been read out of it into this conversation; the receipts of what Reason did stay.`
     + ` A card number, a security code, a password or a PIN is never written down anywhere, and an attempt to save one is refused with nothing written.`;
   // Their own window, not the feature's. Somebody who switched it off must never be told they have
@@ -10657,25 +10657,29 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       // The figures check the reply gets (src/offers.js guardReply), on this message too: before
       // 2026-10-23 a price texted mid-turn skipped it, so a remembered shipping fee could go out as
-      // fact as long as it went by message_send. To their own person it is labelled in place, the
-      // same as the reply. To anybody else nothing is altered in their name: it is refused, and
-      // nothing is sent, until the figure is checked or said to be unverified. A release from the
-      // undo window was checked when it was parked and is not checked again against a later turn.
+      // fact as long as it went by message_send. Nothing is labelled in code (2026-11-05): a figure
+      // nothing backs — not read this turn, not theirs, not remembered — is sent back, unsent, every
+      // time until it is checked or left out (2026-11-07: an unchecked price never goes, hedged or
+      // not), and so is an unchecked coupon or deal. To anybody else, anything the check would change
+      // is refused, never altered in their name. A release from the undo window was checked when it
+      // was parked and is not checked again against a later turn.
       let text = input.text;
-      let figures = null;
       if (!ctx.heldIdemKey) {
-        const g = offers.guardReply(c, input.text, { asks: false, extraSources: [exactly ?? "", input.exactly_as_asked ?? "", purchasesNoteMod.purchaseRecordSource(c)] });
-        if (g.changed) {
-          figures = g.flags;
-          if (!toOwner) {
-            return {
-              ok: false, blocked: "unchecked_figures", flags: g.flags,
-              error: `Not sent — nothing went to ${input.to}. It states figures or deal claims no source this turn backs (${g.flags.map(f => f.figures ? `${f.rule}: ${f.figures.join(", ")}` : f.rule).join("; ")}).`
-                + ` Check them first (offer_check, or the tool that read them), or drop them, or say plainly in the message that they are unverified — then send again.`,
-            };
-          }
-          text = g.text;
+        // The photos they sent this turn count here too (review 11-07): a text quoting a figure off
+        // their screenshot was refused every time.
+        const photos = await offers.photoWords(c);
+        const g = offers.guardReply(c, input.text, { asks: false, extraSources: [exactly ?? "", input.exactly_as_asked ?? "", ...photos.texts], records: [purchasesNoteMod.purchaseRecordSource(c)] });
+        // No `unread` here (review): the turn's photo reader outlives the turn, so a failed read from an
+        // earlier turn would wave an unchecked figure through a send that cannot be taken back.
+        const back = g.recompose ? offers.sendBack(c, g.fixes) : null;
+        if (back || (g.changed && !toOwner)) {
+          return {
+            ok: false, blocked: "unchecked_figures", flags: g.flags,
+            error: `Not sent — nothing went to ${toOwner ? "them" : input.to}. ${back ?? "It carries a line the figures check would change."}`
+              + " Fix that in the message itself, in your own words (never a bracketed tag like \"(unverified)\"), then send again.",
+          };
         }
+        if (g.changed) text = g.text;
       }
 
       const chatId = toOwner || normalizeNumber(thread?.address) === to ? (thread?.chat_id ?? null) : null;
@@ -10735,7 +10739,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!r.ok) return { ...r, note: "Nothing was sent, and nothing more will be. Tell them exactly that, and what it said." };
       return {
         ok: true, sent_to: to, text, delivered: r.delivered,
-        ...(figures ? { figures_labelled: figures, note_on_text: "Figures no source this turn backed went out marked unverified — that is what they read, so do not restate them as checked." } : {}),
         ...(style ? { style } : {}), ...(styleNote ? { style_dropped: styleNote } : {}),
         ...(exactly ? { sent_exactly_as_asked: exactly } : {}),
         note: "This actually went out. You may say you sent it.",
@@ -13583,7 +13586,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: (row.price_cents == null
           ? `The page carries no machine-readable price, so the price is UNVERIFIED — do not quote one from it as checked.`
           : `Verified from the page just now: ${view.price}.`)
-          + (view.unverified.length ? ` Not stated on the page, so say "unverified" (never guess): ${view.unverified.join(", ")}.` : "")
+          + (view.unverified.length ? ` Not stated on the page, so never guess them; if one matters, say once in plain words that the page doesn't say (never a "(unverified)" tag): ${view.unverified.join(", ")}.` : "")
           + ` If they want it, purchase with offer_id ${row.id} — the cart that comes back is checked against this exact product.`,
       }, { source: url, text: `${rec.product} ${rec.seller} ${rec.stock} ${rec.shipping_time} ${rec.return_terms}` });
     }

@@ -153,7 +153,7 @@ export function requestConfirmation({ conversationId, messages, action, summary,
     state: "waiting_for_yes",
     recorded: summary,
     ...(c.target ? { target: c.target } : {}),
-    next: `Now say that back to ${config.ownerName} in your own words and wait. When they reply, call confirm_record with confirmation_id ${c.id}. Do not call ${action} until confirm_record returns state 'granted'.`,
+    next: `Now say that back to them in your own words and wait. When they reply, call confirm_record with confirmation_id ${c.id}. Do not call ${action} until confirm_record returns state 'granted'.`,
   };
 }
 
@@ -242,7 +242,7 @@ export async function recordConfirmation({ conversationId, messages, confirmatio
   if (texts.length <= c.asked_after_msgs) {
     return {
       ok: false, state: "waiting_for_yes",
-      error: `${config.ownerName} has not answered yet. You asked and they have not replied since. Wait for their next message; do not confirm on their behalf.`,
+      error: `They have not answered yet. You asked and they have not replied since. Wait for their next message; do not confirm on their behalf.`,
     };
   }
   const latest = texts.at(-1);
@@ -290,7 +290,7 @@ export async function recordConfirmation({ conversationId, messages, confirmatio
  */
 export function authorizeConfirmation({ conversationId, action, confirmationId, target = null }) {
   if (!confirmationId) {
-    return { ok: false, blocked: "needs_confirmation", error: `${action} spends money or acts on someone else, so it needs an explicit yes first. Call confirm_request, tell ${config.ownerName} exactly what you are about to do, wait for their answer, then confirm_record, then call ${action} again with that confirmation_id.` };
+    return { ok: false, blocked: "needs_confirmation", error: `${action} spends money or acts on someone else, so it needs an explicit yes first. Call confirm_request, tell them exactly what you are about to do, wait for their answer, then confirm_record, then call ${action} again with that confirmation_id.` };
   }
   const c = db.getConfirmation(conversationId, confirmationId);
   if (!c) return { ok: false, blocked: "no_such_confirmation", error: `No confirmation #${confirmationId} in this conversation.` };
@@ -314,14 +314,14 @@ export function authorizeConfirmation({ conversationId, action, confirmationId, 
       // The wording depends on what the yes was meant to cover: a person for a text or a call,
       // the exact details for a submit. A message about phone numbers is no help to a booking.
       const what = action === "browser_submit"
-        ? `does not say what ${action} was for, so it cannot authorize committing anything. Call confirm_request again with target set to the same one-line details you will submit, show ${config.ownerName} those details, and ask again.`
-        : `does not say who ${action} was for, so it cannot authorize reaching anyone. Call confirm_request again with target set to the exact number, show ${config.ownerName} that number, and ask again.`;
+        ? `does not say what ${action} was for, so it cannot authorize committing anything. Call confirm_request again with target set to the same one-line details you will submit, show them those details, and ask again.`
+        : `does not say who ${action} was for, so it cannot authorize reaching anyone. Call confirm_request again with target set to the exact number, show them that number, and ask again.`;
       return { ok: false, blocked: "no_target_on_record", error: `Confirmation #${confirmationId} ${what}` };
     }
     if (c.target !== want) {
       const what = action === "browser_submit"
-        ? `A yes covers the exact details ${config.ownerName} was shown, and these are not them. Say what has changed, then confirm_request again with the new details and ask.`
-        : `A yes covers the one person ${config.ownerName} was shown. Ask again for this one.`;
+        ? `A yes covers the exact details they were shown, and these are not them. Say what has changed, then confirm_request again with the new details and ask.`
+        : `A yes covers the one person they were shown. Ask again for this one.`;
       return { ok: false, blocked: "wrong_target", error: `Confirmation #${confirmationId} was for '${c.target}', not '${want}'. ${what}` };
     }
   }
@@ -945,7 +945,7 @@ export function retryBlocked({ conversationId, action, target = "", confirmation
     ok: false, blocked: "outcome_unknown", unknown_since: stamp(row.at), what: row.target,
     error: `The last attempt at this ended with nobody knowing whether it went through${row.why ? ` (${row.why})` : ""},`
       + ` at ${stamp(row.at)}. It is not being retried: the shop may already have it, and trying again is the one thing that can take`
-      + ` ${config.ownerName}'s money twice. Tell them exactly that — that you do not know whether it went through, and that they should check`
+      + ` their money twice. Tell them exactly that — that you do not know whether it went through, and that they should check`
       + ` their email or the shop — and ask whether to try again. Only their yes, given now, lets it through${row.cents ? `, and it would be ${money(row.cents)}` : ""}.`,
   };
 }
@@ -978,7 +978,7 @@ function siteName(url) {
  * invisible — "why did this go out with an emoji in it and no sign-off" has an answer.
  */
 const exactlyAsAsked = (out) => (out?.sent_exactly_as_asked
-  ? ` Sent word for word, unchecked, because ${config.ownerName} said: "${out.sent_exactly_as_asked}".`
+  ? ` Sent word for word, unchecked, because they said: "${out.sent_exactly_as_asked}".`
   : "");
 
 /** One plain line per action, written from the tool's real result. This is what ledger_list reads back. */
@@ -997,7 +997,7 @@ export function receiptFor(action, input, out) {
     // later without taking anybody's word for it.
     case "signin_status":
       return ok
-        ? `Asked ${input.site} whether ${config.ownerName} is signed in — ${out.state}: ${out.why}.`
+        ? `Asked ${input.site} whether they are signed in — ${out.state}: ${out.why}.`
         : `Could not check the ${input.site} sign-in${tail}`;
     case "spotify_control":
       return ok
@@ -1185,11 +1185,11 @@ export function receiptFor(action, input, out) {
     // the same target, so "what did you do" and "where is that recording" have one answer.
     case "access_grant":
       return ok
-        ? `Let ${out.number} in — they have their own Reason now. ${config.ownerName} said: "${out.quote}".`
+        ? `Let ${out.number} in — they have their own Reason now. In their words: "${out.quote}".`
         : `Did not let ${input.number} in${tail}`;
     case "access_decline":
       return ok
-        ? `Said no to ${out.number}. ${config.ownerName} said: "${out.quote}". Not asking again for a while.`
+        ? `Said no to ${out.number}. In their words: "${out.quote}". Not asking again for a while.`
         : `Could not answer ${input.number}'s request${tail}`;
     case "admin_pause":
       return ok ? `Paused ${out.number} — stopped answering them, kept everything of theirs.` : `Could not pause ${input.number}${tail}`;
@@ -1257,12 +1257,12 @@ export function receiptFor(action, input, out) {
     // rather than from the model's memory of what it was thinking at the time.
     case "notice_send":
       return ok
-        ? `Told ${config.ownerName}${input.unprompted === false ? " on the end of a reply (not an interruption)" : ", unprompted"}: ${out.what}`
+        ? `Told them${input.unprompted === false ? " on the end of a reply (not an interruption)" : ", unprompted"}: ${out.what}`
           + `${input.why_now ? ` — why then: ${input.why_now}` : ""}${input.urgent ? " [sent as urgent]" : ""}`
-        : `Did not tell ${config.ownerName} about ${input.key}${tail}`;
+        : `Did not tell them about ${input.key}${tail}`;
     case "call_recording":
       return ok
-        ? `Sent ${config.ownerName} the recording of call #${input.call_id}`
+        ? `Sent them the recording of call #${input.call_id}`
           + ` (${out.seconds ?? "?"}s, ${out.bytes ? Math.round(out.bytes / 1024) : "?"} KB ${out.format ?? ""}): ${out.file}`
         // Every call is recorded, so this is a broken promise and the receipt says so in those
         // words. "What went wrong today" has to be answerable from this table.
@@ -1299,7 +1299,7 @@ export function receiptFor(action, input, out) {
     // one thing each has to be exact about is whether money moved. A paused confirm and a placed
     // order are a tap apart and read almost the same in a conversation, so the receipt says which.
     case "vault_enroll":
-      if (out?.already_enrolled) return `Did not send a vault link: ${config.ownerName} already has ${out.card ?? "a card"} stored with AgentCard.`;
+      if (out?.already_enrolled) return `Did not send a vault link: they already have ${out.card ?? "a card"} stored with AgentCard.`;
       return ok
         ? `Sent the AgentCard vault link (session ${out.vault_session_id ?? "?"}) for them to store a card. Reason never sees the number.`
         : `Could not open an AgentCard vault session${tail}`;

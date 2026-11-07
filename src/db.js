@@ -1673,6 +1673,11 @@ addColumnIfMissing("media_items", "transcript_dropped_at", "INTEGER");
 // SEEN — "two bottles of supplements: whey protein and creatine" — and is what a later turn reads
 // when it needs to know what a picture contained. Written by runtime after the model responds.
 addColumnIfMissing("media_items", "description", "TEXT NOT NULL DEFAULT ''");
+// Where that note came from: 'photo' when the quiet pass read the photo itself (src/looked.js), 'reply'
+// when that pass failed and Reason's own reply was kept instead. Only a 'photo' note is the person's
+// own words for the figures check (theirOwnWords): a reply-based note is Reason's words, and a price
+// it invented would vouch for itself for weeks (review 11-07). '' is a row from before this column.
+addColumnIfMissing("media_items", "description_from", "TEXT NOT NULL DEFAULT ''");
 // The outcome sheet (2026-10-06): everything one task is carrying — the budget, the dates, the
 // people, the options already turned down and why. On the task rather than in the model's context,
 // because the context is trimmed to the last sixty messages and a task outlives that. A task from
@@ -2744,7 +2749,23 @@ export function forgetPerson(conversationId, about) {
   const rows = db.prepare("SELECT * FROM people WHERE conversation_id = ? AND (key = ? OR key LIKE ?)")
     .all(conversationId, key, `%${key}%`)
     .filter(p => p.key === key || hasWords(p.key, needle));
-  if (!rows.length) return { ok: false, error: `Nothing is on record about '${about}'.` };
+  // Recall reaches the calls Reason made and the thread itself (src/recallindex.js), not only saved
+  // facts: a forget that left "called Yaw about the deposit" findable by "what do you remember about
+  // Yaw" would be no forget (review 11-05). Cleared whether or not any fact was saved about them.
+  // With nobody saved under it, the subject alone decides what recall loses — and a vague one ("that",
+  // "it", "work", "money") would hide every exchange that says the word, for good (review 11-07). Only
+  // a real name or topic clears recall then.
+  if (!rows.length && !specificSubject(key)) return { ok: false, error: `Nothing is on record about '${about}', and it is too general to clear from recall on its own — nothing was cleared. Ask which person or thing they mean.` };
+  const recall = forgetFromRecall(conversationId, [about, ...rows.map(p => p.name)]);
+  const recalled = recall.calls + recall.exchanges + recall.actions + recall.reminders;
+  if (!rows.length) {
+    if (!recalled) return { ok: false, error: `Nothing is on record about '${about}'.` };
+    return {
+      ok: true, about, forgot: 0, recall_cleared: recall,
+      covers: "nothing was saved about them as a fact; the calls, messages, actions and reminders that mention them are out of recall. It does NOT delete their own messages to you — that is their conversation.",
+      note: `Gone from recall: ${recalled} call(s), message exchange(s) and action(s) that mention ${about} will not come back in a search. Say it plainly in one line and never bring the subject up again on your own.`,
+    };
+  }
 
   const facts = [];
   const factIds = [];
@@ -2806,7 +2827,8 @@ export function forgetPerson(conversationId, about) {
     reasons_dropped: reasons.length,
     old_rows_removed: old.length,
     thread_lines_cleared: scrubbed,
-    covers: "every fact saved about them, under that name and any longer name containing it, plus the copies of those facts in this thread. It does NOT delete their own messages to you — that is their conversation, not something you worked out.",
+    recall_cleared: recall,
+    covers: "every fact saved about them, under that name and any longer name containing it, plus the copies of those facts in this thread, and the calls, message exchanges, actions and reminders that mention them are out of recall. It does NOT delete their own messages to you — that is their conversation, not something you worked out.",
     note: `Gone. ${facts.length} thing(s) about ${rows.map(p => p.name).join(" and ")} are deleted and are not coming back, and nothing in the thread carries them forward.`
       + ` Say it plainly in one line and never bring the subject up again on your own.`
       + ` If they ask whether their own messages are gone too, the honest answer is no — those are theirs, and a full delete (npm run data:delete) is what takes everything.`,
@@ -2844,6 +2866,60 @@ export function redactFromReplies(conversationId, facts) {
   }
   if (n) saveConversation(conversationId, messages);
   return n;
+}
+
+// Words too common to forget by on their own (forgetPerson with nobody saved under them).
+const VAGUE = new Set("is be do go no so up ok hi as if by am are was were a an the this that these those it its it's they them their there here he him his she her hers you your me my mine we us our i about all any anything everything something nothing stuff thing things one ones what which who that's said say says talk talked conversation chat message messages last earlier before today yesterday tomorrow work job money time day week month year home life people person someone somebody everyone everybody plan plans thing idea and or of to for with on in at".split(" "));
+// Two letters is a name too ("Jo", "Al", 李明 — review): any length counts, the VAGUE list is the bar,
+// and a lone one-letter Latin word is never a subject.
+function specificSubject(key) {
+  return wordsOf(key).some(w => !VAGUE.has(w) && (w.length >= 2 || /[^\x00-\x7f]/.test(w)));
+}
+const wordsOf = (s) => String(s ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+
+/**
+ * Take a subject out of recall (src/recallindex.js): every call, message, action receipt and reminder
+ * of THIS conversation that names it by whole words is marked forgotten and its vector deleted. The
+ * rows stay — their messages are theirs, and the ledger is append-only — but no search, by meaning or
+ * by words, reads them again, and the indexer never embeds them again. Sealed: one conversation only.
+ */
+export function forgetFromRecall(conversationId, names = []) {
+  const out = { calls: 0, exchanges: 0, actions: 0, reminders: 0 };
+  const needles = [...new Map(names.map(n => wordsOf(n)).filter(w => w.length).map(w => [w.join(" "), w])).values()];
+  if (!conversationId || !needles.length) return out;
+  const names_ = (text) => { const k = wordsOf(text).join(" "); return needles.some(n => hasWords(k, n)); };
+  const mark = db.prepare("INSERT OR IGNORE INTO recall_forgotten (conversation_id, source_table, row_id, at) VALUES (?, ?, ?, ?)");
+  const at = clock.now();
+  const sweep = (table, cols, where = "") => {
+    const like = needles.map(n => `(${cols.map(c => `LOWER(COALESCE(${c}, '')) LIKE ?`).join(" OR ")})`).join(" OR ");
+    const args = needles.flatMap(n => cols.map(() => `%${n[0]}%`));
+    const hits = db.prepare(`SELECT id, ${cols.map(c => `COALESCE(${c}, '') AS "${c}"`).join(", ")} FROM ${table} WHERE conversation_id = ? ${where} AND (${like})`)
+      .all(conversationId, ...args)
+      .filter(r => names_(cols.map(c => r[c]).join(" \n ")))
+      .map(r => r.id);
+    for (const id of hits) mark.run(conversationId, table, id, at);
+    return hits;
+  };
+  {
+    const calls = sweep("calls", ["goal", "label", "summary"]);
+    // `attempted` too (the query, title, summary, ask): recall indexes it (src/recallindex.js ledgerText).
+    const actions = sweep("action_ledger", ["receipt", "target", "attempted"]);
+    const reminders = sweep("timers", ["note", "label", "call_goal"]);
+    const said = sweep("event_log", ["content"], "AND role IN ('user','assistant')");
+    const unembed = db.prepare("DELETE FROM fact_embeddings WHERE conversation_id = ? AND source_table = ? AND fact_id = ?");
+    for (const id of calls) unembed.run(conversationId, "calls", id);
+    for (const id of actions) unembed.run(conversationId, "action_ledger", id);
+    for (const id of reminders) unembed.run(conversationId, "timers", id);
+    // An exchange's vector covers the run span_from..fact_id: any run with a forgotten line in it goes.
+    const spans = db.prepare(`DELETE FROM fact_embeddings WHERE conversation_id = ? AND source_table = 'event_log'
+      AND ? BETWEEN COALESCE(span_from, fact_id) AND fact_id RETURNING COALESCE(span_from, fact_id) AS from_id, fact_id AS to_id`);
+    // ...and the rest of that run is indexed again without the forgotten lines (recall_reindex).
+    const requeue = db.prepare("INSERT OR IGNORE INTO recall_reindex (conversation_id, span_from, span_to, at) VALUES (?, ?, ?, ?)");
+    let runs = 0;
+    for (const id of said) for (const r of spans.all(conversationId, id)) { requeue.run(conversationId, r.from_id, r.to_id, at); runs++; }
+    Object.assign(out, { calls: calls.length, actions: actions.length, reminders: reminders.length, exchanges: Math.max(runs, said.length ? 1 : 0) });
+  }
+  return out;
 }
 
 /** Do the words of `needle` appear as a run inside the words of `key`? */
@@ -4478,8 +4554,8 @@ export function mediaOfMessage(conversationId, baseHandle) {
 }
 
 /** Store what the model described in a photo, after the turn. */
-export function describeMedia(id, description) {
-  db.prepare("UPDATE media_items SET description = ? WHERE id = ?").run(String(description ?? ""), id);
+export function describeMedia(id, description, { from = "" } = {}) {
+  db.prepare("UPDATE media_items SET description = ?, description_from = ? WHERE id = ?").run(String(description ?? ""), String(from ?? ""), id);
 }
 
 /** Recently-viewed photos with descriptions, for turn context. */
@@ -10502,6 +10578,26 @@ db.exec(`
     UNIQUE(fact_id, source_table)
   );
   CREATE INDEX IF NOT EXISTS fact_embeddings_conv ON fact_embeddings (conversation_id);
+  -- What they asked Reason to forget, kept out of recall (src/recallindex.js) for good: the call,
+  -- message or action row itself stays (it is their conversation), its vector goes, and this says
+  -- never to index or show it again (src/db.js forgetFromRecall).
+  CREATE TABLE IF NOT EXISTS recall_forgotten (
+    conversation_id TEXT NOT NULL,
+    source_table TEXT NOT NULL,
+    row_id INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, source_table, row_id)
+  );
+  -- An exchange whose vector a forget deleted (one of its lines named them): the lines left in it are
+  -- indexed again by src/recallindex.js, without the forgotten ones, so the rest of what was said
+  -- stays findable — the indexer otherwise only moves forward (review 11-07).
+  CREATE TABLE IF NOT EXISTS recall_reindex (
+    conversation_id TEXT NOT NULL,
+    span_from INTEGER NOT NULL,
+    span_to INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, span_from)
+  );
 
   -- episodes and thread_summaries used to be here. Neither was ever read; the first was written by
   -- the extractor every turn and the second by nothing. Dropped below, rows and all (audit 10-18).
@@ -10869,6 +10965,23 @@ export function eventsSince(conversationId, sinceAt, { limit = 100 } = {}) {
 export function recentEvents(conversationId, { limit = 20 } = {}) {
   return db.prepare("SELECT * FROM event_log WHERE conversation_id = ? ORDER BY at DESC LIMIT ?")
     .all(conversationId, limit);
+}
+
+/**
+ * What the person themselves put in front of Reason since `since`, as text: their own messages
+ * (voice notes arrive transcribed), and what was read off the photos and recordings they sent — the
+ * photo note's words, a recording's transcript. The reply check (src/offers.js guardReply) counts a
+ * figure in any of these as theirs, never something to hedge. Scoped by conversation.
+ */
+export function theirOwnWords(conversationId, { since = 0, limit = 400 } = {}) {
+  const said = db.prepare(`SELECT content AS text, at, 'them' AS kind FROM event_log
+    WHERE conversation_id = ? AND role = 'user' AND at >= ? ORDER BY at DESC LIMIT ?`).all(conversationId, since, limit);
+  // A photo's note counts only when the photo read wrote it (description_from = 'photo'): the fallback
+  // note is Reason's own reply, never theirs (review 11-07).
+  const sent = db.prepare(`SELECT TRIM(CASE WHEN description_from = 'photo' THEN COALESCE(description, '') ELSE '' END || ' ' || COALESCE(transcript, '')) AS text, at, 'sent' AS kind FROM media_items
+    WHERE conversation_id = ? AND at >= ? AND ((description_from = 'photo' AND COALESCE(description, '') != '') OR COALESCE(transcript, '') != '')
+    ORDER BY id DESC LIMIT ?`).all(conversationId, since, limit);
+  return [...said, ...sent];
 }
 
 // -- profile_blocks queries --

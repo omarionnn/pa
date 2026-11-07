@@ -333,7 +333,7 @@ test("pinned 14:18: the record correction fires only on a turn about the checkou
   assert.match(offers.guardReply(OMARI, denial).text, /^Actually, checking my record/);
 });
 
-test("pinned 14:15: a figure that is on the checkout record is never marked unverified", async () => {
+test("pinned 14:15: a figure that is on the checkout record is never sent back or hedged", async () => {
   card();
   const out = await start({ store: "walmart", url: WALMART, item: "CeraVe Hydrating Facial Cleanser, 16 oz" });
   runs[out.runId].requiredAction = WALMART_PAY("req_pay_w"); runs[out.runId].revision = 2;
@@ -343,8 +343,10 @@ test("pinned 14:15: a figure that is on the checkout record is never marked unve
   const g = offers.guardReply(OMARI, reply);
   assert.equal(g.text, reply);
   assert.doesNotMatch(g.text, /unverified/);
-  // A figure from nowhere is still the guard's business.
-  assert.match(offers.guardReply(OMARI, "the amazon one would have been $19.49.").text, /\$19\.49 \(unverified\)/);
+  // A figure from nowhere is still the guard's business: sent back for a rewrite, never tagged (2026-11-05).
+  const loose = offers.guardReply(OMARI, "the amazon one would have been $19.49.");
+  assert.equal(loose.text, "the amazon one would have been $19.49.");
+  assert.match(loose.recompose, /\$19\.49/);
 });
 
 // ---------------------------------------------------------------- 7. the wait updates

@@ -118,30 +118,37 @@ test("offer_check saves the record with fetched_at and hands back 'unverified' f
 
 // ---------- 2c: the reply check ----------
 
-test("guardReply labels a dollar figure no source carried, and leaves sourced ones alone", () => {
+test("guardReply sends an unsourced dollar figure back for a rewrite, never tags it, and leaves sourced and their own alone", () => {
   offers.beginTurn("c1", "my budget is $40");
   offers.noteSource("c1", { cart: { total: "$23.06" } });
-  const g = offers.guardReply("c1", "it's $23.06 all in, well under your $40. shipping is usually $5.99");
-  assert.equal(g.text, "it's $23.06 all in, well under your $40. shipping is usually $5.99 (unverified)");
-  const ok = offers.guardReply("c1", "about $7 (unverified) for shipping");
-  assert.equal(ok.changed, false, "already labelled");
+  const reply = "it's $23.06 all in, well under your $40. shipping is usually $5.99";
+  const g = offers.guardReply("c1", reply);
+  assert.equal(g.text, reply, "nothing is written into the text");
+  assert.deepEqual(g.flags, [{ rule: "dollar_unsourced", figures: ["$5.99"] }]);
+  assert.match(g.recompose, /\$5\.99/);
+  assert.match(g.recompose, /leave the figure out/);
+  assert.doesNotMatch(g.recompose, /\$40|\$23\.06/);
 });
 
-test("guardReply: a coupon claim with no live source this turn gets a plain line; with one it does not", () => {
+test("guardReply: a coupon claim with no source is sent back to check or drop; with one it is not", () => {
   offers.beginTurn("c2", "");
   offers.noteSource("c2", { text: "Cafe Mesa coffee $22.50" });
   const g = offers.guardReply("c2", "there's a coupon on it too");
-  assert.match(g.text, /didn't find a live source for any coupon/);
+  assert.equal(g.text, "there's a coupon on it too");
+  assert.match(g.recompose, /coupon, discount or sale/);
   offers.noteSource("c2", { text: "Clip coupon: save 15%" });
-  assert.equal(offers.guardReply("c2", "there's a coupon on it too").changed, false);
+  const ok = offers.guardReply("c2", "there's a coupon on it too");
+  assert.equal(ok.changed, false);
+  assert.equal(ok.recompose, null);
 });
 
-test("guardReply: 'best deal' needs two verified offers this turn; with two, nothing is glued on (no '(compared: …)' tail, 2026-10-31)", () => {
+test("guardReply: 'best deal' needs two verified offers this turn or goes back for a rewrite; with two, nothing is glued on (no '(compared: …)' tail, 2026-10-31)", () => {
   offers.beginTurn("c3", "");
   offers.noteOffer("c3", { seller: "Amazon", price_cents: 2250 });
   offers.noteSource("c3", "$22.50");
   const one = offers.guardReply("c3", "amazon is the best deal at $22.50");
-  assert.match(one.text, /not a checked best price — i only looked at Amazon: \$22\.50/);
+  assert.equal(one.text, "amazon is the best deal at $22.50", "no footnote glued on (2026-11-05)");
+  assert.match(one.recompose, /only looked at Amazon \(\$22\.50\)/);
   offers.noteOffer("c3", { seller: "Walmart", price_cents: 2499 });
   offers.noteSource("c3", "$24.99");
   const two = offers.guardReply("c3", "amazon is the best deal at $22.50");
@@ -360,18 +367,24 @@ test("purchase_track with a conversation_id reads AgentCard's record and says pl
 // ---------- 2c gap: a message sent mid-turn passes the same figures check as the reply ----------
 
 // Pinned: message_send went out without guardReply, so a remembered figure texted mid-turn was sent
-// as fact while the same figure in the reply would have been labelled.
-test("pinned: message_send to their own person labels an unsourced dollar figure, the same as the reply", async () => {
+// as fact. Since 2026-11-05 it is sent back unsent, never tagged; since 2026-11-07 every time, until checked or left out.
+test("pinned: message_send to their own person with an unsourced dollar figure is sent back until it is left out, never tagged", async () => {
   const sent = [];
   const channels = { list: () => [{ name: "test" }], send: async (m) => { sent.push(m); return { ok: true, delivered: true }; } };
   offers.noteSource(OMARI, { cart: { total: "$23.06" } });
-  const out = await call("message_send", { to: "owner", text: "found it — $23.06 all in, and shipping is usually $5.99" }, { channels });
+  const first = await call("message_send", { to: "owner", text: "found it — $23.06 all in, and shipping is usually $5.99" }, { channels });
+  assert.equal(first.ok, false, JSON.stringify(first));
+  assert.equal(first.blocked, "unchecked_figures");
+  assert.match(first.error, /\$5\.99/);
+  assert.doesNotMatch(first.error, /\$23\.06/, "a sourced figure is left alone");
+  assert.equal(sent.length, 0);
+  const hedged = await call("message_send", { to: "owner", text: "found it — $23.06 all in; shipping is usually $5.99 but i haven't confirmed that part" }, { channels });
+  assert.equal(hedged.blocked, "unchecked_figures", "an unchecked price never goes, hedged or not (2026-11-07)");
+  const text = "found it — $23.06 all in; i'll check shipping before anything is bought";
+  const out = await call("message_send", { to: "owner", text }, { channels });
   assert.equal(out.ok, true, JSON.stringify(out));
-  assert.equal(sent.length, 1);
-  assert.match(sent[0].text, /\$23\.06 all in/);
-  assert.doesNotMatch(sent[0].text, /\$23\.06 \(unverified\)/, "a sourced figure is left alone");
-  assert.match(sent[0].text, /\$5\.99 \(unverified\)/, "what was sent is the labelled text");
-  assert.ok(out.figures_labelled?.some(f => f.rule === "dollar_unsourced"));
+  assert.equal(sent[0].text, text, "what was sent is the model's own words, nothing added");
+  assert.doesNotMatch(sent[0].text, /unverified/);
   // The ask line is the reply's to carry, never glued onto a mid-turn message.
   offers.noteAsk(OMARI, { line: "ASK-LINE", total: "$99.00", url: "https://x.test/p" });
   await call("message_send", { to: "owner", text: "one sec, checking the cart" }, { channels });

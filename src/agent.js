@@ -12,7 +12,7 @@ import { undeliveredNotice } from "./outbox.js";
 import { imagesFor, pdfsFor, videosFor } from "./media.js";
 import { docsFor } from "./docread.js";
 import * as doing from "./doing.js";
-import { startCapture, recordLooked, captureViaApi } from "./looked.js";
+import { startCapture, recordLooked, captureViaApi, capturedWords } from "./looked.js";
 import { splitImage } from "./backends/mcp-core.js";
 import * as reviewed from "./reviewed.js";
 import { forLog, sealTravelers } from "./privacy.js";
@@ -29,7 +29,7 @@ import { memoryNotes } from "./memorynote.js";
 import { startPurchasesNote, purchaseRecordSource } from "./purchasesnote.js";
 import { checkoutNote as shopCheckoutNote } from "./shopconnect.js";
 import { withoutSelfNote, readSilence } from "./plain.js";
-import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "./offers.js";
+import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource, notePhotos as noteOfferPhotos, photoWords as offerPhotoWords } from "./offers.js";
 import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
 import { REFUSAL_LINE } from "./harm.js";
 
@@ -473,14 +473,17 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // The CLI backend's "continue the draft's session" (src/backends/claude-cli.js). The API path keeps
   // the message list in process and has nothing to continue; taken out so it never reaches a tool.
   continueSession = false,
+  // The one rewrite of a draft the reply check sent back (Runtime._turn): the same turn going on, so
+  // the figures its tools already read still count (src/offers.js beginTurn `carry`).
+  recompose = false,
   ...toolCtx }) {
   // A Web-only chat reads and keeps its own thread (src/db.js historyKeyFor); tools still act for the person.
   const historyId = toolCtx.historyId ?? conversationId;
   let messages = trimHistory(loadConversation(historyId));
   // A fresh source ledger for the reply check (src/offers.js): what this turn's tools fetch, and
   // their own message, are what a dollar figure in the reply can be checked against. The said check's
-  // rewrite (continueSession) is the same turn: its sources stand.
-  if (!continueSession) beginOfferTurn(conversationId, text, kind);
+  // rewrite (continueSession / recompose) is the same turn: its sources stand.
+  beginOfferTurn(conversationId, text, kind, { carry: recompose || continueSession });
   // Whose Reason this is. Their name is in the prompt and on their own messages, so the model is
   // talking to the person in front of it rather than to whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
@@ -508,6 +511,9 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // Started now, alongside the turn, and awaited only once the reply is in hand — what each photo
   // shows and every word in it, so the next turn can answer a form it can no longer see.
   const captured = startCapture({ blocks, viewedMediaIds, attachments, capture, log });
+  // Every figures check of this turn reads those words — a message_send mid-turn, and the rewrite,
+  // which looks at no photo of its own (src/offers.js notePhotos).
+  if (viewedMediaIds.length) noteOfferPhotos(conversationId, () => capturedWords(captured, viewedMediaIds));
 
   // A PDF — a receipt, a ticket, a lease — read on this machine and handed to the model as text.
   const reading = doing.counter(conversationId, attachments);
@@ -752,12 +758,15 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
       for (const b of lastAssistant.content) if (b.type === "text" && typeof b.text === "string" && readSilence(b.text).stripped) b.text = readSilence(b.text).text;
     }
   }
-  // The figures check (src/offers.js), on the text that would be sent: a dollar figure not in a
-  // source this turn is labelled unverified, an unsourced discount or best-deal claim gets one plain
-  // line, and a purchase ask carries AgentCard's total and the source. The thread keeps what is sent.
+  // The figures check (src/offers.js), on the text that would be sent: a dollar figure nothing backs,
+  // an unsourced discount or best-deal claim is handed back for one rewrite (Runtime._turn takes it),
+  // never labelled here; a purchase ask carries AgentCard's total and the source. The thread keeps what is sent.
   if (!quiet.silent) {
     // Their own purchase record counts as a source too (src/purchasesnote.js purchaseRecordSource).
-    const g = guardReply(conversationId, reply, { extraSources: [purchaseRecordSource(conversationId)] });
+    // So do the words on the photos they sent this turn (src/looked.js capturedWords).
+    const photos = await offerPhotoWords(conversationId);
+    const g = guardReply(conversationId, reply, { records: [purchaseRecordSource(conversationId)], extraSources: photos.texts, unread: photos.unread, turnReply: true });
+    if (g.recompose) log({ reply_guard: g.flags, recompose: true, conversation: conversationId });
     if (g.changed) {
       log({ reply_guard: g.flags, conversation: conversationId });
       const lastAssistant = [...messages].reverse().find(m => m.role === "assistant" && Array.isArray(m.content));
