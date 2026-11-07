@@ -5,7 +5,7 @@
 // until the owner typed a yes, in their own words, after Reason described the action.
 import * as db from "./db.js";
 import * as incidents from "./incidents.js";
-import { clock, config, stamp } from "./config.js";
+import { clock, config, stamp, normalizeNumber } from "./config.js";
 import { sealTravelers } from "./privacy.js";
 import { judgeReply } from "./judge.js";
 import * as sites from "./sites.js";
@@ -182,6 +182,45 @@ export function normalizeTarget(t) {
 }
 
 /**
+ * The tools whose yes is pinned to a person AND to what reaches them (audit lead 26, 11-07). A yes to
+ * "text Kofi: running late" used to be pinned to Kofi's number only, so the same yes could carry any
+ * words to Kofi — or any call brief — for as long as it lasted. Now the target is "<who>: <what>",
+ * built by personPin from the input the tool really got, the same way gmail_send and x_dm pin theirs.
+ */
+export const PERSON_PINNED = new Set(["message_send", "voice_note_send", "call_place"]);
+
+const oneLine = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+
+/**
+ * "<number>: <what reaches them>" for a text, a voice note or a call. For a call that is the goal and
+ * the facts it may give out (read as one run of words, so src/tools.js fitCallBrief moving a long goal
+ * into facts does not change it), plus anything it may agree to or hand over: may_book and its
+ * ceiling, the approved terms, the requirements, and the questions it asks out loud (ask).
+ * read_back (fixed choices) and max_minutes only shape how it asks.
+ */
+export function personPin(name, input = {}) {
+  const who = normalizeNumber(input.to) || String(input.to ?? "").trim();
+  if (name === "message_send") return `${who}: ${oneLine(input.text)}`;
+  if (name === "voice_note_send") return `${who}: voice note ${oneLine(input.file)}${oneLine(input.text) ? ` with "${oneLine(input.text)}"` : ""}`;
+  const parts = [oneLine([input.goal, ...(Array.isArray(input.facts) ? input.facts : [])].join(" "))];
+  const asks = Array.isArray(input.ask) ? input.ask.map(oneLine).filter(Boolean) : [];
+  if (asks.length) parts.push(`asks: ${asks.join("; ")}`);
+  if (input.may_book === true) parts.push("may book");
+  if (input.max_price_cents != null) parts.push(`up to ${money(Number(input.max_price_cents))}`);
+  if (Array.isArray(input.approved_terms) && input.approved_terms.length) parts.push(`terms: ${input.approved_terms.map(oneLine).join("; ")}`);
+  const req = input.requirements && typeof input.requirements === "object" ? Object.entries(input.requirements) : [];
+  if (req.length) parts.push(`gives: ${req.map(([k, v]) => `${oneLine(k)} ${oneLine(v)}`).join("; ")}`);
+  return `${who}: ${parts.join(" | ")}`;
+}
+
+/** The person half of a target ("+1555…: words" → "+1555…"); a target with no words is itself. */
+export function personOfTarget(t) {
+  const s = String(t ?? "").trim();
+  const i = s.indexOf(": ");
+  return i > 0 ? s.slice(0, i).trim() : s;
+}
+
+/**
  * Asks that ran out since the model last looked, for the turn the person starts: shown once, then
  * stamped (expiry_told_at), so it can let them know in a line if it still matters and otherwise say
  * nothing. Never a reason to send anything on its own: this is only ever read on a turn they started.
@@ -332,13 +371,21 @@ export function authorizeConfirmation({ conversationId, action, confirmationId, 
       // the exact details for a submit. A message about phone numbers is no help to a booking.
       const what = action === "browser_submit"
         ? `does not say what ${action} was for, so it cannot authorize committing anything. Call confirm_request again with target set to the same one-line details you will submit, show them those details, and ask again.`
-        : `does not say who ${action} was for, so it cannot authorize reaching anyone. Call confirm_request again with target set to the exact number, show them that number, and ask again.`;
+        : PERSON_PINNED.has(toolName(action))
+          ? `does not say who ${action} was for or what it says, so it cannot authorize reaching anyone. Call confirm_request again with target set to the use_target string this refusal hands back, show them that person and those exact words, and ask again.`
+          : toolName(action) === "account_connect"
+            ? `does not say which account ${action} was for, so it cannot connect anything. Call confirm_request again with target set to the use_target string this refusal hands back, name that provider to them, and ask again.`
+            : `does not say who ${action} was for, so it cannot authorize reaching anyone. Call confirm_request again with target set to the exact number, show them that number, and ask again.`;
       return { ok: false, blocked: "no_target_on_record", error: `Confirmation #${confirmationId} ${what}` };
     }
     if (c.target !== want) {
       const what = action === "browser_submit"
         ? `A yes covers the exact details they were shown, and these are not them. Say what has changed, then confirm_request again with the new details and ask.`
-        : `A yes covers the one person they were shown. Ask again for this one.`;
+        : PERSON_PINNED.has(toolName(action))
+          ? `A yes covers the one person and the exact words they were shown, and this is not both of them. Send exactly what they agreed to, or confirm_request again with target set to use_target and ask about this one.`
+          : toolName(action) === "account_connect"
+            ? `A yes covers connecting the one account they were told about. Ask again for this one.`
+            : `A yes covers the one person they were shown. Ask again for this one.`;
       return { ok: false, blocked: "wrong_target", error: `Confirmation #${confirmationId} was for '${c.target}', not '${want}'. ${what}` };
     }
   }

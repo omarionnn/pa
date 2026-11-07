@@ -62,6 +62,26 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   channel's `sent[].to` is the proof.
 - **A yes is pinned.** `target` is checked, so a yes for one phone number cannot be spent on
   another, and a yes for an 8:00 booking cannot be carried to a 9:00 one.
+- **A text, voice note or call is pinned to the person AND what reaches them** (audit lead 26,
+  sec/lead26, 2026-11-07). `trust.personPin` builds `"<number>: <words>"` for `message_send`, `"<number>:
+  voice note <file> with "<text>""` for `voice_note_send`, and `"<number>: <goal + facts> | asks: <questions, the errand's when no ask> | may book |
+  up to $X | terms: … | gives: …"` for `call_place` (goal and facts read as one run of words, so
+  `fitCallBrief` moving a long goal into facts does not change it). Flow: call the tool with no
+  `confirmation_id` → `needs_confirmation` + `use_target` → `confirm_request` with that `target` →
+  yes → the tool again. Different words, another file, extra facts or `may_book` on the same yes →
+  `wrong_target`. A bare number as `confirm_request`'s target for these three is refused before
+  anything is asked (`blocked: "target_needs_the_words"`), and an old number-only row authorizes
+  nothing (`wrong_target`). Standing permissions, to-do plans, asked-for calls and the job's
+  `verifyRecipient` still match on the person half (`trust.personOfTarget`); a call placed from a call
+  (`src/calls/fromcall.js`) pins its own confirmation with `personPin` on the same dial args. Before,
+  the target was the number alone, so a yes to "running late" could carry any words to that number.
+  `account_connect` is pinned the same way to `connect <name> (<scopes>)`, and its ask must carry a
+  target, so a yes to one provider cannot connect another.
+  Drive: `node --test test/person-pin.test.js` (7; all fail on main ae913c7), then Drive 2 on the cage:
+  `bin/person-pin-drive.mjs` under `caged.sh env` with `REASON_UNDO_SECONDS=0` (`runTool` with a
+  `FakeChannel` router and `FakeCallProvider` in ctx, stub judge):
+  probe → `use_target`, bare-number ask → `target_needs_the_words`, other words / other `ask` questions / `may_book` added →
+  `wrong_target` with nothing sent or placed, the agreed text / brief → sent 1 / placed 1 (2026-11-07).
 - **A yes is spent once.** `consumed_at`.
 - **One reply is a yes to one ask (audit lead 27, 2026-11-07).** Two asks opened in the same turn
   share one `asked_after_msgs` mark, so before this the owner's "yes" to the one they were shown also

@@ -20,6 +20,7 @@ process.env.REASON_CONVERSATION = "dm:owner";
 const { runTool } = await import("../src/tools.js");
 const agentcard = await import("../src/agentcard.js");
 const db = await import("../src/db.js");
+const trust = await import("../src/trust.js");
 const offers = await import("../src/offers.js");
 const { agentcardWebhookRequest } = await import("../src/http.js");
 const { config, clock } = await import("../src/config.js");
@@ -395,7 +396,7 @@ test("pinned: message_send to somebody else with an unsourced figure is refused 
   const sent = [];
   const channels = { list: () => [{ name: "test" }], send: async (m) => { sent.push(m); return { ok: true, delivered: true }; } };
   const text = "hi, this is Reason, Omari's assistant — the speaker is $49.99 at best buy, cheapest anywhere";
-  const req = await call("confirm_request", { action: "message_send", summary: "Text +12025550111 about the speaker?", stakes: "reach", target: "+12025550111" });
+  const req = await call("confirm_request", { action: "message_send", summary: "Text +12025550111 about the speaker?", stakes: "reach", target: trust.personPin("message_send", { to: "+12025550111", text }) });
   assert.ok(req.confirmation_id, JSON.stringify(req));
   messages.push(owner("yes send it"));
   const granted = await call("confirm_record", { confirmation_id: req.confirmation_id });

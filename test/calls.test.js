@@ -47,8 +47,11 @@ beforeEach(() => {
 
 const owner = (t) => ({ role: "user", content: `[Wed, Sep 30, 2026, 3:00 PM] Omari: ${t}` });
 
-/** Ask, answer yes, and hand back the confirmation id — the gate's happy path, stated not read. */
-async function yesFor(summary, { action = "call_place", target } = {}) {
+/** Ask, answer yes, and hand back the confirmation id — the gate's happy path, stated not read.
+ *  `input` is the call_place input the yes is for: a call's yes is pinned to the person AND the
+ *  brief (audit lead 26), so the target is trust.personPin of it. */
+async function yesFor(summary, { action = "call_place", target, input } = {}) {
+  if (input) target = trust.personPin(action, input);
   const asked = await runTool("confirm_request", { action, summary, ...(target ? { target } : {}) },
     { conversationId: C, messages: [owner("do it")] });
   await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
@@ -98,16 +101,17 @@ test("calling a third party without a yes is refused, and no phone is dialled", 
 
 test("a yes for one number does not authorize another", async () => {
   const calls = new FakeCallProvider();
-  const id = await yesFor(`ring ${PLACE} to ask for a table for 4 at 8pm Saturday`, { target: PLACE });
+  const goal = "ask for a table for 4 at 8pm Saturday";
+  const id = await yesFor(`ring ${PLACE} to ${goal}`, { input: { to: PLACE, goal } });
 
-  const wrong = await runTool("call_place", { to: "+13475550000", goal: "same thing", confirmation_id: id }, { conversationId: C, calls });
+  const wrong = await runTool("call_place", { to: "+13475550000", goal, confirmation_id: id }, { conversationId: C, calls });
   assert.equal(wrong.ok, false);
   assert.equal(wrong.blocked, "wrong_target");
-  assert.match(wrong.error, /was for '\+12125559999', not '\+13475550000'/);
+  assert.match(wrong.error, /was for '\+12125559999: [^']*', not '\+13475550000: [^']*'/);
   assert.deepEqual(calls.placed, [], "the other number was never dialled");
 
   // And the yes it was aimed at still works, because nothing was spent on the refusal.
-  const right = await runTool("call_place", { to: PLACE, goal: "the real one", confirmation_id: id }, { conversationId: C, calls });
+  const right = await runTool("call_place", { to: PLACE, goal, confirmation_id: id }, { conversationId: C, calls });
   assert.equal(right.ok, true);
   assert.equal(calls.placed[0].to, PLACE);
 });
@@ -141,20 +145,18 @@ test("a yes that never said who it was for cannot reach anyone", async () => {
 
 test("how the number is written is not a different number", async () => {
   const calls = new FakeCallProvider();
-  const id = await yesFor(`ring ${PLACE}`, { target: "+1 (212) 555-9999" });
+  // The number as they wrote it on the ask, the number in E.164 on the call: still one person.
+  const id = await yesFor(`ring ${PLACE}`, { input: { to: "+1 (212) 555-9999", goal: "x" } });
   const out = await runTool("call_place", { to: PLACE, goal: "x", confirmation_id: id }, { conversationId: C, calls });
   assert.equal(out.ok, true, "formatting is not identity");
 });
 
 test("a real yes rings exactly once, shares only the approved facts, and leaves a receipt", async () => {
   const calls = new FakeCallProvider();
-  const id = await yesFor(`ring ${PLACE} to ask for a table for 4 at 8pm Saturday, under Omari, 202-555-1234`, { target: PLACE });
+  const brief = { to: PLACE, goal: "ask for a table for 4 at 8pm Saturday", facts: ["the name is Omari", "party of 4", "callback 202-555-1234"] };
+  const id = await yesFor(`ring ${PLACE} to ask for a table for 4 at 8pm Saturday, under Omari, 202-555-1234`, { input: brief });
 
-  const out = await runTool("call_place", {
-    to: PLACE, goal: "ask for a table for 4 at 8pm Saturday",
-    facts: ["the name is Omari", "party of 4", "callback 202-555-1234"],
-    confirmation_id: id,
-  }, { conversationId: C, calls });
+  const out = await runTool("call_place", { ...brief, confirmation_id: id }, { conversationId: C, calls });
 
   assert.equal(out.ok, true);
   assert.equal(out.state, "placing");
@@ -171,7 +173,7 @@ test("a real yes rings exactly once, shares only the approved facts, and leaves 
   assert.equal(ledger[0].confirmation_id, id);
 
   // And the yes is spent: a second call on it is refused.
-  const twice = await runTool("call_place", { to: PLACE, goal: "again", confirmation_id: id }, { conversationId: C, calls });
+  const twice = await runTool("call_place", { ...brief, confirmation_id: id }, { conversationId: C, calls });
   assert.equal(twice.ok, false);
   assert.equal(twice.blocked, "already_spent");
   assert.equal(calls.placed.length, 1);
@@ -207,7 +209,7 @@ test("a call to the owner opens with a greeting, not 'a call for Omari' and the 
   assert.equal(outbox().length, 1, "told once ever");
 
   // And a third party still hears the full line.
-  const id = await yesFor("call the restaurant", { target: PLACE });
+  const id = await yesFor("call the restaurant", { input: { to: PLACE, goal: "book a table" } });
   await runTool("call_place", { to: PLACE, goal: "book a table", confirmation_id: id }, { conversationId: C, calls });
   assert.match(calls.placed.at(-1).announcement, /AI assistant calling for Omari.*recorded/);
 });
@@ -275,7 +277,7 @@ test("a provider that throws is survived, not crashed through", async () => {
 
 test("a number that is not a number is refused before anything is recorded", async () => {
   const calls = new FakeCallProvider();
-  const id = await yesFor("ring the place", { target: "the italian place" });
+  const id = await yesFor("ring the place", { input: { to: "the italian place", goal: "x" } });
   const out = await runTool("call_place", { to: "the italian place", goal: "x", confirmation_id: id }, { conversationId: C, calls });
   assert.equal(out.ok, false);
   assert.match(out.error, /E\.164/);

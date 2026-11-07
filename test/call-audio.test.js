@@ -44,6 +44,7 @@ const { storeRecording, deleteRecordingFile, mimeFor } = await import("../src/ca
 const { FakeChannel } = await import("../src/channels/fake.js");
 const { Runtime } = await import("../src/runtime.js");
 const db = await import("../src/db.js");
+const trust = await import("../src/trust.js");
 const { clock, config } = await import("../src/config.js");
 const { findConverter } = await import("../src/expressive.js");
 const HAS_CONVERTER = !!findConverter();
@@ -60,9 +61,10 @@ beforeEach(() => {
 
 const owner = (t) => ({ role: "user", content: `[Wed, Sep 30, 2026, 3:00 PM] Omari: ${t}` });
 
-/** Ask, answer yes, and hand back the confirmation id — the gate's happy path, stated not read. */
-async function yesFor(summary, { target = PLACE } = {}) {
-  const asked = await runTool("confirm_request", { action: "call_place", summary, target },
+/** Ask, answer yes, and hand back the confirmation id — the gate's happy path, stated not read.
+ *  The yes is pinned to the person AND the brief (audit lead 26), so it takes the call_place input. */
+async function yesFor(summary, input) {
+  const asked = await runTool("confirm_request", { action: "call_place", summary, target: trust.personPin("call_place", input) },
     { conversationId: C, messages: [owner("do it")] });
   await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
     { conversationId: C, messages: [owner("do it"), owner("yeah go")], judge: async () => ({ verdict: "yes" }) });
@@ -73,7 +75,7 @@ async function yesFor(summary, { target = PLACE } = {}) {
  *  settle the call, returning the final row. */
 async function callAndSettle({ calls, goal = "ask if they have a table for 4 at 8", to = OWNER } = {}) {
   const provider = calls ?? new FakeCallProvider();
-  const gate = to === OWNER ? {} : { confirmation_id: await yesFor(goal, { target: to }) };
+  const gate = to === OWNER ? {} : { confirmation_id: await yesFor(goal, { to, goal }) };
   const placed = await runTool("call_place", { to, goal, ...gate }, { conversationId: C, calls: provider });
   assert.equal(placed.ok, true, placed.error);
   const status = await runTool("call_status", { call_id: placed.call_id }, { conversationId: C, calls: provider });
@@ -437,7 +439,7 @@ test("capabilities says every call is recorded and the owner gets the audio", as
 
 test("the ledger says what was announced, and gets a row when the audio goes out", async () => {
   const calls = new FakeCallProvider();
-  const confirmation_id = await yesFor("ask about a table");
+  const confirmation_id = await yesFor("ask about a table", { to: PLACE, goal: "ask about a table" });
   const placed = await runTool("call_place", { to: PLACE, goal: "ask about a table", confirmation_id }, { conversationId: C, calls });
   await runTool("call_status", { call_id: placed.call_id }, { conversationId: C, calls });
 

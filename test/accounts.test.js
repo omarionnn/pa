@@ -39,6 +39,7 @@ process.env.REASON_MAX_PROACTIVE_PER_DAY = "1";
 
 const accounts = await import("../src/accounts.js");
 const { runTool } = await import("../src/tools.js");
+const trust = await import("../src/trust.js");
 const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
@@ -141,7 +142,7 @@ test("a yes in one Reason authorizes nothing in another", async () => {
 
   const msgs = [{ role: "user", content: "[Wed, Sep 30, 2026, 3:00 PM] Omari: text kofi" }];
   const req = await runTool("confirm_request",
-    { action: "message_send", summary: `text ${KOFI} 'hi'`, target: KOFI },
+    { action: "message_send", summary: `text ${KOFI} 'hi'`, target: trust.personPin("message_send", { to: KOFI, text: "hi" }) },
     { conversationId: o, messages: msgs });
   msgs.push({ role: "user", content: "[Wed, Sep 30, 2026, 3:01 PM] Omari: yeah go" });
   assert.equal((await runTool("confirm_record", { confirmation_id: req.confirmation_id },

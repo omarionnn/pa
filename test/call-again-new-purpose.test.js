@@ -29,6 +29,7 @@ process.env.REASON_UNDO_SECONDS = "0";
 const { runTool } = await import("../src/tools.js");
 const { FakeCallProvider } = await import("../src/calls/fake.js");
 const db = await import("../src/db.js");
+const trust = await import("../src/trust.js");
 const redial = await import("../src/calls/redial.js");
 const brief = await import("../src/calls/brief.js");
 const { clock, config } = await import("../src/config.js");
@@ -51,8 +52,9 @@ beforeEach(() => {
 
 const owner = (t) => ({ role: "user", content: `[Thu, Nov 5, 2026, 7:07 PM] Omari: ${t}` });
 
-async function yesFor(summary, target) {
-  const asked = await runTool("confirm_request", { action: "call_place", stakes: "third_party", target, summary },
+// The yes is pinned to the person AND the brief (audit lead 26), so it is asked about the call_place input.
+async function yesFor(summary, input) {
+  const asked = await runTool("confirm_request", { action: "call_place", stakes: "third_party", target: trust.personPin("call_place", input), summary },
     { conversationId: C, messages: [owner(summary)] });
   assert.equal(asked.ok, true, JSON.stringify(asked));
   await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
@@ -62,8 +64,9 @@ async function yesFor(summary, target) {
 
 /** Sunday's call, settled exactly as call 63 was: a dead mailbox filed "dropped before confirmation". */
 async function sundayCall(calls, { goal = GOAL_A, facts = FACTS_A, mayBook = false } = {}) {
-  const id = await yesFor(`Call Yaw and ${goal}`, YAW);
-  const out = await runTool("call_place", { to: YAW, goal, facts, may_book: mayBook, ...(mayBook ? { read_back: ["date", "time"], max_price_cents: 20000 } : {}), confirmation_id: id }, { conversationId: C, calls });
+  const input = { to: YAW, goal, facts, may_book: mayBook, ...(mayBook ? { read_back: ["date", "time"], max_price_cents: 20000 } : {}) };
+  const id = await yesFor(`Call Yaw and ${goal}`, input);
+  const out = await runTool("call_place", { ...input, confirmation_id: id }, { conversationId: C, calls });
   assert.equal(out.ok, true, JSON.stringify(out));
   db.updateCall(C, out.call_id, {
     state: "completed", outcome_kind: "dropped_before_confirmation", end_reason: "remote_hung_up",
@@ -78,7 +81,7 @@ test("call Yaw again four days later with a new message: the call carries the NE
   await sundayCall(calls);
   clock.skip(4 * DAY + 8 * 60 * 60 * 1000);
 
-  const id = await yesFor(`Call Yaw and tell him Omari needs him to text his Reason and ask it to call him, then let Omari know how it goes.`, YAW);
+  const id = await yesFor(`Call Yaw and tell him Omari needs him to text his Reason and ask it to call him, then let Omari know how it goes.`, { to: YAW, goal: GOAL_B, facts: FACTS_B, ask: ["Will he text his Reason?"] });
   const out = await runTool("call_place", { to: YAW, goal: GOAL_B, facts: FACTS_B, ask: ["Will he text his Reason?"], confirmation_id: id },
     { conversationId: C, calls });
   assert.equal(out.ok, true, JSON.stringify(out));
@@ -100,7 +103,7 @@ test("the same evening too: an asking-only call that dropped is simply rung agai
   await sundayCall(calls);
   clock.skip(30 * 60 * 1000);
 
-  const id = await yesFor(`Call Yaw again and tell him to text his Reason and ask it to call him.`, YAW);
+  const id = await yesFor(`Call Yaw again and tell him to text his Reason and ask it to call him.`, { to: YAW, goal: GOAL_B, facts: FACTS_B });
   const out = await runTool("call_place", { to: YAW, goal: GOAL_B, facts: FACTS_B, confirmation_id: id }, { conversationId: C, calls });
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(calls.placed.at(-1).brief.goal, GOAL_B);
@@ -127,7 +130,7 @@ test("a dropped call that COULD have booked still comes back to check first — 
   clock.skip(60 * 60 * 1000);
 
   const NEW = "Ask whether they have a vegetarian tasting menu.";
-  const id = await yesFor(`Call them again and ask whether they have a vegetarian tasting menu.`, YAW);
+  const id = await yesFor(`Call them again and ask whether they have a vegetarian tasting menu.`, { to: YAW, goal: NEW, ask: ["Is there a vegetarian tasting menu?"] });
   const out = await runTool("call_place", { to: YAW, goal: NEW, ask: ["Is there a vegetarian tasting menu?"], confirmation_id: id },
     { conversationId: C, calls });
   assert.equal(out.ok, true, JSON.stringify(out));

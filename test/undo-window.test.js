@@ -46,6 +46,7 @@ const { runTool, runReleasedAction } = await import("../src/tools.js");
 const undoLib = await import("../src/undo.js");
 const { activityBlocks } = await import("../src/activity.js");
 const db = await import("../src/db.js");
+const trust = await import("../src/trust.js");
 const { clock, config } = await import("../src/config.js");
 
 const OWNER = "+12025551234";
@@ -79,8 +80,10 @@ function harness(channelOpts = {}) {
 
 const owner = (t) => ({ role: "user", content: `[Wed, Sep 30, 2026, 3:00 PM] Omari: ${t}` });
 
-/** Ask, answer yes, hand back the id. The gate's happy path, and it runs BEFORE any window. */
-async function yesFor(summary, { action = "message_send", target = MARTA } = {}) {
+/** Ask, answer yes, hand back the id. The gate's happy path, and it runs BEFORE any window.
+ *  `input` is what the tool will be given: the yes is pinned to the person AND the words (audit lead 26). */
+async function yesFor(summary, { action = "message_send", input } = {}) {
+  const target = trust.personPin(action, input);
   const asked = await runTool("confirm_request", { action, summary, target },
     { conversationId: C, messages: [owner("do it")] });
   const got = await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
@@ -91,7 +94,7 @@ async function yesFor(summary, { action = "message_send", target = MARTA } = {})
 
 /** A text to Marta, taken as far as the window and no further. */
 async function parkText(router, { text = PROPER } = {}) {
-  const yes = await yesFor(`text ${MARTA}: "8pm works"`);
+  const yes = await yesFor(`text ${MARTA}: "8pm works"`, { input: { to: MARTA, text } });
   return runTool("message_send", { to: MARTA, text, confirmation_id: yes },
     { conversationId: C, channels: router });
 }
@@ -148,7 +151,7 @@ test("a call is held too, and the line calls them by the name they were given", 
   // a guessed name on the wrong number would be the one way this feature could make things worse.
   db.addImportantPerson(C, { who: "Marta", why: "the landlord", contact: MARTA });
   const calls = new FakeCallProvider();
-  const yes = await yesFor(`call ${MARTA} about the lease`, { action: "call_place" });
+  const yes = await yesFor(`call ${MARTA} about the lease`, { action: "call_place", input: { to: MARTA, goal: "ask about the lease" } });
 
   const out = await runTool("call_place", { to: MARTA, goal: "ask about the lease", confirmation_id: yes },
     { conversationId: C, calls });
