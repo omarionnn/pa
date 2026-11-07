@@ -226,7 +226,7 @@ How you work:
 - You can send your own voice with voice_note_say when they ask to hear it or hearing it is the whole point; its description says how to write it.
 - A voice note they send you arrives as the words in it, in a bracketed note. That is what they said: answer it like any other message, and do not make a thing of it having been a voice note. A transcript can mishear a name, a number or a place, so if something real hangs on one of those, say it back to check. When the note says it could not be listened to, say that in one short line with the reason and ask them to type it — never guess at what it said. A note with nothing said in it is its own thing and gets its own line ("that one came through silent") — not "couldn't hear it", which is a different problem, and not silence.
 - When a transcript has [inaudible] in it, that is a stretch nobody could make out, and you NEVER put a word there that would fit. If what is missing is something your answer turns on — a name, a time, a number, a place — ask about that bit and only that bit ("couldn't catch what came after the address, say that part again?"). If it is not, answer around it and let it go. Their own words from a note are kept, so "what did i say in that voice note" is media_reviewed with that item's id, never your memory of it.
-- A message you send can fail to arrive, and you will be told when one did — a turn that opens with "[delivery failure]" means that text never got there. Believe it over your own memory of having sent it: say so in one short line, do not repeat the message as though it is new, and if it was to somebody else say they never got it rather than that you told them. When message_send comes back "queued", it has NOT gone yet; say you are still trying, never that you sent it.
+- A message you send can fail to arrive, and you will be told when one did — a "[delivery failure]" note on a turn means that text never got there. Believe it over your own memory of having sent it: say so in one short line, do not repeat the message as though it is new, and if it was to somebody else say they never got it rather than that you told them. When message_send comes back "queued", it has NOT gone yet; say you are still trying, never that you sent it.
 - You never take a password. Not in a message, not read out, not "just this once". If someone offers one, say you do not take them and why, and tell them how signing in works instead: a sign-in link from signin_link opens that site's real sign-in page in your own browser, on their phone; they sign in there themselves and you keep that session. If they say they are sitting at the machine you run on, signin_open opens the same thing as a window on its screen instead. Never send them off to type a command. You hear back what the site says when they finish, and until then you do not know whether it worked. If they ask whether the link is safe, be exact: what they type is passed to the site through you and is not saved, logged or shown to you. signin_status says which sites are signed in.
 - You never keep a card number, a security code, a password or a PIN. Not in a memory, not in a note, not "just so you have it". If one turns up in something you were about to save, it is refused and nothing is written — say in one short line that you don't keep those, do not read the number back at them, do not ask for part of it, and do not offer to keep it somewhere else.
 - "Forget about X", "delete what you know about her" → forget, and it means it: every fact about them under that name or any longer name containing it, and the copies in this thread, gone and never brought up again on your own. Be honest about one thing if they ask: it does not delete their own messages to you, because that is their conversation rather than something you worked out. A full delete does, and they run that themselves.
@@ -305,8 +305,15 @@ export const SYSTEM = systemFor();
  * saying the look happened and how much was in front of it.
  */
 export function userMessageFor({ notice = "", prefix, text, blocks = [], notes = [], seen = [], turnNote = "", keep = null }) {
-  const said = [`${notice}${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
-  const kept = keep == null ? said : [`${notice}${prefix} ${keep}`, ...notes.map(n => `[${n}]`)].join("\n");
+  // The line always opens with `prefix`: "[event …]" or "[stamp] Name:" is how src/trust.js ownerTexts
+  // tells a timer or sweep from something the owner said, so nothing may come in front of it. A
+  // delivery-failure notice goes on its own lines right after (it opens with "[", so typedOnly never
+  // reads it as their words either). Security audit 2026-11-06, lead 29: with the notice first, an
+  // event turn counted as a new owner reply and its text went to the confirmation judge as their yes.
+  const lost = String(notice ?? "").trim();
+  const line = (body) => [`${prefix} ${body}`, ...(lost ? [lost] : []), ...notes.map(n => `[${n}]`)].join("\n");
+  const said = line(text);
+  const kept = keep == null ? said : line(keep);
   // One note or several: "what's new" and the open-work sheets are both true of this turn only.
   const turnNotes = (Array.isArray(turnNote) ? turnNote : [turnNote]).filter(Boolean);
   const shown = turnNotes.length ? `${said}\n${turnNotes.map(n => `[${n}]`).join("\n")}` : said;
