@@ -45,31 +45,8 @@ export function isConsequential(name, input = null, { toSelf = () => false } = {
   // options" on his own call was held for a check that texted the same phone). Whoever is holding
   // this phone, the words land with the owner, so there is nothing for a voice to authorize.
   if (SELF_SENDS.has(name) && input && toSelf(input.to)) return false;
-  return GATED_ACTIONS.has(name) || name === "confirm_record" || CHANGES_THE_GATE.has(name) || eventWrite(name, input) || WHEREABOUTS.has(name) || MEMORY_READS.has(name);
+  return GATED_ACTIONS.has(name) || name === "confirm_record" || CHANGES_THE_GATE.has(name) || eventWrite(name, input);
 }
-
-/**
- * Where they are, or where they usually are: their live position, what is near it, their saved
- * places (a place's weather is labelled with its address), and a call placed from where they are.
- * Caller ID alone said whose Reason to be, not who is holding the phone, and "where am I?" from a
- * spoofed number must not be answered (drive 11-08 on OVH: a spoofed inbound caller heard "home and
- * work are both in Chelsea"). Behind the same check as anything consequential: refused on the call,
- * picked up by text after it.
- */
-// `weather` has no tool of its own on main today (weather goes through web_search after get_location,
-// which is what is gated); it is named so a weather tool by coordinates or saved place is covered the
-// day it lands. uber_link / uber_options resolve "home" and "work" to the saved pins.
-export const WHEREABOUTS = new Set(["get_location", "nearby_places", "set_place", "weather", "call_place", "uber_link", "uber_options"]);
-
-/**
- * What Reason remembers about them, read on demand: the same saved facts their profile is built from
- * (where they live and work, routines), so keeping the profile out of a caller-ID-only call means these
- * wait for the check too (cold review 11-08: "what do you remember about me?" → memory_page → Chelsea).
- */
-export const MEMORY_READS = new Set(["recall", "memory_page", "memory_search", "graph_lookup"]);
-
-/** Refused for privacy rather than because it spends, books or sends. */
-const PRIVATE = (name) => WHEREABOUTS.has(name) || MEMORY_READS.has(name);
 
 /**
  * An event organizer's tools reach the guests: a cancel, a change, a released detail or a removal is
@@ -199,9 +176,6 @@ export function promptNote({ call, expected = config.callPassphrase } = {}) {
     + ` the phone. So ordinary conversation is exactly as it always is — talk, remember, look things up, answer.`
     + ` But when they ask for something that spends money, books something, sends a message to somebody`
     + ` else, or changes something, ${how}`
-    + ` The same goes for where they are or usually are (home, work, their location, what is near them) and what you`
-    + ` remember about them: until the check has passed, do not say it — not from a tool, and not from anything`
-    + ` else in front of you (their messages, today's notes). Say you can't on this call, and ${passphraseSet({ expected }) ? "ask for the passphrase" : "pick it up by text after"}.`
     + ` Never mention any of this to someone who has not asked for anything like that.`;
 }
 
@@ -209,17 +183,58 @@ export function promptNote({ call, expected = config.callPassphrase } = {}) {
  * The refusal a consequential tool gets before the check has passed. Handed to the model as the
  * tool's result, so the next thing said is the ask rather than the thing.
  */
-export function gateRefusal({ call, name, expected = config.callPassphrase }) {
-  const how = passphraseSet({ expected }) && Number(call?.verify_tries ?? 0) < MAX_PASSPHRASE_TRIES
-    ? `Ask them for their passphrase, then call verify_caller with what they say. Say plainly that this is a one-time check for ${PRIVATE(name) ? "anything private about them" : "anything that spends, books or sends"}.`
-    : `It waits for the call to end: call verify_caller with \`about\` set to what they asked, and say in one line that you'll pick it up by text as soon as you hang up. Do not ask them to reply to anything while you are on the call.`;
+export function gateRefusal({ call, name, input = null, expected = config.callPassphrase, log = () => {} }) {
+  // With no passphrase to ask for, the refused thing is queued for after the call right here, so "I'll text
+  // you to confirm" is true whatever the model does next (the after-call turn asks for its yes in their
+  // own thread, src/calls/postcall.js).
+  const queued = deferredOnly(call, { expected }) && queueForAfter(call, describeAsk(name, input), { log });
+  const how = !deferredOnly(call, { expected })
+    ? `Ask them for their passphrase, then call verify_caller with what they say. Say plainly that this is a one-time check for anything that spends, books or sends.`
+    : queued
+      ? `It waits for the call to end and is already queued for a text: say warmly, in one line, that you'll text them to confirm it as soon as you hang up. Never leave this unsaid, and do not ask them to reply to anything while you are on the call.`
+      : `It waits for the call to end: call verify_caller with \`about\` set to what they asked, and say warmly in one line that you'll text them to confirm it as soon as you hang up. Do not ask them to reply to anything while you are on the call.`;
   return {
-    ok: false, blocked: "needs_verification", tool: name,
-    say: PRIVATE(name)
-      ? `Not on this call. Where they are or usually are, and what you remember about them, is not given out to a voice on caller ID alone, and ${name} would say it. ${how} Do not run ${name} now, and do not answer it from anything else you know about them.`
-      : `Not on this call. ${name} is the kind of thing a voice alone cannot authorize. ${how} Do not run ${name} now.`,
+    ok: false, blocked: "needs_verification", tool: name, queued: Boolean(queued),
+    say: `Not on this call. ${name} is the kind of thing a voice alone cannot authorize. ${how} Do not run ${name} now.`,
     call_id: call?.id ?? null,
   };
+}
+
+/** What was asked for, in a line the after-call turn can read back: the caller's own words quoted, short. */
+export function describeAsk(name, input = null) {
+  const q = (v, n = 120) => {
+    const t = String(v ?? "").replace(/\s+/g, " ").replace(/"/g, "'").trim();
+    return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+  };
+  const i = input && typeof input === "object" ? input : {};
+  const to = i.to ?? i.recipient ?? i.number ?? i.name ?? "";
+  const words = i.text ?? i.message ?? i.body ?? i.subject ?? i.query ?? i.item ?? i.title ?? "";
+  const what = String(name ?? "").replace(/_/g, " ");
+  return `${what}${to ? ` to ${q(to, 60)}` : ""}${words ? ` (caller said: "${q(words)}")` : ""}`;
+}
+
+/**
+ * Add one refused thing to this call's after-call queue (calls.verify_deferred): every refusal on the call
+ * is kept, none overwrites another. Returns true when it is on the row.
+ */
+export function queueForAfter(call, what, { log = () => {} } = {}) {
+  const line = String(what ?? "").trim();
+  if (!call?.id || !line) return false;
+  try {
+    const have = String(db.getCall(call.conversation_id, call.id)?.verify_deferred ?? call.verify_deferred ?? "").trim();
+    const parts = have ? have.split("; ") : [];
+    if (!parts.includes(line)) parts.push(line);
+    const next = parts.join("; ").slice(0, 600);
+    const row = db.updateCall(call.conversation_id, call.id, { verify_deferred: next });
+    if (row) Object.assign(call, { verify_deferred: row.verify_deferred });
+    log({ call_verify_queued: call.id, items: parts.length });
+    return Boolean(row?.verify_deferred);
+  } catch { return false; }
+}
+
+/** No passphrase to ask for on this call (none set, or its tries are spent): only the texted check is left. */
+export function deferredOnly(call, { expected = config.callPassphrase } = {}) {
+  return !(passphraseSet({ expected }) && Number(call?.verify_tries ?? 0) < MAX_PASSPHRASE_TRIES);
 }
 
 /**
@@ -260,7 +275,7 @@ export function verify({
   // It is written on the row, and the after-call turn (src/calls/postcall.js ownerEvent) picks it
   // up in their own thread, where the ordinary gate asks on the phone that is theirs.
   const what = String(about ?? "").trim().slice(0, 300);
-  if (what) db.updateCall(call.conversation_id, call.id, { verify_deferred: what });
+  if (what) queueForAfter(call, what, { log });
   log({ call_verify_deferred: call.id, said_passphrase: !!said });
   return {
     ok: false, verified: false, blocked: "after_the_call", deferred: what || null,

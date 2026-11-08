@@ -234,7 +234,7 @@ export async function go({ call, requestId, saidYes = false, dial, log = () => {
 
   // Who is on the phone, first. The yes is worth nothing until this has passed.
   if (!verify.isVerified(call)) {
-    const r = verify.gateRefusal({ call, name: "make_a_call_for_me" });
+    const r = verify.gateRefusal({ call, name: "make_a_call_for_me", input: { to: req.to_number, text: req.review ?? req.brief?.goal ?? "" }, log });
     log({ call_request_unverified: req.id });
     return { ...r, request_id: req.id, state: "preparing" };
   }

@@ -176,9 +176,9 @@ const QUIET_ON_A_MACHINE = new Set(["skip_turn", "play_keypad_touch_tone", "voic
 export const LINE_OPENED = `[The call has just connected and nothing has been heard from their side yet.]`;
 
 /** A thing refused for the caller check, picked up by text after the call (verify_caller queued it). */
-export const CHECK_LATER_LINE = "I can't do that one on this call — I'll pick it up with you by text as soon as we hang up.";
-/** The same, when nothing was queued for after the call. */
-export const CHECK_NOT_HERE_LINE = "I can't do that one on this call. Text me and I'll sort it there.";
+export const CHECK_LATER_LINE = "I'll text you to confirm that one — it'll be there as soon as we hang up.";
+/** The same, when a passphrase is set and still has tries: the check is asked for out loud. */
+export const CHECK_NOT_HERE_LINE = "Sure — just need your passphrase for that one first.";
 const SILENT_TOOLS = new Set(["end_call", "skip_turn", "transfer_to_number", "voicemail_detection", "language_detection", "play_keypad_touch_tone", "machine_on_the_line"]);
 
 /** The filler that buys thinking time before a tool, rather than dead air. Their own suggestion. */
@@ -554,9 +554,7 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // about my Gmail" worked by text and drew a blank on the phone. Profile only, no per-turn
     // search: it is one row read, and a phone turn pays for every millisecond before the first
     // word. Nothing new is exposed by it — this frame already carries their recent thread.
-    // Not on an inbound call that only has caller ID (./verify.js WHEREABOUTS): the profile says where
-    // they live and work, and "where am I?" was answered from it with no tool in between (drive 11-08).
-    verify.isVerified(call) ? ownerProfileNote(conversationId) : "",
+    ownerProfileNote(conversationId),
     // What happened between them today, before this call (call 79: its own pick by text, three hours
     // earlier, was "nothing saved" on the phone). Up to when the call was made, so every turn of the
     // call sends the same prefix and the prompt cache holds.
@@ -1679,7 +1677,7 @@ export async function* voiceTurn({
     && !callOutcome.MACHINE_KINDS.includes(String(call?.outcome_kind ?? ""));
   const onlyHolding = () => holdingSaid && said === holdingText;
   // A refusal for the caller check is owed out loud until something has been said after it: words
-  // before the refused tool ("let me check where you are") are not the refusal (cold review 11-08).
+  // before the refused tool ("let me send that") are not the refusal (spoofed-inbound drive 11-08).
   const checkRefusalIsOwed = () => turnState.checkRefused != null && (said.length === turnState.checkRefused || onlyHolding());
   const untilFirstWord = async function* (pending) {
     // A turn closed while it waits here leaves `pending` behind; its rejection is nobody's to crash on.
@@ -2073,6 +2071,14 @@ export async function* voiceTurn({
         hold.noteMachineLine(call, { what: system.name === "play_keypad_touch_tone" ? "phone_menu" : "recorded_message", log });
       }
       if (system && system.name !== "end_call") yield* checkRefusalOwed();
+      // Hanging up on a refusal nobody has heard: the platform says end_call's message, so the text-back
+      // goes in front of it rather than being lost.
+      else if (system?.name === "end_call" && checkRefusalIsOwed()) {
+        const line = turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE;
+        const msg = String(system.input?.message ?? "").trim();
+        system = { ...system, input: { ...(system.input ?? {}), message: msg ? `${line} ${msg}` : line } };
+        log({ voice_check_later_said: call.id, round, on: "end_call" });
+      }
       if (system) {
         yield chunk({
           tool_calls: [{
@@ -2125,6 +2131,11 @@ export async function* voiceTurn({
           try { out = await runCallTool(t.name, t.input ?? {}, { call, context, log, turnState }); }
           catch (e) { out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
           if (t.name === "verify_caller" && out?.deferred) turnState.checkQueued = true;
+          // make_a_call_for_me refused for the check (./fromcall.js go): owed out loud like any other.
+          if (out?.blocked === "needs_verification") {
+            turnState.checkRefused ??= said.length;
+            if (out.queued) turnState.checkQueued = true;
+          }
           // Words have already left this turn, and a refusal that says "ask them for the date" does not
           // know that. In the 2026-10-07 rehearsal that produced a call which asked the same question
           // twice in one breath, every turn: the model asked about the date, proposed the booking, was
@@ -2224,8 +2235,9 @@ export async function* voiceTurn({
         // here. `confirm_record` is on the list because it is how a spoken yes becomes a granted
         // confirmation — exactly the thing that must not be grantable by whoever is on the line.
         if (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf: (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false })) {
-          out = verify.gateRefusal({ call, name: t.name });
-          turnState.checkRefused = said.length;
+          out = verify.gateRefusal({ call, name: t.name, input: t.input, log });
+          turnState.checkRefused ??= said.length;
+          if (out.queued) turnState.checkQueued = true;
           log({ call_tool_needs_verification: t.name, call_id: call.id });
           results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
           continue;
