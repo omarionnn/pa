@@ -110,7 +110,7 @@ no model runs). The yes now follows the pinned-target flow (`call_place` without
 details (calm-why, no fixed opening phrase) and fires a scheduled call whose goal carries a card
 through the real `Runtime.tick` (fake channel, stub `runTurn` that must not run): one calm text, says
 why, offers a pay link, no card digits, no model turn. 19 ok on a cage (port 8886) 2026-11-07; those
-two steps FAIL on `bb0b91b` (main before).
+two steps FAIL on `bb0b91b` (main before). Since `sec/r2-about-payment-screen` (R2-C) `call_place.about` — the pickup opener words code speaks to the callee before the live voice — is screened too (card or "card number" → refused, nothing placed) and `openerText` drops payment words to hello only; an ordinary `about` is still kept and spoken. 25 ok 2026-11-08; on `fa3f487` (main before) the card `about` call was placed and the opener read the card (9 FAIL).
 
 No model, no builder: `bin/remote-gate-drive.mjs` under `caged.sh env` with a fresh temp
 `REASON_DB_PATH` + `REASON_REMOTE_ROOT`, `REASON_REMOTE_BUILD=1`, `REASON_OPENCLAW_BIN=/nonexistent/…`

@@ -101,12 +101,23 @@ await refused("card in a requirements key → refused", { requirements: { [`card
 await refused("cvv in ask → refused", { ask: ["is cvv 123 ok to hold it?"] });
 await refused("card number in approved_terms → refused", { approved_terms: [`a deposit on card number ${CARD}`] });
 await refused("card in facts → refused (unchanged)", { facts: [`card ${CARD}`] });
+// R2-C: `about` finishes the pickup opener "Hi there! I'm calling <about>.", which code speaks to the
+// callee at pickup, before the guarded live voice is on the line.
+await refused("card in about (pickup opener words) → refused", { about: `to pay with card ${CARD}` });
+await refused("'card number' in about → refused", { about: "to give you my card number" });
 step("nothing dialled, no call row", calls.placed.length === 0 && db.listCalls(CONV).length === 0, `${calls.placed.length} placed`);
 
-const plain = { to: SHOP, goal: GOAL, requirements: { name: "Omari", people: "2" }, ask: ["do they take card or is it cash only?"] };
+const plain = { to: SHOP, goal: GOAL, requirements: { name: "Omari", people: "2" }, ask: ["do they take card or is it cash only?"], about: "to ask about a table for two" };
 const ok = await runTool("call_place", { ...plain, confirmation_id: (await yes(plain)).confirmation_id }, ctx);
 step("an ordinary ask-only business call still goes", ok.ok === true && calls.placed.length === 1, `${ok.status ?? ""} ${String(ok.error ?? "").slice(0, 120)}`);
 step("and it carries the requirements and the question", JSON.stringify(calls.placed[0]?.brief ?? {}).includes("cash only"));
+{
+  const { openerText } = await imp("src/calls/opener.js");
+  const row = db.listCalls(CONV)[0];
+  step("its ordinary about is kept for the pickup opener", row?.pickup_about === "to ask about a table for two" && openerText({ about: row.pickup_about }).kind === "about", openerText({ about: row?.pickup_about }).text);
+  const o = openerText({ about: `to pay with ${CARD}` });
+  step("the opener never says a card, even from an unscreened row (hello only)", o.kind === "hello" && !/4242/.test(o.text), o.text);
+}
 
 
 // The callee side: what the call itself carries when THEY ask for a card.

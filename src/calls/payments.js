@@ -99,11 +99,14 @@ function requirementTexts(requirements) {
 /**
  * Check everything a call is allowed to say. `ok: false` means do not dial.
  *
- * @param {{goal?: string, facts?: string[], questions?: string[], terms?: string[], requirements?: object}} _
+ * `about` is the few words that finish the pickup opener ("Hi there! I'm calling <about>."), which code
+ * speaks to the callee before the live voice and its no-payment rule are on the line (./opener.js).
+ *
+ * @param {{goal?: string, facts?: string[], questions?: string[], terms?: string[], requirements?: object, about?: string}} _
  */
-export function checkCallForPaymentDetails({ goal = "", facts = [], questions = [], terms = [], requirements = {} } = {}) {
+export function checkCallForPaymentDetails({ goal = "", facts = [], questions = [], terms = [], requirements = {}, about = "" } = {}) {
   const hits = new Set();
-  const texts = [goal, ...(facts ?? []), ...(questions ?? []), ...(terms ?? []), ...requirementTexts(requirements)];
+  const texts = [goal, about, ...(facts ?? []), ...(questions ?? []), ...(terms ?? []), ...requirementTexts(requirements)];
   for (const t of texts) for (const d of findPaymentDetails(t)) hits.add(d);
   if (!hits.size) return { ok: true };
 
@@ -114,7 +117,7 @@ export function checkCallForPaymentDetails({ goal = "", facts = [], questions = 
     error: `Refused: this call would have carried ${what}. Nothing was dialled. Reason never gives payment details by phone.`
       + ` Tell them why, ${calmWhy("their")}`
       + ` Then offer what you can do instead: make the call without those details (take them out of goal, facts, ask,`
-      + ` requirements and approved_terms), and if something needs paying, ask the place for a pay link or another way to pay that is not read out loud.`
+      + ` requirements, approved_terms and about), and if something needs paying, ask the place for a pay link or another way to pay that is not read out loud.`
       + ` If this was a false alarm — a booking reference, say, not a card — reword it so it does not read as payment details.`,
   };
 }
