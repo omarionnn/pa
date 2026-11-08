@@ -570,12 +570,106 @@ test("words while a read is out start a fresh read at once; the older answer is 
   await timers.advance(gl.CALLER_BYE_SETTLE_MS + 50);
   assert.equal(asked.length, 2, "not queued behind the first read");
   answers[0](true);
-  await timers.advance(10);
+  await new Promise(r => setImmediate(r));
   assert.equal(call.ending, false, "the overtaken 'yes' does not hang up");
   answers[1](false);
   await timers.advance(10_000);
   assert.equal(call.done, false);
   voice(" Sure, sending it now.");
+});
+
+test("the voice's goodbye inside their settle never cancels the read their words are due (review)", async () => {
+  const answers = [];
+  const { call, timers, asked, voice, them } = await goodbyeCall();
+  call.judge = (q) => { asked.push(q); return new Promise(r => answers.push(r)); };
+  them(" Wait, let me call you later");
+  await timers.advance(gl.CALLER_BYE_SETTLE_MS + 50);
+  assert.equal(asked.length, 1, "read A out");
+  them(" okay");
+  await timers.advance(100);
+  voice(" All right, talk soon. Bye.");
+  await timers.advance(gl.CALLER_BYE_SETTLE_MS);
+  assert.equal(asked.length, 2, "their 'okay' is still read");
+  assert.match(asked[1].transcript, /Them: Wait, let me call you later okay/);
+  answers[0](false);
+  answers[1](true);
+  await new Promise(r => setImmediate(r));
+  assert.equal(call.ending, true, "the latest read decides");
+});
+
+test("their words while the hang-up waits, then the voice's 'Bye!' inside the settle: read again, then hung up (review)", async () => {
+  const { call, timers, live, asked, voice, them } = await goodbyeCall();
+  them(" Okay, bye.");
+  await timers.advance(gl.CALLER_BYE_SETTLE_MS + 50);
+  assert.equal(call.ending, true);
+  them(" bye");
+  await timers.advance(100);
+  voice(" Bye!");
+  await timers.advance(gl.CALLER_BYE_SETTLE_MS);
+  assert.equal(asked.length, 2, "re-read with their words");
+  assert.equal(call.endHeld, false);
+  await timers.advance(gl.VOICE_BYE_WAIT_MS + 1000);
+  assert.ok(live.of("session.close").length, "hung up, not held forever");
+});
+
+test("at most two goodbye reads out at once; one more wanted waits for one to come back", async () => {
+  const answers = [];
+  const { call, timers, asked, voice, them } = await goodbyeCall();
+  call.judge = (q) => { asked.push(q); return new Promise(r => answers.push(r)); };
+  voice(" Okay, talk soon!");
+  await timers.advance(gl.BYE_SETTLE_MS + 50);
+  assert.equal(asked.length, 1);
+  for (const w of [" Okay bye.", " Oh wait.", " Actually, never mind."]) { them(w); await timers.advance(gl.CALLER_BYE_SETTLE_MS + 50); await timers.advance(4000); }
+  assert.equal(asked.length, 2, "a third read waits");
+  answers[0](false);
+  await new Promise(r => setImmediate(r));
+  assert.equal(asked.length, 3, "the queued read starts with the latest words");
+  assert.match(asked[2].transcript, /never mind/);
+});
+
+test("end() puts down the CLI kept for the goodbye read", async () => {
+  const { call, timers } = await goodbyeCall();
+  let cancelled = 0;
+  call.byeReaderWanted = true;
+  call.byeReader = { at: timers.now(), ready: Promise.resolve({ cancel: () => { cancelled++; } }) };
+  const ended = call.end("caller hung up");
+  await timers.advance(3500);
+  await ended;
+  assert.equal(cancelled, 1);
+  assert.equal(call.byeReader, null);
+  call.readyByeReader();
+  assert.equal(call.byeReader, null, "none started after the call ended");
+});
+
+test("a no read made before the voice's own goodbye is read again with it (drive 11-08)", async () => {
+  const answers = [];
+  const { call, timers, asked, voice, them } = await goodbyeCall();
+  call.judge = (q) => { asked.push(q); return new Promise(r => answers.push(r)); };
+  them(" That was nice talking to you, bye");
+  await timers.advance(gl.CALLER_BYE_SETTLE_MS + 50);
+  assert.equal(asked.length, 1);
+  await timers.advance(300);
+  voice(" Bye! Take care, Omari.");
+  await timers.advance(gl.BYE_SETTLE_MS + 50);
+  assert.equal(asked.length, 1, "not while the read is out");
+  answers[0](false);
+  await new Promise(r => setImmediate(r));
+  assert.equal(asked.length, 2, "read again");
+  assert.match(asked[1].transcript, /Reason: Bye! Take care, Omari\.$/);
+  answers[1](true);
+  await new Promise(r => setImmediate(r));
+  assert.equal(call.ending, true);
+});
+
+test("a goodbye hang-up drops the line before waiting for the session's usage (no dead air)", async () => {
+  const { call, timers, twilio, live, voice, them } = await goodbyeCall();
+  them(" Okay, bye.");
+  await timers.advance(gl.CALLER_BYE_SETTLE_MS + 50);
+  voice(" Bye!");
+  for (let i = 0; i < 200 && !live.of("session.close").length; i++) await timers.advance(20);
+  assert.ok(live.of("session.close").length);
+  assert.equal(twilio.open(), false, "the phone line is down while the usage is still awaited");
+  assert.equal(call.endWhy, "goodbye");
 });
 
 test("no cue, no read: ordinary words before any goodbye never ask the model", async () => {
