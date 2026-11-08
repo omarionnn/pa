@@ -926,9 +926,12 @@ const warm = new Map();
  * third-party call, #232) never reaches GPT-Live and never gets one of these.
  */
 export class WarmSession {
-  constructor({ row, openLive = openLiveSocket, log = () => {}, now = () => Date.now(), timers = globalThis, hold = false, gate = false, greeting = null, renew = false, deadlineAt = null }) {
+  constructor({ row, openLive = openLiveSocket, log = () => {}, now = () => Date.now(), timers = globalThis, hold = false, gate = false, greeting = null, renew = false, deadlineAt = null, memoryMs = 0 }) {
     this.row = row;
     this.opts = { row, openLive, log, now, timers, hold, gate, greeting, renew };
+    // #406's memory read (when this build has it), raced against the socket's own handshake: the start
+    // waits for it at most `memoryMs` past the socket opening; never the dial, never with it absent.
+    this.memory = memoryMs > 0 ? awaitCallMemory(row, memoryMs, { log }) : null;
     // REASON_GPTLIVE_PRERING_GREET=ready: the greeting is made while it rings (fed silence until said, then
     // paused, as calls 54–55 did) but NOT played at pickup: the call holds it until their hello ends or the
     // line stays quiet (`GptLiveCall#pregreetFrame`), so it is heard, and their hello is not answered twice.
@@ -970,8 +973,12 @@ export class WarmSession {
       this.socketAt = this.now();
       // Built when the socket opens (not when it was asked for), so the call's memory read has had
       // the longest possible; through #406's `voiceInstructionsFor` where that exists.
-      const instructions = preopenInstructions(row);
-      this.live.send({ type: "session.start", event_id: `start_${row.id}`, session: sessionConfig({ ...this.who, greeting: this.greeting, ...(instructions ? { instructions } : {}) }) });
+      const start = () => {
+        if (this.closed) return;
+        const instructions = preopenInstructions(row);
+        this.live.send({ type: "session.start", event_id: `start_${row.id}`, session: sessionConfig({ ...this.who, greeting: this.greeting, ...(instructions ? { instructions } : {}) }) });
+      };
+      if (this.memory) void this.memory.then(start, start); else start();
     });
     this.live.on("event", (e) => (this.call ? this.call.fromLive(e) : this.take(e)));
     this.live.on("close", (code) => (this.call ? this.call.liveClosed(code) : this.drop(`closed (${code})`)));
@@ -1074,10 +1081,10 @@ export class WarmSession {
 }
 
 /** Start the voice for a call about to be placed, if it opens with a greeting. Never throws. */
-export function prewarm(row, { openLive = openLiveSocket, log = () => {}, now, timers, hold = false, gate = false, greeting = null, renew = false } = {}) {
+export function prewarm(row, { openLive = openLiveSocket, log = () => {}, now, timers, hold = false, gate = false, greeting = null, renew = false, memoryMs = 0 } = {}) {
   try {
     if (!row?.id || !String(greeting ?? row.announcement ?? "").trim() || warm.has(row.id)) return null;
-    const w = new WarmSession({ row, openLive, log, hold, gate, greeting, renew, ...(now ? { now } : {}), ...(timers ? { timers } : {}) });
+    const w = new WarmSession({ row, openLive, log, hold, gate, greeting, renew, memoryMs, ...(now ? { now } : {}), ...(timers ? { timers } : {}) });
     warm.set(row.id, w);
     return w;
   } catch (e) {
@@ -1113,9 +1120,9 @@ export function awaitCallMemory(row, capMs, { log = () => {} } = {}) {
  * configured greeting mode: "stream"/"early" hold it silent; "ready" makes the greeting and gates it.
  * Resolves `{ w, up }` once it is ready for pickup, or after `waitMs` (0: at once) — never throws.
  */
-export function preopen(row, { openLive = openLiveSocket, log = () => {}, greeting = null, waitMs = 0, now, timers } = {}) {
+export function preopen(row, { openLive = openLiveSocket, log = () => {}, greeting = null, waitMs = 0, memoryMs = 0, now, timers } = {}) {
   const mode = config.gptlivePreringGreet;
-  const w = prewarm(row, { hold: mode !== "ready", gate: mode === "ready", renew: true, openLive, log, greeting, ...(now ? { now } : {}), ...(timers ? { timers } : {}) });
+  const w = prewarm(row, { hold: mode !== "ready", gate: mode === "ready", renew: true, openLive, log, greeting, memoryMs, ...(now ? { now } : {}), ...(timers ? { timers } : {}) });
   if (!w) return { w: null, wait: Promise.resolve(false) };
   const ready = w.gate ? w.greeted : w.ready;
   if (!(waitMs > 0)) return { w, wait: ready };
@@ -3297,9 +3304,7 @@ export async function dialGptLive(args, { fetchImpl = null, openLive = openLiveS
   // a session that is slow or fails never stops the call (it opens the old way on the stream).
   if (!thirdParty && config.gptlivePrering) {
     const t0 = Date.now();
-    // #406's memory read first (already started by `warmTheTurn`), for part of the same capped wait.
-    await awaitCallMemory(row, Math.min(1000, config.gptlivePreringWaitMs / 2), { log: args?.log ?? (() => {}) });
-    const { w, wait } = preopen(row, { openLive, log: args?.log ?? (() => {}), waitMs: Math.max(0, config.gptlivePreringWaitMs - (Date.now() - t0)) });
+    const { w, wait } = preopen(row, { openLive, log: args?.log ?? (() => {}), waitMs: config.gptlivePreringWaitMs, memoryMs: config.gptlivePreringMemoryMs });
     if (w && config.gptlivePreringWaitMs > 0) {
       const up = await wait;
       (args?.log ?? (() => {}))({ gptlive_prering_dial_wait: row.id, ms: Date.now() - t0, up, mode: config.gptlivePreringGreet });
@@ -3539,7 +3544,7 @@ function routeInbound({ params, router, log, away, openLive = openLiveSocket }) 
   // stream — after every check above (blocked, stranger, cap), with exactly the session the stream would
   // open (same instructions, brief and greeting), so nothing is known or said earlier than before.
   if (config.gptliveInboundPreopen) {
-    const { w, wait } = preopen(row, { log, openLive, waitMs: config.gptliveInboundWaitMs, greeting: openingLineFor({ person: accounts.ownerOf(who.conversationId), conversationId: who.conversationId }) });
+    const { w, wait } = preopen(row, { log, openLive, waitMs: config.gptliveInboundWaitMs, memoryMs: config.gptlivePreringMemoryMs, greeting: openingLineFor({ person: accounts.ownerOf(who.conversationId), conversationId: who.conversationId }) });
     // REASON_GPTLIVE_INBOUND_WAIT_MS: the TwiML (the answer) waits for it, far inside Twilio's 15 s webhook timeout.
     if (w && config.gptliveInboundWaitMs > 0) return { ...twiml(streamTwiml(row)), preopen: wait };
   }

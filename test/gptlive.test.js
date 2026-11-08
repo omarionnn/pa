@@ -921,7 +921,7 @@ test("prering (hold): a session not started by pickup still greets when it start
 });
 
 test("prering: the dial waits for the held session to start (capped), then rings; slow or failed never blocks it", async () => {
-  on({ gptlivePrering: true, gptlivePreringWaitMs: 2000 });
+  on({ gptlivePrering: true, gptlivePreringWaitMs: 2000, gptlivePreringMemoryMs: 0 });
   try {
     const row = ownerCall();
     const live = fakeLive();
@@ -950,7 +950,7 @@ test("prering: the dial waits for the held session to start (capped), then rings
     assert.ok(Date.now() - t0 < 1000, "the cap holds");
     assert.equal(lines.filter(l => "gptlive_prering_dial_wait" in l).at(-1).up, false);
     gl.dropWarm(row2.id, "test over");
-  } finally { Object.assign(config, { gptlivePrering: false, gptlivePreringWaitMs: 2000 }); }
+  } finally { Object.assign(config, { gptlivePrering: false, gptlivePreringWaitMs: 2000, gptlivePreringMemoryMs: 800 }); }
 });
 
 test("prering: picked up before the session started — their hello is kept from the first frame and goes in after the greeting ask", async () => {
@@ -974,7 +974,7 @@ test("prering: picked up before the session started — their hello is kept from
 });
 
 test("inbound pre-open: only after routing — a known caller's session opens held (same session as the stream's), never for blocked, stranger or capped; the row stays unverified", async () => {
-  on({ gptliveInboundPreopen: true });
+  on({ gptliveInboundPreopen: true, gptlivePreringMemoryMs: 0 });
   try {
     const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
     const opened = [];
@@ -1012,7 +1012,7 @@ test("inbound pre-open: only after routing — a known caller's session opens he
     config.maxCallsPerDay = 1;
     try { ring("+13105550000", "CA_capped"); } finally { config.maxCallsPerDay = 10; }
     assert.equal(opened.length, 1, "no session for blocked, a stranger, withheld or over the cap");
-  } finally { config.gptliveInboundPreopen = false; }
+  } finally { Object.assign(config, { gptliveInboundPreopen: false, gptlivePreringMemoryMs: 800 }); }
 });
 
 test("inbound pre-open off (default): the webhook opens nothing", () => {

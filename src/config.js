@@ -674,6 +674,8 @@ export const config = {
   // until the stream starts. "on" / "off" (default off).
   gptliveInboundPreopen: String(process.env.REASON_GPTLIVE_INBOUND_PREOPEN ?? "off").trim().toLowerCase() === "on",
   // How long the inbound answer (the TwiML) waits for the pre-opened session to be ready (0 = never waits).
+  // How long a pre-opened session's start may wait for #406's call-memory read (racing the socket handshake).
+  gptlivePreringMemoryMs: Math.max(0, Math.min(2000, Number(process.env.REASON_GPTLIVE_PRERING_MEMORY_MS ?? 800) || 0)),
   gptliveInboundWaitMs: Math.max(0, Math.min(4000, Number(process.env.REASON_GPTLIVE_INBOUND_WAIT_MS ?? 0) || 0)),
   twilioSid: process.env.TWILIO_ACCOUNT_SID || "",
   twilioToken: process.env.TWILIO_AUTH_TOKEN || "",
