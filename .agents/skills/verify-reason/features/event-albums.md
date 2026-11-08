@@ -57,7 +57,7 @@ table gained a column, no event tool or prompt line mentions albums (pinned).
 
 ```bash
 cd ~/Desktop/pa
-node --test test/event-album.test.js                # 14 pinned tests, everything above (5 for the nudges + check-in by name)
+node --test test/event-album.test.js                # 15 pinned tests, everything above (6 for the nudges + check-in by name)
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_EVENT_ALBUMS=on REASON_DB_PATH=$(mktemp -d)/albums.db node .agents/skills/verify-reason/bin/album-drive.mjs
 node .agents/skills/verify-reason/bin/album-preview.mjs ~/Desktop   # three PNGs: attendee page, organizer page, sample chat (note · release · the nudge + "let everyone in")
 ```
@@ -80,7 +80,9 @@ stranger's token → 404. Re-driven 2026-10-27 over `00f3300`. Driven 2026-10-26
   `END_NUDGE.afterStartMs` (4 h) past `starts_at`, events having no end time — only for an unreleased
   album with photos and nobody checked in; `event_albums.nudged_at` is set compare-and-set first, so
   never twice; somebody checked in, event not active, or more than `staleAfterStartMs` (24 h) past
-  the start → marked and dropped unsent. Kind `album_end_nudge`.
+  the start → marked and dropped unsent. Kind `album_end_nudge`. An organizer paused or removed by
+  the master (`events.organizerStopped`) is not texted and the album is NOT marked: let go inside the
+  24 h it comes once.
 - **The organizer checks people in by name** (`album_manage`): `check_in` / `undo_check_in` with
   `guest_names` (or `guest_id` / `guest_ids`), `check_in_all` with optional `except`. `albums.guestsNamed`
   matches against THIS event's joined guests (membership display name, else account name): a name

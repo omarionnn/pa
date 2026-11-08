@@ -120,7 +120,9 @@ Real features with no file here. Add one when you touch them.
 - **The master pausing or removing a person** — `admin_pause` / `admin_resume` / `admin_remove`
   (`case "admin_pause"` in `src/tools.js`). Since #351 (`d0b7f79`, 2026-11-07) a stop belongs to the
   number, not one texting line: `db.stoppedStateOf(address)` ("removed" outranks "paused") is read by
-  `accounts.accountState`, inbound calls, invite redemption and every background sweep, so a number
+  `accounts.accountState`, inbound calls, invite redemption and every background sweep — the event
+  sweeps too (scheduled messages, reminders, ride asks, list notes, the album nudge hold for a stopped
+  organizer via `events.organizerStopped`, lead R2-A) — so a number
   stopped on Sendblue is stopped on Linq too. A pause never softens a removal on another line; a
   resume clears pauses on every line but never brings back a removed one — it answers
   `ok: false, state: "removed"` until the master explicitly says to undo it, then
