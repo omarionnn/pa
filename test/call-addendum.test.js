@@ -1110,8 +1110,11 @@ test("a call that is only asking is still allowed to a maybe-booked number, beca
 });
 
 test("an owner call is shown what Reason knows about them, as a text turn is", () => {
+  // Once the caller is verified: an inbound call on caller ID alone gets no profile (privacy, drive 11-08).
   const call = ownerCall();
   db.saveProfile(call.conversation_id, "**Omari**\n- Pays for Spotify through his second Gmail (inferred, Oct 16)", [1]);
-  const ctx = voice.ownerContext({ call, callMessages: [] });
+  assert.doesNotMatch(voice.ownerContext({ call, callMessages: [] }).system, /WHAT YOU KNOW ABOUT THEM/);
+  const ok = db.updateCall(C, call.id, { verified_at: Date.now(), verified_how: "passphrase" });
+  const ctx = voice.ownerContext({ call: ok, callMessages: [] });
   assert.match(ctx.system, /WHAT YOU KNOW ABOUT THEM[^]*Spotify through his second Gmail/);
 });

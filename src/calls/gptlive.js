@@ -192,13 +192,16 @@ export function preCallBrief(call, { place = "" } = {}) {
       .map(f => clip(f, 160)).filter(Boolean).slice(0, 5);
     if (facts.length) lines.push(`What you've got for it:\n${facts.map(f => `- ${f}`).join("\n")}`);
   }
-  const chat = recentChatLines(call.conversation_id);
+  // An inbound call on caller ID only gets none of their chats (their messages say where they are and
+  // were): the voice answers small talk from this brief with no tool in between (./verify.js).
+  const sealed = !isVerified(call);
+  const chat = sealed ? [] : recentChatLines(call.conversation_id);
   if (chat.length) lines.push(`Lately in your chats:\n${chat.join("\n")}`);
   // Call 79: "three sub events" was the line's garbling of the spots Reason had picked by text that day.
-  const today = todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
+  const today = sealed ? null : todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
   if (today?.names?.length) lines.push(`Names from your chats today — on a bad line, a word that sounds odd is often one of these: ${today.names.join(", ")}`);
   // Never on an inbound call that only has caller ID (./verify.js WHEREABOUTS).
-  if (place && isVerified(call)) lines.push(placeLine(place));
+  if (place && !sealed) lines.push(placeLine(place));
   if (!lines.length) return "";
   return `PRE-CALL BRIEF — background for you, so the call starts warm and on point. Anything they ask still goes to Reason.\n${lines.join("\n")}`;
 }

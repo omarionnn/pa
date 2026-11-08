@@ -140,3 +140,45 @@ test("privacy: the model's own refusal is said once, with no code line added", a
   assert.match(said, /pick it up by text once we hang up/);
   assert.ok(!said.includes(voice.CHECK_NOT_HERE_LINE) && !said.includes(voice.CHECK_LATER_LINE), said);
 });
+
+// ---------- cold review 11-08 ----------
+test("privacy: the memory tools wait for the check too (they hold the facts the profile is built from)", async () => {
+  for (const n of ["recall", "memory_page", "memory_search", "graph_lookup", "uber_link", "uber_options"]) assert.equal(verify.isConsequential(n, {}), true, n);
+  const ran = [];
+  voice.contextDeps.runTool = async (name) => { ran.push(name); return { ok: true, page: PROFILE }; };
+  const out = await turn(inboundCall(), rounds([{ tool: "memory_page", start: true }], [{ tool: "skip_turn" }]));
+  const said = await drain(out.stream);
+  assert.deepEqual(ran, []);
+  assert.doesNotMatch(said, /Chelsea/);
+  assert.equal(said.trim(), voice.CHECK_NOT_HERE_LINE);
+});
+
+test("privacy: words before the refused tool are not the refusal — it is still said after them", async () => {
+  const out = await turn(inboundCall(), rounds(["Let me check where you are. ", { tool: "get_location", start: true }], [{ tool: "skip_turn" }]));
+  const said = (await drain(out.stream)).trim();
+  assert.match(said, /^Let me check where you are\./);
+  assert.ok(said.endsWith(voice.CHECK_NOT_HERE_LINE), said);
+  assert.doesNotMatch(said, / {2}/, "one space between the two");
+});
+
+test("privacy: out of rounds after a refusal says the refusal, not the generic line", async () => {
+  const out = await turn(inboundCall(), rounds([{ tool: "get_location", start: true }]));
+  assert.equal((await drain(out.stream)).trim(), voice.CHECK_NOT_HERE_LINE);
+});
+
+test("privacy: a refused send then a skip is said too; end_call after a refusal is left to the platform", async () => {
+  const out = await turn(inboundCall(), rounds([{ tool: "message_send", start: true, input: { to: "+13105550000", text: "hi" } }], [{ tool: "skip_turn" }]));
+  assert.equal((await drain(out.stream)).trim(), voice.CHECK_NOT_HERE_LINE);
+  const out2 = await turn(inboundCall(), rounds([{ tool: "get_location", start: true }], [{ tool: "end_call", input: { message: "Bye." } }]));
+  assert.equal((await drain(out2.stream)).trim(), "");
+});
+
+test("privacy: the voice's brief has none of their chats on an unverified inbound call; the rule names where they are", () => {
+  db.saveConversation(C, [{ role: "user", content: "I'm at work on 17th St in Chelsea" }, { role: "assistant", content: "Noted, Chelsea it is." }]);
+  const row = inboundCall();
+  assert.doesNotMatch(gl.preCallBrief(row), /Chelsea|17th/);
+  assert.match(verify.promptNote({ call: row }), /where they are or usually are/);
+  const ok = db.updateCall(C, row.id, { verified_at: Date.now(), verified_how: "passphrase" });
+  assert.match(gl.preCallBrief(ok), /Chelsea/);
+  assert.equal(verify.promptNote({ call: ok }), "");
+});
