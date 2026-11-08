@@ -1665,6 +1665,7 @@ export async function* voiceTurn({
   let lastLeadIn = [];
   // The model's own words have been said this turn (a lead-in is then never replayed after them).
   let spokeOwn = false;
+  let firstEventLogged = false;
   // A silent last round says the last lead-in only when nothing of the model's has been said yet —
   // or "Sent." after a send that went out, which is true whatever came before it.
   const replayable = () => lastLeadIn.join("").trim() && (!spokeOwn || (lastLeadIn.length === 1 && lastLeadIn[0] === SENT_LINE));
@@ -1901,6 +1902,12 @@ export async function* voiceTurn({
           const step = yield* untilFirstWord(reading.next());
           if (step.done) { readingDone = true; break; }
           const ev = step.value;
+          // When the model first had anything — words or a tool — for the wait it puts on the call
+          // (the backend's share of the silence, apart from what code adds after it; drive 11-08).
+          if (!firstEventLogged && (ev?.type === "text" ? String(ev.text ?? "").trim() : ev?.type === "tool_start" || ev?.type === "tool_use")) {
+            firstEventLogged = true;
+            log({ voice_first_event: call?.id, ms: Date.now() - turnStartReal, kind: ev.type === "text" ? "text" : "tool", round });
+          }
           if (ev?.type === "text") {
             roundText += ev.text ?? "";
             if (owned) {

@@ -211,6 +211,14 @@ const replies = played.map((p, i) => {
     them: theirTurns.find(t => t.at - startAt > p.from && t.at - startAt < next + 3000)?.text.replace(/\s+/g, " ").trim() ?? "",
     reason: words,
     first_speech_after_ms: mine.length ? mine[0].from - p.to : null,
+    // The backend's share: from their words to the model's first word or tool (voice_first_event, a
+    // build that logs it), and what came after that before any sound — the code's and the voice's share.
+    ...(() => {
+      const d = delegationAt.find(ms => ms > p.from && ms < next);
+      const f = d == null ? null : lines.find(l => "voice_first_event" in l && l.drive_ms >= d && l.drive_ms < next);
+      if (!f) return {};
+      return { backend_first_after_ms: f.drive_ms - p.to, silence_after_backend_ms: mine.length ? Math.max(0, mine[0].from - f.drive_ms) : null };
+    })(),
     speech_s: Math.round(mine.reduce((n, r) => n + (r.to - r.from), 0) / 100) / 10,
     own_holding_phrase: OWN_HOLD.test(words.split(/[.!?]/)[0] ?? ""),
     talked_over_ms: Math.max(0, Math.round(over)),
