@@ -274,7 +274,16 @@ test("a fit read that fails once is asked again; one that fails twice fails open
   s = seq(new Error("spawn EAGAIN"), { value: { verdict: "maybe" } });
   r = await shoptools.checkFit({ texts: ["the one for dry skin"], item: "CeraVe Foaming", what: "one" }, { ask: s.fn });
   assert.deepEqual({ verdict: r.verdict, error: r.error }, { verdict: "unclear", error: true });
-  assert.match(r.why, /^threw: spawn EAGAIN \| off the schema: \{"verdict":"maybe"\}$/);
+  assert.equal(r.why, 'threw | off the schema (verdict "maybe")');
+  // The journal gets the kind of failure only, never the model's text (it can restate what they said).
+  s = seq({ error: "the answer was not JSON: they said dry skin, 555-0100" }, { value: { verdict: "perhaps", need: "dry skin", why: "they said dry skin" } });
+  r = await shoptools.checkFit({ texts: ["the one for dry skin"], item: "CeraVe Foaming", what: "one" }, { ask: s.fn });
+  assert.equal(r.why, 'not JSON | off the schema (verdict "perhaps")');
+  assert.doesNotMatch(r.why, /dry|555/);
+  // A refusal is not asked again.
+  s = seq({ refusal: true, error: "the model's own safeguards refused to read it" }, { value: { verdict: "fits" } });
+  r = await shoptools.checkFit({ texts: ["dry skin"], item: "a", what: "b" }, { ask: s.fn });
+  assert.deepEqual({ verdict: r.verdict, why: r.why, asks: s.asks.length }, { verdict: "unclear", why: "refused", asks: 1 });
   // Read leniently where the meaning is plain: a capitalised verdict, or the answer as a JSON string.
   s = seq({ value: '{"verdict":"Mismatch","need":"dry skin","why":"x"}' });
   assert.equal((await shoptools.checkFit({ texts: ["dry skin"], item: "a", what: "b" }, { ask: s.fn })).verdict, "mismatch");

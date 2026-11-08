@@ -183,6 +183,27 @@ Answer "fits" when the item matches what they asked for. Answer "unclear" when t
 const FIT_TIMEOUT_MS = Number(process.env.REASON_FIT_TIMEOUT_MS || 30_000);
 const FIT_TRIES = 2;
 const FIT_RETRY_MS = Number(process.env.REASON_FIT_RETRY_MS ?? 1500);
+/** Both asks together never hold the checkout past this; a retry with under 5 s left is not made. */
+const FIT_BUDGET_MS = Number(process.env.REASON_FIT_BUDGET_MS || 45_000);
+/**
+ * Why one ask failed, as a fixed kind only. The raw error can carry the model's own text (the CLI's
+ * "not JSON: …", its stdout, an off-schema answer's need/why, which restate what the person said),
+ * and this goes to the journal, which never holds message content.
+ */
+function fitFailure(out, thrown) {
+  if (thrown) return /timeout|timed out|abort/i.test(String(thrown?.message ?? thrown)) ? "threw: timeout" : "threw";
+  if (out?.refusal) return "refused";
+  const e = String(out?.error ?? "");
+  if (!e) return out?.value == null ? "no answer" : `off the schema (verdict ${typeof out.value === "object" && typeof out.value.verdict === "string" && /^[a-z ]{1,16}$/i.test(out.value.verdict) ? JSON.stringify(out.value.verdict) : "unreadable"})`;
+  if (/did not finish inside|timed? ?out|timeout/i.test(e)) return "timeout";
+  if (/side calls skip it/.test(e)) return "side calls paused";
+  if (/not JSON|no JSON|no answer on the schema/i.test(e)) return "not JSON";
+  if (/could not run/.test(e)) return "CLI would not start";
+  if (/^api:/.test(e)) { const s = e.match(/\b(4\d\d|5\d\d)\b/); return s ? `api ${s[1]}` : "api error"; }
+  return "CLI error";
+}
+/** A failure that the same ask a moment later cannot fix. */
+const fitFinal = (kind) => kind === "refused" || kind === "side calls paused";
 /** The answer, read leniently where the meaning is unambiguous: "Mismatch" or a JSON string still count. */
 function readFit(value) {
   let v = value;
@@ -199,18 +220,24 @@ export async function checkFit({ texts = [], need = "", item = "", what = "" }, 
   if (!said && !String(need).trim()) return { verdict: "unclear" };
   const prompt = `What they said, oldest first:\n${said || "(nothing recent)"}\n\nThe need the assistant noted: ${String(need).trim() || "(none)"}\n\nThe checkout will buy: ${item}\nInstruction: ${what}`;
   // One retry: a side call that fails once (a CLI cold start past its deadline, a busy subscription, an
-  // answer off the schema) usually answers on the second ask. Why each failed is kept for the log.
+  // answer off the schema) usually answers on the second ask. Why each failed is kept for the log, as a
+  // kind only (fitFailure). Not retried: a refusal, side calls paused, or too little of the budget left.
   const why = [];
   let v = null;
+  const t0 = Date.now();
   for (let attempt = 0; attempt < FIT_TRIES && !v; attempt++) {
-    if (attempt) await new Promise((r) => setTimeout(r, FIT_RETRY_MS));
+    if (attempt) {
+      if (fitFinal(why.at(-1)) || FIT_BUDGET_MS - (Date.now() - t0) - FIT_RETRY_MS < 5_000) break;
+      await new Promise((r) => setTimeout(r, FIT_RETRY_MS));
+    }
+    const timeoutMs = Math.min(FIT_TIMEOUT_MS, FIT_BUDGET_MS - (Date.now() - t0));
     let out;
     try {
-      out = await ask({ prompt, system: FIT_SYSTEM, schema: FIT_SCHEMA, model: process.env.REASON_FIT_MODEL || "haiku", timeoutMs: FIT_TIMEOUT_MS, feature: "shop_fit" });
-    } catch (e) { why.push(`threw: ${String(e?.message ?? e).split("\n")[0].slice(0, 100)}`); continue; }
+      out = await ask({ prompt, system: FIT_SYSTEM, schema: FIT_SCHEMA, model: process.env.REASON_FIT_MODEL || "haiku", timeoutMs, feature: "shop_fit" });
+    } catch (e) { why.push(fitFailure(null, e || new Error("threw"))); continue; }
     const got = readFit(out?.value);
     if (got) v = got;
-    else why.push(out?.error ? String(out.error).slice(0, 100) : `off the schema: ${JSON.stringify(out?.value ?? null).slice(0, 80)}`);
+    else why.push(fitFailure(out));
   }
   if (!v) return { verdict: "unclear", error: true, why: why.join(" | ") };
   const clip = (x) => String(x ?? "").replace(/\s+/g, " ").trim().slice(0, 240);
