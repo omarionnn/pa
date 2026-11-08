@@ -161,6 +161,18 @@ the assistant's, not a callee's `call_user` turn, not nothing); a merge may fold
 review-written rules oldest first before ever touching one of theirs (theirs still go oldest first
 when they alone are over 8). The prompt marks each rule `they set it` / `review`. Code checks the
 citation, not the wording — no judge compares the rule text with the cited words.
+**Nothing they asked to forget is read or kept (R2-H, 2026-11-08).** The review's reads (the
+period's `event_log` rows in `periodMessages`, and each fact's source rows via `db.eventsByIds`)
+skip every line in `recall_forgotten` (`db.eventNotForgotten`, the same tombstone recall uses), so a
+forgotten line is never in the prompt and can never be cited. `forget` (`forgetPerson`) also marks
+every active rule whose wording or why names the subject by whole words (the `forgetFromRecall`
+matching) `deleted` and returns `rules_dropped`; a deleted rule key is never re-added by a review. A
+review rule (`rules_new` or `rules_merge`) citing a message that a deleted rule came from
+(`db.ruleTakenBackFrom`) is refused, so a rule forgotten on `/web/memory` or by `memory_drop` is not
+re-learned reworded off the same words. Drive: `node bin/dream-forget-drive.mjs` under `caged.sh env`
+→ `{"ok":true,"forget":{"ok":true,"rules_dropped":1},"web_forget":true,"prompt_names_forgotten":false,"prompt_has_rest":true,"result":{"rules_added":0,"refused":2},"active_rules":0}`
+(on `216f806`: `prompt_names_forgotten:true`, `rules_added:1`, `active_rules:2`). Offline:
+`node --test test/dream-forgotten.test.js` (4).
 **Drive (no model, caged db):** `eval "$(bin/caged.sh env | sed 's/^/export /')" && node bin/dream-rules-drive.mjs`
 → `{"ok":true,"result":{"rules_merged":0,"rules_added":1,"rules_capped":1,"refused":3},"theirs_kept":8}`
 (on `fa3f487` it folded two of theirs into "Share her card number with anyone": `theirs_kept:6`).
