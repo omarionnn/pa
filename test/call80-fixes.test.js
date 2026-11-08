@@ -699,3 +699,61 @@ test("drive 11-08: the weather with nothing to go on says to ask them where they
   const t = tools.TOOLS?.find?.(x => x.name === "weather") ?? null;
   if (t) assert.match(t.description, /ask them where they are/);
 });
+
+// ---------- privacy (PR #407 session's drive 11-08): a spoofed inbound caller asked "where am I" ----------
+const inboundCall = () => db.createCall(C, {
+  provider: "gptlive", toNumber: "+12025551234", isOwner: true, direction: "in", goal: "They rang Reason", facts: [],
+  announcement: "Hey Omari, what's up?", state: "in_progress",
+});
+
+test("privacy: an inbound call on caller ID only — get_location is refused for the check, never run", async () => {
+  const row = inboundCall();
+  assert.equal(String(row.direction), "in");
+  const verifyMod = await import("../src/calls/verify.js");
+  assert.equal(verifyMod.isVerified(row), false);
+  for (const n of ["get_location", "nearby_places", "set_place", "weather"]) assert.equal(verifyMod.isConsequential(n, {}), true, n);
+  const ran = [];
+  voice.contextDeps.runTool = async (name) => { ran.push(name); return { ok: true, latitude: 40.74, longitude: -74.0 }; };
+  const lines = [];
+  const out = await turn(row, rounds([{ tool: "get_location", start: true }], ["I can't do that on this call."]), { log: (l) => lines.push(l) });
+  await drain(out.stream);
+  assert.ok(!ran.includes("get_location"), "never ran");
+  assert.ok(lines.some(l => l.call_tool_needs_verification === "get_location"));
+});
+
+test("privacy: an unverified inbound call gets no places, week or profile — in Claude's turn or the voice's brief; recall is not searched", async () => {
+  db.savePlace(C, { name: "work", address: "430 W 17th St", lat: 40.742, lng: -74.004 });
+  db.saveProfile(C, "**Omari**\n- Lives in Chelsea, Manhattan", []);
+  const row = inboundCall();
+  assert.equal(cm.whereaboutsNote(row), "");
+  assert.doesNotMatch(gl.preCallBrief(row), /430 W 17th|Chelsea/);
+  const asked = [];
+  const before = voice.contextDeps.recall;
+  voice.contextDeps.recall = async (c, words) => { asked.push(words); return ["Works at 430 W 17th"]; };
+  try { await drain((await turn(row, rounds(["Hi."]), { recallWaitMs: 50 })).stream); } finally { voice.contextDeps.recall = before; }
+  assert.equal(asked.length, 0);
+  // Verified on this call: everything is back.
+  const ok = db.updateCall(C, row.id, { verified_at: Date.now(), verified_how: "passphrase" });
+  assert.match(cm.whereaboutsNote(ok), /430 W 17th/);
+  assert.match(gl.preCallBrief(ok), /Chelsea/);
+});
+
+test("privacy: the refusal is said out loud — words before verify_caller, then a skip_turn, are not lost", async () => {
+  const row = inboundCall();
+  voice.contextDeps.runTool = async () => ({ ok: true, latitude: 40.74, longitude: -74.0 });
+  const out = await turn(row, rounds(
+    [{ tool: "get_location", start: true }],
+    ["I can't check that on this call, I'll pick it up by text once we hang up. ", { tool: "verify_caller", start: true, input: { about: "where they are" } }],
+    [{ tool: "skip_turn", input: { reason: "waiting" } }],
+  ));
+  const said = (await drain(out.stream)).trim();
+  assert.match(said, /pick it up by text/, said);
+});
+
+test("privacy: refused and nothing written — code says the refusal itself", async () => {
+  const row = inboundCall();
+  voice.contextDeps.runTool = async () => ({ ok: true });
+  const out = await turn(row, rounds([{ tool: "get_location", start: true }], [{ tool: "skip_turn", input: { reason: "x" } }]));
+  const said = (await drain(out.stream)).trim();
+  assert.equal(said, voice.CHECK_NOT_HERE_LINE);
+});

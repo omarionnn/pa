@@ -9,6 +9,7 @@
 // every turn of the call — and the cache warm-up — sends the same words and the prompt cache holds.
 // The schedule lines come from a search by meaning over their own saved facts (src/embedding.js),
 // never a word list. Only this call's own conversation is read: nothing of anyone else's.
+import { isVerified } from "./verify.js";
 import { config } from "../config.js";
 import * as db from "../db.js";
 import { search } from "../embedding.js";
@@ -86,6 +87,8 @@ export function resetCallMemory() { prepared.clear(); retried.clear(); }
  * Sync: the schedule lines are whatever `prepareCallMemory` has read so far for this call.
  */
 export function whereaboutsNote(call) {
+  // An inbound call on caller ID alone hears nothing of where they are (./verify.js WHEREABOUTS).
+  if (!isVerified(call)) return "";
   if (!call?.conversation_id || Number(call.is_owner) !== 1) return "";
   const places = placeLines(call.conversation_id);
   const schedule = prepared.get(keyOf(call))?.lines ?? [];

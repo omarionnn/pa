@@ -1640,7 +1640,8 @@ export async function* voiceTurn({
   // On their own call, what Reason remembers that is closest in meaning to what they just said — the
   // same search a text turn gets — riding in front of their words like the call record, never as theirs.
   const owned = context.kind === "owner";
-  if (owned && recallWaitMs > 0 && messages.at(-1)?.role === "user") {
+  // Not on an inbound call with caller ID only: saved facts carry addresses and routines (./verify.js).
+  if (owned && recallWaitMs > 0 && messages.at(-1)?.role === "user" && verify.isVerified(call)) {
     const theirWords = latestSpoken(context.messages);
     let timer;
     const late = new Promise(r => { timer = setTimeout(() => r(null), recallWaitMs); timer.unref?.(); });
@@ -1961,9 +1962,17 @@ export async function* voiceTurn({
         // (a question it asked as it called the tool), and they are said rather than nothing. The
         // code's own holding line is not the model saying something (drive 11-08: "Still working on
         // it." landed mid-round and the turn ended on "Let me come back to you on that one.").
-        else if (round > 0 && (said.length === saidAtRoundStart || onlyHolding()) && !toolUses.length && replayable()) {
-          log({ voice_lead_in_said: call.id, round });
-          yield* emit(lastLeadIn);
+        // A skip_turn or other silent tool is not something said either (spoofed-inbound drive 11-08:
+        // "I'll pick it up by text" written before verify_caller, then skip_turn, and the caller heard
+        // nothing of Reason's). And a refusal for the caller check is always answered out loud.
+        else if (round > 0 && (said.length === saidAtRoundStart || onlyHolding()) && !toolUses.some(t => !SILENT_TOOLS.has(t.name)) && !toolUses.some(t => t.name === "end_call")) {
+          if (replayable()) {
+            log({ voice_lead_in_said: call.id, round });
+            yield* emit(lastLeadIn);
+          } else if (turnState.checkRefused && !spokeOwn) {
+            log({ voice_check_later_said: call.id, round });
+            yield* emit([turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE]);
+          }
         }
       } else yield* emit(splitter.flush());
 
@@ -2222,6 +2231,7 @@ export async function* voiceTurn({
           // process and resolve immediately, so awaiting them costs a microtask and nothing else.
           try { out = await runCallTool(t.name, t.input ?? {}, { call, context, log, turnState }); }
           catch (e) { out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+          if (t.name === "verify_caller" && out?.deferred) turnState.checkQueued = true;
           // Words have already left this turn, and a refusal that says "ask them for the date" does not
           // know that. In the 2026-10-07 rehearsal that produced a call which asked the same question
           // twice in one breath, every turn: the model asked about the date, proposed the booking, was
@@ -2329,6 +2339,7 @@ export async function* voiceTurn({
         // confirmation — exactly the thing that must not be grantable by whoever is on the line.
         if (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf: (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false })) {
           out = verify.gateRefusal({ call, name: t.name });
+          turnState.checkRefused = true;
           log({ call_tool_needs_verification: t.name, call_id: call.id });
           toolDone(String(t.name), false);
           results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
@@ -2812,6 +2823,10 @@ async function* refusalStream({ why, model = "reason" }) {
  * The tools that really send something to somebody — by name, since a turn's tools include reads
  * (page_list, undo_send, message_effects are not sends; cold review, call 80). Shared with gptlive.js.
  */
+/** A thing refused for the caller check, picked up by text after the call (verify_caller ran). */
+export const CHECK_LATER_LINE = "I can't do that one on this call — I'll pick it up with you by text as soon as we hang up.";
+/** The same, when nothing was queued for after the call. */
+export const CHECK_NOT_HERE_LINE = "I can't do that one on this call. Text me and I'll sort it there.";
 /** Said after a send that ran, when the turn has nothing else to say (in place of its lead-in). */
 export const SENT_LINE = "Sent.";
 export const SEND_TOOLS = new Set(["message_send", "message_people", "email", "gmail_send", "document_send", "drive_send", "send_picture", "send_pictures", "voice_note_send", "voice_note_say", "spotify_send_link", "notice_send", "resend_contact_card", "event_blast", "event_cancel"]);

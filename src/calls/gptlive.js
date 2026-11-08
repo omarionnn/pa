@@ -21,6 +21,7 @@
 // Docs read 2026-10-31: developers.openai.com/api/docs/guides/live, live-delegation (client mode),
 // voice-websockets (pcmu 8k), voice-server-controls (playback control), live-conversations (greeting,
 // usage, close), voice-sip, live-partner-integrations (Twilio Media Streams).
+import { isVerified } from "./verify.js";
 import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import * as db from "../db.js";
@@ -225,7 +226,9 @@ export function preCallBrief(call, { place = "" } = {}) {
   // Who they are to Reason (fix 2, call 80), read at the call's start from this call's own
   // conversation only: the profile their texts are shown, how they want to be treated (src/rules.js,
   // fresh — a rule saved after the last call is here), and their places and week (./callmemory.js).
-  const profile = ownerProfileNote(call.conversation_id);
+  // Not their profile either on an inbound call that only has caller ID: it says where they live and
+  // work, and the voice would answer "where am I" from it with no tool in between (./verify.js).
+  const profile = isVerified(call) ? ownerProfileNote(call.conversation_id) : "";
   if (profile) lines.push(profile.length > 2500 ? `${profile.slice(0, 2499).trimEnd()}…` : profile);
   const rules = rulesNote(call.conversation_id);
   if (rules) lines.push(rules);

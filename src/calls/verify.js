@@ -45,8 +45,17 @@ export function isConsequential(name, input = null, { toSelf = () => false } = {
   // options" on his own call was held for a check that texted the same phone). Whoever is holding
   // this phone, the words land with the owner, so there is nothing for a voice to authorize.
   if (SELF_SENDS.has(name) && input && toSelf(input.to)) return false;
-  return GATED_ACTIONS.has(name) || name === "confirm_record" || CHANGES_THE_GATE.has(name) || eventWrite(name, input);
+  return GATED_ACTIONS.has(name) || name === "confirm_record" || CHANGES_THE_GATE.has(name) || eventWrite(name, input) || WHEREABOUTS.has(name);
 }
+
+/**
+ * Where they are, or where they usually are: their live position, what is near it, their saved
+ * places (a place's weather is labelled with its address). Caller ID alone said whose Reason to be,
+ * not who is holding the phone, and "where am I?" from a spoofed number must not be answered (drive
+ * 11-08 on OVH, time-to-first-word session: a spoofed inbound caller got the location). Behind the
+ * same check as anything consequential: refused on the call, picked up by text after it.
+ */
+export const WHEREABOUTS = new Set(["get_location", "nearby_places", "set_place", "weather", "call_place"]);
 
 /**
  * An event organizer's tools reach the guests: a cancel, a change, a released detail or a removal is
