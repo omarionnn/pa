@@ -1689,6 +1689,7 @@ export async function* voiceTurn({
   // and the last round's words before its tools, dropped unsaid unless nothing comes after.
   let leadIn = [];
   let lastLeadIn = [];
+  let lastLeadInRound = -1;
   // Set when a lookup came back with no position for them (WHERE_ASK).
   let whereUnknown = false;
   let lookedForWhere = false;
@@ -1738,6 +1739,7 @@ export async function* voiceTurn({
     leadIn = [];
     if (!words.join("").trim()) return;
     lastLeadIn = words;
+    lastLeadInRound = round;
     log({ voice_lead_in_dropped: call.id, round, chars: words.join("").trim().length });
   };
   // The holding line, said at most once per turn — see `FIRST_WORD_DEADLINE_MS`.
@@ -2023,10 +2025,19 @@ export async function* voiceTurn({
         // "I'll pick it up by text" written before verify_caller, then skip_turn, and the caller heard
         // nothing of Reason's). And a refusal for the caller check is always answered out loud.
         else if (round > 0 && (said.length === saidAtRoundStart || onlyHolding()) && !toolUses.some(t => !SILENT_TOOLS.has(t.name)) && !toolUses.some(t => t.name === "end_call")) {
+          // Words written after a refusal for the caller check are the model's own answer to it ("I can't
+          // send that on this call, I'll pick it up by text") and are said instead of code's. Words from
+          // the refused tool's own round or before ("Let me check.") are said, then the refusal (#414:
+          // always said; "owed" until something is said after it).
+          const refusalOwed = checkRefusalIsOwed();
           if (replayable()) {
             log({ voice_lead_in_said: call.id, round });
             yield* emit(lastLeadIn);
-          } else if (!spokeOwn) yield* checkRefusalOwed();
+            if (refusalOwed && lastLeadInRound <= (turnState.checkRefusedRound ?? -1)) {
+              log({ voice_check_later_said: call.id, round, after: "lead_in" });
+              yield* emit([turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE]);
+            }
+          } else if (refusalOwed) yield* checkRefusalOwed();
         }
       } else yield* emit(splitter.flush());
 
@@ -2412,6 +2423,7 @@ export async function* voiceTurn({
         if (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf: (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false })) {
           out = verify.gateRefusal({ call, name: t.name });
           turnState.checkRefused = said.length;
+          turnState.checkRefusedRound ??= round;
           log({ call_tool_needs_verification: t.name, call_id: call.id });
           toolDone(String(t.name), false);
           results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
