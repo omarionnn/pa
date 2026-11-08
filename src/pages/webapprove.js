@@ -3,6 +3,14 @@
 //   GET  /web/approve/{token}             the payment: store, item, exact total, Approve with Face ID, Decline
 //   POST /web/approve/{token}/verify      the passkey assertion → verified, link claimed, then paid
 //   POST /web/approve/{token}/decline     no: Crossmint is told to decline, nothing is charged
+//   POST /web/approve/{token}/cvc         after Face ID, Crossmint's CVC field said complete: read the intent again, then pay
+//
+// The CVC step (2026-11-08): Crossmint keeps a saved card's security code only for a while. When it has
+// lapsed, the order intent's card rail reads pending_cvc_recollection and the checkout can't fill the
+// card, so /verify answers needs_cvc with what Crossmint's own field needs (the client key, the person's
+// ten-minute JWT, the card's id) and the page mounts that field (CrossmintCvcRecollection, from
+// /web/connect/island.js) right there. The code is typed into Crossmint's iframe and stored by Crossmint;
+// it never reaches this page's script, our server, or a log. Then /cvc finishes the payment.
 //   GET  /web/connect/passkey             signed in to Web: set up Face ID for purchases
 //   POST /web/connect/passkey/verify      the new passkey (saved only if it verifies with Face ID or PIN)
 //
@@ -31,6 +39,7 @@ const CSS = `${PAPER_CSS}
 .pk-bd td{text-align:right;padding:5px 0;font-variant-numeric:tabular-nums}
 .pk-bd .pk-sum th,.pk-bd .pk-sum td{border-top:1px solid var(--ink);font-weight:600;padding-top:8px}
 .pk-bd-note{margin:8px 0 0;font-size:14px;opacity:.75}
+.pk-cvc{margin:18px 0 0;min-height:64px;max-width:320px}
 `;
 const BACK = "/web?thread";
 const FACE = `<svg class="pk-face" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M9 9v1.5M15 9v1.5M12 9v4h-1M9 16.5c1.8 1.4 4.2 1.4 6 0"/></svg>`;
@@ -178,13 +187,25 @@ export function renderApprove({ v, staging = false, boot = null, blocked = "" })
   // Face ID passed and nothing was charged, but the payment did not start on Reason's side (Crossmint
   // refused the order intent — 2026-10-31 at CVS). The link is open again (src/passkey.js reopenApproval);
   // Try again reloads for the fresh challenge. Never "Face ID didn't go through": it did.
+  // Face ID passed; the card's 3-digit code has to be typed again before the store can take the card.
+  const cvc = frame({
+    step: "cvc", off: true,
+    main: headline("Face ID worked.", "Enter your card's 3-digit code to finish.", "pk-h")
+      + lede(`Your card needs its security code once more before ${v.store} can take it. It's the 3 digits on the back of the card.`)
+      + `<div class="pk-cvc" id="pk-cvc" aria-label="Card security code"></div>`
+      + `<div class="pk-note pk-go">${actions(`<button class="act pf-go" type="button" id="pk-cvc-go" data-busy="1">Finish paying ${esc(v.amount)} <span aria-hidden="true">→</span></button>`)}</div>`
+      + label("NOTHING CHARGED YET")
+      + `<p class="pf-note" id="pk-cvc-err" role="alert" hidden></p>`,
+    margin: label("WHY AGAIN") + para("A saved card's code is only kept for a while. Type it once and this payment goes through.")
+      + label("I NEVER SEE", { pen: true, sp: true }) + para("The code. You type it into the secure box of the service that holds your card, not into Reason."),
+  });
   const failed = frame({
     step: "failed", off: true,
     main: headline("Face ID worked. The payment didn't start.", "Nothing was charged.") + lede(`Setting up the ${v.amount} payment to ${v.store} failed on my side, not yours. Try again here, or text me and I'll sort it out.`)
       + theTotal(v) + `<div class="pk-note">${actions(`<button class="act pf-go" type="button" id="pk-retry" data-busy="1">Try again <span aria-hidden="true">→</span></button>`, go("Back to Reason", { href: BACK }))}</div>`,
     margin: label("THIS LINK") + para("Still works, once, until it runs out.") + label("NOT CHARGED", { sp: true }) + para("The store never got a payment to take."),
   });
-  return page("Reason — approve", shell(ask + paying + paid + declined + unsure + failed), { staging, boot });
+  return page("Reason — approve", shell(ask + cvc + paying + paid + declined + unsure + failed), { staging, boot });
 }
 
 /** A link that can't pay anymore: used, declined, run out, replaced by a newer one, or the payment closed. */
@@ -256,11 +277,33 @@ if(go)go.onclick=function(){
   var o=B.options;busy(go,true);el('pk-err').hidden=true;
   navigator.credentials.get({publicKey:{challenge:b2u(o.challenge),rpId:o.rpId,timeout:o.timeout,userVerification:'required',allowCredentials:(o.allowCredentials||[]).map(function(c){return{type:'public-key',id:b2u(c.id),transports:c.transports}})}})
   .then(function(c){var r=c.response;show('paying');return post('/verify',{id:c.id,rawId:u2b(c.rawId),type:c.type,response:{clientDataJSON:u2b(r.clientDataJSON),authenticatorData:u2b(r.authenticatorData),signature:u2b(r.signature),userHandle:r.userHandle?u2b(r.userHandle):undefined},clientExtensionResults:{},authenticatorAttachment:c.authenticatorAttachment||undefined})})
-  .then(function(out){if(!out)return;if(out.ok)return show('paid');if(out.unknown_outcome)return show('unsure');var e=out.error||'';
-    if(out.retry)return show('failed');
-    if(/^link_|^payment_|^not_found$|^not_open$/.test(e))return location.reload();
-    show('ask');busy(go,false);oops(WHY[e]||(/^http_/.test(e)?"Reason had a problem. Nothing was charged. Try again.":FAIL))},
-    function(err){show('ask');busy(go,false);oops(err&&err.name==='TypeError'?OFFLINE:FAIL)})};
+  .then(done,function(err){show('ask');busy(go,false);oops(err&&err.name==='TypeError'?OFFLINE:FAIL)})};
+function done(out){if(!out)return;if(out.ok)return show('paid');if(out.unknown_outcome)return show('unsure');var e=out.error||'';
+  if(out.needs_cvc){if(out.cvc)return cvcStep(out.cvc);show('cvc');busy(cgo,false);return cvcOops("Your card company hasn't confirmed the code yet. Tap Finish again in a moment.")}
+  if(out.retry)return show('failed');
+  if(/^link_|^payment_|^not_found$|^not_open$|^cvc_window_closed$/.test(e))return location.reload();
+  show('ask');busy(go,false);oops(WHY[e]||(/^http_/.test(e)?"Reason had a problem. Nothing was charged. Try again.":FAIL))}
+// The CVC: Crossmint's hosted field (island.js), mounted only once Face ID passed. Its submit() hands back
+// a status and never the code; only after "complete" does the page ask Reason to finish the payment.
+var cgo=el('pk-cvc-go'),cvcF=null;
+function cvcOops(t){var e=el('pk-cvc-err');if(e){e.textContent=t;e.hidden=false}}
+function css(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
+function cvcLook(){var g=css('--ground'),i=css('--ink'),m=css('--muted'),p=css('--pen'),M='"Courier New",Courier,monospace';
+  return{variables:{fontFamily:M,fontSizeUnit:'5px',borderRadius:'0px',colors:{backgroundPrimary:g,textPrimary:i,textSecondary:m,borderPrimary:css('--hair'),accent:p,danger:p,warning:p}},
+  rules:{Label:{font:{family:M,size:'11px',weight:'400'},colors:{text:m}},Input:{borderRadius:'0px',font:{family:M,size:'22px',weight:'400'},colors:{text:i,background:g,border:g,boxShadow:'inset 0 -1.5px 0 '+i,placeholder:m},focus:{colors:{background:g,border:g,boxShadow:'inset 0 -2px 0 '+p}}}}}}
+function cvcStep(c){show('cvc');busy(cgo,false);el('pk-cvc-err').hidden=true;if(cvcF)return;
+  function mount(){try{cvcF=window.ReasonCrossmint.cvcField(el('pk-cvc'),{apiKey:c.apiKey,jwt:c.jwt,paymentMethodId:c.paymentMethodId,appearance:cvcLook()})}catch(x){cvcOops("The code box didn't load. Nothing was charged. Reload this page to try again.")}}
+  if(window.ReasonCrossmint)return mount();
+  var s=document.createElement('script');s.src='/web/connect/island.js';s.onload=mount;s.onerror=function(){cvcOops("The code box didn't load. Nothing was charged. Check your connection and reload.")};document.head.appendChild(s)}
+var CVCWHY={invalid:"Check the code: it's the 3 digits on the back of your card.",failed:"That code didn't go through. Nothing was charged. Try again.",refused:"Your card company didn't take the code. Nothing was charged. Text me and I'll sort it out.",unavailable:"The code box is still loading. Try again in a moment."};
+if(cgo)cgo.onclick=function(){
+  if(B.staging){busy(cgo,true);show('paying');wait(1400).then(function(){show('paid')});return}
+  if(!cvcF)return cvcOops(CVCWHY.unavailable);
+  busy(cgo,true);el('pk-cvc-err').hidden=true;
+  cvcF.submit().then(function(r){var st=r&&r.status;
+    if(st==='complete'){show('paying');return post('/cvc').then(done,function(){show('cvc');busy(cgo,false);cvcOops(OFFLINE)})}
+    if(st==='superseded')return busy(cgo,false);
+    busy(cgo,false);cvcOops(CVCWHY[st]||CVCWHY.failed)})};
 if(no)no.onclick=function(){busy(no,true);if(B.staging){show('declined');return}post('/decline').then(function(out){if(out.ok)show('declined');else location.reload()})};
 if(add)add.onclick=function(){
   if(B.staging){busy(add,true);wait(900).then(function(){show('done')});return}
@@ -273,10 +316,12 @@ if(add)add.onclick=function(){
 })();`;
 
 // ---------------------------------------------------------------- routes
-// Only this site: no frames, no third-party scripts or calls, nothing cached.
+// Only this site, and Crossmint for the CVC step: our own island script, Crossmint's iframe (the code
+// field) and its SDK's calls. Nothing else is framed or called, the page is framed by nobody, nothing cached.
+const CROSSMINT = "https://www.crossmint.com https://*.crossmint.com";
 export const APPROVE_HEADERS = {
   ...SECURITY_HEADERS,
-  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+  "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ${CROSSMINT}; frame-src ${CROSSMINT}; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
   "Cache-Control": "no-store",
   "Referrer-Policy": "no-referrer",
 };
@@ -302,7 +347,7 @@ export async function approveRequest({ sub = "", method = "GET", headers = {}, r
     if (!opts.ok) return send(renderApprove({ v, blocked: opts.error, boot: { base: `/web/approve/${token}` } }));
     return send(renderApprove({ v, boot: { base: `/web/approve/${token}`, options: opts.options } }));
   }
-  if (verb !== "verify" && verb !== "decline") return null;
+  if (verb !== "verify" && verb !== "decline" && verb !== "cvc") return null;
   if (method !== "POST") return json(405, { ok: false });
   if (!sameOrigin(headers)) return json(403, { ok: false, error: "origin" });
   if (verb === "decline") {
@@ -310,13 +355,24 @@ export async function approveRequest({ sub = "", method = "GET", headers = {}, r
     log({ pay_approve: "decline", ok: !!out.ok });
     return json(out.ok ? 200 : 400, { ok: !!out.ok, ...(out.error ? { error: out.error } : {}) });
   }
+  if (verb === "cvc") {
+    const out = await shop.payAfterCvc(token);
+    log({ pay_approve: "cvc", ok: !!out.ok, ...(out.error ? { error: out.error } : {}), ...(out.status ? { status: out.status } : {}), ...(out.retry ? { retry: true } : {}) });
+    return json(out.ok ? 200 : 400, answerOf(out));
+  }
   const body = await bodyOf(readBody);
   if (!body) return json(400, { ok: false, error: "bad_json" });
   const out = await shop.payByPasskey(token, body);
   // Which link and how it went: never the assertion, never a card detail.
   log({ pay_approve: "verify", ok: !!out.ok, ...(out.error ? { error: out.error } : {}), ...(out.status ? { status: out.status } : {}), ...(out.detail ? { detail: out.detail } : {}), ...(out.retry ? { retry: true } : {}) });
-  return json(out.ok ? 200 : 400, { ok: !!out.ok, ...(out.error ? { error: out.error } : {}), ...(out.unknown_outcome ? { unknown_outcome: true } : {}), ...(out.retry ? { retry: true } : {}) });
+  return json(out.ok ? 200 : 400, answerOf(out));
 }
+/** What the page is told: the outcome, and for the CVC step only what Crossmint's field needs. Never logged. */
+const answerOf = (out) => ({
+  ok: !!out.ok, ...(out.error ? { error: out.error } : {}), ...(out.unknown_outcome ? { unknown_outcome: true } : {}), ...(out.retry ? { retry: true } : {}),
+  ...(out.needs_cvc ? { needs_cvc: true } : {}),
+  ...(out.cvc ? { cvc: { apiKey: out.cvc.apiKey, jwt: out.cvc.jwt, paymentMethodId: out.cvc.paymentMethodId } } : {}),
+});
 
 /** /web/connect/passkey[/verify]: signed in to Web, and only where the flag allows. */
 export async function passkeySetupRequest({ verb = "", method = "GET", headers = {}, account = null, readBody, log = () => {} }) {

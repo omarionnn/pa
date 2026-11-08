@@ -4,9 +4,16 @@
 //
 // Why our own passkey and not Crossmint's (docs.crossmint.com, read 2026-10-31): Crossmint's passkey
 // belongs to a card NETWORK rail of an order intent (Visa's or Mastercard's own verification, shown by
-// OrderIntentVerification). Agent Checkouts pay through the `encrypted-card` rail, which "never needs
-// verification", and a card with no network rail never asks at all. So Crossmint's passkey would gate
-// some payments, on some cards, some of the time. This one gates every payment Reason answers.
+// OrderIntentVerification). Agent Checkouts use that network rail when it is ready and otherwise the
+// `encrypted-card` rail, so Crossmint's passkey would gate some payments, on some cards, some of the
+// time. This one gates every payment Reason answers.
+//
+// The `encrypted-card` rail is NOT always ready (this file said it "never needs verification" until
+// 2026-11-08): Crossmint keeps a saved card's CVC for a limited time, and once it lapses the rail reads
+// `pending_cvc_recollection` and the checkout cannot fill the card (the owner's Amazon run 650f8c4c that
+// day). src/shopconnect.js reads the intent's rails after making it; when the CVC is needed, the approve
+// page collects it right after Face ID in Crossmint's own hosted field (CrossmintCvcRecollection), and
+// only then is the order intent handed to the checkout.
 //
 // What makes a yes here stronger than a texted yes:
 //   **User verification required.** Options ask for it and the assertion must carry the UV flag:
@@ -237,6 +244,8 @@ export function openApprovalFor(paymentId, kind = "pay") {
   const a = q("SELECT * FROM pay_approvals WHERE payment_id = ? AND kind = ? AND state = 'open' ORDER BY created_at DESC").get(paymentId, kind) ?? null;
   return a && a.expires_at >= clock.now() ? a : null;
 }
+/** Claims an open link (the CVC step's finish, src/shopconnect.js payAfterCvc): once, and only under the nonce it was read with. */
+export const claimApproval = (a) => q("UPDATE pay_approvals SET state = 'used', used_at = ? WHERE id = ? AND state = 'open' AND nonce = ? AND expires_at >= ?").run(clock.now(), a.id, a.nonce, clock.now()).changes === 1;
 export const closeApproval = (a, state) => q("UPDATE pay_approvals SET state = ? WHERE id = ? AND state = 'open'").run(state, a.id).changes === 1;
 
 /** What the page asks the browser for: this link's bound challenge, this person's usable passkeys, UV required. */

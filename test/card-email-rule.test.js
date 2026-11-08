@@ -42,6 +42,8 @@ async function fakeFetch(url, init = {}) {
   calls.push({ method: init.method ?? "GET", path: p, body });
   if (REG.test(p) && init.method === "PUT") return body?.email ? reply(200, { status: "active" }) : reply(400, { error: { code: "CONSUMER_EMAIL_REQUIRED" } });
   if (p === "/api/unstable/order-intents") { const no = refuseIntents.shift(); return no ? reply(no.status, no.body) : reply(201, { orderIntentId: `oi_${calls.length}` }); }
+  // The rails read after the intent is made (2026-11-08): a card rail that is ready.
+  if (/^\/api\/unstable\/order-intents\/[^/]+$/.test(p)) return reply(200, { orderIntentId: decodeURIComponent(p.split("/").pop()), status: "active", rails: [{ rail: "encrypted-card", status: "active", credentialFormats: ["card"] }] });
   if (/\/messages$/.test(p)) return reply(202, { ok: true });
   return reply(404, {});
 }

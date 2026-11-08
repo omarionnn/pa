@@ -64,6 +64,8 @@ async function fakeFetch(url, init = {}) {
   }
   if (m) return runs[m[1]] ? reply(200, { runId: m[1], ...runs[m[1]] }) : reply(404, { error: true, message: `Checkout '${m[1]}' not found` });
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}`, status: "active" });
+  // The rails read after the intent is made (2026-11-08): a card rail that is ready.
+  if (/^\/api\/unstable\/order-intents\/[^/]+$/.test(p)) return reply(200, { orderIntentId: decodeURIComponent(p.split("/").pop()), status: "active", rails: [{ rail: "encrypted-card", status: "active", credentialFormats: ["card"] }] });
   return reply(404, { message: "no route" });
 }
 // Ulta's live form at 12:15:58 ET, 2026-10-31 (run 6f457e81…): keys, kinds and the state dropdown as Crossmint sent them.
