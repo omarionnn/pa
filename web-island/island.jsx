@@ -6,12 +6,17 @@
 //   ReasonCrossmint.cardForm(el, { apiKey, jwt, appearance, onSaved, onError })
 //       Crossmint's card form (CrossmintPaymentMethodManagement, "new" only). The card goes to Crossmint;
 //       this page gets back the paymentMethodId and the display fields (brand, last four).
+//   ReasonCrossmint.cvcField(el, { apiKey, jwt, paymentMethodId, appearance }) → { submit() }
+//       Crossmint's hosted CVC field (CrossmintCvcRecollection), for a saved card whose security code
+//       Crossmint no longer keeps (the order intent's encrypted-card rail says pending_cvc_recollection).
+//       The digits are typed into Crossmint's iframe and stored by Crossmint; this page gets back only
+//       a status (complete / invalid / failed / refused / unavailable / superseded), never the code.
 //
 // Built by web-island/build.sh into assets/connect/crossmint-island.js (committed, served by
 // src/pages/webconnect.js). Rebuild after changing this file or bumping the pinned SDK.
 import { createRoot } from "react-dom/client";
 import { createRef, useImperativeHandle, useRef, useState, forwardRef } from "react";
-import { CrossmintProvider, CrossmintProtectedInput, CrossmintPaymentMethodManagement } from "@crossmint/client-sdk-react-ui";
+import { CrossmintProvider, CrossmintProtectedInput, CrossmintPaymentMethodManagement, CrossmintCvcRecollection } from "@crossmint/client-sdk-react-ui";
 
 const Protected = forwardRef(function Protected({ apiKey, jwt, field, appearance }, ref) {
   const inner = useRef(null);
@@ -61,4 +66,21 @@ function cardForm(el, { apiKey, jwt, appearance }) {
   };
 }
 
-window.ReasonCrossmint = { protectedField, cardForm };
+// Only a status leaves this function (the SDK's submit() never rejects and never returns the code).
+function cvcField(el, { apiKey, jwt, paymentMethodId, appearance }) {
+  const ref = createRef();
+  createRoot(el).render(
+    <CrossmintProvider apiKey={apiKey}>
+      <CrossmintCvcRecollection ref={ref} jwt={jwt} paymentMethodId={paymentMethodId} appearance={appearance} hideSubmitButton />
+    </CrossmintProvider>,
+  );
+  return {
+    async submit() {
+      if (!ref.current) return { status: "unavailable", message: "The field is still loading." };
+      const r = await ref.current.submit();
+      return { status: r.status, ...(r.reason ? { reason: r.reason } : {}) };
+    },
+  };
+}
+
+window.ReasonCrossmint = { protectedField, cardForm, cvcField };

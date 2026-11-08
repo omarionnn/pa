@@ -1,12 +1,12 @@
 {
   "name": "reason-crossmint-island",
   "private": true,
-  "description": "Build-only. Bundles Crossmint's protected input and card form for src/pages/webconnect.js. Not a runtime dependency of Reason.",
+  "description": "Build-only. Bundles Crossmint's protected input, card form and CVC field for src/pages/webconnect.js. Not a runtime dependency of Reason.",
   "scripts": {
     "build": "esbuild island.jsx --bundle --minify --format=iife --target=es2020 --jsx=automatic --define:process.env.NODE_ENV=\\\"production\\\" --legal-comments=none --alias:crypto=./shims/empty.js --outfile=../assets/connect/crossmint-island.js"
   },
   "dependencies": {
-    "@crossmint/client-sdk-react-ui": "4.13.1",
+    "@crossmint/client-sdk-react-ui": "4.13.4",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },

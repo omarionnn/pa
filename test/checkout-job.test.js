@@ -60,6 +60,8 @@ async function fakeFetch(url, init = {}) {
   if (m && m[2]) return reply(202, { ok: true });
   if (m) return runs[m[1]]?.__status ? reply(runs[m[1]].__status, { message: "unavailable" }) : runs[m[1]] ? reply(200, { runId: m[1], ...runs[m[1]] }) : reply(404, { error: true, message: `Checkout '${m[1]}' not found` });
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}`, status: "active" });
+  // The rails read after the intent is made (2026-11-08): a card rail that is ready.
+  if (/^\/api\/unstable\/order-intents\/[^/]+$/.test(p)) return reply(200, { orderIntentId: decodeURIComponent(p.split("/").pop()), status: "active", rails: [{ rail: "encrypted-card", status: "active", credentialFormats: ["card"] }] });
   return reply(404, { message: "no route" });
 }
 // Crossmint's own shapes, as seen live on 2026-10-31 (bfbab17b…, 3e6845d9…).

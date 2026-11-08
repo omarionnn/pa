@@ -35,7 +35,7 @@
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
-//   GET  /web/approve/{token}, POST …/verify|decline, GET /web/connect/passkey, POST …/verify   purchase approval by passkey (src/pages/webapprove.js; REASON_PASSKEY_PAY)
+//   GET  /web/approve/{token}, POST …/verify|decline|cvc, GET /web/connect/passkey, POST …/verify   purchase approval by passkey (src/pages/webapprove.js; REASON_PASSKEY_PAY)
 //   GET  /web/connect/{token}[/state], POST …/answer|card, GET /web/connect/island.js|jwks.json|new-card   store sign-in + card for Crossmint checkouts (src/pages/webconnect.js; REASON_SHOP_CONNECT)
 //   GET  /web/stamps, POST /web/api/stamps/{id}/share[/revoke], GET …/{id}/image.png, …/{id}/story.png   Stamps (src/pages/webstamps.js; REASON_WEB_DAILY or REASON_STAMPS_ALL)
 //   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)
@@ -339,7 +339,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       // REASON_SHOP_CONNECT; off, the same flat 404 as any path nobody was issued.
       // Purchase approval by passkey (src/pages/webapprove.js, src/passkey.js): the Face ID link for one
       // payment, and setting Face ID up. Behind REASON_PASSKEY_PAY and REASON_SHOP_CONNECT; off, a flat 404.
-      const approveRoute = /^\/web\/approve\/([A-Za-z0-9_-]{20,64}(?:\/(?:verify|decline))?)$/.exec(url.pathname);
+      const approveRoute = /^\/web\/approve\/([A-Za-z0-9_-]{20,64}(?:\/(?:verify|decline|cvc))?)$/.exec(url.pathname);
       const setupRoute = /^\/web\/connect\/passkey(?:\/(verify))?$/.exec(url.pathname);
       if ((approveRoute || setupRoute) && webOn() && (await import("./shopconnect.js")).connectMode() !== "off" && (await import("./passkey.js")).passkeyMode() !== "off") {
         let out = null;
@@ -785,15 +785,18 @@ export function createServer({ router, runtime, log = () => {} }) {
 
       const hook = /^\/channels\/([a-z0-9_-]+)\/webhook$/i.exec(url.pathname);
       if (hook && req.method === "POST") {
-        const rawBody = await readBody(req);
-        if (rawBody === null) return send(413, { error: "body too large" });
+        // The exact bytes too: a body signature (Sendblue's X-Sendblue-Signature) is over these,
+        // not over whatever a utf8 round-trip makes of them.
+        const rawBytes = await readBody(req, { bytes: true });
+        if (rawBytes === null) return send(413, { error: "body too large" });
+        const rawBody = rawBytes.toString("utf8");
         // The router answers once the whole turn is over, which on a long one is past the
         // provider's own timeout (Sendblue: 45s, then retries). Whatever is wrong with a delivery —
         // a bad signature, a body that will not parse — is known in milliseconds, so the provider
         // still hears that. Anything slower is a turn under way: the message is already claimed
         // and held in the database (and the sweep finishes it if this process stops), so "I have
         // this" is true, and the turn carries on after the provider has its answer.
-        const running = router.webhook({ channel: hook[1], rawBody, headers: req.headers });
+        const running = router.webhook({ channel: hook[1], rawBody, rawBytes, headers: req.headers });
         const done = (out) => log({ webhook: hook[1], status: out.status, delivered: out.body?.delivered ?? 0 });
         const early = await Promise.race([running, new Promise(r => setTimeout(r, config.webhookAnswerMs, null))]);
         if (early) {
@@ -2112,7 +2115,7 @@ export function health({ router, runtime, full = false }) {
   };
 }
 
-function readBody(req) {
+function readBody(req, { bytes = false } = {}) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
@@ -2121,7 +2124,7 @@ function readBody(req) {
       if (size > MAX_BODY) { resolve(null); req.destroy(); return; }
       chunks.push(c);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("end", () => { const buf = Buffer.concat(chunks); resolve(bytes ? buf : buf.toString("utf8")); });
     req.on("error", reject);
   });
 }

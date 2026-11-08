@@ -178,6 +178,10 @@ const QUIET_ON_A_MACHINE = new Set(["skip_turn", "play_keypad_touch_tone", "voic
 /** The first turn on a line that opened silent and has stayed silent. */
 export const LINE_OPENED = `[The call has just connected and nothing has been heard from their side yet.]`;
 
+/** A thing refused for the caller check, picked up by text after the call (verify_caller queued it). */
+export const CHECK_LATER_LINE = "I can't do that one on this call — I'll pick it up with you by text as soon as we hang up.";
+/** The same, when nothing was queued for after the call. */
+export const CHECK_NOT_HERE_LINE = "I can't do that one on this call. Text me and I'll sort it there.";
 const SILENT_TOOLS = new Set(["end_call", "skip_turn", "transfer_to_number", "voicemail_detection", "language_detection", "play_keypad_touch_tone", "machine_on_the_line"]);
 
 /** The filler that buys thinking time before a tool, rather than dead air. Their own suggestion. */
@@ -1788,6 +1792,9 @@ export async function* voiceTurn({
   const replyExpected = () => !holdBack && !superseded() && !hold.onHold(call) && !hold.openingOwed(call)
     && !callOutcome.MACHINE_KINDS.includes(String(call?.outcome_kind ?? ""));
   const onlyHolding = () => holdingSaid && said === holdingText;
+  // A refusal for the caller check is owed out loud until something has been said after it: words
+  // before the refused tool ("let me check where you are") are not the refusal (cold review 11-08).
+  const checkRefusalIsOwed = () => turnState.checkRefused != null && (said.length === turnState.checkRefused || onlyHolding());
   const untilFirstWord = async function* (pending) {
     // A turn closed while it waits here leaves `pending` behind; its rejection is nobody's to crash on.
     Promise.resolve(pending).catch(() => {});
@@ -1885,6 +1892,13 @@ export async function* voiceTurn({
           if (!firstContentAt) firstContentAt = clock.now();
           yield chunk({ content });
         }
+      };
+      // Something was refused for the caller check this turn and nobody has heard so: the refusal is
+      // always said (spoofed-inbound drive 11-08: refused, then a skip_turn, and the caller got silence).
+      const checkRefusalOwed = function* () {
+        if (!checkRefusalIsOwed()) return;
+        log({ voice_check_later_said: call.id, round });
+        yield* emit([turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE]);
       };
 
       if (superseded()) {
@@ -2008,10 +2022,7 @@ export async function* voiceTurn({
           if (replayable()) {
             log({ voice_lead_in_said: call.id, round });
             yield* emit(lastLeadIn);
-          } else if (turnState.checkRefused && !spokeOwn) {
-            log({ voice_check_later_said: call.id, round });
-            yield* emit([turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE]);
-          }
+          } else if (!spokeOwn) yield* checkRefusalOwed();
         }
       } else yield* emit(splitter.flush());
 
@@ -2082,6 +2093,7 @@ export async function* voiceTurn({
       }
 
       if (!toolUses.length) {
+        yield* checkRefusalOwed();
         // The holding line went out and the model then said nothing (only NO_REPLY, or a note to
         // itself): "one moment" with nothing after it is a promise left hanging, so the turn's
         // nothing-said sentence closes it, as it does when the rounds run out.
@@ -2219,6 +2231,7 @@ export async function* voiceTurn({
         && (system.name === "play_keypad_touch_tone" || system.name === "skip_turn")) {
         hold.noteMachineLine(call, { what: system.name === "play_keypad_touch_tone" ? "phone_menu" : "recorded_message", log });
       }
+      if (system && system.name !== "end_call") yield* checkRefusalOwed();
       if (system) {
         yield chunk({
           tool_calls: [{
@@ -2338,14 +2351,18 @@ export async function* voiceTurn({
           yield* askWhere("out_of_rounds", emit);
           return;
         }
-        // Out of rounds with nothing said. Better a sentence admitting it than a silent line — and on
-        // their own call, the last words it wrote before its tools first ("search is down on my end, so
-        // I'll try a news site directly"), so they hear what happened, not only a promise.
-        if (owned && (!said.trim() || onlyHolding()) && replayable()) {
-          log({ voice_lead_in_said: call.id, round, out_of_rounds: true });
-          yield* emit(lastLeadIn);
+        // Out of rounds with nothing said. Better a sentence admitting it than a silent line — a refusal
+        // for the caller check that nobody has heard yet is that sentence; else, on their own call, the
+        // last words it wrote before its tools first ("search is down on my end, so I'll try a news site
+        // directly"), so they hear what happened, not only a promise.
+        if (checkRefusalIsOwed()) yield* checkRefusalOwed();
+        else {
+          if (owned && (!said.trim() || onlyHolding()) && replayable()) {
+            log({ voice_lead_in_said: call.id, round, out_of_rounds: true });
+            yield* emit(lastLeadIn);
+          }
+          yield chunk({ content: said ? ` ${COME_BACK_LATER}` : COME_BACK_LOOK });
         }
-        yield chunk({ content: said ? ` ${COME_BACK_LATER}` : COME_BACK_LOOK });
         yield chunk({}, "stop");
         yield SSE_DONE;
         log({ voice_turn_out_of_rounds: call.id, kind: context.kind, ...timing() });
@@ -2390,7 +2407,7 @@ export async function* voiceTurn({
         // confirmation — exactly the thing that must not be grantable by whoever is on the line.
         if (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf: (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false })) {
           out = verify.gateRefusal({ call, name: t.name });
-          turnState.checkRefused = true;
+          turnState.checkRefused = said.length;
           log({ call_tool_needs_verification: t.name, call_id: call.id });
           toolDone(String(t.name), false);
           results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
@@ -2447,11 +2464,17 @@ export async function* voiceTurn({
     // out-of-rounds guard because a refusal is not a round spent on a tool. Falling off the end then
     // produced an empty stream: no words, no finish reason, just `[DONE]`. Dead air is the worst answer
     // a phone call can give, and an unframed one is worse than that.
-    if (owned && whereUnknown && (!said.trim() || onlyHolding())) {
+    if (checkRefusalIsOwed()) {
+      log({ voice_check_later_said: call.id, after: "out_of_rounds" });
+      yield* openingIfOwed();
+      const line = turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE;
+      const content = said ? ` ${line}` : line;
+      said += content;
+      yield chunk({ content });
+    } else if (owned && whereUnknown && (!said.trim() || onlyHolding())) {
       yield* askWhere("fell_through");
       return;
-    }
-    if (!said || onlyHolding()) {
+    } else if (!said || onlyHolding()) {
       log({ voice_turn_nothing_said: call.id, kind: context.kind, ...timing() });
       yield* openingIfOwed();
       yield chunk({ content: said ? NOTHING_SAID_AFTER : NOTHING_SAID_AFTER.trim() });
@@ -2883,10 +2906,6 @@ async function* refusalStream({ why, model = "reason" }) {
  * The tools that really send something to somebody — by name, since a turn's tools include reads
  * (page_list, undo_send, message_effects are not sends; cold review, call 80). Shared with gptlive.js.
  */
-/** A thing refused for the caller check, picked up by text after the call (verify_caller ran). */
-export const CHECK_LATER_LINE = "I can't do that one on this call — I'll pick it up with you by text as soon as we hang up.";
-/** The same, when nothing was queued for after the call. */
-export const CHECK_NOT_HERE_LINE = "I can't do that one on this call. Text me and I'll sort it there.";
 /** Said after a send that ran, when the turn has nothing else to say (in place of its lead-in). */
 export const SENT_LINE = "Sent.";
 export const SEND_TOOLS = new Set(["message_send", "message_people", "email", "gmail_send", "document_send", "drive_send", "send_picture", "send_pictures", "voice_note_send", "voice_note_say", "spotify_send_link", "notice_send", "resend_contact_card", "event_blast", "event_cancel"]);

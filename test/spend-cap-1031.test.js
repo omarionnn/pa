@@ -97,6 +97,8 @@ async function fakeFetch(url, init = {}) {
   const p = new URL(url).pathname;
   calls.push({ method: init.method ?? "GET", path: p, body: init.body ? JSON.parse(init.body) : undefined });
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}` });
+  // The rails read after the intent is made (2026-11-08): a card rail that is ready.
+  if (/^\/api\/unstable\/order-intents\/[^/]+$/.test(p)) return reply(200, { orderIntentId: decodeURIComponent(p.split("/").pop()), status: "active", rails: [{ rail: "encrypted-card", status: "active", credentialFormats: ["card"] }] });
   if (/^\/api\/unstable\/agent-checkouts\/[^/]+\/messages$/.test(p)) return reply(202, { ok: true });
   if (/order-intent-registration$/.test(p)) return reply(200, { status: "active" });
   return reply(404, {});

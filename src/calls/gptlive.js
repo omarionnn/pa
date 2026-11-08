@@ -218,24 +218,27 @@ export function preCallBrief(call, { place = "" } = {}) {
       .map(f => clip(f, 160)).filter(Boolean).slice(0, 5);
     if (facts.length) lines.push(`What you've got for it:\n${facts.map(f => `- ${f}`).join("\n")}`);
   }
-  const chat = recentChatLines(call.conversation_id);
+  // An inbound call on caller ID only gets none of their chats (their messages say where they are and
+  // were): the voice answers small talk from this brief with no tool in between (./verify.js).
+  const sealed = !isVerified(call);
+  const chat = sealed ? [] : recentChatLines(call.conversation_id);
   if (chat.length) lines.push(`Lately in your chats:\n${chat.join("\n")}`);
   // Call 79: "three sub events" was the line's garbling of the spots Reason had picked by text that day.
-  const today = todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
+  const today = sealed ? null : todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
   // Today so far, the same lines Claude's call turn reads (fix 2: the voice answers from it itself).
   if (today?.lines?.length) lines.push(`Today so far in your chats, before this call (newest last):\n${today.lines.join("\n")}`);
   if (today?.names?.length) lines.push(`Names from your chats today — on a bad line, a word that sounds odd is often one of these: ${today.names.join(", ")}`);
-  if (place) lines.push(placeLine(place));
+  // Never on an inbound call that only has caller ID (./verify.js WHEREABOUTS).
+  if (place && !sealed) lines.push(placeLine(place));
   // Who they are to Reason (fix 2, call 80), read at the call's start from this call's own
   // conversation only: the profile their texts are shown, how they want to be treated (src/rules.js,
   // fresh — a rule saved after the last call is here), and their places and week (./callmemory.js).
-  // Not their profile either on an inbound call that only has caller ID: it says where they live and
-  // work, and the voice would answer "where am I" from it with no tool in between (./verify.js).
-  const profile = isVerified(call) ? ownerProfileNote(call.conversation_id) : "";
+  // None of it on an inbound call that only has caller ID (`sealed`): it says where they live and work.
+  const profile = sealed ? "" : ownerProfileNote(call.conversation_id);
   if (profile) lines.push(profile.length > 2500 ? `${profile.slice(0, 2499).trimEnd()}…` : profile);
-  const rules = rulesNote(call.conversation_id);
+  const rules = sealed ? "" : rulesNote(call.conversation_id);
   if (rules) lines.push(rules);
-  const where = whereaboutsNote(call);
+  const where = sealed ? "" : whereaboutsNote(call);
   if (where) lines.push(where);
   if (!lines.length) return "";
   return `PRE-CALL BRIEF — what you know going in, about them and from your chats. Answer from it yourself where it does; any lookup, action or live fact still goes to Reason.\n${lines.join("\n")}`;

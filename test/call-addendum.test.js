@@ -136,9 +136,12 @@ test("what counts as consequential is the permission system's own list, not a se
   assert.equal(verify.isConsequential("confirm_record"), true);
   // Talking, remembering and looking things up are not gated and must stay ungated. A check in front
   // of "what's on tomorrow" would make every call feel like an interrogation.
-  for (const a of ["recall", "remember", "calendar_list", "web_search", "confirm_request"]) {
+  for (const a of ["remember", "calendar_list", "web_search", "confirm_request"]) {
     assert.equal(verify.isConsequential(a), false, `${a} must not need the check`);
   }
+  // Except what they are remembered as, and where they are (privacy, drive 11-08): the saved facts carry
+  // home, work and routines, so reading them waits for the check like a send (./verify.js MEMORY_READS).
+  for (const a of ["recall", "memory_page", "get_location"]) assert.equal(verify.isConsequential(a), true, a);
 });
 
 test("a passphrase is compared on what was SAID, and a wrong one is told nothing", () => {
@@ -263,10 +266,10 @@ test("on his own call, the first thing that spends or sends is refused until the
   const call2 = ownerCall({ externalId: "conv_in2" });
   const out2 = await voice.llmRequest({
     rawBody: bodyFor(call2), headers: AUTH,
-    generate: rounds([{ tool: "recall", input: { who: "kofi" } }], ["he's your cousin"]),
+    generate: rounds([{ tool: "web_search", input: { query: "knicks score" } }], ["they won"]),
   });
   await drain(out2.stream);
-  assert.deepEqual(ran, ["recall"]);
+  assert.deepEqual(ran, ["web_search"]);
 });
 
 test("once the caller is verified mid-turn, the tool that was refused runs", async () => {
@@ -1111,11 +1114,12 @@ test("a call that is only asking is still allowed to a maybe-booked number, beca
   assert.equal(d.asked[0].may_book, false);
 });
 
-test("an owner call is shown what Reason knows about them, as a text turn is — once the caller is verified (11-08 privacy)", () => {
-  const call = ownerCall({ verifiedAt: Date.now() });
-  const row = call.verified_at ? call : db.updateCall(C, call.id, { verified_at: Date.now(), verified_how: "passphrase" });
-  db.saveProfile(row.conversation_id, "**Omari**\n- Pays for Spotify through his second Gmail (inferred, Oct 16)", [1]);
-  assert.match(voice.ownerContext({ call: row, callMessages: [] }).system, /WHAT YOU KNOW ABOUT THEM[^]*Spotify through his second Gmail/);
-  // Caller ID alone (an inbound call never verified): not the profile.
-  assert.doesNotMatch(voice.ownerContext({ call: ownerCall(), callMessages: [] }).system, /Spotify through his second Gmail/);
+test("an owner call is shown what Reason knows about them, as a text turn is", () => {
+  // Once the caller is verified: an inbound call on caller ID alone gets no profile (privacy, drive 11-08).
+  const call = ownerCall();
+  db.saveProfile(call.conversation_id, "**Omari**\n- Pays for Spotify through his second Gmail (inferred, Oct 16)", [1]);
+  assert.doesNotMatch(voice.ownerContext({ call, callMessages: [] }).system, /WHAT YOU KNOW ABOUT THEM/);
+  const ok = db.updateCall(C, call.id, { verified_at: Date.now(), verified_how: "passphrase" });
+  const ctx = voice.ownerContext({ call: ok, callMessages: [] });
+  assert.match(ctx.system, /WHAT YOU KNOW ABOUT THEM[^]*Spotify through his second Gmail/);
 });

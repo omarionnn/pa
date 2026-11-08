@@ -78,11 +78,18 @@ shop._setFetch(async (url, init = {}) => {
   const p = new URL(url).pathname;
   calls.push({ method: init.method ?? "GET", path: p, body: init.body ? JSON.parse(init.body) : undefined });
   if (p === "/api/unstable/order-intents") { const no = refuseIntents.shift(); return no ? reply(no.status, no.body) : reply(201, { orderIntentId: `oi_${calls.length}` }); }
+  // The rails read after the intent is made (2026-11-08): a card rail that is ready, or (scenario k) the
+  // live 11-08 shape: the card's CVC lapsed until Crossmint's field stores it (cvcDone).
+  if (/^\/api\/unstable\/order-intents\/[^/]+$/.test(p)) return reply(200, { orderIntentId: decodeURIComponent(p.split("/").pop()), status: "active", paymentMethodId: "pm_drive_secret", expiresAt: new Date(clock.now() + 15 * 60_000).toISOString(),
+    amount: { total: "14.83", spent: "0.00", reserved: "0.00", available: "14.83", currency: "USD" },
+    rails: cvcLapsed ? [{ rail: "agentic-token", status: "pending_verification" }, { rail: "spt", status: "active" }, { rail: "encrypted-card", status: cvcDone ? "active" : "pending_cvc_recollection" }] : [{ rail: "encrypted-card", status: "active", credentialFormats: ["card"] }] });
   if (/^\/api\/unstable\/agent-checkouts\/[^/]+\/messages$/.test(p)) return reply(202, { ok: true });
   return reply(404, {});
 });
 /** Refusals queued for the next order-intent calls ({ status, body }); empty means 201 (scenario j). */
 let refuseIntents = [];
+/** Scenario k: the card's CVC lapsed at Crossmint; cvcDone once Crossmint's field "stored" it. */
+let cvcLapsed = false, cvcDone = false;
 const said = [];
 shop.attach({ say: (c, t) => said.push({ c, t }) });
 const orderIntents = () => calls.filter(c => c.path === "/api/unstable/order-intents");
@@ -248,6 +255,42 @@ try {
   await shot("paid-after-retry");
   const usedJ = await http(null, `/web/approve/${tokJ}`);
   step("(j) …and now the link is used up: Already approved", /Already approved/.test(usedJ.text), `${usedJ.status}`);
+  q("UPDATE shop_runs SET stage = '' WHERE run_id = 'run_drive'").run();
+
+  // (k) the card's CVC lapsed (2026-11-08, Amazon run 650f8c4c): Face ID, then the page asks for the
+  // 3-digit code in Crossmint's field, and only then pays. Crossmint's island is stood in for at the
+  // network layer (same URL, so the page's CSP still decides whether it may load): it records what the
+  // page handed it and answers submit() with "complete", as Crossmint's own field does.
+  calls = []; cvcLapsed = true; cvcDone = false;
+  const rowK = asked("14.83");
+  q("UPDATE shop_runs SET stage = 'needs_approval' WHERE run_id = 'run_drive'").run();
+  const tokK = await linkFor(rowK);
+  await pg.route("**/web/connect/island.js", (r) => r.fulfill({ contentType: "text/javascript; charset=utf-8", body:
+    "window.ReasonCrossmint={cvcField:function(el,o){window.__cvc={apiKey:!!o.apiKey,jwt:/^[^.]+\\.[^.]+\\.[^.]+$/.test(o.jwt||''),pm:o.paymentMethodId,look:!!o.appearance};var i=document.createElement('input');i.id='stand-in-cvc';i.placeholder='CVC';el.appendChild(i);return{submit:function(){window.__cvcSubmits=(window.__cvcSubmits||0)+1;return Promise.resolve({status:'complete'})}}}};" }));
+  await pg.goto(`${BASE}/web/approve/${tokK}`, { waitUntil: "load" });
+  await pg.click("#pk-go");
+  const cvcShown = await waitStep("cvc");
+  await pg.waitForFunction(() => !!window.__cvc, null, { timeout: 5000 }).catch(() => {});
+  const handed = await pg.evaluate(() => window.__cvc ?? null);
+  const h1K = await pg.evaluate(() => document.querySelector('.pf-step[data-step="cvc"]')?.innerText ?? "");
+  step("(k) Face ID on a lapsed CVC → the page asks 'Enter your card's 3-digit code to finish'; nothing handed to the checkout, nothing counted, row asked",
+    cvcShown && /Enter your card.s 3-digit code to finish\./.test(h1K) && answers().length === 0 && orderIntents().length === 1 && status(rowK) === "asked",
+    `page=${await shown()} oi=${orderIntents().length} answers=${answers().length} ${status(rowK)}`);
+  step("(k) …Crossmint's field got the client key, a JWT and the card's id, with our look; the island loaded under the page's CSP",
+    handed?.apiKey === true && handed?.jwt === true && handed?.pm === "pm_drive_secret" && handed?.look === true, JSON.stringify(handed));
+  await shot("cvc");
+  cvcDone = true; // Crossmint stored the code the person typed
+  await pg.click("#pk-cvc-go");
+  const paidK = await waitStep("paid");
+  step("(k) Finish paying → the SAME intent handed to the checkout once, row paid, texted Paid $14.83",
+    paidK && orderIntents().length === 1 && answers().length === 1 && answers()[0].body.parts[0].response.orderIntentId === shop.paymentRow(rowK.id).order_intent_id
+      && status(rowK) === "paid" && /Paid \$14\.83 at Best Buy/.test(said.at(-1)?.t ?? ""),
+    `page=${await shown()} oi=${orderIntents().length} answers=${answers().length} ${status(rowK)} submits=${await pg.evaluate(() => window.__cvcSubmits ?? 0)}`);
+  await shot("paid-after-cvc");
+  const logK = passkey.approvalLog(OWNER).slice(-4).map(l => l.event).join(",");
+  step("(k) the log reads needs_cvc → cvc_entered → paid, with no card id or JWT", /needs_cvc.*cvc_entered,paid/.test(logK) && !/pm_drive|eyJ/.test(JSON.stringify(passkey.approvalLog(OWNER))), logK);
+  await pg.unroute("**/web/connect/island.js");
+  cvcLapsed = false; cvcDone = false;
   q("UPDATE shop_runs SET stage = '' WHERE run_id = 'run_drive'").run();
 
   // (d) decline from the page
