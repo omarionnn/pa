@@ -977,6 +977,8 @@ export async function runEventTool(name, input, ctx) {
     }
     const fields = {};
     if (typeof input.in_directory === "boolean") fields.in_directory = input.in_directory ? 1 : 0;
+    // Asking to be on it is a choice, whatever the default tick was (see list_chosen).
+    if (input.in_directory === true) fields.list_chosen = 1;
     if (input.display_name != null) {
       const n = events.cleanDisplayName(input.display_name);
       if (!n) return { ok: false, error: "That name has nothing in it to show." };

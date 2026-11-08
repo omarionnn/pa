@@ -799,6 +799,7 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
               ? [`${plural(plan.off, "guest")} joined while it was private, so they never chose it. They stay off it unless they say they want to be on it.`,
                 plan.asked ? `Reason texts ${plan.asked === plan.off ? (plan.asked === 1 ? "them" : "each of them") : `${plan.asked} of them`} once to ask, never at night.${plan.off > plan.asked ? ` ${plan.off - plan.asked} won't be texted: they muted the event or were already asked.` : ""}` : "None of them will be texted: they muted the event or were already asked."]
               : ["Nobody gets a text."]),
+            ...(events.hostWouldList(own) ? [`You go on it too, as ${events.hostWouldList(own)}. You can take yourself off on your guest list page.`] : []),
           ]
           : ["Guests stop seeing who else is going. Nobody is texted.", "Everyone's own choice is kept, so if you show it again, the people who chose to be on it are back on it."],
         extra: visible && plan.asked ? whoList({ guests: plan.asked, names: plan.names }).replace("WHO GETS IT", "WHO GETS ASKED") : "",

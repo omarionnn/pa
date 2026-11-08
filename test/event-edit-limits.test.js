@@ -376,3 +376,80 @@ test("page: only a cap that closes joining is asked about; bad input is refused;
   await settle();
   assert.equal(h.channel.sent.length, 0, "a cap never texts anyone");
 });
+
+// ---------- review fixes: nobody lands on a shown list by an old or default tick ----------
+
+test("a rejoin while private doesn't carry an old choice, and asking to be on it by text is one", async () => {
+  const h = harness();
+  const ev0 = events.create(OWNER_C, { name: "Open House", description: "x", starts_at: "2027-06-06T20:00", timezone: TZ, location: "x", password: "openhouse", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }).event;
+  const ama = db.addAttendee({ eventId: ev0.id, conversationId: C.ama, displayName: "Ama", inDirectory: true, via: "text" }).attendee;
+  assert.equal(ama.list_chosen, 1);
+  db.updateAttendeeRow(ama.id, { in_directory: 0 });
+  await tool("event_settings", { event_id: ev0.id, guest_list_visible: false }, OWNER_C, h.runtime);
+  assert.equal(db.leaveAttendee(ama.id), true);
+  const back = db.addAttendee({ eventId: ev0.id, conversationId: C.ama, displayName: "Ama", inDirectory: true, via: "text" }).attendee;
+  assert.equal(back.list_chosen, 0, "the default tick on a private rejoin isn't a choice");
+  // Esi asks, by text, to be on the (private) list: that is a choice, kept for when it's shown.
+  const esi = db.addAttendee({ eventId: ev0.id, conversationId: C.esi, displayName: "Esi", inDirectory: true, via: "text" }).attendee;
+  assert.equal(esi.list_chosen, 0);
+  const asked = await tool("event_directory", { event_id: ev0.id, in_directory: true }, C.esi, h.runtime);
+  assert.equal(asked.ok, true, JSON.stringify(asked));
+  assert.equal(row(ev0, C.esi).list_chosen, 1);
+  const shown = await withYes(runTool, "event_settings", { event_id: ev0.id, guest_list_visible: true }, { conversationId: OWNER_C, messages: [], events: h.runtime });
+  assert.equal(shown.asked, 1, "only Ama is asked");
+  assert.deepEqual(listed(db.getEventRow(ev0.id)).filter(n => n !== "Omari"), ["Esi"]);
+});
+
+test("a join-page code made while private and used after the list is shown joins off the list", async () => {
+  const h = harness();
+  const { ev } = await privateParty(h);
+  const claim = events.makeClaim({ ev, displayName: "Abena", inDirectory: true });
+  assert.equal(claim.list_shown, 0);
+  await withYes(runTool, "event_settings", { event_id: ev.id, guest_list_visible: true }, { conversationId: OWNER_C, messages: [], events: h.runtime });
+  const out = db.redeemEventClaim({ code: claim.code, channel: "fake", address: ABENA, existingConversationId: C.abena });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.attendee.in_directory, 0, "the private-page tick is not a choice");
+  assert.equal(out.attendee.list_chosen, 0);
+  assert.ok(!listed(db.getEventRow(ev.id)).includes("Abena"));
+  // A code made while the list is shown, ticked, joins on it.
+  const yawClaim = events.makeClaim({ ev: db.getEventRow(ev.id), displayName: "Yaw", inDirectory: true });
+  const y = db.redeemEventClaim({ code: yawClaim.code, channel: "fake", address: YAW, existingConversationId: C.yaw });
+  assert.equal(y.attendee.list_chosen, 1);
+  assert.ok(listed(db.getEventRow(ev.id)).includes("Yaw"));
+});
+
+test("an ask dropped because the list went private first is asked after all when it's shown again", async () => {
+  const h = harness();
+  const { ev } = await privateParty(h);
+  clock.skip(10 * HOUR); // 22:00 in New York: the asks wait
+  await withYes(runTool, "event_settings", { event_id: ev.id, guest_list_visible: true }, { conversationId: OWNER_C, messages: [], events: h.runtime });
+  await tool("event_settings", { event_id: ev.id, guest_list_visible: false }, OWNER_C, h.runtime);
+  clock.skip(12 * HOUR);
+  await events.sweepListNotes({ runtime: h.runtime });
+  await settle();
+  assert.equal(h.channel.sent.length, 0);
+  assert.equal(row(ev, C.ama).list_note, "opened_dropped");
+  const again = await withYes(runTool, "event_settings", { event_id: ev.id, guest_list_visible: true }, { conversationId: OWNER_C, messages: [], events: h.runtime });
+  assert.equal(again.asked, 2, "Ama and Esi; Kofi muted it");
+  await events.sweepListNotes({ runtime: h.runtime });
+  await settle();
+  assert.equal(sentTo(h, AMA).length, 1);
+  // A guest who unticked the box on a shown list is never asked.
+  const ev2 = events.create(OWNER_C, { name: "Open House", description: "x", starts_at: "2027-06-06T20:00", timezone: TZ, location: "x", password: "openhouse", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }).event;
+  const yaw = db.addAttendee({ eventId: ev2.id, conversationId: C.yaw, displayName: "Yaw", inDirectory: false, via: "web" }).attendee;
+  events.afterJoin({ ev: ev2, att: yaw });
+  await events.sendListNote({ runtime: h.runtime, eventId: ev2.id, conversationId: C.yaw });
+  const hid = await tool("event_settings", { event_id: ev2.id, event_named: "Open House", guest_list_visible: false }, OWNER_C, h.runtime);
+  assert.equal(hid.ok, true, JSON.stringify(hid));
+  assert.equal(row(ev2, C.yaw).list_note, "dropped", "his join note was moot (he unticked the box)");
+  const re = await tool("event_settings", { event_id: ev2.id, event_named: "Open House", guest_list_visible: true }, OWNER_C, h.runtime);
+  assert.equal(re.ok, true, JSON.stringify(re));
+  assert.equal(re.asked, 0);
+});
+
+test("page: showing the list says the organizer goes on it too", async () => {
+  const h = harness();
+  const { ev } = await privateParty(h);
+  const review = await post(h, ev, { action: "list", step: "review", visible: "1" });
+  assert.match(unesc(review.body), /You go on it too, as Omari\. You can take yourself off on your guest list page\./);
+});

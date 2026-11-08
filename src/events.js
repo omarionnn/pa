@@ -791,6 +791,16 @@ export function listOpenPlan(ev) {
 }
 
 /**
+ * The name the organizer goes on their own list under when they show it, or null: they are put on it
+ * the way creating a shown list does, unless they already took themselves off it.
+ */
+export function hostWouldList(ev) {
+  const row = db.attendeeRow(ev.id, ev.organizer_conversation_id);
+  if (row?.role !== "organizer" || row.in_directory || row.list_chosen) return null;
+  return cleanDisplayName(row.display_name) ?? cleanDisplayName(db.getAccount(ev.organizer_conversation_id)?.name);
+}
+
+/**
  * Show or hide the who's-going list after the event was made (owner request 2026-11-08).
  *
  * Hiding is quiet: nobody is texted, the who's-going page closes for guests, and every guest's own
@@ -811,11 +821,8 @@ export function setListVisible(ev, visible, { now = clock.now() } = {}) {
     let host = false;
     if (visible && !cur.guest_list_visible) {
       opened = db.openListFor(ev.id, now);
-      const row = db.attendeeRow(ev.id, ev.organizer_conversation_id);
-      if (row?.role === "organizer" && !row.in_directory && !row.list_chosen) {
-        const name = cleanDisplayName(row.display_name) ?? cleanDisplayName(db.getAccount(ev.organizer_conversation_id)?.name);
-        if (name) { db.updateAttendeeRow(row.id, { in_directory: 1, display_name: name }); host = name; }
-      }
+      const name = hostWouldList(ev);
+      if (name) { db.updateAttendeeRow(db.attendeeRow(ev.id, ev.organizer_conversation_id).id, { in_directory: 1, display_name: name }); host = name; }
     }
     db.db.exec("COMMIT");
     const after = db.getEventRow(ev.id);
@@ -887,7 +894,8 @@ export async function sendListNote({ runtime, eventId, conversationId, now = clo
   const kind = att?.list_note;
   if (!LIST_NOTE_KINDS.includes(kind)) return { state: "none" };
   const text = ev.status === "cancelled" || (ev.starts_at != null && now > ev.starts_at + LIST_NOTE.staleAfterStartMs) ? null : listNoteText(ev, att, kind);
-  if (!text) { db.settleListNote(att.id, kind, "dropped"); return { state: "dropped" }; }
+  // A moot "opened" ask is marked as such, so showing the list again asks them after all (db.unchosenListed).
+  if (!text) { db.settleListNote(att.id, kind, kind === "opened" ? "opened_dropped" : "dropped"); return { state: "dropped" }; }
   if (ev.status === "paused" || organizerStopped(ev) || listNoteQuiet(ev, now)) return { state: "later" };
   if (!db.settleListNote(att.id, kind, "sent")) return { state: "none" };
   const message = db.insertEventMessage(ev.id, "list_note", text);

@@ -12355,6 +12355,11 @@ db.exec("UPDATE event_attendees SET first_joined_at = joined_at WHERE first_join
   addColumnIfMissing("event_attendees", "list_chosen", "INTEGER NOT NULL DEFAULT 0");
   if (!had) db.exec("UPDATE event_attendees SET list_chosen = 1 WHERE in_directory = 1 AND event_id IN (SELECT id FROM events WHERE guest_list_visible = 1)");
 }
+// event_claims.list_shown  whether guests could see the list when the join-page code was made. A box
+//                          ticked on a private event's join page is the default, not a choice, so a
+//                          code made then and used after the organizer shows the list joins OFF it.
+//                          NULL for codes made before this was kept: read as the event is now.
+addColumnIfMissing("event_claims", "list_shown", "INTEGER");
 
 export function setAccountInstagram(conversationId, handle) {
   db.prepare("UPDATE accounts SET instagram = ? WHERE conversation_id = ?").run(handle ?? null, conversationId);
@@ -12372,11 +12377,15 @@ export function replaceInstagramEverywhere(conversationId, handle) {
  * owed — they left and came back before it went — is owed afresh, as things now stand.
  */
 export function oweListNote(attendeeId, kind, dueAt) {
-  return db.prepare("UPDATE event_attendees SET list_note = ?, list_note_at = ? WHERE id = ? AND (list_note IS NULL OR list_note IN ('ask', 'carried', 'shown', 'opened'))").run(kind, dueAt, Number(attendeeId)).changes === 1;
+  return db.prepare("UPDATE event_attendees SET list_note = ?, list_note_at = ? WHERE id = ? AND (list_note IS NULL OR list_note IN ('ask', 'carried', 'shown', 'opened', 'opened_dropped'))").run(kind, dueAt, Number(attendeeId)).changes === 1;
 }
-/** The guests showing the list would take off it and ask: joined, on it only by default, never chose it. */
+/**
+ * The guests showing the list would take off it and ask: joined, on it only by default, never chose
+ * it — and those taken off by an earlier show whose ask was dropped before it went (the list went
+ * private again first), so a show after that still asks them once.
+ */
 export function unchosenListed(eventId) {
-  return db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND role = 'guest' AND state = 'joined' AND in_directory = 1 AND list_chosen = 0 ORDER BY id").all(Number(eventId));
+  return db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND role = 'guest' AND state = 'joined' AND list_chosen = 0 AND (in_directory = 1 OR list_note = 'opened_dropped') ORDER BY id").all(Number(eventId));
 }
 /**
  * The organizer just showed a list these guests joined while it was private: each comes off it, and
@@ -12851,7 +12860,7 @@ export function addAttendeeTx({ eventId, conversationId, displayName, instagram 
   // On the list by choice only when guests can see the list as they join (see list_chosen).
   const chosen = inDirectory && ev.guest_list_visible ? 1 : 0;
   if (prior) {
-    db.prepare(`UPDATE event_attendees SET state = 'joined', display_name = ?, instagram = ?, in_directory = ?, list_chosen = MAX(list_chosen, ?), muted = 0, via = ?, token = ?,
+    db.prepare(`UPDATE event_attendees SET state = 'joined', display_name = ?, instagram = ?, in_directory = ?, list_chosen = ?, muted = 0, via = ?, token = ?,
       first_joined_at = COALESCE(first_joined_at, joined_at), joined_at = ?, left_at = NULL, updated_at = ? WHERE id = ?`).run(displayName, instagram, inDirectory ? 1 : 0, chosen, via, newEventToken(32), now, now, prior.id);
   } else {
     db.prepare(`INSERT INTO event_attendees (event_id, conversation_id, display_name, instagram, in_directory, list_chosen, via, token, new_account, joined_at, first_joined_at, updated_at)
@@ -12878,7 +12887,7 @@ export function leaveAttendee(id) {
     .run(clock.now(), clock.now(), Number(id)).changes === 1;
 }
 
-const ATTENDEE_FIELDS = new Set(["display_name", "instagram", "in_directory", "muted", "state", "left_at"]);
+const ATTENDEE_FIELDS = new Set(["display_name", "instagram", "in_directory", "muted", "state", "left_at", "list_chosen"]);
 export function updateAttendeeRow(id, fields) {
   const keys = Object.keys(fields).filter(k => ATTENDEE_FIELDS.has(k));
   // Putting somebody on the who's-going list is their choice when it is a change (they were off it),
@@ -13041,8 +13050,9 @@ export function insertEventClaim({ eventId, passwordVersion, displayName, instag
   const now = clock.now();
   for (let i = 0; i < 5; i++) {
     try {
-      const id = Number(db.prepare(`INSERT INTO event_claims (event_id, code, password_version, display_name, instagram, in_directory, state, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)`).run(Number(eventId), newClaimCode(), passwordVersion, displayName, instagram, inDirectory ? 1 : 0, now, now + ttlMs).lastInsertRowid);
+      const shown = getEventRow(eventId)?.guest_list_visible ? 1 : 0;
+      const id = Number(db.prepare(`INSERT INTO event_claims (event_id, code, password_version, display_name, instagram, in_directory, list_shown, state, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`).run(Number(eventId), newClaimCode(), passwordVersion, displayName, instagram, inDirectory ? 1 : 0, shown, now, now + ttlMs).lastInsertRowid);
       return db.prepare("SELECT * FROM event_claims WHERE id = ?").get(id);
     } catch (e) {
       if (!/UNIQUE/i.test(e?.message ?? "")) throw e;
@@ -13095,7 +13105,9 @@ export function redeemEventClaim({ code, channel, address, existingConversationI
       }
     }
     if (conversationId === ev.organizer_conversation_id) return fail("organizer");
-    const added = addAttendeeTx({ eventId: ev.id, conversationId, displayName: claim.display_name, instagram: claim.instagram, inDirectory: !!claim.in_directory, via: "web_text", newAccount });
+    // Ticked while the list was private, used after it was shown: that tick was never a choice.
+    const inDirectory = !!claim.in_directory && !(claim.list_shown === 0 && ev.guest_list_visible);
+    const added = addAttendeeTx({ eventId: ev.id, conversationId, displayName: claim.display_name, instagram: claim.instagram, inDirectory, via: "web_text", newAccount });
     if (!added.ok) return fail(added.reason);
     const now = clock.now();
     const won = db.prepare("UPDATE event_claims SET state = 'used', used_at = ?, used_by = ? WHERE id = ? AND state = 'open'").run(now, conversationId, claim.id);
