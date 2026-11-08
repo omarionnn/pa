@@ -2771,10 +2771,14 @@ export function forgetPerson(conversationId, about) {
   if (!rows.length && !specificSubject(key)) return { ok: false, error: `Nothing is on record about '${about}', and it is too general to clear from recall on its own — nothing was cleared. Ask which person or thing they mean.` };
   const recall = forgetFromRecall(conversationId, [about, ...rows.map(p => p.name)]);
   const recalled = recall.calls + recall.exchanges + recall.actions + recall.reminders;
+  // And the "how to treat me" rules that name them (src/dream.js), matched the same way recall is. A
+  // rule is read into every turn, so one left saying "always cc Yaw" would carry a forgotten person
+  // forward in every reply. 'deleted', as when they take one back, so no review can write it again.
+  const rulesGone = forgetRules(conversationId, [about, ...rows.map(p => p.name)]);
   if (!rows.length) {
-    if (!recalled) return { ok: false, error: `Nothing is on record about '${about}'.` };
+    if (!recalled && !rulesGone.length) return { ok: false, error: `Nothing is on record about '${about}'.` };
     return {
-      ok: true, about, forgot: 0, recall_cleared: recall,
+      ok: true, about, forgot: 0, recall_cleared: recall, rules_dropped: rulesGone.length,
       covers: "nothing was saved about them as a fact; the calls, messages, actions and reminders that mention them are out of recall. It does NOT delete their own messages to you — that is their conversation.",
       note: `Gone from recall: ${recalled} call(s), message exchange(s) and action(s) that mention ${about} will not come back in a search. Say it plainly in one line and never bring the subject up again on your own.`,
     };
@@ -2822,6 +2826,7 @@ export function forgetPerson(conversationId, about) {
     .filter(w => { const k = personKey(w.about); return k === key || hasWords(k, needle); });
   for (const w of reasons) db.prepare("DELETE FROM whys WHERE id = ?").run(w.id);
   facts.push(...reasons.map(w => w.why));
+  facts.push(...rulesGone);
 
   // And the copies of those facts sitting in the thread, where the next turn would read them. Two
   // places: the memory tools' own results, and Reason's own earlier replies — which is where a
@@ -2838,6 +2843,7 @@ export function forgetPerson(conversationId, about) {
     forgot: facts.length,
     guesses_dropped: hunches.length,
     reasons_dropped: reasons.length,
+    rules_dropped: rulesGone.length,
     old_rows_removed: old.length,
     thread_lines_cleared: scrubbed,
     recall_cleared: recall,
@@ -2933,6 +2939,25 @@ export function forgetFromRecall(conversationId, names = []) {
     Object.assign(out, { calls: calls.length, actions: actions.length, reminders: reminders.length, exchanges: Math.max(runs, said.length ? 1 : 0) });
   }
   return out;
+}
+
+/**
+ * Take back every active "how to treat me" rule of THIS conversation whose wording or why names the
+ * subject by whole words (the same matching as forgetFromRecall). Marked 'deleted', as when they take
+ * one back themselves (dropRule), so the nightly review never writes it again. Returns the rules' text.
+ */
+function forgetRules(conversationId, names = []) {
+  const needles = [...new Map(names.map(n => wordsOf(n)).filter(w => w.length).map(w => [w.join(" "), w])).values()];
+  if (!conversationId || !needles.length) return [];
+  const at = clock.now();
+  const gone = [];
+  for (const r of db.prepare("SELECT id, rule, why FROM treat_rules WHERE conversation_id = ? AND status = 'active'").all(conversationId)) {
+    const k = wordsOf(`${r.rule} \n ${r.why}`).join(" ");
+    if (!needles.some(n => hasWords(k, n))) continue;
+    db.prepare("UPDATE treat_rules SET status = 'deleted', retired_at = ? WHERE id = ? AND conversation_id = ?").run(at, r.id, conversationId);
+    gone.push(r.rule);
+  }
+  return gone;
 }
 
 /** Do the words of `needle` appear as a run inside the words of `key`? */
@@ -13579,12 +13604,28 @@ export function hasEventsSince(conversationId, afterId = 0) {
   return !!db.prepare("SELECT 1 FROM event_log WHERE conversation_id = ? AND id > ? AND role = 'user' LIMIT 1").get(conversationId, Number(afterId) || 0);
 }
 
-/** Event rows by id, this conversation only: a fact's source messages, resolved. */
+/**
+ * Not a line they asked Reason to forget (forgetFromRecall), as SQL on an event_log alias. The same
+ * tombstone recall reads (src/recallindex.js); the nightly review reads through it too.
+ */
+export const eventNotForgotten = (alias) => `NOT EXISTS (SELECT 1 FROM recall_forgotten f WHERE f.conversation_id = ${alias}.conversation_id AND f.source_table = 'event_log' AND f.row_id = ${alias}.id)`;
+
+/** Event rows by id, this conversation only: a fact's source messages, resolved. Never a forgotten line. */
 export function eventsByIds(conversationId, ids) {
   const want = [...new Set((ids ?? []).map(Number).filter(n => Number.isInteger(n) && n > 0))].slice(0, 400);
   if (!want.length) return [];
-  return db.prepare(`SELECT id, role, content, at FROM event_log WHERE conversation_id = ? AND id IN (${want.map(() => "?").join(",")})`)
+  return db.prepare(`SELECT e.id, e.role, e.content, e.at FROM event_log e WHERE e.conversation_id = ? AND e.id IN (${want.map(() => "?").join(",")}) AND ${eventNotForgotten("e")}`)
     .all(conversationId, ...want);
+}
+
+/**
+ * Did a rule they took back (dropRule, a forget, a reword on the Web page) come from this message? A
+ * review must not re-learn it from the same words, reworded or not.
+ */
+export function ruleTakenBackFrom(conversationId, messageId) {
+  const id = Number(messageId);
+  if (!Number.isInteger(id) || id <= 0) return false;
+  return !!db.prepare("SELECT 1 FROM treat_rules WHERE conversation_id = ? AND source_message_id = ? AND status = 'deleted' LIMIT 1").get(conversationId, id);
 }
 
 /**
