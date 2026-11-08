@@ -94,7 +94,7 @@ test("a refused send, then nothing said: the code says it'll text them to confir
   assert.match(voice.CHECK_LATER_LINE, /text you to confirm/);
   assert.deepEqual(ran, []);
   assert.ok(lines.some(l => l.call_tool_needs_verification === "message_send"));
-  assert.match(db.getCall(C, row.id).verify_deferred, /^message_send .*running late/);
+  assert.equal(db.getCall(C, row.id).verify_deferred, `message send to +13105550000 (caller said: "running late")`);
 });
 
 test("no tools and no words after the refusal, or out of rounds: still the text-back line", async () => {
@@ -119,18 +119,47 @@ test("the model's own text-back is said, with no code line added; verify_caller'
   ));
   const said = (await drain(out.stream)).trim();
   assert.equal(said, "I'll text you to confirm that as soon as we hang up.");
-  assert.equal(db.getCall(C, row.id).verify_deferred, "text Ama running late");
+  assert.equal(db.getCall(C, row.id).verify_deferred, `message send to +13105550000 (caller said: "running late"); text Ama running late`);
 });
 
-test("end_call after a refusal is left to the platform; a verified or placed call is never refused", async () => {
+test("end_call after a refusal nobody heard: the text-back goes in front of the goodbye", async () => {
   const out = await turn(inboundCall(), rounds([SEND], [{ tool: "end_call", input: { message: "Bye." } }]));
-  assert.equal((await drain(out.stream)).trim(), "");
+  const raw = [];
+  for await (const x of out.stream) raw.push(x);
+  const call = raw.map(x => x.startsWith("data: ") && !x.includes("[DONE]") ? JSON.parse(x.slice(6)) : null).find(j => j?.choices?.[0]?.delta?.tool_calls);
+  assert.equal(JSON.parse(call.choices[0].delta.tool_calls[0].function.arguments).message, `${voice.CHECK_LATER_LINE} Bye.`);
+});
+
+test("a verified call, a call Reason placed to him, and a call to a business are never refused", async () => {
   const ran = [];
   voice.contextDeps.runTool = async (name) => { ran.push(name); return { ok: true }; };
-  const ok = db.updateCall(C, inboundCall().id, { verified_at: Date.now(), verified_how: "passphrase" });
-  const out2 = await turn(ok, rounds([SEND], ["Sent."]));
-  assert.doesNotMatch(await drain(out2.stream), /confirm/);
-  assert.deepEqual(ran, ["message_send"]);
+  const verified = db.updateCall(C, inboundCall().id, { verified_at: Date.now(), verified_how: "passphrase" });
+  const placed = db.createCall(C, { provider: "gptlive", toNumber: "+12025551234", isOwner: true, goal: "asked", facts: [], announcement: "Hey Omari.", state: "in_progress" });
+  for (const row of [verified, placed]) {
+    const out = await turn(row, rounds([SEND], ["Sent."]));
+    assert.doesNotMatch(await drain(out.stream), /confirm/);
+  }
+  assert.deepEqual(ran, ["message_send", "message_send"]);
+});
+
+test("two different refused things on one call are both queued, in order; the line is said once", async () => {
+  const row = inboundCall();
+  const BUY = { tool: "shop_pay", start: true, input: { item: "phone charger" } };
+  const out = await turn(row, rounds([SEND, BUY], [{ tool: "skip_turn" }]));
+  assert.equal((await drain(out.stream)).trim(), voice.CHECK_LATER_LINE);
+  const out2 = await turn(row, rounds([SEND], [{ tool: "skip_turn" }]));
+  await drain(out2.stream);
+  const q = db.getCall(C, row.id).verify_deferred.split("; ");
+  assert.equal(q[0], `message send to +13105550000 (caller said: "running late")`);
+  assert.ok(q.length >= 1 && new Set(q).size === q.length, "no duplicates");
+});
+
+test("a filler after the refusal does not stand in for it", async () => {
+  voice.contextDeps.runTool = async () => ({ ok: true, results: [] });
+  const out = await turn(inboundCall(), rounds([SEND], [{ tool: "web_search", start: true, input: { query: "x" } }], [{ tool: "skip_turn" }]), { fillerAfterMs: 0 });
+  const said = (await drain(out.stream)).trim();
+  assert.ok(said.endsWith(voice.CHECK_LATER_LINE), said);
+  assert.equal(said.split(voice.CHECK_LATER_LINE).length, 2, "once");
 });
 
 test("a passphrase set with tries left: the fallback line asks for it, nothing is queued", async () => {
@@ -140,5 +169,10 @@ test("a passphrase set with tries left: the fallback line asks for it, nothing i
     const out = await turn(row, rounds([SEND], [{ tool: "skip_turn" }]));
     assert.equal((await drain(out.stream)).trim(), voice.CHECK_NOT_HERE_LINE);
     assert.ok(!db.getCall(C, row.id).verify_deferred);
+    // Tries spent: back to the texted check, queued and said.
+    const spent = db.updateCall(C, inboundCall().id, { verify_tries: 2 });
+    const out2 = await turn(spent, rounds([SEND], [{ tool: "skip_turn" }]));
+    assert.equal((await drain(out2.stream)).trim(), voice.CHECK_LATER_LINE);
+    assert.ok(db.getCall(C, spent.id).verify_deferred);
   } finally { config.callPassphrase = ""; }
 });

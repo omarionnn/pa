@@ -2071,6 +2071,14 @@ export async function* voiceTurn({
         hold.noteMachineLine(call, { what: system.name === "play_keypad_touch_tone" ? "phone_menu" : "recorded_message", log });
       }
       if (system && system.name !== "end_call") yield* checkRefusalOwed();
+      // Hanging up on a refusal nobody has heard: the platform says end_call's message, so the text-back
+      // goes in front of it rather than being lost.
+      else if (system?.name === "end_call" && checkRefusalIsOwed()) {
+        const line = turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE;
+        const msg = String(system.input?.message ?? "").trim();
+        system = { ...system, input: { ...(system.input ?? {}), message: msg ? `${line} ${msg}` : line } };
+        log({ voice_check_later_said: call.id, round, on: "end_call" });
+      }
       if (system) {
         yield chunk({
           tool_calls: [{
@@ -2123,6 +2131,11 @@ export async function* voiceTurn({
           try { out = await runCallTool(t.name, t.input ?? {}, { call, context, log, turnState }); }
           catch (e) { out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
           if (t.name === "verify_caller" && out?.deferred) turnState.checkQueued = true;
+          // make_a_call_for_me refused for the check (./fromcall.js go): owed out loud like any other.
+          if (out?.blocked === "needs_verification") {
+            turnState.checkRefused ??= said.length;
+            if (out.queued) turnState.checkQueued = true;
+          }
           // Words have already left this turn, and a refusal that says "ask them for the date" does not
           // know that. In the 2026-10-07 rehearsal that produced a call which asked the same question
           // twice in one breath, every turn: the model asked about the date, proposed the booking, was
@@ -2222,18 +2235,9 @@ export async function* voiceTurn({
         // here. `confirm_record` is on the list because it is how a spoken yes becomes a granted
         // confirmation — exactly the thing that must not be grantable by whoever is on the line.
         if (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf: (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false })) {
-          out = verify.gateRefusal({ call, name: t.name });
-          turnState.checkRefused = said.length;
-          // With no passphrase to ask for, the refused thing is queued for after the call here, by code
-          // (the after-call turn asks for its yes in their own thread, src/calls/postcall.js), so "I'll
-          // text you to confirm" is true even when the model never called verify_caller.
-          if (verify.deferredOnly(call)) {
-            if (!String(call.verify_deferred ?? "").trim()) {
-              const what = `${t.name} ${JSON.stringify(t.input ?? {})}`.slice(0, 300);
-              try { Object.assign(call, db.updateCall(call.conversation_id, call.id, { verify_deferred: what }) ?? {}); } catch { /* the line still says it */ }
-            }
-            turnState.checkQueued = true;
-          }
+          out = verify.gateRefusal({ call, name: t.name, input: t.input, log });
+          turnState.checkRefused ??= said.length;
+          if (out.queued) turnState.checkQueued = true;
           log({ call_tool_needs_verification: t.name, call_id: call.id });
           results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
           continue;
