@@ -433,7 +433,7 @@ own pick by text that day; "I'm —" over his "how are | you" at 0:07; first ans
   checking." only with a lookup). Line calls unchanged. Log `gptlive_hold_line {kind, ms, tool, line}`.
 - **Short answers:** `ownerCallFrame` says one or two short sentences, then offer more. Floor in code
   (`shortForPhone`): a spoken answer over `LONG_REPLY_CHARS` (180, ~12 s at ~15 chars/s) on their own call is
-  said as whole sentences up to `SHORT_REPLY_CHARS` (130) + `TEXT_REST_OFFER`; one ending on a question keeps
+  said as whole sentences up to `SHORT_REPLY_CHARS` (150) + `TEXT_REST_OFFER`; one ending on a question keeps
   that question word for word and adds no offer; never cut when `sayWhole` (confirm/commit/propose/readback/
   quote/send tools, or end_call). The whole answer rides as `textOfferNote` on the voice's own words for the
   next 2 hand-offs (never on the caller's — the harm screen reads those); Reason texts it with

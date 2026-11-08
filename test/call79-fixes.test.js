@@ -261,6 +261,8 @@ test("short answers: an answer that ends on a question keeps that question, word
   assert.ok(cut.say.length < CALL79_TIPS.length - 100);
   const ask = "Bo Peep has a table at seven for two, at the bar side, and they hold it fifteen minutes past the time, then give it away. You said seven or later, so seven fits. There's a forty dollar deposit, which comes off the bill, and it's refundable up to a day before. Want me to book it?";
   assert.ok(gl.shortForPhone(ask).say.endsWith("Want me to book it?"), "a yes Reason needs is never swapped for 'want me to text you the rest?'");
+  const openers = gl.shortForPhone("Got it, seven or later. For openers, ask what they are drinking, since you are picking your own anyway. Or on sing-along night, ask if they actually know this one or are faking it too. If a song starts, just join in and say this one is a banger. Want me to text you a few more?");
+  assert.match(openers.say, /For openers, ask what they are drinking/, "the drive's case: the content is said, not only the question");
   const longQ = gl.shortForPhone(`${"Grab a seat at the bar rather than a table, since that is where the talking happens on a sing-along night. "}${"Getting there right around seven helps you land a stool. ".repeat(3)}Do you want me to text you a few opener lines you could try with the people sitting next to you at the bar?`);
   assert.ok(longQ.say.length <= gl.LONG_REPLY_CHARS, "an answer and its own long question are still kept short");
   assert.ok(longQ.say.endsWith(gl.TEXT_REST_OFFER) && longQ.offered);

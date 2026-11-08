@@ -558,11 +558,11 @@ export function holdLineFor({ kind = "first", tool = false, n = 0 } = {}) {
 // whole answer is kept for Reason's next turn, which reads their reply to the offer and, if they want
 // it, texts it with its own send tool (`textOfferNote`) — so a "sent" is only ever said behind a real send.
 // Measured on the 2026-11-08 drives: the voice speaks ~15 characters a second, so 220 characters is
-// about 15 s of talking. 180 (~12 s) is the most said at once; 130 (~9 s, two sentences) is what is kept.
+// about 15 s of talking. 180 (~12 s) is the most said at once; 150 (~10 s, two sentences) is what is kept.
 /** Spoken answers longer than this are cut. */
 export const LONG_REPLY_CHARS = 180;
 /** What is kept of a long answer: whole sentences up to about this. */
-export const SHORT_REPLY_CHARS = 130;
+export const SHORT_REPLY_CHARS = 150;
 /** The offer said after a cut answer. */
 export const TEXT_REST_OFFER = "There's a bit more — want me to text you the rest?";
 /** How many hand-offs after the offer the whole answer is still kept for Reason. */
@@ -590,7 +590,8 @@ export function shortForPhone(text, { max = LONG_REPLY_CHARS, keep = SHORT_REPLY
   const sentences = sentencesOf(full);
   const lastQ = sentences.length > 1 && /\?["”’)]*$/.test(sentences.at(-1)) ? sentences.at(-1) : "";
   const body = lastQ ? sentences.slice(0, -1) : sentences;
-  const room = lastQ ? Math.max(60, keep - lastQ.length) : keep;
+  // Room for real content before its question: two sentences of the answer, never only the question.
+  const room = lastQ ? Math.max(110, keep - lastQ.length) : keep;
   let say = "";
   for (const s of body) {
     if (say && `${say} ${s}`.length > room) break;
