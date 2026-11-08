@@ -20,8 +20,8 @@ process.env.REASON_TOKEN_KEY = "45".repeat(32);
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 const verify = await import("../src/calls/verify.js");
-const { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS, EVENT_RIDE_GUEST_TOOLS } = await import("../src/eventtools.js");
-const { ALBUM_ORGANIZER_TOOLS } = await import("../src/albumtools.js");
+const { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS, EVENT_RIDE_GUEST_TOOLS, EVENT_GUEST_TOOLS } = await import("../src/eventtools.js");
+const { ALBUM_ORGANIZER_TOOLS, ALBUM_MEMBER_TOOLS } = await import("../src/albumtools.js");
 
 test("every organizer tool that texts guests needs the second check on an unverified call", () => {
   for (const name of ["event_cancel", "event_update", "event_release", "event_guest_remove", "event_blast", "event_schedule"]) {
@@ -65,8 +65,35 @@ test("reading their own event on a call stays unchecked", () => {
   assert.equal(verify.isConsequential("event_ride", { event_id: 1, action: "neither" }), false);
   assert.equal(verify.isConsequential("album_manage", { event_id: 1, action: "status" }), false);
   assert.equal(verify.isConsequential("album_info", { event_id: 1 }), false);
-  // Guest-side tools are about the caller themself and are unchanged.
-  for (const name of ["event_list", "event_info", "event_join", "event_mute"]) {
-    assert.equal(verify.isConsequential(name, { event_id: 1 }), false, name);
+  // A guest reading their own events is ordinary conversation.
+  for (const name of ["event_list", "event_info", "event_lookup"]) {
+    assert.equal(verify.isConsequential(name, { event_id: 1, link: "x" }), false, name);
+  }
+});
+
+// R2-G leftover: a guest's own writes. A voice spoofing someone's number could join them to an event
+// (Reason texts the welcome, they show on the guest list), rename them or set an Instagram on a
+// who's-going list other guests read, mute an event's updates to them, sign their browsers out, or
+// put photos into an event album shared as them. Same check as an organizer write.
+test("a guest's own writes need the second check on an unverified call", () => {
+  assert.equal(verify.isConsequential("event_join", { name: "Game night", password: "x" }), true, "event_join");
+  assert.equal(verify.isConsequential("event_directory", { event_id: 1, display_name: "Someone Else" }), true, "event_directory name");
+  assert.equal(verify.isConsequential("event_directory", { event_id: 1, instagram: "@x" }), true, "event_directory instagram");
+  assert.equal(verify.isConsequential("event_directory", { event_id: 1, in_directory: false }), true, "event_directory off the list");
+  assert.equal(verify.isConsequential("event_instagram", { instagram: "@x" }), true, "event_instagram");
+  assert.equal(verify.isConsequential("event_instagram", { remove: true }), true, "event_instagram remove");
+  assert.equal(verify.isConsequential("event_mute", { event_id: 1, muted: true }), true, "event_mute");
+  assert.equal(verify.isConsequential("browsers_sign_out", {}), true, "browsers_sign_out");
+  assert.equal(verify.isConsequential("album_add", { event_id: 1, photo_ids: [1] }), true, "album_add");
+  assert.equal(verify.isConsequential("album_add", { event_id: 1, photo_ids: [1], agreed: true }), true, "album_add agreed");
+});
+
+test("every event and album tool is covered by default: only the named reads are not", () => {
+  // Derived from the tool lists, so a NEW guest or album tool is gated on a call until somebody
+  // names it as a read. event_create is the one write left out: a new event reaches nobody.
+  const reads = new Set(["event_guests", "event_list", "event_lookup", "event_info", "album_info"]);
+  for (const name of [...EVENT_GUEST_TOOLS, ...ALBUM_MEMBER_TOOLS, ...ALBUM_ORGANIZER_TOOLS, ...EVENT_ORGANIZER_TOOLS]) {
+    if (reads.has(name)) continue;
+    assert.equal(verify.isConsequential(name), true, `${name} with no input must need the check`);
   }
 });

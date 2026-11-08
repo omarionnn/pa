@@ -4,9 +4,10 @@
 //   eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')"
 //   REASON_EVENTS=on node --env-file-if-exists=.env .agents/skills/verify-reason/bin/call-event-gate-drive.mjs
 //
-// A scripted model (no model key spent) asks for event_cancel on an unverified incoming call: the
-// tool must be refused with `needs_verification` and the event stays live. The same ask on the same
-// call once it is verified runs the real tool (the verified path is unchanged). Nothing can reach a
+// A scripted model (no model key spent) asks for event_cancel, then event_directory (a new name on
+// their who's-going entry, the R2-G leftover), on an unverified incoming call: each must be refused
+// with `needs_verification`, the event stays live and the name is unchanged. The same asks on the same
+// call once it is verified run the real tools (the verified path is unchanged). Nothing can reach a
 // phone: the cage has no texting channel and no phone line.
 if (!process.env.REASON_DB_PATH?.includes("rv-") && !process.env.REASON_DB_PATH?.includes("reason-verify")) {
   console.error("refusing: REASON_DB_PATH is not a cage database"); process.exit(2);
@@ -30,24 +31,35 @@ const call = db.createCall(C, {
   provider: "gptlive", toNumber: owner, isOwner: true, goal: "caller-ID owner call", facts: [],
   direction: "in", externalId: `gate-drive-${ev.id}`, state: "in_progress",
 });
-const turn = async (c) => {
+const turn = async (c, name, input) => {
   let i = 0;
   const generate = async function* () {
-    if (i++ === 0) yield { type: "tool_use", name: "event_cancel", id: `tu_${i}`, input: { event_id: ev.id, message: "party's off" } };
+    if (i++ === 0) yield { type: "tool_use", name, id: `tu_${i}`, input };
     else yield { type: "text", text: "Okay." };
   };
   const logs = [];
   const out = await voice.llmRequest({
-    rawBody: JSON.stringify({ model: "reason", stream: true, messages: [{ role: "user", content: "cancel my party" }],
+    rawBody: JSON.stringify({ model: "reason", stream: true, messages: [{ role: "user", content: `please do ${name}` }],
       extra_body: { [EXTRA_BODY_KEYS.callId]: c.id, [EXTRA_BODY_KEYS.conversationId]: C } }),
     headers: {}, generate, log: (l) => logs.push(l),
   });
   for await (const _ of out.stream) void _;
   return logs;
 };
-const before = await turn(call);
-const afterUnverified = db.getEventRow(ev.id).status;
-console.log(JSON.stringify({ unverified: { gate_log: before.find(l => l.call_tool_needs_verification) ?? null, event_status: afterUnverified } }));
+const listedName = () => db.attendeeRow(ev.id, C)?.display_name ?? null; // their own entry
+const cancel = [call, "event_cancel", { event_id: ev.id, message: "party's off" }];
+const rename = ["event_directory", { event_id: ev.id, display_name: "Spoofed Name" }];
+const nameBefore = listedName();
+const gate = (logs) => logs.find(l => l.call_tool_needs_verification) ?? null;
+const before = await turn(...cancel);
+const renameLogs = await turn(call, ...rename);
+console.log(JSON.stringify({ unverified: {
+  cancel_gate_log: gate(before), event_status: db.getEventRow(ev.id).status,
+  directory_gate_log: gate(renameLogs), listed_name_before: nameBefore, listed_name_after: listedName(),
+} }));
 db.updateCall(C, call.id, { verified_at: clock.now(), verified_how: "passphrase" });
-await turn(db.getCall(C, call.id));
-console.log(JSON.stringify({ verified: { event_status: db.getEventRow(ev.id).status } }));
+const verified = db.getCall(C, call.id);
+await turn(verified, ...rename);
+const nameVerified = listedName();
+await turn(verified, "event_cancel", cancel[2]);
+console.log(JSON.stringify({ verified: { listed_name: nameVerified, event_status: db.getEventRow(ev.id).status } }));

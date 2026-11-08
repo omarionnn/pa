@@ -32,8 +32,8 @@
 import { timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
 import { GATED_ACTIONS } from "../permissions.js";
-import { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS, EVENT_RIDE_GUEST_TOOLS } from "../eventtools.js";
-import { ALBUM_ORGANIZER_TOOLS } from "../albumtools.js";
+import { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS, EVENT_RIDE_GUEST_TOOLS, EVENT_GUEST_TOOLS } from "../eventtools.js";
+import { ALBUM_ORGANIZER_TOOLS, ALBUM_MEMBER_TOOLS } from "../albumtools.js";
 import { config, clock } from "../config.js";
 
 /** How many wrong passphrases before the call is pushed to the texted check. */
@@ -45,7 +45,7 @@ export function isConsequential(name, input = null, { toSelf = () => false } = {
   // options" on his own call was held for a check that texted the same phone). Whoever is holding
   // this phone, the words land with the owner, so there is nothing for a voice to authorize.
   if (SELF_SENDS.has(name) && input && toSelf(input.to)) return false;
-  return GATED_ACTIONS.has(name) || name === "confirm_record" || CHANGES_THE_GATE.has(name) || organizerWrite(name, input);
+  return GATED_ACTIONS.has(name) || name === "confirm_record" || CHANGES_THE_GATE.has(name) || eventWrite(name, input);
 }
 
 /**
@@ -54,28 +54,39 @@ export function isConsequential(name, input = null, { toSelf = () => false } = {
  * event_schedule are in GATED_ACTIONS (they need a yes to exact words in a text too), so the others
  * slipped past this check and a voice spoofing an organizer's number could cancel the event and text
  * every guest (security audit run 2, lead R2-G). A guest's ride tool is on the same footing: it
- * passes free text to their ride partner, swaps phone numbers, and tells the organizer. Derived from
- * the tool lists themselves, so a new organizer or ride tool needs the check on a call until it is
- * named here as a read (or as touching nobody else).
+ * passes free text to their ride partner, swaps phone numbers, and tells the organizer.
+ *
+ * A guest's own writes too (R2-G leftover): joining an event (Reason texts the welcome and they show
+ * on its guest list), their name or Instagram on a who's-going list other guests read, muting an
+ * event's updates, signing their browsers out, and photos put into an album as "Shared by" them. A
+ * voice spoofing their number must not do any of that as them.
+ *
+ * Derived from the tool lists themselves, so a new organizer, guest, ride or album tool needs the
+ * check on a call until it is named here as a read. event_create is the one write not on it: a new
+ * event reaches nobody until somebody joins it, and everything an organizer then does is covered.
  */
-const ORGANIZER_READS = {
+const EVENT_READS = {
   event_guests: () => true,
+  event_list: () => true,
+  event_lookup: () => true,
+  event_info: () => true,
+  album_info: () => true,
   event_scheduled: (input) => input?.action === "list",
   event_cover: (input) => input?.action === "status",
   event_rides_setting: (input) => input != null && input.enabled === undefined,
   event_ride: (input) => input?.action === "neither",
   album_manage: (input) => input?.action === "status",
 };
-// event_leave too: it ends their ride offers, which texts the ride partner and sends new matches.
+// event_leave: it ends their ride offers, which texts the ride partner and sends new matches.
 // The album's organizer tool releases it (texting every checked-in guest) and checks guests in or out;
 // album_remove lets an organizer delete any guest's photo, which cannot be undone.
 const REACHES_GUESTS = new Set([
-  ...EVENT_ORGANIZER_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS, "event_leave",
-  ...ALBUM_ORGANIZER_TOOLS, "album_remove",
+  ...EVENT_ORGANIZER_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS,
+  ...EVENT_GUEST_TOOLS, ...ALBUM_ORGANIZER_TOOLS, ...ALBUM_MEMBER_TOOLS,
 ]);
-function organizerWrite(name, input) {
+function eventWrite(name, input) {
   if (!REACHES_GUESTS.has(name)) return false;
-  return !(ORGANIZER_READS[name]?.(input) ?? false);
+  return !(EVENT_READS[name]?.(input) ?? false);
 }
 
 /**
