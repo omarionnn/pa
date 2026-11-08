@@ -117,5 +117,5 @@ the only one where the thing on the phone could hold Reason's own memory, tools 
 Its pause/resume recording is not a reason to pick it — Reason records end to end.
 
 Still only Omari can do the next step: open an account and put a key in `.env`
-(`REASON_CALL_PROVIDER=bland`, `BLAND_API_KEY=…`). Until then `capabilities` says phone calls are
+(`REASON_CALL_PROVIDER=bland`, `BLAND_API_KEY` in `.env`). Until then `capabilities` says phone calls are
 not connected, and Reason tells people so.

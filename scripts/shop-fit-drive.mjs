@@ -1,5 +1,5 @@
 // Real-model check of store_checkout's variant read (src/shoptools.js checkFit) on the subscription CLI:
-//   CLAUDE_CODE_OAUTH_TOKEN=… REASON_BACKEND=claude-cli node scripts/shop-fit-drive.mjs "$PWD" [rounds] [parallel]
+//   REASON_BACKEND=claude-cli node --env-file=<file with CLAUDE_CODE_OAUTH_TOKEN, see verify-reason "Keys for a drive"> scripts/shop-fit-drive.mjs "$PWD" [rounds] [parallel]
 // The CLI child runs in a scratch REASON_CLI_HOME of its own (src/backends/cli.js sealedCliHome), never the
 // shared ~/.reason-cli: a CLAUDE_CONFIG_DIR set outside is replaced by the sealed one. A failed read prints why.
 // 2026-11-07: 6/6 (haiku). After the retry (fit-errors): see the PR.

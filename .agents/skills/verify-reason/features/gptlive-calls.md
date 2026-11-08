@@ -72,9 +72,10 @@ upgrade route, throwaway db, no phone; ~2¢ of OpenAI voice) — on Hetzner from
 the `reason` user, keys read from `/opt/reason/.env`:
 
 ```bash
+E=$(sudo -u reason .agents/skills/verify-reason/bin/drive-env.sh OPENAI_API_KEY CLAUDE_CODE_OAUTH_TOKEN)   # keys never on argv
 sudo -u reason env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/reason USER=reason LOGNAME=reason \
-  OPENAI_API_KEY=… CLAUDE_CODE_OAUTH_TOKEN=… REASON_DB_PATH=$(sudo -u reason mktemp -d)/gl.db \
-  node .agents/skills/verify-reason/bin/gptlive-drive.mjs q.ulaw 30 [--expect identity] [--cold] [--ring 5000]
+  REASON_DB_PATH=$(sudo -u reason mktemp -d)/gl.db node --env-file="$E" \
+  .agents/skills/verify-reason/bin/gptlive-drive.mjs q.ulaw 30 [--expect identity] [--cold] [--ring 5000]; rm -f "$E"
 ```
 
 `q.ulaw`: `say -o q.aiff "Hi, can you check what is on my calendar tomorrow morning?" && ffmpeg -i q.aiff -ar 8000 -ac 1 -f mulaw q.ulaw`.

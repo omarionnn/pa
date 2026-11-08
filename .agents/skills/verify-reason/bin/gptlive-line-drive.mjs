@@ -10,8 +10,8 @@
 //
 // On the Hetzner box, as the reason user, from a copy of the code (the clips are made on a Mac, below):
 //
-//   REASON_DB_PATH=$(mktemp -d)/gl.db OPENAI_API_KEY=… \
-//     node .agents/skills/verify-reason/bin/gptlive-line-drive.mjs <clips dir> --scene ivr|hold|voicemail|human
+//   E=$(.agents/skills/verify-reason/bin/drive-env.sh OPENAI_API_KEY)   # keys never on argv
+//   REASON_DB_PATH=$(mktemp -d)/gl.db node --env-file="$E" .agents/skills/verify-reason/bin/gptlive-line-drive.mjs <clips dir> --scene ivr|hold|voicemail|human
 //
 // Clips: raw 8 kHz mono μ-law, from `say` (Mac): ivr-menu, ivr-connecting, human-after-hold,
 // receptionist, voicemail-greeting, hold-recording (see make-line-clips in the feature doc). Tones
@@ -54,7 +54,7 @@ const scene = flag("--scene") > 0 ? process.argv[flag("--scene") + 1] : "";
 const clips = process.argv[2];
 const BIZ = ["greet", "hello", "noisy", "quiet", "interrupt", "robot"];
 if (!process.env.OPENAI_API_KEY || !clips || !["ivr", "hold", "voicemail", "human", ...BIZ].includes(scene)) {
-  console.error(`usage: OPENAI_API_KEY=… REASON_DB_PATH=… gptlive-line-drive.mjs <clips dir> --scene ivr|hold|voicemail|human|${BIZ.join("|")}`);
+  console.error(`usage: REASON_DB_PATH=… node --env-file=<bin/drive-env.sh file> gptlive-line-drive.mjs <clips dir> --scene ivr|hold|voicemail|human|${BIZ.join("|")}`);
   process.exit(2);
 }
 Object.assign(process.env, {

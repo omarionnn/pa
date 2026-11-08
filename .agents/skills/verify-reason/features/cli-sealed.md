@@ -57,7 +57,7 @@ workspace file. `systemFor` for a non-owner carries no operator name or email.
 
    The dummy login has to be `CLAUDE_CODE_OAUTH_TOKEN`: since #346 the child's env is an allowlist
    (`CHILD_ENV_KEEP` in `src/backends/cli.js`), and `ANTHROPIC_AUTH_TOKEN` is not on it. With the old
-   `ANTHROPIC_AUTH_TOKEN=…` the sealed run gives `run_ok: false`, `requests: 0`, "no request reached
+   `ANTHROPIC_AUTH_TOKEN` dummy the sealed run gives `run_ok: false`, `requests: 0`, "no request reached
    the stand-in" (2026-11-07 at `8a1fe18`); with `CLAUDE_CODE_OAUTH_TOKEN` it is `run_ok: true`,
    1 request, every field false. #346 also gives a tool turn `--tools ToolSearch` only and makes the
    tool bridge answer only this turn's Bearer secret (`src/backends/mcp-http.js`);

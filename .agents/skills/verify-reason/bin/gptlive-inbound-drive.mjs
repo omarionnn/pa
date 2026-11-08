@@ -4,8 +4,8 @@
 // upgrade route, a REAL GPT-Live session (bills the voice layer, ~2¢), and Reason's REAL turn on claude-cli
 // (the subscription, never the API). Throwaway database; nothing rings and nothing is texted.
 //
-//   REASON_DB_PATH=$(mktemp -d)/in.db OPENAI_API_KEY=… CLAUDE_CODE_OAUTH_TOKEN=… \
-//     node .agents/skills/verify-reason/bin/gptlive-inbound-drive.mjs --who user|stranger|blocked [q.ulaw] [seconds] [--quiet s] [--then b.ulaw --then-at s]
+//   E=$(.agents/skills/verify-reason/bin/drive-env.sh OPENAI_API_KEY CLAUDE_CODE_OAUTH_TOKEN)   # keys never on argv
+//   REASON_DB_PATH=$(mktemp -d)/in.db node --env-file="$E" .agents/skills/verify-reason/bin/gptlive-inbound-drive.mjs --who user|stranger|blocked [q.ulaw] [seconds] [--quiet s] [--then b.ulaw --then-at s]
 //
 // Seeds Omari (operator; his thread carries a locker code, his profile a commute) and Ama (a user, peanut
 // allergy). --who user rings from Ama's number: passes when a row is made on HER conversation, Reason
@@ -28,7 +28,7 @@ const arg = (k, d = null) => (process.argv.indexOf(k) > 0 ? process.argv[process
 const who = arg("--who", "user");
 const positional = process.argv.slice(2).filter((a, i, all) => !a.startsWith("--") && !all[i - 1]?.startsWith("--"));
 if (!process.env.OPENAI_API_KEY || (who !== "blocked" && !positional[0])) {
-  console.error("usage: OPENAI_API_KEY=… REASON_DB_PATH=… gptlive-inbound-drive.mjs --who user|stranger|blocked q.ulaw [seconds]");
+  console.error("usage: REASON_DB_PATH=… node --env-file=<bin/drive-env.sh file> gptlive-inbound-drive.mjs --who user|stranger|blocked q.ulaw [seconds]");
   process.exit(2);
 }
 Object.assign(process.env, {
