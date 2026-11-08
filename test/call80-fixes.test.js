@@ -616,7 +616,7 @@ test("dead air: a lookup that starts after 1.5 s gets its line at its start — 
   assert.equal(s.lines.filter(l => l.gptlive_hold_line && l.kind === "first").length, 1, "never twice");
 });
 
-test("dead air: a send running gets 'one sec', never 'check'; a turn with no tool gets no first line at all", async () => {
+test("dead air: a send running says it is sending, never 'check'; a turn with no tool gets no first line at all", async () => {
   let hooks;
   const s = startCall({ brain: (m, h) => new Promise(() => { hooks = h; }) });
   s.live.emit({ type: "session.delegation.created", delegation: { id: "d2" } });
@@ -624,8 +624,8 @@ test("dead air: a send running gets 'one sec', never 'check'; a turn with no too
   hooks.onTool("message_send", "start");
   await s.timers.advance(gl.HOLD_LINE_AFTER_MS);
   const first = s.lines.find(l => l.gptlive_hold_line);
-  assert.ok(first && gl.QUICK_HOLD_LINES.includes(first.line), JSON.stringify(first));
-  const t = startCall({ brain: (m, h) => new Promise(() => { h.onContent; }) });
+  assert.ok(first && gl.SEND_HOLD_LINES.includes(first.line), JSON.stringify(first));
+  const t = startCall({ brain: () => new Promise(() => {}) });
   t.live.emit({ type: "session.delegation.created", delegation: { id: "d3" } });
   await t.timers.advance(voice.LATE_HOLDING_MS - 100);
   assert.ok(!t.lines.some(l => l.gptlive_hold_line), "no tool, no words yet: silence is the model writing, not a stall to cover");

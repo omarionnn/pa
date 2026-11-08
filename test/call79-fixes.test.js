@@ -169,13 +169,13 @@ test("holding: a few words of the voice's own don't leave dead air after them �
   assert.equal(holds(live).length, 1, "once it has been quiet 1.2 s");
 });
 
-test("holding: a wait on a send is not 'checking', and gets no first line", async () => {
+test("holding: a wait on a send is not 'checking' — its first line says it is sending (call 80 dead air), never 'sent'", async () => {
   const { timers, live } = startCall({ brain: (m, hooks) => { hooks.onTool("message_send", "start"); return new Promise(() => {}); } });
   live.emit({ type: "session.delegation.created", delegation: { id: "item_8" } });
   await timers.advance(1600);
-  assert.equal(holds(live).length, 0);
+  assert.deepEqual(holds(live).map(h => /"([^"]+)"/.exec(h.content)[1]), [...gl.SEND_HOLD_LINES]);
   await timers.advance(voice.LATE_HOLDING_MS);
-  assert.doesNotMatch(/"([^"]+)"/.exec(holds(live)[0].content)[1], /check|look/i);
+  for (const h of holds(live)) assert.doesNotMatch(/"([^"]+)"/.exec(h.content)[1], /check|look|\bsent\b/i);
   assert.equal(gl.isLookup("web_search"), true);
   assert.equal(gl.isLookup("calendar_events"), true);
   assert.equal(gl.isLookup("timer_set"), false);
@@ -186,7 +186,9 @@ test("holding: 'check' only WHILE the lookup runs — once it has come back, a l
   live.emit({ type: "session.delegation.created", delegation: { id: "item_9" } });
   await timers.advance(voice.LATE_HOLDING_MS + 50);
   const said = holds(live).map(h => /"([^"]+)"/.exec(h.content)[1]);
-  assert.equal(said.length, 1, "no first line: the lookup was over by 1.5 s");
+  // Call 80 dead air: the lookup is over by 1.5 s but Reason is still working from it — "one sec", not "check".
+  assert.equal(said.length, 2, said.join(" | "));
+  assert.ok(gl.QUICK_HOLD_LINES.includes(said[0]), said[0]);
   for (const s of said) assert.doesNotMatch(s, /check|look/i);
 });
 

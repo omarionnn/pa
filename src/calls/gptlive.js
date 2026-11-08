@@ -598,6 +598,8 @@ export const HOLD_LINE_AFTER_MS = 1500;
 export const QUICK_HOLD_LINES = Object.freeze(["Mm, one sec.", "One sec.", "Mm-hm, one sec."]);
 /** One of Reason's tools really is running. */
 export const CHECK_HOLD_LINES = Object.freeze(["Let me check.", "Let me look that up.", "Checking now."]);
+/** A send of Reason's is running (never "sent": it has not gone yet). */
+export const SEND_HOLD_LINES = Object.freeze(["Sending it now."]);
 /** Which of the code's own lines talk about checking or looking (only while a tool runs). */
 const CHECK_WORDING = /\b(?:check|look)/i;
 /** Reason's tools that act rather than look something up: a wait for one of them is not "checking". */
@@ -615,8 +617,8 @@ export function holdingInstruction(line) {
 }
 
 /** The holding line for this wait: `kind` "first" (at HOLD_LINE_AFTER_MS) or "late" (at LATE_HOLDING_MS). */
-export function holdLineFor({ kind = "first", tool = false, n = 0 } = {}) {
-  const pool = kind === "late" ? LATE_LINES.filter(l => tool || !CHECK_WORDING.test(l)) : tool ? CHECK_HOLD_LINES : QUICK_HOLD_LINES;
+export function holdLineFor({ kind = "first", tool = false, sending = false, n = 0 } = {}) {
+  const pool = kind === "late" ? LATE_LINES.filter(l => tool || !CHECK_WORDING.test(l)) : tool ? CHECK_HOLD_LINES : sending ? SEND_HOLD_LINES : QUICK_HOLD_LINES;
   return pool[n % pool.length];
 }
 
@@ -1902,14 +1904,15 @@ export class GptLiveCall {
     // "Check / look" only while one of Reason's lookups is running right now. And the first line is
     // only ever that: a wait with no lookup behind it gets no "one sec" at all (call 80, his rule:
     // "don't stall with 'one sec'"); the answer is streaming in, and the late line still covers a long one.
-    // A tool that has run (or is running) and is not a lookup — a text being sent — gets "one sec":
+    // A send running gets "Sending it now."; any other tool that has run or is running, "one sec" —
     // true, Reason is doing something. Nothing has started yet: no line, the answer may be a sentence away.
     const looking = [...turn.running].find(isLookup) ?? "";
     if (kind === "first" && !looking && !turn.toolSeen) {
       if (t - turn.startedAt < LATE_HOLDING_MS - 1500) turn.holdTimer = this.timers.setTimeout(() => this.holdLine(id, "first"), 400);
       return;
     }
-    const line = holdLineFor({ kind, tool: !!looking, n: kind === "late" ? this.lateHolds++ : this.quickHolds++ });
+    const sending = kind === "first" && !looking && [...turn.running].some(n => SEND_TOOLS.has(n));
+    const line = holdLineFor({ kind, tool: !!looking, sending, n: kind === "late" ? this.lateHolds++ : this.quickHolds++ });
     turn.held++;
     this.holdLines++;
     this.live.send({ type: "session.commentary.append", event_id: `hold_${kind}_${id}`, delegation_id: id, content: holdingInstruction(line) });
