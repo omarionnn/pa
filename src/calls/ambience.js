@@ -16,9 +16,10 @@ import { config } from "../config.js";
 import * as accounts from "../accounts.js";
 import { ulawToPcm, pcmToUlaw } from "./gptlive.js";
 
-/** Bed level against the files' own (RMS 3000): ≈ −43 dBFS, about 24 dB under Reason's voice.
- *  Was 0.12 (≈ −39 dBFS) until Omari, 2026-11-02: "reduce the background noise a little" — 4 dB down. */
-export const AMBIENCE_GAIN = 0.075;
+/** Bed level against the files' own (RMS 3000): ≈ −56 dBFS, about 26 dB under Reason's voice (≈ −30).
+ *  Was 0.12 (≈ −40) until Omari, 2026-11-02: "reduce the background noise a little" → 0.075 (≈ −44);
+ *  11-08 00:30 "too loud" → 0.0375 (≈ −50) by .env; call 77 (11-08): "still loud, reduce it by 50%" → half again, −6 dB. */
+export const AMBIENCE_GAIN = 0.01875;
 export const AMBIENCE_GAIN_MAX = 0.2;
 /** How far ahead of the playout the room is kept, and when it is topped up. */
 export const LEAD_MS = 80;

@@ -20,7 +20,10 @@
 // it went to Reason and the answer is not the identity line. --expect goodbye says "that was nice talking
 // to you, bye!": passes only if the voice says goodbye back and the CALL HANGS UP on its own (end_call,
 // mutual goodbye, read by the small model on claude-cli). --expect room-bye says "bye Mum, see you later"
-// to someone in the room and keeps talking: passes only if the call is NOT hung up.
+// to someone in the room and keeps talking: passes only if the call is NOT hung up. --expect bye-only (call 77)
+// says only the caller's sign-off ("okay, bye-bye" / "let me call you later, okay"): passes only if the call
+// hangs up on its own as a mutual goodbye within 6 s of the clip's end, whatever words the voice said back.
+// hung_up_after_question_ms is the clip's end to Reason's hang-up.
 // REASON_CALL_IDENTITY (default owner): with --as user, "owner" proves Ama's call is unchanged and gets
 // nothing of Omari's; "on" proves her Reason knows her (and still nothing of his).
 //
@@ -252,6 +255,8 @@ const ok = expect === "hearing"
   ? out.delegations > 0 && !/you['’]re Omari|the person I work for/i.test(said) && out.guard_trips === 0
   : expect === "goodbye"
   ? hungUpByReason && settled.end_reason === "end_call" && /mutual goodbye/.test(settled.end_detail ?? "") && gl.soundsLikeFarewell(said)
+  : expect === "bye-only"
+  ? hungUpByReason && settled.end_reason === "end_call" && /mutual goodbye/.test(settled.end_detail ?? "") && hungUpAt - askedEndMs < 6000
   : expect === "room-bye"
   ? !hungUpByReason && settled.end_reason !== "end_call"
   : expect === "made"
