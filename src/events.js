@@ -181,6 +181,22 @@ export function organizerName(ev) {
   return null;
 }
 
+/**
+ * Is this event's organizer stopped — paused or removed by the master, on any line? null when not.
+ * A stop is per number (db.stoppedStateOf, #351) and every sweep that speaks for a person skips a
+ * stopped one. What Reason sends on its own for an event (a scheduled message, a reminder, a ride
+ * ask, a list note, a nudge) is sent for its organizer, so it holds while they are stopped. Held,
+ * not dropped: it goes if they are let go while it is still on time, the way a paused event's do.
+ * The master's own events never are.
+ */
+export function organizerStopped(ev) {
+  const acct = ev ? db.getAccount(ev.organizer_conversation_id) : null;
+  if (!acct || acct.is_operator) return null;
+  const own = acct.state ?? "active";
+  if (own !== "active") return own;
+  return db.stoppedStateOf(acct.address);
+}
+
 // ---------- who may see what ----------
 
 /**
@@ -783,7 +799,7 @@ export async function sendListNote({ runtime, eventId, conversationId, now = clo
   if (!["ask", "carried", "shown"].includes(kind)) return { state: "none" };
   const text = ev.status === "cancelled" || (ev.starts_at != null && now > ev.starts_at + LIST_NOTE.staleAfterStartMs) ? null : listNoteText(ev, att, kind);
   if (!text) { db.settleListNote(att.id, kind, "dropped"); return { state: "dropped" }; }
-  if (ev.status === "paused" || listNoteQuiet(ev, now)) return { state: "later" };
+  if (ev.status === "paused" || organizerStopped(ev) || listNoteQuiet(ev, now)) return { state: "later" };
   if (!db.settleListNote(att.id, kind, "sent")) return { state: "none" };
   const message = db.insertEventMessage(ev.id, "list_note", text);
   const r = await deliver({ runtime, message, conversationId });
