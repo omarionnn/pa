@@ -480,6 +480,15 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — event edit-limits (guest-list privacy + cap after creation; 2026-11-08, PR event-edit-limits, not merged)
+
+Scoped maintain pass for [features/events.md](features/events.md) "Guest-list privacy and the cap after
+creation". Offline: `test/event-edit-limits.test.js` 11/11. `bin/events-drive.mjs` under `caged.sh env` + temp
+DB: all ok, with 6 new `limits:` steps (cap under the count takes nobody off and closes joins, texting nobody;
+no cap reopens; showing a private list asks for the yes first naming who is asked; with it nobody unchosen is
+listed; each is asked once; hiding is quiet). Not proven: the real model reading a texted request, a live
+send of the ask, the `list_chosen` backfill on a copy of live.
+
 ### Baseline — event some-guests (message only some guests; 2026-11-08, PR event-some-guests, not merged)
 
 Scoped maintain pass for [features/events.md](features/events.md) "Message only some guests". Offline:

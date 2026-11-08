@@ -253,7 +253,7 @@ function doneNote(q, ev) {
       // Read off the event as it is now, never off the address.
       const st = ev ? events.capacityState(ev) : null;
       if (!st || st.capacity == null) return "No cap now. Anyone with the link and the password can join.";
-      if (st.over) return `Saved. ${st.going} are already in, more than ${st.capacity}. Nobody was taken off, and new joins are closed until fewer than ${st.capacity} are in.`;
+      if (st.over) return `Saved. ${st.going} are already in, more than ${st.capacity}. Nobody was taken off, and new joins are closed until enough guests leave to get under ${st.capacity}.`;
       if (st.full) return "Saved. That's exactly how many are in, so new joins are closed. Nobody was taken off.";
       return `Saved. Room for ${plural(st.capacity - st.going, "more guest")}.`;
     }
@@ -339,7 +339,7 @@ function listAndCap(ev, { going, drafts }) {
   const st = events.capacityState(ev);
   const capTag = st.capacity == null ? "NO CAP" : st.full ? `FULL · ${st.going} OF ${st.capacity}` : `${st.going} OF ${st.capacity}`;
   const capSentence = st.capacity == null ? "No cap: anyone with the link and the password can join."
-    : st.over ? `${plural(st.going, "guest")} in, more than your cap of ${st.capacity}. Nobody is taken off; new joins stay closed until fewer than ${st.capacity} are in.`
+    : st.over ? `${plural(st.going, "guest")} in, more than your cap of ${st.capacity}. Nobody is taken off; new joins stay closed until enough guests leave to get under ${st.capacity}.`
     : st.full ? `Full: ${plural(st.going, "guest")} in, your cap is ${st.capacity}. New joins are closed. If someone leaves, a spot opens.`
     : `Up to ${st.capacity} guests. ${going} in, room for ${st.capacity - going} more.`;
   const capDraft = drafts.cap ?? (st.capacity ?? "");
@@ -829,7 +829,7 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
           ev: own, title: `Set the cap to ${cap}?`,
           sentences: [
             cap < going ? `${plural(going, "guest")} are already in, more than ${cap}. Nobody is taken off the event.` : `That's exactly how many are in now (${going}).`,
-            `New joins close: anyone who tries is told the event is full. A spot opens only when fewer than ${cap} are in.`,
+            `New joins close: anyone who tries is told the event is full. A spot opens only once enough guests leave to get under ${cap}.`,
             "Guests aren't told about the cap, and nobody is texted.",
           ],
           fields: { action: "cap", step: "do", capacity: String(cap) },

@@ -251,7 +251,7 @@ export function settingsAsks(conversationId, input) {
 /** What a cap now means, in words the model can relay. */
 export function capacityLine(st) {
   if (st.capacity == null) return "No cap now: anyone with the link and the password can join.";
-  if (st.over) return `${st.going} are already in, more than the new cap of ${st.capacity}. Nobody was taken off. New joins are closed until fewer than ${st.capacity} are in.`;
+  if (st.over) return `${st.going} are already in, more than the new cap of ${st.capacity}. Nobody was taken off. New joins are closed until enough guests leave to get under ${st.capacity}.`;
   if (st.full) return `That's exactly how many are in (${st.going}), so new joins are closed now. Nobody was taken off.`;
   return `Up to ${st.capacity} guests: ${st.going} in, room for ${st.capacity - st.going} more.`;
 }

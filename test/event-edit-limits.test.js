@@ -254,7 +254,7 @@ test("a cap under the number in takes nobody off, closes joins on every route, a
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(out.blocked, undefined, "a cap texts nobody, so no yes");
   assert.deepEqual([out.capacity, out.going, out.joins_closed], [2, 3, true]);
-  assert.equal(out.capacity_note, "3 are already in, more than the new cap of 2. Nobody was taken off. New joins are closed until fewer than 2 are in. Guests aren't told about a cap.");
+  assert.equal(out.capacity_note, "3 are already in, more than the new cap of 2. Nobody was taken off. New joins are closed until enough guests leave to get under 2. Guests aren't told about a cap.");
   assert.equal(db.joinedCount(ev.id), 3, "nobody taken off");
   await settle();
   assert.equal(h.channel.sent.length, 0, "nobody texted");
@@ -357,7 +357,7 @@ test("page: only a cap that closes joining is asked about; bad input is refused;
   const html = unesc(close.body);
   assert.match(html, /Set the cap to 2\?/);
   assert.match(html, /3 guests are already in, more than 2\. Nobody is taken off the event\./);
-  assert.match(html, /A spot opens only when fewer than 2 are in\./);
+  assert.match(html, /A spot opens only once enough guests leave to get under 2\./);
   assert.equal(db.getEventRow(ev.id).capacity, 10, "nothing saved yet");
   const set = await post(h, ev, { action: "cap", step: "do", capacity: "2" });
   assert.equal(set.status, 303);
