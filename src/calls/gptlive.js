@@ -1629,10 +1629,7 @@ export class GptLiveCall {
       // On a line call Reason's turn is started by the line itself (`lineTurn`), not by this hand-off;
       // the hand-off is kept open, its automatic acknowledgement cancelled (an empty quiet update, per
       // the docs), and the next words Reason has for the line are its result.
-      // A factual quiet update (it cancels the automatic acknowledgement just as an empty one does, per
-      // the docs) that also says the answer is Reason's: on the 2026-11-08 drives a voice left to wait in
-      // silence sometimes began answering on its own, ahead of Reason.
-      this.live.send({ type: "session.thinking.append", event_id: `quiet_${id}`, delegation_id: id, content: WAIT_NOTE });
+      this.live.send({ type: "session.thinking.append", event_id: `quiet_${id}`, delegation_id: id, content: "" });
       this.openDelegation = id;
       return;
     }
