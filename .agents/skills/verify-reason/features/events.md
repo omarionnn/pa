@@ -316,8 +316,13 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   everyone; an unreadable key reaches nobody). Dedupe (`recentEventMessage`) matches audience too.
   Page: "WHO GETS IT" radio (everyone / only guests I pick / joined since) on both the 02 MESSAGE
   GUESTS and 03 LATER forms; preview lists count + every name; send step re-checks a `pin` of the
-  reached ids and re-shows the preview if it moved. Pinned: `test/event-some-guests.test.js`; drive:
-  the `some:` steps.
+  reached ids and re-shows the preview if it moved. Owner decisions 2026-11-08: "joined since" compares
+  `event_attendees.first_joined_at` (set on first join, kept on a rejoin; old rows backfilled from
+  `joined_at`, which still moves on a rejoin), so a guest who left and came back is not new — the
+  pick list's JOINED line and `event_guests.joined` show the same first join; muted guests are in
+  the pick list with NO muted label (they still get nothing; the confirm step says "N guest(s) you
+  picked muted the event"); the page section is "Message guests" (was "Message everyone"). Pinned:
+  `test/event-some-guests.test.js`; drive: the `some:` steps (incl. the left-and-came-back one).
 
 ## How to get to it (user POV)
 
@@ -356,6 +361,7 @@ node --test test/code-guards.test.js   # #134: every code text ends `@<live host
 # the real Runtime + Router + outbox + FakeChannel, in process, cage env, throwaway DB (no model):
 node --test test/event-ops.test.js    # the status page section, pause/resume/retry, owner-only
 node --test test/event-web.test.js    # the pages, the finishing text, existing users by session and by text, who's going
+node --test test/event-manage.test.js test/event-scheduled.test.js test/event-some-guests.test.js  # /e/<id> manage page (#386), scheduled + reminders (#388), only some guests (#390)
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/events.db node .agents/skills/verify-reason/bin/events-drive.mjs
 REASON_BACKEND=claude-cli node --test test/flow-events.test.js   # by meaning, real model on the subscription: setup questions, text join, pasted link, hidden address
 ```

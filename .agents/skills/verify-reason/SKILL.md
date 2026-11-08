@@ -481,6 +481,14 @@ web-ongoing desktop-margin test. `bin/events-drive.mjs` under `caged.sh env` + t
 only picked unmuted guests texted, a scheduled pick sent once to the picked guest only). Not proven: the real
 model picking guests from a texted request, and a live send.
 
+Owner decisions 2026-11-08 (maintain pass before merge): "joined since" reads
+`event_attendees.first_joined_at` (new column, backfilled from `joined_at` on boot; a rejoin keeps it),
+muted guests sit in the pick list unlabeled, the section is "Message guests". `test/event-some-guests.test.js`
+19/19 (+2: rejoin not new, muted unlabeled); events-drive all ok with a 6th `some:` step (left and came back →
+joined-since reaches 0). Migration tried on a `.backup` of live `reason.db` in `/tmp/rtrial` on the box:
+three columns added, 7/7 attendees backfilled, `integrity_check` ok. Hetzner over the public IP can crawl
+(~7 KB/s scp on 2026-11-08); the Tailscale address `100.100.152.2` was the one that finished.
+
 ### Baseline — call-hearing (quiet-speech lift, ask once, no therapist tone, turn_log; 2026-11-08)
 
 Scoped maintain pass for the GPT-Live hearing change ([features/gptlive-calls.md](features/gptlive-calls.md),

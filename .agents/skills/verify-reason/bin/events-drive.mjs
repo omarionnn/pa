@@ -362,6 +362,17 @@ config.events = "owner";
   await new Promise(r => setTimeout(r, 50));
   step("some: a scheduled pick goes at its time to the picked guest only, once", sset.ok && toNum(AMA).filter(t => t === later).length === 1 && !toNum(KOFI).includes(later) && db.scheduledRow(sset.scheduled_id).state === "sent", JSON.stringify(sset).slice(0, 160));
   clock.reset();
+  // Owner decision 2026-11-08: "joined since" reads the FIRST join, so leaving and coming back is not new.
+  const sinceParts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(clock.now() + 60_000)).map(x => [x.type, x.value]));
+  const sinceWall = `${sinceParts.year}-${sinceParts.month}-${sinceParts.day}T${sinceParts.hour}:${sinceParts.minute}`;
+  clock.skip(3 * 60_000);
+  db.leaveAttendee(idOf(C.kofi));
+  const back = await tool("event_join", { name: "Some Guests Supper", password: "some-pw" }, C.kofi);
+  const row = db.attendeeRow(sev.id, C.kofi);
+  const nSince = fake.sent.length;
+  const since = await tool("event_blast", { event_id: sev.id, event_named: sev.name, message: "newcomers only", only_joined_after: sinceWall }, C.owner);
+  step("some: joined since doesn't count a guest who left and came back as new", back.ok && row.joined_at > row.first_joined_at && since.reaches?.guests === 0 && fake.sent.length === nSince, JSON.stringify({ reaches: since.reaches, joined: row.joined_at, first: row.first_joined_at }));
+  clock.reset();
   await tool("event_cancel", { event_id: sev.id, event_named: sev.name }, C.owner);
 }
 
