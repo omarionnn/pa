@@ -128,6 +128,52 @@ Live check after deploy: `journalctl -u reason` shows `card_registrations_swept`
 `registered: 1` for the owner's card (saved 2026-10-30, registered by hand 2026-10-31), and
 `sqlite3 data/reason.db "SELECT last4, registered, reg_error FROM shop_cards"` reads `1929|1|`.
 
+## The card's CVC after Face ID (wt/cvc-recollect, 2026-11-08)
+
+Live 11-08: the owner's Amazon $14.83 (run 650f8c4c, payment row 3) was approved with Face ID; the
+intent was made, handed to the checkout, the row marked paid and $14.83 counted, while Crossmint read
+the intent's `encrypted-card` rail as `pending_cvc_recollection` (spent 0.00 / reserved 0.00). The
+checkout couldn't fill the card and asked again; every new link hit the same wall.
+
+- After making the intent, `payRow` reads it (`GET /api/unstable/order-intents/{id}`, asked twice).
+  `cardRail`: **ready** (an active rail with `"card"` in its credentialFormats; agentic-token /
+  encrypted-card by name when formats are missing) → handed over, paid, counted; **cvc** (encrypted
+  card `pending_cvc_recollection`, nothing ready) → row back to `asked`, intent kept on the row, no
+  spend line, `needs_cvc`; **blocked** (encrypted card in error) and **unreadable** → `order_intent_failed`
+  (retryable, nothing reached the store); **unlisted** (no encrypted-card rail at all) → handed over,
+  as Crossmint's docs say for a card with no network rail.
+- Face ID path: `/verify` answers `needs_cvc` + `cvc {apiKey (client key), jwt (10 min), paymentMethodId}`
+  — only after a verified assertion, never in the GET page, never logged. The link reopens (fresh
+  nonce) and `shop_payments.cvc_until` = now + 10 min. The page shows "Face ID worked. Enter your card's
+  3-digit code to finish." and mounts `ReasonCrossmint.cvcField` (island.jsx →
+  `CrossmintCvcRecollection`, @crossmint/client-sdk-react-ui 4.13.4; the code goes to Crossmint's
+  iframe only). On `complete` the page POSTs `/web/approve/{token}/cvc` → `payAfterCvc`: link open,
+  row asked, inside `cvc_until`, row unchanged (bindingChallenge), link claimed once → `payRow` reuses
+  the SAME intent (`intentReusable`: active, same card, same total, nothing drawn, ≥2 min left).
+  Still pending → `needs_cvc` again (no new JWT). Page closed meanwhile → a new Face ID reuses the intent.
+- Texted-yes path: `needs_cvc` with words (re-save the card in Settings → Shopping); never the card id.
+- Network verification (agentic-token `pending_verification`, `OrderIntentVerification`) is not asked:
+  Agent Checkouts falls back to the encrypted card, so the CVC alone unblocks.
+- CSP of /web/approve now allows `script-src 'self'` (the island) and Crossmint for frame/connect.
+- Ledger: every row paid from now on records `rail_at_pay` ('ready'/'unlisted') and is only paid when
+  the rail is usable. `settleUnknownPayments` also releases a **paid** row, narrowly
+  (`paidNeverHandedCard`): `rail_at_pay` empty (paid before this fix), its run ended unplaced
+  (failed/cancelled/expired/blocked, no order_ref), its intent still reads the encrypted card waiting for
+  the CVC with no card rail ready, nothing spent or reserved, and closed or past `expiresAt` (Crossmint can
+  still read it `active`). Spent/reserved alone is not proof once a ready rail handed the card over (cold
+  review 11-08). Same `releasedLineOf` rewrite to $0, row → failed. Runs at boot and on an over-cap
+  check. Live row 3 releases at the first boot after deploy (log `paid_payment_released`).
+- Review fixes: the CVC step finishes only on the link Face ID was on (`cvc_link`); the day's cap is asked
+  before `/cvc` claims the link; a missing JWT/client key fails as "payment didn't start"; an
+  unlisted-rails handover is logged (`payment_rails_unlisted`).
+
+Tests: `test/cvc-recollect-1108.test.js` (15; 12 source mutations all caught). Drive `bin/passkey-drive.mjs`
+scenario (k): real Chromium, Face ID → CVC screen → island stand-in (network-routed, same URL so the CSP
+decides) → Finish → paid with the same intent; shots `passkey-cvc.png`, `passkey-paid-after-cvc.png`.
+Fakes in 10 suites + 2 drives answer the new intent read with a ready rail.
+Unproven: Crossmint's real field on a phone; whether the production client key has the
+`payment-methods.update` scope the docs ask for (a `refused`/`invalid-credentials` result would show it).
+
 ## Live check (after the flag flip, read-only, never create a payment)
 
 - Signed in as the owner (headless with the `reason_page` cookie): `https://heyreason.com/web/connect/passkey` returns 200, and the `var B=` boot holds options with `rp.id` = `heyreason.com` and `authenticatorSelection.userVerification` = `required`.

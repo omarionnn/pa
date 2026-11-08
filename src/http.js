@@ -35,7 +35,7 @@
 //   GET  /web/memory, POST /web/memory/correct|forget|guess   what Reason remembers (src/pages/webmemory.js)
 //   GET  /web/memory/history          chat history by day, a day read-only, message search (src/pages/webhistory.js)
 //   GET/POST /web/settings            Settings (src/pages/websettings.js)
-//   GET  /web/approve/{token}, POST …/verify|decline, GET /web/connect/passkey, POST …/verify   purchase approval by passkey (src/pages/webapprove.js; REASON_PASSKEY_PAY)
+//   GET  /web/approve/{token}, POST …/verify|decline|cvc, GET /web/connect/passkey, POST …/verify   purchase approval by passkey (src/pages/webapprove.js; REASON_PASSKEY_PAY)
 //   GET  /web/connect/{token}[/state], POST …/answer|card, GET /web/connect/island.js|jwks.json|new-card   store sign-in + card for Crossmint checkouts (src/pages/webconnect.js; REASON_SHOP_CONNECT)
 //   GET  /web/stamps, POST /web/api/stamps/{id}/share[/revoke], GET …/{id}/image.png, …/{id}/story.png   Stamps (src/pages/webstamps.js; REASON_WEB_DAILY or REASON_STAMPS_ALL)
 //   GET  /web/signal                  what needs them / just finished, for the tab title and notifications (src/pages/webnotify.js)
@@ -339,7 +339,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       // REASON_SHOP_CONNECT; off, the same flat 404 as any path nobody was issued.
       // Purchase approval by passkey (src/pages/webapprove.js, src/passkey.js): the Face ID link for one
       // payment, and setting Face ID up. Behind REASON_PASSKEY_PAY and REASON_SHOP_CONNECT; off, a flat 404.
-      const approveRoute = /^\/web\/approve\/([A-Za-z0-9_-]{20,64}(?:\/(?:verify|decline))?)$/.exec(url.pathname);
+      const approveRoute = /^\/web\/approve\/([A-Za-z0-9_-]{20,64}(?:\/(?:verify|decline|cvc))?)$/.exec(url.pathname);
       const setupRoute = /^\/web\/connect\/passkey(?:\/(verify))?$/.exec(url.pathname);
       if ((approveRoute || setupRoute) && webOn() && (await import("./shopconnect.js")).connectMode() !== "off" && (await import("./passkey.js")).passkeyMode() !== "off") {
         let out = null;

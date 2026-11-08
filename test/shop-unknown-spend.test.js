@@ -34,12 +34,18 @@ const q = (sql) => db.db.prepare(sql);
 
 // ---------------------------------------------------------------- a fake Crossmint (no network)
 let calls, messages, runStatus, intent;
+const handed = new Set();
 const reply = (status, body) => ({ status, ok: status < 300, text: async () => (body === undefined ? "" : JSON.stringify(body)) });
 async function fakeFetch(url, init = {}) {
   const p = new URL(url).pathname;
   calls.push({ method: init.method ?? "GET", path: p });
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}` });
   const oi = /^\/api\/unstable\/order-intents\/([^/]+)$/.exec(p);
+  // The pay-time read of the rails (2026-11-08), before the checkout got the intent: a ready card rail.
+  // Once handed over, the intent answers as the test sets it (the settle reads).
+  if (oi) calls.at(-1).settleRead = handed.has(decodeURIComponent(oi[1]));
+  if (oi && !handed.has(decodeURIComponent(oi[1]))) return reply(200, { orderIntentId: decodeURIComponent(oi[1]), status: "active", rails: [{ rail: "encrypted-card", status: "active", credentialFormats: ["card"] }] });
+  if (/\/messages$/.test(p) && init.body) { try { const id = JSON.parse(init.body).parts?.[0]?.response?.orderIntentId; if (id) handed.add(id); } catch { /* not json */ } }
   if (oi) {
     if (intent === "throw") throw new Error("timeout");
     if (typeof intent === "number") return reply(intent, { message: "nope" });
@@ -70,7 +76,7 @@ const spentToday = () => db.spentToday(AMA, trust.spendDay()).cents;
 before(() => { shop._setFetch(fakeFetch); shop.attach({ say: () => {} }); });
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
-  calls = []; messages = "ok"; runStatus = "running"; intent = 404; clock.reset();
+  calls = []; messages = "ok"; runStatus = "running"; intent = 404; handed.clear(); clock.reset();
   for (const t of ["shop_runs", "shop_cards", "shop_payments", "spend", "daily_caps"]) db.db.exec(`DELETE FROM ${t}`);
   q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', 0, 1)").run(AMA);
 });
@@ -126,7 +132,8 @@ const neverCharged = (status = "expired", spent = "0.00", reserved = "0.00") => 
   orderIntentId: id, status, paymentMethodId: "pm_1", description: "x", expiresAt: new Date(0).toISOString(), rails: [],
   amount: { total: "90.00", spent, reserved, available: status === "active" ? "90.00" : "0.00", currency: "USD" },
 });
-const intentReads = () => calls.filter((c) => /^\/api\/unstable\/order-intents\/./.test(c.path)).length;
+// Reads of an intent already handed to the checkout (the settle reads), not the pay-time rails read.
+const intentReads = () => calls.filter((c) => c.settleRead).length;
 async function unknown90() {
   messages = "500";
   const row = asked("90.00");

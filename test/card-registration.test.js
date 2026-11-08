@@ -62,6 +62,8 @@ async function fakeFetch(url, init = {}) {
     if (no) return reply(no.status, no.body);
     return reply(201, { orderIntentId: `oi_${calls.length}`, status: "active" });
   }
+  // The rails read after the intent is made (2026-11-08): a card rail that is ready.
+  if (/^\/api\/unstable\/order-intents\/[^/]+$/.test(p)) return reply(200, { orderIntentId: decodeURIComponent(p.split("/").pop()), status: "active", rails: [{ rail: "encrypted-card", status: "active", credentialFormats: ["card"] }] });
   if (/^\/api\/unstable\/agent-checkouts\/[^/]+\/messages$/.test(p)) return reply(202, { ok: true });
   return reply(404, { message: "no route" });
 }

@@ -56,12 +56,16 @@ const q = (sql) => db.db.prepare(sql);
 q("INSERT INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', 0, 1)").run(AMA);
 
 let calls = [], messages = "500", intent = null;
+const handed = new Set();
 const reply = (status, body) => ({ status, ok: status < 300, text: async () => JSON.stringify(body ?? {}) });
 shop._setFetch(async (url, init = {}) => {
   const p = new URL(url).pathname;
   calls.push(p);
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}` });
   const oi = /^\/api\/unstable\/order-intents\/([^/]+)$/.exec(p);
+  // The pay-time read of the rails (2026-11-08), before the checkout got it: a ready card rail.
+  if (oi && !handed.has(decodeURIComponent(oi[1]))) return reply(200, { orderIntentId: decodeURIComponent(oi[1]), status: "active", rails: [{ rail: "encrypted-card", status: "active", credentialFormats: ["card"] }] });
+  if (/\/messages$/.test(p) && init.body) { try { const id = JSON.parse(init.body).parts?.[0]?.response?.orderIntentId; if (id) handed.add(id); } catch { /* not json */ } }
   if (oi) return intent ? reply(200, { orderIntentId: decodeURIComponent(oi[1]), status: intent.status, paymentMethodId: "pm_1", description: "x", expiresAt: new Date().toISOString(), rails: [],
     amount: { total: "90.00", spent: intent.spent, reserved: "0.00", available: "0.00", currency: "USD" } }) : reply(404, {});
   if (/^\/api\/unstable\/agent-checkouts\/[^/]+\/messages$/.test(p)) return messages === "500" ? reply(500, { message: "internal" }) : reply(202, { ok: true });
