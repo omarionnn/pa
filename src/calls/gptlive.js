@@ -598,7 +598,7 @@ export function shortForPhone(text, { max = LONG_REPLY_CHARS, keep = SHORT_REPLY
     say = say ? `${say} ${s}` : s;
   }
   // One sentence that is itself long: cut at the last clause break inside the limit, never mid-word.
-  if (say.length > room + 40) {
+  if (say.length > Math.max(room + 40, 200)) {
     const cut = say.slice(0, room);
     const at = Math.max(cut.lastIndexOf(", "), cut.lastIndexOf("; "), cut.lastIndexOf(" — "));
     say = `${(at > 60 ? cut.slice(0, at) : cut.slice(0, cut.lastIndexOf(" "))).trim()}.`;
