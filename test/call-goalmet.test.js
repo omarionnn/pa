@@ -49,7 +49,7 @@ beforeEach(() => {
   clock.skip(MORNING - Date.now());
   delete process.env.REASON_WEB_DAILY;
   stamps.installStamps({ tell: null, delayMs: 0 });
-  db.db.exec("DELETE FROM accounts; DELETE FROM calls; DELETE FROM stamps; DELETE FROM tasks;");
+  db.db.exec("DELETE FROM accounts; DELETE FROM calls; DELETE FROM stamps; DELETE FROM tasks; DELETE FROM call_commitments;");
   db.upsertAccount({ conversationId: C, channel: "fake", address: "+12025551234", name: "Omari Nyarko", isOperator: true });
 });
 
@@ -74,11 +74,14 @@ test("only a call that reached a person and settled nothing is asked about (thei
   assert.equal(goal.judgeable(call({ outcome_kind: "confirmed" })), false);
   assert.equal(goal.judgeable(call({ outcome_kind: "line_silent" })), false);
   assert.equal(goal.judgeable(call({ transcript: "Reason: Hello?\nThem: ...\nReason: Hello?" })), false);
-  // Cleared to book: only the read-back gate settles whether it was done; a machine answering it still names itself.
+  // Cleared to book: only the read-back gate settles whether it was done — the model's read moves it
+  // nowhere, not even to "a machine answered" (security run-2 R2-I: that is a booking-enabled retry).
   const booking = call({ brief: JSON.stringify({ approved: { book: true } }) });
   assert.equal(goal.kindFrom(booking, { met: true, how: "talked" }), "");
   assert.equal(goal.kindFrom(booking, { met: false, how: "hung_up_early" }), "");
-  assert.equal(goal.kindFrom(booking, { met: false, how: "voicemail_not_set_up" }), "voicemail_full");
+  for (const how of ["voicemail_not_set_up", "voicemail_greeting", "recording"]) assert.equal(goal.kindFrom(booking, { met: false, how }), "", how);
+  // A call that could not have booked still names the machine.
+  assert.equal(goal.kindFrom(call(), { met: false, how: "voicemail_not_set_up" }), "voicemail_full");
 });
 
 test("a transcript that grew while it was being read is read again", async () => {
@@ -135,4 +138,22 @@ test("something else settling the call first wins, and one call is asked about o
   assert.equal(asked, 1);
   assert.equal(db.getCall(C, row.id).outcome_kind, "voicemail_left");
   assert.equal(goal.goalPending(row.id), null);
+});
+
+test("security R2-I: a book-cleared call that dropped is never re-filed as a machine by the read, so its redial stays ask-only", async () => {
+  const redial = await import("../src/calls/redial.js");
+  const BOOK = JSON.stringify({ goal: "Book a table for two Saturday at 8 under Omari.", approved: { book: true, maxCents: null, terms: [], upTo: "" } });
+  const row = call({ brief: BOOK, transcript: "Reason: Hi, I'd like a table for two Saturday at eight.\nThem: Sure, you're booked for Saturday at eight.\nThem: Please leave a message after the tone." });
+  for (const how of ["recording", "voicemail_greeting", "voicemail_not_set_up"]) {
+    const r = await goal.settleGoal(C, db.getCall(C, row.id), { ask: async () => ({ value: { met: false, how, why: "a recording" } }) });
+    assert.equal(r.outcome_kind, "dropped_before_confirmation", how);
+    const next = redial.safeToRedial(C, { toNumber: "+16165550100", brief: { goal: "Book a table", approved: { book: true } } });
+    assert.equal(next.mode, "ask", how);
+    assert.notEqual(next.brief?.approved?.book, true, how);
+  }
+  // Any commitment on the call (even one already declined, which the redial check does not look at): the same.
+  const c2 = call();
+  assert.equal(goal.kindFrom(c2, { met: false, how: "recording" }), "machine_recording", "no commitment: a machine still names itself");
+  db.createCommitment(C, { callId: c2.id, what: "a table for two", state: "declined" });
+  assert.equal(goal.kindFrom(c2, { met: false, how: "recording" }), "");
 });
