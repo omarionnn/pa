@@ -659,6 +659,26 @@ export const config = {
   // The voice (a young adult British woman was the owner's pick): Marin, with the accent
   // asked for in the live prompt. There is no British built-in voice.
   gptliveVoice: process.env.REASON_GPTLIVE_VOICE || "marin",
+  // An own call's GPT-Live session opened while the phone rings, with the call's own session.start
+  // (instructions, voice, brief, greeting), and HELD — no audio, nothing said — until the stream starts
+  // (gptlive.js `WarmSession` hold). Not calls 54–55's warm-up: nothing is spoken before pickup.
+  // "on" / "off" (default off).
+  // "owner": the operator's own calls only (like the repo's other =owner flags).
+  gptlivePrering: (v => v === "owner" ? "owner" : v === "on")(String(process.env.REASON_GPTLIVE_PRERING ?? "off").trim().toLowerCase()),
+  // When the held session's greeting is asked for: "stream" (default; at pickup, as a cold call does) or
+  // "early" (appended while it rings; the stopped timeline holds it until the first frames after pickup).
+  // "ready": the greeting made while it rings and played the moment their hello ends (or into a quiet line).
+  gptlivePreringGreet: (() => { const v = String(process.env.REASON_GPTLIVE_PRERING_GREET ?? "stream").trim().toLowerCase(); return ["early", "ready"].includes(v) ? v : "stream"; })(),
+  // How long the dial waits for the held session to start before it rings anyway (0 = never waits).
+  gptlivePreringWaitMs: Math.max(0, Math.min(5000, Number(process.env.REASON_GPTLIVE_PRERING_WAIT_MS ?? 2000) || 0)),
+  // An inbound own call's session opened from the voice webhook (after the caller is routed), held silent
+  // until the stream starts. "on" / "off" (default off).
+  // "owner": only when the operator rings in.
+  gptliveInboundPreopen: (v => v === "owner" ? "owner" : v === "on")(String(process.env.REASON_GPTLIVE_INBOUND_PREOPEN ?? "off").trim().toLowerCase()),
+  // How long the inbound answer (the TwiML) waits for the pre-opened session to be ready (0 = never waits).
+  // How long a pre-opened session's start may wait for #406's call-memory read (racing the socket handshake).
+  gptlivePreringMemoryMs: Math.max(0, Math.min(2000, Number(process.env.REASON_GPTLIVE_PRERING_MEMORY_MS ?? 800) || 0)),
+  gptliveInboundWaitMs: Math.max(0, Math.min(4000, Number(process.env.REASON_GPTLIVE_INBOUND_WAIT_MS ?? 0) || 0)),
   twilioSid: process.env.TWILIO_ACCOUNT_SID || "",
   twilioToken: process.env.TWILIO_AUTH_TOKEN || "",
   // Reason's own number, E.164: what every GPT-Live call dials from, the number on Reason's contact

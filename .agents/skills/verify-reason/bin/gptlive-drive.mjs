@@ -150,9 +150,23 @@ const seconds = Number(process.argv[3] && !process.argv[3].startsWith("--") ? pr
 const thenAudio = flag("--then") > 0 ? readFileSync(process.argv[flag("--then") + 1]) : null;
 const thenAt = flag("--then-at") > 0 ? Number(process.argv[flag("--then-at") + 1]) : 20;
 const cold = flag("--cold") > 0;
+// --prering: REASON_GPTLIVE_PRERING's held session — opened and started while it rings, nothing fed,
+// nothing said; the call greets on the stream as a cold one does. Compare with --cold.
+const prering = flag("--prering") > 0;
 const ringMs = flag("--ring") > 0 ? Number(process.argv[flag("--ring") + 1]) : 5000;
+// --lead ms: the line before their clip (default 3000). 0 = they say it the instant they pick up.
+const leadMs = flag("--lead") > 0 ? Number(process.argv[flag("--lead") + 1]) : 3000;
+// --dial-wait: as dialGptLive does with REASON_GPTLIVE_PRERING, wait (≤ REASON_GPTLIVE_PRERING_WAIT_MS) for
+// the held session to start BEFORE the phone rings; --ring then counts from the dial.
+const dialWait = flag("--dial-wait") > 0;
+let dialWaitMs = null;
+const prewarmAt = Date.now();
 if (!cold) {
-  gl.prewarm(db.getCall(CONV, row.id), { log });
+  // --prering: the live path (`gptlive.preopen`, in REASON_GPTLIVE_PRERING_GREET's mode); else the old warm-up.
+  if (prering) {
+    const { w, wait } = gl.preopen(db.getCall(CONV, row.id), { log, waitMs: dialWait ? config.gptlivePreringWaitMs : 0 });
+    if (dialWait && w) { await wait; dialWaitMs = Date.now() - prewarmAt; }
+  } else gl.prewarm(db.getCall(CONV, row.id), { log });
   await new Promise(r => setTimeout(r, ringMs));
 }
 const heardAt = [];
@@ -179,7 +193,7 @@ twilio.send(JSON.stringify({ event: "start", start: { streamSid: "MZdrive", call
 // 3 s of line, the question, then silence — in real time, as Twilio sends it.
 const frames = [];
 const silence = Buffer.alloc(160, 0xff);
-for (let i = 0; i < 150; i++) frames.push(silence);
+for (let i = 0; i < leadMs / 20; i++) frames.push(silence);
 for (let i = 0; i < audio.length; i += 160) frames.push(audio.subarray(i, i + 160));
 if (thenAudio) {
   while (frames.length < thenAt * 50) frames.push(silence);
@@ -201,7 +215,7 @@ server.close();
 
 const settled = db.getCall(CONV, row.id);
 // When their question ended, and when the first speech after it reached them.
-const askedEndMs = 3000 + (audio.length / 8);
+const askedEndMs = leadMs + (audio.length / 8);
 const answerAt = speechAt.find(ms => ms > askedEndMs + 200);
 const turns = db.callTurns(row.id);
 const pick = (k) => lines.filter(l => k in l);
@@ -212,7 +226,21 @@ const out = {
   voice_said: call?.turns.filter(t => t.who === "reason" && !t.seeded).map(t => t.text.trim()) ?? [],
   caller_said: call?.turns.filter(t => t.who === "them").map(t => t.text.trim()) ?? [],
   audio_frames_to_caller: heardAt.length,
-  warm: !cold, ring_ms: cold ? 0 : ringMs,
+  warm: !cold, prering, greet_mode: config.gptlivePreringGreet, dial_wait_ms: dialWaitMs, ring_ms: cold ? 0 : ringMs, lead_ms: leadMs,
+  voice_seconds: call?.seconds ?? null,
+  // Where the wait went: the session's socket and start (cold: after the stream; prering: while it rang).
+  timing: {
+    live_open_ms: pick("gptlive_live_open")[0]?.ms ?? null,
+    session_up_at_ms: pick("gptlive_session")[0]?.drive_ms ?? null,
+    prering_ready: pick("gptlive_prering_ready")[0] ?? null,
+    warm_used: pick("gptlive_warm_used")[0] ?? null,
+    early_audio: pick("gptlive_early_audio")[0] ?? null,
+    fresh: pick("gptlive_prering_fresh")[0] ?? null,
+    pregreet: pick("gptlive_pregreet")[0] ?? pick("gptlive_pregreet_skipped")[0] ?? null,
+    renewed: pick("gptlive_prering_renewed")[0] ?? null,
+    warm_greeted: pick("gptlive_warm")[0] ?? null,
+    dropped: pick("gptlive_warm_dropped").map(l => l.why),
+  },
   first_voice_ms: speechAt[0] ?? null,
   answer_after_question_ms: answerAt == null ? null : Math.round(answerAt - askedEndMs),
   turns: turns.map(t => ({ voice: t.voice, heard_ms: t.first_content_ms, real_ms: t.first_real_ms, total_ms: t.total_ms, tools: t.tools })),

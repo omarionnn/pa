@@ -574,7 +574,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       if (gptlive.gptliveOn() && req.method === "POST" && url.pathname === gptlive.INBOUND_PATH) {
         const rawBody = await readBody(req);
         if (rawBody === null) return send(413, { error: "body too large" });
-        const out = gptlive.inboundTwiml({ rawBody, headers: req.headers, router, log });
+        const out = await gptlive.inboundTwimlReady({ rawBody, headers: req.headers, router, log });
         res.writeHead(out.status, out.type ? { "Content-Type": out.type } : {});
         return res.end(out.body);
       }
