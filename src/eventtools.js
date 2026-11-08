@@ -677,7 +677,7 @@ export async function runEventTool(name, input, ctx) {
       ok: true,
       event: events.organizerView(ev),
       share: { name: ev.name, password: input.password, link: events.eventUrl(ev), share_text: events.shareText(ev, input.password) }, links: LINK_ALONE,
-      say: "Send them the share_text as one message for them to forward, then the link as its OWN message with nothing else in it — never inside the share text or a block to copy — so Messages draws it as the event's card. The link opens a join page; guests still need the password. Guests who already use Reason can also just text Reason the name and password, or paste the link to their Reason. Mention once that they can text a photo or flyer to put on the link's card, and in a few words that Reason reminds guests the day before and about 2 hours before (either can be turned off)."
+      say: "Send them the share_text as one message for them to forward, then the link as its OWN message with nothing else in it — never inside the share text or a block to copy — so Messages draws it as the event's card. The link opens a join page; guests still need the password. Guests who already use Reason can also just text Reason the name and password, or paste the link to their Reason. Mention once that they can text a photo or flyer to put on the link's card, and, in one short line, that Reason texts guests two reminders on its own — the day before and about 2 hours before — and that they can turn either off on the event's page or by asking you. Describe that in plain words; never hand them a phrase to type."
         + (ev.guest_list_visible ? " Don't bring up the who's-going list or Instagram: one follow-up about their own spot on it goes out on its own after your reply." : ""),
     };
   }

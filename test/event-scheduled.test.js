@@ -138,6 +138,21 @@ test("reminders are on for a new event and off for one made before reminders exi
   assert.deepEqual(schedule.reminders(old).map(r => r.on), [false, false]);
 });
 
+test("event_create by text: the reply tells the organizer about the two reminders and that either can be turned off, with no phrase to type", async () => {
+  const out = await tool("event_create", {
+    name: "Rooftop Night", description: "drinks", starts_at: nyDay(5, 20), timezone: TZ, location: "1 Main St",
+    welcome_message: "", password: "rooftop", show_time_on_join: true, show_location_on_join: true, guest_list_visible: false,
+  }, AMA_C, harness().runtime);
+  assert.equal(out.ok, true);
+  const row = db.db.prepare("SELECT * FROM events WHERE name = 'Rooftop Night'").get();
+  assert.equal(row.remind_day_before, 1);
+  assert.equal(row.remind_soon, 1);
+  assert.match(out.say, /two reminders/);
+  assert.match(out.say, /the day before and about 2 hours before/);
+  assert.match(out.say, /turn either off on the event's page or by asking you/);
+  assert.match(out.say, /never hand them a phrase to type/);
+});
+
 test("the two tools are shown to an organizer and not to a guest who organizes nothing", () => {
   make(OWNER_C);
   config.events = "owner";
