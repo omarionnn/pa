@@ -475,7 +475,7 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
       const replacing = Number.isInteger(idRaw) && idRaw > 0 ? idRaw : null;
       const draft = { message, send_at: sendAt, ...(replacing ? { id: String(replacing) } : {}) };
       if (step === "edit") return again(null, { schedule: draft });
-      if (!valid("event_schedule", { message: message || " ", send_at: sendAt })) return oops(schedule.WHY.too_long, { schedule: draft });
+      if (!valid("event_schedule", { message: message || " ", send_at: sendAt })) return oops(message.length > LIMITS.message ? schedule.WHY.too_long : schedule.WHY.bad_time, { schedule: draft });
       const plan = schedule.plan(own, { message, sendAt, replacing });
       if (!plan.ok) return oops(schedule.WHY[plan.reason] ?? "That can't be scheduled.", { schedule: draft });
       if (step === "preview") {

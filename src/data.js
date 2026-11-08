@@ -584,6 +584,13 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
       .all(...(conversation ? [conversation] : []))
     : [];
 
+  // An event they organised stays (KEPT_ON_DELETE), but nobody can run it any more: its automatic
+  // reminders are switched off first, so the reminder record going with their rows below can never
+  // read as "not sent yet" and text guests a second time (src/eventschedule.js).
+  if (conversation && present("events")) {
+    try { db.prepare("UPDATE events SET remind_day_before = 0, remind_soon = 0 WHERE organizer_conversation_id = ?").run(conversation); } catch { /* an older db without the columns */ }
+  }
+
   const rows = {};
   const childIds = [...pageIds, ...(conversation ? [`esign:${conversation}`] : [])];
   for (const t of PAGE_CHILD_TABLES) {

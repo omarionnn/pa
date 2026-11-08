@@ -501,3 +501,36 @@ test("page: nobody but the organizer can schedule, change, cancel or switch a re
   const peek = await req(h, ev, { cookie: COOKIE.owner, query: { edit: String(theirs.row.id) } });
   assert.ok(!/kofi&#39;s|kofi's/.test(peek.body), "?edit= only opens this event's own messages");
 });
+
+// ---------- review follow-ups ----------
+
+test("a row left mid-send and found hours later is dropped, not finished stale; a reminder never after the start", async () => {
+  const h = harness();
+  const ev = make(OWNER_C);
+  await join(AMA_C, ev); await join(ESI_C, ev);
+  await settle();
+  h.channel.sent.length = 0;
+  const s = schedule.schedule({ ev, conversationId: OWNER_C, message: "half sent", sendAt: nyDay(1, 12) });
+  at(s.row.send_at + 1000);
+  db.claimScheduledMessage(s.row.id, (r) => events.blastBody(ev, r.body), "scheduled");
+  const soon = db.claimReminder({ eventId: ev.id, conversationId: OWNER_C, kind: "reminder_soon", sendAt: ev.starts_at - 2 * HOUR, forStartsAt: ev.starts_at, body: schedule.reminderBody(ev, "two_hours"), messageKind: "reminder" });
+  // Down for three hours past the message, and past the event's start.
+  at(ev.starts_at + 60_000);
+  const out = await schedule.sweep({ runtime: h.runtime });
+  await settle();
+  assert.equal(out.missed, 2);
+  assert.deepEqual([db.scheduledRow(s.row.id).state, db.scheduledRow(soon.id).state], ["missed", "missed"]);
+  assert.equal(h.channel.sent.length, 0);
+});
+
+test("an organizer's data delete switches their events' reminders off, so none goes twice or for an event nobody runs", async () => {
+  const h = harness();
+  const ev = make(KOFI_C, { name: "Kofi's Dinner", password: "jollof" });
+  await join(AMA_C, ev, "jollof");
+  const { deleteData } = await import("../src/data.js");
+  await deleteData({ conversation: KOFI_C });
+  const after = db.getEventRow(ev.id);
+  assert.ok(after, "the event itself is kept for its guests");
+  assert.deepEqual([after.remind_day_before, after.remind_soon], [0, 0]);
+  assert.ok(h);
+});

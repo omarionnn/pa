@@ -254,6 +254,12 @@ async function sendClaimed({ runtime, row, ev }) {
   return { state: "sent", ...out };
 }
 
+/** The latest a claimed row may still be sent: a message up to LATE_MS after its time, a reminder never after the start. */
+function sendDeadline(row) {
+  const late = row.send_at + SCHEDULE.lateMs;
+  return row.kind === "message" || row.for_starts_at == null ? late : Math.min(late, row.for_starts_at);
+}
+
 async function guarded(id, fn) {
   if (inFlight.has(id)) return { state: "busy" };
   inFlight.add(id);
@@ -271,6 +277,9 @@ export async function sweep({ runtime, now = clock.now(), log = () => {} } = {})
     try {
       const ev = db.getEventRow(due.event_id);
       if (due.state === "sending") {
+        // Left mid-send and found too late (Reason was down, or the event was paused under it): the
+        // rest is dropped, never sent stale — a "starts in about 2 hours" after the start is wrong.
+        if (now > sendDeadline(due)) { db.finishScheduled(due.id, "missed", "Reason couldn't finish sending it on time"); out.missed++; continue; }
         const r = await guarded(due.id, () => sendClaimed({ runtime, row: due, ev }));
         if (r.state === "sent") { out.resumed++; if (due.kind === "message") out.messages++; else out.reminders++; }
         continue;

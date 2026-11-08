@@ -12558,7 +12558,10 @@ export function cancelPendingScheduledFor(eventId, note) {
 }
 /** Messages whose time has come, and rows a stopped process left mid-send. */
 export function dueScheduled(now = clock.now(), { limit = 200 } = {}) {
-  return db.prepare("SELECT * FROM event_scheduled WHERE (state = 'pending' AND send_at <= ?) OR state = 'sending' ORDER BY send_at, id LIMIT ?").all(now, limit);
+  // A row left sending on an event the operator paused waits for the resume; listing it every pass
+  // would let a pile of them crowd out messages that are due now.
+  return db.prepare(`SELECT * FROM event_scheduled WHERE (state = 'pending' AND send_at <= ?)
+    OR (state = 'sending' AND event_id NOT IN (SELECT id FROM events WHERE status = 'paused')) ORDER BY send_at, id LIMIT ?`).all(now, limit);
 }
 /**
  * Claim one waiting message and make the event message it goes out as, together: pending → sending
