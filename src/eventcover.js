@@ -322,7 +322,7 @@ export async function offerCover({ ev, conversationId, mediaId, fetchImpl }) {
   if (!row) return { ok: false, error: `There's no photo #${mediaId} in this conversation.` };
   if (row.kind !== "image") return { ok: false, error: `Item #${mediaId} isn't a photo.` };
   if (!row.url) return { ok: false, error: `Photo #${mediaId} arrived with no link to it, so it can't be used — ask them to send it again.` };
-  const got = await fetchImage({ url: row.url, filename: row.filename, ...(fetchImpl ? { fetchImpl } : {}) });
+  const got = await fetchImage({ url: row.url, filename: row.filename, conversationId, ...(fetchImpl ? { fetchImpl } : {}) });
   if (!got.ok) return { ok: false, error: `Couldn't open photo #${mediaId}: ${got.why}.` };
   const picture = { mediaType: got.mediaType, base64: got.base64 };
 

@@ -122,10 +122,13 @@ test("4. nothing the server writes carries the key; the status page still opens"
   at(TUE_9AM);
   const token = `tok-${Math.random().toString(36).slice(2)}`;
   db.startPageSession(`wsign:${OWNER_C}`, token, { conversationId: OWNER_C });
+  // The status page opens only on its own sign-in, in its own cookie (2026-11-08).
+  const opsToken = `ops-${Math.random().toString(36).slice(2)}`;
+  db.startPageSession("ops", opsToken, { conversationId: OWNER_C });
   const server = createServer({ router: h.router, runtime: h.runtime });
   await new Promise(r => server.listen(0, "127.0.0.1", r));
-  const get = (path) => new Promise((resolve, reject) => {
-    const r = request(`http://127.0.0.1:${server.address().port}${path}`, { headers: { host: "heyreason.test", cookie: `reason_page=${token}`, "sec-fetch-site": "same-origin" } }, (res) => {
+  const get = (path, cookie = `reason_page=${token}`) => new Promise((resolve, reject) => {
+    const r = request(`http://127.0.0.1:${server.address().port}${path}`, { headers: { host: "heyreason.test", cookie, "sec-fetch-site": "same-origin" } }, (res) => {
       const chunks = []; res.on("data", (c) => chunks.push(c)); res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
     });
     r.on("error", reject); r.end();
@@ -140,7 +143,8 @@ test("4. nothing the server writes carries the key; the status page still opens"
     assert.equal(thread.status, 200);
     assert.match(thread.body, /heyreason\.test\/ops\?focus=sweep/, "the thread still shows the link, without the key");
     assert.doesNotMatch((await get("/web?home")).body, /Reason check/, "Home's Overnight has no ops notice");
-    assert.equal((await get(`/ops?k=${key}`)).status, 200, "the status page still opens with its link");
+    assert.equal((await get(`/ops?k=${key}`, `reason_ops=${opsToken}`)).status, 200, "the status page still opens with its link");
+    assert.equal((await get(`/ops?k=${key}`)).status, 401, "a Web sign-in alone does not open the status page");
   } finally {
     await new Promise(r => server.close(r));
   }

@@ -58,7 +58,10 @@ test("accounts get web_reach and web_theme, NULL for old rows: texted as ever, n
 
 test("page_sessions gets user_agent, NULL for old rows; every session still opens what it did", () => {
   assert.ok(db.db.prepare("SELECT * FROM pragma_table_info('page_sessions') WHERE name = 'user_agent'").get());
-  assert.deepEqual(db.pageSessionsFor(OWNER).map(s => [s.token, s.user_agent]), [["t-web", null], ["t-page", null]]);
+  // Hashed in place (2026-11-08): the row holds the token's sha256, never the token, and the same cookie still opens it.
+  assert.deepEqual(db.pageSessionsFor(OWNER).map(s => [s.token, s.user_agent]), [[db.sessionKey("t-web"), null], [db.sessionKey("t-page"), null]]);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions WHERE token IN ('t-web', 't-page', 't-ama')").get().n, 0, "no raw token is left in the table");
+  assert.match(db.db.prepare("SELECT token FROM page_sessions WHERE conversation_id = ?").get(A).token, /^[0-9a-f]{64}$/);
   assert.equal(db.pageSessionOwner("t-web", 90 * 86_400_000), OWNER);
   assert.equal(db.pageSessionCsrf("t-web"), "c1", "the form secret is kept");
   assert.equal(db.pageSessionOwner("t-ama", 90 * 86_400_000), A);

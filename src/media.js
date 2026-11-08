@@ -154,9 +154,10 @@ export async function fetchImage({
   headers = {},
   converter = findConverter(),
   convert = toJpeg,
+  conversationId = "",
 } = {}) {
   // A photo handed in on Reason Web is kept on this machine (src/webuploads.js): read from disk, every check below unchanged.
-  const local = localUpload(url);
+  const local = localUpload(url, { conversationId });
   if (local) fetchImpl = local.fetch;
   const name = filename || String(url ?? "").split("?")[0].split("/").pop() || "the picture";
   const hinted = modelTypeFor(name);
@@ -323,11 +324,12 @@ export async function fetchPdf({
   timeoutMs = config.imageFetchTimeoutMs,
   maxBytes = config.pdfMaxBytes,
   read = pdfText,
+  conversationId = "",
 } = {}) {
   const name = filename || String(url ?? "").split("?")[0].split("/").pop() || "the document";
   if (!url) return { ok: false, why: `they sent a PDF (${name}) but it arrived with no link to it` };
   // One handed in on Reason Web is read from disk (src/webuploads.js), with the same checks.
-  const local = localUpload(url);
+  const local = localUpload(url, { conversationId });
   if (local) fetchImpl = local.fetch;
 
   const first = checkUrl(url);

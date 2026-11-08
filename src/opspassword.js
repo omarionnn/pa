@@ -13,7 +13,7 @@
 import { scrypt, timingSafeEqual } from "node:crypto";
 import * as db from "./db.js";
 import { config } from "./config.js";
-import { siteClientIp } from "./pages/siteproxy.js";
+import { siteClientIp, caddyClientIp } from "./pages/siteproxy.js";
 
 export const WINDOW_MS = 15 * 60 * 1000;
 /** Wrong passwords from one address in the window before it is locked out for the rest of it. */
@@ -56,15 +56,17 @@ export function passwordMatches(input, stored = config.opsPasswordHash) {
 }
 
 /**
- * Who is asking. Behind Netlify the browser's address is in x-nf-client-connection-ip, and in the
- * first entry of x-forwarded-for; the Tailscale Funnel in front of this server adds its own. The
- * per-address count is a courtesy — the total cap is what bounds a guesser who forges the header.
+ * Who is asking, for the per-address count. Only an address something we trust vouches for: the
+ * website's signed rewrite (x-nf-client-connection-ip with a valid x-nf-sign), or Caddy's
+ * X-Forwarded-For on a loopback request carrying Caddy's secret (src/pages/siteproxy.js). Anything
+ * else — a browser's own X-Forwarded-For or x-nf-client-connection-ip, which the Tailscale Funnel
+ * passes straight through — is ignored, and the socket's address is used: then everyone arriving
+ * by the Funnel shares one count, so a guesser cannot buy five fresh tries per forged address
+ * (2026-11-08, security).
  */
 export function clientIp(headers = {}, socketAddress = "") {
-  const nf = String(headers["x-nf-client-connection-ip"] ?? "").trim();
-  if (nf) return nf.slice(0, 64);
-  const xff = String(headers["x-forwarded-for"] ?? "").split(",")[0].trim();
-  if (xff) return xff.slice(0, 64);
+  const ip = siteClientIp(headers) || caddyClientIp(headers, socketAddress);
+  if (ip) return ip.slice(0, 64);
   return String(socketAddress || "unknown").slice(0, 64);
 }
 

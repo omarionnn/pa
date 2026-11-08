@@ -288,7 +288,7 @@ test("the happy path: the code text is keyed wsign:, bound to the Web host, and 
   assert.match(row.idem_key, new RegExp(`^wsign:${KOFI_C.replace(/[+:]/g, "\\$&")}:\\d+$`));
   assert.equal(row.state, "sent");
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM messages").get().n, 0, "a code is a secret, not history");
-  const sess = db.db.prepare("SELECT * FROM page_sessions WHERE token = ?").get(s.token);
+  const sess = db.db.prepare("SELECT * FROM page_sessions WHERE token = ?").get(db.sessionKey(s.token));
   assert.equal(sess.conversation_id, KOFI_C);
   assert.equal(sess.page_id, ws.signinKey(KOFI_C));
   // The cookie: on every path, shared across heyreason.com (decision 3; test/domains.test.js), HttpOnly,
@@ -511,13 +511,13 @@ test("a session is over after 30 idle days or 90 days of age, whichever first", 
   const h = harness();
   const s = await signedIn(h);
   await firstVisit(h, s.jar);
-  db.db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now() - 29 * DAY, s.token);
+  db.db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now() - 29 * DAY, db.sessionKey(s.token));
   assert.match((await req(h, { cookie: s.jar })).body, /What(&#39;|')s good, /, "29 idle days: still in, and touched");
-  db.db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now() - 31 * DAY, s.token);
+  db.db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now() - 31 * DAY, db.sessionKey(s.token));
   assert.match((await req(h, { cookie: s.jar })).body, SIGNIN, "31 idle days: out");
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions").get().n, 0);
   const t = await signedIn(h);
-  db.db.prepare("UPDATE page_sessions SET created_at = ?, last_seen_at = ? WHERE token = ?").run(clock.now() - 91 * DAY, clock.now(), t.token);
+  db.db.prepare("UPDATE page_sessions SET created_at = ?, last_seen_at = ? WHERE token = ?").run(clock.now() - 91 * DAY, clock.now(), db.sessionKey(t.token));
   assert.match((await req(h, { cookie: t.jar })).body, SIGNIN, "91 days old: out however recently used");
 });
 

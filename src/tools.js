@@ -9231,7 +9231,7 @@ async function withFoldedPhoto(ctx, pics, out) {
   try {
     const row = db.mediaItem(ctx.conversationId, pics[0]);
     if (!row?.url || row.kind !== "image") return out;
-    const got = await fetchImage({ url: row.url, filename: row.filename, ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}) });
+    const got = await fetchImage({ url: row.url, filename: row.filename, conversationId: ctx.conversationId, ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}) });
     if (!got.ok) return out;
     try { reviewed.cover(row.id, { coverage: "looked", bytes: got.bytes }); } catch { /* the record is best-effort */ }
     return { ...out, photo_attached: row.id, _image: { media_type: got.mediaType, data: got.base64, bytes: got.bytes } };
@@ -14230,7 +14230,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!row) return { ok: false, error: `There is no item #${input.id} in this conversation. Call media_reviewed with no id to see what there is.` };
       if (row.kind !== "image") return { ok: false, error: `Item #${input.id} is a ${row.kind === "voice" ? "voice note" : row.kind}, not a photo. For a voice note's words, media_reviewed with its id.` };
       if (!row.url) return { ok: false, error: `Photo #${input.id} (${row.filename || "photo"}) arrived with no link to it, so there is nothing to fetch. Say so if it matters, in one line.` };
-      const got = await fetchImage({ url: row.url, filename: row.filename, ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}) });
+      const got = await fetchImage({ url: row.url, filename: row.filename, conversationId: c, ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}) });
       if (!got.ok) return { ok: false, error: `Could not bring photo #${input.id} back: ${got.why}. Work from what the recent-photos note says you saw in it, and say in one line that the picture itself is out of reach now.` };
       return {
         ok: true,

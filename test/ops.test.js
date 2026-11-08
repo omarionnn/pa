@@ -353,7 +353,7 @@ test("the right code opens the page, sets a cookie for the whole site, and that 
   const opened = await POST(`code=${code}`, {}, ops.opsKey());
   assert.equal(opened.status, 303, "signed in, then back to the page as a GET");
   assert.equal(opened.headers.Location, "/ops");
-  assert.match(opened.headers["Set-Cookie"], /^reason_page=[A-Za-z0-9_-]+; Path=\/; /);
+  assert.match(opened.headers["Set-Cookie"], /^reason_ops=[A-Za-z0-9_-]+; Path=\/; .*SameSite=Strict/);
 
   const cookie = opened.headers["Set-Cookie"].split(";")[0];
   const again = await GET({ cookie });

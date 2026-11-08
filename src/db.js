@@ -1385,6 +1385,22 @@ db.exec(`UPDATE page_sessions SET conversation_id = (SELECT conversation_id FROM
 // site cannot post as this browser (the cookie alone would ride along). Minted on first read for a
 // session that predates the column.
 addColumnIfMissing("page_sessions", "csrf", "TEXT");
+// Sign-in sessions are kept only as a hash of the cookie (2026-11-08, security): a copy of this
+// database then opens nobody's Web, pages or /ops. The browser keeps the token; every lookup hashes
+// what it sent (sessionKey). Rows from before are hashed in place, once, so every browser signed in
+// stays signed in. A stored key is 64 hex characters; a token we mint is 43 base64url ones, so a row
+// is hashed exactly once however many times this runs.
+{
+  const raw = db.prepare("SELECT token FROM page_sessions WHERE length(token) != 64 OR token GLOB '*[^0-9a-f]*'").all();
+  if (raw.length) {
+    const upd = db.prepare("UPDATE OR IGNORE page_sessions SET token = ? WHERE token = ?");
+    db.exec("BEGIN");
+    try {
+      for (const r of raw) upd.run(sessionKey(r.token), r.token);
+      db.exec("COMMIT");
+    } catch (e) { db.exec("ROLLBACK"); throw e; }
+  }
+}
 // active | paused | removed (2026-10-25). The CREATE TABLE above has had it, but a database made
 // before it never got it, and live was one: every read fell back to "active", so nothing looked
 // wrong, while every write — the owner's pause/resume/remove and the harm pause — would have
@@ -6185,11 +6201,17 @@ export function failedPageAttempts(pageId_, windowMs) {
     .get(pageId_, clock.now() - windowMs).n;
 }
 
+/** What a session is stored under: the sha256 of the browser's token, hex. Never the token itself. */
+export function sessionKey(token) {
+  return createHash("sha256").update(String(token)).digest("hex");
+}
+function sk(token) { return sessionKey(token); }
+
 export function startPageSession(pageId_, token, { conversationId = null } = {}) {
   const now = clock.now();
   const owner = conversationId ?? db.prepare("SELECT conversation_id FROM pages WHERE id = ?").get(pageId_)?.conversation_id ?? null;
   db.prepare("INSERT INTO page_sessions (token, page_id, conversation_id, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
-    .run(token, pageId_, owner, now, now);
+    .run(sk(token), pageId_, owner, now, now);
   return token;
 }
 
@@ -6200,15 +6222,15 @@ export function startPageSession(pageId_, token, { conversationId = null } = {})
  */
 export function pageSessionOwner(token, maxAgeMs, { idleMs = Infinity } = {}) {
   if (!token) return null;
-  const row = db.prepare("SELECT * FROM page_sessions WHERE token = ?").get(token);
+  const row = db.prepare("SELECT * FROM page_sessions WHERE token = ?").get(sk(token));
   if (!row?.conversation_id) return null;
   // Too old since it was made, or (Reason Web, owner decision 3) unused for too long: gone, and the
   // row with it, so the same cookie opens nothing anywhere afterwards.
   if (clock.now() - row.created_at > maxAgeMs || clock.now() - row.last_seen_at > idleMs) {
-    db.prepare("DELETE FROM page_sessions WHERE token = ?").run(token);
+    db.prepare("DELETE FROM page_sessions WHERE token = ?").run(sk(token));
     return null;
   }
-  db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now(), token);
+  db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now(), sk(token));
   zonescope.enter(row.conversation_id);
   return row.conversation_id;
 }
@@ -6219,11 +6241,11 @@ export function pageSessionOwner(token, maxAgeMs, { idleMs = Infinity } = {}) {
  */
 export function pageSessionCsrf(token) {
   if (!token) return null;
-  const row = db.prepare("SELECT token, csrf FROM page_sessions WHERE token = ?").get(token);
+  const row = db.prepare("SELECT token, csrf FROM page_sessions WHERE token = ?").get(sk(token));
   if (!row) return null;
   if (row.csrf) return row.csrf;
-  db.prepare("UPDATE page_sessions SET csrf = ? WHERE token = ? AND csrf IS NULL").run(randomBytes(16).toString("base64url"), token);
-  return db.prepare("SELECT csrf FROM page_sessions WHERE token = ?").get(token)?.csrf ?? null;
+  db.prepare("UPDATE page_sessions SET csrf = ? WHERE token = ? AND csrf IS NULL").run(randomBytes(16).toString("base64url"), sk(token));
+  return db.prepare("SELECT csrf FROM page_sessions WHERE token = ?").get(sk(token))?.csrf ?? null;
 }
 
 /**
@@ -6234,35 +6256,35 @@ export function pageSessionCsrf(token) {
 export function pageSessionValid(pageId_, token, maxAgeMs) {
   if (!token) return false;
   const row = db.prepare(`SELECT s.* FROM page_sessions s JOIN pages p ON p.id = ?
-    WHERE s.token = ? AND (s.page_id = p.id OR s.conversation_id = p.conversation_id)`).get(pageId_, token);
+    WHERE s.token = ? AND (s.page_id = p.id OR s.conversation_id = p.conversation_id)`).get(pageId_, sk(token));
   if (!row) return false;
   if (clock.now() - row.created_at > maxAgeMs) {
-    db.prepare("DELETE FROM page_sessions WHERE token = ?").run(token);
+    db.prepare("DELETE FROM page_sessions WHERE token = ?").run(sk(token));
     return false;
   }
-  db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now(), token);
+  db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now(), sk(token));
   return true;
 }
 
 /** Is there a session row for this token at all? A read only: no ageing, no touch. */
 export function pageSessionExists(token) {
-  return !!token && !!db.prepare("SELECT 1 FROM page_sessions WHERE token = ?").get(String(token));
+  return !!token && !!db.prepare("SELECT 1 FROM page_sessions WHERE token = ?").get(sk(token));
 }
 
 /** Which sign-in made this session (its page_id: a page id, `wsign:…`, `esign:…`, `connect:…`), or null. A read only. */
 export function pageSessionSource(token) {
-  return token ? db.prepare("SELECT page_id FROM page_sessions WHERE token = ?").get(String(token))?.page_id ?? null : null;
+  return token ? db.prepare("SELECT page_id FROM page_sessions WHERE token = ?").get(sk(token))?.page_id ?? null : null;
 }
 
 /** Whose session row this is (its conversation), or null. A read only. */
 export function pageSessionConversation(token) {
-  return token ? db.prepare("SELECT conversation_id FROM page_sessions WHERE token = ?").get(String(token))?.conversation_id ?? null : null;
+  return token ? db.prepare("SELECT conversation_id FROM page_sessions WHERE token = ?").get(sk(token))?.conversation_id ?? null : null;
 }
 
 /** Sign one browser out: its session row is gone, so its cookie opens nothing anywhere. */
 export function endPageSession(token) {
   if (!token) return false;
-  return db.prepare("DELETE FROM page_sessions WHERE token = ?").run(String(token)).changes === 1;
+  return db.prepare("DELETE FROM page_sessions WHERE token = ?").run(sk(token)).changes === 1;
 }
 
 /** Sign every browser of one person out (spec v3 §12: revocable). Returns how many there were. */
@@ -6272,7 +6294,8 @@ export function endPageSessionsFor(conversationId) {
 }
 
 /**
- * Every browser one person is signed in on (Reason Web Settings): token, when it was made, when it
+ * Every browser one person is signed in on (Reason Web Settings): its stored key (`token`, the hash,
+ * never the browser's token), when it was made, when it
  * was last used and the browser it was last used from. Newest use first. Rows past `maxAgeMs` since
  * made, or `idleMs` unused, are not listed: they open nothing.
  */
@@ -6287,13 +6310,19 @@ export function pageSessionsFor(conversationId, { maxAgeMs = Infinity, idleMs = 
 export function notePageSessionAgent(token, userAgent) {
   const ua = String(userAgent ?? "").slice(0, 300);
   if (!token || !ua) return false;
-  return db.prepare("UPDATE page_sessions SET user_agent = ? WHERE token = ? AND (user_agent IS NULL OR user_agent != ?)").run(ua, String(token), ua).changes === 1;
+  return db.prepare("UPDATE page_sessions SET user_agent = ? WHERE token = ? AND (user_agent IS NULL OR user_agent != ?)").run(ua, sk(token), ua).changes === 1;
 }
 
 /** Sign one of THIS person's browsers out. A token that is somebody else's is untouched. */
 export function endPageSessionOf(conversationId, token) {
   if (!conversationId || !token) return false;
-  return db.prepare("DELETE FROM page_sessions WHERE token = ? AND conversation_id = ?").run(String(token), conversationId).changes === 1;
+  return db.prepare("DELETE FROM page_sessions WHERE token = ? AND conversation_id = ?").run(sk(token), conversationId).changes === 1;
+}
+
+/** The same, by the stored key a pageSessionsFor row carries (Web Settings' list never sees a token). */
+export function endPageSessionKeyOf(conversationId, key) {
+  if (!conversationId || !key) return false;
+  return db.prepare("DELETE FROM page_sessions WHERE token = ? AND conversation_id = ?").run(String(key), conversationId).changes === 1;
 }
 
 /**
@@ -6321,7 +6350,7 @@ export function setWebReach(conversationId, value) {
  */
 export function pageSessionPeek(token, maxAgeMs, { idleMs = Infinity } = {}) {
   if (!token) return null;
-  const row = db.prepare("SELECT conversation_id, created_at, last_seen_at FROM page_sessions WHERE token = ?").get(String(token));
+  const row = db.prepare("SELECT conversation_id, created_at, last_seen_at FROM page_sessions WHERE token = ?").get(sk(token));
   if (!row?.conversation_id) return null;
   const now = clock.now();
   if (now - row.created_at > maxAgeMs || now - row.last_seen_at > idleMs) return null;
@@ -6331,12 +6360,12 @@ export function pageSessionPeek(token, maxAgeMs, { idleMs = Infinity } = {}) {
 
 /** Browser notifications on this one browser (Gap 8C): true only when it asked for them. */
 export function pageSessionNotify(token) {
-  return !!token && Number(db.prepare("SELECT web_notify FROM page_sessions WHERE token = ?").get(String(token))?.web_notify ?? 0) === 1;
+  return !!token && Number(db.prepare("SELECT web_notify FROM page_sessions WHERE token = ?").get(sk(token))?.web_notify ?? 0) === 1;
 }
 /** Turn them on or off for one of THIS person's browsers. A token that is somebody else's is untouched. */
 export function setPageSessionNotify(conversationId, token, on) {
   if (!conversationId || !token) return false;
-  return db.prepare("UPDATE page_sessions SET web_notify = ? WHERE token = ? AND conversation_id = ?").run(on ? 1 : 0, String(token), conversationId).changes === 1;
+  return db.prepare("UPDATE page_sessions SET web_notify = ? WHERE token = ? AND conversation_id = ?").run(on ? 1 : 0, sk(token), conversationId).changes === 1;
 }
 
 /** The theme this person chose on Web (paper | night | auto), or null when they never chose one. */
@@ -10365,21 +10394,21 @@ export function inboundCancelled(channel, externalId) {
  */
 export function webVisit(token, { awayMs, now = clock.now() } = {}) {
   if (!token) return null;
-  const row = db.prepare("SELECT web_seen_at FROM page_sessions WHERE token = ? AND conversation_id IS NOT NULL").get(String(token));
+  const row = db.prepare("SELECT web_seen_at FROM page_sessions WHERE token = ? AND conversation_id IS NOT NULL").get(sk(token));
   if (!row) return null;
   const prev = row.web_seen_at;
   if (prev != null && now - prev >= awayMs) {
-    db.prepare("UPDATE page_sessions SET web_seen_at = ?, web_away_from = ?, web_away_to = ? WHERE token = ?").run(now, prev, now, String(token));
+    db.prepare("UPDATE page_sessions SET web_seen_at = ?, web_away_from = ?, web_away_to = ? WHERE token = ?").run(now, prev, now, sk(token));
     return { returned: true, from: prev, to: now };
   }
-  db.prepare("UPDATE page_sessions SET web_seen_at = ? WHERE token = ?").run(now, String(token));
+  db.prepare("UPDATE page_sessions SET web_seen_at = ? WHERE token = ?").run(now, sk(token));
   return { returned: false };
 }
 
 /** This browser is here (it sent something): its last-seen moves on, without starting a return. */
 export function webPresent(token, now = clock.now()) {
   if (!token) return false;
-  return db.prepare("UPDATE page_sessions SET web_seen_at = ? WHERE token = ? AND conversation_id IS NOT NULL").run(now, String(token)).changes === 1;
+  return db.prepare("UPDATE page_sessions SET web_seen_at = ? WHERE token = ? AND conversation_id IS NOT NULL").run(now, sk(token)).changes === 1;
 }
 
 /** Taken back after its claim but before it was held (src/channels/router.js takeBack): the hold then never happens. */
@@ -10393,9 +10422,9 @@ export function markInboundCancelled(channel, externalId, now = clock.now()) {
  */
 export function takeWebAway(token, conversationId, { within = Infinity, now = clock.now() } = {}) {
   if (!token || !conversationId) return null;
-  const row = db.prepare("SELECT web_away_from, web_away_to FROM page_sessions WHERE token = ? AND conversation_id = ?").get(String(token), conversationId);
+  const row = db.prepare("SELECT web_away_from, web_away_to FROM page_sessions WHERE token = ? AND conversation_id = ?").get(sk(token), conversationId);
   if (row?.web_away_from == null) return null;
-  const spent = db.prepare("UPDATE page_sessions SET web_away_from = NULL, web_away_to = NULL WHERE token = ? AND web_away_from IS NOT NULL").run(String(token)).changes;
+  const spent = db.prepare("UPDATE page_sessions SET web_away_from = NULL, web_away_to = NULL WHERE token = ? AND web_away_from IS NOT NULL").run(sk(token)).changes;
   if (!spent || now - row.web_away_to > within) return null;
   return { from: row.web_away_from, to: row.web_away_to };
 }

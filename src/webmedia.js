@@ -162,7 +162,7 @@ export async function prepareSend({ conversationId, text = "", files = [], liste
     if (kept) { words = kept; Object.assign(a, { transcribed: "server", transcript: kept }); continue; }
     let r = null;
     if (canHear().ok && !uploads.meta(a.web_upload)?.unheard) {
-      try { r = await listen({ url: a.url, filename: a.filename }); } catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+      try { r = await listen({ url: a.url, filename: a.filename, conversationId }); } catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
     }
     if (r?.ok && !r.silent && String(r.text ?? "").trim()) {
       words = String(r.text).trim();

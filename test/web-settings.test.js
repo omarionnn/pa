@@ -260,14 +260,14 @@ test("browsers: this person's sessions only, device from the user agent, last ac
   const old = browser(OWNER_C, WIN_FF);
   await call(h, { sub: null, b: old });
   const weekAgo = clock.now() - 7 * DAY;
-  db.db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(weekAgo, old.token);
+  db.db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(weekAgo, db.sessionKey(old.token));
   const day = st.lastActive(weekAgo);
   assert.match(day, /^[A-Z]{3} \d{1,2}$/);
   const kofi = browser(KOFI_C, IPHONE);
   await call(h, { sub: null, b: kofi });
   const me = browser(OWNER_C, MAC_CHROME);
   const body = await page(h, me);
-  assert.equal(db.pageSessionsFor(OWNER_C).find(s => s.token === me.token).user_agent, MAC_CHROME, "the browser is written down");
+  assert.equal(db.pageSessionsFor(OWNER_C).find(s => s.token === db.sessionKey(me.token)).user_agent, MAC_CHROME, "the browser is written down");
   const rows = [...body.matchAll(/<div class="br-row[^"]*">.*?<\/div>/g)].map(m => m[0]);
   assert.equal(rows.length, 3, "Kofi's browser is not on the owner's list");
   assert.match(rows[0], /class="br-row here".*Chrome on Mac.*THIS ONE · <\/span>NOW.*<span class="br-here">you're here<\/span>/);
@@ -281,13 +281,14 @@ test("browsers: this person's sessions only, device from the user agent, last ac
 
 test("browsers: sessions never used since browsers were noted are one quiet count, ended by Sign out everywhere", async () => {
   const h = harness();
-  for (let i = 0; i < 3; i++) db.startPageSession("p123", `page-${i}-${Math.random()}`, { conversationId: OWNER_C });
+  const pageTokens = [0, 1, 2].map(i => `page-${i}-${Math.random()}`);
+  for (const t of pageTokens) db.startPageSession("p123", t, { conversationId: OWNER_C });
   const me = browser(OWNER_C);
   const body = await page(h, me);
   assert.equal((body.match(/class="br-row/g) ?? []).length, 1, "only this one is listed");
   assert.match(body, /<p class="st-quiet">And 3 other sign-ins that haven't opened Reason Web, like Reason's pages\. Signing out everywhere ends them too\.<\/p>/);
   assert.match(body, /class="br-row here"/, "this browser is listed");
-  db.db.prepare("DELETE FROM page_sessions WHERE token LIKE 'page-1-%' OR token LIKE 'page-2-%'").run();
+  for (const t of pageTokens.slice(1)) db.db.prepare("DELETE FROM page_sessions WHERE token = ?").run(db.sessionKey(t));
   assert.match(await page(h, me), /And 1 other sign-in that hasn't opened Reason Web, like Reason's pages\. Signing out everywhere ends it too\./);
   await post(h, me, { do: "everywhere" });
   assert.equal(db.pageSessionsFor(OWNER_C).length, 0);
@@ -299,11 +300,11 @@ test("SIGN OUT ends that browser's session for real; this one stays; a handle fr
   const kofi = browser(KOFI_C, IPHONE);
   const me = browser(OWNER_C, MAC_CHROME);
   // Kofi's own handle, posted from the owner's page: not the owner's, nothing ends.
-  const nope = await post(h, me, { do: "browser", b: st.sessionHandle(kofi.token) });
+  const nope = await post(h, me, { do: "browser", b: st.sessionHandle(db.sessionKey(kofi.token)) });
   assert.equal(nope.status, 303);
   assert.equal((await call(h, { b: kofi })).status, 200, "Kofi is still signed in");
   // The owner's phone, from the owner's page.
-  const out = await post(h, me, { do: "browser", b: st.sessionHandle(phone.token) });
+  const out = await post(h, me, { do: "browser", b: st.sessionHandle(db.sessionKey(phone.token)) });
   assert.equal(out.headers.Location, "/web/settings?done=browsers#browsers");
   assert.equal((await call(h, { b: phone })).status, 303, "the phone's session opens nothing now");
   assert.equal((await call(h, { b: phone })).headers.Location, "/web");

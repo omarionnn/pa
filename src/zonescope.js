@@ -20,6 +20,9 @@ let enabled = () => true;
 /** config.js says whether per-person clocks are on at all; off, every read is the install's zone. */
 export function setEnabled(fn) { enabled = typeof fn === "function" ? fn : () => true; }
 
+/** Whose work is running now (their conversation id), or "" outside any person's scope. */
+export function conversation() { return scope.getStore()?.conv || ""; }
+
 /** Run `fn` with no person's clock: for loops shared by everyone that one person's work started. */
 export function outside(fn) { return scope.exit(fn); }
 
