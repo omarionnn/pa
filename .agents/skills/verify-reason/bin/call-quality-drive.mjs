@@ -44,7 +44,12 @@ if (!process.env.OPENAI_API_KEY || !clipsDir || !existsSync(clipsDir)) {
 Object.assign(process.env, {
   REASON_DATA_DIR: dirname(dbPath) + "/data", REASON_RECORDING_ROOT: dirname(dbPath) + "/recordings",
   REASON_OWNER_NAME: "Omari", REASON_TZ: "America/New_York", REASON_CONVERSATION: "dm:owner", REASON_WEB: "on",
-  REASON_OWNER_NUMBER: "+12025550100", ANTHROPIC_API_KEY: "", REASON_CALL_BACKEND: "claude-cli", REASON_BACKEND: "claude-cli",
+  REASON_OWNER_NUMBER: "+12025550100", // REASON_DRIVE_CALL_BACKEND=api (owner-approved paid replays only, 11-08): the call turn on the API and
+  // model live uses (REASON_CALL_MODEL from the env file), everything else still on claude-cli.
+  ...(process.env.REASON_DRIVE_CALL_BACKEND === "api"
+    ? { REASON_CALL_BACKEND: "api", REASON_CALL_MODEL: process.env.REASON_CALL_MODEL || "claude-sonnet-5-5" }
+    : { ANTHROPIC_API_KEY: "", REASON_CALL_BACKEND: "claude-cli" }),
+  REASON_BACKEND: "claude-cli",
   REASON_CALL_VOICE: "gptlive", REASON_CALL_IDENTITY: "owner", REASON_PUBLIC_URL: "http://127.0.0.1",
 });
 const flag = (k) => process.argv.indexOf(k);
