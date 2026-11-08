@@ -230,6 +230,30 @@ test("by text: a scheduled message for some guests is pinned, kept on the row, a
   assert.equal(db.eventMessage(db.scheduledRow(row.id).message_id).audience, row.audience, "the message carries the pick");
 });
 
+test("by text: changing a picked message's words keeps its guests; widening to everyone is said in so many words", async () => {
+  const h = harness();
+  const { ev, g } = await party(h);
+  const ctx = { conversationId: OWNER_C, messages: [], events: h.runtime };
+  const set = await withYes(runTool, "event_schedule", { event_id: ev.id, message: "cousins only", send_at: nyDay(2, 18), only_guest_ids: [g.ama.id, g.esi.id] }, ctx);
+  const change = { event_id: ev.id, scheduled_id: set.scheduled_id, message: "cousins only, new words", send_at: nyDay(2, 18) };
+  const unasked = await tool("event_schedule", change, OWNER_C, h.runtime);
+  assert.match(unasked.use_target, /\(replacing #\d+\) to 2 guests you picked — 2 get it: Ama, Esi/, "the yes for a word fix names the same two");
+  const changed = await withYes(runTool, "event_schedule", change, ctx);
+  assert.equal(changed.ok, true, JSON.stringify(changed));
+  assert.equal(db.scheduledRow(set.scheduled_id).audience, events.audienceKey({ guests: [g.ama.id, g.esi.id] }), "still the two of them");
+  const widen = await tool("event_schedule", { ...change, to_everyone: true }, OWNER_C, h.runtime);
+  assert.match(widen.use_target, /now to everyone, was 2 guests you picked/);
+  const wide = await withYes(runTool, "event_schedule", { ...change, to_everyone: true }, ctx);
+  assert.equal(wide.ok, true);
+  assert.equal(db.scheduledRow(set.scheduled_id).audience, null);
+  // The page's change of a picked message back to everyone widens it too, through its own confirm.
+  const again = schedule.schedule({ ev, conversationId: OWNER_C, message: "page one", sendAt: nyDay(3, 9), audience: { guests: [g.ama.id] } });
+  const prev = await post(h, ev, { action: "schedule", step: "preview", message: "page one", send_at: nyDay(3, 9), to: "everyone", id: String(again.row.id) });
+  assert.match(unesc(prev.body), /Reason texts this to everyone on the event/);
+  await post(h, ev, { action: "schedule", step: "set", message: "page one", send_at: nyDay(3, 9), to: "everyone", id: String(again.row.id) });
+  assert.equal(db.scheduledRow(again.row.id).audience, null);
+});
+
 test("a scheduled pick claimed by a process that stopped is finished to the same guests only", async () => {
   const h = harness();
   const { ev, g } = await party(h);

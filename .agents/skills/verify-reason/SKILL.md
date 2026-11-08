@@ -472,6 +472,15 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — event some-guests (message only some guests; 2026-11-08, PR event-some-guests, not merged)
+
+Scoped maintain pass for [features/events.md](features/events.md) "Message only some guests". Offline:
+`test/event-some-guests.test.js` 17/17; full `npm run test:offline` under `env -i` passes except the known
+web-ongoing desktop-margin test. `bin/events-drive.mjs` under `caged.sh env` + temp DB: all ok, with 5 new
+`some:` steps (guest_id on the list, gate target + `reaches` name who, a non-guest pick refused before a yes,
+only picked unmuted guests texted, a scheduled pick sent once to the picked guest only). Not proven: the real
+model picking guests from a texted request, and a live send.
+
 ### Baseline — call-hearing (quiet-speech lift, ask once, no therapist tone, turn_log; 2026-11-08)
 
 Scoped maintain pass for the GPT-Live hearing change ([features/gptlive-calls.md](features/gptlive-calls.md),

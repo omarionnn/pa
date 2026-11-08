@@ -606,7 +606,7 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
       if (step === "preview") return preview();
       if (step !== "set") return redirect(homePath(own));
       if (pick.audience && f.get("pin") !== pin) return preview("Who gets it changed since you looked. Check the list again before setting it.");
-      const out = await run("event_schedule", { message, send_at: sendAt, ...pickInput(pickDraft, pick.audience), ...(replacing ? { scheduled_id: replacing } : {}) });
+      const out = await run("event_schedule", { message, send_at: sendAt, ...pickInput(pickDraft, pick.audience), ...(replacing ? { scheduled_id: replacing, ...(pick.audience ? {} : { to_everyone: true }) } : {}) });
       if (!out?.ok) return oops(out?.reason && schedule.WHY[out.reason] ? schedule.WHY[out.reason] : "That didn't save. Nothing is scheduled.", { schedule: draft });
       log({ event_manage_scheduled: own.id, changed: !!out.changed });
       return back(own, "schedule", { done: out.changed ? "sched_changed" : "scheduled", s: String(out.scheduled_id) });

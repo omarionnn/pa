@@ -135,7 +135,8 @@ function audienceTarget(ev, input) {
  * Who a message would reach, for the organizer to be shown before their yes: the count, the names,
  * and how many of the guests picked muted the event. Null when there is nothing of theirs to show.
  */
-export function reachFor(conversationId, input) {
+export function reachFor(conversationId, raw) {
+  const input = withKeptPick(conversationId, raw);
   const ev = events.managed(conversationId, input.event_id);
   if (!ev) return null;
   const pick = pickFrom(ev, input);
@@ -165,7 +166,8 @@ const PICK_WHY = {
  * and, for a change, which waiting message it replaces. Pinned the way a blast's is (blastTarget), so
  * a yes to "Friday 6 PM: doors at 9" is not a yes to Saturday, or to other words.
  */
-export function scheduleTarget(conversationId, input) {
+export function scheduleTarget(conversationId, raw) {
+  const input = withKeptPick(conversationId, raw);
   const words = String(input.message ?? "").trim();
   const ev = events.managed(conversationId, input.event_id);
   const where = ev ? `${String(ev.name).slice(0, 120)} (event #${ev.id})` : `event #${input.event_id}`;
@@ -173,7 +175,23 @@ export function scheduleTarget(conversationId, input) {
   const when = ev && at != null ? schedule.whenText(ev, at) : String(input.send_at ?? "").slice(0, 40);
   const preview = words.length > 120 ? `${words.slice(0, 120)}…` : words;
   const hash = createHash("sha256").update(words).digest("hex").slice(0, 16);
-  return `scheduled message to ${where} at ${when}${input.scheduled_id ? ` (replacing #${input.scheduled_id})` : ""}${audienceTarget(ev, input)}: "${preview}" [${hash}]`;
+  const widened = ev && input.scheduled_id && input.to_everyone === true ? db.scheduledRow(input.scheduled_id) : null;
+  const was = widened?.event_id === ev?.id && widened?.audience ? ` (now to everyone, was ${events.audienceLabel(ev, widened.audience)})` : "";
+  return `scheduled message to ${where} at ${when}${input.scheduled_id ? ` (replacing #${input.scheduled_id})` : ""}${was}${audienceTarget(ev, input)}: "${preview}" [${hash}]`;
+}
+
+/**
+ * A change to a waiting message that names no guests keeps the guests it was set for: editing the
+ * words of a message to two people never quietly widens it to everyone. Going back to everyone is
+ * said in so many words (`to_everyone`), and the yes target says so.
+ */
+export function withKeptPick(conversationId, input) {
+  if (!input?.scheduled_id || picked(input) || input.to_everyone === true) return input;
+  const ev = events.managed(conversationId, input.event_id);
+  const row = ev ? db.scheduledRow(input.scheduled_id) : null;
+  if (!row || row.event_id !== ev.id || !row.audience) return input;
+  const a = events.parseAudience(row.audience);
+  return a.guests ? { ...input, only_guest_ids: a.guests } : { ...input, only_joined_after: schedule.localInput(ev, a.joined_since) };
 }
 
 /**
@@ -181,7 +199,8 @@ export function scheduleTarget(conversationId, input) {
  * refusal first (a stranger hears what a made-up id hears), then the message and time themselves —
  * a time in the past is refused, never sent to collect a yes for something that cannot happen.
  */
-export function scheduleRefusal(c, input) {
+export function scheduleRefusal(c, raw) {
+  const input = withKeptPick(c, raw);
   const refused = organizerRefusal(c, input) ?? audienceRefusal(c, input);
   if (refused) return refused;
   const ev = events.managed(c, input.event_id);
@@ -360,7 +379,7 @@ export const EVENT_TOOL_DEFS = [
   },
   {
     name: "event_schedule",
-    description: "Organizer only: set one message to text every guest at a later time they choose (guests who muted the event are skipped) — or only some of them — or change one already waiting (scheduled_id from event_scheduled, with the full new words, time and, if it is for only some guests, the same pick again; a change with no pick goes to everyone)."
+    description: "Organizer only: set one message to text every guest at a later time they choose (guests who muted the event are skipped) — or only some of them — or change one already waiting (scheduled_id from event_scheduled, with the full new words and time; a change keeps the guests it was set for unless you pass a new pick, or to_everyone to widen it)."
       + ONLY_SOME + " Use when they want something sent to their guests later — \"remind everyone friday morning to bring a dish\". If they want it out now, that's event_blast."
       + " send_at is their wall-clock time in the EVENT's time zone. The same yes rule as event_blast: call first with no confirmation_id (nothing is set), show them the exact text, when it goes and who it reaches today (`reaches`: how many, and for a pick every name), then confirm_request with action event_schedule and target set to the `use_target` it refused with, wait for their answer, confirm_record, then this again with the same message, time, pick and the confirmation_id. A changed word, time or pick needs a new yes.",
     input_schema: {
@@ -371,6 +390,7 @@ export const EVENT_TOOL_DEFS = [
         send_at: { type: "string", description: "When it goes: YYYY-MM-DDTHH:MM, wall-clock time in the event's zone." },
         scheduled_id: { type: "integer", description: "Only to change a message already waiting." },
         ...ONLY_SOME_PROPS,
+        to_everyone: { type: "boolean", description: "Only for a change: true when they want a message set for some guests to go to everyone instead. Without it, a change keeps the guests it was set for." },
         confirmation_id: { type: "integer", description: "From confirm_record, granted, for exactly this message and time." },
       },
       required: ["event_id", "message", "send_at"],
@@ -469,7 +489,7 @@ export const EVENT_SCHEMAS = {
   event_update: z.object({ event_id: id, event_named: text(500).optional(), name: text(120).optional(), description: text(2000).optional(), starts_at: text(40).optional(), timezone: text(64).optional(), location: text(500).optional(), welcome_message: text(1000).optional() }),
   event_release: z.object({ event_id: id, event_named: text(500).optional(), detail: z.enum(["time", "location"]) }),
   event_blast: z.object({ event_id: id, event_named: text(500).optional(), message: z.string().min(1).max(1500), ...ONLY_SOME_ZOD, confirmation_id: z.number().int().optional() }),
-  event_schedule: z.object({ event_id: id, event_named: text(500).optional(), message: z.string().min(1).max(1500), send_at: text(40), scheduled_id: id.optional(), ...ONLY_SOME_ZOD, confirmation_id: z.number().int().optional() }),
+  event_schedule: z.object({ event_id: id, event_named: text(500).optional(), message: z.string().min(1).max(1500), send_at: text(40), scheduled_id: id.optional(), ...ONLY_SOME_ZOD, to_everyone: z.boolean().optional(), confirmation_id: z.number().int().optional() }),
   event_scheduled: z.object({ event_id: id, event_named: text(500).optional(), action: z.enum(["list", "cancel", "reminder"]), scheduled_id: id.optional(), reminder: z.enum(["day_before", "two_hours"]).optional(), enabled: z.boolean().optional() }),
   event_password_rotate: z.object({ event_id: id, event_named: text(500).optional(), new_password: text(200) }),
   event_guest_remove: z.object({ event_id: id, event_named: text(500).optional(), guest_id: id }),
@@ -967,6 +987,7 @@ export async function runEventTool(name, input, ctx) {
     }
 
     case "event_schedule": {
+      input = withKeptPick(c, input);
       const refusedPick = audienceRefusal(c, input);
       if (refusedPick) return refusedPick;
       const p = schedule.schedule({ ev, conversationId: c, message: input.message, sendAt: input.send_at, replacing: input.scheduled_id ?? null, audience: pickFrom(ev, input).audience });

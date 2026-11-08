@@ -304,6 +304,20 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   after the reminder time. `events.remind_day_before/remind_soon`: 0 for events made before this
   shipped, 1 for new ones. History kinds `scheduled` / `reminder`. Pinned:
   `test/event-scheduled.test.js`; drive: the `sched:` steps.
+- **Message only some guests (2026-11-08, `src/events.js` `pickAudience` / `recipients(ev, kind, audience)`)** —
+  `event_blast` and `event_schedule` take `only_guest_ids` (guest_id from `event_guests`) or
+  `only_joined_after` (wall-clock, event zone); neither = everyone. The model reads who they meant
+  against the guest list; code checks ids are joined guests of THIS event (`not_guests` refused before
+  any yes, `audienceRefusal`). Floor unchanged: joined, unmuted only (cancel still everyone). The
+  confirm target adds ` to <label> — N get it: names {hash(pick + reached ids)}`, so a different pick,
+  or someone muting / leaving / joining between ask and send, needs a new yes; everyone's target is
+  byte-for-byte the old one. The gate refusal carries `reaches` (count, names, skipped_muted).
+  Stored as canonical JSON in `event_messages.audience` / `event_scheduled.audience` (NULL =
+  everyone; an unreadable key reaches nobody). Dedupe (`recentEventMessage`) matches audience too.
+  Page: "WHO GETS IT" radio (everyone / only guests I pick / joined since) on both the 02 MESSAGE
+  GUESTS and 03 LATER forms; preview lists count + every name; send step re-checks a `pin` of the
+  reached ids and re-shows the preview if it moved. Pinned: `test/event-some-guests.test.js`; drive:
+  the `some:` steps.
 
 ## How to get to it (user POV)
 
