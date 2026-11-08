@@ -911,13 +911,16 @@ export class SendblueChannel extends Channel {
     // Sendblue's signed scheme (docs.sendblue.com/api-v2/verify, seen on real receive deliveries
     // from 2026-11-08): `X-Sendblue-Signature: t=<unix>,v1=<hex>`, v1 = HMAC-SHA256(secret,
     // `${t}.${raw body}`). A valid one is enough on its own; an invalid one falls back to the old
-    // shared-secret header, and with neither good it is a flat no. No tight timestamp window:
+    // shared-secret header, then to the Sendblue lookup an unsigned delivery gets. No tight timestamp window:
     // Sendblue retries late, and a stale-but-genuine retry is safe behind the handle dedupe.
     const sig = h["x-sendblue-signature"];
     const signed = sig ? checkSignature(String(sig), this.webhookSecret, rawBytes ?? Buffer.from(String(rawBody ?? ""), "utf8")) : false;
     if (signed) return { ok: true };
     const given = h[this.secretHeader];
-    if (!given && sig) return { ok: false, why: "the signature did not match" };
+    // A signature that fails (say Sendblue signs with a different secret than this machine holds)
+    // is NOT a flat no: it goes to the same Sendblue lookup as an unsigned delivery, so a genuine
+    // text is still let through by `confirmUnsigned` and a forged one is still refused there.
+    if (!given && sig) return { ok: false, unsigned: true, why: "the signature did not match (asking Sendblue whether the message is real)" };
     if (!given) {
       // Not refused here: `receive` asks Sendblue whether it really has this message (see
       // `confirmUnsigned`). A wrong secret is still a flat no — that is somebody guessing.
