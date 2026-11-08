@@ -174,13 +174,13 @@ test("the organizer's /e/{id} is the manage page; a guest and a stranger never s
   await join(AMA_C, ev);
   const own = await req(h, ev, { cookie: COOKIE.owner });
   assert.equal(own.status, 200);
-  for (const s of ["Your event", "Your guest list", "Welcome message", "Message everyone", "Details", "Guests", "Sharing", "Cancel the event", 'action="/e/']) assert.ok(own.body.includes(s.toUpperCase()) || own.body.includes(s), `has ${s}`);
+  for (const s of ["Your event", "Your guest list", "Welcome message", "Message guests", "Details", "Guests", "Sharing", "Cancel the event", 'action="/e/']) assert.ok(own.body.includes(s.toUpperCase()) || own.body.includes(s), `has ${s}`);
   assert.match(own.body, /HIDDEN FROM GUESTS/, "the hidden location says so");
   assert.ok(!/3475550000/.test(own.body), "no phone numbers");
   const guest = await req(h, ev, { cookie: COOKIE.ama });
-  assert.ok(!/MESSAGE EVERYONE|mg-sec/.test(guest.body));
+  assert.ok(!/MESSAGE GUESTS|mg-sec/.test(guest.body));
   const stranger = await req(h, ev);
-  assert.ok(!/MESSAGE EVERYONE|mg-sec|Elm St/.test(stranger.body));
+  assert.ok(!/MESSAGE GUESTS|mg-sec|Elm St/.test(stranger.body));
 });
 
 test("the welcome preview is welcomeText; saving and clearing go through event_update", async () => {
@@ -202,7 +202,7 @@ test("the welcome preview is welcomeText; saving and clearing go through event_u
   assert.equal(h.channel.sent.length, 0, "saving a welcome texts nobody");
 });
 
-test("message everyone: preview shows the exact text and the count, nothing goes until send, and the sent text is the preview", async () => {
+test("message guests: preview shows the exact text and the count, nothing goes until send, and the sent text is the preview", async () => {
   const h = harness();
   const ev = make(OWNER_C);
   await join(AMA_C, ev);
@@ -235,7 +235,7 @@ test("message everyone: preview shows the exact text and the count, nothing goes
   assert.match(page.body, /Sent\. Reached 1 of 1\./);
 });
 
-test("message everyone is refused while the operator has the event paused", async () => {
+test("message guests is refused while the operator has the event paused", async () => {
   const h = harness();
   const ev = make(OWNER_C);
   await join(AMA_C, ev);

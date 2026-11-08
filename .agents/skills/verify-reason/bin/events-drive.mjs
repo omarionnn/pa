@@ -356,6 +356,52 @@ config.events = "owner";
   clock.reset();
 }
 
+// ---- messages to only some guests (src/events.js recipients / pickAudience) ----
+{
+  const tz = "America/New_York";
+  const wall = (days, hh) => {
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(clock.now() + days * 86_400_000)).map(x => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}T${String(hh).padStart(2, "0")}:00`;
+  };
+  const made = await tool("event_create", { name: "Some Guests Supper", description: "x", starts_at: wall(5, 20), timezone: tz, location: "4 Pine St", password: "some-pw", show_time_on_join: true, show_location_on_join: false, guest_list_visible: false }, C.owner);
+  const sev = db.getEventRow(made.event.event_id);
+  for (const c of [C.ama, C.kofi, C.yaw]) await tool("event_join", { name: "Some Guests Supper", password: "some-pw" }, c);
+  await tool("event_mute", { event_id: sev.id, event_named: sev.name, muted: true }, C.yaw);
+  const list = await tool("event_guests", { event_id: sev.id, event_named: sev.name }, C.owner);
+  const idOf = (c) => db.attendeeRow(sev.id, c).id;
+  step("some: the guest list hands the model a guest_id per guest", list.ok && list.guests.length === 3 && list.guests.every(g => Number.isInteger(g.guest_id)), JSON.stringify(list).slice(0, 160));
+  const before = fake.sent.length;
+  const input = { event_id: sev.id, event_named: sev.name, message: "ama + kofi: come at 7", only_guest_ids: [idOf(C.ama), idOf(C.kofi), idOf(C.yaw)] };
+  const unasked = await tool("event_blast", input, C.owner);
+  step("some: no yes texts nobody; target and reaches name the count and who (muted one out)", unasked.blocked === "needs_confirmation" && /2 get it: /.test(unasked.use_target ?? "") && unasked.reaches?.guests === 2 && unasked.reaches?.skipped_muted === 1 && fake.sent.length === before, JSON.stringify(unasked.reaches));
+  const bad = await tool("event_blast", { ...input, only_guest_ids: [999999] }, C.owner);
+  step("some: a pick that isn't a guest is refused before any yes", bad.reason === "not_guests" && !bad.use_target);
+  const sent = await blastYes(input, C.owner);
+  await new Promise(r => setTimeout(r, 50));
+  const body = events.blastBody(sev, "ama + kofi: come at 7");
+  step("some: with a yes only the picked, unmuted guests get it", sent.ok && sent.sent.guests === 2 && toNum(AMA).includes(body) && toNum(KOFI).includes(body) && !toNum(YAW).includes(body), JSON.stringify(sent.sent));
+  const sset = await withYes(runTool, "event_schedule", { event_id: sev.id, event_named: sev.name, message: "ama only, later", send_at: wall(2, 10), only_guest_ids: [idOf(C.ama)] }, { conversationId: C.owner, messages: [], events: runtime });
+  const later = events.blastBody(sev, "ama only, later");
+  const due = db.scheduledRow(sset.scheduled_id).send_at;
+  clock.reset(); clock.skip(due + 1000 - Date.now());
+  await runtime.sweep(); await runtime.sweep();
+  await new Promise(r => setTimeout(r, 50));
+  step("some: a scheduled pick goes at its time to the picked guest only, once", sset.ok && toNum(AMA).filter(t => t === later).length === 1 && !toNum(KOFI).includes(later) && db.scheduledRow(sset.scheduled_id).state === "sent", JSON.stringify(sset).slice(0, 160));
+  clock.reset();
+  // Owner decision 2026-11-08: "joined since" reads the FIRST join, so leaving and coming back is not new.
+  const sinceParts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Date(clock.now() + 60_000)).map(x => [x.type, x.value]));
+  const sinceWall = `${sinceParts.year}-${sinceParts.month}-${sinceParts.day}T${sinceParts.hour}:${sinceParts.minute}`;
+  clock.skip(3 * 60_000);
+  db.leaveAttendee(idOf(C.kofi));
+  const back = await tool("event_join", { name: "Some Guests Supper", password: "some-pw" }, C.kofi);
+  const row = db.attendeeRow(sev.id, C.kofi);
+  const nSince = fake.sent.length;
+  const since = await tool("event_blast", { event_id: sev.id, event_named: sev.name, message: "newcomers only", only_joined_after: sinceWall }, C.owner);
+  step("some: joined since doesn't count a guest who left and came back as new", back.ok && row.joined_at > row.first_joined_at && since.reaches?.guests === 0 && fake.sent.length === nSince, JSON.stringify({ reaches: since.reaches, joined: row.joined_at, first: row.first_joined_at }));
+  clock.reset();
+  await tool("event_cancel", { event_id: sev.id, event_named: sev.name }, C.owner);
+}
+
 const cancel = await tool("event_cancel", { event_id: ev.id, event_named: "Halloween Party" }, C.owner);
 step("cancellation reaches every guest", cancel.ok && toNum(AMA).some(t => /is cancelled/.test(t)) && toNum(YAW).some(t => /is cancelled/.test(t)));
 

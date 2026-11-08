@@ -2,7 +2,8 @@
 //
 // A scheduled message is a blast with a time on it: the organizer's own words, built by the same
 // `events.blastBody` the blast uses, to the same guests a blast reaches (every joined guest, less the
-// ones who muted the event), through the same tracked deliveries. The organizer sees it, its time and
+// ones who muted the event — or only the ones the organizer picked, src/events.js `recipients`),
+// through the same tracked deliveries. The organizer sees it, its time and
 // its reach before it is set, by text (event_schedule, behind the confirm gate like event_blast) or
 // on their page (src/pages/eventmanage.js, with its own confirm step), and can change or cancel it
 // until it goes.
@@ -164,7 +165,7 @@ function deliveryCounts(messageId) {
  * today. `{ ok: false, reason }` — empty | too_long | bad_time | past | too_far | too_many | cancelled
  * | paused | not_found.
  */
-export function plan(ev, { message, sendAt: wall, replacing = null }, now = clock.now()) {
+export function plan(ev, { message, sendAt: wall, replacing = null, audience = null }, now = clock.now()) {
   if (!ev) return { ok: false, reason: "not_found" };
   if (ev.status === "cancelled") return { ok: false, reason: "cancelled" };
   if (ev.status === "paused") return { ok: false, reason: "paused" };
@@ -181,7 +182,7 @@ export function plan(ev, { message, sendAt: wall, replacing = null }, now = cloc
   } else if (db.scheduledFor(ev.id, ["pending"]).filter(r => r.kind === "message").length >= SCHEDULE.maxPending) {
     return { ok: false, reason: "too_many" };
   }
-  return { ok: true, message: words, sendAt, when: whenText(ev, sendAt), local: localInput(ev, sendAt), body: events.blastBody(ev, words), reach: events.audience(ev, "scheduled") };
+  return { ok: true, message: words, sendAt, when: whenText(ev, sendAt), local: localInput(ev, sendAt), body: events.blastBody(ev, words), audience: events.audienceKey(events.parseAudience(audience)), to: events.audienceLabel(ev, audience), reach: events.audience(ev, "scheduled", audience) };
 }
 
 /** Plain words for a refusal from `plan`, for the page and the model alike. */
@@ -198,14 +199,15 @@ export const WHY = {
 };
 
 /** Schedule one message, or change one still waiting (`replacing`). The caller has checked this is the organizer's event. */
-export function schedule({ ev, conversationId, message, sendAt, replacing = null, now = clock.now() }) {
-  const p = plan(ev, { message, sendAt, replacing }, now);
+export function schedule({ ev, conversationId, message, sendAt, replacing = null, audience = null, now = clock.now() }) {
+  const p = plan(ev, { message, sendAt, replacing, audience }, now);
   if (!p.ok) return p;
+  // A change says who it is for as well: a change that names nobody goes back to everyone.
   if (replacing != null) {
-    if (!db.updatePendingScheduled(replacing, { body: p.message, sendAt: p.sendAt })) return { ok: false, reason: "not_found" };
+    if (!db.updatePendingScheduled(replacing, { body: p.message, sendAt: p.sendAt, audience: p.audience })) return { ok: false, reason: "not_found" };
     return { ok: true, changed: true, row: db.scheduledRow(replacing), ...p };
   }
-  return { ok: true, row: db.insertScheduledMessage({ eventId: ev.id, conversationId, body: p.message, sendAt: p.sendAt }), ...p };
+  return { ok: true, row: db.insertScheduledMessage({ eventId: ev.id, conversationId, body: p.message, sendAt: p.sendAt, audience: p.audience }), ...p };
 }
 
 /** Cancel one message still waiting. Nothing is sent. */
@@ -223,7 +225,8 @@ export function cancelAllFor(ev) {
 
 /** One waiting message, as the organizer sees it. */
 function viewOf(ev, row) {
-  return { id: row.id, message: row.body, at: row.send_at, when: whenText(ev, row.send_at), local: localInput(ev, row.send_at), preview: events.blastBody(ev, row.body) };
+  return { id: row.id, message: row.body, at: row.send_at, when: whenText(ev, row.send_at), local: localInput(ev, row.send_at), preview: events.blastBody(ev, row.body),
+    audience: row.audience ?? null, to: events.audienceLabel(ev, row.audience), reach: events.audience(ev, "scheduled", row.audience) };
 }
 
 /** What is waiting to go, soonest first, and what didn't go out lately (missed or cancelled with the event). */
@@ -247,7 +250,8 @@ async function sendClaimed({ runtime, row, ev }) {
   // Its organizer stopped by the master (events.organizerStopped): the same, until they are let go.
   if (ev.status === "paused" || events.organizerStopped(ev)) return { state: "waiting" };
   const out = { sent: 0, failed: 0, other: 0 };
-  for (const g of events.recipients(ev, message.kind)) {
+  // Exactly who it was set for — carried on the message, so a row finished after a restart too.
+  for (const g of events.recipients(ev, message.kind, message.audience ?? null)) {
     const r = await events.deliver({ runtime, message, conversationId: g.conversation_id });
     if (r.state === "sent") out.sent++; else if (r.state === "failed") out.failed++; else out.other++;
   }

@@ -82,6 +82,15 @@ const CSS = `<style>
 .mg-cover{display:block;box-sizing:border-box;width:calc(100% - 3px);max-width:420px;aspect-ratio:1200/630;object-fit:cover;background:var(--photo);border:6px solid var(--lift);box-shadow:2px 3px 0 var(--shp)}
 .mg-confirm{display:flex;flex-direction:column;gap:18px}
 .mg-confirm .mg-h{font-size:34px}
+.mg-pick{border:0;margin:0;padding:0;display:flex;flex-direction:column;gap:10px;min-width:0}
+.mg-pick legend{padding:0;margin:0 0 4px}
+.mg-picks{display:flex;flex-direction:column;gap:0;margin:0 0 4px 30px;border-left:1px dashed var(--hair);padding-left:14px}
+.mg-picks .check{min-height:40px;align-items:center}
+.mg-picks .check small{font-family:'Courier New',Courier,monospace;font-size:10px;letter-spacing:.1em;color:var(--mut);margin-left:auto;padding-left:10px;white-space:nowrap}
+.mg-since{margin:0 0 4px 30px}
+@supports selector(:has(*)){.mg-pick .mg-picks,.mg-pick .mg-since{display:none}.mg-pick:has(input[value=some]:checked) .mg-picks{display:flex}.mg-pick:has(input[value=since]:checked) .mg-since{display:flex}}
+.mg-to{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:8px}
+.mg-to li{padding:6px 12px;border:1.5px solid var(--ink);border-radius:999px;font-size:14px;background:var(--lift)}
 details.mg-more>summary{list-style:none;cursor:pointer;font-family:'Courier New',Courier,monospace;font-size:11px;letter-spacing:.14em;min-height:44px;display:flex;align-items:center}
 details.mg-more>summary::-webkit-details-marker{display:none}
 @media (min-width:900px){.mg-hero h1{font-size:48px}}
@@ -92,6 +101,7 @@ document.querySelectorAll('[data-count]').forEach(function(t){var o=document.get
 var w=document.getElementById('welcome_text'),wp=document.getElementById('welcome_live');
 if(w&&wp){var rest=wp.getAttribute('data-rest');function lw(){var v=w.value.trim();wp.textContent=(v?v+'\\n\\n':'')+rest}w.addEventListener('input',lw)}
 document.querySelectorAll('[data-copy]').forEach(function(b){b.addEventListener('click',function(){var f=document.getElementById(b.getAttribute('data-copy'));var v=f.value!==undefined?f.value:f.textContent;function ok(){var was=b.textContent;b.textContent='Copied';setTimeout(function(){b.textContent=was},1600)}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(v).then(ok,function(){f.select&&f.select()})}else{f.select&&f.select();try{document.execCommand('copy');ok()}catch(e){}}})});
+document.querySelectorAll('.mg-pick').forEach(function(fs){function pick(v){var r=fs.querySelector('input[name=to][value='+v+']');if(r)r.checked=true}fs.querySelectorAll('.mg-picks input').forEach(function(c){c.addEventListener('change',function(){if(c.checked)pick('some')})});var s=fs.querySelector('.mg-since input');if(s)s.addEventListener('input',function(){if(s.value)pick('since')})});
 document.querySelectorAll('form').forEach(function(f){f.addEventListener('submit',function(e){if(f.dataset.sent){e.preventDefault();return}f.dataset.sent='1';var b=e.submitter||f.querySelector('button[type=submit]');if(b&&b.getAttribute('data-busy')){b.textContent=b.getAttribute('data-busy')}setTimeout(function(){b&&(b.disabled=true)},0)})});
 `;
 
@@ -112,6 +122,92 @@ const section = (id, n, title, inner, notice = null) => `<section class="mg-sec 
 /** A guest's way in, as the organizer reads it. */
 const VIA = { text: "joined by text", link: "joined from a pasted link", web: "joined on the join page", web_text: "joined on the join page" };
 const KIND = { blast: "Message to everyone", update: "Update", release: "Shared detail", cancel: "Cancellation", scheduled: "Scheduled message", reminder: "Reminder" };
+/** A sent message's label in the history: who it went to, when it was only some guests. */
+const kindLabel = (ev, m) => m.audience && (m.kind === "blast" || m.kind === "scheduled")
+  ? `${m.kind === "blast" ? "Message" : "Scheduled message"} to ${events.audienceLabel(ev, m.audience)}` : (KIND[m.kind] ?? m.kind);
+
+// ---------------------------------------------------------------- only some guests
+
+/** "Ama", "Ama and Kofi", "Ama, Kofi and Esi". */
+const andList = (names) => names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+/**
+ * Who the organizer picked on a form: everyone (`to` everyone, or nothing), the guests they ticked
+ * (`to` some, one `g` per guest — or the ids joined with commas, as a confirm step carries them), or
+ * the guests who joined since a time (`to` since, `joined_after`). The draft puts the form back as it
+ * was; `pick` is events.pickAudience's answer.
+ */
+function readPick(ev, f) {
+  const to = f.get("to") === "some" ? "some" : f.get("to") === "since" ? "since" : "everyone";
+  const ids = f.getAll("g").flatMap(v => String(v).split(",")).map(v => Number.parseInt(v, 10)).filter(n => Number.isInteger(n) && n > 0).slice(0, 500);
+  const joinedAfter = String(f.get("joined_after") ?? "").trim().slice(0, 40);
+  const draft = { to, g: ids, joined_after: joinedAfter };
+  const pick = to === "some" ? events.pickAudience(ev, { guestIds: ids }) : to === "since" ? events.pickAudience(ev, { joinedAfter: joinedAfter || null }) : { ok: true, audience: null };
+  // "Since" with no time ticked is no pick at all, not everyone.
+  if (to === "since" && !joinedAfter) return { draft, pick: { ok: false, reason: "bad_time" } };
+  return { draft, pick };
+}
+const PICK_OOPS = {
+  none_picked: "Tick at least one guest, or send it to everyone.",
+  not_guests: "One of the guests you picked isn't on the event any more. Check the list and pick again.",
+  bad_time: "Pick the date and time they joined since.",
+  both: "Pick guests by name or by when they joined, not both.",
+};
+/** The pick, as hidden fields a confirm step carries forward. */
+const pickFields = (draft) => ({ to: draft.to, ...(draft.to === "some" ? { g: draft.g.join(",") } : {}), ...(draft.to === "since" ? { joined_after: draft.joined_after } : {}) });
+/**
+ * A fingerprint of exactly who a pick reaches right now. The confirm step carries it, and the send
+ * step checks it again: if somebody the pick reaches joined, left or muted the event in between, the
+ * organizer is shown the new list instead of it going to people they didn't see.
+ */
+const reachPin = (ev, audience, kind) => events.audience(ev, kind, audience).ids.join(".") || "none";
+
+/** The "who gets it" choice on a message form. Only joined guests can be picked. */
+function whoPicker(ev, prefix, draft = {}) {
+  const joined = events.guestList(ev).filter(g => g.state === "joined");
+  const all = events.audience(ev, "blast");
+  const to = draft.to ?? "everyone";
+  const ticked = new Set((draft.g ?? []).map(Number));
+  const radio = (value, label, extra = "") => `<label class="check"><input type="radio" name="to" value="${value}"${to === value ? " checked" : ""}${extra}> <span>${label}</span></label>`;
+  if (!joined.length) return hidden("to", "everyone");
+  return `<fieldset class="mg-pick"><legend class="lbl">WHO GETS IT</legend>`
+    + radio("everyone", esc(`Everyone · ${plural(all.guests, "guest")}`))
+    + radio("some", "Only guests I pick")
+    + `<div class="mg-picks" role="group" aria-label="Guests to send it to">${joined.map(g => `<label class="check"><input type="checkbox" name="g" value="${g.guest_id}"${ticked.has(g.guest_id) ? " checked" : ""}> <span>${esc(g.display_name || "A guest")}</span><small>${esc(`JOINED ${when(ev, Date.parse(g.joined)).toUpperCase()}`)}</small></label>`).join("")}</div>`
+    + radio("since", "Guests who joined since…")
+    + `<label class="mg-since" for="${prefix}_since">JOINED ON OR AFTER (${esc(ev.tz.replace(/_/g, " ").toUpperCase())} TIME)<input id="${prefix}_since" name="joined_after" type="datetime-local" value="${esc(draft.joined_after ?? "")}"></label>`
+    + `</fieldset>`;
+}
+
+/** Who gets it, on a confirm step: the count, and for a pick each name. */
+function whoSentences(ev, audience, reach, { later = false } = {}) {
+  if (!audience) return [];
+  const a = events.parseAudience(audience);
+  const names = andList(reach.names);
+  const first = !reach.guests ? "None of the guests you picked can get it right now."
+    : !later ? `Only ${plural(reach.guests, "guest")} ${reach.guests === 1 ? "gets" : "get"} it: ${names}. Nobody else on the event does.`
+    : a.joined_since != null ? `It goes only to guests who joined since then. Right now that's ${plural(reach.guests, "guest")}: ${names}.`
+    : `It goes only to ${plural(reach.guests, "guest")}: ${names}. Nobody else on the event will get it.`;
+  return [
+    first,
+    ...(later && a.joined_since != null ? ["Anybody else who joins before it goes gets it too, and anybody who leaves won't."] : []),
+    ...(later && a.guests ? ["If one of them leaves before then, they won't get it."] : []),
+    ...(reach.muted ? [`${plural(reach.muted, "guest")} you picked muted the event and won't get it.`] : []),
+  ];
+}
+/** The pick, as the text tool takes it: the same ids, or the same wall-clock time, the organizer chose. */
+const pickInput = (draft, audience) => {
+  const a = events.parseAudience(audience);
+  if (!a) return {};
+  return a.guests ? { only_guest_ids: a.guests } : { only_joined_after: draft.joined_after };
+};
+/** A waiting message's pick, back as a form draft (to change it). */
+function draftOf(ev, audience) {
+  const a = events.parseAudience(audience);
+  if (!a) return { to: "everyone" };
+  return a.guests ? { to: "some", g: a.guests } : { to: "since", joined_after: schedule.localInput(ev, a.joined_since) };
+}
+const whoList = (reach) => reach.guests ? `<p class="lbl">${esc(`WHO GETS IT · ${reach.guests}`)}</p><ul class="mg-to">${reach.names.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : "";
 
 /** What a new guest is sent on joining, for the preview. Their own who's-going link differs per guest. */
 function welcomePreview(ev, welcome) {
@@ -190,7 +286,7 @@ function scheduleSection(ev, { query, drafts, paused, sec }) {
   // Changing one: picked by its number off this event's own waiting list, so another event's never shows.
   const editId = Number.parseInt(query.edit ?? drafts.schedule?.id ?? "", 10);
   const editing = Number.isInteger(editId) ? waiting.find(m => m.id === editId) ?? null : null;
-  const d = drafts.schedule ?? (editing ? { message: editing.message, send_at: editing.local } : {});
+  const d = drafts.schedule ?? (editing ? { message: editing.message, send_at: editing.local, ...draftOf(ev, editing.audience) } : {});
   const minAt = schedule.localInput(ev, clock.now() + schedule.SCHEDULE.minAheadMs);
   const scheduleForm = paused ? p("Paused by Reason's operator, so nothing can be scheduled right now.", "quiet")
     : form("schedule", "preview",
@@ -198,8 +294,9 @@ function scheduleSection(ev, { query, drafts, paused, sec }) {
       + `<label for="sched_text">YOUR MESSAGE<textarea id="sched_text" name="message" maxlength="${LIMITS.message}" data-count="sched_count" rows="4" required>${esc(d.message ?? "")}</textarea></label>`
       + counter("sched_count", d.message ?? "", LIMITS.message)
       + `<label for="sched_at">SEND IT AT (${esc(ev.tz.replace(/_/g, " ").toUpperCase())} TIME)<input id="sched_at" name="send_at" type="datetime-local" min="${esc(minAt)}" required value="${esc(d.send_at ?? "")}"></label>`
+      + whoPicker(ev, "sched", d)
       + `<div class="mg-row">${button(editing ? "Preview the change" : "Preview message", { busy: "Opening preview…" })}${editing ? `<a class="mg-btn quiet" href="${esc(`${homePath(ev)}#schedule`)}">Stop changing it</a>` : ""}</div>`);
-  const row = (m) => `<div class="mg-msg"><span class="mg-meta">${esc(`Goes ${m.when} · ${plural(aud.guests, "guest")} on it now`.toUpperCase())}</span>${bubble(m.preview)}`
+  const row = (m) => `<div class="mg-msg"><span class="mg-meta">${esc((m.audience ? `Goes ${m.when} · to ${m.to}: ${m.reach.names.join(", ") || "nobody right now"}` : `Goes ${m.when} · ${plural(aud.guests, "guest")} on it now`).toUpperCase())}</span>${bubble(m.preview)}`
     + `<div class="mg-row"><a class="mg-btn alt" href="${esc(`${homePath(ev)}?edit=${m.id}#schedule`)}">Change</a>`
     + `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "sched_cancel")}${hidden("step", "review")}${hidden("id", m.id)}${button("Cancel it", { cls: "mg-btn quiet", busy: "Opening…" })}</form></div></div>`;
   const reminderRow = (r) => {
@@ -210,7 +307,7 @@ function scheduleSection(ev, { query, drafts, paused, sec }) {
   };
   return sec("schedule", "03", "Later",
     `<h2 class="mg-h">Send it later</h2>`
-    + p(`Write a message and pick when it goes. It goes to everyone on the event at that moment${aud.muted ? ", except guests who muted it" : ""}, and you'll see exactly how it reads before it's set.`)
+    + p(`Write a message and pick when it goes. It goes to everyone on the event at that moment${aud.muted ? ", except guests who muted it" : ""}, or only to the guests you pick, and you'll see exactly how it reads and who gets it before it's set.`)
     + scheduleForm
     + `<p class="lbl" style="margin-top:8px">WAITING TO GO</p>`
     + (waiting.length ? waiting.map(row).join("") : p("Nothing scheduled.", "quiet"))
@@ -239,7 +336,7 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
     + `</div>`;
   const banner = (paused ? `<p class="mg-note">Reason's operator has paused this event, so joining is closed and nothing goes out to guests until it's resumed. That isn't something you can undo from here.</p>` : "")
     + (done?.text && !done.section ? noteHtml(done) : "");
-  const nav = `<ul class="mg-nav" aria-label="On this page">${[["welcome", "WELCOME"], ["message", "MESSAGE EVERYONE"], ["schedule", "SCHEDULED"], ["details", "DETAILS"], ["guests", "GUESTS"], ["access", "SHARING"], ["more", "MORE"]]
+  const nav = `<ul class="mg-nav" aria-label="On this page">${[["welcome", "WELCOME"], ["message", "MESSAGE GUESTS"], ["schedule", "SCHEDULED"], ["details", "DETAILS"], ["guests", "GUESTS"], ["access", "SHARING"], ["more", "MORE"]]
     .map(([id, l]) => `<li><a href="#${id}">${l}</a></li>`).join("")}</ul>`;
 
   // 01 — the welcome
@@ -252,23 +349,24 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
       + counter("welcome_count", welcomeDraft, LIMITS.welcome)
       + `<p class="lbl">A NEW GUEST GETS</p><p class="mg-bubble" id="welcome_live" data-rest="${esc(rest)}">${esc(welcomePreview(ev, welcomeDraft.trim()))}</p>`
       + `<div class="mg-row">${button("Save welcome", { busy: "Saving…" })}${ev.welcome ? button("Clear it", { cls: "mg-btn quiet", name: "clear", value: "1", busy: "Clearing…" }) : ""}</div>`)
-    + p("Saving changes what future guests get. People already in aren't texted. To tell them too, send it under Message everyone.", "quiet"));
+    + p("Saving changes what future guests get. People already in aren't texted. To tell them too, send it under Message guests.", "quiet"));
 
-  // 02 — message everyone
+  // 02 — message guests
   const audience = events.audience(ev, "blast");
   const sent = events.sentMessages(ev, { limit: 8 });
   const msgDraft = drafts.message ?? (query.prefill === "welcome" ? ev.welcome ?? "" : "");
-  const message = sec("message", "02", "Message everyone",
-    `<h2 class="mg-h">Text every guest</h2>`
-    + p(`Goes to ${plural(audience.guests, "guest")}${audience.muted ? ` (${audience.muted} who muted the event won't get it)` : ""}, from Reason, with your name on it. You'll see exactly how it reads before anything is sent.`)
+  const message = sec("message", "02", "Message guests",
+    `<h2 class="mg-h">Text your guests</h2>`
+    + p(`Goes to everyone — ${plural(audience.guests, "guest")}${audience.muted ? `, not counting ${audience.muted} who muted the event` : ""} — or only to the guests you pick, from Reason, with your name on it. You'll see exactly how it reads and who gets it before anything is sent.`)
     + (paused ? p("Paused by Reason's operator, so messages can't go out right now.", "quiet")
       : form("blast", "preview", `<label for="blast_text">YOUR MESSAGE<textarea id="blast_text" name="message" maxlength="${LIMITS.message}" data-count="blast_count" rows="4" required>${esc(msgDraft)}</textarea></label>`
         + counter("blast_count", msgDraft, LIMITS.message)
+        + whoPicker(ev, "blast", drafts.blastPick ?? {})
         + `<div class="mg-row">${button("Preview message", { busy: "Opening preview…" })}</div>`))
     + `<p class="lbl" style="margin-top:8px">SENT SO FAR</p>`
     + (sent.length
-      ? sent.map(m => `<div class="mg-msg"><span class="mg-meta">${esc(`${KIND[m.kind] ?? m.kind} · ${when(ev, m.at)}`.toUpperCase())}</span>${bubble(m.body)}<span class="mg-meta">${esc(deliveryLine(m))}</span></div>`).join("")
-      : p("Nothing sent to everyone yet.", "quiet")));
+      ? sent.map(m => `<div class="mg-msg"><span class="mg-meta">${esc(`${kindLabel(ev, m)} · ${when(ev, m.at)}`.toUpperCase())}</span>${bubble(m.body)}<span class="mg-meta">${esc(deliveryLine(m))}</span></div>`).join("")
+      : p("Nothing sent to guests yet.", "quiet")));
 
   // 03 — later: messages the organizer scheduled, and the two automatic reminders
   const scheduled = scheduleSection(ev, { query, drafts, paused, sec });
@@ -361,10 +459,12 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
 }
 
 /** One confirm step: what happens, in a sentence, the exact text when there is one, and the two buttons. */
-export function renderConfirm({ ev, title, sentences = [], preview = null, previewLabel = "GUESTS GET THIS TEXT", fields = {}, confirm, back = "Go back", danger = false, disabled = false }) {
+export function renderConfirm({ ev, title, sentences = [], preview = null, previewLabel = "GUESTS GET THIS TEXT", fields = {}, confirm, back = "Go back", danger = false, disabled = false, extra = "", notice = null }) {
   const keep = Object.entries(fields).map(([k, val]) => hidden(k, val)).join("");
   const main = `<div class="mg-confirm"><p class="lbl">YOUR EVENT · ${esc(String(ev.name).toUpperCase())}</p><h1 class="mg-h">${esc(title)}</h1>`
+    + (notice ? noteHtml({ text: notice, error: true }) : "")
     + sentences.map(s => p(s)).join("")
+    + extra
     + (preview != null ? `<p class="lbl">${esc(previewLabel)}</p>${bubble(preview)}` : "")
     + `<form class="mg-f" method="POST" action="${esc(managePath(ev))}">${keep}<div class="mg-row">${button(confirm, { cls: danger ? "mg-btn danger" : "mg-btn", busy: "Working…", disabled })}</div></form>`
     + `<form class="mg-f" method="POST" action="${esc(managePath(ev))}">${keep.replace(/name="step" value="[^"]*"/, `name="step" value="edit"`)}<div class="mg-row">${button(back, { cls: "mg-btn quiet" })}</div></form>`
@@ -443,27 +543,35 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
 
     case "blast": {
       const message = String(f.get("message") ?? "");
-      if (step === "edit") return again(null, { message });
-      if (!message.trim()) return oops("Write the message first.", { message });
-      if (!valid("event_blast", { message })) return oops(`A message can be up to ${LIMITS.message} characters.`, { message });
-      if (own.status === "paused") return oops("Reason's operator has paused this event, so nothing goes out to guests right now.", { message });
-      const aud = events.audience(own, "blast");
-      if (step === "preview") {
-        return page(200, renderConfirm({
-          ev: own, title: "Send this to everyone?",
-          sentences: [
+      const { draft: pickDraft, pick } = readPick(own, f);
+      const drafts = { message, blastPick: pickDraft };
+      if (step === "edit") return again(null, drafts);
+      if (!message.trim()) return oops("Write the message first.", drafts);
+      if (!valid("event_blast", { message })) return oops(`A message can be up to ${LIMITS.message} characters.`, drafts);
+      if (own.status === "paused") return oops("Reason's operator has paused this event, so nothing goes out to guests right now.", drafts);
+      if (!pick.ok) return oops(PICK_OOPS[pick.reason] ?? "That pick of guests didn't read.", drafts);
+      const aud = events.audience(own, "blast", pick.audience);
+      const pin = reachPin(own, pick.audience, "blast");
+      const preview = (notice = null) => page(200, renderConfirm({
+        ev: own, title: pick.audience ? `Send this to ${plural(aud.guests, "guest")}?` : "Send this to everyone?", notice,
+        sentences: pick.audience
+          ? [...whoSentences(own, pick.audience, aud), "Once it's sent it can't be taken back."]
+          : [
             aud.guests ? `Reason texts this to ${plural(aud.guests, "guest")}, exactly as it reads below.` : "Nobody has joined yet, so nobody would get it.",
             ...(aud.muted ? [`${plural(aud.muted, "guest")} muted this event and won't get it.`] : []),
             "Once it's sent it can't be taken back.",
           ],
-          preview: tools.blastBody(own, message),
-          fields: { action: "blast", step: "send", message },
-          confirm: aud.guests ? `Send to ${plural(aud.guests, "guest")}` : "Nobody to send to", back: "Change the message", disabled: !aud.guests,
-        }));
-      }
+        extra: pick.audience ? whoList(aud) : "",
+        preview: tools.blastBody(own, message),
+        fields: { action: "blast", step: "send", message, ...pickFields(pickDraft), pin },
+        confirm: aud.guests ? `Send to ${plural(aud.guests, "guest")}` : "Nobody to send to", back: "Change the message", disabled: !aud.guests,
+      }));
+      if (step === "preview") return preview();
       if (step !== "send") return redirect(homePath(own));
-      const out = await run("event_blast", { message });
-      if (!out?.ok) return oops("That didn't send. Nothing went out.", { message });
+      // Who it reaches is checked again: a guest who joined, left or muted since the preview is shown first.
+      if (pick.audience && f.get("pin") !== pin) return preview("Who gets it changed since you looked. Check the list again before sending.");
+      const out = await run("event_blast", { message, ...pickInput(pickDraft, pick.audience) });
+      if (!out?.ok) return oops("That didn't send. Nothing went out.", drafts);
       log({ event_manage_blast: own.id, guests: out.sent?.guests ?? 0, failed: out.sent?.failed ?? 0 });
       return back(own, "message", { done: "blast", ...counts(out.sent) });
     }
@@ -473,26 +581,32 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
       const sendAt = String(f.get("send_at") ?? "").trim();
       const idRaw = Number.parseInt(f.get("id") ?? "", 10);
       const replacing = Number.isInteger(idRaw) && idRaw > 0 ? idRaw : null;
-      const draft = { message, send_at: sendAt, ...(replacing ? { id: String(replacing) } : {}) };
+      const { draft: pickDraft, pick } = readPick(own, f);
+      const draft = { message, send_at: sendAt, ...pickDraft, ...(replacing ? { id: String(replacing) } : {}) };
       if (step === "edit") return again(null, { schedule: draft });
       if (!valid("event_schedule", { message: message || " ", send_at: sendAt })) return oops(message.length > LIMITS.message ? schedule.WHY.too_long : schedule.WHY.bad_time, { schedule: draft });
-      const plan = schedule.plan(own, { message, sendAt, replacing });
+      if (!pick.ok) return oops(PICK_OOPS[pick.reason] ?? "That pick of guests didn't read.", { schedule: draft });
+      const plan = schedule.plan(own, { message, sendAt, replacing, audience: pick.audience });
       if (!plan.ok) return oops(schedule.WHY[plan.reason] ?? "That can't be scheduled.", { schedule: draft });
-      if (step === "preview") {
-        return page(200, renderConfirm({
-          ev: own, title: replacing ? "Change this scheduled message?" : "Schedule this for everyone?",
-          sentences: [
+      const pin = reachPin(own, pick.audience, "scheduled");
+      const preview = (notice = null) => page(200, renderConfirm({
+        ev: own, title: replacing ? "Change this scheduled message?" : pick.audience ? "Schedule this for the guests you picked?" : "Schedule this for everyone?", notice,
+        sentences: pick.audience
+          ? [`Reason texts this at ${plan.when}, exactly as it reads below.`, ...whoSentences(own, pick.audience, plan.reach, { later: true }), "Until then you can change it or cancel it here. Once it's sent it can't be taken back."]
+          : [
             `Reason texts this to everyone on the event at ${plan.when}, exactly as it reads below. That's ${plural(plan.reach.guests, "guest")} right now; anybody who joins before then gets it too, and anybody who leaves won't.`,
             ...(plan.reach.muted ? [`${plural(plan.reach.muted, "guest")} muted this event and won't get it.`] : []),
             "Until then you can change it or cancel it here. Once it's sent it can't be taken back.",
           ],
-          preview: plan.body,
-          fields: { action: "schedule", step: "set", message, send_at: sendAt, ...(replacing ? { id: String(replacing) } : {}) },
-          confirm: replacing ? "Save the change" : `Schedule for ${plan.when}`, back: "Change the message",
-        }));
-      }
+        extra: pick.audience ? whoList(plan.reach) : "",
+        preview: plan.body,
+        fields: { action: "schedule", step: "set", message, send_at: sendAt, ...pickFields(pickDraft), pin, ...(replacing ? { id: String(replacing) } : {}) },
+        confirm: replacing ? "Save the change" : `Schedule for ${plan.when}`, back: "Change the message",
+      }));
+      if (step === "preview") return preview();
       if (step !== "set") return redirect(homePath(own));
-      const out = await run("event_schedule", { message, send_at: sendAt, ...(replacing ? { scheduled_id: replacing } : {}) });
+      if (pick.audience && f.get("pin") !== pin) return preview("Who gets it changed since you looked. Check the list again before setting it.");
+      const out = await run("event_schedule", { message, send_at: sendAt, ...pickInput(pickDraft, pick.audience), ...(replacing ? { scheduled_id: replacing, ...(pick.audience ? {} : { to_everyone: true }) } : {}) });
       if (!out?.ok) return oops(out?.reason && schedule.WHY[out.reason] ? schedule.WHY[out.reason] : "That didn't save. Nothing is scheduled.", { schedule: draft });
       log({ event_manage_scheduled: own.id, changed: !!out.changed });
       return back(own, "schedule", { done: out.changed ? "sched_changed" : "scheduled", s: String(out.scheduled_id) });

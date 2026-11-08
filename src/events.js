@@ -387,7 +387,8 @@ export function guestList(ev) {
     state: a.state,
     in_directory: !!a.in_directory,
     instagram: a.instagram || null,
-    joined: new Date(a.joined_at).toISOString(),
+    // When they first joined: "guests who joined since …" reads this same time.
+    joined: new Date(a.first_joined_at ?? a.joined_at).toISOString(),
     via: a.via,
   }));
 }
@@ -959,28 +960,126 @@ async function attemptDelivery({ runtime, message, d, body = message.body }) {
  */
 export const SAME_MESSAGE_MS = 10 * 60_000;
 
-/** Who a broadcast of this kind goes to: every joined guest, less the muted ones unless it is the cancellation. */
-export function recipients(ev, kind) {
-  return db.attendeesOf(ev.id).filter(a => kind === "cancel" || !a.muted);
+// ---------- who a message is for: everyone, or only some guests (owner request 2026-11-08) ----------
+//
+// An organizer's own message (a blast, or one they scheduled) can go to only some of their guests:
+// the ones they picked by name, or the ones who joined since a time. Which guests the organizer MEANT
+// is the model's to read, against the guest list (event_guests), or the organizer's own ticks on the
+// page; code only ever sees guest ids and a time. Whatever was picked, the floor is the same as for
+// everyone: only joined guests, never one who muted the event (the cancellation is the one thing a
+// muted guest still gets, and it always goes to everyone).
+//
+// The pick is kept as `audience` — null for everyone, `{ guests: [attendee ids] }`, or
+// `{ joined_since: ms }` — and written on the message (and the scheduled row) as `audienceKey`'s
+// canonical JSON, so a confirm target, a dedupe and a restart all see the same thing.
+
+/** The canonical stored form of an audience: null for everyone. */
+export function audienceKey(aud) {
+  if (!aud) return null;
+  if (Array.isArray(aud.guests)) return JSON.stringify({ guests: [...new Set(aud.guests.map(Number))].filter(Number.isInteger).sort((a, b) => a - b) });
+  if (Number.isFinite(aud.joined_since)) return JSON.stringify({ joined_since: Math.floor(aud.joined_since) });
+  return null;
 }
 
-/** How many guests a broadcast of this kind would reach now, and how many it skips as muted. For the organizer's page. */
-export function audience(ev, kind) {
-  const reached = recipients(ev, kind).length;
-  return { guests: reached, muted: db.attendeesOf(ev.id).length - reached };
+/** The stored form back as an audience (null for everyone, and for anything that doesn't read). */
+export function parseAudience(key) {
+  if (!key) return null;
+  if (typeof key === "object") return key;
+  try {
+    const a = JSON.parse(key);
+    if (Array.isArray(a?.guests)) return { guests: a.guests.map(Number).filter(Number.isInteger) };
+    if (Number.isFinite(a?.joined_since)) return { joined_since: a.joined_since };
+  } catch { /* fall through */ }
+  // Never "everyone" by accident: a key that no longer reads reaches nobody.
+  return { guests: [] };
 }
 
-export async function broadcast({ runtime, ev, kind, body, hold = false }) {
-  // The same words to the same event inside a few minutes is one message asked for twice (a turn
-  // retried, a tool called again): it reuses the first, whose deliveries are already one per guest.
-  const message = db.recentEventMessage(ev.id, kind, body, clock.now() - SAME_MESSAGE_MS) ?? db.insertEventMessage(ev.id, kind, body);
-  const guests = recipients(ev, kind);
+/** When a guest first joined the event: a return after leaving does not move it. */
+const firstJoined = (a) => a.first_joined_at ?? a.joined_at;
+
+/** Whether a joined guest is in this audience (muting aside). */
+function inAudience(a, aud) {
+  if (!aud) return true;
+  if (aud.guests) return aud.guests.includes(a.id);
+  // First join, so somebody who left and came back is not new (owner decision 2026-11-08).
+  if (aud.joined_since != null) return firstJoined(a) >= aud.joined_since;
+  return false;
+}
+
+/**
+ * Who a broadcast of this kind goes to: every joined guest (or, for an organizer's message to only
+ * some of them, the joined guests in `audience`), less the muted ones unless it is the cancellation.
+ */
+export function recipients(ev, kind, audience = null) {
+  const aud = kind === "cancel" ? null : parseAudience(audience);
+  return db.attendeesOf(ev.id).filter(a => (kind === "cancel" || !a.muted) && inAudience(a, aud));
+}
+
+/**
+ * How many guests a broadcast of this kind would reach now, and how many it skips as muted. For the
+ * organizer's page. With an audience, `muted` counts only the picked guests who muted the event, and
+ * `names` is who gets it, as each guest chose to be shown.
+ */
+export function audience(ev, kind, aud = null) {
+  const a = kind === "cancel" ? null : parseAudience(aud);
+  const reached = recipients(ev, kind, a);
+  const picked = db.attendeesOf(ev.id).filter(x => inAudience(x, a));
+  return { guests: reached.length, muted: picked.length - reached.length, names: reached.map(guestName), ids: reached.map(x => x.id) };
+}
+
+/** A guest's name as the organizer reads it: what they typed, or a placeholder. Data, not instructions. */
+export function guestName(a) {
+  return String(a?.display_name ?? "").trim() || "A guest";
+}
+
+/**
+ * Check an organizer's pick before anything is asked or sent: guest ids that are this event's joined
+ * guests, or a join time that reads. `{ ok: true, audience }` (null for everyone), or
+ * `{ ok: false, reason }` — both | not_guests (with `ids`) | none_picked | bad_time.
+ */
+export function pickAudience(ev, { guestIds = null, joinedAfter = null } = {}) {
+  const hasIds = Array.isArray(guestIds) && guestIds.length > 0;
+  const hasSince = joinedAfter != null && String(joinedAfter).trim() !== "";
+  if (hasIds && hasSince) return { ok: false, reason: "both" };
+  if (Array.isArray(guestIds) && !guestIds.length && !hasSince) return { ok: false, reason: "none_picked" };
+  if (hasIds) {
+    const joined = new Set(db.attendeesOf(ev.id).map(a => a.id));
+    const ids = [...new Set(guestIds.map(Number))];
+    const strangers = ids.filter(id => !joined.has(id));
+    if (strangers.length) return { ok: false, reason: "not_guests", ids: strangers };
+    return { ok: true, audience: { guests: ids.sort((a, b) => a - b) } };
+  }
+  if (hasSince) {
+    const since = parseStartsAt(joinedAfter, ev.tz);
+    if (since == null) return { ok: false, reason: "bad_time" };
+    return { ok: true, audience: { joined_since: since } };
+  }
+  return { ok: true, audience: null };
+}
+
+/** Who a message is for, in a few words: "everyone", "3 guests you picked", "guests who joined since Nov 5, 6:00 PM". */
+export function audienceLabel(ev, aud) {
+  const a = parseAudience(aud);
+  if (!a) return "everyone";
+  if (a.guests) return `${a.guests.length} ${a.guests.length === 1 ? "guest" : "guests"} you picked`;
+  const t = new Date(a.joined_since).toLocaleString("en-US", { timeZone: ev.tz, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return `guests who joined since ${t}`;
+}
+
+export async function broadcast({ runtime, ev, kind, body, hold = false, audience = null }) {
+  const key = kind === "cancel" ? null : audienceKey(parseAudience(audience));
+  // The same words to the same guests of the same event inside a few minutes is one message asked for
+  // twice (a turn retried, a tool called again): it reuses the first, whose deliveries are already one
+  // per guest.
+  const message = db.recentEventMessage(ev.id, kind, body, clock.now() - SAME_MESSAGE_MS, key) ?? db.insertEventMessage(ev.id, kind, body, key);
+  const guests = recipients(ev, kind, key);
   const out = { sent: 0, sending: 0, failed: 0, pending: 0, held: 0 };
   for (const g of guests) {
     const r = await deliver({ runtime, message, conversationId: g.conversation_id, hold });
     out[r.state] = (out[r.state] ?? 0) + 1;
   }
-  return { message_id: message.id, guests: guests.length, skipped_muted: db.attendeesOf(ev.id).length - guests.length, ...out };
+  const picked = key ? db.attendeesOf(ev.id).filter(a => inAudience(a, parseAudience(key))).length : db.attendeesOf(ev.id).length;
+  return { message_id: message.id, guests: guests.length, skipped_muted: picked - guests.length, ...(key ? { to: audienceLabel(ev, key) } : {}), ...out };
 }
 
 /** The welcome, to one guest, as its own tracked message. */
@@ -1065,7 +1164,7 @@ export function sentMessages(ev, { limit = 10 } = {}) {
     if (!ORGANIZER_MESSAGE_KINDS.has(m.kind)) continue;
     const ds = db.deliveriesFor(m.id).map(d => deliveryState(d));
     const count = (s) => ds.filter(x => x === s).length;
-    out.push({ id: m.id, kind: m.kind, body: m.body, at: m.created_at, total: ds.length, sent: count("sent"), sending: count("sending") + count("pending"), held: count("held"), failed: count("failed") });
+    out.push({ id: m.id, kind: m.kind, body: m.body, at: m.created_at, audience: m.audience ?? null, total: ds.length, sent: count("sent"), sending: count("sending") + count("pending"), held: count("held"), failed: count("failed") });
     if (out.length >= limit) break;
   }
   return out;

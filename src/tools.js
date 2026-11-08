@@ -63,7 +63,7 @@ import { endFieldsFor } from "./calls/metrics.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
-import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal } from "./eventtools.js";
+import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal, audienceRefusal, reachFor } from "./eventtools.js";
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
@@ -9403,7 +9403,7 @@ async function runToolInner(name, rawInput, ctx) {
   // asked to approve a message that could never go out — and a stranger is told nothing new.
   if (name === "event_blast") {
     if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
-    const refusal = organizerRefusal(c, input, name);
+    const refusal = organizerRefusal(c, input, name) ?? audienceRefusal(c, input);
     if (refusal) return refusal;
   }
   // And for a scheduled message, the time and the words as well: a time already gone is refused here,
@@ -9490,7 +9490,13 @@ async function runToolInner(name, rawInput, ctx) {
       // hands back the string this tool will compare against. It is not a loophole: the string is
       // computed here from what the tool was really asked to do, so carrying it into confirm_request
       // and then changing the email is what produces a MISMATCH, which is the whole point.
-      const refusal = target !== null && gate.blocked !== "already_spent" ? { ...gate, use_target: target } : gate;
+      let refusal = target !== null && gate.blocked !== "already_spent" ? { ...gate, use_target: target } : gate;
+      // A message to guests says who it reaches — how many, and for a pick each name — so the
+      // organizer is shown exactly who gets it before they are asked (owner request 2026-11-08).
+      if ((name === "event_blast" || name === "event_schedule") && gate.blocked === "needs_confirmation") {
+        const reaches = reachFor(c, input);
+        if (reaches) refusal = { ...refusal, reaches };
+      }
       trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) });
       return refusal;
     }
