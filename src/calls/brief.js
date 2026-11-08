@@ -82,8 +82,22 @@ export function namesIn(texts, { max = 10 } = {}) {
  * Today so far in this person's own thread, for their own call: `{ lines, names }` (newest last), or
  * null when nothing was said today. `until` is when the call was made.
  */
-export function todaySoFar(conversationId, { until = clock.now(), tz = config.tz, maxChars = TODAY_MAX_CHARS } = {}) {
+export function todaySoFar(conversationId, { until = clock.now(), tz = config.tz, maxChars = TODAY_MAX_CHARS, call = null } = {}) {
   if (!conversationId) return null;
+  // Read once per call: every turn of it sends the same words (the prompt cache), even on an install
+  // whose only record of today is the thread itself, which the call goes on writing to.
+  const key = call == null ? null : `${call}#${conversationId}#${until}#${tz}#${maxChars}`;
+  if (key && todayKept.has(key)) return todayKept.get(key);
+  const got = readToday(conversationId, { until, tz, maxChars });
+  if (key) {
+    todayKept.set(key, got);
+    if (todayKept.size > 200) todayKept.delete(todayKept.keys().next().value);
+  }
+  return got;
+}
+const todayKept = new Map();
+
+function readToday(conversationId, { until, tz, maxChars }) {
   let rows = [];
   try {
     const since = Math.min(startOfDay(until, tz), until - TODAY_MIN_HOURS * 3600_000);

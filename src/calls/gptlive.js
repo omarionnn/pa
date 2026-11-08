@@ -194,7 +194,7 @@ export function preCallBrief(call, { place = "" } = {}) {
   const chat = recentChatLines(call.conversation_id);
   if (chat.length) lines.push(`Lately in your chats:\n${chat.join("\n")}`);
   // Call 79: "three sub events" was the line's garbling of the spots Reason had picked by text that day.
-  const today = todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now() });
+  const today = todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
   if (today?.names?.length) lines.push(`Names from your chats today — on a bad line, a word that sounds odd is often one of these: ${today.names.join(", ")}`);
   if (place) lines.push(placeLine(place));
   if (!lines.length) return "";
@@ -527,8 +527,14 @@ export const QUICK_HOLD_LINES = Object.freeze(["Mm, one sec.", "One sec.", "Mm-h
 export const CHECK_HOLD_LINES = Object.freeze(["Let me check.", "Let me look that up.", "Checking now."]);
 /** Which of the code's own lines talk about checking or looking (only while a tool runs). */
 const CHECK_WORDING = /\b(?:check|look)/i;
+/** Reason's tools that act rather than look something up: a wait for one of them is not "checking". */
+const ACTING_TOOLS = /send|email|text|message|call|timer|remind|book|pay|order|buy|confirm|commit|propose|cancel|undo|calendar_add|create|save|set/;
+/** Is this one of Reason's tools that looks something up? (Its own tool names, never anyone's words.) */
+export const isLookup = (name) => !!name && !ACTING_TOOLS.test(String(name));
 /** They spoke this recently: the turn is not over, nothing is said into it. */
 const HOLD_CALLER_QUIET_MS = 600;
+/** The voice spoke this recently (a few words of its own): a holding line waits until it has been quiet this long. */
+const HOLD_VOICE_QUIET_MS = 1200;
 
 /** What the voice is handed for a holding line: the exact words, nothing of its own. */
 export function holdingInstruction(line) {
@@ -549,43 +555,69 @@ export function holdLineFor({ kind = "first", tool = false, n = 0 } = {}) {
 // cut to its first sentences (up to SHORT_REPLY_CHARS) and ends on an offer to text the rest. The
 // whole answer is kept for Reason's next turn, which reads their reply to the offer and, if they want
 // it, texts it with its own send tool (`textOfferNote`) — so a "sent" is only ever said behind a real send.
+// Measured on the 2026-11-08 drives: the voice speaks ~15 characters a second, so 220 characters is
+// about 15 s of talking and 160 about 11 s — two sentences.
 /** Spoken answers longer than this are cut. */
-export const LONG_REPLY_CHARS = 300;
+export const LONG_REPLY_CHARS = 220;
 /** What is kept of a long answer: whole sentences up to about this. */
-export const SHORT_REPLY_CHARS = 200;
+export const SHORT_REPLY_CHARS = 160;
 /** The offer said after a cut answer. */
 export const TEXT_REST_OFFER = "There's a bit more — want me to text you the rest?";
 /** How many hand-offs after the offer the whole answer is still kept for Reason. */
 const TEXT_OFFER_TURNS = 2;
+/** Tools behind an answer that must be said whole: an agreement being made, a readback, a send. */
+const SAY_WHOLE_TOOLS = /confirm|commit|propose|readback|quote|send|email|text|message/;
 
-/** A long answer as `{ say, full }` — the start, then the offer — or null when it is short enough. */
+/** The sentences of a spoken answer. A full stop inside "$12.50" or "7 p.m. or later" ends nothing. */
+function sentencesOf(text) {
+  const held = [];
+  const masked = String(text).replace(QUOTED, (q) => `\u0000${held.push(q) - 1}\u0000`);
+  const parts = masked.split(/(?<=[.!?…]["”’)]*)\s+(?=["“‘(]?[A-Z0-9\u0000])/);
+  return parts.map(x => x.replace(/\u0000(\d+)\u0000/g, (_, i) => held[Number(i)]).trim()).filter(Boolean);
+}
+
+/**
+ * A long answer as `{ say, full, offered }`, or null when it is short enough. `say` is its first
+ * sentences, then the offer to text the rest (`offered`). An answer that ends on a question keeps the
+ * question as it is, and makes no offer of its own — one question at a time, and a question Reason
+ * asked (a yes it needs, a choice) is never swapped for another.
+ */
 export function shortForPhone(text, { max = LONG_REPLY_CHARS, keep = SHORT_REPLY_CHARS } = {}) {
   const full = String(text ?? "").replace(/\s+/g, " ").trim();
   if (full.length <= max) return null;
-  const held = [];
-  const masked = full.replace(QUOTED, (q) => `\u0000${held.push(q) - 1}\u0000`);
-  const sentences = (masked.match(/[^.!?…]+[.!?…]+["”’)]*\s*|[^.!?…]+$/g) ?? [masked]).map(x => x.replace(/\u0000(\d+)\u0000/g, (_, i) => held[Number(i)]));
+  const sentences = sentencesOf(full);
+  const lastQ = sentences.length > 1 && /\?["”’)]*$/.test(sentences.at(-1)) ? sentences.at(-1) : "";
+  const body = lastQ ? sentences.slice(0, -1) : sentences;
+  const room = lastQ ? Math.max(60, keep - lastQ.length) : keep;
   let say = "";
-  for (const s of sentences) {
-    if (say && (say + s).trim().length > keep) break;
-    say += s;
+  for (const s of body) {
+    if (say && `${say} ${s}`.length > room) break;
+    say = say ? `${say} ${s}` : s;
   }
-  say = say.trim();
   // One sentence that is itself long: cut at the last clause break inside the limit, never mid-word.
   if (say.length > max) {
-    const cut = say.slice(0, keep);
+    const cut = say.slice(0, room);
     const at = Math.max(cut.lastIndexOf(", "), cut.lastIndexOf("; "), cut.lastIndexOf(" — "));
     say = `${(at > 60 ? cut.slice(0, at) : cut.slice(0, cut.lastIndexOf(" "))).trim()}.`;
   }
-  if (!say || say.length >= full.length - 20) return null;
-  return { say: `${say} ${TEXT_REST_OFFER}`, full };
+  const out = lastQ ? `${say} ${lastQ}` : `${say} ${TEXT_REST_OFFER}`;
+  if (!say || out.length >= full.length - 20) return null;
+  return { say: out, full, offered: !lastQ };
 }
 
-/** The note on their next words to Reason, while a cut answer's offer stands. */
-export function textOfferNote(full) {
-  return `[On this call you said only the start of your last answer and offered to text them the rest. The whole answer was: "${String(full).replace(/"/g, "'")}"`
-    + " If what they just said means yes to that, text it to them now with message_send to \"owner\" (the whole answer, as a short text), and only then say it's sent."
-    + " If they didn't take you up on it, leave it and answer what they said.]";
+/** Would cutting this answer lose something they must hear whole? (its tools: an agreement, a readback, a send) */
+export function sayWhole(reply) {
+  return !!reply?.endCall || (reply?.tools ?? []).some(n => SAY_WHOLE_TOOLS.test(String(n)));
+}
+
+/** The note on the voice's cut answer, for Reason's next turns while it stands. */
+export function textOfferNote(full, { offered = true } = {}) {
+  const whole = `The whole answer was: "${String(full).replace(/"/g, "'")}"`;
+  return offered
+    ? `[Not all said aloud: on the phone you said only the start of this answer and offered to text them the rest. ${whole}`
+      + " If what they say next means yes to that, text it to them with message_send to \"owner\" (the whole answer, as a short text), and only then say it's sent."
+      + " If they don't take you up on it, leave it and answer what they said.]"
+    : `[Not all said aloud: on the phone you said only the start of this answer and its question. ${whole} If they ask for the rest, or for it by text, you have it.]`;
 }
 
 /** The words the voice is given when it claimed something nobody confirmed. Code's words, never the caller's. */
@@ -1030,6 +1062,8 @@ export const TALKOVER_QUIET_MS = 300;
 export const FIRST_EXCHANGE_QUIET_MS = 700;
 /** Still talking this long after the voice began: what it began was an answer to half a sentence. */
 export const TALKOVER_MAX_MS = 2000;
+/** With no words of theirs through by the limit, it waits this much longer for quiet, then plays anyway (a noisy line). */
+export const TALKOVER_NOISE_MS = 1500;
 /** How often a held run checks whether they have stopped. */
 const OVER_TICK_MS = 40;
 /** After a dropped run: this much quiet from them, with nothing from the voice, and it is asked to answer. */
@@ -1282,6 +1316,8 @@ export class GptLiveCall {
 
   /** Throw away whatever Twilio has buffered and not played. */
   clearPlayback(why) {
+    // A run held back for talk-over goes with everything else unplayed (the guard, a barge-in).
+    this.overDiscard();
     this.toTwilio({ event: "clear" });
     this.tape.cut();
     this.playheadAt = this.now();
@@ -1449,7 +1485,7 @@ export class GptLiveCall {
   textOut(delta) {
     const t = this.now();
     // The words of a run dropped for talking over them (`overDrop`) were never said.
-    if (this.over?.dropped && t - this.over.lastAt < 1500) return;
+    if (this.over?.dropped && !this.over.discarded && t - this.over.lastAt < 1500) return;
     // The words of a listening sound held back or dropped (`heldSound`) were never said.
     if (this.talking && (this.sound || t - this.soundDroppedAt < 1500) && BARE_SOUND.test(delta)) return;
     // Words of audio that never reached the line were never said (a line call's gate was shut).
@@ -1608,13 +1644,19 @@ export class GptLiveCall {
       turn.lateTimer = this.timers.setTimeout(() => this.holdLine(id, "late"), LATE_HOLDING_MS);
     }
     const messages = this.messages();
-    // A cut answer's offer to text the rest stands for a turn or two: Reason's next turn is handed the
-    // whole answer with their reply, and reads whether they want it (`textOfferNote`).
+    // A cut answer stands for a turn or two: the whole of it rides on the voice's own words for it (the
+    // message right after the ones its hand-off read), so Reason reads their reply against it
+    // (`textOfferNote`) — never on their words, which the harm screen reads as theirs.
     const offer = this.textOffer;
-    if (offer && this.delegations - offer.n <= TEXT_OFFER_TURNS && messages.at(-1)?.role === "user") {
-      messages[messages.length - 1] = { ...messages.at(-1), content: `${messages.at(-1).content}\n${textOfferNote(offer.full)}` };
-    } else if (offer && this.delegations - offer.n > TEXT_OFFER_TURNS) this.textOffer = null;
+    if (offer && this.delegations - offer.n > TEXT_OFFER_TURNS) this.textOffer = null;
+    else if (offer) {
+      // Their words are counted, not the voice's: the seeded greeting gives way to the voice's own.
+      let users = 0;
+      const at = messages.findIndex((m, i) => (m.role === "user" ? ++users : users) === offer.users && m.role === "assistant" && i < messages.length - 1);
+      if (at >= 0) messages[at] = { ...messages[at], content: `${messages[at].content}\n${textOfferNote(offer.full, { offered: offer.offered })}` };
+    }
     turn.msgCount = messages.length;
+    turn.users = messages.filter(m => m.role === "user").length;
     this.log({ gptlive_delegation: this.call.id, n: this.delegations, messages: messages.length });
     // A slow turn: the voice is told, not asked to speak, that nothing has finished — so if they ask,
     // the honest answer is to hand.
@@ -1624,7 +1666,7 @@ export class GptLiveCall {
     let reply;
     try {
       // Each of Reason's own tools as it starts: the only thing that makes a holding line say "check".
-      reply = await this.brain(messages, { onTool: (name) => { if (!turn.tool) turn.tool = String(name || "tool"); } });
+      reply = await this.brain(messages, { onTool: (name) => { if (!turn.tool && isLookup(name)) turn.tool = String(name); } });
     } catch (e) {
       reply = { text: "Something broke on my end there.", tools: [], endCall: null, skip: false, error: (e?.message ?? String(e)).split("\n")[0] };
     }
@@ -1646,11 +1688,12 @@ export class GptLiveCall {
     // The rest of a cut answer has been texted: the offer is spent.
     if (this.textOffer && this.textOffer.n < this.delegations && (reply.tools ?? []).some(n => SENDS.test(String(n)))) this.textOffer = null;
     let spoken = honest.text;
-    // A long answer on their own call: the start, then the offer to text the rest (call 79).
-    const cut = !this.line && !this.persona && Number(this.call.is_owner) === 1 && !reply.endCall ? shortForPhone(spoken) : null;
+    // A long answer on their own call: the start, then the offer to text the rest (call 79). Never one
+    // with an agreement, a readback, a send or a goodbye behind it (`sayWhole`).
+    const cut = !this.line && !this.persona && Number(this.call.is_owner) === 1 && !sayWhole(reply) ? shortForPhone(spoken) : null;
     if (cut) {
-      this.textOffer = { full: cut.full, n: this.delegations };
-      this.log({ gptlive_reply_cut: this.call.id, chars: cut.full.length, said: cut.say.length });
+      this.textOffer = { full: cut.full, offered: cut.offered, n: this.delegations, users: turn.users };
+      this.log({ gptlive_reply_cut: this.call.id, chars: cut.full.length, said: cut.say.length, offered: cut.offered });
       spoken = cut.say;
     }
     if (spoken) {
@@ -1696,10 +1739,14 @@ export class GptLiveCall {
     const turn = this.pending.get(id);
     if (!turn || this.done || this.ending || this.latest !== id) return;
     const t = this.now();
-    if (t - this.theirSpeechAt < HOLD_CALLER_QUIET_MS) return;
-    if (kind === "first" && (turn.held || this.lastVoiceAt > turn.startedAt)) return;
-    // Late: the voice is mid-sentence (its own words, or the first line still playing) — nothing over it.
-    if (kind === "late" && (t - this.lastVoiceAt < 1000 || this.queuedMs() > 0)) return;
+    if (kind === "first" && turn.held) return;
+    // They are talking, or the voice is (its own few words, a line still playing): nothing over either.
+    // The first line waits for that to pass, so a "yeah —" of the voice's own never leaves dead air after it.
+    const busy = t - this.theirSpeechAt < HOLD_CALLER_QUIET_MS || t - this.lastVoiceAt < HOLD_VOICE_QUIET_MS || this.queuedMs() > 0 || (this.over && !this.over.dropped);
+    if (busy) {
+      if (kind === "first" && t - turn.startedAt < LATE_HOLDING_MS - 1500) turn.holdTimer = this.timers.setTimeout(() => this.holdLine(id, "first"), 400);
+      return;
+    }
     const line = holdLineFor({ kind, tool: !!turn.tool, n: kind === "late" ? this.lateHolds++ : this.quickHolds++ });
     turn.held++;
     this.holdLines++;
@@ -1823,6 +1870,8 @@ export class GptLiveCall {
    */
   hangUpAfterSpeech(why = "end_call") {
     if (this.ending) return;
+    // A goodbye held back while they finished goes out now: the hang-up waits on what is really playing.
+    if (this.over && !this.over.dropped) this.overRelease();
     this.ending = true;
     this.endWhy = why;
     const started = this.now();
@@ -2185,10 +2234,11 @@ export class GptLiveCall {
     const afterThem = this.theirSpeechAt > this.lastRunAt && this.theirSpeechAt >= this.voiceEndsAt + ECHO_TAIL_MS;
     const first = afterThem && this.lastRunAt > 0 && this.runsAfterThem === 0;
     const wait = first ? FIRST_EXCHANGE_QUIET_MS : TALKOVER_QUIET_MS;
-    if (!afterThem || t - this.theirSpeechAt >= wait) { this.noteRun(t, afterThem); return false; }
+    // Never while the call is ending: a goodbye is said, and the hang-up waits on it.
+    if (!afterThem || this.ending || t - this.theirSpeechAt >= wait) { this.noteRun(t, afterThem); return false; }
     // Where the voice's words stood when this run began, so a drop takes back only this run's words.
-    const last = this.turns.at(-1);
-    const mark = last?.who === "reason" && !last.seeded ? { turn: last, len: last.text.length } : null;
+    const last = this.turns.findLast(x => x.who === "reason" && !x.seeded) ?? null;
+    const mark = last ? { turn: last, len: last.text.length } : null;
     this.over = { since: t, frames: [b64], lastAt: t, wait, first, mark };
     this.overTimer = this.timers.setTimeout(() => this.overCheck(), OVER_TICK_MS);
     return true;
@@ -2206,14 +2256,30 @@ export class GptLiveCall {
     if (!o || o.dropped || this.done) return;
     const t = this.now();
     if (t - this.theirSpeechAt >= o.wait) return this.overRelease();
-    if (t - o.since >= TALKOVER_MAX_MS) return this.overDrop();
+    // Still "talking" at the limit: if words of theirs have come through since, it was half their
+    // sentence and is dropped; if none have, it is the line (a noisy room) and the run goes out — never
+    // dead air for noise.
+    if (t - o.since >= TALKOVER_MAX_MS && this.lastCallerAt > o.since) return this.overDrop("they kept talking");
+    if (t - o.since >= TALKOVER_MAX_MS + TALKOVER_NOISE_MS) return this.overRelease();
     this.overTimer = this.timers.setTimeout(() => this.overCheck(), OVER_TICK_MS);
   }
 
-  /** They have stopped: the held run goes out now, as it was. */
+  /** The words of the held run so far (its transcript, which may trail its audio). */
+  overText(o) {
+    const last = this.turns.findLast(x => x.who === "reason" && !x.seeded);
+    if (!last) return "";
+    if (o.mark?.turn === last) return last.text.slice(o.mark.len);
+    return (last.from ?? last.at) >= o.since - 1500 ? last.text : "";
+  }
+
+  /** They have stopped: the held run goes out now, as it was — unless it was a fragment the voice gave up on. */
   overRelease() {
     const o = this.over;
+    // "I'm —" and nothing more: the voice stopped when they went on, so playing it now is call 79 again.
+    const words = this.overText(o).trim();
+    if (words && words.split(/\s+/).length <= 2 && !/[.!?…]["”’)]*$/.test(words) && this.now() - o.lastAt > 300) return this.overDrop("a fragment");
     this.over = null;
+    if (this.overTimer) { this.timers.clearTimeout(this.overTimer); this.overTimer = null; }
     const t = this.now();
     this.noteRun(t, true);
     this.talkOvers++;
@@ -2222,31 +2288,42 @@ export class GptLiveCall {
     this.log({ gptlive_talkover_held: this.call.id, held_ms: t - o.since, first: o.first });
   }
 
-  /** They kept talking: the run was an answer to half of what they said. Nobody heard it. */
-  overDrop() {
+  /** A held run thrown away unplayed (Twilio's queue cleared for a barge-in or the guard), with nothing more said about it. */
+  overDiscard() {
+    if (!this.over || this.over.dropped) return;
+    if (this.overTimer) { this.timers.clearTimeout(this.overTimer); this.overTimer = null; }
+    // The rest of that run, still arriving, goes the same way (never the tail of a cleared sentence).
+    this.over = { dropped: true, discarded: true, lastAt: this.now(), frames: [] };
+  }
+
+  /** The run was an answer to half of what they said, or a fragment. Nobody heard it. */
+  overDrop(why) {
     const o = this.over;
     o.dropped = true;
     o.frames = [];
+    if (this.overTimer) { this.timers.clearTimeout(this.overTimer); this.overTimer = null; }
     const t = this.now();
     this.talkOverDrops++;
     // Its words were never said: off the transcript, so neither Reason nor the record thinks they were.
-    const last = this.turns.at(-1);
-    if (last?.who === "reason" && !last.seeded) {
+    const last = this.turns.findLast(x => x.who === "reason" && !x.seeded);
+    if (last) {
       if (o.mark?.turn === last) last.text = last.text.slice(0, o.mark.len);
-      else if ((last.from ?? last.at) >= o.since - 1500) this.turns.pop();
+      else if ((last.from ?? last.at) >= o.since - 1500) this.turns.splice(this.turns.lastIndexOf(last), 1);
     }
     this.live.send({ type: "session.thinking.append", event_id: `over_${this.call.id}_${this.talkOverDrops}`, delegation_id: null, content: OVER_NOTE });
-    this.log({ gptlive_talkover_dropped: this.call.id, held_ms: t - o.since, first: o.first });
+    this.log({ gptlive_talkover_dropped: this.call.id, why, held_ms: t - o.since, first: o.first });
+    if (this.overNudgeTimer) this.timers.clearTimeout(this.overNudgeTimer);
     this.overNudgeTimer = this.timers.setTimeout(() => this.overNudge(t), OVER_TICK_MS);
   }
 
-  /** After a dropped run: once they stop, the voice answers — unless it already has. */
+  /** After a dropped run: once they stop, the voice answers — unless it already has, or a hand-off will. */
   overNudge(droppedAt) {
     this.overNudgeTimer = null;
     if (this.done || this.ending) return;
     const t = this.now();
-    if (this.lastVoiceAt > droppedAt || this.pending.size || (this.over && !this.over.dropped)) return;
-    if (t - this.theirSpeechAt < OVER_NUDGE_QUIET_MS) {
+    if (this.lastVoiceAt > droppedAt || this.pending.size) return;
+    // A newer run is being held (it goes out when they stop), or they are still talking: look again soon.
+    if ((this.over && !this.over.dropped) || t - this.theirSpeechAt < OVER_NUDGE_QUIET_MS) {
       if (t - droppedAt < OVER_NUDGE_GIVE_UP_MS) this.overNudgeTimer = this.timers.setTimeout(() => this.overNudge(droppedAt), OVER_TICK_MS * 5);
       return;
     }

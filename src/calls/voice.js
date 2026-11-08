@@ -554,7 +554,7 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // What happened between them today, before this call (call 79: its own pick by text, three hours
     // earlier, was "nothing saved" on the phone). Up to when the call was made, so every turn of the
     // call sends the same prefix and the prompt cache holds.
-    todaySoFarNote(conversationId, { until: Number(call.created_at) || now }),
+    todaySoFarNote(conversationId, { until: Number(call.created_at) || now, call: call.id }),
   ];
   return {
     kind: "owner",
@@ -1827,7 +1827,8 @@ export async function* voiceTurn({
             yield* emit(splitter.push(ev.text ?? ""));
             continue;
           }
-          if (ev?.type === "tool_start" && onTool && !SILENT_TOOLS.has(ev.name)) {
+          // A backend with no streaming tool start (the CLI) reports the tool when its call is read.
+          if ((ev?.type === "tool_start" || ev?.type === "tool_use") && onTool && !SILENT_TOOLS.has(ev.name)) {
             try { onTool(String(ev.name ?? "")); } catch { /* a watcher never breaks the turn */ }
           }
           if (ev?.type === "tool_start" && !filled && !holdBack && !SILENT_TOOLS.has(ev.name)) {
@@ -2918,6 +2919,5 @@ async function* cliGenerator({ system, messages, tools, log = () => {}, onUsage 
   }
   const text = spoken.join("\n").trim();
   if (text) yield { type: "text", text };
-  // Each tool announced as it starts, as the API stream does, so a watcher (`onTool`) sees it too.
-  for (const a of asked) { yield { type: "tool_start", name: a.name }; yield a; }
+  for (const a of asked) yield a;
 }

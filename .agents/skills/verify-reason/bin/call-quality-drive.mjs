@@ -132,9 +132,12 @@ for (const [i, clip] of clips.entries()) {
   await sleep(i === 0 ? 300 : 600);
   const p = await playClip(clip);
   played.push(p);
-  // A reply has started and gone quiet for 1.5 s (a reply with a pause in it carries on), or 25 s.
-  const until = Date.now() + 25_000;
-  while (Date.now() < until && hungUpAt == null && !(speechAt.some(ms => ms > p.to) && Date.now() - startAt - speechAt.at(-1) >= 1500)) await sleep(50);
+  // Reason's answer is in (no hand-off still running) and has gone quiet for 1.5 s, or 35 s: the way a
+  // person waits through "one sec" for the answer before saying the next thing.
+  const until = Date.now() + 35_000;
+  const answered = () => speechAt.some(ms => ms > p.to) && !(call?.pending?.size) && Date.now() - startAt - speechAt.at(-1) >= 1500;
+  await sleep(1500);
+  while (Date.now() < until && hungUpAt == null && !answered()) await sleep(50);
 }
 await sleep(4000);
 clearInterval(tick);
