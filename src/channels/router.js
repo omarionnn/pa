@@ -1372,12 +1372,12 @@ export class Router {
    * Hand a raw webhook request to the channel that owns it, then deliver whatever it parsed out.
    * A bad signature never reaches `deliver`.
    */
-  async webhook({ channel, rawBody, headers }) {
+  async webhook({ channel, rawBody, rawBytes, headers }) {
     const ch = this.get(channel);
     if (!ch) return { status: 404, body: { error: `no channel '${channel}'` } };
     let parsed;
     try {
-      parsed = await ch.receive({ rawBody, headers });
+      parsed = await ch.receive({ rawBody, rawBytes, headers });
     } catch (e) {
       this.log({ webhook: channel, threw: (e?.message ?? String(e)).split("\n")[0] });
       return { status: 500, body: { error: "webhook handler failed" } };
