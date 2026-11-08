@@ -43,8 +43,12 @@ export function runOpen(fn) { return scope.run({ tz: "" }, fn); }
 /** The request's person is known now: put their zone on the open scope, if there is one. */
 export function enter(conversationId) {
   const s = scope.getStore();
-  if (!s || s.tz || !conversationId) return;
+  if (!s || !conversationId) return;
+  // The first person a request turns out to be is its person for good: conversation() decides whose
+  // Web uploads may be read (src/webuploads.js), so a later lookup can never swap it.
+  if (s.conv && s.conv !== conversationId) return;
   s.conv = conversationId;
+  if (s.tz) return;
   try { s.tz = resolver(conversationId) || ""; } catch {}
 }
 

@@ -1801,10 +1801,13 @@ export function opsSession(headers = {}) {
  */
 export function opsSameOrigin(headers = {}) {
   const site = String(headers["sec-fetch-site"] ?? "").toLowerCase();
-  if (site && site !== "same-origin") return false;
+  // "none" is the browser's own doing (a reload, a resubmit from history), never another page's.
+  if (site && site !== "same-origin" && site !== "none") return false;
   const hostOf = (u) => { try { return new URL(u).host.toLowerCase(); } catch { return ""; } };
   const notOps = new Set([hostOf(config.pagesUrl), hostOf(config.eventsUrl)].filter(Boolean));
-  const ours = new Set([hostOf(config.opsUrl), hostOf(config.publicUrl), String(headers.host ?? "").toLowerCase()].filter(h => h && !notOps.has(h)));
+  // Only the status page's own addresses, never whatever Host the request names: another host that
+  // reaches this server and serves somebody's page must not count as the status page.
+  const ours = new Set([hostOf(config.opsUrl), hostOf(config.publicUrl)].filter(h => h && !notOps.has(h)));
   const origin = String(headers.origin ?? "").trim();
   if (origin === "null") return site === "same-origin";
   if (origin) return ours.has(hostOf(origin));
@@ -1813,8 +1816,16 @@ export function opsSameOrigin(headers = {}) {
   return true;
 }
 
+/** Is this request addressed to the pages or events host? Those serve people's pages: never /ops. */
+export function onPeopleHost(headers = {}) {
+  const host = String(headers?.host ?? "").toLowerCase().replace(/:\d+$/, "");
+  const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ""; } };
+  return !!host && [hostOf(config.pagesUrl), hostOf(config.eventsUrl)].filter(Boolean).includes(host);
+}
+
 export async function opsRequest({ json = false, key = null, focus = null, via = null, bounced = false, method, headers, remoteAddress = "", readBody, runtime, router = null, log = () => {} }) {
   const page = { ...ops.PAGE, conversation_id: config.ownerConversation };
+  if (onPeopleHost(headers)) return { status: 404, headers: HTML(), body: renderNotFound() };
   const session = opsSession(headers);
   const owner = session ? db.pageSessionOwner(session.token, SESSION_TTL_MS) : null;
   const signedIn = !!owner && accounts.isOperatorConversation(owner);
@@ -2003,7 +2014,8 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
     };
   }
   // A session from before the status page had its own cookie: moved to it now (opsSession).
-  return { status: 200, headers: { ...HTML(), ...(session?.legacy ? { "Set-Cookie": opsCookieHeader(session.token) } : {}) }, body: renderOps({ report, now: clock.now(), focus: focusId, events: eventsOps(), web: await webOps() }) };
+  // The old host-only copy is cleared in the same answer (never the shared Web one, which has a Domain).
+  return { status: 200, headers: { ...HTML(), ...(session?.legacy ? { "Set-Cookie": [opsCookieHeader(session.token), clearCookieHeader({ path: "/" })] } : {}) }, body: renderOps({ report, now: clock.now(), focus: focusId, events: eventsOps(), web: await webOps() }) };
 }
 
 /** The status page's events section, or null while events are off and none exist. */
@@ -2030,6 +2042,7 @@ function noAddresses(text, known = null) {
 
 /** Is this request the operator's own signed-in browser? The same session /ops takes (opsRequest). */
 function operatorSignedIn(headers) {
+  if (onPeopleHost(headers)) return false;
   const session = opsSession(headers);
   const owner = session ? db.pageSessionOwner(session.token, SESSION_TTL_MS) : null;
   return !!owner && accounts.isOperatorConversation(owner);

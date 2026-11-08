@@ -83,7 +83,10 @@ test("a Web sign-in (the shared cookie) does not open /ops; a status-page one fr
   db.startPageSession("ops", "old-ops-tok", { conversationId: "dm:owner" });
   const legacy = await GET({ cookie: "reason_page=old-ops-tok" });
   assert.equal(legacy.status, 200, "signed in before: still signed in");
-  assert.match(legacy.headers["Set-Cookie"], /^reason_ops=old-ops-tok; .*SameSite=Strict/);
+  const set = [].concat(legacy.headers["Set-Cookie"]);
+  assert.match(set[0], /^reason_ops=old-ops-tok; .*SameSite=Strict/);
+  assert.match(set[1], /^reason_page=; Path=\/; Max-Age=0/, "the old host-only copy is cleared");
+  assert.doesNotMatch(set[1], /Domain=/i, "never the shared Web cookie");
   const moved = await GET({ cookie: "reason_ops=old-ops-tok" });
   assert.equal(moved.status, 200);
   assert.equal(moved.headers["Set-Cookie"], undefined);
@@ -112,6 +115,18 @@ test("a post from anywhere but the status page is refused before anything is rea
   assert.equal(opsSameOrigin({ origin: "https://reason.example.test" }), true, "the Funnel's own address");
   assert.equal(opsSameOrigin({ origin: "null", "sec-fetch-site": "same-origin" }), true);
   assert.equal(opsSameOrigin({}), true, "no browser vouching either way is not a browser");
+  assert.equal(opsSameOrigin({ "sec-fetch-site": "none" }), true, "a reload or resubmit is the browser's own");
+  assert.equal(opsSameOrigin({ origin: "https://other.example", host: "other.example" }), false, "the Host a request names is not trusted");
+});
+
+test("/ops, /ops.json and the full /health never answer on the pages or events host", async () => {
+  db.startPageSession("ops", "ops-tok3", { conversationId: "dm:owner" });
+  for (const host of ["files.heyreason.test", "events.heyreason.test"]) {
+    assert.equal((await GET({ host, cookie: "reason_ops=ops-tok3" })).status, 404, host);
+    assert.equal((await GET({ host, cookie: "reason_ops=ops-tok3" }, { json: true })).status, 404, host);
+    assert.equal((await POST(pw(PASSWORD), { host })).status, 404, host);
+  }
+  assert.equal((await GET({ host: "reason.example.test", cookie: "reason_ops=ops-tok3" })).status, 200);
 });
 
 test("a link tapped on another site is asked again once, so the Strict cookie comes; never a loop, never for JSON", async () => {

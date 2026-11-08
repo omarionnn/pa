@@ -1393,10 +1393,16 @@ addColumnIfMissing("page_sessions", "csrf", "TEXT");
 {
   const raw = db.prepare("SELECT token FROM page_sessions WHERE length(token) != 64 OR token GLOB '*[^0-9a-f]*'").all();
   if (raw.length) {
-    const upd = db.prepare("UPDATE OR IGNORE page_sessions SET token = ? WHERE token = ?");
+    const upd = db.prepare("UPDATE page_sessions SET token = ? WHERE token = ?");
+    const has = db.prepare("SELECT 1 FROM page_sessions WHERE token = ?");
+    const drop = db.prepare("DELETE FROM page_sessions WHERE token = ?");
     db.exec("BEGIN");
     try {
-      for (const r of raw) upd.run(sessionKey(r.token), r.token);
+      // A hash already there (the same browser, hashed by a newer process): the raw row just goes.
+      for (const r of raw) {
+        const key = sessionKey(r.token);
+        if (has.get(key)) drop.run(r.token); else upd.run(key, r.token);
+      }
       db.exec("COMMIT");
     } catch (e) { db.exec("ROLLBACK"); throw e; }
   }

@@ -282,6 +282,14 @@ failing closed) runs only with `REASON_DOCTOR_POST_PROBE=1`.
 
 ## Drive
 
+**Sign-in sessions are hashed (2026-11-08).** `page_sessions.token` holds `sha256(token)` hex, never
+the cookie. Every "temporary owner `page_sessions` row" in a feature file means: make it with
+`db.startPageSession(pageId, token, { conversationId })` (or INSERT `db.sessionKey(token)`), send the
+raw token as the cookie, and delete it by `db.sessionKey(token)` — a raw INSERT opens nothing, is
+hashed at the next boot, and then a delete by the raw token silently misses, leaving a live 90-day
+session. /ops opens only on a `page_id 'ops'` session in the `reason_ops` cookie, and every POST to it
+needs a same-origin Origin.
+
 Four recipes. Each feature file in `features/` names the ones that apply to it.
 
 **1 — One inbound message, down the real road.** The user path: adapter verifies the shared secret,
@@ -488,6 +496,7 @@ muted guests sit in the pick list unlabeled, the section is "Message guests". `t
 joined-since reaches 0). Migration tried on a `.backup` of live `reason.db` in `/tmp/rtrial` on the box:
 three columns added, 7/7 attendees backfilled, `integrity_check` ok. Hetzner over the public IP can crawl
 (~7 KB/s scp on 2026-11-08); the Tailscale address `100.100.152.2` was the one that finished.
+
 ### Baseline — security holes (sec-holes, 2026-11-08)
 `npm run test:offline` under `env -i`: 5,681 tests, 5,525 passing, 25 failing — exactly main fa3f487's 25 (video.test.js without yt-dlp, web-ongoing #5), none new. New: `test/sec-holes-1108.test.js` (5). What changed for a driver: **`page_sessions.token` is sha256(token) hex** — a drive that reads or edits a row by token must use `db.sessionKey(token)` (web-drive, web-settings-drive updated; Web Settings' sign-out handle is `sessionHandle(db.sessionKey(token))`); rows from before are hashed in place on boot. **/ops opens only on its own sign-in** (page_id `ops`) in its own cookie `reason_ops` (host-only, SameSite=Strict); a Web `reason_page` cookie no longer opens it, an old ops-made `reason_page` still does and is moved. **Every POST /ops** must be same-origin (Origin/Referer = the ops host or the Funnel, never files./events.; Sec-Fetch-Site same-origin if sent) or it is 403. **opspassword.clientIp** believes only the signed website address or Caddy's (loopback + X-Reason-Caddy), else the socket. **localUpload** reads a Web upload only for its own conversation (explicit `conversationId`, else the zonescope turn). Drives: web-drive 15/15, web-settings-drive 29/29, signin-link 10/10, events-drive 64/64, web-memory-drive 27/27, web-settings-index 13/13.
 

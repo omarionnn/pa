@@ -123,7 +123,7 @@ export async function uploadRequest({ account, headers = {}, readBody, log = () 
   let words = null;
   if (rec.kind === "voice" && String(headers["x-reason-hear"] ?? "") === "1" && canHear().ok) {
     let r = null;
-    try { r = await listen({ url: uploads.uploadUrl(rec.id, rec.name), filename: rec.name }); } catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+    try { r = await listen({ url: uploads.uploadUrl(rec.id, rec.name), filename: rec.name, conversationId: conv }); } catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
     if (r?.ok && !r.silent && String(r.text ?? "").trim()) {
       words = String(r.text).trim();
       rec = uploads.update(rec.id, { transcript: words }) ?? rec;

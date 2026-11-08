@@ -78,8 +78,8 @@ Mac: `launchctl list | grep com.reason.usage-reporter` and `tail ~/.config/reaso
   token is in the keychain) and skips.
 - `sqlite3` on the cage DB is refused under the OpenClaw state dir; use `bin/peek.sh sql`, or start
   the cage with `REASON_VERIFY_RUN=/tmp/reason-verify-<n>` (export it for every `caged.sh` call). To
-  read `/ops.json` on the cage, insert a `page_sessions` row (`page_id 'ops'`, the owner
-  conversation) from a node script and send it as the `reason_page` cookie.
+  read `/ops.json` on the cage, make a session with `db.startPageSession("ops", token, { conversationId: <owner> })` from a node
+  script (never a raw INSERT: rows are sha256-hashed since 11-08) and send it as the `reason_ops` cookie.
 - The Mac reporter reads the CLI's token from the keychain item `Claude Code-credentials`. It never
   refreshes it: an expired token means a push with counts only until the CLI next runs.
 - Stop the reporter: `launchctl bootout gui/$(id -u)/com.reason.usage-reporter`.
