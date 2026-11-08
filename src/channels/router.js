@@ -54,7 +54,7 @@ const EVENT_CLAIM_LINES = {
   password_changed: "the organizer changed the event's password since you got that code. open the event link again and use the new password.",
   paused: "joining that event is paused right now. try again later.",
   cancelled: "that event was cancelled by its organizer.",
-  full: "that event filled up before your join went through — the organizer set a limit and it's been reached. if a spot opens up, the same link and password will work.",
+  full: "that event is full — it filled up before your join went through. if a spot opens up, the same link and password will work.",
   removed: "the organizer took you off that event, so you can't rejoin it.",
   organizer: "you're organizing that one — nothing to join.",
   not_found: "that event code didn't work. open the event link again to get a fresh one.",

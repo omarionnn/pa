@@ -344,7 +344,7 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   taken off; at/under the number in, joins refuse `full` on every route (text, page, claim) until the count
   drops below the cap; guests never told. Full copy: text "full right now… same password works… no
   waitlist", page "This event is full right now. If a spot opens up, the same link and password will
-  work.", claim line "that event filled up before your join went through…". Page: 05 GUESTS has WHO SEES
+  work.", claim line "that event is full — it filled up before your join went through…". Page: 05 GUESTS has WHO SEES
   THE GUEST LIST (tag PRIVATE / SHOWN TO GUESTS; show = confirm step with who gets asked, the exact text and a
   `pin` re-checked on send; hide = confirm, quiet) and HOW MANY CAN JOIN (tag `N OF CAP` / `FULL · N OF CAP`;
   empty = no cap; confirm step only when the new cap is at or under the number in). Guest rows on a private
