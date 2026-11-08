@@ -120,6 +120,37 @@ test("while Reason's own voice is playing, their phone's echo of it is not lifte
   for (const [i, o] of out.entries()) assert.ok(dbOf(o) - dbOf(echo[i]) <= hearing.ECHO_GAIN_DB + 0.5);
 });
 
+test("review: gusty noise is not read as speech, and a noisy line's floor is never lifted past the ceiling", () => {
+  const h = new hearing.Hearing();
+  const gust = Array.from({ length: 150 }, (_, i) => hiss(i % 10 < 5 ? -57 : -62));
+  const out = run(h, gust);
+  for (const [i, o] of out.entries()) assert.ok(dbOf(o) - dbOf(gust[i]) < 1, `gust frame ${i} lifted ${(dbOf(o) - dbOf(gust[i])).toFixed(1)} dB`);
+  // Hiss at −62 under −45 speech: lift capped at NOISE_CEIL_DB − floor = 7 dB.
+  const h2 = new hearing.Hearing();
+  const mix = [...Array.from({ length: 100 }, () => hiss(-62)), ...Array.from({ length: 50 }, () => tone(-45))];
+  const o2 = run(h2, mix);
+  for (const i of [120, 140, 149]) assert.ok(dbOf(o2[i]) - dbOf(mix[i]) <= -55 - -62 + 1, `lift ${(dbOf(o2[i]) - dbOf(mix[i])).toFixed(1)} dB`);
+});
+
+test("review: when Reason starts talking right after them, the lift drops to the echo cap at once", () => {
+  const h = new hearing.Hearing();
+  run(h, Array.from({ length: 50 }, () => hiss(-74)));
+  run(h, Array.from({ length: 40 }, () => tone(-45)));
+  const echo = tone(-48);
+  const after = h.frame(echo, 99999, { reasonTalking: true });
+  // Past the 5 ms ramp, the very first echo frame is at the cap.
+  const tail = (b64) => Buffer.from(b64, "base64").subarray(40).toString("base64");
+  assert.ok(dbOf(tail(after)) - dbOf(tail(echo)) <= hearing.ECHO_GAIN_DB + 0.5, `first echo frame lifted ${(dbOf(tail(after)) - dbOf(tail(echo))).toFixed(1)} dB past the ramp`);
+});
+
+test("review: a long quiet stretch with short gaps keeps its lift past three seconds", () => {
+  const h = new hearing.Hearing();
+  run(h, Array.from({ length: 50 }, () => hiss(-74)));
+  const talk = Array.from({ length: 250 }, (_, i) => (i % 25 < 22 ? tone(-45) : hiss(-74)));
+  const out = run(h, talk);
+  for (const i of [150, 200, 240]) assert.ok(dbOf(out[i]) - dbOf(talk[i]) > 12, `frame ${i} lift ${(dbOf(out[i]) - dbOf(talk[i])).toFixed(1)} dB`);
+});
+
 test("levelsBetween: their speech in a window, as it came in and how much it was lifted", () => {
   const h = new hearing.Hearing();
   run(h, Array.from({ length: 50 }, () => hiss(-74)));
@@ -208,6 +239,7 @@ test("turn_log: what was heard each turn, when, and how loud — on their own ca
   live.emit({ type: "session.input_transcript.delta", delta: " I'm in Kibi", start_ms: 2600, end_ms: 3200 });
   await timers.advance(300);
   live.emit({ type: "session.input_transcript.delta", delta: " Kibi.", start_ms: 3200, end_ms: 3700 });
+  live.emit({ type: "session.output_transcript.delta", delta: "", start_ms: 9000, end_ms: 9100 });
   twilio.say({ event: "stop" });
   await timers.advance(4000);
 

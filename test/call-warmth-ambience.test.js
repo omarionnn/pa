@@ -226,7 +226,7 @@ test("no brief, no warm lines on a call to somebody else", () => {
   const row = call({ isOwner: false, toNumber: "+12125550123" });
   const who = gl.whoFor(db.getCall(C, row.id));
   assert.equal(who.brief, undefined);
-  assert.doesNotMatch(gl.liveInstructions(who), /PRE-CALL BRIEF|friendly, chatty/);
+  assert.doesNotMatch(gl.liveInstructions(who), /PRE-CALL BRIEF|friendly and warm, like a friend|therapist/);
 });
 
 test("roughly where they are: only while they share their location, and a neighbourhood, never an address", async () => {

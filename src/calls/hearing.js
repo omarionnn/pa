@@ -10,9 +10,10 @@
 // μ-law frame Twilio sends, in order, on the copy that goes to the model only. The recording and every
 // loudness check in ./gptlive.js still read the line as it came.
 //
-//   - A frame counts as speech only when it is loud enough above the line's own noise floor (tracked
-//     per call) and above an absolute floor, so silence, hiss and a quiet room are never lifted into
-//     something that sounds like words.
+//   - A frame counts as speech only when it is GATE_OVER_FLOOR_DB above the line's own noise floor
+//     (the 10th-percentile frame of the last 3 s, per call) and above GATE_MIN_DB, so silence, hiss and
+//     a quiet room are never lifted into something that sounds like words. And the lift is capped so
+//     the floor itself never comes up past NOISE_CEIL_DB: a noisy line gets less lift, not more noise.
 //   - Speech is brought toward TARGET_DB, never cut below how it came in, and lifted at most
 //     MAX_GAIN_DB. The level it follows rises at once on a louder frame and falls back over a few
 //     hundred ms, so loud speech is never pumped up and a quiet stretch reaches full lift in ~0.3 s.
@@ -39,7 +40,9 @@ export const ECHO_GAIN_DB = 3;
 /** Speech is this far over the line's noise floor... */
 export const GATE_OVER_FLOOR_DB = 10;
 /** ...and over this, whatever the floor. */
-export const GATE_MIN_DB = -58;
+export const GATE_MIN_DB = -55;
+/** The line's noise floor is never lifted past this, whatever the speech wants: a noisy line gets less lift. */
+export const NOISE_CEIL_DB = -55;
 /** A frame's peak stays under this (about −2 dBFS). */
 export const LIMIT = 26000;
 /** How fast the speech level it follows falls back after a louder frame, per 20 ms frame (≈ 75 dB/s). */
@@ -47,8 +50,11 @@ const ENV_FALL_DB = 1.5;
 /** How fast the lift may change, per frame: up gently, down quicker. */
 const GAIN_UP_DB = 3;
 const GAIN_DOWN_DB = 2;
-/** The line's noise floor is the quietest frame of the last FLOOR_FRAMES (2 s): speech always has a gap in that long. */
-const FLOOR_FRAMES = 100;
+/** Samples in the fast ramp (5 ms at 8 kHz). */
+const FAST_RAMP = 40;
+/** The line's noise floor is the 10th-percentile frame of the last FLOOR_FRAMES (3 s): speech has gaps in that long. */
+const FLOOR_FRAMES = 150;
+const FLOOR_RANK = 0.1;
 /** The quietest a frame is read as (digital silence would be −∞). */
 const QUIET_DB = -96;
 
@@ -60,6 +66,7 @@ export class Hearing {
     this.floor = 0;
     this.recent = new Float32Array(FLOOR_FRAMES);
     this.seen = 0;
+    this.sorted = new Float32Array(FLOOR_FRAMES);
     this.env = TARGET_DB;
     this.gainDb = 0;
     this.quietFrames = 0;
@@ -102,23 +109,27 @@ export class Hearing {
     // The line's noise floor: the quietest frame of the last two seconds, this one included. A steady
     // hiss is its own floor, so it never counts as speech however loud it is.
     this.recent[this.seen++ % FLOOR_FRAMES] = level;
-    let floor = level;
-    for (let i = 0, k = Math.min(this.seen, FLOOR_FRAMES); i < k; i++) if (this.recent[i] < floor) floor = this.recent[i];
-    this.floor = floor;
+    const k = Math.min(this.seen, FLOOR_FRAMES);
+    this.sorted.set(this.recent.subarray(0, k));
+    const win = this.sorted.subarray(0, k).sort();
+    this.floor = win[Math.floor((k - 1) * FLOOR_RANK)];
     const speech = level >= GATE_MIN_DB && level >= this.floor + GATE_OVER_FLOOR_DB;
     let want;
     this.quietFrames = speech ? 0 : this.quietFrames + 1;
+    // However much the speech wants, the line's own noise is never brought up past NOISE_CEIL_DB.
+    const room = Math.max(0, NOISE_CEIL_DB - this.floor);
     if (reasonTalking) {
       want = Math.min(this.gainDb, ECHO_GAIN_DB);
     } else if (speech) {
       this.env = level > this.env ? level : Math.max(level, this.env - ENV_FALL_DB);
-      want = Math.min(MAX_GAIN_DB, Math.max(0, TARGET_DB - this.env));
+      want = Math.min(MAX_GAIN_DB, room, Math.max(0, TARGET_DB - this.env));
     } else if (this.quietFrames <= HOLD_FRAMES) {
-      want = this.gainDb;
+      want = Math.min(this.gainDb, room);
     } else {
       want = Math.min(this.gainDb, NOISE_GAIN_DB);
     }
-    const step = want > this.gainDb ? Math.min(GAIN_UP_DB, want - this.gainDb) : Math.max(-GAIN_DOWN_DB, want - this.gainDb);
+    // Down to the echo cap at once when Reason starts talking (the per-sample ramp keeps it click-free).
+    const step = want > this.gainDb ? Math.min(GAIN_UP_DB, want - this.gainDb) : reasonTalking ? want - this.gainDb : Math.max(-GAIN_DOWN_DB, want - this.gainDb);
     const from = lin(this.gainDb);
     let to = lin(this.gainDb + step);
     // The limiter: this frame's loudest sample, at the lift it ends on, stays under LIMIT.
@@ -130,8 +141,10 @@ export class Hearing {
     if (start === 1 && to === 1) return b64;
     const out = Buffer.alloc(u.length);
     const n = u.length;
+    // The ramp spans the frame, or 5 ms when the lift falls for Reason's own voice (fast, still click-free).
+    const ramp = reasonTalking && to < start ? Math.min(n, FAST_RAMP) : n;
     for (let i = 0; i < n; i++) {
-      const g = start + ((to - start) * (i + 1)) / n;
+      const g = i < ramp ? start + ((to - start) * (i + 1)) / ramp : to;
       let v = Math.round(pcm[i] * g);
       if (v > LIMIT) v = LIMIT; else if (v < -LIMIT) v = -LIMIT;
       out[i] = pcmToUlaw(v);

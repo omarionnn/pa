@@ -161,7 +161,7 @@ test("own calls: the voice is told the same; calls to somebody else are not", ()
   const own = gl.liveInstructions({ name: "Omari", owner: true });
   assert.match(own, /one point at a time, a few short sentences, then let them react/);
   assert.match(own, /Never read a long text out loud; offer to text it\. Ask at most one question at a time\./);
-  assert.match(own, /friendly, chatty and warm/, "warmth kept");
+  assert.match(own, /friendly and warm, like a friend/, "warmth kept (call 76: without the chatty probing)");
   assert.doesNotMatch(gl.liveInstructions({ name: "Omari", owner: false }), /one point at a time/);
 });
 

@@ -265,7 +265,7 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
  * (API reference, read 2026-11-08), so this is the voice's own judgment of what it heard.
  */
 export const HEARING_LINES = [
-  "Phone lines cut out. If a word, name, place or number sounds unclear, cut off or garbled, or would be a strange thing for them to have said, don't guess and don't repeat the strange word back: ask briefly about just that part, like \"sorry, you cut out — where?\"",
+  "Phone lines cut out. If a word, name, place or number sounds unclear, cut off or garbled, or would be a strange thing for them to have said, don't guess and don't repeat the strange word back: ask briefly about just that part yourself, like \"sorry, you cut out — where?\", before you hand anything to Reason, since Reason only gets the words as you heard them.",
   "Ask like that at most once for the same thing. If it's still unclear, go with your best reading, say it plainly so they can correct you, and carry on.",
   "If they've already told you something, don't ask them to say it again or to \"tell me\" more; answer what they said.",
 ];
@@ -890,8 +890,8 @@ export const LINE_REJOIN_MS = 20_000;
  */
 /** How far their words' transcript trails the sound of them, for the per-turn level window (~2.7 s seen). */
 export const TRANSCRIPT_LAG_MS = 2500;
-/** Their phone's echo of Reason can trail its audio by this much; no quiet-speech lift until it has passed. */
-export const ECHO_TAIL_MS = 250;
+/** Their phone's echo of Reason can trail its audio by this much (mobile round trips run 300–600 ms); no quiet-speech lift until it has passed. */
+export const ECHO_TAIL_MS = 700;
 export const BC_CALLER_MS = 650;
 export const BC_SELF_MS = [600, 3000];
 export const BC_REAL_MS = 450;
@@ -1081,7 +1081,7 @@ export class GptLiveCall {
       }
       // What the model hears: their side evened out (./hearing.js), quiet words lifted, silence left
       // alone. The recording and every loudness check above keep the line as it came.
-      const heard = this.hearing ? this.hearing.frame(m.media.payload, this.now(), { reasonTalking: this.now() < Math.min(this.voiceEndsAt, this.playheadAt) + ECHO_TAIL_MS }) : m.media.payload;
+      const heard = this.hearing ? this.hearing.frame(m.media.payload, this.now(), { reasonTalking: this.now() < this.playheadAt + ECHO_TAIL_MS }) : m.media.payload;
       if (this.started) this.live.send({ type: "session.input_audio.append", audio: heard });
       else if (this.talk && this.pickup && this.preStart.length < 250) this.preStart.push(heard);
     } else if (m.event === "stop") {
@@ -1310,7 +1310,7 @@ export class GptLiveCall {
    * `end_ms` on the session timeline), onto the newest turn of that side, for the per-turn log.
    */
   timeTurn(who, e) {
-    if (!Number.isFinite(e?.start_ms) && !Number.isFinite(e?.end_ms)) return;
+    if (!String(e?.delta ?? "").trim() || (!Number.isFinite(e?.start_ms) && !Number.isFinite(e?.end_ms))) return;
     const turn = this.turns.findLast(x => x.who === who);
     if (!turn) return;
     if (Number.isFinite(e.start_ms)) turn.startMs ??= e.start_ms;
@@ -1332,7 +1332,7 @@ export class GptLiveCall {
       const text = t.text.replace(/\s+/g, " ").trim();
       if (!text) return null;
       const from = t.from ?? t.at;
-      const row = { who: t.who, text, from_s: s(from - t0), to_s: s(t.at - t0) };
+      const row = { who: t.who, text, from_s: Math.max(0, s(from - t0)), to_s: Math.max(0, s(t.at - t0)) };
       if (Number.isFinite(t.startMs)) row.session_ms = [t.startMs, t.endMs ?? t.startMs];
       if (t.who === "them" && this.hearing) {
         const lv = this.hearing.levelsBetween(from - TRANSCRIPT_LAG_MS, t.at);
