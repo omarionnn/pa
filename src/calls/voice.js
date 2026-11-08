@@ -1663,6 +1663,11 @@ export async function* voiceTurn({
   // and the last round's words before its tools, dropped unsaid unless nothing comes after.
   let leadIn = [];
   let lastLeadIn = [];
+  // The model's own words have been said this turn (a lead-in is then never replayed after them).
+  let spokeOwn = false;
+  // A silent last round says the last lead-in only when nothing of the model's has been said yet —
+  // or "Sent." after a send that went out, which is true whatever came before it.
+  const replayable = () => lastLeadIn.join("").trim() && (!spokeOwn || (lastLeadIn.length === 1 && lastLeadIn[0] === SENT_LINE));
   // Reason's own tools as the voice is told of them: each one once at its start (the API streams a
   // tool_start and then a tool_use for the same call; the CLI only the tool_use) and once when done.
   // One left open at the end of a round (a refused or call-side tool) is closed then (second review).
@@ -1834,8 +1839,8 @@ export async function* voiceTurn({
           // One leading space between sentences, because each piece was trimmed on the way through.
           const content = said ? ` ${spoken}` : spoken;
           said += content;
-          // Words of the model's own are out: the lead-in they followed is spent, never said after them.
-          lastLeadIn = [];
+          // Words of the model's own are out this turn: an earlier lead-in is never said after them.
+          if (holdingText !== spoken) spokeOwn = true;
           if (!firstContentAt) firstContentAt = clock.now();
           yield chunk({ content });
         }
@@ -1949,7 +1954,7 @@ export async function* voiceTurn({
         // (a question it asked as it called the tool), and they are said rather than nothing. The
         // code's own holding line is not the model saying something (drive 11-08: "Still working on
         // it." landed mid-round and the turn ended on "Let me come back to you on that one.").
-        else if (round > 0 && (said.length === saidAtRoundStart || onlyHolding()) && !toolUses.length && lastLeadIn.length) {
+        else if (round > 0 && (said.length === saidAtRoundStart || onlyHolding()) && !toolUses.length && replayable()) {
           log({ voice_lead_in_said: call.id, round });
           yield* emit(lastLeadIn);
         }
@@ -2268,7 +2273,7 @@ export async function* voiceTurn({
         // Out of rounds with nothing said. Better a sentence admitting it than a silent line — and on
         // their own call, the last words it wrote before its tools first ("search is down on my end, so
         // I'll try a news site directly"), so they hear what happened, not only a promise.
-        if (owned && (!said.trim() || onlyHolding()) && lastLeadIn.join("").trim()) {
+        if (owned && (!said.trim() || onlyHolding()) && replayable()) {
           log({ voice_lead_in_said: call.id, round, out_of_rounds: true });
           yield* emit(lastLeadIn);
         }
@@ -2344,7 +2349,7 @@ export async function* voiceTurn({
         toolDone(String(t.name), out?.ok !== false && !out?.slow);
         // A send that went out: the words before it ("I'll text that to you") are not said after it as
         // if still to come. A last round with nothing to add says what is true now instead.
-        if (SEND_TOOLS.has(String(t.name)) && out?.ok !== false) lastLeadIn = [SENT_LINE];
+        if (SEND_TOOLS.has(String(t.name)) && out?.ok !== false && !out?.error && !out?.scheduled) lastLeadIn = [SENT_LINE];
         // Kept even when the platform has moved on: the search happened, and the next turn has to know.
         try { db.addCallLookup(call.conversation_id, call.id, lookupEntry({ name: t.name, input: t.input, out })); }
         catch { /* the record is a help, never a reason for the turn to fail */ }
@@ -3088,12 +3093,14 @@ export function cliLineStream() {
   const decide = (out) => {
     const s = line.replace(/^\s+/, "");
     if (!s) return;
-    if (/^TOOL\s+[a-z_]+[\s{]/i.test(s)) {
+    // Known as a tool call once its JSON has begun, written the way the prompt asks (upper-case TOOL):
+    // "Tool up the volume" or a TOOL line that never becomes one is never a tool that started.
+    if (/^TOOL\s+[a-z_]+\s*\{/.test(s)) {
       mode = "tool";
       if (!started) { started = true; out.push({ type: "tool_start", name: /^TOOL\s+([a-z_]+)/i.exec(s)[1] }); }
       return;
     }
-    if ("TOOL ".startsWith(s.slice(0, 5).toUpperCase()) || /^TOOL\s+[a-z_]*$/i.test(s)) return;
+    if ("TOOL ".startsWith(s.slice(0, 5)) || /^TOOL\s+[a-z_]*\s*$/.test(s)) return;
     mode = "text";
     out.push({ type: "text", text: line });
     line = "";
@@ -3113,7 +3120,7 @@ export function cliLineStream() {
   return {
     push(text) {
       const out = [];
-      for (const part of String(text ?? "").split(/(\n)/)) {
+      for (const part of String(text ?? "").replace(/\r/g, "").split(/(\n)/)) {
         if (part === "\n") {
           // The end of a tool line is not words; the end of a spoken one is.
           if ((mode === "text" || !lineEnd(out))) out.push({ type: "text", text: "\n" });

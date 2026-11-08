@@ -643,7 +643,7 @@ test("dead air: the CLI test backend streams — words as written, a TOOL line k
   assert.deepEqual([...q.push("Today"), ...q.end()].map(e => e.text), ["Today"], "a line that began like TOOL is words");
 });
 
-test("should-fix: the last lead-in is spent once words of the model's own are said — never replayed after the answer", async () => {
+test("should-fix: once the model's own words are said, no lead-in is replayed after them (cold review: 'One more look.' after the answer)", async () => {
   voice.contextDeps.runTool = async () => ({ ok: true });
   const LONG = "It's fifty nine and clear near work on West Seventeenth, high of sixty two, and it drops to the mid forties after dark, so bring a jacket for when your shift ends at eight. ";
   assert.ok(LONG.length > voice.LEAD_IN_HOLD_CHARS);
@@ -654,7 +654,7 @@ test("should-fix: the last lead-in is spent once words of the model's own are sa
   ));
   const said = (await drain(out.stream)).trim();
   assert.match(said, /bring a jacket/);
-  assert.doesNotMatch(said, /Let me check the weather/, said);
+  assert.doesNotMatch(said, /Let me check the weather|One more look/, said);
 });
 
 test("should-fix: after a send that ran, a silent last round says it was sent — not the lead-in as if still to come", async () => {
@@ -662,4 +662,32 @@ test("should-fix: after a send that ran, a silent last round says it was sent �
   const out = await turn(ownerCall(), rounds(["I'll text that to you now. ", { tool: "message_send", start: true }], []));
   const said = (await drain(out.stream)).trim();
   assert.equal(said, voice.SENT_LINE);
+});
+
+test("cold review: a send that failed says nothing of having sent", async () => {
+  voice.contextDeps.runTool = async () => ({ ok: false, error: "no number" });
+  const out = await turn(ownerCall(), rounds(["I'll text that to you now. ", { tool: "message_send", start: true }], []));
+  assert.doesNotMatch((await drain(out.stream)).trim(), /^Sent\.$/);
+});
+
+test("cold review: a tool starting while the voice talks leaves one retry, and no first line once Reason's words are out", async () => {
+  let hooks;
+  const s = startCall({ brain: (m, h) => new Promise(() => { hooks = h; }) });
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "d4" } });
+  await s.timers.advance(gl.HOLD_LINE_AFTER_MS + 100);
+  s.live.emit({ type: "session.output_audio.delta", delta: LOUD }); // the voice's own "mm"
+  hooks.onTool("web_search", "start");
+  await s.timers.advance(100);
+  hooks.onContent("It's fifty nine and clear near work.");
+  await s.timers.advance(3000);
+  assert.ok(!s.lines.some(l => l.gptlive_hold_line && l.kind === "first"), JSON.stringify(s.lines.filter(l => l.gptlive_hold_line)));
+});
+
+test("cold review: the CLI stream — a TOOL line is a tool only once its JSON begins; words that look like one are words", () => {
+  const p = voice.cliLineStream();
+  const out = [...p.push("Tool up the volume.\r\nTOOL weather "), ...p.push("{\"place\":\"work\"}"), ...p.end()];
+  assert.deepEqual(out.map(e => e.type === "text" ? e.text : `${e.type}:${e.name}`), ["Tool up the volume.", "\n", "tool_start:weather", "tool_use:weather"]);
+  const q = voice.cliLineStream();
+  const never = [...q.push("TOOL weather"), ...q.push(" is what I'd call it."), ...q.end()];
+  assert.ok(!never.some(e => e.type === "tool_start"), JSON.stringify(never));
 });

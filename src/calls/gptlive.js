@@ -1758,11 +1758,12 @@ export class GptLiveCall {
         const c = (turn.runs.get(n) ?? 0) + (phase === "done" ? -1 : 1);
         if (c > 0) { turn.runs.set(n, c); turn.running.add(n); } else { turn.runs.delete(n); turn.running.delete(n); }
         if (phase === "done") { if (info?.ok !== false) turn.ran.add(n); return; }
-        turn.toolSeen = true;
+        // A lookup or a send: work they are waiting on. Saving a rule is not (it is done in a blink).
+        if ((isLookup(n) || SEND_TOOLS.has(n)) && !RULE_WRITERS.includes(n)) turn.toolSeen = true;
         // A tool of Reason's has started into a wait that has heard nothing yet: its line goes now,
         // not on the next poll (drive 11-08 on OVH: 9.4 s median of nothing before an answer). Never
         // inside HOLD_LINE_AFTER_MS — the first timer reads it there.
-        if (holding && !turn.pieces && !turn.held && this.now() - turn.startedAt >= HOLD_LINE_AFTER_MS) this.holdLine(id, "first");
+        if (holding && turn.toolSeen && !turn.pieces && !turn.held && this.now() - turn.startedAt >= HOLD_LINE_AFTER_MS) this.holdLine(id, "first");
         // A tool started after words were already said: the late line covers this wait too.
         if (holding && turn.pieces && !turn.lateTimer) turn.lateTimer = this.timers.setTimeout(() => this.holdLine(id, "late"), LATE_HOLDING_MS);
       };
@@ -1893,12 +1894,15 @@ export class GptLiveCall {
     const turn = this.pending.get(id);
     if (!turn || this.done || this.ending || this.latest !== id) return;
     const t = this.now();
-    if (kind === "first" && turn.held) return;
+    // Reason's words are already going out: a first line now would land after them (cold review).
+    if (kind === "first" && (turn.held || turn.pieces)) return;
+    // One retry timer at a time: a tool's own call arriving while a poll is armed never leaves two.
+    const retry = () => { if (turn.holdTimer) this.timers.clearTimeout(turn.holdTimer); turn.holdTimer = this.timers.setTimeout(() => this.holdLine(id, "first"), 400); };
     // They are talking, or the voice is (its own few words, a line still playing): nothing over either.
     // The first line waits for that to pass, so a "yeah —" of the voice's own never leaves dead air after it.
     const busy = t - this.theirSpeechAt < HOLD_CALLER_QUIET_MS || t - this.lastVoiceAt < HOLD_VOICE_QUIET_MS || this.voiceEndsAt > t || (this.over && !this.over.dropped);
     if (busy) {
-      if (kind === "first" && t - turn.startedAt < LATE_HOLDING_MS - 1500) turn.holdTimer = this.timers.setTimeout(() => this.holdLine(id, "first"), 400);
+      if (kind === "first" && t - turn.startedAt < LATE_HOLDING_MS - 1500) retry();
       return;
     }
     // "Check / look" only while one of Reason's lookups is running right now. And the first line is
@@ -1908,7 +1912,7 @@ export class GptLiveCall {
     // true, Reason is doing something. Nothing has started yet: no line, the answer may be a sentence away.
     const looking = [...turn.running].find(isLookup) ?? "";
     if (kind === "first" && !looking && !turn.toolSeen) {
-      if (t - turn.startedAt < LATE_HOLDING_MS - 1500) turn.holdTimer = this.timers.setTimeout(() => this.holdLine(id, "first"), 400);
+      if (t - turn.startedAt < LATE_HOLDING_MS - 1500) retry();
       return;
     }
     const sending = kind === "first" && !looking && [...turn.running].some(n => SEND_TOOLS.has(n));
