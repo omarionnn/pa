@@ -133,6 +133,18 @@ export function whoFor(call) {
 }
 
 /**
+ * The GPT-Live instructions this build gives a call, as one string: on their own call, Reason as
+ * itself with their brief (profile, rules, today, places — `preCallBrief`); on an errand or anyone
+ * else's call, the restricted relay voice with nothing about them. Pure apart from DB reads and fast
+ * enough to call at dial or answer time, so a session opened before the call starts gets exactly
+ * these words. `line: true` gives the line-call instructions instead.
+ */
+export function voiceInstructionsFor(call, { line = false } = {}) {
+  const who = whoFor(call);
+  return line ? lineInstructions(who) : liveInstructions(who);
+}
+
+/**
  * Roughly where they are, for one own call's small talk, once it is known (it is looked up while the
  * call dials and never waited on): handed to the session like anything else told mid-call (`tellLive`).
  */

@@ -12,6 +12,7 @@
 import { config } from "../config.js";
 import * as db from "../db.js";
 import { search } from "../embedding.js";
+import { rulesNote } from "../rules.js";
 
 /** What the schedule search asks for, in meaning. */
 export const SCHEDULE_QUERY = "their work schedule and routine: which days and hours they work, their shifts, and where they usually are at different times of the week";
@@ -79,4 +80,16 @@ export function whereaboutsNote(call) {
     ...(places.length ? ["Saved places:", ...places] : []),
     ...(schedule.length ? ["Their schedule, as they told you:", ...schedule] : []),
   ].join("\n");
+}
+
+/**
+ * The per-call notes for a person's own call, as one string, or "" — how they want to be treated
+ * (src/rules.js, read fresh) and where they usually are (`whereaboutsNote`). Sync, no model call:
+ * DB reads plus whatever `prepareCallMemory` has already read for this call, so it is cheap enough to
+ * call before dialing or answering (the time-to-first-word work loads it into a pre-rung session).
+ * Only this call's own conversation is read; a call that is not their own gets "".
+ */
+export function callNotes(call) {
+  if (!call?.conversation_id || !Number(call.is_owner)) return "";
+  return [rulesNote(call.conversation_id), whereaboutsNote(call)].filter(Boolean).join("\n");
 }

@@ -25,6 +25,7 @@ process.env.REASON_UNDO_SECONDS = "0";
 const rules = await import("../src/rules.js");
 const gl = await import("../src/calls/gptlive.js");
 const voice = await import("../src/calls/voice.js");
+const cm = await import("../src/calls/callmemory.js");
 const onboarding = await import("../src/onboarding.js");
 const { memoryNotes } = await import("../src/memorynote.js");
 const db = await import("../src/db.js");
@@ -168,4 +169,24 @@ test("onboarding's one-line answers and the Web daily greeting carry them — mi
   await onboarding.readText({ state: "not_started", text: "what are you?", conversationId: C, ask: async (q) => { asked = q; return { value: { kind: "question" } }; } });
   assert.match(asked.prompt, /HOW THEY WANT YOU TO TREAT THEM[^]*call me O/);
   assert.match(bodyOf("src/daily.js", "written"), /rulesNote\(conversationId\)/);
+});
+
+test("shared with the time-to-first-word work: callNotes and voiceInstructionsFor, fresh, own call only", () => {
+  const mk = (conv = C, isOwner = true) => db.createCall(conv, { provider: "gptlive", toNumber: "+12025551234", isOwner, goal: "check in", facts: [], announcement: "Hey Omari, what's up?", state: "in_progress" });
+  const n = mk();
+  assert.equal(cm.callNotes(n), "");
+  db.addRule(C, { rule: "on a call, just say the answer out loud" });
+  db.savePlace(C, { name: "work", address: "430 W 17th St", lat: 40.742, lng: -74.004 });
+  const next = mk();
+  assert.match(cm.callNotes(next), /HOW THEY WANT YOU TO TREAT THEM[^]*answer out loud[^]*work: 430 W 17th St/);
+  // The one builder: exactly what the call's own session is started with.
+  assert.equal(gl.voiceInstructionsFor(next), gl.liveInstructions(gl.whoFor(next)));
+  assert.match(gl.voiceInstructionsFor(next), /You are Reason[^]*answer out loud/);
+  assert.equal(gl.voiceInstructionsFor(next, { line: true }), gl.lineInstructions(gl.whoFor(next)));
+  // Anyone else's call, and an errand: nothing of his.
+  assert.equal(cm.callNotes(mk(OTHER)), "");
+  const errand = mk(C, false);
+  assert.equal(cm.callNotes(errand), "");
+  assert.doesNotMatch(gl.voiceInstructionsFor(errand), /answer out loud|430 W 17th/);
+  assert.match(gl.voiceInstructionsFor(errand), /You are only the voice/);
 });
