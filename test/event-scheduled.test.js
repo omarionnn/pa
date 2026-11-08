@@ -151,6 +151,14 @@ test("event_create by text: the reply tells the organizer about the two reminder
   assert.match(out.say, /the day before and about 2 hours before/);
   assert.match(out.say, /turn either off on the event's page or by asking you/);
   assert.match(out.say, /never hand them a phrase to type/);
+  assert.doesNotMatch(out.say, /time is hidden/);
+  // Time hidden at creation: reminders wait for it, and the reply says so instead of promising them.
+  const hid = await tool("event_create", {
+    name: "Secret Supper", description: "dinner", starts_at: nyDay(5, 19), timezone: TZ, location: "2 Main St",
+    welcome_message: "", password: "supper1", show_time_on_join: false, show_location_on_join: false, guest_list_visible: false,
+  }, AMA_C, harness().runtime);
+  assert.equal(hid.ok, true);
+  assert.match(hid.say, /time is hidden for now, so say the reminders start once they share it/);
 });
 
 test("the two tools are shown to an organizer and not to a guest who organizes nothing", () => {
