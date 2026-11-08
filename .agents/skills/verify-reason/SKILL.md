@@ -522,6 +522,15 @@ See [features/table-images.md](features/table-images.md).
 ### Baseline — the card's CVC after Face ID + paid-row ledger release (cvc-recollect, #411, 2026-11-08)
 
 Offline suite under `env -i` (fresh `npm ci` in the worktree): 5,814 tests, 5,681 pass, 131 skipped, 2 fail — web-ongoing "the desktop margin" (date-dependent, fails on main too) and pages-busy-buttons "name=value" (load flake: 4/4 alone on the branch and on main; an earlier full run also flaked ops "a check's 'since'", 33/33 alone). New: `test/cvc-recollect-1108.test.js` (15; 12 source mutations all caught). Drives: `bin/passkey-drive.mjs` all ok with new scenario (k) (Face ID → "Enter your card's 3-digit code to finish." → Finish → paid with the same intent; Crossmint's island stood in at the network layer); `bin/spend-unknown-drive.mjs` all ok. Every Crossmint fake now answers `GET /api/unstable/order-intents/{id}` (payRow reads the rails before handing the intent over). See [features/passkey-pay.md](features/passkey-pay.md) "The card's CVC after Face ID".
+### Baseline — event guest questions (up to 3 optional questions on joining; 2026-11-08, PR event-guest-questions, not merged)
+
+Scoped maintain pass for [features/events.md](features/events.md) "Guest questions". Offline:
+`test/event-guest-questions.test.js` 10/10; full `npm run test:offline` 5763 / 5631 pass / 1 fail (known web-ongoing
+desktop margin) / 131 skip. `bin/events-drive.mjs` under `caged.sh env` + temp DB: all ok, with 10 new `ask:` steps
+(add asks for the yes showing what guests see; saved texts nobody; 4th refused before a yes; join page shows them all
+optional; claim answers reach the row through the finishing text; text join hands the model the questions; pick by
+number; guest edits on own page; organizer sees counts + answers, no guest page shows another's; answered can't be
+reworded, remove says the count). Not proven: the real model asking/reading answers, a live join with answers.
 
 ### Baseline — event edit-limits (guest-list privacy + cap after creation; 2026-11-08, PR event-edit-limits, not merged)
 
