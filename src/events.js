@@ -372,6 +372,7 @@ export function guestList(ev) {
     in_directory: !!a.in_directory,
     instagram: a.instagram || null,
     joined: new Date(a.joined_at).toISOString(),
+    via: a.via,
   }));
 }
 
@@ -933,11 +934,22 @@ async function attemptDelivery({ runtime, message, d, body = message.body }) {
  */
 export const SAME_MESSAGE_MS = 10 * 60_000;
 
+/** Who a broadcast of this kind goes to: every joined guest, less the muted ones unless it is the cancellation. */
+export function recipients(ev, kind) {
+  return db.attendeesOf(ev.id).filter(a => kind === "cancel" || !a.muted);
+}
+
+/** How many guests a broadcast of this kind would reach now, and how many it skips as muted. For the organizer's page. */
+export function audience(ev, kind) {
+  const reached = recipients(ev, kind).length;
+  return { guests: reached, muted: db.attendeesOf(ev.id).length - reached };
+}
+
 export async function broadcast({ runtime, ev, kind, body, hold = false }) {
   // The same words to the same event inside a few minutes is one message asked for twice (a turn
   // retried, a tool called again): it reuses the first, whose deliveries are already one per guest.
   const message = db.recentEventMessage(ev.id, kind, body, clock.now() - SAME_MESSAGE_MS) ?? db.insertEventMessage(ev.id, kind, body);
-  const guests = db.attendeesOf(ev.id).filter(a => kind === "cancel" || !a.muted);
+  const guests = recipients(ev, kind);
   const out = { sent: 0, sending: 0, failed: 0, pending: 0, held: 0 };
   for (const g of guests) {
     const r = await deliver({ runtime, message, conversationId: g.conversation_id, hold });
@@ -1011,6 +1023,25 @@ export async function retryFailed({ runtime, ev }) {
     if (deliveryState(d) !== "failed") continue;
     const r = await retryDelivery({ runtime, deliveryId: d.id });
     if (r.ok) out.retried++; else out.skipped++;
+  }
+  return out;
+}
+
+/**
+ * What the organizer has sent their guests, newest first, for their own page: the messages that went
+ * to everyone (blasts, updates, shared details, the cancellation) with their words and how delivery
+ * went. Per-guest texts (welcomes, list notes, a removal) are left out: they were never the
+ * organizer's words to everyone. Only for the event's organizer — the caller has checked `managed`.
+ */
+export const ORGANIZER_MESSAGE_KINDS = new Set(["blast", "update", "release", "cancel"]);
+export function sentMessages(ev, { limit = 10 } = {}) {
+  const out = [];
+  for (const m of db.eventMessages(ev.id, { limit: 200 })) {
+    if (!ORGANIZER_MESSAGE_KINDS.has(m.kind)) continue;
+    const ds = db.deliveriesFor(m.id).map(d => deliveryState(d));
+    const count = (s) => ds.filter(x => x === s).length;
+    out.push({ id: m.id, kind: m.kind, body: m.body, at: m.created_at, total: ds.length, sent: count("sent"), sending: count("sending") + count("pending"), held: count("held"), failed: count("failed") });
+    if (out.length >= limit) break;
   }
   return out;
 }

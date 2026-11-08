@@ -35,6 +35,7 @@ import { prettyNumber } from "../invites.js";
 import { coverUrl, coverFile, previewFile, INVITE_LINE, COVER_W, COVER_H } from "../eventcover.js";
 import { albumRequest } from "./album.js";
 import * as made from "./made.js";
+import { renderManage, manageRequest } from "./eventmanage.js";
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-Length": Buffer.byteLength(body), ...extra }), body });
@@ -265,14 +266,13 @@ export function renderJoined({ ev, att }) {
   return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
 }
 
-/** The organizer's own event link, opened on their own browser: what guests see, and their guest list. */
-export function renderOrganizerHome({ ev }) {
-  const v = events.organizerView(ev);
-  const body = `<div class="hero"><p class="kicker">Your event</p><h1>${esc(ev.name)}</h1></div><div class="t">${p(ev.description)}</div>`
-    + `<div class="t">${p(`When: ${v.when ?? "not set"}${v.time_shown_to_guests ? "" : " (not shared with guests yet)"}`)}${p(`Where: ${v.where ?? "not set"}${v.location_shown_to_guests ? "" : " (not shared with guests yet)"}`)}${p(`Going: ${v.going}${v.capacity ? ` of ${v.capacity}` : ""}`)}</div>`
-    + `<a class="ev-btn" href="${esc(whoPath(ev, ev.organizer_token))}">Your guest list</a>`
-    + `<div class="t">${p("To change anything or message your guests, text Reason.")}</div>`;
-  return shell({ title: ev.name, body, pill: "Event", url: events.eventUrl(ev), head: headFor(ev), css: CSS });
+/**
+ * The organizer's own event link, opened on their own browser: the place to run the event
+ * (src/pages/eventmanage.js) — the welcome, a message to everyone, the details, the guests, the
+ * password — every change made through the same tool call a text would make.
+ */
+export function renderOrganizerHome({ ev, query = {} }) {
+  return renderManage({ ev, conversationId: ev.organizer_conversation_id, query });
 }
 
 /** The who's-going page for one viewer: a joined guest (their own token) or the organizer. */
@@ -429,6 +429,12 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     });
   }
 
+  // ---- the organizer's changes, from their own page (src/pages/eventmanage.js) ----
+  if (sub === "manage") {
+    if (ev.status === "cancelled") return page(404, renderNotFound());
+    return await manageRequest({ ev, method, headers, readBody, account, mine, runtime, log });
+  }
+
   // ---- sign this browser out ----
   if (sub === "signout") {
     if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
@@ -532,10 +538,13 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   }
   // E2 (Pages v2): a cancelled event's link is turned off, and says only that.
   if (config.pagesV2 && ev.status === "cancelled") return page(410, made.renderTurnedOff({ siteUrl: config.siteUrl }));
+  // The organizer opening their own event's link gets their own page, never a guest's — paused too,
+  // so they can still see it and read what is held (the page says what pausing stops).
+  if (mine?.role === "organizer" && ev.status !== "cancelled" && (method === "GET" || method === "HEAD") && !sub) return page(200, renderOrganizerHome({ ev, query }));
   // Cancelled: nothing but the name and that it is off, in the page and in its preview alike.
   if (ev.status !== "active") return page(200, shell({ title: ev.name, body: closedBody(ev), pill: "Event", url: events.eventUrl(ev), head: ev.status === "cancelled" ? "" : headFor(ev), css: CSS }));
   // The organizer opening their own event's link gets their own page, never a guest's.
-  if (mine?.role === "organizer") return page(200, renderOrganizerHome({ ev }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
+  if (mine?.role === "organizer") return page(200, renderOrganizerHome({ ev, query }));
   if (mine?.role === "guest") return page(200, renderJoined({ ev, att: mine.att }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
   if (method !== "POST") return page(200, renderJoin({ ev, account }));
 

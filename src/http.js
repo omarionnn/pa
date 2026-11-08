@@ -258,7 +258,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       // ---------- an event's pages ----------
       // The public join page and the who's-going page (src/pages/event.js). `/p/e/…` is the same
       // link arriving through the files domain, which Caddy rewrites under /p.
-      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}|calendar\.ics))?$/.exec(url.pathname);
+      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who|signin|signout|manage|cover\.jpg|cover-preview\.jpg|album|album\/manage|album\/download|album\/photo\/\d{1,12}|calendar\.ics))?$/.exec(url.pathname);
       if (eventRoute) {
         const out = await eventRequestFor({
           publicId: eventRoute[1], sub: eventRoute[2] || null, method: req.method,
