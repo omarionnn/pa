@@ -70,6 +70,8 @@ export class Hearing {
     this.env = TARGET_DB;
     this.gainDb = 0;
     this.quietFrames = 0;
+    /** Was the last frame speech (over the line's floor)? */
+    this.speech = false;
     // One small entry per frame, for the per-turn log (`levelsBetween`): when, raw level and lift (whole
     // dB), and whether it was speech. Typed arrays, grown as needed: a long call stays a few hundred KB.
     this.n = 0;
@@ -114,6 +116,9 @@ export class Hearing {
     const win = this.sorted.subarray(0, k).sort();
     this.floor = win[Math.floor((k - 1) * FLOOR_RANK)];
     const speech = level >= GATE_MIN_DB && level >= this.floor + GATE_OVER_FLOOR_DB;
+    // Read by the call (./gptlive.js) to know they are still talking: over the line's own floor, so a
+    // steady hiss or a noisy room is never taken for somebody speaking.
+    this.speech = speech;
     let want;
     this.quietFrames = speech ? 0 : this.quietFrames + 1;
     // However much the speech wants, the line's own noise is never brought up past NOISE_CEIL_DB.

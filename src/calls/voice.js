@@ -42,7 +42,7 @@ import * as commit from "./commit.js";
 import { PROPOSE_TOOL, CONFIRM_TOOL, RELEASE_TOOL } from "./commit.js";
 import * as errand from "./errand.js";
 import { QUOTE_TOOL } from "./errand.js";
-import { briefLines, buildBrief } from "./brief.js";
+import { briefLines, buildBrief, todaySoFarNote } from "./brief.js";
 import { readBackInstruction, detail as readbackDetail, recordOf as recordOfDetails } from "./readback.js";
 import * as verify from "./verify.js";
 import * as fromcall from "./fromcall.js";
@@ -551,6 +551,10 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // search: it is one row read, and a phone turn pays for every millisecond before the first
     // word. Nothing new is exposed by it — this frame already carries their recent thread.
     ownerProfileNote(conversationId),
+    // What happened between them today, before this call (call 79: its own pick by text, three hours
+    // earlier, was "nothing saved" on the phone). Up to when the call was made, so every turn of the
+    // call sends the same prefix and the prompt cache holds.
+    todaySoFarNote(conversationId, { until: Number(call.created_at) || now, call: call.id }),
   ];
   return {
     kind: "owner",
@@ -1579,6 +1583,9 @@ export async function* voiceTurn({
   // turn alive for a moment after its socket closes, so the platform's retry can pick it up; nothing
   // with a side effect starts in that moment unless somebody has. Null (a direct caller): always read.
   attended = null,
+  // Told the name of each of Reason's own tools as it starts (never the call's platform tools). The
+  // GPT-Live voice reads it so a "let me check" is only ever said while a lookup really runs (call 79).
+  onTool = null,
 }) {
   const streamId = id ?? `chatcmpl-${randomUUID()}`;
   const created = Math.floor(clock.now() / 1000);
@@ -1819,6 +1826,10 @@ export async function* voiceTurn({
             roundText += ev.text ?? "";
             yield* emit(splitter.push(ev.text ?? ""));
             continue;
+          }
+          // A backend with no streaming tool start (the CLI) reports the tool when its call is read.
+          if ((ev?.type === "tool_start" || ev?.type === "tool_use") && onTool && !SILENT_TOOLS.has(ev.name)) {
+            try { onTool(String(ev.name ?? "")); } catch { /* a watcher never breaks the turn */ }
           }
           if (ev?.type === "tool_start" && !filled && !holdBack && !SILENT_TOOLS.has(ev.name)) {
             // The filler goes out as the tool call begins, while the model is still writing its
@@ -2310,6 +2321,8 @@ export async function llmRequest({
   fillerAfterMs = FILLER_AFTER_MS,
   // How long a turn whose socket closed waits for the platform's retry to join it; see `ATTACH_GRACE_MS`.
   attachGraceMs = ATTACH_GRACE_MS,
+  // Each of Reason's own tools as it starts; see `voiceTurn`. Only the turn this request starts tells it.
+  onTool = null,
 }) {
   // The moment the platform's request arrived — the person has stopped talking — which is where the
   // caller's wait starts. Every turn timing in call_turns is measured from here.
@@ -2404,6 +2417,7 @@ export async function llmRequest({
     context, call, generate: gen, model, id: streamId, log, extras,
     signal: control.signal, toolBudgetMs, firstWordDeadlineMs, lateHoldingMs, fillerAfterMs, t0, meter,
     attended: () => shared.attended(),
+    ...(onTool ? { onTool } : {}),
     ...(screen ? { screen } : {}),
   });
   const source = callMetrics.metered(turn, {

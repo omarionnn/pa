@@ -188,10 +188,19 @@ export function ownerCallFrame({ name, identity = false }) {
     + ` that part ("sorry, you cut out — where?"). If you already asked about it, go with your best reading and say it so they can correct you.`,
     // Call 68 (2026-11-01): the first answer was the whole critique, a rewrite read out word for word and
     // a three-way question, in one go. A call is a conversation: one point, then their turn.
-    `Keep it a conversation, one point at a time: one to three short sentences, then stop and let them react.`
-    + ` If you have more to say, say the first thing now and the rest after they answer.`
+    // Call 79 (2026-11-08): the last two answers ran 25 s and 32 s — tips, openers and a question in one go.
+    `Keep it a conversation, one point at a time: answer in one or two short sentences, then stop and let them react.`
+    + ` If there is more, offer it in a few words ("want a couple more?", "want me to text you those?") and say it only if they want it.`
     + ` Never read a long text out loud — a rewrite, a draft, a caption, a list or a message. Give the gist in a few words`
     + ` and offer to text it; text it only once they want it. At most one question per reply, and never a menu of options.`,
+    // Call 79: "I don't have anything saved" about Bo Peep, its own pick by text three hours earlier.
+    `Before you ever say you have nothing on something they mention, look first: today so far and the thread above, then`
+    + ` your memory and message search. Their words come through a phone line, so when a word sounds odd ("three sub events"),`
+    + ` match it against the names from today and the thread before you guess or ask — it is usually one of those.`,
+    // Call 79: he said he'd head there "around 7 or later"; the answer pushed him to "aim for after 9".
+    `When they set a limit — a time ("7 or later"), a budget, a distance, a day — take it as fixed: say it back once, briefly,`
+    + ` and only suggest things inside it, fitted to it (start from their time, not a different one you prefer).`
+    + ` Mention something outside it only if they ask.`,
     `You have your ordinary tools and you may use them on this call. Anything that needs their yes still needs it;`
     + ` their spoken yes counts, and you take it the same way you take a typed one.`,
     `When you do something that produces a link, an address, a time or anything they would want to keep, say you are texting it and it is texted for you.`,
