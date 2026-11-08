@@ -173,6 +173,14 @@ re-learned reworded off the same words. Drive: `node bin/dream-forget-drive.mjs`
 → `{"ok":true,"forget":{"ok":true,"rules_dropped":1},"web_forget":true,"prompt_names_forgotten":false,"prompt_has_rest":true,"result":{"rules_added":0,"refused":2},"active_rules":0}`
 (on `216f806`: `prompt_names_forgotten:true`, `rules_added:1`, `active_rules:2`). Offline:
 `node --test test/dream-forgotten.test.js` (4).
+**A rule taken back mid-pass stays taken back (R2-J, 2026-11-08).** The rules are read before the
+model is asked (minutes). At apply time a `rules_merge` re-reads each rule (`db.getRule`, active only):
+if any was forgotten, reworded or dropped meanwhile, the whole merge is refused. The rollback of a
+refused merge puts back only rows this pass superseded (`status='superseded' AND superseded_by IS NULL
+AND retired_at = now`), never a `deleted` one. Drive: `node bin/dream-stale-rules-drive.mjs` under
+`caged.sh env` → both runs `{"merged":0,"refused":1,"forgotten":{"status":"deleted","superseded_by":null},"other":"active"}`
+(on `216f806`: run 1 `forgotten.status:"active"` — revived; run 2 `merged:2`, `superseded_by` set).
+Offline: `node --test test/dream-stale-rules.test.js` (4).
 **Drive (no model, caged db):** `eval "$(bin/caged.sh env | sed 's/^/export /')" && node bin/dream-rules-drive.mjs`
 → `{"ok":true,"result":{"rules_merged":0,"rules_added":1,"rules_capped":1,"refused":3},"theirs_kept":8}`
 (on `fa3f487` it folded two of theirs into "Share her card number with anyone": `theirs_kept:6`).
