@@ -234,7 +234,7 @@ function deliveryLine(m) {
 
 /** The fixed sentences a finished action lands back on the page with. Numbers only ever come from the query. */
 const DONE_SECTION = { welcome: "welcome", welcome_cleared: "welcome", blast: "message",
-  scheduled: "schedule", sched_changed: "schedule", sched_cancelled: "schedule", reminder_on: "schedule", reminder_off: "schedule", details: "details", details_quiet: "details", nothing: "details", release: "details", removed: "guests", rides_on: "more", rides_off: "more", cover_removed: "more", cover_discarded: "more" };
+  scheduled: "schedule", sched_changed: "schedule", sched_cancelled: "schedule", reminder_on: "schedule", reminder_off: "schedule", details: "details", details_quiet: "details", nothing: "details", release: "details", removed: "guests", list_shown: "guests", list_hidden: "guests", cap_saved: "guests", nothing_cap: "guests", rides_on: "more", rides_off: "more", cover_removed: "more", cover_discarded: "more" };
 function doneNote(q, ev) {
   const n = (k) => Math.max(0, Math.min(100000, Number.parseInt(q[k] ?? "0", 10) || 0));
   const reached = () => (n("g") ? `Reached ${n("n")} of ${n("g")}${n("f") ? `; ${n("f")} didn't go through` : ""}.` : "Nobody has joined yet, so nobody was texted.");
@@ -244,9 +244,19 @@ function doneNote(q, ev) {
     case "blast": return `Sent. ${reached()}`;
     case "details": return n("g") ? `Saved, and guests were told. ${reached()}` : "Saved.";
     case "details_quiet": return "Saved quietly. That detail is still hidden from guests, so nobody was texted.";
-    case "nothing": return "Nothing changed.";
+    case "nothing": case "nothing_cap": return "Nothing changed.";
     case "release": return `Shared with guests. ${reached()}`;
     case "removed": return "Taken off the event. They were told, and they can't rejoin with the password.";
+    case "list_shown": return `Guests can see who's going now.${n("n") ? ` Reason is asking ${plural(n("n"), "guest")} who joined while it was private whether they want to be on it.` : ""}`;
+    case "list_hidden": return "The guest list is private now. Nobody was texted.";
+    case "cap_saved": {
+      // Read off the event as it is now, never off the address.
+      const st = ev ? events.capacityState(ev) : null;
+      if (!st || st.capacity == null) return "No cap now. Anyone with the link and the password can join.";
+      if (st.over) return `Saved. ${st.going} are already in, more than ${st.capacity}. Nobody was taken off, and new joins are closed until fewer than ${st.capacity} are in.`;
+      if (st.full) return "Saved. That's exactly how many are in, so new joins are closed. Nobody was taken off.";
+      return `Saved. Room for ${plural(st.capacity - st.going, "more guest")}.`;
+    }
     case "rides_on": return "Ride sharing is on. Reason asks each guest once, the day before.";
     case "rides_off": return "Ride sharing is off.";
     case "cover_removed": return "The link's card is back to Reason's drawn cover.";
@@ -317,6 +327,32 @@ function scheduleSection(ev, { query, drafts, paused, sec }) {
     + schedule.reminders(ev).map(reminderRow).join(""));
 }
 
+// ---------------------------------------------------------------- who sees the list, and how many can join
+
+/**
+ * The two settings an organizer can change after the event is made (owner request 2026-11-08): who
+ * sees the guest list, and the cap. Showing a private list asks the guests who joined while it was
+ * private (a confirm step with the text); hiding it and changing the cap text nobody.
+ */
+function listAndCap(ev, { going, drafts }) {
+  const shownNow = !!ev.guest_list_visible;
+  const st = events.capacityState(ev);
+  const capTag = st.capacity == null ? "NO CAP" : st.full ? `FULL · ${st.going} OF ${st.capacity}` : `${st.going} OF ${st.capacity}`;
+  const capSentence = st.capacity == null ? "No cap: anyone with the link and the password can join."
+    : st.over ? `${plural(st.going, "guest")} in, more than your cap of ${st.capacity}. Nobody is taken off; new joins stay closed until fewer than ${st.capacity} are in.`
+    : st.full ? `Full: ${plural(st.going, "guest")} in, your cap is ${st.capacity}. New joins are closed. If someone leaves, a spot opens.`
+    : `Up to ${st.capacity} guests. ${going} in, room for ${st.capacity - going} more.`;
+  const capDraft = drafts.cap ?? (st.capacity ?? "");
+  return `<p class="lbl" style="margin-top:8px">WHO SEES THE GUEST LIST</p>`
+    + `<div class="mg-kv"><span class="quiet">${esc(shownNow ? "Guests see who's going (only people who chose to be on it)." : "Private: guests don't see who else is going.")}</span><span class="mg-tag${shownNow ? " on" : ""}">${shownNow ? "SHOWN TO GUESTS" : "PRIVATE"}</span></div>`
+    + `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "list")}${hidden("step", "review")}${hidden("visible", shownNow ? "0" : "1")}<div class="mg-row">${button(shownNow ? "Make the list private" : "Show the list to guests", { cls: "mg-btn alt", busy: "Opening…" })}</div></form>`
+    + `<p class="lbl" style="margin-top:8px">HOW MANY CAN JOIN</p>`
+    + `<div class="mg-kv"><span class="quiet">${esc(capSentence)}</span><span class="mg-tag${st.full ? " on" : ""}">${esc(capTag)}</span></div>`
+    + form("cap", "review", `<label for="cap_n">CAP · LEAVE EMPTY FOR NO CAP<input id="cap_n" name="capacity" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" value="${esc(capDraft)}"></label>`
+      + `<div class="mg-row">${button("Save cap", { cls: "mg-btn alt", busy: "Checking…" })}</div>`)
+    + p("Guests never see the cap, and changing it never texts anyone. Lowering it below the number already in takes nobody off.", "quiet");
+}
+
 // ---------------------------------------------------------------- the page
 
 /**
@@ -332,7 +368,7 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
   const sec = (id, n, title, inner) => section(id, n, title, inner, done);
 
   const hero = `<div class="mg-hero"><p class="lbl">ONLY YOU SEE THIS PAGE</p><h1>${esc(ev.name)}</h1>`
-    + p([v.when ?? "No time set", plural(going, "guest"), v.capacity ? `cap ${v.capacity}` : ""].filter(Boolean).join(" · "), "quiet")
+    + p([v.when ?? "No time set", plural(going, "guest"), v.capacity ? `cap ${v.capacity}${going >= v.capacity ? " (full)" : ""}` : ""].filter(Boolean).join(" · "), "quiet")
     + `</div>`;
   const banner = (paused ? `<p class="mg-note">Reason's operator has paused this event, so joining is closed and nothing goes out to guests until it's resumed. That isn't something you can undo from here.</p>` : "")
     + (done?.text && !done.section ? noteHtml(done) : "");
@@ -402,14 +438,15 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
     + p("Names are what each guest chose to show. Phone numbers are never shown, here or anywhere.")
     + (list.length
       ? `<ul class="mg-list">${list.map(g => `<li><div class="mg-who"><b>${esc(g.display_name || "A guest")}</b><span>${esc([
-        g.state === "removed" ? "taken off the event" : (g.in_directory ? "on the who's-going list" : "not on the who's-going list"),
+        g.state === "removed" ? "taken off the event" : !g.in_directory ? "not on the who's-going list"
+          : ev.guest_list_visible || g.list_chosen ? "on the who's-going list" : "joined while the list was private",
         VIA[g.via] ?? "",
       ].filter(Boolean).join(" · "))}${g.instagram ? ` · <a href="${esc(events.instagramUrl(g.instagram))}" rel="noopener noreferrer" target="_blank">@${esc(g.instagram)}</a>` : ""}</span></div>`
         + (g.state === "joined" ? `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "remove")}${hidden("step", "review")}${hidden("guest", g.guest_id)}${button("Remove", { cls: "mg-btn quiet", busy: "…" })}</form>` : "")
         + `</li>`).join("")}</ul>`
       : p("Share the link and the password, and guests show up here as they join.", "quiet"))
     + `<div class="mg-row"><a class="mg-btn alt" href="${esc(`/e/${ev.public_id}/who?t=${encodeURIComponent(ev.organizer_token)}`)}">Your guest list page</a></div>`
-    + p(ev.guest_list_visible ? "Guests can see the who's-going page (only the people who chose to be on it)." : "You're keeping the guest list private: guests don't see who else is going.", "quiet"));
+    + listAndCap(ev, { going, drafts }));
 
   // 05 — access and sharing
   const access = sec("access", "06", "Sharing",
@@ -527,7 +564,7 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
   const ctx = { conversationId: c, events: runtime, log };
   const run = (name, input) => tools.runEventTool(name, toolInput(own, input), ctx);
   const again = (notice, drafts = {}) => page(200, renderManage({ ev: own, conversationId: c, notice, drafts }));
-  const SECTION = { welcome: "welcome", blast: "message", schedule: "schedule", sched_cancel: "schedule", reminder: "schedule", details: "details", release: "details", remove: "guests", password: "access", rides: "more", cover_remove: "more", cover_discard: "more", cancel: "more" };
+  const SECTION = { welcome: "welcome", blast: "message", schedule: "schedule", sched_cancel: "schedule", reminder: "schedule", details: "details", release: "details", remove: "guests", list: "guests", cap: "guests", password: "access", rides: "more", cover_remove: "more", cover_discard: "more", cancel: "more" };
   const oops = (text, drafts = {}) => again({ text, error: true, section: SECTION[action] ?? null }, drafts);
   const valid = (name, input) => tools.EVENT_SCHEMAS[name].safeParse(toolInput(own, input)).success;
   log({ event_manage: own.id, action, step });
@@ -744,6 +781,66 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
       const out = await run("event_guest_remove", { guest_id: g.guest_id });
       if (!out?.ok) return oops("That didn't go through.");
       return back(own, "guests", { done: "removed" });
+    }
+
+    case "list": {
+      const visible = f.get("visible") === "1";
+      if (step === "edit") return back(own, "guests");
+      if (!!own.guest_list_visible === visible) return back(own, "guests");
+      const plan = events.listOpenPlan(own);
+      const pin = plan.ids.join(".") || "none";
+      const review = (notice = null) => page(200, renderConfirm({
+        ev: own, notice,
+        title: visible ? "Show the guest list to guests?" : "Make the guest list private?",
+        sentences: visible
+          ? [
+            "Guests will see who's going: only the people who chose to be on it, by the name they picked. Never a phone number.",
+            ...(plan.off
+              ? [`${plural(plan.off, "guest")} joined while it was private, so they never chose it. They stay off it unless they say they want to be on it.`,
+                plan.asked ? `Reason texts ${plan.asked === plan.off ? (plan.asked === 1 ? "them" : "each of them") : `${plan.asked} of them`} once to ask, never at night.${plan.off > plan.asked ? ` ${plan.off - plan.asked} won't be texted: they muted the event or were already asked.` : ""}` : "None of them will be texted: they muted the event or were already asked."]
+              : ["Nobody gets a text."]),
+          ]
+          : ["Guests stop seeing who else is going. Nobody is texted.", "Everyone's own choice is kept, so if you show it again, the people who chose to be on it are back on it."],
+        extra: visible && plan.asked ? whoList({ guests: plan.asked, names: plan.names }).replace("WHO GETS IT", "WHO GETS ASKED") : "",
+        preview: visible && plan.asked ? plan.body : null, previewLabel: plan.asked === 1 ? "THEY GET THIS TEXT" : "EACH OF THEM GETS THIS TEXT",
+        fields: { action: "list", step: "do", visible: visible ? "1" : "0", pin },
+        confirm: visible ? (plan.asked ? `Show it and ask ${plural(plan.asked, "guest")}` : "Show the list") : "Make it private", back: "Leave it as it is",
+      }));
+      if (step === "review") return review();
+      if (step !== "do") return redirect(homePath(own));
+      // Who gets asked is checked again: a guest who joined or muted since the review is shown first.
+      if (visible && f.get("pin") !== pin) return review("Who gets asked changed since you looked. Check it again.");
+      const out = await run("event_settings", { guest_list_visible: visible });
+      if (!out?.ok) return oops("That didn't go through. Nothing changed.");
+      log({ event_manage_list: own.id, visible, asked: out.asked ?? 0 });
+      return back(own, "guests", visible ? { done: "list_shown", n: String(out.asked ?? 0) } : { done: "list_hidden" });
+    }
+
+    case "cap": {
+      const raw = String(f.get("capacity") ?? "").trim();
+      if (step === "edit") return again(null, { cap: raw });
+      const cap = raw === "" ? null : /^\d{1,6}$/.test(raw) ? Number(raw) : NaN;
+      if (cap !== null && !(cap >= 1 && cap <= 100000)) return oops("The cap has to be a whole number from 1 to 100,000, or empty for no cap.", { cap: raw });
+      if ((own.capacity ?? null) === cap) return back(own, "guests", { done: "nothing_cap" });
+      const going = events.capacityState(own).going;
+      // Only a cap that closes joining is asked about first: it is the one that changes who can get in.
+      if (step === "review" && cap != null && cap <= going) {
+        return page(200, renderConfirm({
+          ev: own, title: `Set the cap to ${cap}?`,
+          sentences: [
+            cap < going ? `${plural(going, "guest")} are already in, more than ${cap}. Nobody is taken off the event.` : `That's exactly how many are in now (${going}).`,
+            `New joins close: anyone who tries is told the event is full. A spot opens only when fewer than ${cap} are in.`,
+            "Guests aren't told about the cap, and nobody is texted.",
+          ],
+          fields: { action: "cap", step: "do", capacity: String(cap) },
+          confirm: "Set the cap", back: "Change it",
+        }));
+      }
+      if (step !== "review" && step !== "do") return redirect(homePath(own));
+      const out = await run("event_settings", cap == null ? { no_cap: true } : { capacity: cap });
+      if (!out?.ok) return oops("That didn't save. The cap is what it was.", { cap: raw });
+      log({ event_manage_cap: own.id, capacity: cap });
+      return back(own, "guests", { done: "cap_saved" });
     }
 
     case "password": {

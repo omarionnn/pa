@@ -12342,6 +12342,19 @@ addColumnIfMissing("event_attendees", "list_note_at", "INTEGER");
 //                              Rows from before it was kept start at their `joined_at`.
 addColumnIfMissing("event_attendees", "first_joined_at", "INTEGER");
 db.exec("UPDATE event_attendees SET first_joined_at = joined_at WHERE first_joined_at IS NULL");
+// event_attendees.list_chosen  1 once this person chose to be on the who's-going list while guests
+//                              could see it, or asked to be put on it. A text join defaults to "on the
+//                              list" even while the organizer keeps it private, and that default is
+//                              not a choice: when the organizer later shows the list (owner request
+//                              2026-11-08, events.setListVisible) only rows with this set appear, and
+//                              the rest come off it and are asked once. Until then a list could never
+//                              change after creation, so for older rows "on it, on a shown list" is
+//                              exactly who chose it. Backfilled once, when the column is added.
+{
+  const had = db.prepare("PRAGMA table_info(event_attendees)").all().some(c => c.name === "list_chosen");
+  addColumnIfMissing("event_attendees", "list_chosen", "INTEGER NOT NULL DEFAULT 0");
+  if (!had) db.exec("UPDATE event_attendees SET list_chosen = 1 WHERE in_directory = 1 AND event_id IN (SELECT id FROM events WHERE guest_list_visible = 1)");
+}
 
 export function setAccountInstagram(conversationId, handle) {
   db.prepare("UPDATE accounts SET instagram = ? WHERE conversation_id = ?").run(handle ?? null, conversationId);
@@ -12359,7 +12372,29 @@ export function replaceInstagramEverywhere(conversationId, handle) {
  * owed — they left and came back before it went — is owed afresh, as things now stand.
  */
 export function oweListNote(attendeeId, kind, dueAt) {
-  return db.prepare("UPDATE event_attendees SET list_note = ?, list_note_at = ? WHERE id = ? AND (list_note IS NULL OR list_note IN ('ask', 'carried', 'shown'))").run(kind, dueAt, Number(attendeeId)).changes === 1;
+  return db.prepare("UPDATE event_attendees SET list_note = ?, list_note_at = ? WHERE id = ? AND (list_note IS NULL OR list_note IN ('ask', 'carried', 'shown', 'opened'))").run(kind, dueAt, Number(attendeeId)).changes === 1;
+}
+/** The guests showing the list would take off it and ask: joined, on it only by default, never chose it. */
+export function unchosenListed(eventId) {
+  return db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND role = 'guest' AND state = 'joined' AND in_directory = 1 AND list_chosen = 0 ORDER BY id").all(Number(eventId));
+}
+/**
+ * The organizer just showed a list these guests joined while it was private: each comes off it, and
+ * the one "want to be on it?" note is owed (`opened`) — unless they muted the event or a note
+ * already went to them on it. Call inside the caller's transaction. Returns how many were taken off and how many are owed.
+ */
+export function openListFor(eventId, dueAt) {
+  const rows = unchosenListed(eventId);
+  let owed = 0;
+  for (const r of rows) {
+    db.prepare("UPDATE event_attendees SET in_directory = 0, updated_at = ? WHERE id = ?").run(clock.now(), r.id);
+    // Never to a guest who muted the event, and never a second note on the same event.
+    if (!r.muted && r.list_note !== "sent") {
+      db.prepare("UPDATE event_attendees SET list_note = 'opened', list_note_at = ? WHERE id = ?").run(dueAt, r.id);
+      owed++;
+    }
+  }
+  return { off: rows.length, owed };
 }
 /** Settle an owed note, compare-and-set on it still being owed: the one caller that wins sends it. */
 export function settleListNote(attendeeId, kind, outcome) {
@@ -12368,7 +12403,7 @@ export function settleListNote(attendeeId, kind, outcome) {
 /** Owed notes that are due, on events that can still send: a paused event's wait off the queue. */
 export function owedListNotes(now = clock.now(), { limit = 200 } = {}) {
   return db.prepare(`SELECT a.* FROM event_attendees a JOIN events e ON e.id = a.event_id AND e.status != 'paused'
-    WHERE a.list_note IN ('ask', 'carried', 'shown') AND a.list_note_at <= ? AND a.state = 'joined'
+    WHERE a.list_note IN ('ask', 'carried', 'shown', 'opened') AND a.list_note_at <= ? AND a.state = 'joined'
     ORDER BY a.list_note_at, a.id LIMIT ?`).all(now, limit);
 }
 /** The organizer's own row when they are on their own list: listed, but never counted or texted as a guest. */
@@ -12813,12 +12848,14 @@ export function addAttendeeTx({ eventId, conversationId, displayName, instagram 
   if (prior?.state === "removed") return { ok: false, reason: "removed" };
   if (ev.capacity != null && joinedCount(eventId) >= ev.capacity) return { ok: false, reason: "full" };
   const now = clock.now();
+  // On the list by choice only when guests can see the list as they join (see list_chosen).
+  const chosen = inDirectory && ev.guest_list_visible ? 1 : 0;
   if (prior) {
-    db.prepare(`UPDATE event_attendees SET state = 'joined', display_name = ?, instagram = ?, in_directory = ?, muted = 0, via = ?, token = ?,
-      first_joined_at = COALESCE(first_joined_at, joined_at), joined_at = ?, left_at = NULL, updated_at = ? WHERE id = ?`).run(displayName, instagram, inDirectory ? 1 : 0, via, newEventToken(32), now, now, prior.id);
+    db.prepare(`UPDATE event_attendees SET state = 'joined', display_name = ?, instagram = ?, in_directory = ?, list_chosen = MAX(list_chosen, ?), muted = 0, via = ?, token = ?,
+      first_joined_at = COALESCE(first_joined_at, joined_at), joined_at = ?, left_at = NULL, updated_at = ? WHERE id = ?`).run(displayName, instagram, inDirectory ? 1 : 0, chosen, via, newEventToken(32), now, now, prior.id);
   } else {
-    db.prepare(`INSERT INTO event_attendees (event_id, conversation_id, display_name, instagram, in_directory, via, token, new_account, joined_at, first_joined_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(Number(eventId), conversationId, displayName, instagram, inDirectory ? 1 : 0, via, newEventToken(32), newAccount ? 1 : 0, now, now, now);
+    db.prepare(`INSERT INTO event_attendees (event_id, conversation_id, display_name, instagram, in_directory, list_chosen, via, token, new_account, joined_at, first_joined_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(Number(eventId), conversationId, displayName, instagram, inDirectory ? 1 : 0, chosen, via, newEventToken(32), newAccount ? 1 : 0, now, now, now);
   }
   return { ok: true, attendee: attendeeRow(eventId, conversationId), already: false };
 }
@@ -12844,6 +12881,11 @@ export function leaveAttendee(id) {
 const ATTENDEE_FIELDS = new Set(["display_name", "instagram", "in_directory", "muted", "state", "left_at"]);
 export function updateAttendeeRow(id, fields) {
   const keys = Object.keys(fields).filter(k => ATTENDEE_FIELDS.has(k));
+  // Putting somebody on the who's-going list is their choice when it is a change (they were off it),
+  // or when guests can see the list: a page save that leaves a private event's default box ticked is not.
+  if (Number(fields.in_directory) === 1) {
+    db.prepare(`UPDATE event_attendees SET list_chosen = 1 WHERE id = ? AND (in_directory = 0 OR (SELECT guest_list_visible FROM events WHERE events.id = event_attendees.event_id) = 1)`).run(Number(id));
+  }
   if (keys.length) {
     db.prepare(`UPDATE event_attendees SET ${keys.map(k => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
       .run(...keys.map(k => fields[k]), clock.now(), Number(id));

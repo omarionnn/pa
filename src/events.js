@@ -386,6 +386,8 @@ export function guestList(ev) {
     display_name: a.display_name,
     state: a.state,
     in_directory: !!a.in_directory,
+    // On the list by their own choice, not only by the default a join while it was private ticks.
+    list_chosen: !!a.list_chosen,
     instagram: a.instagram || null,
     // When they first joined: "guests who joined since …" reads this same time.
     joined: new Date(a.first_joined_at ?? a.joined_at).toISOString(),
@@ -748,6 +750,7 @@ export function listNoteQuiet(ev, now = clock.now()) {
  * they are off the event, or the ask is moot because they already gave a handle.
  */
 export function listNoteText(ev, att, kind) {
+  if (kind === "opened") return openedNoteText(ev, att);
   if (!ev?.guest_list_visible || !att || att.state !== "joined" || !att.in_directory) return null;
   const name = cleanDisplayName(att.display_name);
   // Plain intent, never a phrase to type (owner copy rule 2026-10-25): they answer in their own
@@ -758,6 +761,91 @@ export function listNoteText(ev, att, kind) {
   if (!att.instagram) return null;
   if (kind === "carried") return `you're on the who's-going list as ${name} — ${change}. i'll show your instagram @${att.instagram} on this guest list too; tell me anytime if you'd rather it not show.`;
   return `you're on the who's-going list as ${name}, with your instagram @${att.instagram} — ${change}, or if you'd rather your instagram not show.`;
+}
+
+/** Every kind of list note that can be owed. `opened` is the one asked when the organizer shows a list that was private. */
+const LIST_NOTE_KINDS = ["ask", "carried", "shown", "opened"];
+
+/**
+ * The one note to a guest who joined while the list was private, once the organizer shows it: they
+ * are not on it, and it is theirs to say if they want to be. Plain intent, never a phrase to type.
+ * Null once it is moot — the list is private again, they put themselves on it, they are off the
+ * event, or they muted it.
+ */
+export function openedNoteText(ev, att) {
+  if (!ev?.guest_list_visible || !att || att.state !== "joined" || att.in_directory || att.muted || att.role === "organizer") return null;
+  const who = organizerName(ev);
+  const name = cleanDisplayName(att.display_name);
+  return `${who ? `${who} turned on` : "the organizer turned on"} a who's-going list for ${ev.name}, so guests can see who else is coming. you're not on it — if you'd like to be, just let me know${name ? ` (you'd show as ${name})` : ", and what name to show"}.`;
+}
+
+/**
+ * Who showing the list would ask, before anything changes: the joined guests on it only by default
+ * (they joined while it was private), the ones of them who would be texted (not muted), and the text.
+ */
+export function listOpenPlan(ev) {
+  const off = ev.guest_list_visible ? [] : db.unchosenListed(ev.id);
+  const asked = off.filter(a => !a.muted && a.list_note !== "sent");
+  const sample = asked[0] ?? { display_name: "", state: "joined", in_directory: 0, muted: 0 };
+  return { off: off.length, asked: asked.length, names: asked.map(guestName), ids: asked.map(a => a.id), body: openedNoteText({ ...ev, guest_list_visible: 1 }, { ...sample, in_directory: 0 }) };
+}
+
+/**
+ * Show or hide the who's-going list after the event was made (owner request 2026-11-08).
+ *
+ * Hiding is quiet: nobody is texted, the who's-going page closes for guests, and every guest's own
+ * choice is kept for if it is shown again. Showing never puts anybody on it who did not choose it:
+ * guests who joined while it was private come off it (their join only ticked the default) and each
+ * is owed one note asking if they want to be on it — sent by the sweep, never at night, never to a
+ * guest who muted the event. Guests who chose it while it was shown before are on it again. The
+ * organizer is put on their own list the way creating a shown list does. All of it one transaction.
+ */
+export function setListVisible(ev, visible, { now = clock.now() } = {}) {
+  if (!!ev.guest_list_visible === !!visible) return { ok: true, changed: false, visible: !!visible, off: 0, asked: 0 };
+  db.db.exec("BEGIN IMMEDIATE");
+  let out;
+  try {
+    const cur = db.getEventRow(ev.id);
+    db.updateEventRow(ev.id, { guest_list_visible: visible ? 1 : 0 });
+    let opened = { off: 0, owed: 0 };
+    let host = false;
+    if (visible && !cur.guest_list_visible) {
+      opened = db.openListFor(ev.id, now);
+      const row = db.attendeeRow(ev.id, ev.organizer_conversation_id);
+      if (row?.role === "organizer" && !row.in_directory && !row.list_chosen) {
+        const name = cleanDisplayName(row.display_name) ?? cleanDisplayName(db.getAccount(ev.organizer_conversation_id)?.name);
+        if (name) { db.updateAttendeeRow(row.id, { in_directory: 1, display_name: name }); host = name; }
+      }
+    }
+    db.db.exec("COMMIT");
+    const after = db.getEventRow(ev.id);
+    out = { ok: true, changed: true, visible: !!after.guest_list_visible, off: opened.off, asked: opened.owed, ...(host ? { you_listed_as: host } : {}), ev: after };
+  } catch (e) {
+    try { db.db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
+  }
+  return out;
+}
+
+/**
+ * Change the cap after the event was made, or take it off (null). Nobody already in is ever taken
+ * off: a cap at or under the number in closes new joins — the join check is "fewer than the cap are
+ * in" (db.addAttendeeTx) — and they open again only if enough guests leave. Guests are never told:
+ * no guest sees the cap. `{ ok, capacity, going, full, over }`; `bad_capacity` for anything that
+ * isn't a whole number from 1 to 100000.
+ */
+export function setCapacity(ev, capacity) {
+  const cap = capacity == null ? null : Number(capacity);
+  if (cap != null && !(Number.isInteger(cap) && cap >= 1 && cap <= 100000)) return { ok: false, problem: "bad_capacity" };
+  const after = (ev.capacity ?? null) === cap ? ev : db.updateEventRow(ev.id, { capacity: cap });
+  return { ok: true, changed: after !== ev, ...capacityState(after) };
+}
+
+/** The cap as it stands: how many are in, whether new joins are closed, and by how many it is over. */
+export function capacityState(ev) {
+  const going = db.joinedCount(ev.id);
+  const cap = ev.capacity ?? null;
+  return { capacity: cap, going, full: cap != null && going >= cap, over: cap != null && going > cap ? going - cap : 0 };
 }
 
 /**
@@ -797,7 +885,7 @@ export async function sendListNote({ runtime, eventId, conversationId, now = clo
   const ev = db.getEventRow(eventId);
   const att = ev ? db.attendeeRow(ev.id, conversationId) : null;
   const kind = att?.list_note;
-  if (!["ask", "carried", "shown"].includes(kind)) return { state: "none" };
+  if (!LIST_NOTE_KINDS.includes(kind)) return { state: "none" };
   const text = ev.status === "cancelled" || (ev.starts_at != null && now > ev.starts_at + LIST_NOTE.staleAfterStartMs) ? null : listNoteText(ev, att, kind);
   if (!text) { db.settleListNote(att.id, kind, "dropped"); return { state: "dropped" }; }
   if (ev.status === "paused" || organizerStopped(ev) || listNoteQuiet(ev, now)) return { state: "later" };
@@ -813,7 +901,7 @@ export async function sendListNote({ runtime, eventId, conversationId, now = clo
  * Reason's "you're in", as the last thing said, and their next text reads as the answer to it.
  */
 export function scheduleListNote({ runtime, ev, att }) {
-  if (!att?.list_note || !["ask", "carried", "shown"].includes(att.list_note)) return;
+  if (!att?.list_note || !LIST_NOTE_KINDS.includes(att.list_note)) return;
   // With no queue to wait behind, the sweep's backstop sends it instead, minutes later, rather than
   // landing ahead of the reply this note is meant to follow.
   if (typeof runtime?.enqueue !== "function") return;
