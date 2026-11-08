@@ -32,7 +32,7 @@
 import { timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
 import { GATED_ACTIONS } from "../permissions.js";
-import { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS } from "../eventtools.js";
+import { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS, EVENT_RIDE_GUEST_TOOLS } from "../eventtools.js";
 import { config, clock } from "../config.js";
 
 /** How many wrong passphrases before the call is pushed to the texted check. */
@@ -52,17 +52,21 @@ export function isConsequential(name, input = null, { toSelf = () => false } = {
  * texted to them, and the rest change what guests or strangers see. Only event_blast and
  * event_schedule are in GATED_ACTIONS (they need a yes to exact words in a text too), so the others
  * slipped past this check and a voice spoofing an organizer's number could cancel the event and text
- * every guest (security audit run 2, lead R2-G). Derived from the organizer list itself, so a new
- * organizer tool needs the check on a call until it is named here as a read.
+ * every guest (security audit run 2, lead R2-G). A guest's ride tool is on the same footing: it
+ * passes free text to their ride partner, swaps phone numbers, and tells the organizer. Derived from
+ * the tool lists themselves, so a new organizer or ride tool needs the check on a call until it is
+ * named here as a read (or as touching nobody else).
  */
 const ORGANIZER_READS = {
   event_guests: () => true,
   event_scheduled: (input) => input?.action === "list",
   event_cover: (input) => input?.action === "status",
   event_rides_setting: (input) => input != null && input.enabled === undefined,
+  event_ride: (input) => input?.action === "neither",
 };
+const REACHES_GUESTS = new Set([...EVENT_ORGANIZER_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS]);
 function organizerWrite(name, input) {
-  if (!EVENT_ORGANIZER_TOOLS.has(name) && !EVENT_RIDE_ORGANIZER_TOOLS.has(name)) return false;
+  if (!REACHES_GUESTS.has(name)) return false;
   return !(ORGANIZER_READS[name]?.(input) ?? false);
 }
 

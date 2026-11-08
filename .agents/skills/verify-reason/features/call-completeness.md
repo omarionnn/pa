@@ -52,9 +52,9 @@ files but not mapped here.
   is verified already (`isVerified`). Tests: `test/call-addendum.test.js`.
 - **An organizer's event tools wait for the check too (audit run 2 R2-G).** Besides `GATED_ACTIONS`,
   `isConsequential` (src/calls/verify.js) gates every tool in `EVENT_ORGANIZER_TOOLS` and
-  `EVENT_RIDE_ORGANIZER_TOOLS` (src/eventtools.js) on an unverified incoming call, except the reads in
+  `EVENT_RIDE_ORGANIZER_TOOLS` and `EVENT_RIDE_GUEST_TOOLS` (`event_ride` relays free text, swaps numbers) (src/eventtools.js) on an unverified incoming call, except the reads in
   `ORGANIZER_READS`: `event_guests`, `event_scheduled` action list, `event_cover` action status,
-  `event_rides_setting` with no `enabled`. A new organizer tool is gated until named there as a read.
+  `event_rides_setting` with no `enabled`, `event_ride` action neither. A new organizer tool is gated until named there as a read.
   Before this a caller-ID-only call ran `event_cancel` / `event_update` / `event_release` /
   `event_guest_remove` (each texts guests) unchecked. Test: `test/call-event-gate.test.js` (3).
   Cage drive (scripted model, no key spent): `eval "$(bin/caged.sh env | sed 's/^/export /')"; REASON_EVENTS=on
