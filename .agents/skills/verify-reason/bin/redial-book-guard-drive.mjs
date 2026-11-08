@@ -56,7 +56,8 @@ for (const how of ["recording", "voicemail_greeting", "voicemail_not_set_up"]) {
   const to = `+1616555020${n++}`;
   const row = dropped(to, { goal: "Book a table", approved: { book: true, maxCents: null, terms: [], upTo: "" } });
   const settled = await goal.settleGoal(C, row, { ask: reads(how) });
-  step(`book-cleared + read "${how}": row stays dropped_before_confirmation`, settled.outcome_kind === "dropped_before_confirmation", settled.outcome_kind);
+  const KIND = { recording: "machine_recording", voicemail_greeting: "voicemail_no_message", voicemail_not_set_up: "voicemail_full" };
+  step(`book-cleared + read "${how}": label as before (${KIND[how]})`, settled.outcome_kind === KIND[how], settled.outcome_kind);
   const r = safeToRedial(C, { toNumber: to, brief: next });
   step(`book-cleared + read "${how}": redial is ask-only with booking off`, r.ok && r.mode === "ask" && r.brief?.approved?.book !== true, `${r.mode} book=${r.brief?.approved?.book}`);
 }
