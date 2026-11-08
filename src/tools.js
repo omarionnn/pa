@@ -414,7 +414,7 @@ const LAPSED_EXTRA = new Set(["timer_set", "series_pause", "series_resume", "res
   "x_post", "x_reply", "x_dm", "drive_create", "drive_upload", "drive_share", "github_issue_create", "github_issue_comment", "spotify_playlist_create", "spotify_send_link", "important_add"]);
 // Leave the machine but change nothing and make nothing: a reply after only these does not wait for
 // the claim check (src/said.js; review 11-06 — a search reply should not pay ~2 s for it).
-const CLAIM_CHECK_READS = new Set(["web_search", "web_lookup", "nearby_places", "get_location", "offer_check", "video_understand", "flight_search", "flight_dates", "flight_verify", "shop_status", "event_list", "event_guests"]);
+const CLAIM_CHECK_READS = new Set(["web_search", "web_lookup", "nearby_places", "get_location", "weather", "offer_check", "video_understand", "flight_search", "flight_dates", "flight_verify", "shop_status", "event_list", "event_guests"]);
 const LAPSED_READS = new Set(["event_list", "event_guests", "shop_status", "browser_close"]);
 export function lapsedBlocked(name) {
   const n = String(name);
@@ -627,6 +627,8 @@ export const SAFE_WHILE_SCREENED = new Set([
   "document_list",
   // Reading the subway feed. It sends nothing and reaches nobody.
   "transit_status",
+  // Reading the weather at a point. It sends nothing and reaches nobody.
+  "weather",
 ]);
 
 // What was read off a Spotify account, and what was read off a site in the browser. Both lists exist
@@ -2394,6 +2396,7 @@ export const CAPABILITIES = [
   { name: "web_search", status: "live", what: "search the web" },
   { name: "transit_status", status: "live", what: "live NYC subway status for any line, with the data's age checked — delays, slowdowns, service changes" },
   { name: "nearby_places", status: "live", what: "find places near coordinates — restaurants, cafes, shops, etc. via OpenStreetMap (free, no key)" },
+  { name: "weather", status: "live", what: "the live weather at a place's coordinates (a shared pin or a saved place), via Open-Meteo (free, no key), with the reading's age" },
   { name: "get_location", status: "live", what: "check if someone is sharing their location with you and read their coordinates, or send them a native 'Share My Location' request card in iMessage" },
   { name: "research", status: "live", what: "answer a question from several sources" },
   // Both rewritten by capabilitiesNow() from whether there is a Parallel key: with none, neither
@@ -6545,13 +6548,25 @@ export const tools = [
   },
   {
     name: "get_location",
-    description: "Where they are, when something they asked needs it — places near them, directions, travel time, the weather where they are. Call it then, not on every message. It answers with the best it has: a live share if Sendblue can read one, otherwise the last location they sent in a message with how many minutes ago (`minutes_ago`), otherwise nothing. Judge whether a sent location is recent enough for the task; if it is not, or there is none, ask them in one short line to share it and call this with action 'request' to put the native 'Share My Location' card in the thread — they tap it and the coordinates arrive in their next message. Never tell them you cannot see their location without calling this first.",
+    description: "Where they are, when something they asked needs it — places near them, directions, travel time, the weather where they are (then pass the coordinates, or the saved place's name, to the weather tool). Call it then, not on every message. It answers with the best it has: a live share if Sendblue can read one, otherwise the last location they sent in a message with how many minutes ago (`minutes_ago`), otherwise nothing. Judge whether a sent location is recent enough for the task; if it is not, or there is none, ask them in one short line to share it and call this with action 'request' to put the native 'Share My Location' card in the thread — they tap it and the coordinates arrive in their next message. Never tell them you cannot see their location without calling this first.",
     input_schema: {
       type: "object",
       properties: {
         action: { type: "string", enum: ["auto", "read", "request"], description: "auto (default) and read: the best known location, sending nothing. request: send the Share My Location card." },
       },
       required: [],
+    },
+  },
+  {
+    name: "weather",
+    description: "The live weather where someone is or is going: current temperature, sky, wind, and today's high, low and rain chance, with how old the reading is. ALWAYS use this for the weather, never web_search (a search snippet has no coordinates and is often hours old). Give `latitude`/`longitude` from get_location or nearby_places, or `place` — the name of one of their saved places (\"work\", \"home\") — and it uses that place's coordinates. With no coordinates and no saved place that fits, call get_location first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        latitude: { type: "number", description: "Latitude, from a tool. Never typed from memory." },
+        longitude: { type: "number", description: "Longitude, from a tool." },
+        place: { type: "string", description: "One of their saved places by name (\"work\", \"home\"), instead of coordinates." },
+      },
     },
   },
   {
@@ -7681,6 +7696,11 @@ const S = {
   }),
   get_location: z.object({
     action: z.enum(["auto", "read", "request"]).optional(),
+  }),
+  weather: z.object({
+    latitude: z.number().min(-90).max(90).optional(),
+    longitude: z.number().min(-180).max(180).optional(),
+    place: z.string().min(1).max(80).optional(),
   }),
   research: z.object({
     question: z.string().min(1).max(400).optional(),
@@ -17983,6 +18003,23 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         source: "OpenStreetMap nearby-places results",
         text: out.results.map(r => `${r.name ?? ""} ${r.address ?? ""} ${r.cuisine ?? ""}`).join("\n"),
       });
+    }
+
+    case "weather": {
+      const { weatherAt } = await import("./weather.js");
+      // A saved place of THEIRS, by name (this conversation's own rows only), or the coordinates given.
+      if (input.place && !(Number.isFinite(input.latitude) && Number.isFinite(input.longitude))) {
+        const p = db.getPlace(c, input.place);
+        if (!p) {
+          const names = db.listPlaces(c).map(x => x.name);
+          return { ok: false, error: `No saved place called "${String(input.place).slice(0, 40)}".`, saved_places: names, next: "Use one of those names, or get_location for their position." };
+        }
+        return weatherAt(Number(p.lat), Number(p.lng), { fetchImpl: ctx.fetchImpl, label: `${p.name} (${p.address})` });
+      }
+      if (!Number.isFinite(input.latitude) || !Number.isFinite(input.longitude)) {
+        return { ok: false, error: "Give coordinates or a saved place.", next: "Call get_location first, or pass place with one of their saved places." };
+      }
+      return weatherAt(input.latitude, input.longitude, { fetchImpl: ctx.fetchImpl });
     }
 
     case "get_location": {

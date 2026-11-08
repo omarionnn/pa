@@ -45,6 +45,9 @@ import { QUOTE_TOOL } from "./errand.js";
 import { briefLines, buildBrief, todaySoFarNote } from "./brief.js";
 import { readBackInstruction, detail as readbackDetail, recordOf as recordOfDetails } from "./readback.js";
 import * as verify from "./verify.js";
+import { rulesNote } from "../rules.js";
+import { whereaboutsNote, prepareCallMemory } from "./callmemory.js";
+import { memoryHits } from "../memorynote.js";
 import * as fromcall from "./fromcall.js";
 import { profileNote } from "./profile.js";
 import * as callMetrics from "./metrics.js";
@@ -551,6 +554,12 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // search: it is one row read, and a phone turn pays for every millisecond before the first
     // word. Nothing new is exposed by it — this frame already carries their recent thread.
     ownerProfileNote(conversationId),
+    // How they want to be treated (src/rules.js), read fresh each turn — call 80's own rule, "on a call,
+    // just say the answer out loud", was saved after it and no call turn had ever been shown one.
+    rulesNote(conversationId),
+    // Their saved places and what they told you about their week (./callmemory.js), so "where I'm at"
+    // on a shift day is work, not "I can't tell if you're home or elsewhere" (call 80).
+    whereaboutsNote(call),
     // What happened between them today, before this call (call 79: its own pick by text, three hours
     // earlier, was "nothing saved" on the phone). Up to when the call was made, so every turn of the
     // call sends the same prefix and the prompt cache holds.
@@ -1430,7 +1439,16 @@ function queueToMaster({ text, key, log = () => {} }) {
  */
 export const contextDeps = {
   systemFor: null, toolsFor: null, runTool: null, toSelf: null, openWorkNote: () => "", keptNote: () => "", purchasesNote: () => "",
+  // The saved facts closest to what they just said (src/memorynote.js), for a turn on their own call.
+  recall: memoryHits,
 };
+
+/**
+ * How long a turn on their own call waits for the facts closest to what they just said (call 80: a
+ * text turn was shown them, a call turn never). It sits in front of the first word, so it is short;
+ * past it the turn goes on without them and says so in the log.
+ */
+export const CALL_RECALL_WAIT_MS = 700;
 
 let primed = null;
 export async function prime() {
@@ -1585,7 +1603,11 @@ export async function* voiceTurn({
   attended = null,
   // Told the name of each of Reason's own tools as it starts (never the call's platform tools). The
   // GPT-Live voice reads it so a "let me check" is only ever said while a lookup really runs (call 79).
+  // Called `onTool(name, "start")` as it starts and `onTool(name, "done", { ok })` once it has run, so
+  // the voice knows which tools REALLY ran this turn (call 80: a real send read as an unbacked one).
   onTool = null,
+  // How long their own call's turn waits for the facts closest to their words; see `CALL_RECALL_WAIT_MS`.
+  recallWaitMs = CALL_RECALL_WAIT_MS,
 }) {
   const streamId = id ?? `chatcmpl-${randomUUID()}`;
   const created = Math.floor(clock.now() / 1000);
@@ -1611,11 +1633,40 @@ export async function* voiceTurn({
   yield chunk({ role: "assistant" });
 
   const messages = withCallRecord(endOnTheirSide(context.messages, { own: context.kind === "owner" }), db.callLookups(call));
+  // On their own call, what Reason remembers that is closest in meaning to what they just said — the
+  // same search a text turn gets — riding in front of their words like the call record, never as theirs.
+  const owned = context.kind === "owner";
+  if (owned && recallWaitMs > 0 && messages.at(-1)?.role === "user") {
+    const theirWords = latestSpoken(context.messages);
+    let timer;
+    const late = new Promise(r => { timer = setTimeout(() => r(null), recallWaitMs); timer.unref?.(); });
+    const found = theirWords
+      ? await Promise.race([Promise.resolve().then(() => contextDeps.recall(context.conversationId, theirWords, { log })).catch(() => []), late]).finally(() => clearTimeout(timer))
+      : [];
+    if (found === null) log({ call_recall_late: call.id, wait_ms: recallWaitMs });
+    if (found?.length) {
+      const last = messages.at(-1);
+      const theirs = typeof last.content === "string" ? [{ type: "text", text: last.content }] : last.content;
+      messages[messages.length - 1] = { role: "user", content: [{ type: "text", text: `[What you remember that may bear on this (saved facts closest in meaning to what they just said — not something they said):\n${found.join("\n")}]` }, ...theirs] };
+    }
+  }
   // A line that opened silent and stayed silent: the platform hands the turn over with nothing from
   // either side yet, and the call model refuses a request with no messages in it.
   if (!messages.length) messages.push({ role: "user", content: LINE_OPENED });
   let said = "";
   let filled = false;
+  // Their own call: this round's newest sentences, held until more words follow them (`owned` above);
+  // and the last round's words before its tools, dropped unsaid unless nothing comes after.
+  let leadIn = [];
+  let lastLeadIn = [];
+  let currentSplitter = null;
+  const dropLeadIn = (round) => {
+    const words = [...leadIn, ...(currentSplitter?.flush() ?? [])];
+    leadIn = [];
+    if (!words.join("").trim()) return;
+    lastLeadIn = words;
+    log({ voice_lead_in_dropped: call.id, round, chars: words.join("").trim().length });
+  };
   // The holding line, said at most once per turn — see `FIRST_WORD_DEADLINE_MS`.
   let holdingSaid = false;
   // Which line it was (the holding line, or the late line), for `onlyHolding`.
@@ -1725,6 +1776,7 @@ export async function* voiceTurn({
   try {
     for (let round = 0; round <= MAX_VOICE_TOOL_ROUNDS; round++) {
       const splitter = sentenceSplitter();
+      currentSplitter = splitter;
       const toolUses = [];
       let roundText = "";
 
@@ -1772,6 +1824,7 @@ export async function* voiceTurn({
         yield* endSuperseded("round", round);
         return;
       }
+      const saidAtRoundStart = said.length;
 
       const gen = generate({
         system: context.system, messages, tools: offeredTools(context), log, signal,
@@ -1824,12 +1877,23 @@ export async function* voiceTurn({
           const ev = step.value;
           if (ev?.type === "text") {
             roundText += ev.text ?? "";
-            yield* emit(splitter.push(ev.text ?? ""));
+            if (owned) {
+              // Their own call: a sentence is said once more words follow it in this round, or the round
+              // ends with no tool. Words written just before a tool are the lead-in ("I'll grab your
+              // location first"), and the spoken answer is what comes after the tool (call 80).
+              if (leadIn.length && String(ev.text ?? "").trim()) { yield* emit(leadIn); leadIn = []; }
+              leadIn.push(...splitter.push(ev.text ?? ""));
+            } else yield* emit(splitter.push(ev.text ?? ""));
             continue;
           }
           // A backend with no streaming tool start (the CLI) reports the tool when its call is read.
           if ((ev?.type === "tool_start" || ev?.type === "tool_use") && onTool && !SILENT_TOOLS.has(ev.name)) {
-            try { onTool(String(ev.name ?? "")); } catch { /* a watcher never breaks the turn */ }
+            try { onTool(String(ev.name ?? ""), "start"); } catch { /* a watcher never breaks the turn */ }
+          }
+          if ((ev?.type === "tool_start" || ev?.type === "tool_use") && owned && !SILENT_TOOLS.has(ev.name)) {
+            dropLeadIn(round);
+            if (ev.type === "tool_start" && !filled) yield* oneSec();
+            if (ev.type === "tool_start") continue;
           }
           if (ev?.type === "tool_start" && !filled && !holdBack && !SILENT_TOOLS.has(ev.name)) {
             // The filler goes out as the tool call begins, while the model is still writing its
@@ -1849,7 +1913,18 @@ export async function* voiceTurn({
       } finally {
         if (!readingDone) Promise.resolve(reading.return?.()).catch(() => {});
       }
-      yield* emit(splitter.flush());
+      if (owned) {
+        const rest = [...leadIn, ...splitter.flush()];
+        leadIn = [];
+        if (toolUses.some(t => !SILENT_TOOLS.has(t.name))) { leadIn = rest; dropLeadIn(round); }
+        else if (rest.join("").trim()) yield* emit(rest);
+        // The round after the tools said nothing at all: then the words before them were the answer
+        // (a question it asked as it called the tool), and they are said rather than nothing.
+        else if (round > 0 && said.length === saidAtRoundStart && !toolUses.length && lastLeadIn.length) {
+          log({ voice_lead_in_said: call.id, round });
+          yield* emit(lastLeadIn);
+        }
+      } else yield* emit(splitter.flush());
 
       // Everything below this point writes down what this round did — the disclosure as said, a
       // voicemail as left, a wait, a key press, a hand-over — so none of it runs for a round nobody
@@ -2128,6 +2203,7 @@ export async function* voiceTurn({
               + ` something out loud to the person on the line, who has been waiting through all of this.`;
           }
           log({ call_side_tool: t.name, call_id: call.id, ok: out?.ok !== false });
+          if (onTool) { try { onTool(String(t.name), "done", { ok: out?.ok !== false }); } catch { /* a watcher never breaks the turn */ } }
           // A recording said nobody can be reached this way, or a mailbox takes nothing. Hung up by code,
           // now, without a word: there is nothing to say to it and every second is billed.
           if (out?.endNow) {
@@ -2205,6 +2281,7 @@ export async function* voiceTurn({
         if (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf: (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false })) {
           out = verify.gateRefusal({ call, name: t.name });
           log({ call_tool_needs_verification: t.name, call_id: call.id });
+          if (onTool) { try { onTool(String(t.name), "done", { ok: false }); } catch { /* a watcher never breaks the turn */ } }
           results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
           continue;
         }
@@ -2226,6 +2303,8 @@ export async function* voiceTurn({
         }
         if (out?.slow) log({ call_tool_over_budget: t.name, call_id: call.id, budget_ms: toolBudgetMs });
         log({ call_tool: t.name, call_id: call.id, ok: out?.ok !== false });
+        // Ran, and how it came back: what the voice may say was done this turn rests on this (call 80).
+        if (onTool) { try { onTool(String(t.name), "done", { ok: out?.ok !== false && !out?.slow }); } catch { /* a watcher never breaks the turn */ } }
         // Kept even when the platform has moved on: the search happened, and the next turn has to know.
         try { db.addCallLookup(call.conversation_id, call.id, lookupEntry({ name: t.name, input: t.input, out })); }
         catch { /* the record is a help, never a reason for the turn to fail */ }
@@ -2323,6 +2402,8 @@ export async function llmRequest({
   attachGraceMs = ATTACH_GRACE_MS,
   // Each of Reason's own tools as it starts; see `voiceTurn`. Only the turn this request starts tells it.
   onTool = null,
+  // How long a turn on their own call waits for the facts closest to their words; see `voiceTurn`.
+  recallWaitMs = CALL_RECALL_WAIT_MS,
 }) {
   // The moment the platform's request arrived — the person has stopped talking — which is where the
   // caller's wait starts. Every turn timing in call_turns is measured from here.
@@ -2364,6 +2445,8 @@ export async function llmRequest({
   let context;
   try {
     await prime();
+    // Where they usually are (./callmemory.js): read while it rang, so this is normally already done.
+    if (kind === "owner") await prepareCallMemory(call, { log });
     context = contextFor({ call, kind, callMessages: body.messages, now });
   } catch (e) {
     const why = (e?.message ?? String(e)).split("\n")[0];
@@ -2415,7 +2498,7 @@ export async function llmRequest({
   let shared = null;
   const turn = voiceTurn({
     context, call, generate: gen, model, id: streamId, log, extras,
-    signal: control.signal, toolBudgetMs, firstWordDeadlineMs, lateHoldingMs, fillerAfterMs, t0, meter,
+    signal: control.signal, toolBudgetMs, firstWordDeadlineMs, lateHoldingMs, fillerAfterMs, t0, meter, recallWaitMs,
     attended: () => shared.attended(),
     ...(onTool ? { onTool } : {}),
     ...(screen ? { screen } : {}),
@@ -2718,6 +2801,8 @@ export function warmCallCache({ call, log = () => {}, now = clock.now(), client 
   return (async () => {
     try {
       await prime();
+      // The same words the first turn will send (./callmemory.js), so the warm prefix is the real one.
+      if (call.is_owner) await prepareCallMemory(call, { log });
       const context = contextFor({ call, kind: call.is_owner ? "owner" : "third_party", callMessages: [], now });
       const api = client ?? new (await import("@anthropic-ai/sdk")).default();
       const t0 = Date.now();

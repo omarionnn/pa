@@ -312,7 +312,7 @@ test("a call: μ-law session, greeting, caller audio relayed, delegation answere
   assert.deepEqual(start.session.audio.format, { type: "audio/pcmu", rate: 8000 });
   assert.deepEqual(start.session.delegation, { type: "client", acknowledgement_delay_ms: 800 }, "room for code to cancel the voice's own 'let me check' (call 79)");
   assert.equal(start.session.audio.output.voice, "marin");
-  assert.match(start.session.instructions, /You are the voice/);
+  assert.match(start.session.instructions, /You are Reason, Omari's personal assistant/);
 
   twilio.say({ event: "media", media: { payload: ULAW_FRAME } });
   assert.equal(live.of("session.input_audio.append").length, 0, "nothing goes in before the session has started");
@@ -836,14 +836,17 @@ test("warm: picked up — the greeting plays at once on the same session, with n
   assert.equal(gl.takeWarm(row.id), null, "taken once");
   twilio.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
   assert.equal(opened, 0);
+  // The voice goes out one piece behind, its last sound faded when nothing follows (call 80).
+  await timers.advance(gl.FADE_FLUSH_MS);
   const media = twilio.sent.filter(m => m.event === "media");
   assert.equal(media.length, 1, "the leading silence is not played, the greeting is");
-  assert.equal(media[0].media.payload, loud);
+  assert.equal(media[0].media.payload, gl.fadeOut(loud));
   assert.equal(lines.find(l => "gptlive_first_voice" in l).ms, 0, "first word the moment the stream starts");
   assert.equal(live.of("session.commentary.append").length, 1, "no second greeting");
   twilio.say({ event: "media", media: { payload: ULAW_FRAME } });
   assert.equal(live.of("session.input_audio.append").at(-1).audio, ULAW_FRAME, "their audio goes in from here");
   live.emit({ type: "session.output_audio.delta", delta: loud });
+  await timers.advance(gl.FADE_FLUSH_MS);
   assert.equal(twilio.sent.filter(m => m.event === "media").length, 2, "and the live session carries on into the line");
   assert.equal(call.started, true);
   assert.equal(w.call, call);
@@ -883,51 +886,57 @@ const profiles = () => {
 const vp = await import("../src/calls/voice-prompt.js");
 await voice.prime();
 
-test("the live prompt is call 53's (#290), word for word, plus only the gated identity and maker lines", () => {
+test("the live prompt on their own call (fix 2, call 80): Reason itself, with its persona, the split, call 53's lines and their own brief", () => {
   on({ callIdentity: "owner" });
   profiles();
   const s = gl.sessionConfig({ ...gl.whoFor(db.getCall(C, ownerCall().id)), greeting: "hey" }).instructions;
   const lines = s.split("\n");
-  assert.equal(lines[0], "You are the voice of Reason, Omari's personal assistant, on a phone call with Omari.");
-  assert.match(lines[1], /^Only if they ask who you are, who they are or their name, answer straight away yourself: you're Reason, their assistant, and they're Omari, the person you work for\. Where they are, or any other question, goes to Reason;/);
+  assert.match(lines[0], /^You are Reason, Omari's personal assistant — the same Reason they text with — on a phone call with Omari\./);
+  assert.match(lines[1], /^Only if they ask who you are, who they are or their name, answer straight away yourself: you're Reason, their assistant, and they're Omari, the person you work for\./);
   assert.match(lines[2], /^You were made by Saafi Interactions Lab;/);
   assert.equal(lines[3], "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.");
+  assert.equal(lines[4], gl.OWN_VOICE_PERSONA);
+  for (const l of [...gl.OWN_VOICE_SPLIT, ...gl.CALL56_LINES, ...gl.HEARING_LINES, ...gl.OWN_CALL_LINES, gl.NO_FILLER, gl.PIECES_LINE]) assert.ok(lines.includes(l), l.slice(0, 60));
+  assert.doesNotMatch(s, /You are only the voice|Delegate to the backend for every question/, "no longer a relay on their own call");
+  assert.match(s, /Never state a fact, figure, news item, price, time or the weather from your own knowledge: hand it off/);
   const end = lines.indexOf("Stop speaking when they talk over you, and listen.");
-  assert.equal(end, 22, "call 53's ten lines + identity + maker + call 56's four + call 76's three hearing lines + the four own-call lines (2026-11-01 call 68, 2026-11-08 call 76)");
-  for (const l of [...gl.CALL56_LINES, ...gl.HEARING_LINES, ...gl.OWN_CALL_LINES]) assert.ok(lines.includes(l));
-  assert.match(lines.slice(end + 1).join("\n"), /^PRE-CALL BRIEF/, "only the pre-call brief after call 53's last line");
-  assert.doesNotMatch(s, /2 and 5 trains|How you sound|You rang|New York/, "no profile, no tone section, none of #293's additions");
+  assert.match(lines.slice(end + 1).join("\n"), /^PRE-CALL BRIEF/, "only the pre-call brief after the last fixed line");
+  assert.match(s, /2 and 5 trains/, "his own profile is in his own call's brief");
+  assert.doesNotMatch(s, /peanuts|\bAma\b/, "nobody else's");
   assert.equal(config.gptliveVoice, "marin", "the default voice is call 53's");
 });
 
-test("identity off (flag unset): call 53's prompt plus the maker line, nothing else", () => {
+test("identity off (flag unset): no identity line; still Reason itself on their own call", () => {
   on({ callIdentity: false });
   const s = gl.liveInstructions(gl.whoFor(db.getCall(C, ownerCall().id)));
   assert.doesNotMatch(s, /ask who you are/);
-  assert.equal(s.split("\n").indexOf("Stop speaking when they talk over you, and listen."), 21);
+  assert.match(s, /^You are Reason, Omari's personal assistant/);
 });
 
-test("identity =owner: another user's call has no identity line and nothing of the operator's", () => {
+test("identity =owner: another user's call has no identity line and nothing of the operator's — only her own brief", () => {
   on({ callIdentity: "owner" });
   profiles();
   const s = gl.liveInstructions(gl.whoFor(AMA_CALL()));
-  assert.match(s, /^You are the voice of Reason, Ama's personal assistant/);
-  assert.doesNotMatch(s, /ask who you are|\bOmari\b|2 and 5 trains|peanuts/);
+  assert.match(s, /^You are Reason, Ama's personal assistant/);
+  assert.doesNotMatch(s, /ask who you are|\bOmari\b|2 and 5 trains/);
+  assert.match(s, /peanuts/, "her own profile");
   assert.equal(vp.callIdentityFor(OTHER), false);
   assert.equal(vp.callIdentityFor(C), true);
 });
 
-test("isolation, identity =on: user B's voice gets B's name only, never user A's (and no profile at all)", () => {
+test("isolation, identity =on: user B's voice gets B's name and B's profile, never user A's", () => {
   on({ callIdentity: true });
   profiles();
+  db.addRule(C, { rule: "call me O, never Omari" });
   const s = gl.liveInstructions(gl.whoFor(AMA_CALL()));
   assert.match(s, /they're Ama, the person you work for/);
-  assert.doesNotMatch(s, /\bOmari\b|2 and 5 trains|peanuts/);
+  assert.match(s, /peanuts/);
+  assert.doesNotMatch(s, /\bOmari\b|2 and 5 trains|call me O/);
   const NEW = "sendblue:+13105550001";
   db.upsertAccount({ conversationId: NEW, channel: "sendblue", address: "+13105550001", name: "the person I work for", isOperator: false });
   const n = gl.liveInstructions(gl.whoFor(db.createCall(NEW, { provider: "gptlive", toNumber: "+13105550001", isOwner: true, goal: "g", facts: [], announcement: "hey", state: "placing" })));
   assert.match(n, /you don't have their name saved yet/);
-  assert.doesNotMatch(n, /\bOmari\b|\bAma\b|them's/);
+  assert.doesNotMatch(n, /\bOmari\b|\bAma\b|them's|peanuts|2 and 5|call me O/);
 });
 
 test("a third-party call: 'I'm Reason, calling for Omari', and none of his profile", () => {

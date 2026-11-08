@@ -1,7 +1,7 @@
 // Call 79 (2026-11-08, Omari's own GPT-Live call, 187 s): the fixes, pinned. No network: the voice
 // session, the Twilio stream and Reason's turn are stand-ins; every assertion reads what was sent.
 //   1. holding lines are code's: none for an answer ready within 1.5 s, "check/look" only while a tool runs
-//   2. short answers: a long spoken answer is cut to its start plus an offer to text the rest, kept for Reason
+//   2. (call 80 replaced the code cut: see test/call80-fixes.test.js)
 //   3. today so far: the caller's own thread today, names included, in Reason's prompt and the voice's brief
 //   4. talk-over: a reply that starts while they are still talking waits for them; first exchange waits longer
 //   5. warm-up: Reason's prompt is cached while it rings, with the exact bytes the first turn sends
@@ -101,6 +101,8 @@ function startCall({ brain, row = ownerCall(), warmTurn = null } = {}) {
   const live = fakeLive();
   const lines = [];
   const call = new gl.GptLiveCall({ call: row, twilio, openLive: () => live.socket, brain, now: timers.now, timers, log: (o) => lines.push(o), finish: async () => {}, warmTurn });
+  // The voice goes out one piece behind (its fade, call 80): a piece held for that counts as played.
+  twilio.media = () => twilio.sent.filter(m => m.event === "media").length + (call.voiceTail ? 1 : 0);
   twilio.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
   live.open();
   live.emit({ type: "session.started", session: { id: "live_1" } });
@@ -128,20 +130,17 @@ test("holding: the voice's own 'let me check' is cancelled at once, and an answe
   assert.equal(live.of("session.commentary.append").find(e => e.delegation_id === "item_1").content, "Tuesday's Bo Peep, from seven.");
 });
 
-test("holding: a slow answer with no tool gets one tiny line at 1.5 s, never 'check' or 'look'", async () => {
+test("holding: a slow answer with no lookup running gets no line at 1.5 s — no 'one sec' stalling (call 80) — only the late one", async () => {
   let release;
   const { timers, live, lines } = startCall({ brain: () => new Promise(r => { release = r; }) });
   live.emit({ type: "session.delegation.created", delegation: { id: "item_2" } });
-  await timers.advance(1400);
-  assert.equal(holds(live).length, 0, "not before 1.5 s");
-  await timers.advance(150);
+  await timers.advance(3000);
+  assert.equal(holds(live).length, 0, "nothing is being looked up, so nothing is said into the wait");
+  await timers.advance(voice.LATE_HOLDING_MS - 3000 + 50);
   const h = holds(live);
-  assert.equal(h.length, 1);
-  assert.equal(h[0].delegation_id, "item_2");
+  assert.equal(h.length, 1, "the late line, so a long wait is never dead air");
   const said = /"([^"]+)"/.exec(h[0].content)[1];
-  assert.ok(gl.QUICK_HOLD_LINES.includes(said), said);
-  assert.doesNotMatch(said, /check|look/i, "nothing is being checked, so nothing says so");
-  assert.match(h[0].content, /Say only this/);
+  assert.ok(voice.LATE_LINES.includes(said) && !/check|look/i.test(said), said);
   assert.equal(lines.filter(l => l.gptlive_hold_line).length, 1);
   release({ text: "You said seven or later.", tools: [] });
   await timers.advance(10);
@@ -160,7 +159,7 @@ test("holding: 'let me check' only while one of Reason's tools is really running
 });
 
 test("holding: a few words of the voice's own don't leave dead air after them — the line waits for it to finish", async () => {
-  const { timers, live } = startCall({ brain: () => new Promise(() => {}) });
+  const { timers, live } = startCall({ brain: (m, hooks) => { hooks.onTool("web_search", "start"); return new Promise(() => {}); } });
   live.emit({ type: "session.delegation.created", delegation: { id: "item_7" } });
   await timers.advance(1000);
   live.emit({ type: "session.output_audio.delta", delta: LOUD }); // "Yeah —"
@@ -170,15 +169,25 @@ test("holding: a few words of the voice's own don't leave dead air after them �
   assert.equal(holds(live).length, 1, "once it has been quiet 1.2 s");
 });
 
-test("holding: a wait on a send is not 'checking'", async () => {
-  const { timers, live } = startCall({ brain: (m, hooks) => { hooks.onTool("message_send"); return new Promise(() => {}); } });
+test("holding: a wait on a send is not 'checking', and gets no first line", async () => {
+  const { timers, live } = startCall({ brain: (m, hooks) => { hooks.onTool("message_send", "start"); return new Promise(() => {}); } });
   live.emit({ type: "session.delegation.created", delegation: { id: "item_8" } });
   await timers.advance(1600);
-  const said = /"([^"]+)"/.exec(holds(live)[0].content)[1];
-  assert.ok(gl.QUICK_HOLD_LINES.includes(said), said);
+  assert.equal(holds(live).length, 0);
+  await timers.advance(voice.LATE_HOLDING_MS);
+  assert.doesNotMatch(/"([^"]+)"/.exec(holds(live)[0].content)[1], /check|look/i);
   assert.equal(gl.isLookup("web_search"), true);
   assert.equal(gl.isLookup("calendar_events"), true);
   assert.equal(gl.isLookup("timer_set"), false);
+});
+
+test("holding: 'check' only WHILE the lookup runs — once it has come back, a later line never says it (call 80)", async () => {
+  const { timers, live } = startCall({ brain: (m, hooks) => { hooks.onTool("web_search", "start"); timers.setTimeout(() => hooks.onTool("web_search", "done", { ok: true }), 1000); return new Promise(() => {}); } });
+  live.emit({ type: "session.delegation.created", delegation: { id: "item_9" } });
+  await timers.advance(voice.LATE_HOLDING_MS + 50);
+  const said = holds(live).map(h => /"([^"]+)"/.exec(h.content)[1]);
+  assert.equal(said.length, 1, "no first line: the lookup was over by 1.5 s");
+  for (const s of said) assert.doesNotMatch(s, /check|look/i);
 });
 
 test("holding: still nothing at the late deadline gets a late line (no dead air), never 'Still checking' without a tool", async () => {
@@ -186,8 +195,8 @@ test("holding: still nothing at the late deadline gets a late line (no dead air)
   live.emit({ type: "session.delegation.created", delegation: { id: "item_4" } });
   await timers.advance(voice.LATE_HOLDING_MS + 50);
   const h = holds(live);
-  assert.equal(h.length, 2, "the first line, then the late one");
-  const late = /"([^"]+)"/.exec(h[1].content)[1];
+  assert.equal(h.length, 1, "the late one");
+  const late = /"([^"]+)"/.exec(h[0].content)[1];
   assert.ok(voice.LATE_LINES.includes(late));
   for (let n = 0; n < 12; n++) assert.notEqual(gl.holdLineFor({ kind: "late", tool: false, n }), "Still checking.");
   assert.ok(Array.from({ length: 6 }, (_, n) => gl.holdLineFor({ kind: "late", tool: true, n })).includes("Still checking."), "with a tool it may");
@@ -221,7 +230,7 @@ test("onTool: Reason's own tools are reported as they start, the call's platform
   const out = await voice.llmRequest({
     rawBody: JSON.stringify({ model: "reason", messages: [{ role: "user", content: "what's the weather" }], extra_body: { reason_call_id: call.id, reason_conversation_id: C } }),
     screen: async () => ({ verdict: "clear" }),
-    onTool: (n) => seen.push(n),
+    onTool: (n, phase) => seen.push(`${n}:${phase}`),
     generate: async function* ({ messages }) {
       if (messages.some(m => Array.isArray(m.content) && m.content.some(b => b?.type === "tool_result"))) { yield { type: "text", text: "Clear and 54." }; return; }
       yield { type: "tool_start", name: "skip_turn" };
@@ -230,112 +239,7 @@ test("onTool: Reason's own tools are reported as they start, the call's platform
     },
   });
   for await (const _ of out.stream) { /* drain */ }
-  assert.deepEqual([...new Set(seen)], ["web_search"]);
-});
-
-// ---------- 2. short answers ----------
-
-const CALL79_TIPS = "Yeah, sit at the bar, that's where solo people end up chatting, and the music picks up later. So, aim for after 9 if you can. Order something simple, then just comment on the music or ask the bartender what's good. Sing-along nights make it easy, since everyone's already joining in. Do you want a couple opener lines for the people sitting next to you?";
-const CALL79_OPENERS = 'For openers, keep it easy. Ask the person next to you "have you been here before?" or "any good song requests?" Or say "I\'m new here, what\'s good on the menu?" If a song is going, just say "okay, this one\'s a banger" and join in. The bartender is a good start too.';
-
-test("short answers: a long answer is said as its first sentences and an offer to text the rest", () => {
-  const cut = gl.shortForPhone(CALL79_OPENERS);
-  assert.ok(cut && cut.offered);
-  assert.ok(cut.say.endsWith(gl.TEXT_REST_OFFER));
-  const start = cut.say.slice(0, -gl.TEXT_REST_OFFER.length).trim();
-  assert.ok(start.length <= gl.SHORT_REPLY_CHARS, start);
-  assert.ok(CALL79_OPENERS.startsWith(start), "whole sentences from the start");
-  assert.equal(cut.full, CALL79_OPENERS);
-  assert.equal(gl.shortForPhone("Right, Bo Peep on Tuesday. You said seven or later."), null, "a short answer is left alone");
-  const long = `So the thing is ${"really quite long, ".repeat(25)}and that's it.`;
-  const one = gl.shortForPhone(long);
-  const head = one.say.slice(0, -gl.TEXT_REST_OFFER.length).trim().replace(/\.$/, "");
-  assert.ok(head.length <= gl.SHORT_REPLY_CHARS && long.startsWith(head) && long[head.length] === ",", "a single long sentence is cut at a clause, never mid-word");
-});
-
-test("short answers: an answer that ends on a question keeps that question, word for word, and adds no offer of its own", () => {
-  const cut = gl.shortForPhone(CALL79_TIPS);
-  assert.ok(cut && cut.offered === false);
-  assert.ok(cut.say.endsWith("Do you want a couple opener lines for the people sitting next to you?"));
-  assert.ok(!cut.say.includes(gl.TEXT_REST_OFFER), "one question at a time");
-  assert.ok(cut.say.length < CALL79_TIPS.length - 100);
-  const ask = "Bo Peep has a table at seven for two, at the bar side, and they hold it fifteen minutes past the time, then give it away. You said seven or later, so seven fits. There's a forty dollar deposit, which comes off the bill, and it's refundable up to a day before. Want me to book it?";
-  assert.ok(gl.shortForPhone(ask).say.endsWith("Want me to book it?"), "a yes Reason needs is never swapped for 'want me to text you the rest?'");
-  const openers = gl.shortForPhone("Got it, seven or later. For openers, ask what they are drinking, since you are picking your own anyway. Or on sing-along night, ask if they actually know this one or are faking it too. If a song starts, just join in and say this one is a banger. Want me to text you a few more?");
-  assert.match(openers.say, /For openers, ask what they are drinking/, "the drive's case: the content is said, not only the question");
-  const longQ = gl.shortForPhone("Bo Peep has a table at seven for two at the bar side, and they hold it fifteen minutes past the time before they give it away to the next people waiting. There's a forty dollar deposit, which comes off the bill. Want me to book the seven o'clock table at the bar side for the two of you tonight?");
-  assert.ok(longQ === null || longQ.say.endsWith("Want me to book the seven o'clock table at the bar side for the two of you tonight?"), "the question is never dropped, however long");
-  assert.ok(!longQ || !longQ.say.includes(gl.TEXT_REST_OFFER));
-  assert.equal(gl.shortForPhone("Want me to book it for seven? It's a forty dollar deposit that comes off the bill, refundable up to a day before, and they hold the table for fifteen minutes past the time before they give it away to the next people."), null, "a question in the middle is never cut away");
-  const mondays = gl.shortForPhone("Bo Peep is closed Mondays, unless there's a private event booked, and on Tuesdays the sing-along starts at eight, which is when the bar fills up and people start talking to each other. Pebble Bar is quieter. Joe's Pub has shows most nights. The Ragtrader upstairs does food until ten, and the bar staff are friendly if you sit at the end.");
-  assert.ok(mondays && mondays.say.startsWith("Bo Peep is closed Mondays, unless there's a private event booked"), "whole sentences that fit are never clipped")
-  assert.equal(gl.sayWhole({ tools: ["confirm_record"] }), true, "and behind a confirm it is not cut at all");
-  assert.equal(gl.sayWhole({ tools: ["message_send"] }), true);
-  assert.equal(gl.sayWhole({ tools: [], endCall: { message: "bye" } }), true);
-  assert.equal(gl.sayWhole({ tools: ["web_search"] }), false);
-  assert.equal(gl.sayWhole({ tools: ["message_search"] }), false, "a lookup of messages is not a send");
-  assert.equal(gl.isLookup("message_search"), true);
-  assert.equal(gl.isLookup("message_send"), false);
-  const money = "It's $12.50 a ticket and doors are at 7 p.m. or later, so there's no rush to get there for the start of it at all. The second band is the one people come for and they're usually on at about nine thirty, and the bar stays busy right up to closing.";
-  const m = gl.shortForPhone(money);
-  assert.ok(m.say.startsWith("It's $12.50 a ticket and doors are at 7 p.m. or later"), m.say);
-});
-
-test("short answers: on their own call the cut answer is said, the whole one rides on the voice's words for Reason's next turn, and a send spends it", async () => {
-  const asked = [];
-  let n = 0;
-  const { timers, live, lines } = startCall({
-    brain: async (messages) => {
-      asked.push(messages);
-      n++;
-      if (n === 1) return { text: CALL79_OPENERS, tools: [] };
-      if (n === 2) return { text: "Texted you the lot.", tools: ["message_send"] };
-      return { text: "Sure.", tools: [] };
-    },
-  });
-  live.emit({ type: "session.input_transcript.delta", delta: " What are your suggestions for the bar?" });
-  live.emit({ type: "session.delegation.created", delegation: { id: "item_a" } });
-  await timers.advance(10);
-  const said = live.of("session.commentary.append").find(e => e.delegation_id === "item_a").content;
-  assert.ok(said.length < 230, said);
-  assert.match(said, /want me to text you the rest\?$/);
-  assert.ok(lines.some(l => l.gptlive_reply_cut));
-  live.emit({ type: "session.output_transcript.delta", delta: ` ${said}` });
-  await timers.advance(5000);
-  live.emit({ type: "session.input_transcript.delta", delta: " Yeah go on, send it." });
-  live.emit({ type: "session.delegation.created", delegation: { id: "item_b" } });
-  await timers.advance(10);
-  const last = asked[1].at(-1);
-  assert.deepEqual(last, { role: "user", content: "Yeah go on, send it." }, "their words are theirs alone (the harm screen reads them)");
-  const mine = asked[1].at(-2);
-  assert.equal(mine.role, "assistant");
-  assert.ok(mine.content.includes(gl.textOfferNote(CALL79_OPENERS)), "Reason gets the whole answer, on the voice's own words, and decides from theirs");
-  assert.match(gl.textOfferNote("x"), /message_send to "owner"/);
-  assert.match(gl.textOfferNote("x"), /only then say it's sent/);
-  await timers.advance(5000);
-  live.emit({ type: "session.input_transcript.delta", delta: " Thanks." });
-  live.emit({ type: "session.delegation.created", delegation: { id: "item_c" } });
-  await timers.advance(10);
-  assert.ok(!JSON.stringify(asked[2]).includes("whole answer was"), "texted: the offer is spent");
-});
-
-test("short answers: an unbacked 'texted' is still caught, and a business line is never cut", async () => {
-  const { timers, live } = startCall({ brain: async () => ({ text: "I've texted you the lot.", tools: [] }) });
-  live.emit({ type: "session.delegation.created", delegation: { id: "item_x" } });
-  await timers.advance(10);
-  assert.doesNotMatch(live.of("session.commentary.append").find(e => e.delegation_id === "item_x").content, /texted you/i);
-  const third = db.createCall(C, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "ask about a table", facts: [], announcement: "", state: "placing" });
-  const b = startCall({ row: third, brain: async () => ({ text: CALL79_TIPS, tools: [] }) });
-  b.call.talking = true;
-  b.live.emit({ type: "session.delegation.created", delegation: { id: "item_y" } });
-  await b.timers.advance(10);
-  assert.equal(b.live.of("session.commentary.append").find(e => e.delegation_id === "item_y")?.content, CALL79_TIPS);
-});
-
-test("short answers: Reason's own call turn is told one or two sentences, then to offer more", () => {
-  const frame = prompt.ownerCallFrame({ name: "Omari" });
-  assert.match(frame, /answer in one or two short sentences, then stop and let them react/);
-  assert.match(frame, /If there is more, offer it in a few words/);
+  assert.deepEqual([...new Set(seen)], ["web_search:start", "web_search:done"], "started, then ran (call 80: what ran is known)");
 });
 
 // ---------- 3. today so far ----------
@@ -428,6 +332,7 @@ test("talk-over: on the first exchange a reply that starts while they are still 
   live.emit({ type: "session.output_audio.delta", delta: LOUD }); // "I'm —"
   live.emit({ type: "session.output_audio.delta", delta: LOUD });
   assert.equal(twilio.media() - before, 0, "nothing goes out over them");
+  live.emit({ type: "session.input_transcript.delta", delta: " how are you" }); // their words come through
   await theySay(twilio, timers, 200, LOUD); // "— you"
   await theySay(twilio, timers, 600, SILENT);
   assert.equal(twilio.media() - before, 0, "600 ms of quiet is not enough on the first exchange");
@@ -448,6 +353,7 @@ test("talk-over: after the first exchange it waits 300 ms; a reply that starts a
   before = s.twilio.media();
   await theySay(s.twilio, s.timers, 400, LOUD);
   s.live.emit({ type: "session.output_audio.delta", delta: LOUD });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " so anyway" });
   assert.equal(s.twilio.media() - before, 0, "held while they talk");
   await theySay(s.twilio, s.timers, 320, SILENT);
   assert.equal(s.twilio.media() - before, 1, "out after 300 ms of quiet");
@@ -469,7 +375,8 @@ test("talk-over: if they keep talking it was an answer to half a sentence — dr
   for (let ms = 0; ms < gl.TALKOVER_MAX_MS + 200; ms += 100) {
     await theySay(s.twilio, s.timers, 100, LOUD);
     s.live.emit({ type: "session.output_audio.delta", delta: LOUD });
-    if (ms === 600) s.live.emit({ type: "session.input_transcript.delta", delta: " and also I wanted to ask" });
+    // Their words come through inside the wordless cap (TALKOVER_WORDLESS_MS): it is them, not the line.
+    if (ms === 300) s.live.emit({ type: "session.input_transcript.delta", delta: " and also I wanted to ask" });
   }
   assert.ok(s.lines.some(l => l.gptlive_talkover_dropped));
   assert.ok(s.live.of("session.thinking.append").some(e => /did not hear what you just started/.test(e.content)));
@@ -486,13 +393,14 @@ test("talk-over: after a drop, the silence the session streams never keeps it al
   for (let ms = 0; ms < gl.TALKOVER_MAX_MS + 200; ms += 100) {
     await theySay(s.twilio, s.timers, 100, LOUD);
     s.live.emit({ type: "session.output_audio.delta", delta: SILENT }); // the session's own silence, all along
-    if (ms === 500) s.live.emit({ type: "session.input_transcript.delta", delta: " and also" });
+    if (ms === 300) s.live.emit({ type: "session.input_transcript.delta", delta: " and also" });
   }
   assert.ok(s.lines.some(l => l.gptlive_talkover_dropped));
   for (let i = 0; i < 20; i++) { await theySay(s.twilio, s.timers, 100, SILENT); s.live.emit({ type: "session.output_audio.delta", delta: SILENT }); }
-  const before = s.twilio.sent.filter(m => m.event === "media" && m.media.payload === LOUD).length;
+  const loud = () => s.twilio.sent.filter(m => m.event === "media" && m.media.payload === LOUD).length + (s.call.voiceTail === LOUD ? 1 : 0);
+  const before = loud();
   s.live.emit({ type: "session.output_audio.delta", delta: LOUD }); // its real answer, later
-  assert.equal(s.twilio.sent.filter(m => m.event === "media" && m.media.payload === LOUD).length - before, 1, "heard");
+  assert.equal(loud() - before, 1, "heard");
 });
 
 test("talk-over: a noisy line with no words through is never dead air — the run goes out by 3.5 s", async () => {

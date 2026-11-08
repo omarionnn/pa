@@ -552,7 +552,7 @@ test("an own call with phase 3 on is exactly as before: greeted through commenta
   live.emit({ type: "session.started", session: { id: "l" } });
   assert.equal(call.line, false);
   assert.match(live.of("session.commentary.append")[0].content, /Hey Omari, it's Reason/);
-  assert.match(live.of("session.start")[0].session.instructions, /^You are the voice of Reason, Omari's personal assistant/);
+  assert.match(live.of("session.start")[0].session.instructions, /^You are Reason, Omari's personal assistant/);
   live.emit({ type: "session.output_audio.delta", delta: QUIET });
   assert.equal(twilio.media().length, 1, "no gate on an own call");
   call.done = true;
