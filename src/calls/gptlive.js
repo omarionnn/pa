@@ -941,8 +941,6 @@ export class WarmSession {
     // An inbound call greets with `openingLineFor`, not the row's announcement (`GptLiveCall`).
     this.greeting = greeting != null ? String(greeting) : String(row.announcement ?? "");
     this.openedAt = now();
-    // What the brief was built from, so anything new by pickup is handed over (`freshSince`).
-    this.threadLen = threadLength(row.conversation_id);
     this.ready = new Promise((r) => { this.readyResolve = r; });
     // A gated session's greeting, said and paused (true), or not coming (false).
     this.greeted = new Promise((r) => { this.greetedResolve = r; });
@@ -1064,28 +1062,6 @@ export class WarmSession {
     this.timers.setTimeout(() => this.live.close(), 1000);
     this.log({ gptlive_warm_dropped: this.row.id, why });
   }
-}
-
-/** Messages in a conversation's thread now (0 when it cannot be read). */
-function threadLength(conversationId) {
-  try { return db.loadConversation(conversationId).length; } catch { return 0; }
-}
-
-/**
- * What came into their thread after a held session's brief was built (a text, a finished errand's
- * note), as one thinking note for the voice — or "" when nothing did. Their own conversation only.
- */
-export function freshSince(conversationId, fromLen) {
-  let thread = [];
-  try { thread = db.loadConversation(conversationId); } catch { return ""; }
-  const lines = [];
-  for (const m of thread.slice(Math.max(0, Number(fromLen) || 0))) {
-    if (m?.role !== "user" && m?.role !== "assistant") continue;
-    const line = clip(wordsOf(m).replace(/^\s*\[[^\]]*\]\s*[^:\n]{1,40}:\s*/, ""), 200);
-    if (line && !/NO_REPLY/.test(line)) lines.push(`${m.role === "user" ? "them" : "you"}: ${line}`);
-  }
-  if (!lines.length) return "";
-  return `New in your chats while the phone rang — background, and Reason has it too:\n${lines.slice(-4).join("\n")}`;
 }
 
 /** Start the voice for a call about to be placed, if it opens with a greeting. Never throws. */
@@ -1537,15 +1513,6 @@ export class GptLiveCall {
       for (const audio of early) this.live.send({ type: "session.input_audio.append", audio });
       if (early.length) this.log({ gptlive_early_audio: this.call.id, ms: early.length * 20 });
       return;
-    }
-    // Anything new in their thread since the held session's brief was built, before the greeting asks.
-    if (this.heldSession && this.warm && !this.freshSent) {
-      this.freshSent = true;
-      const note = freshSince(this.call.conversation_id, this.warm.threadLen);
-      if (note) {
-        this.live.send({ type: "session.thinking.append", event_id: `fresh_${this.call.id}`, delegation_id: null, content: note });
-        this.log({ gptlive_prering_fresh: this.call.id, chars: note.length });
-      }
     }
     if (greet && this.greeting) this.live.send({ type: "session.commentary.append", event_id: `greet_${this.call.id}`, delegation_id: null, content: greetingInstruction(this.greeting, this.who?.purpose ?? "") });
     // A held session picked up before it had started: their hello, kept from the first frame.

@@ -971,38 +971,6 @@ test("prering: picked up before the session started — their hello is kept from
   assert.equal(lines.find(l => "gptlive_early_audio" in l).ms, 100);
 });
 
-test("prering: anything new in their thread while it rang is handed to the voice once, before the greeting; nothing new, nothing sent", async () => {
-  on();
-  db.saveConversation(C, [{ role: "user", content: "hi" }]);
-  const row = ownerCall();
-  const timers = fakeTimers();
-  const live = fakeLive();
-  gl.prewarm(row, { hold: true, openLive: () => live.socket, now: timers.now, timers });
-  live.open();
-  live.emit({ type: "session.started", session: { id: "live_f" } });
-  db.saveConversation(C, [{ role: "user", content: "hi" }, { role: "user", content: "[Sun 3pm] Omari: also the dentist moved to 4" }, { role: "assistant", content: "Booked: table for 2 at Lilia, 7pm." }]);
-  const twilio = fakeTwilio();
-  new gl.GptLiveCall({ call: row, twilio, warm: gl.takeWarm(row.id), openLive: () => fakeLive().socket, brain: async () => ({ text: "", tools: [] }), now: timers.now, timers, finish: async () => {} });
-  twilio.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
-  const fresh = live.of("session.thinking.append");
-  assert.equal(fresh.length, 1);
-  assert.match(fresh[0].content, /them: also the dentist moved to 4/);
-  assert.match(fresh[0].content, /you: Booked: table for 2 at Lilia/);
-  assert.doesNotMatch(fresh[0].content, /them: hi\b/, "only what is new");
-  const types = live.sent.map(e => e.type);
-  assert.ok(types.indexOf("session.thinking.append") < types.indexOf("session.commentary.append"), "before the greeting is asked for");
-
-  const row2 = ownerCall();
-  const live2 = fakeLive();
-  gl.prewarm(row2, { hold: true, openLive: () => live2.socket, now: timers.now, timers });
-  live2.open();
-  live2.emit({ type: "session.started", session: { id: "live_g" } });
-  const twilio2 = fakeTwilio();
-  new gl.GptLiveCall({ call: row2, twilio: twilio2, warm: gl.takeWarm(row2.id), openLive: () => fakeLive().socket, brain: async () => ({ text: "", tools: [] }), now: timers.now, timers, finish: async () => {} });
-  twilio2.say({ event: "start", start: { streamSid: "MZ2", callSid: "CA2" } });
-  assert.equal(live2.of("session.thinking.append").length, 0);
-});
-
 test("inbound pre-open: only after routing — a known caller's session opens held (same session as the stream's), never for blocked, stranger or capped; the row stays unverified", async () => {
   on({ gptliveInboundPreopen: true });
   try {
