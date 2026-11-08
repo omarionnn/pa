@@ -12488,6 +12488,134 @@ export function eventsWithRides() {
   return db.prepare("SELECT * FROM events WHERE rides_enabled = 1 AND status = 'active' ORDER BY id").all();
 }
 
+// ---------- messages the organizer scheduled, and the automatic reminders (src/eventschedule.js) ----------
+//
+//   events.remind_day_before / remind_soon   the organizer's two reminder switches. 0 for every event
+//                     made before reminders existed (nobody's guests start getting texts their
+//                     organizer was never told about); insertEvent writes 1 for every new event.
+//   event_scheduled   one per scheduled message (`kind` message: the organizer's words, sent at
+//                     `send_at`) and one per reminder that went (`kind` reminder_day | reminder_soon,
+//                     written when it is claimed, for the start time it was about). A row is claimed
+//                     (pending → sending) and its event message made in one transaction, so two passes
+//                     can never both send it, and a process that died mid-send finds it still
+//                     `sending`, with its message, and finishes it: deliveries are one per guest per
+//                     message (event_deliveries), so finishing never sends anybody a second copy.
+//                     UNIQUE (event_id, kind, for_starts_at) makes a reminder once per start time;
+//                     messages leave for_starts_at NULL, and NULLs never collide.
+addColumnIfMissing("events", "remind_day_before", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("events", "remind_soon", "INTEGER NOT NULL DEFAULT 0");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS event_scheduled (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    -- message | reminder_day | reminder_soon
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    send_at INTEGER NOT NULL,
+    for_starts_at INTEGER,
+    -- pending | sending | sent | cancelled | missed
+    state TEXT NOT NULL DEFAULT 'pending',
+    message_id INTEGER,
+    note TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    sent_at INTEGER,
+    UNIQUE (event_id, kind, for_starts_at)
+  );
+  CREATE INDEX IF NOT EXISTS event_scheduled_due ON event_scheduled (state, send_at);
+  CREATE INDEX IF NOT EXISTS event_scheduled_event ON event_scheduled (event_id, state);
+`);
+
+export function insertScheduledMessage({ eventId, conversationId, body, sendAt }) {
+  const now = clock.now();
+  const id = Number(db.prepare(`INSERT INTO event_scheduled (event_id, conversation_id, kind, body, send_at, state, created_at, updated_at)
+    VALUES (?, ?, 'message', ?, ?, 'pending', ?, ?)`).run(Number(eventId), conversationId, String(body), Number(sendAt), now, now).lastInsertRowid);
+  return scheduledRow(id);
+}
+export function scheduledRow(id) {
+  return db.prepare("SELECT * FROM event_scheduled WHERE id = ?").get(Number(id)) ?? null;
+}
+/** One event's rows, soonest first, optionally only in some states. */
+export function scheduledFor(eventId, states = null) {
+  const rows = db.prepare("SELECT * FROM event_scheduled WHERE event_id = ? ORDER BY send_at, id").all(Number(eventId));
+  return states ? rows.filter(r => states.includes(r.state)) : rows;
+}
+/** New words and a new time for a message still waiting, compare-and-set on it still waiting. */
+export function updatePendingScheduled(id, { body, sendAt }) {
+  return db.prepare("UPDATE event_scheduled SET body = ?, send_at = ?, updated_at = ? WHERE id = ? AND state = 'pending' AND kind = 'message'")
+    .run(String(body), Number(sendAt), clock.now(), Number(id)).changes === 1;
+}
+/** Settle a row that has not started sending: cancelled or missed, with why. */
+export function settlePendingScheduled(id, state, note = null) {
+  return db.prepare("UPDATE event_scheduled SET state = ?, note = ?, updated_at = ? WHERE id = ? AND state = 'pending'")
+    .run(state, note, clock.now(), Number(id)).changes === 1;
+}
+/** Every message still waiting on one event, cancelled at once (the event itself was cancelled). */
+export function cancelPendingScheduledFor(eventId, note) {
+  return Number(db.prepare("UPDATE event_scheduled SET state = 'cancelled', note = ?, updated_at = ? WHERE event_id = ? AND state = 'pending'")
+    .run(note, clock.now(), Number(eventId)).changes);
+}
+/** Messages whose time has come, and rows a stopped process left mid-send. */
+export function dueScheduled(now = clock.now(), { limit = 200 } = {}) {
+  return db.prepare("SELECT * FROM event_scheduled WHERE (state = 'pending' AND send_at <= ?) OR state = 'sending' ORDER BY send_at, id LIMIT ?").all(now, limit);
+}
+/**
+ * Claim one waiting message and make the event message it goes out as, together: pending → sending
+ * and the message row, or neither. `makeBody(row)` is called inside, after the claim. Returns the
+ * claimed row, or null when it was no longer waiting (claimed by another pass, or cancelled).
+ */
+export function claimScheduledMessage(id, makeBody, messageKind) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const row = scheduledRow(id);
+    const ok = !!row && db.prepare("UPDATE event_scheduled SET state = 'sending', updated_at = ? WHERE id = ? AND state = 'pending'").run(clock.now(), Number(id)).changes === 1;
+    if (!ok) { db.exec("ROLLBACK"); return null; }
+    const message = insertEventMessage(row.event_id, messageKind, makeBody(row));
+    db.prepare("UPDATE event_scheduled SET message_id = ? WHERE id = ?").run(message.id, Number(id));
+    db.exec("COMMIT");
+    return scheduledRow(id);
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
+  }
+}
+/**
+ * Claim one reminder for one start time and make its event message, together. Null when it was
+ * already claimed for that start time — by this pass, an earlier one, or a process that died.
+ */
+export function claimReminder({ eventId, conversationId, kind, sendAt, forStartsAt, body, messageKind }) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const now = clock.now();
+    const r = db.prepare(`INSERT OR IGNORE INTO event_scheduled (event_id, conversation_id, kind, body, send_at, for_starts_at, state, created_at, updated_at)
+      VALUES (?, ?, ?, '', ?, ?, 'sending', ?, ?)`).run(Number(eventId), conversationId, kind, Number(sendAt), Number(forStartsAt), now, now);
+    if (Number(r.changes) !== 1) { db.exec("ROLLBACK"); return null; }
+    const id = Number(r.lastInsertRowid);
+    const message = insertEventMessage(eventId, messageKind, body);
+    db.prepare("UPDATE event_scheduled SET message_id = ? WHERE id = ?").run(message.id, id);
+    db.exec("COMMIT");
+    return scheduledRow(id);
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
+  }
+}
+/** The reminder of this kind already claimed for this start time, if one was. */
+export function reminderRow(eventId, kind, forStartsAt) {
+  return db.prepare("SELECT * FROM event_scheduled WHERE event_id = ? AND kind = ? AND for_starts_at = ?").get(Number(eventId), kind, Number(forStartsAt)) ?? null;
+}
+/** A row that was sending is done: sent, or (the event was cancelled under it) cancelled. */
+export function finishScheduled(id, state = "sent", note = null) {
+  const now = clock.now();
+  return db.prepare("UPDATE event_scheduled SET state = ?, note = ?, sent_at = ?, updated_at = ? WHERE id = ? AND state = 'sending'")
+    .run(state, note, now, now, Number(id)).changes === 1;
+}
+/** Live events with a reminder switched on and a start time: the reminder pass's list. */
+export function eventsWithReminders() {
+  return db.prepare("SELECT * FROM events WHERE (remind_day_before = 1 OR remind_soon = 1) AND status = 'active' AND starts_at IS NOT NULL ORDER BY id").all();
+}
+
 /** A random key for a link or a page: 24 bytes, base64url, 32 characters. */
 export function newEventToken(bytes = 24) {
   return randomBytes(bytes).toString("base64url");
@@ -12498,11 +12626,15 @@ export function insertEvent(row) {
   for (let i = 0; i < 5; i++) {
     try {
       const id = Number(db.prepare(`INSERT INTO events (public_id, organizer_conversation_id, name, name_key, description, starts_at, tz,
-        location, welcome, password_hash, time_released, location_released, guest_list_visible, capacity, organizer_token, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`).run(
+        location, welcome, password_hash, time_released, location_released, guest_list_visible, capacity, organizer_token, status, created_at, updated_at,
+        remind_day_before, remind_soon)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`).run(
         newEventToken(12), row.organizer, row.name, row.nameKey, row.description, row.startsAt, row.tz,
         row.location, row.welcome, row.passwordHash, row.timeReleased ? 1 : 0, row.locationReleased ? 1 : 0,
-        row.guestListVisible ? 1 : 0, row.capacity ?? null, newEventToken(), now, now).lastInsertRowid);
+        row.guestListVisible ? 1 : 0, row.capacity ?? null, newEventToken(), now, now,
+        // Both reminders are on for every event made from here on; events made before reminders
+        // existed keep the column's 0 until their organizer turns one on (src/eventschedule.js).
+        row.remindDayBefore === false ? 0 : 1, row.remindSoon === false ? 0 : 1).lastInsertRowid);
       addOrganizerMembership(id, row.organizer, row.organizerName ?? "");
       return getEventRow(id);
     } catch (e) {
@@ -12558,7 +12690,8 @@ export function allEvents({ limit = 50 } = {}) {
 /** Change an event's own fields. Only the columns named; the caller has already checked who may. */
 const EVENT_FIELDS = new Set(["name", "name_key", "description", "starts_at", "tz", "location", "welcome", "password_hash", "password_version",
   "time_released", "location_released", "guest_list_visible", "capacity", "status", "paused_at", "cancelled_at", "owner_told_at", "rides_enabled",
-  "cover_file", "cover_version", "cover_approved_at", "cover_approved_by", "cover_media_id", "cover_findings", "cover_pending", "time_public", "location_public", "public_ask"]);
+  "cover_file", "cover_version", "cover_approved_at", "cover_approved_by", "cover_media_id", "cover_findings", "cover_pending", "time_public", "location_public", "public_ask",
+  "remind_day_before", "remind_soon"]);
 export function updateEventRow(id, fields) {
   const keys = Object.keys(fields).filter(k => EVENT_FIELDS.has(k));
   if (!keys.length) return getEventRow(id);

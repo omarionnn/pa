@@ -21,10 +21,11 @@ import * as tools from "../eventtools.js";
 import * as rides from "../eventrides.js";
 import * as cover from "../eventcover.js";
 import * as albums from "../albums.js";
+import * as schedule from "../eventschedule.js";
 import { madeDoc, esc } from "./made.js";
 import { sameOrigin } from "./websignin.js";
 import { renderNotFound } from "./render.js";
-import { config } from "../config.js";
+import { config, clock } from "../config.js";
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-Length": Buffer.byteLength(body), ...extra }), body });
@@ -110,7 +111,7 @@ const section = (id, n, title, inner, notice = null) => `<section class="mg-sec 
 
 /** A guest's way in, as the organizer reads it. */
 const VIA = { text: "joined by text", link: "joined from a pasted link", web: "joined on the join page", web_text: "joined on the join page" };
-const KIND = { blast: "Message to everyone", update: "Update", release: "Shared detail", cancel: "Cancellation" };
+const KIND = { blast: "Message to everyone", update: "Update", release: "Shared detail", cancel: "Cancellation", scheduled: "Scheduled message", reminder: "Reminder" };
 
 /** What a new guest is sent on joining, for the preview. Their own who's-going link differs per guest. */
 function welcomePreview(ev, welcome) {
@@ -136,8 +137,9 @@ function deliveryLine(m) {
 }
 
 /** The fixed sentences a finished action lands back on the page with. Numbers only ever come from the query. */
-const DONE_SECTION = { welcome: "welcome", welcome_cleared: "welcome", blast: "message", details: "details", details_quiet: "details", nothing: "details", release: "details", removed: "guests", rides_on: "more", rides_off: "more", cover_removed: "more", cover_discarded: "more" };
-function doneNote(q) {
+const DONE_SECTION = { welcome: "welcome", welcome_cleared: "welcome", blast: "message",
+  scheduled: "schedule", sched_changed: "schedule", sched_cancelled: "schedule", reminder_on: "schedule", reminder_off: "schedule", details: "details", details_quiet: "details", nothing: "details", release: "details", removed: "guests", rides_on: "more", rides_off: "more", cover_removed: "more", cover_discarded: "more" };
+function doneNote(q, ev) {
   const n = (k) => Math.max(0, Math.min(100000, Number.parseInt(q[k] ?? "0", 10) || 0));
   const reached = () => (n("g") ? `Reached ${n("n")} of ${n("g")}${n("f") ? `; ${n("f")} didn't go through` : ""}.` : "Nobody has joined yet, so nobody was texted.");
   switch (q.done) {
@@ -153,8 +155,69 @@ function doneNote(q) {
     case "rides_off": return "Ride sharing is off.";
     case "cover_removed": return "The link's card is back to Reason's drawn cover.";
     case "cover_discarded": return "The waiting picture was dropped. The card is what it was.";
+    case "scheduled":
+    case "sched_changed": {
+      // The time is read off the row this event owns, never off the address: nothing typed is echoed.
+      const row = ev ? schedule.pendingFor(ev).find(m => m.id === n("s")) : null;
+      return `${q.done === "scheduled" ? "Scheduled" : "Changed"}.${row ? ` It goes ${row.when}.` : ""} You can change or cancel it below until then.`;
+    }
+    case "sched_cancelled": return "Cancelled. Nobody was texted.";
+    case "reminder_on": return "Reminder on.";
+    case "reminder_off": return "Reminder off. Guests won't get that one.";
     default: return "";
   }
+}
+
+/** One reminder's state, in a sentence the organizer reads. */
+function reminderSentence(r) {
+  switch (r.state) {
+    case "off": return r.when ? `Off. If it were on, it would go ${r.when}.` : "Off.";
+    case "no_time": return "The event has no start time, so there's nothing to remind guests about.";
+    case "time_hidden": return `${r.on ? "On" : "Off"}, but guests can't see the time yet, so it can't go. Share the time with guests before ${r.when} and it goes then.`;
+    case "night": return `Skipped for this event: ${r.when} is the middle of the night there. The day-before reminder covers it.`;
+    case "sent": return r.sent ? `Went out. ${deliveryLine(r.sent)}.` : "Went out.";
+    case "too_late": return "Its time has already passed for this event, so it won't go.";
+    case "upcoming": return `On. It goes ${r.when} to everyone on the event then.`;
+    default: return "";
+  }
+}
+
+/** The "later" section: schedule a message, what's waiting (change or cancel it), what didn't go, the two reminders. */
+function scheduleSection(ev, { query, drafts, paused, sec }) {
+  const aud = events.audience(ev, "scheduled");
+  const waiting = schedule.pendingFor(ev);
+  const missed = schedule.missedFor(ev);
+  // Changing one: picked by its number off this event's own waiting list, so another event's never shows.
+  const editId = Number.parseInt(query.edit ?? drafts.schedule?.id ?? "", 10);
+  const editing = Number.isInteger(editId) ? waiting.find(m => m.id === editId) ?? null : null;
+  const d = drafts.schedule ?? (editing ? { message: editing.message, send_at: editing.local } : {});
+  const minAt = schedule.localInput(ev, clock.now() + schedule.SCHEDULE.minAheadMs);
+  const scheduleForm = paused ? p("Paused by Reason's operator, so nothing can be scheduled right now.", "quiet")
+    : form("schedule", "preview",
+      (editing ? hidden("id", editing.id) + `<p class="mg-note">Changing the message set for ${esc(editing.when)}.</p>` : "")
+      + `<label for="sched_text">YOUR MESSAGE<textarea id="sched_text" name="message" maxlength="${LIMITS.message}" data-count="sched_count" rows="4" required>${esc(d.message ?? "")}</textarea></label>`
+      + counter("sched_count", d.message ?? "", LIMITS.message)
+      + `<label for="sched_at">SEND IT AT (${esc(ev.tz.replace(/_/g, " ").toUpperCase())} TIME)<input id="sched_at" name="send_at" type="datetime-local" min="${esc(minAt)}" required value="${esc(d.send_at ?? "")}"></label>`
+      + `<div class="mg-row">${button(editing ? "Preview the change" : "Preview message", { busy: "Opening preview…" })}${editing ? `<a class="mg-btn quiet" href="${esc(`${homePath(ev)}#schedule`)}">Stop changing it</a>` : ""}</div>`);
+  const row = (m) => `<div class="mg-msg"><span class="mg-meta">${esc(`Goes ${m.when} · ${plural(aud.guests, "guest")} on it now`.toUpperCase())}</span>${bubble(m.preview)}`
+    + `<div class="mg-row"><a class="mg-btn alt" href="${esc(`${homePath(ev)}?edit=${m.id}#schedule`)}">Change</a>`
+    + `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "sched_cancel")}${hidden("step", "review")}${hidden("id", m.id)}${button("Cancel it", { cls: "mg-btn quiet", busy: "Opening…" })}</form></div></div>`;
+  const reminderRow = (r) => {
+    const toggle = r.state === "sent" || r.state === "no_time" || paused ? ""
+      : `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "reminder")}${hidden("which", r.which)}${hidden("step", r.on ? "do" : "review")}${hidden("enabled", r.on ? "0" : "1")}<div class="mg-row">${button(r.on ? "Turn it off" : "Turn it on", { cls: "mg-btn alt", busy: "Saving…" })}</div></form>`;
+    return `<div class="mg-msg"><div class="mg-kv"><span class="lbl">${esc(r.label.toUpperCase())}</span><span class="mg-tag${r.on ? " on" : ""}">${r.on ? "ON" : "OFF"}</span></div>`
+      + p(reminderSentence(r)) + (r.preview ? bubble(r.preview) : "") + toggle + `</div>`;
+  };
+  return sec("schedule", "03", "Later",
+    `<h2 class="mg-h">Send it later</h2>`
+    + p(`Write a message and pick when it goes. It goes to everyone on the event at that moment${aud.muted ? ", except guests who muted it" : ""}, and you'll see exactly how it reads before it's set.`)
+    + scheduleForm
+    + `<p class="lbl" style="margin-top:8px">WAITING TO GO</p>`
+    + (waiting.length ? waiting.map(row).join("") : p("Nothing scheduled.", "quiet"))
+    + missed.map(m => `<div class="mg-msg"><span class="mg-meta">${esc(`Didn't go · was set for ${m.when}`.toUpperCase())}</span>${bubble(m.preview)}${p(m.why === "the event was paused when it was due" ? "The event was paused when it was due, so it was dropped rather than sent late." : "Reason couldn't send it on time, so it was dropped rather than sent late.", "quiet")}</div>`).join("")
+    + `<p class="lbl" style="margin-top:8px">AUTOMATIC REMINDERS</p>`
+    + p("Reason texts guests a short reminder with the time, and the place once you've shared it. Turn each one on or off.")
+    + schedule.reminders(ev).map(reminderRow).join(""));
 }
 
 // ---------------------------------------------------------------- the page
@@ -166,7 +229,7 @@ function doneNote(q) {
 export function renderManage({ ev, conversationId, query = {}, notice = null, drafts = {} }) {
   const v = events.organizerView(ev);
   const paused = ev.status === "paused";
-  const done = notice ?? (query.done && DONE_SECTION[query.done] ? { text: doneNote(query), section: DONE_SECTION[query.done] } : null);
+  const done = notice ?? (query.done && DONE_SECTION[query.done] ? { text: doneNote(query, ev), section: DONE_SECTION[query.done] } : null);
   const link = events.eventUrl(ev);
   const going = v.going;
   const sec = (id, n, title, inner) => section(id, n, title, inner, done);
@@ -176,7 +239,7 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
     + `</div>`;
   const banner = (paused ? `<p class="mg-note">Reason's operator has paused this event, so joining is closed and nothing goes out to guests until it's resumed. That isn't something you can undo from here.</p>` : "")
     + (done?.text && !done.section ? noteHtml(done) : "");
-  const nav = `<ul class="mg-nav" aria-label="On this page">${[["welcome", "WELCOME"], ["message", "MESSAGE EVERYONE"], ["details", "DETAILS"], ["guests", "GUESTS"], ["access", "SHARING"], ["more", "MORE"]]
+  const nav = `<ul class="mg-nav" aria-label="On this page">${[["welcome", "WELCOME"], ["message", "MESSAGE EVERYONE"], ["schedule", "SCHEDULED"], ["details", "DETAILS"], ["guests", "GUESTS"], ["access", "SHARING"], ["more", "MORE"]]
     .map(([id, l]) => `<li><a href="#${id}">${l}</a></li>`).join("")}</ul>`;
 
   // 01 — the welcome
@@ -207,14 +270,17 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
       ? sent.map(m => `<div class="mg-msg"><span class="mg-meta">${esc(`${KIND[m.kind] ?? m.kind} · ${when(ev, m.at)}`.toUpperCase())}</span>${bubble(m.body)}<span class="mg-meta">${esc(deliveryLine(m))}</span></div>`).join("")
       : p("Nothing sent to everyone yet.", "quiet")));
 
-  // 03 — details
+  // 03 — later: messages the organizer scheduled, and the two automatic reminders
+  const scheduled = scheduleSection(ev, { query, drafts, paused, sec });
+
+  // 04 — details
   const d = drafts.details ?? {};
   const shown = (on) => `<span class="mg-tag${on ? " on" : ""}">${on ? "GUESTS SEE IT" : "HIDDEN FROM GUESTS"}</span>`;
   const zones = (() => { try { return Intl.supportedValuesOf("timeZone"); } catch { return [ev.tz]; } })();
   const releaseBtn = (detail, has, out) => !out && has && !paused
     ? `<form class="mg-f" method="POST" action="__ACTION__">${hidden("action", "release")}${hidden("step", "review")}${hidden("detail", detail)}${button(detail === "time" ? "Share the time with guests" : "Share the location with guests", { cls: "mg-btn alt", busy: "Opening…" })}</form>`
     : "";
-  const details = sec("details", "03", "Details",
+  const details = sec("details", "04", "Details",
     `<h2 class="mg-h">The event itself</h2>`
     + p("Change anything here. If guests can already see what you change, Reason texts them the update, and you'll see that text before it goes. A change to something still hidden is saved quietly.")
     + `<div class="mg-kv"><span class="lbl">TIME</span>${shown(v.time_shown_to_guests)}</div>`
@@ -233,7 +299,7 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
   // 04 — guests
   const list = events.guestList(ev);
   const joined = list.filter(g => g.state === "joined");
-  const guests = sec("guests", "04", "Guests",
+  const guests = sec("guests", "05", "Guests",
     `<h2 class="mg-h">${esc(joined.length ? `${plural(joined.length, "guest")} in` : "Nobody yet")}</h2>`
     + p("Names are what each guest chose to show. Phone numbers are never shown, here or anywhere.")
     + (list.length
@@ -248,7 +314,7 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
     + p(ev.guest_list_visible ? "Guests can see the who's-going page (only the people who chose to be on it)." : "You're keeping the guest list private: guests don't see who else is going.", "quiet"));
 
   // 05 — access and sharing
-  const access = sec("access", "05", "Sharing",
+  const access = sec("access", "06", "Sharing",
     `<h2 class="mg-h">The link and the password</h2>`
     + p("Guests need both: the link opens the join page, and the password lets them in.")
     + `<label class="lbl" for="invite_link">INVITE LINK</label><div class="mg-copy"><input id="invite_link" type="text" readonly value="${esc(link)}"><button class="mg-btn alt" type="button" data-copy="invite_link">Copy</button></div>`
@@ -260,7 +326,7 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
   const hasPicture = cover.hasUploaded(ev);
   const pending = cover.pendingOf(ev);
   const ridesHere = rides.canEnable(ev);
-  const more = sec("more", "06", "More",
+  const more = sec("more", "07", "More",
     `<h2 class="mg-h">The rest</h2>`
     + `<p class="lbl">THE LINK'S CARD</p>`
     + `<img class="mg-cover" src="${esc(cover.coverUrl(ev))}" alt="The picture on your event link's card">`
@@ -288,7 +354,7 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
     + `</div></details>`);
 
   const signOut = `<form method="POST" action="${esc(`/e/${ev.public_id}/signout`)}" style="margin:0"><button class="typed mut" type="submit">SIGN OUT OF THIS BROWSER</button></form>`;
-  const main = (hero + banner + nav + welcome + message + details + guests + access + more + signOut).split("__ACTION__").join(esc(managePath(ev)));
+  const main = (hero + banner + nav + welcome + message + scheduled + details + guests + access + more + signOut).split("__ACTION__").join(esc(managePath(ev)));
   const side = `<span class="lbl d">AT A GLANCE</span><p class="quiet d">${esc(`${plural(going, "guest")} in. Time ${v.time_shown_to_guests ? "shared" : "hidden"}, location ${v.location_shown_to_guests ? "shared" : "hidden"}.`)}</p>`
     + `<a class="typed d" href="${esc(link)}">${esc("THE JOIN PAGE GUESTS SEE →")}</a>`;
   return madeDoc({ title: `Your event: ${ev.name}`, kicker: "YOUR EVENT", main, side, head: CSS, script: SCRIPT, foot: "Only you, the organizer, can see this page. Guests never see it. You can also change anything by texting Reason.", url: link });
@@ -361,7 +427,7 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
   const ctx = { conversationId: c, events: runtime, log };
   const run = (name, input) => tools.runEventTool(name, toolInput(own, input), ctx);
   const again = (notice, drafts = {}) => page(200, renderManage({ ev: own, conversationId: c, notice, drafts }));
-  const SECTION = { welcome: "welcome", blast: "message", details: "details", release: "details", remove: "guests", password: "access", rides: "more", cover_remove: "more", cover_discard: "more", cancel: "more" };
+  const SECTION = { welcome: "welcome", blast: "message", schedule: "schedule", sched_cancel: "schedule", reminder: "schedule", details: "details", release: "details", remove: "guests", password: "access", rides: "more", cover_remove: "more", cover_discard: "more", cancel: "more" };
   const oops = (text, drafts = {}) => again({ text, error: true, section: SECTION[action] ?? null }, drafts);
   const valid = (name, input) => tools.EVENT_SCHEMAS[name].safeParse(toolInput(own, input)).success;
   log({ event_manage: own.id, action, step });
@@ -400,6 +466,81 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
       if (!out?.ok) return oops("That didn't send. Nothing went out.", { message });
       log({ event_manage_blast: own.id, guests: out.sent?.guests ?? 0, failed: out.sent?.failed ?? 0 });
       return back(own, "message", { done: "blast", ...counts(out.sent) });
+    }
+
+    case "schedule": {
+      const message = String(f.get("message") ?? "");
+      const sendAt = String(f.get("send_at") ?? "").trim();
+      const idRaw = Number.parseInt(f.get("id") ?? "", 10);
+      const replacing = Number.isInteger(idRaw) && idRaw > 0 ? idRaw : null;
+      const draft = { message, send_at: sendAt, ...(replacing ? { id: String(replacing) } : {}) };
+      if (step === "edit") return again(null, { schedule: draft });
+      if (!valid("event_schedule", { message: message || " ", send_at: sendAt })) return oops(schedule.WHY.too_long, { schedule: draft });
+      const plan = schedule.plan(own, { message, sendAt, replacing });
+      if (!plan.ok) return oops(schedule.WHY[plan.reason] ?? "That can't be scheduled.", { schedule: draft });
+      if (step === "preview") {
+        return page(200, renderConfirm({
+          ev: own, title: replacing ? "Change this scheduled message?" : "Schedule this for everyone?",
+          sentences: [
+            `Reason texts this to everyone on the event at ${plan.when}, exactly as it reads below. That's ${plural(plan.reach.guests, "guest")} right now; anybody who joins before then gets it too, and anybody who leaves won't.`,
+            ...(plan.reach.muted ? [`${plural(plan.reach.muted, "guest")} muted this event and won't get it.`] : []),
+            "Until then you can change it or cancel it here. Once it's sent it can't be taken back.",
+          ],
+          preview: plan.body,
+          fields: { action: "schedule", step: "set", message, send_at: sendAt, ...(replacing ? { id: String(replacing) } : {}) },
+          confirm: replacing ? "Save the change" : `Schedule for ${plan.when}`, back: "Change the message",
+        }));
+      }
+      if (step !== "set") return redirect(homePath(own));
+      const out = await run("event_schedule", { message, send_at: sendAt, ...(replacing ? { scheduled_id: replacing } : {}) });
+      if (!out?.ok) return oops(out?.reason && schedule.WHY[out.reason] ? schedule.WHY[out.reason] : "That didn't save. Nothing is scheduled.", { schedule: draft });
+      log({ event_manage_scheduled: own.id, changed: !!out.changed });
+      return back(own, "schedule", { done: out.changed ? "sched_changed" : "scheduled", s: String(out.scheduled_id) });
+    }
+
+    case "sched_cancel": {
+      const id = Number.parseInt(f.get("id") ?? "", 10);
+      const m = Number.isInteger(id) ? schedule.pendingFor(own).find(x => x.id === id) : null;
+      if (!m) return oops(schedule.WHY.not_found);
+      if (step === "edit") return back(own, "schedule");
+      if (step === "review") {
+        return page(200, renderConfirm({
+          ev: own, title: "Cancel this scheduled message?",
+          sentences: [`It was set to go ${m.when}. Nobody is texted, and it won't go out.`],
+          preview: m.preview, previewLabel: "THE MESSAGE", fields: { action: "sched_cancel", step: "do", id: String(m.id) },
+          confirm: "Cancel it", back: "Keep it", danger: true,
+        }));
+      }
+      const out = await run("event_scheduled", { action: "cancel", scheduled_id: m.id });
+      if (!out?.ok) return oops(schedule.WHY.not_found);
+      return back(own, "schedule", { done: "sched_cancelled" });
+    }
+
+    case "reminder": {
+      const which = f.get("which") === "day_before" ? "day_before" : f.get("which") === "two_hours" ? "two_hours" : null;
+      if (!which) return redirect(homePath(own));
+      const enabled = f.get("enabled") === "1";
+      if (step === "edit") return back(own, "schedule");
+      if (enabled && step === "review") {
+        const r = schedule.reminderStatus({ ...own, [schedule.WHICH[which].column]: 1 }, which);
+        const aud = events.audience(own, "reminder");
+        const when = {
+          upcoming: `It goes ${r.when} to everyone on the event then — ${plural(aud.guests, "guest")} right now${aud.muted ? `, not counting ${aud.muted} who muted the event` : ""}.`,
+          time_hidden: `Guests can't see the time yet, so it only goes if you share the time before ${r.when}.`,
+          night: `For this event it would land at ${r.when}, the middle of the night there, so it's skipped. It goes if the start time moves.`,
+          too_late: "Its time for this event has already passed, so nothing goes now. It would go if the start time moves later.",
+          no_time: "The event has no start time, so nothing goes until it has one.",
+        }[r.state] ?? "";
+        return page(200, renderConfirm({
+          ev: own, title: `Turn on the ${which === "day_before" ? "day-before" : "two-hours-before"} reminder?`,
+          sentences: [when, "You can turn it off here any time before it goes."].filter(Boolean),
+          preview: r.preview, fields: { action: "reminder", step: "do", which, enabled: "1" },
+          confirm: "Turn it on", back: "Leave it off",
+        }));
+      }
+      const out = await run("event_scheduled", { action: "reminder", reminder: which, enabled });
+      if (!out?.ok) return oops("That didn't go through.");
+      return back(own, "schedule", { done: enabled ? "reminder_on" : "reminder_off" });
     }
 
     case "details": {

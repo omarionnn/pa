@@ -63,7 +63,7 @@ import { endFieldsFor } from "./calls/metrics.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
-import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal } from "./eventtools.js";
+import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink, blastTarget, organizerRefusal, scheduleTarget, scheduleRefusal } from "./eventtools.js";
 import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "./albumtools.js";
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
@@ -310,7 +310,9 @@ export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_su
   // Model-written words in front of other people (audit lead 28): a blast texts every guest of an
   // event, and an issue or a comment is published under their GitHub name. The draft-then-yes rule
   // used to live only in the tool descriptions; something the model read could talk it past that.
-  "event_blast", "github_issue_create", "github_issue_comment"]);
+  "event_blast", "github_issue_create", "github_issue_comment",
+  // The same words to every guest, at a time they chose (src/eventschedule.js): a blast with a clock on it.
+  "event_schedule"]);
 
 // The actions that put words in front of a person who is not the owner. What they have in common is
 // the failure in src/verify.js: an errand that collected three people's numbers sending one of them
@@ -9106,6 +9108,7 @@ function confirmTargetFor(name, input, c = null) {
     case "todo_approve": return todoApprovalTarget(c, input.list_id);
     // The event and the exact words, or the repo, the issue and the exact words (audit lead 28).
     case "event_blast": return blastTarget(c, input);
+    case "event_schedule": return scheduleTarget(c, input);
     case "github_issue_create": return github.issueTarget(input);
     case "github_issue_comment": return github.commentTarget(input);
     default: return null;
@@ -9401,6 +9404,13 @@ async function runToolInner(name, rawInput, ctx) {
   if (name === "event_blast") {
     if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
     const refusal = organizerRefusal(c, input, name);
+    if (refusal) return refusal;
+  }
+  // And for a scheduled message, the time and the words as well: a time already gone is refused here,
+  // not after a yes was collected for something that could never be set.
+  if (name === "event_schedule") {
+    if (!eventToolVisible(name, c)) return await runEventTool(name, input, { ...ctx, conversationId: c });
+    const refusal = scheduleRefusal(c, input);
     if (refusal) return refusal;
   }
 
@@ -11842,6 +11852,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "event_mute": case "event_directory": case "event_instagram": case "event_guests": case "event_update": case "event_release":
     case "event_blast": case "event_password_rotate": case "event_guest_remove": case "event_cancel": case "browsers_sign_out":
     case "event_ride": case "event_rides_setting": case "event_cover": case "event_detail_public":
+    case "event_schedule": case "event_scheduled":
       return await runEventTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- an event's photo album (src/albumtools.js) ----------

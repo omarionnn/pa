@@ -885,6 +885,15 @@ export function welcomeText(ev, att) {
   return lines.join("\n\n");
 }
 
+/**
+ * The organizer's words to every guest, as they go out — now (event_blast) or at the time they chose
+ * (src/eventschedule.js): "{name} — from {organizer}:\n{message}".
+ */
+export function blastBody(ev, message) {
+  const who = organizerName(ev);
+  return `${ev.name}${who ? ` — from ${who}` : ""}:\n${String(message ?? "").trim()}`;
+}
+
 /** A delivery still `pending` this long after its last change never reached the outbox: a crash mid-send. */
 export const STUCK_MS = 5 * 60_000;
 
@@ -1033,7 +1042,7 @@ export async function retryFailed({ runtime, ev }) {
  * went. Per-guest texts (welcomes, list notes, a removal) are left out: they were never the
  * organizer's words to everyone. Only for the event's organizer — the caller has checked `managed`.
  */
-export const ORGANIZER_MESSAGE_KINDS = new Set(["blast", "update", "release", "cancel"]);
+export const ORGANIZER_MESSAGE_KINDS = new Set(["blast", "update", "release", "cancel", "scheduled", "reminder"]);
 export function sentMessages(ev, { limit = 10 } = {}) {
   const out = [];
   for (const m of db.eventMessages(ev.id, { limit: 200 })) {
