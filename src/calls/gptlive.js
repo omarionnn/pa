@@ -36,8 +36,8 @@ import * as callOutcome from "./outcome.js";
 import { makerLine } from "../maker.js";
 import { CallProvider, announcementFor, callRulesFor } from "./provider.js";
 import { briefLines, todaySoFar } from "./brief.js";
-import { rulesNote } from "../rules.js";
-import { whereaboutsNote, prepareCallMemory } from "./callmemory.js";
+import { rulesNote, RULES_HEADING } from "../rules.js";
+import { whereaboutsNote, prepareCallMemory, onScheduleRead } from "./callmemory.js";
 import { recordingNoticeFor } from "./consent.js";
 import * as ambience from "./ambience.js";
 import { ulawToPcm, pcmToUlaw } from "./ulaw.js";
@@ -138,12 +138,19 @@ export function whoFor(call) {
  * else's call, the restricted relay voice with nothing about them. Pure apart from DB reads and fast
  * enough to call at dial or answer time, so a session opened before the call starts gets exactly
  * these words. `line` defaults the way `GptLiveCall` decides it: any call that is not their own is a
- * line call (a business or another person) and gets `lineInstructions`. Strangers ringing Reason's
+ * line call (a business or another person) and gets the same line instructions the call would
+ * (`lineTalkInstructions` for one Reason placed with REASON_LINE_TALK on, else `lineInstructions`). Strangers ringing Reason's
  * number are not calls of an account and are not covered here.
  */
 export function voiceInstructionsFor(call, { line = Number(call?.is_owner) !== 1 } = {}) {
   const who = whoFor(call);
-  return line ? lineInstructions(who) : liveInstructions(who);
+  if (!line) return liveInstructions(who);
+  // A business call Reason placed talks (REASON_LINE_TALK), as `GptLiveCall` sets it up; one ringing back is the puppet line.
+  if (config.lineTalk && call?.direction !== "in") {
+    const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
+    return lineTalkInstructions({ ...who, brief: briefOf(call), goal: call.goal, facts, notice: recordingNoticeFor(call.to_number).notice });
+  }
+  return lineInstructions(who);
 }
 
 /**
@@ -514,7 +521,9 @@ const SENT_CLAIM = /\b(?:sent|texted|emailed|messaged)\b/i;
 const EARLIER = /\b(?:earlier|before|yesterday|this morning|last (?:night|week)|this afternoon)\b/i;
 // The tools that really send something to somebody — by name, since `turn.ran` holds Reason's own tool
 // names, reads included (page_list, undo_send, message_effects are not sends; cold review, call 80).
-export const SEND_TOOLS = new Set(["message_send", "message_people", "email", "gmail_send", "document_send", "drive_send", "send_picture", "send_pictures", "voice_note_send", "voice_note_say", "spotify_send_link", "notice_send", "resend_contact_card"]);
+/** Reason's tools that write, change or drop a "how to treat me" rule. */
+export const RULE_WRITERS = Object.freeze(["remember", "forget", "memory_fix", "memory_drop"]);
+export const SEND_TOOLS = new Set(["message_send", "message_people", "email", "gmail_send", "document_send", "drive_send", "send_picture", "send_pictures", "voice_note_send", "voice_note_say", "spotify_send_link", "notice_send", "resend_contact_card", "event_blast", "event_cancel"]);
 const SENDS = { test: (n) => SEND_TOOLS.has(n) };
 
 /**
@@ -1763,6 +1772,9 @@ export class GptLiveCall {
     if (turn.lateTimer) this.timers.clearTimeout(turn.lateTimer);
     this.pending.delete(id);
     if (this.done) return;
+    // A rule saved, changed or dropped on this turn reaches the voice now, not only on the next call —
+    // a superseded turn's too, since the write happened all the same.
+    if (this.who?.owner && RULE_WRITERS.some(n => turn.ran.has(n))) this.freshRules();
     if (this.latest !== id) {
       // They said something new while this ran; Reason has already started on that, and this answer is
       // to a question that has moved on.
@@ -1772,8 +1784,6 @@ export class GptLiveCall {
     const doneAt = this.now();
     turn.totalMs = doneAt - turn.startedAt;
     const tools = [...new Set([...(reply.tools ?? []), ...turn.ran])];
-    // A rule saved on this turn (the remember tool) reaches the voice now, not only the next call.
-    if (this.who?.owner && turn.ran.has("remember")) this.freshRules();
     // The goodbye end_call carries is said too, as one more piece of the answer.
     if (turn.pieces && reply.endCall?.message) this.speakPiece(id, turn, reply.endCall.message);
     // Broke after some words went out: the half answer is closed out loud, never left hanging.
@@ -1822,12 +1832,13 @@ export class GptLiveCall {
 
   /** Their rules as they are now, told to the voice when they differ from what it was given. */
   freshRules() {
-    const now = rulesNote(this.call.conversation_id);
-    const had = this.rulesTold ?? (String(this.who?.brief ?? "").includes(now) ? now : null);
-    if (!now || now === had) return false;
+    const now = rulesNote(this.call.conversation_id) || "";
+    const brief = String(this.who?.brief ?? "");
+    if (this.rulesTold === undefined && (now ? brief.includes(now) : !brief.includes(RULES_HEADING))) return false;
+    if (this.rulesTold !== undefined && now === this.rulesTold) return false;
     this.rulesTold = now;
-    this.log({ gptlive_rules_told: this.call.id });
-    return tellLive(this.call.id, `Updated just now — ${now}`);
+    this.log({ gptlive_rules_told: this.call.id, rules: now ? "changed" : "none" });
+    return tellLive(this.call.id, now ? `Updated just now — ${now}` : "Updated just now — they have no rules any more about how you treat them: drop the ones you were given earlier.");
   }
 
   /**
@@ -3167,7 +3178,7 @@ export function stateFromTwilio(s) {
 export function warmTheTurn(row, log = () => {}, { warm = warmCallCache } = {}) {
   // Where they usually are (./callmemory.js) is read while it rings too, for the voice's brief and
   // Claude's turn alike — whatever backend the turns run on.
-  if (row?.id && Number(row.is_owner)) void prepareCallMemory(row, { log: log ?? (() => {}) }).then(() => lateWhereabouts(row)).catch(() => {});
+  if (row?.id && Number(row.is_owner) === 1) void prepareCallMemory(row, { log: log ?? (() => {}) }).catch(() => {});
   if (!config.callCacheWarm || !row?.id) return null;
   try {
     return Promise.resolve(warm({ call: row, log: log ?? (() => {}) })).catch(() => null);
@@ -3179,6 +3190,7 @@ export function warmTheTurn(row, log = () => {}, { warm = warmCallCache } = {}) 
  * a second, the search can take up to 2.5 s): it is handed to the voice like anything told mid-call, so
  * the voice, which answers "where am I / my week" itself, has what Claude's turn has (cold review, call 80).
  */
+onScheduleRead((row) => lateWhereabouts(row));
 export function lateWhereabouts(row) {
   const live = running.get(row?.id);
   if (!live || live.done || !live.who?.owner) return false;

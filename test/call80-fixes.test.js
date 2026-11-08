@@ -484,7 +484,7 @@ test("review: a tool that starts after words were said re-arms the late line; ov
 
 test("review: voiceInstructionsFor defaults like the call does — an errand gets the line instructions", () => {
   const errand = db.createCall(config.ownerConversation, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "book a table", facts: [], announcement: "", state: "in_progress" });
-  assert.equal(gl.voiceInstructionsFor(errand), gl.lineInstructions(gl.whoFor(errand)));
+  assert.equal(gl.voiceInstructionsFor(errand), startCall({ brain: async () => ({}), row: errand }).call.who.instructions, "the words the call itself starts with");
   assert.equal(gl.whoFor({ ...errand, is_owner: "0" }).owner, false, "a string 0 is not their own call");
   assert.equal(gl.preCallBrief({ ...errand, is_owner: "0" }), "");
 });
@@ -509,8 +509,8 @@ test("review: their week read after the session started is handed to the voice (
   cm.resetCallMemory();
   const fact = db.remember(C, "Omari", "Works Thu to Sun shifts");
   await cm.prepareCallMemory(row, { enabled: true, find: async () => [{ factId: fact.id ?? fact.factId ?? fact }] });
-  assert.equal(gl.lateWhereabouts(row), true);
-  assert.ok(s.live.of("session.instructions.append").some(e => /Works Thu to Sun shifts/.test(e.content)));
+  // The read itself tells the live call (onScheduleRead), whichever ask it was — the ring's or the retry.
+  assert.equal(s.live.of("session.instructions.append").filter(e => /Works Thu to Sun shifts/.test(e.content)).length, 1);
   assert.equal(gl.lateWhereabouts(row), false, "once");
 });
 
@@ -521,4 +521,36 @@ test("review drive: out of rounds on his call, the last words before the tools a
   const said = (await drain(out.stream)).trim();
   assert.match(said, /One more try\.\s+Let me come back to you on that one\.$/, said);
   assert.doesNotMatch(said, /Searching the news/, "only the last lead-in");
+});
+
+test("second review: the API's tool_start + tool_use is one start — a finished lookup is not 'running' after", async () => {
+  voice.contextDeps.runTool = async () => ({ ok: true });
+  const seen = [];
+  const out = await turn(ownerCall(), rounds(["", { tool: "web_search", start: true }], ["Done."]), { onTool: (n, phase) => seen.push(`${n}:${phase}`) });
+  await drain(out.stream);
+  const starts = seen.filter(x => x === "web_search:start").length;
+  const dones = seen.filter(x => x === "web_search:done").length;
+  assert.equal(starts, 1, JSON.stringify(seen));
+  assert.equal(dones, 1);
+});
+
+test("second review: a rule dropped mid-call is told to the voice too; every rule gone says so", async () => {
+  const made = db.addRule(C, { rule: "no jokes on calls" });
+  const s = startCall({ brain: async (m, h) => { db.db.prepare("DELETE FROM treat_rules").run(); h.onTool("memory_drop", "start"); h.onTool("memory_drop", "done", { ok: true }); return { text: "Dropped it.", tools: [] }; } });
+  assert.match(String(s.call.who.brief), /no jokes on calls/);
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "x1" } });
+  await s.timers.advance(10);
+  assert.ok(s.live.of("session.instructions.append").some(e => /no rules any more/.test(e.content)), "told they're gone");
+  void made;
+});
+
+test("second review: voiceInstructionsFor matches a talking business call, and the puppet line when talk is off", () => {
+  const prev = config.lineTalk;
+  try {
+    for (const talk of [true, false]) {
+      config.lineTalk = talk;
+      const errand = db.createCall(C, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "book a table", facts: [], announcement: "", state: "in_progress" });
+      assert.equal(gl.voiceInstructionsFor(errand), startCall({ brain: async () => ({}), row: errand }).call.who.instructions, `lineTalk ${talk}`);
+    }
+  } finally { config.lineTalk = prev; }
 });

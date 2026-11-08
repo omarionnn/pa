@@ -63,15 +63,20 @@ export function prepareCallMemory(call, { find = search, enabled = !!config.open
     }
   })().then(lines => {
     entry.lines = lines;
-    // A failed or empty read (the search returns nothing on a timeout) is tried once more at the next ask — the first turn — rather
+    // A failed read (a timeout throws) is tried once more at the next ask — the first turn — rather
     // than kept for the whole call.
-    if ((failed || !lines.length) && !retried.has(key)) { retried.add(key); if (prepared.get(key) === entry) prepared.delete(key); }
+    if (failed && !retried.has(key)) { retried.add(key); if (prepared.get(key) === entry) prepared.delete(key); }
     log({ call_schedule_read: call.id, facts: lines.length });
+    if (lines.length) { try { listener?.(call); } catch { /* a watcher never breaks the read */ } }
     return lines;
   });
   prepared.set(key, entry);
   return entry.promise;
 }
+
+let listener = null;
+/** Told each call whose week was read with something in it — the live voice picks it up (gptlive.js). */
+export function onScheduleRead(fn) { listener = typeof fn === "function" ? fn : null; }
 
 /** For tests: forget every call's read. */
 export function resetCallMemory() { prepared.clear(); retried.clear(); }

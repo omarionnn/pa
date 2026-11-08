@@ -1663,6 +1663,21 @@ export async function* voiceTurn({
   // and the last round's words before its tools, dropped unsaid unless nothing comes after.
   let leadIn = [];
   let lastLeadIn = [];
+  // Reason's own tools as the voice is told of them: each one once at its start (the API streams a
+  // tool_start and then a tool_use for the same call; the CLI only the tool_use) and once when done.
+  // One left open at the end of a round (a refused or call-side tool) is closed then (second review).
+  const toolsOpen = new Map();
+  const startsSeen = new Map();
+  const toolStart = (name) => {
+    toolsOpen.set(name, (toolsOpen.get(name) ?? 0) + 1);
+    if (onTool) { try { onTool(name, "start"); } catch { /* a watcher never breaks the turn */ } }
+  };
+  const toolDone = (name, ok) => {
+    const c = (toolsOpen.get(name) ?? 0) - 1;
+    if (c > 0) toolsOpen.set(name, c); else toolsOpen.delete(name);
+    if (onTool) { try { onTool(name, "done", { ok }); } catch { /* a watcher never breaks the turn */ } }
+  };
+  const closeOpenTools = () => { for (const [n, c] of [...toolsOpen]) for (let i = 0; i < c; i++) toolDone(n, false); };
   let currentSplitter = null;
   const dropLeadIn = (round) => {
     const words = [...leadIn, ...(currentSplitter?.flush() ?? [])];
@@ -1894,8 +1909,11 @@ export async function* voiceTurn({
             continue;
           }
           // A backend with no streaming tool start (the CLI) reports the tool when its call is read.
-          if ((ev?.type === "tool_start" || ev?.type === "tool_use") && onTool && !SILENT_TOOLS.has(ev.name)) {
-            try { onTool(String(ev.name ?? ""), "start"); } catch { /* a watcher never breaks the turn */ }
+          if ((ev?.type === "tool_start" || ev?.type === "tool_use") && !SILENT_TOOLS.has(ev.name)) {
+            const n = String(ev.name ?? "");
+            if (ev.type === "tool_start") { startsSeen.set(n, (startsSeen.get(n) ?? 0) + 1); toolStart(n); }
+            else if (startsSeen.get(n) > 0) startsSeen.set(n, startsSeen.get(n) - 1);
+            else toolStart(n);
           }
           if ((ev?.type === "tool_start" || ev?.type === "tool_use") && owned && !SILENT_TOOLS.has(ev.name)) {
             dropLeadIn(round);
@@ -2210,7 +2228,7 @@ export async function* voiceTurn({
               + ` something out loud to the person on the line, who has been waiting through all of this.`;
           }
           log({ call_side_tool: t.name, call_id: call.id, ok: out?.ok !== false });
-          if (onTool) { try { onTool(String(t.name), "done", { ok: out?.ok !== false }); } catch { /* a watcher never breaks the turn */ } }
+          toolDone(String(t.name), out?.ok !== false);
           // A recording said nobody can be reached this way, or a mailbox takes nothing. Hung up by code,
           // now, without a word: there is nothing to say to it and every second is billed.
           if (out?.endNow) {
@@ -2227,6 +2245,8 @@ export async function* voiceTurn({
             ...callUses.map(t => ({ type: "tool_use", id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, name: t.name, input: t.input ?? {} })),
           ],
         });
+        closeOpenTools();
+        startsSeen.clear();
         messages.push({ role: "user", content: results });
         continue;
       }
@@ -2294,7 +2314,7 @@ export async function* voiceTurn({
         if (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf: (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false })) {
           out = verify.gateRefusal({ call, name: t.name });
           log({ call_tool_needs_verification: t.name, call_id: call.id });
-          if (onTool) { try { onTool(String(t.name), "done", { ok: false }); } catch { /* a watcher never breaks the turn */ } }
+          toolDone(String(t.name), false);
           results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
           continue;
         }
@@ -2317,7 +2337,7 @@ export async function* voiceTurn({
         if (out?.slow) log({ call_tool_over_budget: t.name, call_id: call.id, budget_ms: toolBudgetMs });
         log({ call_tool: t.name, call_id: call.id, ok: out?.ok !== false });
         // Ran, and how it came back: what the voice may say was done this turn rests on this (call 80).
-        if (onTool) { try { onTool(String(t.name), "done", { ok: out?.ok !== false && !out?.slow }); } catch { /* a watcher never breaks the turn */ } }
+        toolDone(String(t.name), out?.ok !== false && !out?.slow);
         // Kept even when the platform has moved on: the search happened, and the next turn has to know.
         try { db.addCallLookup(call.conversation_id, call.id, lookupEntry({ name: t.name, input: t.input, out })); }
         catch { /* the record is a help, never a reason for the turn to fail */ }
@@ -2328,6 +2348,8 @@ export async function* voiceTurn({
         }
         results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
       }
+      closeOpenTools();
+      startsSeen.clear();
       messages.push({ role: "user", content: results });
     }
 
@@ -2815,7 +2837,7 @@ export function warmCallCache({ call, log = () => {}, now = clock.now(), client 
     try {
       await prime();
       // The same words the first turn will send (./callmemory.js), so the warm prefix is the real one.
-      if (call.is_owner) await prepareCallMemory(call, { log });
+      if (Number(call.is_owner) === 1) await prepareCallMemory(call, { log });
       const context = contextFor({ call, kind: call.is_owner ? "owner" : "third_party", callMessages: [], now });
       const api = client ?? new (await import("@anthropic-ai/sdk")).default();
       const t0 = Date.now();

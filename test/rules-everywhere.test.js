@@ -182,11 +182,10 @@ test("shared with the time-to-first-word work: callNotes and voiceInstructionsFo
   // The one builder: exactly what the call's own session is started with.
   assert.equal(gl.voiceInstructionsFor(next), gl.liveInstructions(gl.whoFor(next)));
   assert.match(gl.voiceInstructionsFor(next), /You are Reason[^]*answer out loud/);
-  assert.equal(gl.voiceInstructionsFor(next, { line: true }), gl.lineInstructions(gl.whoFor(next)));
   // Anyone else's call, and an errand: nothing of his.
   assert.equal(cm.callNotes(mk(OTHER)), "");
   const errand = mk(C, false);
   assert.equal(cm.callNotes(errand), "");
   assert.doesNotMatch(gl.voiceInstructionsFor(errand), /answer out loud|430 W 17th/);
-  assert.match(gl.voiceInstructionsFor(errand), /You are only the voice/);
+  assert.match(gl.voiceInstructionsFor(errand), /to a business or another person/, "the line call's own instructions");
 });
