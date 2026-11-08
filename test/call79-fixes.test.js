@@ -236,7 +236,7 @@ test("onTool: Reason's own tools are reported as they start, the call's platform
 // ---------- 2. short answers ----------
 
 const CALL79_TIPS = "Yeah, sit at the bar, that's where solo people end up chatting, and the music picks up later. So, aim for after 9 if you can. Order something simple, then just comment on the music or ask the bartender what's good. Sing-along nights make it easy, since everyone's already joining in. Do you want a couple opener lines for the people sitting next to you?";
-const CALL79_OPENERS = "For openers, keep it easy. Ask the person next to you, have you been here before? Any good song requests? Or, I'm new here, what's good on the menu? If a song is going, just say, okay, this one's a banger, right, and join in. The bartender is a good start too.";
+const CALL79_OPENERS = 'For openers, keep it easy. Ask the person next to you "have you been here before?" or "any good song requests?" Or say "I\'m new here, what\'s good on the menu?" If a song is going, just say "okay, this one\'s a banger" and join in. The bartender is a good start too.';
 
 test("short answers: a long answer is said as its first sentences and an offer to text the rest", () => {
   const cut = gl.shortForPhone(CALL79_OPENERS);
@@ -263,9 +263,12 @@ test("short answers: an answer that ends on a question keeps that question, word
   assert.ok(gl.shortForPhone(ask).say.endsWith("Want me to book it?"), "a yes Reason needs is never swapped for 'want me to text you the rest?'");
   const openers = gl.shortForPhone("Got it, seven or later. For openers, ask what they are drinking, since you are picking your own anyway. Or on sing-along night, ask if they actually know this one or are faking it too. If a song starts, just join in and say this one is a banger. Want me to text you a few more?");
   assert.match(openers.say, /For openers, ask what they are drinking/, "the drive's case: the content is said, not only the question");
-  const longQ = gl.shortForPhone(`${"Grab a seat at the bar rather than a table, since that is where the talking happens on a sing-along night. "}${"Getting there right around seven helps you land a stool. ".repeat(3)}Do you want me to text you a few opener lines you could try with the people sitting next to you at the bar?`);
-  assert.ok(longQ.say.length <= gl.LONG_REPLY_CHARS, "an answer and its own long question are still kept short");
-  assert.ok(longQ.say.endsWith(gl.TEXT_REST_OFFER) && longQ.offered);
+  const longQ = gl.shortForPhone("Bo Peep has a table at seven for two at the bar side, and they hold it fifteen minutes past the time before they give it away to the next people waiting. There's a forty dollar deposit, which comes off the bill. Want me to book the seven o'clock table at the bar side for the two of you tonight?");
+  assert.ok(longQ === null || longQ.say.endsWith("Want me to book the seven o'clock table at the bar side for the two of you tonight?"), "the question is never dropped, however long");
+  assert.ok(!longQ || !longQ.say.includes(gl.TEXT_REST_OFFER));
+  assert.equal(gl.shortForPhone("Want me to book it for seven? It's a forty dollar deposit that comes off the bill, refundable up to a day before, and they hold the table for fifteen minutes past the time before they give it away to the next people."), null, "a question in the middle is never cut away");
+  const mondays = gl.shortForPhone("Bo Peep is closed Mondays, unless there's a private event booked, and on Tuesdays the sing-along starts at eight, which is when the bar fills up and people start talking to each other. Pebble Bar is quieter. Joe's Pub has shows most nights. The Ragtrader upstairs does food until ten, and the bar staff are friendly if you sit at the end.");
+  assert.ok(mondays && mondays.say.startsWith("Bo Peep is closed Mondays, unless there's a private event booked"), "whole sentences that fit are never clipped")
   assert.equal(gl.sayWhole({ tools: ["confirm_record"] }), true, "and behind a confirm it is not cut at all");
   assert.equal(gl.sayWhole({ tools: ["message_send"] }), true);
   assert.equal(gl.sayWhole({ tools: [], endCall: { message: "bye" } }), true);

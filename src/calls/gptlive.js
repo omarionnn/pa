@@ -598,18 +598,17 @@ export function shortForPhone(text, { max = LONG_REPLY_CHARS, keep = SHORT_REPLY
     say = say ? `${say} ${s}` : s;
   }
   // One sentence that is itself long: cut at the last clause break inside the limit, never mid-word.
-  if (say.length > max) {
+  if (say.length > room + 40) {
     const cut = say.slice(0, room);
     const at = Math.max(cut.lastIndexOf(", "), cut.lastIndexOf("; "), cut.lastIndexOf(" — "));
     say = `${(at > 60 ? cut.slice(0, at) : cut.slice(0, cut.lastIndexOf(" "))).trim()}.`;
   }
+  // A question before the end is something Reason asked them: the answer is said whole, never
+  // swapped for (or put beside) "want me to text you the rest?" — a yes must answer one question.
+  // (A line in quotes — an opener to try, "have you been here before?" — is not a question to them.)
+  if (body.some(x => /\?/.test(unquoted(x)))) return null;
   const out = lastQ ? `${say} ${lastQ}` : `${say} ${TEXT_REST_OFFER}`;
-  // Its own question as well would still be a long answer: the start and the offer, the question kept
-  // for the text (an agreement's question never gets here — `sayWhole`).
-  if (lastQ && out.length > max) {
-    const r = shortForPhone(body.join(" "), { max: 0, keep });
-    return r ? { ...r, full } : null;
-  }
+  // The content is what shrinks, never the question: it is kept whole however long it is.
   if (!say || out.length >= full.length - 20) return null;
   return { say: out, full, offered: !lastQ };
 }
