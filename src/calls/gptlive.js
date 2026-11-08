@@ -291,7 +291,6 @@ export const OWN_VOICE_NO_DEFLECT = "Each time you speak it is either a real ans
 export const HANDOFF_ACK = "When you hand the backend something that needs a lookup or an action — the weather, the news, a place, directions, their calendar, messages or reminders, sending something — say one short line of a few words first, straight away, that names exactly what you're getting or doing for them, then hand it off. For example: \"Weather near work, one sec.\", \"Pulling up Nigeria headlines.\", \"Texting you the headlines now.\", \"Checking your Thursday.\""
   + " Never a bare \"one sec\", \"let me check\", \"hang on\" or \"looking that up\" with nothing named."
   + " Say nothing first when you're only passing on their yes or no, their reply to something Reason asked or offered, or something unclear; and never two of these lines in a row — if your last words were one, hand off in silence."
-  + " Say you're sending something only when they clearly said what to send; a request cut off before what (\"text me what…\") gets no line."
   + " That one line is all you say until Reason's answer comes.";
 /** Their own call's version of `NO_HOLDING_LINE`: the one named line of `HANDOFF_ACK`, nothing else. */
 export const OWN_NO_HOLDING_LINE = "Apart from that one short line naming what you're getting, say nothing of your own while Reason works: no \"let me check\", \"looking that up\", \"hang on\" or \"one sec\"."
@@ -623,6 +622,8 @@ export const SKIP_FOLLOW_UP = "So — what do you reckon?";
  * Reason skipped after the voice's named hand-off line (drive v6 11-08: "Texting you the weather summary
  * now." then nothing sent, then "So — what do you reckon?"): nothing was done, so it asks, plainly.
  */
+/** How long the voice's reply to `ACK_ASK` may take to show up before code's own named line may go. */
+export const ACK_REPLY_MS = 3000;
 export const ACK_SKIP_FOLLOW_UP = "Sorry — what was it you wanted?";
 
 // ---------- holding lines, decided by code (call 79) ----------
@@ -1997,8 +1998,10 @@ export class GptLiveCall {
       // handed over in silence on all five lookups when only told in its instructions (v3: 4 of 5).
       // It knows the question; the line is its own words, and it says nothing when no lookup is
       // needed. Never right after an unanswered line of the hand-off before (never two in a row).
-      const before = [...this.pending.values()].some(p => p !== turn && !p.pieces && (p.askedAck || this.voiceAcked(p)));
-      // Only for words of theirs newer than the voice's last (a question to hand over, not its own initiative).
+      // An earlier hand-off still open whose line was said (or was just asked for, its reply maybe not in yet).
+      const before = [...this.pending.values()].some(p => p !== turn && !p.pieces && (this.voiceAcked(p) || p.held || (p.askedAck && this.now() - p.startedAt < ACK_REPLY_MS)));
+      turn.afterAck = before;
+      // Only when they have said something (a question to hand over, not the voice's own initiative).
       const theirs = this.turns.findLast(x => x.who === "them");
       if (this.who?.owner && !this.persona && theirs && !this.voiceAcked(turn) && !before) {
         turn.askedAck = true;
@@ -2084,7 +2087,7 @@ export class GptLiveCall {
       // Call 68 (2026-11-01): "Hmm. Lemme have a think." then Reason skipped, the voice was told to say
       // nothing, and the line sat silent until he said "Hello". A thought announced is closed out loud.
       this.log({ gptlive_skip_followed_up: this.call.id });
-      this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: turn.askedAck || turn.preAck ? ACK_SKIP_FOLLOW_UP : SKIP_FOLLOW_UP });
+      this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: turn.askedAck || turn.preAck || turn.held ? ACK_SKIP_FOLLOW_UP : SKIP_FOLLOW_UP });
       (this.answered ??= []).push(turn);
     } else {
       this.live.send({ type: "session.thinking.append", event_id: `result_${id}`, delegation_id: id, content: "Reason has nothing to add right now. Say nothing more about it and listen." });
@@ -2183,7 +2186,9 @@ export class GptLiveCall {
     const looking = [...turn.running].find(isLookup) ?? "";
     // The voice already said its own named line for this hand-off (`HANDOFF_ACK`): never a second
     // one in a row from code. The late line still covers a long wait.
-    if (kind === "first" && this.voiceAcked(turn)) return;
+    if (kind === "first" && (this.voiceAcked(turn) || turn.afterAck)) return;
+    // Asked for its line a moment ago and its words aren't in yet: wait for them, not over them (cold review).
+    if (kind === "first" && turn.askedAck && t - turn.startedAt < ACK_REPLY_MS) { retry(); return; }
     if (kind === "first" && !looking && !turn.toolSeen) {
       if (t - turn.startedAt < LATE_HOLDING_MS - 1500) retry();
       return;
@@ -2221,7 +2226,8 @@ export class GptLiveCall {
    */
   promisedThought(turn) {
     if (this.line) return false;
-    const ack = String(turn.ack ?? "").trim();
+    // The voice's named line said as it handed over (`preAck`) is a promise too (cold review 11-08).
+    const ack = String(turn.ack || turn.preAck || "").trim();
     // Their words up to the voice's "let me think" are the question still being transcribed; words after
     // it are them talking again. An ack that ends on a question already handed the turn back.
     // Any words of its own count, not only the phrasings in THINKING_ACK: drives showed the voice words

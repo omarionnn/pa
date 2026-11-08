@@ -883,8 +883,10 @@ test("named ack: a bare listening sound before the hand-off is not a line — co
   await s.timers.advance(gl.HOLD_LINE_AFTER_MS + 100);
   hooks.onTool("web_search", "start");
   await s.timers.advance(10);
+  assert.equal(holdsOf(s).length, 0, "the voice was asked for its line: code waits for its reply, not over it (cold review)");
+  await s.timers.advance(gl.ACK_REPLY_MS);
   const h = holdsOf(s).map(e => /"([^"]+)"/.exec(e.content)[1]);
-  assert.deepEqual(h, ["Searching the web for that."]);
+  assert.deepEqual(h, ["Searching the web for that."], "it said nothing: code names the lookup");
 });
 
 test("named ack: code's first line names Reason's tool — never 'one sec' / 'let me check' — and a tool with no name gets none", async () => {
@@ -963,4 +965,32 @@ test("named ack: Reason skips after the voice's named line → it asks plainly w
   await s.timers.advance(50);
   const r = s.live.of("session.commentary.append").find(e => e.event_id === "result_k6");
   assert.equal(r?.content, gl.ACK_SKIP_FOLLOW_UP, JSON.stringify(r));
+});
+
+test("named ack (cold review): a hand-off on top of one whose line was just said gets no code line either — never two in a row", async () => {
+  let hooks;
+  const s = startCall({ brain: (m, h) => new Promise(() => { hooks = h; }) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " Weather near work?" });
+  await s.timers.advance(300);
+  s.live.emit({ type: "session.output_transcript.delta", delta: "Weather near work, one sec." });
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "c1" } });
+  await s.timers.advance(5000);
+  s.live.emit({ type: "session.input_transcript.delta", delta: " and tomorrow too" });
+  await s.timers.advance(300);
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "c2" } });
+  await s.timers.advance(2000);
+  hooks.onTool("weather", "start");
+  await s.timers.advance(gl.ACK_REPLY_MS + 500);
+  assert.equal(asksOf(s).length, 0, "not asked: the line before is still the last thing said");
+  assert.ok(!holdsOf(s).some(e => e.event_id === "hold_first_c2"), "no 'Getting the weather.' after 'Weather near work, one sec.'");
+});
+
+test("named ack (cold review): the voice's line said as it handed over, then Reason skips → still closed out loud, never silence", async () => {
+  const s = startCall({ brain: async () => ({ text: "", tools: ["skip_turn"], skip: true }) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " Weather near work?" });
+  await s.timers.advance(300);
+  s.live.emit({ type: "session.output_transcript.delta", delta: "Weather near work, one sec." });
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "c3" } });
+  await s.timers.advance(50);
+  assert.equal(s.live.of("session.commentary.append").find(e => e.event_id === "result_c3")?.content, gl.ACK_SKIP_FOLLOW_UP);
 });
