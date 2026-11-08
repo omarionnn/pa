@@ -63,7 +63,7 @@ import * as zonescope from "./zonescope.js";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import * as accounts from "./accounts.js";
 import * as db from "./db.js";
-import { renderPage, renderCodeGate, renderPasswordGate, renderNotFound } from "./pages/render.js";
+import { renderPage, renderCodeGate, renderPasswordGate, renderNotFound, esc as escapeAttr } from "./pages/render.js";
 import * as opspw from "./opspassword.js";
 import { webMovedTo } from "./pages/siteproxy.js";
 import { checkAccess, trySubmittedCode, requestCode, codeHost, readCookie, readCookies, cookieHeader, clearCookieHeader, pageUrl, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS } from "./pages/access.js";
@@ -243,6 +243,7 @@ export function createServer({ router, runtime, log = () => {} }) {
           key: url.searchParams.get("k"),
           focus: url.searchParams.get("focus"),
           via: url.searchParams.get("via"),
+          bounced: url.searchParams.get("r") === "1",
           method: req.method,
           headers: req.headers,
           remoteAddress: req.socket?.remoteAddress ?? "",
@@ -1768,17 +1769,65 @@ function gateFor(access, page, { real, status = 401, sent = false, error = "" })
  * Pulled out of the server for the same reason pageRequest is: the whole dance is drivable in a
  * test without a socket.
  */
-/** `headers` without the website's signature. */
-const unsigned = (headers) => {
-  if (!headers || !("x-nf-sign" in headers)) return headers;
-  const { "x-nf-sign": _sig, ...rest } = headers;
-  return rest;
-};
+/**
+ * The status page's own cookie (2026-11-08, security). Only a session the status page itself signed
+ * in (its password or its code, page_id "ops") opens it, and it travels in its own cookie: host-only
+ * on the address /ops is served from (heyreason.com), never the shared heyreason.com one, so it is
+ * never sent to files. or events., where pages and event guests live; SameSite=Strict, so no other
+ * site's link or form carries it. A Web or page sign-in no longer opens /ops.
+ */
+export const OPS_COOKIE = "reason_ops";
+const opsCookieHeader = (token) => `${OPS_COOKIE}=${token}; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; HttpOnly; SameSite=Strict${(config.publicUrl || "").startsWith("https://") ? "; Secure" : ""}`;
+const cookieValues = (header, name) => String(header ?? "").split(";").map(p => p.trim().split("=")).filter(([k, ...v]) => k === name && v.join("=")).map(([, ...v]) => v.join("="));
 
-export async function opsRequest({ json = false, key = null, focus = null, via = null, method, headers, remoteAddress = "", readBody, runtime, router = null, log = () => {} }) {
+/**
+ * The status page's session this browser holds: `{ token, legacy }` or null. `legacy` is a session
+ * the status page signed in before it had its own cookie, carried in the shared `reason_page` one
+ * (host-only on heyreason.com, as /ops always set it): still honoured so nobody is signed out, and
+ * moved to the status page's cookie the next time it is opened.
+ */
+export function opsSession(headers = {}) {
+  for (const t of cookieValues(headers?.cookie, OPS_COOKIE)) if (db.pageSessionSource(t) === ops.PAGE.id) return { token: t, legacy: false };
+  for (const t of readCookies(headers?.cookie)) if (db.pageSessionSource(t) === ops.PAGE.id) return { token: t, legacy: true };
+  return null;
+}
+
+/**
+ * Did this post come from the status page itself? (2026-11-08, security.) A browser that says it is
+ * not same-origin (Sec-Fetch-Site, which no page can set) is refused; one that names its Origin, or
+ * failing that its Referer, must name the status page's own host — never the pages or events host,
+ * which are the same site and so would pass a SameSite check. A request with none of the three is
+ * not a browser's, and a forged post needs a browser.
+ */
+export function opsSameOrigin(headers = {}) {
+  const site = String(headers["sec-fetch-site"] ?? "").toLowerCase();
+  // "none" is the browser's own doing (a reload, a resubmit from history), never another page's.
+  if (site && site !== "same-origin" && site !== "none") return false;
+  const hostOf = (u) => { try { return new URL(u).host.toLowerCase(); } catch { return ""; } };
+  const notOps = new Set([hostOf(config.pagesUrl), hostOf(config.eventsUrl)].filter(Boolean));
+  // Only the status page's own addresses, never whatever Host the request names: another host that
+  // reaches this server and serves somebody's page must not count as the status page.
+  const ours = new Set([hostOf(config.opsUrl), hostOf(config.publicUrl)].filter(h => h && !notOps.has(h)));
+  const origin = String(headers.origin ?? "").trim();
+  if (origin === "null") return site === "same-origin";
+  if (origin) return ours.has(hostOf(origin));
+  const referer = String(headers.referer ?? "").trim();
+  if (referer) return ours.has(hostOf(referer));
+  return true;
+}
+
+/** Is this request addressed to the pages or events host? Those serve people's pages: never /ops. */
+export function onPeopleHost(headers = {}) {
+  const host = String(headers?.host ?? "").toLowerCase().replace(/:\d+$/, "");
+  const hostOf = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return ""; } };
+  return !!host && [hostOf(config.pagesUrl), hostOf(config.eventsUrl)].filter(Boolean).includes(host);
+}
+
+export async function opsRequest({ json = false, key = null, focus = null, via = null, bounced = false, method, headers, remoteAddress = "", readBody, runtime, router = null, log = () => {} }) {
   const page = { ...ops.PAGE, conversation_id: config.ownerConversation };
-  const cookie = readCookie(headers?.cookie);
-  const owner = db.pageSessionOwner(cookie, SESSION_TTL_MS);
+  if (onPeopleHost(headers)) return { status: 404, headers: HTML(), body: renderNotFound() };
+  const session = opsSession(headers);
+  const owner = session ? db.pageSessionOwner(session.token, SESSION_TTL_MS) : null;
   const signedIn = !!owner && accounts.isOperatorConversation(owner);
   const via_key = ops.keyMatches(key);
   const focusId = typeof focus === "string" && /^[a-z0-9_:.-]{1,64}$/i.test(focus) ? focus : null;
@@ -1803,19 +1852,22 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
         passwordHref: opspw.passwordEnabled() ? here() : null }),
   });
   const signIn = (token) => ({
-    // 303 back to the page: a refresh afterwards is a GET, not the password posted again. Path "/"
-    // rather than the pages' "/p/": this cookie has to come back on /ops, and a session is valid
-    // for every page of the owner's anyway. Host-only, as it has always been here: the website's
-    // signature (which /ops may carry for its sign-in limits, audit lead 23) is not taken as asking
-    // for the shared heyreason.com cookie.
+    // 303 back to the page: a refresh afterwards is a GET, not the password posted again. The status
+    // page's own cookie (OPS_COOKIE): host-only, Path "/" so it comes back on /ops and /ops.json.
     status: 303,
-    headers: { ...HTML(), Location: focusId ? `/ops?focus=${encodeURIComponent(focusId)}` : "/ops", "Set-Cookie": cookieHeader(token, { path: "/", headers: unsigned(headers) }) },
+    headers: { ...HTML(), Location: focusId ? `/ops?focus=${encodeURIComponent(focusId)}` : "/ops", "Set-Cookie": opsCookieHeader(token) },
     body: "",
   });
 
+  // ---- a post from anywhere but the status page itself: refused before anything is read ----
+  if (method === "POST" && !opsSameOrigin(headers ?? {})) {
+    log({ ops_post_refused: "origin" });
+    return { status: 403, headers: HTML(), body: renderNotFound() };
+  }
+
   // ---- the owner's two buttons ----
-  // Only a signed-in browser gets here; the cookie is SameSite=Lax, so a form on some other site
-  // cannot press them. "Check again" is the scheduled pass, now. "Clear" restarts one windowed
+  // Only a signed-in browser from the status page itself gets here (opsSameOrigin above, and the
+  // cookie is SameSite=Strict), so a form on some other site, or on a page of ours, cannot press them. "Check again" is the scheduled pass, now. "Clear" restarts one windowed
   // row's count from this moment and runs the pass with that row kept quiet — they know.
   //
   // The page's own script asks for JSON (2026-10-24: the pass takes as long as the slowest provider,
@@ -1928,6 +1980,13 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
 
   if (method !== "GET" && method !== "HEAD") return { status: 405, headers: HTML(), body: renderNotFound() };
   if (!signedIn) {
+    // A tap on a link from another site (a mail app's web page) does not carry a SameSite=Strict
+    // cookie on that first hop. Once, the page asks for itself again from here, which does.
+    // `r=1` marks the second ask, so a browser that still calls it cross-site gets the gate, not a loop.
+    if (!json && !bounced && method === "GET" && String(headers?.["sec-fetch-site"] ?? "").toLowerCase() === "cross-site") {
+      const again = escapeAttr(here({ ...(via === "code" ? { via } : {}), r: "1" }));
+      return { status: 200, headers: HTML(), body: `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${again}"><title>Reason status</title>` };
+    }
     if (!usePassword && db.failedPageAttempts(page.id, ATTEMPT_WINDOW_MS) >= MAX_FAILED_ATTEMPTS) {
       return gate({ status: 429, error: `Too many wrong codes. Try again in about ${Math.ceil(ATTEMPT_WINDOW_MS / 60000)} minutes.` });
     }
@@ -1954,7 +2013,9 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
       }),
     };
   }
-  return { status: 200, headers: HTML(), body: renderOps({ report, now: clock.now(), focus: focusId, events: eventsOps(), web: await webOps() }) };
+  // A session from before the status page had its own cookie: moved to it now (opsSession).
+  // The old host-only copy is cleared in the same answer (never the shared Web one, which has a Domain).
+  return { status: 200, headers: { ...HTML(), ...(session?.legacy ? { "Set-Cookie": [opsCookieHeader(session.token), clearCookieHeader({ path: "/" })] } : {}) }, body: renderOps({ report, now: clock.now(), focus: focusId, events: eventsOps(), web: await webOps() }) };
 }
 
 /** The status page's events section, or null while events are off and none exist. */
@@ -1981,7 +2042,9 @@ function noAddresses(text, known = null) {
 
 /** Is this request the operator's own signed-in browser? The same session /ops takes (opsRequest). */
 function operatorSignedIn(headers) {
-  const owner = db.pageSessionOwner(readCookie(headers?.cookie), SESSION_TTL_MS);
+  if (onPeopleHost(headers)) return false;
+  const session = opsSession(headers);
+  const owner = session ? db.pageSessionOwner(session.token, SESSION_TTL_MS) : null;
   return !!owner && accounts.isOperatorConversation(owner);
 }
 

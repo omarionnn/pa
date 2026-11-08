@@ -89,7 +89,7 @@ test("a stranger's thirty forged wrong passwords cannot lock out the owner's sig
   for (let i = 0; i < opspw.MAX_TOTAL; i++) await POST(pw("nope"), { headers: forged(`9.9.${Math.floor(i / 4)}.${i}`) });
   const owner = await POST(pw(PASSWORD), { headers: signed("203.0.113.7") });
   assert.equal(owner.status, 303, "the owner's right password, through the website, still opens the page");
-  assert.match(owner.headers["Set-Cookie"], /^reason_page=/);
+  assert.match(owner.headers["Set-Cookie"], /^reason_ops=/);
 });
 
 test("a stranger's own signed guesses lock only the stranger's address", async () => {

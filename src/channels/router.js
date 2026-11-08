@@ -662,7 +662,7 @@ export class Router {
       const texts = [];
       for (const h of held) {
         let t = h.text;
-        try { t = await this.hear(h.text, h.attachments ?? [], { log: this.log, cover: reviewed.cover }); }
+        try { t = await this.hear(h.text, h.attachments ?? [], { log: this.log, cover: reviewed.cover, conversationId }); }
         catch (e) { this.log({ hear_failed: h.external_id, why: (e?.message ?? String(e)).split("\n")[0] }); }
         try { t = await this.readContacts(t, h.attachments ?? [], { log: this.log, cover: reviewed.cover }); }
         catch (e) { this.log({ contact_read_failed: h.external_id, why: (e?.message ?? String(e)).split("\n")[0] }); }

@@ -143,9 +143,9 @@ step("CANCEL from Web: canceled, stamped CANCELED, the slot is back", cx.locatio
 step("Kofi (invites dark): no invites section", !(await get(kofi)).body.includes('id="invites"'));
 
 // Browsers.
-const out1 = await form(me, { do: "browser", b: st.sessionHandle(phoneB.token) });
+const out1 = await form(me, { do: "browser", b: st.sessionHandle(db.sessionKey(phoneB.token)) });
 step("SIGN OUT the phone: its session opens nothing; this one stays", out1.location === "/web/settings?done=browsers#browsers" && (await get(phoneB)).location === "/web" && (await get(me)).status === 200);
-await form(me, { do: "browser", b: st.sessionHandle(kofi.token) });
+await form(me, { do: "browser", b: st.sessionHandle(db.sessionKey(kofi.token)) });
 step("a handle from Kofi's list ends nothing", (await get(kofi)).status === 200);
 const five = await get(me, "/web/settings?confirm=everywhere");
 step("5C: asks first with the real count; nobody signed out yet", /<p class="so-n">1 browser: this one\.<\/p>/.test(five.body) && />KEEP ME IN</.test(five.body) && (await get(me)).status === 200);

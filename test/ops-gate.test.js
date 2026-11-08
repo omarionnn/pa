@@ -71,8 +71,8 @@ beforeEach(() => {
 const NF = (ip) => ({ "x-nf-client-connection-ip": ip });
 const GET = ({ headers = {}, key = null, json = false, focus = null, via = null } = {}) =>
   opsRequest({ json, key, focus, via, method: "GET", headers, readBody: async () => "", runtime, log });
-const POST = (body, { headers = {}, key = null, via = null } = {}) =>
-  opsRequest({ key, via, method: "POST", headers, readBody: async () => body, runtime, log });
+const POST = (body, { headers = {}, key = null, via = null, remoteAddress = "" } = {}) =>
+  opsRequest({ key, via, method: "POST", headers, remoteAddress, readBody: async () => body, runtime, log });
 const pw = (p) => `username=Reason+status&password=${encodeURIComponent(p)}`;
 
 // ---------- the password ----------
@@ -95,42 +95,52 @@ test("the right password signs the browser in as the owner — the same session 
   const out = await POST(pw(PASSWORD), { headers: NF("2.2.2.2") });
   assert.equal(out.status, 303);
   assert.equal(out.headers.Location, "/ops");
-  assert.match(out.headers["Set-Cookie"], /^reason_page=[A-Za-z0-9_-]{40,}; Path=\/; Max-Age=7776000; HttpOnly; SameSite=Lax; Secure$/);
+  assert.match(out.headers["Set-Cookie"], /^reason_ops=[A-Za-z0-9_-]{40,}; Path=\/; Max-Age=7776000; HttpOnly; SameSite=Strict; Secure$/);
   const token = out.headers["Set-Cookie"].split(";")[0].split("=")[1];
-  const row = db.db.prepare("SELECT page_id, conversation_id FROM page_sessions WHERE token = ?").get(token);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions WHERE token = ?").get(token).n, 0, "the token itself is never stored");
+  const row = db.db.prepare("SELECT page_id, conversation_id FROM page_sessions WHERE token = ?").get(db.sessionKey(token));
   assert.deepEqual({ ...row }, { page_id: "ops", conversation_id: "dm:owner" });
-  const page = await GET({ headers: { cookie: `reason_page=${token}` } });
+  const page = await GET({ headers: { cookie: `reason_ops=${token}` } });
   assert.equal(page.status, 200);
   assert.match(page.body, /All good/);
   assert.ok(!JSON.stringify(logs).includes(PASSWORD), "the password is never logged");
 });
 
 test("a wrong password is refused and counted, without what was typed; five from one address locks it out", async () => {
+  // The address is the socket's: a forged X-Forwarded-For is not believed (2026-11-08).
+  const from3 = { headers: { "x-forwarded-for": "6.6.6.6, 10.0.0.1" }, remoteAddress: "3.3.3.3" };
   for (let i = 1; i <= 5; i++) {
-    const out = await POST(pw(`guess-${i}`), { headers: { "x-forwarded-for": "3.3.3.3, 10.0.0.1" } });
+    const out = await POST(pw(`guess-${i}`), from3);
     assert.equal(out.status, 401);
     assert.equal(out.headers["Set-Cookie"], undefined);
     assert.match(out.body, /That password is not right\./);
   }
   assert.ok(logs.some(l => l.ops_password_failed === "wrong" && l.ip === "3.3.3.3"), "failed attempts are logged with the address");
   assert.ok(!JSON.stringify(logs).includes("guess-"), "never the input");
-  // Locked: even the right one is refused, from this address, for the window.
-  const locked = await POST(pw(PASSWORD), { headers: { "x-forwarded-for": "3.3.3.3" } });
+  // Locked: even the right one is refused, from this address, for the window, whatever header it writes.
+  const locked = await POST(pw(PASSWORD), { headers: { "x-forwarded-for": "4.4.4.5" }, remoteAddress: "3.3.3.3" });
   assert.equal(locked.status, 429);
   assert.match(locked.body, /Too many wrong passwords/);
   assert.equal(locked.headers["Set-Cookie"], undefined);
   // Another address is not locked out by this one.
-  const other = await POST(pw(PASSWORD), { headers: NF("4.4.4.4") });
+  const other = await POST(pw(PASSWORD), { remoteAddress: "4.4.4.4" });
   assert.equal(other.status, 303);
   // The window passes and the address may try again.
   clock.skip(opspw.WINDOW_MS + 1000);
-  assert.equal((await POST(pw(PASSWORD), { headers: { "x-forwarded-for": "3.3.3.3" } })).status, 303);
+  assert.equal((await POST(pw(PASSWORD), from3)).status, 303);
 });
 
-test("Netlify's client address wins over x-forwarded-for, and a cap on all wrong guesses bounds a forged header", async () => {
-  assert.equal(opspw.clientIp({ "x-nf-client-connection-ip": "5.5.5.5", "x-forwarded-for": "6.6.6.6" }), "5.5.5.5");
-  assert.equal(opspw.clientIp({ "x-forwarded-for": " 6.6.6.6 , 7.7.7.7" }), "6.6.6.6");
+test("only a signed or Caddy-vouched address is believed; a forged header is not, and a cap on all wrong guesses bounds a guesser", async () => {
+  assert.equal(opspw.clientIp({ "x-nf-client-connection-ip": "5.5.5.5", "x-forwarded-for": "6.6.6.6" }, "127.0.0.1"), "127.0.0.1", "unsigned Netlify header: ignored");
+  assert.equal(opspw.clientIp({ "x-forwarded-for": " 6.6.6.6 , 7.7.7.7" }, "100.100.152.2"), "100.100.152.2", "a browser's XFF over the Tailscale address: ignored");
+  assert.equal(opspw.clientIp({ "x-forwarded-for": "6.6.6.6", "x-files-domain": "true" }, "127.0.0.1"), "127.0.0.1", "Caddy's marker without Caddy's secret: ignored");
   assert.equal(opspw.clientIp({}, "::1"), "::1");
+  const was = config.caddySecret;
+  config.caddySecret = "caddy-test-secret";
+  try {
+    assert.equal(opspw.clientIp({ "x-forwarded-for": "6.6.6.6", "x-files-domain": "true", "x-reason-caddy": "caddy-test-secret" }, "127.0.0.1"), "6.6.6.6", "Caddy's own, on loopback: believed");
+    assert.equal(opspw.clientIp({ "x-forwarded-for": "6.6.6.6", "x-files-domain": "true", "x-reason-caddy": "caddy-test-secret" }, "100.100.152.2"), "100.100.152.2", "not from loopback: not Caddy");
+  } finally { config.caddySecret = was; }
   for (let i = 0; i < opspw.MAX_TOTAL; i++) await POST(pw("nope"), { headers: NF(`9.9.${Math.floor(i / 4)}.${i}`) });
   const fresh = await POST(pw(PASSWORD), { headers: NF("8.8.8.8") });
   assert.equal(fresh.status, 429, "past the total cap nobody may try until the window passes");

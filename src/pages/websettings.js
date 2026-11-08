@@ -609,7 +609,7 @@ export function settingsView(account, token) {
   return {
     reach: db.webReach(conv),
     browsers: sessionsOf(conv),
-    current: token,
+    current: db.sessionKey(token),
     connected: connections(conv),
     invitesView: myInvitesView(conv),
     shopping: shop.connectAllowedFor(conv) ? { stores: shop.connectedStores(conv), card: shop.cardOf(conv), lastUsed: shop.lastPaid(conv), passkeys: passkey.passkeyAllowedFor(conv) ? passkey.passkeysOf(conv) : null, cap: spendcap.view(conv) } : null,
@@ -697,9 +697,10 @@ export async function settingsRequest({ account, method, query = {}, headers = {
     const h = String(form.get("b") ?? "");
     const row = sessionsOf(conv).find(s => same(sessionHandle(s.token), h));
     if (!row) return back("", "browsers");
-    db.endPageSessionOf(conv, row.token);
-    log({ web_settings: "browser_signed_out", here: row.token === token });
-    if (row.token === token) return signedOut(headers);
+    const here = row.token === db.sessionKey(token);
+    db.endPageSessionKeyOf(conv, row.token);
+    log({ web_settings: "browser_signed_out", here });
+    if (here) return signedOut(headers);
     return back("browsers", "browsers");
   }
 

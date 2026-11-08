@@ -118,7 +118,7 @@ const midThread = await req({ cookie: session });
 const home = await req({ query: { home: "" }, cookie: session });
 step("a Web message 5 min ago: /web is the thread, /web?home (the sign-in landing) is still the arrival", !/What(&#39;|')s good, Kofi\?/.test(midThread.body) && /What(&#39;|')s good, Kofi\?/.test(home.body));
 db.db.prepare("DELETE FROM messages WHERE id = ?").run(recentId);
-step("the session row is Kofi's, under wsign:", db.db.prepare("SELECT conversation_id, page_id FROM page_sessions WHERE token = ?").get(token)?.conversation_id === KOFI_C);
+step("the session row is Kofi's, under wsign:", db.db.prepare("SELECT conversation_id, page_id FROM page_sessions WHERE token = ?").get(db.sessionKey(token))?.conversation_id === KOFI_C);
 
 // 6. Sign out: refused without the secret or from elsewhere; done with both.
 const noSecret = await req({ sub: "signout", method: "POST", body: form({}), cookie: session });

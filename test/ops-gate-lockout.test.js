@@ -79,7 +79,7 @@ test("a stranger's junk codes, with no key, cannot lock the owner out of the rig
   const code = /code is ([0-9]{6}),/.exec(sent[0].text)[1];
   const opened = await POST(`code=${code}`, { key: ops.opsKey(), via: "code" });
   assert.equal(opened.status, 303, "the owner's right code still opens the page");
-  assert.match(opened.headers["Set-Cookie"], /^reason_page=/);
+  assert.match(opened.headers["Set-Cookie"], /^reason_ops=/);
 });
 
 test("a keyless right code opens nothing either: a code is only taken with the key", async () => {
@@ -102,7 +102,7 @@ test("a stranger's thirty wrong passwords from forged addresses cannot lock out 
   for (let i = 0; i < opspw.MAX_TOTAL; i++) await POST(pw("nope"), { headers: { "x-forwarded-for": `9.9.${Math.floor(i / 4)}.${i}` } });
   const keyed = await POST(pw(PASSWORD), { key: ops.opsKey(), headers: { "x-forwarded-for": "8.8.8.8" } });
   assert.equal(keyed.status, 303, "the owner's right password, on the keyed link, still opens the page");
-  assert.match(keyed.headers["Set-Cookie"], /^reason_page=/);
+  assert.match(keyed.headers["Set-Cookie"], /^reason_ops=/);
   // Without the key the shared cap still holds: it is the bound on a header-forging guesser.
   const keyless = await POST(pw(PASSWORD), { headers: { "x-forwarded-for": "8.8.8.7" } });
   assert.equal(keyless.status, 429);

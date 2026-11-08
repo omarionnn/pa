@@ -226,7 +226,7 @@ export async function contribute({ ev, conversationId, mediaIds, fetchImpl = nul
     if (!row) { out.failed.push({ photo_id: mid, why: "there's no photo with that number in this conversation" }); continue; }
     if (row.kind !== "image") { out.failed.push({ photo_id: mid, why: "that isn't a photo" }); continue; }
     if (!row.url) { out.failed.push({ photo_id: mid, why: "it arrived with no link to it" }); continue; }
-    const got = await fetchImage({ url: row.url, filename: row.filename, ...(fetchImpl ? { fetchImpl } : {}) });
+    const got = await fetchImage({ url: row.url, filename: row.filename, conversationId, ...(fetchImpl ? { fetchImpl } : {}) });
     if (!got.ok) { out.failed.push({ photo_id: mid, why: got.why }); continue; }
     const bytes = Buffer.from(got.base64, "base64");
     const type = sniff(bytes);

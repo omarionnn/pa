@@ -51,6 +51,7 @@ const { ConsoleChannel } = await import("../src/channels/console.js");
 const { WebChannel } = await import("../src/channels/web.js");
 const { makeDeliver } = await import("../src/deliver.js");
 const db = await import("../src/db.js");
+const zonescope = await import("../src/zonescope.js");
 const { clock, config } = await import("../src/config.js");
 
 const KOFI = "+14155559876", AMA = "+13475550000";
@@ -187,8 +188,14 @@ test("a photo sent on Web goes through the texted-photo pipeline: router attachm
   assert.ok(a.media_id, "the reviewed record has a row for it, as for a texted photo");
   assert.equal(db.mediaItem(KOFI_C, a.media_id).kind, "image");
   // Vision (src/media.js) reads it from disk — no network: the fetch that would go out is never called.
-  const seen = await imagesFor(turn.attachments, { fetchImpl: () => { throw new Error("no network for a Web upload"); } });
+  // Read inside Kofi's turn (src/agent.js runs it on his scope), as the turn does.
+  const seen = await zonescope.runFor(KOFI_C, () => imagesFor(turn.attachments, { fetchImpl: () => { throw new Error("no network for a Web upload"); } }));
   assert.equal(seen.blocks.length, 1);
+  // Somebody else's turn, or nobody's, handed the same link reads nothing: not from disk, not over the network.
+  for (const who of [AMA_C, ""]) {
+    const theirs = await zonescope.runFor(who, () => imagesFor(turn.attachments, { fetchImpl: () => { throw new Error("no network for a Web upload"); } }));
+    assert.equal(theirs.blocks.length, 0, `not ${who || "nobody"}'s upload`);
+  }
   assert.equal(seen.blocks[0].source.media_type, "image/png");
   assert.equal(seen.blocks[0].source.data, PNG.toString("base64"));
   // The history row, as the thread draws it: words, the photo framed and served from Web's own address.
@@ -210,7 +217,8 @@ test("a PDF sent on Web is read by the PDF reader from disk; the thread shows it
   assert.equal(a.kind, "pdf");
   assert.equal(a.pages, 4);
   let got = null;
-  const read = await fetchPdf({ url: a.url, filename: a.filename, fetchImpl: () => { throw new Error("no network"); }, read: async ({ bytes }) => { got = bytes; return { ok: true, text: "LEASE TERMS", pages: 4, pages_read: 4 }; } });
+  assert.equal((await fetchPdf({ url: a.url, filename: a.filename, conversationId: AMA_C, fetchImpl: () => { throw new Error("no network"); } })).ok, false, "not Ama's to read");
+  const read = await fetchPdf({ url: a.url, filename: a.filename, conversationId: KOFI_C, fetchImpl: () => { throw new Error("no network"); }, read: async ({ bytes }) => { got = bytes; return { ok: true, text: "LEASE TERMS", pages: 4, pages_read: 4 }; } });
   assert.equal(read.ok, true);
   assert.ok(Buffer.compare(got, PDF) === 0, "the reader got the very bytes uploaded");
   const line = convo.rowOut(db.messagesFor(KOFI_C)[0], { conversationId: KOFI_C });
@@ -433,7 +441,8 @@ test("docs: a Word file and plain text are taken and read; a video or a program 
   // The text the model is handed.
   assert.match(docText(DOCX).text, /^Rent is \$2,400 a month\.\nNo dogs over 40 lb\.$/);
   const atts = uploads.attachmentsFor(KOFI_C, [d.id, t.id]);
-  const read = await docsFor(atts);
+  assert.match((await docsFor(atts, { conversationId: AMA_C })).notes[0], /no longer on this machine/, "not Ama's to read");
+  const read = await docsFor(atts, { conversationId: KOFI_C });
   assert.equal(read.notes.length, 2);
   assert.match(read.notes[0], /^they sent a document \(lease\.docx\) — here is the text from it:\nRent is \$2,400 a month\./);
   assert.match(read.notes[1], /passport/);

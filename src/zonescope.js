@@ -20,6 +20,9 @@ let enabled = () => true;
 /** config.js says whether per-person clocks are on at all; off, every read is the install's zone. */
 export function setEnabled(fn) { enabled = typeof fn === "function" ? fn : () => true; }
 
+/** Whose work is running now (their conversation id), or "" outside any person's scope. */
+export function conversation() { return scope.getStore()?.conv || ""; }
+
 /** Run `fn` with no person's clock: for loops shared by everyone that one person's work started. */
 export function outside(fn) { return scope.exit(fn); }
 
@@ -40,8 +43,12 @@ export function runOpen(fn) { return scope.run({ tz: "" }, fn); }
 /** The request's person is known now: put their zone on the open scope, if there is one. */
 export function enter(conversationId) {
   const s = scope.getStore();
-  if (!s || s.tz || !conversationId) return;
+  if (!s || !conversationId) return;
+  // The first person a request turns out to be is its person for good: conversation() decides whose
+  // Web uploads may be read (src/webuploads.js), so a later lookup can never swap it.
+  if (s.conv && s.conv !== conversationId) return;
   s.conv = conversationId;
+  if (s.tz) return;
   try { s.tz = resolver(conversationId) || ""; } catch {}
 }
 

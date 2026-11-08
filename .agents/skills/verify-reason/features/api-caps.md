@@ -73,8 +73,8 @@ $Y of $10.00 this month`) and the "Phone calls on the API" row, and gets one tex
   `dm:owner` with `ops:api_warn:daily:<day>`. 16 steps, "all ok", rc 0. Nothing leaves the process.
 - Cage (2026-10-25): `bin/caged.sh start`; with `caged.sh env` exported (and `REASON_VERIFY_RUN`
   the same as the cage's), a node script calls `spend.recordApi` for `harm` $1.05 and `call` $2.10,
-  `db.saveOpsCheck` both rows `warn` 10 min back, and inserts a `page_sessions` row
-  (`conversation_id` = `config.ownerConversation`). `POST /ops.json` with `Cookie: reason_page=<token>`
+  `db.saveOpsCheck` both rows `warn` 10 min back, and makes an ops session with `db.startPageSession("ops", token, { conversationId: config.ownerConversation })`
+  (since 11-08 rows are hashed and /ops opens only on `page_id 'ops'`). `POST /ops.json` with `Cookie: reason_ops=<token>` and an `Origin` of the cage's own address
   and `action=check` twice → `serve.log` shows ONE "Reason check — 2 things need you" text, then
   `texted:false`. (2026-10-27, via the since-removed `bin/call-turn.sh`) one call turn past both caps → `voice_turn_threw` with the SDK's
   "Could not resolve authentication method" (the key is blanked): the turn went to the API path, i.e.

@@ -17,6 +17,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSy
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { config, clock } from "./config.js";
+import * as zonescope from "./zonescope.js";
 import { sniff, READABLE } from "./pictures.js";
 import { isPdfBytes } from "./pdf.js";
 import { isDocx, isPlainText } from "./docread.js";
@@ -173,14 +174,22 @@ export function uploadIdOf(url) {
 }
 
 /**
- * The readers' way in. For an upload link whose file is here: `{ meta, fetch }`, where `fetch` is a
- * drop-in for `globalThis.fetch` that answers from disk (so src/media.js and src/voice.js read it
- * with every check they already make). For anything else: null, and they fetch as they always do.
+ * The readers' way in. For an upload link whose file is here and belongs to the person asking:
+ * `{ meta, fetch }`, where `fetch` is a drop-in for `globalThis.fetch` that answers from disk (so
+ * src/media.js and src/voice.js read it with every check they already make). The person asking is
+ * `conversationId`, else whoever's turn or request is running (src/zonescope.js). An upload link
+ * that is somebody else's, gone, or asked for by nobody in particular gets `{ meta: null, fetch }`
+ * with a fetch that answers 404: never read from disk, and never fetched over the network either
+ * (2026-11-08, security: one person's link pasted into another's thread opens nothing). For
+ * anything that is not an upload link: null, and they fetch as they always do.
  */
-export function localUpload(url) {
+const refused = { meta: null, fetch: async () => new Response(null, { status: 404 }) };
+export function localUpload(url, { conversationId = "" } = {}) {
   const id = uploadIdOf(url);
-  const m = id ? meta(id) : null;
-  if (!m || !existsSync(filePath(m))) return null;
+  if (!id) return null;
+  const m = meta(id);
+  const owner = conversationId || zonescope.conversation();
+  if (!m || !owner || m.conversationId !== owner || !existsSync(filePath(m))) return refused;
   const fetch = async () => {
     const bytes = readFileSync(filePath(m));
     return new Response(bytes, { status: 200, headers: { "content-type": m.mime, "content-length": String(bytes.length) } });

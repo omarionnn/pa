@@ -190,6 +190,7 @@ export async function hear({
   apiKey = config.geminiKey, model = config.videoModel, fallbackModel = config.hearFallbackModel,
   fetchImpl = globalThis.fetch, base = config.geminiBase, timeoutMs = config.hearTimeoutMs,
   converter = findConverter(), convert = runConverter, read = readFileSync, retryAfterMs = 1_500,
+  conversationId = "",
 } = {}) {
   const st = hearingStatus({ apiKey, converter });
   if (!st.ok) return { ok: false, unavailable: true, error: st.why };
@@ -199,7 +200,7 @@ export async function hear({
   const where = checkUrl(url);
   if (!where.ok) return { ok: false, error: `it could not be downloaded: ${where.why}` };
   // A voice note recorded on Reason Web is kept on this machine (src/webuploads.js): read from disk.
-  const local = localUpload(url);
+  const local = localUpload(url, { conversationId });
   if (local) fetchImpl = local.fetch;
   const name = filename || String(url).split("?")[0].split("/").pop() || "audio";
   const ext = extname(name).toLowerCase();
@@ -345,7 +346,7 @@ export function couldNotHearLine(a, why) {
  * adapter's "you cannot listen to it" line is already the truth. Otherwise each note's line is
  * swapped for what was said, or for exactly why it could not be heard.
  */
-export async function hearInto(text, attachments = [], { log = () => {}, listen = hear, status = hearingStatus, cover = () => {} } = {}) {
+export async function hearInto(text, attachments = [], { log = () => {}, listen = hear, status = hearingStatus, cover = () => {}, conversationId = "" } = {}) {
   // Already heard before it got here — a Web voice note, transcribed as it was said (the browser's
   // own speech recognition) or when it was sent (src/webmedia.js): the words ARE the message.
   for (const a of attachments.filter(x => isAudio(x) && x.transcribed && x.transcript)) {
@@ -366,7 +367,7 @@ export async function hearInto(text, attachments = [], { log = () => {}, listen 
     // listened to right now, and a row left in it is a crash rather than a shrug.
     cover(a.media_id, { coverage: "processing" });
     let r;
-    try { r = await listen({ url: a.url, filename: a.filename }); }
+    try { r = await listen({ url: a.url, filename: a.filename, conversationId }); }
     catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
     if (!r.ok && r.unavailable) { cover(a.media_id, { coverage: "failed", detail: r.error }); continue; }
     const line = r.ok ? heardLine(a, r) : couldNotHearLine(a, r.error);
