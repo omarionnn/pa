@@ -32,7 +32,7 @@
 import { timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
 import { GATED_ACTIONS } from "../permissions.js";
-import { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS, EVENT_RIDE_GUEST_TOOLS, EVENT_GUEST_TOOLS } from "../eventtools.js";
+import { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS, EVENT_RIDE_GUEST_TOOLS, EVENT_GUEST_TOOLS, EVENT_ANSWER_TOOLS } from "../eventtools.js";
 import { ALBUM_ORGANIZER_TOOLS, ALBUM_MEMBER_TOOLS } from "../albumtools.js";
 import { config, clock } from "../config.js";
 
@@ -72,6 +72,7 @@ const EVENT_READS = {
   event_info: () => true,
   album_info: () => true,
   event_scheduled: (input) => input?.action === "list",
+  event_questions: (input) => input?.action === "list",
   event_cover: (input) => input?.action === "status",
   event_rides_setting: (input) => input != null && input.enabled === undefined,
   event_ride: (input) => input?.action === "neither",
@@ -82,7 +83,7 @@ const EVENT_READS = {
 // album_remove lets an organizer delete any guest's photo, which cannot be undone.
 const REACHES_GUESTS = new Set([
   ...EVENT_ORGANIZER_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS,
-  ...EVENT_GUEST_TOOLS, ...ALBUM_ORGANIZER_TOOLS, ...ALBUM_MEMBER_TOOLS,
+  ...EVENT_GUEST_TOOLS, ...EVENT_ANSWER_TOOLS, ...ALBUM_ORGANIZER_TOOLS, ...ALBUM_MEMBER_TOOLS,
 ]);
 function eventWrite(name, input) {
   if (!REACHES_GUESTS.has(name)) return false;

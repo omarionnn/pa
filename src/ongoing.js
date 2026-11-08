@@ -284,7 +284,7 @@ function seriesItem(conversationId, s, name) {
 const ACTION_WORDS = { purchase_confirm: "PURCHASE", browser_submit: "BOOKING", call_place: "CALL", message_send: "TEXT", voice_note_send: "VOICE NOTE",
   gmail_send: "EMAIL", uber_request: "RIDE", document_send: "DOCUMENT", drive_share: "SHARE", subscription_cancel_commit: "CANCEL A SUBSCRIPTION",
   flight_checkin_commit: "CHECK IN", account_connect: "CONNECT AN ACCOUNT", github_pr_merge: "MERGE A PULL REQUEST", access_grant: "ACCESS",
-  event_blast: "TEXT GUESTS", event_schedule: "SCHEDULE A TEXT TO GUESTS", event_settings: "SHOW THE GUEST LIST", github_issue_create: "OPEN AN ISSUE", github_issue_comment: "COMMENT ON GITHUB" };
+  event_blast: "TEXT GUESTS", event_schedule: "SCHEDULE A TEXT TO GUESTS", event_settings: "SHOW THE GUEST LIST", event_questions: "ASK GUESTS A QUESTION", github_issue_create: "OPEN AN ISSUE", github_issue_comment: "COMMENT ON GITHUB" };
 const TO_ACTIONS = new Set(["call_place", "message_send", "voice_note_send", "gmail_send", "document_send", "drive_share"]);
 
 /** The purchase a purchase_confirm ask is about: the row that spent this yes, or the cart its target is pinned to. */

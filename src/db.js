@@ -12593,6 +12593,107 @@ db.exec("UPDATE event_attendees SET first_joined_at = joined_at WHERE first_join
 //                          NULL for codes made before this was kept: read as the event is now.
 addColumnIfMissing("event_claims", "list_shown", "INTEGER");
 
+// ---------- guest questions (src/eventquestions.js, owner request 2026-11-08, events next-round #4) ----------
+//
+// event_questions  the organizer's few questions guests answer when they join ("any dietary needs?",
+//                  "your plus-one's name"). `kind` text | choice; `choices` a JSON array of labels for a
+//                  choice question. `version` moves on every rewording, so an answer typed on a join
+//                  page against the old words is never filed under the new ones. Removing a question
+//                  deletes it and its answers: nothing is kept that the organizer no longer asks.
+// event_answers    one row per guest per question, theirs: `conversation_id` is the guest's, so their
+//                  export carries it and their delete takes it. `choice` is the 0-based pick of a choice
+//                  question (its label at the time is in `answer` too), `answer` the words. Only the
+//                  organizer and the guest themselves ever read these — never another guest, never the
+//                  who's-going list. `answered_at` is the first answer, `updated_at` the latest change.
+// event_claims.answers  what the join page collected, as JSON, until the finishing text spends it.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS event_questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    choices TEXT,
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS event_questions_event ON event_questions(event_id, position);
+  CREATE TABLE IF NOT EXISTS event_answers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    question_id INTEGER NOT NULL,
+    attendee_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    choice INTEGER,
+    answer TEXT NOT NULL,
+    via TEXT NOT NULL,
+    answered_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(question_id, attendee_id)
+  );
+  CREATE INDEX IF NOT EXISTS event_answers_event ON event_answers(event_id, question_id);
+`);
+addColumnIfMissing("event_claims", "answers", "TEXT");
+
+/** An event's questions, in the order guests see them. */
+export function eventQuestions(eventId) {
+  return db.prepare("SELECT * FROM event_questions WHERE event_id = ? ORDER BY position, id").all(Number(eventId));
+}
+export function eventQuestion(eventId, id) {
+  return db.prepare("SELECT * FROM event_questions WHERE event_id = ? AND id = ?").get(Number(eventId), Number(id)) ?? null;
+}
+export function insertEventQuestion({ eventId, kind, prompt, choices = null }) {
+  const now = clock.now();
+  const pos = db.prepare("SELECT COALESCE(MAX(position), 0) + 1 AS p FROM event_questions WHERE event_id = ?").get(Number(eventId)).p;
+  const id = Number(db.prepare("INSERT INTO event_questions (event_id, position, kind, prompt, choices, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)")
+    .run(Number(eventId), pos, kind, prompt, choices ? JSON.stringify(choices) : null, now, now).lastInsertRowid);
+  return eventQuestion(eventId, id);
+}
+/** Reword a question nobody has answered yet; compare-and-set on there still being no answer. */
+export function rewordEventQuestion({ eventId, id, kind, prompt, choices = null }) {
+  const r = db.prepare(`UPDATE event_questions SET kind = ?, prompt = ?, choices = ?, version = version + 1, updated_at = ?
+    WHERE event_id = ? AND id = ? AND NOT EXISTS (SELECT 1 FROM event_answers WHERE question_id = event_questions.id)`)
+    .run(kind, prompt, choices ? JSON.stringify(choices) : null, clock.now(), Number(eventId), Number(id));
+  return r.changes === 1 ? eventQuestion(eventId, id) : null;
+}
+/** A question and every answer to it, in one go. How many answers went with it. */
+export function deleteEventQuestion(eventId, id) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const gone = db.prepare("DELETE FROM event_answers WHERE event_id = ? AND question_id = ?").run(Number(eventId), Number(id)).changes;
+    const q = db.prepare("DELETE FROM event_questions WHERE event_id = ? AND id = ?").run(Number(eventId), Number(id)).changes;
+    db.exec("COMMIT");
+    return q === 1 ? { ok: true, answers: gone } : { ok: false };
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
+  }
+}
+/** Every answer on an event, with whose it is: the organizer's read (src/eventquestions.js decides who sees it). */
+export function eventAnswers(eventId) {
+  return db.prepare(`SELECT ans.*, a.display_name, a.state FROM event_answers ans JOIN event_attendees a ON a.id = ans.attendee_id
+    WHERE ans.event_id = ? ORDER BY ans.question_id, ans.answered_at, ans.id`).all(Number(eventId));
+}
+/** One guest's own answers on one event. */
+export function answersOf(eventId, attendeeId) {
+  return db.prepare("SELECT * FROM event_answers WHERE event_id = ? AND attendee_id = ? ORDER BY question_id").all(Number(eventId), Number(attendeeId));
+}
+/** Set (or change) one guest's answer to one question; the first answer's time is kept. */
+export function setEventAnswer({ eventId, questionId, attendeeId, conversationId, choice = null, answer, via }) {
+  const now = clock.now();
+  db.prepare(`INSERT INTO event_answers (event_id, question_id, attendee_id, conversation_id, choice, answer, via, answered_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(question_id, attendee_id) DO UPDATE SET choice = excluded.choice, answer = excluded.answer, via = excluded.via, updated_at = excluded.updated_at`)
+    .run(Number(eventId), Number(questionId), Number(attendeeId), conversationId, choice, answer, via, now, now);
+}
+export function clearEventAnswer(questionId, attendeeId) {
+  return db.prepare("DELETE FROM event_answers WHERE question_id = ? AND attendee_id = ?").run(Number(questionId), Number(attendeeId)).changes === 1;
+}
+export function questionAnswerCount(questionId) {
+  return db.prepare("SELECT COUNT(*) AS n FROM event_answers WHERE question_id = ?").get(Number(questionId)).n;
+}
+
 export function setAccountInstagram(conversationId, handle) {
   db.prepare("UPDATE accounts SET instagram = ? WHERE conversation_id = ?").run(handle ?? null, conversationId);
 }
@@ -13278,13 +13379,13 @@ export function scrubConversationText(conversationId, since, fn) {
   return changed;
 }
 
-export function insertEventClaim({ eventId, passwordVersion, displayName, instagram = null, inDirectory = false, ttlMs }) {
+export function insertEventClaim({ eventId, passwordVersion, displayName, instagram = null, inDirectory = false, answers = null, ttlMs }) {
   const now = clock.now();
   for (let i = 0; i < 5; i++) {
     try {
       const shown = getEventRow(eventId)?.guest_list_visible ? 1 : 0;
-      const id = Number(db.prepare(`INSERT INTO event_claims (event_id, code, password_version, display_name, instagram, in_directory, list_shown, state, created_at, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`).run(Number(eventId), newClaimCode(), passwordVersion, displayName, instagram, inDirectory ? 1 : 0, shown, now, now + ttlMs).lastInsertRowid);
+      const id = Number(db.prepare(`INSERT INTO event_claims (event_id, code, password_version, display_name, instagram, in_directory, list_shown, answers, state, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`).run(Number(eventId), newClaimCode(), passwordVersion, displayName, instagram, inDirectory ? 1 : 0, shown, answers?.length ? JSON.stringify(answers) : null, now, now + ttlMs).lastInsertRowid);
       return db.prepare("SELECT * FROM event_claims WHERE id = ?").get(id);
     } catch (e) {
       if (!/UNIQUE/i.test(e?.message ?? "")) throw e;
@@ -13309,6 +13410,28 @@ export function eventClaimByCode(code) {
  * with reason one of `not_found`, `used`, `expired`, `password_changed`, `paused`, `cancelled`,
  * `full`, `removed`, `organizer`.
  */
+/**
+ * A join page's answers (`[{ q, v, choice, answer }]`, already checked when the page took them) put
+ * on the guest's row: each under its question only while that question still has the version it had.
+ * Returns how many were filed. Call inside the caller's transaction.
+ */
+export function fileClaimAnswers(eventId, att, raw, via = "join") {
+  let list = [];
+  try { list = Array.isArray(raw) ? raw : JSON.parse(raw ?? "[]"); } catch { list = []; }
+  let n = 0;
+  for (const a of Array.isArray(list) ? list : []) {
+    const q = a && eventQuestion(eventId, a.q);
+    if (!q || q.version !== a.v || typeof a.answer !== "string" || !a.answer) continue;
+    if (q.kind === "choice") {
+      const labels = JSON.parse(q.choices ?? "[]");
+      if (!Number.isInteger(a.choice) || labels[a.choice] !== a.answer) continue;
+    }
+    setEventAnswer({ eventId, questionId: q.id, attendeeId: att.id, conversationId: att.conversation_id, choice: q.kind === "choice" ? a.choice : null, answer: a.answer, via });
+    n++;
+  }
+  return n;
+}
+
 export function redeemEventClaim({ code, channel, address, existingConversationId = null }) {
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -13344,6 +13467,9 @@ export function redeemEventClaim({ code, channel, address, existingConversationI
     const now = clock.now();
     const won = db.prepare("UPDATE event_claims SET state = 'used', used_at = ?, used_by = ? WHERE id = ? AND state = 'open'").run(now, conversationId, claim.id);
     if (won.changes !== 1) return fail("used");
+    // What they answered on the join page, filed now that they are in — and only under a question
+    // still worded as it was when they read it (a reworded or removed one drops that answer).
+    if (!added.already) fileClaimAnswers(ev.id, added.attendee, claim.answers);
     db.exec("COMMIT");
     return { ok: true, claim: eventClaimByCode(code), event: getEventRow(ev.id), attendee: added.attendee, already: added.already, account: getAccount(conversationId), newAccount };
   } catch (e) {

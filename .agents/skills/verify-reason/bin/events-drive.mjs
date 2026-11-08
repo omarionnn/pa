@@ -448,6 +448,53 @@ config.events = "owner";
   clock.reset();
 }
 
+// ---- guest questions (src/eventquestions.js): asked on joining, all optional, answers the organizer's alone ----
+{
+  const qs = await imp("src/eventquestions.js");
+  const made = await tool("event_create", { name: "Questions Brunch", description: "x", starts_at: "2027-08-01T11:00", timezone: "America/New_York", location: "3 Elm St", password: "brunch-pw", show_time_on_join: true, show_location_on_join: false, guest_list_visible: true }, C.owner);
+  const qev = db.getEventRow(made.event.event_id);
+  await tool("event_join", { name: "Questions Brunch", password: "brunch-pw" }, C.ama);
+  await new Promise(r => setTimeout(r, 50));
+  const n0 = fake.sent.length;
+  const add = { event_id: qev.id, event_named: qev.name, action: "add", kind: "choice", prompt: "Any dietary needs?", choices: ["Vegetarian", "Vegan", "No restrictions"] };
+  const unasked = await tool("event_questions", add, C.owner);
+  step("ask: adding a question by text asks for the yes first, showing what guests see; nothing saved", unasked.blocked === "needs_confirmation" && /pick one: Vegetarian \/ Vegan \/ No restrictions/.test(unasked.asks?.guests_see ?? "") && db.eventQuestions(qev.id).length === 0, unasked.use_target);
+  const saved = await withYes(runTool, "event_questions", add, { conversationId: C.owner, messages: [], events: runtime });
+  await withYes(runTool, "event_questions", { event_id: qev.id, event_named: qev.name, action: "add", kind: "text", prompt: "Your plus-one's name" }, { conversationId: C.owner, messages: [], events: runtime });
+  await new Promise(r => setTimeout(r, 50));
+  step("ask: with the yes it's saved, and nobody is texted", saved.ok && db.eventQuestions(qev.id).length === 2 && fake.sent.length === n0, saved.note);
+  await withYes(runTool, "event_questions", { event_id: qev.id, event_named: qev.name, action: "add", kind: "text", prompt: "Arriving when?" }, { conversationId: C.owner, messages: [], events: runtime });
+  const fourth = await tool("event_questions", { event_id: qev.id, event_named: qev.name, action: "add", kind: "text", prompt: "One more?" }, C.owner);
+  step("ask: a fourth question is refused before any yes", fourth.problem === "too_many" && !fourth.blocked, fourth.error);
+  const [food, plus, arrive] = qs.questionsOf(qev);
+  await tool("event_questions", { event_id: qev.id, event_named: qev.name, action: "remove", question_id: arrive.question_id }, C.owner);
+  const qweb = (o) => web({ publicId: qev.public_id, ...o });
+  const open = await qweb({});
+  step("ask: the join page shows them under the name, all optional", /THE HOST ASKS · ALL OPTIONAL/i.test(open.body) && /Any dietary needs\?/.test(open.body) && !/name="q_\d+"[^>]*required/.test(open.body));
+  const NEWQ = "+14155550021";
+  const claim = await qweb({ sub: "join", method: "POST", headers: { "x-forwarded-for": "203.0.113.21" }, body: new URLSearchParams({ password: "brunch-pw", display_name: "Nana", [`q_${food.question_id}`]: "1", [`qv_${food.question_id}`]: "1", [`q_${plus.question_id}`]: "Akos", [`qv_${plus.question_id}`]: "1" }).toString() });
+  const qcode = decodeURIComponent(/body=([^"]+)"/.exec(claim.body)[1].replace(/&#39;/g, "'").replace(/&amp;/g, "&"));
+  await router.deliver({ channel: "fake", externalId: "web-q1", from: NEWQ, text: qcode });
+  const nana = db.attendeeRow(qev.id, `dm:fake:${NEWQ}`);
+  step("ask: a new guest's page answers reach their row through the finishing text", nana?.state === "joined" && JSON.stringify(db.answersOf(qev.id, nana.id).map(a => a.answer)) === '["Vegan","Akos"]');
+  const kofiIn = await tool("event_join", { name: "Questions Brunch", password: "brunch-pw" }, C.kofi);
+  step("ask: a text join hands the model the questions, one at a time, all optional", kofiIn.ok && kofiIn.questions?.length === 2 && /every one optional/.test(kofiIn.say) && /ask only the first/.test(kofiIn.say));
+  const pick = await tool("event_answer", { event_id: qev.id, event_named: qev.name, question_id: food.question_id, choice: 1 }, C.kofi);
+  step("ask: event_answer saves a pick by its number", pick.ok && pick.saved === "Vegetarian", JSON.stringify(pick).slice(0, 120));
+  db.startPageSession("drive-q-ama", "drive-session-token-ama-q-0001", { conversationId: C.ama });
+  const amaCookie = "reason_page=drive-session-token-ama-q-0001";
+  const ch = await qweb({ sub: "answers", method: "POST", headers: { cookie: amaCookie }, body: new URLSearchParams({ [`q_${food.question_id}`]: "2", [`q_${plus.question_id}`]: "Yaw M." }).toString() });
+  step("ask: a guest changes their answers on their own page", ch.status === 303 && JSON.stringify(db.answersOf(qev.id, db.attendeeRow(qev.id, C.ama).id).map(a => a.answer)) === '["No restrictions","Yaw M."]');
+  // The organizer's own page, drawn as /e/<id> draws it for their browser (the drive's owner has no page session of its own).
+  const host = (await imp("src/pages/eventmanage.js")).renderManage({ ev: db.getEventRow(qev.id), conversationId: C.owner });
+  const who = (await qweb({ sub: "who", headers: { cookie: amaCookie } })).body + (await qweb({ headers: { cookie: amaCookie } })).body + open.body;
+  step("ask: the organizer sees the count per choice and each answer; no guest page shows another's", /ANSWERED · 3 OF 3/.test(host) && /Akos/.test(host) && /Yaw M\./.test(host) && !/Akos/.test(who), "");
+  const rw = await tool("event_questions", { event_id: qev.id, event_named: qev.name, action: "change", question_id: plus.question_id, kind: "text", prompt: "Who are you bringing?" }, C.owner);
+  const rm = await tool("event_questions", { event_id: qev.id, event_named: qev.name, action: "remove", question_id: plus.question_id }, C.owner);
+  step("ask: an answered question can't be reworded; removing it says how many answers go first", rw.problem === "answered" && !rw.blocked && rm.problem === "has_answers" && rm.answers === 2, rm.error);
+  await tool("event_cancel", { event_id: qev.id, event_named: qev.name }, C.owner);
+}
+
 const cancel = await tool("event_cancel", { event_id: ev.id, event_named: "Halloween Party" }, C.owner);
 step("cancellation reaches every guest", cancel.ok && toNum(AMA).some(t => /is cancelled/.test(t)) && toNum(YAW).some(t => /is cancelled/.test(t)));
 

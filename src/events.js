@@ -969,8 +969,8 @@ export const CLAIM_TTL_MS = 24 * 60 * 60 * 1000;
  * The page's join, after the password: a claim, holding what the page collected and the code the
  * guest's own text will carry. Nothing is joined yet — a phone has not been proved.
  */
-export function makeClaim({ ev, displayName, instagram = null, inDirectory = false }) {
-  return db.insertEventClaim({ eventId: ev.id, passwordVersion: ev.password_version, displayName, instagram: instagramHandle(instagram), inDirectory, ttlMs: CLAIM_TTL_MS });
+export function makeClaim({ ev, displayName, instagram = null, inDirectory = false, answers = null }) {
+  return db.insertEventClaim({ eventId: ev.id, passwordVersion: ev.password_version, displayName, instagram: instagramHandle(instagram), inDirectory, answers, ttlMs: CLAIM_TTL_MS });
 }
 
 /** The text the page's button prefills. Says what it is, with the code a lookup key in it. */
