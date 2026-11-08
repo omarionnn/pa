@@ -348,8 +348,11 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   THE GUEST LIST (tag PRIVATE / SHOWN TO GUESTS; show = confirm step with who gets asked, the exact text and a
   `pin` re-checked on send; hide = confirm, quiet) and HOW MANY CAN JOIN (tag `N OF CAP` / `FULL · N OF CAP`;
   empty = no cap; confirm step only when the new cap is at or under the number in). Guest rows on a private
-  list read "joined while the list was private". Waitlist out of scope. Pinned:
-  `test/event-edit-limits.test.js`; drive: the `limits:` steps.
+  list read "joined while the list was private". Waitlist out of scope. Owner decisions 2026-11-08 (#401, yes
+  to all three): guests who joined while it was private are asked once, behind the yes; the organizer goes on
+  their own list when they show it (`hostWouldList`; the text reply's `you_listed_as`, the page's "You go on it
+  too, as …"); the full-event wording stays as written. Pinned: `test/event-edit-limits.test.js`; drive: the
+  `limits:` steps (one per decision: asked once, organizer listed, full wording).
 
 ## How to get to it (user POV)
 

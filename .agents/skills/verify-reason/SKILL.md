@@ -489,6 +489,10 @@ no cap reopens; showing a private list asks for the yes first naming who is aske
 listed; each is asked once; hiding is quiet). Not proven: the real model reading a texted request, a live
 send of the ask, the `list_chosen` backfill on a copy of live.
 
+Owner decisions 2026-11-08 (yes to all three, before merge): ask once behind the yes; the organizer goes on
+their own list when it's shown; the full wording stays. Maintain pass: features/events.md decisions line;
+events-drive +2 `limits:` steps (organizer listed + told; full wording, no waitlist) → 8 `limits:` steps, all ok.
+
 ### Baseline — event some-guests (message only some guests; 2026-11-08, PR event-some-guests, not merged)
 
 Scoped maintain pass for [features/events.md](features/events.md) "Message only some guests". Offline:
