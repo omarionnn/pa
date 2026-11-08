@@ -265,6 +265,10 @@ test("short answers: an answer that ends on a question keeps that question, word
   assert.equal(gl.sayWhole({ tools: ["message_send"] }), true);
   assert.equal(gl.sayWhole({ tools: [], endCall: { message: "bye" } }), true);
   assert.equal(gl.sayWhole({ tools: ["web_search"] }), false);
+  assert.equal(gl.sayWhole({ tools: ["message_search"] }), false, "a lookup of messages is not a send");
+  assert.equal(gl.isLookup("message_search"), true);
+  assert.equal(gl.isLookup("message_send"), false);
+  assert.equal(gl.shortForPhone("Want me to book it for seven? It's a forty dollar deposit that comes off the bill, refundable up to a day before, and they hold the table for fifteen minutes past the time before they give it away to the next people."), null, "a question in the middle is never cut away");
   const money = "It's $12.50 a ticket and doors are at 7 p.m. or later, so there's no rush to get there for the start of it at all. The second band is the one people come for and they're usually on at about nine thirty, and the bar stays busy right up to closing.";
   const m = gl.shortForPhone(money);
   assert.ok(m.say.startsWith("It's $12.50 a ticket and doors are at 7 p.m. or later"), m.say);
@@ -499,6 +503,16 @@ test("talk-over: a held claim the guard stops is thrown away with the rest of th
   const before = s.twilio.media();
   await theySay(s.twilio, s.timers, 1000, SILENT);
   assert.equal(s.twilio.media() - before, 0, "the claim never plays");
+});
+
+test("talk-over: a barge-in clear leaves a held reply waiting for them, not thrown away", async () => {
+  const s = await greeted();
+  await theySay(s.twilio, s.timers, 400, LOUD);
+  s.live.emit({ type: "session.output_audio.delta", delta: LOUD });
+  s.call.clearPlayback("barge_in");
+  const before = s.twilio.media();
+  await theySay(s.twilio, s.timers, 800, SILENT);
+  assert.ok(s.twilio.media() - before >= 1, "played once they stopped");
 });
 
 test("talk-over: a goodbye held while they finish goes out before the hang-up waits on it", async () => {

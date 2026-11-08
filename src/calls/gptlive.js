@@ -530,7 +530,7 @@ const CHECK_WORDING = /\b(?:check|look)/i;
 /** Reason's tools that act rather than look something up: a wait for one of them is not "checking". */
 const ACTING_TOOLS = /send|email|text|message|call|timer|remind|book|pay|order|buy|confirm|commit|propose|cancel|undo|calendar_add|create|save|set/;
 /** Is this one of Reason's tools that looks something up? (Its own tool names, never anyone's words.) */
-export const isLookup = (name) => !!name && !ACTING_TOOLS.test(String(name));
+export const isLookup = (name) => !!name && (/search|list|lookup|find|read|recall|get_|_get|events/.test(String(name)) || !ACTING_TOOLS.test(String(name)));
 /** They spoke this recently: the turn is not over, nothing is said into it. */
 const HOLD_CALLER_QUIET_MS = 600;
 /** The voice spoke this recently (a few words of its own): a holding line waits until it has been quiet this long. */
@@ -566,7 +566,7 @@ export const TEXT_REST_OFFER = "There's a bit more — want me to text you the r
 /** How many hand-offs after the offer the whole answer is still kept for Reason. */
 const TEXT_OFFER_TURNS = 2;
 /** Tools behind an answer that must be said whole: an agreement being made, a readback, a send. */
-const SAY_WHOLE_TOOLS = /confirm|commit|propose|readback|quote|send|email|text|message/;
+const SAY_WHOLE_TOOLS = /confirm|commit|propose|readback|quote|_send$|^send_|email_send|voice_note|picture/;
 
 /** The sentences of a spoken answer. A full stop inside "$12.50" or "7 p.m. or later" ends nothing. */
 function sentencesOf(text) {
@@ -600,6 +600,8 @@ export function shortForPhone(text, { max = LONG_REPLY_CHARS, keep = SHORT_REPLY
     const at = Math.max(cut.lastIndexOf(", "), cut.lastIndexOf("; "), cut.lastIndexOf(" — "));
     say = `${(at > 60 ? cut.slice(0, at) : cut.slice(0, cut.lastIndexOf(" "))).trim()}.`;
   }
+  // A question anywhere in what would go unsaid stays: the answer is said whole.
+  if (body.slice(say ? sentencesOf(say).length : 0).some(x => /\?/.test(x))) return null;
   const out = lastQ ? `${say} ${lastQ}` : `${say} ${TEXT_REST_OFFER}`;
   if (!say || out.length >= full.length - 20) return null;
   return { say: out, full, offered: !lastQ };
@@ -1316,8 +1318,9 @@ export class GptLiveCall {
 
   /** Throw away whatever Twilio has buffered and not played. */
   clearPlayback(why) {
-    // A run held back for talk-over goes with everything else unplayed (the guard, a barge-in).
-    this.overDiscard();
+    // A run held back for talk-over goes with everything else unplayed when the guard stops a claim. A
+    // barge-in leaves it alone: it is already waiting for them to finish (`overTalk`).
+    if (why === "guard") this.overDiscard();
     this.toTwilio({ event: "clear" });
     this.tape.cut();
     this.playheadAt = this.now();
