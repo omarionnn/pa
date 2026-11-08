@@ -214,7 +214,7 @@ export function openingPurpose(call) {
  * silence, and if the wait runs long, code hands it the exact words (call 79).
  */
 export const NO_HOLDING_LINE = "When you hand something to Reason, say nothing of your own while you wait: no \"let me check\", \"looking that up\", \"hang on\" or \"one sec\"."
-  + " If a wait needs a word, you'll be given the exact one to say. Then say Reason's answer as your reply, without a holding phrase in front of it.";
+  + " If a wait needs a word, you'll be given the exact one to say. Then say Reason's answer as your reply, in about as many words as it has: no holding phrase in front of it and no lines of your own around it.";
 
 /** Call 56: "do you know where I am?" was answered "you're Omari" (2026-10-31). Where/what goes to Reason. */
 const NOT_WHO = "Where they are, or any other question, goes to Reason; if you're not sure whether they said who or where, ask.";
@@ -556,11 +556,11 @@ export function holdLineFor({ kind = "first", tool = false, n = 0 } = {}) {
 // whole answer is kept for Reason's next turn, which reads their reply to the offer and, if they want
 // it, texts it with its own send tool (`textOfferNote`) — so a "sent" is only ever said behind a real send.
 // Measured on the 2026-11-08 drives: the voice speaks ~15 characters a second, so 220 characters is
-// about 15 s of talking and 160 about 11 s — two sentences.
+// about 15 s of talking. 180 (~12 s) is the most said at once; 130 (~9 s, two sentences) is what is kept.
 /** Spoken answers longer than this are cut. */
-export const LONG_REPLY_CHARS = 220;
+export const LONG_REPLY_CHARS = 180;
 /** What is kept of a long answer: whole sentences up to about this. */
-export const SHORT_REPLY_CHARS = 160;
+export const SHORT_REPLY_CHARS = 130;
 /** The offer said after a cut answer. */
 export const TEXT_REST_OFFER = "There's a bit more — want me to text you the rest?";
 /** How many hand-offs after the offer the whole answer is still kept for Reason. */
@@ -600,8 +600,6 @@ export function shortForPhone(text, { max = LONG_REPLY_CHARS, keep = SHORT_REPLY
     const at = Math.max(cut.lastIndexOf(", "), cut.lastIndexOf("; "), cut.lastIndexOf(" — "));
     say = `${(at > 60 ? cut.slice(0, at) : cut.slice(0, cut.lastIndexOf(" "))).trim()}.`;
   }
-  // A question anywhere in what would go unsaid stays: the answer is said whole.
-  if (body.slice(say ? sentencesOf(say).length : 0).some(x => /\?/.test(x))) return null;
   const out = lastQ ? `${say} ${lastQ}` : `${say} ${TEXT_REST_OFFER}`;
   if (!say || out.length >= full.length - 20) return null;
   return { say: out, full, offered: !lastQ };
@@ -2223,16 +2221,19 @@ export class GptLiveCall {
   overTalk(t, b64) {
     if (this.overFlushing) return false;
     const o = this.over;
+    const speech = hasSpeech(b64);
     if (o?.dropped) {
-      // The rest of a dropped run, as it keeps coming: dropped too (never half a sentence).
-      if (t - o.lastAt < VOICE_RUN_GAP_MS) { o.lastAt = t; return true; }
+      // The rest of a dropped run, as it keeps coming: dropped too (never half a sentence). Only its
+      // SPEECH counts: the session streams silence between words, and silence must never keep a drop alive.
+      if (speech && t - o.lastAt < VOICE_RUN_GAP_MS) { o.lastAt = t; return true; }
+      if (!speech && t - o.lastAt < VOICE_RUN_GAP_MS) return false;
       this.over = null;
     } else if (o) {
       o.frames.push(b64);
-      o.lastAt = t;
+      if (speech) o.lastAt = t;
       return true;
     }
-    if (!hasSpeech(b64) || this.voiceRunFrom !== t) return false;
+    if (!speech || this.voiceRunFrom !== t) return false;
     // They have spoken since the voice's last run began (not the echo of that run): this run answers them.
     const afterThem = this.theirSpeechAt > this.lastRunAt && this.theirSpeechAt >= this.voiceEndsAt + ECHO_TAIL_MS;
     const first = afterThem && this.lastRunAt > 0 && this.runsAfterThem === 0;

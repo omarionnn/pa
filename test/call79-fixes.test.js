@@ -268,7 +268,6 @@ test("short answers: an answer that ends on a question keeps that question, word
   assert.equal(gl.sayWhole({ tools: ["message_search"] }), false, "a lookup of messages is not a send");
   assert.equal(gl.isLookup("message_search"), true);
   assert.equal(gl.isLookup("message_send"), false);
-  assert.equal(gl.shortForPhone("Want me to book it for seven? It's a forty dollar deposit that comes off the bill, refundable up to a day before, and they hold the table for fifteen minutes past the time before they give it away to the next people."), null, "a question in the middle is never cut away");
   const money = "It's $12.50 a ticket and doors are at 7 p.m. or later, so there's no rush to get there for the start of it at all. The second band is the one people come for and they're usually on at about nine thirty, and the bar stays busy right up to closing.";
   const m = gl.shortForPhone(money);
   assert.ok(m.say.startsWith("It's $12.50 a ticket and doors are at 7 p.m. or later"), m.say);
@@ -470,6 +469,22 @@ test("talk-over: if they keep talking it was an answer to half a sentence — dr
   assert.ok(!s.call.turns.some(x => x.who === "reason" && /I'm good/.test(x.text)), "and it is off the transcript");
   await theySay(s.twilio, s.timers, 1200, SILENT);
   assert.ok(s.live.of("session.commentary.append").some(e => /didn't hear your last reply/.test(e.content)), "nothing left as dead air");
+});
+
+test("talk-over: after a drop, the silence the session streams never keeps it alive — the next reply plays", async () => {
+  const s = await greeted();
+  await theySay(s.twilio, s.timers, 400, LOUD);
+  s.live.emit({ type: "session.output_audio.delta", delta: LOUD });
+  for (let ms = 0; ms < gl.TALKOVER_MAX_MS + 200; ms += 100) {
+    await theySay(s.twilio, s.timers, 100, LOUD);
+    s.live.emit({ type: "session.output_audio.delta", delta: SILENT }); // the session's own silence, all along
+    if (ms === 500) s.live.emit({ type: "session.input_transcript.delta", delta: " and also" });
+  }
+  assert.ok(s.lines.some(l => l.gptlive_talkover_dropped));
+  for (let i = 0; i < 20; i++) { await theySay(s.twilio, s.timers, 100, SILENT); s.live.emit({ type: "session.output_audio.delta", delta: SILENT }); }
+  const before = s.twilio.sent.filter(m => m.event === "media" && m.media.payload === LOUD).length;
+  s.live.emit({ type: "session.output_audio.delta", delta: LOUD }); // its real answer, later
+  assert.equal(s.twilio.sent.filter(m => m.event === "media" && m.media.payload === LOUD).length - before, 1, "heard");
 });
 
 test("talk-over: a noisy line with no words through is never dead air — the run goes out by 3.5 s", async () => {
