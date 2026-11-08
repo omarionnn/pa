@@ -59,7 +59,7 @@ db.blockNumber("+14155550111", "drive");
 const omariBefore = JSON.stringify(db.loadConversation(C));
 
 const lines = [];
-const log = (o) => lines.push(o);
+const log = (o) => lines.push({ ...o, t: Date.now() });
 const events = [];
 const runtime = {
   event: async (conversationId, text, opts) => { events.push({ conversationId, text: String(text), forCall: opts?.forCall }); return "ok"; },
@@ -82,7 +82,8 @@ config.publicUrl = `http://127.0.0.1:${port}`;
 const from = { user: "+13105550000", stranger: "+14155550199", blocked: "+14155550111" }[who];
 const params = { CallSid: `CAdrive_${who}`, From: from, To: "+16562167455" };
 const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
-const twiml = gl.inboundTwiml({ rawBody: new URLSearchParams(params).toString(), headers: { "x-twilio-signature": gl.twilioSignature(url, params) }, router, log });
+const hookAt = Date.now();
+const twiml = await gl.inboundTwimlReady({ rawBody: new URLSearchParams(params).toString(), headers: { "x-twilio-signature": gl.twilioSignature(url, params) }, router, log });
 const streamUrl = twiml.body.match(/<Stream url="([^"]+)"/)?.[1] ?? null;
 
 const out = { who, twiml: twiml.body.replace(/stream\/[^"]+/, "stream/<token>") };
@@ -97,17 +98,27 @@ if (who === "blocked") {
   const thenAt = Number(arg("--then-at", 20));
   const speechAt = [];
   let hungUpAt = null;
+  // --answer-ms: Twilio's own time from the TwiML to the stream (answer + WebSocket), default 0.
+  const twimlMs = Date.now() - hookAt;
+  await new Promise(r => setTimeout(r, Number(arg("--answer-ms", 0))));
   const twilio = new WebSocket(streamUrl);
   twilio.onmessage = (m) => { const e = JSON.parse(String(m.data)); if (e.event === "media" && gl.hasSpeech(e.media.payload)) speechAt.push(Date.now() - startAt); };
   await new Promise((r, j) => { twilio.onopen = r; twilio.onerror = () => j(new Error("the stream socket did not open")); });
   twilio.onclose = () => { hungUpAt ??= Date.now() - startAt; };
   twilio.send(JSON.stringify({ event: "connected" }));
   const startAt = Date.now();
+  const streamAfterHookMs = startAt - hookAt;
   twilio.send(JSON.stringify({ event: "start", start: { streamSid: "MZin", callSid: params.CallSid } }));
   // They say nothing for --quiet s (default 4: Reason speaks first), then the question, then silence.
   const silence = Buffer.alloc(160, 0xff);
   const frames = [];
-  for (let i = 0; i < Number(arg("--quiet", 4)) * 50; i++) frames.push(silence);
+  // --hello file: they say it 300 ms after the answer (a person who rang still says "hello?"), then the quiet.
+  if (arg("--hello")) {
+    const hello = readFileSync(arg("--hello"));
+    for (let i = 0; i < 15; i++) frames.push(silence);
+    for (let i = 0; i < hello.length; i += 160) frames.push(hello.subarray(i, i + 160));
+  }
+  while (frames.length < Number(arg("--quiet", 4)) * 50) frames.push(silence);
   for (let i = 0; i < audio.length; i += 160) frames.push(audio.subarray(i, i + 160));
   if (thenAudio) {
     while (frames.length < thenAt * 50) frames.push(silence);
@@ -127,6 +138,15 @@ if (who === "blocked") {
   const said = call?.turns.filter(t => t.who === "reason").map(t => t.text.trim()) ?? [];
   Object.assign(out, {
     first_voice_ms: speechAt[0] ?? null,
+    preopen: config.gptliveInboundPreopen, twiml_ms: twimlMs, stream_after_hook_ms: streamAfterHookMs,
+    first_voice_after_hook_ms: speechAt[0] == null ? null : speechAt[0] + streamAfterHookMs,
+    session_ready: lines.find(l => "gptlive_prering_ready" in l) ?? null,
+    session_up_after_stream_ms: (() => { const l = lines.find(x => "gptlive_session" in x); return l ? l.t - startAt : null; })(),
+    warm_used: lines.find(l => "gptlive_warm_used" in l) ?? null,
+    answer_wait: lines.find(l => "gptlive_inbound_answer_wait" in l) ?? null,
+    pregreet: lines.find(l => "gptlive_pregreet" in l || "gptlive_pregreet_skipped" in l) ?? null,
+    warm_greeted: lines.find(l => "gptlive_warm" in l) ?? null,
+    voice_seconds: call?.seconds ?? null,
     voice_said: said,
     caller_said: call?.turns.filter(t => t.who === "them").map(t => t.text.trim()) ?? [],
     delegations: pick("gptlive_delegation").length,
