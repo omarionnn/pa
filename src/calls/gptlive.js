@@ -46,6 +46,12 @@ import { goalPending } from "./goalmet.js";
 import { openingLineFor, recordingNoteFor, whoseCallIsThis, strangerIntake, overCallCap } from "./inbound.js";
 import * as strangerCall from "./stranger.js";
 import * as strangerCalls from "../strangercalls.js";
+// Feature checks, no hard dependency (#406 / call80-fixes adds both): this module's own
+// `voiceInstructionsFor`, and ./callmemory.js's `prepareCallMemory`. Absent, the pre-open builds the
+// session exactly as the stream would on this build (`sessionConfig` from `whoFor`).
+import * as self from "./gptlive.js";
+let callMemory = null;
+void import("./callmemory.js").then((m) => { callMemory = m; }, () => { /* not on this build */ });
 
 export const PROVIDER = "gptlive";
 export const STREAM_PATH = "/calls/gptlive/stream/";
@@ -962,7 +968,10 @@ export class WarmSession {
     this.live = openLive();
     this.live.on("open", () => {
       this.socketAt = this.now();
-      this.live.send({ type: "session.start", event_id: `start_${row.id}`, session: sessionConfig({ ...this.who, greeting: this.greeting }) });
+      // Built when the socket opens (not when it was asked for), so the call's memory read has had
+      // the longest possible; through #406's `voiceInstructionsFor` where that exists.
+      const instructions = preopenInstructions(row);
+      this.live.send({ type: "session.start", event_id: `start_${row.id}`, session: sessionConfig({ ...this.who, greeting: this.greeting, ...(instructions ? { instructions } : {}) }) });
     });
     this.live.on("event", (e) => (this.call ? this.call.fromLive(e) : this.take(e)));
     this.live.on("close", (code) => (this.call ? this.call.liveClosed(code) : this.drop(`closed (${code})`)));
@@ -1075,6 +1084,28 @@ export function prewarm(row, { openLive = openLiveSocket, log = () => {}, now, t
     log({ gptlive_warm_failed: row?.id ?? null, why: (e?.message ?? String(e)).split("\n")[0] });
     return null;
   }
+}
+
+/** The pre-opened session's instructions: `voiceInstructionsFor(row)` when this build has it, else "" (the default). */
+export function preopenInstructions(row) {
+  const build = self.voiceInstructionsFor;
+  if (typeof build !== "function") return "";
+  try { return String(build(row) ?? ""); } catch { return ""; }
+}
+
+/**
+ * The call's memory read (`prepareCallMemory`, memoized per call and capped by itself) waited on for at
+ * most `capMs`, when this build has it. Resolves true/false/null (null: not on this build). Never throws.
+ */
+export function awaitCallMemory(row, capMs, { log = () => {} } = {}) {
+  const prep = callMemory?.prepareCallMemory;
+  if (typeof prep !== "function" || !(capMs > 0)) return Promise.resolve(null);
+  let timer = null;
+  const t0 = Date.now();
+  return Promise.race([
+    Promise.resolve().then(() => prep(row, { log })).then(() => true, () => false),
+    new Promise((r) => { timer = setTimeout(() => r(false), capMs); }),
+  ]).then((done) => { clearTimeout(timer); log({ gptlive_prering_memory: row.id, ms: Date.now() - t0, done }); return done; });
 }
 
 /**
@@ -3266,7 +3297,9 @@ export async function dialGptLive(args, { fetchImpl = null, openLive = openLiveS
   // a session that is slow or fails never stops the call (it opens the old way on the stream).
   if (!thirdParty && config.gptlivePrering) {
     const t0 = Date.now();
-    const { w, wait } = preopen(row, { openLive, log: args?.log ?? (() => {}), waitMs: config.gptlivePreringWaitMs });
+    // #406's memory read first (already started by `warmTheTurn`), for part of the same capped wait.
+    await awaitCallMemory(row, Math.min(1000, config.gptlivePreringWaitMs / 2), { log: args?.log ?? (() => {}) });
+    const { w, wait } = preopen(row, { openLive, log: args?.log ?? (() => {}), waitMs: Math.max(0, config.gptlivePreringWaitMs - (Date.now() - t0)) });
     if (w && config.gptlivePreringWaitMs > 0) {
       const up = await wait;
       (args?.log ?? (() => {}))({ gptlive_prering_dial_wait: row.id, ms: Date.now() - t0, up, mode: config.gptlivePreringGreet });

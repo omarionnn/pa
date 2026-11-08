@@ -1191,6 +1191,25 @@ test("prering: a held session still ringing at 24 s is replaced by a fresh one o
   assert.ok(socks.length <= 3, "never renewed past the ring's deadline");
 });
 
+test("pre-open instructions: through voiceInstructionsFor when this build has it (#406), else the stream's own default; never throws", async () => {
+  on();
+  const row = ownerCall();
+  const live = fakeLive();
+  const timers = fakeTimers();
+  gl.prewarm(row, { hold: true, openLive: () => live.socket, now: timers.now, timers });
+  live.open();
+  const sent = live.of("session.start")[0].session.instructions;
+  if (typeof gl.voiceInstructionsFor === "function") {
+    assert.equal(sent, gl.voiceInstructionsFor(db.getCall(C, row.id) ?? row), "#406's builder, word for word");
+  } else {
+    assert.equal(gl.preopenInstructions(row), "");
+    assert.equal(sent, gl.sessionConfig({ ...gl.whoFor(row) }).instructions, "main: what the stream would send");
+  }
+  const mem = await gl.awaitCallMemory(row, 50);
+  assert.ok(mem === null || typeof mem === "boolean");
+  gl.dropWarm(row.id, "test over");
+});
+
 test("warm: a call that opens silent never gets a warm session", () => {
   on();
   const row = ownerCall({ announcement: "" });
