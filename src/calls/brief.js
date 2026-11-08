@@ -101,7 +101,7 @@ function readToday(conversationId, { until, tz, maxChars }) {
   let rows = [];
   try {
     const since = Math.min(startOfDay(until, tz), until - TODAY_MIN_HOURS * 3600_000);
-    rows = db.messagesBetween(conversationId, since, until, { limit: 40 });
+    rows = messagesBetween(conversationId, since, until, { limit: 40 });
     // No message history kept on this install (REASON_WEB off): the thread itself, back to the first
     // of their lines stamped with another day (their lines carry "[Sun, Nov 8, 2026, 10:04 AM] Name:").
     if (!rows.length) rows = todayFromThread(conversationId, { until, tz });
@@ -124,6 +124,15 @@ function readToday(conversationId, { until, tz, maxChars }) {
   const newest = [...rows].reverse();
   const names = namesIn([...newest.filter(r => r.role === "assistant"), ...newest.filter(r => r.role === "user")].map(r => r.text));
   return { lines: picked, names };
+}
+
+/**
+ * This conversation's own messages from `since` up to `until` (ms), oldest first, the newest `limit`:
+ * text only, never deleted ones. Scoped by conversation — never anybody else's.
+ */
+function messagesBetween(conversationId, since, until, { limit = 40 } = {}) {
+  return db.db.prepare(`SELECT role, text, at FROM messages WHERE conversation_id = ? AND at >= ? AND at <= ?
+    AND deleted_at IS NULL AND text != '' ORDER BY at DESC, id DESC LIMIT ?`).all(conversationId, since, until, limit).reverse();
 }
 
 /** Today's end of the thread, as `{ role, text, at }` rows (at: the day's stamp, or `until`). */

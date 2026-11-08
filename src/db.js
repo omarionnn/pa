@@ -11099,15 +11099,6 @@ function historyFromOutbound(row) {
   });
 }
 
-/**
- * This conversation's own messages from `since` up to `until` (ms), oldest first, the newest `limit`.
- * Text only, never deleted ones. Scoped by conversation: never anybody else's (a call's "today so far").
- */
-export function messagesBetween(conversationId, since, until, { limit = 40 } = {}) {
-  return db.prepare(`SELECT role, text, at FROM messages WHERE conversation_id = ? AND at >= ? AND at <= ?
-    AND deleted_at IS NULL AND text != '' ORDER BY at DESC, id DESC LIMIT ?`).all(conversationId, since, until, limit).reverse();
-}
-
 /** This conversation's history, oldest first, after a row id. Scoped by conversation: never anybody else's. */
 export function messagesFor(conversationId, { after = 0, limit = 200, chat = null } = {}) {
   const c = chatWhere(chat);
