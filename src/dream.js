@@ -12,7 +12,11 @@
 //   2. for each fact it says keep / correct (new wording) / merge into #id / retire, CITING the
 //      message that justifies the change — code refuses any change without a citation it was shown;
 //   3. it can add a rule from a behaviour correction in the transcript, and merge or retire rules a
-//      later message contradicts; past db.RULES_CAP it must consolidate, and code enforces the cap;
+//      later message contradicts; past db.RULES_CAP it must consolidate, and code enforces the cap.
+//      A standing rule exists only because THEY said it: every rule the review writes (new or merged)
+//      must cite their own message shown in the pass, a merge folds only rules a review wrote, and
+//      the cap drops review-written rules before ever touching one they set themselves. Code checks
+//      the citation, not the wording: nothing here judges that the rule says what they said.
 //   4. every change goes through the existing status machinery (corrected / superseded /
 //      superseded_by) — nothing is hard-deleted, and nothing they took back is ever written again;
 //   5. the profile is rebuilt.
@@ -107,16 +111,16 @@ const SCHEMA = {
     },
     rules_merge: {
       type: "array",
-      description: "Rules that say overlapping things, folded into one.",
+      description: "Rules a review wrote (marked 'review') that say overlapping things, folded into one. Never rules they set themselves.",
       items: {
         type: "object",
         properties: {
           ids: { type: "array", items: { type: "integer" }, description: "The R-numbers folded together (two or more)." },
           rule: { type: "string" },
           why: { type: "string" },
-          message: { type: "integer", description: "An m-number behind the merged rule, if one is shown." },
+          message: { type: "integer", description: "The m-number of THEIR message behind the merged rule." },
         },
-        required: ["ids", "rule", "why"],
+        required: ["ids", "rule", "why", "message"],
       },
     },
     rules_retire: {
@@ -143,7 +147,7 @@ For each fact, decide:
 - retire: a later message makes it no longer true (they moved, it finished, they changed their mind) and there is no new version to give.
 Every change must cite, in "message", the m-number that justifies it. If no message shown to you justifies a change, keep the fact. Never correct a fact into something nobody said. When unsure, keep.
 
-Rules are how they want the assistant to behave: timing, tone, what to show first, things to stop doing. Add one only when THEY corrected or asked for a change in how the assistant behaves; cite their message. A fact about them is not a rule. Retire a rule when a later message of theirs takes it back or contradicts it; merge rules that overlap. There may be at most {CAP} active rules: when there would be more, merge the overlapping ones and keep what matters most.
+Rules are how they want the assistant to behave: timing, tone, what to show first, things to stop doing. Add one only when THEY corrected or asked for a change in how the assistant behaves; cite their message. A fact about them is not a rule. Retire a rule when a later message of theirs takes it back or contradicts it; merge overlapping rules marked "review" (never one they set themselves), citing their message. There may be at most {CAP} active rules: when there would be more, merge the overlapping review rules and keep what matters most.
 
 Answer only with the schema.`;
 
@@ -275,7 +279,7 @@ export function reviewPrompt(conversationId, { messages, facts, rules, now = clo
     const quoted = from.map(id => `\n   from m${id} (${shownMessages.get(id).role}): "${cut(shownMessages.get(id).text ?? shownMessages.get(id).content, SOURCE_CHARS)}"`).join("");
     return `#${f.id} [${f.about}] (saved ${savedOn(f.created_at)}${f.source === "inferred" ? ", inferred" : ", they said it"}) ${cut(f.fact, FACT_CHARS)}${quoted}`;
   });
-  const ruleLines = rules.map(r => `R${r.id} (saved ${savedOn(r.created_at)}${r.source_message_id ? `, from m${r.source_message_id}` : ""}) ${cut(r.rule, 300)}${r.why ? ` — why: ${cut(r.why, 200)}` : ""}`);
+  const ruleLines = rules.map(r => `R${r.id} (saved ${savedOn(r.created_at)}${r.source === "they_said" ? ", they set it" : ", review"}${r.source_message_id ? `, from m${r.source_message_id}` : ""}) ${cut(r.rule, 300)}${r.why ? ` — why: ${cut(r.why, 200)}` : ""}`);
   const prompt = `Today is ${savedOn(now)}. The person is ${name}.\n\n`
     + `Messages since the last review, oldest first:\n${messages.map(m => `[m${m.id}] (${m.role}, ${savedOn(m.at)}): ${m.text}`).join("\n") || "(none)"}\n\n`
     + `Saved facts:\n${factLines.join("\n") || "(none)"}\n\n`
@@ -382,8 +386,12 @@ export async function reviewOne(conversationId, { now = clock.now(), day = local
   }
   for (const x of Array.isArray(v.rules_merge) ? v.rules_merge : []) {
     const ids = [...new Set((x?.ids ?? []).map(Number))].filter(id => shown.shownRules.has(id) && !ruleGone.has(id));
-    if (ids.length < 2 || !String(x.rule ?? "").trim()) { counts.refused++; continue; }
-    const from = anyMsg(x.message)?.id ?? ids.map(id => shown.shownRules.get(id).source_message_id).filter(Boolean).sort((a, b) => b - a)[0] ?? null;
+    // Their own message, shown this pass, behind the merged wording; and only review-written rules
+    // fold: one they set themselves is never replaced by model text.
+    const cited = userMsg(x?.message);
+    if (ids.length < 2 || !cited || !String(x.rule ?? "").trim()
+      || ids.some(id => shown.shownRules.get(id).source === "they_said")) { counts.refused++; continue; }
+    const from = cited.id;
     // Folded first, so the merged rule never counts against the ceiling it is making room under.
     for (const id of ids) db.supersedeRule(c, id, { at: now });
     const made = db.addRule(c, { rule: x.rule, why: x.why, sourceMessageId: from, source: "review", at: now });
@@ -403,9 +411,15 @@ export async function reviewOne(conversationId, { now = clock.now(), day = local
     if (made.ok && !made.already) counts.rules_added++;
     else if (!made.ok) counts.refused++;
   }
-  // The hard cap. The model was told to consolidate; whatever is still over goes oldest first.
+  // The hard cap. The model was told to consolidate; whatever is still over goes oldest first —
+  // review-written rules before any they set themselves, so a review never makes room for its own.
   const live = db.activeRules(c, { limit: 100 });
-  for (const r of live.slice(db.RULES_CAP)) if (db.supersedeRule(c, r.id, { at: now }).ok) counts.rules_capped++;
+  const over = live.length - db.RULES_CAP;
+  if (over > 0) {
+    const oldestFirst = [...live].reverse();
+    const drop = [...oldestFirst.filter(r => r.source !== "they_said"), ...oldestFirst.filter(r => r.source === "they_said")].slice(0, over);
+    for (const r of drop) if (db.supersedeRule(c, r.id, { at: now }).ok) counts.rules_capped++;
+  }
 
   db.markMemoryReview(c, { day, lastEventId: lastId, outcome: "reviewed", at: now });
   const changed = counts.corrected + counts.merged + counts.retired;
