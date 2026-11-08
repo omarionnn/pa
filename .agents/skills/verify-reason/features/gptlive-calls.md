@@ -127,7 +127,7 @@ LICENSE copyright, docs/usecases.json (internal).
 ## Call 56 fixes (2026-10-31)
 
 Call 56 (291 s, 9 delegations): "Checking" before nearly every reply, "how are you?" not returned, "where am I?" answered with the identity line (its ASR heard "who"), flat "Bye." and the line stayed open until Omari hung up, and a "yeah" to Reason's own train-check offer answered "Okay." without reaching Reason (the after-call note caught it: timer 389, 7:45 pm ET).
-- Prompt: call 53's lines untouched; identity line now "Only if they ask who you are, who they are or their name … Where they are, or any other question, goes to Reason; if you're not sure whether they said who or where, ask." plus `CALL56_LINES` (4): holding phrase only for a real hand-off, small talk returned, a yes/no to Reason's offer passed on, warm brief sign-off.
+- Prompt: call 53's lines untouched; identity line now "Only if they ask who you are, who they are or their name … Where they are, or any other question, goes to Reason; if you're not sure whether they said who or where, ask." plus `CALL56_LINES` (4): holding phrase only for a real hand-off (since call 79: `NO_HOLDING_LINE`, the voice never holds the line itself — see "Call 79 fixes"), small talk returned, a yes/no to Reason's offer passed on, warm brief sign-off.
 - Hang-up: the voice says its goodbyes itself, so Reason's `end_call` never came. A goodbye-sounding voice line (`soundsLikeFarewell`, a cue only) → `judgeEnding({kind:"goodbye"})` on claude-cli (askJson, haiku) → mutual goodbye → hang up once its SPEECH stops (the session streams silence between words, so `lastOutAt` never goes quiet; that left end_call on the 15 s cap). Words while it waits are read again ("bye — oh wait" calls it off). null (no CLI) never hangs up. Row: `end_reason=end_call`, detail `end_call (mutual goodbye)`. Log: `gptlive_goodbye_read`, `gptlive_goodbye_called_off`.
 - Cut-off: their words after Reason's goodbye are read (`kind:"cutoff"`; "bye"/"you too" = no); with no words, ≥300 ms of their speech in the last 1.5 s of a hang-up Reason made counts. `live.cutOff` → `ownerEvent` adds one "sounded like you were saying something as we hung up, what was it?" line (owner thread, normal after-call path, once). Log `gptlive_cut_off`.
 - `ownerEvent` (GPT-Live calls only): a yes to something offered for later that isn't set up → set it up now or say it couldn't.
@@ -414,3 +414,60 @@ Recipes:
   Right now.") and the voice doesn't ask about it (2/2); one backend turn asked where but guessed "the gym".
   **Not proven: a real phone call.** Whether the voice asks once about a truly garbled word on a real call
   is also unproven.
+
+## Call 79 fixes (2026-11-08) — holding lines by code, short answers, today so far, limits, warm first turn, talk-over
+
+Call 79 (Omari's own, 187 s, 6 hand-offs, no tool run on any): every reply opened with "let me check /
+looking that up"; the last two answers ran 25 s / 32 s; "I don't have anything saved" about Bo Peep, its
+own pick by text that day; "I'm —" over his "how are | you" at 0:07; first answer 4.3 s vs ~2.3 s later;
+"aim for after 9" when he'd said "7 or later".
+
+- **Holding lines (`src/calls/gptlive.js` `holdLine`, `holdLineFor`, `NO_HOLDING_LINE`, `WAIT_NOTE`):** every
+  non-line call's session has `delegation.acknowledgement_delay_ms: 800`; on each hand-off a quiet
+  `session.thinking.append` (`WAIT_NOTE`) cancels the voice's automatic acknowledgement. Answer back within
+  `HOLD_LINE_AFTER_MS` (1.5 s): no line at all. Later: one commentary "Say only this…" with `QUICK_HOLD_LINES`
+  ("Mm, one sec." …), or `CHECK_HOLD_LINES` ("Let me check." …) only when `onTool` (new hook through
+  `reasonTurn` → `llmRequest` → `voiceTurn`, tool_start/tool_use of Reason's own non-platform tools) reported
+  a lookup (`isLookup`: sends/bookings/timers are not "checking"). The first line waits while they or the voice
+  are speaking (voice quiet 1.2 s). At `LATE_HOLDING_MS` (7.5 s) one late line from `LATE_LINES` ("Still
+  checking." only with a lookup). Line calls unchanged. Log `gptlive_hold_line {kind, ms, tool, line}`.
+- **Short answers:** `ownerCallFrame` says one or two short sentences, then offer more. Floor in code
+  (`shortForPhone`): a spoken answer over `LONG_REPLY_CHARS` (180, ~12 s at ~15 chars/s) on their own call is
+  said as whole sentences up to `SHORT_REPLY_CHARS` (130) + `TEXT_REST_OFFER`; one ending on a question keeps
+  that question word for word and adds no offer; never cut when `sayWhole` (confirm/commit/propose/readback/
+  quote/send tools, or end_call). The whole answer rides as `textOfferNote` on the voice's own words for the
+  next 2 hand-offs (never on the caller's — the harm screen reads those); Reason texts it with
+  `message_send` to "owner" if they want it; a send spends it. False "sent" still blocked by `withoutUnbackedSends`.
+  Log `gptlive_reply_cut`.
+- **Today so far (`src/calls/brief.js` `todaySoFar`, `todaySoFarNote`, `namesIn`; `db.messagesBetween`):** the
+  call's own conversation only, local midnight (≥6 h back) up to the row's `created_at`, ≤1600 chars, names
+  (Bo Peep, The Ragtrader); thread fallback when REASON_WEB is off (lines stamped today). Read once per call
+  id (prompt stable for the cache). In `ownerContext`'s system prompt; names in the voice's `preCallBrief`.
+  Rules in `ownerCallFrame`: look (today, thread, memory/message search) before saying there's nothing; match
+  odd words to today's names; a limit they set ("7 or later") is said back once and kept to.
+- **Warm first turn (`warmTheTurn` → `voice.warmCallCache`, `REASON_CALL_CACHE_WARM`, default on):** own calls at
+  dial (`dialGptLive`) and at inbound routing; errands at stream start (`GptLiveCall` `warmTurn`, the opening
+  line is only settled then). API backend only. Prefix: own ~118k tokens (266 tools), errand ~6k (12 tools).
+  Log `call_cache_warmed {cache_write, cache_read}`.
+- **Talk-over (`overTalk`, `overRelease`, `overDrop`, `overNudge`; `Hearing.speech`):** a run of the voice's
+  speech that starts while their speech (over the line's floor, not the echo of the voice's last words) is
+  under `TALKOVER_QUIET_MS` (300) old — `FIRST_EXCHANGE_QUIET_MS` (700) on their first reply to the greeting —
+  is held, then played whole once they have been quiet that long. Still talking at `TALKOVER_MAX_MS` (2 s) with
+  their words coming through: dropped, its words taken off the transcript, `OVER_NOTE` to the voice, and
+  `OVER_NUDGE` if it hasn't answered once they've been quiet 0.9 s; no words through (noise): played by 3.5 s.
+  A ≤2-word unterminated fragment the voice gave up on is dropped, not replayed. Only SPEECH keeps a dropped
+  run alive (the session streams silence between words — the 2026-11-08 drive caught every later reply being
+  muted). Guard clear throws a held run away; a barge-in clear leaves it waiting; never while ending (a held
+  goodbye is released first). Logs `gptlive_talkover_held|dropped|nudged`.
+
+Recipes:
+- Offline: `node --test test/call79-fixes.test.js` (30: each behaviour above, incl. byte-identical warm/first-turn
+  prefix, nobody else's thread, the silence-keeps-drop-alive regression).
+- Whole-call replay, **on Hetzner** (real GPT-Live + Reason's real turn on claude-cli, fake Twilio, throwaway db
+  seeded with a "today" thread; ~3–4 min, ~15¢ of voice): `bin/call-quality-drive.mjs <clips-dir> --out x.json`
+  from a copy of main and of the branch (`/root/cq-run.sh main|branch <label>` on the box). Clips 1–6 = call 79's
+  lines (`say -v Samantha`, "how are [[slnc 450]] you?" for the cut-in). Prints per reply latency, seconds of
+  speech, talk-over ms, holding phrases, and a timeline. claude-cli turns are 4–11 s, so most hand-offs get a code
+  holding line in the drive; on the live API (~2–4 s) more answers land inside 1.5 s.
+- Not drivable without the API: the warm cache hit itself (check `call_cache_warmed` + the first `voice_turn`
+  first_word_ms on the next real call). **Not proven: a real phone call.**
