@@ -659,6 +659,11 @@ export const config = {
   // The voice (a young adult British woman was the owner's pick): Marin, with the accent
   // asked for in the live prompt. There is no British built-in voice.
   gptliveVoice: process.env.REASON_GPTLIVE_VOICE || "marin",
+  // An own call's GPT-Live session opened while the phone rings, with the call's own session.start
+  // (instructions, voice, brief, greeting), and HELD — no audio, nothing said — until the stream starts
+  // (gptlive.js `WarmSession` hold). Not calls 54–55's warm-up: nothing is spoken before pickup.
+  // "on" / "off" (default off).
+  gptlivePrering: String(process.env.REASON_GPTLIVE_PRERING ?? "off").trim().toLowerCase() === "on",
   twilioSid: process.env.TWILIO_ACCOUNT_SID || "",
   twilioToken: process.env.TWILIO_AUTH_TOKEN || "",
   // Reason's own number, E.164: what every GPT-Live call dials from, the number on Reason's contact
