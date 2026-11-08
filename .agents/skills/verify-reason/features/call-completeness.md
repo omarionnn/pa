@@ -50,16 +50,24 @@ files but not mapped here.
   with `about` stores it as `calls.verify_deferred` and texts nothing; the after-call turn asks for
   the yes in their own thread (`onlyAnExplicitYes`). A call Reason placed to the owner's own number
   is verified already (`isVerified`). Tests: `test/call-addendum.test.js`.
-- **An organizer's event tools wait for the check too (audit run 2 R2-G).** Besides `GATED_ACTIONS`,
-  `isConsequential` (src/calls/verify.js) gates every tool in `EVENT_ORGANIZER_TOOLS` and
-  `EVENT_RIDE_ORGANIZER_TOOLS` and `EVENT_RIDE_GUEST_TOOLS` (`event_ride` relays free text, swaps numbers), plus `event_leave` (ends their ride offers, texting the partner), `ALBUM_ORGANIZER_TOOLS` (`album_manage` release texts checked-in guests) and `album_remove` (src/albumtools.js) (src/eventtools.js) on an unverified incoming call, except the reads in
-  `ORGANIZER_READS`: `event_guests`, `event_scheduled` action list, `event_cover` action status,
-  `event_rides_setting` with no `enabled`, `event_ride` action neither, `album_manage` action status. A new organizer tool is gated until named there as a read.
-  Before this a caller-ID-only call ran `event_cancel` / `event_update` / `event_release` /
-  `event_guest_remove` (each texts guests) unchecked. Test: `test/call-event-gate.test.js` (3).
+- **Event and album tools wait for the check too (audit run 2 R2-G + leftover).** Besides `GATED_ACTIONS`,
+  `isConsequential` (src/calls/verify.js `REACHES_GUESTS` / `eventWrite`) gates every tool in
+  `EVENT_ORGANIZER_TOOLS`, `EVENT_RIDE_ORGANIZER_TOOLS`, `EVENT_RIDE_GUEST_TOOLS`, `EVENT_GUEST_TOOLS`
+  (src/eventtools.js) and `ALBUM_ORGANIZER_TOOLS` + `ALBUM_MEMBER_TOOLS` (src/albumtools.js) on an
+  unverified incoming call, except the reads in `EVENT_READS`: `event_guests`, `event_list`,
+  `event_lookup`, `event_info`, `album_info`, `event_scheduled` action list, `event_cover` action status,
+  `event_rides_setting` with no `enabled`, `event_ride` action neither, `album_manage` action status.
+  A new event/album tool is gated until named there as a read; `event_create` is not on the list.
+  Before R2-G a caller-ID-only call ran `event_cancel` / `event_update` / `event_release` /
+  `event_guest_remove` (each texts guests) unchecked; before the leftover fix it still ran a guest's
+  own writes: `event_join`, `event_directory` (name / Instagram on the who's-going list),
+  `event_instagram`, `event_mute`, `browsers_sign_out`, `album_add`. Text, Web and calls Reason placed
+  are unchanged. Test: `test/call-event-gate.test.js` (5).
   Cage drive (scripted model, no key spent): `eval "$(bin/caged.sh env | sed 's/^/export /')"; REASON_EVENTS=on
   node bin/call-event-gate-drive.mjs` → unverified `{"call_tool_needs_verification":"event_cancel"}`,
-  event `active`; same call verified → `cancelled` (on origin/main the unverified ask cancelled it).
+  event `active`; then unverified `event_directory` rename → gate log `event_directory`, guest-list
+  name unchanged; same call verified → event `cancelled` and the name changed (on origin/main the
+  unverified asks cancelled it and renamed the entry).
 - **Latency logging.** `voice_turn` log lines carry `first_word_ms` (speech to first content) and
   `turn_ms` (total); `first_word_ms` is `null` when no content was streamed. `http.js` also logs
   `call_llm_first_content_ms` per request.
