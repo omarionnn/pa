@@ -46,6 +46,7 @@ import { previousAssistant as previousAssistantLine } from "../purchasesnote.js"
 import * as onboarding from "../onboarding.js";
 import * as plan from "../plan.js";
 import * as opsDigest from "../opsdigest.js";
+import * as webhookAlert from "../webhookalert.js";
 
 /** What somebody whose event code did not work is told, by why. */
 const EVENT_CLAIM_LINES = {
@@ -1381,6 +1382,9 @@ export class Router {
       this.log({ webhook: channel, threw: (e?.message ?? String(e)).split("\n")[0] });
       return { status: 500, body: { error: "webhook handler failed" } };
     }
+    // Refused deliveries (a rotated secret, a missing header) raise an alert after a few; an
+    // accepted one closes it (src/webhookalert.js). Never in the way of the answer.
+    try { webhookAlert.note({ channel, status: parsed.status, error: parsed.body?.error ?? "" }); } catch { /* never blocks */ }
     const delivered = [];
     for (const inbound of parsed.inbound ?? []) {
       delivered.push(await this.deliver({ ...inbound, channel }));
