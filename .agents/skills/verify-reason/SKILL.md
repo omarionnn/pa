@@ -290,6 +290,25 @@ hashed at the next boot, and then a delete by the raw token silently misses, lea
 session. /ops opens only on a `page_id 'ops'` session in the `reason_ops` cookie, and every POST to it
 needs a same-origin Origin.
 
+**Keys for a drive never go on a command line (2026-11-08).** A call-quality drive on Hetzner ran
+`sudo -u reason env -i …` with the OpenAI key and the Claude token written inline before `node`; `env`, `sudo`,
+`ssh host "…"` and `docker -e` all make an inline `NAME=value` part of argv, so `ps` showed both keys
+to every user on the box. A drive that needs a real key reads it from a 0600 env file with
+`node --env-file`, made by `bin/drive-env.sh` (names in, path out; values never touch argv):
+
+```bash
+E=$(sudo -u reason .agents/skills/verify-reason/bin/drive-env.sh OPENAI_API_KEY CLAUDE_CODE_OAUTH_TOKEN)
+sudo -u reason env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/reason USER=reason LOGNAME=reason \
+  REASON_DB_PATH=$(sudo -u reason mktemp -d)/q.db node --env-file="$E" .agents/skills/verify-reason/bin/<drive>.mjs …
+rm -f "$E"
+```
+
+On the Mac, the test token: `E=$(mktemp) && printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(security
+find-generic-password -s reason-test-claude-token -w)" > "$E"` (`printf` is a shell builtin), then
+`env -i … node --env-file="$E" …; rm -f "$E"`. Never `KEY=… node`, never `--key`, never a key inside
+an ssh command string. `test/no-secrets-on-argv.test.js` fails on any inline credential in skills,
+scripts, docs or shell files (dummy values such as `cage`/`cage-fake`/`probe-not-a-key`/`x` are fine).
+
 Four recipes. Each feature file in `features/` names the ones that apply to it.
 
 **1 — One inbound message, down the real road.** The user path: adapter verifies the shared secret,
@@ -550,7 +569,7 @@ regression; keep `PATH=$PATH` from a shell that has it. New feature files this r
 
 ### Baseline — free flight sources (free-flights, 2026-11-06)
 
-`node --test test/*.test.js` under `env -i`: 5,251 tests, 5,120 passing, 131 skipped, **0 failing** (main c6ce172: 5,235 / 5,104 / 0). New: `test/flight-providers.test.js` (17, recorded SerpApi + Duffel bodies in `test/fixtures/flights/`). Drive on the real model, no flight keys: `bin/flights-unavailable-drive.mjs` — one ask + six task wakes → exactly one message with the Google Flights link. On a Mac the sealed CLI (#336) can't read the Keychain login; export `CLAUDE_CODE_OAUTH_TOKEN=$(security find-generic-password -s reason-test-claude-token -w)` (the test account's token — never the `Claude Code-credentials` item, which is this Mac's own login) with a scratch `CLAUDE_CONFIG_DIR=$(mktemp -d)`, into the drive's shell only, never echoed. `FLIGHT_DRIVE_FAKE_BLOCKED=1` replays the old refused-Google path on main.
+`node --test test/*.test.js` under `env -i`: 5,251 tests, 5,120 passing, 131 skipped, **0 failing** (main c6ce172: 5,235 / 5,104 / 0). New: `test/flight-providers.test.js` (17, recorded SerpApi + Duffel bodies in `test/fixtures/flights/`). Drive on the real model, no flight keys: `bin/flights-unavailable-drive.mjs` — one ask + six task wakes → exactly one message with the Google Flights link. On a Mac the sealed CLI (#336) can't read the Keychain login; write `CLAUDE_CODE_OAUTH_TOKEN` from `security find-generic-password -s reason-test-claude-token -w` into an env file for `node --env-file` ("Keys for a drive" above; the test account's token — never the `Claude Code-credentials` item, which is this Mac's own login) with a scratch `CLAUDE_CONFIG_DIR=$(mktemp -d)`, into the drive's shell only, never echoed. `FLIGHT_DRIVE_FAKE_BLOCKED=1` replays the old refused-Google path on main.
 
 ### Baseline — sealed CLI turns (fix/sealed-engine-context, 2026-11-06)
 
@@ -912,6 +931,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 
 | Script | What it does |
 |---|---|
+| `bin/drive-env.sh NAME…` | Copies only the named keys from `/opt/reason/.env` (or `REASON_ENV_FILE`) into a new 0600 file and prints its path, for `node --env-file`. The only way a drive gets a real key — see "Keys for a drive" under Drive. |
 | `bin/caged.sh start\|stop\|status\|env` | The caged instance. `env` prints the exports for driving tools in-process against its database. |
 | `bin/delete-coverage-drive.mjs` | Under `caged.sh env`, from the repo root: seeds every table for a test + control person, runs `deleteData`, scans for anything of theirs left. Exit 0 = nothing unexplained, control untouched. See [features/data-delete.md](features/data-delete.md). |
 | `bin/recall-figures-drive.mjs` | Under `caged.sh env`, from the repo root, `OPENAI_API_KEY=` and a mktemp `REASON_DB_PATH`: recall ranking + the "nothing saved" filter, forget clearing recall (sealed), the figures gate on the reply and `message_send`, receipts without the operator's name, own-files-only. 19 steps, no model, no network. See [features/recall.md](features/recall.md). |

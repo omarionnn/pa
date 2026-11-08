@@ -4,7 +4,8 @@
 // calls: the operator's own, ANOTHER user's own (Ama), and a call Reason makes for the operator to a
 // business. Throwaway database; nothing rings, nothing is texted.
 //
-//   REASON_DB_PATH=$(mktemp -d)/id.db CLAUDE_CODE_OAUTH_TOKEN=… node .agents/skills/verify-reason/bin/call-identity-drive.mjs
+//   E=$(.agents/skills/verify-reason/bin/drive-env.sh CLAUDE_CODE_OAUTH_TOKEN)   # keys never on argv
+//   REASON_DB_PATH=$(mktemp -d)/id.db node --env-file="$E" .agents/skills/verify-reason/bin/call-identity-drive.mjs
 //
 // Two throwaway users (Omari = operator, Ama). Passes when the owner hears "Omari", Ama hears "Ama" and
 // nothing of Omari's (name, profile, thread), "who made you" gets REASON_MAKER (Saafi Interactions Lab by

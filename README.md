@@ -3634,7 +3634,7 @@ personal plan rather than out of an install's budget. With `REASON_TEST_NUMBERS`
 nobody it may legitimately answer, so it **refuses to start**:
 
 ```
-$ LINQ_API_KEY=... REASON_BACKEND=claude-cli npm run serve
+$ LINQ_API_KEY=x REASON_BACKEND=claude-cli npm run serve
 Refusing to start: REASON_BACKEND=claude-cli with linq set up and no test numbers.
 …
 Either set REASON_TEST_NUMBERS to Omari's own number(s) to test over linq, or serve other
@@ -3702,11 +3702,10 @@ docker build -t reason .
 docker run -d --name reason \
   -p 8787:8787 \
   -v reason-data:/data \
-  -e ANTHROPIC_API_KEY=sk-... \
+  --env-file .env \
   -e REASON_OWNER_NAME=Omari \
   -e REASON_OWNER_NUMBER=+12025551234 \
   -e REASON_PUBLIC_URL=https://reason.example.com \
-  -e LINQ_API_KEY=... -e LINQ_WEBHOOK_SECRET=... \
   reason
 ```
 

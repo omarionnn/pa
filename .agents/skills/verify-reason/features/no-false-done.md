@@ -40,9 +40,9 @@ Real claude-cli turn (the real Runtime, MCP tools, harm screen, check and rewrit
 that refuses every start; throwaway DB; no API key). Log in with the **test** token only:
 
 ```bash
-D=$(mktemp -d) && env -i PATH=$PATH HOME=$HOME USER=$USER LOGNAME=$USER REASON_DB_PATH=$D/nfd.db \
-  CLAUDE_CONFIG_DIR=$(mktemp -d) CLAUDE_CODE_OAUTH_TOKEN="$(security find-generic-password -s reason-test-claude-token -w)" \
-  node .agents/skills/verify-reason/bin/no-false-done-drive.mjs ulta      # or directions | chat; --inject; --off
+D=$(mktemp -d) && printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(security find-generic-password -s reason-test-claude-token -w)" > $D/k.env   # never on argv
+env -i PATH=$PATH HOME=$HOME USER=$USER LOGNAME=$USER REASON_DB_PATH=$D/nfd.db \
+  CLAUDE_CONFIG_DIR=$(mktemp -d) node --env-file=$D/k.env .agents/skills/verify-reason/bin/no-false-done-drive.mjs ulta      # or directions | chat; --inject; --off
 ```
 
 2026-11-07 at `8113bcf` (`ulta`, 44 s): tools `offer_check, shop_status, recall, store_checkout`

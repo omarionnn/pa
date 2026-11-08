@@ -5,7 +5,7 @@
 const { writeFileSync, mkdirSync } = await import("node:fs");
 const { join, resolve, dirname } = await import("node:path");
 const out = process.argv[2];
-if (!out || !process.env.OPENAI_API_KEY) { console.error("usage: OPENAI_API_KEY=… make-tts-line-clips.mjs <out dir>"); process.exit(2); }
+if (!out || !process.env.OPENAI_API_KEY) { console.error("usage: node --env-file=<bin/drive-env.sh OPENAI_API_KEY file> make-tts-line-clips.mjs <out dir>"); process.exit(2); }
 const REPO = resolve(dirname(new URL(import.meta.url).pathname), "../../../..");
 const { pcmToUlaw } = await import(`${REPO}/src/calls/gptlive.js`);
 mkdirSync(out, { recursive: true });

@@ -7,8 +7,8 @@
 //
 // Run on the Hetzner box, where OPENAI_API_KEY and the claude-cli login live, from a copy of the code:
 //
-//   REASON_DB_PATH=$(mktemp -d)/gl.db OPENAI_API_KEY=… CLAUDE_CODE_OAUTH_TOKEN=… \
-//     node .agents/skills/verify-reason/bin/gptlive-drive.mjs caller.ulaw [seconds] [--expect identity] [--cold] [--ring ms]
+//   E=$(.agents/skills/verify-reason/bin/drive-env.sh OPENAI_API_KEY CLAUDE_CODE_OAUTH_TOKEN)   # keys never on argv
+//   REASON_DB_PATH=$(mktemp -d)/gl.db node --env-file="$E" .agents/skills/verify-reason/bin/gptlive-drive.mjs caller.ulaw [seconds] [--expect identity] [--cold] [--ring ms]
 //
 // By default the call is placed the way the live one is: the voice is warmed up (`gptlive.prewarm`) and
 // the phone "rings" for --ring ms (5000) before the stream starts. --cold skips that (the old path), for
@@ -55,7 +55,7 @@ if (!dbPath || existsSync(dbPath) || !parent || !roots.some(r => parent.startsWi
   process.exit(2);
 }
 if (!process.env.OPENAI_API_KEY || !process.argv[2]) {
-  console.error("usage: OPENAI_API_KEY=… REASON_DB_PATH=… gptlive-drive.mjs caller.ulaw [seconds]");
+  console.error("usage: REASON_DB_PATH=… node --env-file=<bin/drive-env.sh file> gptlive-drive.mjs caller.ulaw [seconds]");
   process.exit(2);
 }
 Object.assign(process.env, {
