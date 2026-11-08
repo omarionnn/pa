@@ -497,7 +497,7 @@ work (430 W 17th) and "works Thu–Sun" were in memory but not in the call turn;
   file not listed. Missing before: Claude's call turn, GPT-Live, event turns (API + CLI), Web daily greeting,
   onboarding's one-line answers.
 - **Weather (`src/weather.js`, tool `weather`):** open-meteo by lat/lng (6 s timeout), `REASON_WEATHER_BASE`.
-- **Sound:** talk-over wordless cap `TALKOVER_WORDLESS_MS` 600; `fadeOut` (240 samples) on a run's last frame;
+- **Sound:** talk-over wordless cap `TALKOVER_WORDLESS_MS` 1000 (transcripts trail speech 0.5–1.5 s); `fadeOut` (240 samples) on a run's last frame;
   `AMBIENCE_GAIN` 0.009375; `NO_FILLER` (no uh/um, no own "one sec").
 - **Shared with the time-to-first-word work:** `callNotes(call)` (callmemory.js: rules + where, sync, own only)
   and `voiceInstructionsFor(call, {line})` (gptlive.js: the exact session instructions).
@@ -507,6 +507,6 @@ Recipes:
   N+1, nothing of his on Ama's call or an errand).
 - Replay, on the live box: `bin/call-quality-drive.mjs <clips> --seed call80 --out x.json` (his places, week, rule;
   texts to a stand-in; per reply `first_piece_ms`, totals `hard_stops`, `lead_ins_dropped`, `tools_ran`), main vs
-  branch. 2026-11-08: replies_cut 4→0, hard_stops 2→0, longest reply 12.4→7.4 s, weather said whole on the
-  first ask (before: never). claude-cli turns 8–39 s in the drive, so the 7.5 s late line still fires there.
+  branch. 2026-11-08: replies_cut 4→0, hard_stops 2→0, longest reply 12.4→9.3 s, weather said whole on the
+  first ask (before: never). claude-cli turns 6–31 s in the drive, so the 7.5 s late line still fires there.
 - Not proven: a real phone call; the news turn (search keys absent in the drive env).
