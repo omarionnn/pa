@@ -20,6 +20,7 @@ process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_SHOP_CONNECT = "owner";
 process.env.REASON_PASSKEY_PAY = "owner";
 process.env.REASON_SITE_URL = "https://heyreason.com";
+process.env.REASON_FIT_RETRY_MS = "0";
 process.env.CROSSMINT_SERVER_KEY = "sk_test_server";
 process.env.CROSSMINT_CLIENT_KEY = "ck_test_client";
 process.env.CROSSMINT_API_BASE = "https://cm.test";
@@ -258,4 +259,33 @@ test("a fit, an unclear read, or a side call that fails all start the checkout (
     } finally { shoptools._setFitCheck(null); }
   }
   assert.equal(posts(), 4);
+});
+
+// Release 11-07, real model: 3 of 12 fit reads came back {verdict:"unclear",error:true} and the checkout
+// went ahead unchecked. One failed ask is asked once more; why each failed is kept for the journal.
+test("a fit read that fails once is asked again; one that fails twice fails open and says why", async () => {
+  const seq = (...outs) => { let i = 0; const asks = []; return { asks, fn: async (a) => { asks.push(a); const o = outs[i++]; if (o instanceof Error) throw o; return o; } }; };
+  let s = seq({ error: "the CLI did not finish inside 30000 ms" }, { value: { verdict: "mismatch", need: "dry skin", why: "Foaming is for oily skin." } });
+  let r = await shoptools.checkFit({ texts: ["the one for dry skin"], item: "CeraVe Foaming", what: "one" }, { ask: s.fn });
+  assert.equal(r.verdict, "mismatch");
+  assert.equal(r.error, undefined);
+  assert.equal(s.asks.length, 2);
+  assert.equal(s.asks[0].timeoutMs, 30_000);
+  s = seq(new Error("spawn EAGAIN"), { value: { verdict: "maybe" } });
+  r = await shoptools.checkFit({ texts: ["the one for dry skin"], item: "CeraVe Foaming", what: "one" }, { ask: s.fn });
+  assert.deepEqual({ verdict: r.verdict, error: r.error }, { verdict: "unclear", error: true });
+  assert.equal(r.why, 'threw | off the schema (verdict "maybe")');
+  // The journal gets the kind of failure only, never the model's text (it can restate what they said).
+  s = seq({ error: "the answer was not JSON: they said dry skin, 555-0100" }, { value: { verdict: "perhaps", need: "dry skin", why: "they said dry skin" } });
+  r = await shoptools.checkFit({ texts: ["the one for dry skin"], item: "CeraVe Foaming", what: "one" }, { ask: s.fn });
+  assert.equal(r.why, 'not JSON | off the schema (verdict "perhaps")');
+  assert.doesNotMatch(r.why, /dry|555/);
+  // A refusal is not asked again.
+  s = seq({ refusal: true, error: "the model's own safeguards refused to read it" }, { value: { verdict: "fits" } });
+  r = await shoptools.checkFit({ texts: ["dry skin"], item: "a", what: "b" }, { ask: s.fn });
+  assert.deepEqual({ verdict: r.verdict, why: r.why, asks: s.asks.length }, { verdict: "unclear", why: "refused", asks: 1 });
+  // Read leniently where the meaning is plain: a capitalised verdict, or the answer as a JSON string.
+  s = seq({ value: '{"verdict":"Mismatch","need":"dry skin","why":"x"}' });
+  assert.equal((await shoptools.checkFit({ texts: ["dry skin"], item: "a", what: "b" }, { ask: s.fn })).verdict, "mismatch");
+  assert.equal(s.asks.length, 1);
 });
