@@ -150,7 +150,7 @@ test("call 68's first answer reaches the voice with no stray line in front", asy
 
 test("own calls: Reason's call turn is told one point at a time, never a long text read aloud, one question", () => {
   const frame = prompt.ownerCallFrame({ name: "Omari" });
-  assert.match(frame, /one point at a time: one to three short sentences, then stop and let them react/);
+  assert.match(frame, /one point at a time: answer in one or two short sentences, then stop and let them react/);
   assert.match(frame, /Never read a long text out loud — a rewrite, a draft, a caption/);
   assert.match(frame, /offer to text it; text it only once they want it/);
   assert.match(frame, /At most one question per reply, and never a menu of options/);

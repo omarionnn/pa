@@ -310,7 +310,7 @@ test("a call: μ-law session, greeting, caller audio relayed, delegation answere
   });
   const start = live.of("session.start")[0];
   assert.deepEqual(start.session.audio.format, { type: "audio/pcmu", rate: 8000 });
-  assert.deepEqual(start.session.delegation, { type: "client" });
+  assert.deepEqual(start.session.delegation, { type: "client", acknowledgement_delay_ms: 800 }, "room for code to cancel the voice's own 'let me check' (call 79)");
   assert.equal(start.session.audio.output.voice, "marin");
   assert.match(start.session.instructions, /You are the voice/);
 

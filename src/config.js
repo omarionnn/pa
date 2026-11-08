@@ -688,6 +688,9 @@ export const config = {
   // turn pays for every token in first-word latency, and what the call needs is the recent shape of
   // the conversation rather than the whole of it.
   callHistoryTurns: Number(process.env.REASON_CALL_HISTORY_TURNS || 12),
+  // Reason's call prompt loaded into the model's cache while the phone rings, so the first answer is
+  // warm (call 79: 4.3 s first answer vs ~2.3 s after). REASON_CALL_CACHE_WARM=off stops it.
+  callCacheWarm: String(process.env.REASON_CALL_CACHE_WARM ?? "on").trim().toLowerCase() !== "off",
 
   // ---------- what a real call is like, and the numbers the owner has NOT decided ----------
   //

@@ -20,6 +20,126 @@
 // possible moment to discover nobody knows what name to put the booking under.
 import { config, clock } from "../config.js";
 import { exactMoney } from "./readback.js";
+import * as db from "../db.js";
+
+// ---------- a person's own call: today so far ----------
+
+/**
+ * Call 79 (2026-11-08, Omari's own): asked about "the three spots" Reason had recommended by text at
+ * 12:08 that day, the line garbled it to "three sub events" and Reason said "I don't have anything
+ * saved" — Bo Peep, its own recommendation three hours earlier, was in the thread all along. So a call
+ * to a person's own Reason starts with what happened between them today: what Reason recommended or
+ * promised, what they said they'd do, and the names in it, so a garbled word can be matched against them.
+ *
+ * Only this conversation's own messages, by the call row's conversation, up to when the call was made
+ * (so the note is the same on every turn of the call and the prompt cache holds). Never anyone else's.
+ */
+export const TODAY_MAX_CHARS = 1600;
+const TODAY_MIN_HOURS = 6;
+const LINE_CHARS = { assistant: 240, user: 150 };
+
+/** Midnight where they are, as ms, for the day `now` falls in. */
+function startOfDay(now, tz) {
+  const p = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).formatToParts(new Date(now));
+  const n = (k) => Number(p.find(x => x.type === k)?.value ?? 0) % (k === "hour" ? 24 : 60);
+  return now - ((n("hour") * 60 + n("minute")) * 60 + n("second")) * 1000;
+}
+
+const clipped = (t, n) => {
+  const x = String(t ?? "").replace(/^\s*\[[^\]]*\]\s*[^:\n]{1,40}:\s*/, "").replace(/```/g, "").replace(/\s+/g, " ").trim();
+  return x.length > n ? `${x.slice(0, n - 1).trimEnd()}…` : x;
+};
+
+// Words that start capitalised without being a name: sentence openers, days, months.
+const NOT_NAMES = new Set(("I I'm I'll I've I'd A An The This That These Those It It's Its You You're Your Yours We He She They My Me Our"
+  + " If So And But Or Yes No Not Ok Okay Sure Thanks Hey Hi Oh Nice Done Good Great Want Do Does Did Is Are Was Were Will Would Can Could"
+  + " Should Here There What When Where Which Who Why How Just Also Then Now Today Tonight Tomorrow Yesterday Let Got Have Has Had"
+  + " Monday Tuesday Wednesday Thursday Friday Saturday Sunday Mon Tue Wed Thu Fri Sat Sun"
+  + " January February March April May June July August September October November December Jan Feb Mar Apr Jun Jul Aug Sep Sept Oct Nov Dec"
+  + " AM PM St Ave Rd").split(" "));
+
+/** The names in a few messages (places, people, things), in order, each once: "Bo Peep", "The Ragtrader". */
+export function namesIn(texts, { max = 10 } = {}) {
+  const out = [];
+  const seen = new Set();
+  for (const t of texts) {
+    for (const m of String(t ?? "").matchAll(/\b[A-Z][\p{L}'’&-]*(?:\s+(?:(?:of|de|the|and|&)\s+)?[A-Z][\p{L}'’&-]*)*/gu)) {
+      const words = m[0].trim().split(/\s+/);
+      while (words.length && NOT_NAMES.has(words[0]) && !(words[0] === "The" && words.length > 1)) words.shift();
+      const name = words.join(" ").replace(/['’]s$/, "");
+      if (name.length < 3 || NOT_NAMES.has(name)) continue;
+      const k = name.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(name);
+      if (out.length >= max) return out;
+    }
+  }
+  return out;
+}
+
+/**
+ * Today so far in this person's own thread, for their own call: `{ lines, names }` (newest last), or
+ * null when nothing was said today. `until` is when the call was made.
+ */
+export function todaySoFar(conversationId, { until = clock.now(), tz = config.tz, maxChars = TODAY_MAX_CHARS } = {}) {
+  if (!conversationId) return null;
+  let rows = [];
+  try {
+    const since = Math.min(startOfDay(until, tz), until - TODAY_MIN_HOURS * 3600_000);
+    rows = db.messagesBetween(conversationId, since, until, { limit: 40 });
+    // No message history kept on this install (REASON_WEB off): the thread itself, back to the first
+    // of their lines stamped with another day (their lines carry "[Sun, Nov 8, 2026, 10:04 AM] Name:").
+    if (!rows.length) rows = todayFromThread(conversationId, { until, tz });
+  } catch { return null; }
+  const fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit" });
+  const picked = [];
+  let used = 0;
+  for (const r of [...rows].reverse()) {
+    const who = r.role === "assistant" ? "you" : r.role === "user" ? "them" : "";
+    if (!who) continue;
+    const text = clipped(r.text, LINE_CHARS[r.role] ?? 150);
+    if (!text || /NO_REPLY/.test(text)) continue;
+    const line = `${r.untimed ? "" : `${fmt.format(new Date(r.at))} `}${who}: ${text}`;
+    if (used + line.length > maxChars) break;
+    picked.unshift(line);
+    used += line.length;
+  }
+  if (!picked.length) return null;
+  // Names from everything said today: Reason's own words first (its recommendations), newest first.
+  const newest = [...rows].reverse();
+  const names = namesIn([...newest.filter(r => r.role === "assistant"), ...newest.filter(r => r.role === "user")].map(r => r.text));
+  return { lines: picked, names };
+}
+
+/** Today's end of the thread, as `{ role, text, at }` rows (at: the day's stamp, or `until`). */
+function todayFromThread(conversationId, { until, tz }) {
+  const day = new Intl.DateTimeFormat("en-US", { timeZone: tz, month: "short", day: "numeric", year: "numeric" }).format(new Date(until));
+  const out = [];
+  for (const m of db.loadConversation(conversationId).slice(-40).reverse()) {
+    if (m?.role !== "user" && m?.role !== "assistant") continue;
+    const text = typeof m.content === "string" ? m.content
+      : Array.isArray(m.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join(" ") : "";
+    if (m.role === "user") {
+      const stamp = /^\s*\[(?:[A-Za-z]{3}, )?([A-Za-z]{3} \d{1,2}, \d{4})/.exec(text);
+      if (!stamp) continue;
+      if (stamp[1] !== day) break;
+    }
+    if (text.trim()) out.push({ role: m.role, text, at: until, untimed: true });
+  }
+  // Only what follows a line of theirs stamped today counts.
+  while (out.length && out.at(-1).role === "assistant") out.pop();
+  return out.reverse();
+}
+
+/** The "today so far" block for Reason's own turns on a person's own call, or "". */
+export function todaySoFarNote(conversationId, opts = {}) {
+  const t = todaySoFar(conversationId, opts);
+  if (!t) return "";
+  return "TODAY SO FAR in your chats with them (before this call), newest last — what you recommended or promised, and what they said they'd do:\n"
+    + t.lines.join("\n")
+    + (t.names.length ? `\nNames from today: ${t.names.join(", ")}.` : "");
+}
 
 /**
  * The questions every provider on a comparison errand is asked, so the answers actually compare.
