@@ -645,7 +645,8 @@ export const WAIT_NOTE = "Reason is working on this now and its answer comes nex
  */
 export const ACK_ASK = "Reason has their request now. If it needs a lookup or an action (the weather, news, a place, their calendar or messages, sending something), say only one short line of a few words naming exactly what you're getting or doing for them — like \"Weather near work, one sec.\" or \"Pulling up Nigeria headlines.\" — never just \"one sec\" or \"let me check\", and nothing else."
   + " If it doesn't need one — they answered yes or no, replied to something Reason asked, or it was unclear or sounded cut off — say nothing at all."
-  + " Say you're sending something only when they clearly said what to send (\"send it to me\" after Reason offered, \"text me the headlines\"); a request cut off before what (\"text me what…\") gets nothing.";
+  // Drive v8/v9: an example "…gets nothing" here, left in its context, kept it from handing over the next "Text me what" at all.
+  + " Only say you're sending something when they clearly said what to send (\"send it to me\" after Reason offered, \"text me the headlines\"); otherwise name nothing about sending.";
 /** Their own call: the voice's one named hand-off line (`HANDOFF_ACK`) is still its to say, once. */
 export const OWN_WAIT_NOTE = "Reason is working on this now and its answer comes next. Don't answer it yourself and don't fill the wait: if this needs a lookup or an action and you haven't yet said your one short line naming it, say just that line now; otherwise say nothing until you're given words.";
 /** An answer ready this soon after the hand-off gets no holding line. */

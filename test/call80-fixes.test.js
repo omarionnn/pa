@@ -927,7 +927,8 @@ test("named ack: handed over with nothing said on his own call → the voice is 
   assert.match(gl.ACK_ASK, /naming exactly what you're getting or doing/);
   assert.match(gl.ACK_ASK, /never just "one sec" or "let me check"/);
   assert.match(gl.ACK_ASK, /they answered yes or no, replied to something Reason asked, or it was unclear or sounded cut off — say nothing at all\./);
-  assert.match(gl.ACK_ASK, /Say you're sending something only when they clearly said what to send/);
+  assert.match(gl.ACK_ASK, /Only say you're sending something when they clearly said what to send/);
+  assert.doesNotMatch(gl.ACK_ASK, /gets nothing|text me what/i, "drive v8/v9: that example kept the voice from handing over his next 'Text me what'");
   assert.doesNotMatch(gl.ACK_ASK, /wait quietly/, "drive v7: told to wait after it, the voice left his next 'No' unanswered");
   const t = startCall({ brain: () => new Promise(() => {}) });
   t.live.emit({ type: "session.input_transcript.delta", delta: " Weather near work?" });
