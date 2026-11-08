@@ -116,14 +116,15 @@ async function theySay(twilio, timers, ms, payload = LOUD) {
 
 // ---------- 1. holding lines are code's ----------
 
-test("holding: the voice's own 'let me check' is cancelled at once, and an answer inside 1.5 s gets no holding line", async () => {
+test("holding: the voice's automatic acknowledgement is cancelled at once, and an answer inside 1.5 s gets no holding line", async () => {
   const { timers, live } = startCall({ brain: () => new Promise(r => timers.setTimeout(() => r({ text: "Tuesday's Bo Peep, from seven.", tools: [] }), 1200)) });
   live.emit({ type: "session.input_transcript.delta", delta: " Where am I going Tuesday?" });
   live.emit({ type: "session.delegation.created", delegation: { id: "item_1" } });
   await timers.advance(5);
   const quiet = live.of("session.thinking.append").find(e => e.delegation_id === "item_1");
   assert.ok(quiet, "the automatic acknowledgement is cancelled the moment the hand-off starts");
-  assert.equal(quiet.content, gl.WAIT_NOTE, "a factual quiet update, which cancels it as an empty one does (the docs)");
+  // Their own call: the quiet update leaves the voice the named line it says as it hands over (Omari 11-08).
+  assert.equal(quiet.content, gl.OWN_WAIT_NOTE, "a factual quiet update, which cancels it as an empty one does (the docs)");
   assert.equal(live.of("session.start")[0].session.delegation.acknowledgement_delay_ms, gl.ACK_DELAY_MS);
   await timers.advance(2000);
   assert.equal(holds(live).length, 0, "ready at 1.2 s: no holding line at all");
@@ -147,13 +148,14 @@ test("holding: a slow answer with no lookup running gets no line at 1.5 s — no
   assert.equal(holds(live).length, 1, "the answer, not a second line");
 });
 
-test("holding: 'let me check' only while one of Reason's tools is really running", async () => {
+test("holding: a lookup running gets a line that names it — never a stock 'let me check' (Omari 11-08)", async () => {
   let release;
   const { timers, live } = startCall({ brain: (m, hooks) => new Promise(r => { release = r; timers.setTimeout(() => hooks.onTool("web_search"), 400); }) });
   live.emit({ type: "session.delegation.created", delegation: { id: "item_3" } });
   await timers.advance(1600);
   const said = /"([^"]+)"/.exec(holds(live)[0].content)[1];
-  assert.ok(gl.CHECK_HOLD_LINES.includes(said), said);
+  assert.equal(said, "Searching the web for that.");
+  assert.doesNotMatch(said, /^(?:let me check|one sec|checking now)/i);
   release({ text: "It's 54 and clear.", tools: ["web_search"] });
   await timers.advance(10);
 });
@@ -186,10 +188,11 @@ test("holding: 'check' only WHILE the lookup runs — once it has come back, a l
   live.emit({ type: "session.delegation.created", delegation: { id: "item_9" } });
   await timers.advance(voice.LATE_HOLDING_MS + 50);
   const said = holds(live).map(h => /"([^"]+)"/.exec(h.content)[1]);
-  // Call 80 dead air: the lookup is over by 1.5 s but Reason is still working from it — "one sec", not "check".
+  // Call 80 dead air: the lookup is over by 1.5 s but Reason is still working from it — the line names
+  // what it did (Omari 11-08: never a stock "one sec"), and no later line says "check".
   assert.equal(said.length, 2, said.join(" | "));
-  assert.ok(gl.QUICK_HOLD_LINES.includes(said[0]), said[0]);
-  for (const s of said) assert.doesNotMatch(s, /check|look/i);
+  assert.equal(said[0], "Searching the web for that.");
+  assert.doesNotMatch(said[1], /check|look/i);
 });
 
 test("holding: still nothing at the late deadline gets a late line (no dead air), never 'Still checking' without a tool", async () => {
@@ -219,8 +222,10 @@ test("holding: no line while they are still talking, and none on a business line
 });
 
 test("holding: the voice is told never to hold the line itself; the old 'a very short acknowledgement is fine' is gone", () => {
+  // Their own call: only the one named hand-off line (Omari 11-08, HANDOFF_ACK); anyone else's: none.
   const s = gl.liveInstructions({ name: "Omari", named: true, owner: true });
-  assert.ok(s.includes(gl.NO_HOLDING_LINE));
+  assert.ok(s.includes(gl.OWN_NO_HOLDING_LINE) && s.includes(gl.HANDOFF_ACK) && !s.includes(gl.NO_HOLDING_LINE));
+  assert.ok(gl.liveInstructions({ name: "Ama", named: true, owner: false }).includes(gl.NO_HOLDING_LINE));
   assert.doesNotMatch(s, /very short acknowledgement is fine|Only use a holding phrase/);
   assert.match(gl.NO_HOLDING_LINE, /no "let me check", "looking that up", "hang on" or "one sec"/);
   assert.ok(gl.strangerInstructions().includes(gl.NO_HOLDING_LINE));

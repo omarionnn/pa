@@ -431,6 +431,19 @@ own pick by text that day; "I'm —" over his "how are | you" at 0:07; first ans
   a lookup (`isLookup`: sends/bookings/timers are not "checking"). The first line waits while they or the voice
   are speaking (voice quiet 1.2 s). At `LATE_HOLDING_MS` (7.5 s) one late line from `LATE_LINES` ("Still
   checking." only with a lookup). Line calls unchanged. Log `gptlive_hold_line {kind, ms, tool, line}`.
+- **Named hand-off line (Omari 11-08, #406, after the paid replay):** on their own call the voice says one short
+  line naming the lookup/action AS it hands over (`HANDOFF_ACK`: "Weather near work, one sec.", "Pulling up
+  Nigeria headlines."; never a bare "one sec"/"let me check", never before a passed-on yes/no or something
+  unclear, never twice in a row); `OWN_NO_HOLDING_LINE` / `OWN_NO_FILLER` / `OWN_WAIT_NOTE` replace the relay's
+  versions there. `turn.preAck` (voice words since their latest words began) or `turn.ack` → `voiceAcked` → code
+  says no first line. Code's first line, when the voice said none, names the tool (`toolHoldLine`: "Getting the
+  weather.", "Checking where you are.", "Searching the web for that.", "Sending it now."); a tool with no named
+  line gets none (QUICK_/CHECK_HOLD_LINES are gone). The platform's automatic acknowledgement is still
+  cancelled at once: left to play (drive v4) it came ~1 s later and stock ("Working on it."). Drive v3 (CLI,
+  OVH): named lines on 4/5 lookup turns at 1.5–2.0 s after his words; "No" answered by the voice, no line.
+  Headlines/lists: the top one or two in two short sentences, then the offer (`ownerCallFrame`; the paid
+  replay's 24 s Nigeria read ran into the next clip = its 1.6 s talk-over). The cq drive prints `played` and
+  `speech_runs` (ms) for talk-over.
 - **Short answers:** `ownerCallFrame` says one or two short sentences, then offer more. Floor in code
   (`shortForPhone`): a spoken answer over `LONG_REPLY_CHARS` (180, ~12 s at ~15 chars/s) on their own call is
   said as whole sentences up to `SHORT_REPLY_CHARS` (150) + `TEXT_REST_OFFER`; one ending on a question keeps

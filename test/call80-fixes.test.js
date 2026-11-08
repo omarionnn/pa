@@ -493,7 +493,10 @@ test("7. on the line: a piece with speech is held until the next; faded when sil
 test("7. the voice is told no 'uh', 'um' or 'let me check' of its own — on his call and a stranger's", () => {
   assert.match(gl.NO_FILLER, /no "uh", "um", "er" or "hmm"/);
   assert.match(gl.NO_FILLER, /never say "let me check", "one sec"/);
-  assert.ok(gl.liveInstructions({ name: "Omari", owner: true }).includes(gl.NO_FILLER));
+  // His own call: the same floor, but the one named hand-off line is the voice's (Omari 11-08).
+  assert.ok(gl.liveInstructions({ name: "Omari", owner: true }).includes(gl.OWN_NO_FILLER));
+  assert.match(gl.OWN_NO_FILLER, /no "uh", "um", "er" or "hmm"/);
+  assert.match(gl.OWN_NO_FILLER, /never a bare "let me check", "one sec"/);
   assert.ok(gl.strangerInstructions().includes(gl.NO_FILLER));
 });
 
@@ -652,7 +655,7 @@ test("dead air: a lookup that starts after 1.5 s gets its line at its start — 
   assert.ok(first, "said as the tool starts");
   assert.equal(first.kind, "first");
   assert.equal(first.tool, "weather");
-  assert.ok(gl.CHECK_HOLD_LINES.includes(first.line), first.line);
+  assert.equal(first.line, "Getting the weather.", "named, never a stock 'let me check' (Omari 11-08)");
   assert.ok(first.ms < 3000, `at ${first.ms} ms`);
   hooks.onTool("weather", "start");
   assert.equal(s.lines.filter(l => l.gptlive_hold_line && l.kind === "first").length, 1, "never twice");
@@ -809,4 +812,153 @@ test("caller check + nowhere to go: a refused send and an unknown position — t
   const refusal = [voice.CHECK_LATER_LINE, voice.CHECK_NOT_HERE_LINE].find(l => said.startsWith(l));
   assert.ok(refusal, said);
   assert.match(said.slice(refusal.length), /Where are you right now\?/, "the where question after it");
+});
+
+// ---------- the named hand-off line (Omari 11-08, after the paid replay) ----------
+// Branch 3.4 s median / 4.9 s worst before any sound vs main's 3.0 / 3.5 s (main's = a stock "Mm, one
+// sec" in front of a cut answer). Now the voice says one short line naming the lookup as it hands
+// over, within ~1 s; code's own first line names the tool and is never said after the voice's.
+
+const holdsOf = (s) => s.live.of("session.commentary.append").filter(e => String(e.event_id).startsWith("hold_"));
+const quietOf = (s, id) => s.live.of("session.thinking.append").filter(e => e.delegation_id === id);
+
+test("named ack: his own call's voice is told to name the lookup as it hands over — not a stock line, not before a plain answer or a yes/no, never twice", () => {
+  const own = gl.liveInstructions({ name: "Omari", named: true, owner: true });
+  assert.ok(own.includes(gl.HANDOFF_ACK));
+  assert.match(gl.HANDOFF_ACK, /names exactly what you're getting or doing/);
+  assert.match(gl.HANDOFF_ACK, /"Weather near work, one sec\."/);
+  assert.match(gl.HANDOFF_ACK, /"Pulling up Nigeria headlines\."/);
+  assert.match(gl.HANDOFF_ACK, /Never a bare "one sec", "let me check"/);
+  assert.match(gl.HANDOFF_ACK, /Say nothing first when you're only passing on their yes or no/);
+  assert.match(gl.HANDOFF_ACK, /never two of these lines in a row/);
+  assert.ok(!own.includes(gl.NO_HOLDING_LINE) && !own.includes(gl.NO_FILLER), "no line that forbids the named one");
+  // Anyone else's call and a stranger's: the relay waits in silence as before.
+  assert.ok(!gl.liveInstructions({ name: "Omari", named: true, owner: false }).includes(gl.HANDOFF_ACK));
+  assert.ok(!gl.strangerInstructions().includes(gl.HANDOFF_ACK));
+});
+
+test("named ack: the voice said its line as it handed over → code says no first line when the lookup starts; the late line still covers a long wait", async () => {
+  let hooks;
+  const s = startCall({ brain: (m, h) => new Promise(() => { hooks = h; }) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " What's the weather like near work?" });
+  await s.timers.advance(400);
+  s.live.emit({ type: "session.output_transcript.delta", delta: "Weather near work, one sec." });
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "a1" } });
+  await s.timers.advance(5);
+  assert.equal(quietOf(s, "a1").length, 1, "said already: the automatic acknowledgement is cancelled at once");
+  await s.timers.advance(2000);
+  hooks.onTool("weather", "start");
+  await s.timers.advance(2000);
+  assert.equal(holdsOf(s).length, 0, "no 'Getting the weather.' after his voice's own line — never two in a row");
+  await s.timers.advance(voice.LATE_HOLDING_MS);
+  const h = holdsOf(s);
+  assert.equal(h.length, 1, "the late line, so a long wait is never dead air");
+  assert.ok(voice.LATE_LINES.includes(/"([^"]+)"/.exec(h[0].content)[1]));
+});
+
+test("named ack: the platform's automatic acknowledgement never plays — cancelled at once on his call too (drive v4: it came later and stock)", async () => {
+  const s = startCall({ brain: () => new Promise(() => {}) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " What's the latest from Nigeria?" });
+  await s.timers.advance(300);
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "a2" } });
+  await s.timers.advance(5);
+  const q = quietOf(s, "a2");
+  assert.equal(q.length, 1);
+  assert.equal(q[0].content, gl.OWN_WAIT_NOTE);
+  assert.match(gl.OWN_WAIT_NOTE, /haven't yet said your one short line naming it, say just that line now; otherwise say nothing/);
+  const third = db.createCall(C, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "ask about a table", facts: [], announcement: "", state: "placing" });
+  const t = startCall({ row: third, brain: () => new Promise(() => {}) });
+  t.live.emit({ type: "session.delegation.created", delegation: { id: "a3" } });
+  await t.timers.advance(5);
+  assert.equal(quietOf(t, "a3")[0]?.content, "", "a business line: cancelled at once, as before");
+});
+
+test("named ack: a bare listening sound before the hand-off is not a line — code still names the lookup", async () => {
+  let hooks;
+  const s = startCall({ brain: (m, h) => new Promise(() => { hooks = h; }) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " Any news from Nigeria?" });
+  await s.timers.advance(300);
+  s.live.emit({ type: "session.output_transcript.delta", delta: "Mm-hmm." });
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "a4" } });
+  await s.timers.advance(gl.HOLD_LINE_AFTER_MS + 100);
+  hooks.onTool("web_search", "start");
+  await s.timers.advance(10);
+  const h = holdsOf(s).map(e => /"([^"]+)"/.exec(e.content)[1]);
+  assert.deepEqual(h, ["Searching the web for that."]);
+});
+
+test("named ack: code's first line names Reason's tool — never 'one sec' / 'let me check' — and a tool with no name gets none", async () => {
+  assert.equal(gl.toolHoldLine("weather"), "Getting the weather.");
+  assert.equal(gl.toolHoldLine("get_location"), "Checking where you are.");
+  assert.equal(gl.toolHoldLine("calendar_events"), "Checking your calendar.");
+  assert.equal(gl.toolHoldLine("message_send"), "Sending it now.");
+  assert.equal(gl.toolHoldLine("timer_set"), "");
+  assert.equal(gl.holdLineFor({ kind: "first" }), "", "nothing named: no first line");
+  for (const name of ["weather", "web_search", "get_location", "nearby_places", "calendar_events", "recall", "message_send"]) {
+    assert.doesNotMatch(gl.toolHoldLine(name), /^(?:mm,? )?(?:one sec|let me check|checking now|let me look)/i, name);
+  }
+  let hooks;
+  const s = startCall({ brain: (m, h) => new Promise(() => { hooks = h; }) });
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "a5" } });
+  await s.timers.advance(gl.HOLD_LINE_AFTER_MS + 100);
+  hooks.onTool("timer_set", "start");
+  await s.timers.advance(3000);
+  assert.equal(holdsOf(s).length, 0, "an unnamed tool: no stock 'one sec' into the wait");
+});
+
+test("talk-over (paid replay 11-08): naturally long content is the top one or two in two short sentences, then the offer — not 24 s of headlines", () => {
+  const frame = prompt.ownerCallFrame({ name: "Omari" });
+  assert.match(frame, /say just the top one or two,\s+in two short sentences at most \(about ten seconds out loud\), and then offer the rest/);
+});
+
+const asksOf = (s) => s.live.of("session.commentary.append").filter(e => String(e.event_id).startsWith("ack_"));
+
+test("named ack: handed over with nothing said on his own call → the voice is asked for its named line at once (drive v5: 0 of 5 said it unasked); said already → not asked", async () => {
+  const s = startCall({ brain: () => new Promise(() => {}) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " What's the latest from Nigeria?" });
+  await s.timers.advance(300);
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "k1" } });
+  await s.timers.advance(5);
+  const a = asksOf(s);
+  assert.equal(a.length, 1, "asked once, at the hand-off");
+  assert.equal(a[0].content, gl.ACK_ASK);
+  assert.match(gl.ACK_ASK, /naming exactly what you're getting or doing/);
+  assert.match(gl.ACK_ASK, /never just "one sec" or "let me check"/);
+  assert.match(gl.ACK_ASK, /they answered yes or no, replied to something Reason asked, or it was unclear or sounded cut off — say nothing at all\. Never guess what they want sent/);
+  const t = startCall({ brain: () => new Promise(() => {}) });
+  t.live.emit({ type: "session.input_transcript.delta", delta: " Weather near work?" });
+  await t.timers.advance(300);
+  t.live.emit({ type: "session.output_transcript.delta", delta: "Weather near work, one sec." });
+  t.live.emit({ type: "session.delegation.created", delegation: { id: "k2" } });
+  await t.timers.advance(5);
+  assert.equal(asksOf(t).length, 0, "the voice said it as it handed over: never asked for a second");
+});
+
+test("named ack: never two in a row — a hand-off right after an unanswered one that had its line is not asked again; a business line is never asked", async () => {
+  const s = startCall({ brain: () => new Promise(() => {}) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " Any news from Nigeria?" });
+  await s.timers.advance(300);
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "k3" } });
+  await s.timers.advance(800);
+  s.live.emit({ type: "session.input_transcript.delta", delta: " like today's" });
+  await s.timers.advance(200);
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "k4" } });
+  await s.timers.advance(5);
+  assert.deepEqual(asksOf(s).map(e => e.event_id), ["ack_k3"], "the second hand-off is not asked: its line was just said");
+  const third = db.createCall(C, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "ask about a table", facts: [], announcement: "", state: "placing" });
+  const b = startCall({ row: third, brain: () => new Promise(() => {}) });
+  b.live.emit({ type: "session.delegation.created", delegation: { id: "k5" } });
+  await b.timers.advance(5);
+  assert.equal(asksOf(b).length, 0);
+});
+
+test("named ack: Reason skips after the voice's named line → it asks plainly what they wanted, not 'what do you reckon?' (drive v6)", async () => {
+  const s = startCall({ brain: async () => ({ text: "", tools: ["skip_turn"], skip: true }) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " Text me what" });
+  await s.timers.advance(300);
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "k6" } });
+  s.live.emit({ type: "session.output_transcript.delta", delta: "Texting you that now." });
+  await s.timers.advance(50);
+  const r = s.live.of("session.commentary.append").find(e => e.event_id === "result_k6");
+  assert.equal(r?.content, gl.ACK_SKIP_FOLLOW_UP, JSON.stringify(r));
 });

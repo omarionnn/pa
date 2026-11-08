@@ -280,6 +280,23 @@ export const OWN_VOICE_NO_DEFLECT = "Each time you speak it is either a real ans
   + " Never bounce a question back in place of an answer (\"what's your take?\", \"what do you reckon?\", \"what do you think?\"), and never say a line that says nothing."
   + " If they ask your opinion, give it. If you can't really answer what they said from this conversation and the brief — it's unclear, half a sentence, or about something the brief doesn't cover — hand it to the backend with their words; don't guess and don't stall."
   + " While the backend is working on something, say nothing of your own: its answer is coming.";
+/**
+ * Omari 11-08 (after call 80's paid replay: the branch's first sound 3.4 s median, main's 3.0 s was a
+ * stock "Mm, one sec" in front of a cut answer): on his own call, a hand-off that needs a lookup or an
+ * action gets one short line from the voice AS it hands over — it knows the question, so the line names
+ * it, and it is the voice's first audio, inside ~1 s of his words. Never a stock "one sec" / "let me
+ * check", never in front of a plain answer or a passed-on yes/no, never twice in a row. Code never adds
+ * a line of its own after it (`GptLiveCall#voiceAcked`).
+ */
+export const HANDOFF_ACK = "When you hand the backend something that needs a lookup or an action — the weather, the news, a place, directions, their calendar, messages or reminders, sending something — say one short line of a few words first, straight away, that names exactly what you're getting or doing for them, then hand it off. For example: \"Weather near work, one sec.\", \"Pulling up Nigeria headlines.\", \"Texting you that now.\", \"Checking your Thursday.\""
+  + " Never a bare \"one sec\", \"let me check\", \"hang on\" or \"looking that up\" with nothing named."
+  + " Say nothing first when you're only passing on their yes or no, their reply to something Reason asked or offered, or something unclear; and never two of these lines in a row — if your last words were one, hand off in silence."
+  + " That one line is all you say until Reason's answer comes.";
+/** Their own call's version of `NO_HOLDING_LINE`: the one named line of `HANDOFF_ACK`, nothing else. */
+export const OWN_NO_HOLDING_LINE = "Apart from that one short line naming what you're getting, say nothing of your own while Reason works: no \"let me check\", \"looking that up\", \"hang on\" or \"one sec\"."
+  + " If a wait needs another word, you'll be given the exact one to say. Then say Reason's answer as your reply, in about as many words as it has: no holding phrase in front of it and no lines of your own around it.";
+/** Their own call's version of `NO_FILLER`. */
+export const OWN_NO_FILLER = "Never say filler sounds — no \"uh\", \"um\", \"er\" or \"hmm\" — and never a bare \"let me check\", \"one sec\" or anything like it. If you need a moment, stay silent.";
 export const OWN_VOICE_SPLIT = [
   "Answer them yourself, straight away, whenever you can from this conversation and the brief below: small talk, reactions, follow-ups, advice from common sense, and anything the brief already tells you about them — where they work, their week, what you talked about today, how they want to be treated.",
   "Hand it to the backend (delegate) for anything that needs a lookup or an action, or anything live or factual: the weather, the news, prices, scores, opening hours, their calendar, messages, reminders, tasks, a place or address the brief does not list, directions, sending them anything, or any fact, number or name the brief does not give you.",
@@ -287,6 +304,7 @@ export const OWN_VOICE_SPLIT = [
   // Drive 11-08 (cq run 2, OVH): two turns answered with filler — "So — what do you reckon?" into a
   // wait, "I mean, what's your take?" to "Text me what" — neither an answer nor a hand-off.
   OWN_VOICE_NO_DEFLECT,
+  HANDOFF_ACK,
 ];
 
 /** Call 56: "do you know where I am?" was answered "you're Omari" (2026-10-31). Where/what goes to Reason. */
@@ -307,6 +325,8 @@ export const CALL56_LINES = [
   "If they say yes or no to something Reason offered, pass that answer to Reason; never just say okay.",
   "When you both say goodbye, sign off warmly and briefly.",
 ];
+/** `CALL56_LINES` on their own call: the hand-off line is the voice's (`HANDOFF_ACK`). */
+export const OWN_CALL56_LINES = CALL56_LINES.map(l => l === NO_HOLDING_LINE ? OWN_NO_HOLDING_LINE : l === NO_FILLER ? OWN_NO_FILLER : l);
 
 /**
  * The live prompt: call 53's (#290), the one Omari called "a big upgrade, really felt like a
@@ -343,7 +363,7 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
     "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.",
     ...split,
     "While the backend works, do not fill the silence with guesses.",
-    ...CALL56_LINES,
+    ...(own ? OWN_CALL56_LINES : CALL56_LINES),
     PIECES_LINE,
     ...HEARING_LINES,
     ...(own ? OWN_CALL_LINES : []),
@@ -598,6 +618,11 @@ export function fromLine(said, line) {
 export const THINKING_ACK = /\b(?:(?:let me|lemme|let's|i'll)\s+(?:have a\s+(?:proper\s+|quick\s+)?)?(?:think|check|look|see)|have a (?:proper |quick )?(?:think|look)|giv(?:e|ing) it (?:some |a )?(?:thought|think)|mull|think(?:ing)? (?:it|that|about it) (?:over|through)|i'm (?:on it|checking|looking)|one (?:sec|second|moment)|just a (?:sec|second|moment)|give me a (?:sec|second|moment)|hang on|hold on|bear with me)\b/i;
 /** What is said when Reason had nothing to add after the voice promised a thought: the turn handed back. */
 export const SKIP_FOLLOW_UP = "So — what do you reckon?";
+/**
+ * Reason skipped after the voice's named hand-off line (drive v6 11-08: "Texting you the weather summary
+ * now." then nothing sent, then "So — what do you reckon?"): nothing was done, so it asks, plainly.
+ */
+export const ACK_SKIP_FOLLOW_UP = "Sorry — what was it you wanted?";
 
 // ---------- holding lines, decided by code (call 79) ----------
 
@@ -612,12 +637,16 @@ export const SKIP_FOLLOW_UP = "So — what do you reckon?";
 // call's) gets the next late line, so there is never dead air.
 /** What the voice is told, quietly, the moment it hands something over. */
 export const WAIT_NOTE = "Reason is working on this now and its answer comes next. Don't answer it yourself and don't fill the wait; say nothing until you're given words.";
+/**
+ * Their own call, the voice handed over with nothing said: asked for its named line at once (Omari 11-08).
+ * Its own words from the question it heard; nothing when what they said needs no lookup or action.
+ */
+export const ACK_ASK = "Reason has their request now. If it needs a lookup or an action (the weather, news, a place, their calendar or messages, sending something), say only one short line of a few words naming exactly what you're getting or doing for them — like \"Weather near work, one sec.\" or \"Pulling up Nigeria headlines.\" — never just \"one sec\" or \"let me check\", and nothing else."
+  + " If it doesn't need one — they answered yes or no, replied to something Reason asked, or it was unclear or sounded cut off — say nothing at all. Never guess what they want sent. Then wait quietly for Reason's answer.";
+/** Their own call: the voice's one named hand-off line (`HANDOFF_ACK`) is still its to say, once. */
+export const OWN_WAIT_NOTE = "Reason is working on this now and its answer comes next. Don't answer it yourself and don't fill the wait: if this needs a lookup or an action and you haven't yet said your one short line naming it, say just that line now; otherwise say nothing until you're given words.";
 /** An answer ready this soon after the hand-off gets no holding line. */
 export const HOLD_LINE_AFTER_MS = 1500;
-/** No lookup running: a tiny sound, nothing about checking. */
-export const QUICK_HOLD_LINES = Object.freeze(["Mm, one sec.", "One sec.", "Mm-hm, one sec."]);
-/** One of Reason's tools really is running. */
-export const CHECK_HOLD_LINES = Object.freeze(["Let me check.", "Let me look that up.", "Checking now."]);
 /** A send of Reason's is running (never "sent": it has not gone yet). */
 export const SEND_HOLD_LINES = Object.freeze(["Sending it now."]);
 /** Which of the code's own lines talk about checking or looking (only while a tool runs). */
@@ -636,9 +665,39 @@ export function holdingInstruction(line) {
   return `Reason is still working on their request. Say only this, in your own voice, and nothing else: "${line}" Then wait quietly for Reason's answer.`;
 }
 
-/** The holding line for this wait: `kind` "first" (at HOLD_LINE_AFTER_MS) or "late" (at LATE_HOLDING_MS). */
-export function holdLineFor({ kind = "first", tool = false, sending = false, n = 0 } = {}) {
-  const pool = kind === "late" ? LATE_LINES.filter(l => tool || !CHECK_WORDING.test(l)) : tool ? CHECK_HOLD_LINES : sending ? SEND_HOLD_LINES : QUICK_HOLD_LINES;
+/**
+ * Omari 11-08: code's first line, when the voice said none of its own, names what Reason's tool is
+ * doing — never a stock "one sec" / "let me check". Read off Reason's own tool names (never anyone's
+ * words); a tool with no line here gets no first line (the late line still covers a long wait).
+ */
+const TOOL_LINES = [
+  [/^weather$/, "Getting the weather."],
+  [/^get_location$/, "Checking where you are."],
+  [/^nearby_places$/, "Looking for places nearby."],
+  [/^(?:web_search|web_lookup|research|find_all)$/, "Searching the web for that."],
+  [/^image_search$/, "Finding pictures of that."],
+  [/calendar_events?$/, "Checking your calendar."],
+  [/^gmail_(?:search|read)$/, "Checking your email."],
+  [/^flight_(?:search|dates|verify|list)$/, "Looking at flights."],
+  [/^transit_status$/, "Checking the trains."],
+  [/^(?:recall|memory_search|graph_lookup)$/, "Checking what I've got saved."],
+  [/^(?:timer_list|task_list|plan_list|watch_list)$/, "Checking your list."],
+];
+/** The named first line for one of Reason's tools, or "" (no line). A send says it is sending. */
+export function toolHoldLine(name) {
+  const n = String(name ?? "");
+  if (!n) return "";
+  if (SEND_TOOLS.has(n)) return SEND_HOLD_LINES[0];
+  return TOOL_LINES.find(([re]) => re.test(n))?.[1] ?? "";
+}
+
+/**
+ * The holding line for this wait: `kind` "first" (a tool of Reason's started, named by `name`) or
+ * "late" (at LATE_HOLDING_MS). A first line with no named tool is "" — nothing is said.
+ */
+export function holdLineFor({ kind = "first", tool = false, n = 0, name = "" } = {}) {
+  if (kind !== "late") return toolHoldLine(name);
+  const pool = LATE_LINES.filter(l => tool || !CHECK_WORDING.test(l));
   return pool[n % pool.length];
 }
 
@@ -1913,6 +1972,11 @@ export class GptLiveCall {
     // both off voice.js's own hooks, never the stream (call 80: platform tools only, so a real send read
     // as none). `pieces`: Reason's words handed to the voice so far, as they were written (`speakPiece`).
     const turn = { id, startedAt: this.now(), msgCount: 0, firstAudioMs: null, firstRealMs: null, resultAt: null, held: 0, running: new Set(), runs: new Map(), ran: new Set(), pieces: 0, spoken: "", sendLine: false };
+    // Words the voice said since their latest words began, before this hand-off reached code: its own
+    // named hand-off line (`HANDOFF_ACK`), said as it handed over. Code adds no first line after it.
+    const them = this.turns.findLast(x => x.who === "them");
+    const mine = this.turns.findLast(x => x.who === "reason" && !x.seeded);
+    turn.preAck = mine && them && (mine.from ?? mine.at) > (them.from ?? them.at) ? String(mine.text ?? "") : "";
     this.pending.set(id, turn);
     this.latest = id;
     this.lastResultClaimed = false;
@@ -1923,7 +1987,22 @@ export class GptLiveCall {
       // A factual quiet update (it cancels the automatic acknowledgement just as an empty one does, per
       // the docs) that also says the answer is Reason's: on the 2026-11-08 drives a voice left to wait in
       // silence sometimes began answering on its own, ahead of Reason.
-      this.live.send({ type: "session.thinking.append", event_id: `quiet_${id}`, delegation_id: id, content: WAIT_NOTE });
+      // Cancelled at once on every call. Their own call's named line is the voice's own, said as it
+      // hands over (`HANDOFF_ACK`); the automatic one, left to play (drive v4 11-08 on OVH), came ~1 s
+      // later and stock — "Right, checking that for you.", "Working on it." — so it never plays.
+      this.live.send({ type: "session.thinking.append", event_id: `quiet_${id}`, delegation_id: id, content: this.who?.owner ? OWN_WAIT_NOTE : WAIT_NOTE });
+      // Their own call, nothing said yet: the voice is asked for its named line now — on drive v5 it
+      // handed over in silence on all five lookups when only told in its instructions (v3: 4 of 5).
+      // It knows the question; the line is its own words, and it says nothing when no lookup is
+      // needed. Never right after an unanswered line of the hand-off before (never two in a row).
+      const before = [...this.pending.values()].some(p => p !== turn && !p.pieces && (p.askedAck || this.voiceAcked(p)));
+      // Only for words of theirs newer than the voice's last (a question to hand over, not its own initiative).
+      const theirs = this.turns.findLast(x => x.who === "them");
+      if (this.who?.owner && !this.persona && theirs && !this.voiceAcked(turn) && !before) {
+        turn.askedAck = true;
+        this.live.send({ type: "session.commentary.append", event_id: `ack_${id}`, delegation_id: null, content: ACK_ASK });
+        this.log({ gptlive_ack_asked: this.call.id });
+      }
       turn.holdTimer = this.timers.setTimeout(() => this.holdLine(id, "first"), HOLD_LINE_AFTER_MS);
       turn.lateTimer = this.timers.setTimeout(() => this.holdLine(id, "late"), LATE_HOLDING_MS);
     }
@@ -2003,7 +2082,7 @@ export class GptLiveCall {
       // Call 68 (2026-11-01): "Hmm. Lemme have a think." then Reason skipped, the voice was told to say
       // nothing, and the line sat silent until he said "Hello". A thought announced is closed out loud.
       this.log({ gptlive_skip_followed_up: this.call.id });
-      this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: SKIP_FOLLOW_UP });
+      this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: turn.askedAck || turn.preAck ? ACK_SKIP_FOLLOW_UP : SKIP_FOLLOW_UP });
       (this.answered ??= []).push(turn);
     } else {
       this.live.send({ type: "session.thinking.append", event_id: `result_${id}`, delegation_id: id, content: "Reason has nothing to add right now. Say nothing more about it and listen." });
@@ -2100,16 +2179,37 @@ export class GptLiveCall {
     // A send running gets "Sending it now."; any other tool that has run or is running, "one sec" —
     // true, Reason is doing something. Nothing has started yet: no line, the answer may be a sentence away.
     const looking = [...turn.running].find(isLookup) ?? "";
+    // The voice already said its own named line for this hand-off (`HANDOFF_ACK`): never a second
+    // one in a row from code. The late line still covers a long wait.
+    if (kind === "first" && this.voiceAcked(turn)) return;
     if (kind === "first" && !looking && !turn.toolSeen) {
       if (t - turn.startedAt < LATE_HOLDING_MS - 1500) retry();
       return;
     }
-    const sending = kind === "first" && !looking && [...turn.running].some(n => SEND_TOOLS.has(n));
-    const line = holdLineFor({ kind, tool: !!looking, sending, n: kind === "late" ? this.lateHolds++ : this.quickHolds++ });
+    // Omari 11-08: a first line names what is running (a send, then a lookup), or what ran — never a
+    // stock "one sec". A tool with no named line: nothing yet, a later tool may have one.
+    const named = kind === "first"
+      ? [...turn.running].find(n => SEND_TOOLS.has(n) && toolHoldLine(n)) ?? [looking, ...turn.running, ...[...turn.ran].reverse()].find(n => toolHoldLine(n)) ?? ""
+      : "";
+    const line = holdLineFor({ kind, tool: !!looking, name: named, n: kind === "late" ? this.lateHolds++ : this.quickHolds++ });
+    if (!line) {
+      if (t - turn.startedAt < LATE_HOLDING_MS - 1500) retry();
+      return;
+    }
     turn.held++;
     this.holdLines++;
     this.live.send({ type: "session.commentary.append", event_id: `hold_${kind}_${id}`, delegation_id: id, content: holdingInstruction(line) });
     this.log({ gptlive_hold_line: this.call.id, kind, ms: t - turn.startedAt, tool: looking || null, line });
+  }
+
+  /**
+   * Has the voice said words of its own for this hand-off — its named line as it handed over (before
+   * code heard of it) or since? A bare listening sound is not one. Then code says no first line: two
+   * in a row is what Omari ruled out (11-08).
+   */
+  voiceAcked(turn) {
+    const words = `${turn.preAck ?? ""} ${turn.ack ?? ""}`.trim();
+    return !!words && !BARE_SOUND.test(words) && !/^(?:mm-?hmm|uh-?huh|mm|yeah|okay|right|sure)[.!,\s]*$/i.test(words);
   }
 
   /**

@@ -195,8 +195,9 @@ export function ownerCallFrame({ name, identity = false }) {
     `Keep it a conversation, one point at a time: answer in one or two short sentences, then stop and let them react.`
     + ` Everything you write is said out loud, word for word in meaning, so write only what should be heard — never narrate what you`
     + ` are about to do ("let me check", "I'll grab your location first"): call the tool, then say the answer.`
-    + ` Only when the content itself is naturally long — headlines, a list of options, directions, a recipe — say the first few`
-    + ` and then offer the rest ("there's more — want me to text you the rest?"). An ordinary answer never ends on that offer.`
+    // Paid replay 11-08: "the latest from Nigeria" read out whole for 24 s, and he started talking over its end.
+    + ` Only when the content itself is naturally long — headlines, a list of options, directions, a recipe — say just the top one or two,`
+    + ` in two short sentences at most (about ten seconds out loud), and then offer the rest ("there's more — want me to text you the rest?"). An ordinary answer never ends on that offer.`
     + ` If they take it, send it with message_send to "owner" in that turn, and say it's sent only after the send.`
     + ` Never read a long text out loud — a rewrite, a draft, a caption or a message: give the gist in a few words and offer to text it.`
     + ` At most one question per reply, and never a menu of options.`,

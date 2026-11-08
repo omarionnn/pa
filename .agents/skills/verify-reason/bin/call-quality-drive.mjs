@@ -253,6 +253,9 @@ const out = {
       .map(l => ({ ms: l.drive_ms, who: "code", text: JSON.stringify(Object.fromEntries(Object.entries(l).filter(([k]) => k !== "drive_ms"))) })),
   ].sort((a, b) => a.ms - b.ms),
   replies,
+  // When each clip of theirs played and each run of Reason's speech reached the line (ms), for talk-over.
+  played: played.map(p => [p.from, p.to]),
+  speech_runs: runs.map(r => [r.from, r.to]),
   totals: {
     clips: played.length,
     delegations: pick("gptlive_delegation").length,

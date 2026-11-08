@@ -1276,7 +1276,7 @@ test("the live prompt on their own call (fix 2, call 80): Reason itself, with it
   assert.match(lines[2], /^You were made by Saafi Interactions Lab;/);
   assert.equal(lines[3], "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.");
   assert.equal(lines[4], gl.OWN_VOICE_PERSONA);
-  for (const l of [...gl.OWN_VOICE_SPLIT, ...gl.CALL56_LINES, ...gl.HEARING_LINES, ...gl.OWN_CALL_LINES, gl.NO_FILLER, gl.PIECES_LINE]) assert.ok(lines.includes(l), l.slice(0, 60));
+  for (const l of [...gl.OWN_VOICE_SPLIT, ...gl.OWN_CALL56_LINES, ...gl.HEARING_LINES, ...gl.OWN_CALL_LINES, gl.OWN_NO_FILLER, gl.HANDOFF_ACK, gl.PIECES_LINE]) assert.ok(lines.includes(l), l.slice(0, 60));
   assert.doesNotMatch(s, /You are only the voice|Delegate to the backend for every question/, "no longer a relay on their own call");
   assert.match(s, /Never state a fact, figure, news item, price, time or the weather from your own knowledge: hand it off/);
   const end = lines.indexOf("Stop speaking when they talk over you, and listen.");
