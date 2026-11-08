@@ -41,6 +41,7 @@ import * as ambience from "./ambience.js";
 import { ulawToPcm, pcmToUlaw } from "./ulaw.js";
 import { Hearing } from "./hearing.js";
 import * as opener from "./opener.js";
+import { isVerified } from "./verify.js";
 import { goalPending } from "./goalmet.js";
 import { openingLineFor, recordingNoteFor, whoseCallIsThis, strangerIntake, overCallCap } from "./inbound.js";
 import * as strangerCall from "./stranger.js";
@@ -196,7 +197,8 @@ export function preCallBrief(call, { place = "" } = {}) {
   // Call 79: "three sub events" was the line's garbling of the spots Reason had picked by text that day.
   const today = todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
   if (today?.names?.length) lines.push(`Names from your chats today — on a bad line, a word that sounds odd is often one of these: ${today.names.join(", ")}`);
-  if (place) lines.push(placeLine(place));
+  // Never on an inbound call that only has caller ID (./verify.js WHEREABOUTS).
+  if (place && isVerified(call)) lines.push(placeLine(place));
   if (!lines.length) return "";
   return `PRE-CALL BRIEF — background for you, so the call starts warm and on point. Anything they ask still goes to Reason.\n${lines.join("\n")}`;
 }

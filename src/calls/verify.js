@@ -45,8 +45,18 @@ export function isConsequential(name, input = null, { toSelf = () => false } = {
   // options" on his own call was held for a check that texted the same phone). Whoever is holding
   // this phone, the words land with the owner, so there is nothing for a voice to authorize.
   if (SELF_SENDS.has(name) && input && toSelf(input.to)) return false;
-  return GATED_ACTIONS.has(name) || name === "confirm_record" || CHANGES_THE_GATE.has(name) || eventWrite(name, input);
+  return GATED_ACTIONS.has(name) || name === "confirm_record" || CHANGES_THE_GATE.has(name) || eventWrite(name, input) || WHEREABOUTS.has(name);
 }
+
+/**
+ * Where they are, or where they usually are: their live position, what is near it, their saved
+ * places (a place's weather is labelled with its address), and a call placed from where they are.
+ * Caller ID alone said whose Reason to be, not who is holding the phone, and "where am I?" from a
+ * spoofed number must not be answered (drive 11-08 on OVH: a spoofed inbound caller heard "home and
+ * work are both in Chelsea"). Behind the same check as anything consequential: refused on the call,
+ * picked up by text after it.
+ */
+export const WHEREABOUTS = new Set(["get_location", "nearby_places", "set_place", "weather", "call_place"]);
 
 /**
  * An event organizer's tools reach the guests: a cancel, a change, a released detail or a removal is
@@ -189,7 +199,9 @@ export function gateRefusal({ call, name, expected = config.callPassphrase }) {
     : `It waits for the call to end: call verify_caller with \`about\` set to what they asked, and say in one line that you'll pick it up by text as soon as you hang up. Do not ask them to reply to anything while you are on the call.`;
   return {
     ok: false, blocked: "needs_verification", tool: name,
-    say: `Not on this call. ${name} is the kind of thing a voice alone cannot authorize. ${how} Do not run ${name} now.`,
+    say: WHEREABOUTS.has(name)
+      ? `Not on this call. Where they are or usually are is not given out to a voice on caller ID alone, and ${name} would say it. ${how} Do not run ${name} now, and do not answer it from anything else you know about them.`
+      : `Not on this call. ${name} is the kind of thing a voice alone cannot authorize. ${how} Do not run ${name} now.`,
     call_id: call?.id ?? null,
   };
 }
