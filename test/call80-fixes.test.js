@@ -513,3 +513,12 @@ test("review: their week read after the session started is handed to the voice (
   assert.ok(s.live.of("session.instructions.append").some(e => /Works Thu to Sun shifts/.test(e.content)));
   assert.equal(gl.lateWhereabouts(row), false, "once");
 });
+
+test("review drive: out of rounds on his call, the last words before the tools are said, then the come-back line", async () => {
+  voice.contextDeps.runTool = async () => ({ ok: false, error: "search down" });
+  const r = (lead) => [lead, { tool: "web_search", start: true }];
+  const out = await turn(ownerCall(), rounds(r("Searching the news. "), r("Search is down on my end, so I'll try a Nigerian news site directly. "), r("Trying another site. "), r("One more try. ")));
+  const said = (await drain(out.stream)).trim();
+  assert.match(said, /One more try\.\s+Let me come back to you on that one\.$/, said);
+  assert.doesNotMatch(said, /Searching the news/, "only the last lead-in");
+});

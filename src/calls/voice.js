@@ -2241,7 +2241,13 @@ export async function* voiceTurn({
       }
 
       if (round === MAX_VOICE_TOOL_ROUNDS) {
-        // Out of rounds with nothing said. Better a sentence admitting it than a silent line.
+        // Out of rounds with nothing said. Better a sentence admitting it than a silent line — and on
+        // their own call, the last words it wrote before its tools first ("search is down on my end, so
+        // I'll try a news site directly"), so they hear what happened, not only a promise.
+        if (owned && !said.trim() && lastLeadIn.join("").trim()) {
+          log({ voice_lead_in_said: call.id, round, out_of_rounds: true });
+          yield* emit(lastLeadIn);
+        }
         yield chunk({ content: said ? ` ${COME_BACK_LATER}` : COME_BACK_LOOK });
         yield chunk({}, "stop");
         yield SSE_DONE;
