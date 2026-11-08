@@ -1745,7 +1745,7 @@ export class GptLiveCall {
     if (kind === "first" && turn.held) return;
     // They are talking, or the voice is (its own few words, a line still playing): nothing over either.
     // The first line waits for that to pass, so a "yeah —" of the voice's own never leaves dead air after it.
-    const busy = t - this.theirSpeechAt < HOLD_CALLER_QUIET_MS || t - this.lastVoiceAt < HOLD_VOICE_QUIET_MS || this.queuedMs() > 0 || (this.over && !this.over.dropped);
+    const busy = t - this.theirSpeechAt < HOLD_CALLER_QUIET_MS || t - this.lastVoiceAt < HOLD_VOICE_QUIET_MS || this.voiceEndsAt > t || (this.over && !this.over.dropped);
     if (busy) {
       if (kind === "first" && t - turn.startedAt < LATE_HOLDING_MS - 1500) turn.holdTimer = this.timers.setTimeout(() => this.holdLine(id, "first"), 400);
       return;

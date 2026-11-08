@@ -173,6 +173,12 @@ const pick = (k) => lines.filter(l => k in l);
 const results = pick("gptlive_result");
 const out = {
   code: process.env.DRIVE_LABEL ?? "",
+  // Who said what when (ms from the stream's start), and when each of Reason's answers came back.
+  timeline: [
+    ...(call?.turns ?? []).filter(t => !t.seeded).map(t => ({ ms: Math.round((t.from ?? t.at) - startAt), who: t.who, text: t.text.replace(/\s+/g, " ").trim().slice(0, 300) })),
+    ...lines.filter(l => "gptlive_result" in l || "gptlive_delegation" in l || "gptlive_hold_line" in l || "gptlive_reply_cut" in l || "gptlive_talkover_held" in l || "gptlive_talkover_dropped" in l)
+      .map(l => ({ ms: l.drive_ms, who: "code", text: JSON.stringify(Object.fromEntries(Object.entries(l).filter(([k]) => k !== "drive_ms"))) })),
+  ].sort((a, b) => a.ms - b.ms),
   replies,
   totals: {
     clips: played.length,
