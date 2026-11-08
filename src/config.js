@@ -641,7 +641,7 @@ export const config = {
   thirdPartyVoice: String(process.env.REASON_THIRD_PARTY_VOICE ?? "").trim().toLowerCase(),
   // A quiet café (own calls) or office (errands) under Reason's GPT-Live voice: owner | on | off (unset = off).
   callAmbience: String(process.env.REASON_CALL_AMBIENCE ?? "").trim().toLowerCase(),
-  // That room's level (calls/ambience.js ambienceGain): a number 0–0.2; unset = the default (0.075).
+  // That room's level (calls/ambience.js ambienceGain): a number 0–0.2; unset = the default (0.01875 since call 77).
   callAmbienceGain: String(process.env.REASON_CALL_AMBIENCE_GAIN ?? "").trim(),
   // Their side of a GPT-Live call evened out before the voice hears it (src/calls/hearing.js, call 76):
   // quiet speech lifted, silence and line noise left alone, peaks limited. "on" (default) / "off".

@@ -328,19 +328,19 @@ test("REASON_CALL_AMBIENCE: unset is off; owner is the operator's calls; on is e
   assert.equal(amb.ambienceKind(ama), "cafe");
 });
 
-test("REASON_CALL_AMBIENCE_GAIN: unset is 0.075 (4 dB under the old 0.12); a number is clamped to 0–0.2; junk is the default", () => {
-  assert.equal(amb.AMBIENCE_GAIN, 0.075);
+test("REASON_CALL_AMBIENCE_GAIN: unset is 0.01875 (call 77: half of 0.0375, −6 dB); a number is clamped to 0–0.2; junk is the default", () => {
+  assert.equal(amb.AMBIENCE_GAIN, 0.01875);
   assert.equal(config.callAmbienceGain, "", "not set in the test env");
-  assert.equal(amb.ambienceGain(), 0.075);
-  assert.equal(amb.ambienceGain(""), 0.075);
-  assert.equal(amb.ambienceGain("loud"), 0.075);
+  assert.equal(amb.ambienceGain(), 0.01875);
+  assert.equal(amb.ambienceGain(""), 0.01875);
+  assert.equal(amb.ambienceGain("loud"), 0.01875);
   assert.equal(amb.ambienceGain("0.05"), 0.05);
   assert.equal(amb.ambienceGain(" 0.1 "), 0.1);
   assert.equal(amb.ambienceGain("0"), 0, "0 silences the room");
   assert.equal(amb.ambienceGain("-1"), 0);
   assert.equal(amb.ambienceGain("5"), 0.2);
-  const db4 = 20 * Math.log10(0.12 / amb.AMBIENCE_GAIN);
-  assert.ok(db4 > 3.5 && db4 < 4.5, `about 4 dB quieter (${db4.toFixed(1)})`);
+  const db6 = 20 * Math.log10(0.0375 / amb.AMBIENCE_GAIN);
+  assert.ok(Math.abs(db6 - 6.02) < 0.05, `half the level the call 77 heard: 6 dB quieter (${db6.toFixed(2)})`);
   const prev = config.callAmbienceGain;
   try {
     config.callAmbienceGain = "0.05";
@@ -349,13 +349,13 @@ test("REASON_CALL_AMBIENCE_GAIN: unset is 0.075 (4 dB under the old 0.12); a num
   } finally { config.callAmbienceGain = prev; }
 });
 
-test("the beds: 20 s each, quiet (about 24 dB under a voice), and seamless at the wrap", async () => {
+test("the beds: 20 s each, quiet (about 26 dB under a voice), and seamless at the wrap", async () => {
   const { readFileSync } = await import("node:fs");
   for (const kind of ["cafe", "office"]) {
     const bed = new amb.Bed(kind);
     assert.equal(bed.s.length, 160_000);
     const rms = Math.sqrt(bed.s.reduce((a, v) => a + v * v, 0) / bed.s.length);
-    assert.ok(rms > 150 && rms < 450, `${kind} rms ${rms.toFixed(0)}`);
+    assert.ok(rms > 35 && rms < 110, `${kind} rms ${rms.toFixed(0)} (≈ −56 dBFS)`);
     const jump = Math.abs(bed.s[0] - bed.s.at(-1));
     assert.ok(jump < 2500, `${kind}: no click at the loop point (${jump})`);
     assert.equal(readFileSync(new URL(`../assets/calls/ambience-${kind}.ulaw`, import.meta.url)).length, 160_000);

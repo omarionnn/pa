@@ -20,7 +20,10 @@
 // it went to Reason and the answer is not the identity line. --expect goodbye says "that was nice talking
 // to you, bye!": passes only if the voice says goodbye back and the CALL HANGS UP on its own (end_call,
 // mutual goodbye, read by the small model on claude-cli). --expect room-bye says "bye Mum, see you later"
-// to someone in the room and keeps talking: passes only if the call is NOT hung up.
+// to someone in the room and keeps talking: passes only if the call is NOT hung up. --expect bye-only (call 77)
+// says only the caller's sign-off ("okay, bye-bye" / "let me call you later, okay"): passes only if the call
+// hangs up on its own as a mutual goodbye within 6 s of the clip's end, whatever words the voice said back.
+// hung_up_after_question_ms is the clip's end to Reason's hang-up.
 // REASON_CALL_IDENTITY (default owner): with --as user, "owner" proves Ama's call is unchanged and gets
 // nothing of Omari's; "on" proves her Reason knows her (and still nothing of his).
 //
@@ -94,7 +97,9 @@ const row = as === "user"
 const CONV = row.conversation_id;
 
 const lines = [];
-const log = (o) => lines.push(o);
+// Each log line stamped with ms since the stream started (for the goodbye timeline below).
+const streamClock = { at: 0 };
+const log = (o) => lines.push({ ...o, drive_ms: streamClock.at ? Date.now() - streamClock.at : null });
 let call = null;
 // A stand-in for serve.js's runtime: records every after-call event and recording flush, by conversation.
 const events = [];
@@ -155,6 +160,7 @@ await new Promise((r, j) => { twilio.onopen = r; twilio.onerror = () => j(new Er
 twilio.onclose = () => { hungUpAt ??= Date.now() - startAt; };
 twilio.send(JSON.stringify({ event: "connected" }));
 startAt = Date.now();
+streamClock.at = startAt;
 twilio.send(JSON.stringify({ event: "start", start: { streamSid: "MZdrive", callSid: "CAdrive" } }));
 // 3 s of line, the question, then silence — in real time, as Twilio sends it.
 const frames = [];
@@ -201,6 +207,13 @@ const out = {
   hung_up_by_reason: hungUpByReason,
   hung_up_after_question_ms: hungUpAt == null ? null : Math.round(hungUpAt - askedEndMs),
   goodbye_reads: pick("gptlive_goodbye_read").map(l => l.ended),
+  // The end of the call in ms after their clip ended: when their words were written down, each read
+  // (answer, ms it took, when it came back), and the hang-up.
+  bye_timeline: {
+    them_heard: (call?.turns ?? []).filter(t => t.who === "them").map(t => Math.round(t.at - startAt - askedEndMs)),
+    reads: pick("gptlive_goodbye_read").map(l => ({ ended: l.ended, ms: l.ms, back: Math.round(l.drive_ms - askedEndMs), ...(l.overtaken ? { overtaken: true } : {}) })),
+    hung_up: hungUpAt == null ? null : Math.round(hungUpAt - askedEndMs),
+  },
   cut_off: pick("gptlive_cut_off").map(l => l.cut),
   end_detail: settled.end_detail,
 };
@@ -252,6 +265,8 @@ const ok = expect === "hearing"
   ? out.delegations > 0 && !/you['’]re Omari|the person I work for/i.test(said) && out.guard_trips === 0
   : expect === "goodbye"
   ? hungUpByReason && settled.end_reason === "end_call" && /mutual goodbye/.test(settled.end_detail ?? "") && gl.soundsLikeFarewell(said)
+  : expect === "bye-only"
+  ? hungUpByReason && settled.end_reason === "end_call" && /mutual goodbye/.test(settled.end_detail ?? "") && hungUpAt - askedEndMs < 6000
   : expect === "room-bye"
   ? !hungUpByReason && settled.end_reason !== "end_call"
   : expect === "made"

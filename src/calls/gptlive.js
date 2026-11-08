@@ -556,11 +556,27 @@ export async function readTurn(stream) {
 // this list only picks which lines are worth asking about; it never decides anything itself.
 // Only a hint: the small model reads the ending (`judgeEnding`). Chattier own calls sign off more
 // ways — "Lovely talking too. Chat soon." went unread on a 2026-11-01 drive and the call stayed up.
-const FAREWELL_HINT = /\b(?:bye|goodbye|take care|(?:talk|chat|speak) (?:to you )?(?:soon|later)|see (?:you|ya)|catch you|good ?night|have a (?:good|great|nice|lovely)|(?:lovely|nice|great|good) (?:talking|chatting|speaking)|cheers)\b/i;
+const FAREWELL_HINT = /\b(?:bye|goodbye|take care|(?:talk|chat|speak) (?:to you )?(?:soon|later)|(?:call|text|ring) (?:you|ya) (?:later|back|soon|tomorrow)|(?:gotta|got to|have to|need to) go|let you go|see (?:you|ya)|catch you|good ?night|have a (?:good|great|nice|lovely)|(?:lovely|nice|great|good) (?:talking|chatting|speaking)|cheers)\b/i;
 /** Does this line of the voice's sound like a goodbye, so the call's end is worth reading? */
 export const soundsLikeFarewell = (text) => FAREWELL_HINT.test(String(text ?? ""));
 /** The voice's goodbye has settled for this long before the end is read. */
 export const BYE_SETTLE_MS = 900;
+// Call 77 (2026-11-08): "Wait, let me call you later" / "okay" / Reason "All right, talk soon. Bye." /
+// "Bye" — and Omari hung up himself 7.5 s after Reason's bye. The first read said no (he had signed off
+// without the word "bye"), his "Bye" landed during it, and the read again took 3.5 s on a cold CLI. Now
+// the caller's own words are a cue too (their sign-off, or anything they say just after Reason's
+// goodbye), their newer words start a fresh read at once instead of queueing behind the old one, and a
+// started CLI is kept ready for the read.
+/** Their words have settled for this long before the end is read (transcripts come in pieces). */
+export const CALLER_BYE_SETTLE_MS = 500;
+/** Their words this soon after Reason's goodbye are read for the end, whatever they are. */
+export const AFTER_FAREWELL_MS = 20_000;
+/** A goodbye hang-up waits this long after their last words for the voice's own goodbye to start. */
+export const VOICE_BYE_WAIT_MS = 3000;
+/** Goodbye reads out at once, at most (each is a CLI run on a 2-vCPU box). */
+const MAX_BYE_READS = 2;
+/** A started CLI kept for the read is put down before the CLI's own idle limit (10 min) and restarted. */
+const BYE_WARM_MAX_MS = 8 * 60_000;
 
 const ENDING_SYSTEM = "You read the last lines of a phone call between a person (Them) and their AI assistant (Reason)."
   + " Answer only from what was said. Reply with the JSON asked for, nothing else.";
@@ -568,9 +584,12 @@ const GOODBYE_SCHEMA = { type: "object", properties: { ended: { type: "boolean" 
 const CUTOFF_SCHEMA = { type: "object", properties: { cut_off: { type: "boolean" } }, required: ["cut_off"], additionalProperties: false };
 
 export function goodbyePrompt(transcript) {
-  return `${transcript}\n\nHave Them and Reason both said goodbye TO EACH OTHER, so the call is over and Reason should hang up now?`
-    + " ended=false if Them is still asking or saying anything, if the goodbye was to someone else in the room,"
-    + " or if only one side said goodbye. ended=true only for a mutual goodbye.";
+  return `${transcript}\n\nIs the call over, so Reason should hang up now (after its own short goodbye, if it has not said one)?`
+    + " ended=true when Them, in their LAST words, is ending the call TO REASON — any sign-off counts, with or without"
+    + " the word bye (bye, bye-bye, okay bye, talk later, let me call you later, gotta go, or a plain okay with nothing"
+    + " more right after Reason's clear goodbye — not an okay to something Reason asked or offered)."
+    + " ended=false if Them asks or starts anything after their goodbye (\"bye — oh wait\"), if the goodbye was to someone"
+    + " else in the room, or if only Reason has said goodbye and Them has not.";
 }
 
 export function cutOffPrompt(transcript, late) {
@@ -584,7 +603,7 @@ export function cutOffPrompt(transcript, late) {
  * `{ kind: "cutoff", late }` → were their last words cut off. true/false, or null when it could not be
  * asked (no subscription CLI, a timeout) — and null never hangs up or texts anyone. Subscription only.
  */
-export async function judgeEnding({ kind, transcript, late = "" }, { ask = null } = {}) {
+export async function judgeEnding({ kind, transcript, late = "" }, { ask = null, warm = null } = {}) {
   try {
     const goodbye = kind === "goodbye";
     const q = {
@@ -592,9 +611,26 @@ export async function judgeEnding({ kind, transcript, late = "" }, { ask = null 
       prompt: goodbye ? goodbyePrompt(transcript) : cutOffPrompt(transcript, late),
       schema: goodbye ? GOODBYE_SCHEMA : CUTOFF_SCHEMA,
     };
-    const { value } = ask ? { value: await ask(q) } : await (await import("../onethought.js")).askJson(q);
+    const askJson = ask ? null : (await import("../onethought.js")).askJson;
+    let value;
+    if (ask) value = await ask(q);
+    else if (warm && goodbye) {
+      // A started CLI (`goodbyeReader`) answers a little faster; one that died is asked again cold.
+      try { ({ value } = await askJson({ ...q, warm })); } catch { ({ value } = await askJson(q)); } finally { warm.cancel?.(); }
+    } else ({ value } = await askJson(q));
     const v = goodbye ? value?.ended : value?.cut_off;
     return typeof v === "boolean" ? v : null;
+  } catch { return null; }
+}
+
+/** A started subscription CLI for the next goodbye read, or null (API backend, the CLI out). */
+async function goodbyeReader() {
+  try {
+    const { onCli } = await import("../backends/side.js");
+    if (!onCli()) return null;
+    const { startWarm } = await import("../backends/cli.js");
+    // 6 s once asked (a read takes ~2 s): a stuck one gives way to the cold retry in time.
+    return startWarm({ system: ENDING_SYSTEM, schema: GOODBYE_SCHEMA, model: config.midTurnCliModel, timeoutMs: Math.min(6000, config.midTurnCliTimeoutMs), feature: "gptlive_goodbye" });
   } catch { return null; }
 }
 
@@ -935,10 +971,19 @@ export class GptLiveCall {
     this.openLive = openLive;
     this.warm = warm;
     this.brain = brain ?? ((messages) => reasonTurn({ call, messages, log }));
-    this.judge = judge ?? ((q) => judgeEnding(q));
+    // The goodbye read gets a started CLI (kept ready from the first goodbye-ish line on); injected judges don't.
+    this.judge = judge ?? ((q) => judgeEnding(q, q.kind === "goodbye" ? { warm: this.takeByeReader() } : {}));
+    this.byeReader = null;
+    this.byeReaderWanted = !judge;
+    this.byeSeq = 0;
+    this.byeInFlight = 0;
+    this.byeQueued = false;
+    this.callerByeAt = 0;
+    this.farewellHeardAt = 0;
     this.farewellAt = 0;
     this.goodbyeAt = 0;
     this.byeTimer = null;
+    this.byeTimerBy = "";
     this.byeAsking = false;
     this.endHeld = false;
     this.callerSpeechAt = 0;
@@ -1057,6 +1102,7 @@ export class GptLiveCall {
         return;
       }
       this.streamStartAt = this.now();
+      if (!this.line && !this.persona) this.readyByeReader(); // ready for the end of the call, whenever it comes
       this.log({ gptlive_stream_start: this.call.id, sid: this.callSid, ...(this.bed ? { ambience: this.bed.kind } : {}), ...(this.pickup ? { opener: this.pickup.clip?.kind ?? "none" } : {}) });
       this.connect();
       this.roomTick();
@@ -1289,8 +1335,11 @@ export class GptLiveCall {
     const line = this.turns.at(-1);
     if (soundsLikeFarewell(line.text)) {
       this.farewellAt = line.from ?? t;
-      if (this.byeTimer) this.timers.clearTimeout(this.byeTimer);
-      if (!this.ending) this.byeTimer = this.timers.setTimeout(() => void this.readGoodbye(), BYE_SETTLE_MS);
+      this.farewellHeardAt = t;
+      this.readyByeReader();
+      // A read already under way or due (their sign-off, their words while the hang-up waits) decides;
+      // the voice's goodbye back adds nothing to it, so it never moves or cancels that read.
+      if (!this.ending && !this.byeAsking && this.byeTimerBy !== "them") this.readGoodbyeIn(BYE_SETTLE_MS, "voice");
     }
     // Words of the claim already being held back are not a second claim; anything a second on is.
     if (this.mute && t - this.mute.since < 1000) return;
@@ -1368,7 +1417,16 @@ export class GptLiveCall {
     if (this.line && !this.talking && delta.trim() && !pre && !this.openerAnswers()) this.lineHeard();
     if (this.ending && this.endWhy === "goodbye" && !this.done && delta.trim()) {
       this.endHeld = true;
-      void this.readGoodbye();
+      this.readGoodbyeIn(CALLER_BYE_SETTLE_MS, "them");
+    } else if (!this.line && !this.ending && !this.done && delta.trim()) {
+      // Their sign-off ("bye-bye", "let me call you later"), or anything they say just after Reason's
+      // goodbye, is read too — the voice may answer a goodbye without one of its own words for it.
+      const mine = this.turns.at(-1);
+      if ((mine?.who === "them" && soundsLikeFarewell(mine.text)) || (this.farewellAt && t - this.farewellAt < AFTER_FAREWELL_MS)) {
+        this.callerByeAt = t;
+        this.readyByeReader();
+        this.readGoodbyeIn(CALLER_BYE_SETTLE_MS, "them");
+      }
     }
     // Barge-in. The voice stops generating when it is talked over, but what Twilio already holds keeps
     // playing; if no new audio has come since they spoke, that buffer is stale and is dropped.
@@ -1512,25 +1570,71 @@ export class GptLiveCall {
    * "bye — oh wait, one more thing" calls it off. A "bye" to someone in the room is not mutual, and an
    * unanswerable read (null) never hangs up: they can always hang up themselves, as before.
    */
+  /** (Re)arm the one goodbye read due `ms` from now; `by` = whose words it waits on ("them" | "voice"). */
+  readGoodbyeIn(ms, by) {
+    if (this.byeTimer) this.timers.clearTimeout(this.byeTimer);
+    this.byeTimerBy = by;
+    this.byeTimer = this.timers.setTimeout(() => { this.byeTimer = null; this.byeTimerBy = ""; void this.readGoodbye(); }, ms);
+  }
+
   async readGoodbye() {
+    if (this.byeTimer) this.timers.clearTimeout(this.byeTimer);
     this.byeTimer = null;
-    if (this.done || !this.farewellAt) return;
+    this.byeTimerBy = "";
+    if (this.done || !(this.farewellAt || this.callerByeAt)) return;
     if (this.ending ? this.endWhy !== "goodbye" : this.pending.size > 0) return;
-    if (this.byeAsking) { this.byeAgain = true; return; }
+    // At most MAX_BYE_READS out at once; a read wanted beyond that starts when one comes back.
+    if (this.byeInFlight >= MAX_BYE_READS) { this.byeQueued = true; return; }
+    // Newer words start a new read at once; an older read still out is then only overtaken (call 77:
+    // his "Bye" waited 3 s behind the read before it). The latest read decides.
+    const seq = ++this.byeSeq;
     this.byeAsking = true;
+    this.byeInFlight++;
     const heardTo = this.lastCallerAt;
     const askedAt = this.now();
     const ended = await this.judge({ kind: "goodbye", transcript: this.tail() }).catch(() => null);
-    this.byeAsking = false;
-    this.log({ gptlive_goodbye_read: this.call.id, ended, waiting: this.ending, ms: this.now() - askedAt });
+    this.byeInFlight--;
+    const latest = seq === this.byeSeq;
+    if (latest) this.byeAsking = false;
+    this.log({ gptlive_goodbye_read: this.call.id, ended, waiting: this.ending, ms: this.now() - askedAt, ...(latest ? {} : { overtaken: true }) });
     if (this.done) return;
-    if (this.byeAgain || this.lastCallerAt !== heardTo) { this.byeAgain = false; return void this.readGoodbye(); }
+    if (this.byeQueued) { this.byeQueued = false; return void this.readGoodbye(); }
+    if (!latest) return;
+    // A no read before the voice's own goodbye came (drive 11-08: their "bye" read alone, said no, and
+    // the voice's "Bye! Take care" after it was never read): read again with it.
+    if (ended !== true && !this.ending && this.farewellHeardAt >= askedAt && !this.byeTimer) return void this.readGoodbye();
+    // Words came in during the read that started no read of their own (a settle timer would have).
+    if (this.lastCallerAt !== heardTo && !this.byeTimer) return void this.readGoodbye();
+    if (this.byeTimer) return;
     if (this.ending) {
       if (ended === true) this.endHeld = false;
       else { this.ending = false; this.endWhy = ""; this.endHeld = false; this.goodbyeAt = 0; this.log({ gptlive_goodbye_called_off: this.call.id }); }
       return;
     }
-    if (ended === true && this.pending.size === 0) { this.goodbyeAt = this.farewellAt; this.hangUpAfterSpeech("goodbye"); }
+    if (ended === true && this.pending.size === 0) { this.goodbyeAt = this.farewellAt || this.callerByeAt; this.hangUpAfterSpeech("goodbye"); }
+  }
+
+  /** Start a CLI for the goodbye read if none is waiting (the first goodbye-ish line of the call starts it). */
+  readyByeReader() {
+    if (!this.byeReaderWanted || this.done) return;
+    const r = this.byeReader;
+    if (r && this.now() - r.at < BYE_WARM_MAX_MS) return;
+    if (r) { this.byeReader = null; void r.ready.then(w => w?.cancel()); }
+    const at = this.now();
+    this.byeReader = { at, ready: goodbyeReader() };
+  }
+
+  /** The waiting CLI for this read, or null (then the read starts one cold); the next is started at once. */
+  takeByeReader() {
+    const r = this.byeReader;
+    this.byeReader = null;
+    const fresh = r && this.now() - r.at < BYE_WARM_MAX_MS;
+    if (r && !fresh) void r.ready.then(w => w?.cancel());
+    if (!this.done) this.readyByeReader();
+    return fresh ? {
+      ask: (prompt) => r.ready.then(w => w ? w.ask(prompt) : { error: "no started CLI" }),
+      cancel: () => void r.ready.then(w => w?.cancel()), // a no-op once asked; puts it down if it never was
+    } : null;
   }
 
   /**
@@ -1549,7 +1653,11 @@ export class GptLiveCall {
       const quiet = why === "goodbye"
         ? t - this.lastVoiceAt > 1000 && t >= this.voiceEndsAt + 500
         : t - this.lastOutAt > 1500 && this.queuedMs() === 0 && !(this.gate && !this.gate.heard) && !this.pendingSay;
-      const held = why === "goodbye" && (this.endHeld || t - this.lastCallerAt < 1000);
+      // Their goodbye was last: the voice says its own first — it starts within VOICE_BYE_WAIT_MS of their
+      // words, and the hang-up gives it at least 750 ms after the yes too.
+      const voiceDue = why === "goodbye" && this.lastVoiceAt < this.lastCallerAt
+        && (t - this.lastCallerAt < VOICE_BYE_WAIT_MS || t - started < 750);
+      const held = why === "goodbye" && (this.endHeld || t - this.lastCallerAt < 1000 || voiceDue);
       const minMs = why === "goodbye" ? 0 : 2500;
       if (!held && ((quiet && t - started >= minMs) || t - started > 15000)) return void this.end(why).catch(() => {});
       this.timers.setTimeout(tick, 250);
@@ -2382,6 +2490,8 @@ export class GptLiveCall {
     this.endWhy = this.endWhy || why;
     if (this.capTimer) this.timers.clearTimeout(this.capTimer);
     if (this.byeTimer) this.timers.clearTimeout(this.byeTimer);
+    this.byeReaderWanted = false;
+    if (this.byeReader) { const r = this.byeReader; this.byeReader = null; void r.ready.then(w => w?.cancel()); }
     for (const k of ["lineTimer", "holdTimer", "rejoinTimer", "vmTimer", "openTimer", "noticeTimer", "roomTimer"]) if (this[k]) this.timers.clearTimeout(this[k]);
     if (this.pickup?.pumpTimer) this.timers.clearTimeout(this.pickup.pumpTimer);
     // Reason's turn wrote the voicemail down as left when it wrote the words; if the line went before
@@ -2391,6 +2501,9 @@ export class GptLiveCall {
       this.log({ gptlive_voicemail_not_said: this.call.id });
     }
     for (const turn of [...this.pending.values(), ...(this.answered ?? [])]) this.heard(turn);
+    // A goodbye hang-up drops the line first: the goodbye has played, and the wait for the usage below
+    // (up to 3 s) was dead air on the phone (drives 11-08: hang-up 5.4–6.1 s after their "bye").
+    if (this.endWhy === "goodbye" && this.twilio.open?.()) this.twilio.close();
     // Their usage arrives on session.closed; wait for it briefly, then let go either way.
     if (this.live && this.started) {
       await new Promise((resolve) => {
