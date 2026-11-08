@@ -64,7 +64,8 @@ const ORGANIZER_READS = {
   event_rides_setting: (input) => input != null && input.enabled === undefined,
   event_ride: (input) => input?.action === "neither",
 };
-const REACHES_GUESTS = new Set([...EVENT_ORGANIZER_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS]);
+// event_leave too: it ends their ride offers, which texts the ride partner and sends new matches.
+const REACHES_GUESTS = new Set([...EVENT_ORGANIZER_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS, "event_leave"]);
 function organizerWrite(name, input) {
   if (!REACHES_GUESTS.has(name)) return false;
   return !(ORGANIZER_READS[name]?.(input) ?? false);

@@ -34,6 +34,8 @@ test("every organizer tool that texts guests needs the second check on an unveri
   assert.equal(verify.isConsequential("event_scheduled", { event_id: 1, action: "cancel", scheduled_id: 2 }), true);
   assert.equal(verify.isConsequential("event_scheduled", { event_id: 1, action: "reminder", reminder: "day_before", enabled: false }), true);
   assert.equal(verify.isConsequential("event_rides_setting", { event_id: 1, enabled: true }), true);
+  // Leaving ends their ride offers, which texts the ride partner.
+  assert.equal(verify.isConsequential("event_leave", { event_id: 1 }), true);
   // A guest's ride tool texts the ride partner (free text), swaps numbers, or tells the organizer.
   for (const action of ["offer", "need", "cancel", "answer", "coordinate", "message", "report"]) {
     assert.equal(verify.isConsequential("event_ride", { event_id: 1, action, message: "x", mode: "intro" }), true, `event_ride ${action}`);
@@ -56,7 +58,7 @@ test("reading their own event on a call stays unchecked", () => {
   assert.equal(verify.isConsequential("event_rides_setting", { event_id: 1 }), false);
   assert.equal(verify.isConsequential("event_ride", { event_id: 1, action: "neither" }), false);
   // Guest-side tools are about the caller themself and are unchanged.
-  for (const name of ["event_list", "event_info", "event_join", "event_leave", "event_mute"]) {
+  for (const name of ["event_list", "event_info", "event_join", "event_mute"]) {
     assert.equal(verify.isConsequential(name, { event_id: 1 }), false, name);
   }
 });
