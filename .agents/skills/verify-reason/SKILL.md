@@ -525,7 +525,7 @@ Offline suite under `env -i` (fresh `npm ci` in the worktree): 5,814 tests, 5,68
 ### Baseline — event guest questions (up to 3 optional questions on joining; 2026-11-08, PR event-guest-questions, not merged)
 
 Scoped maintain pass for [features/events.md](features/events.md) "Guest questions". Offline:
-`test/event-guest-questions.test.js` 10/10; full `npm run test:offline` 5763 / 5631 pass / 1 fail (known web-ongoing
+`test/event-guest-questions.test.js` 11/11; full `npm run test:offline` 5794 / 5662 pass / 1 fail (known web-ongoing
 desktop margin) / 131 skip. `bin/events-drive.mjs` under `caged.sh env` + temp DB: all ok, with 10 new `ask:` steps
 (add asks for the yes showing what guests see; saved texts nobody; 4th refused before a yes; join page shows them all
 optional; claim answers reach the row through the finishing text; text join hands the model the questions; pick by
