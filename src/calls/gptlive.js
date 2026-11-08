@@ -1102,7 +1102,7 @@ export class GptLiveCall {
         return;
       }
       this.streamStartAt = this.now();
-      if (!this.line) this.readyByeReader(); // ready for the end of the call, whenever it comes
+      if (!this.line && !this.persona) this.readyByeReader(); // ready for the end of the call, whenever it comes
       this.log({ gptlive_stream_start: this.call.id, sid: this.callSid, ...(this.bed ? { ambience: this.bed.kind } : {}), ...(this.pickup ? { opener: this.pickup.clip?.kind ?? "none" } : {}) });
       this.connect();
       this.roomTick();
