@@ -262,6 +262,10 @@ addRunColumn("renewals", "INTEGER NOT NULL DEFAULT 0");
 // Face ID passed and the card's CVC is being typed again (2026-11-08): until when the approve page may
 // finish this payment without another Face ID (payAfterCvc). NULL when no CVC step is open.
 if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().some((r) => r.name === "cvc_until")) db.db.exec("ALTER TABLE shop_payments ADD COLUMN cvc_until INTEGER");
+// Which approval link that Face ID was on (the CVC step finishes only on that link), and what the
+// intent's card rail read when the checkout got it ('ready' / 'unlisted'; '' = paid before 2026-11-08).
+if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().some((r) => r.name === "cvc_link")) db.db.exec("ALTER TABLE shop_payments ADD COLUMN cvc_link TEXT NOT NULL DEFAULT ''");
+if (!db.db.prepare("SELECT name FROM pragma_table_info('shop_payments')").all().some((r) => r.name === "rail_at_pay")) db.db.exec("ALTER TABLE shop_payments ADD COLUMN rail_at_pay TEXT NOT NULL DEFAULT ''");
 function siteRow(key) { return q("SELECT * FROM shop_sites WHERE store = ?").get(key) ?? null; }
 /** What Reason learned about a store it was asked to shop at: its site and the name it was called by. */
 export function noteStore({ store, name = "", url = "" }) {
@@ -1030,6 +1034,9 @@ async function payRow(row, { confirmationId = null } = {}) {
     return { ok: false, error: "needs_cvc", needs_cvc: true, paymentMethodId: card.paymentMethodId, say: CVC_SAY };
   }
   if (rail === "blocked") return failed(null, "card_rail_unavailable");
+  // Crossmint's own advice for a card with no encrypted-card rail listed is to send it anyway; logged, so a
+  // changed answer shape (no rails at all) shows up instead of quietly paying blind.
+  if (rail === "unlisted") logFn({ payment_rails_unlisted: true, payment_id: row.id, rails: Array.isArray(look.rails) ? look.rails.length : -1 });
   const part = { type: "input_response", requestId: row.request_id, action: "submit", response: { kind: "payment", orderIntentId } };
   // From here the card may have been offered to the store: any failure is an unknown outcome, never a retry.
   // It is counted against the day's cap as if it went through ("(OUTCOME UNKNOWN)", the same line
@@ -1043,7 +1050,7 @@ async function payRow(row, { confirmationId = null } = {}) {
   let r;
   try { r = await server(conversationId, `${CHECKOUTS}/${encodeURIComponent(row.run_id)}/messages`, { method: "POST", body: { id: `msg_${randomUUID()}`, parts: [part] } }); } catch { return await unknown(); }
   if (!r.ok) return await unknown(r.status);
-  q("UPDATE shop_payments SET status = 'paid', confirmation_id = ?, order_intent_id = ?, answered_at = ? WHERE id = ?").run(confirmationId ?? null, orderIntentId, clock.now(), row.id);
+  q("UPDATE shop_payments SET status = 'paid', confirmation_id = ?, order_intent_id = ?, answered_at = ?, rail_at_pay = ? WHERE id = ?").run(confirmationId ?? null, orderIntentId, clock.now(), rail, row.id);
   // Counted against the day's and the month's caps the moment it is paid, by the real amount (owner
   // 2026-10-31: spend_today read $0.00 after the $25 Walmart payment). Never costs the payment.
   await countSpend(row, confirmationId);
@@ -1153,6 +1160,18 @@ export function intentLapsedUnused(json, orderIntentId) {
   const until = Date.parse(json.expiresAt ?? "");
   return zero(a.spent) && zero(a.reserved) && Number.isFinite(until) && until < clock.now();
 }
+/**
+ * A paid row whose card provably never reached the store: paid before the rails were read (rail_at_pay
+ * '' — every row paid since reads them and is 'ready'/'unlisted'), its checkout ended placing nothing,
+ * and its intent still reads the encrypted card waiting for its CVC with no card rail ever ready, nothing
+ * spent or reserved, and closed or past its expiry. Exactly the 11-08 Amazon row; nothing wider.
+ */
+function paidNeverHandedCard(row, json) {
+  if (row.rail_at_pay) return false;
+  if (!runEndedUnplaced(row.run_id)) return false;
+  if (cardRail(json) !== "cvc") return false;
+  return intentNeverCharged(json, row.order_intent_id) || intentLapsedUnused(json, row.order_intent_id);
+}
 /** The checkout this payment answered is over and placed nothing (its last word was failed, cancelled, expired or blocked). */
 function runEndedUnplaced(runId) {
   const run = runRow(runId);
@@ -1170,13 +1189,12 @@ export const releasedLineOf = (row) => `${spendLineOf({ ...row, status: "paid" }
  * A timeout, an error, a 404 or any other answer leaves it counted. Mirrors AgentCard's release
  * (src/tools.js: only a definite decline takes the unknown amount back off the day).
  *
- * Paid rows too (2026-11-08): a row is marked paid when the checkout gets the intent, and its line
- * counts the full amount from then on, though nothing is drawn until the store takes it. The owner's
- * Amazon $14.83 (row 3) was counted for a day while Crossmint said spent 0.00, reserved 0.00: the card
- * rail wanted its CVC and the run failed. A paid row is released the same way only when its checkout
- * ENDED without placing the order (failed, cancelled, expired or blocked) and Crossmint says nothing was
- * ever drawn on the intent and it can't be any more: closed (intentNeverCharged), or past its expiry
- * with nothing spent or reserved (Crossmint can still read such an intent "active").
+ * Paid rows too, narrowly (2026-11-08): before that day a row was marked paid and counted the moment the
+ * checkout got the intent, rails unread. The owner's Amazon $14.83 (row 3) was counted while Crossmint
+ * said spent 0.00, reserved 0.00 and the card rail wanted its CVC: the store never had a card to take.
+ * Spent/reserved alone is NOT proof (once a ready rail handed the card to the store, a charge there may
+ * not show on the intent — review 11-08), so a paid row is released only with positive evidence the card
+ * never left: paidNeverHandedCard.
  * Returns how many were released.
  */
 export async function settleUnknownPayments({ conversationId = null, sinceMs = 7 * 86_400_000 } = {}) {
@@ -1187,10 +1205,11 @@ export async function settleUnknownPayments({ conversationId = null, sinceMs = 7
     ? q("SELECT * FROM shop_payments WHERE conversation_id = ? AND status IN ('unknown', 'paid') AND order_intent_id != '' AND answered_at > ? ORDER BY id").all(conversationId, since)
     : q("SELECT * FROM shop_payments WHERE status IN ('unknown', 'paid') AND order_intent_id != '' AND answered_at > ? ORDER BY id").all(since);
   for (const row of rows) {
-    if (row.status === "paid" && !runEndedUnplaced(row.run_id)) continue;
     let r;
     try { r = await asUser(row.conversation_id, `/api/unstable/order-intents/${encodeURIComponent(row.order_intent_id)}`); } catch { continue; }
-    if (!r.ok || !(intentNeverCharged(r.json, row.order_intent_id) || (row.status === "paid" && intentLapsedUnused(r.json, row.order_intent_id)))) continue;
+    if (!r.ok) continue;
+    if (row.status === "unknown" && !intentNeverCharged(r.json, row.order_intent_id)) continue;
+    if (row.status === "paid" && !paidNeverHandedCard(row, r.json)) continue;
     const site = row.merchant_name || storeName(runRow(row.run_id)?.store) || "";
     const cents = Math.round(Number(row.amount) * 100);
     const released = db.atomically(() => {
@@ -1278,8 +1297,11 @@ export async function payByPasskey(token, response) {
   // Face ID just passed and the card's CVC lapsed: the page asks for it now, in Crossmint's own field.
   // Only here (after a verified assertion) does the page get the person's Crossmint JWT, for ten minutes.
   if (out.needs_cvc) {
-    q("UPDATE shop_payments SET cvc_until = ? WHERE id = ?").run(clock.now() + CVC_MS, v.row.id);
-    return { ...out, cvc: { apiKey: process.env.CROSSMINT_CLIENT_KEY || "", jwt: mintJwt(v.row.conversation_id, { ttlSec: CVC_MS / 1000 }), paymentMethodId: out.paymentMethodId } };
+    let jwt;
+    try { jwt = mintJwt(v.row.conversation_id, { ttlSec: CVC_MS / 1000 }); } catch { jwt = ""; }
+    if (!jwt || !process.env.CROSSMINT_CLIENT_KEY) { logFn({ cvc_field_unavailable: true, payment_id: v.row.id }); return { ok: false, error: "order_intent_failed", detail: "cvc_field_unavailable", retry: !!out.retry }; }
+    q("UPDATE shop_payments SET cvc_until = ?, cvc_link = ? WHERE id = ?").run(clock.now() + CVC_MS, v.a.id, v.row.id);
+    return { ...out, cvc: { apiKey: process.env.CROSSMINT_CLIENT_KEY, jwt, paymentMethodId: out.paymentMethodId } };
   }
   return out;
 }
@@ -1296,12 +1318,15 @@ export async function payAfterCvc(token) {
   if (!v || v.kind !== "pay") return { ok: false, error: "not_found" };
   if (v.state !== "open") return { ok: false, error: `link_${v.state}` };
   if (v.row.status !== "asked") return { ok: false, error: `payment_${v.row.status}` };
-  if (!v.row.order_intent_id || !(Number(v.row.cvc_until) >= clock.now())) return { ok: false, error: "cvc_window_closed" };
+  if (!v.row.order_intent_id || !(Number(v.row.cvc_until) >= clock.now()) || v.row.cvc_link !== v.a.id) return { ok: false, error: "cvc_window_closed" };
   if (passkey.bindingChallenge(v.row, v.a.nonce) !== v.a.challenge) return { ok: false, error: "details_changed" };
+  // The day's cap before the link is claimed, as payByPasskey asks it: over it, the link stays open.
+  const capped = await capRefusal(v.row);
+  if (capped) { passkey.logEvent(v.row.conversation_id, v.row, "pay_failed", capped.error); return capped; }
   if (!passkey.claimApproval(v.a)) return { ok: false, error: "link_used" };
   passkey.logEvent(v.row.conversation_id, v.row, "cvc_entered");
   const out = await afterApproval(v, await payRow(paymentRow(v.row.id)));
-  if (out.ok || out.unknown_outcome || !out.retry) q("UPDATE shop_payments SET cvc_until = NULL WHERE id = ?").run(v.row.id);
+  if (out.ok || out.unknown_outcome || !out.retry) q("UPDATE shop_payments SET cvc_until = NULL, cvc_link = '' WHERE id = ?").run(v.row.id);
   return out;
 }
 /** What every approval does with payRow's answer: logged, the owner told, the link reopened where another try can only help. */

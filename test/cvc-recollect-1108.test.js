@@ -324,10 +324,11 @@ test("an intent that can't be read, or whose card rail is in error, pays nothing
 
 // ---------------------------------------------------------------- 5. the ledger
 /** Row 3 as it was live: paid, counted, its checkout then failed; the intent active past its expiry, nothing drawn. */
-function paidRow({ runStatus = "failed", stage = "failed", spent = "0.00", expired = true } = {}) {
+function paidRow({ runStatus = "failed", stage = "failed", spent = "0.00", expired = true, railAtPay = "", railNow = "cvc" } = {}) {
   const row = asked("14.83", { runId: `run_${nextReq}` });
   const id = `oi_live_${row.id}`;
-  q("UPDATE shop_payments SET status = 'paid', order_intent_id = ?, answered_at = ? WHERE id = ?").run(id, clock.now(), row.id);
+  q("UPDATE shop_payments SET status = 'paid', order_intent_id = ?, answered_at = ?, rail_at_pay = ? WHERE id = ?").run(id, clock.now(), railAtPay, row.id);
+  cvcDone = railNow !== "cvc";
   q("INSERT INTO spend (conversation_id, day, cents, what, site, confirmation_id, at) VALUES (?, ?, 1483, ?, 'Amazon.com', NULL, ?)").run(OMARI, trust.spendDay(), shop.spendLineOf({ ...shop.paymentRow(row.id) }), clock.now());
   q("UPDATE shop_runs SET status = ?, stage = ? WHERE run_id = ?").run(runStatus, stage, row.run_id);
   intentAnswer = (oid) => reply(200, { orderIntentId: oid, status: "active", paymentMethodId: "pm_secret_1929", expiresAt: new Date(clock.now() + (expired ? -60_000 : 10 * 60_000)).toISOString(),
@@ -353,6 +354,9 @@ for (const [why, opts] of [
   ["the order placed", { runStatus: "succeeded", stage: "placed" }],
   ["money drawn on the intent", { spent: "14.83" }],
   ["the intent not yet past its expiry", { expired: false }],
+  // Review 11-08: once a ready rail handed the card over, a store charge may not show on the intent.
+  ["the card rail read ready when the checkout got it (paid since the fix)", { railAtPay: "ready" }],
+  ["the card rail ready now (the card could have been minted)", { railNow: "ready" }],
 ]) {
   test(`a paid row stays counted with ${why}`, async () => {
     const row = paidRow(opts);
@@ -361,3 +365,25 @@ for (const [why, opts] of [
     assert.equal(shop.paymentRow(row.id).status, "paid");
   });
 }
+
+test("the CVC step finishes only on the link Face ID was on, and the day's cap is asked before the link is claimed", async () => {
+  const a = await setUp();
+  const row = asked("14.83");
+  const token = await linkFor(row);
+  await faceId(a, token);
+  // A fresh link for the same payment (a resend) can't ride the first link's Face ID.
+  const fresh = await linkFor(shop.paymentRow(row.id));
+  cvcDone = true;
+  assert.equal(JSON.parse((await page(fresh, "cvc")).body).error, "cvc_window_closed");
+  assert.equal(answers().length, 0);
+  // Back on a Face ID'd link: spending elsewhere crossed the $100 day meanwhile → refused, link still open.
+  const t2 = fresh;
+  cvcDone = false;
+  await faceId(a, t2);
+  q("INSERT INTO spend (conversation_id, day, cents, what, site, confirmation_id, at) VALUES (?, ?, 9000, 'Elsewhere: thing ($90.00)', 'Elsewhere', NULL, ?)").run(OMARI, trust.spendDay(), clock.now());
+  cvcDone = true;
+  const capped = JSON.parse((await page(t2, "cvc")).body);
+  assert.equal(capped.error, "over_daily_cap");
+  assert.equal(answers().length, 0);
+  assert.equal(passkey.openApprovalFor(row.id)?.state, "open", "the link stays open");
+});

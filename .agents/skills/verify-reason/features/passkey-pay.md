@@ -155,13 +155,19 @@ checkout couldn't fill the card and asked again; every new link hit the same wal
 - Network verification (agentic-token `pending_verification`, `OrderIntentVerification`) is not asked:
   Agent Checkouts falls back to the encrypted card, so the CVC alone unblocks.
 - CSP of /web/approve now allows `script-src 'self'` (the island) and Crossmint for frame/connect.
-- Ledger: `settleUnknownPayments` also releases **paid** rows whose run ended unplaced (status
-  failed/cancelled/expired/blocked or stage failed/cancelled, no order_ref) when the intent drew nothing
-  and is closed or past `expiresAt` (`intentLapsedUnused`; Crossmint can still read it `active`). Same
-  `releasedLineOf` rewrite to $0, row → failed. Runs at boot and on an over-cap check. Live row 3
-  releases at the first boot after deploy (log `paid_payment_released`).
+- Ledger: every row paid from now on records `rail_at_pay` ('ready'/'unlisted') and is only paid when
+  the rail is usable. `settleUnknownPayments` also releases a **paid** row, narrowly
+  (`paidNeverHandedCard`): `rail_at_pay` empty (paid before this fix), its run ended unplaced
+  (failed/cancelled/expired/blocked, no order_ref), its intent still reads the encrypted card waiting for
+  the CVC with no card rail ready, nothing spent or reserved, and closed or past `expiresAt` (Crossmint can
+  still read it `active`). Spent/reserved alone is not proof once a ready rail handed the card over (cold
+  review 11-08). Same `releasedLineOf` rewrite to $0, row → failed. Runs at boot and on an over-cap
+  check. Live row 3 releases at the first boot after deploy (log `paid_payment_released`).
+- Review fixes: the CVC step finishes only on the link Face ID was on (`cvc_link`); the day's cap is asked
+  before `/cvc` claims the link; a missing JWT/client key fails as "payment didn't start"; an
+  unlisted-rails handover is logged (`payment_rails_unlisted`).
 
-Tests: `test/cvc-recollect-1108.test.js` (12; 8 source mutations all caught). Drive `bin/passkey-drive.mjs`
+Tests: `test/cvc-recollect-1108.test.js` (15; 12 source mutations all caught). Drive `bin/passkey-drive.mjs`
 scenario (k): real Chromium, Face ID → CVC screen → island stand-in (network-routed, same URL so the CSP
 decides) → Finish → paid with the same intent; shots `passkey-cvc.png`, `passkey-paid-after-cvc.png`.
 Fakes in 10 suites + 2 drives answer the new intent read with a ready rail.
