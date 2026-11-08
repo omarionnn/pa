@@ -202,7 +202,7 @@ test("the welcome preview is welcomeText; saving and clearing go through event_u
   assert.equal(h.channel.sent.length, 0, "saving a welcome texts nobody");
 });
 
-test("message everyone: preview shows the exact text and the count, nothing goes until send, and the sent text is the preview", async () => {
+test("message guests: preview shows the exact text and the count, nothing goes until send, and the sent text is the preview", async () => {
   const h = harness();
   const ev = make(OWNER_C);
   await join(AMA_C, ev);
@@ -235,7 +235,7 @@ test("message everyone: preview shows the exact text and the count, nothing goes
   assert.match(page.body, /Sent\. Reached 1 of 1\./);
 });
 
-test("message everyone is refused while the operator has the event paused", async () => {
+test("message guests is refused while the operator has the event paused", async () => {
   const h = harness();
   const ev = make(OWNER_C);
   await join(AMA_C, ev);

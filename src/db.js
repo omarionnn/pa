@@ -12276,6 +12276,12 @@ backfillOrganizerMemberships();
 addColumnIfMissing("accounts", "instagram", "TEXT");
 addColumnIfMissing("event_attendees", "list_note", "TEXT");
 addColumnIfMissing("event_attendees", "list_note_at", "INTEGER");
+// event_attendees.first_joined_at  when this person first joined this event. `joined_at` moves when
+//                              somebody who left comes back; this never does, so "guests who joined
+//                              since …" never counts a returning guest as new (owner decision 2026-11-08).
+//                              Rows from before it was kept start at their `joined_at`.
+addColumnIfMissing("event_attendees", "first_joined_at", "INTEGER");
+db.exec("UPDATE event_attendees SET first_joined_at = joined_at WHERE first_joined_at IS NULL");
 
 export function setAccountInstagram(conversationId, handle) {
   db.prepare("UPDATE accounts SET instagram = ? WHERE conversation_id = ?").run(handle ?? null, conversationId);
@@ -12749,10 +12755,10 @@ export function addAttendeeTx({ eventId, conversationId, displayName, instagram 
   const now = clock.now();
   if (prior) {
     db.prepare(`UPDATE event_attendees SET state = 'joined', display_name = ?, instagram = ?, in_directory = ?, muted = 0, via = ?, token = ?,
-      joined_at = ?, left_at = NULL, updated_at = ? WHERE id = ?`).run(displayName, instagram, inDirectory ? 1 : 0, via, newEventToken(32), now, now, prior.id);
+      first_joined_at = COALESCE(first_joined_at, joined_at), joined_at = ?, left_at = NULL, updated_at = ? WHERE id = ?`).run(displayName, instagram, inDirectory ? 1 : 0, via, newEventToken(32), now, now, prior.id);
   } else {
-    db.prepare(`INSERT INTO event_attendees (event_id, conversation_id, display_name, instagram, in_directory, via, token, new_account, joined_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(Number(eventId), conversationId, displayName, instagram, inDirectory ? 1 : 0, via, newEventToken(32), newAccount ? 1 : 0, now, now);
+    db.prepare(`INSERT INTO event_attendees (event_id, conversation_id, display_name, instagram, in_directory, via, token, new_account, joined_at, first_joined_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(Number(eventId), conversationId, displayName, instagram, inDirectory ? 1 : 0, via, newEventToken(32), newAccount ? 1 : 0, now, now, now);
   }
   return { ok: true, attendee: attendeeRow(eventId, conversationId), already: false };
 }

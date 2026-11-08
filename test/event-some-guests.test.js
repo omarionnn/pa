@@ -150,6 +150,22 @@ test("joined since: only the guests who joined at or after the time", async () =
   assert.match(events.audienceLabel(ev, pick.audience), /^guests who joined since /);
 });
 
+test("joined since: a guest who left and came back keeps their first join time, so they are not new (owner decision 2026-11-08)", async () => {
+  const h = harness();
+  const { ev, g, sinceWall } = await party(h);
+  // Esi joined before the time, left, and came back after it.
+  assert.equal(db.leaveAttendee(g.esi.id), true);
+  clock.skip(HOUR);
+  const back = db.addAttendee({ eventId: ev.id, conversationId: C.esi, displayName: "Esi", via: "text" });
+  assert.equal(back.ok, true);
+  assert.ok(back.attendee.joined_at > back.attendee.first_joined_at, "joined_at moved, first_joined_at did not");
+  assert.equal(back.attendee.first_joined_at, g.esi.joined_at);
+  const pick = events.pickAudience(ev, { joinedAfter: sinceWall });
+  assert.deepEqual(events.recipients(ev, "blast", pick.audience).map(a => a.display_name), ["Abena"], "Esi is not counted as new");
+  // The guest list (and the page's JOINED line) shows the same first join.
+  assert.equal(events.guestList(ev).find(x => x.guest_id === g.esi.id).joined, new Date(g.esi.joined_at).toISOString());
+});
+
 // ---------- by text ----------
 
 test("by text: the target names the count and every guest; nothing goes before the yes; then only they get it", async () => {
@@ -323,6 +339,18 @@ test("page: the who-gets-it choice lists joined guests only, never removed ones 
   assert.ok(!/3475550/.test(page.body));
   // Both forms carry it: now and later.
   assert.equal((page.body.match(/<fieldset class="mg-pick">/g) ?? []).length, 2);
+});
+
+test("page: a muted guest is in the pick list with no muted label, and still gets nothing when picked (owner decision 2026-11-08)", async () => {
+  const h = harness();
+  const { ev, g } = await party(h);
+  const page = await req(h, ev, { cookie: COOKIE.owner });
+  const picks = (/<div class="mg-picks"[^>]*>([\s\S]*?)<\/div>/.exec(page.body) ?? [])[1] ?? "";
+  assert.ok(picks.includes(`name="g" value="${g.kofi.id}"`), "Kofi (muted) can be picked");
+  assert.ok(!/mute/i.test(picks), "no muted label anywhere in the pick list");
+  assert.ok(!("muted" in events.guestList(ev)[0]), "the text tool's guest list carries no muted flag either");
+  const pick = events.pickAudience(ev, { guestIds: [g.kofi.id, g.ama.id] });
+  assert.deepEqual(events.recipients(ev, "blast", pick.audience).map(a => a.display_name), ["Ama"], "recipients stay joined and unmuted");
 });
 
 test("page: the preview shows the exact count and every name; send reaches only them; history says who", async () => {

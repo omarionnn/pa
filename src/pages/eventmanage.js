@@ -351,7 +351,7 @@ export function renderManage({ ev, conversationId, query = {}, notice = null, dr
       + `<div class="mg-row">${button("Save welcome", { busy: "Saving…" })}${ev.welcome ? button("Clear it", { cls: "mg-btn quiet", name: "clear", value: "1", busy: "Clearing…" }) : ""}</div>`)
     + p("Saving changes what future guests get. People already in aren't texted. To tell them too, send it under Message guests.", "quiet"));
 
-  // 02 — message everyone
+  // 02 — message guests
   const audience = events.audience(ev, "blast");
   const sent = events.sentMessages(ev, { limit: 8 });
   const msgDraft = drafts.message ?? (query.prefill === "welcome" ? ev.welcome ?? "" : "");

@@ -371,7 +371,8 @@ export function guestList(ev) {
     state: a.state,
     in_directory: !!a.in_directory,
     instagram: a.instagram || null,
-    joined: new Date(a.joined_at).toISOString(),
+    // When they first joined: "guests who joined since …" reads this same time.
+    joined: new Date(a.first_joined_at ?? a.joined_at).toISOString(),
     via: a.via,
   }));
 }
@@ -977,11 +978,15 @@ export function parseAudience(key) {
   return { guests: [] };
 }
 
+/** When a guest first joined the event: a return after leaving does not move it. */
+const firstJoined = (a) => a.first_joined_at ?? a.joined_at;
+
 /** Whether a joined guest is in this audience (muting aside). */
 function inAudience(a, aud) {
   if (!aud) return true;
   if (aud.guests) return aud.guests.includes(a.id);
-  if (aud.joined_since != null) return a.joined_at >= aud.joined_since;
+  // First join, so somebody who left and came back is not new (owner decision 2026-11-08).
+  if (aud.joined_since != null) return firstJoined(a) >= aud.joined_since;
   return false;
 }
 
