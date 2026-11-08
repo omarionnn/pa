@@ -201,14 +201,6 @@ test("weather (a): the model asks itself → said once, not twice; a known posit
   assert.doesNotMatch(w, /Where are you/);
 });
 
-test("weather (a): an unverified inbound caller is refused get_location by the gate and hears the refusal, not the where question", async () => {
-  voice.contextDeps.runTool = async () => { throw new Error("must not run"); };
-  const row = db.createCall(C, { provider: "gptlive", toNumber: "+12025551234", isOwner: true, direction: "in", goal: "They rang Reason", facts: [], announcement: "Hey Omari, what's up?", state: "in_progress" });
-  const out = await turn(row, rounds([{ tool: "get_location" }], [{ tool: "get_location" }], [{ tool: "get_location" }], [{ tool: "get_location" }]), { firstWordDeadlineMs: 60_000, lateHoldingMs: 60_000, fillerAfterMs: 60_000 });
-  const said = await drain(out.stream);
-  assert.doesNotMatch(said, /Where are you right now/);
-});
-
 test("1. no code cut: a long answer reaches the voice whole, and code never adds an offer to text the rest", async () => {
   const LONG = "Here's the latest from Nigeria. The central bank held rates at twenty seven and a half percent. Lagos opened the new rail line to Ikeja. The Super Eagles qualified for the Cup of Nations. There's more — want me to text you the rest?";
   const s = startCall({ brain: async (m, hooks) => { for (const p of voice.sentenceSplitter().push(`${LONG} `)) hooks.onContent?.(p.trim()); return { text: LONG, tools: [] }; } });
@@ -756,81 +748,24 @@ const inboundCall = () => db.createCall(C, {
   announcement: "Hey Omari, what's up?", state: "in_progress",
 });
 
-test("privacy: an inbound call on caller ID only — get_location is refused for the check, never run", async () => {
-  const row = inboundCall();
-  assert.equal(String(row.direction), "in");
-  const verifyMod = await import("../src/calls/verify.js");
-  assert.equal(verifyMod.isVerified(row), false);
-  for (const n of ["get_location", "nearby_places", "set_place", "weather"]) assert.equal(verifyMod.isConsequential(n, {}), true, n);
-  const ran = [];
-  voice.contextDeps.runTool = async (name) => { ran.push(name); return { ok: true, latitude: 40.74, longitude: -74.0 }; };
-  const lines = [];
-  const out = await turn(row, rounds([{ tool: "get_location", start: true }], ["I can't do that on this call."]), { log: (l) => lines.push(l) });
-  await drain(out.stream);
-  assert.ok(!ran.includes("get_location"), "never ran");
-  assert.ok(lines.some(l => l.call_tool_needs_verification === "get_location"));
-});
-
-test("privacy: an unverified inbound call gets no places, week or profile — in Claude's turn or the voice's brief; recall is not searched", async () => {
-  db.savePlace(C, { name: "work", address: "430 W 17th St", lat: 40.742, lng: -74.004 });
-  db.saveProfile(C, "**Omari**\n- Lives in Chelsea, Manhattan", []);
-  const row = inboundCall();
-  assert.equal(cm.whereaboutsNote(row), "");
-  assert.doesNotMatch(gl.preCallBrief(row), /430 W 17th|Chelsea/);
-  const asked = [];
-  const before = voice.contextDeps.recall;
-  voice.contextDeps.recall = async (c, words) => { asked.push(words); return ["Works at 430 W 17th"]; };
-  try { await drain((await turn(row, rounds(["Hi."]), { recallWaitMs: 50 })).stream); } finally { voice.contextDeps.recall = before; }
-  assert.equal(asked.length, 0);
-  // Verified on this call: everything is back.
-  const ok = db.updateCall(C, row.id, { verified_at: Date.now(), verified_how: "passphrase" });
-  assert.match(cm.whereaboutsNote(ok), /430 W 17th/);
-  assert.match(gl.preCallBrief(ok), /Chelsea/);
-});
-
-test("privacy: the refusal is said out loud — words before verify_caller, then a skip_turn, are not lost", async () => {
+test("caller check: the refusal is said out loud — words before verify_caller, then a skip_turn, are not lost", async () => {
   const row = inboundCall();
   voice.contextDeps.runTool = async () => ({ ok: true, latitude: 40.74, longitude: -74.0 });
   const out = await turn(row, rounds(
-    [{ tool: "get_location", start: true }],
-    ["I can't check that on this call, I'll pick it up by text once we hang up. ", { tool: "verify_caller", start: true, input: { about: "where they are" } }],
+    [{ tool: "message_send", start: true, input: { to: "+13105550000", text: "running late" } }],
+    ["I can't send that on this call, I'll pick it up by text once we hang up. ", { tool: "verify_caller", start: true, input: { about: "a text to Ama" } }],
     [{ tool: "skip_turn", input: { reason: "waiting" } }],
   ));
   const said = (await drain(out.stream)).trim();
   assert.match(said, /pick it up by text/, said);
 });
 
-test("privacy: refused and nothing written — code says the refusal itself", async () => {
+test("caller check: refused and nothing written — code says the refusal itself", async () => {
   const row = inboundCall();
   voice.contextDeps.runTool = async () => ({ ok: true });
-  const out = await turn(row, rounds([{ tool: "get_location", start: true }], [{ tool: "skip_turn", input: { reason: "x" } }]));
+  const out = await turn(row, rounds([{ tool: "message_send", start: true, input: { to: "+13105550000", text: "running late" } }], [{ tool: "skip_turn", input: { reason: "x" } }]));
   const said = (await drain(out.stream)).trim();
   assert.equal(said, voice.CHECK_NOT_HERE_LINE);
-});
-
-test("privacy (parent): an unverified inbound call gets the restricted relay voice with nothing of his — no brief, today, rules or places", async () => {
-  db.savePlace(C, { name: "work", address: "430 W 17th St", lat: 40.742, lng: -74.004 });
-  db.saveProfile(C, "**Omari**\n- Lives in Chelsea, Manhattan", []);
-  db.addRule(C, { rule: "keep the weather to one line" });
-  db.writeMessage({ conversationId: C, role: "user", channel: "sendblue", text: "heading to work at 430 W 17th", at: Date.now() - 60_000 });
-  const row = inboundCall();
-  const who = gl.whoFor(row);
-  assert.equal(who.restricted, true);
-  assert.equal(who.brief, "");
-  const words = gl.voiceInstructionsFor(row);
-  assert.doesNotMatch(words, /430 W 17th|Chelsea|weather to one line|PRE-CALL BRIEF/);
-  assert.match(words, /You are only the voice/, "the relay");
-  assert.equal(cm.callNotes(row), "");
-  assert.equal(gl.lateWhereabouts(row), false);
-  // Claude's call turn: no today-so-far, profile or places in its frame.
-  const sys = [];
-  const out = await voice.llmRequest({ rawBody: bodyFor(row), screen: async () => ({ verdict: "clear" }), generate: async function* ({ system }) { sys.push(system); yield { type: "text", text: "Hi." }; }, recallWaitMs: 0 });
-  await drain(out.stream);
-  assert.doesNotMatch(sys.join("\n"), /430 W 17th|Chelsea/);
-  // Verified: his own call again.
-  const ok = db.updateCall(C, row.id, { verified_at: Date.now(), verified_how: "passphrase" });
-  assert.equal(gl.whoFor(ok).restricted, false);
-  assert.match(gl.voiceInstructionsFor(ok), /Chelsea/);
 });
 
 test("fix 2 (b): his own voice never deflects with filler — every reply an answer or a hand-off; silent while the backend works; strangers keep the relay", () => {
@@ -840,8 +775,6 @@ test("fix 2 (b): his own voice never deflects with filler — every reply an ans
   const relay = gl.liveInstructions({ name: "Ama", owner: false });
   assert.ok(!relay.includes(gl.OWN_VOICE_NO_DEFLECT));
   assert.match(relay, /You are only the voice/);
-  // An unverified inbound call on his number gets the relay too, not fix 2.
-  assert.ok(!gl.liveInstructions({ name: "Omari", owner: true, restricted: true }).includes(gl.OWN_VOICE_NO_DEFLECT));
 });
 
 test("weather (a), review: weather's own 'give coordinates' before get_location ran is not 'unknown' — get_location still runs", async () => {
@@ -854,10 +787,24 @@ test("weather (a), review: weather's own 'give coordinates' before get_location 
   assert.doesNotMatch(said, /Where are you right now/);
 });
 
-test("privacy, review: an unverified inbound call's turn is not shown how they like to be treated; verified, it is", async () => {
+
+// ---------- Omari 11-08 (final): on his number, caller ID alone is enough for where he is and what Reason knows ----------
+test("caller ID only: his places, week, rules and profile reach the call (Omari 11-08); only money, booking, texting others and settings wait", async () => {
+  db.savePlace(C, { name: "work", address: "430 W 17th St", lat: 40.742, lng: -74.004 });
   db.addRule(C, { rule: "keep the weather to one line" });
   const row = inboundCall();
-  assert.doesNotMatch(voice.ownerContext({ call: row, callMessages: [] }).system, /weather to one line/);
-  const ok = db.updateCall(C, row.id, { verified_at: Date.now(), verified_how: "passphrase" });
-  assert.match(voice.ownerContext({ call: ok, callMessages: [] }).system, /weather to one line/);
+  assert.match(cm.callNotes(row), /430 W 17th/);
+  assert.match(cm.callNotes(row), /weather to one line/);
+  const who = gl.whoFor(row);
+  assert.equal(who.restricted, undefined, "no restricted voice");
+  assert.ok(gl.voiceInstructionsFor(row).includes(gl.OWN_VOICE_NO_DEFLECT), "his own voice, fix 2");
+  assert.match(voice.ownerContext({ call: row, callMessages: [] }).system, /weather to one line/);
+});
+
+test("caller check + nowhere to go: a refused send and an unknown position — the refusal is said first, then the where question", async () => {
+  voice.contextDeps.runTool = async (name) => name === "get_location" ? { ok: true, sharing: false, source: "none" } : { ok: true };
+  const row = inboundCall();
+  const out = await turn(row, rounds([{ tool: "message_send", start: true, input: { to: "+13105550000", text: "running late" } }], [{ tool: "get_location" }], [{ tool: "get_location" }], [{ tool: "get_location" }]), { firstWordDeadlineMs: 60_000, lateHoldingMs: 60_000, fillerAfterMs: 60_000 });
+  const said = await drain(out.stream);
+  assert.match(said, /can't do that one on this call/i, said);
 });

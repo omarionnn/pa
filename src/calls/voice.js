@@ -582,16 +582,14 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     verify.isVerified(call) ? ownerProfileNote(conversationId) : "",
     // How they want to be treated (src/rules.js), read fresh each turn — call 80's own rule, "on a call,
     // just say the answer out loud", was saved after it and no call turn had ever been shown one.
-    // Not to an inbound call on caller ID alone (review 11-08): how they like to be treated is theirs too.
-    verify.isVerified(call) ? rulesNote(conversationId) : "",
+    rulesNote(conversationId),
     // Their saved places and what they told you about their week (./callmemory.js), so "where I'm at"
     // on a shift day is work, not "I can't tell if you're home or elsewhere" (call 80).
     whereaboutsNote(call),
     // What happened between them today, before this call (call 79: its own pick by text, three hours
     // earlier, was "nothing saved" on the phone). Up to when the call was made, so every turn of the
     // call sends the same prefix and the prompt cache holds.
-    // Not to an inbound call on caller ID alone (./verify.js WHEREABOUTS): today's chats say where they were.
-    verify.isVerified(call) ? todaySoFarNote(conversationId, { until: Number(call.created_at) || now, call: call.id }) : "",
+    todaySoFarNote(conversationId, { until: Number(call.created_at) || now, call: call.id }),
   ];
   return {
     kind: "owner",
@@ -1668,8 +1666,7 @@ export async function* voiceTurn({
   // On their own call, what Reason remembers that is closest in meaning to what they just said — the
   // same search a text turn gets — riding in front of their words like the call record, never as theirs.
   const owned = context.kind === "owner";
-  // Not on an inbound call with caller ID only: saved facts carry addresses and routines (./verify.js).
-  if (owned && recallWaitMs > 0 && messages.at(-1)?.role === "user" && verify.isVerified(call)) {
+  if (owned && recallWaitMs > 0 && messages.at(-1)?.role === "user") {
     const theirWords = latestSpoken(context.messages);
     let timer;
     const late = new Promise(r => { timer = setTimeout(() => r(null), recallWaitMs); timer.unref?.(); });
@@ -1702,6 +1699,13 @@ export async function* voiceTurn({
     // you?"), is said rather than replaced; otherwise code's.
     const leadAsks = emit && (!said.trim() || onlyHolding()) && replayable() && /\bwhere\b[^.?!]*\?/i.test(lastLeadIn.join(""));
     log({ voice_where_ask: call.id, why, lead_in: Boolean(leadAsks), ...timing() });
+    // Something refused for the caller check this turn, not yet said: that first (it is what they asked for).
+    if (checkRefusalIsOwed()) {
+      const line = turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE;
+      const content = said ? ` ${line}` : line;
+      said += content;
+      yield chunk({ content });
+    }
     if (leadAsks) yield* emit(lastLeadIn);
     else if (!askedWhere()) yield chunk({ content: said ? ` ${WHERE_ASK}` : WHERE_ASK });
     yield chunk({}, "stop");

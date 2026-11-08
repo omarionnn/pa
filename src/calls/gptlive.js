@@ -127,12 +127,9 @@ export function whoFor(call) {
   // Only this call's own account, by the call row's conversation — never anyone else's. On their own
   // call the voice gets their brief (`preCallBrief`: profile, rules, today, places); anyone else, nothing.
   const own = Number(call.is_owner) === 1;
-  // An inbound call on caller ID alone is not yet theirs to be told anything about (PR #407 session's
-  // spoofed drive, 11-08): the restricted relay voice, no brief, nothing of theirs, until verified.
-  const restricted = own && !isVerified(call);
   return {
-    name: named ? raw : "them", named, owner: own, restricted, identity: callIdentityFor(call.conversation_id),
-    ...(own ? { brief: restricted ? "" : preCallBrief(call), purpose: openingPurpose(call) } : {}),
+    name: named ? raw : "them", named, owner: own, identity: callIdentityFor(call.conversation_id),
+    ...(own ? { brief: preCallBrief(call), purpose: openingPurpose(call) } : {}),
   };
 }
 
@@ -233,12 +230,13 @@ export function preCallBrief(call, { place = "" } = {}) {
   // Who they are to Reason (fix 2, call 80), read at the call's start from this call's own
   // conversation only: the profile their texts are shown, how they want to be treated (src/rules.js,
   // fresh — a rule saved after the last call is here), and their places and week (./callmemory.js).
-  // None of it on an inbound call that only has caller ID (`sealed`): it says where they live and work.
-  const profile = sealed ? "" : ownerProfileNote(call.conversation_id);
+  // On caller ID alone too (Omari, 11-08: where he is and what Reason knows are fine on his number;
+  // only money, booking, texting others and settings wait for the check).
+  const profile = ownerProfileNote(call.conversation_id);
   if (profile) lines.push(profile.length > 2500 ? `${profile.slice(0, 2499).trimEnd()}…` : profile);
-  const rules = sealed ? "" : rulesNote(call.conversation_id);
+  const rules = rulesNote(call.conversation_id);
   if (rules) lines.push(rules);
-  const where = sealed ? "" : whereaboutsNote(call);
+  const where = whereaboutsNote(call);
   if (where) lines.push(where);
   if (!lines.length) return "";
   return `PRE-CALL BRIEF — what you know going in, about them and from your chats. Answer from it yourself where it does; any lookup, action or live fact still goes to Reason.\n${lines.join("\n")}`;
@@ -315,10 +313,8 @@ export const CALL56_LINES = [
  * made it — behind REASON_CALL_IDENTITY, and call 56's four short lines (`CALL56_LINES`). #293's longer prompt (tone section, profile block, who-rang-
  * whom) went out with calls 54–55, which he called confused and worse; it is not here (2026-10-31).
  */
-export function liveInstructions({ name = "them", named = name !== "them", owner = false, restricted = false, identity = false, brief = "" } = {}) {
-  // Restricted (unverified inbound): who they are stays (caller ID says whose Reason to be), but the
-  // voice is the relay — it answers nothing itself, so it has nothing of theirs to answer from.
-  const own = owner && !restricted;
+export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, brief = "" } = {}) {
+  const own = owner;
   const them = named ? name : "them";
   const theirs = named ? `${name}'s` : "their";
   const who = !identity
@@ -499,10 +495,10 @@ export function lineAnnouncement(ann) {
 export const ACK_DELAY_MS = 800;
 
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, restricted = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false } = {}) {
+export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: instructions || liveInstructions({ name, named, owner, restricted, identity, brief }),
+    instructions: instructions || liveInstructions({ name, named, owner, identity, brief }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     // Room to cancel the voice's automatic "one moment" before it is generated: a line call never has
     // one, and on every other call code decides whether a wait gets a line at all (call 79, `holdLine`).
@@ -1805,7 +1801,7 @@ export class GptLiveCall {
     if (this.done) return;
     // A rule saved, changed or dropped on this turn reaches the voice now, not only on the next call —
     // a superseded turn's too, since the write happened all the same.
-    if (this.who?.owner && !this.who.restricted && RULE_WRITERS.some(n => turn.ran.has(n))) this.freshRules();
+    if (this.who?.owner && RULE_WRITERS.some(n => turn.ran.has(n))) this.freshRules();
     if (this.latest !== id) {
       // They said something new while this ran; Reason has already started on that, and this answer is
       // to a question that has moved on.
@@ -3230,7 +3226,7 @@ export function warmTheTurn(row, log = () => {}, { warm = warmCallCache } = {}) 
 onScheduleRead((row) => lateWhereabouts(row));
 export function lateWhereabouts(row) {
   const live = running.get(row?.id);
-  if (!live || live.done || !live.who?.owner || live.who.restricted) return false;
+  if (!live || live.done || !live.who?.owner) return false;
   const note = whereaboutsNote(row);
   if (!note || String(live.who.brief ?? "").includes(note) || live.whereTold === note) return false;
   live.whereTold = note;
