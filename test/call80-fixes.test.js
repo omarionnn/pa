@@ -240,7 +240,7 @@ test("3. Claude's call turn: his rules, his saved places and his week (read by m
   db.savePlace(C, { name: "work", address: "430 W 17th St, New York", lat: 40.7429, lng: -74.0061 });
   db.savePlace(OTHER, { name: "home", address: "1 Elm St, Springfield", lat: 39.8, lng: -89.6 });
   const fact = db.remember(C, "Omari", "Works Thu to Sun shifts, 8am to 8pm");
-  const id = fact?.id ?? db.listFacts(C)[0]?.id;
+  const id = fact?.factId;
   const call = ownerCall();
   let asked = 0;
   const find = async (conv, q) => { asked++; assert.equal(conv, C, "only his own facts are searched"); assert.match(q, /schedule/); return [{ factId: id, score: 0.8 }]; };

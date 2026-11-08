@@ -18,6 +18,13 @@
 // speech, seconds of Reason's speech, holding lines (the code's, and the voice's own "let me check"
 // phrasing), and any Reason speech that went out while their clip was still playing (talk-over).
 // Totals at the end. Exits 0 unless a delegation never ran or the call never answered.
+//
+// --seed call80 (2026-11-08): call 80's world instead — a Sunday-afternoon "Call me", his saved places
+// (work 430 W 17th, home 164 W 26th, the laundry), his week as facts ("works Thu to Sun shifts", embedded
+// so a search by meaning finds them), the profile block call 80 had ("night shift every Monday"), and
+// call 80's own rule ("on a call, just say the answer out loud…"). Texts go to a stand-in channel and are
+// listed under `texted`. Each reply also gets `first_piece_ms` (Reason's first words handed to the voice)
+// and the line's `hard_stops` (runs whose last 5 ms are still at voice level: no fade).
 const { resolve, dirname, join } = await import("node:path");
 const { existsSync, readFileSync, realpathSync, readdirSync, writeFileSync } = await import("node:fs");
 const { createServer } = await import("node:http");
@@ -42,6 +49,7 @@ Object.assign(process.env, {
 });
 const flag = (k) => process.argv.indexOf(k);
 const outFile = flag("--out") > 0 ? process.argv[flag("--out") + 1] : "";
+const seedKind = flag("--seed") > 0 ? process.argv[flag("--seed") + 1] : "call79";
 const REPO = resolve(dirname(new URL(import.meta.url).pathname), "../../../..");
 const gl = await import(`${REPO}/src/calls/gptlive.js`);
 const { acceptUpgrade } = await import(`${REPO}/src/calls/wsserver.js`);
@@ -68,9 +76,34 @@ const seed = [
   ["user", `[${nyDay}, 2:57 PM] Omari: Call me`, -1],
   ["assistant", "Calling you now.", -1],
 ];
-db.saveConversation(C, seed.map(([role, content]) => ({ role, content })));
-for (const [role, text, minAgo] of seed) db.writeMessage({ conversationId: C, role, channel: "sendblue", text: text.replace(/^\[[^\]]*\]\s*Omari:\s*/, ""), at: nowMs + minAgo * 60_000 });
+const seed80 = [
+  ["user", `[${nyDay}, ${new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }).format(today)}] Omari: Call me`, -1],
+  ["assistant", "Calling you now.", -1],
+];
+const thread = seedKind === "call80" ? seed80 : seed;
+db.saveConversation(C, thread.map(([role, content]) => ({ role, content })));
+for (const [role, text, minAgo] of thread) db.writeMessage({ conversationId: C, role, channel: "sendblue", text: text.replace(/^\[[^\]]*\]\s*Omari:\s*/, ""), at: nowMs + minAgo * 60_000 });
 void stamp;
+if (seedKind === "call80") {
+  db.savePlace(C, { name: "work", address: "430 W 17th St, New York, NY 10011", lat: 40.7432, lng: -74.0064 });
+  db.savePlace(C, { name: "home", address: "164 W 26th St, New York, NY 10001", lat: 40.7454, lng: -73.9935 });
+  db.savePlace(C, { name: "Lionel's laundry", address: "150 W 25th St, New York, NY 10001", lat: 40.7446, lng: -73.9930 });
+  const { embedAndStore } = await import(`${REPO}/src/embedding.js`);
+  for (const f of ["Works Thu to Sun shifts", "Works a 12-hour shift", "His shift runs until 8pm", "Gets a ride home from work at 430 W 17th on a shift day"]) {
+    const r = db.remember(C, "Omari", f);
+    const id = r?.factId;
+    if (id) await embedAndStore(C, id, `Omari: ${f}`).catch((e) => console.error("embed failed:", e.message));
+  }
+  db.saveProfile(C, "**Omari**\n- Night shift every Monday\n- Lives in Chelsea, Manhattan", []);
+  db.addRule(C, { rule: "on a call, just say the answer out loud. don't offer to text it or stall with 'one sec'" });
+}
+// A stand-in texting channel: what Reason texts on the call is kept here, never sent.
+const texted = [];
+const channels = {
+  list: () => [{ name: "sendblue" }],
+  send: async (m) => { texted.push({ ms: streamClock.at ? Date.now() - streamClock.at : null, text: String(m?.text ?? m?.body ?? "").slice(0, 400) }); return { ok: true, delivered: true, handle: `fake-${texted.length}` }; },
+  get: () => ({ readLocation: async () => ({ ok: true, sharing: false }), requestLocation: async () => { texted.push({ ms: Date.now() - streamClock.at, text: "[Share My Location card]" }); return { ok: true }; } }),
+};
 const row = db.createCall(C, { provider: "gptlive", toNumber: "+12025550100", isOwner: true, goal: "Omari asked to be called. Find out what he wants to talk about and help with it.", facts: [], announcement: "Hey Omari, what's up?", state: "placing" });
 
 const lines = [];
@@ -81,18 +114,21 @@ const server = createServer((_, res) => res.end());
 server.on("upgrade", (req, socket) => {
   const path = new URL(req.url, "http://x").pathname;
   const ws = acceptUpgrade(req, socket);
-  if (ws) call = gl.acceptStream({ token: path.slice(gl.STREAM_PATH.length), socket: ws, settle: settleCall, runtime: null, log });
+  if (ws) call = gl.acceptStream({ token: path.slice(gl.STREAM_PATH.length), socket: ws, settle: settleCall, runtime: seedKind === "call80" ? { turnExtras: { channels } } : null, log });
 });
 await new Promise(r => server.listen(0, "127.0.0.1", r));
 const port = server.address().port;
 
 const clips = readdirSync(clipsDir).filter(f => /^\d+\.ulaw$/.test(f)).sort((a, b) => parseInt(a) - parseInt(b)).map(f => readFileSync(join(clipsDir, f)));
 const speechAt = [];
+// Every frame Reason sent down the line, for the fade check (the last 5 ms of each run).
+const framesOut = [];
 let hungUpAt = null;
 const twilio = new WebSocket(`ws://127.0.0.1:${port}${gl.STREAM_PATH}${row.webhook_token}`);
 let startAt = 0;
 twilio.onmessage = (m) => {
   const e = JSON.parse(String(m.data));
+  if (e.event === "media") framesOut.push({ ms: Date.now() - startAt, b: Buffer.from(e.media.payload, "base64") });
   if (e.event === "media" && gl.hasSpeech(e.media.payload)) speechAt.push(Date.now() - startAt);
 };
 await new Promise((r, j) => { twilio.onopen = r; twilio.onerror = () => j(new Error("the stream socket did not open")); });
@@ -177,9 +213,22 @@ const replies = played.map((p, i) => {
     speech_s: Math.round(mine.reduce((n, r) => n + (r.to - r.from), 0) / 100) / 10,
     own_holding_phrase: OWN_HOLD.test(words.split(/[.!?]/)[0] ?? ""),
     talked_over_ms: Math.max(0, Math.round(over)),
+    // Reason's first words handed to the voice, from the hand-off (streamed: the first sentence).
+    first_piece_ms: (() => { const d = delegationAt.find(ms => ms > p.from && ms < next); const r = lines.find(l => "gptlive_result" in l && l.drive_ms > (d ?? Infinity) && l.drive_ms < next + 30_000); return r?.first_piece_ms ?? (r ? r.ms : null); })(),
   };
 });
 const pick = (k) => lines.filter(l => k in l);
+// A run ends hard when the last frame with speech in it still carries voice level in its final 5 ms.
+const rms = (b, from, to) => { let s = 0; for (let i = from; i < to; i++) { const x = gl.ulawToPcm(b[i]); s += x * x; } return Math.sqrt(s / Math.max(1, to - from)); };
+let hardStops = 0, runEnds = 0;
+for (let i = 0; i < framesOut.length; i++) {
+  const f = framesOut[i];
+  const next = framesOut[i + 1];
+  if (!gl.hasSpeech(f.b.toString("base64")) || (next && gl.hasSpeech(next.b.toString("base64")))) continue;
+  runEnds++;
+  if (rms(f.b, f.b.length - 40, f.b.length) > 1000) hardStops++;
+}
+const delegationAt = lines.filter(l => "gptlive_delegation" in l).map(l => l.drive_ms);
 const results = pick("gptlive_result");
 const out = {
   code: process.env.DRIVE_LABEL ?? "",
@@ -208,6 +257,12 @@ const out = {
     said_nothing_saved: /don['’]t have (?:anything|that)|nothing saved/i.test(replies.map(r => r.reason).join(" ")),
     pushed_past_their_time: /after (?:9|nine)/i.test(replies.map(r => r.reason).join(" ")),
     guard_trips: pick("gptlive_guard").length,
+    hard_stops: hardStops, run_ends: runEnds,
+    lead_ins_dropped: pick("voice_lead_in_dropped").length,
+    recall_late: pick("call_recall_late").length,
+    tools_ran: pick("call_tool").map(l => `${l.call_tool}:${l.ok ? "ok" : "failed"}`),
+    unbacked_send_swaps: pick("gptlive_unbacked_send").length,
+    texted,
     errors: pick("gptlive_error").length,
   },
 };
