@@ -318,14 +318,14 @@ can you hear me?" or hung up. Own calls (1.7–2.8 s) are unchanged and keep the
   `src/calls/opener.js`: `openerFor` (:58 — `config.pickupOpener` + `config.lineTalk`, not own, not
   inbound) → `openerText` (:48) = `Hi there! I'm calling <about>.`, or `Hi there!` alone (kind `hello`),
   or `Hi there — just so you know, this call's recorded.` where `src/calls/consent.js` needs it; `about`
-  over 140 chars or with a URL/`@`/brackets is dropped. Never "I'm an AI" / "calling for X". `makeClip`
+  over 140 chars, with a URL/`@`/brackets, or with payment details (`findPaymentDetails`, R2-C) is dropped. Never "I'm an AI" / "calling for X". `makeClip`
   (:128, OpenAI TTS `REASON_OPENER_TTS_MODEL` default `gpt-4o-mini-tts` (src/config.js:654), same voice
   name as the live voice) → `pcm24ToUlaw` (:114, 24 kHz PCM → 8 kHz μ-law, 3:1), cached by text under
   `data/call-openers/`, swept after two days (`CLIP_KEEP_MS`, `sweepClips` :76). The hello-only clip is
   made beside it as the fallback. `take(callId)` (:178) hands it to the stream once
   (src/calls/gptlive.js:973); not ready at pickup → the old opening.
 - **`call_place.about`** (src/tools.js:4123): the model's few words finishing "I'm calling …", only when
-  ringing somebody else; stored as `calls.pickup_about` (src/tools.js:11421, ≤200 chars; column
+  ringing somebody else; screened for card/bank details with every other field before dialling (`checkCallForPaymentDetails` `about`, R2-C → `payment_details_refused`); stored as `calls.pickup_about` (src/tools.js:11421, ≤200 chars; column
   src/db.js:2104).
 - **When it plays** (`pickupFrame`, src/calls/gptlive.js:1537; constants src/calls/opener.js:23–40):
   `OPENER_AFTER_THEM_MS` 550 ms after their hello ends, or `OPENER_SILENT_MS` 600 ms into a silent line;
