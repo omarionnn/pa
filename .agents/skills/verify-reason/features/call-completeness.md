@@ -49,7 +49,17 @@ files but not mapped here.
   with no `REASON_CALL_PASSPHRASE` (or after `MAX_PASSPHRASE_TRIES` 2 wrong ones), `verify_caller`
   with `about` stores it as `calls.verify_deferred` and texts nothing; the after-call turn asks for
   the yes in their own thread (`onlyAnExplicitYes`). A call Reason placed to the owner's own number
-  is verified already (`isVerified`, src/calls/verify.js:60-64). Tests: `test/call-addendum.test.js`.
+  is verified already (`isVerified`). Tests: `test/call-addendum.test.js`.
+- **An organizer's event tools wait for the check too (audit run 2 R2-G).** Besides `GATED_ACTIONS`,
+  `isConsequential` (src/calls/verify.js) gates every tool in `EVENT_ORGANIZER_TOOLS` and
+  `EVENT_RIDE_ORGANIZER_TOOLS` (src/eventtools.js) on an unverified incoming call, except the reads in
+  `ORGANIZER_READS`: `event_guests`, `event_scheduled` action list, `event_cover` action status,
+  `event_rides_setting` with no `enabled`. A new organizer tool is gated until named there as a read.
+  Before this a caller-ID-only call ran `event_cancel` / `event_update` / `event_release` /
+  `event_guest_remove` (each texts guests) unchecked. Test: `test/call-event-gate.test.js` (3).
+  Cage drive (scripted model, no key spent): `eval "$(bin/caged.sh env | sed 's/^/export /')"; REASON_EVENTS=on
+  node bin/call-event-gate-drive.mjs` → unverified `{"call_tool_needs_verification":"event_cancel"}`,
+  event `active`; same call verified → `cancelled` (on origin/main the unverified ask cancelled it).
 - **Latency logging.** `voice_turn` log lines carry `first_word_ms` (speech to first content) and
   `turn_ms` (total); `first_word_ms` is `null` when no content was streamed. `http.js` also logs
   `call_llm_first_content_ms` per request.
