@@ -395,16 +395,24 @@ export async function reviewOne(conversationId, { now = clock.now(), day = local
     if (ids.length < 2 || !cited || db.ruleTakenBackFrom(c, cited.id) || !String(x.rule ?? "").trim()
       || ids.some(id => shown.shownRules.get(id).source === "they_said")) { counts.refused++; continue; }
     const from = cited.id;
+    // The rules were read before the model was asked, minutes ago: a rule they forgot or reworded in
+    // the meantime (/web/memory, memory_drop) is not this review's to fold. Every one must still be
+    // active now, or the whole merge is refused — its wording may carry the one they took back.
+    if (ids.some(id => !db.getRule(c, id))) { counts.refused++; continue; }
     // Folded first, so the merged rule never counts against the ceiling it is making room under.
-    for (const id of ids) db.supersedeRule(c, id, { at: now });
+    // Only what this pass itself superseded is ever put back.
+    const folded = ids.filter(id => db.supersedeRule(c, id, { at: now }).ok);
+    const putBack = () => { for (const id of folded) db.db.prepare(`UPDATE treat_rules SET status = 'active', superseded_by = NULL, retired_at = NULL
+      WHERE id = ? AND conversation_id = ? AND status = 'superseded' AND superseded_by IS NULL AND retired_at = ?`).run(id, c, now); };
+    if (folded.length !== ids.length) { putBack(); counts.refused++; continue; }
     const made = db.addRule(c, { rule: x.rule, why: x.why, sourceMessageId: from, source: "review", at: now });
     if (!made.ok) {
       // Put them back rather than lose them: a merge that could not be written is no merge.
-      for (const id of ids) db.db.prepare("UPDATE treat_rules SET status = 'active', superseded_by = NULL, retired_at = NULL WHERE id = ? AND conversation_id = ?").run(id, c);
+      putBack();
       counts.refused++;
       continue;
     }
-    for (const id of ids) { db.db.prepare("UPDATE treat_rules SET superseded_by = ? WHERE id = ? AND conversation_id = ?").run(made.rule.id, id, c); ruleGone.add(id); }
+    for (const id of ids) { db.db.prepare("UPDATE treat_rules SET superseded_by = ? WHERE id = ? AND conversation_id = ? AND status = 'superseded' AND superseded_by IS NULL").run(made.rule.id, id, c); ruleGone.add(id); }
     counts.rules_merged += ids.length;
   }
   for (const x of Array.isArray(v.rules_new) ? v.rules_new : []) {
