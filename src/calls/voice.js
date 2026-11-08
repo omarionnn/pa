@@ -553,7 +553,7 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // about my Gmail" worked by text and drew a blank on the phone. Profile only, no per-turn
     // search: it is one row read, and a phone turn pays for every millisecond before the first
     // word. Nothing new is exposed by it — this frame already carries their recent thread.
-    ownerProfileNote(conversationId),
+    verify.isVerified(call) ? ownerProfileNote(conversationId) : "",
     // How they want to be treated (src/rules.js), read fresh each turn — call 80's own rule, "on a call,
     // just say the answer out loud", was saved after it and no call turn had ever been shown one.
     rulesNote(conversationId),
@@ -563,7 +563,8 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // What happened between them today, before this call (call 79: its own pick by text, three hours
     // earlier, was "nothing saved" on the phone). Up to when the call was made, so every turn of the
     // call sends the same prefix and the prompt cache holds.
-    todaySoFarNote(conversationId, { until: Number(call.created_at) || now, call: call.id }),
+    // Not to an inbound call on caller ID alone (./verify.js WHEREABOUTS): today's chats say where they were.
+    verify.isVerified(call) ? todaySoFarNote(conversationId, { until: Number(call.created_at) || now, call: call.id }) : "",
   ];
   return {
     kind: "owner",

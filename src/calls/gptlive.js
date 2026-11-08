@@ -127,9 +127,12 @@ export function whoFor(call) {
   // Only this call's own account, by the call row's conversation — never anyone else's. On their own
   // call the voice gets their brief (`preCallBrief`: profile, rules, today, places); anyone else, nothing.
   const own = Number(call.is_owner) === 1;
+  // An inbound call on caller ID alone is not yet theirs to be told anything about (PR #407 session's
+  // spoofed drive, 11-08): the restricted relay voice, no brief, nothing of theirs, until verified.
+  const restricted = own && !isVerified(call);
   return {
-    name: named ? raw : "them", named, owner: own, identity: callIdentityFor(call.conversation_id),
-    ...(own ? { brief: preCallBrief(call), purpose: openingPurpose(call) } : {}),
+    name: named ? raw : "them", named, owner: own, restricted, identity: callIdentityFor(call.conversation_id),
+    ...(own ? { brief: restricted ? "" : preCallBrief(call), purpose: openingPurpose(call) } : {}),
   };
 }
 
@@ -298,7 +301,10 @@ export const CALL56_LINES = [
  * made it — behind REASON_CALL_IDENTITY, and call 56's four short lines (`CALL56_LINES`). #293's longer prompt (tone section, profile block, who-rang-
  * whom) went out with calls 54–55, which he called confused and worse; it is not here (2026-10-31).
  */
-export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, brief = "" } = {}) {
+export function liveInstructions({ name = "them", named = name !== "them", owner = false, restricted = false, identity = false, brief = "" } = {}) {
+  // Restricted (unverified inbound): who they are stays (caller ID says whose Reason to be), but the
+  // voice is the relay — it answers nothing itself, so it has nothing of theirs to answer from.
+  const own = owner && !restricted;
   const them = named ? name : "them";
   const theirs = named ? `${name}'s` : "their";
   const who = !identity
@@ -310,7 +316,7 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
       : [thirdPartyIdentity({ ownerName: them })];
   // Their own call: the voice is Reason, answering what it can itself (fix 2, call 80). Anyone else's
   // keeps the relay below.
-  const split = owner
+  const split = own
     ? [OWN_VOICE_PERSONA, ...OWN_VOICE_SPLIT]
     : [
       `You are only the voice. Reason, the backend, does all of the thinking and every action: it has ${theirs} messages, calendar, memory, tasks and tools.`,
@@ -318,7 +324,7 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
       "Never answer from your own knowledge, and never invent a fact, time, name, number or price.",
     ];
   return [
-    owner
+    own
       ? `You are Reason, ${theirs} personal assistant — the same Reason they text with — on a phone call with ${them}. You are who they hear and talk with; Reason's backend has ${theirs} messages, calendar, memory, tasks and tools, and does every lookup and every action.`
       : `You are the voice of Reason, ${theirs} personal assistant, on a phone call with ${them}.`,
     ...who,
@@ -329,12 +335,12 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
     ...CALL56_LINES,
     PIECES_LINE,
     ...HEARING_LINES,
-    ...(owner ? OWN_CALL_LINES : []),
+    ...(own ? OWN_CALL_LINES : []),
     "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
     "When a backend result arrives, say it naturally and briefly, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
     "Never read out links, codes, IDs or anything in square brackets, and never say the words NO_REPLY.",
     "Stop speaking when they talk over you, and listen.",
-    ...(owner && brief ? [brief] : []),
+    ...(own && brief ? [brief] : []),
   ].join("\n");
 }
 
@@ -479,10 +485,10 @@ export function lineAnnouncement(ann) {
 export const ACK_DELAY_MS = 800;
 
 /** The session.start body. μ-law at 8 kHz both ways, so Twilio's frames go straight through. */
-export function sessionConfig({ name, named, owner = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false } = {}) {
+export function sessionConfig({ name, named, owner = false, restricted = false, identity = false, brief = "", purpose = "", greeting = "", instructions = "", line = false } = {}) {
   const session = {
     model: config.gptliveModel,
-    instructions: instructions || liveInstructions({ name, named, owner, identity, brief }),
+    instructions: instructions || liveInstructions({ name, named, owner, restricted, identity, brief }),
     audio: { format: { type: "audio/pcmu", rate: 8000 }, output: { voice: config.gptliveVoice } },
     // Room to cancel the voice's automatic "one moment" before it is generated: a line call never has
     // one, and on every other call code decides whether a wait gets a line at all (call 79, `holdLine`).
@@ -1785,7 +1791,7 @@ export class GptLiveCall {
     if (this.done) return;
     // A rule saved, changed or dropped on this turn reaches the voice now, not only on the next call —
     // a superseded turn's too, since the write happened all the same.
-    if (this.who?.owner && RULE_WRITERS.some(n => turn.ran.has(n))) this.freshRules();
+    if (this.who?.owner && !this.who.restricted && RULE_WRITERS.some(n => turn.ran.has(n))) this.freshRules();
     if (this.latest !== id) {
       // They said something new while this ran; Reason has already started on that, and this answer is
       // to a question that has moved on.
@@ -3210,7 +3216,7 @@ export function warmTheTurn(row, log = () => {}, { warm = warmCallCache } = {}) 
 onScheduleRead((row) => lateWhereabouts(row));
 export function lateWhereabouts(row) {
   const live = running.get(row?.id);
-  if (!live || live.done || !live.who?.owner) return false;
+  if (!live || live.done || !live.who?.owner || live.who.restricted) return false;
   const note = whereaboutsNote(row);
   if (!note || String(live.who.brief ?? "").includes(note) || live.whereTold === note) return false;
   live.whereTold = note;

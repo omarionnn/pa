@@ -757,3 +757,28 @@ test("privacy: refused and nothing written — code says the refusal itself", as
   const said = (await drain(out.stream)).trim();
   assert.equal(said, voice.CHECK_NOT_HERE_LINE);
 });
+
+test("privacy (parent): an unverified inbound call gets the restricted relay voice with nothing of his — no brief, today, rules or places", async () => {
+  db.savePlace(C, { name: "work", address: "430 W 17th St", lat: 40.742, lng: -74.004 });
+  db.saveProfile(C, "**Omari**\n- Lives in Chelsea, Manhattan", []);
+  db.addRule(C, { rule: "keep the weather to one line" });
+  db.writeMessage({ conversationId: C, role: "user", channel: "sendblue", text: "heading to work at 430 W 17th", at: Date.now() - 60_000 });
+  const row = inboundCall();
+  const who = gl.whoFor(row);
+  assert.equal(who.restricted, true);
+  assert.equal(who.brief, "");
+  const words = gl.voiceInstructionsFor(row);
+  assert.doesNotMatch(words, /430 W 17th|Chelsea|weather to one line|PRE-CALL BRIEF/);
+  assert.match(words, /You are only the voice/, "the relay");
+  assert.equal(cm.callNotes(row), "");
+  assert.equal(gl.lateWhereabouts(row), false);
+  // Claude's call turn: no today-so-far, profile or places in its frame.
+  const sys = [];
+  const out = await voice.llmRequest({ rawBody: bodyFor(row), screen: async () => ({ verdict: "clear" }), generate: async function* ({ system }) { sys.push(system); yield { type: "text", text: "Hi." }; }, recallWaitMs: 0 });
+  await drain(out.stream);
+  assert.doesNotMatch(sys.join("\n"), /430 W 17th|Chelsea/);
+  // Verified: his own call again.
+  const ok = db.updateCall(C, row.id, { verified_at: Date.now(), verified_how: "passphrase" });
+  assert.equal(gl.whoFor(ok).restricted, false);
+  assert.match(gl.voiceInstructionsFor(ok), /Chelsea/);
+});

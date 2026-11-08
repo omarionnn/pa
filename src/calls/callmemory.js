@@ -108,6 +108,7 @@ export function whereaboutsNote(call) {
  * Only this call's own conversation is read; a call that is not their own gets "".
  */
 export function callNotes(call) {
+  if (!isVerified(call)) return "";
   if (!call?.conversation_id || !Number(call.is_owner)) return "";
   return [rulesNote(call.conversation_id), whereaboutsNote(call)].filter(Boolean).join("\n");
 }
