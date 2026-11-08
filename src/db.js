@@ -12527,10 +12527,20 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS event_scheduled_event ON event_scheduled (event_id, state);
 `);
 
-export function insertScheduledMessage({ eventId, conversationId, body, sendAt }) {
+// Messages to only some guests (owner request 2026-11-08, src/events.js `recipients`):
+//
+//   event_messages.audience / event_scheduled.audience   who a message is for, as the canonical
+//                     JSON src/events.js `audienceKey` writes — {"guests":[attendee ids]} or
+//                     {"joined_since":ms}. NULL is every guest, as before. Carried from the scheduled
+//                     row onto the message it goes out as, so a message finished after a restart
+//                     still reaches exactly the guests it was set for.
+addColumnIfMissing("event_messages", "audience", "TEXT");
+addColumnIfMissing("event_scheduled", "audience", "TEXT");
+
+export function insertScheduledMessage({ eventId, conversationId, body, sendAt, audience = null }) {
   const now = clock.now();
-  const id = Number(db.prepare(`INSERT INTO event_scheduled (event_id, conversation_id, kind, body, send_at, state, created_at, updated_at)
-    VALUES (?, ?, 'message', ?, ?, 'pending', ?, ?)`).run(Number(eventId), conversationId, String(body), Number(sendAt), now, now).lastInsertRowid);
+  const id = Number(db.prepare(`INSERT INTO event_scheduled (event_id, conversation_id, kind, body, send_at, state, created_at, updated_at, audience)
+    VALUES (?, ?, 'message', ?, ?, 'pending', ?, ?, ?)`).run(Number(eventId), conversationId, String(body), Number(sendAt), now, now, audience ?? null).lastInsertRowid);
   return scheduledRow(id);
 }
 export function scheduledRow(id) {
@@ -12542,9 +12552,9 @@ export function scheduledFor(eventId, states = null) {
   return states ? rows.filter(r => states.includes(r.state)) : rows;
 }
 /** New words and a new time for a message still waiting, compare-and-set on it still waiting. */
-export function updatePendingScheduled(id, { body, sendAt }) {
-  return db.prepare("UPDATE event_scheduled SET body = ?, send_at = ?, updated_at = ? WHERE id = ? AND state = 'pending' AND kind = 'message'")
-    .run(String(body), Number(sendAt), clock.now(), Number(id)).changes === 1;
+export function updatePendingScheduled(id, { body, sendAt, audience = null }) {
+  return db.prepare("UPDATE event_scheduled SET body = ?, send_at = ?, audience = ?, updated_at = ? WHERE id = ? AND state = 'pending' AND kind = 'message'")
+    .run(String(body), Number(sendAt), audience ?? null, clock.now(), Number(id)).changes === 1;
 }
 /** Settle a row that has not started sending: cancelled or missed, with why. */
 export function settlePendingScheduled(id, state, note = null) {
@@ -12574,7 +12584,7 @@ export function claimScheduledMessage(id, makeBody, messageKind) {
     const row = scheduledRow(id);
     const ok = !!row && db.prepare("UPDATE event_scheduled SET state = 'sending', updated_at = ? WHERE id = ? AND state = 'pending'").run(clock.now(), Number(id)).changes === 1;
     if (!ok) { db.exec("ROLLBACK"); return null; }
-    const message = insertEventMessage(row.event_id, messageKind, makeBody(row));
+    const message = insertEventMessage(row.event_id, messageKind, makeBody(row), row.audience ?? null);
     db.prepare("UPDATE event_scheduled SET message_id = ? WHERE id = ?").run(message.id, Number(id));
     db.exec("COMMIT");
     return scheduledRow(id);
@@ -12826,18 +12836,18 @@ export function failedJoinsSince(since) {
   return Number(db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE actor NOT LIKE 'event:%' AND ok = 0 AND at >= ?").get(since).n);
 }
 
-export function insertEventMessage(eventId, kind, body) {
-  const id = Number(db.prepare("INSERT INTO event_messages (event_id, kind, body, created_at) VALUES (?, ?, ?, ?)")
-    .run(Number(eventId), kind, String(body), clock.now()).lastInsertRowid);
+export function insertEventMessage(eventId, kind, body, audience = null) {
+  const id = Number(db.prepare("INSERT INTO event_messages (event_id, kind, body, created_at, audience) VALUES (?, ?, ?, ?, ?)")
+    .run(Number(eventId), kind, String(body), clock.now(), audience ?? null).lastInsertRowid);
   return db.prepare("SELECT * FROM event_messages WHERE id = ?").get(id);
 }
 export function eventMessages(eventId, { limit = 20 } = {}) {
   return db.prepare("SELECT * FROM event_messages WHERE event_id = ? ORDER BY id DESC LIMIT ?").all(Number(eventId), limit);
 }
-/** The same words of the same kind to the same event since `since`, if there are any. */
-export function recentEventMessage(eventId, kind, body, since) {
-  return db.prepare("SELECT * FROM event_messages WHERE event_id = ? AND kind = ? AND body = ? AND created_at >= ? ORDER BY id DESC LIMIT 1")
-    .get(Number(eventId), kind, String(body), since) ?? null;
+/** The same words of the same kind to the same guests of the same event since `since`, if there are any. */
+export function recentEventMessage(eventId, kind, body, since, audience = null) {
+  return db.prepare("SELECT * FROM event_messages WHERE event_id = ? AND kind = ? AND body = ? AND created_at >= ? AND audience IS ? ORDER BY id DESC LIMIT 1")
+    .get(Number(eventId), kind, String(body), since, audience ?? null) ?? null;
 }
 export function eventMessage(id) {
   return db.prepare("SELECT * FROM event_messages WHERE id = ?").get(Number(id)) ?? null;
