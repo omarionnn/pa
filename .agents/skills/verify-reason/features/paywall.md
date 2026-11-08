@@ -53,15 +53,26 @@ What a person sees:
   (`pause.resumeAll`), one "you're all set" line through `runtime.say`. `subscription_show` says where they
   stand; `subscription_cancel` cancels at the period's end through Stripe and says the date access ends.
 
+- **Who a payment is for (security, 2026-11-07).** The webhook binds an event to a person by
+  `client_reference_id` only when the server issued it: `plan.refFor` = base64url(conversation id) +
+  a 22-character HMAC under `REASON_TOKEN_KEY`, read back by `plan.conversationOfRef` (null for anything
+  unsigned or bent; logged `stripe_ref_unsigned`). This matters in Payment Link mode
+  (`STRIPE_PAYMENT_LINK_URL` set), where whoever opens the link types the reference: a plain encoding of
+  somebody's number no longer binds a payer's subscription to them. Checkout Sessions also carry
+  server-set `metadata.conversation_id`, so an old unsigned session still matches by that. A second
+  `checkout.session.completed` while already `paid` on a live subscription keeps the ids on record
+  (`stripe_second_subscription` logged). Rotating `REASON_TOKEN_KEY` voids outstanding Payment Link refs.
+
 ## Drive — in process, fake Stripe, no model, no phone, no sound
 
 ```bash
 cd ~/Desktop/pa/.agents/skills/verify-reason
-REASON_DB_PATH=$(mktemp -d)/paywall.db node bin/paywall-drive.mjs    # 23 "ok" lines, then "all ok"
+REASON_DB_PATH=$(mktemp -d)/paywall.db node bin/paywall-drive.mjs    # 25 "ok" lines, then "all ok"
 ```
 
-The drive prints 23 step lines (13 for Ama, 6 for Kofi, 3 for Efua, 1 for the operator; counted
-2026-11-07, unchanged since 19dbb9f) — the "24" below was a miscount. Evidence 2026-11-07
+The drive prints 25 step lines (13 for Ama, 6 for Kofi, 3 for Efua, 1 for the operator, 2 for Akua in
+Payment Link mode: a forged reference binds nothing, the issued one pays her up; 2026-11-08,
+sec/r2-paylink-ref-signed) — the "24" below was a miscount. Evidence 2026-11-07
 (rel/verify-maint): 23 ok + "all ok"; `test/paywall-win.test.js` 11, `test/paywall.test.js` 23,
 `test/pricing-flag.test.js` 7, all pass; cage `GET /pay/done` → 302 `https://heyreason.com/`.
 
@@ -89,7 +100,7 @@ past-the-30th backlog label; 8 of the first 9 fail on c67e5c9): what a win is, w
 (label, note, view, 26th and 27th quiet), win at 27 → asked on the next text and the 28th lapses, no win
 → asked at 30 with the softer line and the 31st lapses, a 40-session backlog asked at once, grandfather
 untouched at 30 and 31, `owner` mode follows the rule on his thread only, `plan-set.js --last-inbound
-none` + `win` in its output. `test/paywall.test.js` (23; everyone who reaches the ask has one done task): the 29-vs-31-minute gap, the 25th trigger exactly once (unit, and down the
+none` + `win` in its output. `test/paywall.test.js` (25 since 2026-11-08: + a forged Payment Link reference binds nobody, a second checkout keeps live ids; everyone who reaches the ask has one done task): the 29-vs-31-minute gap, the 25th trigger exactly once (unit, and down the
 real Router with a FakeChannel: the 25th turn ran before the three bubbles), grandfather (operator, test
 number, pre-ship account), `owner` and `off` modes, the ship-time rule, lapsed gating (which tools, once
 a session), hold/release including a pause of their own left alone, webhook reject (missing / wrong /
@@ -111,7 +122,7 @@ payment-link override, no-Stripe hold, `scripts/plan-set.js`.
 - `curl -s <base>/pay/done` → 200, a branded "You're all set" page (`/pay/back` → "No charge"); while
   the switch is off both 302 to `https://heyreason.com/`.
 - `/ops` shows a plan tag per person (e.g. `trial 25/30 (no win yet)`) only when `REASON_PAYWALL` is not off.
-- Journal lines: `paywall_asked`, `paywall_refused`, `paywall_held`, `paywall_released`,
+- Journal lines: `paywall_asked`, `paywall_refused`, `paywall_held`, `paywall_released`, `stripe_ref_unsigned`, `stripe_second_subscription`,
   `stripe_webhook`, `stripe_webhook_rejected`, `paywall_no_link`, `paywall_checkout_failed`.
 
 ## What turning it on needs (Omari)

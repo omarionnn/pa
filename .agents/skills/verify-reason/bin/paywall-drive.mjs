@@ -119,6 +119,20 @@ step("the 30th, no win: asked anyway, softer first line", r30.did === "asked" &&
 visit(E); await after(E);
 step("the 31st lapses", plan.status(E).status === "lapsed");
 step("the operator (grandfathered under `on`) is never asked and never extended", (() => { for (let i = 0; i < 30; i++) visit("dm:owner"); return plan.status("dm:owner").status === "free" && plan.status("dm:owner").extended === false && plan.row("dm:owner").ask_due === 0; })());
+// ---- Payment Link mode: only a reference the server issued binds a payment (security, 2026-11-07)
+process.env.STRIPE_PAYMENT_LINK_URL = "https://buy.stripe.com/test_drive";
+const F = "dm:fake:+13475550004";
+db.upsertAccount({ conversationId: F, channel: "fake", address: "+13475550004", name: "Akua", isOperator: false });
+visit(F); await after(F);
+const hook = async (obj, id) => { const raw = JSON.stringify({ id, type: "checkout.session.completed", data: { object: obj } }); return stripeWebhookRequest({ rawBody: raw, headers: { "stripe-signature": sign(raw, "whsec_drive") }, runtime }); };
+const forged = Buffer.from(F, "utf8").toString("base64url");
+const fr = await hook({ client_reference_id: forged, customer: "cus_attacker", subscription: "sub_attacker" }, "evt_pl_forged");
+step("payment link: a reference made from her number by somebody else binds nothing", fr.status === 200 && fr.body.matched === false && plan.status(F).status === "trial" && !plan.row(F).stripe_subscription_id, JSON.stringify(fr.body));
+const link = await plan.payLink(F);
+const issued = new URL(link).searchParams.get("client_reference_id");
+const pr = await hook({ client_reference_id: issued, customer: "cus_akua", subscription: "sub_akua" }, "evt_pl_issued");
+step("payment link: the reference Reason gave her pays her up", pr.status === 200 && plan.status(F).status === "paid" && plan.row(F).stripe_subscription_id === "sub_akua" && /^[A-Za-z0-9_-]{1,200}$/.test(issued) && issued !== forged, `${issued.length} chars`);
+process.env.STRIPE_PAYMENT_LINK_URL = "";
 fake.close();
 console.log(failed ? `FAILED (${failed})` : "all ok");
 process.exit(failed ? 1 : 0);
