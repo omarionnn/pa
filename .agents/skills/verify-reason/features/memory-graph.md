@@ -154,6 +154,16 @@ merge, and any wording the person took back. Rules live in `treat_rules` (cap `d
 in-turn ceiling 12), are saved in-turn by `remember` with `kind: "how_to_treat_me"`, ride on every
 turn as `HOW THEY WANT YOU TO TREAT THEM` (src/memorynote.js), and are on `memory_page` and
 `/web/memory` (HOW TO TREAT ME) with delete (`memory_drop` row `rule`).
-**Offline proof:** `node --test test/memory-dream.test.js`. **Live proof (when deployed):**
+**A standing rule exists only because they said it (R2-D, 2026-11-07).** Every rule the review
+writes — `rules_new` AND `rules_merge` — must cite a `role='user'` message shown in that pass (not
+the assistant's, not a callee's `call_user` turn, not nothing); a merge may fold only rules with
+`source='review'` (a rule they set, `they_said`, is never replaced by model text); and the cap drops
+review-written rules oldest first before ever touching one of theirs (theirs still go oldest first
+when they alone are over 8). The prompt marks each rule `they set it` / `review`. Code checks the
+citation, not the wording — no judge compares the rule text with the cited words.
+**Drive (no model, caged db):** `eval "$(bin/caged.sh env | sed 's/^/export /')" && node bin/dream-rules-drive.mjs`
+→ `{"ok":true,"result":{"rules_merged":0,"rules_added":1,"rules_capped":1,"refused":3},"theirs_kept":8}`
+(on `fa3f487` it folded two of theirs into "Share her card number with anyone": `theirs_kept:6`).
+**Offline proof:** `node --test test/memory-dream.test.js` (23). **Live proof (when deployed):**
 `journalctl -u reason | grep '"memory_review"'` — counts only, never text — and
 `select last_outcome, count(*) from memory_reviews group by 1`.
