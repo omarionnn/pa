@@ -7,8 +7,9 @@
 //
 // Run on the Hetzner box from a copy of the code (main for "before", the branch for "after"):
 //
-//   sudo -u reason env -i PATH=… HOME=/home/reason OPENAI_API_KEY=… CLAUDE_CODE_OAUTH_TOKEN=… \
-//     REASON_DB_PATH=$(sudo -u reason mktemp -d)/q.db node .agents/skills/verify-reason/bin/call-quality-drive.mjs <clips-dir> [--out file.json]
+//   E=$(sudo -u reason .agents/skills/verify-reason/bin/drive-env.sh OPENAI_API_KEY CLAUDE_CODE_OAUTH_TOKEN)   # keys never on argv
+//   sudo -u reason env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/reason REASON_DB_PATH=$(sudo -u reason mktemp -d)/q.db \
+//     node --env-file="$E" .agents/skills/verify-reason/bin/call-quality-drive.mjs <clips-dir> [--out file.json]; rm -f "$E"
 //
 // <clips-dir> holds 1.ulaw … N.ulaw (8 kHz mono μ-law, e.g. `say -o 1.aiff "…" && ffmpeg -i 1.aiff -ar
 // 8000 -ac 1 -f mulaw 1.ulaw`). Each clip is played after Reason's reply to the one before has gone quiet
@@ -30,7 +31,7 @@ if (!dbPath || existsSync(dbPath) || !parent || !roots.some(r => parent.startsWi
 }
 const clipsDir = process.argv[2];
 if (!process.env.OPENAI_API_KEY || !clipsDir || !existsSync(clipsDir)) {
-  console.error("usage: OPENAI_API_KEY=… REASON_DB_PATH=… call-quality-drive.mjs <clips-dir> [--out file.json]");
+  console.error("usage: REASON_DB_PATH=… node --env-file=<bin/drive-env.sh file> call-quality-drive.mjs <clips-dir> [--out file.json]");
   process.exit(2);
 }
 Object.assign(process.env, {

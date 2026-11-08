@@ -465,7 +465,7 @@ Recipes:
   prefix, nobody else's thread, the silence-keeps-drop-alive regression).
 - Whole-call replay, **on Hetzner** (real GPT-Live + Reason's real turn on claude-cli, fake Twilio, throwaway db
   seeded with a "today" thread; ~3–4 min, ~15¢ of voice): `bin/call-quality-drive.mjs <clips-dir> --out x.json`
-  from a copy of main and of the branch (`/root/cq-run.sh main|branch <label>` on the box). Clips 1–6 = call 79's
+  from a copy of main and of the branch (keys via `bin/drive-env.sh` + `node --env-file`, never on argv). Clips 1–6 = call 79's
   lines (`say -v Samantha`, "how are [[slnc 450]] you?" for the cut-in). Prints per reply latency, seconds of
   speech, talk-over ms, holding phrases, and a timeline. claude-cli turns are 4–11 s, so most hand-offs get a code
   holding line in the drive; on the live API (~2–4 s) more answers land inside 1.5 s.
