@@ -1944,8 +1944,10 @@ export async function* voiceTurn({
         if (toolUses.some(t => !SILENT_TOOLS.has(t.name))) { leadIn = rest; dropLeadIn(round); }
         else if (rest.join("").trim()) yield* emit(rest);
         // The round after the tools said nothing at all: then the words before them were the answer
-        // (a question it asked as it called the tool), and they are said rather than nothing.
-        else if (round > 0 && said.length === saidAtRoundStart && !toolUses.length && lastLeadIn.length) {
+        // (a question it asked as it called the tool), and they are said rather than nothing. The
+        // code's own holding line is not the model saying something (drive 11-08: "Still working on
+        // it." landed mid-round and the turn ended on "Let me come back to you on that one.").
+        else if (round > 0 && (said.length === saidAtRoundStart || onlyHolding()) && !toolUses.length && lastLeadIn.length) {
           log({ voice_lead_in_said: call.id, round });
           yield* emit(lastLeadIn);
         }
@@ -2264,7 +2266,7 @@ export async function* voiceTurn({
         // Out of rounds with nothing said. Better a sentence admitting it than a silent line — and on
         // their own call, the last words it wrote before its tools first ("search is down on my end, so
         // I'll try a news site directly"), so they hear what happened, not only a promise.
-        if (owned && !said.trim() && lastLeadIn.join("").trim()) {
+        if (owned && (!said.trim() || onlyHolding()) && lastLeadIn.join("").trim()) {
           log({ voice_lead_in_said: call.id, round, out_of_rounds: true });
           yield* emit(lastLeadIn);
         }

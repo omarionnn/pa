@@ -120,6 +120,45 @@ test("1. a round after the tools that says nothing: the words before them were t
   assert.ok(lines.some(l => l.voice_lead_in_said));
 });
 
+// Drive 11-08 (OVH, gptlive-drive wx): the code's holding line went out while the tools ran, so the
+// turn counted as "said something" and the words before the tools were lost — the caller heard only
+// "Still working on it. Let me come back to you on that one."
+const slowRounds = (delays, ...batches) => {
+  let i = 0;
+  return async function* () {
+    const n = i++;
+    const batch = batches[Math.min(n, batches.length - 1)] ?? [];
+    await new Promise(r => setTimeout(r, delays[Math.min(n, delays.length - 1)]));
+    for (const e of batch) {
+      if (typeof e === "string") yield { type: "text", text: e };
+      else { yield { type: "tool_start", name: e.tool }; yield { type: "tool_use", name: e.tool, id: `tu_${Math.random().toString(16).slice(2, 8)}`, input: {} }; }
+    }
+  };
+};
+const ASK = "I can't see where you are right now. Where are you? ";
+
+test("1. a holding line said mid-turn is not the model's words: a silent last round still says the words before the tools", async () => {
+  voice.contextDeps.runTool = async () => ({ ok: false, error: "no location" });
+  const lines = [];
+  const out = await turn(ownerCall(), slowRounds([0, 60], [ASK, { tool: "get_location" }], []),
+    { log: (l) => lines.push(l), firstWordDeadlineMs: 20, lateHoldingMs: 60_000, fillerAfterMs: 60_000 });
+  const said = await drain(out.stream);
+  assert.ok(lines.some(l => l.voice_holding_line), "the holding line went out first (the case under test)");
+  assert.match(said, /Where are you\?/, "the question it asked as it called the tool is said");
+  assert.doesNotMatch(said, /come back to you/);
+});
+
+test("1. a holding line said mid-turn is not the model's words: out of rounds, the last lead-in comes before the come-back line", async () => {
+  voice.contextDeps.runTool = async () => ({ ok: false, error: "no location" });
+  const lines = [];
+  const out = await turn(ownerCall(), slowRounds([0, 60], [ASK, { tool: "get_location" }], [{ tool: "get_location" }], [{ tool: "weather" }]),
+    { log: (l) => lines.push(l), firstWordDeadlineMs: 20, lateHoldingMs: 60_000, fillerAfterMs: 60_000 });
+  const said = await drain(out.stream);
+  assert.ok(lines.some(l => l.voice_holding_line), "the holding line went out first (the case under test)");
+  assert.match(said, /Where are you\?[^]*Let me come back to you on that one\.$/);
+  assert.ok(lines.some(l => l.voice_lead_in_said && l.out_of_rounds));
+});
+
 test("1. no code cut: a long answer reaches the voice whole, and code never adds an offer to text the rest", async () => {
   const LONG = "Here's the latest from Nigeria. The central bank held rates at twenty seven and a half percent. Lagos opened the new rail line to Ikeja. The Super Eagles qualified for the Cup of Nations. There's more — want me to text you the rest?";
   const s = startCall({ brain: async (m, hooks) => { for (const p of voice.sentenceSplitter().push(`${LONG} `)) hooks.onContent?.(p.trim()); return { text: LONG, tools: [] }; } });
