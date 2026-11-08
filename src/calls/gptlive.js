@@ -3302,7 +3302,7 @@ export async function dialGptLive(args, { fetchImpl = null, openLive = openLiveS
   // REASON_GPTLIVE_PRERING: the voice's socket and session.start while it rings, held silent (`WarmSession` hold).
   // The dial waits for it, up to REASON_GPTLIVE_PRERING_WAIT_MS, so even an instant pickup finds it up;
   // a session that is slow or fails never stops the call (it opens the old way on the stream).
-  if (!thirdParty && config.gptlivePrering) {
+  if (!thirdParty && preopenOn(config.gptlivePrering, row.conversation_id)) {
     const t0 = Date.now();
     const { w, wait } = preopen(row, { openLive, log: args?.log ?? (() => {}), waitMs: config.gptlivePreringWaitMs, memoryMs: config.gptlivePreringMemoryMs });
     if (w && config.gptlivePreringWaitMs > 0) {
@@ -3543,12 +3543,22 @@ function routeInbound({ params, router, log, away, openLive = openLiveSocket }) 
   // REASON_GPTLIVE_INBOUND_PREOPEN: their voice session opened and started now, held silent until the
   // stream — after every check above (blocked, stranger, cap), with exactly the session the stream would
   // open (same instructions, brief and greeting), so nothing is known or said earlier than before.
-  if (config.gptliveInboundPreopen) {
+  if (preopenOn(config.gptliveInboundPreopen, who.conversationId)) {
     const { w, wait } = preopen(row, { log, openLive, waitMs: config.gptliveInboundWaitMs, memoryMs: config.gptlivePreringMemoryMs, greeting: openingLineFor({ person: accounts.ownerOf(who.conversationId), conversationId: who.conversationId }) });
     // REASON_GPTLIVE_INBOUND_WAIT_MS: the TwiML (the answer) waits for it, far inside Twilio's 15 s webhook timeout.
     if (w && config.gptliveInboundWaitMs > 0) return { ...twiml(streamTwiml(row)), preopen: wait };
   }
   return twiml(streamTwiml(row));
+}
+
+/**
+ * Is a pre-open flag (REASON_GPTLIVE_PRERING / REASON_GPTLIVE_INBOUND_PREOPEN) on for this person's call?
+ * true = everyone's own calls; "owner" = the operator's only; anything else off.
+ */
+export function preopenOn(flag, conversationId) {
+  if (flag === true) return true;
+  if (flag !== "owner") return false;
+  try { return accounts.ownerOf(conversationId)?.isOperator === true; } catch { return false; }
 }
 
 /**

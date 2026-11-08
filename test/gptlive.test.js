@@ -1026,6 +1026,41 @@ test("inbound pre-open off (default): the webhook opens nothing", () => {
   assert.equal(config.gptlivePrering, false);
 });
 
+test("pre-open =owner: the operator's own calls only — his outbound dial waits for the held session and his inbound opens one; Ama's do neither", async () => {
+  assert.equal(gl.preopenOn(true, OTHER), true);
+  assert.equal(gl.preopenOn(false, C), false);
+  assert.equal(gl.preopenOn("owner", C), true);
+  assert.equal(gl.preopenOn("owner", OTHER), false);
+  on({ gptlivePrering: "owner", gptliveInboundPreopen: "owner", gptlivePreringWaitMs: 40, gptlivePreringMemoryMs: 0 });
+  try {
+    const fetchImpl = async () => ({ ok: true, status: 201, json: async () => ({ sid: "CA_dial" }) });
+    const lines = [];
+    let opens = 0;
+    const openLive = () => { opens++; return fakeLive().socket; };
+    const mine = ownerCall();
+    await gl.dialGptLive({ conversationId: C, callId: mine.id, to: "+12025551234", kind: "owner", log: (o) => lines.push(o) }, { fetchImpl, openLive });
+    assert.equal(opens, 1, "his outbound: opened while it rings");
+    assert.ok(lines.some(l => "gptlive_prering_dial_wait" in l));
+    gl.dropWarm(mine.id, "test over");
+    const hers = ownerCall({ conversationId: OTHER });
+    await gl.dialGptLive({ conversationId: OTHER, callId: hers.id, to: "+13105550000", kind: "owner", log: (o) => lines.push(o) }, { fetchImpl, openLive });
+    assert.equal(opens, 1, "hers: nothing opened before the stream");
+    gl.dropWarm(hers.id, "test over");
+
+    const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
+    const ring = (from, sid) => {
+      const params = { CallSid: sid, From: from, To: "+16562167455" };
+      return gl.inboundTwiml({ rawBody: new URLSearchParams(params).toString(), headers: { "x-twilio-signature": gl.twilioSignature(url, params) }, openLive });
+    };
+    ring("+13105550000", "CA_ama_owner_flag");
+    assert.equal(opens, 1, "Ama rings in: no pre-open");
+    ring("+12025551234", "CA_omari_owner_flag");
+    assert.equal(opens, 2, "he rings in: pre-opened");
+    const row = db.db.prepare("SELECT * FROM calls WHERE conversation_id = ? ORDER BY id DESC").get(C);
+    gl.dropWarm(row.id, "test over");
+  } finally { Object.assign(config, { gptlivePrering: false, gptliveInboundPreopen: false, gptlivePreringWaitMs: 2000, gptlivePreringMemoryMs: 800 }); }
+});
+
 async function gatedGreeted(row) {
   const timers = fakeTimers();
   const live = fakeLive();
