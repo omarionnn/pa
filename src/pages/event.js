@@ -592,7 +592,8 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     const read = questions.readForm(ev, (k) => form.get(k));
     const shown = (error) => page(200, renderJoined({ ev, att: mine.att, error }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
     if (read.problems.length) return shown(`${read.problems[0].prompt}: ${questions.ANSWER_WHY[read.problems[0].problem] ?? "that answer didn't read."}`);
-    // A question reworded (or removed) since this page was opened: nothing is saved, and the page shows the new words.
+    // A question reworded since this page was opened: nothing is saved, and the page shows the new words.
+    // (One removed meanwhile just has its answer dropped.)
     const now = new Map(db.eventQuestions(ev.id).map(q => [q.id, q.version]));
     if (read.answers.some(a => now.get(a.q) !== a.v)) return shown("The host changed a question since you opened this page. Check it and save again.");
     const filed = questions.saveAnswers(ev, mine.att, read.answers, "page");

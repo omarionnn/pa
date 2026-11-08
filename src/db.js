@@ -13431,6 +13431,8 @@ export function fileClaimAnswers(eventId, att, raw, via = "join") {
   let list = [];
   try { list = Array.isArray(raw) ? raw : JSON.parse(raw ?? "[]"); } catch { list = []; }
   let n = 0;
+  // Only onto somebody still in: a leave or removal racing a save files nothing.
+  if (db.prepare("SELECT state FROM event_attendees WHERE id = ?").get(Number(att.id))?.state !== "joined") return 0;
   for (const a of Array.isArray(list) ? list : []) {
     const q = a && eventQuestion(eventId, a.q);
     if (!q || q.version !== a.v || typeof a.answer !== "string" || !a.answer) continue;
