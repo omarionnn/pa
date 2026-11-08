@@ -567,7 +567,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     const shown = events.cleanDisplayName(values.display_name) || events.cleanDisplayName(account.name) || "Guest";
     const out = events.admitExisting({ ev, conversationId: account.conversation_id, displayName: shown, instagram, inDirectory: values.in_directory, via: "web", actor });
     if (!out.ok) {
-      const why = { organizer: "You're organizing this one.", full: "This event is full.", removed: "The organizer took you off this event.", paused: "Joining is paused right now." }[out.reason] ?? "That didn't work.";
+      const why = { organizer: "You're organizing this one.", full: "This event is full right now. If a spot opens up, the same link and password will work.", removed: "The organizer took you off this event.", paused: "Joining is paused right now." }[out.reason] ?? "That didn't work.";
       return again(200, why);
     }
     const att = out.already ? out.attendee : events.afterJoin({ ev, att: out.attendee, typedInstagram: instagram });

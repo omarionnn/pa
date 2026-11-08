@@ -402,6 +402,49 @@ config.events = "owner";
   await tool("event_cancel", { event_id: sev.id, event_named: sev.name }, C.owner);
 }
 
+// ---- the guest list's privacy and the cap, after the event is made (src/events.js setListVisible / setCapacity) ----
+{
+  // Noon in New York, so a list note may go (never 21:00–09:00 in the event's zone).
+  clock.reset();
+  const noon = new Date(); noon.setUTCHours(17, 0, 0, 0);
+  clock.skip(noon.getTime() + 86_400_000 - Date.now());
+  const made = await tool("event_create", { name: "Limits Lounge", description: "x", starts_at: "2027-07-10T20:00", timezone: "America/New_York", location: "1 Oak St", password: "limits-pw", show_time_on_join: true, show_location_on_join: false, guest_list_visible: false }, C.owner);
+  const lev = db.getEventRow(made.event.event_id);
+  for (const c of [C.ama, C.kofi]) await tool("event_join", { name: "Limits Lounge", password: "limits-pw" }, c);
+  await new Promise(r => setTimeout(r, 50));
+  const n0 = fake.sent.length;
+  const cap = await tool("event_settings", { event_id: lev.id, event_named: lev.name, capacity: 1 }, C.owner);
+  const third = await tool("event_join", { name: "Limits Lounge", password: "limits-pw" }, C.yaw);
+  step("limits: a cap under the number in takes nobody off and closes joins, texting nobody", cap.ok && !cap.blocked && cap.joins_closed && db.joinedCount(lev.id) === 2 && third.reason === "full" && fake.sent.length === n0, cap.capacity_note);
+  // Owner decision 2026-11-08: the full-event wording stays as written — full right now, same password if a spot opens, no waitlist.
+  step("limits: a full event says so plainly, offers no waitlist", /full right now/.test(third.error ?? "") && /same password works/.test(third.error ?? "") && /no waitlist/.test(third.error ?? ""), third.error);
+  const open = await tool("event_settings", { event_id: lev.id, event_named: lev.name, no_cap: true }, C.owner);
+  step("limits: taking the cap off opens joining again", open.ok && open.capacity === null && db.getEventRow(lev.id).capacity === null);
+  const show = { event_id: lev.id, event_named: lev.name, guest_list_visible: true };
+  const unasked = await tool("event_settings", show, C.owner);
+  step("limits: showing a private list asks for the yes first, naming who gets asked; nothing changes", unasked.blocked === "needs_confirmation" && unasked.asks?.guests === 2 && /ask 2 guests who joined while it was private/.test(unasked.use_target ?? "") && db.getEventRow(lev.id).guest_list_visible === 0 && fake.sent.length === n0, JSON.stringify(unasked.asks).slice(0, 160));
+  const shown = await withYes(runTool, "event_settings", show, { conversationId: C.owner, messages: [], events: runtime });
+  const lev2 = db.getEventRow(lev.id);
+  const names = events.directoryEntries(lev2).filter(e => !e.organizer).map(e => e.name);
+  step("limits: with the yes, nobody who joined while it was private shows on it", shown.ok && lev2.guest_list_visible === 1 && shown.asked === 2 && names.length === 0, JSON.stringify(names));
+  // Owner decision 2026-11-08: the organizer goes on their own list when they show it, as at creation.
+  const host = events.directoryEntries(lev2).filter(e => e.organizer).map(e => e.name);
+  step("limits: the organizer is on their own list once it's shown, and is told so", host.length === 1 && /on it themselves, as /.test(shown.list_note ?? ""), JSON.stringify({ host, note: shown.list_note }));
+  await events.sweepListNotes({ runtime });
+  await new Promise(r => setTimeout(r, 80));
+  await events.sweepListNotes({ runtime });
+  await new Promise(r => setTimeout(r, 80));
+  const asks = (n) => toNum(n).filter(t => /turned on a who's-going list for Limits Lounge/.test(t)).length;
+  // Owner decision 2026-11-08: guests who joined while it was private are asked once (gated above).
+  step("limits: each of them is asked once, in plain words", asks(AMA) === 1 && asks(KOFI) === 1, JSON.stringify(toNum(AMA).slice(-1)));
+  const n1 = fake.sent.length;
+  const hid = await tool("event_settings", { event_id: lev.id, event_named: lev.name, guest_list_visible: false }, C.owner);
+  await new Promise(r => setTimeout(r, 50));
+  step("limits: hiding it again is quiet", hid.ok && !hid.blocked && db.getEventRow(lev.id).guest_list_visible === 0 && fake.sent.length === n1, hid.list_note);
+  await tool("event_cancel", { event_id: lev.id, event_named: lev.name }, C.owner);
+  clock.reset();
+}
+
 const cancel = await tool("event_cancel", { event_id: ev.id, event_named: "Halloween Party" }, C.owner);
 step("cancellation reaches every guest", cancel.ok && toNum(AMA).some(t => /is cancelled/.test(t)) && toNum(YAW).some(t => /is cancelled/.test(t)));
 

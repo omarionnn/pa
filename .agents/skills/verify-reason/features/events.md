@@ -327,6 +327,32 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   the pick list with NO muted label (they still get nothing; the confirm step says "N guest(s) you
   picked muted the event"); the page section is "Message guests" (was "Message everyone"). Pinned:
   `test/event-some-guests.test.js`; drive: the `some:` steps (incl. the left-and-came-back one).
+- **Guest-list privacy and the cap after creation (2026-11-08, `src/events.js` `setListVisible` / `setCapacity`, tool `event_settings`)** —
+  `event_settings` takes `guest_list_visible`, `capacity` (1–100000) or `no_cap`. Hiding the list is quiet: no
+  text, no yes, every guest's `in_directory` kept. Showing it never lists anybody who didn't choose it: new
+  column `event_attendees.list_chosen` (1 = joined with the box ticked while the list was shown, or turned it
+  on themselves; a page save that leaves a private event's default tick is not a choice; backfilled once when
+  the column is added: in_directory AND the event's list shown). On show, every joined guest with
+  in_directory=1 and list_chosen=0 is set off the list (`db.openListFor`) and owed list note kind `opened`
+  ("<organizer> turned on a who's-going list for <event>… you're not on it — if you'd like to be, just let me
+  know (you'd show as <name>)."), sent by the list-note sweep: never 21:00–09:00, never to a muted guest,
+  never twice, dropped if the list is private again first. The organizer goes on their own list as at
+  creation. Guests who chose it before reappear without a text. By text, showing a private list with anybody
+  to ask is CONDITIONALLY_GATED (`settingsNeedYes`); target `show the who's-going list of <event> (event #id)
+  and ask N guests who joined while it was private: names {hash(ids)}`; the refusal carries `asks` (count,
+  names, muted_not_asked, text_they_get); refusals (`settingsRefusal`) come first. Cap: nobody is ever
+  taken off; at/under the number in, joins refuse `full` on every route (text, page, claim) until the count
+  drops below the cap; guests never told. Full copy: text "full right now… same password works… no
+  waitlist", page "This event is full right now. If a spot opens up, the same link and password will
+  work.", claim line "that event is full — it filled up before your join went through…". Page: 05 GUESTS has WHO SEES
+  THE GUEST LIST (tag PRIVATE / SHOWN TO GUESTS; show = confirm step with who gets asked, the exact text and a
+  `pin` re-checked on send; hide = confirm, quiet) and HOW MANY CAN JOIN (tag `N OF CAP` / `FULL · N OF CAP`;
+  empty = no cap; confirm step only when the new cap is at or under the number in). Guest rows on a private
+  list read "joined while the list was private". Waitlist out of scope. Owner decisions 2026-11-08 (#401, yes
+  to all three): guests who joined while it was private are asked once, behind the yes; the organizer goes on
+  their own list when they show it (`hostWouldList`; the text reply's `you_listed_as`, the page's "You go on it
+  too, as …"); the full-event wording stays as written. Pinned: `test/event-edit-limits.test.js`; drive: the
+  `limits:` steps (one per decision: asked once, organizer listed, full wording).
 
 ## How to get to it (user POV)
 
@@ -365,7 +391,7 @@ node --test test/code-guards.test.js   # #134: every code text ends `@<live host
 # the real Runtime + Router + outbox + FakeChannel, in process, cage env, throwaway DB (no model):
 node --test test/event-ops.test.js    # the status page section, pause/resume/retry, owner-only
 node --test test/event-web.test.js    # the pages, the finishing text, existing users by session and by text, who's going
-node --test test/event-manage.test.js test/event-scheduled.test.js test/event-some-guests.test.js  # /e/<id> manage page (#386), scheduled + reminders (#388), only some guests (#390)
+node --test test/event-manage.test.js test/event-scheduled.test.js test/event-some-guests.test.js test/event-edit-limits.test.js  # /e/<id> manage page (#386), scheduled + reminders (#388), only some guests (#390), list privacy + cap after creation
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/events.db node .agents/skills/verify-reason/bin/events-drive.mjs
 REASON_BACKEND=claude-cli node --test test/flow-events.test.js   # by meaning, real model on the subscription: setup questions, text join, pasted link, hidden address
 ```
