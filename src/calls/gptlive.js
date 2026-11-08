@@ -603,6 +603,12 @@ export function shortForPhone(text, { max = LONG_REPLY_CHARS, keep = SHORT_REPLY
     say = `${(at > 60 ? cut.slice(0, at) : cut.slice(0, cut.lastIndexOf(" "))).trim()}.`;
   }
   const out = lastQ ? `${say} ${lastQ}` : `${say} ${TEXT_REST_OFFER}`;
+  // Its own question as well would still be a long answer: the start and the offer, the question kept
+  // for the text (an agreement's question never gets here — `sayWhole`).
+  if (lastQ && out.length > max) {
+    const r = shortForPhone(body.join(" "), { max: 0, keep });
+    return r ? { ...r, full } : null;
+  }
   if (!say || out.length >= full.length - 20) return null;
   return { say: out, full, offered: !lastQ };
 }
