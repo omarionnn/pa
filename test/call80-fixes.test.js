@@ -593,3 +593,73 @@ test("second review: voiceInstructionsFor matches a talking business call, and t
     }
   } finally { config.lineTalk = prev; }
 });
+
+// ---------- dead air (drive 11-08 on OVH, 21:00Z): 2.8 s → 9.4 s median before any sound ----------
+// The code's first line waited on a poll that gave up at 6 s, and the CLI test backend printed its
+// whole turn at the end. A real tool starting is the moment a true "let me check" is due.
+
+test("dead air: a lookup that starts after 1.5 s gets its line at its start — not at the 7.5 s late line", async () => {
+  let hooks;
+  const s = startCall({ brain: (m, h) => new Promise(() => { hooks = h; }) });
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "d1" } });
+  await s.timers.advance(gl.HOLD_LINE_AFTER_MS + 200);
+  assert.ok(!s.lines.some(l => l.gptlive_hold_line), "nothing running yet: no 'one sec' into what may be a plain answer");
+  await s.timers.advance(1100);
+  hooks.onTool("weather", "start");
+  const first = s.lines.find(l => l.gptlive_hold_line);
+  assert.ok(first, "said as the tool starts");
+  assert.equal(first.kind, "first");
+  assert.equal(first.tool, "weather");
+  assert.ok(gl.CHECK_HOLD_LINES.includes(first.line), first.line);
+  assert.ok(first.ms < 3000, `at ${first.ms} ms`);
+  hooks.onTool("weather", "start");
+  assert.equal(s.lines.filter(l => l.gptlive_hold_line && l.kind === "first").length, 1, "never twice");
+});
+
+test("dead air: a send running gets 'one sec', never 'check'; a turn with no tool gets no first line at all", async () => {
+  let hooks;
+  const s = startCall({ brain: (m, h) => new Promise(() => { hooks = h; }) });
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "d2" } });
+  await s.timers.advance(400);
+  hooks.onTool("message_send", "start");
+  await s.timers.advance(gl.HOLD_LINE_AFTER_MS);
+  const first = s.lines.find(l => l.gptlive_hold_line);
+  assert.ok(first && gl.QUICK_HOLD_LINES.includes(first.line), JSON.stringify(first));
+  const t = startCall({ brain: (m, h) => new Promise(() => { h.onContent; }) });
+  t.live.emit({ type: "session.delegation.created", delegation: { id: "d3" } });
+  await t.timers.advance(voice.LATE_HOLDING_MS - 100);
+  assert.ok(!t.lines.some(l => l.gptlive_hold_line), "no tool, no words yet: silence is the model writing, not a stall to cover");
+});
+
+test("dead air: the CLI test backend streams — words as written, a TOOL line known at its name", () => {
+  const p = voice.cliLineStream();
+  const out = [];
+  for (const d of ["Sure, let me che", "ck.\nTO", "OL weath", "er {\"place\":\"work\"}\nToday is ", "nice."]) out.push(...p.push(d));
+  out.push(...p.end());
+  assert.deepEqual(out.map(e => e.type === "text" ? e.text : `${e.type}:${e.name}`),
+    ["Sure, let me che", "ck.", "\n", "tool_start:weather", "tool_use:weather", "Today is ", "nice."]);
+  assert.deepEqual(out.find(e => e.type === "tool_use").input, { place: "work" });
+  const q = voice.cliLineStream();
+  assert.deepEqual([...q.push("Today"), ...q.end()].map(e => e.text), ["Today"], "a line that began like TOOL is words");
+});
+
+test("should-fix: the last lead-in is spent once words of the model's own are said — never replayed after the answer", async () => {
+  voice.contextDeps.runTool = async () => ({ ok: true });
+  const LONG = "It's fifty nine and clear near work on West Seventeenth, high of sixty two, and it drops to the mid forties after dark, so bring a jacket for when your shift ends at eight. ";
+  assert.ok(LONG.length > voice.LEAD_IN_HOLD_CHARS);
+  const out = await turn(ownerCall(), rounds(
+    ["Let me check the weather. ", { tool: "weather", start: true }],
+    [LONG, "One more look. ", { tool: "web_search", start: true }],
+    [],
+  ));
+  const said = (await drain(out.stream)).trim();
+  assert.match(said, /bring a jacket/);
+  assert.doesNotMatch(said, /Let me check the weather/, said);
+});
+
+test("should-fix: after a send that ran, a silent last round says it was sent — not the lead-in as if still to come", async () => {
+  voice.contextDeps.runTool = async () => ({ ok: true });
+  const out = await turn(ownerCall(), rounds(["I'll text that to you now. ", { tool: "message_send", start: true }], []));
+  const said = (await drain(out.stream)).trim();
+  assert.equal(said, voice.SENT_LINE);
+});

@@ -26,7 +26,7 @@ import { writeFileSync } from "node:fs";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { config, clock, normalizeNumber } from "../config.js";
-import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generatorFor, LATE_LINES, LATE_HOLDING_MS, warmCallCache, ownerProfileNote } from "./voice.js";
+import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generatorFor, LATE_LINES, LATE_HOLDING_MS, warmCallCache, ownerProfileNote, SEND_TOOLS } from "./voice.js";
 import { recordingFileFor } from "./recordings.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner, noteThirdPartyTurns } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
@@ -523,7 +523,7 @@ const EARLIER = /\b(?:earlier|before|yesterday|this morning|last (?:night|week)|
 // names, reads included (page_list, undo_send, message_effects are not sends; cold review, call 80).
 /** Reason's tools that write, change or drop a "how to treat me" rule. */
 export const RULE_WRITERS = Object.freeze(["remember", "forget", "memory_fix", "memory_drop"]);
-export const SEND_TOOLS = new Set(["message_send", "message_people", "email", "gmail_send", "document_send", "drive_send", "send_picture", "send_pictures", "voice_note_send", "voice_note_say", "spotify_send_link", "notice_send", "resend_contact_card", "event_blast", "event_cancel"]);
+export { SEND_TOOLS };
 const SENDS = { test: (n) => SEND_TOOLS.has(n) };
 
 /**
@@ -1756,6 +1756,11 @@ export class GptLiveCall {
         const c = (turn.runs.get(n) ?? 0) + (phase === "done" ? -1 : 1);
         if (c > 0) { turn.runs.set(n, c); turn.running.add(n); } else { turn.runs.delete(n); turn.running.delete(n); }
         if (phase === "done") { if (info?.ok !== false) turn.ran.add(n); return; }
+        turn.toolSeen = true;
+        // A tool of Reason's has started into a wait that has heard nothing yet: its line goes now,
+        // not on the next poll (drive 11-08 on OVH: 9.4 s median of nothing before an answer). Never
+        // inside HOLD_LINE_AFTER_MS — the first timer reads it there.
+        if (holding && !turn.pieces && !turn.held && this.now() - turn.startedAt >= HOLD_LINE_AFTER_MS) this.holdLine(id, "first");
         // A tool started after words were already said: the late line covers this wait too.
         if (holding && turn.pieces && !turn.lateTimer) turn.lateTimer = this.timers.setTimeout(() => this.holdLine(id, "late"), LATE_HOLDING_MS);
       };
@@ -1897,8 +1902,10 @@ export class GptLiveCall {
     // "Check / look" only while one of Reason's lookups is running right now. And the first line is
     // only ever that: a wait with no lookup behind it gets no "one sec" at all (call 80, his rule:
     // "don't stall with 'one sec'"); the answer is streaming in, and the late line still covers a long one.
+    // A tool that has run (or is running) and is not a lookup — a text being sent — gets "one sec":
+    // true, Reason is doing something. Nothing has started yet: no line, the answer may be a sentence away.
     const looking = [...turn.running].find(isLookup) ?? "";
-    if (kind === "first" && !looking) {
+    if (kind === "first" && !looking && !turn.toolSeen) {
       if (t - turn.startedAt < LATE_HOLDING_MS - 1500) turn.holdTimer = this.timers.setTimeout(() => this.holdLine(id, "first"), 400);
       return;
     }

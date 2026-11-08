@@ -1834,6 +1834,8 @@ export async function* voiceTurn({
           // One leading space between sentences, because each piece was trimmed on the way through.
           const content = said ? ` ${spoken}` : spoken;
           said += content;
+          // Words of the model's own are out: the lead-in they followed is spent, never said after them.
+          lastLeadIn = [];
           if (!firstContentAt) firstContentAt = clock.now();
           yield chunk({ content });
         }
@@ -2340,6 +2342,9 @@ export async function* voiceTurn({
         log({ call_tool: t.name, call_id: call.id, ok: out?.ok !== false });
         // Ran, and how it came back: what the voice may say was done this turn rests on this (call 80).
         toolDone(String(t.name), out?.ok !== false && !out?.slow);
+        // A send that went out: the words before it ("I'll text that to you") are not said after it as
+        // if still to come. A last round with nothing to add says what is true now instead.
+        if (SEND_TOOLS.has(String(t.name)) && out?.ok !== false) lastLeadIn = [SENT_LINE];
         // Kept even when the platform has moved on: the search happened, and the next turn has to know.
         try { db.addCallLookup(call.conversation_id, call.id, lookupEntry({ name: t.name, input: t.input, out })); }
         catch { /* the record is a help, never a reason for the turn to fail */ }
@@ -2791,6 +2796,14 @@ async function* refusalStream({ why, model = "reason" }) {
  * start is seconds, and seconds of silence is what a phone call cannot have — while the rest of
  * Reason may still be running on the subscription.
  */
+/**
+ * The tools that really send something to somebody — by name, since a turn's tools include reads
+ * (page_list, undo_send, message_effects are not sends; cold review, call 80). Shared with gptlive.js.
+ */
+/** Said after a send that ran, when the turn has nothing else to say (in place of its lead-in). */
+export const SENT_LINE = "Sent.";
+export const SEND_TOOLS = new Set(["message_send", "message_people", "email", "gmail_send", "document_send", "drive_send", "send_picture", "send_pictures", "voice_note_send", "voice_note_say", "spotify_send_link", "notice_send", "resend_contact_card", "event_blast", "event_cancel"]);
+
 export function callBackendName() {
   const pinned = String(config.callBackend ?? "").trim().toLowerCase();
   // Never moved by a spend cap (owner, 2026-10-25): the call cap only texts him (src/spend.js).
@@ -3020,26 +3033,100 @@ async function* cliGenerator({ system, messages, tools, log = () => {}, onUsage 
       + `\nUse the exact field names above. A tool line missing its required field does nothing at all.`
     : "";
 
-  const r = await runClaudeCli({ prompt: `${rendered}\n\nYou:`, system: `${system}${systemToolNote}`, feature: "call" });
-  log({ voice_backend: "claude-cli", ok: r.ok });
+  // Streamed, like the API path (drive 11-08 on OVH): the CLI's words are handed on as they are
+  // written and a tool line is known the moment it starts, so a drive on this backend hears the same
+  // waits a real call does. Before, the whole turn arrived at once at the end — 6–20 s of nothing that
+  // was the CLI, not the call.
+  const t0 = Date.now();
+  let firstTextMs = null;
+  const parse = cliLineStream();
+  const queue = [];
+  let wake = null;
+  let finished = false;
+  let deltas = 0;
+  let r = null;
+  const run = runClaudeCli({
+    prompt: `${rendered}\n\nYou:`, system: `${system}${systemToolNote}`, feature: "call",
+    onEvent: (e) => {
+      const ev = e?.type === "stream_event" ? e.event : null;
+      if (ev?.type !== "content_block_delta" || ev.delta?.type !== "text_delta") return;
+      deltas++;
+      firstTextMs ??= Date.now() - t0;
+      queue.push(...parse.push(ev.delta.text ?? ""));
+      wake?.();
+    },
+  }).then(x => { r = x; }, e => { r = { ok: false, error: e?.message ?? String(e) }; }).finally(() => { finished = true; wake?.(); });
+  for (;;) {
+    while (queue.length) yield queue.shift();
+    if (finished) break;
+    await new Promise(res => { wake = res; });
+    wake = null;
+  }
+  await run;
+  log({ voice_backend: "claude-cli", ok: r.ok, first_text_ms: firstTextMs, ms: Date.now() - t0 });
   if (r.envelope?.usage) onUsage?.(r.envelope.usage);
   if (!r.ok) throw new Error(r.error ?? "the CLI reported an error");
+  // Nothing came as a stream (an older CLI): the printed result, read whole, as it always was.
+  if (!deltas) {
+    const all = cliLineStream();
+    for (const ev of [...all.push(String(r.envelope?.result ?? "")), ...all.end()]) yield ev;
+    return;
+  }
+  for (const ev of parse.end()) yield ev;
+}
 
-  const said = String(r.envelope?.result ?? "").trim();
-  const lines = said.split("\n");
-  const spoken = [];
-  const asked = [];
-  for (const line of lines) {
-    const m = /^TOOL\s+([a-z_]+)\s*(\{.*\})?\s*$/i.exec(line.trim());
+/**
+ * The CLI's written turn, read as it streams: spoken words go out as they come, and a line of the
+ * shape `TOOL name {...}` is held to its end — a `tool_start` the moment its name is written, then
+ * the `tool_use` once the line is whole. A line that only began like one ("To…") is words.
+ */
+const CLI_TOOL_LINE = /^TOOL\s+([a-z_]+)\s*(\{.*\})?\s*$/i;
+export function cliLineStream() {
+  let line = "";
+  let mode = null; // null: not known yet; "text": said as written; "tool": held to the line's end
+  let started = false;
+  const decide = (out) => {
+    const s = line.replace(/^\s+/, "");
+    if (!s) return;
+    if (/^TOOL\s+[a-z_]+[\s{]/i.test(s)) {
+      mode = "tool";
+      if (!started) { started = true; out.push({ type: "tool_start", name: /^TOOL\s+([a-z_]+)/i.exec(s)[1] }); }
+      return;
+    }
+    if ("TOOL ".startsWith(s.slice(0, 5).toUpperCase()) || /^TOOL\s+[a-z_]*$/i.test(s)) return;
+    mode = "text";
+    out.push({ type: "text", text: line });
+    line = "";
+  };
+  const lineEnd = (out) => {
+    const whole = line.trim();
+    const m = mode === "text" ? null : CLI_TOOL_LINE.exec(whole);
     if (m) {
       let input = {};
       try { input = m[2] ? JSON.parse(m[2]) : {}; } catch { input = {}; }
-      asked.push({ type: "tool_use", name: m[1], input });
-      continue;
-    }
-    spoken.push(line);
-  }
-  const text = spoken.join("\n").trim();
-  if (text) yield { type: "text", text };
-  for (const a of asked) yield a;
+      if (!started) out.push({ type: "tool_start", name: m[1] });
+      out.push({ type: "tool_use", name: m[1], input });
+    } else if (line) out.push({ type: "text", text: line });
+    line = ""; mode = null; started = false;
+    return !!m;
+  };
+  return {
+    push(text) {
+      const out = [];
+      for (const part of String(text ?? "").split(/(\n)/)) {
+        if (part === "\n") {
+          // The end of a tool line is not words; the end of a spoken one is.
+          if ((mode === "text" || !lineEnd(out))) out.push({ type: "text", text: "\n" });
+          mode = null; started = false; line = "";
+          continue;
+        }
+        if (!part) continue;
+        if (mode === "text") { out.push({ type: "text", text: part }); continue; }
+        line += part;
+        if (mode === null) decide(out);
+      }
+      return out.filter(e => e.type !== "text" || e.text);
+    },
+    end() { const out = []; if (mode !== "text") lineEnd(out); return out.filter(e => e.type !== "text" || e.text.trim()); },
+  };
 }
