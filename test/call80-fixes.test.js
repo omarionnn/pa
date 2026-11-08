@@ -832,3 +832,14 @@ test("privacy (parent): an unverified inbound call gets the restricted relay voi
   assert.equal(gl.whoFor(ok).restricted, false);
   assert.match(gl.voiceInstructionsFor(ok), /Chelsea/);
 });
+
+test("fix 2 (b): his own voice never deflects with filler — every reply an answer or a hand-off; silent while the backend works; strangers keep the relay", () => {
+  const own = gl.liveInstructions({ name: "Omari", owner: true });
+  assert.ok(own.includes(gl.OWN_VOICE_NO_DEFLECT));
+  assert.match(gl.OWN_VOICE_NO_DEFLECT, /what's your take\?[^]*hand it to the backend[^]*say nothing of your own/);
+  const relay = gl.liveInstructions({ name: "Ama", owner: false });
+  assert.ok(!relay.includes(gl.OWN_VOICE_NO_DEFLECT));
+  assert.match(relay, /You are only the voice/);
+  // An unverified inbound call on his number gets the relay too, not fix 2.
+  assert.ok(!gl.liveInstructions({ name: "Omari", owner: true, restricted: true }).includes(gl.OWN_VOICE_NO_DEFLECT));
+});
