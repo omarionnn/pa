@@ -362,3 +362,53 @@ no clip, `pickupCheck` on three timed rows → `warn · last 3: typical 2.1 s, s
 on 1/2 errand calls`: all ok, rc 0. `node --test test/call-pickup.test.js test/call-goalmet.test.js
 test/call-machines.test.js` 42/42, rc 0. Not proven: a real business pickup (clip sounding like the
 live voice, a real receptionist's hello against the 0.55 s / replay timing).
+
+## What it hears (call-hearing, 2026-11-08, call 76)
+
+Call 76 (Omari's own, 55 s): his quiet words (around −45 dBFS, about 20 dB under his loud ones) came
+through as "Kibaga", "Right. Tell me." after he'd said "going home", and he got "what's that bringing
+up for you?". The ambience mixes into the outbound audio only (his side sits at −74 dBFS between turns).
+
+- **Quiet-speech lift** (`src/calls/hearing.js` `Hearing`, wired in `GptLiveCall.fromTwilio`): every
+  inbound 20 ms μ-law frame passes through an AGC + noise gate + limiter on the copy that goes to
+  GPT-Live only. The recording (`CallTape`), `hasSpeech`/`hasVoice` and the pickup timing still read
+  the raw line. Speech = ≥10 dB over the line's floor (10th percentile of the last 3 s) and ≥ −55 dBFS.
+  It's brought toward −26 dBFS with at most +20 dB, and never cut. The floor is never lifted past
+  −55 dBFS (`NOISE_CEIL_DB`), so a noisy line gets less lift. The lift is held through 400 ms gaps and
+  then eased to 0, the peak is limited at 26000, and the gain ramps per sample. While Reason's audio
+  plays plus 700 ms (`ECHO_TAIL_MS`), the lift drops within 5 ms to +3 dB max, so their phone's echo
+  is never lifted into a false barge-in. A frame at 0 dB lift is passed byte for byte.
+  `REASON_CALL_HEARING=off` sends the raw line (default on). GPT-Live's `session.start` takes no
+  input settings: no noise reduction, no VAD knobs, no transcript confidence (live API reference,
+  read 2026-11-08). So it's done here.
+- **Ask, don't guess** (`HEARING_LINES` in `src/calls/gptlive.js`, on own, line-talk and stranger
+  prompts; plus the owner call turn's frame in `src/calls/voice-prompt.js` `ownerCallFrame`; errand
+  turns already had it in `voice.js` `thirdPartyRules`): ask briefly about the unclear part
+  ("sorry, you cut out — where?") at most once, then go with the best reading said aloud.
+- **Friend, not therapist** (`OWN_CALL_LINES`, `ownerCallFrame`): "chatty … ask natural follow-ups" is
+  replaced with "easy, practical and short" plus a guard that bans "what's that bringing up for you",
+  "how does that make you feel" and feelings-probing.
+- **Per-turn log** `calls.turn_log` (JSON; `turnLog()` written at call end, not for stranger calls):
+  `{who, text, from_s, to_s, session_ms?, level_db?, boost_db?}`, timed from stream start. `session_ms`
+  is the transcript delta's own `start_ms`/`end_ms`. `level_db`/`boost_db` are the median raw level and
+  lift of their speech frames in the turn's window (from − 2.5 s transcript lag). It lives on the
+  person's own row only: never journaled, not on /ops. The retention sweep empties it with the
+  transcript (`dropped.call_turn_logs`); a delete or export takes the row.
+
+Recipes:
+- Offline: `node --test test/call-hearing.test.js` (16: lift, loud untouched, hiss/gust not lifted,
+  noisy-line ceiling, limiter, echo cap, fast drop, long stretch, flag off byte-for-byte, recording raw,
+  turn_log + no words in the journal, retention, prompt lines).
+- Levels on a real call, **on Hetzner only** (a recording never leaves the box):
+  `node bin/call-hearing-levels.mjs /opt/reason/data/recordings/call-N.wav --repo <checkout>`, run as
+  `reason`, which prints each speech stretch before and after the lift. Call 76: quiet stretches
+  −45.0 → −30.4 dBFS median (6), loud −26.1 → −25.6 (6), silence ≥1 s from speech −78.7 → −78.7,
+  0 samples at the rail.
+- Real voice: `bin/gptlive-drive.mjs <clip.ulaw> 18 --expect hearing --words "Kumasi,Kejetia"` with
+  `REASON_CALL_HEARING=off` then on (real GPT-Live, claude-cli via the test token and a scratch
+  CLAUDE_CONFIG_DIR, no phone). 2026-11-08, a clip at −51 dBFS + pink noise: off heard "the mathy … Khadija
+  Market" / "Gamathi … Gadisha Market" (2/2 wrong), on heard "Kumasi … Kejetia Market" (2/2). A −45 dBFS
+  clip was heard right both ways. A 0.7 s dropout over a place name is transcribed as clean text ("I'm in.
+  Right now.") and the voice doesn't ask about it (2/2); one backend turn asked where but guessed "the gym".
+  **Not proven: a real phone call.** Whether the voice asks once about a truly garbled word on a real call
+  is also unproven.

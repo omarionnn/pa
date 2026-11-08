@@ -643,6 +643,9 @@ export const config = {
   callAmbience: String(process.env.REASON_CALL_AMBIENCE ?? "").trim().toLowerCase(),
   // That room's level (calls/ambience.js ambienceGain): a number 0–0.2; unset = the default (0.075).
   callAmbienceGain: String(process.env.REASON_CALL_AMBIENCE_GAIN ?? "").trim(),
+  // Their side of a GPT-Live call evened out before the voice hears it (src/calls/hearing.js, call 76):
+  // quiet speech lifted, silence and line noise left alone, peaks limited. "on" (default) / "off".
+  callHearing: String(process.env.REASON_CALL_HEARING ?? "on").trim().toLowerCase() !== "off",
   // How a GPT-Live third-party call talks once a person answers (2026-10-31, call 59): "on" (default)
   // = the voice talks with them itself, like an own call, and hands decisions to Reason; "off" = the
   // older puppet line, where every reply waits on a Reason turn (4–8 s a reply on call 59).

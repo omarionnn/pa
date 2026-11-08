@@ -38,6 +38,8 @@ import { CallProvider, announcementFor, callRulesFor } from "./provider.js";
 import { briefLines } from "./brief.js";
 import { recordingNoticeFor } from "./consent.js";
 import * as ambience from "./ambience.js";
+import { ulawToPcm, pcmToUlaw } from "./ulaw.js";
+import { Hearing } from "./hearing.js";
 import * as opener from "./opener.js";
 import { goalPending } from "./goalmet.js";
 import { openingLineFor, recordingNoteFor, whoseCallIsThis, strangerIntake, overCallCap } from "./inbound.js";
@@ -245,6 +247,7 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
     "Never answer from your own knowledge, and never invent a fact, time, name, number or price.",
     "While the backend works, a very short acknowledgement is fine. Do not fill the silence with guesses.",
     ...CALL56_LINES,
+    ...HEARING_LINES,
     ...(owner ? OWN_CALL_LINES : []),
     "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
     "When a backend result arrives, say it naturally and briefly, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
@@ -255,11 +258,26 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
 }
 
 /**
+ * Call 76 (2026-11-08): his quieter words came through garbled — a place heard as "Kibaga", "Right.
+ * Tell me." after he had already said "going home" — and the voice guessed instead of asking. Every
+ * call where the voice talks (own, a business call that talks, a stranger) gets these. Once per point,
+ * so a bad line never turns into a loop of "sorry?". GPT-Live gives no confidence for what it heard
+ * (API reference, read 2026-11-08), so this is the voice's own judgment of what it heard.
+ */
+export const HEARING_LINES = [
+  "Phone lines cut out. If a word, name, place or number sounds unclear, cut off or garbled, or would be a strange thing for them to have said, don't guess and don't repeat the strange word back: ask briefly about just that part yourself, like \"sorry, you cut out — where?\", before you hand anything to Reason, since Reason only gets the words as you heard them.",
+  "Ask like that at most once for the same thing. If it's still unclear, go with your best reading, say it plainly so they can correct you, and carry on.",
+  "If they've already told you something, don't ask them to say it again or to \"tell me\" more; answer what they said.",
+];
+
+/**
  * A person's own call (Omari, 2026-11-01): warm and chatty, a friend glad to hear from them. Short on
- * purpose — the long tone section of #293 made calls 54–55 worse.
+ * purpose — the long tone section of #293 made calls 54–55 worse. Call 76 (2026-11-08): "going home"
+ * got "what's that bringing up for you?" — a friend, not a therapist.
  */
 export const OWN_CALL_LINES = [
-  "This is their own call: be friendly, chatty and warm, like a friend who's glad to hear from them. React to what they say, ask a natural follow-up, enjoy the small talk.",
+  "This is their own call: be friendly and warm, like a friend who's glad to hear from them — easy, practical and short. React to what they actually said; a natural follow-up is fine.",
+  "Never sound like a therapist or a coach: no \"what's that bringing up for you\", \"how does that make you feel\" or \"what's on your mind\" probing, and don't dig into their feelings unless they ask you to. If they mention a plan, like heading home, answer it the way a friend would — a quick practical question or a light comment.",
   "If you rang them for a reason, lead with it. If not, you may pick up one thing from your recent chats when it fits. If they want something quick done, get straight to it.",
   // Call 68 (2026-11-01): a whole critique, a rewrite read out and a three-way question in one breath.
   "Keep it a back-and-forth: one point at a time, a few short sentences, then let them react. Never read a long text out loud; offer to text it. Ask at most one question at a time.",
@@ -280,6 +298,7 @@ export function strangerInstructions() {
     "Never answer from your own knowledge, and never invent a fact, feature, date, price or promise. Never say anything is free, cheap, paid, a trial or a subscription unless the backend's result says exactly that.",
     "While the backend works, a very short acknowledgement is fine. Do not fill the silence with guesses.",
     ...CALL56_LINES,
+    ...HEARING_LINES,
     "When a backend result arrives, say it naturally and briefly, keeping every fact exactly as given. Do not add offers or questions the result did not include.",
     "Never mention any person, user, owner or account, and you cannot do anything for them on this call. Say the website as \"hey reason dot com\". Never read out other links, codes, phone numbers or anything in square brackets, and never say the words NO_REPLY.",
     "Stop speaking when they talk over you, and listen.",
@@ -350,6 +369,7 @@ export function lineTalkInstructions({ name = "them", named = name !== "them", b
     "No listening sounds: never \"mm\", \"mhm\" or \"uh-huh\" while they talk or after you've finished speaking. Say nothing until it's your turn.",
     "Don't fill pauses. Never say \"no rush\" or \"take your time\" unless they ask you to hold on. If they say \"hold on\" or put you on hold, say \"sure\" once, then stay silent — through hold music and recordings — until a person speaks to you again.",
     "Repeat back a price, a time or a name once, to be sure you have it right.",
+    ...HEARING_LINES,
     `Hand it to Reason (delegate) whenever they ask something you weren't given above (a name, number, email, address, a preference), they offer to book, hold, reserve, charge or sign ${first} up for anything, they want payment details, a phone menu wants a key pressed, or you aren't sure what to say.`
       + " While Reason works, a few words like \"let me check\" are fine. When Reason's result comes, say it naturally and briefly, keeping every fact, number and name exactly.",
     "Never invent a fact, time, name, number or price, and never agree to anything you weren't told you may.",
@@ -580,16 +600,10 @@ export async function judgeEnding({ kind, transcript, late = "" }, { ask = null 
 
 // ---------- μ-law and the recording ----------
 
-/** One G.711 μ-law byte as a 16-bit sample. */
-export function ulawToPcm(u) {
-  u = ~u & 0xff;
-  const sign = u & 0x80;
-  const exp = (u >> 4) & 0x07;
-  const mant = u & 0x0f;
-  let s = ((mant << 3) + 0x84) << exp;
-  s -= 0x84;
-  return sign ? -s : s;
-}
+// The G.711 codec lives in ./ulaw.js (so ./hearing.js and the level tools need nothing else); kept
+// exported from here for everything that already reads it from this file.
+export { ulawToPcm, pcmToUlaw };
+
 
 /**
  * Both sides of the call on one timeline, as the caller heard it. Their frames arrive in real time
@@ -639,20 +653,6 @@ export class CallTape {
 
 /** Under the 25 MB storeRecording takes, with room. */
 const WAV_PCM_LIMIT = 24 * 1024 * 1024;
-
-/** A 16-bit sample as one G.711 μ-law byte. */
-export function pcmToUlaw(sample) {
-  const BIAS = 0x84;
-  let s = sample;
-  const sign = s < 0 ? 0x80 : 0;
-  if (s < 0) s = -s;
-  if (s > 32635) s = 32635;
-  s += BIAS;
-  let exp = 7;
-  for (let mask = 0x4000; (s & mask) === 0 && exp > 0; mask >>= 1) exp--;
-  const mant = (s >> (exp + 3)) & 0x0f;
-  return ~(sign | (exp << 4) | mant) & 0xff;
-}
 
 // ---------- the OpenAI side ----------
 
@@ -888,6 +888,10 @@ export const LINE_REJOIN_MS = 20_000;
  * that ends sooner (BC_END_MS quiet in the audio, or BC_WAIT_MS with no audio) or that they talk
  * over is dropped. Replies to a finished sentence start ~1 s after it, so they are never held.
  */
+/** How far their words' transcript trails the sound of them, for the per-turn level window (~2.7 s seen). */
+export const TRANSCRIPT_LAG_MS = 2500;
+/** Their phone's echo of Reason can trail its audio by this much (mobile round trips run 300–600 ms); no quiet-speech lift until it has passed. */
+export const ECHO_TAIL_MS = 700;
 export const BC_CALLER_MS = 650;
 export const BC_SELF_MS = [600, 3000];
 export const BC_REAL_MS = 450;
@@ -987,6 +991,8 @@ export class GptLiveCall {
     // On a line call the greeting is not seeded: what was said comes from what was really played.
     this.turns = this.greeting && !this.line ? [{ who: "reason", text: this.greeting, at: now(), seeded: true }] : [];
     this.tape = new CallTape();
+    // Their side as the model hears it: quiet speech lifted (call 76). REASON_CALL_HEARING=off sends it raw.
+    this.hearing = config.callHearing ? new Hearing() : null;
     this.pending = new Map();
     this.delegations = 0;
     this.latest = null;
@@ -1073,8 +1079,11 @@ export class GptLiveCall {
         if (t - this.callerSpeechAt > 200) this.callerSpeechFrom = t;
         this.callerSpeechAt = t;
       }
-      if (this.started) this.live.send({ type: "session.input_audio.append", audio: m.media.payload });
-      else if (this.talk && this.pickup && this.preStart.length < 250) this.preStart.push(m.media.payload);
+      // What the model hears: their side evened out (./hearing.js), quiet words lifted, silence left
+      // alone. The recording and every loudness check above keep the line as it came.
+      const heard = this.hearing ? this.hearing.frame(m.media.payload, this.now(), { reasonTalking: this.now() < this.playheadAt + ECHO_TAIL_MS }) : m.media.payload;
+      if (this.started) this.live.send({ type: "session.input_audio.append", audio: heard });
+      else if (this.talk && this.pickup && this.preStart.length < 250) this.preStart.push(heard);
     } else if (m.event === "stop") {
       if (!this.rejoining) this.end("caller hung up").catch(() => {});
     }
@@ -1179,9 +1188,11 @@ export class GptLiveCall {
       case "session.output_audio.delta":
         return this.audioOut(e.delta);
       case "session.output_transcript.delta":
-        return this.textOut(String(e.delta ?? ""));
+        this.textOut(String(e.delta ?? ""));
+        return this.timeTurn("reason", e);
       case "session.input_transcript.delta":
-        return this.textIn(String(e.delta ?? ""));
+        this.textIn(String(e.delta ?? ""));
+        return this.timeTurn("them", e);
       case "session.delegation.created":
         return void this.delegate(e.delegation?.id).catch((err) => this.log({ gptlive_delegation_failed: this.call.id, why: (err?.message ?? String(err)).split("\n")[0] }));
       case "session.instructions.appended":
@@ -1292,6 +1303,43 @@ export class GptLiveCall {
     const opening = this.delegations === 0 && !this.turns.some(x => x.who === "them") && fromLine(this.utter, this.greeting);
     const unconfirmed = !opening && claimsDone(this.utter) && !confirmed;
     if (said.had || unconfirmed) this.guard(said.had ? "said the silence marker" : "claimed done before Reason confirmed it");
+  }
+
+  /**
+   * The session's own timing for the words just added (each transcript delta carries `start_ms` /
+   * `end_ms` on the session timeline), onto the newest turn of that side, for the per-turn log.
+   */
+  timeTurn(who, e) {
+    if (!String(e?.delta ?? "").trim() || (!Number.isFinite(e?.start_ms) && !Number.isFinite(e?.end_ms))) return;
+    const turn = this.turns.findLast(x => x.who === who);
+    if (!turn) return;
+    if (Number.isFinite(e.start_ms)) turn.startMs ??= e.start_ms;
+    if (Number.isFinite(e.end_ms)) turn.endMs = Math.max(turn.endMs ?? 0, e.end_ms);
+  }
+
+  /**
+   * Each turn of the call as it happened, for a later look at what Reason heard (call 76): who, the
+   * words as the voice heard them, when they began and ended (seconds from pickup, by when their
+   * words arrived here — a transcript trails the speech by a second or two — and the session's own
+   * timeline when it gave one), and for their turns how loud they came in and how much the quiet-speech
+   * lift raised them. Kept on the call row only (`turn_log`): the person's own call record, emptied
+   * with the transcript by the retention sweep and gone with the row on a delete. Never logged.
+   */
+  turnLog() {
+    const t0 = this.streamStartAt ?? this.startedAt;
+    const s = (ms) => Math.round(ms / 100) / 10;
+    return this.turns.map(t => {
+      const text = t.text.replace(/\s+/g, " ").trim();
+      if (!text) return null;
+      const from = t.from ?? t.at;
+      const row = { who: t.who, text, from_s: Math.max(0, s(from - t0)), to_s: Math.max(0, s(t.at - t0)) };
+      if (Number.isFinite(t.startMs)) row.session_ms = [t.startMs, t.endMs ?? t.startMs];
+      if (t.who === "them" && this.hearing) {
+        const lv = this.hearing.levelsBetween(from - TRANSCRIPT_LAG_MS, t.at);
+        if (lv) Object.assign(row, lv);
+      }
+      return row;
+    }).filter(Boolean);
   }
 
   /** The honesty guard: stop the audio the caller has not heard yet and make the voice correct itself. */
@@ -2389,6 +2437,7 @@ export class GptLiveCall {
         db.updateCall(this.call.conversation_id, this.call.id, {
           first_audio_ms: this.firstVoiceMs ?? null,
           pickup_opener: this.pickup?.startedAt ? this.pickup.clip.kind : "",
+          turn_log: JSON.stringify(this.turnLog()),
         });
       } catch { /* a number never breaks a call */ }
     }

@@ -472,6 +472,15 @@ REASON_VERIFY_RUN=/tmp/rv-onboarding REASON_VERIFY_PORT=8823 bin/onboarding-driv
 
 See [features/onboarding.md](features/onboarding.md).
 
+### Baseline — call-hearing (quiet-speech lift, ask once, no therapist tone, turn_log; 2026-11-08)
+
+Scoped maintain pass for the GPT-Live hearing change ([features/gptlive-calls.md](features/gptlive-calls.md),
+"What it hears"). Doctor live rc 0 before the drives. Offline: `test/call-hearing.test.js` 16/16. On Hetzner (code
+copied to /tmp, recordings never copied off): `bin/call-hearing-levels.mjs` on call 76, quiet −45.0 → −30.4 dBFS, loud
+unchanged, 0 clipped. `bin/gptlive-drive.mjs --expect hearing` with real GPT-Live + claude-cli (test token, scratch
+config): the −51 dBFS clip went from wrong (off, 2/2) to right (on, 2/2), and `calls.turn_log` was written with level/boost.
+Not proven: a real phone call.
+
 ### Baseline — #385 bubble-only contact photo LIVE + the paywall ON (2026-11-07)
 
 origin/main `cf415f7` (#385 on `b047383`): 5,610 tests, 5,478 passing, 131 skipped, 1 failing (web-ongoing

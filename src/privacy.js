@@ -111,6 +111,10 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
     drop("call_transcripts", n(db.prepare(
       `UPDATE calls SET transcript = '' WHERE transcript <> ''
        AND COALESCE(ended_at, created_at) < ?`).run(content)));
+    // The same words again, turn by turn with their timing (src/calls/gptlive.js turnLog).
+    drop("call_turn_logs", n(db.prepare(
+      `UPDATE calls SET turn_log = '' WHERE turn_log <> ''
+       AND COALESCE(ended_at, created_at) < ?`).run(content)));
     del("call_recordings", deleteOldRecordings(content, now, log));
     del("web_audio_copies", sweepPlayable({ now }));
     // Documents Reason wrote: the file on disk and the row together. A document is content all the
