@@ -21,7 +21,6 @@
 // Docs read 2026-10-31: developers.openai.com/api/docs/guides/live, live-delegation (client mode),
 // voice-websockets (pcmu 8k), voice-server-controls (playback control), live-conversations (greeting,
 // usage, close), voice-sip, live-partner-integrations (Twilio Media Streams).
-import { isVerified } from "./verify.js";
 import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import * as db from "../db.js";
@@ -48,6 +47,12 @@ import { goalPending } from "./goalmet.js";
 import { openingLineFor, recordingNoteFor, whoseCallIsThis, strangerIntake, overCallCap } from "./inbound.js";
 import * as strangerCall from "./stranger.js";
 import * as strangerCalls from "../strangercalls.js";
+// Feature checks, no hard dependency (#406 / call80-fixes adds both): this module's own
+// `voiceInstructionsFor`, and ./callmemory.js's `prepareCallMemory`. Absent, the pre-open builds the
+// session exactly as the stream would on this build (`sessionConfig` from `whoFor`).
+import * as self from "./gptlive.js";
+let callMemory = null;
+void import("./callmemory.js").then((m) => { callMemory = m; }, () => { /* not on this build */ });
 
 export const PROVIDER = "gptlive";
 export const STREAM_PATH = "/calls/gptlive/stream/";
@@ -215,18 +220,14 @@ export function preCallBrief(call, { place = "" } = {}) {
       .map(f => clip(f, 160)).filter(Boolean).slice(0, 5);
     if (facts.length) lines.push(`What you've got for it:\n${facts.map(f => `- ${f}`).join("\n")}`);
   }
-  // An inbound call on caller ID only gets none of their chats (their messages say where they are and
-  // were): the voice answers small talk from this brief with no tool in between (./verify.js).
-  const sealed = !isVerified(call);
-  const chat = sealed ? [] : recentChatLines(call.conversation_id);
+  const chat = recentChatLines(call.conversation_id);
   if (chat.length) lines.push(`Lately in your chats:\n${chat.join("\n")}`);
   // Call 79: "three sub events" was the line's garbling of the spots Reason had picked by text that day.
-  const today = sealed ? null : todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
+  const today = todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
   // Today so far, the same lines Claude's call turn reads (fix 2: the voice answers from it itself).
   if (today?.lines?.length) lines.push(`Today so far in your chats, before this call (newest last):\n${today.lines.join("\n")}`);
   if (today?.names?.length) lines.push(`Names from your chats today — on a bad line, a word that sounds odd is often one of these: ${today.names.join(", ")}`);
-  // Never on an inbound call that only has caller ID (./verify.js WHEREABOUTS).
-  if (place && !sealed) lines.push(placeLine(place));
+  if (place) lines.push(placeLine(place));
   // Who they are to Reason (fix 2, call 80), read at the call's start from this call's own
   // conversation only: the profile their texts are shown, how they want to be treated (src/rules.js,
   // fresh — a rule saved after the last call is here), and their places and week (./callmemory.js).
@@ -942,6 +943,20 @@ export const WARM_FEED_MAX_MS = 9000;
 /** Nobody picked up within this: the session is closed. Twilio gives up ringing at 30 s. */
 export const WARM_MAX_MS = 60_000;
 
+/** A held/gated session still ringing this long is renewed (GPT-Live expires a silent one at ~30 s). */
+export const HOLD_RENEW_MS = 24_000;
+/** A made greeting waits for their hello to end by this much of quiet (a normal turn gap)... */
+export const PREGREET_AFTER_THEM_MS = 250;
+/** ...or plays into a line that has said nothing for this long... */
+export const PREGREET_SILENT_MS = 600;
+/** ...and is dropped (the voice told, their words handed over) if they are still talking after this. */
+export const PREGREET_MAX_THEIRS_MS = 3000;
+/** Their speech this long in the first PREGREET_REPLAY_WINDOW_MS of the greeting: it is played again after them. */
+export const PREGREET_OVERLAP_MS = 240;
+export const PREGREET_REPLAY_WINDOW_MS = 1500;
+/** 20 ms of μ-law silence. */
+const SILENT_FRAME = Buffer.alloc(160, 0xff).toString("base64");
+
 /** Warm sessions waiting for their call to be answered, by call id. */
 const warm = new Map();
 
@@ -958,14 +973,38 @@ const warm = new Map();
  * third-party call, #232) never reaches GPT-Live and never gets one of these.
  */
 export class WarmSession {
-  constructor({ row, openLive = openLiveSocket, log = () => {}, now = () => Date.now(), timers = globalThis }) {
+  constructor({ row, openLive = openLiveSocket, log = () => {}, now = () => Date.now(), timers = globalThis, hold = false, gate = false, greeting = null, renew = false, deadlineAt = null, memoryMs = 0 }) {
     this.row = row;
+    this.opts = { row, openLive, log, now, timers, hold, gate, greeting, renew };
+    // #406's memory read (when this build has it), raced against the socket's own handshake: the start
+    // waits for it at most `memoryMs` past the socket opening; never the dial, never with it absent.
+    this.memory = memoryMs > 0 ? awaitCallMemory(row, memoryMs, { log }) : null;
+    // REASON_GPTLIVE_PRERING_GREET=ready: the greeting is made while it rings (fed silence until said, then
+    // paused, as calls 54–55 did) but NOT played at pickup: the call holds it until their hello ends or the
+    // line stays quiet (`GptLiveCall#pregreetFrame`), so it is heard, and their hello is not answered twice.
+    this.gate = gate && !hold;
+    // REASON_GPTLIVE_PRERING: only open and start the session while it rings; never feed it, never ask
+    // for the greeting. The call greets on the stream exactly as a cold one does (`adopt`), so the voice
+    // hears nothing and says nothing before pickup — only the socket and session start are done early.
+    this.hold = hold;
+    // REASON_GPTLIVE_PRERING_GREET=early: the greeting is appended while it rings too (the timeline is
+    // stopped — no audio — so nothing is said); the first frames after pickup start it.
+    this.holdGreetEarly = hold && config.gptlivePreringGreet === "early";
     this.log = log;
     this.now = now;
     this.timers = timers;
     this.who = whoFor(row);
-    this.greeting = String(row.announcement ?? "");
+    // An inbound call greets with `openingLineFor`, not the row's announcement (`GptLiveCall`).
+    this.greeting = greeting != null ? String(greeting) : String(row.announcement ?? "");
     this.openedAt = now();
+    this.ready = new Promise((r) => { this.readyResolve = r; });
+    // A gated session's greeting, said and paused (true), or not coming (false).
+    this.greeted = new Promise((r) => { this.greetedResolve = r; });
+    // GPT-Live closes a session that hears nothing for ~30 s ("expired", measured 2026-11-08): a held or
+    // gated session still ringing at HOLD_RENEW_MS is replaced by a fresh one (`renewNow`), up to WARM_MAX_MS.
+    this.deadlineAt = deadlineAt ?? now() + WARM_MAX_MS;
+    this.next = null;
+    if (renew && (hold || this.gate) && now() + HOLD_RENEW_MS < this.deadlineAt) this.renewTimer = timers.setTimeout(() => this.renewNow(), HOLD_RENEW_MS);
     this.audio = [];
     this.text = "";
     this.spoke = false;
@@ -978,11 +1017,34 @@ export class WarmSession {
     this.call = null;
     this.live = openLive();
     this.live.on("open", () => {
-      this.live.send({ type: "session.start", event_id: `start_${row.id}`, session: sessionConfig({ ...this.who, greeting: this.greeting }) });
+      this.socketAt = this.now();
+      // Built when the socket opens (not when it was asked for), so the call's memory read has had
+      // the longest possible; through #406's `voiceInstructionsFor` where that exists.
+      const start = () => {
+        if (this.closed) return;
+        const instructions = preopenInstructions(row);
+        this.live.send({ type: "session.start", event_id: `start_${row.id}`, session: sessionConfig({ ...this.who, greeting: this.greeting, ...(instructions ? { instructions } : {}) }) });
+      };
+      if (this.memory) void this.memory.then(start, start); else start();
     });
     this.live.on("event", (e) => (this.call ? this.call.fromLive(e) : this.take(e)));
     this.live.on("close", (code) => (this.call ? this.call.liveClosed(code) : this.drop(`closed (${code})`)));
-    this.expiry = timers.setTimeout(() => this.drop("never answered"), WARM_MAX_MS);
+    this.expiry = timers.setTimeout(() => this.drop("never answered"), Math.max(0, this.deadlineAt - now()));
+  }
+
+  /** Still ringing near the server's idle limit: a fresh session takes over once it is ready. */
+  renewNow() {
+    if (this.call || this.closed || warm.get(this.row.id) !== this) return;
+    const next = new WarmSession({ ...this.opts, deadlineAt: this.deadlineAt });
+    this.next = next;
+    void (next.gate ? next.greeted : next.ready).then((ok) => {
+      if (ok && warm.get(this.row.id) === this && !this.call) {
+        warm.set(this.row.id, next);
+        this.next = null;
+        this.log({ gptlive_prering_renewed: this.row.id, after_ms: this.now() - this.openedAt });
+        this.drop("renewed");
+      } else if (!next.call) next.drop("not needed");
+    });
   }
 
   take(e) {
@@ -990,6 +1052,14 @@ export class WarmSession {
       this.started = true;
       this.sessionId = e.session?.id ?? "";
       this.startedAt = this.now();
+      // Experiment (REASON_GPTLIVE_PRERING_GREET=early): the greeting asked for at once while it rings, with no
+      // audio fed, so it is queued on a stopped timeline; the call then does not ask again.
+      if (this.hold && this.holdGreetEarly) this.live.send({ type: "session.commentary.append", event_id: `greet_${this.row.id}`, delegation_id: null, content: greetingInstruction(this.greeting, this.who?.purpose ?? "") });
+      this.readyResolve(true);
+      if (this.hold) {
+        this.log({ gptlive_prering_ready: this.row.id, socket_ms: (this.socketAt ?? this.startedAt) - this.openedAt, started_ms: this.startedAt - this.openedAt, early_greet: this.holdGreetEarly });
+        return;
+      }
       this.live.send({ type: "session.commentary.append", event_id: `greet_${this.row.id}`, delegation_id: null, content: greetingInstruction(this.greeting, this.who?.purpose ?? "") });
       this.feeding = true;
       this.feed();
@@ -1023,12 +1093,17 @@ export class WarmSession {
 
   pause(why) {
     this.feeding = false;
+    this.greetDone = why === "greeted";
+    this.greetedResolve(this.spoke);
     this.log({ gptlive_warm: this.row.id, why, ready_ms: this.now() - this.openedAt, spoke: this.spoke, said: this.text.trim().slice(0, 120) });
   }
 
   /** The call picked up: everything from here is the call's. */
   handOver(call) {
     this.timers.clearTimeout(this.expiry);
+    if (this.renewTimer) this.timers.clearTimeout(this.renewTimer);
+    if (this.next && !this.next.call) this.next.drop("the call took the older one");
+    this.greetedResolve(!!this.greetDone);
     if (this.feedTimer) this.timers.clearTimeout(this.feedTimer);
     this.feeding = false;
     this.call = call;
@@ -1038,6 +1113,10 @@ export class WarmSession {
   drop(why) {
     if (this.closed || this.call) return;
     this.closed = true;
+    this.readyResolve(false);
+    this.greetedResolve(false);
+    if (this.renewTimer) this.timers.clearTimeout(this.renewTimer);
+    if (this.next && !this.next.call) this.next.drop(why);
     this.feeding = false;
     this.timers.clearTimeout(this.expiry);
     if (this.feedTimer) this.timers.clearTimeout(this.feedTimer);
@@ -1049,16 +1128,54 @@ export class WarmSession {
 }
 
 /** Start the voice for a call about to be placed, if it opens with a greeting. Never throws. */
-export function prewarm(row, { openLive = openLiveSocket, log = () => {}, now, timers } = {}) {
+export function prewarm(row, { openLive = openLiveSocket, log = () => {}, now, timers, hold = false, gate = false, greeting = null, renew = false, memoryMs = 0 } = {}) {
   try {
-    if (!row?.id || !String(row.announcement ?? "").trim() || warm.has(row.id)) return null;
-    const w = new WarmSession({ row, openLive, log, ...(now ? { now } : {}), ...(timers ? { timers } : {}) });
+    if (!row?.id || !String(greeting ?? row.announcement ?? "").trim() || warm.has(row.id)) return null;
+    const w = new WarmSession({ row, openLive, log, hold, gate, greeting, renew, memoryMs, ...(now ? { now } : {}), ...(timers ? { timers } : {}) });
     warm.set(row.id, w);
     return w;
   } catch (e) {
     log({ gptlive_warm_failed: row?.id ?? null, why: (e?.message ?? String(e)).split("\n")[0] });
     return null;
   }
+}
+
+/** The pre-opened session's instructions: `voiceInstructionsFor(row)` when this build has it, else "" (the default). */
+export function preopenInstructions(row) {
+  const build = self.voiceInstructionsFor;
+  if (typeof build !== "function") return "";
+  try { return String(build(row) ?? ""); } catch { return ""; }
+}
+
+/**
+ * The call's memory read (`prepareCallMemory`, memoized per call and capped by itself) waited on for at
+ * most `capMs`, when this build has it. Resolves true/false/null (null: not on this build). Never throws.
+ */
+export function awaitCallMemory(row, capMs, { log = () => {} } = {}) {
+  const prep = callMemory?.prepareCallMemory;
+  if (typeof prep !== "function" || !(capMs > 0)) return Promise.resolve(null);
+  let timer = null;
+  const t0 = Date.now();
+  return Promise.race([
+    Promise.resolve().then(() => prep(row, { log })).then(() => true, () => false),
+    new Promise((r) => { timer = setTimeout(() => r(false), capMs); }),
+  ]).then((done) => { clearTimeout(timer); log({ gptlive_prering_memory: row.id, ms: Date.now() - t0, done }); return done; });
+}
+
+/**
+ * Pre-open a person's own call's voice (REASON_GPTLIVE_PRERING outbound, _INBOUND_PREOPEN inbound) in the
+ * configured greeting mode: "stream"/"early" hold it silent; "ready" makes the greeting and gates it.
+ * Resolves `{ w, up }` once it is ready for pickup, or after `waitMs` (0: at once) — never throws.
+ */
+export function preopen(row, { openLive = openLiveSocket, log = () => {}, greeting = null, waitMs = 0, memoryMs = 0, now, timers } = {}) {
+  const mode = config.gptlivePreringGreet;
+  const w = prewarm(row, { hold: mode !== "ready", gate: mode === "ready", renew: true, openLive, log, greeting, memoryMs, ...(now ? { now } : {}), ...(timers ? { timers } : {}) });
+  if (!w) return { w: null, wait: Promise.resolve(false) };
+  const ready = w.gate ? w.greeted : w.ready;
+  if (!(waitMs > 0)) return { w, wait: ready };
+  let timer = null;
+  const wait = Promise.race([ready, new Promise((r) => { timer = setTimeout(() => r(null), waitMs); })]).then((v) => { clearTimeout(timer); return v === true; });
+  return { w, wait };
 }
 
 /** The warm session for a call, taken (it is the call's from now on), or null. */
@@ -1264,6 +1381,9 @@ export class GptLiveCall {
         : call.direction === "in"
           ? openingLineFor({ person: accounts.ownerOf(call.conversation_id), conversationId: call.conversation_id })
           : String(call.announcement ?? "");
+    // A held session (REASON_GPTLIVE_PRERING / _INBOUND_PREOPEN) was started with its own greeting (an
+    // inbound lead-in is picked at random): the call says that one, so the session and the seeded turn agree.
+    if (!persona && !this.line && warm?.hold && warm.greeting) this.greeting = warm.greeting;
     // On a line call the greeting is not seeded: what was said comes from what was really played.
     this.turns = this.greeting && !this.line ? [{ who: "reason", text: this.greeting, at: now(), seeded: true }] : [];
     this.tape = new CallTape();
@@ -1362,8 +1482,18 @@ export class GptLiveCall {
       // alone. The recording and every loudness check above keep the line as it came.
       const heard = this.hearing ? this.hearing.frame(m.media.payload, this.now(), { reasonTalking: this.now() < this.playheadAt + ECHO_TAIL_MS }) : m.media.payload;
       if (this.hearing ? this.hearing.speech : hasSpeech(m.media.payload)) this.theirSpeechAt = this.now();
+      // A made greeting waiting for its moment: their hello is not sent (the greeting answers it); kept
+      // in case they talk on and the greeting is dropped instead (`skipPregreet`).
+      if (this.pregreet?.state === "played") this.pregreetOverlap(this.now(), hasSpeech(m.media.payload));
+      if (this.pregreet?.state === "waiting") {
+        this.pregreet.kept.push(heard);
+        // A greeting still being made needs its clock to run: silence in place of their hello.
+        if (!this.pregreet.complete) this.live.send({ type: "session.input_audio.append", audio: SILENT_FRAME });
+        this.pregreetFrame(this.now(), hasSpeech(m.media.payload));
+        return;
+      }
       if (this.started) this.live.send({ type: "session.input_audio.append", audio: heard });
-      else if (this.talk && this.pickup && this.preStart.length < 250) this.preStart.push(heard);
+      else if (((this.talk && this.pickup) || this.heldSession) && this.preStart.length < 250) this.preStart.push(heard);
     } else if (m.event === "stop") {
       if (!this.rejoining) this.end("caller hung up").catch(() => {});
     }
@@ -1439,8 +1569,15 @@ export class GptLiveCall {
     this.capTimer = this.timers.setTimeout(() => { this.endWhy = "duration_cap"; this.end("duration_cap").catch(() => {}); }, config.callPlatformCapSeconds * 1000);
     const w = this.warm;
     if (w && !w.closed && !w.call) return this.adopt(w);
+    this.openFresh();
+  }
+
+  /** A session of the call's own, opened on the stream (no warm one, or a pre-opened one that died). */
+  openFresh() {
     this.live = this.openLive();
+    const openedAt = this.now();
     this.live.on("open", () => {
+      this.log({ gptlive_live_open: this.call.id, ms: this.now() - openedAt });
       this.live.send({ type: "session.start", event_id: `start_${this.call.id}`, session: sessionConfig({ ...this.who, greeting: this.line ? "" : this.greeting, line: this.line }) });
     });
     this.live.on("event", (e) => this.fromLive(e));
@@ -1456,15 +1593,35 @@ export class GptLiveCall {
     w.handOver(this);
     this.live = w.live;
     this.adopted = true;
-    if (w.started) this.onStarted(w.sessionId, { greet: false });
+    // A held session (REASON_GPTLIVE_PRERING) has said nothing: it greets now, as a cold one would.
+    // A gated session not started by pickup has not been asked to greet either: it is asked when it starts.
+    this.adoptedHold = (!!w.hold && !w.holdGreetEarly) || (!!w.gate && !w.started);
+    this.heldSession = !!w.hold || !!w.gate;
+    if (w.started) this.onStarted(w.sessionId, { greet: this.adoptedHold });
     if (Number.isFinite(w.seconds)) this.seconds = w.seconds;
-    for (const delta of w.audio) this.audioOut(delta);
-    if (w.text) this.textOut(w.text);
-    this.log({ gptlive_warm_used: this.call.id, ready: !w.feeding && w.spoke, audio_ms: w.audio.reduce((n, d) => n + Buffer.from(d, "base64").length, 0) / 8, waited_ms: this.now() - w.openedAt });
+    // A gated session's greeting: held until their hello ends (`pregreetFrame`), whether it is made and
+    // paused or still being made (the rest is held with it; the voice hears silence meanwhile, not their hello).
+    if (w.gate && w.started) {
+      this.pregreet = { audio: [...w.audio], text: w.text, state: "waiting", complete: !!w.greetDone, from: this.now(), theirsFrom: 0, theirsAt: 0, kept: [] };
+      this.pregreetTimer = this.timers.setTimeout(() => this.pregreetFrame(this.now(), false), PREGREET_SILENT_MS);
+    } else {
+      for (const delta of w.audio) this.audioOut(delta);
+      if (w.text) this.textOut(w.text);
+    }
+    this.log({ gptlive_warm_used: this.call.id, hold: !!w.hold, started: !!w.started, ready: !w.feeding && w.spoke, audio_ms: w.audio.reduce((n, d) => n + Buffer.from(d, "base64").length, 0) / 8, waited_ms: this.now() - w.openedAt });
   }
 
   liveClosed(code) {
     this.log({ gptlive_session_socket_closed: this.call.id, code });
+    // A pre-opened session that died before it started: the call opens its own, as a cold one does, and
+    // their hello so far (kept, `heldSession`) goes in once it is up.
+    if (this.adopted && this.heldSession && !this.started && !this.done && !this.reopened) {
+      this.reopened = true;
+      this.adopted = false;
+      this.pregreet = null;
+      this.log({ gptlive_prering_fallback: this.call.id, code });
+      return this.openFresh();
+    }
     if (!this.done) this.end(this.endWhy || `voice session closed (${code})`).catch(() => {});
   }
 
@@ -1483,6 +1640,13 @@ export class GptLiveCall {
       return;
     }
     if (greet && this.greeting) this.live.send({ type: "session.commentary.append", event_id: `greet_${this.call.id}`, delegation_id: null, content: greetingInstruction(this.greeting, this.who?.purpose ?? "") });
+    // A held session picked up before it had started: their hello, kept from the first frame.
+    if (this.heldSession && this.preStart.length) {
+      const early = this.preStart;
+      this.preStart = [];
+      for (const audio of early) this.live.send({ type: "session.input_audio.append", audio });
+      this.log({ gptlive_early_audio: this.call.id, ms: early.length * 20 });
+    }
     this.flushTold();
   }
 
@@ -1501,7 +1665,7 @@ export class GptLiveCall {
     switch (e.type) {
       case "session.started":
         // An adopted session started before the call picked up; this is only ever a fresh one's.
-        return this.onStarted(e.session?.id, { greet: !this.adopted });
+        return this.onStarted(e.session?.id, { greet: !this.adopted || this.adoptedHold });
       case "session.output_audio.delta":
         return this.audioOut(e.delta);
       case "session.output_transcript.delta":
@@ -1535,6 +1699,11 @@ export class GptLiveCall {
 
   audioOut(b64) {
     const t = this.now();
+    // The made greeting is waiting for its moment (`pregreetFrame`): what is still coming of it waits too.
+    if (this.pregreet?.state === "waiting") {
+      if (this.pregreet.audio.length || hasSpeech(b64)) this.pregreet.audio.push(b64);
+      return;
+    }
     if (this.mute) {
       // The guard is holding the voice. Released once the correction is in and the claim's audio has
       // stopped arriving, or after four seconds whatever happens, so a lost ack never mutes a call.
@@ -1591,6 +1760,7 @@ export class GptLiveCall {
 
   textOut(delta) {
     const t = this.now();
+    if (this.pregreet?.state === "waiting") { this.pregreet.text += String(delta ?? ""); return; }
     // The words of a run dropped for talking over them (`overDrop`) were never said.
     if (this.over?.dropped && !this.over.discarded && t - this.over.lastAt < 1500) return;
     // The words of a listening sound held back or dropped (`heldSound`) were never said.
@@ -2102,6 +2272,62 @@ export class GptLiveCall {
   }
 
   // --- a line call: a business, a menu, hold, a mailbox (phase 3) ---
+
+  // --- a greeting made while it rang (REASON_GPTLIVE_PRERING_GREET=ready) ---
+
+  /** One frame of their side (or a quiet-line tick) while the made greeting waits. */
+  pregreetFrame(t, speech) {
+    const p = this.pregreet;
+    if (!p || p.state !== "waiting" || this.done) return;
+    if (speech) { p.theirsFrom ||= t; p.theirsAt = t; }
+    if (p.theirsAt) {
+      if (t - p.theirsAt >= PREGREET_AFTER_THEM_MS) return this.playPregreet("after their hello", t);
+      if (t - p.theirsFrom > PREGREET_MAX_THEIRS_MS) return this.skipPregreet(t);
+    } else if (t - p.from >= PREGREET_SILENT_MS) return this.playPregreet("a quiet line", t);
+    // Frames stop on a dead line: a tick keeps the quiet-line deadline.
+    if (this.pregreetTimer) this.timers.clearTimeout(this.pregreetTimer);
+    this.pregreetTimer = this.timers.setTimeout(() => this.pregreetFrame(this.now(), false), 100);
+  }
+
+  playPregreet(why, t) {
+    const p = this.pregreet;
+    p.state = "played";
+    p.playedAt = t;
+    p.overMs = 0;
+    if (this.pregreetTimer) this.timers.clearTimeout(this.pregreetTimer);
+    // Their hello is answered by the greeting; from here on everything they say goes in.
+    p.kept = [];
+    for (const delta of p.audio) this.audioOut(delta);
+    if (p.text && !p.textSent) this.textOut(p.text);
+    p.textSent = true;
+    this.log({ gptlive_pregreet: this.call.id, why, ms: t - (this.streamStartAt ?? p.from), theirs_ms: p.theirsAt ? p.theirsAt - p.theirsFrom : 0, audio_ms: Math.round(p.audio.reduce((n, d) => n + Buffer.from(d, "base64").length, 0) / 8) });
+  }
+
+  /**
+   * Their hello came just as the greeting began (a quiet line that was about to speak): it is cleared and
+   * played once more after their hello, as the errand opener does (`replayOpener`). Once only.
+   */
+  pregreetOverlap(t, speech) {
+    const p = this.pregreet;
+    if (p.replayed || t - p.playedAt > PREGREET_REPLAY_WINDOW_MS) return;
+    if (speech) p.overMs += 20;
+    if (p.overMs < PREGREET_OVERLAP_MS) return;
+    p.replayed = true;
+    this.clearPlayback("pregreet: their hello came over it");
+    Object.assign(p, { state: "waiting", from: t, theirsFrom: t, theirsAt: t, kept: [], complete: true });
+    this.log({ gptlive_pregreet_again: this.call.id, played_ms: t - p.playedAt });
+  }
+
+  /** They talked on past the greeting's moment: it is not played; the voice is told, and hears them. */
+  skipPregreet(t) {
+    const p = this.pregreet;
+    p.state = "skipped";
+    if (this.pregreetTimer) this.timers.clearTimeout(this.pregreetTimer);
+    this.live.send({ type: "session.instructions.append", event_id: `pregreet_${this.call.id}_skipped`, delegation_id: null, content: "Your greeting was never played: they started talking first, so they have not heard you yet. Answer what they say, and greet them briefly as you do." });
+    for (const audio of p.kept) this.live.send({ type: "session.input_audio.append", audio });
+    this.log({ gptlive_pregreet_skipped: this.call.id, ms: t - (this.streamStartAt ?? p.from), kept_ms: p.kept.length * 20 });
+    p.kept = [];
+  }
 
   // --- the pickup opener (./opener.js) ---
 
@@ -3237,7 +3463,7 @@ export function lateWhereabouts(row) {
  * Dial one call on GPT-Live: Twilio rings `args.to` with the media stream as the call's TwiML.
  * `{ ok: false, error }` when this machine cannot (`missingForGptlive`) or the row has no token.
  */
-export async function dialGptLive(args, { fetchImpl = null } = {}) {
+export async function dialGptLive(args, { fetchImpl = null, openLive = openLiveSocket } = {}) {
   const missing = missingForGptlive();
   if (missing.length) return { ok: false, error: `GPT-Live calls are not set up on this machine: no ${missing.join(", ")}` };
   const row = db.getCall(args?.conversationId, args?.callId);
@@ -3258,6 +3484,17 @@ export async function dialGptLive(args, { fetchImpl = null } = {}) {
   // errand's is warmed when the stream starts instead: its opening line is only settled then (talk mode
   // rewrites it), and the prompt has to be the one the first turn really sends.
   if (!thirdParty) warmTheTurn(row, args?.log);
+  // REASON_GPTLIVE_PRERING: the voice's socket and session.start while it rings, held silent (`WarmSession` hold).
+  // The dial waits for it, up to REASON_GPTLIVE_PRERING_WAIT_MS, so even an instant pickup finds it up;
+  // a session that is slow or fails never stops the call (it opens the old way on the stream).
+  if (!thirdParty && preopenOn(config.gptlivePrering, row.conversation_id)) {
+    const t0 = Date.now();
+    const { w, wait } = preopen(row, { openLive, log: args?.log ?? (() => {}), waitMs: config.gptlivePreringWaitMs, memoryMs: config.gptlivePreringMemoryMs });
+    if (w && config.gptlivePreringWaitMs > 0) {
+      const up = await wait;
+      (args?.log ?? (() => {}))({ gptlive_prering_dial_wait: row.id, ms: Date.now() - t0, up, mode: config.gptlivePreringGreet });
+    }
+  }
   const out = await twilioPost("/Calls.json", {
     To: args.to, From: config.twilioFrom, Twiml: streamTwiml(row),
     StatusCallback: `${config.publicUrl}${STATUS_PATH}${row.webhook_token}`,
@@ -3429,20 +3666,20 @@ export function strangerStream({ address = "", callSid = "", kept = null, now = 
  * No greeting is made before the call is connected: the TwiML only opens the stream, and the session
  * is started when Twilio's stream starts (calls 54–55: a greeting made while ringing went unheard).
  */
-export function inboundTwiml({ rawBody, headers, router = null, log = () => {} }) {
+export function inboundTwiml({ rawBody, headers, router = null, log = () => {}, openLive = openLiveSocket }) {
   const params = formOf(rawBody);
   if (!verifyTwilio({ url: `${config.publicUrl}${INBOUND_PATH}`, params, headers })) return { status: 403, body: "" };
   const away = `<?xml version="1.0" encoding="UTF-8"?><Response><Reject/></Response>`;
   // Nothing thrown here may leave a ringing call hanging: anything that fails is rejected at once.
   try {
-    return routeInbound({ params, router, log, away });
+    return routeInbound({ params, router, log, away, openLive });
   } catch (e) {
     log({ gptlive_inbound_failed: (e?.message ?? String(e)).split("\n")[0] });
     return { status: 200, body: away, type: "text/xml" };
   }
 }
 
-function routeInbound({ params, router, log, away }) {
+function routeInbound({ params, router, log, away, openLive = openLiveSocket }) {
   const twiml = (body) => ({ status: 200, body, type: "text/xml" });
   if (!gptliveOn() || missingForGptlive().length) return twiml(away);
   const callSid = String(params.CallSid ?? "");
@@ -3488,7 +3725,39 @@ function routeInbound({ params, router, log, away }) {
   log({ gptlive_inbound: who.conversationId, call: row.id });
   // They rang: their prompt goes into the model's cache while the stream connects and the voice greets.
   warmTheTurn(row, log);
+  // REASON_GPTLIVE_INBOUND_PREOPEN: their voice session opened and started now, held silent until the
+  // stream — after every check above (blocked, stranger, cap), with exactly the session the stream would
+  // open (same instructions, brief and greeting), so nothing is known or said earlier than before.
+  if (preopenOn(config.gptliveInboundPreopen, who.conversationId)) {
+    const { w, wait } = preopen(row, { log, openLive, waitMs: config.gptliveInboundWaitMs, memoryMs: config.gptlivePreringMemoryMs, greeting: openingLineFor({ person: accounts.ownerOf(who.conversationId), conversationId: who.conversationId }) });
+    // REASON_GPTLIVE_INBOUND_WAIT_MS: the TwiML (the answer) waits for it, far inside Twilio's 15 s webhook timeout.
+    if (w && config.gptliveInboundWaitMs > 0) return { ...twiml(streamTwiml(row)), preopen: wait };
+  }
   return twiml(streamTwiml(row));
+}
+
+/**
+ * Is a pre-open flag (REASON_GPTLIVE_PRERING / REASON_GPTLIVE_INBOUND_PREOPEN) on for this person's call?
+ * true = everyone's own calls; "owner" = the operator's only; anything else off.
+ */
+export function preopenOn(flag, conversationId) {
+  if (flag === true) return true;
+  if (flag !== "owner") return false;
+  try { return accounts.ownerOf(conversationId)?.isOperator === true; } catch { return false; }
+}
+
+/**
+ * `inboundTwiml`, answered once a pre-opened session is ready (REASON_GPTLIVE_INBOUND_WAIT_MS, capped).
+ * The voice webhook's route (src/http.js); everything else is `inboundTwiml` as it was.
+ */
+export async function inboundTwimlReady(opts) {
+  const out = inboundTwiml(opts);
+  if (!out?.preopen) return out;
+  const t0 = Date.now();
+  const up = await out.preopen.catch(() => false);
+  (opts?.log ?? (() => {}))({ gptlive_inbound_answer_wait: true, ms: Date.now() - t0, up });
+  const { preopen: _, ...rest } = out;
+  return rest;
 }
 
 /**

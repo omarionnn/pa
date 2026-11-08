@@ -868,6 +868,386 @@ test("warm: a greeting that does not come is asked for once more; an unanswered 
   assert.match(lines.find(l => "gptlive_warm_dropped" in l).why, /no-answer/);
 });
 
+test("prering (hold): started while it rings, nothing fed and nothing said; greets once on pickup, as a cold call", async () => {
+  on();
+  const row = ownerCall();
+  const timers = fakeTimers();
+  const live = fakeLive();
+  const lines = [];
+  gl.prewarm(row, { hold: true, openLive: () => live.socket, log: (o) => lines.push(o), now: timers.now, timers });
+  live.open();
+  assert.match(live.of("session.start")[0].session.input[0].content[0].text, /Hey Omari, it's Reason/, "the call's own session.start, at dial");
+  live.emit({ type: "session.started", session: { id: "live_h" } });
+  await timers.advance(8000);
+  assert.equal(live.of("session.input_audio.append").length, 0, "never fed while it rings");
+  assert.equal(live.of("session.commentary.append").length, 0, "never asked to greet while it rings");
+  assert.ok(lines.some(l => "gptlive_prering_ready" in l));
+  const twilio = fakeTwilio();
+  let opened = 0;
+  new gl.GptLiveCall({ call: row, twilio, warm: gl.takeWarm(row.id), openLive: () => { opened++; return fakeLive().socket; }, brain: async () => ({ text: "", tools: [] }), now: timers.now, timers, log: (o) => lines.push(o), finish: async () => {} });
+  twilio.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
+  assert.equal(opened, 0, "no second session");
+  assert.equal(live.of("session.commentary.append").length, 1, "the greeting asked for at pickup, once");
+  twilio.say({ event: "media", media: { payload: ULAW_FRAME } });
+  assert.equal(live.of("session.input_audio.append").at(-1).audio, ULAW_FRAME, "their audio goes in from the first frame");
+  live.emit({ type: "session.output_audio.delta", delta: loud });
+  live.emit({ type: "session.output_audio.delta", delta: loud });
+  // ≥1: a build that holds the newest frame for a fade (call80-fixes) sends it one frame later.
+  assert.ok(twilio.sent.filter(m => m.event === "media").length >= 1);
+});
+
+test("prering (hold): a session not started by pickup still greets when it starts; no-answer closes it", async () => {
+  on();
+  const row = ownerCall();
+  const timers = fakeTimers();
+  const live = fakeLive();
+  gl.prewarm(row, { hold: true, openLive: () => live.socket, now: timers.now, timers });
+  live.open();
+  const twilio = fakeTwilio();
+  new gl.GptLiveCall({ call: row, twilio, warm: gl.takeWarm(row.id), openLive: () => fakeLive().socket, brain: async () => ({ text: "", tools: [] }), now: timers.now, timers, finish: async () => {} });
+  twilio.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
+  assert.equal(live.of("session.commentary.append").length, 0);
+  live.emit({ type: "session.started", session: { id: "live_h2" } });
+  assert.equal(live.of("session.commentary.append").length, 1, "greets once it is up");
+
+  const row2 = ownerCall();
+  const live2 = fakeLive();
+  const lines = [];
+  gl.prewarm(row2, { hold: true, openLive: () => live2.socket, log: (o) => lines.push(o), now: timers.now, timers });
+  live2.open();
+  live2.emit({ type: "session.started", session: { id: "live_h3" } });
+  const url = `${config.publicUrl}${gl.STATUS_PATH}${row2.webhook_token}`;
+  const params = { CallSid: "CA9", CallStatus: "no-answer", CallDuration: "0" };
+  await gl.statusRequest({ token: row2.webhook_token, rawBody: new URLSearchParams(params).toString(), headers: { "x-twilio-signature": gl.twilioSignature(url, params) }, settle: settleCall });
+  assert.equal(live2.of("session.close").length, 1);
+  assert.equal(gl.takeWarm(row2.id), null);
+});
+
+test("prering: the dial waits for the held session to start (capped), then rings; slow or failed never blocks it", async () => {
+  on({ gptlivePrering: true, gptlivePreringWaitMs: 2000, gptlivePreringMemoryMs: 0 });
+  try {
+    const row = ownerCall();
+    const live = fakeLive();
+    const posted = [];
+    const fetchImpl = async (url, init) => { posted.push({ url: String(url), at: Date.now(), started: live.of("session.start").length }); return { ok: true, status: 201, json: async () => ({ sid: "CA_dial" }) }; };
+    const lines = [];
+    const dialing = gl.dialGptLive({ conversationId: C, callId: row.id, to: "+12025551234", kind: "owner", log: (o) => lines.push(o) }, { fetchImpl, openLive: () => live.socket });
+    await new Promise(r => setImmediate(r));
+    assert.equal(posted.length, 0, "not dialled while the session is starting");
+    live.open();
+    live.emit({ type: "session.started", session: { id: "live_d" } });
+    const out = await dialing;
+    assert.equal(out.ok, true);
+    assert.equal(posted.length, 1, "then dialled");
+    assert.equal(posted[0].started, 1, "with the call's own session.start already sent");
+    assert.equal(lines.find(l => "gptlive_prering_dial_wait" in l).up, true);
+    gl.dropWarm(row.id, "test over");
+
+    // A session that never starts: the dial goes after the cap, and the call opens the old way on the stream.
+    config.gptlivePreringWaitMs = 40;
+    const row2 = ownerCall();
+    const silent = fakeLive();
+    const t0 = Date.now();
+    const out2 = await gl.dialGptLive({ conversationId: C, callId: row2.id, to: "+12025551234", kind: "owner", log: (o) => lines.push(o) }, { fetchImpl, openLive: () => silent.socket });
+    assert.equal(out2.ok, true);
+    assert.ok(Date.now() - t0 < 1000, "the cap holds");
+    assert.equal(lines.filter(l => "gptlive_prering_dial_wait" in l).at(-1).up, false);
+    gl.dropWarm(row2.id, "test over");
+  } finally { Object.assign(config, { gptlivePrering: false, gptlivePreringWaitMs: 2000, gptlivePreringMemoryMs: 800 }); }
+});
+
+test("prering: picked up before the session started — their hello is kept from the first frame and goes in after the greeting ask", async () => {
+  on();
+  const row = ownerCall();
+  const timers = fakeTimers();
+  const live = fakeLive();
+  const lines = [];
+  gl.prewarm(row, { hold: true, openLive: () => live.socket, now: timers.now, timers });
+  live.open();
+  const twilio = fakeTwilio();
+  new gl.GptLiveCall({ call: row, twilio, warm: gl.takeWarm(row.id), openLive: () => fakeLive().socket, brain: async () => ({ text: "", tools: [] }), now: timers.now, timers, log: (o) => lines.push(o), finish: async () => {} });
+  twilio.say({ event: "start", start: { streamSid: "MZ1", callSid: "CA1" } });
+  for (let i = 0; i < 5; i++) twilio.say({ event: "media", media: { payload: loud } });
+  assert.equal(live.of("session.input_audio.append").length, 0, "nothing sent before session.started");
+  live.emit({ type: "session.started", session: { id: "live_e" } });
+  const order = live.sent.map(e => e.type).filter(t => t === "session.commentary.append" || t === "session.input_audio.append");
+  assert.equal(order[0], "session.commentary.append", "the greeting asked for first");
+  assert.equal(live.of("session.input_audio.append").length, 5, "then every frame they said before it was up");
+  assert.equal(lines.find(l => "gptlive_early_audio" in l).ms, 100);
+});
+
+test("inbound pre-open: only after routing — a known caller's session opens held (same session as the stream's), never for blocked, stranger or capped; the row stays unverified", async () => {
+  on({ gptliveInboundPreopen: true, gptlivePreringMemoryMs: 0 });
+  try {
+    const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
+    const opened = [];
+    const openLive = () => { const l = fakeLive(); opened.push(l); return l.socket; };
+    const ring = (from, sid = `CA_${from}`) => {
+      const params = { CallSid: sid, From: from, To: "+16562167455" };
+      return gl.inboundTwiml({ rawBody: new URLSearchParams(params).toString(), headers: { "x-twilio-signature": gl.twilioSignature(url, params) }, openLive });
+    };
+    const ama = ring("+13105550000");
+    assert.match(ama.body, /<Connect><Stream/, "TwiML straight back: the webhook never waits on the session");
+    assert.equal(opened.length, 1, "her session opened while it rings");
+    const row = db.db.prepare("SELECT * FROM calls WHERE conversation_id = ? ORDER BY id DESC").get(OTHER);
+    assert.equal(row.verified_at, null, "pre-opening verifies nobody");
+    const { isVerified } = await import("../src/calls/verify.js");
+    assert.equal(isVerified(db.getCall(OTHER, row.id)), false, "consequential tools still wait for the second check");
+    opened[0].open();
+    const start = opened[0].of("session.start")[0].session;
+    assert.match(start.input[0].content[0].text, /what's up\?/, "her inbound greeting");
+    // The very session a cold stream would open for this row: same instructions, nothing more.
+    const cold = fakeLive();
+    const twilio = fakeTwilio();
+    const timers = fakeTimers();
+    const w = gl.takeWarm(row.id);
+    w.drop("compare");
+    new gl.GptLiveCall({ call: db.getCall(OTHER, row.id), twilio, openLive: () => cold.socket, brain: async () => ({ text: "", tools: [] }), now: timers.now, timers, finish: async () => {} });
+    twilio.say({ event: "start", start: { streamSid: "MZc", callSid: "CAc" } });
+    cold.open();
+    assert.equal(start.instructions, cold.of("session.start")[0].session.instructions);
+    assert.doesNotMatch(JSON.stringify(start), /Omari|4471/, "nothing of anybody else's");
+
+    db.blockNumber("+14155550111");
+    ring("+14155550111");
+    ring("+14155550177", "CA_stranger_p");
+    ring("anonymous");
+    config.maxCallsPerDay = 1;
+    try { ring("+13105550000", "CA_capped"); } finally { config.maxCallsPerDay = 10; }
+    assert.equal(opened.length, 1, "no session for blocked, a stranger, withheld or over the cap");
+  } finally { Object.assign(config, { gptliveInboundPreopen: false, gptlivePreringMemoryMs: 800 }); }
+});
+
+test("inbound pre-open off (default): the webhook opens nothing", () => {
+  on();
+  const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
+  let opened = 0;
+  const params = { CallSid: "CA_off", From: "+13105550000", To: "+16562167455" };
+  gl.inboundTwiml({ rawBody: new URLSearchParams(params).toString(), headers: { "x-twilio-signature": gl.twilioSignature(url, params) }, openLive: () => { opened++; return fakeLive().socket; } });
+  assert.equal(opened, 0);
+  assert.equal(config.gptliveInboundPreopen, false);
+  assert.equal(config.gptlivePrering, false);
+});
+
+test("pre-open =owner: the operator's own calls only — his outbound dial waits for the held session and his inbound opens one; Ama's do neither", async () => {
+  assert.equal(gl.preopenOn(true, OTHER), true);
+  assert.equal(gl.preopenOn(false, C), false);
+  assert.equal(gl.preopenOn("owner", C), true);
+  assert.equal(gl.preopenOn("owner", OTHER), false);
+  on({ gptlivePrering: "owner", gptliveInboundPreopen: "owner", gptlivePreringWaitMs: 40, gptlivePreringMemoryMs: 0 });
+  try {
+    const fetchImpl = async () => ({ ok: true, status: 201, json: async () => ({ sid: "CA_dial" }) });
+    const lines = [];
+    let opens = 0;
+    const openLive = () => { opens++; return fakeLive().socket; };
+    const mine = ownerCall();
+    await gl.dialGptLive({ conversationId: C, callId: mine.id, to: "+12025551234", kind: "owner", log: (o) => lines.push(o) }, { fetchImpl, openLive });
+    assert.equal(opens, 1, "his outbound: opened while it rings");
+    assert.ok(lines.some(l => "gptlive_prering_dial_wait" in l));
+    gl.dropWarm(mine.id, "test over");
+    const hers = ownerCall({ conversationId: OTHER });
+    await gl.dialGptLive({ conversationId: OTHER, callId: hers.id, to: "+13105550000", kind: "owner", log: (o) => lines.push(o) }, { fetchImpl, openLive });
+    assert.equal(opens, 1, "hers: nothing opened before the stream");
+    gl.dropWarm(hers.id, "test over");
+
+    const url = `${config.publicUrl}${gl.INBOUND_PATH}`;
+    const ring = (from, sid) => {
+      const params = { CallSid: sid, From: from, To: "+16562167455" };
+      return gl.inboundTwiml({ rawBody: new URLSearchParams(params).toString(), headers: { "x-twilio-signature": gl.twilioSignature(url, params) }, openLive });
+    };
+    ring("+13105550000", "CA_ama_owner_flag");
+    assert.equal(opens, 1, "Ama rings in: no pre-open");
+    ring("+12025551234", "CA_omari_owner_flag");
+    assert.equal(opens, 2, "he rings in: pre-opened");
+    const row = db.db.prepare("SELECT * FROM calls WHERE conversation_id = ? ORDER BY id DESC").get(C);
+    gl.dropWarm(row.id, "test over");
+  } finally { Object.assign(config, { gptlivePrering: false, gptliveInboundPreopen: false, gptlivePreringWaitMs: 2000, gptlivePreringMemoryMs: 800 }); }
+});
+
+async function gatedGreeted(row) {
+  const timers = fakeTimers();
+  const live = fakeLive();
+  const lines = [];
+  gl.prewarm(row, { gate: true, openLive: () => live.socket, log: (o) => lines.push(o), now: timers.now, timers });
+  live.open();
+  live.emit({ type: "session.started", session: { id: "live_r" } });
+  assert.equal(live.of("session.commentary.append").length, 1, "the greeting asked for while it rings");
+  await timers.advance(300);
+  for (let i = 0; i < 10; i++) live.emit({ type: "session.output_audio.delta", delta: loud });
+  live.emit({ type: "session.output_transcript.delta", delta: "Hey Omari, it's Reason." });
+  await timers.advance(900);
+  assert.ok(lines.some(l => l.gptlive_warm === row.id && l.why === "greeted"), "made and paused");
+  const twilio = fakeTwilio();
+  const call = new gl.GptLiveCall({ call: row, twilio, warm: gl.takeWarm(row.id), openLive: () => { throw new Error("no second session"); }, brain: async () => ({ text: "", tools: [] }), now: timers.now, timers, log: (o) => lines.push(o), finish: async () => {} });
+  const fedBefore = live.of("session.input_audio.append").length;
+  twilio.say({ event: "start", start: { streamSid: "MZr", callSid: "CAr" } });
+  return { timers, live, lines, twilio, call, fedBefore, media: () => twilio.sent.filter(m => m.event === "media" && gl.hasSpeech(m.media.payload)).length };
+}
+
+test("ready: the greeting made while it rang waits for their hello to end, then plays; the hello it answers never reaches the voice", async () => {
+  on();
+  const g = await gatedGreeted(ownerCall());
+  for (let i = 0; i < 15; i++) { g.twilio.say({ event: "media", media: { payload: loud } }); await g.timers.advance(20); }
+  assert.equal(g.media(), 0, "not over their hello");
+  for (let i = 0; i < 25 && !g.lines.some(l => "gptlive_pregreet" in l); i++) { g.twilio.say({ event: "media", media: { payload: ULAW_FRAME } }); await g.timers.advance(20); }
+  const played = g.lines.find(l => "gptlive_pregreet" in l);
+  assert.equal(played.why, "after their hello");
+  assert.ok(played.ms >= 510 && played.ms <= 610, `250 ms after it ended (${played.ms} ms)`);
+  assert.ok(g.media() >= 9 && g.media() <= 10, "the whole greeting, at once (the newest frame may be held for a fade)");
+  assert.equal(g.live.of("session.input_audio.append").length, g.fedBefore, "their hello was not sent");
+  g.twilio.say({ event: "media", media: { payload: loud } });
+  assert.equal(g.live.of("session.input_audio.append").length, g.fedBefore + 1, "what they say to it goes in");
+  assert.match(g.call.turns.map(t => t.text).join(" "), /Hey Omari, it's Reason/);
+});
+
+test("ready: a quiet line gets the greeting at 600 ms; talking on past 3 s drops it — the voice is told and hears all they said", async () => {
+  on();
+  const q = await gatedGreeted(ownerCall());
+  await q.timers.advance(700);
+  const played = q.lines.find(l => "gptlive_pregreet" in l);
+  assert.equal(played.why, "a quiet line");
+  assert.ok(played.ms >= 600 && played.ms <= 700);
+  assert.equal(q.call.firstVoiceMs, played.ms);
+
+  const o = await gatedGreeted(ownerCall());
+  for (let i = 0; i < 160; i++) { o.twilio.say({ event: "media", media: { payload: loud } }); await o.timers.advance(20); }
+  const skipped = o.lines.find(l => "gptlive_pregreet_skipped" in l);
+  assert.ok(skipped, "dropped");
+  assert.equal(o.media(), 0, "never played over them");
+  assert.match(o.live.of("session.instructions.append").at(-1).content, /greeting was never played/);
+  assert.ok(o.live.of("session.input_audio.append").length - o.fedBefore >= 150, "every frame they said, handed over");
+});
+
+test("ready, picked up mid-greeting: what is still coming is held with it, the voice hears silence (not their hello), and it plays after the hello; one not started yet is asked to greet when it starts", async () => {
+  on();
+  const row = ownerCall();
+  const timers = fakeTimers();
+  const live = fakeLive();
+  const lines = [];
+  gl.prewarm(row, { gate: true, openLive: () => live.socket, log: (o) => lines.push(o), now: timers.now, timers });
+  live.open();
+  live.emit({ type: "session.started", session: { id: "live_m" } });
+  await timers.advance(300);
+  live.emit({ type: "session.output_audio.delta", delta: loud });
+  live.emit({ type: "session.output_transcript.delta", delta: "Hey Omari, " });
+  const twilio = fakeTwilio();
+  new gl.GptLiveCall({ call: row, twilio, warm: gl.takeWarm(row.id), openLive: () => { throw new Error("no second"); }, brain: async () => ({ text: "", tools: [] }), now: timers.now, timers, log: (o) => lines.push(o), finish: async () => {} });
+  twilio.say({ event: "start", start: { streamSid: "MZm", callSid: "CAm" } });
+  const fed = live.of("session.input_audio.append").length;
+  for (let i = 0; i < 10; i++) {
+    twilio.say({ event: "media", media: { payload: loud } });
+    live.emit({ type: "session.output_audio.delta", delta: loud });
+    await timers.advance(20);
+  }
+  live.emit({ type: "session.output_transcript.delta", delta: "it's Reason." });
+  const speech = () => twilio.sent.filter(m => m.event === "media" && gl.hasSpeech(m.media.payload)).length;
+  assert.equal(speech(), 0, "nothing over their hello, not even the live rest of the greeting");
+  const sentSince = live.of("session.input_audio.append").slice(fed);
+  assert.equal(sentSince.length, 10, "the clock kept running");
+  assert.ok(sentSince.every(e => !gl.hasSpeech(e.audio)), "on silence, never their hello");
+  for (let i = 0; i < 20 && !lines.some(l => "gptlive_pregreet" in l); i++) { twilio.say({ event: "media", media: { payload: ULAW_FRAME } }); await timers.advance(20); }
+  const greeted = speech();
+  assert.ok(greeted >= 10 && greeted <= 11, "the whole greeting, in order, after their hello");
+  live.emit({ type: "session.output_audio.delta", delta: loud });
+  assert.equal(speech(), greeted + 1, "then live as normal");
+
+  // Picked up before the gated session started: it is asked to greet the moment it starts.
+  const row2 = ownerCall();
+  const live2 = fakeLive();
+  gl.prewarm(row2, { gate: true, openLive: () => live2.socket, now: timers.now, timers });
+  live2.open();
+  const twilio2 = fakeTwilio();
+  new gl.GptLiveCall({ call: row2, twilio: twilio2, warm: gl.takeWarm(row2.id), openLive: () => { throw new Error("no second"); }, brain: async () => ({ text: "", tools: [] }), now: timers.now, timers, finish: async () => {} });
+  twilio2.say({ event: "start", start: { streamSid: "MZn", callSid: "CAn" } });
+  live2.emit({ type: "session.started", session: { id: "live_n" } });
+  assert.equal(live2.of("session.commentary.append").length, 1);
+});
+
+test("ready: their hello just as the greeting starts — it is cleared and said once more after them", async () => {
+  on();
+  const g = await gatedGreeted(ownerCall());
+  await g.timers.advance(620);
+  assert.ok(g.lines.some(l => l.why === "a quiet line"));
+  for (let i = 0; i < 25; i++) { g.twilio.say({ event: "media", media: { payload: loud } }); await g.timers.advance(20); }
+  assert.ok(g.lines.some(l => "gptlive_pregreet_again" in l), "replayed");
+  assert.ok(g.twilio.sent.some(m => m.event === "clear"));
+  const before = g.twilio.sent.filter(m => m.event === "media" && gl.hasSpeech(m.media.payload)).length;
+  for (let i = 0; i < 20; i++) { g.twilio.say({ event: "media", media: { payload: ULAW_FRAME } }); await g.timers.advance(20); }
+  const again = g.twilio.sent.filter(m => m.event === "media" && gl.hasSpeech(m.media.payload)).length - before;
+  assert.ok(again >= 9 && again <= 11, "said once more, whole");
+  assert.equal(g.call.turns.filter(t => /Hey Omari, it's Reason/.test(t.text)).length, 1, "one greeting in the transcript");
+  for (let i = 0; i < 40; i++) { g.twilio.say({ event: "media", media: { payload: loud } }); await g.timers.advance(20); }
+  assert.equal(g.lines.filter(l => "gptlive_pregreet_again" in l).length, 1, "once only");
+});
+
+test("prering: a pre-opened session that dies before it started never ends the call — a fresh one opens and greets, their hello kept", async () => {
+  on();
+  const row = ownerCall();
+  const timers = fakeTimers();
+  const dead = fakeLive();
+  const closers = [];
+  dead.socket.on = ((orig) => (k, f) => { if (k === "close") closers.push(f); return orig(k, f); })(dead.socket.on);
+  gl.prewarm(row, { hold: true, openLive: () => dead.socket, now: timers.now, timers });
+  dead.open();
+  const fresh = fakeLive();
+  const lines = [];
+  const twilio = fakeTwilio();
+  const finished = [];
+  new gl.GptLiveCall({ call: row, twilio, warm: gl.takeWarm(row.id), openLive: () => fresh.socket, brain: async () => ({ text: "", tools: [] }), now: timers.now, timers, log: (o) => lines.push(o), finish: async (l) => { finished.push(l); } });
+  twilio.say({ event: "start", start: { streamSid: "MZx", callSid: "CAx" } });
+  for (let i = 0; i < 3; i++) twilio.say({ event: "media", media: { payload: loud } });
+  closers.forEach(f => f(1006));
+  assert.ok(lines.some(l => "gptlive_prering_fallback" in l));
+  assert.equal(finished.length, 0, "the call goes on");
+  fresh.open();
+  assert.equal(fresh.of("session.start").length, 1);
+  fresh.emit({ type: "session.started", session: { id: "live_fresh" } });
+  assert.equal(fresh.of("session.commentary.append").length, 1, "greets");
+  assert.equal(fresh.of("session.input_audio.append").length, 3, "their hello kept");
+});
+
+test("prering: a held session still ringing at 24 s is replaced by a fresh one once it is up (GPT-Live expires a silent one at ~30 s)", async () => {
+  on();
+  const row = ownerCall();
+  const timers = fakeTimers();
+  const socks = [];
+  const lines = [];
+  const openLive = () => { const l = fakeLive(); socks.push(l); return l.socket; };
+  gl.prewarm(row, { hold: true, renew: true, openLive, log: (o) => lines.push(o), now: timers.now, timers });
+  socks[0].open();
+  socks[0].emit({ type: "session.started", session: { id: "live_1" } });
+  await timers.advance(gl.HOLD_RENEW_MS + 10);
+  assert.equal(socks.length, 2, "a second one opened");
+  socks[1].open();
+  socks[1].emit({ type: "session.started", session: { id: "live_2" } });
+  await new Promise(r => setImmediate(r));
+  assert.equal(socks[0].of("session.close").length, 1, "the old one closed");
+  assert.ok(lines.some(l => "gptlive_prering_renewed" in l));
+  const w = gl.takeWarm(row.id);
+  assert.equal(w.sessionId, "live_2", "pickup gets the fresh one");
+  await timers.advance(60_000);
+  assert.ok(socks.length <= 3, "never renewed past the ring's deadline");
+});
+
+test("pre-open instructions: through voiceInstructionsFor when this build has it (#406), else the stream's own default; never throws", async () => {
+  on();
+  const row = ownerCall();
+  const live = fakeLive();
+  const timers = fakeTimers();
+  gl.prewarm(row, { hold: true, openLive: () => live.socket, now: timers.now, timers });
+  live.open();
+  const sent = live.of("session.start")[0].session.instructions;
+  if (typeof gl.voiceInstructionsFor === "function") {
+    assert.equal(sent, gl.voiceInstructionsFor(db.getCall(C, row.id) ?? row), "#406's builder, word for word");
+  } else {
+    assert.equal(gl.preopenInstructions(row), "");
+    assert.equal(sent, gl.sessionConfig({ ...gl.whoFor(row) }).instructions, "main: what the stream would send");
+  }
+  const mem = await gl.awaitCallMemory(row, 50);
+  assert.ok(mem === null || typeof mem === "boolean");
+  gl.dropWarm(row.id, "test over");
+});
+
 test("warm: a call that opens silent never gets a warm session", () => {
   on();
   const row = ownerCall({ announcement: "" });

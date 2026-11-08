@@ -160,6 +160,11 @@ server.listen(config.port, config.host, () => {
   if (verbose && process.env.REASON_LOG_CONTENT === "1") {
     console.log(`    --log with REASON_LOG_CONTENT=1: tool results are logged IN FULL, page text and transcripts included`);
   }
+  // The GPT-Live pre-open while it rings / from the inbound webhook (PR #407): the armed mode, once.
+  if (config.gptlivePrering || config.gptliveInboundPreopen) {
+    const who = (v) => v === "owner" ? "owner only" : v ? "everyone" : "off";
+    console.log(`  call pre-open: outbound ${who(config.gptlivePrering)} · inbound ${who(config.gptliveInboundPreopen)} · greet ${config.gptlivePreringGreet} · inbound wait ${config.gptliveInboundWaitMs} ms`);
+  }
   console.log(`  listening on http://${config.host}:${config.port}`);
   for (const s of router.statuses()) {
     console.log(`  ${s.name}: ${s.status}${s.missing?.length ? ` (needs ${s.missing.join(", ")})` : ""}`);

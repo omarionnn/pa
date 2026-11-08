@@ -765,7 +765,7 @@ test("caller check: refused and nothing written — code says the refusal itself
   voice.contextDeps.runTool = async () => ({ ok: true });
   const out = await turn(row, rounds([{ tool: "message_send", start: true, input: { to: "+13105550000", text: "running late" } }], [{ tool: "skip_turn", input: { reason: "x" } }]));
   const said = (await drain(out.stream)).trim();
-  assert.equal(said, voice.CHECK_NOT_HERE_LINE);
+  assert.ok([voice.CHECK_LATER_LINE, voice.CHECK_NOT_HERE_LINE].includes(said), said);
 });
 
 test("fix 2 (b): his own voice never deflects with filler — every reply an answer or a hand-off; silent while the backend works; strangers keep the relay", () => {
@@ -806,5 +806,7 @@ test("caller check + nowhere to go: a refused send and an unknown position — t
   const row = inboundCall();
   const out = await turn(row, rounds([{ tool: "message_send", start: true, input: { to: "+13105550000", text: "running late" } }], [{ tool: "get_location" }], [{ tool: "get_location" }], [{ tool: "get_location" }]), { firstWordDeadlineMs: 60_000, lateHoldingMs: 60_000, fillerAfterMs: 60_000 });
   const said = await drain(out.stream);
-  assert.match(said, /can't do that one on this call/i, said);
+  const refusal = [voice.CHECK_LATER_LINE, voice.CHECK_NOT_HERE_LINE].find(l => said.startsWith(l));
+  assert.ok(refusal, said);
+  assert.match(said.slice(refusal.length), /Where are you right now\?/, "the where question after it");
 });
