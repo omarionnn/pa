@@ -1111,9 +1111,11 @@ test("a call that is only asking is still allowed to a maybe-booked number, beca
   assert.equal(d.asked[0].may_book, false);
 });
 
-test("an owner call is shown what Reason knows about them, as a text turn is", () => {
-  const call = ownerCall();
-  db.saveProfile(call.conversation_id, "**Omari**\n- Pays for Spotify through his second Gmail (inferred, Oct 16)", [1]);
-  const ctx = voice.ownerContext({ call, callMessages: [] });
-  assert.match(ctx.system, /WHAT YOU KNOW ABOUT THEM[^]*Spotify through his second Gmail/);
+test("an owner call is shown what Reason knows about them, as a text turn is — once the caller is verified (11-08 privacy)", () => {
+  const call = ownerCall({ verifiedAt: Date.now() });
+  const row = call.verified_at ? call : db.updateCall(C, call.id, { verified_at: Date.now(), verified_how: "passphrase" });
+  db.saveProfile(row.conversation_id, "**Omari**\n- Pays for Spotify through his second Gmail (inferred, Oct 16)", [1]);
+  assert.match(voice.ownerContext({ call: row, callMessages: [] }).system, /WHAT YOU KNOW ABOUT THEM[^]*Spotify through his second Gmail/);
+  // Caller ID alone (an inbound call never verified): not the profile.
+  assert.doesNotMatch(voice.ownerContext({ call: ownerCall(), callMessages: [] }).system, /Spotify through his second Gmail/);
 });

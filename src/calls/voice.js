@@ -290,6 +290,28 @@ const NOTHING_SAID_AFTER = " Let me come back to you on that one.";
 const COME_BACK_LATER = "Let me come back to you on that one.";
 const COME_BACK_CHECK = "Let me check on that and come back to you.";
 const COME_BACK_LOOK = "Let me look into that and come back to you.";
+/**
+ * Asked out loud when the turn has nothing to say where they are: get_location knew nothing (no live
+ * share, no recent pin, no saved place) and the weather or a nearby search needed it. Drive 11-08 (OVH,
+ * no saved places): 1 turn in 3 went round get_location → weather → get_location until it ran out of
+ * rounds and said "let me come back to you" — no weather and no question. Code asks instead, so a
+ * turn with nowhere to go always ends on the one question that unblocks it. Exported for the tests.
+ */
+export const WHERE_ASK = "Where are you right now? A neighbourhood or a cross street is enough.";
+// The reads that need a position. A turn that already learned none is known asks the question instead
+// of calling these again without coordinates.
+const NEEDS_WHERE = new Set(["get_location", "weather", "nearby_places"]);
+/** True when a result says where they are is not known (exported for the tests). */
+export function whereUnknownIn(name, out) {
+  if (name === "get_location") return out?.ok === false || (out?.source === "none" && !out?.requested);
+  if (name === "weather") return out?.ok === false && /coordinates or a saved place|No saved place/i.test(String(out?.error ?? ""));
+  return false;
+}
+/** A call to one of those with nothing new to go on: no coordinates, no saved place, not a card request. */
+const blindWhereCall = (t) => NEEDS_WHERE.has(String(t.name))
+  && t.input?.action !== "request"
+  && !(Number.isFinite(t.input?.latitude) && Number.isFinite(t.input?.longitude))
+  && !t.input?.place && !t.input?.near && !t.input?.address;
 const BROKE_MID = "Something broke on my end there.";
 const BROKE_FIRST = "Something broke on my end. Say that again?";
 /**
@@ -1665,6 +1687,20 @@ export async function* voiceTurn({
   // and the last round's words before its tools, dropped unsaid unless nothing comes after.
   let leadIn = [];
   let lastLeadIn = [];
+  // Set when a lookup came back with no position for them (WHERE_ASK).
+  let whereUnknown = false;
+  // Already asked where they are this turn (their words or WHERE_ASK), so it is never asked twice.
+  const askedWhere = () => /\bwhere\b[^.?!]*\?/i.test(said) || /share (your|their) location/i.test(said);
+  function* askWhere(why, emit = null) {
+    // Their own question, held as a lead-in before the tool ("I can't see where you are. Where are
+    // you?"), is said rather than replaced; otherwise code's.
+    const leadAsks = emit && (!said.trim() || onlyHolding()) && replayable() && /\bwhere\b[^.?!]*\?/i.test(lastLeadIn.join(""));
+    log({ voice_where_ask: call.id, why, lead_in: Boolean(leadAsks), ...timing() });
+    if (leadAsks) yield* emit(lastLeadIn);
+    else if (!askedWhere()) yield chunk({ content: said ? ` ${WHERE_ASK}` : WHERE_ASK });
+    yield chunk({}, "stop");
+    yield SSE_DONE;
+  }
   // The model's own words have been said this turn (a lead-in is then never replayed after them).
   let spokeOwn = false;
   let firstEventLogged = false;
@@ -2287,7 +2323,19 @@ export async function* voiceTurn({
         return;
       }
 
+      // Nothing new to go on: a lookup already said where they are is not known, and this round only
+      // asks again without coordinates. The question, now, not another round (owner's own call only —
+      // an unverified caller was refused these by the gate and hears the refusal).
+      if (owned && whereUnknown && toolUses.every(blindWhereCall)) {
+        yield* askWhere("repeat_without_position", emit);
+        return;
+      }
+
       if (round === MAX_VOICE_TOOL_ROUNDS) {
+        if (owned && whereUnknown) {
+          yield* askWhere("out_of_rounds", emit);
+          return;
+        }
         // Out of rounds with nothing said. Better a sentence admitting it than a silent line — and on
         // their own call, the last words it wrote before its tools first ("search is down on my end, so
         // I'll try a news site directly"), so they hear what happened, not only a promise.
@@ -2363,6 +2411,8 @@ export async function* voiceTurn({
           out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
         }
         if (out?.slow) log({ call_tool_over_budget: t.name, call_id: call.id, budget_ms: toolBudgetMs });
+        if (whereUnknownIn(String(t.name), out)) whereUnknown = true;
+        else if (NEEDS_WHERE.has(String(t.name)) && out?.ok !== false && (out?.latitude != null || out?.now)) whereUnknown = false;
         log({ call_tool: t.name, call_id: call.id, ok: out?.ok !== false });
         // Ran, and how it came back: what the voice may say was done this turn rests on this (call 80).
         toolDone(String(t.name), out?.ok !== false && !out?.slow);
@@ -2392,6 +2442,10 @@ export async function* voiceTurn({
     // out-of-rounds guard because a refusal is not a round spent on a tool. Falling off the end then
     // produced an empty stream: no words, no finish reason, just `[DONE]`. Dead air is the worst answer
     // a phone call can give, and an unframed one is worse than that.
+    if (owned && whereUnknown && (!said || onlyHolding())) {
+      yield* askWhere("fell_through");
+      return;
+    }
     if (!said || onlyHolding()) {
       log({ voice_turn_nothing_said: call.id, kind: context.kind, ...timing() });
       yield* openingIfOwed();

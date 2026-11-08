@@ -155,8 +155,58 @@ test("1. a holding line said mid-turn is not the model's words: out of rounds, t
     { log: (l) => lines.push(l), firstWordDeadlineMs: 20, lateHoldingMs: 60_000, fillerAfterMs: 60_000 });
   const said = await drain(out.stream);
   assert.ok(lines.some(l => l.voice_holding_line), "the holding line went out first (the case under test)");
-  assert.match(said, /Where are you\?[^]*Let me come back to you on that one\.$/);
-  assert.ok(lines.some(l => l.voice_lead_in_said && l.out_of_rounds));
+  // Weather fix (a): a turn that already knows nothing of where they are asks, never "come back".
+  assert.match(said, /Where are you\?\s*$/);
+  assert.doesNotMatch(said, /come back to you/);
+  assert.ok(lines.some(l => l.voice_where_ask && l.lead_in));
+});
+
+// ---------- weather fix (a): nowhere to go → ask where they are, always ----------
+test("weather (a): no saved place, no pin — get_location knows nothing, the model loops: code asks where they are at once, no more rounds", async () => {
+  voice.contextDeps.runTool = async (name) => name === "get_location"
+    ? { ok: true, sharing: false, source: "none", note: "You do not know where they are." }
+    : { ok: false, error: "Give coordinates or a saved place." };
+  let calls = 0;
+  const gen = rounds([{ tool: "get_location" }], [{ tool: "weather" }], [{ tool: "get_location" }], [{ tool: "weather" }]);
+  const lines = [];
+  const out = await turn(ownerCall(), async function* (...a) { calls++; yield* gen(...a); }, { log: (l) => lines.push(l), firstWordDeadlineMs: 60_000, lateHoldingMs: 60_000, fillerAfterMs: 60_000 });
+  const said = await drain(out.stream);
+  assert.equal(said.trim(), voice.WHERE_ASK);
+  assert.equal(calls, 2, "round 2 asked again without a position: the question, not round 3");
+  assert.ok(lines.some(l => l.voice_where_ask && l.why === "repeat_without_position"));
+  assert.doesNotMatch(said, /come back/);
+});
+
+test("weather (a): out of rounds with no position, ×10 — every one ends on the question, never a silent or come-back turn", async () => {
+  for (let k = 0; k < 10; k++) {
+    voice.contextDeps.runTool = async (name) => name === "get_location" ? { ok: false, error: "no location" } : { ok: true, results: [] };
+    // Each round calls something different, so only the out-of-rounds guard can catch it.
+    const out = await turn(ownerCall(), rounds([{ tool: "get_location" }], [{ tool: "web_search", input: { query: "weather" } }], [{ tool: "web_search", input: { query: "weather now" } }], [{ tool: "web_search", input: { query: "x" } }]),
+      { firstWordDeadlineMs: 60_000, lateHoldingMs: 60_000, fillerAfterMs: 60_000 });
+    const said = await drain(out.stream);
+    assert.match(said, /Where are you right now\?/, `run ${k}`);
+    assert.doesNotMatch(said, /come back/);
+  }
+});
+
+test("weather (a): the model asks itself → said once, not twice; a known position clears it and the weather is said", async () => {
+  voice.contextDeps.runTool = async () => ({ ok: true, sharing: false, source: "none" });
+  const out = await turn(ownerCall(), rounds([{ tool: "get_location" }], ["I can't see where you are — where are you right now?"]), { firstWordDeadlineMs: 60_000, lateHoldingMs: 60_000, fillerAfterMs: 60_000 });
+  const said = await drain(out.stream);
+  assert.equal((said.match(/where are you/gi) ?? []).length, 1, said);
+  voice.contextDeps.runTool = async (name) => name === "get_location" ? { ok: true, source: "live", latitude: 40.74, longitude: -74 } : { ok: true, now: { temp_f: 59 } };
+  const ok = await turn(ownerCall(), rounds([{ tool: "get_location" }], [{ tool: "weather", input: { latitude: 40.74, longitude: -74 } }], ["Fifty nine and clear."]), { firstWordDeadlineMs: 60_000, lateHoldingMs: 60_000, fillerAfterMs: 60_000 });
+  const w = await drain(ok.stream);
+  assert.match(w, /Fifty nine and clear\./);
+  assert.doesNotMatch(w, /Where are you/);
+});
+
+test("weather (a): an unverified inbound caller is refused get_location by the gate and hears the refusal, not the where question", async () => {
+  voice.contextDeps.runTool = async () => { throw new Error("must not run"); };
+  const row = db.createCall(C, { provider: "gptlive", toNumber: "+12025551234", isOwner: true, direction: "in", goal: "They rang Reason", facts: [], announcement: "Hey Omari, what's up?", state: "in_progress" });
+  const out = await turn(row, rounds([{ tool: "get_location" }], [{ tool: "get_location" }], [{ tool: "get_location" }], [{ tool: "get_location" }]), { firstWordDeadlineMs: 60_000, lateHoldingMs: 60_000, fillerAfterMs: 60_000 });
+  const said = await drain(out.stream);
+  assert.doesNotMatch(said, /Where are you right now/);
 });
 
 test("1. no code cut: a long answer reaches the voice whole, and code never adds an offer to text the rest", async () => {
