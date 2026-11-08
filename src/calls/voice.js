@@ -175,6 +175,10 @@ const QUIET_ON_A_MACHINE = new Set(["skip_turn", "play_keypad_touch_tone", "voic
 /** The first turn on a line that opened silent and has stayed silent. */
 export const LINE_OPENED = `[The call has just connected and nothing has been heard from their side yet.]`;
 
+/** A thing refused for the caller check, picked up by text after the call (verify_caller queued it). */
+export const CHECK_LATER_LINE = "I can't do that one on this call — I'll pick it up with you by text as soon as we hang up.";
+/** The same, when nothing was queued for after the call. */
+export const CHECK_NOT_HERE_LINE = "I can't do that one on this call. Text me and I'll sort it there.";
 const SILENT_TOOLS = new Set(["end_call", "skip_turn", "transfer_to_number", "voicemail_detection", "language_detection", "play_keypad_touch_tone", "machine_on_the_line"]);
 
 /** The filler that buys thinking time before a tool, rather than dead air. Their own suggestion. */
@@ -550,7 +554,9 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // about my Gmail" worked by text and drew a blank on the phone. Profile only, no per-turn
     // search: it is one row read, and a phone turn pays for every millisecond before the first
     // word. Nothing new is exposed by it — this frame already carries their recent thread.
-    ownerProfileNote(conversationId),
+    // Not on an inbound call that only has caller ID (./verify.js WHEREABOUTS): the profile says where
+    // they live and work, and "where am I?" was answered from it with no tool in between (drive 11-08).
+    verify.isVerified(call) ? ownerProfileNote(conversationId) : "",
     // What happened between them today, before this call (call 79: its own pick by text, three hours
     // earlier, was "nothing saved" on the phone). Up to when the call was made, so every turn of the
     // call sends the same prefix and the prompt cache holds.
@@ -1672,6 +1678,9 @@ export async function* voiceTurn({
   const replyExpected = () => !holdBack && !superseded() && !hold.onHold(call) && !hold.openingOwed(call)
     && !callOutcome.MACHINE_KINDS.includes(String(call?.outcome_kind ?? ""));
   const onlyHolding = () => holdingSaid && said === holdingText;
+  // A refusal for the caller check is owed out loud until something has been said after it: words
+  // before the refused tool ("let me check where you are") are not the refusal (cold review 11-08).
+  const checkRefusalIsOwed = () => turnState.checkRefused != null && (said.length === turnState.checkRefused || onlyHolding());
   const untilFirstWord = async function* (pending) {
     // A turn closed while it waits here leaves `pending` behind; its rejection is nobody's to crash on.
     Promise.resolve(pending).catch(() => {});
@@ -1766,6 +1775,13 @@ export async function* voiceTurn({
           if (!firstContentAt) firstContentAt = clock.now();
           yield chunk({ content });
         }
+      };
+      // Something was refused for the caller check this turn and nobody has heard so: the refusal is
+      // always said (spoofed-inbound drive 11-08: refused, then a skip_turn, and the caller got silence).
+      const checkRefusalOwed = function* () {
+        if (!checkRefusalIsOwed()) return;
+        log({ voice_check_later_said: call.id, round });
+        yield* emit([turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE]);
       };
 
       if (superseded()) {
@@ -1918,6 +1934,7 @@ export async function* voiceTurn({
       }
 
       if (!toolUses.length) {
+        yield* checkRefusalOwed();
         // The holding line went out and the model then said nothing (only NO_REPLY, or a note to
         // itself): "one moment" with nothing after it is a promise left hanging, so the turn's
         // nothing-said sentence closes it, as it does when the rounds run out.
@@ -2055,6 +2072,7 @@ export async function* voiceTurn({
         && (system.name === "play_keypad_touch_tone" || system.name === "skip_turn")) {
         hold.noteMachineLine(call, { what: system.name === "play_keypad_touch_tone" ? "phone_menu" : "recorded_message", log });
       }
+      if (system && system.name !== "end_call") yield* checkRefusalOwed();
       if (system) {
         yield chunk({
           tool_calls: [{
@@ -2106,6 +2124,7 @@ export async function* voiceTurn({
           // process and resolve immediately, so awaiting them costs a microtask and nothing else.
           try { out = await runCallTool(t.name, t.input ?? {}, { call, context, log, turnState }); }
           catch (e) { out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+          if (t.name === "verify_caller" && out?.deferred) turnState.checkQueued = true;
           // Words have already left this turn, and a refusal that says "ask them for the date" does not
           // know that. In the 2026-10-07 rehearsal that produced a call which asked the same question
           // twice in one breath, every turn: the model asked about the date, proposed the booking, was
@@ -2158,8 +2177,10 @@ export async function* voiceTurn({
       }
 
       if (round === MAX_VOICE_TOOL_ROUNDS) {
-        // Out of rounds with nothing said. Better a sentence admitting it than a silent line.
-        yield chunk({ content: said ? ` ${COME_BACK_LATER}` : COME_BACK_LOOK });
+        // Out of rounds with nothing said. Better a sentence admitting it than a silent line — and a
+        // refusal for the caller check that nobody has heard yet is that sentence.
+        if (checkRefusalIsOwed()) yield* checkRefusalOwed();
+        else yield chunk({ content: said ? ` ${COME_BACK_LATER}` : COME_BACK_LOOK });
         yield chunk({}, "stop");
         yield SSE_DONE;
         log({ voice_turn_out_of_rounds: call.id, kind: context.kind, ...timing() });
@@ -2204,6 +2225,7 @@ export async function* voiceTurn({
         // confirmation — exactly the thing that must not be grantable by whoever is on the line.
         if (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name, t.input, { toSelf: (to) => contextDeps.toSelf?.(context.conversationId, to) ?? false })) {
           out = verify.gateRefusal({ call, name: t.name });
+          turnState.checkRefused = said.length;
           log({ call_tool_needs_verification: t.name, call_id: call.id });
           results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
           continue;
@@ -2247,7 +2269,14 @@ export async function* voiceTurn({
     // out-of-rounds guard because a refusal is not a round spent on a tool. Falling off the end then
     // produced an empty stream: no words, no finish reason, just `[DONE]`. Dead air is the worst answer
     // a phone call can give, and an unframed one is worse than that.
-    if (!said || onlyHolding()) {
+    if (checkRefusalIsOwed()) {
+      log({ voice_check_later_said: call.id, after: "out_of_rounds" });
+      yield* openingIfOwed();
+      const line = turnState.checkQueued ? CHECK_LATER_LINE : CHECK_NOT_HERE_LINE;
+      const content = said ? ` ${line}` : line;
+      said += content;
+      yield chunk({ content });
+    } else if (!said || onlyHolding()) {
       log({ voice_turn_nothing_said: call.id, kind: context.kind, ...timing() });
       yield* openingIfOwed();
       yield chunk({ content: said ? NOTHING_SAID_AFTER : NOTHING_SAID_AFTER.trim() });

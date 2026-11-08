@@ -479,13 +479,13 @@ test("an owner call runs Reason's own tools, with the thinking filler instead of
       let round = 0;
       return async function* () {
         round++;
-        if (round === 1) { yield { type: "tool_use", name: "memory_page", id: "tu_1", input: {} }; return; }
+        if (round === 1) { yield { type: "tool_use", name: "web_search", id: "tu_1", input: {} }; return; }
         yield { type: "text", text: "Nothing on file about that yet." };
       };
     })(),
   });
   const r = await drain(out.stream);
-  assert.deepEqual(ran.map(t => t.name), ["memory_page"]);
+  assert.deepEqual(ran.map(t => t.name), ["web_search"]);
   // Their own suggestion: a chunk ending in "... " buys the time without the person thinking the
   // line dropped.
   assert.match(r.said, /One sec\.\.\. /);
@@ -630,9 +630,9 @@ test("the filler is said when a tool call starts, not after the model has finish
       return async function* () {
         round++;
         if (round === 1) {
-          yield { type: "tool_start", name: "memory_page" };
+          yield { type: "tool_start", name: "web_search" };
           await writing;
-          yield { type: "tool_use", name: "memory_page", id: "tu_1", input: {} };
+          yield { type: "tool_use", name: "web_search", id: "tu_1", input: {} };
           return;
         }
         yield { type: "text", text: "Done." };
@@ -670,7 +670,7 @@ test("a turn that uses up its tool rounds says so rather than leaving the line s
   const out = await llmRequest({
     rawBody: bodyFor(call), headers: AUTH,
     // A model that only ever asks for another tool. On a phone, a person is holding a handset.
-    generate: async function* () { yield { type: "tool_use", name: "memory_page", id: "tu_x", input: {} }; },
+    generate: async function* () { yield { type: "tool_use", name: "web_search", id: "tu_x", input: {} }; },
   });
   const r = await drain(out.stream);
   assert.match(r.said, /come back to you/i);
@@ -689,7 +689,7 @@ test("a tool run from a call gets the runtime's channels, the same as one run fr
   const channels = { name: "the texting router" };
   const out = await llmRequest({
     rawBody: bodyFor(call), headers: AUTH,
-    generate: scripted("One sec. ", { tool: "memory_page", input: {} }),
+    generate: scripted("One sec. ", { tool: "web_search", input: {} }),
     extras: { channels, calls: { name: "the call provider" } },
   });
   await drain(out.stream);
@@ -697,7 +697,7 @@ test("a tool run from a call gets the runtime's channels, the same as one run fr
   // runs out of rounds; every one of those runs has to carry the channels.
   assert.ok(seen.length >= 1);
   for (const { name, ctx } of seen) {
-    assert.equal(name, "memory_page");
+    assert.equal(name, "web_search");
     assert.equal(ctx.channels, channels, "the texting router reaches the tool");
     assert.equal(ctx.calls?.name, "the call provider");
     assert.equal(ctx.conversationId, call.conversation_id, "the extras never override whose turn it is");
@@ -787,7 +787,7 @@ test("a new turn for the same call cancels the one still running, which then say
       let round = 0;
       return async function* () {
         round++;
-        if (round === 1) { yield { type: "tool_use", name: "memory_page", id: "tu_1", input: {} }; return; }
+        if (round === 1) { yield { type: "tool_use", name: "web_search", id: "tu_1", input: {} }; return; }
         yield { type: "text", text: "Here is what I found." };
       };
     })(),
@@ -811,7 +811,7 @@ test("a new turn for the same call cancels the one still running, which then say
   assert.deepEqual(r2.finish, ["stop"]);
   assert.ok(seen.some(l => l.voice_turn_replaced === call.id));
   assert.ok(seen.some(l => l.voice_turn_superseded === call.id && l.reason === "new_from_their_side"));
-  assert.ok(seen.some(l => l.voice_turn_superseded === call.id && l.at === "memory_page"));
+  assert.ok(seen.some(l => l.voice_turn_superseded === call.id && l.at === "web_search"));
   // And the cancelled stream still ended the way every stream ends.
   assert.deepEqual(r1.finish, ["stop"]);
   assert.equal(r1.raw.at(-1), SSE_DONE);
@@ -1201,7 +1201,7 @@ test("a model that stalls past the deadline gets one holding line out first, log
   const out = await llmRequest({
     rawBody: bodyFor(call), headers: AUTH, log: (l) => seen.push(l), firstWordDeadlineMs: 100,
     screen: async () => ({ verdict: "safe" }),
-    generate: stalled(1_500, [{ tool: "memory_search", input: { query: "x" } }], ["Here it is."]),
+    generate: stalled(1_500, [{ tool: "web_search", input: { query: "x" } }], ["Here it is."]),
   });
   const said = await timed(out.stream);
   assert.ok(said.length >= 2, "the holding line and then the real reply");
@@ -1298,7 +1298,7 @@ test("no thinking filler straight after the holding line when a tool starts", as
   const out = await llmRequest({
     rawBody: bodyFor(call), headers: AUTH, firstWordDeadlineMs: 50,
     screen: async () => ({ verdict: "safe" }),
-    generate: stalled(300, [{ start: "memory_search" }, { tool: "memory_search", input: { query: "x" } }], ["Found it."]),
+    generate: stalled(300, [{ start: "web_search" }, { tool: "web_search", input: { query: "x" } }], ["Found it."]),
   });
   const r = await drain(out.stream);
   assert.equal(r.said, `${voice.HOLDING_LINE} Found it.`);
@@ -1338,8 +1338,8 @@ const toolThenWords = (...after) => (() => {
     round++;
     if (round === 1) {
       for (const e of after.length > 1 ? [after[0]] : []) yield { type: "text", text: e };
-      yield { type: "tool_start", name: "memory_page" };
-      yield { type: "tool_use", name: "memory_page", id: "tu_1", input: {} };
+      yield { type: "tool_start", name: "web_search" };
+      yield { type: "tool_use", name: "web_search", id: "tu_1", input: {} };
       return;
     }
     yield { type: "text", text: after.at(-1) };
@@ -1478,8 +1478,8 @@ test("holding line: a slow tool after a fast tool start is not silence (deadline
         return async function* () {
           round++;
           if (round === 1) {
-            yield { type: "tool_start", name: "memory_search" };
-            yield { type: "tool_use", name: "memory_search", id: "tu_1", input: { query: "x" } };
+            yield { type: "tool_start", name: "web_search" };
+            yield { type: "tool_use", name: "web_search", id: "tu_1", input: { query: "x" } };
             return;
           }
           await new Promise(r => setTimeout(r, 600));
@@ -1520,8 +1520,8 @@ test("holding line and filler share one turn: never both", async () => {
       return async function* () {
         round++;
         if (round === 1) {
-          yield { type: "tool_start", name: "memory_search" };
-          yield { type: "tool_use", name: "memory_search", id: "tu_1", input: { query: "x" } };
+          yield { type: "tool_start", name: "web_search" };
+          yield { type: "tool_use", name: "web_search", id: "tu_1", input: { query: "x" } };
           return;
         }
         await new Promise(r => setTimeout(r, 300));
