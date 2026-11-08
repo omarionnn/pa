@@ -33,6 +33,9 @@
 // voice's "Hmm. Lemme have a think."; passes only if the voice still speaks within 6 s of the skip
 // (gptlive_skip_followed_up) — the line never sits silent on a promised thought. Ask for a think, e.g.
 // "hmm, what do you think of my caption? take a sec and think it over."
+// --expect hearing --words "train station,Fulton" (call 76): passes only if every word is in what the voice
+// heard them say. Feed a quiet clip (speech near −45 dBFS) and run it twice, REASON_CALL_HEARING=off then
+// on (the default), for a before/after of the quiet-speech lift (src/calls/hearing.js).
 // caller.ulaw is raw 8 kHz mono μ-law (Mac: say -o q.aiff "…" && ffmpeg -i q.aiff -ar 8000 -ac 1 -f mulaw q.ulaw).
 // Prints one JSON line: what Reason was asked, what it answered, what the voice said, what the
 // caller heard when, the guard's trips, and the settled row. Exits non-zero unless a delegation went
@@ -230,7 +233,14 @@ if (expect === "think-skip") {
     speech_after_skip_ms: skipAt == null ? null : (speechAt.find(ms => ms > skipAt + 100) ?? null) - skipAt,
   };
 }
-const ok = expect === "think-skip"
+const words = flag("--words") > 0 ? String(process.argv[flag("--words") + 1]).split(",").map(w => w.trim()).filter(Boolean) : [];
+if (expect === "hearing") {
+  const heardText = out.caller_said.join(" ").toLowerCase();
+  out.hearing = { lift: process.env.REASON_CALL_HEARING ?? "on", words, missing: words.filter(w => !heardText.includes(w.toLowerCase())) };
+}
+const ok = expect === "hearing"
+  ? words.length > 0 && out.hearing.missing.length === 0 && out.guard_trips === 0
+  : expect === "think-skip"
   ? skipAt != null && out.think_skip.followed_up && out.think_skip.speech_after_skip_ms > 0 && out.think_skip.speech_after_skip_ms < 6000 && out.guard_trips === 0
   : expect === "full"
   ? as === "user" && out.delegations > 0 && turnConvs.length === 1 && turnConvs[0] === AMA

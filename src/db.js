@@ -2100,6 +2100,10 @@ addColumnIfMissing("calls", "settle_resumes", "INTEGER NOT NULL DEFAULT 0");
 // people hung up), what opened the call ("about" / "hello" opener clip, or "" for the live voice),
 // what Reason was calling about in a few words for that opener, and the one "nobody heard it" text.
 addColumnIfMissing("calls", "first_audio_ms", "INTEGER");
+// Each turn of a GPT-Live call as it happened (src/calls/gptlive.js turnLog, call 76): who, the words
+// the voice heard, when, and how loud their side came in. JSON, '' when there is none. Their own call
+// record: emptied with the transcript by the retention sweep (src/privacy.js), gone with the row.
+addColumnIfMissing("calls", "turn_log", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "pickup_opener", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "pickup_about", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "unreached_told_at", "INTEGER");
@@ -5497,6 +5501,8 @@ export function updateCall(conversationId, id, fields) {
     "settle_started_at", "settled_at", "settle_resumes",
     // Pickup timing and the opener clip (src/calls/opener.js), and the one "nobody heard it" text.
     "first_audio_ms", "pickup_opener", "pickup_about", "unreached_told_at",
+    // What was heard, turn by turn, with timing and input level (src/calls/gptlive.js turnLog).
+    "turn_log",
   ];
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
