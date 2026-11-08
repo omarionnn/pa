@@ -650,3 +650,19 @@ test("the events feature and its prompt are as they were: no event tool or promp
   assert.equal(events.roleIn(AMA_C, ev.id).role, "guest");
   assert.deepEqual(readdirSync(join(dir, "data", "event-albums")), [ev.public_id]);
 });
+
+test("a stopped organizer gets no end-of-event nudge while stopped; let go inside the window, it comes once (lead R2-A)", async () => {
+  const rt = fakeRuntime();
+  const ev = await made();
+  await joinAs(AMA_C); await joinAs(YAW_C);
+  await addFirst(AMA_C, ev, [photo(AMA_C)], rt);
+  rt.sent.length = 0;
+  db.setAccountState(KOFI_C, "paused");
+  const end = ev.starts_at + albums.END_NUDGE.afterStartMs;
+  assert.equal((await albums.sweep({ runtime: rt, now: end })).nudged, 0);
+  assert.equal(rt.sent.length, 0, "nothing to a paused organizer");
+  assert.ok(!db.albumOf(ev.id).nudged_at, "held, not used up");
+  db.setAccountState(KOFI_C, "active");
+  assert.equal((await albums.sweep({ runtime: rt, now: end + 60_000 })).nudged, 1);
+  assert.equal(rt.sent.length, 1);
+});

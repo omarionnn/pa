@@ -328,6 +328,32 @@ config.events = "owner";
   await withYes(runTool, "event_schedule", { ...input, message: "never sent", send_at: wall(4, 9) }, { conversationId: C.owner, messages: [], events: runtime });
   await tool("event_cancel", { event_id: sev.id, event_named: sev.name }, C.owner);
   step("sched: cancelling the event cancels what was waiting", db.scheduledFor(sev.id, ["pending"]).length === 0 && db.scheduledFor(sev.id, ["cancelled"]).length === 1);
+
+  // A stopped organizer (lead R2-A): the master pauses Kofi's number on ANOTHER line; his event's
+  // scheduled message and reminders hold (a stop is per number, db.stoppedStateOf), and go once he is let go.
+  clock.reset();
+  config.events = true;
+  const kev = events.create(C.kofi, { name: "Kofi Stop Supper", description: "x", starts_at: wall(5, 20), timezone: tz, location: "4 Elm", password: "kofi-pw", show_time_on_join: true, show_location_on_join: false, guest_list_visible: false }).event;
+  config.events = "owner";
+  db.addAttendee({ eventId: kev.id, conversationId: C.ama, displayName: "Ama", via: "text" });
+  const ks = sched.schedule({ ev: kev, conversationId: C.kofi, message: "kofi says hi", sendAt: wall(2, 10) });
+  db.upsertAccount({ conversationId: `dm:linq:${KOFI}`, channel: "linq", address: KOFI, name: "Kofi" });
+  db.setAccountState(`dm:linq:${KOFI}`, "paused");
+  const kbody = events.blastBody(kev, "kofi says hi");
+  clock.reset(); clock.skip(ks.row.send_at + 1000 - Date.now());
+  await runtime.sweep();
+  await new Promise(r => setTimeout(r, 50));
+  step("sched: a paused organizer's message holds (paused on the other line)", !toNum(AMA).includes(kbody) && db.scheduledRow(ks.row.id).state === "pending");
+  clock.reset(); clock.skip(sched.reminderAt(kev, "day_before") + 60_000 - Date.now());
+  await runtime.sweep();
+  await new Promise(r => setTimeout(r, 50));
+  step("sched: no reminder for a paused organizer's event", !toNum(AMA).some(t => /^reminder: Kofi Stop Supper/.test(t)));
+  db.setAccountState(`dm:linq:${KOFI}`, "active");
+  await runtime.sweep();
+  await new Promise(r => setTimeout(r, 50));
+  step("sched: let go in its window, the reminder goes once", toNum(AMA).filter(t => /^reminder: Kofi Stop Supper is tomorrow/.test(t)).length === 1);
+  db.db.prepare("DELETE FROM accounts WHERE conversation_id = ?").run(`dm:linq:${KOFI}`);
+  clock.reset();
 }
 
 const cancel = await tool("event_cancel", { event_id: ev.id, event_named: "Halloween Party" }, C.owner);

@@ -557,3 +557,84 @@ test("an organizer's data delete switches their events' reminders off, so none g
   assert.deepEqual([after.remind_day_before, after.remind_soon], [0, 0]);
   assert.ok(h);
 });
+
+// ---------- a stopped organizer (lead R2-A) ----------
+// A pause or a removal is per number (db.stoppedStateOf, #351), and every sweep that speaks for a
+// person skips a stopped one. The event sweep speaks for the organizer, so it holds too: nothing
+// they scheduled and no automatic reminder goes while they are stopped. A held row waits like one on
+// a paused event — let go in time it goes, found past its window it is dropped as missed.
+
+/** Kofi's event, with Ama and Esi on the list. */
+async function kofiParty(h) {
+  const ev = make(KOFI_C, { name: "Kofi's Dinner", password: "jollof" });
+  await join(AMA_C, ev, "jollof"); await join(ESI_C, ev, "jollof");
+  await settle();
+  h.channel.sent.length = 0;
+  return db.getEventRow(ev.id);
+}
+/** The master pauses or removes Kofi's number on the OTHER line: the stop is per number. */
+function stopKofi(state) {
+  db.upsertAccount({ conversationId: `dm:linq:${KOFI}`, channel: "linq", address: KOFI, name: "Kofi" });
+  db.setAccountState(`dm:linq:${KOFI}`, state);
+}
+
+test("a paused organizer's scheduled message waits; let go in time it goes, once", async () => {
+  const h = harness();
+  const ev = await kofiParty(h);
+  const s = schedule.schedule({ ev, conversationId: KOFI_C, message: "bring a dish", sendAt: nyDay(2, 12) });
+  stopKofi("paused");
+  at(s.row.send_at + 1000);
+  await schedule.sweep({ runtime: h.runtime });
+  await settle();
+  assert.equal(h.channel.sent.length, 0, "nothing goes for a paused organizer");
+  assert.equal(db.scheduledRow(s.row.id).state, "pending", "held, not claimed");
+  db.setAccountState(`dm:linq:${KOFI}`, "active");
+  await schedule.sweep({ runtime: h.runtime });
+  await settle();
+  assert.equal(sentTo(h, AMA).length, 1);
+  assert.equal(db.scheduledRow(s.row.id).state, "sent");
+});
+
+test("a removed organizer's scheduled message is never sent: found past its time it is dropped as missed", async () => {
+  const h = harness();
+  const ev = await kofiParty(h);
+  const s = schedule.schedule({ ev, conversationId: KOFI_C, message: "never this", sendAt: nyDay(2, 12) });
+  db.setAccountState(KOFI_C, "removed");
+  at(s.row.send_at + 1000);
+  await schedule.sweep({ runtime: h.runtime });
+  at(s.row.send_at + 3 * HOUR);
+  const out = await schedule.sweep({ runtime: h.runtime });
+  await settle();
+  assert.equal(h.channel.sent.length, 0);
+  assert.equal(out.missed, 1);
+  assert.equal(db.scheduledRow(s.row.id).state, "missed");
+});
+
+test("a row mid-send when its organizer is stopped is not finished while they are", async () => {
+  const h = harness();
+  const ev = await kofiParty(h);
+  const s = schedule.schedule({ ev, conversationId: KOFI_C, message: "half way", sendAt: nyDay(1, 12) });
+  at(s.row.send_at + 1000);
+  db.claimScheduledMessage(s.row.id, (r) => events.blastBody(ev, r.body), "scheduled");
+  stopKofi("removed");
+  await schedule.sweep({ runtime: h.runtime });
+  await settle();
+  assert.equal(h.channel.sent.length, 0);
+  assert.equal(db.scheduledRow(s.row.id).state, "sending");
+});
+
+test("no automatic reminder goes for a stopped organizer's event; let go inside the window it does", async () => {
+  const h = harness();
+  const ev = await kofiParty(h);
+  const dayBefore = schedule.reminderAt(ev, "day_before");
+  stopKofi("paused");
+  at(dayBefore + 60_000);
+  await schedule.sweep({ runtime: h.runtime });
+  await settle();
+  assert.equal(h.channel.sent.length, 0, "no reminder while paused");
+  assert.equal(schedule.reminderStatus(db.getEventRow(ev.id), "day_before").state, "upcoming", "not used up");
+  db.setAccountState(`dm:linq:${KOFI}`, "active");
+  await schedule.sweep({ runtime: h.runtime });
+  await settle();
+  assert.equal(sentTo(h, AMA).length, 1);
+});

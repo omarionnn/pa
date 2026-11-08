@@ -228,7 +228,8 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
     the ride is off, and the organizer only if asked.
   - **Never gives away what's hidden**: no ask while the time is hidden ("tomorrow" = the date); no
     suggestion while the time or place is (interest is held).
-  - **Sweep** (`Runtime.eventRides`, each event in its own try): released offers of people gone;
+  - **Sweep** (`Runtime.eventRides`, each event in its own try; an event whose organizer is
+    stopped — `events.organizerStopped` — is skipped whole until they are let go): released offers of people gone;
     outside the night (21:00–09:00 in the event's zone — no new suggestion, lapse, ask or reminder
     goes then; a late offer is told "the morning"), suggestions lapse after 12h (both told), the
     day-before ask once per unmuted guest (from 11:00 local the day before, not within 2h of the
@@ -281,7 +282,7 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   sent|dropped, `list_note_at` = due then settled; compare-and-set, never twice per membership).
   `scheduleListNote` sends it through `Runtime.enqueue`, so it lands AFTER Reason's reply; the
   sweep (`runtime.eventListNotes`) is the backstop after 10 min and the morning send: nothing
-  21:00–09:00 in the event's zone, nothing while paused, dropped if the list is private, they are
+  21:00–09:00 in the event's zone, nothing while paused or while the organizer is stopped (held, goes once let go), dropped if the list is private, they are
   off it, the ask is moot, or 12h past the start. Guest list off → never owed, never mentioned. The
   organizer gets the same note on `event_create` and is listed first (`db.organizerListing`,
   "(organizing)" on the page) — never counted (`going` stays guest-only). The answer is the model's:
@@ -298,7 +299,10 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   (`Runtime.eventScheduled`): claim pending → sending + its `event_messages` row in one
   transaction; a row left `sending` by a dead process is finished on the next pass (deliveries
   dedupe per guest). Recipients = joined, unmuted guests at send time. Paused → waits; >2 h late →
-  `missed` (shown on the page); event cancelled → pending rows cancelled. Reminders: day before at
+  `missed` (shown on the page); the organizer's NUMBER paused or removed by the master
+  (`events.organizerStopped` → `db.stoppedStateOf`, any line; never the master's own) → the same
+  hold: a pending row stays pending, a `sending` row is not finished, no reminder is claimed; let go
+  in time it goes, past its window it is `missed` ("it was on hold when it was due"); event cancelled → pending rows cancelled. Reminders: day before at
   18:00 local (may go until 21:00) and start − 2 h (skipped if 22:00–08:00); only while the time is
   shared; location only if shared; once per (event, kind, starts_at); not if the event was made
   after the reminder time. `events.remind_day_before/remind_soon`: 0 for events made before this

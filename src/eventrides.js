@@ -579,7 +579,8 @@ export async function sweep({ runtime, now = clock.now(), log = () => {} } = {})
   if (!ridesOn()) return { events: 0 };
   const out = { events: 0, asked: 0, suggested: 0, reminded: 0, released: 0, expired: 0, failed: 0 };
   for (const ev of db.eventsWithRides()) {
-    if (!active(ev)) continue;
+    // A stopped organizer's event says nothing on its own (events.organizerStopped).
+    if (!active(ev) || events.organizerStopped(ev)) continue;
     out.events++;
     try {
       await sweepOne({ runtime, ev, now, out });

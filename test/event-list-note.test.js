@@ -279,3 +279,25 @@ test("the note never hands them a phrase to type: plain intent only, in every ca
   }
   assert.equal(events.listNoteText({ guest_list_visible: 0 }, row({ instagram: "ama.k" }), "carried"), null);
 });
+
+test("a stopped organizer's event holds its guests' list notes; let go, the note goes once (lead R2-A)", async () => {
+  config.events = true;
+  const rt = fakeRuntime();
+  const made = events.create(AMA_C, { name: "Ama's Dinner", description: "jollof", starts_at: "2026-10-31T19:00", location: "3 Oak St",
+    password: "jollof", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true });
+  assert.equal(made.ok, true, JSON.stringify(made));
+  const ev = made.event;
+  at(NIGHT);
+  const joined = await events.joinExisting({ conversationId: YAW_C, link: events.eventUrl(ev), password: "jollof", inDirectory: true });
+  events.afterJoin({ ev, att: joined.attendee });
+  assert.ok(db.attendeeRow(ev.id, YAW_C).list_note, "a note is owed");
+  db.setAccountState(AMA_C, "removed");
+  at(NEXT_MORNING);
+  await events.sweepListNotes({ runtime: rt });
+  await rt.drain();
+  assert.equal(notesTo(rt, YAW_C).length, 0, "nothing for a removed organizer's event");
+  db.setAccountState(AMA_C, "active");
+  await events.sweepListNotes({ runtime: rt });
+  await rt.drain();
+  assert.equal(notesTo(rt, YAW_C).length, 1);
+});

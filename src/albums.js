@@ -492,6 +492,8 @@ export async function sweep({ runtime = null, now = clock.now(), log = () => {} 
     // No event, or no start to count from: there is no "end" to nudge at — marked, so it is not rescanned every pass.
     if (!ev || ev.starts_at == null) { db.markAlbumNudged(album.id, now); continue; }
     if (now < ev.starts_at + END_NUDGE.afterStartMs) continue;
+    // A stopped organizer is not texted: not marked, so let go inside the day it still comes.
+    if (events.organizerStopped(ev)) continue;
     const stale = now > ev.starts_at + END_NUDGE.staleAfterStartMs;
     const quiet = ev.status !== "active" || !albumFor(ev) || counts(ev).checked_in > 0;
     if (!db.markAlbumNudged(album.id, now)) continue;

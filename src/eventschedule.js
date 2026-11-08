@@ -244,7 +244,8 @@ async function sendClaimed({ runtime, row, ev }) {
   if (!message) { db.finishScheduled(row.id, "cancelled", "nothing to send"); return { state: "dropped" }; }
   if (ev?.status === "cancelled" || !ev) { db.finishScheduled(row.id, "cancelled", "the event was cancelled"); return { state: "dropped" }; }
   // Paused partway (or before it began): it waits, still `sending`, and is finished once resumed.
-  if (ev.status === "paused") return { state: "waiting" };
+  // Its organizer stopped by the master (events.organizerStopped): the same, until they are let go.
+  if (ev.status === "paused" || events.organizerStopped(ev)) return { state: "waiting" };
   const out = { sent: 0, failed: 0, other: 0 };
   for (const g of events.recipients(ev, message.kind)) {
     const r = await events.deliver({ runtime, message, conversationId: g.conversation_id });
@@ -285,12 +286,13 @@ export async function sweep({ runtime, now = clock.now(), log = () => {} } = {})
         continue;
       }
       if (!ev || ev.status === "cancelled") { db.settlePendingScheduled(due.id, "cancelled", "the event was cancelled"); out.dropped++; continue; }
+      const stopped = events.organizerStopped(ev);
       if (now - due.send_at > SCHEDULE.lateMs) {
-        db.settlePendingScheduled(due.id, "missed", ev.status === "paused" ? "the event was paused when it was due" : "Reason couldn't send it on time");
+        db.settlePendingScheduled(due.id, "missed", ev.status === "paused" ? "the event was paused when it was due" : stopped ? "it was on hold when it was due" : "Reason couldn't send it on time");
         out.missed++;
         continue;
       }
-      if (ev.status === "paused") continue;
+      if (ev.status === "paused" || stopped) continue;
       const claimed = db.claimScheduledMessage(due.id, (row) => events.blastBody(ev, row.body), "scheduled");
       if (!claimed) continue;
       const r = await guarded(claimed.id, () => sendClaimed({ runtime, row: claimed, ev }));
@@ -301,6 +303,8 @@ export async function sweep({ runtime, now = clock.now(), log = () => {} } = {})
     }
   }
   for (const ev of db.eventsWithReminders()) {
+    // Nothing claimed for a stopped organizer: let go inside the window, it still goes.
+    if (events.organizerStopped(ev)) continue;
     for (const which of Object.keys(WHICH)) {
       try {
         if (reminderStatus(ev, which, now).state !== "upcoming" || now < reminderAt(ev, which)) continue;
