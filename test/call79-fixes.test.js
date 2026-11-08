@@ -121,7 +121,7 @@ test("holding: the voice's own 'let me check' is cancelled at once, and an answe
   await timers.advance(5);
   const quiet = live.of("session.thinking.append").find(e => e.delegation_id === "item_1");
   assert.ok(quiet, "the automatic acknowledgement is cancelled the moment the hand-off starts");
-  assert.equal(quiet.content, "", "with an empty quiet update, as the docs say");
+  assert.equal(quiet.content, gl.WAIT_NOTE, "a factual quiet update, which cancels it as an empty one does (the docs)");
   assert.equal(live.of("session.start")[0].session.delegation.acknowledgement_delay_ms, gl.ACK_DELAY_MS);
   await timers.advance(2000);
   assert.equal(holds(live).length, 0, "ready at 1.2 s: no holding line at all");

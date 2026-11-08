@@ -135,7 +135,16 @@ for (const [i, clip] of clips.entries()) {
   // Reason's answer is in (no hand-off still running) and has gone quiet for 1.5 s, or 35 s: the way a
   // person waits through "one sec" for the answer before saying the next thing.
   const until = Date.now() + 35_000;
-  const answered = () => speechAt.some(ms => ms > p.to) && !(call?.pending?.size) && Date.now() - startAt - speechAt.at(-1) >= 1500;
+  // Their words handed over? Then Reason's answer must have come back and been spoken, then 1.5 s quiet.
+  const resultAt = () => lines.filter(l => "gptlive_result" in l && l.drive_ms > p.from).at(-1)?.drive_ms ?? null;
+  const handed = () => lines.some(l => "gptlive_delegation" in l && l.drive_ms > p.from);
+  const answered = () => {
+    const now = Date.now() - startAt;
+    if (call?.pending?.size || !speechAt.some(ms => ms > p.to) || now - speechAt.at(-1) < 1500) return false;
+    if (!handed()) return now - p.to > 3000;
+    const r = resultAt();
+    return r != null && speechAt.at(-1) > r;
+  };
   await sleep(1500);
   while (Date.now() < until && hungUpAt == null && !answered()) await sleep(50);
 }

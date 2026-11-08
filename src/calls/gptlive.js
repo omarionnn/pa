@@ -519,6 +519,8 @@ export const SKIP_FOLLOW_UP = "So — what do you reckon?";
 // happening — "check / look" only while one of Reason's tools is running, otherwise just "mm, one
 // sec". A turn still silent at the late deadline (LATE_HOLDING_MS, 7.5 s — the same floor as every
 // call's) gets the next late line, so there is never dead air.
+/** What the voice is told, quietly, the moment it hands something over. */
+export const WAIT_NOTE = "Reason is working on this now and its answer comes next. Don't answer it yourself and don't fill the wait; say nothing until you're given words.";
 /** An answer ready this soon after the hand-off gets no holding line. */
 export const HOLD_LINE_AFTER_MS = 1500;
 /** No lookup running: a tiny sound, nothing about checking. */
@@ -1627,7 +1629,10 @@ export class GptLiveCall {
       // On a line call Reason's turn is started by the line itself (`lineTurn`), not by this hand-off;
       // the hand-off is kept open, its automatic acknowledgement cancelled (an empty quiet update, per
       // the docs), and the next words Reason has for the line are its result.
-      this.live.send({ type: "session.thinking.append", event_id: `quiet_${id}`, delegation_id: id, content: "" });
+      // A factual quiet update (it cancels the automatic acknowledgement just as an empty one does, per
+      // the docs) that also says the answer is Reason's: on the 2026-11-08 drives a voice left to wait in
+      // silence sometimes began answering on its own, ahead of Reason.
+      this.live.send({ type: "session.thinking.append", event_id: `quiet_${id}`, delegation_id: id, content: WAIT_NOTE });
       this.openDelegation = id;
       return;
     }
@@ -1640,7 +1645,10 @@ export class GptLiveCall {
     // update, per the docs); whether this wait gets a line, and which, is `holdLine`'s.
     const holding = !this.line;
     if (holding) {
-      this.live.send({ type: "session.thinking.append", event_id: `quiet_${id}`, delegation_id: id, content: "" });
+      // A factual quiet update (it cancels the automatic acknowledgement just as an empty one does, per
+      // the docs) that also says the answer is Reason's: on the 2026-11-08 drives a voice left to wait in
+      // silence sometimes began answering on its own, ahead of Reason.
+      this.live.send({ type: "session.thinking.append", event_id: `quiet_${id}`, delegation_id: id, content: WAIT_NOTE });
       turn.holdTimer = this.timers.setTimeout(() => this.holdLine(id, "first"), HOLD_LINE_AFTER_MS);
       turn.lateTimer = this.timers.setTimeout(() => this.holdLine(id, "late"), LATE_HOLDING_MS);
     }
