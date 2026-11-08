@@ -23,7 +23,8 @@ chat), even when `met` is true. A booking call (cleared to book, or with a commi
 only by the read-back gate; only a machine answer can relabel it. Its redial does not follow that label
 (security run-2 R2-I, 2026-11-08): `safeToRedial` (src/calls/redial.js, `mayHaveBooked`) sends any call
 cleared to book on which the other side spoke, or with any commitment row, ask-only with booking off,
-whatever its kind. New kinds in `src/calls/outcome.js`
+whatever its kind — and it looks past later calls nobody answered and past the ask-only checks
+(`lastHeard`, `isWentThroughCheck` in src/calls/brief.js) to the last call the other side spoke on. New kinds in `src/calls/outcome.js`
 (`picked_up` :61, `talked` :66, `hung_up_early` :71). `settleGptLive` (src/calls/gptlive.js:2417) waits up
 to `GOAL_WAIT_MS` 30 s (src/calls/gptlive.js:2414) for the read before telling the owner; a
 `voicemail_full` errand then gets one code-worded text instead of the recap — see
@@ -50,6 +51,7 @@ voicemail_not_set_up → `voicemail_full`, voicemail_greeting → `voicemail_no_
 
 Redial guard (R2-I, 2026-11-08, no model, nothing leaves the machine), under `caged.sh env`:
 `REASON_DB_PATH=$(mktemp -d)/redial.db node bin/redial-book-guard-drive.mjs` — real `settleGoal` with a stubbed
-read, then the real `safeToRedial` call_place consults. Branch: 8/8 "all ok" (book-cleared + recording /
+read, then the real `safeToRedial` call_place consults. Branch: 10/10 "all ok" (book-cleared + recording /
 greeting / unset mailbox keeps its machine label, redial `ask`, book off; asking-only → `voicemail_full`,
-`retry`). On origin/main: the label steps pass, the three redial steps FAIL (`retry`, no brief).
+`retry`; chain: dropped booking → check with no answer → still `ask`). On origin/main: the label steps
+pass, the three redial steps and the chain's second step FAIL (`retry`, no brief).

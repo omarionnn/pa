@@ -34,6 +34,9 @@ const imp = (p) => import(new URL(p, root));
 const db = await imp("src/db.js");
 const goal = await imp("src/calls/goalmet.js");
 const { safeToRedial } = await imp("src/calls/redial.js");
+const { askWhetherItWentThrough } = await imp("src/calls/brief.js");
+const { config } = await imp("src/config.js");
+config.callMaxRetries = 5; // the chain below is three calls; the install default (1 retry) would stop it at the limit
 const { clock } = await imp("src/config.js");
 
 const C = "dm:owner";
@@ -42,11 +45,11 @@ const step = (name, ok, detail = "") => { if (!ok) failed++; console.log(`${ok ?
 db.upsertAccount({ conversationId: C, channel: "fake", address: process.env.REASON_OWNER_NUMBER, name: "Omari", isOperator: true });
 
 const TRANSCRIPT = "Reason: Hi, a table for two Saturday at eight, under Omari?\nThem: Sure, you're booked for Saturday at eight.\nThem: Please leave a message after the tone.";
-function dropped(to, brief) {
+function dropped(to, brief, fields = {}) {
   const now = clock.now();
   const r = db.db.prepare(`INSERT INTO calls (conversation_id, provider, to_number, goal, is_owner, direction, brief, created_at, updated_at) VALUES (?, 'fake', ?, ?, 0, 'out', ?, ?, ?)`)
     .run(C, to, "Book a table for two Saturday at 8 under Omari.", JSON.stringify(brief), now, now);
-  return db.updateCall(C, Number(r.lastInsertRowid), { state: "completed", transcript: TRANSCRIPT, outcome_kind: "dropped_before_confirmation", ended_at: now });
+  return db.updateCall(C, Number(r.lastInsertRowid), { state: "completed", transcript: TRANSCRIPT, outcome_kind: "dropped_before_confirmation", ended_at: now, ...fields });
 }
 const reads = (how) => async () => ({ value: { met: false, how, why: "a recording" } });
 const next = { goal: "Book a table for two Saturday at 8", approved: { book: true } };
@@ -68,6 +71,18 @@ const s2 = await goal.settleGoal(C, ask, { ask: reads("voicemail_not_set_up") })
 step("asking-only + read voicemail_not_set_up: voicemail_full (unchanged)", s2.outcome_kind === "voicemail_full", s2.outcome_kind);
 const r2 = safeToRedial(C, { toNumber: "+16165550299", brief: { goal: "Ask the hours", approved: { book: false } } });
 step("asking-only: redial is retry (unchanged)", r2.ok && r2.mode === "retry", r2.mode);
+
+// The chain: maybe-booked → its ask-only check rings out → the next redial is still the check.
+{
+  const BOOK = { goal: "Book a table", approved: { book: true, maxCents: null, terms: [], upTo: "" } };
+  const to = "+16165550310";
+  dropped(to, BOOK);
+  const first = safeToRedial(C, { toNumber: to, brief: next });
+  step("chain: first redial after the dropped booking is ask-only", first.mode === "ask", first.mode);
+  dropped(to, askWhetherItWentThrough(BOOK, { what: BOOK.goal }), { outcome_kind: "no_answer", transcript: "" });
+  const again = safeToRedial(C, { toNumber: to, brief: next });
+  step("chain: after the check rang out, still ask-only with booking off", again.ok && again.mode === "ask" && again.brief?.approved?.book !== true, `${again.mode} book=${again.brief?.approved?.book}`);
+}
 
 console.log(failed ? `${failed} FAIL` : "all ok");
 process.exit(failed ? 1 : 0);
