@@ -32,6 +32,8 @@
 import { timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
 import { GATED_ACTIONS } from "../permissions.js";
+import { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS, EVENT_RIDE_GUEST_TOOLS } from "../eventtools.js";
+import { ALBUM_ORGANIZER_TOOLS } from "../albumtools.js";
 import { config, clock } from "../config.js";
 
 /** How many wrong passphrases before the call is pushed to the texted check. */
@@ -43,7 +45,37 @@ export function isConsequential(name, input = null, { toSelf = () => false } = {
   // options" on his own call was held for a check that texted the same phone). Whoever is holding
   // this phone, the words land with the owner, so there is nothing for a voice to authorize.
   if (SELF_SENDS.has(name) && input && toSelf(input.to)) return false;
-  return GATED_ACTIONS.has(name) || name === "confirm_record" || CHANGES_THE_GATE.has(name);
+  return GATED_ACTIONS.has(name) || name === "confirm_record" || CHANGES_THE_GATE.has(name) || organizerWrite(name, input);
+}
+
+/**
+ * An event organizer's tools reach the guests: a cancel, a change, a released detail or a removal is
+ * texted to them, and the rest change what guests or strangers see. Only event_blast and
+ * event_schedule are in GATED_ACTIONS (they need a yes to exact words in a text too), so the others
+ * slipped past this check and a voice spoofing an organizer's number could cancel the event and text
+ * every guest (security audit run 2, lead R2-G). A guest's ride tool is on the same footing: it
+ * passes free text to their ride partner, swaps phone numbers, and tells the organizer. Derived from
+ * the tool lists themselves, so a new organizer or ride tool needs the check on a call until it is
+ * named here as a read (or as touching nobody else).
+ */
+const ORGANIZER_READS = {
+  event_guests: () => true,
+  event_scheduled: (input) => input?.action === "list",
+  event_cover: (input) => input?.action === "status",
+  event_rides_setting: (input) => input != null && input.enabled === undefined,
+  event_ride: (input) => input?.action === "neither",
+  album_manage: (input) => input?.action === "status",
+};
+// event_leave too: it ends their ride offers, which texts the ride partner and sends new matches.
+// The album's organizer tool releases it (texting every checked-in guest) and checks guests in or out;
+// album_remove lets an organizer delete any guest's photo, which cannot be undone.
+const REACHES_GUESTS = new Set([
+  ...EVENT_ORGANIZER_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS, "event_leave",
+  ...ALBUM_ORGANIZER_TOOLS, "album_remove",
+]);
+function organizerWrite(name, input) {
+  if (!REACHES_GUESTS.has(name)) return false;
+  return !(ORGANIZER_READS[name]?.(input) ?? false);
 }
 
 /**
