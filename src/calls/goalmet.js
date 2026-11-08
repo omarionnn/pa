@@ -35,12 +35,7 @@ export const KIND_FOR = {
   talked: "picked_up", hung_up_early: "hung_up_early", voicemail_not_set_up: "voicemail_full",
   voicemail_greeting: "voicemail_no_message", recording: "machine_recording", unsure: "",
 };
-/**
- * A machine answered. These stand on any call that could not have agreed to anything — but never on
- * one that could (see mayHaveBooked): the read is built from the other side's words, and a machine
- * kind's redial is a plain "retry" with booking allowed, where a dropped book-cleared call's is the
- * ask-only check (./redial.js). Security run-2 R2-I.
- */
+/** A machine answered: nothing could have been agreed, so these stand even on a call cleared to book. */
 const MACHINE_HOW = new Set(["voicemail_not_set_up", "voicemail_greeting", "recording"]);
 
 const SYSTEM = `You read the transcript of a phone call an AI assistant made on someone's behalf, and the goal it was given. Say whether the call achieved that goal.
@@ -73,19 +68,15 @@ export function judgeable(row, transcript = row?.transcript) {
  */
 function goalReadable(row) {
   if (!String(row.goal ?? "").trim()) return false;
-  return !mayHaveBooked(row);
-}
-
-/** Cleared to book, or got as far as a commitment: something may be half-agreed at that number. */
-function mayHaveBooked(row) {
-  if (parse(row.brief)?.approved?.book === true) return true;
-  return Boolean(row.conversation_id && db.callCommitments(row.conversation_id, row.id).length);
+  if (parse(row.brief)?.approved?.book === true) return false;
+  if (row.conversation_id && db.callCommitments(row.conversation_id, row.id).length) return false;
+  return true;
 }
 
 /** The outcome a read moves this row to, or "" to leave it. */
 export function kindFrom(row, verdict) {
   if (!verdict) return "";
-  if (MACHINE_HOW.has(verdict.how)) return mayHaveBooked(row) ? "" : KIND_FOR[verdict.how];
+  if (MACHINE_HOW.has(verdict.how)) return KIND_FOR[verdict.how];
   // Their own call: a conversation, never an errand's success (no seal on the book for it).
   if (Number(row.is_owner) === 1) return verdict.how === "hung_up_early" ? "hung_up_early" : verdict.how === "talked" || verdict.met ? "talked" : "";
   if (!goalReadable(row)) return "";

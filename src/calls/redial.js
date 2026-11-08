@@ -21,7 +21,7 @@
 // and the rows are right there.
 import { config, clock } from "../config.js";
 import * as db from "../db.js";
-import { OUTCOMES, redialMode } from "./outcome.js";
+import { OUTCOMES, redialMode, theySpoke } from "./outcome.js";
 import { askWhetherItWentThrough } from "./brief.js";
 import * as commit from "./commit.js";
 
@@ -39,6 +39,12 @@ export const REDIAL_WINDOW_MS = 24 * 60 * 60 * 1000;
 function couldCommit(call) {
   const b = safeBrief(call);
   return b?.approved?.book === true;
+}
+
+/** Could a booking have been left half-done on this call? Cleared to book and somebody (or something) spoke, or any commitment. */
+function mayHaveBooked(conversationId, call) {
+  if (couldCommit(call) && theySpoke(call.transcript) === true) return true;
+  return db.callCommitments(conversationId, call.id).length > 0;
 }
 
 /**
@@ -115,8 +121,14 @@ export function safeToRedial(conversationId, { toNumber, errandId = null, brief 
   // cannot have left a booking behind, so ringing again is simply ringing again — call 63 to Yaw was a
   // mailbox filed this way, and its "find out whether it went through" rewrite replaced Thursday's
   // new message with Sunday's script.
+  //
+  // And the other way round (security run-2 R2-I, 2026-11-08): a call that MAY have booked — cleared to
+  // book and something on the line spoke, or one that got as far as a commitment — redials ask-only
+  // whatever its label says. The label can come from the after-call model read of the other side's
+  // words (./goalmet.js names a recording or a mailbox), and a plain "retry" here goes with booking on.
   const kindMode = redialMode(last.outcome_kind);
-  const mode = kindMode === "ask" && !couldCommit(last) ? "retry" : kindMode;
+  const mode = kindMode === "ask" && !couldCommit(last) ? "retry"
+    : kindMode === "retry" && mayHaveBooked(conversationId, last) ? "ask" : kindMode;
   if (mode === "no") {
     return {
       ok: false, settled: true,
