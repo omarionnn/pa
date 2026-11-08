@@ -13,8 +13,8 @@ somebody the paywall does not reach (everyone but the operator under `owner`) or
 changes nothing and texts nothing (e875fbb) — an old test subscription cannot lapse or hold them.
 `owner` reaches only the operator's own thread (his grandfather rules skipped there, so he can try it);
 `on` reaches everybody who is not grandfathered — the operator, `REASON_TEST_NUMBERS`, anybody who joined
-through an invite or a member's event (`accounts.invited_by` / `joined_via_event` on any account on the
-number; owner 2026-11-05, whenever they joined), and every account with `created_at` before the FLIP MOMENT (`ops_state` key `paywall_on_since`, written the first time a
+through an invite or a member's event (`accounts.invited_by` / `joined_via_event` on the number's first
+account; owner 2026-11-05, whenever they joined), and every account with `created_at` before the FLIP MOMENT (`ops_state` key `paywall_on_since`, written the first time a
 process boots with the switch on) — or any account on the same number made before it, so a pre-flip
 person whose number shows up on a new channel after the flip stays free (b996019). `REASON_PAYWALL_SHIP_TS` can only move that cut-off later, so the old
 Oct 31 value in live .env cannot put anybody who joined while free on a trial. The website's matching
@@ -62,17 +62,24 @@ What a person sees:
   server-set `metadata.conversation_id`, so an old unsigned session still matches by that. A second
   `checkout.session.completed` while already `paid` on a live subscription keeps the ids on record
   (`stripe_second_subscription` logged). Rotating `REASON_TOKEN_KEY` voids outstanding Payment Link refs.
+- **One number, one plan (security, 2026-11-08).** The trial, the ask, lapsed, paid and the hold are the
+  phone number's, not the texting line's: `plan.planId` routes every plan read and write to the oldest
+  `plan` row on any account with that address, so a second line (Linq next to Sendblue) carries on the
+  same count and a lapsed number stays lapsed there; `hold`/`release` pause and resume every line of the
+  number (release only the lines paused at or after `held_at`). Invite / event free-for-good counts only
+  when the flagged account is the number's EARLIEST account, so a walk-in who redeems an invite or joins
+  an event from another line stays on the trial (the redeem itself still goes through — product question).
 
 ## Drive — in process, fake Stripe, no model, no phone, no sound
 
 ```bash
 cd ~/Desktop/pa/.agents/skills/verify-reason
-REASON_DB_PATH=$(mktemp -d)/paywall.db node bin/paywall-drive.mjs    # 25 "ok" lines, then "all ok"
+REASON_DB_PATH=$(mktemp -d)/paywall.db node bin/paywall-drive.mjs    # 26 "ok" lines, then "all ok"
 ```
 
-The drive prints 25 step lines (13 for Ama, 6 for Kofi, 3 for Efua, 1 for the operator, 2 for Akua in
-Payment Link mode: a forged reference binds nothing, the issued one pays her up; 2026-11-08,
-sec/r2-paylink-ref-signed) — the "24" below was a miscount. Evidence 2026-11-07
+The drive prints 26 step lines (13 for Ama, 6 for Kofi, 3 for Efua, 1 for the operator, 2 for Akua in
+Payment Link mode: a forged reference binds nothing, the issued one pays her up — sec/r2-paylink-ref-signed;
+1 for Yaa on two lines of one number — sec/r2-paywall-per-number; 2026-11-08) — the "24" below was a miscount. Evidence 2026-11-07
 (rel/verify-maint): 23 ok + "all ok"; `test/paywall-win.test.js` 11, `test/paywall.test.js` 23,
 `test/pricing-flag.test.js` 7, all pass; cage `GET /pay/done` → 302 `https://heyreason.com/`.
 
@@ -95,7 +102,7 @@ asking Stripe for `cancel_at_period_end=true` and saying the date, the `/ops` ta
 
 ## Offline
 
-`test/paywall-win.test.js` (11 since 0410db9/a93431a, which added a store-checkout order as a win and a
+`test/paywall-per-number.test.js` (6, 2026-11-08; 5 fail on fa3f487): a second line carries the count and the lapse, paid and the hold reach every line, an invite or event join from a second line is not free, an invitee's later line still is. `test/paywall-win.test.js` (11 since 0410db9/a93431a, which added a store-checkout order as a win and a
 past-the-30th backlog label; 8 of the first 9 fail on c67e5c9): what a win is, win → asked at 25, no win → runs on
 (label, note, view, 26th and 27th quiet), win at 27 → asked on the next text and the 28th lapses, no win
 → asked at 30 with the softer line and the 31st lapses, a 40-session backlog asked at once, grandfather
