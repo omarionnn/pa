@@ -87,7 +87,7 @@
 //
 // Unverified: no request in this file has ever been made against the real Sendblue API from this
 // repo's tests. There are no Sendblue credentials on this machine. See docs/unverified.md.
-import { timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { statSync, readFileSync } from "node:fs";
 import { Channel } from "./channel.js";
 import { isAudio, cannotHearLine } from "../voice.js";
@@ -901,11 +901,23 @@ export class SendblueChannel extends Channel {
    * payload; and there is no timestamp, so there is no replay window to check. Both of those are
    * weaker than the Standard Webhooks scheme the Linq adapter verifies, and that is Sendblue's
    * design, not a shortcut here — see docs/unverified.md.
+   *
+   * Since 2026-11-08 real receive deliveries carry `X-Sendblue-Signature` instead (an HMAC over
+   * the raw body, api-v2/verify); that is checked first, and the header secret is the fallback.
    */
-  verify({ headers }) {
+  verify({ headers, rawBody, rawBytes }) {
     if (!this.webhookSecret) return { ok: false, why: "no SENDBLUE_WEBHOOK_SECRET on this machine" };
     const h = lowerKeys(headers);
+    // Sendblue's signed scheme (docs.sendblue.com/api-v2/verify, seen on real receive deliveries
+    // from 2026-11-08): `X-Sendblue-Signature: t=<unix>,v1=<hex>`, v1 = HMAC-SHA256(secret,
+    // `${t}.${raw body}`). A valid one is enough on its own; an invalid one falls back to the old
+    // shared-secret header, and with neither good it is a flat no. No tight timestamp window:
+    // Sendblue retries late, and a stale-but-genuine retry is safe behind the handle dedupe.
+    const sig = h["x-sendblue-signature"];
+    const signed = sig ? checkSignature(String(sig), this.webhookSecret, rawBytes ?? Buffer.from(String(rawBody ?? ""), "utf8")) : false;
+    if (signed) return { ok: true };
     const given = h[this.secretHeader];
+    if (!given && sig) return { ok: false, why: "the signature did not match" };
     if (!given) {
       // Not refused here: `receive` asks Sendblue whether it really has this message (see
       // `confirmUnsigned`). A wrong secret is still a flat no — that is somebody guessing.
@@ -942,8 +954,8 @@ export class SendblueChannel extends Channel {
    * neither the receive nor the outbound payload has a reaction field. Sendblue can SEND a tapback
    * (api-v2/send-reaction) and documents no way to hear about one.
    */
-  async receive({ rawBody, headers }) {
-    const v = this.verify({ headers });
+  async receive({ rawBody, rawBytes, headers }) {
+    const v = this.verify({ headers, rawBody, rawBytes });
     if (!v.ok && !v.unsigned) return { status: 401, body: { error: `rejected: ${v.why}` }, inbound: [] };
 
     let event;
@@ -1364,4 +1376,27 @@ async function describe(event) {
     parts.push("[they sent an iMessage app card — this is often a location share, but could be a game, a sticker or another app. You cannot read what is in it. If context suggests they were trying to share where they are, use get_location to check whether their coordinates are available]");
   }
   return parts.join("\n").trim();
+}
+
+/**
+ * `t=<unix>,v1=<hex>[,v1=<hex>…]` against HMAC-SHA256(secret, `${t}.${body}`), over the raw
+ * request bytes. Any matching v1 is a pass; a malformed header is a fail. Exported for tests.
+ */
+export function checkSignature(header, secret, body) {
+  let t = null;
+  const v1 = [];
+  for (const part of header.split(",")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    const k = part.slice(0, i).trim(), val = part.slice(i + 1).trim();
+    if (k === "t") t = val;
+    else if (k === "v1") v1.push(val);
+  }
+  if (!t || !/^\d+$/.test(t) || !v1.length) return false;
+  const want = createHmac("sha256", secret).update(Buffer.concat([Buffer.from(`${t}.`, "utf8"), Buffer.isBuffer(body) ? body : Buffer.from(String(body), "utf8")])).digest();
+  for (const hex of v1) {
+    if (!/^[0-9a-f]+$/i.test(hex) || hex.length !== want.length * 2) continue;
+    if (timingSafeEqual(Buffer.from(hex, "hex"), want)) return true;
+  }
+  return false;
 }
