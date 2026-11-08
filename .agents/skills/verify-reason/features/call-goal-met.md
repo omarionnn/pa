@@ -18,9 +18,12 @@ voicemail_greeting / recording / unsure, and `kindFrom` (src/calls/goalmet.js:77
 (`KIND_FOR`, src/calls/goalmet.js:34): talked → `picked_up` (errand) or `talked` (their own call),
 hung_up_early → `hung_up_early`, voicemail_not_set_up → `voicemail_full`, voicemail_greeting →
 `voicemail_no_message`, recording → `machine_recording`, unsure → left as is. Machine answers win
-first (`MACHINE_HOW`); **their own call is read too but is never `goal_met`** (no seal on the book for a
-chat), even when `met` is true. A booking call (cleared to book, or with a commitment) is still settled
-only by the read-back gate; only a machine answer can relabel it. New kinds in `src/calls/outcome.js`
+first (`MACHINE_HOW`) on calls that could not have booked; **their own call is read too but is never `goal_met`** (no seal on the book for a
+chat), even when `met` is true. A booking call (cleared to book, or with a commitment) is settled
+only by the read-back gate: since security run-2 R2-I (2026-11-08) not even a machine read relabels it
+(`mayHaveBooked`, src/calls/goalmet.js), because a machine kind redials as a plain `retry` with booking
+allowed, where a dropped book-cleared call redials ask-only (`safeToRedial`, src/calls/redial.js). A
+machine read on a call that could not have booked still relabels it as below. New kinds in `src/calls/outcome.js`
 (`picked_up` :61, `talked` :66, `hung_up_early` :71). `settleGptLive` (src/calls/gptlive.js:2417) waits up
 to `GOAL_WAIT_MS` 30 s (src/calls/gptlive.js:2414) for the read before telling the owner; a
 `voicemail_full` errand then gets one code-worded text instead of the recap — see
@@ -44,3 +47,9 @@ No model, no network (2026-11-07, rel-1107 `8bbcb96`): `kindFrom` on a throwaway
 voicemail_not_set_up → `voicemail_full`, voicemail_greeting → `voicemail_no_message`, recording →
 `machine_recording`, hung_up_early → `hung_up_early`; own talked → `talked`, own met → `talked` (not
 `goal_met`); all ok. `node --test test/call-goalmet.test.js test/call-pickup.test.js` 23/23.
+
+Redial guard (R2-I, 2026-11-08, no model, nothing leaves the machine), under `caged.sh env`:
+`REASON_DB_PATH=$(mktemp -d)/redial.db node bin/redial-book-guard-drive.mjs` — real `settleGoal` with a stubbed
+read, then the real `safeToRedial` call_place consults. Branch: 8/8 "all ok" (book-cleared + recording /
+greeting / unset mailbox stays `dropped_before_confirmation`, redial `ask`, book off; asking-only →
+`voicemail_full`, `retry`). On origin/main `ea62125`: 6 FAIL (machine kind, redial `retry`, no brief).
