@@ -47,7 +47,9 @@ Tests: `test/recall-history.test.js`, `test/db-busy-timeout.test.js` (3) — all
   carries `recall_cleared: { calls, exchanges, actions, reminders }`. With no fact saved about them
   but recall hits, `ok: true, forgot: 0` and "Gone from recall: N …" — only for a specific subject: with nobody saved, a vague one ("that", "it", "work", "money": the `VAGUE` set, `specificSubject`) clears nothing and answers "… too general to clear from recall on its own — nothing was cleared"; two-letter names ("Jo") and non-Latin names count. With neither, still
   `Nothing is on record about '<name>'.` Sealed: one conversation only. `capabilitiesNow`'s
-  "your_data" line says forget reaches recall (`src/tools.js:2531`).
+  "your_data" line says forget reaches recall (`src/tools.js:2531`). The nightly memory review reads
+  through the same tombstone, and forget also retires how-to-treat-me rules naming the subject
+  (`rules_dropped`; R2-H, see `memory-graph.md`).
 - **`busy_timeout` 5000 ms on every connection** (`src/db.js:24`, `scripts/call-report.js:28`,
   `scripts/web-migrate-dry-run.mjs:47`): `scripts/recall-backfill.mjs` writing beside the server
   failed twice on live 11-06 with "database is locked".

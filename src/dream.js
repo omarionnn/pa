@@ -17,6 +17,8 @@
 //      must cite their own message shown in the pass, a merge folds only rules a review wrote, and
 //      the cap drops review-written rules before ever touching one they set themselves. Code checks
 //      the citation, not the wording: nothing here judges that the rule says what they said.
+//      Nothing they asked to forget is read: a forgotten line (recall_forgotten) is never in the
+//      prompt, and a rule they took back is never re-learned off the message it came from.
 //   4. every change goes through the existing status machinery (corrected / superseded /
 //      superseded_by) — nothing is hard-deleted, and nothing they took back is ever written again;
 //   5. the profile is rebuilt.
@@ -253,8 +255,9 @@ export function periodMessages(conversationId, afterId, { now = clock.now() } = 
     const before = db.db.prepare("SELECT MAX(id) AS id FROM event_log WHERE conversation_id = ? AND at < ?").get(conversationId, now - FIRST_LOOKBACK_MS)?.id;
     from = before ?? 0;
   }
-  const rows = db.db.prepare(`SELECT id, role, content, at FROM event_log WHERE conversation_id = ? AND id > ? AND role IN ('user', 'assistant')
-    ORDER BY id LIMIT ?`).all(conversationId, from, MAX_MESSAGES + 1);
+  // Never a line they asked Reason to forget (src/db.js forgetFromRecall): those are out of every read.
+  const rows = db.db.prepare(`SELECT e.id, e.role, e.content, e.at FROM event_log e WHERE e.conversation_id = ? AND e.id > ? AND e.role IN ('user', 'assistant')
+    AND ${db.eventNotForgotten("e")} ORDER BY e.id LIMIT ?`).all(conversationId, from, MAX_MESSAGES + 1);
   const picked = [];
   let chars = 0;
   for (const r of rows.slice(0, MAX_MESSAGES)) {
@@ -389,7 +392,7 @@ export async function reviewOne(conversationId, { now = clock.now(), day = local
     // Their own message, shown this pass, behind the merged wording; and only review-written rules
     // fold: one they set themselves is never replaced by model text.
     const cited = userMsg(x?.message);
-    if (ids.length < 2 || !cited || !String(x.rule ?? "").trim()
+    if (ids.length < 2 || !cited || db.ruleTakenBackFrom(c, cited.id) || !String(x.rule ?? "").trim()
       || ids.some(id => shown.shownRules.get(id).source === "they_said")) { counts.refused++; continue; }
     const from = cited.id;
     // Folded first, so the merged rule never counts against the ceiling it is making room under.
@@ -406,7 +409,8 @@ export async function reviewOne(conversationId, { now = clock.now(), day = local
   }
   for (const x of Array.isArray(v.rules_new) ? v.rules_new : []) {
     const cited = userMsg(x?.message);
-    if (!cited || !String(x.rule ?? "").trim()) { counts.refused++; continue; }
+    // Not off a message a rule they took back came from: deleted means deleted, however it is reworded.
+    if (!cited || db.ruleTakenBackFrom(c, cited.id) || !String(x.rule ?? "").trim()) { counts.refused++; continue; }
     const made = db.addRule(c, { rule: x.rule, why: x.why, sourceMessageId: cited.id, source: "review", at: now });
     if (made.ok && !made.already) counts.rules_added++;
     else if (!made.ok) counts.refused++;
