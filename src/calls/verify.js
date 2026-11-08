@@ -33,6 +33,7 @@ import { timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
 import { GATED_ACTIONS } from "../permissions.js";
 import { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS, EVENT_RIDE_GUEST_TOOLS } from "../eventtools.js";
+import { ALBUM_ORGANIZER_TOOLS } from "../albumtools.js";
 import { config, clock } from "../config.js";
 
 /** How many wrong passphrases before the call is pushed to the texted check. */
@@ -63,9 +64,15 @@ const ORGANIZER_READS = {
   event_cover: (input) => input?.action === "status",
   event_rides_setting: (input) => input != null && input.enabled === undefined,
   event_ride: (input) => input?.action === "neither",
+  album_manage: (input) => input?.action === "status",
 };
 // event_leave too: it ends their ride offers, which texts the ride partner and sends new matches.
-const REACHES_GUESTS = new Set([...EVENT_ORGANIZER_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS, "event_leave"]);
+// The album's organizer tool releases it (texting every checked-in guest) and checks guests in or out;
+// album_remove lets an organizer delete any guest's photo, which cannot be undone.
+const REACHES_GUESTS = new Set([
+  ...EVENT_ORGANIZER_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS, "event_leave",
+  ...ALBUM_ORGANIZER_TOOLS, "album_remove",
+]);
 function organizerWrite(name, input) {
   if (!REACHES_GUESTS.has(name)) return false;
   return !(ORGANIZER_READS[name]?.(input) ?? false);

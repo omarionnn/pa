@@ -21,6 +21,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 
 const verify = await import("../src/calls/verify.js");
 const { EVENT_ORGANIZER_TOOLS, EVENT_RIDE_ORGANIZER_TOOLS, EVENT_RIDE_GUEST_TOOLS } = await import("../src/eventtools.js");
+const { ALBUM_ORGANIZER_TOOLS } = await import("../src/albumtools.js");
 
 test("every organizer tool that texts guests needs the second check on an unverified call", () => {
   for (const name of ["event_cancel", "event_update", "event_release", "event_guest_remove", "event_blast", "event_schedule"]) {
@@ -40,12 +41,17 @@ test("every organizer tool that texts guests needs the second check on an unveri
   for (const action of ["offer", "need", "cancel", "answer", "coordinate", "message", "report"]) {
     assert.equal(verify.isConsequential("event_ride", { event_id: 1, action, message: "x", mode: "intro" }), true, `event_ride ${action}`);
   }
+  // The album: release texts every checked-in guest; check-ins change who sees it; remove deletes.
+  for (const action of ["release", "check_in", "undo_check_in", "check_in_all", "pin", "unpin", "remove"]) {
+    assert.equal(verify.isConsequential("album_manage", { event_id: 1, action }), true, `album_manage ${action}`);
+  }
+  assert.equal(verify.isConsequential("album_remove", { event_id: 1, photo_ids: [3] }), true);
 });
 
 test("an organizer tool is covered by default: only the named reads are not", () => {
   // Derived from the organizer list, so a NEW organizer tool is gated on a call until somebody says
   // it is a read. This is the test that fails if a tool that messages guests is added and missed.
-  for (const name of [...EVENT_ORGANIZER_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS]) {
+  for (const name of [...EVENT_ORGANIZER_TOOLS, ...EVENT_RIDE_ORGANIZER_TOOLS, ...EVENT_RIDE_GUEST_TOOLS, ...ALBUM_ORGANIZER_TOOLS]) {
     if (name === "event_guests") continue; // the one tool that only ever reads
     assert.equal(verify.isConsequential(name), true, `${name} with no input must need the check`);
   }
@@ -57,6 +63,8 @@ test("reading their own event on a call stays unchecked", () => {
   assert.equal(verify.isConsequential("event_cover", { event_id: 1, action: "status" }), false);
   assert.equal(verify.isConsequential("event_rides_setting", { event_id: 1 }), false);
   assert.equal(verify.isConsequential("event_ride", { event_id: 1, action: "neither" }), false);
+  assert.equal(verify.isConsequential("album_manage", { event_id: 1, action: "status" }), false);
+  assert.equal(verify.isConsequential("album_info", { event_id: 1 }), false);
   // Guest-side tools are about the caller themself and are unchanged.
   for (const name of ["event_list", "event_info", "event_join", "event_mute"]) {
     assert.equal(verify.isConsequential(name, { event_id: 1 }), false, name);
