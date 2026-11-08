@@ -516,3 +516,20 @@ test("the runtime's sweep wrapper logs the shape only, and a code that isn't wor
   assert.deepEqual(lines, [{ event_rides_failed: true, error: "Error", code: null, message_length: 13 }]);
   assert.ok(!JSON.stringify(lines).includes("Dekalb"));
 });
+
+test("a stopped organizer's event asks nobody about rides; let go, the ask goes (lead R2-A)", async () => {
+  const rt = fakeRuntime();
+  const out = events.create(C.kwame, { name: "Halloween Party", description: "costumes", starts_at: `${DAY}T21:00`, location: "88 Party Pl",
+    password: "pumpkin", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true });
+  assert.equal(out.ok, true);
+  db.updateEventRow(out.event.id, { rides_enabled: 1 });
+  await join_("ama"); await join_("yaw");
+  // Paused on another line: a stop is per number.
+  db.upsertAccount({ conversationId: `dm:linq:${P.kwame}`, channel: "linq", address: P.kwame, name: "Kwame" });
+  db.setAccountState(`dm:linq:${P.kwame}`, "paused");
+  goTo(`${dayFromNow(2)}T12:00`);
+  assert.equal((await rides.sweep({ runtime: rt })).asked ?? 0, 0);
+  assert.equal(rt.sent.length, 0, "nothing for a paused organizer's event");
+  db.setAccountState(`dm:linq:${P.kwame}`, "active");
+  assert.equal((await rides.sweep({ runtime: rt })).asked, 2);
+});
