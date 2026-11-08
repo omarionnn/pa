@@ -1626,7 +1626,9 @@ is the one place a standing permission loses. With your yes it goes through, and
 **A payment whose outcome nobody knows is never retried.** A commit that breaks after the button has
 been pressed may have gone through — including the one that does not look like a failure at all,
 where the connection drops and the browser shows its own error page. Reason records that the outcome
-is unknown, says so in plain words, tells you to check your email or the shop, and asks. *Enforced in
+is unknown, says so in plain words, looks in your email itself for the shop's confirmation or
+receipt and tells you what it found (or, with no email connected, says it can't see it and offers the
+link), and asks. *Enforced in
 code*: the same action is blocked until a yes given **since** that moment, which an older yes and a
 standing permission both fail to be, and the block is checked before the gate so the first thing you
 hear is that nobody knows rather than a request to approve it again. The ledger outcome is `unknown`,
@@ -2322,32 +2324,30 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **3,041 tests, 2,967 passing, 3 failing, 71 skipped**.
-The 3 failing are not features: they are the load-sensitive sweep tests in `test/proactive.test.js`,
-`test/series.test.js` and `test/timer-claim.test.js`, which fail the same way on a clean
-`origin/main` and are listed with their causes at the end of `docs/unverified.md`. The 71 skipped
-need a real model and have not been run against the API for want of credit. The newest two are the
-flight check-in — a flight read out of one sentence, the offer raised by the sweep in the airport's
-own zone, nothing pressed before a yes, the seat read back off the page, and a payment wall handed
-back rather than paid — on the `claude-cli` backend (see below) on 2026-10-07. Before them, the
-standing commitment — "leg day tuesdays and fridays 7am" saved with the zone on it, a 7:12 with
-nothing from him answered by the real thing, the real time, his last session and "you hit 175 on
-squats last week. go 180.", "cant today" taken as the end of it, and a hurt knee getting no session
-and no advice — on that backend on 2026-10-07. Before it, the standing check-in — "check in with me
-every monday at 9 about the job search" read as one weekly series rather than one Monday reminder, a
-first firing about the search, what he said back carried into the second Monday in different words,
-and "stop checking in about that" ending it — on that backend on 2026-10-07. Before it, the hard
-line — six sentences seeking help toward harm refused before any model turn, seven innocent ones
-passed, two crisis messages read as crisis, one thread read for where it was going, and the whole
-path from a test number, all on that backend on 2026-10-06 (see the first rule under "The rules it
-keeps"). Before that, "where were we?" — a job mid-flight, asked for an update, answered with what
-is done before what is left before the one thing it needs, which is the difference between a status
-update and a demand. It passed twice on that backend on 2026-10-06. Next to it are the subscription
-flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row
-answered as not-yet rather than done, and a cancellation walked to the last button and pressed only
-on a real yes — on that backend the same day. On the machine this was last run on, `ffmpeg` is
-installed and `test/expressive.test.js` is green — the two failures that line used to carry are
-gone.
+All of this is covered by the offline suite — **5,802 tests, 5,670 passing, 1 failing, 131
+skipped**. The 1 failing is not a feature: it is `test/web-ongoing.test.js` "5. the desktop margin",
+which fails the same way on a clean `origin/main` (2026-11-08). The 131 skipped need a real model
+and have not been run against the API for want of credit. The newest two are the flight check-in — a
+flight read out of one sentence, the offer raised by the sweep in the airport's own zone, nothing
+pressed before a yes, the seat read back off the page, and a payment wall handed back rather than
+paid — on the `claude-cli` backend (see below) on 2026-10-07. Before them, the standing commitment —
+"leg day tuesdays and fridays 7am" saved with the zone on it, a 7:12 with nothing from him answered
+by the real thing, the real time, his last session and "you hit 175 on squats last week. go 180.",
+"cant today" taken as the end of it, and a hurt knee getting no session and no advice — on that
+backend on 2026-10-07. Before it, the standing check-in — "check in with me every monday at 9 about
+the job search" read as one weekly series rather than one Monday reminder, a first firing about the
+search, what he said back carried into the second Monday in different words, and "stop checking in
+about that" ending it — on that backend on 2026-10-07. Before it, the hard line — six sentences
+seeking help toward harm refused before any model turn, seven innocent ones passed, two crisis
+messages read as crisis, one thread read for where it was going, and the whole path from a test
+number, all on that backend on 2026-10-06 (see the first rule under "The rules it keeps"). Before
+that, "where were we?" — a job mid-flight, asked for an update, answered with what is done before
+what is left before the one thing it needs, which is the difference between a status update and a
+demand. It passed twice on that backend on 2026-10-06. Next to it are the subscription flows — a
+year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row answered as
+not-yet rather than done, and a cancellation walked to the last button and pressed only on a real
+yes — on that backend the same day. On the machine this was last run on, `ffmpeg` is installed and
+`test/expressive.test.js` is green — the two failures that line used to carry are gone.
 
 Newest first. One line each; open the fold for what is actually proved and what is not.
 

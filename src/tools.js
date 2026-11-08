@@ -1365,7 +1365,7 @@ function flightPlacedAnswer(c, buyConversationId, { out, line, card, known, char
     amount: trust.money(cents), cart_line: line, card,
     ...(row.retailer_order_id ? { confirmation_code: row.retailer_order_id } : {}),
     note: `What is true right now: ${st.words}`
-      + (chargeKnown ? ` AgentCard reports charge_status 'unknown': whether the card was charged is NOT known. ${chargeKnown.line} Say that, do not retry anything, and tell them to check their card statement.` : "")
+      + (chargeKnown ? ` AgentCard reports charge_status 'unknown': whether the card was charged is NOT known. ${chargeKnown.line} Say that, do not retry anything, then look in their mail yourself for the charge (gmail_search for the card's charge alert or the shop's receipt, gmail_read) and say what you found; only if nothing is there, say their card statement is the one place you can't see.` : "")
       + (st.booked ? "" : ` Do NOT say it is booked or ticketed, and do not call a confirmation code a ticket. Say exactly which state it is in, in those words, and point them to the airline to check.`)
       + ` purchase_track with conversation_id ${buyConversationId} reads AgentCard's record again.`,
   };
@@ -6306,7 +6306,7 @@ export const tools = [
   },
   {
     name: "boarding_pass",
-    description: "Make the boarding-pass page for a flight that is really checked in, and give you the link to send. The page is built by CODE from the row — the airline, the flight, the seat, the real airport code and the real local time — so nothing on it is from memory. Refuses on a flight that is not checked in, because a boarding pass for a check-in that did not happen is the worst possible thing to hand somebody. Send the link with one short line that carries the answer ('done. you kept 14C.'); the link goes out as its own message. Say plainly, if it comes up, that this is Reason's own page and not the airline's scannable pass — that one is in their email or the airline's app.",
+    description: "Make the boarding-pass page for a flight that is really checked in, and give you the link to send. The page is built by CODE from the row — the airline, the flight, the seat, the real airport code and the real local time — so nothing on it is from memory. Refuses on a flight that is not checked in, because a boarding pass for a check-in that did not happen is the worst possible thing to hand somebody. Send the link with one short line that carries the answer ('done. you kept 14C.'); the link goes out as its own message. Say plainly, if it comes up, that this is Reason's own page and not the airline's scannable pass. If they need the scannable one, find it yourself — gmail_search for the airline's check-in or boarding-pass mail, gmail_read, gmail_attachment for a PDF pass — and send what you found; never tell them to go look in their email.",
     input_schema: { type: "object", properties: { flight_id: { type: "integer" } }, required: ["flight_id"] },
   },
   {
@@ -13186,7 +13186,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           reconcile: known.line,
           error: `The confirm went out and nothing came back: ${out.error}. AgentCard's own record was read: ${known.line} NOBODY KNOWS for sure whether that order was placed — the shop may have it and may not.`
             + ` It is not being retried and must not be: a second confirm is how ${me.name} gets charged twice.`
-            + ` Tell them exactly that in plain words, say to check their email, and ask whether to try again. Only a yes from them now lets it through.`
+            + ` Tell them exactly that in plain words, search their mail yourself first (gmail_search for the shop's confirmation, receipt or charge notice since the attempt, then gmail_read) and tell them what you found — or that nothing has arrived yet; if their email is not connected, say you can't see it and offer google_connect. Never tell them to check their email, and ask whether to try again. Only a yes from them now lets it through.`
             + ` The ${trust.money(cents)} is counted against the day either way, so the figure may be high — say so if they ask.`,
         };
       }
@@ -13411,7 +13411,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           + (out.status === "partially_placed" ? ` Only PART of it went through — say which part, from \`reply\`, rather than letting them think the whole cart is coming.` : "")
           + ` Tell them what was bought and the real total. ${out.order_id ? `purchase_track with order_id ${out.order_id} is where the shop's own number and the delivery window come from, about a minute from now — do not invent either.` : `AgentCard returned no order id, so there is nothing to track; say so if they ask.`}`
           + (chargeKnown
-            ? ` BUT AgentCard reports charge_status 'unknown': the order exists, and whether the card was actually charged is NOT known. ${chargeKnown.line} Say that plainly, do not retry anything, and tell them to check their card statement.`
+            ? ` BUT AgentCard reports charge_status 'unknown': the order exists, and whether the card was actually charged is NOT known. ${chargeKnown.line} Say that plainly, do not retry anything, then look in their mail yourself for the charge (gmail_search for the card's charge alert or the shop's receipt, gmail_read) and say what you found; only if nothing is there, say their card statement is the one place you can't see.`
             : ` Charge status is '${out.charge_status || "unreported"}'${out.charge_status === "settled" ? "" : ", so the money may still be settling — do not promise it is final"}.`),
       };
     }
@@ -17917,8 +17917,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // still works and a second check-in on the same booking does not make a second pass.
       const existing = row.page_id ? db.getPageIn(c, row.page_id) : null;
       const page = existing
-        ? db.updatePage(c, row.page_id, { title, blocks: checked.blocks, subtitle: flights.exactly(row), closing: `Checked in ${stamp(row.checked_in_at ?? row.updated_at)}. The airline's own scannable pass is in your email or its app.` })
-        : db.createPage(c, { title, blocks: checked.blocks, subtitle: flights.exactly(row), closing: `Checked in ${stamp(row.checked_in_at ?? row.updated_at)}. The airline's own scannable pass is in your email or its app.` });
+        ? db.updatePage(c, row.page_id, { title, blocks: checked.blocks, subtitle: flights.exactly(row), closing: `Checked in ${stamp(row.checked_in_at ?? row.updated_at)}. The airline's own scannable pass is the one the gate scans; text me and I'll pull it from your email.` })
+        : db.createPage(c, { title, blocks: checked.blocks, subtitle: flights.exactly(row), closing: `Checked in ${stamp(row.checked_in_at ?? row.updated_at)}. The airline's own scannable pass is the one the gate scans; text me and I'll pull it from your email.` });
       const made = verifyPage(page);
       if (!made.ok) {
         if (!existing) db.deletePage(c, page.id);
@@ -17936,7 +17936,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: `${existing ? "Updated at the same link" : "Made"}. Send the link with ONE short line that carries the answer — the seat, not "here's the link"`
           + ` ("done. you kept ${row.seat || row.boarding_position || "your seat"}.") — and the link goes out as its own message.`
           + ` Everything on it was read off ${row.airline}'s own page; nothing on it is from memory.`
-          + ` If it comes up, say plainly this is Reason's page and not the airline's scannable pass: that one is in their email or the airline's app, and it is the one the gate wants.`,
+          + ` If it comes up, say plainly this is Reason's page and not the airline's scannable pass, which is the one the gate wants. If they need that one, find it yourself (gmail_search for the airline's boarding-pass mail, gmail_read, gmail_attachment) and send it; never tell them to go look in their email.`,
       };
     }
 
@@ -18642,7 +18642,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             error: `'${label}' was pressed and then nothing came back — the page is ${snap.url} with nothing on it.`
               + ` NOBODY KNOWS whether that went through: ${site ? site.label : "the site"} may have it and may not.`
               + ` It is not being retried and must not be, because a second attempt is how ${me.name} gets charged twice.`
-              + ` Tell them exactly that in plain words, say to check their email or the site itself, and ask whether to try again.`
+              + ` Tell them exactly that in plain words, search their mail yourself first (gmail_search for the shop's confirmation, receipt or charge notice since the attempt, then gmail_read) and tell them what you found — or that nothing has arrived yet; if their email is not connected, say you can't see it and offer google_connect. Never tell them to check their email or the site, and ask whether to try again.`
               + ` Only a yes from them now will let it through.`
               + (charge ? ` The ${trust.money(charge)} is counted against the day either way, so the figure may be high — say so if they ask.` : ""),
           };
@@ -18671,7 +18671,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           error: `The button was pressed and then it broke: ${why}.`
             + ` NOBODY KNOWS whether that went through — ${site ? site.label : "the site"} may have it and may not.`
             + ` It is not being retried and must not be: a second attempt is how ${me.name} gets charged twice.`
-            + ` Tell them exactly that in plain words, say to check their email or the site, and ask whether to try again.`
+            + ` Tell them exactly that in plain words, search their mail yourself first (gmail_search for the shop's confirmation, receipt or charge notice since the attempt, then gmail_read) and tell them what you found — or that nothing has arrived yet; if their email is not connected, say you can't see it and offer google_connect. Never tell them to check their email or the site, and ask whether to try again.`
             + ` Only a yes from them now will let it through.`,
         };
       }

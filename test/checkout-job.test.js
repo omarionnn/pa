@@ -267,7 +267,48 @@ test("other ends are texted too: blocked, cancelled, and an end after a payment 
   assert.equal(row(c.runId).stage, "paid");
   runs[c.runId] = { status: "failed", result: { code: "merchant.error", summary: "Ulta's page errored after payment." }, revision: 9 };
   await shop.step(c.runId);
-  assert.match(said.at(-1).t, /^Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz ended after the payment was approved \(Ulta's page errored after payment\.\)\. I can't tell from here whether the order went through/);
+  // No mail connected here: it says it can't see their email and offers the link, never "check your email".
+  assert.equal(said.at(-1).t, "Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz ended after the payment was approved (Ulta's page errored after payment.), so the checkout can't tell me whether Ulta has the order. I can't see your email yet, so I can't look for Ulta's confirmation myself. Want the link to connect it? Then I'll check and tell you what's there. If a charge turns up with no order, I'll take it up with Ulta.");
+  assert.doesNotMatch(said.at(-1).t, /check your (e-?mail|inbox|mail)/i);
+});
+
+// Owner 2026-11-08 (live, Amazon CeraVe): "I can't tell from here whether the order went through: check your
+// email for Amazon's confirmation" — with Gmail connected. Reason looks in the mail itself and says what it saw.
+test("pinned 11-08: a checkout that ends after the payment looks in their mail FIRST and says what it found", async () => {
+  q("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
+  const endAfterPay = async (mail) => {
+    shop._setMail(mail);
+    const r = await start();
+    runs[r.runId].requiredAction = PAY(`req_pay_${r.runId}`);
+    await shop.step(r.runId);
+    const pay = q("SELECT * FROM shop_payments WHERE run_id = ?").get(r.runId);
+    assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: pay.id, confirmationId: 7 })).ok, true);
+    runs[r.runId] = { status: "failed", result: { code: "input_expired", summary: "failed" }, revision: 9 };
+    await new Promise((res) => setTimeout(res, 5)); // the paid-time mail watch tick runs first, as live
+    const n = said.length;
+    await shop.step(r.runId);
+    assert.equal(said.length, n + 1, "one line, never two");
+    return { runId: r.runId, text: said.at(-1).t };
+  };
+  // 1. Connected, nothing from the store yet: it looked, says so, and is watching.
+  let asked = 0;
+  const empty = await endAfterPay(async (c, { host }) => { asked++; assert.equal(host, "ulta.com"); return { ok: true, connected: true, hits: [] }; });
+  assert.ok(asked >= 2, "the mail was searched at the end, not only when the payment went out");
+  assert.equal(empty.text, "Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz ended after the payment was approved (failed), so the checkout can't tell me whether Ulta has the order. I looked in your email: nothing from Ulta since the payment yet. I'm watching it and will text you the order number the moment the confirmation lands, or tell you if a day goes by with nothing. If a charge turns up with no order, I'll take it up with Ulta.");
+  // 2. Connected, mail from the store since the payment: named, and the model is woken to read it — and
+  // that wake may not go silent, because they were just told "reading it now".
+  woke.length = 0;
+  let hitAt = 0;
+  const hit = await endAfterPay(async () => (++hitAt < 2 ? { ok: true, connected: true, hits: [] } : { ok: true, connected: true, hits: [{ account: "omari@gmail.com", thread_id: "t_a", message_id: `m_end`, subject: "Your Ulta order is confirmed", from: "Ulta <orders@ulta.com>", date: "Sun, 8 Nov 2026 16:18:00 -0500" }] }));
+  assert.equal(hit.text, "Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz ended after the payment was approved (failed), so the checkout can't tell me whether Ulta has the order. I looked in your email: there's mail from Ulta since the payment (\"Your Ulta order is confirmed\"). Reading it now; I'll tell you what it says.");
+  assert.equal(woke.length, 1);
+  assert.match(woke[0].t, /Read it with gmail_read/);
+  assert.doesNotMatch(woke[0].t, /NO_REPLY/);
+  assert.match(woke[0].t, /Never tell them to check their email/);
+  // 3. Google connected without mail access: it can't see the mail, says so, and offers the link.
+  const none = await endAfterPay(async () => ({ ok: true, connected: false, hits: [] }));
+  assert.match(none.text, /I can't see your email yet, so I can't look for Ulta's confirmation myself\. Want the link to connect it\?/);
+  for (const t of [empty.text, hit.text, none.text]) assert.doesNotMatch(t, /check (your|their) (e-?mail|inbox|mail)|(?<!looked )in your (e-?mail|inbox)/i, t);
 });
 
 test("review: a payment Reason can't approve (not a card) is said once and never handed to the model; shop_answer refuses anything but a form", async () => {
@@ -430,7 +471,7 @@ test("after the payment: placed is texted, the mail is watched for the confirmat
   await shop.step(out.runId);
   assert.equal(row(out.runId).stage, "placed");
   assert.equal(row(out.runId).order_ref, "ULTA-1234567");
-  assert.equal(said.at(-1).t, "Ulta placed the order for CeraVe Foaming Facial Cleanser 16 oz (order ULTA-1234567). Check your email for Ulta's confirmation; I can't see your mail, so the order number and delivery date will be there.");
+  assert.equal(said.at(-1).t, "Ulta placed the order for CeraVe Foaming Facial Cleanser 16 oz (order ULTA-1234567). I can't see your email yet, so I can't pick up Ulta's confirmation with the delivery date. Want the link to connect it? Then I'll watch for it and send you the order number and date.");
   // The mail: nothing yet, then the confirmation.
   const asked = [];
   shop._setMail(async (c, { host, since }) => { asked.push({ c, host, since }); return { ok: true, connected: true, hits: asked.length < 2 ? [] : [{ account: "omari@gmail.com", thread_id: "t_9", message_id: "m_9", subject: "Your Ulta order ULTA-1234567 is confirmed", from: "Ulta Beauty <orders@ulta.com>", date: "Sat, 31 Oct 2026 11:40:00 -0400" }] }; });
@@ -469,7 +510,7 @@ test("after the payment: placed is texted, the mail is watched for the confirmat
   clock.skip(25 * 3600_000);
   const over = await shop.checkMail(late.runId);
   assert.equal(over.expired, true);
-  assert.equal(said.at(-1).t, "No confirmation email from Ulta in the 24 hours since the payment. Check Ulta's site or your card for the charge, and tell me what you see; I'll take it from there.");
+  assert.equal(said.at(-1).t, "No confirmation email from Ulta in the 24 hours since the payment. I've been watching your email the whole time. If a charge from Ulta shows up on your card with no order, tell me and I'll take it up with them.");
   // No mail connected: the watch ends quietly.
   const nomail = await start();
   q("UPDATE shop_runs SET paid_at = ?, mail_until = ? WHERE run_id = ?").run(clock.now(), clock.now() + 3600_000, nomail.runId);

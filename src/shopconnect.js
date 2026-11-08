@@ -1657,14 +1657,37 @@ export function stopOptionOf(rq) {
   }
   return null;
 }
+/**
+ * A checkout that ended after their payment went out: whether the store has the order is not known
+ * from the checkout, so Reason looks in their mail ITSELF, now, and says what it found (owner
+ * 2026-11-08, after "check your email for Amazon's confirmation": never hand them that job). Only
+ * with no mail connected does it say it can't see it, and then it offers the connect link.
+ */
+async function paidEndText(run, status, result) {
+  const store = storeOf(run);
+  const summary = short(result?.summary ?? result?.message ?? "", 160);
+  const head = `${store}'s checkout${itemOf(run)} ended after the payment was approved (${summary || status}), so the checkout can't tell me whether ${store} has the order.`;
+  const charge = `If a charge turns up with no order, I'll take it up with ${store}.`;
+  let look = {};
+  try { look = await checkMail(run.run_id, { ending: true }); } catch { look = {}; }
+  if (look.connected === false || (!look.looked && !mailConnected(run.conversation_id))) {
+    return `${head} I can't see your email yet, so I can't look for ${store}'s confirmation myself. Want the link to connect it? Then I'll check and tell you what's there. ${charge}`;
+  }
+  if (look.hits) {
+    const first = look.found?.[0];
+    return `${head} I looked in your email: there's mail from ${store} since the payment${first?.subject ? ` ("${short(first.subject, 80)}")` : ""}. Reading it now; I'll tell you what it says.`;
+  }
+  if (look.looked) {
+    return `${head} I looked in your email: nothing from ${store} since the payment yet. I'm watching it and will text you the order number the moment the confirmation lands, or tell you if a day goes by with nothing. ${charge}`;
+  }
+  return `${head} I couldn't get into your email just now; I'll keep looking for ${store}'s confirmation and text you what it says. ${charge}`;
+}
 /** What ended a run, in their words. `paid` is a payment of theirs that went out before the end. */
-function endText(run, status, result, paid) {
+async function endText(run, status, result, paid) {
   const store = storeOf(run);
   const code = String(result?.code ?? "").toLowerCase();
   const summary = short(result?.summary ?? result?.message ?? "", 160);
-  if (paid) {
-    return `${store}'s checkout${itemOf(run)} ended after the payment was approved (${summary || status}). I can't tell from here whether the order went through: check your email for ${store}'s confirmation, and if there's a charge with no order, tell me and I'll take it up with them.`;
-  }
+  if (paid) return await paidEndText(run, status, result);
   const expired = code === "input_expired" || /expired while waiting/i.test(summary);
   if (expired) {
     return `The ${store} checkout${itemOf(run)} stopped: ${store} was waiting for ${askedFor(run)} and didn't get it in time, so it expired. Nothing was charged. Want me to start it again?`;
@@ -1742,7 +1765,7 @@ function placedText(run, result) {
   const ref = orderRef(result);
   const watch = mailConnected(run.conversation_id)
     ? `I'm watching your email for ${storeOf(run)}'s confirmation and will send the order number and delivery date when it lands.`
-    : `Check your email for ${storeOf(run)}'s confirmation; I can't see your mail, so the order number and delivery date will be there.`;
+    : `I can't see your email yet, so I can't pick up ${storeOf(run)}'s confirmation with the delivery date. Want the link to connect it? Then I'll watch for it and send you the order number and date.`;
   return `${storeOf(run)} placed the order${itemOf(run)}${ref ? ` (order ${ref})` : ""}. ${watch}`;
 }
 /** A stall — nothing moved for STALL_MS — said once per run. */
@@ -1978,7 +2001,7 @@ export async function step(runId) {
         const moved = await moveOn(runRow(runId), why, say);
         return { done: true, status, said, ...moved };
       }
-      if (tellOnce(runId, "end")) await say(endText({ ...runRow(runId), stage: before }, status, result, paid));
+      if (tellOnce(runId, "end")) await say(await endText({ ...runRow(runId), stage: before }, status, result, paid));
     }
     return { done: true, status, said };
   }
@@ -2243,43 +2266,50 @@ async function readMail(conversationId, { host, since }) {
   }
   return { ok: true, connected: true, hits };
 }
-function mailEvent(run, hits) {
+function mailEvent(run, hits, { ending = false } = {}) {
   const list = hits.slice(0, 3).map((h) => `"${short(h.subject, 120)}" from ${short(h.from, 80)} (${h.date}; account ${h.account}, thread_id ${h.thread_id})`).join("; ");
-  return `[checkout] Mail from ${storeOf(run)} arrived after the order${itemOf(run)} (run ${run.run_id}): ${list}. Read it with gmail_read (thread_id, in that account) and text them the order number and the delivery estimate in one line. If it is not the confirmation for this order, say exactly NO_REPLY.`;
+  // At the end of a run that broke after the payment, they were just told "reading it now": the answer
+  // is owed either way, so silence is not an option there.
+  const otherwise = ending
+    ? `If it is not the confirmation for this order, tell them in one line what it was instead and that you are still watching for the confirmation. Never tell them to check their email: you just did.`
+    : `If it is not the confirmation for this order, say exactly NO_REPLY.`;
+  return `[checkout] Mail from ${storeOf(run)} arrived after the order${itemOf(run)} (run ${run.run_id}): ${list}. Read it with gmail_read (thread_id, in that account) and text them the order number and the delivery estimate in one line. ${otherwise}`;
 }
 /**
  * One look at their mail for the store's confirmation. Stops (and says why, once) when the window
  * closes or no mail is connected; wakes the model, once, when something from the store arrives.
  */
 export const MAIL_WAKES_MAX = 5;
-export async function checkMail(runId) {
+export async function checkMail(runId, { ending = false } = {}) {
   const run = runRow(runId);
   if (!run || !run.mail_until || toldOf(run).has("mail")) return { done: true };
   const store = storeOf(run);
   if (clock.now() > run.mail_until) {
     // A placed order with nothing in the mail is not an alarm; a payment with no order might be.
     const worry = run.stage !== "placed";
-    if (tellOnce(runId, "mail") && worry) await notify(run.conversation_id, `No confirmation email from ${store} in the 24 hours since the payment. Check ${store}'s site or your card for the charge, and tell me what you see; I'll take it from there.`);
+    if (tellOnce(runId, "mail") && worry) await notify(run.conversation_id, `No confirmation email from ${store} in the 24 hours since the payment. I've been watching your email the whole time. If a charge from ${store} shows up on your card with no order, tell me and I'll take it up with them.`);
     return { done: true, expired: true };
   }
   q("UPDATE shop_runs SET mail_checked_at = ? WHERE run_id = ?").run(clock.now(), runId);
   const host = storeHost(run.store).replace(/^www\./, "");
-  if (!host) { tellOnce(runId, "mail"); return { done: true }; }
+  if (!host) { tellOnce(runId, "mail"); return { done: true, looked: false }; }
   let r;
-  try { r = await (mailImpl ?? readMail)(run.conversation_id, { host, since: (run.paid_at ?? run.created_at) - 60_000 }); } catch { return { done: false }; }
-  if (!r?.ok || !r.connected) { tellOnce(runId, "mail"); return { done: true, connected: false }; }
+  try { r = await (mailImpl ?? readMail)(run.conversation_id, { host, since: (run.paid_at ?? run.created_at) - 60_000 }); } catch { return { done: false, looked: false }; }
+  if (!r?.ok) return { done: false, looked: false };
+  if (!r.connected) { tellOnce(runId, "mail"); return { done: true, connected: false }; }
   // Every NEW message from the store is put to the model (it decides whether it is the confirmation);
   // the first one — a "rate your visit" — does not end the watch. Bounded: MAIL_WAKES_MAX wakes, then done.
   const seen = new Set(String(run.mail_seen ?? "").split(",").filter(Boolean));
   const fresh = (r.hits ?? []).filter((h) => h.message_id && !seen.has(h.message_id));
-  if (!fresh.length) return { done: false };
+  if (!fresh.length) return { done: false, looked: true, connected: true, hits: 0 };
   for (const h of fresh) seen.add(h.message_id);
   q("UPDATE shop_runs SET mail_seen = ? WHERE run_id = ?").run([...seen].slice(-50).join(","), runId);
   const wakes = [...toldOf(run)].filter((t) => t.startsWith("mailwake:")).length + 1;
   tellOnce(runId, `mailwake:${fresh[0].message_id}`);
-  await wake(run.conversation_id, mailEvent(run, fresh), `shop:${runId}:mail:${fresh[0].message_id}`);
-  if (wakes >= MAIL_WAKES_MAX) { tellOnce(runId, "mail"); return { done: true, hits: fresh.length, capped: true }; }
-  return { done: false, hits: fresh.length };
+  await wake(run.conversation_id, mailEvent(run, fresh, { ending }), `shop:${runId}:mail:${fresh[0].message_id}`);
+  const saw = { looked: true, connected: true, hits: fresh.length, found: fresh };
+  if (wakes >= MAIL_WAKES_MAX) { tellOnce(runId, "mail"); return { done: true, ...saw, capped: true }; }
+  return { done: false, ...saw };
 }
 /** Watches their mail every few minutes until the confirmation lands or the window closes. */
 export function watchMail(runId, { everyMs = MAIL_EVERY_MS } = {}) {

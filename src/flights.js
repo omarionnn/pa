@@ -487,7 +487,7 @@ export function boardingPassBlocks(row, { ownerName = "" } = {}) {
       tone: "note",
       title: "What this is",
       text: `Reason checked in on ${String(row?.airline || "the airline")}'s own site and read this straight off the screen.`
-        + ` It is not the airline's boarding pass: the scannable one is in your email or the airline's app, and that is the one the gate wants.`,
+        + ` It is not the airline's boarding pass, which is the one the gate wants. Text Reason and it will pull that one from your email.`,
     },
   ];
   return blocks;

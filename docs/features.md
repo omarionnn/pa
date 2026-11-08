@@ -986,6 +986,16 @@ The one failure where doing nothing is right and trying again is the mistake.
   permission cannot, because they have not been told. The check runs **before** the confirm gate, so
   the first thing they hear is that nobody knows, rather than the gate's "that yes was already used,
   ask again" sending the model off to collect a fresh one in silence.
+- **Reason looks in the mail itself; it never says "check your email"** (owner 2026-11-08, after an
+  Amazon checkout ended past the payment and the text said "check your email for Amazon's
+  confirmation" with his Gmail connected). A checkout that ends after the payment searches their
+  mail for the store's mail since the payment at that moment, and the text says what it found:
+  nothing yet and it is watching, or the mail it found and that it is reading it (that wake may not go
+  silent). Every unknown-outcome tool result tells the model to `gmail_search` / `gmail_read` first
+  and report. Only with no mail connected does it say it can't see it, and then it offers the connect
+  link. The system prompt carries the standing rule (never tell them to check something Reason has a
+  tool for), and `test/no-check-your-email.test.js` fails on any source line that hands them their
+  inbox.
 - **Checking does not clear the block.** Only an attempt that got a real answer does, so a refusal
   between the check and the press cannot quietly lift something nobody resolved.
 - **The money is counted anyway**, with `(OUTCOME UNKNOWN)` on the spend line. Over-counting a charge

@@ -1009,8 +1009,8 @@ export function retryBlocked({ conversationId, action, target = "", confirmation
     ok: false, blocked: "outcome_unknown", unknown_since: stamp(row.at), what: row.target,
     error: `The last attempt at this ended with nobody knowing whether it went through${row.why ? ` (${row.why})` : ""},`
       + ` at ${stamp(row.at)}. It is not being retried: the shop may already have it, and trying again is the one thing that can take`
-      + ` their money twice. Tell them exactly that — that you do not know whether it went through, and that they should check`
-      + ` their email or the shop — and ask whether to try again. Only their yes, given now, lets it through${row.cents ? `, and it would be ${money(row.cents)}` : ""}.`,
+      + ` their money twice. Tell them exactly that — that you do not know whether it went through — then search their mail yourself`
+      + ` (gmail_search for the shop's confirmation or receipt since then, gmail_read) and say what you found, or that nothing has come; if their email is not connected, say you can't see it and offer google_connect. Never tell them to check their email. Then ask whether to try again. Only their yes, given now, lets it through${row.cents ? `, and it would be ${money(row.cents)}` : ""}.`,
   };
 }
 
