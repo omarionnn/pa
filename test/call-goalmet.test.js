@@ -49,10 +49,11 @@ beforeEach(() => {
   clock.skip(MORNING - Date.now());
   delete process.env.REASON_WEB_DAILY;
   stamps.installStamps({ tell: null, delayMs: 0 });
-  db.db.exec("DELETE FROM accounts; DELETE FROM calls; DELETE FROM stamps; DELETE FROM tasks;");
+  db.db.exec("DELETE FROM accounts; DELETE FROM calls; DELETE FROM stamps; DELETE FROM tasks; DELETE FROM call_commitments;");
   db.upsertAccount({ conversationId: C, channel: "fake", address: "+12025551234", name: "Omari Nyarko", isOperator: true });
 });
 
+const at = (row, to) => { db.db.prepare("UPDATE calls SET to_number = ? WHERE id = ?").run(to, row.id); return db.getCall(C, row.id); };
 function call({ is_owner = 0, direction = "out", brief = "{}", ...fields } = {}) {
   const now = clock.now();
   const r = db.db.prepare(`INSERT INTO calls (conversation_id, provider, to_number, goal, is_owner, direction, brief, created_at, updated_at) VALUES (?, 'fake', '+16165550100', ?, ?, ?, ?, ?, ?)`)
@@ -135,4 +136,63 @@ test("something else settling the call first wins, and one call is asked about o
   assert.equal(asked, 1);
   assert.equal(db.getCall(C, row.id).outcome_kind, "voicemail_left");
   assert.equal(goal.goalPending(row.id), null);
+});
+
+test("security R2-I: a book-cleared call the read files as a machine keeps its label, and its redial stays ask-only with booking off", async () => {
+  const redial = await import("../src/calls/redial.js");
+  const BOOK = JSON.stringify({ goal: "Book a table for two Saturday at 8 under Omari.", approved: { book: true, maxCents: null, terms: [], upTo: "" } });
+  const next = { goal: "Book a table", approved: { book: true } };
+  const KIND = { recording: "machine_recording", voicemail_greeting: "voicemail_no_message", voicemail_not_set_up: "voicemail_full" };
+  let n = 0;
+  for (const how of Object.keys(KIND)) {
+    const to = `+1616555030${n++}`;
+    const row = at(call({ brief: BOOK, transcript: "Reason: Hi, a table for two Saturday at eight.\nThem: Sure, you're booked for Saturday at eight.\nThem: Please leave a message after the tone." }), to);
+    const r = await goal.settleGoal(C, row, { ask: async () => ({ value: { met: false, how, why: "a recording" } }) });
+    assert.equal(r.outcome_kind, KIND[how], `${how}: the label is as before`);
+    const again = redial.safeToRedial(C, { toNumber: to, brief: next });
+    assert.equal(again.mode, "ask", how);
+    assert.notEqual(again.brief?.approved?.book, true, how);
+  }
+  // Any commitment on the call (even a declined one, which the earlier checks do not look at): the same.
+  const c2 = at(call({ outcome_kind: "machine_recording" }), "+16165550399");
+  assert.equal(redial.safeToRedial(C, { toNumber: "+16165550399", brief: next }).mode, "retry", "asking-only, no commitment: a plain retry");
+  db.createCommitment(C, { callId: c2.id, what: "a table for two", state: "declined" });
+  assert.equal(redial.safeToRedial(C, { toNumber: "+16165550399", brief: next }).mode, "ask");
+  // Cleared to book but nothing on the line said a word (no answer): still a plain retry.
+  const c3 = at(call({ brief: BOOK, outcome_kind: "no_answer", transcript: "" }), "+16165550398");
+  assert.equal(redial.safeToRedial(C, { toNumber: "+16165550398", brief: next }).mode, "retry");
+});
+
+test("security R2-I: maybe-booked → ask-only check nobody answered → the next redial is still ask-only with booking off", async () => {
+  const redial = await import("../src/calls/redial.js");
+  const { askWhetherItWentThrough } = await import("../src/calls/brief.js");
+  const { config } = await import("../src/config.js");
+  const was = config.callMaxRetries;
+  config.callMaxRetries = 5;
+  try {
+    const BOOK = { goal: "Book a table for two Saturday at 8 under Omari.", approved: { book: true, maxCents: null, terms: [], upTo: "" } };
+    const next = { goal: "Book a table", approved: { book: true } };
+    const SPOKE = "Reason: Hi, a table for two Saturday at eight.\nThem: Sure, you're booked for Saturday at eight.";
+    const CHECK = JSON.stringify(askWhetherItWentThrough(BOOK, { what: BOOK.goal }));
+    for (const [n, follow] of [
+      ["no answer", { outcome_kind: "no_answer", transcript: "" }],
+      ["failed", { outcome_kind: "failed", transcript: "" }],
+      ["a check that reached a person and dropped", { outcome_kind: "dropped_before_confirmation", transcript: "Reason: Checking on a booking.\nThem: Hang on—" }],
+    ]) {
+      const to = `+161655504${String(n.length).padStart(2, "0")}`;
+      at(call({ brief: JSON.stringify(BOOK), transcript: SPOKE }), to); // dropped_before_confirmation: ask-only on main too
+      const first = redial.safeToRedial(C, { toNumber: to, brief: next });
+      assert.equal(first.mode, "ask", n);
+      at(call({ brief: CHECK, ...follow }), to);
+      const again = redial.safeToRedial(C, { toNumber: to, brief: next });
+      assert.equal(again.mode, "ask", n);
+      assert.notEqual(again.brief?.approved?.book, true, n);
+      assert.match(again.brief.goal, /^Find out whether this already went through, and change nothing: Book a table for two/, `${n}: the check is about the booking, not about the check`);
+    }
+    // Calls that could not have booked, rung out and rung again: a plain retry as before.
+    const to = "+16165550480";
+    at(call({ outcome_kind: "picked_up" }), to);
+    at(call({ outcome_kind: "no_answer", transcript: "" }), to);
+    assert.equal(redial.safeToRedial(C, { toNumber: to, brief: next }).mode, "retry");
+  } finally { config.callMaxRetries = was; }
 });

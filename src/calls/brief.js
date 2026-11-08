@@ -237,6 +237,11 @@ export function briefLines(brief, { ownerName = config.ownerName } = {}) {
  * It is a different goal (find out whether it went through) with booking switched off, and it is
  * built here so no caller has to remember to switch it off.
  */
+/** The opening of every "did it go through" check's goal; see isWentThroughCheck. */
+const CHECK_GOAL = "Find out whether this already went through, and change nothing:";
+/** Was this brief one of askWhetherItWentThrough's ask-only checks? */
+export const isWentThroughCheck = (brief) => String(brief?.goal ?? "").startsWith(CHECK_GOAL);
+
 export function askWhetherItWentThrough(brief, { what = "", then = null } = {}) {
   const thing = String(what || brief?.goal || "the booking").trim().replace(/[.!?\s]+$/, "");
   // What this call was asked to do NOW, when it is something other than the old errand. It rides
@@ -246,7 +251,7 @@ export function askWhetherItWentThrough(brief, { what = "", then = null } = {}) 
   const base = brief ?? next ?? {};
   return buildBrief({
     ...base,
-    goal: `Find out whether this already went through, and change nothing: ${thing}.`
+    goal: `${CHECK_GOAL} ${thing}.`
       + ` The last call dropped before it was confirmed, so it may or may not exist on their side.`
       + ` Ask them to check. If it IS there, read back what they have and confirm those details.`
       + ` If it is NOT there, say you will come back to them — do NOT make it now.`
