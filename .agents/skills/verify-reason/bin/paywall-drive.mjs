@@ -133,6 +133,14 @@ const issued = new URL(link).searchParams.get("client_reference_id");
 const pr = await hook({ client_reference_id: issued, customer: "cus_akua", subscription: "sub_akua" }, "evt_pl_issued");
 step("payment link: the reference Reason gave her pays her up", pr.status === 200 && plan.status(F).status === "paid" && plan.row(F).stripe_subscription_id === "sub_akua" && /^[A-Za-z0-9_-]{1,200}$/.test(issued) && issued !== forged, `${issued.length} chars`);
 process.env.STRIPE_PAYMENT_LINK_URL = "";
+// ---- one number, two texting lines: one trial, one grandfather decision (security, 2026-11-08)
+const G = "dm:fake:+13475550005", G2 = "dm:other:+13475550005";
+db.upsertAccount({ conversationId: G, channel: "fake", address: "+13475550005", name: "Yaa", isOperator: false });
+for (let i = 0; i < 10; i++) visit(G);
+db.upsertAccount({ conversationId: G2, channel: "other", address: "+13475550005", name: "Yaa", isOperator: false });
+db.db.prepare("UPDATE accounts SET joined_via_event = 1 WHERE conversation_id = ?").run(G2);
+visit(G2);
+step("second line, same number: the trial carries on (11 of 25), an event join there does not make it free", plan.status(G2).status === "trial" && plan.status(G2).sessions_used === 11 && plan.status(G).sessions_used === 11 && plan.status(G).status === "trial", plan.opsLabel(G2));
 fake.close();
 console.log(failed ? `FAILED (${failed})` : "all ok");
 process.exit(failed ? 1 : 0);

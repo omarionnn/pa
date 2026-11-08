@@ -154,8 +154,13 @@ export function grandfathered(conversationId) {
   // (accounts.joined_via_event, set by db.redeemEventClaim). Only people who came in on their own —
   // texting the number from an ad or the website — get the trial. Checked across every account on the
   // number, so an invitee whose number later shows up on another channel keeps it.
-  if (row?.invited_by || row?.joined_via_event) return true;
-  if (row?.address && q("SELECT 1 FROM accounts WHERE address = ? AND (invited_by IS NOT NULL OR joined_via_event IS NOT NULL) LIMIT 1").get(row.address)) return true;
+  // One decision per number (security, 2026-11-08): the invite or event counts only when it is how the
+  // number first came in — its earliest account. A number that already walked in on one line does not
+  // become free by redeeming an invite or joining an event from another line.
+  if (row?.address) {
+    if (q(`SELECT 1 FROM accounts WHERE address = ? AND (invited_by IS NOT NULL OR joined_via_event IS NOT NULL)
+             AND created_at <= (SELECT MIN(created_at) FROM accounts WHERE address = ?) LIMIT 1`).get(row.address, row.address)) return true;
+  } else if (row?.invited_by || row?.joined_via_event) return true;
   const ship = shipTs();
   if (row?.created_at && ship && row.created_at < ship) return true;
   // The same number moved channel after the cut-off (a new `dm:<channel>:<number>` account, made later):
@@ -169,11 +174,29 @@ export function grandfathered(conversationId) {
 
 // ---------------------------------------------------------------- the row
 
-export const row = (conversationId) => q("SELECT * FROM plan WHERE conversation_id = ?").get(conversationId) ?? null;
+// One plan per phone number, not per texting line (security, 2026-11-08): the conversation id embeds
+// the channel (dm:<channel>:<number>), so a second line used to start a fresh trial. Every read and
+// write goes to the number's plan row — the oldest one on any of its accounts — and only a number with
+// no row yet gets one under this conversation id.
+const linesOf = (conversationId) => {
+  const a = db.getAccount(conversationId);
+  if (!a?.address) return [conversationId];
+  const ids = q("SELECT conversation_id FROM accounts WHERE address = ? ORDER BY created_at, conversation_id").all(a.address).map(r => r.conversation_id);
+  return ids.includes(conversationId) ? ids : [conversationId, ...ids];
+};
+export function planId(conversationId) {
+  const a = db.getAccount(conversationId);
+  if (!a?.address) return conversationId;
+  const r = q(`SELECT p.conversation_id FROM plan p JOIN accounts a ON a.conversation_id = p.conversation_id
+               WHERE a.address = ? ORDER BY p.first_seen_at, p.conversation_id LIMIT 1`).get(a.address);
+  return r?.conversation_id ?? conversationId;
+}
+
+export const row = (conversationId) => q("SELECT * FROM plan WHERE conversation_id = ?").get(planId(conversationId)) ?? null;
 
 function ensure(conversationId, now = clock.now()) {
   q(`INSERT INTO plan (conversation_id, sessions_used, first_seen_at, status, updated_at) VALUES (?, 0, ?, 'trial', ?)
-     ON CONFLICT(conversation_id) DO NOTHING`).run(conversationId, now, now);
+     ON CONFLICT(conversation_id) DO NOTHING`).run(planId(conversationId), now, now);
   return row(conversationId);
 }
 
@@ -183,7 +206,7 @@ function write(conversationId, fields, now = clock.now()) {
   const keys = Object.keys(fields).filter(k => COLUMNS.has(k));
   if (!keys.length) return row(conversationId);
   q(`UPDATE plan SET ${keys.map(k => `${k} = ?`).join(", ")}, updated_at = ? WHERE conversation_id = ?`)
-    .run(...keys.map(k => fields[k]), now, conversationId);
+    .run(...keys.map(k => fields[k]), now, planId(conversationId));
   return row(conversationId);
 }
 
@@ -389,7 +412,7 @@ export async function afterTurn({ conversationId, router = null, sleep = realSle
     const counts = await recapCounts(conversationId);
     const bubbles = askBubbles({ counts, url, name: account?.name ? firstName(account.name) : "", sessions: r.sessions_used }).slice(0, Math.max(3, config.maxBubbles));
     // Claimed before the first send so a second drain in the same moment cannot say it twice.
-    if (q("UPDATE plan SET asked_at = ?, ask_due = 0, updated_at = ? WHERE conversation_id = ? AND asked_at IS NULL").run(now, now, conversationId).changes !== 1) return { did: "nothing" };
+    if (q("UPDATE plan SET asked_at = ?, ask_due = 0, updated_at = ? WHERE conversation_id = ? AND asked_at IS NULL").run(now, now, planId(conversationId)).changes !== 1) return { did: "nothing" };
     const sent = await sayBubbles({ conversationId, router, bubbles, key: `paywall:ask:${conversationId}`, sleep, log });
     log({ paywall_asked: conversationId, sessions: r.sessions_used, bubbles: bubbles.length, sent });
     return { did: "asked", bubbles, sent };
@@ -431,9 +454,11 @@ async function sayBubbles({ conversationId, router, bubbles, key, sleep, log }) 
 export async function hold(conversationId, { log = () => {}, now = clock.now() } = {}) {
   const pause = await import("./pause.js");
   let paused = false;
-  if (!pause.isPaused(conversationId)) {
-    try { paused = !!pause.pauseAll({ conversationId, said: "free trial ended", now }).ok; }
-    catch (e) { log({ paywall_hold_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); }
+  // Every line of the number: the plan is the number's, so is the hold.
+  for (const c of linesOf(conversationId)) {
+    if (pause.isPaused(c)) continue;
+    try { paused = !!pause.pauseAll({ conversationId: c, said: "free trial ended", now }).ok || paused; }
+    catch (e) { log({ paywall_hold_failed: c, why: (e?.message ?? String(e)).split("\n")[0] }); }
   }
   write(conversationId, { held_at: paused ? now : -1 }, now);
   log({ paywall_held: conversationId, paused });
@@ -447,9 +472,12 @@ export async function release(conversationId, { log = () => {}, now = clock.now(
   let resumed = false;
   if (r.held_at > 0) {
     const pause = await import("./pause.js");
-    if (pause.isPaused(conversationId)) {
-      try { resumed = !!pause.resumeAll({ conversationId, now }).ok; }
-      catch (e) { log({ paywall_release_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); }
+    // Only the lines the hold paused (paused at the hold's moment or later); a pause they asked for
+    // themselves before it is left alone.
+    for (const c of linesOf(conversationId)) {
+      if (!pause.isPaused(c) || (pause.pausedAt(c) ?? 0) < r.held_at) continue;
+      try { resumed = !!pause.resumeAll({ conversationId: c, now }).ok || resumed; }
+      catch (e) { log({ paywall_release_failed: c, why: (e?.message ?? String(e)).split("\n")[0] }); }
     }
   }
   write(conversationId, { held_at: null }, now);
