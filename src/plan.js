@@ -37,6 +37,7 @@ import * as db from "./db.js";
 import { config, clock } from "./config.js";
 import * as stripe from "./stripe.js";
 import * as stamps from "./stamps.js";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const TRIAL_SESSIONS = Number(process.env.REASON_PAYWALL_SESSIONS || 25);
 /** The trial's hard end when no win has landed: the ask goes here whatever the record says. */
@@ -265,10 +266,31 @@ export function hasWin(conversationId) {
 
 // ---------------------------------------------------------------- the link
 
-/** Who a Stripe object is for: a token safe in a Payment Link's client_reference_id (letters, digits, - and _). */
-export const refFor = (conversationId) => Buffer.from(String(conversationId), "utf8").toString("base64url");
+/**
+ * Who a Stripe object is for: a token safe in a Payment Link's client_reference_id (letters, digits,
+ * - and _, at most 200). base64url(conversationId) followed by a 22-character HMAC of it under the
+ * server's REASON_TOKEN_KEY. Signed since 2026-11-07 (security): a Payment Link's reference is typed
+ * by whoever opens the link, so a plain encoding of somebody's number let a payer bind their own
+ * subscription to that person (and lapse them by cancelling). Only a reference the server issued
+ * reads back; anything else is null.
+ */
+const SIG_LEN = 22; // 16 bytes of HMAC-SHA256, base64url
+const refSig = (body) => {
+  const key = String(process.env.REASON_TOKEN_KEY ?? "").trim();
+  return key ? createHmac("sha256", key).update(`reason pay ref v1:${body}`).digest().subarray(0, 16).toString("base64url") : "";
+};
+export const refFor = (conversationId) => { const body = Buffer.from(String(conversationId), "utf8").toString("base64url"); return body + refSig(body); };
 export function conversationOfRef(ref) {
-  try { const s = Buffer.from(String(ref ?? ""), "base64url").toString("utf8"); return /^[\w:+.@-]{1,120}$/.test(s) ? s : null; } catch { return null; }
+  try {
+    const r = String(ref ?? "");
+    if (r.length <= SIG_LEN) return null;
+    const body = r.slice(0, -SIG_LEN), want = refSig(body);
+    if (!want) return null;
+    const given = Buffer.from(r.slice(-SIG_LEN)), expected = Buffer.from(want);
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
+    const s = Buffer.from(body, "base64url").toString("utf8");
+    return /^[\w:+.@-]{1,120}$/.test(s) ? s : null;
+  } catch { return null; }
 }
 
 // Where Stripe sends a person afterwards: the website (heyreason.com proxies /pay/* to this server,
@@ -493,9 +515,12 @@ export function when(ms, conversationId = null) {
 // ---------------------------------------------------------------- Stripe telling us
 
 /** The conversation a Stripe object is about: our reference first, then the ids we already hold. */
-function conversationFor(obj) {
+function conversationFor(obj, log = () => {}) {
   const byRef = conversationOfRef(obj?.client_reference_id);
   if (byRef && db.getAccount(byRef)) return byRef;
+  // A reference the server did not issue (typed into a Payment Link, or from before refs were signed)
+  // binds nobody; the server-set metadata and the ids already on record still can.
+  if (obj?.client_reference_id && !byRef) log({ stripe_ref_unsigned: true, object: String(obj?.id ?? "").slice(0, 80) });
   const meta = obj?.metadata?.conversation_id;
   if (meta && db.getAccount(meta)) return meta;
   const subId = typeof obj?.subscription === "string" ? obj.subscription : obj?.object === "subscription" ? obj.id : null;
@@ -535,7 +560,7 @@ export async function handleStripeEvent(event, { say = null, log = () => {}, now
 async function actOn(event, { say, log, now }) {
   const type = String(event.type);
   const obj = event?.data?.object ?? {};
-  const conversationId = conversationFor(obj);
+  const conversationId = conversationFor(obj, log);
   if (!conversationId) { log({ stripe_webhook: type, unmatched: true }); return { ok: true, matched: false }; }
   // Somebody the paywall does not reach (everybody but the operator under `owner`), or somebody free for
   // good (before the flip, invited, the operator under `on`): an old test subscription ending, renewing or
@@ -549,9 +574,15 @@ async function actOn(event, { say, log, now }) {
   switch (type) {
     case "checkout.session.completed": {
       const before = row(conversationId)?.status;
+      // Already paying on a live subscription: a second checkout never replaces the ids on record, so
+      // their renewals and their cancel-by-text keep pointing at the subscription that is theirs.
+      const liveSub = before === "paid" ? row(conversationId)?.stripe_subscription_id : "";
+      const newSub = typeof obj.subscription === "string" ? obj.subscription : "";
+      const keepIds = !!(liveSub && newSub && liveSub !== newSub);
+      if (keepIds) log({ stripe_second_subscription: conversationId, kept: liveSub.slice(0, 40), not_stored: newSub.slice(0, 40) });
       await markPaid(conversationId, {
-        customerId: typeof obj.customer === "string" ? obj.customer : "",
-        subscriptionId: typeof obj.subscription === "string" ? obj.subscription : "",
+        customerId: !keepIds && typeof obj.customer === "string" ? obj.customer : "",
+        subscriptionId: keepIds ? "" : newSub,
         paidUntil: null, log, now,
       });
       if (before !== "paid") tell(PAID_LINE);

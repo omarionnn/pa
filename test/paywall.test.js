@@ -598,3 +598,63 @@ test("scripts/plan-set.js sets a plan by hand, dry run first", async () => {
   assert.equal(run(["+19999999999", "free"]).ok, false);
   assert.ok(run(["--list"]).people.some(p => p.conversation === c));
 });
+
+// ---------------------------------------------------------------- Payment Link references (security, 2026-11-07)
+// In Payment Link mode the payer can type any client_reference_id into the link. Only a reference the
+// server issued to that person (signed with a server secret) binds a payment to them; a plain one made
+// from somebody's number is ignored and logged, and never takes over their plan or subscription ids.
+
+const forgedRef = (c) => Buffer.from(String(c), "utf8").toString("base64url");
+
+test("payment link: a reference made from somebody's number (not issued by the server) cannot bind a payer's subscription to them", async () => {
+  process.env.STRIPE_PAYMENT_LINK_URL = "https://buy.stripe.com/test_abc";
+  try {
+    // A paid person with their own subscription.
+    const { c: paidOne } = newcomer("Esi");
+    sessions(paidOne, 2);
+    await deliver(checkoutDone(paidOne, { id: "evt_pl_own", customer: "cus_v", subscription: "sub_v" }));
+    assert.equal(plan.status(paidOne).status, "paid");
+    // Somebody on the trial.
+    const { c: trialOne } = newcomer("Kofi");
+    sessions(trialOne, 2);
+    const logs = [];
+    const forged = (c, id, cus, sub) => ({ id, type: "checkout.session.completed", data: { object: { id: `cs_${id}`, object: "checkout.session", client_reference_id: forgedRef(c), customer: cus, subscription: sub, mode: "subscription", payment_link: "plink_1" } } });
+    await plan.handleStripeEvent(forged(paidOne, "evt_pl_f1", "cus_a", "sub_a"), { log: (x) => logs.push(x) });
+    await plan.handleStripeEvent(forged(trialOne, "evt_pl_f2", "cus_a2", "sub_a2"), { log: (x) => logs.push(x) });
+    assert.equal(plan.row(paidOne).stripe_subscription_id, "sub_v", "their own subscription id stays");
+    assert.equal(plan.row(paidOne).stripe_customer_id, "cus_v");
+    assert.equal(plan.status(trialOne).status, "trial", "a stranger's payment does not make them paid");
+    assert.equal(plan.row(trialOne)?.stripe_subscription_id ?? "", "");
+    assert.ok(logs.some(x => x.stripe_ref_unsigned), "the forged reference is logged");
+    // The payer cancels: nothing happens to either of them.
+    await plan.handleStripeEvent({ id: "evt_pl_f3", type: "customer.subscription.deleted", data: { object: { id: "sub_a", object: "subscription", customer: "cus_a", status: "canceled", current_period_end: 1 } } });
+    await plan.handleStripeEvent({ id: "evt_pl_f4", type: "customer.subscription.deleted", data: { object: { id: "sub_a2", object: "subscription", customer: "cus_a2", status: "canceled", current_period_end: 1 } } });
+    assert.equal(plan.status(paidOne).status, "paid");
+    assert.ok(!pause.isPaused(paidOne), "not held");
+    assert.equal(plan.status(trialOne).status, "trial");
+    assert.ok(!pause.isPaused(trialOne));
+    // The link the server hands them still works for them.
+    const url = await plan.payLink(trialOne);
+    const ref = new URL(url).searchParams.get("client_reference_id");
+    assert.match(ref, /^[A-Za-z0-9_-]{1,200}$/, "a Payment Link's client_reference_id allows only these, up to 200");
+    assert.notEqual(ref, forgedRef(trialOne));
+    await plan.handleStripeEvent({ id: "evt_pl_ok", type: "checkout.session.completed", data: { object: { object: "checkout.session", client_reference_id: ref, customer: "cus_k", subscription: "sub_k" } } });
+    assert.equal(plan.status(trialOne).status, "paid");
+    assert.equal(plan.row(trialOne).stripe_subscription_id, "sub_k");
+    // A signed reference with one character changed is ignored.
+    const bent = ref.slice(0, -1) + (ref.endsWith("A") ? "B" : "A");
+    assert.equal(plan.conversationOfRef(bent), null);
+  } finally { process.env.STRIPE_PAYMENT_LINK_URL = ""; }
+});
+
+test("a second checkout while a subscription is live keeps the live subscription ids", async () => {
+  const { c } = newcomer("Yaw");
+  sessions(c, 2);
+  await deliver(checkoutDone(c, { id: "evt_live_1", customer: "cus_l1", subscription: "sub_l1" }));
+  const logs = [];
+  await plan.handleStripeEvent(checkoutDone(c, { id: "evt_live_2", customer: "cus_l2", subscription: "sub_l2" }), { log: (x) => logs.push(x) });
+  assert.equal(plan.status(c).status, "paid");
+  assert.equal(plan.row(c).stripe_subscription_id, "sub_l1");
+  assert.equal(plan.row(c).stripe_customer_id, "cus_l1");
+  assert.ok(logs.some(x => x.stripe_second_subscription));
+});
