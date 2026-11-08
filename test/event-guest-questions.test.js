@@ -303,9 +303,26 @@ test("a guest changes their own answers on their event page; same-origin, guests
   assert.equal(saved.status, 303);
   assert.match(saved.headers.Location, /saved=answers#answers$/);
   assert.deepEqual(db.answersOf(ev.id, g.ama.id).map(a => a.answer), ["Vegan", "Kojo"]);
-  // Blank clears.
-  await req(h, ev, { sub: "answers", method: "POST", cookie: COOKIE.ama, body: form({ [`q_${q.food.question_id}`]: "1", [`q_${q.plus.question_id}`]: "" }) });
+  // Blank clears what the page showed; "No answer" takes a pick back.
+  const shownNow = { [`qo_${q.food.question_id}`]: "1", [`qo_${q.plus.question_id}`]: "Kojo" };
+  await req(h, ev, { sub: "answers", method: "POST", cookie: COOKIE.ama, body: form({ ...shownNow, [`q_${q.food.question_id}`]: "1", [`q_${q.plus.question_id}`]: "" }) });
   assert.deepEqual(db.answersOf(ev.id, g.ama.id).map(a => a.answer), ["Vegan"]);
+  assert.match((await req(h, ev, { cookie: COOKIE.ama })).body, /value="" ?> <span>No answer<\/span>/);
+  await req(h, ev, { sub: "answers", method: "POST", cookie: COOKIE.ama, body: form({ [`qo_${q.food.question_id}`]: "1", [`q_${q.food.question_id}`]: "", [`qo_${q.plus.question_id}`]: "", [`q_${q.plus.question_id}`]: "" }) });
+  assert.deepEqual(db.answersOf(ev.id, g.ama.id).map(a => a.answer), []);
+  // A page opened before an answer given by text: saving it untouched neither wipes nor overwrites that answer.
+  const stale = { [`qo_${q.food.question_id}`]: "", [`q_${q.food.question_id}`]: "", [`qo_${q.plus.question_id}`]: "", [`q_${q.plus.question_id}`]: "" };
+  questions.answerQuestion(ev, g.ama, q.plus.question_id, { text: "Said by text" });
+  questions.answerQuestion(ev, g.ama, q.food.question_id, { choice: 2 });
+  await req(h, ev, { sub: "answers", method: "POST", cookie: COOKIE.ama, body: form(stale) });
+  assert.deepEqual(db.answersOf(ev.id, g.ama.id).map(a => a.answer), ["No restrictions", "Said by text"]);
+  // A question reworded since the page opened: nothing at all is saved.
+  questions.addQuestion(ev, { kind: "text", prompt: "Arriving when?" });
+  const late = questions.questionsOf(ev)[2];
+  questions.rewordQuestion(ev, { questionId: late.question_id, kind: "text", prompt: "Arriving around when?" });
+  const half = await req(h, ev, { sub: "answers", method: "POST", cookie: COOKIE.ama, body: form({ [`q_${q.plus.question_id}`]: "New name", [`qo_${q.plus.question_id}`]: "Said by text", [`qv_${q.plus.question_id}`]: "1", [`q_${late.question_id}`]: "9pm", [`qv_${late.question_id}`]: "1" }) });
+  assert.match(unesc(half.body), /The host changed a question since you opened this page/);
+  assert.deepEqual(db.answersOf(ev.id, g.ama.id).map(a => a.answer), ["No restrictions", "Said by text"], "nothing half-saved");
   const back = await req(h, ev, { cookie: COOKIE.ama, query: { saved: "answers" } });
   assert.match(back.body, /Saved\./);
 });
@@ -387,6 +404,26 @@ test("the manage page adds, rewords and removes through a confirm step; a remova
   // A guest's browser can't post to the organizer's page.
   const guestPost = await post(h, ev, { action: "question", step: "do", prompt: "x?", kind: "text" }, COOKIE.ama);
   assert.equal(guestPost.status, 404);
+});
+
+test("answers go when a guest leaves or is taken off; a rejoin starts empty; a spent claim keeps no copy", async () => {
+  const h = harness();
+  const { ev, g, q } = await party(h);
+  questions.answerQuestion(ev, g.ama, q.food.question_id, { choice: 0 });
+  questions.answerQuestion(ev, g.kofi, q.food.question_id, { choice: 1 });
+  db.leaveAttendee(g.ama.id);
+  assert.equal(db.answersOf(ev.id, g.ama.id).length, 0, "left: answers gone");
+  await tool("event_guest_remove", { event_id: ev.id, guest_id: g.kofi.id }, OWNER_C, h.runtime);
+  assert.equal(db.answersOf(ev.id, g.kofi.id).length, 0, "taken off: answers gone");
+  // Nobody's answers left, so the question can be reworded again, and the page and the lock agree.
+  assert.equal(questions.answerCount(q.food.question_id), 0);
+  assert.equal(questions.planQuestion(ev, { questionId: q.food.question_id, kind: "text", prompt: "Food?" }).ok, true);
+  await tool("event_join", { name: "Rooftop Night", password: "skyline" }, C.ama, h.runtime);
+  assert.equal(db.answersOf(ev.id, db.attendeeRow(ev.id, C.ama).id).length, 0, "rejoin starts empty");
+  const page = await req(h, ev, { sub: "join", method: "POST", body: form({ password: "skyline", display_name: "Nana", [`q_${q.plus.question_id}`]: "Akos" }) });
+  const code = codeOf(page.body);
+  await h.router.deliver(texts(NEW1, `Hi Reason, I'm joining Rooftop Night with code ${code[1]}-${code[2]}`));
+  assert.equal(db.eventClaimByCode(`${code[1]}${code[2]}`).answers, null, "the spent claim keeps no copy");
 });
 
 test("answers are filed cleanly for join stats: one row per guest per question, first answer time kept, theirs in a delete", async () => {

@@ -166,15 +166,18 @@ const timeOnly = (ev) => new Date(ev.starts_at).toLocaleString("en-US", { timeZo
  * words they read, so an answer is never filed under words the organizer changed meanwhile.
  * `v2` draws them in the v2 pages' type; otherwise in the classic page's.
  */
-export function questionFields(ev, values = {}, { v2 = true, heading = "THE HOST ASKS · ALL OPTIONAL" } = {}) {
+export function questionFields(ev, values = {}, { v2 = true, heading = "THE HOST ASKS · ALL OPTIONAL", own = false } = {}) {
   const list = questions.questionsOf(ev);
   if (!list.length) return "";
   const field = (q) => {
     const name = `q_${q.question_id}`;
     const have = values[name] == null ? "" : String(values[name]);
-    const ver = `<input type="hidden" name="qv_${q.question_id}" value="${esc(q.version)}">`;
+    // On a guest's own answers form, what the page showed: a field left as it was is not touched.
+    const ver = `<input type="hidden" name="qv_${q.question_id}" value="${esc(q.version)}">${own ? `<input type="hidden" name="qo_${q.question_id}" value="${esc(have)}">` : ""}`;
     if (q.kind === "choice") {
-      const picks = q.choices.map((c, i) => `<label class="${v2 ? "check pick" : "pick"}"><input type="radio" name="${name}" value="${i}"${have === String(i) ? " checked" : ""}> <span>${esc(c)}</span></label>`).join("");
+      const radio = (value, label) => `<label class="${v2 ? "check pick" : "pick"}"><input type="radio" name="${name}" value="${value}"${have === value ? " checked" : ""}> <span>${esc(label)}</span></label>`;
+      // Their own form can take an answer back: "No answer" is a pick of its own there.
+      const picks = q.choices.map((c, i) => radio(String(i), c)).join("") + (own ? radio("", "No answer") : "");
       return `<fieldset class="qq"><legend>${esc(q.prompt)}</legend>${picks}${ver}</fieldset>`;
     }
     return v2
@@ -198,7 +201,7 @@ function ownValues(ev, att) {
 /** A joined guest's own answers, on their page, to change any time. Empty when the event asks nothing. */
 function answersBlock(ev, att, { v2 = true, saved = false, error = "" } = {}) {
   if (!questions.hasQuestions(ev)) return "";
-  const fields = questionFields(ev, ownValues(ev, att), { v2, heading: "YOUR ANSWERS FOR THE HOST" });
+  const fields = questionFields(ev, ownValues(ev, att), { v2, heading: "YOUR ANSWERS FOR THE HOST", own: true });
   const note = saved ? (v2 ? `<p class="quiet" role="status">Saved.</p>` : `<p class="ev-note" role="status">Saved.</p>`) : "";
   const err = error ? (v2 ? `<p class="err" role="alert">${esc(error)}</p>` : `<p class="ev-err">${esc(error)}</p>`) : "";
   return v2
@@ -589,11 +592,15 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     const read = questions.readForm(ev, (k) => form.get(k));
     const shown = (error) => page(200, renderJoined({ ev, att: mine.att, error }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
     if (read.problems.length) return shown(`${read.problems[0].prompt}: ${questions.ANSWER_WHY[read.problems[0].problem] ?? "that answer didn't read."}`);
-    // A question reworded since this page was opened: its answer is not filed, and the page says so.
+    // A question reworded (or removed) since this page was opened: nothing is saved, and the page shows the new words.
+    const now = new Map(db.eventQuestions(ev.id).map(q => [q.id, q.version]));
+    if (read.answers.some(a => now.get(a.q) !== a.v)) return shown("The host changed a question since you opened this page. Check it and save again.");
     const filed = questions.saveAnswers(ev, mine.att, read.answers, "page");
-    for (const id of read.cleared) db.clearEventAnswer(id, mine.att.id);
-    log({ event_answers_saved: ev.id, filed, cleared: read.cleared.length });
-    if (filed < read.answers.length) return shown("The host changed a question since you opened this page. Check it and save again.");
+    // A clear takes back only the answer the page showed: one given by text since then stays.
+    const current = ownValues(ev, mine.att);
+    let cleared = 0;
+    for (const c of read.cleared) if (current[`q_${c.id}`] === c.was && db.clearEventAnswer(c.id, mine.att.id)) cleared++;
+    log({ event_answers_saved: ev.id, filed, cleared });
     return redirect(`/e/${ev.public_id}?saved=answers#answers`);
   }
 

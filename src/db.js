@@ -13193,6 +13193,8 @@ export function addAttendeeTx({ eventId, conversationId, displayName, instagram 
   // On the list by choice only when guests can see the list as they join (see list_chosen).
   const chosen = inDirectory && ev.guest_list_visible ? 1 : 0;
   if (prior) {
+    // A rejoin starts with no answers: anything left from before is not theirs to have given again.
+    dropAnswersOf(prior.id);
     db.prepare(`UPDATE event_attendees SET state = 'joined', display_name = ?, instagram = ?, in_directory = ?, list_chosen = ?, muted = 0, via = ?, token = ?,
       first_joined_at = COALESCE(first_joined_at, joined_at), joined_at = ?, left_at = NULL, updated_at = ? WHERE id = ?`).run(displayName, instagram, inDirectory ? 1 : 0, chosen, via, newEventToken(32), now, now, prior.id);
   } else {
@@ -13216,8 +13218,15 @@ export function addAttendee(args) {
 
 /** Leave an event, only from joined: a removal that landed a moment earlier is not turned into a leave. */
 export function leaveAttendee(id) {
-  return db.prepare("UPDATE event_attendees SET state = 'left', left_at = ?, updated_at = ? WHERE id = ? AND state = 'joined' AND role = 'guest'")
+  const left = db.prepare("UPDATE event_attendees SET state = 'left', left_at = ?, updated_at = ? WHERE id = ? AND state = 'joined' AND role = 'guest'")
     .run(clock.now(), clock.now(), Number(id)).changes === 1;
+  // Their answers to the organizer's questions go with them: a guest who comes back answers afresh.
+  if (left) dropAnswersOf(id);
+  return left;
+}
+/** A guest's answers on the event they are leaving or were taken off. */
+export function dropAnswersOf(attendeeId) {
+  db.prepare("DELETE FROM event_answers WHERE attendee_id = ?").run(Number(attendeeId));
 }
 
 const ATTENDEE_FIELDS = new Set(["display_name", "instagram", "in_directory", "muted", "state", "left_at", "list_chosen"]);
@@ -13228,6 +13237,7 @@ export function updateAttendeeRow(id, fields) {
   if (Number(fields.in_directory) === 1) {
     db.prepare(`UPDATE event_attendees SET list_chosen = 1 WHERE id = ? AND (in_directory = 0 OR (SELECT guest_list_visible FROM events WHERE events.id = event_attendees.event_id) = 1)`).run(Number(id));
   }
+  if (fields.state === "removed" || fields.state === "left") dropAnswersOf(id);
   if (keys.length) {
     db.prepare(`UPDATE event_attendees SET ${keys.map(k => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
       .run(...keys.map(k => fields[k]), clock.now(), Number(id));
@@ -13383,6 +13393,8 @@ export function insertEventClaim({ eventId, passwordVersion, displayName, instag
   const now = clock.now();
   for (let i = 0; i < 5; i++) {
     try {
+      // Answers on a claim nobody finished are not kept past its life: cleared as new claims are made.
+      if (i === 0) db.prepare("UPDATE event_claims SET answers = NULL WHERE answers IS NOT NULL AND state = 'open' AND expires_at <= ?").run(now);
       const shown = getEventRow(eventId)?.guest_list_visible ? 1 : 0;
       const id = Number(db.prepare(`INSERT INTO event_claims (event_id, code, password_version, display_name, instagram, in_directory, list_shown, answers, state, created_at, expires_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`).run(Number(eventId), newClaimCode(), passwordVersion, displayName, instagram, inDirectory ? 1 : 0, shown, answers?.length ? JSON.stringify(answers) : null, now, now + ttlMs).lastInsertRowid);
@@ -13465,7 +13477,8 @@ export function redeemEventClaim({ code, channel, address, existingConversationI
     const added = addAttendeeTx({ eventId: ev.id, conversationId, displayName: claim.display_name, instagram: claim.instagram, inDirectory, via: "web_text", newAccount });
     if (!added.ok) return fail(added.reason);
     const now = clock.now();
-    const won = db.prepare("UPDATE event_claims SET state = 'used', used_at = ?, used_by = ? WHERE id = ? AND state = 'open'").run(now, conversationId, claim.id);
+    // The page's answers are filed below; the claim keeps no copy of them once spent.
+    const won = db.prepare("UPDATE event_claims SET state = 'used', used_at = ?, used_by = ?, answers = NULL WHERE id = ? AND state = 'open'").run(now, conversationId, claim.id);
     if (won.changes !== 1) return fail("used");
     // What they answered on the join page, filed now that they are in — and only under a question
     // still worded as it was when they read it (a reworded or removed one drops that answer).

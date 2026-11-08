@@ -181,15 +181,21 @@ export function answerQuestion(ev, att, questionId, { choice = null, text = null
 
 /**
  * A join (or answers) form, read: `q_<id>` carries the typed words or the picked index, `qv_<id>` the
- * version the guest read. A blank is a skip. `{ answers: [{ q, v, choice, answer }], problems: [...] }`
- * — answers in the shape a join claim keeps (db.fileClaimAnswers), problems for the page to say.
+ * version the guest read, and — on a joined guest's own answers form only — `qo_<id>` the value the
+ * page showed. A blank is a skip. A field left as the page showed it is not touched (an answer given
+ * by text since the page opened is not overwritten or wiped), and a blank is a clear only where the
+ * page showed an answer. `{ answers: [{ q, v, choice, answer }], problems, cleared: [{ id, was }] }` —
+ * answers in the shape a join claim keeps (db.fileClaimAnswers), problems for the page to say.
  */
 export function readForm(ev, get) {
   const answers = [], problems = [], cleared = [];
   for (const q of db.eventQuestions(ev.id)) {
     const raw = get(`q_${q.id}`);
+    const was = get(`qo_${q.id}`);
     const v = Number(get(`qv_${q.id}`) ?? q.version);
-    if (raw == null || String(raw).trim() === "") { cleared.push(q.id); continue; }
+    const val = raw == null ? "" : String(raw).trim();
+    if (was != null && val === String(was)) continue;
+    if (!val) { if (was) cleared.push({ id: q.id, was: String(was) }); continue; }
     const a = q.kind === "choice" ? readAnswer(q, { choice: /^\d+$/.test(String(raw)) ? Number(raw) : -1 }) : readAnswer(q, { text: raw });
     if (!a.ok) { problems.push({ question_id: q.id, prompt: q.prompt, problem: a.problem }); continue; }
     answers.push({ q: q.id, v, choice: a.choice, answer: a.answer });

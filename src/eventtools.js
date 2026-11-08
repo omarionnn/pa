@@ -276,9 +276,9 @@ export function capacityLine(st) {
  */
 const QUESTION_INPUT = (input) => ({ questionId: input.action === "change" ? input.question_id ?? -1 : null, kind: input.kind, prompt: input.prompt, choices: input.choices ?? null });
 export function questionsNeedYes(conversationId, input) {
-  if (input?.action !== "add" && input?.action !== "change") return false;
-  const ev = events.managed(conversationId, input.event_id);
-  return !!ev && questions.planQuestion(ev, QUESTION_INPUT(input)).ok;
+  // Always, for an add or a change: anything that can't be saved is refused before the gate
+  // (questionsRefusal), so this never decides by whether the check passes.
+  return input?.action === "add" || input?.action === "change";
 }
 export function questionsTarget(conversationId, input) {
   const ev = events.managed(conversationId, input.event_id);

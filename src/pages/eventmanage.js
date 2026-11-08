@@ -969,7 +969,7 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
       const out = await run("event_questions", qid != null
         ? { action: "change", question_id: qid, prompt: q.prompt, kind: q.kind, ...(q.choices ? { choices: q.choices } : {}) }
         : { action: "add", prompt: q.prompt, kind: q.kind, ...(q.choices ? { choices: q.choices } : {}) });
-      if (!out?.ok) return oops(out?.error ?? "That didn't save.", { question: draft });
+      if (!out?.ok) return oops(questions.WHY[out?.problem] ?? "That didn't save.", { question: draft });
       log({ event_manage_question: own.id, reworded: qid != null });
       return back(own, "questions", qid != null ? { done: "question_reworded" } : { done: "question_added", g: String(questions.alreadyIn(own)) });
     }
@@ -980,28 +980,21 @@ export async function manageRequest({ ev, method, headers = {}, readBody, accoun
       const q = Number.isInteger(qid) ? db_question(own, qid) : null;
       if (!q) return oops(questions.WHY.not_found);
       const n = questions.answerCount(qid);
-      if (step === "review" && n > 0) {
-        return page(200, renderConfirm({
-          ev: own, title: "Remove this question?", danger: true,
-          sentences: [`${plural(n, "guest")} answered it. Removing it deletes ${n === 1 ? "that answer" : "those answers"} for good.`, "New guests won't be asked it. Nobody is texted."],
-          extra: questionPreview(q),
-          fields: { action: "question_remove", step: "do", qid: String(qid), n: String(n) },
-          confirm: n === 1 ? "Remove it and its answer" : `Remove it and ${n} answers`, back: "Keep it",
-        }));
-      }
+      const confirmRemove = (count, notice = null) => page(200, renderConfirm({
+        ev: own, title: "Remove this question?", danger: true, notice,
+        sentences: [`${plural(count, "guest")} answered it. Removing it deletes ${count === 1 ? "that answer" : "those answers"} for good.`, "New guests won't be asked it. Nobody is texted."],
+        extra: questionPreview(q),
+        fields: { action: "question_remove", step: "do", qid: String(qid), n: String(count) },
+        confirm: count === 1 ? "Remove it and its answer" : `Remove it and ${count} answers`, back: "Keep it",
+      }));
+      if (step === "review" && n > 0) return confirmRemove(n);
       if (step !== "review" && step !== "do") return redirect(homePath(own));
       // The answers that go are the ones the organizer was shown: more since then, and they see it again.
-      if (n > 0 && f.get("n") !== String(n)) {
-        return page(200, renderConfirm({
-          ev: own, title: "Remove this question?", danger: true, notice: "More guests answered since you looked. Check it again.",
-          sentences: [`${plural(n, "guest")} answered it. Removing it deletes ${n === 1 ? "that answer" : "those answers"} for good.`, "New guests won't be asked it. Nobody is texted."],
-          extra: questionPreview(q),
-          fields: { action: "question_remove", step: "do", qid: String(qid), n: String(n) },
-          confirm: n === 1 ? "Remove it and its answer" : `Remove it and ${n} answers`, back: "Keep it",
-        }));
-      }
+      if (n > 0 && f.get("n") !== String(n)) return confirmRemove(n, "More guests answered since you looked. Check it again.");
       const out = await run("event_questions", { action: "remove", question_id: qid, delete_answers: n > 0 });
-      if (!out?.ok) return oops(out?.error ?? "That didn't go through.");
+      // The first answer landed between the check and the removal: shown the count, never the model's words.
+      if (out?.problem === "has_answers") return confirmRemove(out.answers, "A guest answered it just now. Check it again.");
+      if (!out?.ok) return oops("That didn't go through. The question is still there.");
       return back(own, "questions", { done: "question_removed", n: String(out.answers_deleted ?? 0) });
     }
 
