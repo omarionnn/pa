@@ -691,3 +691,11 @@ test("cold review: the CLI stream — a TOOL line is a tool only once its JSON b
   const never = [...q.push("TOOL weather"), ...q.push(" is what I'd call it."), ...q.end()];
   assert.ok(!never.some(e => e.type === "tool_start"), JSON.stringify(never));
 });
+
+test("drive 11-08: the weather with nothing to go on says to ask them where they are — not another round of tools", async () => {
+  const none = await tools.runTool("weather", {}, { conversationId: C });
+  assert.equal(none.ok, false);
+  assert.match(none.next, /ask them out loud where they are/);
+  const t = tools.TOOLS?.find?.(x => x.name === "weather") ?? null;
+  if (t) assert.match(t.description, /ask them where they are/);
+});

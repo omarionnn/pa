@@ -6559,7 +6559,7 @@ export const tools = [
   },
   {
     name: "weather",
-    description: "The live weather where someone is or is going: current temperature, sky, wind, and today's high, low and rain chance, with how old the reading is. ALWAYS use this for the weather, never web_search (a search snippet has no coordinates and is often hours old). Give `latitude`/`longitude` from get_location or nearby_places, or `place` — the name of one of their saved places (\"work\", \"home\") — and it uses that place's coordinates. With no coordinates and no saved place that fits, call get_location first.",
+    description: "The live weather where someone is or is going: current temperature, sky, wind, and today's high, low and rain chance, with how old the reading is. ALWAYS use this for the weather, never web_search (a search snippet has no coordinates and is often hours old). Give `latitude`/`longitude` from get_location or nearby_places, or `place` — the name of one of their saved places (\"work\", \"home\") — and it uses that place's coordinates. With no coordinates and no saved place that fits, call get_location first; if that has no position for them either, ask them where they are instead of calling more tools.",
     input_schema: {
       type: "object",
       properties: {
@@ -18012,12 +18012,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const p = db.getPlace(c, input.place);
         if (!p) {
           const names = db.listPlaces(c).map(x => x.name);
-          return { ok: false, error: `No saved place called "${String(input.place).slice(0, 40)}".`, saved_places: names, next: "Use one of those names, or get_location for their position." };
+          return { ok: false, error: `No saved place called "${String(input.place).slice(0, 40)}".`, saved_places: names, next: "Use one of those names, or get_location for their position — and if neither gives you a place, ask them out loud where they are." };
         }
         return weatherAt(Number(p.lat), Number(p.lng), { fetchImpl: ctx.fetchImpl, label: `${p.name} (${p.address})` });
       }
       if (!Number.isFinite(input.latitude) || !Number.isFinite(input.longitude)) {
-        return { ok: false, error: "Give coordinates or a saved place.", next: "Call get_location first, or pass place with one of their saved places." };
+        // Drive 11-08 (OVH, no saved places): "call get_location first" after get_location had already
+        // come back empty sent the turn round again until it ran out, and the caller heard no weather and
+        // no question. Nothing to go on is a question for them.
+        return { ok: false, error: "Give coordinates or a saved place.", next: "If you have not called get_location yet this turn, call it. If it has already come back without a position, stop calling tools: ask them out loud where they are (a neighbourhood or a cross street is enough)." };
       }
       return weatherAt(input.latitude, input.longitude, { fetchImpl: ctx.fetchImpl });
     }
