@@ -843,3 +843,21 @@ test("fix 2 (b): his own voice never deflects with filler — every reply an ans
   // An unverified inbound call on his number gets the relay too, not fix 2.
   assert.ok(!gl.liveInstructions({ name: "Omari", owner: true, restricted: true }).includes(gl.OWN_VOICE_NO_DEFLECT));
 });
+
+test("weather (a), review: weather's own 'give coordinates' before get_location ran is not 'unknown' — get_location still runs", async () => {
+  const ran = [];
+  voice.contextDeps.runTool = async (name) => { ran.push(name); return name === "get_location" ? { ok: true, source: "live", latitude: 40.74, longitude: -74 } : (ran.length === 1 ? { ok: false, error: "Give coordinates or a saved place." } : { ok: true, now: { temp_f: 59 } }); };
+  const out = await turn(ownerCall(), rounds([{ tool: "weather" }], [{ tool: "get_location" }], [{ tool: "weather", input: { latitude: 40.74, longitude: -74 } }], ["Fifty nine."]), { firstWordDeadlineMs: 60_000, lateHoldingMs: 60_000, fillerAfterMs: 60_000 });
+  const said = await drain(out.stream);
+  assert.deepEqual(ran, ["weather", "get_location", "weather"]);
+  assert.match(said, /Fifty nine\./);
+  assert.doesNotMatch(said, /Where are you right now/);
+});
+
+test("privacy, review: an unverified inbound call's turn is not shown how they like to be treated; verified, it is", async () => {
+  db.addRule(C, { rule: "keep the weather to one line" });
+  const row = inboundCall();
+  assert.doesNotMatch(voice.ownerContext({ call: row, callMessages: [] }).system, /weather to one line/);
+  const ok = db.updateCall(C, row.id, { verified_at: Date.now(), verified_how: "passphrase" });
+  assert.match(voice.ownerContext({ call: ok, callMessages: [] }).system, /weather to one line/);
+});

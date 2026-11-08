@@ -578,7 +578,8 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     verify.isVerified(call) ? ownerProfileNote(conversationId) : "",
     // How they want to be treated (src/rules.js), read fresh each turn — call 80's own rule, "on a call,
     // just say the answer out loud", was saved after it and no call turn had ever been shown one.
-    rulesNote(conversationId),
+    // Not to an inbound call on caller ID alone (review 11-08): how they like to be treated is theirs too.
+    verify.isVerified(call) ? rulesNote(conversationId) : "",
     // Their saved places and what they told you about their week (./callmemory.js), so "where I'm at"
     // on a shift day is work, not "I can't tell if you're home or elsewhere" (call 80).
     whereaboutsNote(call),
@@ -1689,6 +1690,7 @@ export async function* voiceTurn({
   let lastLeadIn = [];
   // Set when a lookup came back with no position for them (WHERE_ASK).
   let whereUnknown = false;
+  let lookedForWhere = false;
   // Already asked where they are this turn (their words or WHERE_ASK), so it is never asked twice.
   const askedWhere = () => /\bwhere\b[^.?!]*\?/i.test(said) || /share (your|their) location/i.test(said);
   function* askWhere(why, emit = null) {
@@ -2411,7 +2413,10 @@ export async function* voiceTurn({
           out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
         }
         if (out?.slow) log({ call_tool_over_budget: t.name, call_id: call.id, budget_ms: toolBudgetMs });
-        if (whereUnknownIn(String(t.name), out)) whereUnknown = true;
+        // Only once get_location itself has looked (review 11-08): weather's own "give coordinates" before
+        // anyone checked for a live share or a recent pin is not "unknown" yet.
+        if (String(t.name) === "get_location") lookedForWhere = true;
+        if (whereUnknownIn(String(t.name), out) && lookedForWhere) whereUnknown = true;
         else if (NEEDS_WHERE.has(String(t.name)) && out?.ok !== false && (out?.latitude != null || out?.now)) whereUnknown = false;
         log({ call_tool: t.name, call_id: call.id, ok: out?.ok !== false });
         // Ran, and how it came back: what the voice may say was done this turn rests on this (call 80).
@@ -2442,7 +2447,7 @@ export async function* voiceTurn({
     // out-of-rounds guard because a refusal is not a round spent on a tool. Falling off the end then
     // produced an empty stream: no words, no finish reason, just `[DONE]`. Dead air is the worst answer
     // a phone call can give, and an unframed one is worse than that.
-    if (owned && whereUnknown && (!said || onlyHolding())) {
+    if (owned && whereUnknown && (!said.trim() || onlyHolding())) {
       yield* askWhere("fell_through");
       return;
     }
