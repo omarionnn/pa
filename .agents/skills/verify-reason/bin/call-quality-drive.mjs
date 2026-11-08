@@ -198,6 +198,7 @@ for (const ms of speechAt) {
   const r = runs.at(-1);
   if (r && ms - r.to <= 700) r.to = ms + 20; else runs.push({ from: ms, to: ms + 20 });
 }
+const delegationAt = lines.filter(l => "gptlive_delegation" in l).map(l => l.drive_ms);
 const OWN_HOLD = /\b(?:let me (?:check|look|see|think)|lemme (?:check|look|have a)|looking (?:that|it) up|checking|hang on|hold on|one sec(?:ond)?|give me a (?:sec|moment)|just a (?:sec|moment)|bear with me)\b/i;
 const reasonTurns = (call?.turns ?? []).filter(t => t.who === "reason" && !t.seeded);
 const theirTurns = (call?.turns ?? []).filter(t => t.who === "them");
@@ -228,7 +229,7 @@ for (let i = 0; i < framesOut.length; i++) {
   runEnds++;
   if (rms(f.b, f.b.length - 40, f.b.length) > 1000) hardStops++;
 }
-const delegationAt = lines.filter(l => "gptlive_delegation" in l).map(l => l.drive_ms);
+
 const results = pick("gptlive_result");
 const out = {
   code: process.env.DRIVE_LABEL ?? "",
