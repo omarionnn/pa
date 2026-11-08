@@ -349,6 +349,30 @@ test("a paid $14.83 whose checkout failed and whose intent drew nothing stops co
   assert.equal(spentToday(), 0);
 });
 
+test("the live shape once Crossmint expired row 3's intent: no encrypted-card rail listed; released because the same run asked again", async () => {
+  const row = paidRow();
+  intentAnswer = (oid) => reply(200, { orderIntentId: oid, status: "expired", paymentMethodId: "pm_secret_1929", expiresAt: new Date(clock.now() - 60_000).toISOString(),
+    amount: { total: "14.83", spent: "0.00", reserved: "0.00", available: "14.83", currency: "USD" },
+    rails: [{ rail: "agentic-token", status: "pending_verification", credentialFormats: ["card", "network-token"] }, { rail: "spt", status: "active", credentialFormats: ["identifier"] }] });
+  assert.equal(await shop.settleUnknownPayments(), 0, "no re-ask on record: stays counted");
+  assert.equal(spentToday(), 1483);
+  clock.skip(10_000);
+  asked("14.83", { runId: row.run_id }); // row 4: the checkout asked for payment again
+  assert.equal(await shop.settleUnknownPayments(), 1);
+  assert.equal(spentToday(), 0);
+  assert.equal(shop.paymentRow(row.id).status, "failed");
+});
+
+test("an expired intent whose network rail reads active (could have minted) stays counted even after a re-ask", async () => {
+  const row = paidRow();
+  intentAnswer = (oid) => reply(200, { orderIntentId: oid, status: "expired", expiresAt: new Date(clock.now() - 60_000).toISOString(),
+    amount: { total: "14.83", spent: "0.00", reserved: "0.00", available: "14.83", currency: "USD" }, rails: [{ rail: "agentic-token", status: "active", credentialFormats: ["card"] }] });
+  clock.skip(10_000);
+  asked("14.83", { runId: row.run_id });
+  assert.equal(await shop.settleUnknownPayments(), 0);
+  assert.equal(spentToday(), 1483);
+});
+
 for (const [why, opts] of [
   ["the checkout still running", { runStatus: "running", stage: "paid" }],
   ["the order placed", { runStatus: "succeeded", stage: "placed" }],

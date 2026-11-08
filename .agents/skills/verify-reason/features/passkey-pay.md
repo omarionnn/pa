@@ -162,7 +162,10 @@ checkout couldn't fill the card and asked again; every new link hit the same wal
   the CVC with no card rail ready, nothing spent or reserved, and closed or past `expiresAt` (Crossmint can
   still read it `active`). Spent/reserved alone is not proof once a ready rail handed the card over (cold
   review 11-08). Same `releasedLineOf` rewrite to $0, row → failed. Runs at boot and on an over-cap
-  check. Live row 3 releases at the first boot after deploy (log `paid_payment_released`).
+  check. Follow-up #412: once Crossmint expires an intent it drops the encrypted-card rail from the
+  answer (row 3's at 22:2x UTC read `expired`, rails agentic-token pending + spt only), so the release also
+  accepts "the same run asked for payment again after this row" (a later shop_payments row) when no card
+  rail reads ready. Live row 3 releases at the first boot after #412 (log `paid_payment_released`).
 - Review fixes: the CVC step finishes only on the link Face ID was on (`cvc_link`); the day's cap is asked
   before `/cvc` claims the link; a missing JWT/client key fails as "payment didn't start"; an
   unlisted-rails handover is logged (`payment_rails_unlisted`).
