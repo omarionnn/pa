@@ -1449,6 +1449,10 @@ export const contextDeps = {
  * past it the turn goes on without them and says so in the log.
  */
 export const CALL_RECALL_WAIT_MS = 700;
+/** On their own call, a round's words go out once this much is held (and more follows), or at its end. */
+export const LEAD_IN_HOLD_CHARS = 160;
+/** The first turn waits this long at most for the week's read still running from the ring. */
+export const CALL_MEMORY_WAIT_MS = 900;
 
 let primed = null;
 export async function prime() {
@@ -1881,7 +1885,10 @@ export async function* voiceTurn({
               // Their own call: a sentence is said once more words follow it in this round, or the round
               // ends with no tool. Words written just before a tool are the lead-in ("I'll grab your
               // location first"), and the spoken answer is what comes after the tool (call 80).
-              if (leadIn.length && String(ev.text ?? "").trim()) { yield* emit(leadIn); leadIn = []; }
+              // Held until it is longer than a lead-in ever is (LEAD_IN_HOLD_CHARS): "Okay. Let me grab
+              // your location." is two sentences, and saying the first would start the answer early
+              // and end the holding lines over a tool that has not even begun (cold review).
+              if (leadIn.join("").length >= LEAD_IN_HOLD_CHARS && String(ev.text ?? "").trim()) { yield* emit(leadIn); leadIn = []; }
               leadIn.push(...splitter.push(ev.text ?? ""));
             } else yield* emit(splitter.push(ev.text ?? ""));
             continue;
@@ -2446,7 +2453,7 @@ export async function llmRequest({
   try {
     await prime();
     // Where they usually are (./callmemory.js): read while it rang, so this is normally already done.
-    if (kind === "owner") await prepareCallMemory(call, { log });
+    if (kind === "owner") await Promise.race([prepareCallMemory(call, { log }), new Promise(r => setTimeout(r, CALL_MEMORY_WAIT_MS).unref?.())]);
     context = contextFor({ call, kind, callMessages: body.messages, now });
   } catch (e) {
     const why = (e?.message ?? String(e)).split("\n")[0];

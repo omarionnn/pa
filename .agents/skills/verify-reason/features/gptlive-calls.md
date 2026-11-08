@@ -471,3 +471,42 @@ Recipes:
   holding line in the drive; on the live API (~2–4 s) more answers land inside 1.5 s.
 - Not drivable without the API: the warm cache hit itself (check `call_cache_warmed` + the first `voice_turn`
   first_word_ms on the next real call). **Not proven: a real phone call.**
+
+## Call 80 fixes (2026-11-08) — say the answer, Reason's own voice, same memory as texts, weather by coordinates
+
+Call 80 (Omari's own, 104 s): "weather where I'm at" → code cut Claude's 476 chars to the pre-tool narration
+("I'll grab your location first…") + "want me to text you the rest?"; the weather was heard 79 s in, half-said;
+work (430 W 17th) and "works Thu–Sun" were in memory but not in the call turn; no "how to treat me" rules on calls.
+
+- **No code cut (`src/calls/voice.js`):** `shortForPhone`/`TEXT_REST_OFFER` are gone. Words written before a
+  tool round are dropped (`voice_lead_in_dropped`); only what comes after the last tool is said; a silent final
+  round falls back to the last lead-in (`voice_lead_in_said`). "Text you the rest" only from the prompt, when
+  the content is naturally long (headlines, lists).
+- **Streamed (`gptlive.js` `speakPiece`, `readTurn({onContent})`, `PIECES_LINE`):** each finished sentence goes
+  to the voice as a commentary piece; `gptlive_result {pieces, first_piece_ms}`.
+- **Real tools (`onTool(name, "start"|"done", {ok})`):** "Let me check" only while a lookup is running; the
+  unbacked-send guard uses tools that really ran (`turn.ran`).
+- **Same memory (`src/calls/callmemory.js`):** saved places + schedule facts by meaning (`prepareCallMemory`, while
+  it rings, memo per call, 2.5 s cap) in `whereaboutsNote`; per-turn recall `memoryHits` (≤`CALL_RECALL_WAIT_MS`
+  700 ms); rules via `src/rules.js` `rulesNote`, fresh every turn.
+- **Fix 2 — Reason's own voice on own calls (`liveInstructions` owner branch: `OWN_VOICE_PERSONA`,
+  `OWN_VOICE_SPLIT`; `preCallBrief` adds profile ≤2500, rules, today, places):** the voice answers small talk
+  itself; any lookup, action or live fact goes to Reason. Errands and anyone else's call keep the relay ("You
+  are only the voice") with nothing of his. OpenAI receiving his profile/rules: owner-approved 2026-11-08.
+- **Rules everywhere (`src/rules.js` `RULE_READERS`):** one reader; contract test fails on any model-reaching
+  file not listed. Missing before: Claude's call turn, GPT-Live, event turns (API + CLI), Web daily greeting,
+  onboarding's one-line answers.
+- **Weather (`src/weather.js`, tool `weather`):** open-meteo by lat/lng (6 s timeout), `REASON_WEATHER_BASE`.
+- **Sound:** talk-over wordless cap `TALKOVER_WORDLESS_MS` 600; `fadeOut` (240 samples) on a run's last frame;
+  `AMBIENCE_GAIN` 0.009375; `NO_FILLER` (no uh/um, no own "one sec").
+- **Shared with the time-to-first-word work:** `callNotes(call)` (callmemory.js: rules + where, sync, own only)
+  and `voiceInstructionsFor(call, {line})` (gptlive.js: the exact session instructions).
+
+Recipes:
+- Offline: `node --test test/call80-fixes.test.js test/rules-everywhere.test.js` (incl. rule after call N in call
+  N+1, nothing of his on Ama's call or an errand).
+- Replay, on the live box: `bin/call-quality-drive.mjs <clips> --seed call80 --out x.json` (his places, week, rule;
+  texts to a stand-in; per reply `first_piece_ms`, totals `hard_stops`, `lead_ins_dropped`, `tools_ran`), main vs
+  branch. 2026-11-08: replies_cut 4→0, hard_stops 2→0, longest reply 12.4→7.4 s, weather said whole on the
+  first ask (before: never). claude-cli turns 8–39 s in the drive, so the 7.5 s late line still fires there.
+- Not proven: a real phone call; the news turn (search keys absent in the drive env).

@@ -25,6 +25,7 @@ export const SCHEDULE_TIMEOUT_MS = 2500;
 const KEEP_MS = 3 * 60 * 60_000;
 
 const prepared = new Map();
+const retried = new Set();
 const keyOf = (call) => `${call?.conversation_id}#${call?.id}`;
 
 /** Their saved places, one line each: name, address, and when they go there if they said. */
@@ -46,8 +47,9 @@ export function prepareCallMemory(call, { find = search, enabled = !!config.open
   const key = keyOf(call);
   const had = prepared.get(key);
   if (had) return had.promise;
-  for (const [k, v] of prepared) if (now - v.at > KEEP_MS) prepared.delete(k);
+  for (const [k, v] of prepared) if (now - v.at > KEEP_MS) { prepared.delete(k); retried.delete(k); }
   const entry = { at: now, lines: null, promise: null };
+  let failed = false;
   entry.promise = (async () => {
     if (!enabled) return [];
     try {
@@ -55,23 +57,31 @@ export function prepareCallMemory(call, { find = search, enabled = !!config.open
       const facts = hits.map(h => db.getFact(call.conversation_id, h.factId)).filter(Boolean).slice(0, SCHEDULE_HITS);
       return facts.map(f => `- ${String(f.fact).replace(/\s+/g, " ").trim().slice(0, 200)}`);
     } catch (e) {
+      failed = true;
       log({ call_schedule_read_failed: call.id, why: (e?.message ?? String(e)).split("\n")[0] });
       return [];
     }
-  })().then(lines => { entry.lines = lines; log({ call_schedule_read: call.id, facts: lines.length }); return lines; });
+  })().then(lines => {
+    entry.lines = lines;
+    // A failed or empty read (the search returns nothing on a timeout) is tried once more at the next ask — the first turn — rather
+    // than kept for the whole call.
+    if ((failed || !lines.length) && !retried.has(key)) { retried.add(key); if (prepared.get(key) === entry) prepared.delete(key); }
+    log({ call_schedule_read: call.id, facts: lines.length });
+    return lines;
+  });
   prepared.set(key, entry);
   return entry.promise;
 }
 
 /** For tests: forget every call's read. */
-export function resetCallMemory() { prepared.clear(); }
+export function resetCallMemory() { prepared.clear(); retried.clear(); }
 
 /**
  * Where they usually are, for this call's prompt (Claude's turn and the GPT-Live voice), or "".
  * Sync: the schedule lines are whatever `prepareCallMemory` has read so far for this call.
  */
 export function whereaboutsNote(call) {
-  if (!call?.conversation_id) return "";
+  if (!call?.conversation_id || Number(call.is_owner) !== 1) return "";
   const places = placeLines(call.conversation_id);
   const schedule = prepared.get(keyOf(call))?.lines ?? [];
   if (!places.length && !schedule.length) return "";

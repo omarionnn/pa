@@ -125,7 +125,7 @@ export function whoFor(call) {
   const named = !!raw && raw !== NO_NAME;
   // Only this call's own account, by the call row's conversation — never anyone else's. On their own
   // call the voice gets their brief (`preCallBrief`: profile, rules, today, places); anyone else, nothing.
-  const own = !!call.is_owner;
+  const own = Number(call.is_owner) === 1;
   return {
     name: named ? raw : "them", named, owner: own, identity: callIdentityFor(call.conversation_id),
     ...(own ? { brief: preCallBrief(call), purpose: openingPurpose(call) } : {}),
@@ -137,9 +137,11 @@ export function whoFor(call) {
  * itself with their brief (profile, rules, today, places — `preCallBrief`); on an errand or anyone
  * else's call, the restricted relay voice with nothing about them. Pure apart from DB reads and fast
  * enough to call at dial or answer time, so a session opened before the call starts gets exactly
- * these words. `line: true` gives the line-call instructions instead.
+ * these words. `line` defaults the way `GptLiveCall` decides it: any call that is not their own is a
+ * line call (a business or another person) and gets `lineInstructions`. Strangers ringing Reason's
+ * number are not calls of an account and are not covered here.
  */
-export function voiceInstructionsFor(call, { line = false } = {}) {
+export function voiceInstructionsFor(call, { line = Number(call?.is_owner) !== 1 } = {}) {
   const who = whoFor(call);
   return line ? lineInstructions(who) : liveInstructions(who);
 }
@@ -196,7 +198,7 @@ export function recentChatLines(conversationId, { max = 6, chars = 700 } = {}) {
  * are. Everything here is this call's own person's; nothing for any other call.
  */
 export function preCallBrief(call, { place = "" } = {}) {
-  if (!call?.is_owner) return "";
+  if (Number(call?.is_owner) !== 1) return "";
   const lines = [];
   if (call.direction !== "in") {
     const goal = clip(call.goal, 300);
@@ -257,7 +259,7 @@ export const PIECES_LINE = "Reason's answer may arrive in pieces, one after anot
 export const OWN_VOICE_PERSONA = "Your personality is the same as in their texts: a sharp, warm friend who gets things done. Easy and direct, a joke when it fits, never stiff, corporate or gushing. Read the room: plain and calm when they're stressed or annoyed. Answer first, then stop. Use what you know about them without asking again, naming it in passing (\"you're at work today, right?\"), and never claim anything about their life you weren't told.";
 export const OWN_VOICE_SPLIT = [
   "Answer them yourself, straight away, whenever you can from this conversation and the brief below: small talk, reactions, follow-ups, advice from common sense, and anything the brief already tells you about them — where they work, their week, what you talked about today, how they want to be treated.",
-  "Hand it to the backend (delegate) for anything that needs a lookup or an action, or anything live or factual: the weather, the news, prices, scores, opening hours, their calendar, messages, reminders, tasks, places, directions, sending them anything, or any fact, number or name the brief does not give you.",
+  "Hand it to the backend (delegate) for anything that needs a lookup or an action, or anything live or factual: the weather, the news, prices, scores, opening hours, their calendar, messages, reminders, tasks, a place or address the brief does not list, directions, sending them anything, or any fact, number or name the brief does not give you.",
   "Never state a fact, figure, news item, price, time or the weather from your own knowledge: hand it off. Never say you did something; only the backend does things.",
 ];
 
@@ -510,7 +512,10 @@ const CLAIM = new RegExp([
 const SENT_CLAIM = /\b(?:sent|texted|emailed|messaged)\b/i;
 // A send from before this turn, said as such, is true and stays: "I texted you the link earlier".
 const EARLIER = /\b(?:earlier|before|yesterday|this morning|last (?:night|week)|this afternoon)\b/i;
-const SENDS = /send|email|text|message|page_|picture|voice_note/;
+// The tools that really send something to somebody — by name, since `turn.ran` holds Reason's own tool
+// names, reads included (page_list, undo_send, message_effects are not sends; cold review, call 80).
+export const SEND_TOOLS = new Set(["message_send", "message_people", "email", "gmail_send", "document_send", "drive_send", "send_picture", "send_pictures", "voice_note_send", "voice_note_say", "spotify_send_link", "notice_send", "resend_contact_card"]);
+const SENDS = { test: (n) => SEND_TOOLS.has(n) };
 
 /**
  * A result's words with any sentence that claims a send this turn did not make taken out, and an
@@ -1097,8 +1102,10 @@ export const TALKOVER_NOISE_MS = 1500;
 /**
  * Held this long with no words of theirs coming through since the hold began, the run goes out: it is
  * the line, not them (call 80: "Hey, I'm good" waited 1.9 s and the late line 1.3 s behind a quiet room).
+ * 1 s, not less: their own words reach the transcript 0.5–1.5 s behind their voice, so a shorter wait
+ * reads the middle of their sentence as "no words" and talks over them (cold review, call 80).
  */
-export const TALKOVER_WORDLESS_MS = 600;
+export const TALKOVER_WORDLESS_MS = 1000;
 /** How often a held run checks whether they have stopped. */
 const OVER_TICK_MS = 40;
 /** After a dropped run: this much quiet from them, with nothing from the voice, and it is asked to answer. */
@@ -1705,7 +1712,7 @@ export class GptLiveCall {
     // `running`: Reason's tools running right now; `ran`: those that ran and came back ok this turn —
     // both off voice.js's own hooks, never the stream (call 80: platform tools only, so a real send read
     // as none). `pieces`: Reason's words handed to the voice so far, as they were written (`speakPiece`).
-    const turn = { id, startedAt: this.now(), msgCount: 0, firstAudioMs: null, firstRealMs: null, resultAt: null, held: 0, running: new Set(), ran: new Set(), pieces: 0, spoken: "", sendLine: false };
+    const turn = { id, startedAt: this.now(), msgCount: 0, firstAudioMs: null, firstRealMs: null, resultAt: null, held: 0, running: new Set(), runs: new Map(), ran: new Set(), pieces: 0, spoken: "", sendLine: false };
     this.pending.set(id, turn);
     this.latest = id;
     this.lastResultClaimed = false;
@@ -1736,7 +1743,12 @@ export class GptLiveCall {
       const onTool = (name, phase = "start", info = {}) => {
         const n = String(name ?? "");
         if (!n) return;
-        if (phase === "done") { turn.running.delete(n); if (info?.ok !== false) turn.ran.add(n); } else turn.running.add(n);
+        // Counted, so two overlapping calls of one tool stay "running" until both are done.
+        const c = (turn.runs.get(n) ?? 0) + (phase === "done" ? -1 : 1);
+        if (c > 0) { turn.runs.set(n, c); turn.running.add(n); } else { turn.runs.delete(n); turn.running.delete(n); }
+        if (phase === "done") { if (info?.ok !== false) turn.ran.add(n); return; }
+        // A tool started after words were already said: the late line covers this wait too.
+        if (holding && turn.pieces && !turn.lateTimer) turn.lateTimer = this.timers.setTimeout(() => this.holdLine(id, "late"), LATE_HOLDING_MS);
       };
       // Their own call (and a stranger's): each sentence goes to the voice as it is written, so it starts
       // speaking on the first one instead of after the whole turn (call 80: 2.2 s of turn, then 1.5–3.3 s
@@ -1760,8 +1772,12 @@ export class GptLiveCall {
     const doneAt = this.now();
     turn.totalMs = doneAt - turn.startedAt;
     const tools = [...new Set([...(reply.tools ?? []), ...turn.ran])];
+    // A rule saved on this turn (the remember tool) reaches the voice now, not only the next call.
+    if (this.who?.owner && turn.ran.has("remember")) this.freshRules();
     // The goodbye end_call carries is said too, as one more piece of the answer.
     if (turn.pieces && reply.endCall?.message) this.speakPiece(id, turn, reply.endCall.message);
+    // Broke after some words went out: the half answer is closed out loud, never left hanging.
+    if (turn.pieces && reply.error && reply.text) this.speakPiece(id, turn, reply.text);
     let spoken = turn.spoken;
     if (!turn.pieces) {
       turn.resultAt = doneAt;
@@ -1804,6 +1820,16 @@ export class GptLiveCall {
     if (reply.endCall) this.hangUpAfterSpeech();
   }
 
+  /** Their rules as they are now, told to the voice when they differ from what it was given. */
+  freshRules() {
+    const now = rulesNote(this.call.conversation_id);
+    const had = this.rulesTold ?? (String(this.who?.brief ?? "").includes(now) ? now : null);
+    if (!now || now === had) return false;
+    this.rulesTold = now;
+    this.log({ gptlive_rules_told: this.call.id });
+    return tellLive(this.call.id, `Updated just now — ${now}`);
+  }
+
   /**
    * One piece of Reason's answer (a sentence, as voice.js wrote it), to the voice now (call 80). Docs
    * (live-delegation, "Stream useful results"): several commentary appends on one delegation are said
@@ -1823,11 +1849,11 @@ export class GptLiveCall {
       if (!text) return;
     }
     const t = this.now();
+    // Words are going out: no holding line over them (a tool that starts after re-arms the late one).
+    if (turn.holdTimer) this.timers.clearTimeout(turn.holdTimer);
+    if (turn.lateTimer) this.timers.clearTimeout(turn.lateTimer);
+    turn.holdTimer = turn.lateTimer = null;
     if (!turn.pieces) {
-      // The answer has started: no holding line from here on.
-      if (turn.holdTimer) this.timers.clearTimeout(turn.holdTimer);
-      if (turn.lateTimer) this.timers.clearTimeout(turn.lateTimer);
-      turn.holdTimer = turn.lateTimer = null;
       turn.resultAt = t;
       turn.firstPieceMs = t - turn.startedAt;
       (this.answered ??= []).push(turn);
@@ -3141,11 +3167,25 @@ export function stateFromTwilio(s) {
 export function warmTheTurn(row, log = () => {}, { warm = warmCallCache } = {}) {
   // Where they usually are (./callmemory.js) is read while it rings too, for the voice's brief and
   // Claude's turn alike — whatever backend the turns run on.
-  if (row?.id && Number(row.is_owner)) void prepareCallMemory(row, { log: log ?? (() => {}) }).catch(() => {});
+  if (row?.id && Number(row.is_owner)) void prepareCallMemory(row, { log: log ?? (() => {}) }).then(() => lateWhereabouts(row)).catch(() => {});
   if (!config.callCacheWarm || !row?.id) return null;
   try {
     return Promise.resolve(warm({ call: row, log: log ?? (() => {}) })).catch(() => null);
   } catch { return null; }
+}
+
+/**
+ * Their week arrived after the voice's session was set up (a call they rang: the stream connects within
+ * a second, the search can take up to 2.5 s): it is handed to the voice like anything told mid-call, so
+ * the voice, which answers "where am I / my week" itself, has what Claude's turn has (cold review, call 80).
+ */
+export function lateWhereabouts(row) {
+  const live = running.get(row?.id);
+  if (!live || live.done || !live.who?.owner) return false;
+  const note = whereaboutsNote(row);
+  if (!note || String(live.who.brief ?? "").includes(note) || live.whereTold === note) return false;
+  live.whereTold = note;
+  return tellLive(row.id, note);
 }
 
 /**

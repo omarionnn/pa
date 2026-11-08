@@ -92,16 +92,20 @@ test("1. call 80's hand-off 1: the lead-in before the tool is not said; the weat
   assert.ok(lines.some(l => l.voice_lead_in_dropped), "and logged");
 });
 
-test("1. streamed like the API: a sentence goes once more words follow it; one right before a tool is held and dropped", async () => {
+test("1. streamed like the API: a short round before a tool is a lead-in, every sentence of it; a long round streams", async () => {
   voice.contextDeps.runTool = async () => ({ ok: true });
   const out2 = await turn(ownerCall(), rounds(
     ["Got it", ". Work", " at 430 West", " 17th.", { tool: "weather", start: true, input: { place: "work" } }],
     ["Fifty nine", " and clear."],
   ));
   const said = await drain(out2.stream);
-  assert.match(said, /^Got it\./, "followed by more words in the same round: said");
-  assert.doesNotMatch(said, /430 West 17th/, "the sentence written right before the tool: its lead-in");
-  assert.match(said, /Fifty nine and clear\.$/);
+  // Cold review: "Got it." said ahead of the tool started the answer and ended the holding lines.
+  assert.doesNotMatch(said, /Got it|430 West 17th/, "two short sentences right before a tool: the lead-in, both dropped");
+  assert.equal(said.trim(), "Fifty nine and clear.");
+  const LONG = "Here's the news from Nigeria today, in short. The central bank held rates at twenty seven and a half percent this week, the third hold in a row, and said prices are finally easing. ";
+  assert.ok(LONG.length > voice.LEAD_IN_HOLD_CHARS);
+  const out3 = await turn(ownerCall(), rounds([LONG, "Lagos opened the new rail line. ", "That's the top of it."]));
+  assert.match((await drain(out3.stream)).trim(), /^Here's the news[^]*That's the top of it\.$/, "a long round is said whole, streaming once past the hold");
 });
 
 test("1. a round after the tools that says nothing: the words before them were the answer, and are said", async () => {
@@ -313,16 +317,16 @@ test("4. a newer hand-off stops the old answer's pieces; the voice's echo of a s
   assert.ok(!t.lines.some(l => "gptlive_guard" in l), "its own streamed words are Reason's");
 });
 
-test("4. talk-over: a held run with no words of theirs coming through goes out at 600 ms (call 80: 1.9 s and 1.3 s)", async () => {
+test("4. talk-over: a held run with no words of theirs coming through goes out at 1 s (call 80: 1.9 s and 1.3 s)", async () => {
   const s = startCall({ brain: () => new Promise(() => {}) });
   s.live.emit({ type: "session.output_audio.delta", delta: LOUD }); // the greeting
   for (let i = 0; i < 75; i++) { s.twilio.say({ event: "media", media: { payload: SILENT } }); await s.timers.advance(20); }
   for (let i = 0; i < 20; i++) { s.twilio.say({ event: "media", media: { payload: LOUD } }); await s.timers.advance(20); }
   s.live.emit({ type: "session.output_audio.delta", delta: LOUD }); // the reply, over the line noise
-  for (let i = 0; i < 40; i++) { s.twilio.say({ event: "media", media: { payload: LOUD } }); await s.timers.advance(20); }
+  for (let i = 0; i < 70; i++) { s.twilio.say({ event: "media", media: { payload: LOUD } }); await s.timers.advance(20); }
   const held = s.lines.find(l => l.gptlive_talkover_held);
   assert.ok(held && held.held_ms >= gl.TALKOVER_WORDLESS_MS && held.held_ms < gl.TALKOVER_WORDLESS_MS + 100, JSON.stringify(held));
-  assert.equal(gl.TALKOVER_WORDLESS_MS, 600);
+  assert.equal(gl.TALKOVER_WORDLESS_MS, 1000, "not less: their transcript trails their voice by 0.5–1.5 s (cold review)");
 });
 
 // ---------- 5. the room ----------
@@ -455,4 +459,57 @@ test("the GPT-Live brief is read from the call's own conversation only", () => {
 test("the drive harness reads call 80's lines (verify-reason)", () => {
   const src = readFileSync(new URL("../.agents/skills/verify-reason/bin/call-quality-drive.mjs", import.meta.url), "utf8");
   assert.match(src, /--seed call80/);
+});
+
+// ---------- cold review fixes ----------
+
+test("review: a 'sent' needs a real send tool — a read like page_list or undo_send does not back it", () => {
+  assert.equal(gl.withoutUnbackedSends("Just texted it to you.", ["page_list"]).dropped, 1);
+  assert.equal(gl.withoutUnbackedSends("Just texted it to you.", ["undo_send", "message_effects"]).dropped, 1);
+  assert.equal(gl.withoutUnbackedSends("Just texted it to you.", ["message_send"]).dropped, 0);
+  assert.equal(gl.withoutUnbackedSends("Emailed it.", ["gmail_send"]).dropped, 0);
+});
+
+test("review: a tool that starts after words were said re-arms the late line; overlapping calls of one tool stay running", async () => {
+  let hooks;
+  const s = startCall({ brain: (m, h) => new Promise(() => { hooks = h; h.onContent("Here's the first part of it."); }) });
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "r1" } });
+  await s.timers.advance(5);
+  hooks.onTool("web_search", "start"); hooks.onTool("web_search", "start"); hooks.onTool("web_search", "done", { ok: true });
+  await s.timers.advance(voice.LATE_HOLDING_MS + 50);
+  const late = s.lines.find(l => l.gptlive_hold_line && l.kind === "late");
+  assert.ok(late, "the late line covers the tool's wait");
+  assert.equal(late.tool, "web_search", "the second web_search is still running");
+});
+
+test("review: voiceInstructionsFor defaults like the call does — an errand gets the line instructions", () => {
+  const errand = db.createCall(config.ownerConversation, { provider: "gptlive", toNumber: "+13105559999", isOwner: false, goal: "book a table", facts: [], announcement: "", state: "in_progress" });
+  assert.equal(gl.voiceInstructionsFor(errand), gl.lineInstructions(gl.whoFor(errand)));
+  assert.equal(gl.whoFor({ ...errand, is_owner: "0" }).owner, false, "a string 0 is not their own call");
+  assert.equal(gl.preCallBrief({ ...errand, is_owner: "0" }), "");
+});
+
+test("review: a rule saved mid-call reaches the voice on this call, once; the brief's own rules are not re-sent", async () => {
+  const s = startCall({ brain: async (m, h) => { db.addRule(C, { rule: "keep the weather to one line" }); h.onTool("remember", "start"); h.onTool("remember", "done", { ok: true }); return { text: "Got it.", tools: [] }; } });
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "m1" } });
+  await s.timers.advance(10);
+  const told = s.live.of("session.instructions.append").filter(e => /keep the weather to one line/.test(e.content));
+  assert.equal(told.length, 1);
+  assert.match(told[0].content, /^Updated just now — HOW THEY WANT YOU TO TREAT THEM/);
+  assert.equal(s.call.freshRules(), false, "unchanged since: nothing more");
+});
+
+test("review: their week read after the session started is handed to the voice (a call they rang); not twice", async () => {
+  const row = ownerCall();
+  db.savePlace(C, { name: "work", address: "430 W 17th St", lat: 40.742, lng: -74.004 });
+  const s = startCall({ brain: () => new Promise(() => {}), row });
+  await cm.prepareCallMemory(row, { enabled: true, find: async () => [] });
+  // The brief already had the place: nothing new to say.
+  assert.equal(gl.lateWhereabouts(row), false);
+  cm.resetCallMemory();
+  const fact = db.remember(C, "Omari", "Works Thu to Sun shifts");
+  await cm.prepareCallMemory(row, { enabled: true, find: async () => [{ factId: fact.id ?? fact.factId ?? fact }] });
+  assert.equal(gl.lateWhereabouts(row), true);
+  assert.ok(s.live.of("session.instructions.append").some(e => /Works Thu to Sun shifts/.test(e.content)));
+  assert.equal(gl.lateWhereabouts(row), false, "once");
 });
