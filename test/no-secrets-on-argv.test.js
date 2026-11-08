@@ -14,8 +14,8 @@ import { execFileSync } from "node:child_process";
 
 const root = new URL("../", import.meta.url);
 // `export NAME=…` is a shell builtin (no process, no argv) and is how caged.sh env hands over fakes.
-const SECRET = /(?<![A-Z0-9_]|export )((?!REASON_)[A-Z0-9_]*(?:API_KEY|OAUTH_TOKEN|AUTH_TOKEN|ACCESS_TOKEN|CLIENT_SECRET|WEBHOOK_SECRET|SECRET_KEY|PRIVATE_KEY|JWT_KEY))=(?!$|"$|[\s\\`)}]|""|'')(["']?)([^\s"'`]*)/g;
-const DUMMY = /^(cage(-fake)?|fake[\w-]*|probe-not-a-key|dummy|x|y|%s.*)$/;
+const SECRET = /(?<![A-Z0-9_]|export )((?!REASON_)[A-Z0-9_]*(?:API_KEY|OAUTH_TOKEN|AUTH_TOKEN|ACCESS_TOKEN|CLIENT_SECRET|WEBHOOK_SECRET|API_SECRET|SECRET_KEY|PRIVATE_KEY|JWT_KEY|SERVER_KEY|REFRESH_TOKEN|GITHUB_TOKEN|PASSWORD))=(?!$|"$|[\s\\`)}]|""|'')(["']?)([^\s"'`]*)/g;
+const DUMMY = /^(cage(-fake)?|fake|probe-not-a-key|dummy|x|y|%s(\\n)?)$/;
 // The local cage's own per-run random secrets (made fresh by caged.sh, never a real credential).
 const ALLOW = { ".agents/skills/verify-reason/bin/caged.sh": ["LINQ_WEBHOOK_SECRET", "SENDBLUE_WEBHOOK_SECRET"] };
 

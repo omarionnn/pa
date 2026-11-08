@@ -1,6 +1,6 @@
 #!/bin/bash
-# Keys for a drive without putting them on a command line (2026-11-08: a drive run as
-# `env -i … OPENAI_API_KEY=<key> node …` showed both keys to every user via `ps`).
+# Keys for a drive without putting them on a command line (2026-11-08: a drive run with the
+# OpenAI key and Claude token inline after `env -i` showed both to every user via `ps`).
 # Copies only the named variables from an env file (default /opt/reason/.env, override with
 # REASON_ENV_FILE) into a new 0600 file owned by whoever runs this, and prints its path.
 # Values pass through grep's stdout into the file, never argv. Run as the user the drive runs as:
@@ -15,5 +15,5 @@ for n in "$@"; do [[ "$n" =~ ^[A-Z][A-Z0-9_]*$ ]] || { echo "not a variable name
 OUT=$(umask 077; mktemp "${TMPDIR:-/tmp}/drive-env.XXXXXX")
 pat="^($(IFS='|'; echo "$*"))="
 grep -E "$pat" "$SRC" > "$OUT" || true
-for n in "$@"; do grep -q "^$n=" "$OUT" || echo "drive-env: $n not in $SRC" >&2; done
+for n in "$@"; do grep -q "^$n=" "$OUT" || { echo "drive-env: $n not in $SRC (as NAME=…)" >&2; rm -f "$OUT"; exit 1; }; done
 echo "$OUT"
