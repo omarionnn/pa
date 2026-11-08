@@ -136,9 +136,12 @@ test("what counts as consequential is the permission system's own list, not a se
   assert.equal(verify.isConsequential("confirm_record"), true);
   // Talking, remembering and looking things up are not gated and must stay ungated. A check in front
   // of "what's on tomorrow" would make every call feel like an interrogation.
-  for (const a of ["recall", "remember", "calendar_list", "web_search", "confirm_request"]) {
+  for (const a of ["remember", "calendar_list", "web_search", "confirm_request"]) {
     assert.equal(verify.isConsequential(a), false, `${a} must not need the check`);
   }
+  // Except what they are remembered as, and where they are (privacy, drive 11-08): the saved facts carry
+  // home, work and routines, so reading them waits for the check like a send (./verify.js MEMORY_READS).
+  for (const a of ["recall", "memory_page", "get_location"]) assert.equal(verify.isConsequential(a), true, a);
 });
 
 test("a passphrase is compared on what was SAID, and a wrong one is told nothing", () => {
@@ -262,10 +265,10 @@ test("on his own call, the first thing that spends or sends is refused until the
   const call2 = ownerCall({ externalId: "conv_in2" });
   const out2 = await voice.llmRequest({
     rawBody: bodyFor(call2), headers: AUTH,
-    generate: rounds([{ tool: "recall", input: { who: "kofi" } }], ["he's your cousin"]),
+    generate: rounds([{ tool: "web_search", input: { query: "knicks score" } }], ["they won"]),
   });
   await drain(out2.stream);
-  assert.deepEqual(ran, ["recall"]);
+  assert.deepEqual(ran, ["web_search"]);
 });
 
 test("once the caller is verified mid-turn, the tool that was refused runs", async () => {

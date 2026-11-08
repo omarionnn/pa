@@ -175,7 +175,7 @@ test("a tool running when the re-ask arrives runs once, and both streams hear it
     modelRuns++;
     const last = messages.at(-1);
     if (Array.isArray(last?.content) && last.content[0]?.type === "tool_result") { yield { type: "text", text: "Found it: the dentist on Thursday at ten." }; return; }
-    yield { type: "tool_use", name: "memory_page", id: "tu_m", input: {} };
+    yield { type: "tool_use", name: "web_search", id: "tu_m", input: {} };
   };
   const a = await llmRequest({ ...base, rawBody: bodyFor(call), generate });
   const ra = drain(a.stream);
