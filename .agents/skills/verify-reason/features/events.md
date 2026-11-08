@@ -289,6 +289,21 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   list; organizers allowed on their own row) and `event_instagram` (remove / change everywhere).
   Pinned: `test/event-list-note.test.js`; drive: the `note:` steps in `bin/events-drive.mjs`.
   New users from a claim get their typed handle kept but no note (their welcome flow is its own).
+- **Scheduled messages + automatic reminders (`src/eventschedule.js`, table `event_scheduled`)** —
+  `event_schedule` (behind the confirm gate like `event_blast`; target pins event + time + words
+  hash, `scheduleRefusal` refuses a past time / paused / cancelled BEFORE a yes is asked) sets or
+  changes one message to every guest at a wall-clock time in the event's zone; `event_scheduled`
+  lists, cancels (no yes) and switches reminders. The manage page's `03 · LATER` section does the
+  same through `runEventTool` with its own preview → confirm. Sending is only the runtime sweep
+  (`Runtime.eventScheduled`): claim pending → sending + its `event_messages` row in one
+  transaction; a row left `sending` by a dead process is finished on the next pass (deliveries
+  dedupe per guest). Recipients = joined, unmuted guests at send time. Paused → waits; >2 h late →
+  `missed` (shown on the page); event cancelled → pending rows cancelled. Reminders: day before at
+  18:00 local (may go until 21:00) and start − 2 h (skipped if 22:00–08:00); only while the time is
+  shared; location only if shared; once per (event, kind, starts_at); not if the event was made
+  after the reminder time. `events.remind_day_before/remind_soon`: 0 for events made before this
+  shipped, 1 for new ones. History kinds `scheduled` / `reminder`. Pinned:
+  `test/event-scheduled.test.js`; drive: the `sched:` steps.
 
 ## How to get to it (user POV)
 

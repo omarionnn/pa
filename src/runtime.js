@@ -53,6 +53,7 @@ import { PROVIDER as GOOGLE } from "./google.js";
 import * as eventRides from "./eventrides.js";
 import { sweepListNotes } from "./events.js";
 import { sweep as sweepAlbums } from "./albums.js";
+import * as eventSchedule from "./eventschedule.js";
 import * as dailyEdition from "./daily.js";
 import * as dream from "./dream.js";
 import * as webdraft from "./webdraft.js";
@@ -2743,6 +2744,16 @@ export class Runtime extends EventEmitter {
     }
   }
 
+  /** Event messages an organizer scheduled, and the automatic reminders (src/eventschedule.js). Logged, never thrown. */
+  async eventScheduled({ now = clock.now() } = {}) {
+    try {
+      return await eventSchedule.sweep({ runtime: this, now, log: this.log });
+    } catch (e) {
+      this.log({ event_scheduled_pass_failed: String(e?.name ?? typeof e).slice(0, 40) });
+      return { failed: true };
+    }
+  }
+
   /** Event albums past their deadline: closed, files deleted; and the one end-of-event check-in nudge (src/albums.js). Logged, never thrown. */
   async eventAlbums({ now = clock.now() } = {}) {
     try {
@@ -2859,6 +2870,9 @@ export class Runtime extends EventEmitter {
     const event_rides = await this.eventRides();
     // The one guest-list note after joining an event, when it had to wait for the morning.
     const event_list_notes = await this.eventListNotes();
+    // Messages an organizer scheduled for now, and the day-before / two-hours reminders. A row a
+    // stopped process left mid-send is finished here, on the first pass after boot.
+    const event_scheduled = await this.eventScheduled();
     // An event album whose deadline has passed: closed, and its files deleted. Says nothing to anybody.
     const event_albums = await this.eventAlbums();
     // Before the idle-thread pass: a builder that just finished is real news, and raising a dropped
@@ -2893,7 +2907,7 @@ export class Runtime extends EventEmitter {
     const dreams = this.dreams();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, todo_wraps, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, dreams, retention };
+    return { undone, outbox, held, standing, timers, tasks, todo_wraps, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, event_list_notes, event_scheduled, event_albums, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, daily, follow, access, extracted, shapes, dreams, retention };
   }
 
   start(everyMs = 15_000) {

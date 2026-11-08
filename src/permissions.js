@@ -96,6 +96,8 @@ export const GATED_ACTIONS = new Set([
   // event, and an issue or a comment under their GitHub name. Grantable — "you can comment on my
   // own repos without asking" is a real bound, because the target names the repo.
   "event_blast", "github_issue_create", "github_issue_comment",
+  // A blast at a later time (src/eventschedule.js), on the same footing: the target names the event.
+  "event_schedule",
 ]);
 
 /**

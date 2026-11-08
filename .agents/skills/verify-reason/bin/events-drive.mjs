@@ -294,6 +294,42 @@ config.events = "owner";
   clock.reset();
 }
 
+// ---- scheduled messages and the automatic reminders (src/eventschedule.js) ----
+{
+  const sched = await imp("src/eventschedule.js");
+  const tz = "America/New_York";
+  const wall = (days, hh) => {
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(clock.now() + days * 86_400_000)).map(x => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}T${String(hh).padStart(2, "0")}:00`;
+  };
+  const made = await tool("event_create", { name: "Sched Test Supper", description: "x", starts_at: wall(5, 20), timezone: tz, location: "9 Oak Ave", password: "supper-pw", show_time_on_join: true, show_location_on_join: false, guest_list_visible: false }, C.owner);
+  const sev = db.getEventRow(made.event.event_id);
+  const j = await tool("event_join", { name: "Sched Test Supper", password: "supper-pw" }, C.ama);
+  step("sched: a new event has both reminders on", sev.remind_day_before === 1 && sev.remind_soon === 1 && j.ok, JSON.stringify(j).slice(0, 120));
+  const input = { event_id: sev.id, event_named: sev.name, message: "bring a chair", send_at: wall(2, 10) };
+  const unasked = await tool("event_schedule", input, C.owner);
+  step("sched: no yes sets nothing and hands back a target with the time", unasked.blocked === "needs_confirmation" && /at .*10:00 AM/.test(unasked.use_target ?? "") && db.scheduledFor(sev.id).length === 0);
+  const past = await tool("event_schedule", { ...input, send_at: wall(-1, 10) }, C.owner);
+  step("sched: a past time is refused before any yes", past.reason === "past" && !past.use_target);
+  const set = await withYes(runTool, "event_schedule", input, { conversationId: C.owner, messages: [], events: runtime });
+  step("sched: with a yes it waits", set.ok && db.scheduledFor(sev.id, ["pending"]).length === 1, JSON.stringify(set).slice(0, 160));
+  const body = events.blastBody(sev, "bring a chair");
+  const due = db.scheduledRow(set.scheduled_id).send_at;
+  clock.reset(); clock.skip(due + 1000 - Date.now());
+  await runtime.sweep(); await runtime.sweep();
+  await new Promise(r => setTimeout(r, 50));
+  step("sched: the sweep sends it at its time, once", toNum(AMA).filter(t => t === body).length === 1 && db.scheduledRow(set.scheduled_id).state === "sent");
+  const dayBefore = sched.reminderAt(sev, "day_before");
+  clock.reset(); clock.skip(dayBefore + 60_000 - Date.now());
+  await runtime.sweep(); await runtime.sweep();
+  await new Promise(r => setTimeout(r, 50));
+  step("sched: the day-before reminder goes once, no hidden address", toNum(AMA).filter(t => /^reminder: Sched Test Supper is tomorrow/.test(t)).length === 1 && !toNum(AMA).some(t => /Oak Ave/.test(t)));
+  clock.reset();
+  await withYes(runTool, "event_schedule", { ...input, message: "never sent", send_at: wall(4, 9) }, { conversationId: C.owner, messages: [], events: runtime });
+  await tool("event_cancel", { event_id: sev.id, event_named: sev.name }, C.owner);
+  step("sched: cancelling the event cancels what was waiting", db.scheduledFor(sev.id, ["pending"]).length === 0 && db.scheduledFor(sev.id, ["cancelled"]).length === 1);
+}
+
 const cancel = await tool("event_cancel", { event_id: ev.id, event_named: "Halloween Party" }, C.owner);
 step("cancellation reaches every guest", cancel.ok && toNum(AMA).some(t => /is cancelled/.test(t)) && toNum(YAW).some(t => /is cancelled/.test(t)));
 

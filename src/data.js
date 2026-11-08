@@ -209,6 +209,9 @@ const TABLES = [
   // is shared with its guests: see KEPT_ON_DELETE.
   "event_attendees", "event_checkins", "event_deliveries", "event_photos", "album_consents", "event_claims",
   "ride_offers", "ride_asks", "ride_matches",
+  // What an organiser scheduled for their guests (src/eventschedule.js): their own words, waiting to
+  // go, and the record of which reminders went. Deleted, a waiting message never goes.
+  "event_scheduled",
   // Which of their calls, messages and actions they asked Reason to forget, so recall never reads
   // them again (src/db.js forgetFromRecall). Row ids only, theirs.
   "recall_forgotten",
@@ -580,6 +583,13 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     ? db.prepare(`SELECT p.file, e.public_id FROM event_photos p JOIN events e ON e.id = p.event_id${conversation ? " WHERE p.conversation_id = ?" : ""}`)
       .all(...(conversation ? [conversation] : []))
     : [];
+
+  // An event they organised stays (KEPT_ON_DELETE), but nobody can run it any more: its automatic
+  // reminders are switched off first, so the reminder record going with their rows below can never
+  // read as "not sent yet" and text guests a second time (src/eventschedule.js).
+  if (conversation && present("events")) {
+    try { db.prepare("UPDATE events SET remind_day_before = 0, remind_soon = 0 WHERE organizer_conversation_id = ?").run(conversation); } catch { /* an older db without the columns */ }
+  }
 
   const rows = {};
   const childIds = [...pageIds, ...(conversation ? [`esign:${conversation}`] : [])];

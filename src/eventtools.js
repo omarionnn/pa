@@ -14,6 +14,7 @@ import { fromOutside } from "./outside.js";
 import * as rides from "./eventrides.js";
 import * as cover from "./eventcover.js";
 import * as opsDigest from "./opsdigest.js";
+import * as schedule from "./eventschedule.js";
 
 /** Is this one of Reason's own event links (on the events domain, the pages domain where older links live, or this server's address)? */
 export function isOwnEventLink(url) {
@@ -58,7 +59,7 @@ const EVENT_NAMED = {
 /** Only shown to a conversation that may make events (REASON_EVENTS). */
 export const EVENT_CREATE_TOOLS = new Set(["event_create"]);
 /** Shown to whoever organizes an event, or may make one. */
-export const EVENT_ORGANIZER_TOOLS = new Set(["event_guests", "event_update", "event_release", "event_blast", "event_password_rotate", "event_guest_remove", "event_cancel", "event_cover", "event_detail_public"]);
+export const EVENT_ORGANIZER_TOOLS = new Set(["event_guests", "event_update", "event_release", "event_blast", "event_password_rotate", "event_guest_remove", "event_cancel", "event_cover", "event_detail_public", "event_schedule", "event_scheduled"]);
 /** Rides (spec v3 §13, src/eventrides.js): the organizer's switch, and a guest's one ride tool. */
 export const EVENT_RIDE_ORGANIZER_TOOLS = new Set(["event_rides_setting"]);
 export const EVENT_RIDE_GUEST_TOOLS = new Set(["event_ride"]);
@@ -100,6 +101,40 @@ export function blastTarget(conversationId, input) {
   const hash = createHash("sha256").update(words).digest("hex").slice(0, 16);
   return `blast to ${where}: "${preview}" [${hash}]`;
 }
+
+/**
+ * What an organizer's yes to a scheduled message covers: this event, this time, these exact words —
+ * and, for a change, which waiting message it replaces. Pinned the way a blast's is (blastTarget), so
+ * a yes to "Friday 6 PM: doors at 9" is not a yes to Saturday, or to other words.
+ */
+export function scheduleTarget(conversationId, input) {
+  const words = String(input.message ?? "").trim();
+  const ev = events.managed(conversationId, input.event_id);
+  const where = ev ? `${String(ev.name).slice(0, 120)} (event #${ev.id})` : `event #${input.event_id}`;
+  const at = ev ? events.parseStartsAt(input.send_at, ev.tz) : null;
+  const when = ev && at != null ? schedule.whenText(ev, at) : String(input.send_at ?? "").slice(0, 40);
+  const preview = words.length > 120 ? `${words.slice(0, 120)}…` : words;
+  const hash = createHash("sha256").update(words).digest("hex").slice(0, 16);
+  return `scheduled message to ${where} at ${when}${input.scheduled_id ? ` (replacing #${input.scheduled_id})` : ""}: "${preview}" [${hash}]`;
+}
+
+/**
+ * Why a scheduled message can't be set at all, before anybody is asked to approve it: the organizer
+ * refusal first (a stranger hears what a made-up id hears), then the message and time themselves —
+ * a time in the past is refused, never sent to collect a yes for something that cannot happen.
+ */
+export function scheduleRefusal(c, input) {
+  const refused = organizerRefusal(c, input);
+  if (refused) return refused;
+  const p = schedule.plan(events.managed(c, input.event_id), { message: input.message, sendAt: input.send_at, replacing: input.scheduled_id ?? null });
+  return p.ok ? null : { ok: false, reason: p.reason, error: SCHEDULE_WHY[p.reason] ?? "That can't be scheduled." };
+}
+const SCHEDULE_WHY = {
+  ...schedule.WHY,
+  not_found: "No message like that is waiting on this event — it may have gone out or been cancelled. event_scheduled lists what's waiting.",
+  bad_time: "The time didn't read as a date and time. Ask when it should go and pass it as YYYY-MM-DDTHH:MM, wall-clock time in the event's zone.",
+  past: "That time has passed or is only moments away. Ask them for a later time — or, if they want it out now, that's event_blast.",
+};
 
 export const EVENT_TOOL_DEFS = [
   {
@@ -253,6 +288,38 @@ export const EVENT_TOOL_DEFS = [
     input_schema: { type: "object", properties: { event_id: EVENT_ID, event_named: EVENT_NAMED, message: { type: "string" }, confirmation_id: { type: "integer", description: "From confirm_record, granted, for exactly this message." } }, required: ["event_id", "message"] },
   },
   {
+    name: "event_schedule",
+    description: "Organizer only: set one message to text every guest at a later time they choose (guests who muted the event are skipped), or change one already waiting (scheduled_id from event_scheduled, with the full new words and time). Use when they want something sent to their guests later — \"remind everyone friday morning to bring a dish\". If they want it out now, that's event_blast."
+      + " send_at is their wall-clock time in the EVENT's time zone. The same yes rule as event_blast: call first with no confirmation_id (nothing is set), show them the exact text, when it goes and how many guests it reaches today, then confirm_request with action event_schedule and target set to the `use_target` it refused with, wait for their answer, confirm_record, then this again with the same message, time and the confirmation_id. A changed word or time needs a new yes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        event_id: EVENT_ID, event_named: EVENT_NAMED,
+        message: { type: "string", description: "Their words, exactly." },
+        send_at: { type: "string", description: "When it goes: YYYY-MM-DDTHH:MM, wall-clock time in the event's zone." },
+        scheduled_id: { type: "integer", description: "Only to change a message already waiting." },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, for exactly this message and time." },
+      },
+      required: ["event_id", "message", "send_at"],
+    },
+  },
+  {
+    name: "event_scheduled",
+    description: "Organizer only: the messages waiting to go to their guests and the two automatic reminders (the day before at 6 PM, and about 2 hours before the start, in the event's zone; each on or off per event). action list: what's waiting, when, and each reminder's state. cancel: drop one waiting message (scheduled_id) — nothing is sent. reminder: turn one reminder (day_before | two_hours) on or off with enabled."
+      + " Reminders are Reason's own short text with the time (and the place once it's shared); they never go while guests can't see the time, and the two-hours one is skipped when it would land at night.",
+    input_schema: {
+      type: "object",
+      properties: {
+        event_id: EVENT_ID, event_named: EVENT_NAMED,
+        action: { type: "string", enum: ["list", "cancel", "reminder"] },
+        scheduled_id: { type: "integer", description: "cancel: which waiting message." },
+        reminder: { type: "string", enum: ["day_before", "two_hours"], description: "reminder: which one." },
+        enabled: { type: "boolean", description: "reminder: on or off." },
+      },
+      required: ["event_id", "action"],
+    },
+  },
+  {
     name: "event_password_rotate",
     description: "Organizer only: change their event's password. Everyone already joined stays joined; the old password stops working for new joins. Then send them the new password to share.",
     input_schema: { type: "object", properties: { event_id: EVENT_ID, event_named: EVENT_NAMED, new_password: { type: "string" } }, required: ["event_id", "new_password"] },
@@ -328,6 +395,8 @@ export const EVENT_SCHEMAS = {
   event_update: z.object({ event_id: id, event_named: text(500).optional(), name: text(120).optional(), description: text(2000).optional(), starts_at: text(40).optional(), timezone: text(64).optional(), location: text(500).optional(), welcome_message: text(1000).optional() }),
   event_release: z.object({ event_id: id, event_named: text(500).optional(), detail: z.enum(["time", "location"]) }),
   event_blast: z.object({ event_id: id, event_named: text(500).optional(), message: z.string().min(1).max(1500), confirmation_id: z.number().int().optional() }),
+  event_schedule: z.object({ event_id: id, event_named: text(500).optional(), message: z.string().min(1).max(1500), send_at: text(40), scheduled_id: id.optional(), confirmation_id: z.number().int().optional() }),
+  event_scheduled: z.object({ event_id: id, event_named: text(500).optional(), action: z.enum(["list", "cancel", "reminder"]), scheduled_id: id.optional(), reminder: z.enum(["day_before", "two_hours"]).optional(), enabled: z.boolean().optional() }),
   event_password_rotate: z.object({ event_id: id, event_named: text(500).optional(), new_password: text(200) }),
   event_guest_remove: z.object({ event_id: id, event_named: text(500).optional(), guest_id: id }),
   event_cancel: z.object({ event_id: id, event_named: text(500).optional(), message: text(500).optional() }),
@@ -461,6 +530,16 @@ function askWhich(out) {
 }
 const NOT_AVAILABLE = { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
 
+/** One reminder's state, in words the model can relay. */
+function reminderLine(r) {
+  const said = {
+    off: "off", no_time: "the event has no start time", time_hidden: `on, but guests can't see the time yet, so it can't go until it's shared${r.when ? ` (due ${r.when})` : ""}`,
+    night: `on, but skipped: ${r.when} is the middle of the night there`, sent: "already went for this start time",
+    too_late: "its time has passed for this start", upcoming: `on: goes ${r.when}`,
+  }[r.state];
+  return { which: r.which, on: r.on, state: r.state, ...(r.when ? { goes_at: r.when } : {}), says: said };
+}
+
 /** What guests are sent when the organizer changes something they can see. */
 export function changeLine(ev, changes) {
   return `update for ${ev.name}:\n${changes.join("\n")}`;
@@ -470,11 +549,8 @@ export function changeLine(ev, changes) {
 // sends it and by the organizer's page (src/pages/eventmanage.js) to preview it, so what the page
 // shows is what goes out.
 
-/** A blast: "{name} — from {organizer}:\n{message}". */
-export function blastBody(ev, message) {
-  const who = events.organizerName(ev);
-  return `${ev.name}${who ? ` — from ${who}` : ""}:\n${String(message ?? "").trim()}`;
-}
+/** A blast: "{name} — from {organizer}:\n{message}". Lives in src/events.js, where a scheduled message builds it too. */
+export const blastBody = events.blastBody;
 
 /** A hidden detail shared with every guest (event_release, and event_detail_public's share). */
 export function releaseBody(ev, detail) {
@@ -601,8 +677,9 @@ export async function runEventTool(name, input, ctx) {
       ok: true,
       event: events.organizerView(ev),
       share: { name: ev.name, password: input.password, link: events.eventUrl(ev), share_text: events.shareText(ev, input.password) }, links: LINK_ALONE,
-      say: "Send them the share_text as one message for them to forward, then the link as its OWN message with nothing else in it — never inside the share text or a block to copy — so Messages draws it as the event's card. The link opens a join page; guests still need the password. Guests who already use Reason can also just text Reason the name and password, or paste the link to their Reason. Mention once that they can text a photo or flyer to put on the link's card."
-        + (ev.guest_list_visible ? " Don't bring up the who's-going list or Instagram: one follow-up about their own spot on it goes out on its own after your reply." : ""),
+      say: "Send them the share_text as one message for them to forward, then the link as its OWN message with nothing else in it — never inside the share text or a block to copy — so Messages draws it as the event's card. The link opens a join page; guests still need the password. Guests who already use Reason can also just text Reason the name and password, or paste the link to their Reason. Mention once that they can text a photo or flyer to put on the link's card, and, in one short line, that Reason texts guests two reminders on its own — the day before and about 2 hours before — and that they can turn either off on the event's page or by asking you. Describe that in plain words; never hand them a phrase to type."
+        + (ev.time_released ? "" : " The time is hidden for now, so say the reminders start once they share it.")
+        + (ev.guest_list_visible ?" Don't bring up the who's-going list or Instagram: one follow-up about their own spot on it goes out on its own after your reply." : ""),
     };
   }
 
@@ -811,6 +888,33 @@ export async function runEventTool(name, input, ctx) {
       return { ok: true, sent, note: sent.guests ? `Reached ${sent.sent} of ${sent.guests}${sent.failed ? `; ${sent.failed} failed and can be retried from the status page` : ""}${sent.sending ? `; ${sent.sending} still sending` : ""}.` : "Nobody has joined yet, so nobody was texted." };
     }
 
+    case "event_schedule": {
+      const p = schedule.schedule({ ev, conversationId: c, message: input.message, sendAt: input.send_at, replacing: input.scheduled_id ?? null });
+      if (!p.ok) return { ok: false, reason: p.reason, error: SCHEDULE_WHY[p.reason] ?? "That can't be scheduled." };
+      return {
+        ok: true, scheduled_id: p.row.id, changed: !!p.changed, goes_at: p.when, guests_today: p.reach.guests, text_guests_get: p.body,
+        note: `${p.changed ? "Changed" : "Set"}: it goes ${p.when} to everyone on the event then${p.reach.muted ? ` (${p.reach.muted} muted now)` : ""}. They can see, change or cancel it on their event page or by asking you.`,
+      };
+    }
+
+    case "event_scheduled": {
+      if (input.action === "cancel") {
+        if (!input.scheduled_id) return { ok: false, error: "Which one? event_scheduled with action list shows what's waiting and each one's scheduled_id." };
+        const r = schedule.cancel({ ev, id: input.scheduled_id });
+        return r.ok ? { ok: true, cancelled: r.cancelled, note: "Cancelled; nobody was texted." } : { ok: false, error: SCHEDULE_WHY.not_found };
+      }
+      if (input.action === "reminder") {
+        if (!input.reminder || typeof input.enabled !== "boolean") return { ok: false, error: "Say which reminder (day_before or two_hours) and on or off." };
+        const r = schedule.setReminder(ev, input.reminder, input.enabled);
+        return { ok: true, reminder: reminderLine(r.status) };
+      }
+      return {
+        ok: true, timezone: ev.tz,
+        waiting: schedule.pendingFor(ev).map(m => ({ scheduled_id: m.id, goes_at: m.when, send_at_local: m.local, message: m.message })),
+        reminders: schedule.reminders(ev).map(reminderLine),
+      };
+    }
+
     case "event_password_rotate": {
       const problem = events.passwordProblem(input.new_password);
       if (problem) return { ok: false, error: problem === "too_short" ? "Too short; at least 4 characters." : "Too long." };
@@ -867,6 +971,8 @@ export async function runEventTool(name, input, ctx) {
     case "event_cancel": {
       const wasPaused = ev.status === "paused";
       const after = db.updateEventRow(ev.id, { status: "cancelled", cancelled_at: clock.now() });
+      // Nothing scheduled goes out for an event that isn't happening.
+      schedule.cancelAllFor(after);
       // A cancellation always goes out — guests need to know not to come — but on an event the
       // operator paused it goes out as the bare fact, without anything the organizer added.
       const sent = await events.broadcast({ runtime, ev: after, kind: "cancel", body: cancelBody(after, input.message, { wasPaused }) });
