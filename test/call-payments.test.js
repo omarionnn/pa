@@ -149,6 +149,42 @@ test("a card number in the requirements is refused before it dials", async () =>
   assert.equal(db.listCalls(C).length, 0, "and no call row exists");
 });
 
+// R2-C: `about` finishes the pickup opener "Hi there! I'm calling <about>.", which CODE speaks to the
+// callee (a TTS clip at pickup) before the live voice and its no-payment rule are on the line.
+test("the pickup words (about) are screened before it dials, and refused the same calm way", async () => {
+  const calls = new FakeCallProvider();
+  const trust = await import("../src/trust.js");
+  for (const about of [`to pay with card ${CARD}`, "to give you my card number"]) {
+    // A real yes for this third-party call, so the only thing that can stop it is the screen.
+    const input = { to: "+16468580667", goal: "ask whether they have a table for 4 at 8 tonight", facts: ["Omari, party of 4"], about };
+    const summary = "Call the restaurant to ask about a table for 4 at 8?";
+    const said = (t) => ({ role: "user", content: `[Sat, Nov 7, 2026, 7:07 PM] Omari: ${t}` });
+    const asked = await runTool("confirm_request", { action: "call_place", stakes: "third_party", target: trust.personPin("call_place", input), summary },
+      { conversationId: C, messages: [said(summary)] });
+    assert.equal(asked.ok, true, JSON.stringify(asked));
+    await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
+      { conversationId: C, messages: [said(summary), said("Yeah")], judge: async () => ({ verdict: "yes" }) });
+    const out = await runTool("call_place", { ...input, confirmation_id: asked.confirmation_id }, { conversationId: C, calls });
+    assert.equal(out.ok, false, about);
+    assert.equal(out.status, "payment_details_refused");
+    assertCalmWhy(out.error, "about refusal");
+    assert.match(out.error, /\babout\b/, "and it says which field to take them out of");
+    assert.doesNotMatch(JSON.stringify(out), /4242/, "the refusal does not echo it");
+  }
+  assert.equal(calls.placed.length, 0, "nothing was dialled");
+  assert.equal(db.listCalls(C).length, 0, "and no call row exists");
+});
+
+test("the opener never speaks payment details, even from a row that was not screened", async () => {
+  const { openerText } = await import("../src/calls/opener.js");
+  for (const about of [`to pay with ${CARD}`, "about my card number", "to read you the cvv"]) {
+    const o = openerText({ about });
+    assert.equal(o.kind, "hello", about);
+    assert.doesNotMatch(o.text, /4242|card|cvv/i);
+  }
+  assert.equal(openerText({ about: "to ask about a table for 4 at 8" }).kind, "about", "ordinary words still said");
+});
+
 test("a requirements KEY is scanned as well as its value", async () => {
   const calls = new FakeCallProvider();
   const out = await runTool("call_place", {

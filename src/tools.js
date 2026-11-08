@@ -11248,6 +11248,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         questions: input.ask ?? [],
         terms: input.approved_terms ?? [],
         requirements: input.requirements ?? {},
+        // The pickup opener's words: code says them to the callee, ahead of the guarded live voice.
+        about: input.about ?? "",
       });
       if (!pay.ok) {
         return { ok: false, status: "payment_details_refused", found: pay.found, error: pay.error };

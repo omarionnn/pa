@@ -18,6 +18,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
+import { findPaymentDetails } from "./payments.js";
 
 /** Silence on the line this long after the pickup, nobody speaking: the opener plays. */
 export const OPENER_SILENT_MS = 600;
@@ -48,7 +49,8 @@ const VOICE_STYLE = "A young woman with a light, natural British (London) accent
 export function openerText({ about = "", notice = false } = {}) {
   let a = String(about ?? "").replace(/\s+/g, " ").trim().replace(/[.!?…,;:]+$/, "");
   a = a.replace(/^(?:hi( there)?[,!.]?\s*)?(?:i'?m|i am)\s+calling\s+/i, "");
-  if (a.length > 140 || /[[\]{}<>]|https?:|@/.test(a)) a = "";
+  // Payment details are never said, even from a row the pre-dial screen did not see: hello only.
+  if (a.length > 140 || /[[\]{}<>]|https?:|@/.test(a) || findPaymentDetails(a).length) a = "";
   const hello = notice ? "Hi there — just so you know, this call's recorded." : "Hi there!";
   if (!a) return { text: hello, kind: "hello" };
   return { text: `${hello} I'm calling ${a}.`, kind: "about" };
