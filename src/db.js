@@ -6334,13 +6334,13 @@ export function endPageSessionsFor(conversationId) {
  * Every browser one person is signed in on (Reason Web Settings): its stored key (`token`, the hash,
  * never the browser's token), when it was made, when it
  * was last used and the browser it was last used from. Newest use first. Rows past `maxAgeMs` since
- * made, or `idleMs` unused, are not listed: they open nothing.
+ * made, or `idleMs` unused, are not listed: they open nothing. An app session has no idle limit, so it stays listed and revocable.
  */
 export function pageSessionsFor(conversationId, { maxAgeMs = Infinity, idleMs = Infinity } = {}) {
   if (!conversationId) return [];
   const now = clock.now();
-  return db.prepare("SELECT token, created_at, last_seen_at, user_agent FROM page_sessions WHERE conversation_id = ? ORDER BY last_seen_at DESC, created_at DESC")
-    .all(conversationId).filter(r => now - r.created_at <= maxAgeMs && now - r.last_seen_at <= idleMs);
+  return db.prepare("SELECT token, created_at, last_seen_at, user_agent, client FROM page_sessions WHERE conversation_id = ? ORDER BY last_seen_at DESC, created_at DESC")
+    .all(conversationId).filter(r => now - r.created_at <= maxAgeMs && (r.client === "ios" || now - r.last_seen_at <= idleMs));
 }
 
 /** The stored key of a token, for telling "this device" in a list of stored keys. */

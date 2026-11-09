@@ -4,17 +4,18 @@
 //
 // What is different is only what a native client needs:
 //   - no form cookie, so a code is bound to a random `challenge` the app makes and sends on both calls;
-//   - sessions are marked `client = 'ios'`, and only those open this API, so a browser cookie is not a token.
+//   - sessions are marked `client = 'ios'`, and only those open this API, so a browser cookie is not a token;
+//   - a session lasts a flat 90 days, however long it sits unused (owner 11-09). Web keeps its 30-day idle limit.
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import * as events from "../events.js";
 import { config } from "../config.js";
 import { requestCode, codeHost, boundTo, SESSION_TTL_MS, CODE_TTL_MS } from "../pages/access.js";
-import { accountForNumber, signinKey, webUrl, WEB_IDLE_MS } from "../pages/websignin.js";
+import { accountForNumber, signinKey, webUrl } from "../pages/websignin.js";
 import { eventActor } from "../pages/event.js";
 
 export const IOS_CLIENT = "ios";
-export { SESSION_TTL_MS, WEB_IDLE_MS as SESSION_IDLE_MS, CODE_TTL_MS };
+export { SESSION_TTL_MS, CODE_TTL_MS };
 
 /** May THIS conversation use the app API? Asked with the conversation the session resolved to, never one the client named. */
 export function iosAllowedFor(conversationId) {
@@ -76,7 +77,7 @@ export function bearerOf(headers = {}) {
 export function iosAccount(headers) {
   const token = bearerOf(headers);
   if (!token || db.pageSessionClient(token) !== IOS_CLIENT) return null;
-  const owner = db.pageSessionOwner(token, SESSION_TTL_MS, { idleMs: WEB_IDLE_MS });
+  const owner = db.pageSessionOwner(token, SESSION_TTL_MS);
   const account = owner ? db.getAccount(owner) : null;
   if (!account || !iosAllowedFor(account.conversation_id)) return null;
   if (!accounts.admit({ channel: account.channel, address: account.address }).allow) return null;
@@ -86,7 +87,7 @@ export function iosAccount(headers) {
 /** This person's app sessions. `id` is the stored key: a hash, never the token. */
 export function devicesOf(conversationId, currentToken) {
   const here = db.pageSessionKey(currentToken);
-  return db.pageSessionsFor(conversationId, { maxAgeMs: SESSION_TTL_MS, idleMs: WEB_IDLE_MS })
+  return db.pageSessionsFor(conversationId, { maxAgeMs: SESSION_TTL_MS })
     .filter(r => db.pageSessionClientByKey(r.token) === IOS_CLIENT)
     .map(r => ({ id: r.token, name: String(r.user_agent ?? "").replace(/^Reason iOS(?: · )?/, "") || null, created_at: r.created_at, last_seen_at: r.last_seen_at, current: r.token === here }));
 }

@@ -5,7 +5,7 @@ import { realpathSync } from "node:fs";
 import { sep } from "node:path";
 import * as db from "../db.js";
 import { config, clock } from "../config.js";
-import { askForCode, verifyCode, iosAccount, devicesOf, validChallenge, SESSION_TTL_MS, SESSION_IDLE_MS, CODE_TTL_MS } from "./session.js";
+import { askForCode, verifyCode, iosAccount, devicesOf, validChallenge, SESSION_TTL_MS, CODE_TTL_MS } from "./session.js";
 import { pageFeed, receipt } from "./feed.js";
 import { liveRequest } from "./live.js";
 import { memoriesOf, forgetForever, forgetEverything, correctRow, answerGuess } from "./memory.js";
@@ -52,7 +52,7 @@ export async function iosApiRequest({ path, method, headers = {}, remoteAddress 
     }
     const r = verifyCode({ phone: b.phone, challenge: b.challenge, code: b.code, deviceName: b.device_name, headers, remoteAddress, log });
     if (!r.ok) return r.reason === "rate_limited" ? fail(429, "rate_limited") : fail(401, "wrong_code");
-    return ok({ token: r.token, expires_in_s: Math.round(SESSION_TTL_MS / 1000), idle_expires_in_s: Math.round(SESSION_IDLE_MS / 1000), first_name: String(r.account.name ?? "").trim().split(/\s+/)[0] || null });
+    return ok({ token: r.token, expires_in_s: Math.round(SESSION_TTL_MS / 1000), first_name: String(r.account.name ?? "").trim().split(/\s+/)[0] || null });
   }
 
   const auth = iosAccount(headers);
@@ -94,7 +94,7 @@ export async function iosApiRequest({ path, method, headers = {}, remoteAddress 
     if (method !== "POST") return notAllowed();
     const b = await bodyOf(readBody);
     if (b?.confirm !== FORGET_EVERYTHING_CONFIRM) return fail(400, "confirm_required");
-    return ok(forgetEverything(account, { log }));
+    return ok(await forgetEverything(account, { log }));
   }
   m = new RegExp(`^/memories/(${MEMORY_KEY})(/correct)?$`).exec(path);
   if (m) {

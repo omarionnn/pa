@@ -31,6 +31,7 @@ delete process.env.REASON_BACKEND;
 const { createServer } = await import("../src/http.js");
 const { iosApiRequest } = await import("../src/ios/api.js");
 const { liveRequest } = await import("../src/ios/live.js");
+const { setSpanReader } = await import("../src/ios/memory.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
 
@@ -41,9 +42,10 @@ const challenge = (s = "a") => s.repeat(40);
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   config.iosApi = true;
+  setSpanReader(null);
   db.db.exec(`DELETE FROM accounts; DELETE FROM threads; DELETE FROM conversations; DELETE FROM page_sessions; DELETE FROM page_codes; DELETE FROM page_attempts; DELETE FROM event_join_attempts;
     DELETE FROM people; DELETE FROM person_facts; DELETE FROM guesses; DELETE FROM whys; DELETE FROM treat_rules; DELETE FROM profile_blocks; DELETE FROM fact_embeddings; DELETE FROM messages; DELETE FROM event_log;
-    DELETE FROM tasks; DELETE FROM task_log; DELETE FROM timers; DELETE FROM series; DELETE FROM confirmations; DELETE FROM calls; DELETE FROM agentcard_purchases;`);
+    DELETE FROM tasks; DELETE FROM task_log; DELETE FROM timers; DELETE FROM series; DELETE FROM confirmations; DELETE FROM calls; DELETE FROM agentcard_purchases; DELETE FROM inbound_parts; DELETE FROM graph_mentions; DELETE FROM graph_edges; DELETE FROM graph_entities; DELETE FROM recall_reindex;`);
   for (const p of [A, B]) {
     db.upsertAccount({ conversationId: p.c, channel: "fake", address: p.phone, name: p.name, isOperator: p === A });
     db.upsertThread({ conversationId: p.c, channel: "fake", address: p.phone, isOwner: true, service: "iMessage" });
@@ -343,6 +345,126 @@ test("forget everything: asked plainly, removes what Reason knows; receipts and 
   assert.ok(db.getTask(A.c, t.id), "the job they asked for keeps running");
   assert.equal((await api("/page", { token })).status, 200, "still signed in");
   assert.ok(db.memoryFacts(B.c).some(f => f.id === other.factId), "another person's memory is untouched");
+});
+
+// ---------------------------------------------------------------- forget, from the message it came from
+const AT = () => clock.now();
+function sourceMessage(p, text, { role = "user", at = AT(), ext = "ext-1" } = {}) {
+  const ev = Number(db.db.prepare("INSERT INTO event_log (conversation_id, role, content, message_id, at) VALUES (?, ?, ?, ?, ?)").run(p.c, role, text, ext, at).lastInsertRowid);
+  db.db.prepare("INSERT INTO messages (conversation_id, role, channel, text, at) VALUES (?, ?, 'fake', ?, ?)").run(p.c, role, text, at);
+  db.db.prepare("INSERT INTO inbound_parts (channel, base_handle, part_index, conversation_id, text, at) VALUES ('fake', ?, 0, ?, ?, ?)").run(`${ext}-${p.c}`, p.c, text, at);
+  db.saveConversation(p.c, [...db.loadConversation(p.c), { role, content: text }, { role: "assistant", content: "ok" }]);
+  return ev;
+}
+const cutWords = (span) => async (_w, rows) => rows.map(r => ({ id: r.id, remove: r.content.includes(span) ? [span] : [] }));
+
+test("forgetting takes the fact out of the message it came from, everywhere, and keeps what's unrelated", async () => {
+  const token = await signIn(A);
+  const span = "my doctor is Dr Wugwug";
+  const ev = sourceMessage(A, `Dinner at 7 works. ${span}.`);
+  const f = db.remember(A.c, A.name, "Doctor is Dr Wugwug", { source: "inferred", sourceMessageIds: [ev] });
+  db.db.prepare("INSERT INTO fact_embeddings (conversation_id, fact_id, source_table, embedding, created_at, span_from) VALUES (?, ?, 'event_log', x'00', ?, ?)").run(A.c, ev, AT(), ev);
+  const ent = Number(db.db.prepare("INSERT INTO graph_entities (conversation_id, type, canonical_name, key, created_at, updated_at) VALUES (?, 'person', 'Dr Wugwug', 'dr wugwug', ?, ?)").run(A.c, AT(), AT()).lastInsertRowid);
+  db.db.prepare("INSERT INTO graph_mentions (conversation_id, event_log_id, entity_id, created_at) VALUES (?, ?, ?, ?)").run(A.c, ev, ent, AT());
+  db.db.prepare("INSERT INTO graph_edges (conversation_id, src_entity, relation, dst_entity, valid_from, source_message_ids, created_at) VALUES (?, ?, 'treats', ?, ?, ?, ?)").run(A.c, ent, ent, AT(), JSON.stringify([ev]), AT());
+  db.db.prepare("INSERT OR REPLACE INTO profile_blocks (conversation_id, block, fact_ids, built_at) VALUES (?, 'sees Dr Wugwug', '[]', ?)").run(A.c, AT());
+  const asked = [];
+  setSpanReader(async (w, rows) => { asked.push({ w, ids: rows.map(r => r.id) }); return cutWords(span)(w, rows); });
+  assert.equal((await api(`/memories/fact-${f.factId}`, { method: "DELETE", token })).status, 200);
+  assert.deepEqual(asked[0].ids, [ev]);
+  assert.ok(!dbBytes().includes("Wugwug"), "not in any stored copy or derivative");
+  assert.equal(db.db.prepare("SELECT content FROM event_log WHERE id = ?").get(ev).content, "Dinner at 7 works.");
+  assert.equal(db.db.prepare("SELECT text FROM messages WHERE conversation_id = ?").get(A.c).text, "Dinner at 7 works.");
+  assert.equal(db.db.prepare("SELECT text FROM inbound_parts WHERE conversation_id = ?").get(A.c).text, "Dinner at 7 works.");
+  assert.equal(db.loadConversation(A.c)[0].content, "Dinner at 7 works.");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM fact_embeddings WHERE source_table = 'event_log' AND fact_id = ?").get(ev).n, 0);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM recall_reindex WHERE conversation_id = ?").get(A.c).n, 1, "what's left is indexed again");
+  for (const t of ["graph_mentions", "graph_edges", "graph_entities", "profile_blocks"]) assert.equal(db.db.prepare(`SELECT COUNT(*) n FROM ${t} WHERE conversation_id = ?`).get(A.c).n, 0, t);
+});
+test("nothing else in the message: the message is gone", async () => {
+  const token = await signIn(A);
+  const span = "My blood type is O-Zorp";
+  const ev = sourceMessage(A, span);
+  const f = db.remember(A.c, A.name, "Blood type O-Zorp", { source: "inferred", sourceMessageIds: [ev] });
+  setSpanReader(cutWords(span));
+  assert.equal((await api(`/memories/fact-${f.factId}`, { method: "DELETE", token })).status, 200);
+  assert.equal(db.db.prepare("SELECT 1 AS x FROM event_log WHERE id = ?").get(ev), undefined);
+  const m = db.db.prepare("SELECT text, deleted_at FROM messages WHERE conversation_id = ?").get(A.c);
+  assert.equal(m.text, ""); assert.ok(m.deleted_at);
+  assert.equal(db.loadConversation(A.c)[0].content, "[deleted at their request]");
+  assert.ok(!dbBytes().includes("O-Zorp"));
+});
+test("a source message that doesn't state it is left exactly as it was", async () => {
+  const token = await signIn(A);
+  const ev = sourceMessage(A, "Totally unrelated Plimsoll chatter");
+  const f = db.remember(A.c, A.name, "Likes Vexillology", { source: "inferred", sourceMessageIds: [ev] });
+  setSpanReader(cutWords("no such words"));
+  assert.equal((await api(`/memories/fact-${f.factId}`, { method: "DELETE", token })).status, 200);
+  assert.equal(db.db.prepare("SELECT content FROM event_log WHERE id = ?").get(ev).content, "Totally unrelated Plimsoll chatter");
+});
+test("no model, or words that aren't the message's own: 503, and nothing has changed", async () => {
+  const token = await signIn(A);
+  const text = "I bank at Quuxbank, by the way";
+  const ev = sourceMessage(A, text);
+  const f = db.remember(A.c, A.name, "Banks at Quuxbank", { source: "inferred", sourceMessageIds: [ev] });
+  for (const reader of [async () => { throw new Error("down"); }, async (_w, rows) => rows.map(r => ({ id: r.id, remove: ["invented words"] })), async () => []]) {
+    setSpanReader(reader);
+    const r = await api(`/memories/fact-${f.factId}`, { method: "DELETE", token });
+    assert.equal(r.status, 503); assert.equal(r.json.error, "try_again");
+    assert.equal(db.db.prepare("SELECT content FROM event_log WHERE id = ?").get(ev).content, text);
+    assert.ok(db.memoryFacts(A.c).some(x => x.id === f.factId));
+  }
+});
+test("a rule's source message is cut too", async () => {
+  const token = await signIn(A);
+  const span = "never bring up Grelbok";
+  const ev = sourceMessage(A, `Thanks. Also ${span}`);
+  const rule = db.addRule(A.c, { rule: "Never bring up Grelbok", sourceMessageId: ev, source: "they_said" });
+  setSpanReader(cutWords(span));
+  assert.equal((await api(`/memories/rule-${rule.rule.id}`, { method: "DELETE", token })).status, 200);
+  assert.ok(!dbBytes().includes("Grelbok"));
+  assert.match(db.db.prepare("SELECT content FROM event_log WHERE id = ?").get(ev).content, /^Thanks/);
+});
+test("one person's forget never touches another's messages, even the same words at the same moment", async () => {
+  const token = await signIn(A);
+  const span = "I take Blarfoxin daily";
+  const at = AT();
+  const mine = sourceMessage(A, `Morning. ${span}`, { at, ext: "a" });
+  const theirs = sourceMessage(B, `Morning. ${span}`, { at, ext: "b" });
+  const fa = db.remember(A.c, A.name, "Takes Blarfoxin", { source: "inferred", sourceMessageIds: [mine, theirs] });
+  const fb = db.remember(B.c, B.name, "Takes Blarfoxin", { source: "inferred", sourceMessageIds: [theirs] });
+  const ent = Number(db.db.prepare("INSERT INTO graph_entities (conversation_id, type, canonical_name, key, created_at, updated_at) VALUES (?, 'thing', 'Blarfoxin', 'blarfoxin', ?, ?)").run(B.c, at, at).lastInsertRowid);
+  const seen = [];
+  setSpanReader(async (w, rows) => { seen.push(...rows.map(r => r.id)); return cutWords(span)(w, rows); });
+  assert.equal((await api(`/memories/fact-${fa.factId}`, { method: "DELETE", token })).status, 200);
+  assert.deepEqual(seen, [mine], "another person's message, even if cited, is never read or cut");
+  assert.equal(db.db.prepare("SELECT content FROM event_log WHERE id = ?").get(theirs).content, `Morning. ${span}`);
+  assert.equal(db.db.prepare("SELECT text FROM messages WHERE conversation_id = ?").get(B.c).text, `Morning. ${span}`);
+  assert.equal(db.db.prepare("SELECT text FROM inbound_parts WHERE conversation_id = ?").get(B.c).text, `Morning. ${span}`);
+  assert.equal(db.loadConversation(B.c)[0].content, `Morning. ${span}`);
+  assert.ok(db.memoryFacts(B.c).some(x => x.id === fb.factId));
+  assert.ok(db.db.prepare("SELECT 1 AS x FROM graph_entities WHERE id = ?").get(ent));
+});
+
+test("app sign-in is a flat 90 days: 60 idle days still open it and it stays revocable; day 91 doesn't; Web keeps its idle limit", async () => {
+  const token = await signIn(A);
+  const DAY = 86_400_000;
+  db.db.exec(`UPDATE page_sessions SET created_at = ${AT() - 60 * DAY}, last_seen_at = ${AT() - 60 * DAY}`);
+  assert.equal((await api("/page", { token })).status, 200);
+  db.db.exec(`UPDATE page_sessions SET last_seen_at = ${AT() - 60 * DAY}`);
+  assert.equal(db.pageSessionsFor(A.c, { maxAgeMs: 90 * DAY, idleMs: 30 * DAY }).length, 1, "still listed where Web Settings looks");
+  const web = "z".repeat(43);
+  db.startPageSession(`wsign:${A.c}`, web, { conversationId: A.c });
+  db.db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE client IS NULL").run(AT() - 31 * DAY);
+  assert.equal(db.pageSessionsFor(A.c, { maxAgeMs: 90 * DAY, idleMs: 30 * DAY }).length, 1, "a browser idle past 30 days is not");
+  const { sessionAccount } = await import("../src/pages/websignin.js");
+  config.web = true;
+  assert.equal(sessionAccount({ cookie: `reason_page=${web}` }), null, "Web unchanged");
+  config.web = false;
+  const list = (await api("/auth/sessions", { token })).json.sessions;
+  assert.equal(list.length, 1);
+  db.db.exec(`UPDATE page_sessions SET created_at = ${AT() - 91 * DAY}`);
+  assert.equal((await api("/page", { token })).status, 401);
 });
 
 // ---------------------------------------------------------------- sealed

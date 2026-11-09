@@ -19,6 +19,7 @@ The contract for the Swift client. The app holds no logic: every state, word and
 | 413 | `too_long` | Over 500 characters |
 | 429 | `rate_limited` | This device is asking too often |
 | 500 | `server_error` | |
+| 503 | `try_again` | A forget couldn't be worked out yet. Nothing changed; offer it again |
 
 ## Signing in
 
@@ -28,9 +29,9 @@ Sign-in is by phone number, against the Reason account that number already has. 
 
 Generate `challenge` randomly per attempt, keep it in memory, and send the same value to `/auth/verify`.
 
-**`POST /auth/verify`** `{ "phone", "challenge", "code": "123456", "device_name": "Ama's iPhone" }` → `200 { "ok": true, "token": "…", "expires_in_s": 7776000, "idle_expires_in_s": 2592000, "first_name": "Ama" }`
+**`POST /auth/verify`** `{ "phone", "challenge", "code": "123456", "device_name": "Ama's iPhone" }` → `200 { "ok": true, "token": "…", "expires_in_s": 7776000, "first_name": "Ama" }`
 
-Store `token` in the Keychain. Send it as `Authorization: Bearer <token>` on every other route; it is never accepted in a URL. A session ends 90 days after sign-in or after 30 days unused, the same limits as Reason Web, and then every route answers `401 signed_out`.
+Store `token` in the Keychain. Send it as `Authorization: Bearer <token>` on every other route; it is never accepted in a URL. A session lasts a flat 90 days from sign-in, however long it goes unused, and can be revoked at any time. After that every route answers `401 signed_out`.
 
 **`GET /auth/sessions`** → `{ "sessions": [{ "id", "name", "created_at", "last_seen_at", "current": true }] }`. Only app sessions. `id` is a server-side hash and opens nothing.
 
@@ -123,7 +124,7 @@ A change reaches the stream within 1 second. The stream closes every 30 minutes;
 `Source` is `{ "kind", "label", "at", "quote" }`. `label` is the line to show ("You told me"). `quote` is their own words that it came from, when Reason still has them.
 
 - **`POST /memories/{id}/correct`** `{ "text": "…" }` → `{ "ok": true, "id": "fact-13" }`. Correcting issues a new `id`.
-- **`DELETE /memories/{id}`** forgets one memory for good.
+- **`DELETE /memories/{id}`** forgets one memory for good, including from the message it came from. May answer `503 try_again`.
 - **`POST /memories/guess-{n}`** `{ "answer": "yes" | "no" }`. Yes saves it as a fact (`id` returned); no dismisses it for good.
 - **`POST /memories/forget-everything`** `{ "confirm": "FORGET EVERYTHING" }` → `{ "ok": true, "removed": { "person_facts": 12, … } }`
 
@@ -133,8 +134,12 @@ Face ID for this screen is the app's to enforce. The server can't observe it, so
 
 **Forgetting one memory**
 - The memory's words are removed from the database, including any older wording a correction replaced. A fact keeps a one-way fingerprint so Reason can't re-learn the sentence from messages it re-reads. If the person says it again themselves, it comes back.
-- It leaves their saved profile, search vectors and memory tool results. Wherever Reason wrote the exact wording in its own replies, that is replaced. The messages it was learned from can no longer be found by recall.
-- **Their own messages stay in their chat history**, the same as Reason Web today, and a reply that said the same thing in other words is not changed. So the idea may still be in the recent thread Reason reads until that trims.
+- **It comes out of the message it was learned from.** A model marks the exact words that state it and code cuts only those, so everything unrelated stays word for word. If nothing else remains and the message carried no file, the message is gone.
+- That applies to every stored copy of that message: chat history, the thread Reason reads, inbound records and sent records. In the thread Reason reads, an emptied turn keeps a `[deleted at their request]` marker so the thread stays valid.
+- What was derived from that message goes too: its search vectors (the run is indexed again from what is left), knowledge-graph mentions and relationships cited to it, names left with nothing behind them, and the saved profile, which is rebuilt.
+- It also leaves memory tool results, and Reason's own replies wherever they used the exact wording.
+- If the model can't mark the words, the answer is `503 try_again` and nothing has changed. A forget is never reported done with the source message still holding it.
+- **What it can't reach:** a different message that said the same thing but isn't recorded as the source, and a file or photo attached to the source message. Other memories learned from that same message stay, each forgettable on its own.
 
 **Forgetting everything**
 - Removes all facts, people, reasons, rules, guesses, preferences, search vectors, the profile, the knowledge graph, memory review records, the chat history and the thread Reason reads.
@@ -144,8 +149,8 @@ Face ID for this screen is the app's to enforce. The server can't observe it, so
 **On the live database**, both run with SQLite `secure_delete` and then truncate the write-ahead log, so the freed bytes are overwritten rather than just unlinked. A test reads the raw database files to confirm the words are gone.
 
 **In backups**, forgetting does not reach into a copy that already exists:
-- The on-server rolling backup is replaced twice a day, so it holds the old words for at most about 12 hours.
-- The encrypted off-site backup keeps 7 daily snapshots, so the old words can remain there for up to about 8 days, then age out when that snapshot is pruned. Nothing edits a snapshot in place.
+- The on-server rolling backup is replaced twice a day, so it holds the old words, including the original message, for at most about 12 hours.
+- The encrypted off-site backup keeps 7 daily snapshots, so the memory and the original message can remain there for up to about 8 days, then age out when that snapshot is pruned. Nothing edits a snapshot in place.
 - A restore from a backup would bring forgotten data back. After any restore, forgets made since that backup would have to be re-applied; nothing does that automatically yet.
 - Any one-off database copy left on the server is outside this. Those must be removed before this promise is made to people.
 
