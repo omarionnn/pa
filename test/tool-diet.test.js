@@ -62,6 +62,52 @@ test("the tools array is byte-identical call after call (the prefix stays cachea
   assert.equal(a, b);
 });
 
+test("owner mode: everyone else's API request, CLI tools/list and stored use are exactly as with the diet off", async () => {
+  const { mcpToolsFor: mcp, ALWAYS_LOAD } = await import("../src/backends/mcp-core.js");
+  const { runTool } = await import("../src/tools.js");
+  const capture = async () => {
+    const saved = model.create; const seen = [];
+    model.create = async (p) => { seen.push(JSON.parse(JSON.stringify(p))); return { stop_reason: "end_turn", usage: {}, content: [{ type: "text", text: "ok" }] }; };
+    try { await runTurn({ conversationId: U, text: "what's on today", kind: "user", events: { emit() {} }, log: () => {} }); } finally { model.create = saved; }
+    return seen[0];
+  };
+  process.env.REASON_TOOL_DIET = "off";
+  const offReq = await capture(); const offList = JSON.stringify(mcp(U));
+  db.saveConversation(U, []); diet._resetDiet();
+  process.env.REASON_TOOL_DIET = "owner";
+  const ownerReq = await capture(); const ownerList = JSON.stringify(mcp(U));
+  assert.deepEqual(ownerReq.tools, offReq.tools);
+  assert.deepEqual(ownerReq.system, offReq.system);
+  assert.ok(!ownerReq.tools.some(t => t.defer_loading || t.type));
+  assert.equal(ownerList, offList);
+  assert.ok(JSON.parse(ownerList).filter(t => t._meta?.["anthropic/alwaysLoad"]).every(t => ALWAYS_LOAD.has(t.name)));
+  await runTool("timer_list", {}, { conversationId: U });
+  assert.equal(diet.recentToolUse(U).length, 0, "nothing of theirs is kept");
+  db.saveConversation(U, []);
+});
+
+test("a refused diet request: the turn goes on with every tool loaded and no search blocks", async () => {
+  const saved = model.create; const seen = [];
+  const Anthropic = (await import("@anthropic-ai/sdk")).default;
+  model.create = async (p) => {
+    seen.push(p);
+    if (seen.length === 1) throw new Anthropic.BadRequestError(400, { error: { message: "bad tool" } }, "bad tool", new Headers());
+    return { stop_reason: "end_turn", usage: {}, content: [{ type: "text", text: "fine" }] };
+  };
+  db.saveConversation(C, [{ role: "user", content: "earlier" }, { role: "assistant", content: [
+    { type: "server_tool_use", id: "s9", name: "tool_search_tool_bm25", input: { query: "x" } },
+    { type: "tool_search_tool_result", tool_use_id: "s9", content: { type: "tool_search_tool_search_result", tool_references: [] } },
+    { type: "text", text: "done" } ] }]);
+  try {
+    const reply = await runTurn({ conversationId: C, text: "hi", kind: "user", events: { emit() {} }, log: () => {} });
+    assert.equal(reply, "fine");
+    assert.ok(seen[0].tools.some(t => t.defer_loading));
+    assert.ok(!seen[1].tools.some(t => t.defer_loading || t.type));
+    assert.equal(seen[1].system.length, 1);
+    assert.ok(!JSON.stringify(seen[1].messages).includes("server_tool_use"));
+  } finally { model.create = saved; db.saveConversation(C, []); }
+});
+
 test("off: every tool loaded, as before; owner: only the owner's thread is on the diet", () => {
   process.env.REASON_TOOL_DIET = "off";
   const v = toolsFor(C);

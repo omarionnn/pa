@@ -116,7 +116,8 @@ db.exec(`
 
 /** A tool call that ran, counted for the likely set. Never throws: a count must not fail a tool. */
 export function recordToolUse(conversationId, name) {
-  if (!conversationId || !name) return;
+  // Only for people on the diet: with REASON_TOOL_DIET=owner nobody else's use is kept.
+  if (!conversationId || !name || !dietOn(conversationId)) return;
   try {
     db.prepare(`INSERT INTO tool_recent (conversation_id, name, n, last_at) VALUES (?, ?, 1, ?)
       ON CONFLICT(conversation_id, name) DO UPDATE SET n = n + 1, last_at = excluded.last_at`).run(conversationId, String(name), clock.now());
@@ -272,8 +273,17 @@ export function deferredNote(names) {
  * to someone (a switch, a lapsed plan). That search and its result leave the request only, never
  * the saved thread, and an untouched message stays the same object, so the prefix does not move.
  */
-export function withoutStaleSearches(messages, visible) {
+export function withoutStaleSearches(messages, visible, { searchDeclared = true } = {}) {
   const known = new Set(visible.map(t => t.name));
+  // No search tool in this request (the diet off, or refused this turn): every search block leaves it.
+  if (!searchDeclared) {
+    return messages.map((m) => {
+      if (m?.role !== "assistant" || !Array.isArray(m.content)) return m;
+      if (!m.content.some(b => b?.type === "server_tool_use" || b?.type === "tool_search_tool_result")) return m;
+      const content = m.content.filter(b => b?.type !== "server_tool_use" && b?.type !== "tool_search_tool_result");
+      return { ...m, content: content.length ? content : [{ type: "text", text: "(looked something up)" }] };
+    });
+  }
   return messages.map((m) => {
     if (m?.role !== "assistant" || !Array.isArray(m.content)) return m;
     const stale = new Set(m.content

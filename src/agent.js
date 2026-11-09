@@ -653,10 +653,11 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // loads their core + likely set whole and defers the rest behind the API's tool search; the set is
   // fixed for the whole turn and only ever replaced while their cache is cold.
   const visibleTools = toolsFor(conversationId);
-  const diet = apiTools(conversationId, visibleTools, { messages: messages.slice(viewStart), log });
-  const system = diet.note
+  let diet = apiTools(conversationId, visibleTools, { messages: messages.slice(viewStart), log });
+  const plainSystem = () => [{ type: "text", text: systemFor(me), cache_control: { type: "ephemeral" } }];
+  let system = diet.note
     ? [{ type: "text", text: systemFor(me) }, { type: "text", text: diet.note, cache_control: { type: "ephemeral" } }]
-    : [{ type: "text", text: systemFor(me), cache_control: { type: "ephemeral" } }];
+    : plainSystem();
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
     noteModelCall(conversationId);
     const params = {
@@ -666,7 +667,7 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
       tools: diet.tools,
       // The thread from its anchor, with the history and the newest message cached (cachedMessages).
       // Less any exchange code already refused, once the platform refused a request over one (refusedExchanges).
-      messages: withoutStaleSearches(cachedMessages(messages, { start: viewStart, historyEnd: userIndex, drop: refusedHistory.has(historyId) ? refusedExchanges(messages, viewStart, userIndex) : null }), visibleTools),
+      messages: withoutStaleSearches(cachedMessages(messages, { start: viewStart, historyEnd: userIndex, drop: refusedHistory.has(historyId) ? refusedExchanges(messages, viewStart, userIndex) : null }), visibleTools, { searchDeclared: !!diet.note }),
       output_config: { effort: "medium" },
     };
     let response;
@@ -677,6 +678,12 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
     } catch (err) {
       if (err instanceof Anthropic.BadRequestError && useFallbacks && /fallback/i.test(err.message)) {
         useFallbacks = false; round--; continue;
+      }
+      // The diet's request refused (a deferred tool or a search block it would not take): this turn goes
+      // on with every tool loaded, exactly as without the diet, and the search blocks leave the request.
+      if (err instanceof Anthropic.BadRequestError && diet.note) {
+        log({ tool_diet_refused: String(err.message ?? "").slice(0, 200) });
+        diet = { tools: visibleTools, note: "" }; system = plainSystem(); round--; continue;
       }
       if (err instanceof Anthropic.RateLimitError) return "gimme a sec, slammed rn. say that again in a min";
       throw err;
