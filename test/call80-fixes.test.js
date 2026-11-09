@@ -1067,7 +1067,33 @@ test("paid set 3: Reason skips the 'No' and nothing is said → the voice is sti
   await s.timers.advance(300);
   s.live.emit({ type: "session.delegation.created", delegation: { id: "f2" } });
   await s.timers.advance(gl.REPLY_FLOOR_MS * 3);
-  assert.equal(floorsOf(s).length, 1);
+  const r = s.live.of("session.commentary.append").find(e => e.event_id === "result_f2");
+  assert.equal(r?.content, gl.SKIP_REPLY, "the skip itself is closed out loud by the voice");
+  assert.ok(!s.live.of("session.thinking.append").some(e => e.event_id === "result_f2"), "never 'say nothing more and listen' on his call");
+  assert.equal(floorsOf(s).length, 0, "and the floor never asks on top of it (no second hand-off of the same 'No')");
+});
+
+test("paid set 3 (cold review): no floor for a bare 'mm-hmm', after a farewell, or once the call is done", async () => {
+  const a = startCall({ brain: async () => ({ text: "Ok." }) });
+  a.live.emit({ type: "session.input_transcript.delta", delta: " Mm-hmm." });
+  await a.timers.advance(gl.REPLY_FLOOR_MS * 2);
+  assert.equal(floorsOf(a).length, 0);
+  const b = startCall({ brain: async () => ({ text: "Ok." }) });
+  b.call.farewellAt = b.timers.now();
+  b.live.emit({ type: "session.input_transcript.delta", delta: " No" });
+  await b.timers.advance(gl.REPLY_FLOOR_MS * 2);
+  assert.equal(floorsOf(b).length, 0);
+  const c = startCall({ brain: async () => ({ text: "Ok." }) });
+  c.live.emit({ type: "session.input_transcript.delta", delta: " No" });
+  c.call.done = true;
+  await c.timers.advance(gl.REPLY_FLOOR_MS * 2);
+  assert.equal(floorsOf(c).length, 0);
+});
+
+test("paid set 3 (cold review): the voice's never-silence line is scoped to when nothing is being worked on; ACK_ASK's send example claims no send", () => {
+  assert.match(gl.OWN_VOICE_NO_DEFLECT, /when nothing is being worked on for them and they say something/);
+  assert.match(gl.ACK_ASK, /"Getting the weather to you\."/);
+  assert.doesNotMatch(gl.ACK_ASK, /Texting you the weather/);
 });
 
 test("paid set 3: Reason's answer comes back and is said → no ask", async () => {

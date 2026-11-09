@@ -281,13 +281,15 @@ export const OWN_VOICE_NO_DEFLECT = "Each time you speak it is either a real ans
   + " If they ask your opinion, give it. If you can't really answer what they said from this conversation and the brief — it's unclear, half a sentence, or about something the brief doesn't cover — hand it to the backend with their words; don't guess and don't stall."
   + " While the backend is working on something, say nothing of your own: its answer is coming."
   // Paid set 3 (11-09): "Tell me and I'll send it." → his "No" → 36 s of nothing (main: "Cool.").
-  + " Never leave them in silence: whenever they say something to you — even just \"no\", \"nah\" or \"that's fine\" — reply out loud in a few words, or, when it's a yes or no to something Reason asked or offered, hand it to Reason, whose answer you then say.";
+  + " Never leave them in silence: when nothing is being worked on for them and they say something to you — even just \"no\", \"nah\" or \"that's fine\" — reply out loud in a few words, or, when it's a yes or no to something Reason asked or offered, hand it to Reason, whose answer you then say.";
 /**
  * Paid set 3 (11-09): his "No" got no reply at all. Their own call: words of theirs that, REPLY_FLOOR_MS
  * after they stopped, have no reply and no hand-off get the voice asked to answer them, once per turn.
  */
 export const REPLY_FLOOR_MS = 2500;
 export const REPLY_ASK = "They just spoke and nothing has been said back. Reply out loud now in a few words — or, if it was a yes or no to something Reason asked or offered, or it needs Reason, hand it to Reason now. Never leave them in silence.";
+/** Their own call: Reason skipped their words (a "No" to its question, say) — the voice closes it itself, never silence. */
+export const SKIP_REPLY = "Reason has nothing to add to that. Reply to them yourself now in a few words (\"Okay, no worries.\") — never leave them in silence — and don't hand this to Reason again.";
 /**
  * Omari 11-08 (after call 80's paid replay: the branch's first sound 3.4 s median, main's 3.0 s was a
  * stock "Mm, one sec" in front of a cut answer): on his own call, a hand-off that needs a lookup or an
@@ -654,7 +656,7 @@ export const WAIT_NOTE = "Reason is working on this now and its answer comes nex
 export const ACK_ASK = "Reason has their request now. If it needs a lookup or an action (the weather, news, a place, their calendar or messages, sending something), say only one short line of a few words naming exactly what you're getting or doing for them — like \"Weather near work, one sec.\" or \"Pulling up Nigeria headlines.\" — never just \"one sec\" or \"let me check\", and nothing else."
   + " If it doesn't need one — they answered yes or no, replied to something Reason asked, or it was unclear or sounded cut off — say nothing at all."
   // Drive v8/v9: an example "…gets nothing" here, left in its context, kept it from handing over the next "Text me what" at all.
-  + " Only say you're sending something when they clearly said what to send (\"send it to me\" after Reason offered, \"text me the headlines\", or \"text me that\" right after an answer — that is the answer just given, so name it: \"Texting you the weather.\"); otherwise name nothing about sending.";
+  + " Only say you're sending something when they clearly said what to send (\"send it to me\" after Reason offered, \"text me the headlines\", or \"text me that\" right after an answer — that is the answer just given, so name it: \"Getting the weather to you.\"); otherwise name nothing about sending.";
 /** Their own call: the voice's one named hand-off line (`HANDOFF_ACK`) is still its to say, once. */
 export const OWN_WAIT_NOTE = "Reason is working on this now and its answer comes next. Don't answer it yourself and don't fill the wait: if this needs a lookup or an action and you haven't yet said your one short line naming it, say just that line now; otherwise say nothing until you're given words.";
 /** An answer ready this soon after the hand-off gets no holding line. */
@@ -1928,8 +1930,8 @@ export class GptLiveCall {
     const pre = this.beforeOpener(t);
     const last = this.turns.at(-1);
     if (pre) { pre.text += pre.text ? delta : delta.trimStart(); pre.at = t; }
-    else if (last && last.who === "them" && t - last.at < 4000) { last.text += delta; last.at = t; }
-    else this.turns.push({ who: "them", text: delta.trimStart(), at: t, from: t });
+    else if (last && last.who === "them" && t - last.at < 4000) { last.text += delta; last.at = t; if (delta.trim()) last.floored = false; }
+    else this.turns.push({ who: "them", text: delta.trimStart(), at: t, from: t, speechFrom: Math.min(t, this.callerSpeechFrom || t) });
     if (delta.trim() && !pre) this.armReplyFloor();
     // Words while a goodbye hang-up waits: hold it, and read the end again with them in it.
     if (this.line && !this.talking && delta.trim() && !pre && !this.openerAnswers()) this.lineHeard();
@@ -1991,6 +1993,7 @@ export class GptLiveCall {
     const mine = this.turns.findLast(x => x.who === "reason" && !x.seeded);
     turn.preAck = mine && them && (mine.from ?? mine.at) > (them.from ?? them.at) ? String(mine.text ?? "") : "";
     this.pending.set(id, turn);
+    this.lastHandoffAt = turn.startedAt;
     this.latest = id;
     this.lastResultClaimed = false;
     // Call 79: the voice's automatic "let me check" is cancelled before it is said (an empty quiet
@@ -2062,7 +2065,6 @@ export class GptLiveCall {
     if (turn.holdTimer) this.timers.clearTimeout(turn.holdTimer);
     if (turn.lateTimer) this.timers.clearTimeout(turn.lateTimer);
     this.pending.delete(id);
-    this.lastDoneAt = this.now();
     if (this.done) return;
     // A rule saved, changed or dropped on this turn reaches the voice now, not only on the next call —
     // a superseded turn's too, since the write happened all the same.
@@ -2100,6 +2102,13 @@ export class GptLiveCall {
       this.log({ gptlive_skip_followed_up: this.call.id });
       this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: turn.askedAck || turn.preAck || turn.held ? ACK_SKIP_FOLLOW_UP : SKIP_FOLLOW_UP });
       (this.answered ??= []).push(turn);
+    } else if (this.ownTalk() && !this.ending && this.turns.findLast(x => x.who === "them")) {
+      // Paid set 3 (11-09): Reason skipped his "No" and the line sat silent 36 s. On their own call a
+      // skip is closed by the voice itself, in a few words; the reply floor is not asked again for it.
+      this.turns.findLast(x => x.who === "them").floored = true;
+      this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: SKIP_REPLY });
+      this.log({ gptlive_skip_replied: this.call.id });
+      this.heard(turn);
     } else {
       this.live.send({ type: "session.thinking.append", event_id: `result_${id}`, delegation_id: id, content: "Reason has nothing to add right now. Say nothing more about it and listen." });
       this.heard(turn);
@@ -2225,33 +2234,44 @@ export class GptLiveCall {
    * code heard of it) or since? A bare listening sound is not one. Then code says no first line: two
    * in a row is what Omari ruled out (11-08).
    */
+  /** Their own call, talking with Reason (not a line, a stranger's or a business call). */
+  ownTalk() {
+    return !!this.who?.owner && !this.persona && !this.line;
+  }
+
   /** Their own call: (re)start the wait for a reply to their latest words (`REPLY_FLOOR_MS`). */
   armReplyFloor() {
-    if (!this.who?.owner || this.persona || this.line) return;
+    if (!this.ownTalk() || this.done) return;
     if (this.replyFloorTimer) this.timers.clearTimeout(this.replyFloorTimer);
     this.replyFloorTimer = this.timers.setTimeout(() => this.replyFloor(), REPLY_FLOOR_MS);
   }
 
   /**
-   * Their words have had no reply: no voice speech since they last spoke, no hand-off started since
-   * their turn began. Asked once per turn of theirs; never while a goodbye is being read or the call ends.
+   * Their words have had no reply: no voice speech since they began, and nothing handed to Reason since
+   * (a hand-off's own result or skip closes it out loud — `SKIP_REPLY`). Asked once per turn of theirs;
+   * never around a goodbye, after a farewell, or for a bare "mm-hmm".
    */
   replyFloor() {
     this.replyFloorTimer = null;
-    if (this.done || this.ending || this.byeTimer || !this.live) return;
+    if (this.done || this.ending || this.byeTimer || this.byeAsking || this.byeInFlight || !this.live) return;
     const t = this.now();
+    if (this.farewellAt && t - this.farewellAt < AFTER_FAREWELL_MS) return;
     const them = this.turns.findLast(x => x.who === "them");
-    if (!them || !String(them.text ?? "").trim() || them.floored) return;
-    // Still talking (frames with speech in the last stretch): wait for them to stop.
+    const said = String(them?.text ?? "").trim();
+    if (!said || them.floored || BARE_SOUND.test(said) || /^(?:mm-?hmm|uh-?huh|mm|yeah|okay|ok|right|sure)[.!,\s]*$/i.test(said)) return;
+    const from = Math.min(them.speechFrom ?? them.from ?? them.at, them.from ?? them.at);
+    if (this.callerByeAt >= from) return;
+    // Still talking (speech frames in the last stretch): wait for them to stop.
     if (t - this.callerSpeechAt < REPLY_FLOOR_MS - 500) return this.armReplyFloor();
-    const from = Math.min(them.from ?? them.at, this.callerSpeechFrom || Infinity);
     if ((this.voiceSpeechAt ?? -Infinity) >= from) return;
-    // A hand-off still running: its answer (or its late line) is coming — look again after it. One just
-    // done: give its words a moment to start. Done with nothing said (Reason skipped): asked like any other.
-    if ([...this.pending.values()].some(p => !p.resultAt) || t - (this.lastDoneAt ?? -Infinity) < REPLY_FLOOR_MS - 1000) return this.armReplyFloor();
+    // Handed to Reason since they spoke: its answer, late line or skip reply closes it.
+    if ((this.lastHandoffAt ?? -Infinity) >= from) return;
+    // An earlier hand-off still running, or a result just handed over and not yet heard: look again after it.
+    const unheard = (this.lastResultAt ?? -Infinity) > (this.voiceSpeechAt ?? -Infinity) && t - this.lastResultAt < REPLY_FLOOR_MS * 2;
+    if ([...this.pending.values()].some(p => !p.resultAt) || unheard) return this.armReplyFloor();
     them.floored = true;
     this.live.send({ type: "session.commentary.append", event_id: `reply_${this.call.id}_${t}`, delegation_id: null, content: REPLY_ASK });
-    this.log({ gptlive_reply_floor: this.call.id, ms: t - this.callerSpeechAt, said: String(them.text).slice(0, 40) });
+    this.log({ gptlive_reply_floor: this.call.id, ms: t - this.callerSpeechAt, said: said.slice(0, 40) });
   }
 
   voiceAcked(turn) {
@@ -3120,7 +3140,6 @@ export class GptLiveCall {
       reply = { text: "", tools: [], calls: [], endCall: null, skip: true, error: (e?.message ?? String(e)).split("\n")[0] };
     }
     this.pending.delete(id);
-    this.lastDoneAt = this.now();
     if (this.done) return;
     turn.resultAt = this.now();
     turn.totalMs = turn.resultAt - turn.startedAt;
