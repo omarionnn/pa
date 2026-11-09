@@ -1667,7 +1667,7 @@ async function paidEndText(run, status, result, after = []) {
   const store = storeOf(run);
   const summary = short(result?.summary ?? result?.message ?? "", 160);
   const head = `${store}'s checkout${itemOf(run)} ended after the payment was approved (${summary || status}), so the checkout can't tell me whether ${store} has the order.`;
-  const charge = `If a charge turns up with no order, I'll take it up with ${store}.`;
+  const charge = `If a charge turns up with no order, tell me and I'll take it up with ${store}.`;
   // A payment with an unknown outcome has no watch yet (only a clean 'paid' starts one): the card may
   // have reached the store, so its mail is watched from here, and looked at now (review 11-08).
   const fresh = !runRow(run.run_id)?.mail_until;
@@ -2024,7 +2024,8 @@ export async function step(runId) {
         return { done: true, status, said, ...moved };
       }
       const after = [];
-      if (tellOnce(runId, "end")) { await say(await endText({ ...runRow(runId), stage: before }, status, result, paid, after)); for (const f of after) await f(); }
+      // The deferred mail wake runs even if the text failed to send: the message is already recorded as seen.
+      if (tellOnce(runId, "end")) { try { await say(await endText({ ...runRow(runId), stage: before }, status, result, paid, after)); } finally { for (const f of after) await f(); } }
     }
     return { done: true, status, said };
   }
@@ -2322,16 +2323,20 @@ export async function checkMail(runId, { ending = false, defer = false } = {}) {
   else if (clock.now() > run.mail_until) {
     // A placed order with nothing in the mail is not an alarm; a payment with no order might be.
     const worry = run.stage !== "placed";
-    if (tellOnce(runId, "mail") && worry) await notify(run.conversation_id, `No confirmation email from ${store} in the 24 hours since the payment. I've been watching your email the whole time. If a charge from ${store} shows up on your card with no order, tell me and I'll take it up with them.`);
+    // "Watching the whole time" only when a look ever worked (mail_checked_at is written after a good read).
+    const said = run.mail_checked_at
+      ? `No confirmation email from ${store} in the 24 hours since the payment. I've been watching your email the whole time.`
+      : `I couldn't get into your email in the 24 hours since the payment, so I don't know whether ${store} sent a confirmation.`;
+    if (tellOnce(runId, "mail") && worry) await notify(run.conversation_id, `${said} If a charge from ${store} shows up on your card with no order, tell me and I'll take it up with them.`);
     return { done: true, expired: true };
   }
-  q("UPDATE shop_runs SET mail_checked_at = ? WHERE run_id = ?").run(clock.now(), runId);
   const host = storeHost(run.store).replace(/^www\./, "");
   if (!host) { tellOnce(runId, "mail"); return { done: true, looked: false }; }
   let r;
   try { r = await (mailImpl ?? readMail)(run.conversation_id, { host, since: (run.paid_at ?? run.created_at) - 60_000 }); } catch { return { done: stopped, looked: false }; }
   if (!r?.ok) return { done: stopped, looked: false };
   if (!r.connected) { tellOnce(runId, "mail"); return { done: true, connected: false }; }
+  q("UPDATE shop_runs SET mail_checked_at = ? WHERE run_id = ?").run(clock.now(), runId);
   // Every NEW message from the store is put to the model (it decides whether it is the confirmation);
   // the first one — a "rate your visit" — does not end the watch. Bounded: MAIL_WAKES_MAX wakes, then done.
   // The row is read again after the look: the end-of-run look and a watch tick can overlap, and only
