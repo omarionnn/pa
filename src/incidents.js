@@ -163,8 +163,10 @@ export function resolve({ key = null, prefix = null, addr = null, how = "it is w
 }
 
 /** Close everything that has gone quiet. Run from each ops pass, so a failure that just stops is still marked resolved. */
+// Not `webhook:` ones: refused webhooks going quiet means nothing came in, not that one got through,
+// so those close only on an accepted delivery (src/webhookalert.js resolve on a 2xx).
 export function sweep(at = clock.now()) {
-  const quiet = db.db.prepare("SELECT key FROM incidents WHERE resolved_at IS NULL AND last_at < ?").all(at - QUIET_MS);
+  const quiet = db.db.prepare("SELECT key FROM incidents WHERE resolved_at IS NULL AND last_at < ? AND substr(key, 1, 8) != 'webhook:'").all(at - QUIET_MS);
   for (const r of quiet) resolve({ key: r.key, how: `no repeat in ${Math.round(QUIET_MS / MIN)} minutes`, at });
   // Two days of closed ones is plenty for the page; the rest is history nobody reads.
   db.db.prepare("DELETE FROM incidents WHERE resolved_at IS NOT NULL AND resolved_at < ?").run(at - 2 * 24 * 60 * MIN);

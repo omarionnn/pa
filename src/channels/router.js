@@ -1384,7 +1384,7 @@ export class Router {
     }
     // Refused deliveries (a rotated secret, a missing header) raise an alert after a few; an
     // accepted one closes it (src/webhookalert.js). Never in the way of the answer.
-    try { webhookAlert.note({ channel, status: parsed.status, error: parsed.body?.error ?? "" }); } catch { /* never blocks */ }
+    try { webhookAlert.note({ channel, status: parsed.status, error: parsed.body?.error ?? "", request: { headers, rawBody: rawBody ?? rawBytes?.toString?.("utf8") ?? "" } }); } catch { /* never blocks */ }
     const delivered = [];
     for (const inbound of parsed.inbound ?? []) {
       delivered.push(await this.deliver({ ...inbound, channel }));

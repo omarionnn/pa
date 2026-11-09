@@ -73,14 +73,61 @@ test("a mismatched secret, refused again and again, opens one alert, red on /ops
   }
 });
 
-test("a missing header is named as missing, not as a mismatch", async () => {
+test("a Sendblue-shaped delivery with no auth header at all is not counted (nothing says it is Sendblue)", async () => {
   const router = harness();
   await hit(router, {});
   await hit(router, {});
+  assert.equal(openRow(), undefined);
+});
+
+test("scanners never raise it: `{}` and non-JSON, signed or not", async () => {
+  const router = harness();
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await router.webhook({ channel: "sendblue", rawBody: "{}", headers: {} })).status, 401);
+  }
+  for (let i = 0; i < 3; i++) await router.webhook({ channel: "sendblue", rawBody: "{}", headers: wrong });
+  for (let i = 0; i < 3; i++) await router.webhook({ channel: "sendblue", rawBody: "hello", headers: {} });
+  for (let i = 0; i < 3; i++) await router.webhook({ channel: "sendblue", rawBody: "hello", headers: wrong });
+  assert.equal(openRow(), undefined);
+  assert.equal(texts.length, 0);
+});
+
+test("two Sendblue-shaped receive posts with a bad secret open it", async () => {
+  const router = harness();
+  const RECEIVE = JSON.stringify({ message_handle: "m-9", from_number: "+14155559876", to_number: "+12025550000", content: "hi", is_outbound: false });
+  await router.webhook({ channel: "sendblue", rawBody: RECEIVE, headers: wrong });
+  await router.webhook({ channel: "sendblue", rawBody: RECEIVE, headers: wrong });
+  assert.ok(openRow());
+});
+
+test("a bad X-Sendblue-Signature is named as a signature, not as the shared-secret header", async () => {
+  const router = harness();
+  const sig = { "x-sendblue-signature": "t=1,v1=00" };
+  await hit(router, sig);
+  await hit(router, sig);
   const row = openRow();
   assert.ok(row);
-  assert.match(row.error, /missing/);
-  assert.doesNotMatch(row.error, /did not match/);
+  assert.match(row.error, /the signature did not match/);
+  assert.doesNotMatch(row.error, /shared-secret/);
+});
+
+test("the quiet sweep never says Resolved for a webhook alert; only a 2xx does", async () => {
+  const router = harness();
+  const t0 = Date.parse("2026-11-08T15:00:00Z");
+  webhookAlert.note({ channel: "sendblue", status: 401, error: "rejected: the shared secret did not match", at: t0 });
+  webhookAlert.note({ channel: "sendblue", status: 401, error: "rejected: the shared secret did not match", at: t0 + 60_000 });
+  assert.ok(openRow());
+  incidents.sweep(t0 + 31 * 60_000);
+  assert.ok(openRow(), "still open after 31 quiet minutes");
+  assert.ok(!texts.some(t => /^Resolved/.test(t.text)));
+  webhookAlert.note({ channel: "sendblue", status: 200, at: t0 + 32 * 60_000 });
+  assert.equal(openRow(), undefined);
+  assert.ok(texts.some(t => /^Resolved: .*accepted again/.test(t.text)));
+});
+
+test("rejectReason: signature wording", () => {
+  assert.match(webhookAlert.rejectReason("rejected: the signature did not match (asking Sendblue whether the message is real); not found"), /^the signature did not match/);
+  assert.match(webhookAlert.rejectReason("rejected: the shared secret did not match"), /shared-secret header did not match/);
 });
 
 test("an accepted delivery closes it with one resolved text", async () => {
