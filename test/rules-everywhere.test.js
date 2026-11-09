@@ -87,6 +87,7 @@ const NOT_SPEAKING = {
   "src/factgroups.js": "files facts into groups",
   "src/harm.js": "the harm screen",
   "src/itemtitle.js": "a short title for a row, from Reason's own note",
+  "src/ios/memory.js": "marks which words of a stored message state a forgotten memory; says nothing to anyone",
   "src/judge.js": "the confirm gate's judge",
   "src/looked.js": "checks whether something was looked up",
   "src/onethought.js": "folds texts that arrive mid-turn",

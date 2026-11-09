@@ -1152,7 +1152,7 @@ export function settledLately(conversationId, { service = serviceOf(conversation
 }
 
 const sends = new Map(); // conversation → recent send times, for SEND_LIMIT
-function underLimit(conv, now = clock.now()) {
+export function underLimit(conv, now = clock.now()) {
   const recent = (sends.get(conv) ?? []).filter(t => now - t < 60_000);
   if (recent.length >= SEND_LIMIT) { sends.set(conv, recent); return false; }
   recent.push(now);

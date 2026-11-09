@@ -25,6 +25,7 @@
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
 //   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
 //   POST /access/web                  a number left on the website's form, signed by the form's server
+//   /ios/v1/…                         the iPhone app's JSON API (src/ios/, docs/ios-api.md); REASON_IOS_API, off by default
 //   GET  /web                         Reason Web (src/pages/websignin.js): sign in by number, or (signed in) the conversation
 //   POST /web/signin|code|signout     ask for the code, type it, sign this browser out — all 404 while REASON_WEB is off
 //   GET  /web/history|stream, POST /web/send   the conversation: older/newer lines, live events, a message (src/pages/webconvo.js)
@@ -268,6 +269,28 @@ export function createServer({ router, runtime, log = () => {} }) {
         });
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);
+      }
+
+      // ---------- the iPhone app's API (src/ios/, docs/ios-api.md) ----------
+      // Off (the default): these paths fall through to the same flat 404 as any path nobody was issued.
+      if (config.iosApi && /^\/ios\/v1(?:\/|$)/.test(url.pathname)) {
+        let out;
+        try {
+          const { iosApiRequest } = await import("./ios/api.js");
+          out = await iosApiRequest({ path: url.pathname.slice("/ios/v1".length) || "/", method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers, remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readAllBody(req), runtime, router, log });
+        } catch (e) {
+          log({ http: "/ios/v1", threw: (e?.message ?? String(e)).split("\n")[0] });
+          return send(500, { ok: false, error: "server_error" });
+        }
+        // null: REASON_IOS_API=owner and this isn't the owner. It falls through to what an unissued path answers.
+        if (out) {
+          res.writeHead(out.status, out.headers);
+          if (out.stream) {
+            if (req.method === "HEAD") return res.end();
+            try { return out.stream(res, req); } catch (e) { log({ http: "/ios/v1/live", threw: (e?.message ?? String(e)).split("\n")[0] }); return res.end(); }
+          }
+          return res.end(req.method === "HEAD" ? "" : out.body);
+        }
       }
 
       // ---------- Reason Web ----------
@@ -2113,6 +2136,17 @@ export function health({ router, runtime, full = false }) {
     live_watches: db.db.prepare("SELECT COUNT(*) AS n FROM watches WHERE met_at IS NULL AND cancelled_at IS NULL AND gave_up_at IS NULL").get().n,
     threads: db.listThreads().length,
   };
+}
+
+/** A body read to its end even when it's too big (null): the connection stays up and gets a normal answer. */
+function readAllBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (c) => { size += c.length; if (size <= MAX_BODY) chunks.push(c); });
+    req.on("end", () => resolve(size > MAX_BODY ? null : Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
 }
 
 function readBody(req, { bytes = false } = {}) {

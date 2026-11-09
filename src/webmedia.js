@@ -181,7 +181,7 @@ export async function prepareSend({ conversationId, text = "", files = [], liste
 
 const RANGE = /^bytes=(\d*)-(\d*)$/;
 /** Bytes to the browser: private, never cached by anything shared, ranges for audio (Safari asks for them). */
-function bytesOut({ bytes, mime, name = "", headers = {}, method = "GET" }) {
+export function bytesOut({ bytes, mime, name = "", headers = {}, method = "GET" }) {
   // A recording converted for the browser (src/webaudio.js) is named for what it now is.
   if (mime === "audio/mp4" && name && !/\.(m4a|mp4)$/i.test(name)) name = String(name).replace(/\.[a-z0-9]{1,5}$/i, "") + ".m4a";
   const base = {
