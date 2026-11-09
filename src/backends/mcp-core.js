@@ -9,6 +9,7 @@ import { crossmintWords } from "../shoptools.js";
 import { connectAllowedFor } from "../shopconnect.js";
 import { loadConversation } from "../db.js";
 import { sealTravelers } from "../privacy.js";
+import { CORE, dietOn, loadedFor, noteModelCall } from "../tooldiet.js";
 
 export const PROTOCOL_VERSION = "2024-11-05";
 
@@ -25,10 +26,11 @@ export const PROTOCOL_VERSION = "2024-11-05";
  * num_turns 2 instead of 3). Nothing is removed; the other tools are still there to search for.
  * Never widen this to every tool: that puts all ~107k tokens of schema into every call.
  */
+// Since the tool diet (src/tooldiet.js, 2026-11-09) this is the static floor, used when the diet is
+// off: the first fifteen of CORE. With it on, tools/list marks the person's whole loaded set —
+// CORE plus their likely tools — exactly as the API path loads them.
 export const ALWAYS_LOAD = new Set([
-  "web_search", "web_lookup", "gmail_search", "task_update", "timer_set", "spotify_now_playing",
-  "remember", "browser_read", "recall", "call_place", "confirm_record", "browser_open",
-  "message_send", "task_start",
+  ...CORE.slice(0, 14),
   // Choice cards (src/choicecards.js), only while their switch is on: a deferred tool is a name the
   // model never thinks to search for, so a shopping turn wrote a list instead (cage, 2026-10-30).
   ...(["", "0", "off", "false", "no"].includes(String(process.env.REASON_CHOICE_CARDS ?? "").trim().toLowerCase()) ? [] : ["show_choices"]),
@@ -37,12 +39,12 @@ export const ALWAYS_LOAD = new Set([
 // A tool's own description, plus any feature rule it shares with the rest of its group (see
 // playbookExtra in src/tools.js). The CLI defers tools, so the model reads this only when it loads
 // the tool, which is exactly when the rule matters — or from the start, for the ones above.
-const asMcp = (t) => ({
+const asMcp = (t, loaded = ALWAYS_LOAD) => ({
   name: t.name, description: t.description + playbookExtra(t.name), inputSchema: t.input_schema,
-  ...(ALWAYS_LOAD.has(t.name) ? { _meta: { "anthropic/alwaysLoad": true } } : {}),
+  ...(loaded.has(t.name) ? { _meta: { "anthropic/alwaysLoad": true } } : {}),
 });
 
-export const MCP_TOOLS = tools.map(asMcp);
+export const MCP_TOOLS = tools.map(t => asMcp(t));
 
 /**
  * A result that carries a picture under `_image` ({ media_type, data, bytes }), split into the
@@ -63,10 +65,18 @@ export function splitImage(out) {
  * guard that matters is in `runTool`, which refuses on the conversation whatever it was asked; this
  * is the half that means nobody else's model is ever told the tool is there to ask about.
  */
-export function mcpToolsFor(conversationId) {
+export function mcpToolsFor(conversationId, { log = () => {} } = {}) {
   // The playbook rules ride on here, after toolsFor, so a Crossmint conversation's wording has to be applied again (src/shoptools.js).
   const crossmint = connectAllowedFor(conversationId);
-  return toolsFor(conversationId).map(asMcp).map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
+  const visible = toolsFor(conversationId);
+  // The tool diet: their loaded set, read before this turn counts as a call, so the first turn of a
+  // burst is the one that may refresh it (src/tooldiet.js loadedFor).
+  let loaded = ALWAYS_LOAD;
+  if (dietOn(conversationId)) {
+    loaded = loadedFor(conversationId, visible, { log });
+    noteModelCall(conversationId);
+  }
+  return visible.map(t => asMcp(t, loaded)).map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
 }
 
 /**

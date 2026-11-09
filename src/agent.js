@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as accounts from "./accounts.js";
 import { config, stamp } from "./config.js";
 import { toolsFor, runTool, capabilitiesNow } from "./tools.js";
+import { apiTools, noteModelCall, withoutStaleSearches } from "./tooldiet.js";
 import * as whatsnew from "./whatsnew.js";
 import * as aside from "./aside.js";
 import * as notice from "./notice.js";
@@ -406,8 +407,9 @@ const EPHEMERAL = { type: "ephemeral" };
 function withBreakpoint(m) {
   if (typeof m.content === "string") return m.content ? { ...m, content: [{ type: "text", text: m.content, cache_control: EPHEMERAL }] } : m;
   if (!Array.isArray(m.content)) return m;
-  // Thinking blocks cannot carry one, and neither can an empty text block.
-  const k = m.content.findLastIndex(b => b && !/thinking/.test(b.type) && !(b.type === "text" && !b.text));
+  // Thinking blocks cannot carry one, and neither can an empty text block. A tool search's own blocks
+  // are left alone too: the API's documents only promise a breakpoint on ordinary content.
+  const k = m.content.findLastIndex(b => b && !/thinking|server_tool_use|tool_search_tool_result/.test(b.type) && !(b.type === "text" && !b.text));
   if (k < 0) return m;
   const content = m.content.slice();
   content[k] = { ...content[k], cache_control: EPHEMERAL };
@@ -645,18 +647,26 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   let reply = "";
   const turnStart = Date.now();
   const wallClockMs = config.turnWallClockS * 1000;
+  // Per conversation, not the whole list: a few tools are the master's alone and only exist when the
+  // install switched them on. See `toolsFor` — `runTool` refuses on the conversation regardless, so
+  // this is about nobody else being told they are there. Of those, the tool diet (src/tooldiet.js)
+  // loads their core + likely set whole and defers the rest behind the API's tool search; the set is
+  // fixed for the whole turn and only ever replaced while their cache is cold.
+  const visibleTools = toolsFor(conversationId);
+  const diet = apiTools(conversationId, visibleTools, { messages: messages.slice(viewStart), log });
+  const system = diet.note
+    ? [{ type: "text", text: systemFor(me) }, { type: "text", text: diet.note, cache_control: { type: "ephemeral" } }]
+    : [{ type: "text", text: systemFor(me), cache_control: { type: "ephemeral" } }];
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+    noteModelCall(conversationId);
     const params = {
       model: config.model,
       max_tokens: 8000,
-      system: [{ type: "text", text: systemFor(me), cache_control: { type: "ephemeral" } }],
-      // Per conversation, not the whole list: a few tools are the master's alone and only exist
-      // when the install switched them on. See `toolsFor` — `runTool` refuses on the conversation
-      // regardless, so this is about nobody else being told they are there.
-      tools: toolsFor(conversationId),
+      system,
+      tools: diet.tools,
       // The thread from its anchor, with the history and the newest message cached (cachedMessages).
       // Less any exchange code already refused, once the platform refused a request over one (refusedExchanges).
-      messages: cachedMessages(messages, { start: viewStart, historyEnd: userIndex, drop: refusedHistory.has(historyId) ? refusedExchanges(messages, viewStart, userIndex) : null }),
+      messages: withoutStaleSearches(cachedMessages(messages, { start: viewStart, historyEnd: userIndex, drop: refusedHistory.has(historyId) ? refusedExchanges(messages, viewStart, userIndex) : null }), visibleTools),
       output_config: { effort: "medium" },
     };
     let response;
@@ -688,6 +698,8 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
     const toolUses = response.content.filter(b => b.type === "tool_use");
     const textParts = response.content.filter(b => b.type === "text").map(b => b.text.trim()).filter(Boolean);
 
+    // A server tool (the tool search) can pause a long turn: hand it straight back to go on.
+    if (response.stop_reason === "pause_turn") continue;
     if (response.stop_reason !== "tool_use" || !toolUses.length) {
       reply = textParts.join("\n");
       break;

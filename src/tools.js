@@ -10,6 +10,7 @@ import { z } from "zod";
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as db from "./db.js";
+import { recordToolUse } from "./tooldiet.js";
 import { clock, stamp, config, RECORDING_RIDES_MS, weekdayMismatch, normalizeNumber, isOwnerNumber } from "./config.js";
 import * as trust from "./trust.js";
 import * as permissions from "./permissions.js";
@@ -9182,6 +9183,8 @@ const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memor
 const SPEAKS = new Set(["message_send", "voice_note_send", "voice_note_say"]);
 
 export function runTool(name, rawInput, ctx) {
+  // Counted for the tool diet's likely set (src/tooldiet.js): what they use, by name, nothing else.
+  recordToolUse(ctx?.conversationId, name);
   // On the clock of the person this call is for, whoever called it — the CLI backend's tool calls
   // arrive as their own HTTP requests, outside the turn's scope (src/zonescope.js).
   return zonescope.runFor(ctx?.conversationId, () => runToolOnTheirClock(name, rawInput, ctx));
