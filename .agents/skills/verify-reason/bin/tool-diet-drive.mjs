@@ -5,7 +5,8 @@
 //   main-cold, main-warm  (REASON_TOOL_DIET=off: the tool list exactly as main sends it)
 //   diet-cold, diet-warm  (the diet on)
 // "Cold" puts a fresh marker into the first line of the system prompt (the owner's city), so nothing
-// after the tools can come from the cache; "warm" repeats the same case straight after, same marker.
+// after the tools can come from the cache (see --idle-cold for tools too); "warm" repeats the same
+// case straight after, same marker.
 //
 //   D=$(mktemp -d) && env -i PATH=$PATH HOME=$HOME USER=$USER LOGNAME=$USER REASON_DB_PATH=$D/td.db \
 //     node .agents/skills/verify-reason/bin/tool-diet-drive.mjs [--only c1,r3] [--out file.jsonl]
@@ -21,9 +22,18 @@ process.env.REASON_TZ ||= "America/New_York";
 process.env.REASON_BACKEND = "claude-cli";
 process.env.REASON_TEST_NUMBERS = process.env.REASON_OWNER_NUMBER;
 process.env.REASON_CLAIM_CHECK = "0";
+// The features live has on, or their tools are hidden and "I can't" is simply true (first run, 11-09).
+process.env.REASON_EVENTS = "on";
+process.env.REASON_SHOP_CONNECT = "on";
+process.env.CROSSMINT_SERVER_KEY = "sk_drive_fake";
+process.env.CROSSMINT_CLIENT_KEY = "ck_drive_fake";
+process.env.CROSSMINT_API_BASE = "https://crossmint.drive.invalid";
 const args = process.argv.slice(2);
 const ONLY = (args[args.indexOf("--only") + 1] && args.includes("--only")) ? new Set(args[args.indexOf("--only") + 1].split(",")) : null;
 const OUT = args.includes("--out") ? args[args.indexOf("--out") + 1] : null;
+// The marker only makes everything AFTER the tools cold (the CLI's cache still holds the tool schemas).
+// --idle-cold N waits N minutes before each cold run, past the cache's life, for a truly cold call.
+const IDLE_MIN = args.includes("--idle-cold") ? Number(args[args.indexOf("--idle-cold") + 1]) : 0;
 {
   const { resolve, dirname } = await import("node:path");
   const { existsSync, realpathSync } = await import("node:fs");
@@ -36,6 +46,8 @@ const OUT = args.includes("--out") ? args[args.indexOf("--out") + 1] : null;
     process.exit(2);
   }
   process.env.REASON_DATA_DIR ||= dirname(db) + "/data";
+  const { generateKeyPairSync } = await import("node:crypto");
+  process.env.CROSSMINT_JWT_PRIVATE_KEY = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ type: "pkcs8", format: "pem" });
 }
 for (const k of ["ANTHROPIC_API_KEY", "SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "TWILIO_AUTH_TOKEN", "AGENTCARD_CLIENT_SECRET", "UBER_CLIENT_SECRET", "SERPAPI_API_KEY", "DUFFEL_ACCESS_TOKEN"]) {
   if (process.env[k]) { console.error(`refusing: ${k} is set — run under env -i`); process.exit(2); }
@@ -82,6 +94,9 @@ async function runOnce(c, arm, temp, marker) {
   process.env.REASON_TOOL_DIET = arm === "main" ? "off" : "on";
   config.ownerCity = `${CITY} (drive ${marker})`;
   db.saveConversation(C, []);
+  // What the last run left behind ("you already asked me for this one" is not a tool call).
+  db.db.exec("DELETE FROM timers");
+  db.db.exec("DELETE FROM events WHERE name NOT LIKE '%housewarming%'");
   const logs = [];
   let first = null, toolSearch = 0;
   const t0 = Date.now();
@@ -114,7 +129,8 @@ for (const c of CASES) {
   for (const arm of arms) {
     diet._resetDiet();
     const marker = `${c.id}-${arm}-${Date.now().toString(36)}`;
-    await runOnce(c, arm, "cold", marker);
+    if (IDLE_MIN) await new Promise((r) => setTimeout(r, IDLE_MIN * 60_000));
+    await runOnce(c, arm, IDLE_MIN ? "truecold" : "cold", marker);
     await runOnce(c, arm, "warm", marker);
   }
 }
