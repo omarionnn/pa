@@ -4,7 +4,9 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as accounts from "./accounts.js";
 import { config, stamp } from "./config.js";
 import { toolsFor, runTool, capabilitiesNow } from "./tools.js";
-import { apiTools, noteModelCall, withoutStaleSearches } from "./tooldiet.js";
+import { apiTools, noteModelCall, withoutStaleSearches, WARM_MS } from "./tooldiet.js";
+// Conversations whose diet request the API refused lately (see the BadRequestError branch below).
+const dietRefusedUntil = new Map();
 import * as whatsnew from "./whatsnew.js";
 import * as aside from "./aside.js";
 import * as notice from "./notice.js";
@@ -653,7 +655,9 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   // loads their core + likely set whole and defers the rest behind the API's tool search; the set is
   // fixed for the whole turn and only ever replaced while their cache is cold.
   const visibleTools = toolsFor(conversationId);
-  let diet = apiTools(conversationId, visibleTools, { messages: messages.slice(viewStart), log });
+  let diet = (dietRefusedUntil.get(conversationId) ?? 0) > Date.now()
+    ? { tools: visibleTools, note: "" }
+    : apiTools(conversationId, visibleTools, { messages: messages.slice(viewStart), log });
   const plainSystem = () => [{ type: "text", text: systemFor(me), cache_control: { type: "ephemeral" } }];
   let system = diet.note
     ? [{ type: "text", text: systemFor(me) }, { type: "text", text: diet.note, cache_control: { type: "ephemeral" } }]
@@ -681,8 +685,11 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
       }
       // The diet's request refused (a deferred tool or a search block it would not take): this turn goes
       // on with every tool loaded, exactly as without the diet, and the search blocks leave the request.
-      if (err instanceof Anthropic.BadRequestError && diet.note) {
+      // Only a refusal about tools or search blocks; for WARM_MS after one, this person's turns go
+      // without the diet, so a cause that keeps recurring costs one failed request, not one a turn.
+      if (err instanceof Anthropic.BadRequestError && diet.note && /tool|search|defer|reference/i.test(String(err.message ?? ""))) {
         log({ tool_diet_refused: String(err.message ?? "").slice(0, 200) });
+        dietRefusedUntil.set(conversationId, Date.now() + WARM_MS);
         diet = { tools: visibleTools, note: "" }; system = plainSystem(); round--; continue;
       }
       if (err instanceof Anthropic.RateLimitError) return "gimme a sec, slammed rn. say that again in a min";
@@ -706,7 +713,10 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
     const textParts = response.content.filter(b => b.type === "text").map(b => b.text.trim()).filter(Boolean);
 
     // A server tool (the tool search) can pause a long turn: hand it straight back to go on.
-    if (response.stop_reason === "pause_turn") continue;
+    if (response.stop_reason === "pause_turn") {
+      if (Date.now() - turnStart > wallClockMs) break;
+      continue;
+    }
     if (response.stop_reason !== "tool_use" || !toolUses.length) {
       reply = textParts.join("\n");
       break;
@@ -750,6 +760,11 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
     }
   }
 
+  // A turn that ran out while paused on a search: that half-finished round is not kept, so no later
+  // request carries a search call without its result.
+  if (!reply && messages.at(-1)?.role === "assistant" && Array.isArray(messages.at(-1).content)
+    && messages.at(-1).content.some(b => b?.type === "server_tool_use")
+    && !messages.at(-1).content.some(b => b?.type === "tool_search_tool_result")) messages.pop();
   if (!reply) reply = "ugh my bad, something broke on my end. say that again?";
   // The model's read of the message, recited as the first line, comes off before anything is
   // kept or sent (src/plain.js withoutSelfNote). Same floor on both backends.

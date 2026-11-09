@@ -100,7 +100,7 @@ test("a refused diet request: the turn goes on with every tool loaded and no sea
   const Anthropic = (await import("@anthropic-ai/sdk")).default;
   model.create = async (p) => {
     seen.push(p);
-    if (seen.length === 1) throw new Anthropic.BadRequestError(400, { error: { message: "bad tool" } }, "bad tool", new Headers());
+    if (seen.length === 1) throw new Anthropic.BadRequestError(400, { error: { message: "tool reference not declared" } }, "tool reference not declared", new Headers());
     return { stop_reason: "end_turn", usage: {}, content: [{ type: "text", text: "fine" }] };
   };
   db.saveConversation(C, [{ role: "user", content: "earlier" }, { role: "assistant", content: [
@@ -115,6 +115,24 @@ test("a refused diet request: the turn goes on with every tool loaded and no sea
     assert.equal(seen[1].system.length, 1);
     assert.ok(!JSON.stringify(seen[1].messages).includes("server_tool_use"));
   } finally { model.create = saved; db.saveConversation(C, []); }
+});
+
+test("a search call left without its result is never sent back, except as the round in progress", () => {
+  const msgs = [
+    { role: "user", content: "a" },
+    { role: "assistant", content: [{ type: "server_tool_use", id: "x1", name: "tool_search_tool_bm25", input: {} }] },
+    { role: "user", content: "b" },
+    { role: "assistant", content: [{ type: "server_tool_use", id: "x2", name: "tool_search_tool_bm25", input: {} }] },
+  ];
+  const out = diet.withoutStaleSearches(msgs, toolsFor(C));
+  assert.ok(!JSON.stringify(out[1]).includes("server_tool_use"));
+  assert.equal(out[3], msgs[3]);
+  assert.equal(out[0], msgs[0]);
+});
+
+test("a corrupt stored set falls back to computing one", () => {
+  db.db.prepare("INSERT INTO tool_sets (conversation_id, names, packs, why, computed_at) VALUES (?, '{not json', '[]', '', 0)").run(C);
+  assert.ok(diet.loadedFor(C, toolsFor(C)).has("message_send"));
 });
 
 test("off: every tool loaded, as before; owner: only the owner's thread is on the diet", () => {

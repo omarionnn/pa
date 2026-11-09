@@ -27,7 +27,7 @@ export const PROTOCOL_VERSION = "2024-11-05";
  * Never widen this to every tool: that puts all ~107k tokens of schema into every call.
  */
 // Since the tool diet (src/tooldiet.js, 2026-11-09) this is the static floor, used when the diet is
-// off: the first fifteen of CORE. With it on, tools/list marks the person's whole loaded set —
+// off: the first fourteen of CORE. With it on, tools/list marks the person's whole loaded set —
 // CORE plus their likely tools — exactly as the API path loads them.
 export const ALWAYS_LOAD = new Set([
   ...CORE.slice(0, 14),

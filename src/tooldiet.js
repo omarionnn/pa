@@ -222,7 +222,8 @@ export function loadedFor(conversationId, visible, { messages = [], now = clock.
   try { row = db.prepare("SELECT names, packs, computed_at FROM tool_sets WHERE conversation_id = ?").get(conversationId); } catch {}
   const last = lastCall.get(conversationId);
   const warm = last != null && now - last < WARM_MS;
-  const stored = row ? new Set(JSON.parse(row.names)) : null;
+  let stored = null;
+  try { stored = row ? new Set(JSON.parse(row.names)) : null; } catch {}
   // Warm: the set stands, whatever changed. Only a tool that has stopped being visible to them comes
   // out (toolsFor decides that, and a request may never carry a tool they cannot see).
   if (stored && warm) return new Set([...stored].filter(n => visibleNames.has(n)));
@@ -277,6 +278,16 @@ export function deferredNote(names) {
  */
 export function withoutStaleSearches(messages, visible, { searchDeclared = true } = {}) {
   const known = new Set(visible.map(t => t.name));
+  // A search call with no result anywhere after it (a turn that stopped mid-search) never goes back.
+  const answered = new Set();
+  for (const m of messages) if (Array.isArray(m?.content)) for (const b of m.content) if (b?.type === "tool_search_tool_result") answered.add(b.tool_use_id);
+  const last = messages.length - 1;
+  messages = messages.map((m, i) => {
+    if (i === last || m?.role !== "assistant" || !Array.isArray(m.content)) return m;
+    if (!m.content.some(b => b?.type === "server_tool_use" && !answered.has(b.id))) return m;
+    const content = m.content.filter(b => !(b?.type === "server_tool_use" && !answered.has(b.id)));
+    return { ...m, content: content.length ? content : [{ type: "text", text: "(looked something up)" }] };
+  });
   // No search tool in this request (the diet off, or refused this turn): every search block leaves it.
   if (!searchDeclared) {
     return messages.map((m) => {
