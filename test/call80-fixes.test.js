@@ -1063,6 +1063,8 @@ test("paid set 3: asked for it by text right after an answer → Reason sends th
 
 test("paid set 3: Reason skips the 'No' and nothing is said → the voice is still asked to answer, after the skip", async () => {
   const s = startCall({ brain: async () => ({ text: "", tools: ["skip_turn"], skip: true }) });
+  s.live.emit({ type: "session.output_transcript.delta", delta: "Which bit do you want texted? Tell me and I'll send it." });
+  await s.timers.advance(3000);
   s.live.emit({ type: "session.input_transcript.delta", delta: " No" });
   await s.timers.advance(300);
   s.live.emit({ type: "session.delegation.created", delegation: { id: "f2" } });

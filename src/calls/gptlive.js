@@ -2102,9 +2102,10 @@ export class GptLiveCall {
       this.log({ gptlive_skip_followed_up: this.call.id });
       this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: turn.askedAck || turn.preAck || turn.held ? ACK_SKIP_FOLLOW_UP : SKIP_FOLLOW_UP });
       (this.answered ??= []).push(turn);
-    } else if (this.ownTalk() && !this.ending && this.turns.findLast(x => x.who === "them")) {
-      // Paid set 3 (11-09): Reason skipped his "No" and the line sat silent 36 s. On their own call a
-      // skip is closed by the voice itself, in a few words; the reply floor is not asked again for it.
+    } else if (this.ownTalk() && !this.ending && this.answersQuestion(turn)) {
+      // Paid set 3 (11-09): Reason skipped his "No" to its own question and the line sat silent 36 s. On
+      // their own call that skip is closed by the voice itself, in a few words; the floor isn't asked again.
+      // Any other skip ("hang on, let me grab my keys") stays quiet, as before.
       this.turns.findLast(x => x.who === "them").floored = true;
       this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: SKIP_REPLY });
       this.log({ gptlive_skip_replied: this.call.id });
@@ -2234,6 +2235,18 @@ export class GptLiveCall {
    * code heard of it) or since? A bare listening sound is not one. Then code says no first line: two
    * in a row is what Omari ruled out (11-08).
    */
+  /**
+   * Was the hand-off their reply to a question Reason had just asked ("Tell me and I'll send it." / "…?"),
+   * with nothing said by them since it began? Then a skip still gets a reply (`SKIP_REPLY`).
+   */
+  answersQuestion(turn) {
+    const i = this.turns.findLastIndex(x => x.who === "them");
+    const them = this.turns[i];
+    if (!them || (them.from ?? them.at) > turn.startedAt) return false;
+    const asked = this.turns.slice(0, i).findLast(x => x.who === "reason" && !x.seeded);
+    return !!asked && /\?\s*$|\b(?:tell me|let me know)\b[^.?!]*[.!]?\s*$/i.test(String(asked.text ?? "").trim());
+  }
+
   /** Their own call, talking with Reason (not a line, a stranger's or a business call). */
   ownTalk() {
     return !!this.who?.owner && !this.persona && !this.line;
