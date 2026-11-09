@@ -78,6 +78,8 @@ const CASES = [
   { id: "c4", kind: "common", text: "remind me to call my mom tomorrow at 6pm", expect: ["timer_set"] },
   { id: "c5", kind: "common", text: "who won the knicks game last night?", expect: ["web_search", "web_lookup"] },
   { id: "r1", kind: "rare", text: "make an event called omari's birthday dinner this saturday 8pm at carbone, 10 people max, guest password is dinner2026, show guests the time and place as soon as they join", expect: ["event_create"] },
+  // r1 as written leaves event_create's required questions open, so both arms stop to ask them. This one answers them all.
+  { id: "r1f", kind: "rare", text: "make an event called omari's birthday dinner this saturday 8pm at carbone, 10 people max, guest password is dinner2026, show guests the time and place as soon as they join, guests can see who else is going, description is birthday dinner, no welcome message, no questions for guests. that's everything, go ahead and create it", expect: ["event_create"] },
   { id: "r2", kind: "rare", text: "set my daily spending limit to $50", expect: ["spend_limit_set", "spend_limit_confirm", "caps_set"] },
   { id: "r3", kind: "rare", text: "find me flights from JFK to LAX on december 12", expect: ["flight_search", "flight_dates"] },
   { id: "r4", kind: "rare", text: "how much would an uber from times square to jfk be right now?", expect: ["uber_options", "uber_link", "uber_connect"] },
