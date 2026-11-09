@@ -472,7 +472,10 @@ export async function correctRow(conv, key, text, { log = () => {} } = {}) {
 }
 
 /** Take one row back: it stops being recalled. Their messages stay. */
-export async function forgetRow(conv, key, { log = () => {} } = {}) {
+export async function forgetRow(...args) { return forgetRowNow(...args); }
+
+/** The same, with no await in it, so it can sit inside a transaction. */
+export function forgetRowNow(conv, key, { log = () => {} } = {}) {
   const row = findRow(conv, key);
   if (!row) return { ok: false, status: 404, error: "not_found" };
   const out = row.kind === "rule" ? db.dropRule(conv, row.id) : row.kind === "fact" ? db.dropFact(conv, row.id) : db.dropWhy(conv, row.id);

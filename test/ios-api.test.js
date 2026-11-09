@@ -473,6 +473,54 @@ test("app sign-in is a flat 90 days: 60 idle days still open it and it stays rev
   assert.equal((await api("/page", { token })).status, 401);
 });
 
+test("forgetting: wordings that collapse to one mark don't jam it, and an already-forgotten wording coming back can be forgotten again", async () => {
+  const token = await signIn(A);
+  setSpanReader(async (_w, rows) => rows.map(r => ({ id: r.id, remove: [] })));
+  const f = db.remember(A.c, A.name, "I like Zelkova tea", {});
+  const c = await api(`/memories/fact-${f.factId}/correct`, { method: "POST", token, body: { text: "i like zelkova tea." } });
+  assert.equal(c.status, 200, c.body);
+  assert.equal((await api(`/memories/${c.json.id}`, { method: "DELETE", token })).status, 200);
+  assert.ok(!dbBytes().toLowerCase().includes("zelkova"));
+  const said = db.remember(A.c, A.name, "Drinks Wisteria", { source: "user_stated" });
+  const other = db.remember(A.c, A.name, "Eats Kumquat", { source: "user_stated" });
+  assert.equal((await api(`/memories/fact-${said.factId}`, { method: "DELETE", token })).status, 200);
+  const fixed = await api(`/memories/fact-${other.factId}/correct`, { method: "POST", token, body: { text: "Drinks Wisteria" } });
+  assert.equal((await api(`/memories/${fixed.json.id}`, { method: "DELETE", token })).status, 200);
+  assert.ok(!dbBytes().includes("Wisteria"));
+});
+test("a failure midway leaves the memory and its message as they were", async () => {
+  const token = await signIn(A);
+  const ev = sourceMessage(A, "keep this. I fly Snarfwing");
+  const f = db.remember(A.c, A.name, "Flies Snarfwing", { source: "inferred", sourceMessageIds: [ev] });
+  setSpanReader(cutWords("I fly Snarfwing"));
+  db.db.exec("CREATE TRIGGER boom BEFORE UPDATE ON person_facts WHEN NEW.fact LIKE 'forgotten:%' BEGIN SELECT RAISE(ABORT, 'boom'); END");
+  try { await assert.rejects(api(`/memories/fact-${f.factId}`, { method: "DELETE", token })); } finally { db.db.exec("DROP TRIGGER boom"); }
+  assert.equal(db.db.prepare("SELECT content FROM event_log WHERE id = ?").get(ev).content, "keep this. I fly Snarfwing");
+  assert.ok(db.memoryFacts(A.c).some(x => x.id === f.factId));
+  assert.equal((await api(`/memories/fact-${f.factId}`, { method: "DELETE", token })).status, 200, "and it can be tried again");
+});
+test("the cut only reaches copies of that message: the same word in a different message nearby stays", async () => {
+  const token = await signIn(A);
+  const ev = sourceMessage(A, "Allergic to Peanuts, sadly", { ext: "p1" });
+  db.db.prepare("INSERT INTO messages (conversation_id, role, channel, text, at) VALUES (?, 'user', 'fake', 'Bought Peanuts for the party', ?)").run(A.c, clock.now());
+  const f = db.remember(A.c, A.name, "Allergic to Peanuts", { source: "inferred", sourceMessageIds: [ev] });
+  setSpanReader(cutWords("Peanuts"));
+  assert.equal((await api(`/memories/fact-${f.factId}`, { method: "DELETE", token })).status, 200);
+  assert.ok(db.db.prepare("SELECT 1 AS x FROM messages WHERE text = 'Bought Peanuts for the party'").get());
+});
+test("forget everything also empties stored inbound and sent copies; someone else's stay", async () => {
+  const token = await signIn(A);
+  for (const p of [A, B]) {
+    sourceMessage(p, "Inbound Ploughshare words", { ext: `i-${p.phone}` });
+    db.db.prepare("INSERT INTO outbox (idem_key, conversation_id, channel, address, body, state, created_at, updated_at) VALUES (?, ?, 'fake', ?, 'Sent Ploughshare words', 'sent', ?, ?)").run(`k-${p.phone}`, p.c, p.phone, clock.now(), clock.now());
+  }
+  assert.equal((await api("/memories/forget-everything", { method: "POST", token, body: { confirm: "FORGET EVERYTHING" } })).status, 200);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM inbound_parts WHERE conversation_id = ?").get(A.c).n, 0);
+  assert.equal(db.db.prepare("SELECT body FROM outbox WHERE conversation_id = ?").get(A.c).body, "");
+  assert.equal(db.db.prepare("SELECT body FROM outbox WHERE conversation_id = ?").get(B.c).body, "Sent Ploughshare words");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM inbound_parts WHERE conversation_id = ?").get(B.c).n, 1);
+});
+
 // ---------------------------------------------------------------- owner mode
 test("owner mode: everyone but the signed-in owner gets exactly what the API being off answers, even a real code request", async () => {
   const told = [];
@@ -495,6 +543,7 @@ test("owner mode: everyone but the signed-in owner gets exactly what the API bei
     await same(await post("/ios/v1/auth/code", { phone: B.phone, challenge: challenge("c") }), "non-owner asks");
     await same(await post("/ios/v1/auth/code", { phone: "+16465550101", challenge: challenge("c") }), "stranger asks");
     await same(await post("/ios/v1/auth/code", { phone: "x" }), "malformed");
+    await same(await fetch(`${base}/ios/v1/auth/code`, { method: "POST", body: "x".repeat(3_000_000) }), "oversized body");
     assert.equal(told.length, 0, "nobody but the owner is texted");
     await same(await post("/ios/v1/auth/code", { phone: A.phone, challenge: challenge("o") }), "the owner's own request answers the same");
     assert.equal(told.length, 1); assert.equal(told[0].c, A.c);

@@ -3,7 +3,7 @@
 // so a review can't re-learn them, and here a forget has to mean the words are gone. docs/ios-api.md §Forgetting
 // says exactly what that does and does not reach, backups included.
 import * as db from "../db.js";
-import { memoryView, findRow, forgetRow, correctRow, answerGuess } from "../pages/webmemory.js";
+import { memoryView, findRow, forgetRowNow, correctRow, answerGuess } from "../pages/webmemory.js";
 import { clock, config } from "../config.js";
 import { runStructured, onCli, sideModelOn } from "../backends/side.js";
 
@@ -146,7 +146,7 @@ function applyCuts(conv, cuts) {
     if (keep || !noFiles) db.db.prepare("UPDATE event_log SET content = ? WHERE id = ? AND conversation_id = ?").run(keep ? kept : "", c.id, conv);
     else db.forgetEvent(c.id);
     // The same message's other copies: the same person, the same moment, holding the very words.
-    const near = (table, col, time, extra = "") => (hasColumn(table, col) && hasColumn(table, time) ? ALL(`SELECT rowid AS rid, ${col} AS t, ${hasColumn(table, "media") ? "media" : "'[]'"} AS media FROM ${table} WHERE conversation_id = ? AND ${time} BETWEEN ? AND ?${extra}`, conv, c.at - WINDOW_MS, c.at + WINDOW_MS).filter(r => typeof r.t === "string" && c.spans.some(s => r.t.includes(s))) : []);
+    const near = (table, col, time, extra = "") => (hasColumn(table, col) && hasColumn(table, time) ? ALL(`SELECT rowid AS rid, ${col} AS t, ${hasColumn(table, "media") ? "media" : "'[]'"} AS media FROM ${table} WHERE conversation_id = ? AND ${time} BETWEEN ? AND ?${extra}`, conv, c.at - WINDOW_MS, c.at + WINDOW_MS).filter(r => typeof r.t === "string" && r.t.length && (r.t.includes(c.content) || c.content.includes(r.t)) && c.spans.some(s => r.t.includes(s))) : []);
     for (const r of near("messages", "text", "at", ` AND role = '${c.role === "user" ? "user" : "assistant"}'`)) {
       const next = cutOut(r.t, c.spans);
       if (anythingLeft(next)) db.db.prepare("UPDATE messages SET text = ? WHERE rowid = ?").run(next, r.rid);
@@ -228,35 +228,40 @@ export async function forgetForever(conv, key, { log = () => {} } = {}) {
   // Worked out first: if it can't be, nothing has changed and the person is told to try again.
   const cuts = await plannedCuts(conv, sources, wordings, log);
   if (!cuts) { log({ ios_memory: "forget_not_ready" }); return { ok: false, status: 503, error: "try_again" }; }
-  await scrubbed(async () => {
-    // All or nothing, and before the memory goes, so a failure here leaves something to retry.
+  await scrubbed(() => {
+    // All or nothing: a failure anywhere leaves the memory and its message as they were, to be tried again.
     db.db.exec("BEGIN IMMEDIATE");
-    try { applyCuts(conv, cuts); db.db.exec("COMMIT"); } catch (e) { db.db.exec("ROLLBACK"); throw e; }
-    await forgetRow(conv, key, { log });
-    if (row.kind === "fact") {
-      const clear = db.db.prepare("UPDATE person_facts SET fact = ?, status = 'deleted', valid_to = COALESCE(valid_to, ?) WHERE id = ?");
-      const unembed = db.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ? AND source_table = 'person_facts'");
-      const person = ONE("SELECT person_id FROM person_facts WHERE id = ?", row.id)?.person_id;
-      const ids = new Set(factLineage(conv, row.id));
-      for (const id of [...ids]) { const f = ONE("SELECT fact FROM person_facts WHERE id = ?", id); if (f && person != null) for (const same of sameWording(person, f.fact)) ids.add(same); }
-      for (const id of ids) {
-        const f = ONE("SELECT person_id, fact FROM person_facts WHERE id = ?", id);
-        if (!f || db.isForgottenMark(f.fact)) continue;
-        db.scrubToolResults(conv, { tools: db.MEMORY_TOOL_NAMES, mentioning: [f.fact] });
-        db.redactFromReplies(conv, [f.fact]);
-        outOfReplies(conv, f.fact);
-        if (present("memories")) db.db.prepare("DELETE FROM memories WHERE conversation_id = ? AND fact = ?").run(conv, f.fact);
-        clear.run(db.forgottenMark(f.person_id, db.factKey(f.fact)), clock.now(), id);
-        unembed.run(id);
+    try {
+      applyCuts(conv, cuts);
+      const out = forgetRowNow(conv, key, { log });
+      if (!out.ok) throw new Error(out.error ?? "not forgotten");
+      if (row.kind === "fact") {
+        const person = ONE("SELECT person_id FROM person_facts WHERE id = ?", row.id)?.person_id;
+        const ids = new Set(factLineage(conv, row.id));
+        for (const id of [...ids]) { const f = ONE("SELECT fact FROM person_facts WHERE id = ?", id); if (f && person != null) for (const same of sameWording(person, f.fact)) ids.add(same); }
+        for (const id of ids) {
+          const f = ONE("SELECT person_id, fact FROM person_facts WHERE id = ?", id);
+          if (!f || db.isForgottenMark(f.fact)) continue;
+          db.scrubToolResults(conv, { tools: db.MEMORY_TOOL_NAMES, mentioning: [f.fact] });
+          db.redactFromReplies(conv, [f.fact]);
+          outOfReplies(conv, f.fact);
+          if (present("memories")) db.db.prepare("DELETE FROM memories WHERE conversation_id = ? AND fact = ?").run(conv, f.fact);
+          db.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ? AND source_table = 'person_facts'").run(id);
+          // One mark per subject and wording: the table allows no two alike, and one is all a refusal needs.
+          const mark = db.forgottenMark(f.person_id, db.factKey(f.fact));
+          if (ONE("SELECT 1 AS x FROM person_facts WHERE person_id = ? AND fact = ?", f.person_id, mark)) db.db.prepare("DELETE FROM person_facts WHERE id = ?").run(id);
+          else db.db.prepare("UPDATE person_facts SET fact = ?, status = 'deleted', valid_to = COALESCE(valid_to, ?) WHERE id = ?").run(mark, clock.now(), id);
+        }
+      } else if (row.kind === "rule") {
+        // The row stays as 'deleted' with no words: a review refuses to re-derive a rule from that source message.
+        outOfReplies(conv, row.raw);
+        db.db.prepare("UPDATE treat_rules SET rule = ?, rule_key = ?, why = '' WHERE id = ? AND conversation_id = ?").run(`forgotten-rule-${row.id}`, `forgotten-rule-${row.id}`, row.id, conv);
+      } else {
+        outOfReplies(conv, row.raw);
+        db.db.prepare("DELETE FROM whys WHERE id = ? AND conversation_id = ?").run(row.id, conv);
       }
-    } else if (row.kind === "rule") {
-      // The row stays as 'deleted' with no words: a review refuses to re-derive a rule from that source message.
-      outOfReplies(conv, row.raw);
-      db.db.prepare("UPDATE treat_rules SET rule = ?, rule_key = ?, why = '' WHERE id = ? AND conversation_id = ?").run(`forgotten-rule-${row.id}`, `forgotten-rule-${row.id}`, row.id, conv);
-    } else {
-      outOfReplies(conv, row.raw);
-      db.db.prepare("DELETE FROM whys WHERE id = ? AND conversation_id = ?").run(row.id, conv);
-    }
+      db.db.exec("COMMIT");
+    } catch (e) { db.db.exec("ROLLBACK"); throw e; }
   });
   log({ ios_memory: "forgotten_forever", kind: row.kind });
   return { ok: true };
@@ -266,7 +271,7 @@ export { correctRow, answerGuess };
 
 /** The tables that are Reason's memory of one person, plus the thread it reads them from. */
 export const MEMORY_TABLES = ["memories", "preferences", "guesses", "whys", "treat_rules", "fact_embeddings", "recall_forgotten", "recall_reindex", "profile_blocks",
-  "graph_mentions", "graph_merge_candidates", "graph_edges", "graph_entities", "memory_reviews", "memory_review_passes", "event_log", "messages"];
+  "graph_mentions", "graph_merge_candidates", "graph_edges", "graph_entities", "memory_reviews", "memory_review_passes", "event_log", "messages", "inbound_parts", "pending_inbound", "media_items"];
 
 /**
  * Forget everything Reason knows about this person. Their account, orders, reminders and call records stay
@@ -283,6 +288,9 @@ export async function forgetEverything(account, { log = () => {} } = {}) {
       counts.person_facts = people.reduce((n, id) => n + Number(delFacts.run(id).changes), 0);
       counts.people = Number(db.db.prepare("DELETE FROM people WHERE conversation_id = ?").run(conv).changes);
       for (const t of MEMORY_TABLES) if (present(t)) counts[t] = Number(db.db.prepare(`DELETE FROM ${t} WHERE conversation_id = ?`).run(conv).changes);
+      // Stored copies of what was said. The rows that stop a text being answered twice stay, with no words in them.
+      if (hasColumn("inbound_messages", "text")) db.db.prepare("UPDATE inbound_messages SET text = '' WHERE conversation_id = ?").run(conv);
+      if (present("outbox")) db.db.prepare("UPDATE outbox SET body = '' WHERE conversation_id = ? AND state = 'sent'").run(conv);
       // Records that stay stop being searchable, so "forget everything" isn't undone by recall reading them.
       const mark = db.db.prepare("INSERT OR IGNORE INTO recall_forgotten (conversation_id, source_table, row_id, at) VALUES (?, ?, ?, ?)");
       const at = clock.now();

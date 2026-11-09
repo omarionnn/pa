@@ -277,7 +277,7 @@ export function createServer({ router, runtime, log = () => {} }) {
         let out;
         try {
           const { iosApiRequest } = await import("./ios/api.js");
-          out = await iosApiRequest({ path: url.pathname.slice("/ios/v1".length) || "/", method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers, remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, router, log });
+          out = await iosApiRequest({ path: url.pathname.slice("/ios/v1".length) || "/", method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers, remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readAllBody(req), runtime, router, log });
         } catch (e) {
           log({ http: "/ios/v1", threw: (e?.message ?? String(e)).split("\n")[0] });
           return send(500, { ok: false, error: "server_error" });
@@ -2136,6 +2136,17 @@ export function health({ router, runtime, full = false }) {
     live_watches: db.db.prepare("SELECT COUNT(*) AS n FROM watches WHERE met_at IS NULL AND cancelled_at IS NULL AND gave_up_at IS NULL").get().n,
     threads: db.listThreads().length,
   };
+}
+
+/** A body read to its end even when it's too big (null): the connection stays up and gets a normal answer. */
+function readAllBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (c) => { size += c.length; if (size <= MAX_BODY) chunks.push(c); });
+    req.on("end", () => resolve(size > MAX_BODY ? null : Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
 }
 
 function readBody(req, { bytes = false } = {}) {

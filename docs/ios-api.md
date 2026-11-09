@@ -158,7 +158,8 @@ Face ID for this screen is the app's to enforce. The server can't observe it, so
 
 **Forgetting everything**
 - Removes all facts, people, reasons, rules, guesses, preferences, search vectors, the profile, the knowledge graph, memory review records, the chat history and the thread Reason reads.
-- Keeps the account, orders, spend records, reminders, open tasks and call records including recordings and transcripts. Receipts stay and promises keep running, but Reason can no longer search those records.
+- Also empties stored copies of what was said: inbound records, sent-message text, messages waiting to be read, and what was read from files. A text still queued to go out is left to send.
+- Keeps the account, orders, spend records, reminders, open tasks, pages and documents Reason made, and call records including recordings and transcripts. Receipts stay and promises keep running, but Reason can no longer search those records.
 - A reply being written at that instant can save its own turn afterward. Avoid offering this while a turn is running.
 
 **On the live database**, both run with SQLite `secure_delete` and then truncate the write-ahead log, so the freed bytes are overwritten rather than just unlinked. A test reads the raw database files to confirm the words are gone.
