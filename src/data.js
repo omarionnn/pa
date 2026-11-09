@@ -31,6 +31,7 @@ import { db, recordingFiles, documentFiles } from "./db.js";
 import { config } from "./config.js";
 // Creates stranger_calls if this runs before anything else has (npm run data:*).
 import "./strangercalls.js";
+import "./tooldiet.js";
 import { profilePath } from "./browser.js";
 import { readRecording, deleteRecordingFile, mimeFor } from "./calls/recordings.js";
 import { readDocument, deleteDocumentFile, mimeForKind } from "./documents/store.js";
@@ -183,6 +184,8 @@ const TABLES = [
   "messages", "web_chats", "event_log", "extraction_queue", "profile_blocks",
   // Their how-to-treat-me rules and the nightly memory review's watermark and per-pass cost (src/dream.js).
   "treat_rules", "memory_reviews", "memory_review_passes",
+  // Which tools they use, by name, for the tool diet's likely set (src/tooldiet.js).
+  "tool_recent", "tool_sets",
   "graph_entities", "graph_edges", "graph_mentions", "graph_merge_candidates",
   // Places they saved and the things they pinned on their Saved page.
   "saved_places", "saved_marks",
