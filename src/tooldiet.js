@@ -147,6 +147,8 @@ export function statePacks(conversationId, { now = clock.now() } = {}) {
   if (safe(() => one("SELECT 1 FROM uber_rides WHERE conversation_id = ? AND created_at >= ? LIMIT 1", c, now - 7 * DAY))) out.push("rides");
   if (safe(() => dbm.listFlights(c).length)) out.push("flights");
   if (safe(() => dbm.listOauthTokens(c, "google").length)) out.push("calendar", "gmail");
+  // A pack, not core: 0 tokens for anyone without it, where core would charge everybody (count_tokens 11-09).
+  if (safe(() => dbm.listOauthTokens(c, "apple_calendar").length)) out.push("apple_calendar");
   if (safe(() => dbm.listTasks(c).length)) out.push("tasks");
   if (safe(() => dbm.listGoals(c).some(g => !CLOSED_GOALS.has(g.state)))) out.push("goals");
   if (safe(() => dbm.listSeries(c).length)) out.push("series");

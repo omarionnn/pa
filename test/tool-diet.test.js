@@ -9,6 +9,7 @@ import { join } from "node:path";
 const dir = mkdtempSync(join(tmpdir(), "reason-tooldiet-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_DATA_DIR = dir;
+process.env.REASON_TOKEN_KEY = "11".repeat(32);
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_TZ = "America/New_York";
@@ -88,6 +89,17 @@ test("state brings its pack: an organized event, a checkout, a ride, a flight", 
   const v = toolsFor(V);
   const names = diet.computeLoaded(V, v).names;
   for (const n of ["uber_request", "event_blast", "flight_list", "shop_pay"]) if (v.some(t => t.name === n)) assert.ok(names.has(n), `${n} loaded`);
+});
+
+test("a connected Apple Calendar brings its pack; nobody else carries it", () => {
+  const V = "dm:+12025550177";
+  db.upsertAccount({ conversationId: V, channel: "test", address: "+12025550177", name: "Kofi", isOperator: false });
+  assert.ok(!diet.statePacks(V).includes("apple_calendar"));
+  assert.ok(!diet.CORE_SET.has("apple_calendar_events"));
+  db.saveOauthTokens(V, "apple_calendar", { accessToken: "x", accountLabel: "k@icloud.com" });
+  assert.ok(diet.statePacks(V).includes("apple_calendar"));
+  const loaded = diet.loadedFor(V, toolsFor(V));
+  assert.ok(loaded.has("apple_calendar_events"));
 });
 
 test("their own recent tools come in, with the pack they belong to", () => {

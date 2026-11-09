@@ -25,6 +25,8 @@ process.env.REASON_CLAIM_CHECK = "0";
 // The features live has on, or their tools are hidden and "I can't" is simply true (first run, 11-09).
 process.env.REASON_EVENTS = "on";
 process.env.REASON_SHOP_CONNECT = "on";
+process.env.REASON_TOKEN_KEY = (await import("node:crypto")).randomBytes(32).toString("hex"); // seals the seeded row in the throwaway db
+process.env.ICLOUD_CALDAV_BASE = "https://caldav.drive.invalid"; // the seeded Apple row never reaches Apple
 process.env.CROSSMINT_SERVER_KEY = "sk_drive_fake";
 process.env.CROSSMINT_CLIENT_KEY = "ck_drive_fake";
 process.env.CROSSMINT_API_BASE = "https://crossmint.drive.invalid";
@@ -86,9 +88,12 @@ const CASES = [
   { id: "r5", kind: "rare", text: "stop texting me first unless it's really urgent", expect: ["notice_mode", "notice_settings", "notice_window", "pause_everything"] },
   { id: "r6", kind: "rare", text: "what subscriptions am i paying for?", expect: ["subscription_list", "subscriptions_scan"] },
   { id: "l1", kind: "likely", text: "what events do i have going on?", expect: ["event_list", "event_info"], seed: "event" },
+  // Last: the seed stays in the database. Hit = the Apple calendar was checked, whatever else was.
+  { id: "l2", kind: "likely", text: "what events do i have going on?", expect: ["apple_calendar_events"], seed: "apple" },
 ];
 
 function seed(kind) {
+  if (kind === "apple") { seed("event"); db.saveOauthTokens(C, "apple_calendar", { accessToken: "drive-fake", scope: "/drive/home/", accountLabel: "drive@icloud.invalid" }); return; }
   if (kind === "event") {
     const have = db.eventsOrganizedBy(C);
     if (!have.length) db.insertEvent({ organizer: C, name: "Omari's housewarming", nameKey: "omaris housewarming", description: "drinks and food", startsAt: clock.now() + 5 * 86_400_000, tz: "America/New_York", location: "Brooklyn", welcome: "", passwordHash: "x", organizerName: "Omari" });
@@ -103,15 +108,15 @@ async function runOnce(c, arm, temp, marker) {
   db.db.exec("DELETE FROM timers");
   try { db.db.exec("DELETE FROM spend_caps"); } catch {}
   db.db.exec("DELETE FROM events WHERE name NOT LIKE '%housewarming%'");
-  const logs = [];
+  const logs = [], pending = [], toolMs = [];
   let first = null, toolSearch = 0;
   const t0 = Date.now();
   const draft = { feed(e) {
     if (e?.type === "stream_event" && e.event?.delta?.type === "text_delta" && first == null) first = Date.now() - t0;
-    if (e?.type === "assistant") for (const b of e.message?.content ?? []) if (b.type === "tool_use" && b.name === "ToolSearch") toolSearch++;
+    if (e?.type === "assistant") for (const b of e.message?.content ?? []) if (b.type === "tool_use") { if (b.name === "ToolSearch") toolSearch++; else pending.push({ name: b.name, t: Date.now() }); }
   } };
   let reply = null, err = null;
-  try { reply = await runTurnViaCli({ conversationId: C, text: c.text, kind: "user", log: (l) => logs.push(l), draft }); } catch (e) { err = String(e?.message ?? e).slice(0, 200); }
+  try { reply = await runTurnViaCli({ conversationId: C, text: c.text, kind: "user", log: (l) => { logs.push(l); if (l.tool && "out" in l) { const i = pending.findIndex((p) => p.name.endsWith(l.tool)); if (i >= 0) toolMs.push({ tool: l.tool, ms: Date.now() - pending.splice(i, 1)[0].t }); } }, draft }); } catch (e) { err = String(e?.message ?? e).slice(0, 200); }
   const total = Date.now() - t0;
   const cli = logs.find((l) => l.cli)?.cli ?? {};
   const used = logs.filter((l) => l.tool && "out" in l).map((l) => l.tool);
@@ -119,7 +124,7 @@ async function runOnce(c, arm, temp, marker) {
   const hit = used.some((u) => c.expect.includes(u)) || (used.includes("confirm_request") && c.expect.some((e) => JSON.stringify(logs.filter((l) => l.tool === "confirm_request")).includes(e)));
   const row = { case: c.id, kind: c.kind, arm, temp, text: c.text, used, hit, toolSearch, turns: cli.turns ?? null,
     firstWordS: first == null ? null : +(first / 1000).toFixed(2), totalS: +(total / 1000).toFixed(2),
-    tokens: cli.tokens ?? null, loaded: set?.loaded ?? null, reply: reply ?? err };
+    toolMs, tokens: cli.tokens ?? null, loaded: set?.loaded ?? null, reply: reply ?? err };
   console.log(`${c.id} ${arm}-${temp}  hit=${hit ? "yes" : "NO"}  tools=[${used.join(",")}]  ToolSearch=${toolSearch} turns=${row.turns}  first=${row.firstWordS}s total=${row.totalS}s  tok=${JSON.stringify(row.tokens)}\n    → ${String(row.reply).replace(/\s+/g, " ").slice(0, 220)}`);
   if (OUT) appendFileSync(OUT, JSON.stringify(row) + "\n");
   return row;
