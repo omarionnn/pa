@@ -52,7 +52,10 @@ export const feeFor = (conversationId) => {
   return s === "paid" || s === "cancelled" ? 0 : reasonFeeCents();
 };
 /** Duffel's published price per order, passed through: $3.00 plus 1% of the order (managed content). */
-export const serviceFeeCents = (airlineCents) => 300 + Math.ceil(airlineCents / 100);
+export const serviceFeeCents = (airlineCents) => {
+  const fixed = Number(process.env.REASON_FLIGHT_SERVICE_FIXED_CENTS ?? 300), bps = Number(process.env.REASON_FLIGHT_SERVICE_BPS ?? 100);
+  return (Number.isInteger(fixed) && fixed >= 0 ? fixed : 300) + Math.ceil(airlineCents * (Number.isInteger(bps) && bps >= 0 ? bps : 100) / 10_000);
+};
 
 /**
  * The card line. Stripe's fee is charged on the whole amount, including this line, so it is grossed up:

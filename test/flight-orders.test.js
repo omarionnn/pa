@@ -259,6 +259,29 @@ for (const [who, member, total] of [["a non-member", false, 21659], ["an unlimit
   });
 }
 
+test("the booking service line is $3 + 1% of the order, and is configurable", () => {
+  assert.equal(orders.serviceFeeCents(31200), 612);
+  assert.equal(orders.serviceFeeCents(20000), 500);
+  assert.equal(orders.serviceFeeCents(100001), 1301, "a part of a cent rounds up");
+  process.env.REASON_FLIGHT_SERVICE_FIXED_CENTS = "450"; process.env.REASON_FLIGHT_SERVICE_BPS = "150";
+  try { assert.equal(orders.serviceFeeCents(20000), 750); }
+  finally { delete process.env.REASON_FLIGHT_SERVICE_FIXED_CENTS; delete process.env.REASON_FLIGHT_SERVICE_BPS; }
+});
+
+test("a $312 fare: $6.12 service, the card line grossed up over it, and the lines are what is held and charged", async () => {
+  offerPrice = "312.00";
+  const out = await quoted();
+  assert.deepEqual(out.lines.map(l => l.amount), ["$312.00", "$6.12", "$9.96", "$5.00"]);
+  assert.equal(out.total, "$333.08");
+  assert.equal(sumLines(out.lines), 33308);
+  assert.equal(33308 - orders.processorCents(33308), 31200 + 612 + 500, "the card fee on the whole total leaves the rest intact");
+  await approveVia(out.url); await orders.idle();
+  assert.equal(holds()[0].body.amount, "33308");
+  assert.equal(captures().length, 1);
+  assert.equal(captures()[0].body?.amount_to_capture, undefined);
+  assert.equal(trust.spendToday(C).spent_cents, 33308);
+});
+
 test("an unlimited member pays no Reason fee", async () => {
   await plan.markPaid(C, { customerId: "cus_paid", subscriptionId: "sub_1", paidUntil: clock.now() + 864e5 });
   const out = await quoted();
