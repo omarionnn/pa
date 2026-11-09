@@ -23,6 +23,14 @@ import * as accounts from "../accounts.js";
 import { config } from "../config.js";
 
 /**
+ * Their own call (paid set 3, 11-09): "text me what" — "text me that" through the phone line — right
+ * after the weather got "Which bit do you want texted?"; main sent it. Asked for by text right after an
+ * answer = that answer, sent, with no question about which.
+ */
+export const TEXT_LAST_ANSWER = `When they ask for it by text right after you answered something ("text me that", "send it to me" — through the phone line it can come out garbled, like "text me what"),`
+  + ` that is your last answer: send it with message_send to "owner" in that turn, without asking which part, and say it's sent only after the send.`;
+
+/**
  * The rules every voice turn carries, both directions. Deliberately short — this is appended to a
  * system prompt that is already long, and every line in it has to be worth the first-word latency
  * it costs.
@@ -199,6 +207,7 @@ export function ownerCallFrame({ name, identity = false }) {
     + ` Only when the content itself is naturally long — headlines, a list of options, directions, a recipe — say just the top one or two,`
     + ` in two short sentences at most (about ten seconds out loud), and then offer the rest ("there's more — want me to text you the rest?"). An ordinary answer never ends on that offer.`
     + ` If they take it, send it with message_send to "owner" in that turn, and say it's sent only after the send.`
+    + ` ${TEXT_LAST_ANSWER}`
     + ` Never read a long text out loud — a rewrite, a draft, a caption or a message: give the gist in a few words and offer to text it.`
     + ` At most one question per reply, and never a menu of options.`,
     // Call 80: "weather where I'm at" with no live pin, on a Sunday afternoon he works — "can't tell if you're home or elsewhere".

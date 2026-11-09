@@ -995,3 +995,88 @@ test("named ack (cold review): the voice's line said as it handed over, then Rea
   await s.timers.advance(50);
   assert.equal(s.live.of("session.commentary.append").find(e => e.event_id === "result_c3")?.content, gl.ACK_SKIP_FOLLOW_UP);
 });
+
+// ---------- paid set 3 (11-09): his "No" unanswered; "text me what" asked back ----------
+
+const floorsOf = (s) => s.live.of("session.commentary.append").filter(e => String(e.event_id).startsWith("reply_"));
+
+test("paid set 3: a 'No' with no reply and no hand-off gets the voice asked to answer — once, at REPLY_FLOOR_MS", async () => {
+  const s = startCall({ brain: async () => ({ text: "Ok." }) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " No" });
+  await s.timers.advance(gl.REPLY_FLOOR_MS - 100);
+  assert.equal(floorsOf(s).length, 0, "not before the floor");
+  await s.timers.advance(200);
+  assert.equal(floorsOf(s).length, 1);
+  assert.equal(floorsOf(s)[0].content, gl.REPLY_ASK);
+  assert.equal(floorsOf(s)[0].delegation_id, null);
+  await s.timers.advance(20_000);
+  assert.equal(floorsOf(s).length, 1, "once per turn of theirs");
+  assert.ok(s.lines.some(l => l.gptlive_reply_floor));
+});
+
+test("paid set 3: the voice answered the 'No' itself → no ask", async () => {
+  const s = startCall({ brain: async () => ({ text: "Ok." }) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " No" });
+  await s.timers.advance(800);
+  s.live.emit({ type: "session.output_audio.delta", delta: LOUD });
+  s.live.emit({ type: "session.output_transcript.delta", delta: "Okay, no worries." });
+  await s.timers.advance(5000);
+  assert.equal(floorsOf(s).length, 0);
+});
+
+test("paid set 3: handed to Reason and still running → no ask (its answer is coming)", async () => {
+  const s = startCall({ brain: () => new Promise(() => {}) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " Weather near work?" });
+  await s.timers.advance(300);
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "f1" } });
+  await s.timers.advance(6000);
+  assert.equal(floorsOf(s).length, 0);
+});
+
+test("paid set 3: a new turn of theirs after an answered one gets its own floor", async () => {
+  const s = startCall({ brain: async () => ({ text: "Ok." }) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " Hi" });
+  await s.timers.advance(800);
+  s.live.emit({ type: "session.output_audio.delta", delta: LOUD });
+  await s.timers.advance(5000);
+  s.live.emit({ type: "session.input_transcript.delta", delta: " No" });
+  await s.timers.advance(gl.REPLY_FLOOR_MS + 100);
+  assert.equal(floorsOf(s).length, 1);
+});
+
+test("paid set 3: the voice is told never to leave them in silence — a plain 'no' gets a few words back", () => {
+  assert.match(gl.OWN_VOICE_NO_DEFLECT, /Never leave them in silence/);
+  assert.match(gl.OWN_VOICE_NO_DEFLECT, /even just "no"/);
+  assert.match(gl.REPLY_ASK, /Never leave them in silence/);
+  assert.ok(gl.liveInstructions({ name: "Omari", named: true, owner: true }).includes(gl.OWN_VOICE_NO_DEFLECT));
+});
+
+test("paid set 3: asked for it by text right after an answer → Reason sends that answer, no 'which bit?'", () => {
+  const frame = prompt.ownerCallFrame({ name: "Omari" });
+  assert.ok(frame.includes(prompt.TEXT_LAST_ANSWER));
+  assert.match(prompt.TEXT_LAST_ANSWER, /that is your last answer: send it with message_send to "owner" in that turn, without asking which part/);
+  assert.match(prompt.TEXT_LAST_ANSWER, /"text me what"/);
+  // The voice may name that send: "text me that" right after an answer is clear (never a do-nothing example).
+  assert.match(gl.ACK_ASK, /"text me that" right after an answer — that is the answer just given/);
+  assert.doesNotMatch(gl.ACK_ASK, /text me what/i);
+});
+
+test("paid set 3: Reason skips the 'No' and nothing is said → the voice is still asked to answer, after the skip", async () => {
+  const s = startCall({ brain: async () => ({ text: "", tools: ["skip_turn"], skip: true }) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " No" });
+  await s.timers.advance(300);
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "f2" } });
+  await s.timers.advance(gl.REPLY_FLOOR_MS * 3);
+  assert.equal(floorsOf(s).length, 1);
+});
+
+test("paid set 3: Reason's answer comes back and is said → no ask", async () => {
+  const s = startCall({ brain: async () => ({ text: "Fifty two and clear at work." }) });
+  s.live.emit({ type: "session.input_transcript.delta", delta: " Weather near work?" });
+  await s.timers.advance(300);
+  s.live.emit({ type: "session.delegation.created", delegation: { id: "f3" } });
+  await s.timers.advance(600);
+  s.live.emit({ type: "session.output_audio.delta", delta: LOUD });
+  await s.timers.advance(gl.REPLY_FLOOR_MS * 3);
+  assert.equal(floorsOf(s).length, 0);
+});
