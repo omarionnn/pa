@@ -1163,14 +1163,20 @@ export function intentLapsedUnused(json, orderIntentId) {
 /**
  * A paid row whose card provably never reached the store: paid before the rails were read (rail_at_pay
  * '' — every row paid since reads them and is 'ready'/'unlisted'), its checkout ended placing nothing,
- * and its intent still reads the encrypted card waiting for its CVC with no card rail ever ready, nothing
- * spent or reserved, and closed or past its expiry. Exactly the 11-08 Amazon row; nothing wider.
+ * nothing was spent or reserved on its intent and the intent is closed or past its expiry, AND one of:
+ *   - the intent still reads the encrypted card waiting for its CVC, no card rail ready; or
+ *   - the same checkout asked for payment AGAIN after this row was answered (a later payment row on the
+ *     run): a checkout asks again only when the card it was given did not go through.
+ * The second is what the 11-08 Amazon row looks like once Crossmint expires the intent: the expired
+ * intent no longer lists the encrypted-card rail at all (read 22:2x UTC), so the first can't be seen.
  */
 function paidNeverHandedCard(row, json) {
   if (row.rail_at_pay) return false;
   if (!runEndedUnplaced(row.run_id)) return false;
-  if (cardRail(json) !== "cvc") return false;
-  return intentNeverCharged(json, row.order_intent_id) || intentLapsedUnused(json, row.order_intent_id);
+  if (!(intentNeverCharged(json, row.order_intent_id) || intentLapsedUnused(json, row.order_intent_id))) return false;
+  if (cardRail(json) === "ready") return false;
+  if (cardRail(json) === "cvc") return true;
+  return !!q("SELECT 1 AS x FROM shop_payments WHERE run_id = ? AND id > ? AND created_at >= ? LIMIT 1").get(row.run_id, row.id, row.answered_at ?? 0);
 }
 /** The checkout this payment answered is over and placed nothing (its last word was failed, cancelled, expired or blocked). */
 function runEndedUnplaced(runId) {
