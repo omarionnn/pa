@@ -1,0 +1,398 @@
+// The iPhone app's API (src/ios/, docs/ios-api.md). One pinned test per promise:
+//   - flag off: every /ios/v1 path is the flat 404, byte for byte
+//   - sign in by phone, one answer for every number, codes bound to the asking device, revocable device sessions
+//   - the Page from real rows only, an honest empty, failures with what Reason did next
+//   - receipts: steps, cost, artifacts
+//   - live: a state change arrives inside a second
+//   - memories: source labels, correct, forget for good, forget everything
+//   - sealed: nothing of one person's is reachable with another's token
+import { test, beforeEach, after } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { EventEmitter } from "node:events";
+
+const dir = mkdtempSync(join(tmpdir(), "reason-ios-api-"));
+process.env.REASON_DB_PATH = join(dir, "reason.db");
+process.env.REASON_DATA_DIR = dir;
+process.env.REASON_RECORDING_ROOT = join(dir, "recordings");
+process.env.REASON_OWNER_NAME = "Omari";
+process.env.REASON_TZ = "America/New_York";
+process.env.REASON_CONVERSATION = "dm:owner";
+process.env.REASON_OWNER_NUMBER = "+12025551234";
+process.env.REASON_MASTER_NUMBER = "+12025551234";
+process.env.REASON_PUBLIC_URL = "https://reason.example.test";
+process.env.REASON_SITE_URL = "https://heyreason.test";
+process.env.REASON_PAGES_URL = "https://files.heyreason.test";
+delete process.env.REASON_IOS_API;
+delete process.env.REASON_BACKEND;
+
+const { createServer } = await import("../src/http.js");
+const { iosApiRequest } = await import("../src/ios/api.js");
+const { liveRequest } = await import("../src/ios/live.js");
+const db = await import("../src/db.js");
+const { config, clock } = await import("../src/config.js");
+
+const A = { c: "dm:owner", phone: "+12025551234", name: "Omari Test" };
+const B = { c: "dm:fake:+14155559876", phone: "+14155559876", name: "Kofi" };
+const challenge = (s = "a") => s.repeat(40);
+
+after(() => rmSync(dir, { recursive: true, force: true }));
+beforeEach(() => {
+  config.iosApi = true;
+  db.db.exec(`DELETE FROM accounts; DELETE FROM threads; DELETE FROM conversations; DELETE FROM page_sessions; DELETE FROM page_codes; DELETE FROM page_attempts; DELETE FROM event_join_attempts;
+    DELETE FROM people; DELETE FROM person_facts; DELETE FROM guesses; DELETE FROM whys; DELETE FROM treat_rules; DELETE FROM profile_blocks; DELETE FROM fact_embeddings; DELETE FROM messages; DELETE FROM event_log;
+    DELETE FROM tasks; DELETE FROM task_log; DELETE FROM timers; DELETE FROM series; DELETE FROM confirmations; DELETE FROM calls; DELETE FROM agentcard_purchases;`);
+  for (const p of [A, B]) {
+    db.upsertAccount({ conversationId: p.c, channel: "fake", address: p.phone, name: p.name, isOperator: p === A });
+    db.upsertThread({ conversationId: p.c, channel: "fake", address: p.phone, isOwner: true, service: "iMessage" });
+  }
+});
+
+async function api(path, { method = "GET", token = null, body = undefined, runtime = null, headers = {}, log } = {}) {
+  const out = await iosApiRequest({
+    path, method, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers }, remoteAddress: "10.0.0.1",
+    readBody: async () => (body === undefined ? "" : JSON.stringify(body)), runtime, log,
+  });
+  let parsed = null;
+  try { parsed = typeof out.body === "string" && out.body ? JSON.parse(out.body) : null; } catch { /* binary */ }
+  return { ...out, json: parsed };
+}
+
+/** A real sign-in: the code is read from what would have been texted. */
+async function signIn(p, { ch = challenge(), name = "iPhone" } = {}) {
+  const told = [];
+  const runtime = { _tell: async (c, line) => { told.push({ c, line }); return { ok: true }; } };
+  const asked = await api("/auth/code", { method: "POST", body: { phone: p.phone, challenge: ch }, runtime });
+  assert.equal(asked.status, 202);
+  assert.equal(told[0].c, p.c);
+  const code = /code is (\d{6})/.exec(told[0].line)[1];
+  const r = await api("/auth/verify", { method: "POST", body: { phone: p.phone, challenge: ch, code, device_name: name } });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  return r.json.token;
+}
+function failedTask(c, title = "Book the table") {
+  const t = db.createTask(c, { title, goal: title, maxAttempts: 3 });
+  db.finishTask(c, t.id, { state: "failed", outcome: "no tables", result: { why: "They were fully booked", next: "I'm trying the place next door" } });
+  return t.id;
+}
+function call(c, fields = {}) {
+  const row = db.createCall(c, { provider: "fake", toNumber: "+14155550000", isOwner: false, goal: "Call the salon", ...fields });
+  return row.id ?? row;
+}
+
+// ---------------------------------------------------------------- the flag
+async function viaServer(fn) {
+  const server = createServer({ router: { get: () => null, all: () => [], channels: () => [] }, runtime: {}, log: () => {} });
+  await new Promise(r => server.listen(0, "127.0.0.1", r));
+  try { return await fn(`http://127.0.0.1:${server.address().port}`); } finally { server.closeAllConnections?.(); await new Promise(r => server.close(r)); }
+}
+test("flag off (the default): /ios/v1 answers exactly what a path nobody issued answers", async () => {
+  config.iosApi = false;
+  assert.equal((await import("../src/config.js")).config.iosApi, false);
+  await viaServer(async (base) => {
+    const miss = await fetch(`${base}/no/such/address`);
+    const missBody = await miss.text();
+    for (const [p, m] of [["/ios/v1/page", "GET"], ["/ios/v1/auth/code", "POST"], ["/ios/v1/live", "GET"], ["/ios/v1/memories", "GET"]]) {
+      const r = await fetch(base + p, { method: m });
+      assert.equal(r.status, miss.status, p);
+      assert.equal(await r.text(), missBody, p);
+    }
+  });
+});
+test("flag on: routed through the real server; owner mode opens only the owner's conversation", async () => {
+  await viaServer(async (base) => {
+    const r = await fetch(`${base}/ios/v1/page`);
+    assert.equal(r.status, 401);
+    assert.deepEqual(await r.json(), { ok: false, error: "signed_out" });
+  });
+  const b = await signIn(B);
+  const a = await signIn(A);
+  config.iosApi = "owner";
+  assert.equal((await api("/page", { token: b })).status, 401);
+  assert.equal((await api("/page", { token: a })).status, 200);
+});
+
+// ---------------------------------------------------------------- sign in
+test("every number gets the same answer, and only a real account gets a text", async () => {
+  const told = [];
+  const runtime = { _tell: async (...x) => { told.push(x); return { ok: true }; } };
+  const real = await api("/auth/code", { method: "POST", body: { phone: A.phone, challenge: challenge() }, runtime });
+  const fake = await api("/auth/code", { method: "POST", body: { phone: "+16465550101", challenge: challenge() }, runtime });
+  assert.equal(real.status, fake.status);
+  assert.equal(real.body, fake.body);
+  assert.equal(told.length, 1);
+});
+test("a wrong code and a stranger's number fail identically; a malformed challenge is refused", async () => {
+  const told = [];
+  const runtime = { _tell: async (_c, line) => { told.push(line); return { ok: true }; } };
+  await api("/auth/code", { method: "POST", body: { phone: A.phone, challenge: challenge("a") }, runtime });
+  const code = /code is (\d{6})/.exec(told[0])[1];
+  const wrong = await api("/auth/verify", { method: "POST", body: { phone: A.phone, challenge: challenge("a"), code: code === "000000" ? "000001" : "000000" } });
+  const stranger = await api("/auth/verify", { method: "POST", body: { phone: "+16465550101", challenge: challenge("a"), code } });
+  assert.equal(wrong.status, 401);
+  assert.deepEqual(wrong.json, stranger.json);
+  const bad = await api("/auth/code", { method: "POST", body: { phone: A.phone, challenge: "short" } });
+  assert.equal(bad.status, 400);
+});
+test("verified: the token opens the API, and a browser's Web session does not", async () => {
+  const token = await signIn(A);
+  assert.equal((await api("/page", { token })).status, 200);
+  const webToken = "w".repeat(43);
+  db.startPageSession(`wsign:${A.c}`, webToken, { conversationId: A.c });
+  assert.equal((await api("/page", { token: webToken })).status, 401);
+  assert.equal((await api("/page")).status, 401);
+});
+test("device sessions: listed, one revoked ends it, signing out ends this one; token never in the list", async () => {
+  const t1 = await signIn(A, { name: "Phone One" });
+  const t2 = await signIn(A, { name: "Phone Two", ch: challenge("b") });
+  const list = (await api("/auth/sessions", { token: t1 })).json.sessions;
+  assert.equal(list.length, 2);
+  assert.ok(!JSON.stringify(list).includes(t1) && !JSON.stringify(list).includes(t2));
+  assert.deepEqual(list.map(s => s.name).sort(), ["Phone One", "Phone Two"]);
+  const other = list.find(s => !s.current);
+  assert.equal((await api(`/auth/sessions/${other.id}`, { method: "DELETE", token: t1 })).status, 200);
+  assert.equal((await api("/page", { token: other.name === "Phone Two" ? t2 : t1 })).status, 401);
+  const stay = other.name === "Phone Two" ? t1 : t2;
+  assert.equal((await api("/auth/session", { method: "DELETE", token: stay })).status, 200);
+  assert.equal((await api("/page", { token: stay })).status, 401);
+});
+
+// ---------------------------------------------------------------- the Page
+test("nothing real: an honest empty, no filler", async () => {
+  const token = await signIn(A);
+  const { json } = await api("/page", { token });
+  assert.equal(json.empty, true);
+  assert.deepEqual(json.sections, { in_progress: [], done: [], failed: [], open_offers: [] });
+});
+test("in progress, done, failed with what Reason did next, open offers: real rows, internals never out", async () => {
+  const token = await signIn(A);
+  const run = db.createTask(A.c, { title: "Find a dentist", goal: "SECRET-GOAL-TEXT", maxAttempts: 3 });
+  const done = db.createTask(A.c, { title: "Order the pads", goal: "x", maxAttempts: 3 });
+  db.finishTask(A.c, done.id, { state: "done", outcome: "ok", result: { headline: "Ordered", facts: ["$12"] } });
+  failedTask(A.c);
+  const ask = db.askConfirmation({ conversationId: A.c, action: "message_send", summary: "Text Kofi the address", stakes: "low", target: "Kofi", askedAfterMsgs: 0 });
+  const { json } = await api("/page", { token });
+  assert.equal(json.empty, false);
+  assert.deepEqual(json.sections.in_progress.map(i => i.id), [`task-${run.id}`]);
+  assert.equal(json.sections.done[0].result.headline, "Ordered");
+  assert.deepEqual(json.sections.failed[0].failure, { why: "They were fully booked", did_next: "I'm trying the place next door" });
+  assert.equal(json.sections.open_offers[0].id, `approval-${ask.id ?? ask}`);
+  assert.ok(!JSON.stringify(json).includes("SECRET-GOAL-TEXT"), "the raw task record stays on the server");
+});
+test("a failure with no recorded next step says null, it does not invent one", async () => {
+  const token = await signIn(A);
+  const t = db.createTask(A.c, { title: "Book it", goal: "x", maxAttempts: 3 });
+  db.finishTask(A.c, t.id, { state: "failed", outcome: "gave up" });
+  const f = (await api("/page", { token })).json.sections.failed[0];
+  assert.equal(f.failure.why, "gave up");
+  assert.equal(f.failure.did_next, null);
+});
+
+// ---------------------------------------------------------------- receipts
+test("a task's receipt: steps, the money actually charged, recording, transcript and the approval", async () => {
+  const token = await signIn(A);
+  const t = db.createTask(A.c, { title: "Book the salon", goal: "x", maxAttempts: 3 });
+  db.updateTask(A.c, t.id, { progress: "Found the number" });
+  const ask = db.askConfirmation({ conversationId: A.c, action: "purchase_confirm", summary: "Buy it, $12", stakes: "money", target: "x", askedAfterMsgs: 0, taskId: t.id });
+  const askId = ask.id ?? ask;
+  db.db.prepare("UPDATE confirmations SET granted_at = ?, granted_quote = 'yes do it' WHERE id = ?").run(clock.now(), askId);
+  const pid = db.recordAgentcardPurchase({ conversationId: A.c, buyConversationId: "b1", status: "placed", amountCents: 1200, merchant: "Walmart", what: "Pads" });
+  db.db.prepare("UPDATE agentcard_purchases SET confirmation_id = ?, order_id = 'ORD1' WHERE conversation_id = ?").run(askId, A.c);
+  const cid = call(A.c, { taskId: t.id });
+  mkdirSync(config.recordingRoot, { recursive: true });
+  writeFileSync(join(config.recordingRoot, "call-a.mp3"), Buffer.from("ID3 fake audio bytes"));
+  db.db.prepare("UPDATE calls SET task_id = ?, state = 'completed', transcript = 'Hello there', recording_state = 'stored', recording_file = ?, recording_format = 'mp3' WHERE id = ?").run(t.id, join(config.recordingRoot, "call-a.mp3"), cid);
+  const { json } = await api(`/items/task-${t.id}`, { token });
+  assert.ok(json.item.steps.some(s => s.text.includes("Found the number")));
+  assert.equal(json.item.cost.charged_cents, 1200);
+  assert.deepEqual(json.item.cost.lines.map(l => [l.label, l.charged]), [["Walmart", true]]);
+  const kinds = json.item.artifacts.map(a => a.type).sort();
+  assert.deepEqual(kinds, ["approval", "confirmation", "recording", "transcript"]);
+  assert.equal(json.item.artifacts.find(a => a.type === "approval").you_said, "yes do it");
+  const audio = await api(`/calls/${cid}/recording`, { token });
+  assert.equal(audio.status, 200);
+  assert.equal(Buffer.from(audio.body).toString(), "ID3 fake audio bytes");
+  assert.equal(pid != null, true);
+});
+test("a purchase whose outcome nobody knows does not claim a number", async () => {
+  const token = await signIn(A);
+  db.recordAgentcardPurchase({ conversationId: A.c, buyConversationId: "b2", status: "outcome_unknown", amountCents: 900, merchant: "Target", what: "x" });
+  const id = db.db.prepare("SELECT id FROM agentcard_purchases").get().id;
+  const { cost } = (await api(`/items/purchase-${id}`, { token })).json.item;
+  assert.equal(cost.charged_cents, null);
+  assert.equal(cost.charged_known, false);
+});
+
+// ---------------------------------------------------------------- live
+function sink() {
+  const chunks = []; const res = new EventEmitter();
+  res.write = (s) => { chunks.push({ s, at: Date.now() }); return true; };
+  res.end = () => { res.ended = true; };
+  return { res, chunks };
+}
+test("a state change arrives within a second; only ever their own", async () => {
+  const token = await signIn(A);
+  const account = db.getAccount(A.c);
+  const { res, chunks } = sink();
+  const out = liveRequest({ account, token, headers: { authorization: `Bearer ${token}` } });
+  out.stream(res, new EventEmitter());
+  try {
+    assert.match(chunks.map(c => c.s).join(""), /event: page/);
+    const seen = chunks.length;
+    // Somebody else's change makes no event at all.
+    db.createTask(B.c, { title: "NOT-YOURS", goal: "x", maxAttempts: 3 });
+    await new Promise(r => setTimeout(r, 700));
+    assert.equal(chunks.length, seen);
+    const t0 = Date.now();
+    db.createTask(A.c, { title: "Mine now", goal: "x", maxAttempts: 3 });
+    while (chunks.length === seen && Date.now() - t0 < 1000) await new Promise(r => setTimeout(r, 20));
+    const got = chunks.slice(seen).map(c => c.s).join("");
+    assert.match(got, /event: page/);
+    assert.ok(got.includes("Mine now") && !got.includes("NOT-YOURS"));
+    assert.ok(chunks[seen].at - t0 < 1000, `took ${chunks[seen].at - t0} ms`);
+  } finally { res.emit("close"); }
+});
+test("a device revoked elsewhere is told, and the stream ends", async () => {
+  const token = await signIn(A);
+  const { res, chunks } = sink();
+  liveRequest({ account: db.getAccount(A.c), token, headers: { authorization: `Bearer ${token}` } }).stream(res, new EventEmitter());
+  db.endPageSessionOf(A.c, token);
+  const t0 = Date.now();
+  while (!res.ended && Date.now() - t0 < 1000) await new Promise(r => setTimeout(r, 20));
+  assert.equal(res.ended, true);
+  assert.match(chunks.map(c => c.s).join(""), /event: signedout/);
+});
+test("the live route is a real stream over HTTP", async () => {
+  const token = await signIn(A);
+  await viaServer(async (base) => {
+    const ac = new AbortController();
+    const r = await fetch(`${base}/ios/v1/live`, { headers: { authorization: `Bearer ${token}` }, signal: ac.signal });
+    assert.equal(r.status, 200);
+    assert.match(r.headers.get("content-type"), /text\/event-stream/);
+    const { value } = await r.body.getReader().read();
+    assert.match(Buffer.from(value).toString(), /retry: 1500|event: page/);
+    ac.abort();
+  });
+});
+
+// ---------------------------------------------------------------- memories
+const dbBytes = () => [config.dbPath, `${config.dbPath}-wal`].filter(existsSync).map(p => readFileSync(p).toString("latin1")).join("");
+
+test("memories carry a source label and the words that gave rise to them; correct replaces the row", async () => {
+  const token = await signIn(A);
+  const ev = db.db.prepare("INSERT INTO event_log (conversation_id, role, content, at) VALUES (?, 'user', 'i am allergic to shellfish', ?)").run(A.c, clock.now());
+  db.remember(A.c, A.name, "Allergic to shellfish", { source: "inferred", sourceMessageIds: [Number(ev.lastInsertRowid)] });
+  db.remember(A.c, "Kofi", "Is a nurse", { source: "user_stated" });
+  const { json } = await api("/memories", { token });
+  const rows = json.groups.flatMap(g => g.memories);
+  const allergy = rows.find(r => r.text.includes("shellfish"));
+  assert.equal(allergy.source.label, "I picked this up from what you said");
+  assert.equal(allergy.source.quote, "i am allergic to shellfish");
+  assert.equal(rows.find(r => r.text.includes("nurse")).source.label, "You told me");
+  const fixed = await api(`/memories/${allergy.id}/correct`, { method: "POST", token, body: { text: "Allergic to crab only" } });
+  assert.equal(fixed.status, 200);
+  const after = (await api("/memories", { token })).json.groups.flatMap(g => g.memories);
+  assert.ok(after.some(r => r.text === "Allergic to crab only") && !after.some(r => r.text.includes("shellfish")));
+});
+test("forget one: gone from recall, its words off the disk, and the extractor can't learn it back", async () => {
+  const token = await signIn(A);
+  const words = "Sees a therapist named Dr Zzyzx";
+  const f = db.remember(A.c, A.name, words, { source: "inferred" });
+  db.db.prepare("INSERT INTO fact_embeddings (conversation_id, fact_id, source_table, embedding, created_at) VALUES (?, ?, 'person_facts', x'00', ?)").run(A.c, f.factId, clock.now());
+  db.db.prepare("INSERT INTO event_log (conversation_id, role, content, at) VALUES (?, 'assistant', ?, ?)").run(A.c, `Noted: ${words}.`, clock.now());
+  db.db.prepare("INSERT INTO messages (conversation_id, role, channel, text, at) VALUES (?, 'assistant', 'fake', ?, ?)").run(A.c, `Noted: ${words}.`, clock.now());
+  const own = db.db.prepare("INSERT INTO messages (conversation_id, role, channel, text, at) VALUES (?, 'user', 'fake', 'my own words about Dr Qqqxx', ?)").run(A.c, clock.now()).lastInsertRowid;
+  assert.equal((await api(`/memories/fact-${f.factId}`, { method: "DELETE", token })).status, 200);
+  assert.ok(!(await api("/memories", { token })).json.groups.flatMap(g => g.memories).some(m => m.text.includes("Zzyzx")));
+  assert.ok(!dbBytes().includes("Dr Zzyzx"), "the sentence is not in the database file or its write-ahead log");
+  assert.ok(dbBytes().includes("Qqqxx") && db.db.prepare("SELECT 1 AS x FROM messages WHERE id = ?").get(own), "their own messages are left alone");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM fact_embeddings WHERE fact_id = ?").get(f.factId).n, 0);
+  const again = db.remember(A.c, A.name, words, { source: "inferred" });
+  assert.equal(again.factId, null);
+  assert.equal(again.refused, "taken_back");
+  const said = db.remember(A.c, A.name, words, { source: "user_stated" });
+  assert.ok(said.factId, "their own word brings it back");
+  assert.ok(db.memoryFacts(A.c).some(x => x.fact === words));
+});
+test("forget one also takes the older wording a correction left behind, a rule's words, and a why", async () => {
+  const token = await signIn(A);
+  const f = db.remember(A.c, A.name, "Lives at Ninety Qwerty Lane", {});
+  const c = await api(`/memories/fact-${f.factId}/correct`, { method: "POST", token, body: { text: "Lives at Ninety Asdfg Lane" } });
+  assert.equal((await api(`/memories/${c.json.id}`, { method: "DELETE", token })).status, 200);
+  const rule = db.addRule(A.c, { rule: "Never mention Blorpian topics", why: "they asked", source: "they_said" });
+  assert.equal((await api(`/memories/rule-${rule.rule.id}`, { method: "DELETE", token })).status, 200);
+  const bytes = dbBytes();
+  for (const w of ["Qwerty", "Asdfg", "Blorpian"]) assert.ok(!bytes.includes(w), w);
+});
+test("forget everything: asked plainly, removes what Reason knows; receipts and promises stay", async () => {
+  const token = await signIn(A);
+  const other = db.remember(B.c, B.name, "Kofi's own secret fact", {});
+  db.remember(A.c, A.name, "Likes Frobnitz coffee", {});
+  db.db.prepare("INSERT INTO event_log (conversation_id, role, content, at) VALUES (?, 'user', 'Frobnitz please', ?)").run(A.c, clock.now());
+  db.saveConversation(A.c, [{ role: "user", content: "Frobnitz please" }]);
+  const t = db.createTask(A.c, { title: "Still running", goal: "x", maxAttempts: 3 });
+  assert.equal((await api("/memories/forget-everything", { method: "POST", token, body: {} })).status, 400, "needs the explicit confirmation");
+  assert.ok(db.memoryFacts(A.c).length);
+  const r = await api("/memories/forget-everything", { method: "POST", token, body: { confirm: "FORGET EVERYTHING" } });
+  assert.equal(r.status, 200);
+  assert.equal((await api("/memories", { token })).json.empty, true);
+  assert.deepEqual(db.loadConversation(A.c), []);
+  assert.ok(!dbBytes().includes("Frobnitz"));
+  assert.ok(db.getTask(A.c, t.id), "the job they asked for keeps running");
+  assert.equal((await api("/page", { token })).status, 200, "still signed in");
+  assert.ok(db.memoryFacts(B.c).some(f => f.id === other.factId), "another person's memory is untouched");
+});
+
+// ---------------------------------------------------------------- sealed
+test("sealed: every route, with Kofi's token and Omari's ids, answers exactly what an id that never existed answers", async () => {
+  const a = await signIn(A);
+  const b = await signIn(B, { ch: challenge("b") });
+  const t = db.createTask(A.c, { title: "Omari private task", goal: "x", maxAttempts: 3 });
+  db.finishTask(A.c, t.id, { state: "done", outcome: "ok", result: { headline: "Omari private headline" } });
+  const cid = call(A.c);
+  mkdirSync(config.recordingRoot, { recursive: true });
+  writeFileSync(join(config.recordingRoot, "call-omari.mp3"), Buffer.from("OMARI AUDIO"));
+  db.db.prepare("UPDATE calls SET state = 'completed', summary = 'Omari call', transcript = 'Omari transcript', recording_state = 'stored', recording_file = ?, recording_format = 'mp3' WHERE id = ?").run(join(config.recordingRoot, "call-omari.mp3"), cid);
+  db.recordAgentcardPurchase({ conversationId: A.c, buyConversationId: "b9", status: "placed", amountCents: 500, merchant: "OmariShop", what: "x" });
+  const pid = db.db.prepare("SELECT id FROM agentcard_purchases WHERE conversation_id = ?").get(A.c).id;
+  const ask = db.askConfirmation({ conversationId: A.c, action: "message_send", summary: "Omari ask", stakes: "low", target: "x", askedAfterMsgs: 0 });
+  const askId = ask.id ?? ask;
+  const fact = db.remember(A.c, A.name, "Omari private fact", {}).factId;
+  const rule = db.addRule(A.c, { rule: "Omari private rule", source: "they_said" }).rule.id;
+  db.noteGuess(A.c, { about: A.name, guess: "Omari private guess" });
+  const guess = db.db.prepare("SELECT id FROM guesses WHERE conversation_id = ?").get(A.c)?.id;
+  const omariSessions = (await api("/auth/sessions", { token: a })).json.sessions;
+
+  // Reachable with Omari's own token, or these prove nothing.
+  for (const p of [`/items/task-${t.id}`, `/items/call-${cid}`, `/items/purchase-${pid}`, `/items/approval-${askId}`]) assert.equal((await api(p, { token: a })).status, 200, p);
+  assert.equal((await api(`/calls/${cid}/recording`, { token: a })).status, 200);
+
+  const nothing = await api("/items/task-999999", { token: b });
+  for (const p of [`/items/task-${t.id}`, `/items/call-${cid}`, `/items/purchase-${pid}`, `/items/approval-${askId}`]) {
+    const r = await api(p, { token: b });
+    assert.equal(r.status, nothing.status, p);
+    assert.equal(r.body, nothing.body, p);
+  }
+  assert.equal((await api(`/calls/${cid}/recording`, { token: b })).status, 404);
+  assert.equal((await api(`/memories/fact-${fact}`, { method: "DELETE", token: b })).status, 404);
+  assert.equal((await api(`/memories/rule-${rule}`, { method: "DELETE", token: b })).status, 404);
+  assert.equal((await api(`/memories/fact-${fact}/correct`, { method: "POST", token: b, body: { text: "hijacked" } })).status, 404);
+  assert.ok(guess);
+  assert.equal((await api(`/memories/guess-${guess}`, { method: "POST", token: b, body: { answer: "yes" } })).status, 404);
+  assert.equal((await api(`/auth/sessions/${omariSessions[0].id}`, { method: "DELETE", token: b })).status, 404);
+  assert.equal((await api("/page", { token: a })).status, 200, "Omari is still signed in");
+  assert.ok(db.memoryFacts(A.c).some(f => f.id === fact), "Omari's fact is untouched");
+
+  // Nothing of Omari's in anything Kofi can list, nor does forget-everything cross over.
+  for (const p of ["/page", "/memories", "/auth/sessions"]) assert.ok(!(await api(p, { token: b })).body.includes("Omari"), p);
+  await api("/memories/forget-everything", { method: "POST", token: b, body: { confirm: "FORGET EVERYTHING" } });
+  assert.ok(db.memoryFacts(A.c).some(f => f.id === fact), "Kofi's forget-everything reached only Kofi");
+});
+test("no route takes a person: a client naming someone else's conversation changes nothing", async () => {
+  const b = await signIn(B);
+  db.remember(A.c, A.name, "Omari secret line", {});
+  const r = await api("/memories", { token: b, headers: { "x-conversation-id": A.c, cookie: `reason_page=${"x".repeat(43)}` } });
+  assert.ok(!r.body.includes("Omari secret line"));
+});

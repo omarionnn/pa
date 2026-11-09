@@ -420,6 +420,8 @@ export const config = {
   callIdentity: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_CALL_IDENTITY ?? "").trim().toLowerCase()),
   // Who made Reason, as every Reason says it, in texts and on calls (src/maker.js): the company.
   makerName: String(process.env.REASON_MAKER ?? "").trim() || "Saafi Interactions Lab",
+  // The iPhone app's JSON API (src/ios/, docs/ios-api.md). off (default) | owner | on.
+  iosApi: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_IOS_API ?? "").trim().toLowerCase()),
   web: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_WEB ?? "").trim().toLowerCase()),
   // Pages Reason makes, v2 (handoff 2026-10-27 P1–P6, E2–E4, link previews; src/pages/made.js). HELD
   // for the owner: off, every page, event and album draws exactly as before. "1" turns it on.

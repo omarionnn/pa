@@ -73,7 +73,7 @@ export function codeLine(code) {
  * line to another), the one used most recently wins and the other is never mentioned (owner
  * decision 4). Null for everybody else, who then sees exactly what a real person sees.
  */
-export function accountForNumber(number) {
+export function accountForNumber(number, { allowed = webAllowedFor } = {}) {
   const raw = String(number ?? "").trim();
   let n = normalizeNumber(raw);
   if (n.length === 11 && !raw.startsWith("+")) n = `+1${n.slice(1)}`;
@@ -83,7 +83,7 @@ export function accountForNumber(number) {
     .sort((a, b) => (b.last_seen_at ?? 0) - (a.last_seen_at ?? 0));
   for (const acct of rows) {
     if (!accounts.admit({ channel: acct.channel, address: acct.address }).allow) continue;
-    if (!webAllowedFor(acct.conversation_id)) continue;
+    if (!allowed(acct.conversation_id)) continue;
     return acct;
   }
   return null;

@@ -1599,6 +1599,9 @@ addColumnIfMissing("accounts", "web_notice_seen_at", "INTEGER");
 addColumnIfMissing("accounts", "web_reach", "TEXT");
 addColumnIfMissing("accounts", "web_theme", "TEXT");
 addColumnIfMissing("page_sessions", "user_agent", "TEXT");
+// Which client a session was issued to: NULL for a browser, 'ios' for the app (src/ios/session.js).
+// The iPhone API only accepts sessions it issued, so a Web cookie is never a bearer token there.
+addColumnIfMissing("page_sessions", "client", "TEXT");
 // Reason Web v2 (Gap 8C): browser notifications, per browser. 1 = this browser asked for them (and its
 // own permission was granted when it did); 0, the default, = off. Only ever says "Reason needs your approval."
 addColumnIfMissing("page_sessions", "web_notify", "INTEGER NOT NULL DEFAULT 0");
@@ -2706,7 +2709,7 @@ export function remember(conversationId, about, fact, { source = "user_stated", 
     // only something they said themselves (`user_stated`, the remember tool) revives it. A row the
     // extractor itself retired as out of date ('superseded', see `retireForNewer`) is not theirs to
     // have taken back, and a state that really flips back has to be able to come back.
-    const stale = rows.find(r => r.status !== "active" && factKey(r.fact) === key);
+    const stale = rows.find(r => r.status !== "active" && (factKey(r.fact) === key || r.fact === forgottenMark(person.id, key)));
     if (stale && (stale.status === "deleted" || stale.status === "corrected") && source !== "user_stated") {
       return {
         about: person.name, fact: clean, already_knew: false, factId: null,
@@ -2715,6 +2718,9 @@ export function remember(conversationId, about, fact, { source = "user_stated", 
       };
     }
     const now = clock.now();
+    // Said again in their own words after a permanent forget (src/ios/memory.js): the row only holds
+    // a fingerprint, so it gets the words back along with the active status.
+    if (stale && isForgottenMark(stale.fact)) db.prepare("UPDATE person_facts SET fact = ? WHERE id = ?").run(clean, stale.id);
     if (stale) {
       db.prepare("UPDATE person_facts SET status = 'active', valid_from = ?, valid_to = NULL, superseded_by = NULL, confidence = ?, source = ?, source_message_ids = ?, category = ?, memory_group = ? WHERE id = ?")
         .run(now, confidence, source, JSON.stringify(sourceMessageIds), category, filed, stale.id);
@@ -6335,6 +6341,21 @@ export function pageSessionsFor(conversationId, { maxAgeMs = Infinity, idleMs = 
   const now = clock.now();
   return db.prepare("SELECT token, created_at, last_seen_at, user_agent FROM page_sessions WHERE conversation_id = ? ORDER BY last_seen_at DESC, created_at DESC")
     .all(conversationId).filter(r => now - r.created_at <= maxAgeMs && now - r.last_seen_at <= idleMs);
+}
+
+/** The stored key of a token, for telling "this device" in a list of stored keys. */
+export const pageSessionKey = (token) => (token ? sk(token) : null);
+/** Which client issued the session with this stored key, or null. */
+export function pageSessionClientByKey(key) {
+  return key ? db.prepare("SELECT client FROM page_sessions WHERE token = ?").get(String(key))?.client ?? null : null;
+}
+/** Mark which client a session was issued to. */
+export function setPageSessionClient(token, client) {
+  return !!token && db.prepare("UPDATE page_sessions SET client = ? WHERE token = ?").run(client, sk(token)).changes === 1;
+}
+/** Which client a session was issued to, or null. A read only: no ageing, no touch. */
+export function pageSessionClient(token) {
+  return token ? db.prepare("SELECT client FROM page_sessions WHERE token = ?").get(sk(token))?.client ?? null : null;
 }
 
 /** The browser a session was just used from. Written only when it changed, capped at 300 characters. */
@@ -13734,6 +13755,16 @@ export function ruleTakenBackFrom(conversationId, messageId) {
 }
 
 /**
+ * What a permanently forgotten fact's row holds instead of its words (src/ios/memory.js): a one-way
+ * fingerprint of subject and wording. It is how Reason can still refuse to re-learn a sentence from
+ * messages it re-reads, without keeping the sentence.
+ */
+export function forgottenMark(personId, key) {
+  return `forgotten:${createHash("sha256").update(`${personId}:${key}`).digest("hex")}`;
+}
+export const isForgottenMark = (fact) => /^forgotten:[0-9a-f]{64}$/.test(String(fact ?? ""));
+
+/**
  * Has the person taken back this wording about this subject (memory_drop, memory_fix)? A review must
  * never write a sentence they removed.
  */
@@ -13741,7 +13772,7 @@ export function factTakenBack(conversationId, personId, fact) {
   const key = factKey(fact);
   return db.prepare(`SELECT f.fact FROM person_facts f JOIN people p ON p.id = f.person_id
     WHERE p.conversation_id = ? AND f.person_id = ? AND f.status IN ('deleted', 'corrected')`).all(conversationId, personId)
-    .some(r => factKey(r.fact) === key);
+    .some(r => factKey(r.fact) === key || r.fact === forgottenMark(personId, key));
 }
 
 /**

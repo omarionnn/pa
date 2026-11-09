@@ -25,6 +25,7 @@
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
 //   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
 //   POST /access/web                  a number left on the website's form, signed by the form's server
+//   /ios/v1/…                         the iPhone app's JSON API (src/ios/, docs/ios-api.md); REASON_IOS_API, off by default
 //   GET  /web                         Reason Web (src/pages/websignin.js): sign in by number, or (signed in) the conversation
 //   POST /web/signin|code|signout     ask for the code, type it, sign this browser out — all 404 while REASON_WEB is off
 //   GET  /web/history|stream, POST /web/send   the conversation: older/newer lines, live events, a message (src/pages/webconvo.js)
@@ -267,6 +268,25 @@ export function createServer({ router, runtime, log = () => {} }) {
           readBody: () => readBody(req), runtime, router, log,
         });
         res.writeHead(out.status, out.headers);
+        return res.end(req.method === "HEAD" ? "" : out.body);
+      }
+
+      // ---------- the iPhone app's API (src/ios/, docs/ios-api.md) ----------
+      // Off (the default): these paths fall through to the same flat 404 as any path nobody was issued.
+      if (config.iosApi && /^\/ios\/v1(?:\/|$)/.test(url.pathname)) {
+        let out;
+        try {
+          const { iosApiRequest } = await import("./ios/api.js");
+          out = await iosApiRequest({ path: url.pathname.slice("/ios/v1".length) || "/", method: req.method, headers: req.headers, remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, log });
+        } catch (e) {
+          log({ http: "/ios/v1", threw: (e?.message ?? String(e)).split("\n")[0] });
+          return send(500, { ok: false, error: "server_error" });
+        }
+        res.writeHead(out.status, out.headers);
+        if (out.stream) {
+          if (req.method === "HEAD") return res.end();
+          try { return out.stream(res, req); } catch (e) { log({ http: "/ios/v1/live", threw: (e?.message ?? String(e)).split("\n")[0] }); return res.end(); }
+        }
         return res.end(req.method === "HEAD" ? "" : out.body);
       }
 
