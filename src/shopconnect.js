@@ -43,6 +43,7 @@ import * as accounts from "./accounts.js";
 import { config, clock } from "./config.js";
 import { isPrivateHost } from "./pictures.js";
 import * as passkey from "./passkey.js";
+import * as flightorders from "./flightorders.js";
 import * as spendcap from "./spendcap.js";
 import * as shipping from "./shipping.js";
 import { zoneFor } from "./zone.js";
@@ -1252,6 +1253,8 @@ export function breakdownOf(row) {
 }
 export function approvalView(token) {
   const a = passkey.approvalFor(token);
+  // A flight rides the same link and passkeys, but not the Crossmint gate below (src/flightorders.js).
+  if (a?.kind === "flight") return flightorders.approvalView(a);
   if (!a || !connectAllowedFor(a.conversation_id) || !passkey.passkeyAllowedFor(a.conversation_id)) return null;
   // A raise of the daily spending limit rides the same link (src/spendcap.js, kind 'cap'): the page
   // shows the new number and the old one instead of a store and an item, and a tap changes the limit.
@@ -1274,6 +1277,7 @@ export function approvalView(token) {
 export async function payByPasskey(token, response) {
   const v = approvalView(token);
   if (!v) return { ok: false, error: "not_found" };
+  if (v.kind === "flight") return await flightorders.approve(v, response);
   // A raise of the daily limit: Face ID verified against the change as it is, then the number changes.
   // Nothing is paid, nothing reaches a store. The one line is texted because no model turn runs here.
   if (v.kind === "cap") {
@@ -1364,6 +1368,7 @@ const RETRYABLE = new Set(["order_intent_failed", "no_card", "needs_cvc"]);
 export async function declineByLink(token) {
   const v = approvalView(token);
   if (!v || v.state !== "open") return { ok: false, error: "not_open" };
+  if (v.kind === "flight") return await flightorders.decline(v);
   passkey.closeApproval(v.a, "declined");
   if (v.kind === "cap") {
     const out = spendcap.declineChange(v.row.conversation_id, v.row.id);

@@ -203,6 +203,8 @@ export async function register(conversationId, response) {
  */
 export function bindingChallenge(row, nonce) {
   // A raise of the daily limit signs the change itself: which one, whose, from what to what.
+  // A flight signs the fare, the people and every line of the price (src/flightorders.js).
+  if (kindOf(row) === "flight") return sha(JSON.stringify(["reason-flight-v1", row.id, row.conversation_id, row.amount, row.currency, row.item, row.binding, nonce])).toString("base64url");
   const fields = kindOf(row) === "cap"
     ? ["reason-cap-v1", row.id, row.conversation_id, row.from_cents, row.to_cents, row.amount, nonce]
     : ["reason-pay-v1", row.id, row.conversation_id, row.run_id, row.request_id, row.amount_kind, row.amount, row.currency,

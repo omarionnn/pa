@@ -68,6 +68,8 @@ import { ALBUM_TOOL_DEFS, ALBUM_SCHEMAS, albumToolVisible, runAlbumTool } from "
 import { DIRECTIONS_TOOL_DEFS, DIRECTIONS_SCHEMAS, directionsToolVisible, runDirectionsTool } from "./directionstools.js";
 import { CHOICE_TOOL_DEFS, CHOICE_SCHEMAS, choiceToolVisible, runChoiceTool } from "./choicecards.js";
 import { requiredFor as requiresPasskey } from "./passkey.js";
+import { FLIGHT_ORDER_TOOL_DEFS, FLIGHT_ORDER_SCHEMAS, FLIGHT_ORDER_TOOLS, FLIGHT_TRAVELER_TOOLS, FLIGHT_SEARCH_BOOKABLE, flightOrderToolVisible, flightOrderTarget, runFlightOrderTool } from "./flighttools.js";
+import * as flightorders from "./flightorders.js";
 import { SHOP_TOOL_DEFS, SHOP_SCHEMAS, SHOP_TOOLS, shopToolVisible, shopPayTarget, runShopTool, AGENTCARD_BUY_TOOLS, agentcardToolVisible, AGENTCARD_REFUSAL, crossmintWords } from "./shoptools.js";
 import * as shopConnect from "./shopconnect.js";
 import { TODO_TOOL_DEFS, TODO_SCHEMAS, TODO_TOOLS, todoToolVisible, runTodoTool, grantCovering as todoGrantCovering, approvalTarget as todoApprovalTarget, nudge as todoNudge, nudgeAfter as todoNudgeAfter, askCovered as todoAskCovered } from "./todo.js";
@@ -149,6 +151,8 @@ const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_connect", "ac
   // A flight search reads Google Flights through the Fli sidecar; "what did you look up" answers
   // from these rows like any other search.
   "flight_search", "flight_dates", "flight_verify",
+  // Bookings and their fares reach the airline through Duffel; every call is on the ledger.
+  ...FLIGHT_ORDER_TOOLS,
   // A tapback is a thing that visibly appears on somebody's phone, on a message of theirs, and it
   // is the one reply that leaves no bubble behind — so without a row, "you never answered me" has
   // no answer but the model's memory. It is also the acknowledgment that is easiest to claim
@@ -302,6 +306,8 @@ const OUTSIDE_WORLD = new Set(["flight_book", "shop_pay", "account_connect", "ac
 export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "purchase_confirm", "github_pr_merge", "uber_request",
   // A Crossmint checkout's payment (src/shoptools.js): the yes is pinned to Crossmint's own amount.
   "shop_pay",
+  // Cancelling a ticket, or accepting an airline's new time, is pinned to the figure or change shown.
+  "flight_cancel_confirm", "flight_airline_change_accept",
   // The one yes to a whole to-do list's plan (src/todo.js), pinned to the plan's fingerprint.
   "todo_approve",
   // Every X write is a draft: the person sees exactly what goes out before it does. A bad tweet is
@@ -379,10 +385,12 @@ export function toolsFor(conversationId) {
   // Crossmint on: it is the only way to buy here, so AgentCard's buying tools and flight_book go (src/shoptools.js).
   const crossmint = shopConnect.connectAllowedFor(conversationId);
   const bookingOk = flightbook.bookingEnabled(conversationId) && !crossmint;
+  const duffelOk = flightorders.enabled(conversationId);
   return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
     && (invitesOk || !INVITE_TOOLS.has(t.name))
     && (isMaster || !INVITE_MASTER_TOOLS.has(t.name))
-    && (bookingOk || !FLIGHT_BOOKING_TOOLS.has(t.name))
+    && (bookingOk || !FLIGHT_BOOKING_TOOLS.has(t.name) || (duffelOk && FLIGHT_TRAVELER_TOOLS.has(t.name)))
+    && flightOrderToolVisible(t.name, conversationId)
     && eventToolVisible(t.name, conversationId)
     && albumToolVisible(t.name, conversationId)
     && directionsToolVisible(t.name, conversationId)
@@ -392,6 +400,7 @@ export function toolsFor(conversationId) {
     && todoToolVisible(t.name, conversationId)
     && planToolVisible(t.name, conversationId))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t))
+    .map(t => (duffelOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOOKABLE) } : t))
     .map(t => (crossmint ? { ...t, description: crossmintWords(t.description) } : t));
 }
 
@@ -4423,6 +4432,7 @@ export const tools = [
   ...DIRECTIONS_TOOL_DEFS,
   ...CHOICE_TOOL_DEFS,
   ...SHOP_TOOL_DEFS,
+  ...FLIGHT_ORDER_TOOL_DEFS,
   ...TODO_TOOL_DEFS,
   {
     name: "capabilities",
@@ -6955,6 +6965,7 @@ const S = {
   ...DIRECTIONS_SCHEMAS,
   ...CHOICE_SCHEMAS,
   ...SHOP_SCHEMAS,
+  ...FLIGHT_ORDER_SCHEMAS,
   ...TODO_SCHEMAS,
   invites_list: z.object({}),
   invite_link_create: z.object({}),
@@ -9084,6 +9095,7 @@ function confirmTargetFor(name, input, c = null) {
      */
     // A Crossmint payment, pinned to the row: Crossmint's amount, the merchant, the run and request.
     case "shop_pay": return shopPayTarget(input, c);
+    case "flight_cancel_confirm": case "flight_airline_change_accept": return flightOrderTarget(name, input, c);
     case "purchase_confirm": {
       const row = db.getAgentcardPurchase(input.conversation_id);
       // Someone else's cart reads as unknown, the same as shop_pay: its merchant, items and amount
@@ -9388,7 +9400,7 @@ async function runToolInner(name, rawInput, ctx) {
       return refusal;
     }
   }
-  if (FLIGHT_BOOKING_TOOLS.has(name) && !flightbook.bookingEnabled(c)) {
+  if (FLIGHT_BOOKING_TOOLS.has(name) && !flightbook.bookingEnabled(c) && !(FLIGHT_TRAVELER_TOOLS.has(name) && flightorders.enabled(c))) {
     return { ok: false, blocked: "not_available", error: "Reason doesn't book flights here. Hand over the Google Flights link from the search so they can book it themselves, and do not mention booking." };
   }
   // A flight's confirm is refused BEFORE the gate when there is nothing a yes could be about — a total
@@ -11915,6 +11927,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // ---------- choice cards (src/choicecards.js) ----------
     case "show_choices":
       return await runChoiceTool(name, input, { ...ctx, conversationId: c });
+
+    // ---------- flights booked through Duffel (src/flighttools.js) ----------
+    case "flight_fares": case "flight_quote": case "flight_booking_status": case "flight_cancel_quote": case "flight_cancel_confirm": case "flight_change_options": case "flight_change_quote": case "flight_airline_change_accept":
+      return await runFlightOrderTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- Crossmint checkouts (src/shoptools.js) ----------
     case "store_checkout": case "shop_pay": case "shop_decline": case "shop_card": case "shop_status": case "shop_answer": case "spend_limit_set": case "spend_limit_confirm": {

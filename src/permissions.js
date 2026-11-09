@@ -72,7 +72,7 @@ export const GATED_ACTIONS = new Set([
   // pre-authorize it. The reasoning is on NEVER_STANDING.
   "purchase_confirm",
   // A Crossmint checkout's payment (src/shoptools.js); never standing, see WHY_NEVER_STANDING.
-  "shop_pay",
+  "shop_pay", "flight_cancel_confirm", "flight_airline_change_accept",
   // Merging somebody else's (or their own) pull request. Irreversible: the commit is on the default
   // branch, CI runs, and undoing it means a revert PR. On the same footing as flight_checkin_commit:
   // in GATED_ACTIONS because the gate stops it, and in NEVER_STANDING because no sentence should
@@ -150,7 +150,7 @@ export const CATEGORIES = {
  * The thing somebody actually wants when they say that sentence is not fewer questions, it is less
  * waiting — and that is what the offer arriving by itself the moment check-in opens already does.
  */
-export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm", "uber_request", "shop_pay", "todo_approve"]);
+export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm", "uber_request", "shop_pay", "flight_cancel_confirm", "flight_airline_change_accept", "todo_approve"]);
 
 /**
  * Why each one cannot be granted, in the words to say it in.

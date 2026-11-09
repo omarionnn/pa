@@ -70,6 +70,8 @@ export function breakdownRows(v) {
   if (v.kind === "cap") return "";
   const parts = Array.isArray(v.breakdown) ? v.breakdown : [];
   const row = (l, n, cls = "") => `<tr${cls ? ` class="${cls}"` : ""}><th scope="row">${esc(l)}</th><td>${esc(n)}</td></tr>`;
+  // A flight's lines are complete as they are: no shipping or tax rows to fill in.
+  if (v.kind === "flight") return `<table class="pk-bd" aria-label="What the total covers">${parts.map(([l, n]) => row(l, n)).join("")}${row("Total", v.amount, "pk-sum")}</table>`;
   if (!parts.length) {
     return `<table class="pk-bd" aria-label="What the total covers">${row("Item, shipping and tax", "all in the total")}${row("Total", v.amount, "pk-sum")}</table>`
       + `<p class="pk-bd-note">${esc(v.store)} gave one number, with shipping and tax in it.</p>`;
@@ -137,9 +139,49 @@ function renderApproveCap({ v, staging = false, boot = null, blocked = "" }) {
   return page("Reason — approve", shell(ask + paying + paid + declined + failed), { staging, boot });
 }
 
+/**
+ * A flight, or a change to one (src/flightorders.js, kind 'flight'): the itinerary, every line of the
+ * price, and Face ID. The page never says booked. An approval only starts it; the text says how it went.
+ */
+function renderApproveFlight({ v, staging = false, boot = null, blocked = "" }) {
+  const left = Math.max(0, v.expiresAt - Date.now());
+  const change = v.flightKind === "change";
+  const what = paper({ label: v.store.toUpperCase(), big: v.amount, extra: `<p class="pk-item">${esc(v.item)}</p>` + breakdownRows(v) });
+  const margin = label("FACE ID APPROVES") + para(change ? "This one change to your flight, at this price." : "These flights, for these people, at this exact total.")
+    + label("THE LINK", { sp: true }) + para("Works once, and runs out with the fare.")
+    + label("I NEVER SEE", { pen: true, sp: true }) + para("Your face or fingerprint. It stays on your phone.");
+  if (blocked) {
+    const cooling = blocked === "cooling_off";
+    const main = headline(cooling ? "Your new Face ID isn't ready yet." : "Face ID isn't set up here.", "Nothing was charged.", "pk-h")
+      + lede(cooling ? "A Face ID added after the first one waits a day before it can pay. Use the phone you set it up on, or decline." : "Set up Face ID in Settings, then ask me again.")
+      + what + `<div class="pk-note">${actions(NO("Decline it"), go("Settings", { href: "/web/settings#shopping" }))}</div>`;
+    return page("Reason — approve", shell(frame({ main, margin })), { staging, boot });
+  }
+  const ask = frame({
+    step: "ask",
+    main: headline(change ? "Change this flight?" : `Book this flight for ${v.amount}?`, "Approve it with Face ID.", "pk-h")
+      + lede(change ? "The airline's own figure for this change." : "The exact total, every line of it. Nothing is held or charged until you approve.")
+      + what
+      + `<div class="pk-note pk-go">${actions(`<button class="act pf-go" type="button" id="pk-go" data-busy="1">${FACE}Approve with Face ID <span aria-hidden="true">→</span></button>`, NO("Decline"))}</div>`
+      + label(`RUNS OUT IN ${minutes(left)} MIN · NOTHING CHARGED YET`)
+      + `<p class="pf-note" id="pk-err" role="alert" hidden></p>`,
+    margin,
+  });
+  const paying = frame({ step: "paying", off: true, main: headline("Approved.", "One moment.") + lede("Handing it to the airline now."), margin: label("ONLY") + para(esc(v.amount)) });
+  const paid = frame({
+    step: "paid", off: true,
+    main: headline("Approved.", "Working on it with the airline.") + lede("It isn't confirmed yet. I'll text you the moment the airline answers, whichever way it goes.")
+      + `<div class="pk-note">${actions(go("Back to Reason", { href: BACK }))}</div>`,
+    margin: label("APPROVED WITH") + para("Face ID, on this device.") + label("THIS LINK", { sp: true }) + para("Is used up. It can't pay again."),
+  });
+  const declined = frame({ step: "declined", off: true, main: headline("Declined.", "Nothing was charged.") + lede("Text me if you want something else.") + `<div class="pk-note">${actions(go("Back to Reason", { href: BACK }))}</div>`, margin: label("THIS LINK") + para("Is closed. It can't pay.") });
+  return page("Reason — approve", shell(ask + paying + paid + declined), { staging, boot });
+}
+
 /** The open payment and every screen its script moves to. `blocked` is cooling_off / no_passkey. */
 export function renderApprove({ v, staging = false, boot = null, blocked = "" }) {
   if (v.kind === "cap") return renderApproveCap({ v, staging, boot, blocked });
+  if (v.kind === "flight") return renderApproveFlight({ v, staging, boot, blocked });
   const left = Math.max(0, v.expiresAt - Date.now());
   if (blocked) {
     const cooling = blocked === "cooling_off";
