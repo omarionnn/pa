@@ -1,7 +1,7 @@
 # Flights booked end to end (Duffel + Stripe), behind REASON_FLIGHT_DUFFEL
 
 Off by default. `owner` or `on`, plus DUFFEL_ACCESS_TOKEN (a `duffel_test_` key, or a live one with
-REASON_FLIGHT_DUFFEL_LIVE=1), DUFFEL_WEBHOOK_SECRET, STRIPE_SECRET_KEY, and Face ID allowed for them
+REASON_FLIGHT_DUFFEL_LIVE=1, not to be set until a lawyer has answered the seller-of-travel question), DUFFEL_WEBHOOK_SECRET, STRIPE_SECRET_KEY, and Face ID allowed for them
 (REASON_PASSKEY_PAY). Reason's fee: REASON_FLIGHT_FEE_CENTS.
 
 Code: `src/duffel.js` (API, what an answer proves), `src/flightorders.js` (state, money, sweep,

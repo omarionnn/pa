@@ -190,6 +190,37 @@ test("off by default: no tools, the webhook is a 404, and a live token cannot wr
   assert.equal(toolsFor(C).some(t => t.name === "flight_book"), false, "the old path stays hidden");
 });
 
+test("legal gate: real bookings and real cards need the separate live setting, which is off by default", async () => {
+  assert.equal(process.env.REASON_FLIGHT_DUFFEL_LIVE, undefined);
+  const live = { DUFFEL_ACCESS_TOKEN: "duffel_live_real", STRIPE_SECRET_KEY: "sk_live_real" };
+  const saved = { DUFFEL_ACCESS_TOKEN: process.env.DUFFEL_ACCESS_TOKEN, STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY };
+  const mustNot = async () => { throw new Error("must not be called"); };
+  try {
+    for (const flag of ["owner", "on"]) {
+      process.env.REASON_FLIGHT_DUFFEL = flag;
+      Object.assign(process.env, live);
+      assert.equal(duffel.canBook(), false, `${flag}: a live token cannot write`);
+      assert.equal((await duffel.createOrder({}, { fetchImpl: mustNot })).error, "writes_not_allowed");
+      assert.equal(orders.enabled(C), false, `${flag}: live keys alone do not turn it on`);
+      process.env.DUFFEL_ACCESS_TOKEN = saved.DUFFEL_ACCESS_TOKEN;
+      assert.equal(orders.enabled(C), false, `${flag}: a sandbox flight cannot take a real card`);
+    }
+    process.env.REASON_FLIGHT_DUFFEL = "owner";
+    process.env.STRIPE_SECRET_KEY = saved.STRIPE_SECRET_KEY;
+    const out = await quoted();
+    process.env.STRIPE_SECRET_KEY = live.STRIPE_SECRET_KEY;
+    assert.equal(orders.start(out.booking_id).ok, true);
+    await orders.idle();
+    assert.equal(holds().length, 0, "even an approved row can't hold a real card");
+    assert.equal(orderPosts().length, 0);
+    Object.assign(process.env, live, { REASON_FLIGHT_DUFFEL_LIVE: "1" });
+    assert.equal(orders.enabled(C), true, "only the explicit setting opens it");
+  } finally {
+    delete process.env.REASON_FLIGHT_DUFFEL_LIVE;
+    Object.assign(process.env, saved, { REASON_FLIGHT_DUFFEL: "owner" });
+  }
+});
+
 test("what a Duffel answer proves: only a 4xx or a 503 is a definite no", () => {
   const o = (status, json = null, error) => duffel.outcomeOf({ status, json, error }).outcome;
   assert.equal(o(201, { data: { id: "ord_1" } }), "done");
@@ -280,6 +311,22 @@ test("a $312 fare: $6.12 service, the card line grossed up over it, and the line
   assert.equal(captures().length, 1);
   assert.equal(captures()[0].body?.amount_to_capture, undefined);
   assert.equal(trust.spendToday(C).spent_cents, 33308);
+});
+
+test("grandfathered people pay no Reason fee, and still see the booking service and card lines", async () => {
+  q("INSERT INTO plan (conversation_id, status, first_seen_at, updated_at) VALUES (?, 'free', 0, 0)").run(C);
+  const out = await quoted();
+  assert.deepEqual(out.lines.map(l => [l.label, l.amount]), [["Airline fare and taxes", "$200.00"], ["Booking service fee", "$5.00"], ["Card processing fee", "$6.44"]]);
+  assert.equal(out.total, "$211.44");
+  assert.equal(sumLines(out.lines), 21144);
+  await approveVia(out.url); await orders.idle();
+  assert.equal(holds()[0].body.amount, "21144");
+  // The rule itself, for someone who came in by invite while the paywall is on for everybody.
+  db.upsertAccount({ conversationId: "dm:invited", channel: "fake", address: "+15550001111", name: "Ama", isOperator: false });
+  db.db.prepare("UPDATE accounts SET joined_via_event = 1 WHERE conversation_id = 'dm:invited'").run();
+  process.env.REASON_PAYWALL = "on";
+  try { assert.equal(plan.grandfathered("dm:invited"), true); assert.equal(orders.feeFor("dm:invited"), 0); }
+  finally { process.env.REASON_PAYWALL = "owner"; }
 });
 
 test("an unlimited member pays no Reason fee", async () => {

@@ -33,12 +33,19 @@ export const mode = () => {
   const v = String(process.env.REASON_FLIGHT_DUFFEL ?? "").trim().toLowerCase();
   return v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v) ? "on" : "off";
 };
+/**
+ * LEGAL GATE. Reason being merchant of record is approved for testing only: no real ticket is sold until
+ * a lawyer has answered the seller-of-travel question. Real money needs REASON_FLIGHT_DUFFEL_LIVE, off
+ * by default and separate from REASON_FLIGHT_DUFFEL. Without it a live Duffel token cannot write
+ * (src/duffel.js) and a live Stripe key cannot hold a card for a sandbox ticket.
+ */
+export const cardKeyAllowed = () => { const k = stripeapi.env().secretKey; return !!k && (/^(sk|rk)_test_/.test(k) || duffel.env().liveAllowed); };
 /** On only when every part a yes depends on is here: the flag, Duffel, Stripe, and Face ID. */
 export function enabled(conversationId) {
   const m = mode();
   if (m === "off" || !conversationId) return false;
   if (m === "owner" && !accounts.ownerOf(conversationId).isOperator) return false;
-  return duffel.canBook() && !!stripeapi.env().secretKey && passkey.passkeyAllowedFor(conversationId);
+  return duffel.canBook() && cardKeyAllowed() && passkey.passkeyAllowedFor(conversationId);
 }
 
 /** Reason's flat fee per booking, in cents. Placeholder until the owner sets it. */
@@ -46,10 +53,10 @@ export const reasonFeeCents = () => {
   const n = Number(process.env.REASON_FLIGHT_FEE_CENTS ?? 500);
   return Number.isInteger(n) && n >= 0 ? n : 500;
 };
-/** An unlimited member (a live paid plan) pays no Reason fee. Trial and grandfathered people do. */
+/** Unlimited members (a live paid plan) and grandfathered people pay no Reason fee. */
 export const feeFor = (conversationId) => {
   const s = plan.status(conversationId).status;
-  return s === "paid" || s === "cancelled" ? 0 : reasonFeeCents();
+  return s === "paid" || s === "cancelled" || s === "free" || plan.grandfathered(conversationId) ? 0 : reasonFeeCents();
 };
 /** Duffel's published price per order, passed through: $3.00 plus 1% of the order (managed content). */
 export const serviceFeeCents = (airlineCents) => {
@@ -273,6 +280,7 @@ async function cardFor(c) {
 }
 /** A hold for exactly this booking, off-session. The idempotency key makes a repeat the same hold. */
 async function hold({ key, cents, customer, method, description, booking }) {
+  if (!cardKeyAllowed()) return { state: "refused", code: "live_card_not_allowed" };
   let r = null;
   for (let i = 0; i < 2; i++) {
     r = await stripeapi.api("POST", "/v1/payment_intents", {
