@@ -986,6 +986,35 @@ The one failure where doing nothing is right and trying again is the mistake.
   permission cannot, because they have not been told. The check runs **before** the confirm gate, so
   the first thing they hear is that nobody knows, rather than the gate's "that yes was already used,
   ask again" sending the model off to collect a fresh one in silence.
+- **Reason looks in the mail itself; it never says "check your email"** (owner 2026-11-08, after an
+  Amazon checkout ended past the payment and the text said "check your email for Amazon's
+  confirmation" with his Gmail connected). A checkout that ends after the payment searches their
+  mail for the store's mail since the payment at that moment, and the text says what it found:
+  nothing yet and it is watching, or the mail it found and that it is reading it (that wake may not go
+  silent). Every unknown-outcome tool result tells the model to `gmail_search` / `gmail_read` first
+  and report. Only with no mail connected does it say it can't see it, and then it offers the connect
+  link. The system prompt carries the standing rule (never tell them to check something Reason has a
+  tool for), and `test/no-check-your-email.test.js` fails on any source line that hands them their
+  inbox.
+  Review 11-08: mail the background watch already found counts too, so the end text names it ("Ulta
+  has already written since the payment (…), and I read it when it came in") instead of "nothing yet";
+  a watch that already stopped still gets one look at the end, and the text then promises no further
+  watching ("ask me and I'll try again" when the mail can't be read). The end look and a watch tick
+  re-read the row before recording a message, so only one of them wakes the model for it.
+  Second review pass: a payment whose outcome is unknown (the pay call failed after the card was offered)
+  starts the mail watch at the end of the run and is looked at then, instead of "I couldn't get into your
+  email" with no look; a Gmail error is reported as not having looked, never as "nothing there"; the end
+  wake after a stopped watch tells the model not to promise more watching; and past the 24-hour window
+  the end look replaces the separate "24 hours" notice. `test/checkout-mail-read.test.js` drives the real
+  Gmail reader against a fake Gmail, including two looks in flight at once.
+  Third pass: the end text goes out before the model is woken to read the mail it names (the wake is a
+  whole model turn, so the order number used to land before "reading it now"); mail the watch read earlier
+  is named even when the end look doesn't bring it back; a listed message that can't be read, or a token
+  that won't renew, is a failed look rather than "nothing there" or "not connected"; and "connect it" no
+  longer promises a look nothing runs ("once it's connected, ask me and I'll look").
+  Fourth pass: the 24-hour notice says "watching your email the whole time" only if a look ever worked
+  (otherwise "I couldn't get into your email in the 24 hours"); the mail wake still runs if the end text
+  fails to send; and "if a charge turns up… tell me and I'll take it up", since nothing watches their card.
 - **Checking does not clear the block.** Only an attempt that got a real answer does, so a refusal
   between the check and the press cannot quietly lift something nobody resolved.
 - **The money is counted anyway**, with `(OUTCOME UNKNOWN)` on the spend line. Over-counting a charge

@@ -57,6 +57,7 @@ async function fakeFetch(url, init = {}) {
   }
   const m = /^\/api\/unstable\/agent-checkouts\/([^/]+)(\/messages|\/cancel)?$/.exec(p);
   if (m && m[2] === "/cancel") return runs[m[1]] ? reply(202, { ok: true }) : reply(409, { message: "over" });
+  if (m && m[2] === "/messages" && runs[m[1]]?.__payFail) return reply(500, { message: "upstream" });
   if (m && m[2]) return reply(202, { ok: true });
   if (m) return runs[m[1]]?.__status ? reply(runs[m[1]].__status, { message: "unavailable" }) : runs[m[1]] ? reply(200, { runId: m[1], ...runs[m[1]] }) : reply(404, { error: true, message: `Checkout '${m[1]}' not found` });
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}`, status: "active" });
@@ -100,12 +101,12 @@ const woke = [];
 const q = (sql) => db.db.prepare(sql);
 before(() => {
   shop._setFetch(fakeFetch);
-  shop.attach({ say: (c, t) => said.push({ c, t }), wake: (c, t, { key }) => woke.push({ c, t, key }), base: "https://heyreason.test/web/connect" });
+  shop.attach({ say: (c, t) => said.push({ c, t }), wake: (c, t, { key }) => woke.push({ c, t, key, saidBefore: said.length }), base: "https://heyreason.test/web/connect" });
 });
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   calls = []; runs = {}; nextRun = 1; said.length = 0; woke.length = 0; clock.reset(); shop._setMail(null);
-  for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments", "shop_sites", "shop_run_asks", "shop_shipping"]) db.db.exec(`DELETE FROM ${t}`);
+  for (const t of ["shop_profiles", "shop_stores", "shop_runs", "shop_links", "shop_cards", "shop_payments", "shop_sites", "shop_run_asks", "shop_shipping", "spend"]) db.db.exec(`DELETE FROM ${t}`);
 });
 const start = (conv = OMARI, { item = "CeraVe Foaming Facial Cleanser 16 oz" } = {}) => shop.startCheckout({ conversationId: conv, store: "ulta", startUrl: ULTA, what: "One CeraVe Foaming Facial Cleanser, 16 oz, shipped to home.", item, maxUsd: 35 });
 const row = (runId) => q("SELECT * FROM shop_runs WHERE run_id = ?").get(runId);
@@ -267,7 +268,201 @@ test("other ends are texted too: blocked, cancelled, and an end after a payment 
   assert.equal(row(c.runId).stage, "paid");
   runs[c.runId] = { status: "failed", result: { code: "merchant.error", summary: "Ulta's page errored after payment." }, revision: 9 };
   await shop.step(c.runId);
-  assert.match(said.at(-1).t, /^Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz ended after the payment was approved \(Ulta's page errored after payment\.\)\. I can't tell from here whether the order went through/);
+  // No mail connected here: it says it can't see their email and offers the link, never "check your email".
+  assert.equal(said.at(-1).t, "Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz ended after the payment was approved (Ulta's page errored after payment.), so the checkout can't tell me whether Ulta has the order. I can't see your email yet, so I can't look for Ulta's confirmation myself. Want the link to connect it? Once it's connected, ask me and I'll look. If a charge turns up with no order, tell me and I'll take it up with Ulta.");
+  assert.doesNotMatch(said.at(-1).t, /check your (e-?mail|inbox|mail)/i);
+});
+
+// Owner 2026-11-08 (live, Amazon CeraVe): "I can't tell from here whether the order went through: check your
+// email for Amazon's confirmation" — with Gmail connected. Reason looks in the mail itself and says what it saw.
+test("pinned 11-08: a checkout that ends after the payment looks in their mail FIRST and says what it found", async () => {
+  q("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
+  const endAfterPay = async (mail) => {
+    shop._setMail(mail);
+    const r = await start();
+    runs[r.runId].requiredAction = PAY(`req_pay_${r.runId}`);
+    await shop.step(r.runId);
+    const pay = q("SELECT * FROM shop_payments WHERE run_id = ?").get(r.runId);
+    assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: pay.id, confirmationId: 7 })).ok, true);
+    runs[r.runId] = { status: "failed", result: { code: "input_expired", summary: "failed" }, revision: 9 };
+    await new Promise((res) => setTimeout(res, 5)); // the paid-time mail watch tick runs first, as live
+    const n = said.length;
+    await shop.step(r.runId);
+    assert.equal(said.length, n + 1, "one line, never two");
+    return { runId: r.runId, text: said.at(-1).t };
+  };
+  // 1. Connected, nothing from the store yet: it looked, says so, and is watching.
+  let asked = 0;
+  const empty = await endAfterPay(async (c, { host }) => { asked++; assert.equal(host, "ulta.com"); return { ok: true, connected: true, hits: [] }; });
+  assert.ok(asked >= 2, "the mail was searched at the end, not only when the payment went out");
+  assert.equal(empty.text, "Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz ended after the payment was approved (failed), so the checkout can't tell me whether Ulta has the order. I looked in your email: nothing from Ulta since the payment yet. I'm watching it and will text you the order number the moment the confirmation lands, or tell you if a day goes by with nothing. If a charge turns up with no order, tell me and I'll take it up with Ulta.");
+  // 2. Connected, mail from the store since the payment: named, and the model is woken to read it — and
+  // that wake may not go silent, because they were just told "reading it now".
+  woke.length = 0;
+  let hitAt = 0;
+  const hit = await endAfterPay(async () => (++hitAt < 2 ? { ok: true, connected: true, hits: [] } : { ok: true, connected: true, hits: [{ account: "omari@gmail.com", thread_id: "t_a", message_id: `m_end`, subject: "Your Ulta order is confirmed", from: "Ulta <orders@ulta.com>", date: "Sun, 8 Nov 2026 16:18:00 -0500" }] }));
+  assert.equal(hit.text, "Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz ended after the payment was approved (failed), so the checkout can't tell me whether Ulta has the order. I looked in your email: there's mail from Ulta since the payment (\"Your Ulta order is confirmed\"). Reading it now; I'll tell you what it says.");
+  assert.equal(woke.length, 1);
+  assert.match(woke[0].t, /Read it with gmail_read/);
+  assert.match(said[woke[0].saidBefore - 1]?.t ?? "", /Reading it now/, "the end text is out before the model is woken to read the mail");
+  assert.doesNotMatch(woke[0].t, /NO_REPLY/);
+  assert.match(woke[0].t, /Never tell them to check their email/);
+  // 3. Google connected without mail access: it can't see the mail, says so, and offers the link.
+  const none = await endAfterPay(async () => ({ ok: true, connected: false, hits: [] }));
+  assert.match(none.text, /I can't see your email yet, so I can't look for Ulta's confirmation myself\. Want the link to connect it\?/);
+  for (const t of [empty.text, hit.text, none.text]) assert.doesNotMatch(t, /check (your|their) (e-?mail|inbox|mail)|(?<!looked )in your (e-?mail|inbox)/i, t);
+});
+
+// Review 11-08 (merge gate on #412): the end-of-run look counted only mail the watch had not seen yet, so
+// with the confirmation already found it said "nothing from Ulta since the payment yet"; and with the
+// watch already stopped it still promised "I'll keep looking". Both pinned here.
+test("pinned 11-08 review: the end text says what the watch already found, and never promises a watch that stopped", async () => {
+  q("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
+  const HEAD = "Ulta's checkout for CeraVe Foaming Facial Cleanser 16 oz ended after the payment was approved (failed), so the checkout can't tell me whether Ulta has the order.";
+  const CHARGE = "If a charge turns up with no order, tell me and I'll take it up with Ulta.";
+  const CONF = { account: "omari@gmail.com", thread_id: "t_c", message_id: "m_conf", subject: "Your Ulta order ULTA-77 is confirmed", from: "Ulta <orders@ulta.com>", date: "Sun, 8 Nov 2026 16:10:00 -0500" };
+  const endAfterPay = async (mail, { stop = false } = {}) => {
+    shop._setMail(mail);
+    const r = await start();
+    runs[r.runId].requiredAction = PAY(`req_pay_${r.runId}`);
+    await shop.step(r.runId);
+    const pay = q("SELECT * FROM shop_payments WHERE run_id = ?").get(r.runId);
+    assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: pay.id, confirmationId: 7 })).ok, true);
+    await new Promise((res) => setTimeout(res, 5)); // the paid-time watch tick runs first, as live
+    // The watch ended before the run did (wake cap reached): nothing is watching any more.
+    if (stop) q("UPDATE shop_runs SET told = told || ',mail' WHERE run_id = ?").run(r.runId);
+    runs[r.runId] = { status: "failed", result: { code: "input_expired", summary: "failed" }, revision: 9 };
+    const n = said.length;
+    const w = woke.length;
+    await shop.step(r.runId);
+    assert.equal(said.length, n + 1, "one line, never two");
+    return { text: said.at(-1).t, woke: woke.length - w };
+  };
+  // 1. The watch already found the confirmation (and woke the model for it): the end says so, wakes nobody again.
+  woke.length = 0;
+  const found = await endAfterPay(async () => ({ ok: true, connected: true, hits: [CONF] }));
+  assert.equal(woke.length, 1, "the watch's own wake, once");
+  assert.equal(found.woke, 0, "the end does not wake the model a second time for the same mail");
+  assert.equal(found.text, `${HEAD} I looked in your email: Ulta has already written since the payment ("Your Ulta order ULTA-77 is confirmed"), and I read it when it came in. I'm still watching for anything more from Ulta and will text you the order number if a confirmation lands. ${CHARGE}`);
+  // 2. Same, but the watch had already stopped: what was found, and no promise to keep watching.
+  const foundStopped = await endAfterPay(async () => ({ ok: true, connected: true, hits: [CONF] }), { stop: true });
+  assert.equal(foundStopped.text, `${HEAD} I looked in your email: Ulta has already written since the payment ("Your Ulta order ULTA-77 is confirmed"), and I read it when it came in. ${CHARGE}`);
+  // 3. Watch stopped, nothing there: it still looks once and says so, with no promise.
+  let looks = 0;
+  const emptyStopped = await endAfterPay(async () => { looks++; return { ok: true, connected: true, hits: [] }; }, { stop: true });
+  assert.equal(looks, 2, "the paid-time tick, then one look at the end even though the watch had stopped");
+  assert.equal(emptyStopped.text, `${HEAD} I looked in your email: nothing from Ulta since the payment. ${CHARGE}`);
+  // 4. Watch stopped and the mail can't be read right now (Google is connected): no "I'll keep looking".
+  const keyWas = process.env.REASON_TOKEN_KEY;
+  process.env.REASON_TOKEN_KEY = "11".repeat(32);
+  db.saveOauthTokens(OMARI, "google", { accessToken: "at_1", scope: "gmail.readonly", accountLabel: "omari@gmail.com" });
+  let tries = 0;
+  const brokeStopped = await endAfterPay(async () => { if (++tries > 1) throw new Error("gmail 500"); return { ok: true, connected: true, hits: [] }; }, { stop: true });
+  assert.equal(brokeStopped.text, `${HEAD} I couldn't get into your email just now; ask me and I'll try again. ${CHARGE}`);
+  // 5. Watch running and the mail can't be read right now: the promise is real, the watch keeps going.
+  tries = 0;
+  const broke = await endAfterPay(async () => { if (++tries > 1) throw new Error("gmail 500"); return { ok: true, connected: true, hits: [] }; });
+  assert.equal(broke.text, `${HEAD} I couldn't get into your email just now; I'll keep looking for Ulta's confirmation and text you what it says. ${CHARGE}`);
+  for (const t of [found.text, foundStopped.text, emptyStopped.text, brokeStopped.text]) assert.doesNotMatch(t, /nothing from Ulta since the payment yet|I'll keep looking/, t);
+  for (const t of [foundStopped.text, emptyStopped.text, brokeStopped.text]) assert.doesNotMatch(t, /watching|keep looking/i, t);
+  q("DELETE FROM oauth_tokens WHERE conversation_id = ?").run(OMARI);
+  if (keyWas === undefined) delete process.env.REASON_TOKEN_KEY; else process.env.REASON_TOKEN_KEY = keyWas;
+});
+
+// Review 11-08, second pass: a payment whose outcome is unknown (the pay POST failed after the card was
+// offered) had no mail watch, so the end text said "I couldn't get into your email" without ever looking.
+test("pinned 11-08 review: an unknown-outcome payment gets its mail looked at and watched; the end wake after a stopped watch promises no watching", async () => {
+  q("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
+  let looks = 0;
+  shop._setMail(async () => { looks++; return { ok: true, connected: true, hits: [] }; });
+  const r = await start();
+  runs[r.runId].requiredAction = PAY(`req_pay_${r.runId}`);
+  await shop.step(r.runId);
+  runs[r.runId].__payFail = true;
+  const pay = q("SELECT * FROM shop_payments WHERE run_id = ?").get(r.runId);
+  const out = await shop.payApproved({ conversationId: OMARI, paymentId: pay.id, confirmationId: 7 });
+  assert.equal(out.unknown_outcome, true, JSON.stringify(out));
+  assert.equal(row(r.runId).mail_until, null, "no watch was started by the unknown payment itself");
+  runs[r.runId] = { status: "failed", result: { code: "merchant.error", summary: "failed" }, revision: 9 };
+  await shop.step(r.runId);
+  assert.ok(looks >= 1, "the mail was searched");
+  assert.ok(row(r.runId).mail_until > clock.now(), "and is watched from here");
+  const before = looks;
+  await new Promise((res) => setTimeout(res, 5));
+  assert.ok(looks > before, "the watch really runs: its own tick looked again");
+  assert.match(said.at(-1).t, /I looked in your email: nothing from Ulta since the payment yet\. I'm watching it/);
+  assert.doesNotMatch(said.at(-1).t, /couldn't get into your email/);
+  // The watch stopped (wake cap), then the store's mail lands as the run ends: the model is told what to
+  // read and that nothing is watching any more.
+  const s2 = await start();
+  runs[s2.runId].requiredAction = PAY(`req_pay_${s2.runId}`);
+  shop._setMail(async () => ({ ok: true, connected: true, hits: [] }));
+  await shop.step(s2.runId);
+  const pay2 = q("SELECT * FROM shop_payments WHERE run_id = ?").get(s2.runId);
+  assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: pay2.id, confirmationId: 8 })).ok, true);
+  await new Promise((res) => setTimeout(res, 5));
+  q("UPDATE shop_runs SET told = told || ',mail' WHERE run_id = ?").run(s2.runId);
+  shop._setMail(async () => ({ ok: true, connected: true, hits: [{ account: "omari@gmail.com", thread_id: "t_p", message_id: "m_promo", subject: "20% off your next visit", from: "Ulta <news@ulta.com>", date: "Sun, 8 Nov 2026 16:30:00 -0500" }] }));
+  woke.length = 0;
+  runs[s2.runId] = { status: "failed", result: { code: "input_expired", summary: "failed" }, revision: 9 };
+  await shop.step(s2.runId);
+  assert.equal(woke.length, 1);
+  assert.match(woke[0].t, /promise no more watching/);
+  assert.doesNotMatch(woke[0].t, /still watching/);
+});
+
+// Review 11-08, third pass: mail the watch read earlier counts even when this look doesn't bring it back;
+// past the 24-hour window the end look is the one message (no separate "24 hours" notice).
+test("pinned 11-08 review: mail read earlier is named when the end look misses it; past the window, one message", async () => {
+  q("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
+  const paidRun = async () => {
+    shop._setMail(async () => ({ ok: true, connected: true, hits: [] }));
+    const r = await start();
+    runs[r.runId].requiredAction = PAY(`req_pay_${r.runId}`);
+    await shop.step(r.runId);
+    const pay = q("SELECT * FROM shop_payments WHERE run_id = ?").get(r.runId);
+    assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: pay.id, confirmationId: 7 })).ok, true);
+    await new Promise((res) => setTimeout(res, 5));
+    return r.runId;
+  };
+  // 1. The watch recorded Ulta's mail; the end look errors (Gmail down): still "already written", never "couldn't get in".
+  const a = await paidRun();
+  q("UPDATE shop_runs SET mail_seen = 'm_old' WHERE run_id = ?").run(a);
+  shop._setMail(async () => ({ ok: false }));
+  runs[a] = { status: "failed", result: { code: "input_expired", summary: "failed" }, revision: 9 };
+  await shop.step(a);
+  assert.match(said.at(-1).t, /Ulta has already written since the payment, and I read it when it came in\./);
+  assert.doesNotMatch(said.at(-1).t, /couldn't get into your email|nothing from Ulta/);
+  // 2. Past the 24-hour window when the run ends: one text, the end look's, and no "24 hours" notice.
+  const b = await paidRun();
+  clock.skip(shop.MAIL_WATCH_MS + 60_000);
+  let looked = 0;
+  shop._setMail(async () => { looked++; return { ok: true, connected: true, hits: [] }; });
+  runs[b] = { status: "failed", result: { code: "input_expired", summary: "failed" }, revision: 9 };
+  const n = said.length;
+  await shop.step(b);
+  assert.equal(looked, 1, "the end still looked");
+  assert.equal(said.length, n + 1, "one message, not the 24h notice on top");
+  assert.match(said.at(-1).t, /I looked in your email: nothing from Ulta since the payment\. If a charge/);
+  assert.doesNotMatch(said.at(-1).t, /watching|24 hours/);
+});
+
+test("review 11-08: the mail wake still runs when the end text fails to send", async () => {
+  q("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
+  shop._setMail(async () => ({ ok: true, connected: true, hits: [] }));
+  const r = await start();
+  runs[r.runId].requiredAction = PAY(`req_pay_${r.runId}`);
+  await shop.step(r.runId);
+  const pay = q("SELECT * FROM shop_payments WHERE run_id = ?").get(r.runId);
+  assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: pay.id, confirmationId: 7 })).ok, true);
+  await new Promise((res) => setTimeout(res, 5));
+  shop._setMail(async () => ({ ok: true, connected: true, hits: [{ account: "omari@gmail.com", thread_id: "t_f", message_id: "m_fail", subject: "Your Ulta order is confirmed", from: "Ulta <orders@ulta.com>", date: "Sun, 8 Nov 2026 16:40:00 -0500" }] }));
+  shop.attach({ say: () => { throw new Error("sendblue down"); }, wake: (c, t, { key }) => woke.push({ c, t, key }), base: "https://heyreason.test/web/connect" });
+  woke.length = 0;
+  runs[r.runId] = { status: "failed", result: { code: "input_expired", summary: "failed" }, revision: 9 };
+  try { await shop.step(r.runId); } catch { /* the send's own failure */ }
+  shop.attach({ say: (c, t) => said.push({ c, t }), wake: (c, t, { key }) => woke.push({ c, t, key, saidBefore: said.length }), base: "https://heyreason.test/web/connect" });
+  assert.equal(woke.length, 1, "the model is still woken to read the confirmation");
 });
 
 test("review: a payment Reason can't approve (not a card) is said once and never handed to the model; shop_answer refuses anything but a form", async () => {
@@ -303,7 +498,7 @@ test("review: an expired payment approval reads as that; a wake that failed is r
   const s1 = await shop.step(b.runId);
   assert.equal(s1.woke, "req_ship_b");
   assert.ok(!String(row(b.runId).told).includes("woke:req_ship_b"));
-  shop.attach({ say: (c, t) => said.push({ c, t }), wake: (c, t, { key }) => woke.push({ c, t, key }), base: "https://heyreason.test/web/connect" });
+  shop.attach({ say: (c, t) => said.push({ c, t }), wake: (c, t, { key }) => woke.push({ c, t, key, saidBefore: said.length }), base: "https://heyreason.test/web/connect" });
   const s2 = await shop.step(b.runId);
   assert.equal(s2.woke, "req_ship_b");
   assert.equal(woke.length, 1);
@@ -430,7 +625,7 @@ test("after the payment: placed is texted, the mail is watched for the confirmat
   await shop.step(out.runId);
   assert.equal(row(out.runId).stage, "placed");
   assert.equal(row(out.runId).order_ref, "ULTA-1234567");
-  assert.equal(said.at(-1).t, "Ulta placed the order for CeraVe Foaming Facial Cleanser 16 oz (order ULTA-1234567). Check your email for Ulta's confirmation; I can't see your mail, so the order number and delivery date will be there.");
+  assert.equal(said.at(-1).t, "Ulta placed the order for CeraVe Foaming Facial Cleanser 16 oz (order ULTA-1234567). I can't see your email yet, so I can't pick up Ulta's confirmation with the delivery date. Want the link to connect it? Once it's connected, ask me and I'll find it.");
   // The mail: nothing yet, then the confirmation.
   const asked = [];
   shop._setMail(async (c, { host, since }) => { asked.push({ c, host, since }); return { ok: true, connected: true, hits: asked.length < 2 ? [] : [{ account: "omari@gmail.com", thread_id: "t_9", message_id: "m_9", subject: "Your Ulta order ULTA-1234567 is confirmed", from: "Ulta Beauty <orders@ulta.com>", date: "Sat, 31 Oct 2026 11:40:00 -0400" }] }; });
@@ -464,12 +659,25 @@ test("after the payment: placed is texted, the mail is watched for the confirmat
   runs[late.runId].requiredAction = PAY("req_pay_2");
   await shop.step(late.runId);
   const pay2 = q("SELECT * FROM shop_payments WHERE run_id = ?").get(late.runId);
-  await shop.payApproved({ conversationId: OMARI, paymentId: pay2.id, confirmationId: 2 });
   shop._setMail(async () => ({ ok: true, connected: true, hits: [] }));
+  await shop.payApproved({ conversationId: OMARI, paymentId: pay2.id, confirmationId: 2 });
+  await new Promise((res) => setTimeout(res, 5)); // the paid-time look worked
   clock.skip(25 * 3600_000);
   const over = await shop.checkMail(late.runId);
   assert.equal(over.expired, true);
-  assert.equal(said.at(-1).t, "No confirmation email from Ulta in the 24 hours since the payment. Check Ulta's site or your card for the charge, and tell me what you see; I'll take it from there.");
+  assert.equal(said.at(-1).t, "No confirmation email from Ulta in the 24 hours since the payment. I've been watching your email the whole time. If a charge from Ulta shows up on your card with no order, tell me and I'll take it up with them.");
+  clock.reset();
+  // Review 11-08: a day in which no look ever worked (Gmail erroring all day) is not "watching the whole time".
+  const blind = await start();
+  runs[blind.runId].requiredAction = PAY("req_pay_3");
+  await shop.step(blind.runId);
+  const pay3 = q("SELECT * FROM shop_payments WHERE run_id = ?").get(blind.runId);
+  shop._setMail(async () => ({ ok: false }));
+  await shop.payApproved({ conversationId: OMARI, paymentId: pay3.id, confirmationId: 3 });
+  await new Promise((res) => setTimeout(res, 5));
+  clock.skip(25 * 3600_000);
+  assert.equal((await shop.checkMail(blind.runId)).expired, true);
+  assert.equal(said.at(-1).t, "I couldn't get into your email in the 24 hours since the payment, so I don't know whether Ulta sent a confirmation. If a charge from Ulta shows up on your card with no order, tell me and I'll take it up with them.");
   // No mail connected: the watch ends quietly.
   const nomail = await start();
   q("UPDATE shop_runs SET paid_at = ?, mail_until = ? WHERE run_id = ?").run(clock.now(), clock.now() + 3600_000, nomail.runId);

@@ -5243,3 +5243,9 @@ What it took to get there, because every step looked right on paper first:
 Still not verified: Safari on an iPhone that is not signed in to Uber (whether the trip survives the
 sign-in), and Android.
 
+## 2026-11-08: "check your email" removed — not yet seen against the real model
+
+The checkout end text after a payment is code-written and pinned offline (`test/checkout-job.test.js`,
+"pinned 11-08"). What the model does with the new unknown-outcome instructions and the system-prompt
+rule (search the mail with `gmail_search` / `gmail_read` and report, never "check your email") has
+not been run against the real model: no live lane exists for it, and none was run (no API credit).
