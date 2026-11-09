@@ -53,6 +53,8 @@ export const CORE = [
   "message_send", "task_start", "show_choices",
   "timer_list", "timer_cancel", "forget", "call_status", "confirm_request", "react",
   "store_checkout", "shop_status", "weather", "nearby_places", "get_location", "capabilities",
+  // Each cost a search round on every use (drive 11-09); together ~3.4k chars of schema (~900 tokens).
+  "event_create", "spend_limit_set",
 ];
 export const CORE_SET = new Set(CORE);
 

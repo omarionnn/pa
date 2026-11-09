@@ -33,6 +33,7 @@ const ONLY = (args[args.indexOf("--only") + 1] && args.includes("--only")) ? new
 const OUT = args.includes("--out") ? args[args.indexOf("--out") + 1] : null;
 // The marker only makes everything AFTER the tools cold (the CLI's cache still holds the tool schemas).
 // --idle-cold N waits N minutes before each cold run, past the cache's life, for a truly cold call.
+const SAMPLES = args.includes("--samples") ? Number(args[args.indexOf("--samples") + 1]) : 1;
 const IDLE_MIN = args.includes("--idle-cold") ? Number(args[args.indexOf("--idle-cold") + 1]) : 0;
 {
   const { resolve, dirname } = await import("node:path");
@@ -60,6 +61,8 @@ const db = await imp("src/db.js");
 const { config, clock } = await imp("src/config.js");
 const diet = await imp("src/tooldiet.js");
 const { appendFileSync } = await import("node:fs");
+const { tools: allTools } = await imp("src/tools.js");
+const descOf = new Map(allTools.map((t) => [t.name, t.description]));
 
 const C = "dm:owner";
 db.upsertAccount({ conversationId: C, channel: "fake", address: process.env.REASON_OWNER_NUMBER, name: "Omari", isOperator: true });
@@ -72,9 +75,9 @@ const CASES = [
   { id: "c1", kind: "common", text: "what's the weather like tomorrow?", expect: ["weather"] },
   { id: "c2", kind: "common", text: "what reminders do i have coming up?", expect: ["timer_list"] },
   { id: "c3", kind: "common", text: "find me a good coffee shop near union square", expect: ["nearby_places", "web_search"] },
-  { id: "c4", kind: "common", text: "remind me to call my mom at 6pm today", expect: ["timer_set"] },
+  { id: "c4", kind: "common", text: "remind me to call my mom tomorrow at 6pm", expect: ["timer_set"] },
   { id: "c5", kind: "common", text: "who won the knicks game last night?", expect: ["web_search", "web_lookup"] },
-  { id: "r1", kind: "rare", text: "make an event for my birthday dinner this saturday 8pm at carbone, 10 people max", expect: ["event_create"] },
+  { id: "r1", kind: "rare", text: "make an event called omari's birthday dinner this saturday 8pm at carbone, 10 people max, guest password is dinner2026, show guests the time and place as soon as they join", expect: ["event_create"] },
   { id: "r2", kind: "rare", text: "set my daily spending limit to $50", expect: ["spend_limit_set", "spend_limit_confirm", "caps_set"] },
   { id: "r3", kind: "rare", text: "find me flights from JFK to LAX on december 12", expect: ["flight_search", "flight_dates"] },
   { id: "r4", kind: "rare", text: "how much would an uber from times square to jfk be right now?", expect: ["uber_options", "uber_link", "uber_connect"] },
@@ -96,6 +99,7 @@ async function runOnce(c, arm, temp, marker) {
   db.saveConversation(C, []);
   // What the last run left behind ("you already asked me for this one" is not a tool call).
   db.db.exec("DELETE FROM timers");
+  try { db.db.exec("DELETE FROM spend_caps"); } catch {}
   db.db.exec("DELETE FROM events WHERE name NOT LIKE '%housewarming%'");
   const logs = [];
   let first = null, toolSearch = 0;
@@ -126,12 +130,16 @@ for (const c of CASES) {
   if (c.seed) seed(c.seed);
   // Alternate which arm goes first, so neither always meets a CLI that just woke up.
   const arms = n++ % 2 ? ["diet", "main"] : ["main", "diet"];
-  for (const arm of arms) {
+  for (let sample = 1; sample <= SAMPLES; sample++) for (const arm of sample % 2 ? arms : [...arms].reverse()) {
     diet._resetDiet();
-    const marker = `${c.id}-${arm}-${Date.now().toString(36)}`;
+    const marker = `${c.id}-${arm}-${sample}-${Date.now().toString(36)}`;
     if (IDLE_MIN) await new Promise((r) => setTimeout(r, IDLE_MIN * 60_000));
-    await runOnce(c, arm, IDLE_MIN ? "truecold" : "cold", marker);
-    await runOnce(c, arm, "warm", marker);
+    // The marker on every tool too: tools come first in the prefix, so without this a "cold" run still
+    // read the tool schemas from the cache of the arm's previous sample. Same few characters on both arms.
+    for (const t of allTools) t.description = `${descOf.get(t.name)} [${marker}]`;
+    const cold = await runOnce(c, arm, IDLE_MIN ? "truecold" : "cold", marker);
+    const warm = await runOnce(c, arm, "warm", marker);
+    if (OUT) appendFileSync(OUT, JSON.stringify({ sampleOf: c.id, sample, arm, coldTotal: cold.totalS, warmTotal: warm.totalS }) + "\n");
   }
 }
 process.exit(0);
