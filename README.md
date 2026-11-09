@@ -2324,7 +2324,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **5,802 tests, 5,670 passing, 1 failing, 131
+All of this is covered by the offline suite — **5,923 tests, 5,791 passing, 1 failing, 131
 skipped**. The 1 failing is not a feature: it is `test/web-ongoing.test.js` "5. the desktop margin",
 which fails the same way on a clean `origin/main` (2026-11-08). The 131 skipped need a real model
 and have not been run against the API for want of credit. The newest two are the flight check-in — a

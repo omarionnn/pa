@@ -1001,6 +1001,12 @@ The one failure where doing nothing is right and trying again is the mistake.
   a watch that already stopped still gets one look at the end, and the text then promises no further
   watching ("ask me and I'll try again" when the mail can't be read). The end look and a watch tick
   re-read the row before recording a message, so only one of them wakes the model for it.
+  Second review pass: a payment whose outcome is unknown (the pay call failed after the card was offered)
+  starts the mail watch at the end of the run and is looked at then, instead of "I couldn't get into your
+  email" with no look; a Gmail error is reported as not having looked, never as "nothing there"; the end
+  wake after a stopped watch tells the model not to promise more watching; and past the 24-hour window
+  the end look replaces the separate "24 hours" notice. `test/checkout-mail-read.test.js` drives the real
+  Gmail reader against a fake Gmail, including two looks in flight at once.
 - **Checking does not clear the block.** Only an attempt that got a real answer does, so a refusal
   between the check and the press cannot quietly lift something nobody resolved.
 - **The money is counted anyway**, with `(OUTCOME UNKNOWN)` on the spend line. Over-counting a charge

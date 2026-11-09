@@ -57,6 +57,7 @@ async function fakeFetch(url, init = {}) {
   }
   const m = /^\/api\/unstable\/agent-checkouts\/([^/]+)(\/messages|\/cancel)?$/.exec(p);
   if (m && m[2] === "/cancel") return runs[m[1]] ? reply(202, { ok: true }) : reply(409, { message: "over" });
+  if (m && m[2] === "/messages" && runs[m[1]]?.__payFail) return reply(500, { message: "upstream" });
   if (m && m[2]) return reply(202, { ok: true });
   if (m) return runs[m[1]]?.__status ? reply(runs[m[1]].__status, { message: "unavailable" }) : runs[m[1]] ? reply(200, { runId: m[1], ...runs[m[1]] }) : reply(404, { error: true, message: `Checkout '${m[1]}' not found` });
   if (p === "/api/unstable/order-intents") return reply(201, { orderIntentId: `oi_${calls.length}`, status: "active" });
@@ -365,6 +366,45 @@ test("pinned 11-08 review: the end text says what the watch already found, and n
   for (const t of [foundStopped.text, emptyStopped.text, brokeStopped.text]) assert.doesNotMatch(t, /watching|keep looking/i, t);
   q("DELETE FROM oauth_tokens WHERE conversation_id = ?").run(OMARI);
   if (keyWas === undefined) delete process.env.REASON_TOKEN_KEY; else process.env.REASON_TOKEN_KEY = keyWas;
+});
+
+// Review 11-08, second pass: a payment whose outcome is unknown (the pay POST failed after the card was
+// offered) had no mail watch, so the end text said "I couldn't get into your email" without ever looking.
+test("pinned 11-08 review: an unknown-outcome payment gets its mail looked at and watched; the end wake after a stopped watch promises no watching", async () => {
+  q("INSERT OR REPLACE INTO shop_cards (conversation_id, payment_method_id, brand, last4, saved_at, registered) VALUES (?, 'pm_1', 'visa', '4242', ?, 1)").run(OMARI, clock.now());
+  let looks = 0;
+  shop._setMail(async () => { looks++; return { ok: true, connected: true, hits: [] }; });
+  const r = await start();
+  runs[r.runId].requiredAction = PAY(`req_pay_${r.runId}`);
+  await shop.step(r.runId);
+  runs[r.runId].__payFail = true;
+  const pay = q("SELECT * FROM shop_payments WHERE run_id = ?").get(r.runId);
+  const out = await shop.payApproved({ conversationId: OMARI, paymentId: pay.id, confirmationId: 7 });
+  assert.equal(out.unknown_outcome, true, JSON.stringify(out));
+  assert.equal(row(r.runId).mail_until, null, "no watch was started by the unknown payment itself");
+  runs[r.runId] = { status: "failed", result: { code: "merchant.error", summary: "failed" }, revision: 9 };
+  await shop.step(r.runId);
+  assert.ok(looks >= 1, "the mail was searched");
+  assert.ok(row(r.runId).mail_until > clock.now(), "and is watched from here");
+  assert.match(said.at(-1).t, /I looked in your email: nothing from Ulta since the payment yet\. I'm watching it/);
+  assert.doesNotMatch(said.at(-1).t, /couldn't get into your email/);
+  // The watch stopped (wake cap), then the store's mail lands as the run ends: the model is told what to
+  // read and that nothing is watching any more.
+  const s2 = await start();
+  runs[s2.runId].requiredAction = PAY(`req_pay_${s2.runId}`);
+  shop._setMail(async () => ({ ok: true, connected: true, hits: [] }));
+  await shop.step(s2.runId);
+  const pay2 = q("SELECT * FROM shop_payments WHERE run_id = ?").get(s2.runId);
+  assert.equal((await shop.payApproved({ conversationId: OMARI, paymentId: pay2.id, confirmationId: 8 })).ok, true);
+  await new Promise((res) => setTimeout(res, 5));
+  q("UPDATE shop_runs SET told = told || ',mail' WHERE run_id = ?").run(s2.runId);
+  shop._setMail(async () => ({ ok: true, connected: true, hits: [{ account: "omari@gmail.com", thread_id: "t_p", message_id: "m_promo", subject: "20% off your next visit", from: "Ulta <news@ulta.com>", date: "Sun, 8 Nov 2026 16:30:00 -0500" }] }));
+  woke.length = 0;
+  runs[s2.runId] = { status: "failed", result: { code: "input_expired", summary: "failed" }, revision: 9 };
+  await shop.step(s2.runId);
+  assert.equal(woke.length, 1);
+  assert.match(woke[0].t, /promise no more watching/);
+  assert.doesNotMatch(woke[0].t, /still watching/);
 });
 
 test("review: a payment Reason can't approve (not a card) is said once and never handed to the model; shop_answer refuses anything but a form", async () => {

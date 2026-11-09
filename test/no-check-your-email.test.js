@@ -18,7 +18,7 @@ const files = (dir) => readdirSync(dir).flatMap((n) => {
 const HANDOFF = /\bcheck (?:your|their) (?:e-?mail|inbox|mail|gmail)\b|\blook in your (?:e-?mail|inbox|mail)\b|\b(?:is|are|will be) in (?:your|their) (?:e-?mail|inbox)\b/i;
 // A match is exempt only when the rule forbidding it sits right in front of it in the same sentence
 // ("never tell them to check their email", 'Never "check your email"'): the line around it still counts.
-const forbids = (line, at) => /\bnever\b(?:(?![.!?:;](?:\s|$)).){0,30}$/i.test(line.slice(Math.max(0, at - 40), at));
+const forbids = (line, at) => /\bnever\b(?!\s+mind)(?:(?![.!?:;,](?:\s|$)).){0,30}$/i.test(line.slice(Math.max(0, at - 40), at));
 const handoffs = (line) => [...line.matchAll(new RegExp(HANDOFF.source, "gi"))].filter((m) => !forbids(line, m.index));
 
 test("the guard itself: a rule quoting the phrase passes, a handoff on the same line as a 'never' does not", () => {
@@ -27,6 +27,8 @@ test("the guard itself: a rule quoting the phrase passes, a handoff on the same 
   assert.equal(handoffs('Payment went through. Check your email for the receipt; I never saw it.').length, 1);
   assert.equal(handoffs('It is never late: the pass is in your email.').length, 1);
   assert.equal(handoffs('Never mind. Check your inbox.').length, 1);
+  assert.equal(handoffs('Never mind, check your inbox.').length, 1);
+  assert.equal(handoffs('If you never got it, check your email.').length, 1);
 });
 
 test("no source line tells the person to check their own email", () => {

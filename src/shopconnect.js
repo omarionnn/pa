@@ -1668,8 +1668,13 @@ async function paidEndText(run, status, result) {
   const summary = short(result?.summary ?? result?.message ?? "", 160);
   const head = `${store}'s checkout${itemOf(run)} ended after the payment was approved (${summary || status}), so the checkout can't tell me whether ${store} has the order.`;
   const charge = `If a charge turns up with no order, I'll take it up with ${store}.`;
+  // A payment with an unknown outcome has no watch yet (only a clean 'paid' starts one): the card may
+  // have reached the store, so its mail is watched from here, and looked at now (review 11-08).
+  const fresh = !runRow(run.run_id)?.mail_until;
+  if (fresh) q("UPDATE shop_runs SET mail_until = ? WHERE run_id = ?").run(clock.now() + MAIL_WATCH_MS, run.run_id);
   let look = {};
   try { look = await checkMail(run.run_id, { ending: true }); } catch { look = {}; }
+  if (fresh && look.done === false) watchMail(run.run_id);
   // A promise to keep looking is made only while the watch is really still running (review 11-08).
   const watching = look.done === false;
   if (look.connected === false || (!look.looked && !mailConnected(run.conversation_id))) {
@@ -2265,9 +2270,11 @@ async function readMail(conversationId, { host, since }) {
   const tokens = await google.allAccessTokens(conversationId, { scope: google.GMAIL_SCOPE });
   if (!tokens.ok) return { ok: true, connected: false, hits: [] };
   const hits = [];
+  let read = 0;
   for (const a of tokens.accounts ?? []) {
     const list = await google.api(a.token, "GET", "/gmail/v1/users/me/messages", { query: { q: `from:${host} after:${Math.floor(since / 1000)}`, maxResults: 5 } });
     if (!list.ok) continue;
+    read++;
     for (const m of list.body?.messages ?? []) {
       const one = await google.api(a.token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(m.id)}`, { query: { format: "metadata", metadataHeaders: ["From", "Subject", "Date"] } });
       if (!one.ok) continue;
@@ -2275,14 +2282,16 @@ async function readMail(conversationId, { host, since }) {
       hits.push({ account: a.account, thread_id: v.thread_id, message_id: m.id, subject: v.subject, from: v.from, date: v.date });
     }
   }
+  // No account could be searched (Gmail errored): that is "couldn't look", never "nothing there" (review 11-08).
+  if (!read && (tokens.accounts ?? []).length) return { ok: false, connected: true, hits: [] };
   return { ok: true, connected: true, hits };
 }
-function mailEvent(run, hits, { ending = false } = {}) {
+function mailEvent(run, hits, { ending = false, watching = true } = {}) {
   const list = hits.slice(0, 3).map((h) => `"${short(h.subject, 120)}" from ${short(h.from, 80)} (${h.date}; account ${h.account}, thread_id ${h.thread_id})`).join("; ");
   // At the end of a run that broke after the payment, they were just told "reading it now": the answer
   // is owed either way, so silence is not an option there.
   const otherwise = ending
-    ? `If it is not the confirmation for this order, tell them in one line what it was instead and that you are still watching for the confirmation. Never tell them to check their email: you just did.`
+    ? `If it is not the confirmation for this order, tell them in one line what it was instead${watching ? " and that you are still watching for the confirmation" : "; you are no longer watching their mail for this order, so promise no more watching"}. Never tell them to check their email: you just did.`
     : `If it is not the confirmation for this order, say exactly NO_REPLY.`;
   return `[checkout] Mail from ${storeOf(run)} arrived after the order${itemOf(run)} (run ${run.run_id}): ${list}. Read it with gmail_read (thread_id, in that account) and text them the order number and the delivery estimate in one line. ${otherwise}`;
 }
@@ -2296,10 +2305,13 @@ export async function checkMail(runId, { ending = false } = {}) {
   if (!run || !run.mail_until) return { done: true };
   // A watch that already stopped (told "mail": capped, no host, no mail) gets one more look at the
   // end of a run, so the end text says what is really there; nothing restarts it (review 11-08).
-  const stopped = toldOf(run).has("mail");
+  let stopped = toldOf(run).has("mail");
   if (stopped && !ending) return { done: true };
   const store = storeOf(run);
-  if (clock.now() > run.mail_until) {
+  // Past the window at the end of a run: the watch is over, but the end text still looks once and says
+  // what is there, so no separate "24 hours" notice goes out on top of it (review 11-08).
+  if (ending && clock.now() > run.mail_until) { tellOnce(runId, "mail"); stopped = true; }
+  else if (clock.now() > run.mail_until) {
     // A placed order with nothing in the mail is not an alarm; a payment with no order might be.
     const worry = run.stage !== "placed";
     if (tellOnce(runId, "mail") && worry) await notify(run.conversation_id, `No confirmation email from ${store} in the 24 hours since the payment. I've been watching your email the whole time. If a charge from ${store} shows up on your card with no order, tell me and I'll take it up with them.`);
@@ -2326,7 +2338,7 @@ export async function checkMail(runId, { ending = false } = {}) {
   q("UPDATE shop_runs SET mail_seen = ? WHERE run_id = ?").run([...seen].slice(-50).join(","), runId);
   const wakes = [...toldOf(now)].filter((t) => t.startsWith("mailwake:")).length + 1;
   tellOnce(runId, `mailwake:${fresh[0].message_id}`);
-  await wake(run.conversation_id, mailEvent(run, fresh, { ending }), `shop:${runId}:mail:${fresh[0].message_id}`);
+  await wake(run.conversation_id, mailEvent(run, fresh, { ending, watching: !stopped && wakes < MAIL_WAKES_MAX }), `shop:${runId}:mail:${fresh[0].message_id}`);
   const saw = { looked: true, connected: true, hits: fresh.length, found: fresh, already };
   if (stopped) return { done: true, ...saw };
   if (wakes >= MAIL_WAKES_MAX) { tellOnce(runId, "mail"); return { done: true, ...saw, capped: true }; }
