@@ -151,6 +151,22 @@ for the second pass (past `ALERT_AFTER_MS`, 4 min). Proof: the `outbox` row in `
 `bad`, `ops_state` has `alerted:outbox|incident@…`, and the pass's own text (it did text — the
 cage's Context.dev and embeddings rows) does not mention the outbox.
 
+## Webhook 401 alert (`src/webhookalert.js`, #408 + #410)
+
+Two refused Sendblue deliveries inside 10 min open `webhook:sendblue:rejected` and text the owner;
+the next accepted (2xx) delivery resolves it. Only refusals that look like Sendblue's own count
+(`looksReal`: a JSON body in Sendblue's shape AND a secret header or `X-Sendblue-Signature`), so a
+scanner's `{}` is a journal line, never an alert. `webhook:` incidents are exempt from the 30-min
+quiet sweep (quiet = nothing came in, not fixed). Offline: `test/webhookalert.test.js`.
+
+**Caged drive (2026-11-08, `7aedef4`), no model turn:** use a status-callback body
+(`{"status":"DELIVERED","number":…,"message_handle":…,"from_number":…}`) so a signed post runs no
+turn. `{}` unsigned → 401, no incident; the body with `sb-signing-secret: wrong` twice → 401 ×2, the
+incident opens and its text lands on the cage console; the body with `sb-signing-secret: $(cat
+$RUN/secret)` → 200 and "Resolved: …" on the console. Read `incidents` with `node:sqlite`
+(`readOnly`), not sqlite3 (guarded under `~/.openclaw`). **On live, never post two shaped refusals
+— that texts the owner;** one unsigned `{}` is safe.
+
 ## Gotchas
 
 - `$TMPDIR` here is under `~/.openclaw`, and this machine's sqlite3 guard refuses any DB there:
