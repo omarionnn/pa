@@ -26,7 +26,7 @@ import { writeFileSync } from "node:fs";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { config, clock, normalizeNumber } from "../config.js";
-import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generatorFor, LATE_LINES, LATE_HOLDING_MS, warmCallCache } from "./voice.js";
+import { llmRequest, withoutSilenceMarker, METER_KINDS, THINKING_FILLER, generatorFor, LATE_LINES, LATE_HOLDING_MS, warmCallCache, ownerProfileNote, SEND_TOOLS } from "./voice.js";
 import { recordingFileFor } from "./recordings.js";
 import { writeCallIntoThread, noteOnTask, tellTheOwner, noteThirdPartyTurns } from "./postcall.js";
 import * as fromcall from "./fromcall.js";
@@ -36,6 +36,8 @@ import * as callOutcome from "./outcome.js";
 import { makerLine } from "../maker.js";
 import { CallProvider, announcementFor, callRulesFor } from "./provider.js";
 import { briefLines, todaySoFar } from "./brief.js";
+import { rulesNote, RULES_HEADING } from "../rules.js";
+import { whereaboutsNote, prepareCallMemory, onScheduleRead } from "./callmemory.js";
 import { recordingNoticeFor } from "./consent.js";
 import * as ambience from "./ambience.js";
 import { ulawToPcm, pcmToUlaw } from "./ulaw.js";
@@ -127,13 +129,34 @@ export function whoFor(call) {
   try { me = accounts.ownerOf(call.conversation_id); } catch { /* unknown conversation */ }
   const raw = me?.name || "";
   const named = !!raw && raw !== NO_NAME;
-  // Only this call's own account, by the call row's conversation — never anyone else's. No profile:
-  // the voice gets the name and nothing more (the backend has the rest, per turn, for this person).
-  const own = !!call.is_owner;
+  // Only this call's own account, by the call row's conversation — never anyone else's. On their own
+  // call the voice gets their brief (`preCallBrief`: profile, rules, today, places); anyone else, nothing.
+  const own = Number(call.is_owner) === 1;
   return {
     name: named ? raw : "them", named, owner: own, identity: callIdentityFor(call.conversation_id),
     ...(own ? { brief: preCallBrief(call), purpose: openingPurpose(call) } : {}),
   };
+}
+
+/**
+ * The GPT-Live instructions this build gives a call, as one string: on their own call, Reason as
+ * itself with their brief (profile, rules, today, places — `preCallBrief`); on an errand or anyone
+ * else's call, the restricted relay voice with nothing about them. Pure apart from DB reads and fast
+ * enough to call at dial or answer time, so a session opened before the call starts gets exactly
+ * these words. `line` defaults the way `GptLiveCall` decides it: any call that is not their own is a
+ * line call (a business or another person) and gets the same line instructions the call would
+ * (`lineTalkInstructions` for one Reason placed with REASON_LINE_TALK on, else `lineInstructions`). Strangers ringing Reason's
+ * number are not calls of an account and are not covered here.
+ */
+export function voiceInstructionsFor(call, { line = Number(call?.is_owner) !== 1 } = {}) {
+  const who = whoFor(call);
+  if (!line) return liveInstructions(who);
+  // A business call Reason placed talks (REASON_LINE_TALK), as `GptLiveCall` sets it up; one ringing back is the puppet line.
+  if (config.lineTalk && call?.direction !== "in") {
+    const facts = Array.isArray(call.facts) ? call.facts : (() => { try { return JSON.parse(call.facts ?? "[]"); } catch { return []; } })();
+    return lineTalkInstructions({ ...who, brief: briefOf(call), goal: call.goal, facts, notice: recordingNoticeFor(call.to_number).notice });
+  }
+  return lineInstructions(who);
 }
 
 /**
@@ -188,7 +211,7 @@ export function recentChatLines(conversationId, { max = 6, chars = 700 } = {}) {
  * are. Everything here is this call's own person's; nothing for any other call.
  */
 export function preCallBrief(call, { place = "" } = {}) {
-  if (!call?.is_owner) return "";
+  if (Number(call?.is_owner) !== 1) return "";
   const lines = [];
   if (call.direction !== "in") {
     const goal = clip(call.goal, 300);
@@ -201,10 +224,23 @@ export function preCallBrief(call, { place = "" } = {}) {
   if (chat.length) lines.push(`Lately in your chats:\n${chat.join("\n")}`);
   // Call 79: "three sub events" was the line's garbling of the spots Reason had picked by text that day.
   const today = todaySoFar(call.conversation_id, { until: Number(call.created_at) || clock.now(), call: call.id });
+  // Today so far, the same lines Claude's call turn reads (fix 2: the voice answers from it itself).
+  if (today?.lines?.length) lines.push(`Today so far in your chats, before this call (newest last):\n${today.lines.join("\n")}`);
   if (today?.names?.length) lines.push(`Names from your chats today — on a bad line, a word that sounds odd is often one of these: ${today.names.join(", ")}`);
   if (place) lines.push(placeLine(place));
+  // Who they are to Reason (fix 2, call 80), read at the call's start from this call's own
+  // conversation only: the profile their texts are shown, how they want to be treated (src/rules.js,
+  // fresh — a rule saved after the last call is here), and their places and week (./callmemory.js).
+  // On caller ID alone too (Omari, 11-08: where he is and what Reason knows are fine on his number;
+  // only money, booking, texting others and settings wait for the check).
+  const profile = ownerProfileNote(call.conversation_id);
+  if (profile) lines.push(profile.length > 2500 ? `${profile.slice(0, 2499).trimEnd()}…` : profile);
+  const rules = rulesNote(call.conversation_id);
+  if (rules) lines.push(rules);
+  const where = whereaboutsNote(call);
+  if (where) lines.push(where);
   if (!lines.length) return "";
-  return `PRE-CALL BRIEF — background for you, so the call starts warm and on point. Anything they ask still goes to Reason.\n${lines.join("\n")}`;
+  return `PRE-CALL BRIEF — what you know going in, about them and from your chats. Answer from it yourself where it does; any lookup, action or live fact still goes to Reason.\n${lines.join("\n")}`;
 }
 
 /** Why Reason is ringing, for the opening line, when the line itself does not already say it. */
@@ -222,6 +258,65 @@ export function openingPurpose(call) {
 export const NO_HOLDING_LINE = "When you hand something to Reason, say nothing of your own while you wait: no \"let me check\", \"looking that up\", \"hang on\" or \"one sec\"."
   + " If a wait needs a word, you'll be given the exact one to say. Then say Reason's answer as your reply, in about as many words as it has: no holding phrase in front of it and no lines of your own around it.";
 
+/** Call 80: the voice's own "uh", "um" and "let me check", said into a wait or in front of an answer. */
+export const NO_FILLER = "Never say filler sounds — no \"uh\", \"um\", \"er\" or \"hmm\" — and never say \"let me check\", \"one sec\" or anything like it on your own. If you need a moment, stay silent.";
+
+/** Reason's answer streams in (call 80, `speakPiece`): pieces one after another, one reply. */
+export const PIECES_LINE = "Reason's answer may arrive in pieces, one after another. Say each piece as it comes, as one continuous reply in about as many words, without repeating an earlier piece or adding anything around them.";
+
+/**
+ * Who the voice is on their own call (owner decision 2026-11-08, call 80's fix 2): Reason itself — the
+ * same personality as in their texts (src/agent.js systemFor, distilled) — talking with them, not a
+ * relay in front of Reason. It answers what it can from the conversation and the brief (their profile,
+ * their rules, today, their places and week); anything that needs a lookup, an action, or a fact it was
+ * not given goes to Reason's backend. The honesty guard still hears every word it says (`textOut`).
+ */
+export const OWN_VOICE_PERSONA = "Your personality is the same as in their texts: a sharp, warm friend who gets things done. Easy and direct, a joke when it fits, never stiff, corporate or gushing. Read the room: plain and calm when they're stressed or annoyed. Answer first, then stop. Use what you know about them without asking again, naming it in passing (\"you're at work today, right?\"), and never claim anything about their life you weren't told.";
+/**
+ * Fix 2's floor (drive 11-08): every reply of the voice's own is a real answer or a hand-off. A question
+ * bounced back in place of an answer, or a line that says nothing, is neither. Exported for the tests.
+ */
+export const OWN_VOICE_NO_DEFLECT = "Each time you speak it is either a real answer or a hand-off to the backend — never filler."
+  + " Never bounce a question back in place of an answer (\"what's your take?\", \"what do you reckon?\", \"what do you think?\"), and never say a line that says nothing."
+  + " If they ask your opinion, give it. If you can't really answer what they said from this conversation and the brief — it's unclear, half a sentence, or about something the brief doesn't cover — hand it to the backend with their words; don't guess and don't stall."
+  + " While the backend is working on something, say nothing of your own: its answer is coming."
+  // Paid set 3 (11-09): "Tell me and I'll send it." → his "No" → 36 s of nothing (main: "Cool.").
+  + " Never leave them in silence: when nothing is being worked on for them and they say something to you — even just \"no\", \"nah\" or \"that's fine\" — reply out loud in a few words, or, when it's a yes or no to something Reason asked or offered, hand it to Reason, whose answer you then say.";
+/**
+ * Paid set 3 (11-09): his "No" got no reply at all. Their own call: words of theirs that, REPLY_FLOOR_MS
+ * after they stopped, have no reply and no hand-off get the voice asked to answer them, once per turn.
+ */
+export const REPLY_FLOOR_MS = 2500;
+export const REPLY_ASK = "They just spoke and nothing has been said back. Reply out loud now in a few words — or, if it was a yes or no to something Reason asked or offered, or it needs Reason, hand it to Reason now. Never leave them in silence.";
+/** Their own call: Reason skipped their words (a "No" to its question, say) — the voice closes it itself, never silence. */
+export const SKIP_REPLY = "Reason has nothing to add to that. Reply to them yourself now in a few words (\"Okay, no worries.\") — never leave them in silence — and don't hand this to Reason again.";
+/**
+ * Omari 11-08 (after call 80's paid replay: the branch's first sound 3.4 s median, main's 3.0 s was a
+ * stock "Mm, one sec" in front of a cut answer): on his own call, a hand-off that needs a lookup or an
+ * action gets one short line from the voice AS it hands over — it knows the question, so the line names
+ * it, and it is the voice's first audio, inside ~1 s of his words. Never a stock "one sec" / "let me
+ * check", never in front of a plain answer or a passed-on yes/no, never twice in a row. Code never adds
+ * a line of its own after it (`GptLiveCall#voiceAcked`).
+ */
+export const HANDOFF_ACK = "When you hand the backend something that needs a lookup or an action — the weather, the news, a place, directions, their calendar, messages or reminders, sending something — say one short line of a few words first, straight away, that names exactly what you're getting or doing for them, then hand it off. For example: \"Weather near work, one sec.\", \"Pulling up Nigeria headlines.\", \"Texting you the headlines now.\", \"Checking your Thursday.\""
+  + " Never a bare \"one sec\", \"let me check\", \"hang on\" or \"looking that up\" with nothing named."
+  + " Say nothing first when you're only passing on their yes or no, their reply to something Reason asked or offered, or something unclear; and never two of these lines in a row — if your last words were one, hand off in silence."
+  + " That one line is all you say until Reason's answer comes.";
+/** Their own call's version of `NO_HOLDING_LINE`: the one named line of `HANDOFF_ACK`, nothing else. */
+export const OWN_NO_HOLDING_LINE = "Apart from that one short line naming what you're getting, say nothing of your own while Reason works: no \"let me check\", \"looking that up\", \"hang on\" or \"one sec\"."
+  + " If a wait needs another word, you'll be given the exact one to say. Then say Reason's answer as your reply, in about as many words as it has: no holding phrase in front of it and no lines of your own around it.";
+/** Their own call's version of `NO_FILLER`. */
+export const OWN_NO_FILLER = "Never say filler sounds — no \"uh\", \"um\", \"er\" or \"hmm\" — and never a bare \"let me check\", \"one sec\" or anything like it. If you need a moment, stay silent.";
+export const OWN_VOICE_SPLIT = [
+  "Answer them yourself, straight away, whenever you can from this conversation and the brief below: small talk, reactions, follow-ups, advice from common sense, and anything the brief already tells you about them — where they work, their week, what you talked about today, how they want to be treated.",
+  "Hand it to the backend (delegate) for anything that needs a lookup or an action, or anything live or factual: the weather, the news, prices, scores, opening hours, their calendar, messages, reminders, tasks, a place or address the brief does not list, directions, sending them anything, or any fact, number or name the brief does not give you.",
+  "Never state a fact, figure, news item, price, time or the weather from your own knowledge: hand it off. Never say you did something; only the backend does things.",
+  // Drive 11-08 (cq run 2, OVH): two turns answered with filler — "So — what do you reckon?" into a
+  // wait, "I mean, what's your take?" to "Text me what" — neither an answer nor a hand-off.
+  OWN_VOICE_NO_DEFLECT,
+  HANDOFF_ACK,
+];
+
 /** Call 56: "do you know where I am?" was answered "you're Omari" (2026-10-31). Where/what goes to Reason. */
 const NOT_WHO = "Where they are, or any other question, goes to Reason; if you're not sure whether they said who or where, ask.";
 
@@ -234,10 +329,14 @@ export const CALL56_LINES = [
   // Call 79 (2026-11-08): all six replies opened with "let me check" / "looking that up", with no lookup
   // behind any of them. Whether a wait gets a line, and its words, is code's now (`GptLiveCall#holdLine`).
   NO_HOLDING_LINE,
+  // Call 80 (2026-11-08): "Uh… Let me check." and "Um." were the voice's own, with nothing behind them.
+  NO_FILLER,
   "Small talk is yours: if they ask how you are, answer warmly and ask them back.",
   "If they say yes or no to something Reason offered, pass that answer to Reason; never just say okay.",
   "When you both say goodbye, sign off warmly and briefly.",
 ];
+/** `CALL56_LINES` on their own call: the hand-off line is the voice's (`HANDOFF_ACK`). */
+export const OWN_CALL56_LINES = CALL56_LINES.map(l => l === NO_HOLDING_LINE ? OWN_NO_HOLDING_LINE : l === NO_FILLER ? OWN_NO_FILLER : l);
 
 /**
  * The live prompt: call 53's (#290), the one Omari called "a big upgrade, really felt like a
@@ -246,6 +345,7 @@ export const CALL56_LINES = [
  * whom) went out with calls 54–55, which he called confused and worse; it is not here (2026-10-31).
  */
 export function liveInstructions({ name = "them", named = name !== "them", owner = false, identity = false, brief = "" } = {}) {
+  const own = owner;
   const them = named ? name : "them";
   const theirs = named ? `${name}'s` : "their";
   const who = !identity
@@ -255,23 +355,33 @@ export function liveInstructions({ name = "them", named = name !== "them", owner
         ? `Only if they ask who you are, who they are or their name, answer straight away yourself: you're Reason, their assistant, and they're ${name}, the person you work for. ${NOT_WHO}`
         : `Only if they ask who you are, who they are or their name, answer straight away yourself: you're Reason, their assistant; you don't have their name saved yet. ${NOT_WHO}`]
       : [thirdPartyIdentity({ ownerName: them })];
+  // Their own call: the voice is Reason, answering what it can itself (fix 2, call 80). Anyone else's
+  // keeps the relay below.
+  const split = own
+    ? [OWN_VOICE_PERSONA, ...OWN_VOICE_SPLIT]
+    : [
+      `You are only the voice. Reason, the backend, does all of the thinking and every action: it has ${theirs} messages, calendar, memory, tasks and tools.`,
+      "Delegate to the backend for every question, request, instruction or opinion — anything beyond a greeting, a brief listening sound, or asking them to repeat something.",
+      "Never answer from your own knowledge, and never invent a fact, time, name, number or price.",
+    ];
   return [
-    `You are the voice of Reason, ${theirs} personal assistant, on a phone call with ${them}.`,
+    own
+      ? `You are Reason, ${theirs} personal assistant — the same Reason they text with — on a phone call with ${them}. You are who they hear and talk with; Reason's backend has ${theirs} messages, calendar, memory, tasks and tools, and does every lookup and every action.`
+      : `You are the voice of Reason, ${theirs} personal assistant, on a phone call with ${them}.`,
     ...who,
     makerLine(),
     "Voice: a young woman with a light, natural British (London) accent — warm, quick, relaxed. Short sentences, like a friend on the phone.",
-    `You are only the voice. Reason, the backend, does all of the thinking and every action: it has ${theirs} messages, calendar, memory, tasks and tools.`,
-    "Delegate to the backend for every question, request, instruction or opinion — anything beyond a greeting, a brief listening sound, or asking them to repeat something.",
-    "Never answer from your own knowledge, and never invent a fact, time, name, number or price.",
+    ...split,
     "While the backend works, do not fill the silence with guesses.",
-    ...CALL56_LINES,
+    ...(own ? OWN_CALL56_LINES : CALL56_LINES),
+    PIECES_LINE,
     ...HEARING_LINES,
-    ...(owner ? OWN_CALL_LINES : []),
+    ...(own ? OWN_CALL_LINES : []),
     "Never say anything is done, booked, sent, texted, ordered, paid, scheduled, cancelled or confirmed unless the backend's result says so. If the result says it is not done, only started, or needs their approval, say exactly that.",
     "When a backend result arrives, say it naturally and briefly, keeping every fact, number and name exactly as given. Do not add offers or questions the result did not include.",
     "Never read out links, codes, IDs or anything in square brackets, and never say the words NO_REPLY.",
     "Stop speaking when they talk over you, and listen.",
-    ...(owner && brief ? [brief] : []),
+    ...(own && brief ? [brief] : []),
   ].join("\n");
 }
 
@@ -459,7 +569,12 @@ const CLAIM = new RegExp([
 const SENT_CLAIM = /\b(?:sent|texted|emailed|messaged)\b/i;
 // A send from before this turn, said as such, is true and stays: "I texted you the link earlier".
 const EARLIER = /\b(?:earlier|before|yesterday|this morning|last (?:night|week)|this afternoon)\b/i;
-const SENDS = /send|email|text|message|page_|picture|voice_note/;
+// The tools that really send something to somebody — by name, since `turn.ran` holds Reason's own tool
+// names, reads included (page_list, undo_send, message_effects are not sends; cold review, call 80).
+/** Reason's tools that write, change or drop a "how to treat me" rule. */
+export const RULE_WRITERS = Object.freeze(["remember", "forget", "memory_fix", "memory_drop"]);
+export { SEND_TOOLS };
+const SENDS = { test: (n) => SEND_TOOLS.has(n) };
 
 /**
  * A result's words with any sentence that claims a send this turn did not make taken out, and an
@@ -513,6 +628,13 @@ export function fromLine(said, line) {
 export const THINKING_ACK = /\b(?:(?:let me|lemme|let's|i'll)\s+(?:have a\s+(?:proper\s+|quick\s+)?)?(?:think|check|look|see)|have a (?:proper |quick )?(?:think|look)|giv(?:e|ing) it (?:some |a )?(?:thought|think)|mull|think(?:ing)? (?:it|that|about it) (?:over|through)|i'm (?:on it|checking|looking)|one (?:sec|second|moment)|just a (?:sec|second|moment)|give me a (?:sec|second|moment)|hang on|hold on|bear with me)\b/i;
 /** What is said when Reason had nothing to add after the voice promised a thought: the turn handed back. */
 export const SKIP_FOLLOW_UP = "So — what do you reckon?";
+/**
+ * Reason skipped after the voice's named hand-off line (drive v6 11-08: "Texting you the weather summary
+ * now." then nothing sent, then "So — what do you reckon?"): nothing was done, so it asks, plainly.
+ */
+/** How long the voice's reply to `ACK_ASK` may take to show up before code's own named line may go. */
+export const ACK_REPLY_MS = 3000;
+export const ACK_SKIP_FOLLOW_UP = "Sorry — what was it you wanted?";
 
 // ---------- holding lines, decided by code (call 79) ----------
 
@@ -527,12 +649,20 @@ export const SKIP_FOLLOW_UP = "So — what do you reckon?";
 // call's) gets the next late line, so there is never dead air.
 /** What the voice is told, quietly, the moment it hands something over. */
 export const WAIT_NOTE = "Reason is working on this now and its answer comes next. Don't answer it yourself and don't fill the wait; say nothing until you're given words.";
+/**
+ * Their own call, the voice handed over with nothing said: asked for its named line at once (Omari 11-08).
+ * Its own words from the question it heard; nothing when what they said needs no lookup or action.
+ */
+export const ACK_ASK = "Reason has their request now. If it needs a lookup or an action (the weather, news, a place, their calendar or messages, sending something), say only one short line of a few words naming exactly what you're getting or doing for them — like \"Weather near work, one sec.\" or \"Pulling up Nigeria headlines.\" — never just \"one sec\" or \"let me check\", and nothing else."
+  + " If it doesn't need one — they answered yes or no, replied to something Reason asked, or it was unclear or sounded cut off — say nothing at all."
+  // Drive v8/v9: an example "…gets nothing" here, left in its context, kept it from handing over the next "Text me what" at all.
+  + " Only say you're sending something when they clearly said what to send (\"send it to me\" after Reason offered, \"text me the headlines\", or \"text me that\" right after an answer — that is the answer just given, so name it: \"Getting the weather to you.\"); otherwise name nothing about sending.";
+/** Their own call: the voice's one named hand-off line (`HANDOFF_ACK`) is still its to say, once. */
+export const OWN_WAIT_NOTE = "Reason is working on this now and its answer comes next. Don't answer it yourself and don't fill the wait: if this needs a lookup or an action and you haven't yet said your one short line naming it, say just that line now; otherwise say nothing until you're given words.";
 /** An answer ready this soon after the hand-off gets no holding line. */
 export const HOLD_LINE_AFTER_MS = 1500;
-/** No lookup running: a tiny sound, nothing about checking. */
-export const QUICK_HOLD_LINES = Object.freeze(["Mm, one sec.", "One sec.", "Mm-hm, one sec."]);
-/** One of Reason's tools really is running. */
-export const CHECK_HOLD_LINES = Object.freeze(["Let me check.", "Let me look that up.", "Checking now."]);
+/** A send of Reason's is running (never "sent": it has not gone yet). */
+export const SEND_HOLD_LINES = Object.freeze(["Sending it now."]);
 /** Which of the code's own lines talk about checking or looking (only while a tool runs). */
 const CHECK_WORDING = /\b(?:check|look)/i;
 /** Reason's tools that act rather than look something up: a wait for one of them is not "checking". */
@@ -549,90 +679,52 @@ export function holdingInstruction(line) {
   return `Reason is still working on their request. Say only this, in your own voice, and nothing else: "${line}" Then wait quietly for Reason's answer.`;
 }
 
-/** The holding line for this wait: `kind` "first" (at HOLD_LINE_AFTER_MS) or "late" (at LATE_HOLDING_MS). */
-export function holdLineFor({ kind = "first", tool = false, n = 0 } = {}) {
-  const pool = kind === "late" ? LATE_LINES.filter(l => tool || !CHECK_WORDING.test(l)) : tool ? CHECK_HOLD_LINES : QUICK_HOLD_LINES;
-  return pool[n % pool.length];
-}
-
-// ---------- short answers on the phone (call 79) ----------
-
-// Call 79: the last two answers ran 25 s and 32 s (342 and 463 characters: tips, openers and a
-// question in one breath). Reason's turn is told to answer in a sentence or two and offer more
-// (./voice-prompt.js). This is the floor under that: a spoken answer longer than LONG_REPLY_CHARS is
-// cut to its first sentences (up to SHORT_REPLY_CHARS) and ends on an offer to text the rest. The
-// whole answer is kept for Reason's next turn, which reads their reply to the offer and, if they want
-// it, texts it with its own send tool (`textOfferNote`) — so a "sent" is only ever said behind a real send.
-// Measured on the 2026-11-08 drives: the voice speaks ~15 characters a second, so 220 characters is
-// about 15 s of talking. 180 (~12 s) is the most said at once; 150 (~10 s, two sentences) is what is kept.
-/** Spoken answers longer than this are cut. */
-export const LONG_REPLY_CHARS = 180;
-/** What is kept of a long answer: whole sentences up to about this. */
-export const SHORT_REPLY_CHARS = 150;
-/** The offer said after a cut answer. */
-export const TEXT_REST_OFFER = "There's a bit more — want me to text you the rest?";
-/** How many hand-offs after the offer the whole answer is still kept for Reason. */
-const TEXT_OFFER_TURNS = 2;
-/** Tools behind an answer that must be said whole: an agreement being made, a readback, a send. */
-const SAY_WHOLE_TOOLS = /confirm|commit|propose|readback|quote|_send$|^send_|email_send|voice_note|picture/;
-
-/** The sentences of a spoken answer. A full stop inside "$12.50" or "7 p.m. or later" ends nothing. */
-function sentencesOf(text) {
-  const held = [];
-  const masked = String(text).replace(QUOTED, (q) => `\u0000${held.push(q) - 1}\u0000`);
-  const parts = masked.split(/(?<=[.!?…]["”’)]*)\s+(?=["“‘(]?[A-Z0-9\u0000])/);
-  return parts.map(x => x.replace(/\u0000(\d+)\u0000/g, (_, i) => held[Number(i)]).trim()).filter(Boolean);
+/**
+ * Omari 11-08: code's first line, when the voice said none of its own, names what Reason's tool is
+ * doing — never a stock "one sec" / "let me check". Read off Reason's own tool names (never anyone's
+ * words); a tool with no line here gets no first line (the late line still covers a long wait).
+ */
+const TOOL_LINES = [
+  [/^weather$/, "Getting the weather."],
+  [/^get_location$/, "Checking where you are."],
+  [/^nearby_places$/, "Looking for places nearby."],
+  [/^(?:web_search|web_lookup|research|find_all)$/, "Searching the web for that."],
+  [/^image_search$/, "Finding pictures of that."],
+  [/calendar_events?$/, "Checking your calendar."],
+  [/^gmail_(?:search|read)$/, "Checking your email."],
+  [/^flight_(?:search|dates|verify|list)$/, "Looking at flights."],
+  [/^transit_status$/, "Checking the trains."],
+  [/^(?:recall|memory_search|graph_lookup)$/, "Checking what I've got saved."],
+  [/^(?:timer_list|task_list|plan_list|watch_list)$/, "Checking your list."],
+];
+/** The named first line for one of Reason's tools, or "" (no line). A send says it is sending. */
+export function toolHoldLine(name) {
+  const n = String(name ?? "");
+  if (!n) return "";
+  if (SEND_TOOLS.has(n)) return SEND_HOLD_LINES[0];
+  return TOOL_LINES.find(([re]) => re.test(n))?.[1] ?? "";
 }
 
 /**
- * A long answer as `{ say, full, offered }`, or null when it is short enough. `say` is its first
- * sentences, then the offer to text the rest (`offered`). An answer that ends on a question keeps the
- * question as it is, and makes no offer of its own — one question at a time, and a question Reason
- * asked (a yes it needs, a choice) is never swapped for another.
+ * The holding line for this wait: `kind` "first" (a tool of Reason's started, named by `name`) or
+ * "late" (at LATE_HOLDING_MS). A first line with no named tool is "" — nothing is said.
  */
-export function shortForPhone(text, { max = LONG_REPLY_CHARS, keep = SHORT_REPLY_CHARS } = {}) {
-  const full = String(text ?? "").replace(/\s+/g, " ").trim();
-  if (full.length <= max) return null;
-  const sentences = sentencesOf(full);
-  const lastQ = sentences.length > 1 && /\?["”’)]*$/.test(sentences.at(-1)) ? sentences.at(-1) : "";
-  const body = lastQ ? sentences.slice(0, -1) : sentences;
-  // Room for real content before its question: two sentences of the answer, never only the question.
-  const room = lastQ ? Math.max(110, keep - lastQ.length) : keep;
-  let say = "";
-  for (const s of body) {
-    if (say && `${say} ${s}`.length > room) break;
-    say = say ? `${say} ${s}` : s;
-  }
-  // One sentence that is itself long: cut at the last clause break inside the limit, never mid-word.
-  if (say.length > Math.max(room + 40, 200)) {
-    const cut = say.slice(0, room);
-    const at = Math.max(cut.lastIndexOf(", "), cut.lastIndexOf("; "), cut.lastIndexOf(" — "));
-    say = `${(at > 60 ? cut.slice(0, at) : cut.slice(0, cut.lastIndexOf(" "))).trim()}.`;
-  }
-  // A question before the end is something Reason asked them: the answer is said whole, never
-  // swapped for (or put beside) "want me to text you the rest?" — a yes must answer one question.
-  // (A line in quotes — an opener to try, "have you been here before?" — is not a question to them.)
-  if (body.some(x => /\?/.test(unquoted(x)))) return null;
-  const out = lastQ ? `${say} ${lastQ}` : `${say} ${TEXT_REST_OFFER}`;
-  // The content is what shrinks, never the question: it is kept whole however long it is.
-  if (!say || out.length >= full.length - 20) return null;
-  return { say: out, full, offered: !lastQ };
+export function holdLineFor({ kind = "first", tool = false, n = 0, name = "" } = {}) {
+  if (kind !== "late") return toolHoldLine(name);
+  const pool = LATE_LINES.filter(l => tool || !CHECK_WORDING.test(l));
+  return pool[n % pool.length];
 }
 
-/** Would cutting this answer lose something they must hear whole? (its tools: an agreement, a readback, a send) */
-export function sayWhole(reply) {
-  return !!reply?.endCall || (reply?.tools ?? []).some(n => SAY_WHOLE_TOOLS.test(String(n)));
-}
+// ---------- no code cut (call 80) ----------
 
-/** The note on the voice's cut answer, for Reason's next turns while it stands. */
-export function textOfferNote(full, { offered = true } = {}) {
-  const whole = `The whole answer was: "${String(full).replace(/"/g, "'")}"`;
-  return offered
-    ? `[Not all said aloud: on the phone you said only the start of this answer and offered to text them the rest. ${whole}`
-      + " If what they say next means yes to that, text it to them with message_send to \"owner\" (the whole answer, as a short text), and only then say it's sent."
-      + " If they don't take you up on it, leave it and answer what they said.]"
-    : `[Not all said aloud: on the phone you said only the start of this answer and its question. ${whole} If they ask for the rest, or for it by text, you have it.]`;
-}
+// Call 79's floor under long answers — keep the first sentences, add "there's a bit more, want me to
+// text you the rest?" — threw away the answer on call 80: Reason's turn text strung every round
+// together, so the first sentences were the words BEFORE the tool ("I'll grab your location first")
+// and the weather after it was the part cut, twice; and an offer bolted onto an ordinary reply is what
+// he hated most. Gone. What is said is Reason's answer as it wrote it: the words after its last tool
+// (./voice.js `owned` lead-in), streamed sentence by sentence (`speakPiece`). How long it runs, and
+// whether something naturally long ("the latest from Nigeria") is said in part and offered by text,
+// is the model's call by meaning (./voice-prompt.js `ownerCallFrame`), never a character count.
 
 /** The words the voice is given when it claimed something nobody confirmed. Code's words, never the caller's. */
 export const GUARD_CORRECTION = "Stop. Nothing has been confirmed as done yet. In a few words, correct yourself: say it is not done yet"
@@ -650,7 +742,7 @@ const SPOKEN_FILLERS = new Set([...METER_KINDS.holdingLines, ...METER_KINDS.fill
  * out again here as a second net. Platform tools come back as their names: `end_call` (with its
  * optional spoken message) is honoured; `skip_turn` means nothing to say.
  */
-export async function readTurn(stream) {
+export async function readTurn(stream, { onContent = null } = {}) {
   const said = [];
   const tools = new Map();
   for await (const chunk of stream) {
@@ -660,7 +752,15 @@ export async function readTurn(stream) {
       let j;
       try { j = JSON.parse(m[1]); } catch { continue; }
       const d = j?.choices?.[0]?.delta ?? {};
-      if (typeof d.content === "string" && d.content) said.push(d.content);
+      if (typeof d.content === "string" && d.content) {
+        said.push(d.content);
+        // Each piece of Reason's words as it is written (a sentence: ./voice.js emits whole ones), for a
+        // voice that says them as they come (call 80). Code fillers never; the marker never.
+        if (onContent && !SPOKEN_FILLERS.has(d.content.trim().toLowerCase())) {
+          const piece = withoutSilenceMarker(d.content).text.trim();
+          if (piece) { try { onContent(piece); } catch { /* a reader never breaks the turn */ } }
+        }
+      }
       for (const t of Array.isArray(d.tool_calls) ? d.tool_calls : []) {
         const k = t.index ?? 0;
         const got = tools.get(k) ?? { name: "", args: "" };
@@ -882,6 +982,31 @@ export function hasVoice(b64) {
 
 /** 100 ms of μ-law silence: what the warm session is fed so its clock runs before anyone is on the line. */
 const SILENCE_100MS = Buffer.alloc(800, 0xff).toString("base64");
+
+/** The end of a spoken line: faded over this many samples (30 ms at 8 kHz) up to where its sound stops. */
+export const FADE_SAMPLES = 240;
+/** A held piece with nothing after it this long is faded and sent. */
+export const FADE_FLUSH_MS = 60;
+/** Below this a sample is the quiet after the words, not the words. */
+const FADE_FLOOR = 300;
+
+/**
+ * A μ-law piece with its last sound faded out: a raised-cosine ramp over the FADE_SAMPLES before the
+ * last sample louder than FADE_FLOOR, down to silence there. Exported for the tests.
+ */
+export function fadeOut(b64) {
+  const buf = Buffer.from(String(b64 ?? ""), "base64");
+  let end = buf.length - 1;
+  while (end >= 0 && Math.abs(ulawToPcm(buf[end])) <= FADE_FLOOR) end--;
+  if (end < 0) return b64;
+  const from = Math.max(0, end - FADE_SAMPLES + 1);
+  const n = end - from + 1;
+  for (let i = from; i <= end; i++) {
+    const g = 0.5 * (1 + Math.cos(Math.PI * (i - from + 1) / n));
+    buf[i] = pcmToUlaw(Math.round(ulawToPcm(buf[i]) * g));
+  }
+  return buf.toString("base64");
+}
 /** The greeting is over once the voice has been quiet this long after speaking; the session is then paused. */
 export const WARM_QUIET_MS = 700;
 /** Fed this long and still no greeting: say it again once (the docs: the greeting is never guaranteed). */
@@ -1194,6 +1319,13 @@ export const FIRST_EXCHANGE_QUIET_MS = 700;
 export const TALKOVER_MAX_MS = 2000;
 /** With no words of theirs through by the limit, it waits this much longer for quiet, then plays anyway (a noisy line). */
 export const TALKOVER_NOISE_MS = 1500;
+/**
+ * Held this long with no words of theirs coming through since the hold began, the run goes out: it is
+ * the line, not them (call 80: "Hey, I'm good" waited 1.9 s and the late line 1.3 s behind a quiet room).
+ * 1 s, not less: their own words reach the transcript 0.5–1.5 s behind their voice, so a shorter wait
+ * reads the middle of their sentence as "no words" and talks over them (cold review, call 80).
+ */
+export const TALKOVER_WORDLESS_MS = 1000;
 /** How often a held run checks whether they have stopped. */
 const OVER_TICK_MS = 40;
 /** After a dropped run: this much quiet from them, with nothing from the voice, and it is asked to answer. */
@@ -1245,7 +1377,7 @@ export class GptLiveCall {
     this.dropped = 0;
     this.openLive = openLive;
     this.warm = warm;
-    this.brain = brain ?? ((messages, hooks = {}) => reasonTurn({ call, messages, log, onTool: hooks.onTool }));
+    this.brain = brain ?? ((messages, hooks = {}) => reasonTurn({ call, messages, log, onTool: hooks.onTool, onContent: hooks.onContent }));
     // The goodbye read gets a started CLI (kept ready from the first goodbye-ish line on); injected judges don't.
     this.judge = judge ?? ((q) => judgeEnding(q, q.kind === "goodbye" ? { warm: this.takeByeReader() } : {}));
     this.byeReader = null;
@@ -1265,11 +1397,10 @@ export class GptLiveCall {
     this.callerSpeechFrom = 0;
     // Their last frame of speech over the line's own floor (./hearing.js), for talk-over and holding lines.
     this.theirSpeechAt = -Infinity;
-    // Holding lines said by code (call 79), and a cut answer's standing offer to text the rest.
+    // Holding lines said by code (call 79).
     this.holdLines = 0;
     this.quickHolds = 0;
     this.lateHolds = 0;
-    this.textOffer = null;
     // Talk-over (call 79: "how are | you" cut into at 0:07): a run of the voice's held while they finish.
     this.over = null;
     this.overTimer = null;
@@ -1447,6 +1578,39 @@ export class GptLiveCall {
     this.twilio.send(JSON.stringify({ ...obj, streamSid: this.streamSid }));
   }
 
+  /**
+   * The voice's audio to Twilio, one piece behind (call 80): GPT-Live often stops a line at full level
+   * and drops to digital silence in 5–10 ms, which on the phone sounds like the line going dead. A piece
+   * with speech in it is held until the next arrives — the session streams silence between words, so
+   * that is a frame or so — and when the next has no speech, or none comes within FADE_FLUSH_MS, the
+   * held piece's last FADE_SAMPLES before its sound ends are faded out (`fadeOut`).
+   */
+  voiceOut(b64, speech) {
+    // A business line's audio is gated word by word (`gateOpen`, `ownOpener`): it goes as it is.
+    if (this.line) return this.toTwilio({ event: "media", media: { payload: b64 } });
+    const held = this.voiceTail;
+    this.voiceTail = null;
+    if (this.tailTimer) { this.timers.clearTimeout(this.tailTimer); this.tailTimer = null; }
+    if (held) this.toTwilio({ event: "media", media: { payload: speech ? held : fadeOut(held) } });
+    if (!speech) return this.toTwilio({ event: "media", media: { payload: b64 } });
+    this.voiceTail = b64;
+    this.tailTimer = this.timers.setTimeout(() => this.flushTail(), FADE_FLUSH_MS);
+  }
+
+  /** The held piece, faded, now (nothing came after it). */
+  flushTail() {
+    this.tailTimer = null;
+    const held = this.voiceTail;
+    this.voiceTail = null;
+    if (held && !this.done) this.toTwilio({ event: "media", media: { payload: fadeOut(held) } });
+  }
+
+  /** The held piece thrown away with everything else unplayed (a clear). */
+  dropTail() {
+    this.voiceTail = null;
+    if (this.tailTimer) { this.timers.clearTimeout(this.tailTimer); this.tailTimer = null; }
+  }
+
   /** The room under the call (src/calls/ambience.js): topped up every TICK_MS while the call is up. */
   roomTick() {
     if (!this.bed || this.done) return;
@@ -1462,6 +1626,7 @@ export class GptLiveCall {
     // A run held back for talk-over goes with everything else unplayed when the guard stops a claim. A
     // barge-in leaves it alone: it is already waiting for them to finish (`overTalk`).
     if (why === "guard") this.overDiscard();
+    this.dropTail();
     this.toTwilio({ event: "clear" });
     this.tape.cut();
     this.playheadAt = this.now();
@@ -1653,8 +1818,9 @@ export class GptLiveCall {
     this.tape.reason(buf);
     this.playheadAt = Math.max(this.playheadAt, t) + buf.length / 8;
     // The session streams silence between words, so "quiet" for a hang-up is no SPEECH arriving.
-    if (hasSpeech(b64)) { this.lastVoiceAt = t; this.voiceEndsAt = this.playheadAt; }
-    this.toTwilio({ event: "media", media: { payload: b64 } });
+    const speech = hasSpeech(b64);
+    if (speech) { this.lastVoiceAt = t; this.voiceEndsAt = this.playheadAt; }
+    this.voiceOut(b64, speech);
     for (const turn of this.pending.values()) if (turn.firstAudioMs == null) turn.firstAudioMs = t - turn.startedAt;
     for (const turn of this.answered ?? []) {
       if (turn.firstRealMs == null && t >= turn.resultAt) {
@@ -1698,7 +1864,8 @@ export class GptLiveCall {
     const said = withoutSilenceMarker(this.utter);
     // A claim is only ever the echo of Reason's own: nothing pending, and Reason's latest answer said
     // so within the last minute. A request since then starts the clock again (see `delegate`).
-    const confirmed = this.pending.size === 0 && this.lastResultClaimed && t - this.lastResultAt < 60_000;
+    // While an answer is streaming in (`speakPiece`), its own pieces already said count as Reason's.
+    const confirmed = [...this.pending.values()].every(p => p.pieces > 0) && this.lastResultClaimed && t - this.lastResultAt < 60_000;
     // The opening line, before they have said a word or anything was asked, is code's words — a
     // stranger's intro says "getting things done" (2026-10-31 drive: the guard cut the intro mid-line).
     const opening = this.delegations === 0 && !this.turns.some(x => x.who === "them") && fromLine(this.utter, this.greeting);
@@ -1763,8 +1930,9 @@ export class GptLiveCall {
     const pre = this.beforeOpener(t);
     const last = this.turns.at(-1);
     if (pre) { pre.text += pre.text ? delta : delta.trimStart(); pre.at = t; }
-    else if (last && last.who === "them" && t - last.at < 4000) { last.text += delta; last.at = t; }
-    else this.turns.push({ who: "them", text: delta.trimStart(), at: t, from: t });
+    else if (last && last.who === "them" && t - last.at < 4000) { last.text += delta; last.at = t; if (delta.trim()) last.floored = false; }
+    else this.turns.push({ who: "them", text: delta.trimStart(), at: t, from: t, speechFrom: Math.min(t, this.callerSpeechFrom || t) });
+    if (delta.trim() && !pre) this.armReplyFloor();
     // Words while a goodbye hang-up waits: hold it, and read the end again with them in it.
     if (this.line && !this.talking && delta.trim() && !pre && !this.openerAnswers()) this.lineHeard();
     if (this.ending && this.endWhy === "goodbye" && !this.done && delta.trim()) {
@@ -1815,8 +1983,17 @@ export class GptLiveCall {
       return;
     }
     this.delegations++;
-    const turn = { id, startedAt: this.now(), msgCount: 0, firstAudioMs: null, firstRealMs: null, resultAt: null, tool: "", held: 0 };
+    // `running`: Reason's tools running right now; `ran`: those that ran and came back ok this turn —
+    // both off voice.js's own hooks, never the stream (call 80: platform tools only, so a real send read
+    // as none). `pieces`: Reason's words handed to the voice so far, as they were written (`speakPiece`).
+    const turn = { id, startedAt: this.now(), msgCount: 0, firstAudioMs: null, firstRealMs: null, resultAt: null, held: 0, running: new Set(), runs: new Map(), ran: new Set(), pieces: 0, spoken: "", sendLine: false };
+    // Words the voice said since their latest words began, before this hand-off reached code: its own
+    // named hand-off line (`HANDOFF_ACK`), said as it handed over. Code adds no first line after it.
+    const them = this.turns.findLast(x => x.who === "them");
+    const mine = this.turns.findLast(x => x.who === "reason" && !x.seeded);
+    turn.preAck = mine && them && (mine.from ?? mine.at) > (them.from ?? them.at) ? String(mine.text ?? "") : "";
     this.pending.set(id, turn);
+    this.lastHandoffAt = turn.startedAt;
     this.latest = id;
     this.lastResultClaimed = false;
     // Call 79: the voice's automatic "let me check" is cancelled before it is said (an empty quiet
@@ -1826,22 +2003,28 @@ export class GptLiveCall {
       // A factual quiet update (it cancels the automatic acknowledgement just as an empty one does, per
       // the docs) that also says the answer is Reason's: on the 2026-11-08 drives a voice left to wait in
       // silence sometimes began answering on its own, ahead of Reason.
-      this.live.send({ type: "session.thinking.append", event_id: `quiet_${id}`, delegation_id: id, content: WAIT_NOTE });
+      // Cancelled at once on every call. Their own call's named line is the voice's own, said as it
+      // hands over (`HANDOFF_ACK`); the automatic one, left to play (drive v4 11-08 on OVH), came ~1 s
+      // later and stock — "Right, checking that for you.", "Working on it." — so it never plays.
+      this.live.send({ type: "session.thinking.append", event_id: `quiet_${id}`, delegation_id: id, content: this.who?.owner ? OWN_WAIT_NOTE : WAIT_NOTE });
+      // Their own call, nothing said yet: the voice is asked for its named line now — on drive v5 it
+      // handed over in silence on all five lookups when only told in its instructions (v3: 4 of 5).
+      // It knows the question; the line is its own words, and it says nothing when no lookup is
+      // needed. Never right after an unanswered line of the hand-off before (never two in a row).
+      // An earlier hand-off still open whose line was said (or was just asked for, its reply maybe not in yet).
+      const before = [...this.pending.values()].some(p => p !== turn && !p.pieces && (this.voiceAcked(p) || p.held || (p.askedAck && this.now() - p.startedAt < ACK_REPLY_MS)));
+      turn.afterAck = before;
+      // Only when they have said something (a question to hand over, not the voice's own initiative).
+      const theirs = this.turns.findLast(x => x.who === "them");
+      if (this.who?.owner && !this.persona && theirs && !this.voiceAcked(turn) && !before) {
+        turn.askedAck = true;
+        this.live.send({ type: "session.commentary.append", event_id: `ack_${id}`, delegation_id: null, content: ACK_ASK });
+        this.log({ gptlive_ack_asked: this.call.id });
+      }
       turn.holdTimer = this.timers.setTimeout(() => this.holdLine(id, "first"), HOLD_LINE_AFTER_MS);
       turn.lateTimer = this.timers.setTimeout(() => this.holdLine(id, "late"), LATE_HOLDING_MS);
     }
     const messages = this.messages();
-    // A cut answer stands for a turn or two: the whole of it rides on the voice's own words for it (the
-    // message right after the ones its hand-off read), so Reason reads their reply against it
-    // (`textOfferNote`) — never on their words, which the harm screen reads as theirs.
-    const offer = this.textOffer;
-    if (offer && this.delegations - offer.n > TEXT_OFFER_TURNS) this.textOffer = null;
-    else if (offer) {
-      // Their words are counted, not the voice's: the seeded greeting gives way to the voice's own.
-      let users = 0;
-      const at = messages.findIndex((m, i) => (m.role === "user" ? ++users : users) === offer.users && m.role === "assistant" && i < messages.length - 1);
-      if (at >= 0) messages[at] = { ...messages[at], content: `${messages[at].content}\n${textOfferNote(offer.full, { offered: offer.offered })}` };
-    }
     turn.msgCount = messages.length;
     turn.users = messages.filter(m => m.role === "user").length;
     this.log({ gptlive_delegation: this.call.id, n: this.delegations, messages: messages.length });
@@ -1852,8 +2035,29 @@ export class GptLiveCall {
     }, 8000);
     let reply;
     try {
-      // Each of Reason's own tools as it starts: the only thing that makes a holding line say "check".
-      reply = await this.brain(messages, { onTool: (name) => { if (!turn.tool && isLookup(name)) turn.tool = String(name); } });
+      // Each of Reason's own tools as it starts and once it has run: a holding line says "check" only
+      // while a lookup runs, and a "sent" is said only behind a send that ran.
+      const onTool = (name, phase = "start", info = {}) => {
+        const n = String(name ?? "");
+        if (!n) return;
+        // Counted, so two overlapping calls of one tool stay "running" until both are done.
+        const c = (turn.runs.get(n) ?? 0) + (phase === "done" ? -1 : 1);
+        if (c > 0) { turn.runs.set(n, c); turn.running.add(n); } else { turn.runs.delete(n); turn.running.delete(n); }
+        if (phase === "done") { if (info?.ok !== false) turn.ran.add(n); return; }
+        // A lookup or a send: work they are waiting on. Saving a rule is not (it is done in a blink).
+        if ((isLookup(n) || SEND_TOOLS.has(n)) && !RULE_WRITERS.includes(n)) turn.toolSeen = true;
+        // A tool of Reason's has started into a wait that has heard nothing yet: its line goes now,
+        // not on the next poll (drive 11-08 on OVH: 9.4 s median of nothing before an answer). Never
+        // inside HOLD_LINE_AFTER_MS — the first timer reads it there.
+        if (holding && turn.toolSeen && !turn.pieces && !turn.held && this.now() - turn.startedAt >= HOLD_LINE_AFTER_MS) this.holdLine(id, "first");
+        // A tool started after words were already said: the late line covers this wait too.
+        if (holding && turn.pieces && !turn.lateTimer) turn.lateTimer = this.timers.setTimeout(() => this.holdLine(id, "late"), LATE_HOLDING_MS);
+      };
+      // Their own call (and a stranger's): each sentence goes to the voice as it is written, so it starts
+      // speaking on the first one instead of after the whole turn (call 80: 2.2 s of turn, then 1.5–3.3 s
+      // more for the voice). A business line keeps whole turns: its words are said exactly.
+      const onContent = this.line ? null : (piece) => this.speakPiece(id, turn, piece);
+      reply = await this.brain(messages, { onTool, onContent });
     } catch (e) {
       reply = { text: "Something broke on my end there.", tools: [], endCall: null, skip: false, error: (e?.message ?? String(e)).split("\n")[0] };
     }
@@ -1862,28 +2066,32 @@ export class GptLiveCall {
     if (turn.lateTimer) this.timers.clearTimeout(turn.lateTimer);
     this.pending.delete(id);
     if (this.done) return;
+    // A rule saved, changed or dropped on this turn reaches the voice now, not only on the next call —
+    // a superseded turn's too, since the write happened all the same.
+    if (this.who?.owner && RULE_WRITERS.some(n => turn.ran.has(n))) this.freshRules();
     if (this.latest !== id) {
       // They said something new while this ran; Reason has already started on that, and this answer is
       // to a question that has moved on.
       this.log({ gptlive_delegation_superseded: this.call.id });
       return;
     }
-    turn.resultAt = this.now();
-    turn.totalMs = turn.resultAt - turn.startedAt;
-    const honest = withoutUnbackedSends([reply.text, reply.endCall?.message].filter(Boolean).join(" ").trim(), reply.tools);
-    if (honest.dropped) this.log({ gptlive_unbacked_send: this.call.id, dropped: honest.dropped, tools: reply.tools ?? [] });
-    // The rest of a cut answer has been texted: the offer is spent.
-    if (this.textOffer && this.textOffer.n < this.delegations && (reply.tools ?? []).some(n => SENDS.test(String(n)))) this.textOffer = null;
-    let spoken = honest.text;
-    // A long answer on their own call: the start, then the offer to text the rest (call 79). Never one
-    // with an agreement, a readback, a send or a goodbye behind it (`sayWhole`).
-    const cut = !this.line && !this.persona && Number(this.call.is_owner) === 1 && !sayWhole(reply) ? shortForPhone(spoken) : null;
-    if (cut) {
-      this.textOffer = { full: cut.full, offered: cut.offered, n: this.delegations, users: turn.users };
-      this.log({ gptlive_reply_cut: this.call.id, chars: cut.full.length, said: cut.say.length, offered: cut.offered });
-      spoken = cut.say;
+    const doneAt = this.now();
+    turn.totalMs = doneAt - turn.startedAt;
+    const tools = [...new Set([...(reply.tools ?? []), ...turn.ran])];
+    // The goodbye end_call carries is said too, as one more piece of the answer.
+    if (turn.pieces && reply.endCall?.message) this.speakPiece(id, turn, reply.endCall.message);
+    // Broke after some words went out: the half answer is closed out loud, never left hanging.
+    if (turn.pieces && reply.error && reply.text) this.speakPiece(id, turn, reply.text);
+    let spoken = turn.spoken;
+    if (!turn.pieces) {
+      turn.resultAt = doneAt;
+      const honest = withoutUnbackedSends([reply.text, reply.endCall?.message].filter(Boolean).join(" ").trim(), tools);
+      if (honest.dropped) this.log({ gptlive_unbacked_send: this.call.id, dropped: honest.dropped, tools });
+      spoken = honest.text;
     }
-    if (spoken) {
+    if (turn.pieces) {
+      // Said as it came (`speakPiece`).
+    } else if (spoken) {
       this.lastResultClaimed = claimsDone(spoken);
       this.lastResultAt = turn.resultAt;
       this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: spoken.slice(0, 1800) });
@@ -1892,13 +2100,21 @@ export class GptLiveCall {
       // Call 68 (2026-11-01): "Hmm. Lemme have a think." then Reason skipped, the voice was told to say
       // nothing, and the line sat silent until he said "Hello". A thought announced is closed out loud.
       this.log({ gptlive_skip_followed_up: this.call.id });
-      this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: SKIP_FOLLOW_UP });
+      this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: turn.askedAck || turn.preAck || turn.held ? ACK_SKIP_FOLLOW_UP : SKIP_FOLLOW_UP });
       (this.answered ??= []).push(turn);
+    } else if (this.ownTalk() && !this.ending && this.answersQuestion(turn)) {
+      // Paid set 3 (11-09): Reason skipped his "No" to its own question and the line sat silent 36 s. On
+      // their own call that skip is closed by the voice itself, in a few words; the floor isn't asked again.
+      // Any other skip ("hang on, let me grab my keys") stays quiet, as before.
+      this.turns.findLast(x => x.who === "them").floored = true;
+      this.live.send({ type: "session.commentary.append", event_id: `result_${id}`, delegation_id: id, content: SKIP_REPLY });
+      this.log({ gptlive_skip_replied: this.call.id });
+      this.heard(turn);
     } else {
       this.live.send({ type: "session.thinking.append", event_id: `result_${id}`, delegation_id: id, content: "Reason has nothing to add right now. Say nothing more about it and listen." });
       this.heard(turn);
     }
-    this.log({ gptlive_result: this.call.id, ms: turn.totalMs, chars: spoken.length, tools: reply.tools ?? [], ends: !!reply.endCall, ...(reply.error ? { error: reply.error } : {}) });
+    this.log({ gptlive_result: this.call.id, ms: turn.totalMs, chars: spoken.length, tools, ends: !!reply.endCall, pieces: turn.pieces, ...(turn.firstPieceMs != null ? { first_piece_ms: turn.firstPieceMs } : {}), ...(reply.error ? { error: reply.error } : {}) });
     // A machine verdict that came during this hand-off, after talk mode turned off: read now.
     if (this.line && !this.talking && this.amdNote && !this.pending.size) {
       const note = this.amdNote;
@@ -1916,6 +2132,52 @@ export class GptLiveCall {
     if (reply.endCall) this.hangUpAfterSpeech();
   }
 
+  /** Their rules as they are now, told to the voice when they differ from what it was given. */
+  freshRules() {
+    const now = rulesNote(this.call.conversation_id) || "";
+    const brief = String(this.who?.brief ?? "");
+    if (this.rulesTold === undefined && (now ? brief.includes(now) : !brief.includes(RULES_HEADING))) return false;
+    if (this.rulesTold !== undefined && now === this.rulesTold) return false;
+    this.rulesTold = now;
+    this.log({ gptlive_rules_told: this.call.id, rules: now ? "changed" : "none" });
+    return tellLive(this.call.id, now ? `Updated just now — ${now}` : "Updated just now — they have no rules any more about how you treat them: drop the ones you were given earlier.");
+  }
+
+  /**
+   * One piece of Reason's answer (a sentence, as voice.js wrote it), to the voice now (call 80). Docs
+   * (live-delegation, "Stream useful results"): several commentary appends on one delegation are said
+   * in turn. Each piece passes the same honesty floor the whole answer did: a "sent" with no send that
+   * ran this turn is taken out, and the honest line said once in its place. Nothing once a newer
+   * hand-off has taken over or the call is done.
+   */
+  speakPiece(id, turn, piece) {
+    if (this.done || this.latest !== id) return;
+    let text = String(piece ?? "").replace(/\s+/g, " ").trim();
+    if (!text) return;
+    const honest = withoutUnbackedSends(text, [...turn.ran]);
+    if (honest.dropped) {
+      this.log({ gptlive_unbacked_send: this.call.id, dropped: honest.dropped, tools: [...turn.ran] });
+      text = turn.sendLine ? honest.text.replace(/I'll text that to you\.\s*/g, "").trim() : honest.text;
+      turn.sendLine = true;
+      if (!text) return;
+    }
+    const t = this.now();
+    // Words are going out: no holding line over them (a tool that starts after re-arms the late one).
+    if (turn.holdTimer) this.timers.clearTimeout(turn.holdTimer);
+    if (turn.lateTimer) this.timers.clearTimeout(turn.lateTimer);
+    turn.holdTimer = turn.lateTimer = null;
+    if (!turn.pieces) {
+      turn.resultAt = t;
+      turn.firstPieceMs = t - turn.startedAt;
+      (this.answered ??= []).push(turn);
+    }
+    turn.pieces++;
+    turn.spoken = turn.spoken ? `${turn.spoken} ${text}` : text;
+    if (claimsDone(text)) this.lastResultClaimed = true;
+    this.lastResultAt = t;
+    this.live.send({ type: "session.commentary.append", event_id: `result_${id}_${turn.pieces}`, delegation_id: id, content: text.slice(0, 1800) });
+  }
+
   /**
    * One holding line for a hand-off still running (call 79), said by code through the voice: at
    * HOLD_LINE_AFTER_MS ("first") or the late deadline ("late"). Never when the answer is in, a newer
@@ -1926,19 +2188,108 @@ export class GptLiveCall {
     const turn = this.pending.get(id);
     if (!turn || this.done || this.ending || this.latest !== id) return;
     const t = this.now();
-    if (kind === "first" && turn.held) return;
+    // Reason's words are already going out: a first line now would land after them (cold review).
+    if (kind === "first" && (turn.held || turn.pieces)) return;
+    // One retry timer at a time: a tool's own call arriving while a poll is armed never leaves two.
+    const retry = () => { if (turn.holdTimer) this.timers.clearTimeout(turn.holdTimer); turn.holdTimer = this.timers.setTimeout(() => this.holdLine(id, "first"), 400); };
     // They are talking, or the voice is (its own few words, a line still playing): nothing over either.
     // The first line waits for that to pass, so a "yeah —" of the voice's own never leaves dead air after it.
     const busy = t - this.theirSpeechAt < HOLD_CALLER_QUIET_MS || t - this.lastVoiceAt < HOLD_VOICE_QUIET_MS || this.voiceEndsAt > t || (this.over && !this.over.dropped);
     if (busy) {
-      if (kind === "first" && t - turn.startedAt < LATE_HOLDING_MS - 1500) turn.holdTimer = this.timers.setTimeout(() => this.holdLine(id, "first"), 400);
+      if (kind === "first" && t - turn.startedAt < LATE_HOLDING_MS - 1500) retry();
       return;
     }
-    const line = holdLineFor({ kind, tool: !!turn.tool, n: kind === "late" ? this.lateHolds++ : this.quickHolds++ });
+    // "Check / look" only while one of Reason's lookups is running right now. And the first line is
+    // only ever that: a wait with no lookup behind it gets no "one sec" at all (call 80, his rule:
+    // "don't stall with 'one sec'"); the answer is streaming in, and the late line still covers a long one.
+    // A send running gets "Sending it now."; any other tool that has run or is running, "one sec" —
+    // true, Reason is doing something. Nothing has started yet: no line, the answer may be a sentence away.
+    const looking = [...turn.running].find(isLookup) ?? "";
+    // The voice already said its own named line for this hand-off (`HANDOFF_ACK`): never a second
+    // one in a row from code. The late line still covers a long wait.
+    if (kind === "first" && (this.voiceAcked(turn) || turn.afterAck)) return;
+    // Asked for its line a moment ago and its words aren't in yet: wait for them, not over them (cold review).
+    if (kind === "first" && turn.askedAck && t - turn.startedAt < ACK_REPLY_MS) { retry(); return; }
+    if (kind === "first" && !looking && !turn.toolSeen) {
+      if (t - turn.startedAt < LATE_HOLDING_MS - 1500) retry();
+      return;
+    }
+    // Omari 11-08: a first line names what is running (a send, then a lookup), or what ran — never a
+    // stock "one sec". A tool with no named line: nothing yet, a later tool may have one.
+    const named = kind === "first"
+      ? [...turn.running].find(n => SEND_TOOLS.has(n) && toolHoldLine(n)) ?? [looking, ...turn.running, ...[...turn.ran].reverse()].find(n => toolHoldLine(n)) ?? ""
+      : "";
+    const line = holdLineFor({ kind, tool: !!looking, name: named, n: kind === "late" ? this.lateHolds++ : this.quickHolds++ });
+    if (!line) {
+      if (t - turn.startedAt < LATE_HOLDING_MS - 1500) retry();
+      return;
+    }
     turn.held++;
     this.holdLines++;
     this.live.send({ type: "session.commentary.append", event_id: `hold_${kind}_${id}`, delegation_id: id, content: holdingInstruction(line) });
-    this.log({ gptlive_hold_line: this.call.id, kind, ms: t - turn.startedAt, tool: turn.tool || null, line });
+    this.log({ gptlive_hold_line: this.call.id, kind, ms: t - turn.startedAt, tool: looking || null, line });
+  }
+
+  /**
+   * Has the voice said words of its own for this hand-off — its named line as it handed over (before
+   * code heard of it) or since? A bare listening sound is not one. Then code says no first line: two
+   * in a row is what Omari ruled out (11-08).
+   */
+  /**
+   * Was the hand-off their reply to a question Reason had just asked ("Tell me and I'll send it." / "…?"),
+   * with nothing said by them since it began? Then a skip still gets a reply (`SKIP_REPLY`).
+   */
+  answersQuestion(turn) {
+    const i = this.turns.findLastIndex(x => x.who === "them");
+    const them = this.turns[i];
+    if (!them || (them.from ?? them.at) > turn.startedAt) return false;
+    const asked = this.turns.slice(0, i).findLast(x => x.who === "reason" && !x.seeded);
+    return !!asked && /\?\s*$|\b(?:tell me|let me know)\b[^.?!]*[.!]?\s*$/i.test(String(asked.text ?? "").trim());
+  }
+
+  /** Their own call, talking with Reason (not a line, a stranger's or a business call). */
+  ownTalk() {
+    return !!this.who?.owner && !this.persona && !this.line;
+  }
+
+  /** Their own call: (re)start the wait for a reply to their latest words (`REPLY_FLOOR_MS`). */
+  armReplyFloor() {
+    if (!this.ownTalk() || this.done) return;
+    if (this.replyFloorTimer) this.timers.clearTimeout(this.replyFloorTimer);
+    this.replyFloorTimer = this.timers.setTimeout(() => this.replyFloor(), REPLY_FLOOR_MS);
+  }
+
+  /**
+   * Their words have had no reply: no voice speech since they began, and nothing handed to Reason since
+   * (a hand-off's own result or skip closes it out loud — `SKIP_REPLY`). Asked once per turn of theirs;
+   * never around a goodbye, after a farewell, or for a bare "mm-hmm".
+   */
+  replyFloor() {
+    this.replyFloorTimer = null;
+    if (this.done || this.ending || this.byeTimer || this.byeAsking || this.byeInFlight || !this.live) return;
+    const t = this.now();
+    if (this.farewellAt && t - this.farewellAt < AFTER_FAREWELL_MS) return;
+    const them = this.turns.findLast(x => x.who === "them");
+    const said = String(them?.text ?? "").trim();
+    if (!said || them.floored || BARE_SOUND.test(said) || /^(?:mm-?hmm|uh-?huh|mm|yeah|okay|ok|right|sure)[.!,\s]*$/i.test(said)) return;
+    const from = Math.min(them.speechFrom ?? them.from ?? them.at, them.from ?? them.at);
+    if (this.callerByeAt >= from) return;
+    // Still talking (speech frames in the last stretch): wait for them to stop.
+    if (t - this.callerSpeechAt < REPLY_FLOOR_MS - 500) return this.armReplyFloor();
+    if ((this.voiceSpeechAt ?? -Infinity) >= from) return;
+    // Handed to Reason since they spoke: its answer, late line or skip reply closes it.
+    if ((this.lastHandoffAt ?? -Infinity) >= from) return;
+    // An earlier hand-off still running, or a result just handed over and not yet heard: look again after it.
+    const unheard = (this.lastResultAt ?? -Infinity) > (this.voiceSpeechAt ?? -Infinity) && t - this.lastResultAt < REPLY_FLOOR_MS * 2;
+    if ([...this.pending.values()].some(p => !p.resultAt) || unheard) return this.armReplyFloor();
+    them.floored = true;
+    this.live.send({ type: "session.commentary.append", event_id: `reply_${this.call.id}_${t}`, delegation_id: null, content: REPLY_ASK });
+    this.log({ gptlive_reply_floor: this.call.id, ms: t - this.callerSpeechAt, said: said.slice(0, 40) });
+  }
+
+  voiceAcked(turn) {
+    const words = `${turn.preAck ?? ""} ${turn.ack ?? ""}`.trim();
+    return !!words && !BARE_SOUND.test(words) && !/^(?:mm-?hmm|uh-?huh|mm|yeah|okay|right|sure)[.!,\s]*$/i.test(words);
   }
 
   /**
@@ -1948,7 +2299,8 @@ export class GptLiveCall {
    */
   promisedThought(turn) {
     if (this.line) return false;
-    const ack = String(turn.ack ?? "").trim();
+    // The voice's named line said as it handed over (`preAck`) is a promise too (cold review 11-08).
+    const ack = String(turn.ack || turn.preAck || "").trim();
     // Their words up to the voice's "let me think" are the question still being transcribed; words after
     // it are them talking again. An ack that ends on a question already handed the turn back.
     // Any words of its own count, not only the phrasings in THINKING_ACK: drives showed the voice words
@@ -2502,6 +2854,7 @@ export class GptLiveCall {
     if (!o || o.dropped || this.done) return;
     const t = this.now();
     if (t - this.theirSpeechAt >= o.wait) return this.overRelease();
+    if (t - o.since >= TALKOVER_WORDLESS_MS && this.lastCallerAt < o.since) return this.overRelease();
     // Still "talking" at the limit: if words of theirs have come through since, it was half their
     // sentence and is dropped; if none have, it is the line (a noisy room) and the run goes out — never
     // dead air for noise.
@@ -3090,6 +3443,7 @@ export class GptLiveCall {
     this.endedAt = this.now();
     this.endWhy = this.endWhy || why;
     if (this.capTimer) this.timers.clearTimeout(this.capTimer);
+    if (this.replyFloorTimer) this.timers.clearTimeout(this.replyFloorTimer);
     if (this.byeTimer) this.timers.clearTimeout(this.byeTimer);
     this.byeReaderWanted = false;
     if (this.byeReader) { const r = this.byeReader; this.byeReader = null; void r.ready.then(w => w?.cancel()); }
@@ -3161,7 +3515,7 @@ export class GptLiveCall {
 }
 
 /** One Reason turn for the call, run in process (`llmRequest` in ./voice.js). */
-export async function reasonTurn({ call, messages, log = () => {}, extras = {}, onTool = null }) {
+export async function reasonTurn({ call, messages, log = () => {}, extras = {}, onTool = null, onContent = null }) {
   const out = await llmRequest({
     rawBody: JSON.stringify({
       model: "reason", messages,
@@ -3170,7 +3524,7 @@ export async function reasonTurn({ call, messages, log = () => {}, extras = {}, 
     log, extras, ...(onTool ? { onTool } : {}),
   });
   if (!out.stream) return { text: "", tools: [], endCall: null, skip: true, error: `turn refused (${out.status})` };
-  return readTurn(out.stream);
+  return readTurn(out.stream, { onContent });
 }
 
 /** How long the after-call text waits on the model's read of how the call went. */
@@ -3263,10 +3617,28 @@ export function stateFromTwilio(s) {
  * cache to warm). REASON_CALL_CACHE_WARM=off stops it.
  */
 export function warmTheTurn(row, log = () => {}, { warm = warmCallCache } = {}) {
+  // Where they usually are (./callmemory.js) is read while it rings too, for the voice's brief and
+  // Claude's turn alike — whatever backend the turns run on.
+  if (row?.id && Number(row.is_owner) === 1) void prepareCallMemory(row, { log: log ?? (() => {}) }).catch(() => {});
   if (!config.callCacheWarm || !row?.id) return null;
   try {
     return Promise.resolve(warm({ call: row, log: log ?? (() => {}) })).catch(() => null);
   } catch { return null; }
+}
+
+/**
+ * Their week arrived after the voice's session was set up (a call they rang: the stream connects within
+ * a second, the search can take up to 2.5 s): it is handed to the voice like anything told mid-call, so
+ * the voice, which answers "where am I / my week" itself, has what Claude's turn has (cold review, call 80).
+ */
+onScheduleRead((row) => lateWhereabouts(row));
+export function lateWhereabouts(row) {
+  const live = running.get(row?.id);
+  if (!live || live.done || !live.who?.owner) return false;
+  const note = whereaboutsNote(row);
+  if (!note || String(live.who.brief ?? "").includes(note) || live.whereTold === note) return false;
+  live.whereTold = note;
+  return tellLive(row.id, note);
 }
 
 /**
@@ -3655,7 +4027,7 @@ export function acceptStream({ token, socket, settle, runtime, log = () => {}, o
   db.updateCall(row.conversation_id, row.id, { state: "in_progress" });
   const call = new GptLiveCall({
     call: db.getCall(row.conversation_id, row.id) ?? row, twilio: socket, openLive, log, warm: takeWarm(row.id), twilioApi,
-    brain: (messages, hooks = {}) => reasonTurn({ call: row, messages, log, extras: runtime?.turnExtras ?? {}, onTool: hooks.onTool }),
+    brain: (messages, hooks = {}) => reasonTurn({ call: row, messages, log, extras: runtime?.turnExtras ?? {}, onTool: hooks.onTool, onContent: hooks.onContent }),
     warmTurn: (r) => warmTheTurn(r, log),
     finish: async (live) => {
       try { await settleGptLive({ row, live, settle, runtime, log }); } finally { streams.delete(row.id); }

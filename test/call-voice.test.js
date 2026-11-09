@@ -1363,8 +1363,10 @@ test("filler: nothing extra after words the turn has already said", async () => 
     generate: toolThenWords("Let me look.", "Nothing on file."),
   });
   const r = await drain(out.stream);
-  assert.equal(r.said, "Let me look. Nothing on file.");
-  assert.doesNotMatch(r.said, /One sec|\.\.\./);
+  // Their own call (call 80): the words before the tool are its lead-in and are not said, so the turn
+  // is silent until the answer — the filler is what fills it (the GPT-Live voice drops it again).
+  assert.equal(r.said, "One sec... Nothing on file.");
+  assert.doesNotMatch(r.said, /Let me look/);
 });
 
 test("filler: \"One sec...\" at most once per call", async () => {

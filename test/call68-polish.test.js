@@ -152,7 +152,7 @@ test("own calls: Reason's call turn is told one point at a time, never a long te
   const frame = prompt.ownerCallFrame({ name: "Omari" });
   assert.match(frame, /one point at a time: answer in one or two short sentences, then stop and let them react/);
   assert.match(frame, /Never read a long text out loud — a rewrite, a draft, a caption/);
-  assert.match(frame, /offer to text it; text it only once they want it/);
+  assert.match(frame, /give the gist in a few words and offer to text it/);
   assert.match(frame, /At most one question per reply, and never a menu of options/);
   assert.ok(prompt.ownerCallFrame({ name: "Omari", identity: true }).includes("one point at a time"), "with identity on too");
 });

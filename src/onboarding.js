@@ -37,6 +37,7 @@ import * as db from "./db.js";
 import * as outbox from "./outbox.js";
 import { config, clock, normalizeNumber, stamp } from "./config.js";
 import { askStructured, sideAskAllowed } from "./backends/side.js";
+import { rulesNote } from "./rules.js";
 import { contactCardUrl, lineNumber, RETRY_AFTER_MS } from "./contact.js";
 import { zoneFor } from "./zone.js";
 
@@ -172,10 +173,12 @@ Fields you have nothing for are "" (or [] for ideas).`;
 const clean = (s, max) => String(s ?? "").replace(/[*_`#]/g, "").replace(/\s+/g, " ").trim().slice(0, max);
 
 /** One read of their text for this step, or null when the read could not be had. */
-export async function readText({ state, text, ask = askStructured }) {
+export async function readText({ state, text, ask = askStructured, conversationId = null }) {
   if (ask === askStructured && !sideAskAllowed()) return null;
+  // Its one-line answer to a question is Reason speaking to them, so their rules ride too (src/rules.js).
+  const rules = rulesNote(conversationId);
   const r = await ask({
-    prompt: `Their text, verbatim:\n${String(text ?? "").slice(0, 2_000)}`,
+    prompt: `Their text, verbatim:\n${String(text ?? "").slice(0, 2_000)}${rules ? `\n\n${rules}` : ""}`,
     system: instructions(state),
     schema: SCHEMA,
     model: process.env.REASON_ONBOARDING_CLI_MODEL || "haiku",
@@ -332,7 +335,7 @@ export async function handle({ router, conversationId, route, texts = [], attach
   }
 
   const [read, screened] = await Promise.all([
-    readText({ state, text, ask }).catch(() => null),
+    readText({ state, text, ask, conversationId }).catch(() => null),
     screen ? Promise.resolve().then(() => screen({ text })).catch(e => ({ verdict: "unscreened", error: e?.message })) : { verdict: "clear" },
   ]);
   let verdict = screened?.verdict ?? "clear";

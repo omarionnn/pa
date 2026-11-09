@@ -37,6 +37,7 @@ import { dailyAllowedFor } from "./dailyflag.js";
 import { WEB, webAllowedFor } from "./web.js";
 import { hasOpsKeyLink } from "./opsredact.js";
 import { displayText } from "./pages/webnotes.js";
+import { rulesNote } from "./rules.js";
 
 /** The local hour an edition is written from (overnight, before anyone's morning). */
 export const EDITION_HOUR = 4;
@@ -405,12 +406,15 @@ export function cleanGreeting(text, name = "") {
 }
 
 /** The greeting from the model (the CLI on claude-cli, the API key on api: src/backends/side.js), or null. */
-async function written({ name, overnight }) {
+async function written({ name, overnight, conversationId = null }) {
   const ask = testAsk ?? askStructured;
   if (ask === askStructured && (!sideAskAllowed() || process.env.REASON_DAILY_WRITE === "0")) return null;
   const kinds = { decision: "needs their yes or no", update: "news", done: "finished" };
+  const rules = rulesNote(conversationId);
   const { value, error } = await ask({
-    prompt: `First name: ${name || "(unknown)"}\nOvernight (${overnight.length}):\n${overnight.slice(0, 8).map(x => `- ${kinds[x.kind]}`).join("\n")}`,
+    // Their own rules ride along (src/rules.js): "no 'morning' greetings", "call me O" reach this line too.
+    prompt: `First name: ${name || "(unknown)"}\nOvernight (${overnight.length}):\n${overnight.slice(0, 8).map(x => `- ${kinds[x.kind]}`).join("\n")}`
+      + (rules ? `\n\n${rules}` : ""),
     system: SYSTEM, schema: SCHEMA,
     model: process.env.REASON_DAILY_CLI_MODEL || "sonnet",
     timeoutMs: 45_000,
@@ -511,7 +515,7 @@ export async function writeEdition(conversationId, { now = clock.now(), log = ()
   let by = moment ? "fixed" : "plain";
   if (!moment) {
     let w = null;
-    try { w = await written({ name, overnight: f.overnight }); } catch { w = null; }
+    try { w = await written({ name, overnight: f.overnight, conversationId }); } catch { w = null; }
     if (w?.greeting) { greeting = w.greeting; by = "claude-cli"; }
   }
   const edition = { issueNumber: issue, date: day, greeting, moment, away: win.away, counted: f.overnight.length, ...f, question: question ?? null, newestStamp: newestStamp(conversationId) };

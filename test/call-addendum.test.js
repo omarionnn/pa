@@ -254,7 +254,8 @@ test("on his own call, the first thing that spends or sends is refused until the
   // The tool never ran. This is the whole property: not "the model was told not to", but that the
   // function that sends a message was not called.
   assert.deepEqual(ran, []);
-  assert.match(r.said, /One sec/);
+  // "One sec." was its lead-in to the tool: on their own call that is not said (call 80).
+  assert.doesNotMatch(r.said, /One sec\. /);
   // And the turn still said something, because somebody is holding a handset.
   assert.match(r.said, /passphrase/);
 
@@ -976,9 +977,10 @@ test("the backend failing mid-turn says something honest rather than going silen
     generate: scripted("Let me just check that for you. ", { throws: "the model backend is unavailable" }),
   });
   const r = await drain(out.stream);
-  // The sentence that had already left is still spoken — only a FINISHED sentence leaves, which is
-  // why this one has a full stop in it — and then the honest line follows it rather than silence.
-  assert.match(r.said, /Let me just check that for you/);
+  // On their own call a sentence is held until more words follow it (call 80: words before a tool are
+  // its lead-in, never said), so the turn that dies here has said nothing — and the honest line is
+  // said rather than silence.
+  assert.doesNotMatch(r.said, /Let me just check that for you/);
   assert.match(r.said, /something broke on my end/i);
   // Nothing was agreed, nothing was claimed, and the stream still closed properly.
   assert.equal(db.pausedCommitments(C).length, 0);

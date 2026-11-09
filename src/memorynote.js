@@ -10,6 +10,7 @@ import * as db from "./db.js";
 import { search, vectorsFor } from "./embedding.js";
 import { distinct } from "./samefact.js";
 import { savedOn } from "./extract.js";
+import { rulesNote } from "./rules.js";
 
 /** How many matches ride on a turn. Enough to catch the thing they mean, few enough to stay cheap. */
 const HITS = 3;
@@ -34,25 +35,33 @@ export async function memoryNotes(conversationId, text, { find = search, vectors
   } catch (e) {
     log({ profile_note_failed: e.message });
   }
-  // How they want to be treated: rules from their own corrections of how Reason behaves (the remember
-  // tool's how_to_treat_me, and the nightly review, src/dream.js). Every turn, beside the profile,
-  // short: the rule only, at most db.RULES_CAP.
-  try {
-    const rules = db.activeRules(conversationId, { limit: db.RULES_CAP });
-    if (rules.length) {
-      notes.push(`HOW THEY WANT YOU TO TREAT THEM (their own corrections of how you behave — follow these; a newer one wins):\n`
-        + rules.map(r => `- ${String(r.rule).slice(0, 200)}`).join("\n"));
-    }
-  } catch (e) {
-    log({ rules_note_failed: e.message });
-  }
+  // How they want to be treated (src/rules.js — the one reader every prompt for a person uses).
+  const rules = rulesNote(conversationId);
+  if (rules) notes.push(rules);
 
-  if (!enabled || !String(text ?? "").trim()) return notes;
+  // No await at all when there is nothing to search: the turn's notes are ready at once, as before.
+  const hits = enabled && String(text ?? "").trim() ? await memoryHits(conversationId, text, { find, vectors, enabled, log, inProfile }) : [];
+  if (hits.length) notes.push(`RELEVANT MEMORIES (closest in meaning to this message):\n${hits.join("\n")}`);
+  return notes;
+}
+
+/** The facts in the profile block, by id (they need not be shown twice). */
+export function profileFactIds(conversationId) {
+  try { return new Set(JSON.parse(db.getProfile(conversationId)?.fact_ids || "[]")); } catch { return new Set(); }
+}
+
+/**
+ * The few saved facts closest in meaning to what they just said, as "- about: fact (tags)" lines,
+ * leaving out what the profile already shows. Shared by a text turn (above) and a turn on their own
+ * phone call (src/calls/voice.js), which waits less for it. Never throws.
+ */
+export async function memoryHits(conversationId, text, { find = search, vectors = vectorsFor, enabled = !!config.openaiKey, log = () => {}, inProfile = profileFactIds(conversationId), timeoutMs = EMBED_TIMEOUT_MS, exclude = new Set() } = {}) {
+  if (!enabled || !String(text ?? "").trim()) return [];
   try {
     // More than HITS asked for, because a match may already be in the profile above or no longer
     // active, and the slots should go to something the model has not just been shown.
-    const hits = await find(conversationId, text, { limit: HITS * 4, minScore: MIN_SCORE, timeoutMs: EMBED_TIMEOUT_MS });
-    const found = hits.filter(h => !inProfile.has(h.factId)).map(h => db.getFact(conversationId, h.factId)).filter(Boolean);
+    const hits = await find(conversationId, text, { limit: HITS * 4, minScore: MIN_SCORE, timeoutMs });
+    const found = hits.filter(h => !inProfile.has(h.factId) && !exclude.has(h.factId)).map(h => db.getFact(conversationId, h.factId)).filter(Boolean);
     // The same thing in three wordings would spend all three slots on it — and the profile above
     // may already say it — so restatements are passed over, off the vectors already stored.
     const shown = [...inProfile].map(id => db.getFact(conversationId, id)).filter(Boolean);
@@ -61,10 +70,10 @@ export async function memoryNotes(conversationId, text, { find = search, vectors
       const tags = [f.source === "inferred" ? "inferred" : "", `saved ${savedOn(f.created_at)}`].filter(Boolean).join(", ");
       return `- ${f.about}: ${f.fact} (${tags})`;
     });
-    if (lines.length) notes.push(`RELEVANT MEMORIES (closest in meaning to this message):\n${lines.join("\n")}`);
     log({ memory_hits: lines.length, conversation: conversationId });
+    return lines;
   } catch (e) {
     log({ memory_search_failed: e.message });
+    return [];
   }
-  return notes;
 }

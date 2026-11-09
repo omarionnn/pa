@@ -26,6 +26,7 @@ import { goalNote } from "./goals.js";
 import { pauseNote } from "./pause.js";
 import { note as planNote, blocked as planBlocked } from "./plan.js";
 import { memoryNotes } from "./memorynote.js";
+import { rulesNote } from "./rules.js";
 import { startPurchasesNote, purchaseRecordSource } from "./purchasesnote.js";
 import { checkoutNote as shopCheckoutNote } from "./shopconnect.js";
 import { withoutSelfNote, readSilence } from "./plain.js";
@@ -601,7 +602,9 @@ async function runTurnOnTheirClock({ conversationId, text, kind = "user", attach
   const recentPhotos = kind === "user" ? reviewed.recentPhotosNote(conversationId) : "";
   // What it already knows about them: the profile and the closest saved facts. Same call as the
   // CLI path (src/memorynote.js), so the two backends are shown the same memory.
-  const remembered = kind === "user" ? await memoryNotes(conversationId, text, { log }) : [];
+  // A turn Reason starts itself (a reminder, a check-in, the note after a call) speaks to them too, so
+  // it carries their rules (src/rules.js) — until 2026-11-08 only their own turns did.
+  const remembered = kind === "user" ? await memoryNotes(conversationId, text, { log }) : [rulesNote(conversationId)].filter(Boolean);
   let graphContext = "";
   if (kind === "user" && text) {
     try {
