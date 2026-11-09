@@ -1007,6 +1007,11 @@ The one failure where doing nothing is right and trying again is the mistake.
   wake after a stopped watch tells the model not to promise more watching; and past the 24-hour window
   the end look replaces the separate "24 hours" notice. `test/checkout-mail-read.test.js` drives the real
   Gmail reader against a fake Gmail, including two looks in flight at once.
+  Third pass: the end text goes out before the model is woken to read the mail it names (the wake is a
+  whole model turn, so the order number used to land before "reading it now"); mail the watch read earlier
+  is named even when the end look doesn't bring it back; a listed message that can't be read, or a token
+  that won't renew, is a failed look rather than "nothing there" or "not connected"; and "connect it" no
+  longer promises a look nothing runs ("once it's connected, ask me and I'll look").
 - **Checking does not clear the block.** Only an attempt that got a real answer does, so a refusal
   between the check and the press cannot quietly lift something nobody resolved.
 - **The money is counted anyway**, with `(OUTCOME UNKNOWN)` on the spend line. Over-counting a charge

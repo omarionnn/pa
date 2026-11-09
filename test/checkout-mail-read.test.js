@@ -62,6 +62,21 @@ test("a Gmail error is 'couldn't look', never 'nothing there'", async () => {
   assert.equal(ok.hits, 0);
 });
 
+test("a listed message that can't be read, or a token that won't renew, is 'couldn't look', never 'nothing there' or 'not connected'", async () => {
+  const id = run("run_meta");
+  gmail = async (u) => (u.pathname.endsWith("/messages") ? json(200, { messages: [{ id: "m_x" }] }) : json(500, {}));
+  const meta = await shop.checkMail(id, { ending: true });
+  assert.equal(meta.looked, false, JSON.stringify(meta));
+  // An expired token whose refresh fails: still connected, the look failed.
+  db.db.exec("DELETE FROM oauth_tokens");
+  db.saveOauthTokens(OMARI, "google", { accessToken: "at_old", refreshToken: "rt_1", scope: "https://www.googleapis.com/auth/gmail.modify", expiresAt: clock.now() - 60_000, accountLabel: "omari@gmail.com" });
+  gmail = async () => json(200, { messages: [] });
+  const stale = await shop.checkMail(id, { ending: true });
+  assert.notEqual(stale.connected, false, JSON.stringify(stale));
+  assert.equal(stale.looked, false);
+  assert.equal(stale.done, false, "the watch is not stopped by a token hiccup");
+});
+
 test("two looks in flight at once wake the model once for the same mail", async () => {
   const id = run("run_race");
   gmail = async (u) => {
