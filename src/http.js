@@ -277,17 +277,20 @@ export function createServer({ router, runtime, log = () => {} }) {
         let out;
         try {
           const { iosApiRequest } = await import("./ios/api.js");
-          out = await iosApiRequest({ path: url.pathname.slice("/ios/v1".length) || "/", method: req.method, headers: req.headers, remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, log });
+          out = await iosApiRequest({ path: url.pathname.slice("/ios/v1".length) || "/", method: req.method, query: Object.fromEntries(url.searchParams), headers: req.headers, remoteAddress: req.socket?.remoteAddress ?? "", readBody: () => readBody(req), runtime, router, log });
         } catch (e) {
           log({ http: "/ios/v1", threw: (e?.message ?? String(e)).split("\n")[0] });
           return send(500, { ok: false, error: "server_error" });
         }
-        res.writeHead(out.status, out.headers);
-        if (out.stream) {
-          if (req.method === "HEAD") return res.end();
-          try { return out.stream(res, req); } catch (e) { log({ http: "/ios/v1/live", threw: (e?.message ?? String(e)).split("\n")[0] }); return res.end(); }
+        // null: REASON_IOS_API=owner and this isn't the owner. It falls through to what an unissued path answers.
+        if (out) {
+          res.writeHead(out.status, out.headers);
+          if (out.stream) {
+            if (req.method === "HEAD") return res.end();
+            try { return out.stream(res, req); } catch (e) { log({ http: "/ios/v1/live", threw: (e?.message ?? String(e)).split("\n")[0] }); return res.end(); }
+          }
+          return res.end(req.method === "HEAD" ? "" : out.body);
         }
-        return res.end(req.method === "HEAD" ? "" : out.body);
       }
 
       // ---------- Reason Web ----------

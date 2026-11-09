@@ -2,7 +2,8 @@
 
 The contract for the Swift client. The app holds no logic: every state, word and rule below comes from the server.
 
-- Base: `https://<reason host>/ios/v1`. Behind `REASON_IOS_API` (`off` by default, `owner`, `on`). Off, every path is the server's flat 404.
+- Base: `https://app.heyreason.com/ios/v1`. Behind `REASON_IOS_API` (`off` by default, `owner`, `on`). Off, every path is the server's flat 404, `{"error":"not found"}`.
+- **Owner mode** (what is live now): everyone but the signed-in owner gets that flat 404 on every route. That includes `POST /auth/code` even when a code was sent, so the answer never says which number is the owner's. While in this mode the app goes to the code screen whatever that call answers, and treats a flat 404 from any later route (no `"ok"` field) as signed out or a wrong code.
 - JSON, UTF-8, `snake_case`. Times are Unix milliseconds. Money is integer cents with a `currency`.
 - Successful answers carry `"ok": true`. Failures carry `"ok": false` and an `error` code.
 - Every response is `Cache-Control: no-store`. Anything marked `"private": true` is the app's to frost until Face ID.
@@ -101,13 +102,27 @@ A `Receipt` is the `Item` plus:
 |---|---|
 | `page` | The full `/page` body. Always sent first, then on every change |
 | `ping` | `{}` every 15 s. A connection silent for 40 s is dead: reconnect |
+| `message` | A `Message`, as it's written, with an SSE `id` (the message id) |
+| `typing` | `{ "on": true, "until": 0 }` while Reason works on a message from the app |
 | `signedout` | `{}`. This device was revoked. The stream ends; clear the token |
 
-A change reaches the stream within 1 second. The stream closes every 30 minutes; reconnect after the `retry:` hint (1.5 s). There is no resume token because each connection starts with the whole Page. Each person gets 3 streams at once, and a fourth closes the oldest.
+A change reaches the stream within 1 second. The stream closes every 30 minutes; reconnect after the `retry:` hint (1.5 s). The Page needs no resume because each connection starts with the whole Page. Messages resume from `Last-Event-ID` (or `?after={id}`); a fresh connection starts from now, so load history with `GET /messages`. Each person gets 3 streams at once, and a fourth closes the oldest.
 
 **Why SSE, not WebSocket.** Updates only flow server to app, and the app's actions are ordinary requests. SSE runs over the HTTP path already in place, carries the same bearer header, and works directly with `URLSession.bytes`. A WebSocket would add an upgrade path, a framing layer and a second auth check to get a return channel nothing would use.
 
 **How the 1 second holds.** State reaches the database from many places, most with no event to hook. Each open stream polls a small per-person fingerprint every 400 ms and only rebuilds the Page when it moves.
+
+## Talking to Reason
+
+A message from the app is the same as a text. It runs the same turn, so reminders, calls, messages to other people and purchases are real, and every confirmation, Face ID step and spend limit applies unchanged. Face ID for a purchase comes as a link in Reason's reply.
+
+**`POST /messages`** `{ "id": "<8–64 chars, A-Z a-z 0-9 ->", "text": "…" }` → `{ "ok": true, "id": "…", "duplicate": false }`
+
+Make `id` a fresh UUID per message and reuse it on a retry: a repeated `id` is not run twice (`duplicate: true`). `200` means Reason took it, not that it has answered. Up to 4,000 characters. `429 slow_down` when sending too fast, `403 refused` when this account can't be served, `503 unavailable` when the service isn't ready.
+
+**`GET /messages`** newest 50, oldest of them first. `?before={id}` pages back, `?after={id}` catches up, `?limit=` up to 100.
+
+`Message` is `{ "id", "role": "user|reason", "text", "at", "via": "app_or_web|text", "client_id", "attachments": [{ "name" }] }`. `client_id` is your `id`, so an optimistic line can be matched. Texts appear too, since it's one conversation. Attachment bytes aren't served by this API yet.
 
 ## What Reason knows
 
@@ -158,4 +173,4 @@ Face ID for this screen is the app's to enforce. The server can't observe it, so
 
 ## Not in this API yet
 
-Reason doing work from the app (tap to write, margin notes, shopping and Face ID pay), push and Live Activity delivery, and everything else outside the routes above.
+Native shopping and native Face ID pay, attachments, push and Live Activity delivery, and everything else outside the routes above.

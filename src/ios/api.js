@@ -8,6 +8,7 @@ import { config, clock } from "../config.js";
 import { askForCode, verifyCode, iosAccount, devicesOf, validChallenge, SESSION_TTL_MS, CODE_TTL_MS } from "./session.js";
 import { pageFeed, receipt } from "./feed.js";
 import { liveRequest } from "./live.js";
+import { sendMessage, listMessages } from "./messages.js";
 import { memoriesOf, forgetForever, forgetEverything, correctRow, answerGuess } from "./memory.js";
 import { bytesOut } from "../webmedia.js";
 import { playable } from "../webaudio.js";
@@ -39,7 +40,24 @@ async function callRecording(account, id, { headers, method }) {
   return bytesOut({ ...(await playable({ path, root, mime: mimeFor(c.recording_format) ?? "audio/mpeg" })), name: `call-${c.id}`, headers, method });
 }
 
-export async function iosApiRequest({ path, method, headers = {}, remoteAddress = "", readBody, runtime = null, log = () => {} }) {
+/**
+ * The route. With REASON_IOS_API=owner, null (the server's flat 404, as if this API didn't exist) for everyone
+ * but the signed-in owner. Asking for a code is hidden the same way even when it worked, so the answer can't say
+ * which number is the owner's: only the owner's phone gets a text.
+ */
+export async function iosApiRequest(args) {
+  if (config.iosApi !== "owner") return await route(args);
+  const { path, headers = {}, log = () => {} } = args;
+  const signingIn = path === "/auth/code" || path === "/auth/verify";
+  if (!signingIn && !iosAccount(headers)) return null;
+  if (!signingIn) return await route(args);
+  try {
+    const out = await route(args);
+    return path === "/auth/verify" && out.status === 200 ? out : null;
+  } catch (e) { log({ ios_signin_threw: (e?.message ?? String(e)).split("\n")[0] }); return null; }
+}
+
+async function route({ path, method, query = {}, headers = {}, remoteAddress = "", readBody, runtime = null, router = null, log = () => {} }) {
   // ---- signing in: the only routes that take no token ----
   if (path === "/auth/code" || path === "/auth/verify") {
     if (method !== "POST") return notAllowed();
@@ -86,7 +104,17 @@ export async function iosApiRequest({ path, method, headers = {}, remoteAddress 
   }
   m = /^\/calls\/([^/]{1,20})\/recording$/.exec(path);
   if (m) return method === "GET" || method === "HEAD" ? await callRecording(account, m[1], { headers, method }) : notAllowed();
-  if (path === "/live") return method === "GET" ? liveRequest({ account, token, headers, log }) : notAllowed();
+  if (path === "/live") return method === "GET" ? liveRequest({ account, token, headers, query, router, log }) : notAllowed();
+
+  // ---- talking to Reason ----
+  if (path === "/messages") {
+    if (method === "GET") return ok(listMessages(conv, query));
+    if (method !== "POST") return notAllowed();
+    const b = await bodyOf(readBody);
+    if (!b) return fail(400, "bad_request");
+    const out = await sendMessage({ account, body: b, router, log });
+    return out.error ? fail(out.status, out.error) : json(out.status, { ok: true, id: out.id, duplicate: out.duplicate });
+  }
 
   // ---- what Reason knows ----
   if (path === "/memories") return method === "GET" ? ok(memoriesOf(account)) : notAllowed();

@@ -9,6 +9,8 @@ import * as db from "../db.js";
 import { clock } from "../config.js";
 import { pageFeed, fingerprint } from "./feed.js";
 import { iosAccount } from "./session.js";
+import { messageOut } from "./messages.js";
+import { WEB } from "../web.js";
 
 export const TICK_MS = 400;
 export const PING_MS = 15_000;
@@ -18,8 +20,11 @@ export const MAX_STREAMS = 3;
 
 const open = new Map(); // conversation → Set of { end }
 
-export function liveRequest({ account, token, headers, log = () => {}, tickMs = TICK_MS, pingMs = PING_MS, streamMs = STREAM_MS }) {
+export function liveRequest({ account, token, headers, query = {}, router = null, log = () => {}, tickMs = TICK_MS, pingMs = PING_MS, streamMs = STREAM_MS }) {
   const conv = account.conversation_id;
+  // Reconnecting says where it got to; a fresh connection starts from now, and history is GET /messages.
+  const named = [headers?.["last-event-id"], query.after].find(v => /^\d{1,15}$/.test(String(v ?? "")));
+  let lastRow = named != null ? Number(named) : (db.latestMessagesFor(conv, { limit: 1 })[0]?.id ?? 0);
   return {
     status: 200,
     headers: { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store, no-transform", "X-Accel-Buffering": "no", "X-Content-Type-Options": "nosniff", Connection: "keep-alive" },
@@ -31,6 +36,8 @@ export function liveRequest({ account, token, headers, log = () => {}, tickMs = 
         if (closed) return;
         closed = true;
         clearInterval(tick); clearInterval(beat); clearTimeout(stop);
+        db.historyBus.off("row", onRow);
+        webCh?.events?.off?.("typing", onTyping);
         const set = open.get(conv); set?.delete(me); if (set && !set.size) open.delete(conv);
         log({ ios_stream_end: why });
         try { res.end(); } catch { /* already gone */ }
@@ -44,6 +51,15 @@ export function liveRequest({ account, token, headers, log = () => {}, tickMs = 
         lastSections = sections;
         write(`event: page\ndata: ${JSON.stringify(page)}\n\n`);
       };
+      const flush = () => {
+        for (const r of db.messagesFor(conv, { after: lastRow, limit: 200 })) {
+          lastRow = Math.max(lastRow, r.id);
+          write(`id: ${r.id}\nevent: message\ndata: ${JSON.stringify(messageOut(r, conv))}\n\n`);
+        }
+      };
+      const onRow = (e) => { if (e?.conversationId !== conv || closed) return; try { if (!db.pageSessionExists(token)) return signedOut(); flush(); } catch { end("failed"); } };
+      const webCh = router?.get?.(WEB) ?? null;
+      const onTyping = (e) => { if (e?.to === account.address && !closed && db.pageSessionExists(token)) write(`event: typing\ndata: ${JSON.stringify({ on: !!e.on, until: e.until || 0 })}\n\n`); };
       const check = () => {
         if (closed) return;
         try {
@@ -52,6 +68,7 @@ export function liveRequest({ account, token, headers, log = () => {}, tickMs = 
           if ((sinceAuth += tickMs) >= 5_000) { sinceAuth = 0; if (iosAccount(headers)?.account.conversation_id !== conv) return signedOut(); }
           const print = fingerprint(conv);
           if (print !== lastPrint) { lastPrint = print; draw(); }
+          flush();
         } catch (e) { log({ ios_stream_failed: (e?.message ?? String(e)).split("\n")[0] }); end("failed"); }
       };
       const tick = setInterval(check, tickMs);
@@ -66,6 +83,8 @@ export function liveRequest({ account, token, headers, log = () => {}, tickMs = 
       set.add(me);
       while (set.size > MAX_STREAMS) [...set][0].end("replaced");
       write("retry: 1500\n\n");
+      db.historyBus.on("row", onRow);
+      webCh?.events?.on?.("typing", onTyping);
       check();
     },
   };

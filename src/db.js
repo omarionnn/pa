@@ -11128,6 +11128,14 @@ export function messagesFor(conversationId, { after = 0, limit = 200, chat = nul
     .map(r => ({ ...r, media: (() => { try { return JSON.parse(r.media || "[]"); } catch { return []; } })() }));
 }
 
+/** The newest history rows (or those before `before`), oldest of them first. */
+export function latestMessagesFor(conversationId, { before = Number.MAX_SAFE_INTEGER, limit = 50 } = {}) {
+  const c = chatWhere(null);
+  return db.prepare(`SELECT * FROM messages WHERE conversation_id = ? AND ${c.sql} AND id < ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?`)
+    .all(conversationId, ...c.args, before, limit).reverse()
+    .map(r => ({ ...r, media: (() => { try { return JSON.parse(r.media || "[]"); } catch { return []; } })() }));
+}
+
 /**
  * Did a web message with these words go to this address in the window? Asked by the web channel's
  * findSent after a crash, through the outbox row the history row was written off, so the address is

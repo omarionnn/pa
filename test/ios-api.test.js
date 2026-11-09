@@ -31,6 +31,12 @@ delete process.env.REASON_BACKEND;
 const { createServer } = await import("../src/http.js");
 const { iosApiRequest } = await import("../src/ios/api.js");
 const { liveRequest } = await import("../src/ios/live.js");
+const { Runtime } = await import("../src/runtime.js");
+const { Router } = await import("../src/channels/router.js");
+const { FakeChannel } = await import("../src/channels/fake.js");
+const { ConsoleChannel } = await import("../src/channels/console.js");
+const { WebChannel } = await import("../src/channels/web.js");
+const { makeDeliver } = await import("../src/deliver.js");
 const { setSpanReader } = await import("../src/ios/memory.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
@@ -45,17 +51,17 @@ beforeEach(() => {
   setSpanReader(null);
   db.db.exec(`DELETE FROM accounts; DELETE FROM threads; DELETE FROM conversations; DELETE FROM page_sessions; DELETE FROM page_codes; DELETE FROM page_attempts; DELETE FROM event_join_attempts;
     DELETE FROM people; DELETE FROM person_facts; DELETE FROM guesses; DELETE FROM whys; DELETE FROM treat_rules; DELETE FROM profile_blocks; DELETE FROM fact_embeddings; DELETE FROM messages; DELETE FROM event_log;
-    DELETE FROM tasks; DELETE FROM task_log; DELETE FROM timers; DELETE FROM series; DELETE FROM confirmations; DELETE FROM calls; DELETE FROM agentcard_purchases; DELETE FROM inbound_parts; DELETE FROM graph_mentions; DELETE FROM graph_edges; DELETE FROM graph_entities; DELETE FROM recall_reindex;`);
+    DELETE FROM tasks; DELETE FROM task_log; DELETE FROM timers; DELETE FROM series; DELETE FROM confirmations; DELETE FROM calls; DELETE FROM agentcard_purchases; DELETE FROM inbound_parts; DELETE FROM inbound_messages; DELETE FROM pending_inbound; DELETE FROM outbox; DELETE FROM graph_mentions; DELETE FROM graph_edges; DELETE FROM graph_entities; DELETE FROM recall_reindex;`);
   for (const p of [A, B]) {
     db.upsertAccount({ conversationId: p.c, channel: "fake", address: p.phone, name: p.name, isOperator: p === A });
     db.upsertThread({ conversationId: p.c, channel: "fake", address: p.phone, isOwner: true, service: "iMessage" });
   }
 });
 
-async function api(path, { method = "GET", token = null, body = undefined, runtime = null, headers = {}, log } = {}) {
+async function api(path, { method = "GET", token = null, body = undefined, runtime = null, router = null, query = {}, headers = {}, log } = {}) {
   const out = await iosApiRequest({
     path, method, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers }, remoteAddress: "10.0.0.1",
-    readBody: async () => (body === undefined ? "" : JSON.stringify(body)), runtime, log,
+    readBody: async () => (body === undefined ? "" : JSON.stringify(body)), runtime, router, query, log,
   });
   let parsed = null;
   try { parsed = typeof out.body === "string" && out.body ? JSON.parse(out.body) : null; } catch { /* binary */ }
@@ -112,7 +118,7 @@ test("flag on: routed through the real server; owner mode opens only the owner's
   const b = await signIn(B);
   const a = await signIn(A);
   config.iosApi = "owner";
-  assert.equal((await api("/page", { token: b })).status, 401);
+  assert.equal(await iosApiRequest({ path: "/page", method: "GET", headers: { authorization: `Bearer ${b}` } }), null);
   assert.equal((await api("/page", { token: a })).status, 200);
 });
 
@@ -465,6 +471,99 @@ test("app sign-in is a flat 90 days: 60 idle days still open it and it stays rev
   assert.equal(list.length, 1);
   db.db.exec(`UPDATE page_sessions SET created_at = ${AT() - 91 * DAY}`);
   assert.equal((await api("/page", { token })).status, 401);
+});
+
+// ---------------------------------------------------------------- owner mode
+test("owner mode: everyone but the signed-in owner gets exactly what the API being off answers, even a real code request", async () => {
+  const told = [];
+  const a = await signIn(A);
+  const b = await signIn(B, { ch: challenge("b") });
+  config.iosApi = "owner";
+  const server = createServer({ router: { get: () => null, all: () => [], channels: () => [] }, runtime: { _tell: async (c, l) => { told.push({ c, l }); return { ok: true }; } }, log: () => {} });
+  await new Promise(r => server.listen(0, "127.0.0.1", r));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const miss = await fetch(`${base}/no/such/address`, { method: "GET" }), missBody = await miss.text();
+    const post = (p, body, token) => fetch(base + p, { method: "POST", headers: token ? { authorization: `Bearer ${token}` } : {}, body: JSON.stringify(body) });
+    const get = (p, token) => fetch(base + p, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+    const same = async (r, why) => { assert.equal(r.status, 404, why); assert.equal(await r.text(), missBody, why); };
+    await same(await get("/ios/v1/page", b), "non-owner's token");
+    await same(await get("/ios/v1/live", b), "non-owner's live");
+    await same(await post("/ios/v1/messages", { id: "abcdefgh", text: "hi" }, b), "non-owner's message");
+    await same(await get("/ios/v1/page"), "no token");
+    await same(await get("/ios/v1/page", "n".repeat(43)), "bad token");
+    await same(await post("/ios/v1/auth/code", { phone: B.phone, challenge: challenge("c") }), "non-owner asks");
+    await same(await post("/ios/v1/auth/code", { phone: "+16465550101", challenge: challenge("c") }), "stranger asks");
+    await same(await post("/ios/v1/auth/code", { phone: "x" }), "malformed");
+    assert.equal(told.length, 0, "nobody but the owner is texted");
+    await same(await post("/ios/v1/auth/code", { phone: A.phone, challenge: challenge("o") }), "the owner's own request answers the same");
+    assert.equal(told.length, 1); assert.equal(told[0].c, A.c);
+    const code = /code is (\d{6})/.exec(told[0].l)[1];
+    await same(await post("/ios/v1/auth/verify", { phone: B.phone, challenge: challenge("o"), code }), "someone else using the code");
+    await same(await post("/ios/v1/auth/verify", { phone: A.phone, challenge: challenge("o"), code: code === "000000" ? "000001" : "000000" }), "wrong code");
+    const ok = await post("/ios/v1/auth/verify", { phone: A.phone, challenge: challenge("o"), code });
+    assert.equal(ok.status, 200);
+    const fresh = (await ok.json()).token;
+    assert.equal((await get("/ios/v1/page", fresh)).status, 200);
+    assert.equal((await get("/ios/v1/page", a)).status, 200);
+    const inner = await get("/ios/v1/items/task-999999", a);
+    assert.equal(inner.status, 404); assert.equal((await inner.json()).ok, false, "the owner's own miss is told apart from the API not existing");
+  } finally { server.closeAllConnections?.(); await new Promise(r => server.close(r)); }
+});
+
+// ---------------------------------------------------------------- talking to Reason
+function realPipeline(reply = "done, on it") {
+  config.web = true;
+  const turns = [];
+  const runtime = new Runtime({ log: () => {}, runTurn: async (a) => { turns.push(a); return reply; } });
+  const router = new Router({ runtime, log: () => {} });
+  router.runtime = runtime;
+  router.register(new FakeChannel({ number: "+16562167455" }));
+  const web = router.register(new WebChannel());
+  runtime.deliver = makeDeliver({ router, consoleChannel: new ConsoleChannel(), log: () => {} });
+  runtime.on("outbound", async ({ conversationId, text, channel, to, chatId, fromOwner, replyTo }) => { await runtime.deliver({ conversationId, text, media: null, channel, to, chatId, fromOwner, replyTo }); });
+  return { router, runtime, turns, web };
+}
+const until = async (f, ms = 8000) => { const t = Date.now(); while (Date.now() - t < ms) { const v = f(); if (v) return v; await new Promise(r => setTimeout(r, 25)); } return f(); };
+
+test("a message runs the same turn as a text, on the token's own conversation; the reply comes over the live stream", async () => {
+  const token = await signIn(A);
+  const h = realPipeline("Reminder set for 9");
+  const { res, chunks } = sink();
+  try {
+    liveRequest({ account: db.getAccount(A.c), token, headers: { authorization: `Bearer ${token}` }, router: h.router }).stream(res, new EventEmitter());
+    const r = await api("/messages", { method: "POST", token, router: h.router, body: { id: "aaaaaaaa-1", text: "remind me at 9", conversation_id: B.c } });
+    assert.equal(r.status, 200, r.body);
+    assert.ok(await until(() => chunks.map(c => c.s).join("").includes("Reminder set for 9")), "reply on the stream");
+    assert.equal(h.turns.length, 1);
+    const events = chunks.map(c => c.s).filter(s => s.includes("event: message")).map(s => JSON.parse(/data: (.*)/.exec(s)[1]));
+    assert.deepEqual(events.map(e => [e.role, e.text]), [["user", "remind me at 9"], ["reason", "Reminder set for 9"]]);
+    assert.equal(events[0].client_id, "aaaaaaaa-1");
+    assert.equal(db.db.prepare("SELECT COUNT(*) n FROM messages WHERE conversation_id = ?").get(B.c).n, 0, "a body naming someone else changes nothing");
+    const again = await api("/messages", { method: "POST", token, router: h.router, body: { id: "aaaaaaaa-1", text: "remind me at 9" } });
+    assert.equal(again.json.duplicate, true);
+    await new Promise(r => setTimeout(r, 100));
+    assert.equal(h.turns.length, 1, "a retry doesn't run twice");
+    const list = await api("/messages", { token, query: {} });
+    assert.deepEqual(list.json.messages.map(m => m.role), ["user", "reason"]);
+    const page = await api("/messages", { token, query: { after: String(list.json.messages[0].id) } });
+    assert.deepEqual(page.json.messages.map(m => m.role), ["reason"]);
+  } finally { res.emit("close"); config.web = false; }
+});
+test("messages are sealed and validated: another's history is never listed or streamed", async () => {
+  const a = await signIn(A), b = await signIn(B, { ch: challenge("b") });
+  db.db.prepare("INSERT INTO messages (conversation_id, role, channel, text, at) VALUES (?, 'user', 'fake', 'Omari only words', ?)").run(A.c, clock.now());
+  assert.ok(!(await api("/messages", { token: b, query: { after: "0" } })).body.includes("Omari only"));
+  const { res, chunks } = sink();
+  liveRequest({ account: db.getAccount(B.c), token: b, headers: { authorization: `Bearer ${b}` }, query: { after: "0" } }).stream(res, new EventEmitter());
+  db.db.prepare("INSERT INTO messages (conversation_id, role, channel, text, at) VALUES (?, 'user', 'fake', 'Omari later words', ?)").run(A.c, clock.now());
+  await new Promise(r => setTimeout(r, 600));
+  res.emit("close");
+  assert.ok(!chunks.map(c => c.s).join("").includes("Omari"));
+  for (const [body, want] of [[{ id: "x", text: "hi" }, 400], [{ id: "abcdefgh", text: "   " }, 400], [{ id: "abcdefgh", text: "y".repeat(4001) }, 413]]) assert.equal((await api("/messages", { method: "POST", token: a, body, router: {} })).status, want);
+  assert.equal((await api("/messages", { method: "POST", token: a, body: { id: "abcdefgh", text: "hi" } })).status, 503);
+  const refused = await api("/messages", { method: "POST", token: a, body: { id: "abcdefgh2", text: "hi" }, router: { deliver: async () => ({ ok: false, refused: "web_off" }) } });
+  assert.equal(refused.status, 403);
 });
 
 // ---------------------------------------------------------------- sealed
