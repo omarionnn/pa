@@ -54,6 +54,25 @@ export const feeFor = (conversationId) => {
 /** Duffel's published price per order, passed through: $3.00 plus 1% of the order (managed content). */
 export const serviceFeeCents = (airlineCents) => 300 + Math.ceil(airlineCents / 100);
 
+/**
+ * The card line. Stripe's fee is charged on the whole amount, including this line, so it is grossed up:
+ * the smallest total that leaves the subtotal after the fee. Rates default to Stripe's standard US card
+ * price (2.9% + 30c), and REASON_FLIGHT_CARD_BPS / _FIXED_CENTS match them to the real account.
+ */
+const cardRate = () => {
+  const bps = Number(process.env.REASON_FLIGHT_CARD_BPS ?? 290), fixed = Number(process.env.REASON_FLIGHT_CARD_FIXED_CENTS ?? 30);
+  return { bps: Number.isInteger(bps) && bps >= 0 && bps < 5000 ? bps : 290, fixed: Number.isInteger(fixed) && fixed >= 0 ? fixed : 30 };
+};
+/** What the card company takes from a charge of `total` cents, a fraction of a cent rounded against Reason. */
+export const processorCents = (total, { bps, fixed } = cardRate()) => Math.ceil(total * bps / 10_000) + fixed;
+export function cardFeeCents(subtotal, rate = cardRate()) {
+  if (subtotal <= 0) return 0;
+  let total = Math.ceil((subtotal + rate.fixed) * 10_000 / (10_000 - rate.bps));
+  while (total - processorCents(total, rate) < subtotal) total++;
+  while (total - 1 - processorCents(total - 1, rate) >= subtotal) total--;
+  return total - subtotal;
+}
+
 const q = (sql) => db.db.prepare(sql);
 /** A synchronous body as one write: nothing else runs between its reads and writes. */
 const transaction = (fn) => () => {
@@ -74,6 +93,7 @@ db.db.exec(`
     traveler_fp TEXT NOT NULL,
     airline_cents INTEGER NOT NULL,
     service_cents INTEGER NOT NULL,
+    card_cents INTEGER NOT NULL,
     reason_cents INTEGER NOT NULL,
     total_cents INTEGER NOT NULL,
     stripe_customer TEXT NOT NULL DEFAULT '',
@@ -109,6 +129,7 @@ db.db.exec(`
     summary TEXT NOT NULL DEFAULT '',
     offer_expires_at INTEGER,
     change_cents INTEGER NOT NULL,
+    card_cents INTEGER NOT NULL DEFAULT 0,
     stripe_pi TEXT NOT NULL DEFAULT '',
     spend_id INTEGER,
     created_at INTEGER NOT NULL,
@@ -333,12 +354,13 @@ export async function quote(c, input) {
   if (airline == null || airline <= 0) return { ok: false, blocked: "bad_price", error: "That fare's price couldn't be read. Nothing was booked." };
   const service = serviceFeeCents(airline);
   const reason = feeFor(c);
-  const total = airline + service + reason;
+  const card = cardFeeCents(airline + service + reason);
+  const total = airline + service + card + reason;
   const cap = trust.checkSpendCap(c, total);
   if (!cap.ok) return { ...cap, ok: false };
-  const card = await cardFor(c);
-  if (!card.ok) return card.error === "needs_card"
-    ? { ok: false, blocked: "needs_card", url: card.url, error: "They have no card saved for flights, so no yes can be taken yet. Nothing was booked. Give them this link to save one, and quote again when they're back." }
+  const payWith = await cardFor(c);
+  if (!payWith.ok) return payWith.error === "needs_card"
+    ? { ok: false, blocked: "needs_card", url: payWith.url, error: "They have no card saved for flights, so no yes can be taken yet. Nothing was booked. Give them this link to save one, and quote again when they're back." }
     : { ok: false, blocked: "stripe_unavailable", error: "The card system didn't answer, so no price can be promised. Nothing was booked. Tell them and offer to try again." };
 
   const fp = sha(`${tripKey(offer.slices)}#${flightbook.travelerFingerprint(got.travelers)}`);
@@ -350,15 +372,15 @@ export async function quote(c, input) {
   if (live && live.status !== "asked") return { ok: false, blocked: "already_booked", booking_id: live.id, status: live.status, error: "These people already have this flight booked or being booked, so a second one was not started. Tell them what's already in place." };
   const insert = transaction(() => {
     if (live) { const a = passkey.openApprovalFor(live.id, "flight"); if (a) passkey.closeApproval(a, "replaced"); q("UPDATE flight_bookings SET status = 'replaced', updated_at = ? WHERE id = ? AND status = 'asked'").run(now, live.id); }
-    q(`INSERT INTO flight_bookings (id, conversation_id, status, trip_fp, offer_id, offer_expires_at, summary, offer_json, traveler_ids, traveler_fp, airline_cents, service_cents, reason_cents, total_cents, stripe_customer, stripe_method, created_at, updated_at)
-       VALUES (?, ?, 'asked', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, c, fp, offer.id, expiresAt, summary, JSON.stringify({ passengers: offer.passengers.map(p => ({ id: p.id })) }), JSON.stringify(input.traveler_ids), flightbook.travelerFingerprint(got.travelers), airline, service, reason, total, card.customer, card.method, now, now);
+    q(`INSERT INTO flight_bookings (id, conversation_id, status, trip_fp, offer_id, offer_expires_at, summary, offer_json, traveler_ids, traveler_fp, airline_cents, service_cents, card_cents, reason_cents, total_cents, stripe_customer, stripe_method, created_at, updated_at)
+       VALUES (?, ?, 'asked', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, c, fp, offer.id, expiresAt, summary, JSON.stringify({ passengers: offer.passengers.map(p => ({ id: p.id })) }), JSON.stringify(input.traveler_ids), flightbook.travelerFingerprint(got.travelers), airline, service, card, reason, total, payWith.customer, payWith.method, now, now);
   });
   try { insert(); } catch { return { ok: false, blocked: "already_booked", error: "This flight is already being booked for these people, so a second one was not started." }; }
   const token = passkey.createApproval(rowForApproval(get(id)), { until: expiresAt ?? undefined });
   const lines = lineItems(get(id));
   return {
-    ok: true, booking_id: id, flights: summary, lines, total: money(total), charged_to: card.label,
+    ok: true, booking_id: id, flights: summary, lines, total: money(total), charged_to: payWith.label,
     conditions: conditionWords(offer.conditions), url: `${siteBase()}/web/approve/${token}`,
     note: "Send the lines exactly as given, the fare's refund and change rules, and the link. Their Face ID on that page is the yes; a texted yes does not book. Nothing is held or charged until then. Never say it's booked: you'll be told, and so will they.",
   };
@@ -366,17 +388,20 @@ export async function quote(c, input) {
 export const lineItems = (r) => [
   { label: "Airline fare and taxes", amount: money(r.airline_cents) },
   { label: "Booking service fee", amount: money(r.service_cents) },
-  { label: r.reason_cents ? "Reason fee" : "Reason fee (none for members)", amount: money(r.reason_cents) },
+  { label: "Card processing fee", amount: money(r.card_cents) },
+  ...(r.reason_cents ? [{ label: "Reason fee", amount: money(r.reason_cents) }] : []),
 ];
 
 // ---------- Face ID (src/passkey.js, src/pages/webapprove.js) ----------
 /** The row as the approval code reads it. `binding` is what the Face ID signature covers. */
 export function rowForApproval(r) {
   return { id: r.id, kind: "flight", conversation_id: r.conversation_id, status: r.status, amount_kind: "exact", amount: (r.total_cents / 100).toFixed(2), currency: "USD",
-    merchant_name: "Flight", item: r.summary, binding: sha(`${r.offer_id}|${r.traveler_fp}|${r.airline_cents}|${r.service_cents}|${r.reason_cents}`) };
+    merchant_name: "Flight", item: r.summary, binding: sha(`${r.offer_id}|${r.traveler_fp}|${r.airline_cents}|${r.service_cents}|${r.card_cents}|${r.reason_cents}|${r.total_cents}`) };
 }
+/** What the card is charged for a change: the airline's cost and its card line; nothing for a refund. */
+const chargeOf = (ch) => Math.max(ch.change_cents, 0) + ch.card_cents;
 function changeForApproval(ch) {
-  return { id: ch.id, kind: "flight", conversation_id: ch.conversation_id, status: ch.status, amount_kind: "exact", amount: (Math.max(ch.change_cents, 0) / 100).toFixed(2), currency: "USD", merchant_name: "Flight change", item: ch.summary, binding: sha(`${ch.change_offer_id}|${ch.change_cents}`) };
+  return { id: ch.id, kind: "flight", conversation_id: ch.conversation_id, status: ch.status, amount_kind: "exact", amount: (chargeOf(ch) / 100).toFixed(2), currency: "USD", merchant_name: "Flight change", item: ch.summary, binding: sha(`${ch.change_offer_id}|${ch.change_cents}|${ch.card_cents}`) };
 }
 /** What the approval page shows for a flight link; null when the feature does not reach them. */
 export function approvalView(a) {
@@ -385,8 +410,8 @@ export function approvalView(a) {
     const ch = getChangeRow(a.payment_id);
     if (!ch || ch.conversation_id !== a.conversation_id) return null;
     const row = changeForApproval(ch);
-    const breakdown = ch.change_cents >= 0 ? [["Airline change cost", money(ch.change_cents)]] : [["Refund to your card", money(ch.change_cents)]];
-    return { a, row, kind: "flight", flightKind: "change", state: a.state === "open" && ch.status !== "asked" ? "closed" : a.state, amount: money(ch.change_cents), store: "Flight change", item: ch.summary, expiresAt: a.expires_at, breakdown };
+    const breakdown = ch.change_cents >= 0 ? [["Airline change cost", money(ch.change_cents)], ...(ch.card_cents ? [["Card processing fee", money(ch.card_cents)]] : [])] : [["Refund to your card", money(ch.change_cents)]];
+    return { a, row, kind: "flight", flightKind: "change", state: a.state === "open" && ch.status !== "asked" ? "closed" : a.state, amount: ch.change_cents >= 0 ? money(chargeOf(ch)) : money(ch.change_cents), store: "Flight change", item: ch.summary, expiresAt: a.expires_at, breakdown };
   }
   const r = get(a.payment_id);
   if (!r || r.conversation_id !== a.conversation_id) return null;
@@ -405,7 +430,7 @@ export const idle = async () => { while (inFlight.size) await Promise.all([...in
  */
 export async function approve(v, response) {
   const isChange = v.flightKind === "change";
-  const cents = isChange ? Math.max(getChangeRow(v.row.id).change_cents, 0) : get(v.row.id).total_cents;
+  const cents = isChange ? chargeOf(getChangeRow(v.row.id)) : get(v.row.id).total_cents;
   const cap = cents ? trust.checkSpendCap(v.row.conversation_id, cents) : { ok: true };
   if (!cap.ok) { passkey.logEvent(v.row.conversation_id, v.row, "pay_failed", "over_daily_cap"); return { ok: false, error: "over_daily_cap", say: cap.say }; }
   const ok = await passkey.verifyApproval(v.a, v.row, response);
@@ -598,10 +623,10 @@ export async function cancelQuote(c, bookingId) {
   const refundCents = d.refund_amount == null ? null : toCents(d.refund_amount);
   if (refundCents == null) return { ok: false, blocked: "refund_unknown", error: "The airline won't say what it would refund, so I won't cancel blind. Nothing changed. Tell them this and that the airline can answer it directly, and ask if they want you to keep trying." };
   touch(r.id, { cancel_id: d.id, cancel_refund_cents: refundCents, cancel_state: "quoted", cancel_expires_at: parseTime(d.expires_at) });
-  const fees = r.service_cents + r.reason_cents;
+  const fees = r.service_cents + r.card_cents + r.reason_cents;
   const refundable = Math.min(refundCents, r.airline_cents);
   return { ok: true, booking_id: r.id, refund: money(refundable), not_refunded: money(r.total_cents - refundable), fees_kept: money(fees), expires_at: d.expires_at ?? null,
-    note: `Tell them exactly: cancelling gets ${money(refundable)} back to their card. ${money(fees)} of booking fees can't be refunded. Then ask whether to cancel, once. flight_cancel_confirm does it and needs their yes.` };
+    note: `Tell them exactly: cancelling gets ${money(refundable)} back to their card. ${money(fees)} of booking and card fees can't be refunded. Then ask whether to cancel, once. flight_cancel_confirm does it and needs their yes.` };
 }
 export const cancelTarget = (c, input) => { const r = getFor(c, input.booking_id); return r ? `flight:cancel:${r.id}:refund:${r.cancel_refund_cents}` : `flight:cancel:${input.booking_id}`; };
 
@@ -676,26 +701,27 @@ export async function changeQuote(c, input) {
   if (o.change_total_currency !== "USD") return { ok: false, blocked: "currency", error: `That change is priced in ${o.change_total_currency}, and Reason only does US dollars for now. Nothing changed.` };
   const cents = toCents(o.change_total_amount);
   if (cents == null) return { ok: false, blocked: "bad_price", error: "That change's price couldn't be read. Nothing changed." };
-  if (cents > 0) { const cap = trust.checkSpendCap(c, cents); if (!cap.ok) return { ...cap, ok: false }; }
+  const card = cents > 0 ? cardFeeCents(cents) : 0;
+  if (cents > 0) { const cap = trust.checkSpendCap(c, cents + card); if (!cap.ok) return { ...cap, ok: false }; }
   const expiresAt = parseTime(o.expires_at);
   const id = `fc_${randomUUID()}`;
   const summary = `Change ${r.booking_reference} to ${slicesSummary(o.slices?.add)}`;
   const now = clock.now();
   try {
     q("UPDATE flight_changes SET status = 'replaced', updated_at = ? WHERE booking_id = ? AND status = 'asked'").run(now, r.id);
-    q(`INSERT INTO flight_changes (id, booking_id, conversation_id, status, change_offer_id, summary, offer_expires_at, change_cents, created_at, updated_at) VALUES (?, ?, ?, 'asked', ?, ?, ?, ?, ?, ?)`)
-      .run(id, r.id, c, o.id, summary, expiresAt, cents, now, now);
+    q(`INSERT INTO flight_changes (id, booking_id, conversation_id, status, change_offer_id, summary, offer_expires_at, change_cents, card_cents, created_at, updated_at) VALUES (?, ?, ?, 'asked', ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, r.id, c, o.id, summary, expiresAt, cents, card, now, now);
   } catch { return { ok: false, blocked: "change_in_progress", error: "A change is already under way on this booking, so another wasn't started." }; }
   const token = passkey.createApproval(changeForApproval(getChangeRow(id)), { until: expiresAt ?? undefined });
-  return { ok: true, change_id: id, summary, amount: cents >= 0 ? `${money(cents)} to pay` : `${money(cents)} back`, url: `${siteBase()}/web/approve/${token}`, note: "Send this and the link. Face ID on the page is the yes. Never say it's changed; they'll be told." };
+  return { ok: true, change_id: id, summary, amount: cents >= 0 ? `${money(cents + card)} to pay` : `${money(cents)} back`, ...(card ? { lines: [{ label: "Airline change cost", amount: money(cents) }, { label: "Card processing fee", amount: money(card) }] } : {}), url: `${siteBase()}/web/approve/${token}`, note: "Send this and the link. Face ID on the page is the yes. Never say it's changed; they'll be told." };
 }
 function startChange(id) {
   const ch = getChangeRow(id);
   if (!ch || ch.status !== "asked") return { ok: false, error: `payment_${ch?.status ?? "gone"}` };
   const claimed = transaction(() => {
-    if (ch.change_cents > 0) { const cap = trust.checkSpendCap(ch.conversation_id, ch.change_cents); if (!cap.ok) return { ok: false, error: "over_daily_cap", say: cap.say }; }
+    if (ch.change_cents > 0) { const cap = trust.checkSpendCap(ch.conversation_id, chargeOf(ch)); if (!cap.ok) return { ok: false, error: "over_daily_cap", say: cap.say }; }
     if (!casChange(id, "asked", "authorizing")) return { ok: false, error: "payment_in_progress" };
-    if (ch.change_cents > 0) q("UPDATE flight_changes SET spend_id = ? WHERE id = ?").run(trust.noteSpend({ conversationId: ch.conversation_id, cents: ch.change_cents, what: `Flight change: ${ch.summary}`, site: "Flight" }), id);
+    if (ch.change_cents > 0) q("UPDATE flight_changes SET spend_id = ? WHERE id = ?").run(trust.noteSpend({ conversationId: ch.conversation_id, cents: chargeOf(ch), what: `Flight change: ${ch.summary}`, site: "Flight" }), id);
     return { ok: true };
   })();
   if (!claimed.ok) return claimed;
@@ -707,7 +733,7 @@ async function runChange(id) {
   if (ch.status !== "authorizing") return;
   const b = get(ch.booking_id);
   if (ch.change_cents > 0) {
-    const h = await hold({ key: `flight-hold-${id}`, cents: ch.change_cents, customer: b.stripe_customer, method: b.stripe_method, description: ch.summary, booking: id });
+    const h = await hold({ key: `flight-hold-${id}`, cents: chargeOf(ch), customer: b.stripe_customer, method: b.stripe_method, description: ch.summary, booking: id });
     if (h.state !== "held") {
       if (h.state === "no_answer" && clock.now() - ch.updated_at < 15 * 60_000) return;
       if (casChange(id, "authorizing", "failed")) { releaseSpend(ch.spend_id, ch.summary); await tellNow(ch.conversation_id, "Your card didn't go through, so I left your flight as it is. You weren't charged."); }
@@ -740,7 +766,7 @@ async function finishChange(ch) {
   if (!["confirming", "unknown"].some(s => casChange(ch.id, s, "done"))) return;
   const b = get(ch.booking_id);
   let line;
-  if (ch.change_cents > 0) { await capture(ch.stripe_pi); line = `${money(ch.change_cents)} charged to your card.`; }
+  if (ch.change_cents > 0) { await capture(ch.stripe_pi); line = `${money(chargeOf(ch))} charged to your card.`; }
   else if (ch.change_cents < 0) {
     const ok = b.capture_state === "done" && await refund({ pi: b.stripe_pi, cents: Math.min(-ch.change_cents, b.airline_cents), key: `flight-refund-${ch.id}` });
     if (ok) touch(b.id, { airline_cents: b.airline_cents + ch.change_cents });

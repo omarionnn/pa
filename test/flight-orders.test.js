@@ -128,6 +128,7 @@ const captures = () => calls.filter(c => /\/capture$/.test(c.path));
 const voids = () => calls.filter(c => /payment_intents\/.*\/cancel$/.test(c.path));
 const holds = () => calls.filter(c => c.path === "/v1/payment_intents");
 const refunds = () => calls.filter(c => c.path === "/v1/refunds");
+const sumLines = (lines) => lines.reduce((n, l) => n + Math.round(Number(l.amount.slice(1)) * 100), 0);
 const allSaid = () => said.map(s => s.t).join("\n");
 
 const page = (token, verb = "", body) => approveRequest({ sub: verb ? `${token}/${verb}` : token, method: verb ? "POST" : "GET", headers: SAME, readBody: async () => (body === undefined ? "" : JSON.stringify(body)) });
@@ -215,18 +216,58 @@ test("the quote is line by line and adds up; nothing is held or charged yet", as
   assert.deepEqual(out.lines, [
     { label: "Airline fare and taxes", amount: "$200.00" },
     { label: "Booking service fee", amount: "$5.00" },
+    { label: "Card processing fee", amount: "$6.59" },
     { label: "Reason fee", amount: "$5.00" },
   ]);
-  assert.equal(out.total, "$210.00");
+  assert.equal(out.total, "$216.59");
+  assert.equal(sumLines(out.lines), 21659, "the lines are the total, to the cent");
   assert.equal(holds().length, 0); assert.equal(orderPosts().length, 0);
 });
+
+test("the gross-up: after the card fee on the whole total, Reason keeps the subtotal, and not a cent more", () => {
+  for (let subtotal = 1; subtotal < 400_000; subtotal += 137) {
+    const card = orders.cardFeeCents(subtotal), total = subtotal + card;
+    assert.ok(total - orders.processorCents(total) >= subtotal, `loses money at ${subtotal}`);
+    assert.ok(total - 1 - orders.processorCents(total - 1) < subtotal, `overcharges at ${subtotal}`);
+  }
+  assert.equal(orders.cardFeeCents(21000), 659);
+  assert.ok(orders.processorCents(21659) > Math.ceil(21000 * 0.029) + 30, "a plain percentage of the subtotal would fall short");
+  assert.equal(orders.cardFeeCents(0), 0);
+  process.env.REASON_FLIGHT_CARD_BPS = "350"; process.env.REASON_FLIGHT_CARD_FIXED_CENTS = "50";
+  try { assert.equal(21000 + orders.cardFeeCents(21000) - orders.processorCents(21000 + orders.cardFeeCents(21000)), 21000); }
+  finally { delete process.env.REASON_FLIGHT_CARD_BPS; delete process.env.REASON_FLIGHT_CARD_FIXED_CENTS; }
+});
+
+for (const [who, member, total] of [["a non-member", false, 21659], ["an unlimited member", true, 21144]]) {
+  test(`${who}: the total before Face ID is exactly what is held and charged, and the lines add up to it`, async () => {
+    if (member) await plan.markPaid(C, { customerId: "cus_paid", subscriptionId: "sub_1", paidUntil: clock.now() + 864e5 });
+    const out = await quoted();
+    const html = (await page(tokenOf(out.url))).body;
+    assert.ok(html.includes(out.total), "the page shows the quoted total");
+    for (const l of out.lines) assert.ok(html.includes(l.amount), l.label);
+    assert.equal(sumLines(out.lines), total);
+    await approveVia(out.url); await orders.idle();
+    const r = orders.get(out.booking_id);
+    assert.equal(r.total_cents, total);
+    assert.equal(r.airline_cents + r.service_cents + r.card_cents + r.reason_cents, total);
+    assert.equal(holds()[0].body.amount, String(total));
+    assert.equal(captures().length, 1);
+    assert.equal(captures()[0].body?.amount_to_capture, undefined, "captures the whole hold, no other figure");
+    assert.equal(orderPosts()[0].body.data.payments[0].amount, "200.00", "the airline gets only its fare");
+    assert.equal(trust.spendToday(C).spent_cents, total);
+    assert.ok(allSaid().includes(out.total), "the confirmation names the same total");
+  });
+}
 
 test("an unlimited member pays no Reason fee", async () => {
   await plan.markPaid(C, { customerId: "cus_paid", subscriptionId: "sub_1", paidUntil: clock.now() + 864e5 });
   const out = await quoted();
-  assert.equal(out.lines[2].amount, "$0.00");
-  assert.match(out.lines[2].label, /none for members/);
-  assert.equal(out.total, "$205.00");
+  assert.deepEqual(out.lines.map(l => l.label), ["Airline fare and taxes", "Booking service fee", "Card processing fee"]);
+  assert.equal(out.lines[2].amount, "$6.44", "members still see the card line, on their smaller total");
+  assert.equal(out.total, "$211.44");
+  assert.equal(sumLines(out.lines), 21144);
+  const html = (await page(tokenOf(out.url))).body;
+  assert.ok(!html.includes("Reason fee")); assert.ok(html.includes("Card processing fee"));
 });
 
 test("no yes is taken when it couldn't be kept: unconfirmed traveler, no card, no Face ID, an infant, foreign currency", async () => {
@@ -263,7 +304,7 @@ test("Face ID books: hold, order, capture, read back; the only claim comes after
   const r = orders.get(out.booking_id);
   assert.equal(r.status, "verified");
   assert.equal(holds()[0].body.capture_method, "manual");
-  assert.equal(holds()[0].body.amount, "21000");
+  assert.equal(holds()[0].body.amount, "21659");
   assert.deepEqual(calls.filter(c => ["/v1/payment_intents", "/air/orders"].includes(c.path) || /\/capture$/.test(c.path)).map(c => c.path.replace(/pi_\d+/, "pi")), ["/v1/payment_intents", "/air/orders", "/v1/payment_intents/pi/capture"]);
   const sent = orderPosts()[0].body.data;
   assert.equal(sent.payments[0].amount, "200.00", "the airline is paid its own price, not the total");
@@ -271,14 +312,14 @@ test("Face ID books: hold, order, capture, read back; the only claim comes after
   assert.equal(sent.metadata.reason_booking_id, r.id);
   assert.equal(said.length, 1);
   assert.match(said[0].t, /You're booked\. Confirmation ABC123, ticket 1250000000/);
-  assert.match(said[0].t, /\$210\.00/);
-  assert.equal(trust.spendToday(C).spent_cents, 21000, "counted once");
+  assert.match(said[0].t, /\$216\.59/);
+  assert.equal(trust.spendToday(C).spent_cents, 21659, "counted once");
 });
 
 test("the approve page shows every line and never says booked", async () => {
   const out = await quoted();
   const html = (await page(tokenOf(out.url))).body;
-  for (const line of ["Airline fare and taxes", "Booking service fee", "Reason fee", "$210.00", "JFK→LAX"]) assert.ok(html.includes(line), line);
+  for (const line of ["Airline fare and taxes", "Booking service fee", "Reason fee", "$216.59", "JFK→LAX"]) assert.ok(html.includes(line), line);
   assert.ok(!/You're booked/.test(html));
   assert.match(html, /It isn&#39;t confirmed yet|It isn't confirmed yet/);
 });
@@ -322,7 +363,7 @@ test("a row is claimed once: two starts at once make one hold and one order", as
   assert.equal(a.ok, true); assert.equal(b.ok, false);
   await orders.idle();
   assert.equal(holds().length, 1); assert.equal(orderPosts().length, 1); assert.equal(captures().length, 1);
-  assert.equal(trust.spendToday(C).spent_cents, 21000);
+  assert.equal(trust.spendToday(C).spent_cents, 21659);
 });
 
 test("a reused Face ID link pays nothing a second time", async () => {
@@ -397,7 +438,7 @@ for (const [label, answer] of [["a 500", { status: 500, placeAnyway: true }], ["
     assert.match(allSaid(), /can't say it's booked yet/);
     assert.match(allSaid(), /not trying again/);
     assert.ok(!/You're booked/.test(allSaid()));
-    assert.equal(trust.spendToday(C).spent_cents, 21000, "still counted: it may have gone through");
+    assert.equal(trust.spendToday(C).spent_cents, 21659, "still counted: it may have gone through");
     assert.match(q("SELECT what FROM spend").get().what, /OUTCOME UNKNOWN/);
   });
 }
@@ -410,7 +451,7 @@ test("unclear, then the order turns up: the sweep finishes it, charges once, tel
   assert.equal(orderPosts().length, 1);
   assert.equal(captures().length, 1);
   assert.equal(said.filter(s => /You're booked/.test(s.t)).length, 1);
-  assert.equal(trust.spendToday(C).spent_cents, 21000);
+  assert.equal(trust.spendToday(C).spent_cents, 21659);
   assert.ok(!/OUTCOME UNKNOWN/.test(q("SELECT what FROM spend").get().what));
 });
 
@@ -480,7 +521,7 @@ test("cancel: the refund is quoted, confirmed once, and only the airline's amoun
   const out = await book();
   const quote = await runTool("flight_cancel_quote", { booking_id: out.booking_id }, { conversationId: C });
   assert.equal(quote.ok, true, JSON.stringify(quote));
-  assert.equal(quote.refund, "$150.00"); assert.equal(quote.fees_kept, "$10.00");
+  assert.equal(quote.refund, "$150.00"); assert.equal(quote.fees_kept, "$16.59");
   const r = orders.get(out.booking_id);
   assert.equal(r.cancel_refund_cents, 15000);
   const done = await orders.cancelConfirm(C, out.booking_id);
@@ -531,15 +572,16 @@ test("a change that costs money: Face ID, a hold, then the change, then the char
   calls.length = 0; said.length = 0;
   const ch = await runTool("flight_change_quote", { booking_id: out.booking_id, change_offer_id: "oco_1" }, { conversationId: C });
   assert.equal(ch.ok, true, JSON.stringify(ch));
-  assert.equal(ch.amount, "$45.00 to pay");
+  assert.equal(ch.amount, "$46.66 to pay");
+  assert.equal(sumLines(ch.lines), 4666);
   const res = await approveVia(ch.url);
   assert.equal(res.status, 200, res.body);
   await orders.idle();
-  assert.equal(holds().length, 1); assert.equal(holds()[0].body.amount, "4500");
+  assert.equal(holds().length, 1); assert.equal(holds()[0].body.amount, "4666");
   assert.equal(calls.filter(c => /order_changes\/oce_1\/actions\/confirm$/.test(c.path)).length, 1);
   assert.equal(captures().length, 1);
-  assert.match(allSaid(), /Changed\./); assert.match(allSaid(), /\$45\.00 charged/);
-  assert.equal(trust.spendToday(C).spent_cents, 21000 + 4500);
+  assert.match(allSaid(), /Changed\./); assert.match(allSaid(), /\$46\.66 charged/);
+  assert.equal(trust.spendToday(C).spent_cents, 21659 + 4666);
 });
 
 test("a cheaper change refunds the difference", async () => {
