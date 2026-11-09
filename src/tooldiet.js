@@ -25,11 +25,13 @@ import * as dbm from "./db.js";
 import { clock, config } from "./config.js";
 
 const OFF = ["0", "off", "false", "no"];
-/** off | owner | on (the default). Off: every tool loaded, exactly as before. */
+/** off (the default) | owner | on. Off: every tool loaded, exactly as before. Unset is off, so a deploy
+ * that forgets the line never puts everybody on it. */
 export function dietMode() {
-  const v = String(process.env.REASON_TOOL_DIET ?? "on").trim().toLowerCase();
+  const v = String(process.env.REASON_TOOL_DIET ?? "off").trim().toLowerCase();
   if (OFF.includes(v)) return "off";
-  return v === "owner" ? "owner" : "on";
+  if (v === "owner") return "owner";
+  return v === "on" ? "on" : "off";
 }
 export function dietOn(conversationId) {
   const m = dietMode();

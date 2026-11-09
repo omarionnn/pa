@@ -1,4 +1,4 @@
-# Tool diet (src/tooldiet.js, REASON_TOOL_DIET = on | owner | off)
+# Tool diet (src/tooldiet.js, REASON_TOOL_DIET = off (default) | owner | on)
 
 A reply call carries core + the person's likely tools whole; the rest are found by search (the API's
 `tool_search_tool_bm25` with `defer_loading`, or the CLI's ToolSearch). The set is only replaced when

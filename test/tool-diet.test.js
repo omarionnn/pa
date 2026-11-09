@@ -27,7 +27,16 @@ db.upsertAccount({ conversationId: C, channel: "test", address: "+12025551234", 
 const U = "dm:+12025550111";
 db.upsertAccount({ conversationId: U, channel: "test", address: "+12025550111", name: "Ama", isOperator: false });
 
-beforeEach(() => { diet._resetDiet(); delete process.env.REASON_TOOL_DIET; });
+beforeEach(() => { diet._resetDiet(); process.env.REASON_TOOL_DIET = "on"; });
+
+test("unset or unknown is off: a deploy that forgets the line changes nothing", () => {
+  for (const v of [undefined, "", "yes", "maybe"]) {
+    if (v === undefined) delete process.env.REASON_TOOL_DIET; else process.env.REASON_TOOL_DIET = v;
+    assert.equal(diet.dietMode(), "off", String(v));
+    const vis = toolsFor(C);
+    assert.deepEqual(diet.apiTools(C, vis), { tools: vis, note: "" });
+  }
+});
 
 const chars = (list) => list.reduce((n, t) => n + JSON.stringify(t).length, 0);
 
