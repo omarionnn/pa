@@ -22,7 +22,12 @@ What code does now, with no model in front of it:
   where they have a passkey;
 - **the store's hold runs out while they still have time to approve** (#376) → `renewHold` asks the same checkout again (≤ `RENEW_MAX` 2), one "let go of the cart … asking again" text, no end text for the old run (its `result` reads `renewed: store hold ran out; asked again as <run>`); see [passkey-pay.md](passkey-pay.md);
 - **the end** → one text saying what happened: expired input (what was asked), blocked (summary),
-  cancelled, placed (order ref if Crossmint gives one), ended after a payment (outcome unknown, check mail; since #357 that amount already counts against the day's cap);
+  cancelled, placed (order ref if Crossmint gives one), ended after a payment (outcome unknown; since #357 that amount already counts against the day's cap).
+  Since #412 the after-payment end looks in their Gmail itself (`paidEndText` → `checkMail(..., {ending:true})`)
+  and says what is there: new mail from the store (model woken to read it), mail the watch already read
+  ("has already written since the payment"), nothing yet (watching), or couldn't look; it promises more
+  watching only while the watch runs, an unknown-outcome payment starts the watch here, and it never says
+  "check your email" (`test/no-check-your-email.test.js` guards src/);
 - **a stall** (`STALL_MS` 12 min without the revision moving; never while `needs_approval` since #376 — the one approval reminder covers that, see [passkey-pay.md](passkey-pay.md) "Thirty minutes"; past Crossmint's 10-min input expiry so an
   expiring request reads as expired) → one text; Crossmint saying it does not know the run (a 404)
   for `LOST_MS` (60 s since #337) → failed ("lost"), cancelled at Crossmint, said once; Crossmint down
@@ -48,7 +53,7 @@ Want me to start it now?`; a "never actually started" line with a run of the las
 in front (`src/offers.js:95`), and only on a turn where they asked about the checkout (`aboutCheckout`).
 
 ## Offline
-- `node --test test/checkout-job.test.js` (16 pass 2026-11-07; the four "review" ones cover non-card payment, expired
+- `node --test test/checkout-job.test.js test/checkout-mail-read.test.js` (19 + 2 pass 2026-11-08 at #412; earlier: 16 pass 2026-11-07; the four "review" ones cover non-card payment, expired
   approval wording + wake retry, lost run + a pre-change row with stage '', and "review 11-06" Crossmint
   503 for minutes is not a lost run): the exact 10:58 line refused without a run and untouched
   with one; the 11:17 line corrected; the shipping form → wake → `shop_answer` → in_progress, sealed;
