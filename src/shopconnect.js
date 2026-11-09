@@ -1670,6 +1670,8 @@ async function paidEndText(run, status, result) {
   const charge = `If a charge turns up with no order, I'll take it up with ${store}.`;
   let look = {};
   try { look = await checkMail(run.run_id, { ending: true }); } catch { look = {}; }
+  // A promise to keep looking is made only while the watch is really still running (review 11-08).
+  const watching = look.done === false;
   if (look.connected === false || (!look.looked && !mailConnected(run.conversation_id))) {
     return `${head} I can't see your email yet, so I can't look for ${store}'s confirmation myself. Want the link to connect it? Then I'll check and tell you what's there. ${charge}`;
   }
@@ -1677,9 +1679,18 @@ async function paidEndText(run, status, result) {
     const first = look.found?.[0];
     return `${head} I looked in your email: there's mail from ${store} since the payment${first?.subject ? ` ("${short(first.subject, 80)}")` : ""}. Reading it now; I'll tell you what it says.`;
   }
+  // The watch already found (and read) mail from the store: say so, never "nothing from them yet" (review 11-08).
+  const already = look.already ?? [];
+  if (already.length) {
+    const first = already[0];
+    const more = watching ? ` I'm still watching for anything more from ${store} and will text you the order number if a confirmation lands.` : "";
+    return `${head} I looked in your email: ${store} has already written since the payment${first?.subject ? ` ("${short(first.subject, 80)}")` : ""}, and I read it when it came in.${more} ${charge}`;
+  }
   if (look.looked) {
+    if (!watching) return `${head} I looked in your email: nothing from ${store} since the payment. ${charge}`;
     return `${head} I looked in your email: nothing from ${store} since the payment yet. I'm watching it and will text you the order number the moment the confirmation lands, or tell you if a day goes by with nothing. ${charge}`;
   }
+  if (!watching) return `${head} I couldn't get into your email just now; ask me and I'll try again. ${charge}`;
   return `${head} I couldn't get into your email just now; I'll keep looking for ${store}'s confirmation and text you what it says. ${charge}`;
 }
 /** What ended a run, in their words. `paid` is a payment of theirs that went out before the end. */
@@ -2282,7 +2293,11 @@ function mailEvent(run, hits, { ending = false } = {}) {
 export const MAIL_WAKES_MAX = 5;
 export async function checkMail(runId, { ending = false } = {}) {
   const run = runRow(runId);
-  if (!run || !run.mail_until || toldOf(run).has("mail")) return { done: true };
+  if (!run || !run.mail_until) return { done: true };
+  // A watch that already stopped (told "mail": capped, no host, no mail) gets one more look at the
+  // end of a run, so the end text says what is really there; nothing restarts it (review 11-08).
+  const stopped = toldOf(run).has("mail");
+  if (stopped && !ending) return { done: true };
   const store = storeOf(run);
   if (clock.now() > run.mail_until) {
     // A placed order with nothing in the mail is not an alarm; a payment with no order might be.
@@ -2294,20 +2309,26 @@ export async function checkMail(runId, { ending = false } = {}) {
   const host = storeHost(run.store).replace(/^www\./, "");
   if (!host) { tellOnce(runId, "mail"); return { done: true, looked: false }; }
   let r;
-  try { r = await (mailImpl ?? readMail)(run.conversation_id, { host, since: (run.paid_at ?? run.created_at) - 60_000 }); } catch { return { done: false, looked: false }; }
-  if (!r?.ok) return { done: false, looked: false };
+  try { r = await (mailImpl ?? readMail)(run.conversation_id, { host, since: (run.paid_at ?? run.created_at) - 60_000 }); } catch { return { done: stopped, looked: false }; }
+  if (!r?.ok) return { done: stopped, looked: false };
   if (!r.connected) { tellOnce(runId, "mail"); return { done: true, connected: false }; }
   // Every NEW message from the store is put to the model (it decides whether it is the confirmation);
   // the first one — a "rate your visit" — does not end the watch. Bounded: MAIL_WAKES_MAX wakes, then done.
-  const seen = new Set(String(run.mail_seen ?? "").split(",").filter(Boolean));
-  const fresh = (r.hits ?? []).filter((h) => h.message_id && !seen.has(h.message_id));
-  if (!fresh.length) return { done: false, looked: true, connected: true, hits: 0 };
+  // The row is read again after the look: the end-of-run look and a watch tick can overlap, and only
+  // the one that records a message first wakes the model for it (review 11-08).
+  const now = runRow(runId) ?? run;
+  const seen = new Set(String(now.mail_seen ?? "").split(",").filter(Boolean));
+  const hits = (r.hits ?? []).filter((h) => h.message_id);
+  const already = hits.filter((h) => seen.has(h.message_id));
+  const fresh = hits.filter((h) => !seen.has(h.message_id));
+  if (!fresh.length) return { done: stopped, looked: true, connected: true, hits: 0, already };
   for (const h of fresh) seen.add(h.message_id);
   q("UPDATE shop_runs SET mail_seen = ? WHERE run_id = ?").run([...seen].slice(-50).join(","), runId);
-  const wakes = [...toldOf(run)].filter((t) => t.startsWith("mailwake:")).length + 1;
+  const wakes = [...toldOf(now)].filter((t) => t.startsWith("mailwake:")).length + 1;
   tellOnce(runId, `mailwake:${fresh[0].message_id}`);
   await wake(run.conversation_id, mailEvent(run, fresh, { ending }), `shop:${runId}:mail:${fresh[0].message_id}`);
-  const saw = { looked: true, connected: true, hits: fresh.length, found: fresh };
+  const saw = { looked: true, connected: true, hits: fresh.length, found: fresh, already };
+  if (stopped) return { done: true, ...saw };
   if (wakes >= MAIL_WAKES_MAX) { tellOnce(runId, "mail"); return { done: true, ...saw, capped: true }; }
   return { done: false, ...saw };
 }

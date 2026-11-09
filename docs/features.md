@@ -996,6 +996,11 @@ The one failure where doing nothing is right and trying again is the mistake.
   link. The system prompt carries the standing rule (never tell them to check something Reason has a
   tool for), and `test/no-check-your-email.test.js` fails on any source line that hands them their
   inbox.
+  Review 11-08: mail the background watch already found counts too, so the end text names it ("Ulta
+  has already written since the payment (…), and I read it when it came in") instead of "nothing yet";
+  a watch that already stopped still gets one look at the end, and the text then promises no further
+  watching ("ask me and I'll try again" when the mail can't be read). The end look and a watch tick
+  re-read the row before recording a message, so only one of them wakes the model for it.
 - **Checking does not clear the block.** Only an attempt that got a real answer does, so a refusal
   between the check and the press cannot quietly lift something nobody resolved.
 - **The money is counted anyway**, with `(OUTCOME UNKNOWN)` on the spend line. Over-counting a charge
